@@ -15,16 +15,15 @@ use thiserror::Error;
 /// ever increasing. It is a single opaque ordering value: callers compare and
 /// checkpoint it, never decompose it.
 ///
-/// SQLite assigns it directly as the 1-based row position. KurrentDB's native
-/// `$all` position is a `(commit, prepare)` pair; the adapter exposes the
-/// **commit position** as this `Position` and reconstructs the pair as
-/// `(commit, commit)` when resuming a read or subscription. That round-trips
-/// faithfully because KurrentDB orders and seeks `$all` by commit position, and
-/// every record Rigger writes is a single-event append whose own commit and
-/// prepare positions coincide (the prepare half of a *start* position only
-/// disambiguates records that share a commit, which Rigger never produces). A
-/// position returned from `read_all`/`subscribe_all` therefore resolves back to
-/// the same logical location when fed into the next resume.
+/// SQLite assigns it directly as the 1-based row position, one per event. KurrentDB's
+/// native `$all` position is a `(commit, prepare)` pair, and the server issues each event
+/// an append writes - a multi-event append's (a batched fold's, the conductor's
+/// `append_and_fold_batch`) included - a commit position of its own, equal to its prepare
+/// position. The adapter exposes the **commit position** as this `Position` and
+/// reconstructs the pair as `(commit, commit)` when resuming a read or subscription,
+/// which KurrentDB orders and seeks `$all` by. So on both backends each event an append
+/// writes carries its own position, and a read or subscription resumed from a position is
+/// exclusive of the one event at it.
 pub type Position = u64;
 
 /// Revision is an event's place within its own stream: 0-based, so the first event
@@ -166,6 +165,15 @@ impl Event {
     /// Builder: set the valid-from time (when the fact became true).
     pub fn with_valid_from(mut self, t: SystemTime) -> Self {
         self.valid_from = t;
+        self
+    }
+
+    /// This event as an append placed it: on `stream`, at the `position` the append's report
+    /// gave it - the two stamps a writer that keeps the event it handed the store takes from
+    /// that report.
+    pub fn appended_at(mut self, stream: &str, position: Position) -> Self {
+        self.stream = stream.to_string();
+        self.position = position;
         self
     }
 
@@ -732,6 +740,25 @@ pub trait EventStore: Send + Sync {
         dir: Direction,
         filter: &Filter,
     ) -> Result<Vec<Event>, Error>;
+
+    /// Read one page of the global log forward from a global position (**exclusive**), filtered:
+    /// the events [`read_all`](EventStore::read_all) reads forward from `from`, up to `max` of
+    /// them and no further. A `max` of 0 reads nothing. A backend reads no further than the
+    /// record that ends the page, so a read past a long run of events reads one page and never
+    /// the run.
+    fn read_all_page(
+        &self,
+        from: Position,
+        filter: &Filter,
+        max: usize,
+    ) -> Result<Vec<Event>, Error>;
+
+    /// The log's head: the highest [`Position`] the log has issued, whatever stream or event it
+    /// was issued to, so every later append lands above it - or `None` for a log that has issued
+    /// none. A position issued to an event the log no longer holds still counts. A backend
+    /// answers from its own index, or from one backward read of its last record - never by a
+    /// forward read.
+    fn log_head(&self) -> Result<Option<Position>, Error>;
 
     /// Open a catch-up subscription over the global log from a position
     /// (**exclusive**): it replays the matching events after `from` in order,

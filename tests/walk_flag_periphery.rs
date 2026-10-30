@@ -141,23 +141,24 @@ fn every_public_whole_tree_walk_hands_only_the_out_of_line_test_modules_gc_batch
 fn a_walk_at_any_width_hands_each_interleaved_test_module_its_own_flag() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
-    for (path, body) in [
-        (
-            "src/lib.rs",
-            "#[cfg(test)]\nmod a_checks;\nmod b_plain;\n#[cfg(test)]\nmod c_checks;\n\
+    common::fixtures::write_files(
+        root,
+        &[
+            (
+                "src/lib.rs",
+                "#[cfg(test)]\nmod a_checks;\nmod b_plain;\n#[cfg(test)]\nmod c_checks;\n\
              mod d_plain;\n#[cfg(test)]\nmod e_checks;\n\nfn product() {}\n",
-        ),
-        (
-            "src/a_checks.rs",
-            "// WHY: the first checks sit out of line\nfn a() {}\n",
-        ),
-        ("src/b_plain.rs", "fn b() {}\n"),
-        ("src/c_checks.rs", "fn c() {}\n"),
-        ("src/d_plain.rs", "fn d() {}\n"),
-        ("src/e_checks.rs", "fn e() {}\n"),
-    ] {
-        write_file(&root.join(path), body.as_bytes());
-    }
+            ),
+            (
+                "src/a_checks.rs",
+                "// WHY: the first checks sit out of line\nfn a() {}\n",
+            ),
+            ("src/b_plain.rs", "fn b() {}\n"),
+            ("src/c_checks.rs", "fn c() {}\n"),
+            ("src/d_plain.rs", "fn d() {}\n"),
+            ("src/e_checks.rs", "fn e() {}\n"),
+        ],
+    );
     let expected = owned(&[
         ("gc/src/a_checks.rs", true),
         ("gc/src/b_plain.rs", false),

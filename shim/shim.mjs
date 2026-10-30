@@ -195,9 +195,10 @@ export function buildProxyServer(client) {
 
   const peersTool = tool(
     'rigger_peers',
-    'List the decisions and review findings other agents have raised so far this ' +
-      'run. Pass `files` (your blast-radius) to scope the result to the files you ' +
-      'are touching; omit it to see every one.',
+    'List the decisions, lessons and review findings other agents have recorded, ' +
+      'each section the newest under a byte budget (`left_out` counts the rest). ' +
+      'Pass `files` (your blast-radius) to scope the result to the files you are ' +
+      'touching; omit it for every file.',
     {
       files: z
         .array(z.string())

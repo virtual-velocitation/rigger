@@ -48,9 +48,17 @@ pub(crate) fn cmd_graph(args: &[String]) -> Res {
         return Err("graph: --around <id> or --show <entity> is required".into());
     }
     let gp = owning_graph_to_read()?;
-    let g = contextgraph::around(&gp, &[around.clone()], depth)?;
+    // The queried id (spec 117, UNRESOLVED REFERENCES ARE A READ): the query resolved once through
+    // the port, an alias to its canonical id, else the query as typed. Its one site read answers
+    // the queried node's unresolved leaves.
+    let queried = Projection::resolve(&gp, &around)?.unwrap_or(around.clone());
+    let g = contextgraph::around(&gp, std::slice::from_ref(&queried), depth)?;
+    let unresolved = match gp.locate(&queried)? {
+        Located::One(site) => site.unresolved,
+        _ => Vec::new(),
+    };
     println!("subgraph around {around:?} (depth {depth}):");
-    print_around_subgraph(&g, &around);
+    print_around_subgraph(&g, &queried, &unresolved);
     Ok(())
 }
 
@@ -85,10 +93,14 @@ const AROUND_GOVERNANCE_CAP: usize = 10;
 ///   inbound `SUPERSEDES` edge carries its superseder's fresh position, which would let the
 ///   stale decision crowd a live one out of the cap if it counted).
 ///
+/// The queried node `around`'s line is followed by `  unresolved <count>`, the count of its
+/// `unresolved` leaves (spec 117), when it lists any; no other node prints one.
+///
 /// An empty subgraph prints one note naming the seed form (spec 119, A BARE SHOW FINDS A LEAF OR
-/// PATH): a seed is an exact id, `<file>::<path>`, never resolved from a bare name, and
-/// `rigger graph --show <name>` is the verb that resolves one.
-fn print_around_subgraph(g: &contextgraph::Graph, around: &str) {
+/// PATH): a seed is an exact id, `<file>::<path>`, or an alias [`cmd_graph`] resolves to one (spec
+/// 117), never resolved from a bare name, and `rigger graph --show <name>` is the verb that
+/// resolves one.
+fn print_around_subgraph(g: &contextgraph::Graph, around: &str, unresolved: &[String]) {
     use std::collections::{BTreeMap, BTreeSet};
 
     let is_narrative =
@@ -101,6 +113,9 @@ fn print_around_subgraph(g: &contextgraph::Graph, around: &str) {
 
     for n in &code_nodes {
         println!("  node {:<24} {}", n.id, n.kind);
+        if n.id == around && !unresolved.is_empty() {
+            println!("  unresolved {}", unresolved.len());
+        }
     }
     for e in &g.edges {
         if code_ids.contains(e.from.as_str()) && code_ids.contains(e.to.as_str()) {
@@ -147,15 +162,16 @@ fn print_around_subgraph(g: &contextgraph::Graph, around: &str) {
         let rest = narrative_nodes.len().saturating_sub(AROUND_GOVERNANCE_CAP);
         if rest > 0 {
             println!(
-                "  (+{rest} more decision(s)/finding(s) not shown - see `rigger peers {around}` for the full history)"
+                "  (+{rest} more decision(s)/finding(s) not shown - {})",
+                conductor::RECORD_RECOVERY
             );
         }
     }
 
     if g.nodes.is_empty() {
         println!(
-            "  (nothing found; a seed is an exact id, `<file>::<path>`, and `rigger graph --show \
-             <name>` resolves a bare name; has `rigger run` been run yet?)"
+            "  (nothing found; a seed is an exact id, `<file>::<path>`, or an alias of one, and \
+             `rigger graph --show <name>` resolves a bare name; has `rigger run` been run yet?)"
         );
     }
 }
@@ -350,7 +366,7 @@ fn print_site_header(site: &contextgraph::EntitySite, file: &str, live_line: u32
 /// so each entry stays one line (the MCP key carrying it verbatim).
 fn print_site_entries(site: &contextgraph::EntitySite) {
     for (entry, value) in contextgraph::site_fields(site) {
-        // The header's entries; every entry after them is a recorded string value.
+        // The header's entries; every entry after them is a string value.
         if matches!(entry, "file" | "line" | "kind" | "degree") {
             continue;
         }
@@ -594,7 +610,12 @@ fn cmd_graph_build(_args: &[String]) -> Res {
     let selection = store_selection(None, None)?;
     let backend = resolve_store(&selection, &db_path("events.db"))?;
     let store = Namespaced::new(backend.as_ref(), &project_identity());
-    let graph = open_graph(&db_path("graph.db"), &project_identity(), "graph build")?;
+    let graph = open_graph(
+        &db_path("graph.db"),
+        &project_identity(),
+        &selection,
+        "graph build",
+    )?;
 
     // The tree to fold: the git top-level, so a build launched from a subdirectory still ingests
     // the WHOLE project (the same root a run's `deps.repo` carries), falling back to the cwd
@@ -618,7 +639,8 @@ fn cmd_graph_build(_args: &[String]) -> Res {
 }
 
 /// The walk of the tree at `root` into `store` and `graph`, answering the N of the build's line
-/// and the first fold it lost.
+/// and the first fold it lost. Every batch's blob is hashed through the one binding of the hash
+/// function to `root` ([`hash_blob_in`]), so the build detects the root's repository once.
 ///
 /// A re-build refreshes incrementally (spec 45) without reading the log (spec 101): the walk hands
 /// this each batch identity exactly once, and each batch is recorded by [`record_batch`], which
@@ -627,9 +649,9 @@ fn cmd_graph_build(_args: &[String]) -> Res {
 /// N counts the batch events of each entry SINK OUTCOMES counts (spec 107): an entry the graph
 /// folded, and one whose fold was lost - refused by a graph that owes its rebuild, or failed.
 /// An entry that folded as a re-recording, the graph already holding its generation, moved no
-/// fact and is not counted. The fold answered is the FIRST one this build could not make: a
-/// lost fold marks a current graph owed, so every entry after it is refused for that debt, and
-/// the first names the cause.
+/// fact and is not counted. The fold answered is the FIRST one this build could not make, naming
+/// its cause: a lost fold writes no mark (spec 124), so every entry after it still folds, its
+/// position the only one missing from the graph's `applied` ledger.
 ///
 /// The walk runs under the one walk policy both ingest sinks share
 /// ([`rigger::ingest::sink_walked_batches`]): a batch whose lookup the store cannot answer, or whose
@@ -644,12 +666,15 @@ fn ingest_tree(
 ) -> Result<(usize, contextgraph::Fold), Box<dyn std::error::Error>> {
     let mut counted = 0usize;
     let mut first_lost = contextgraph::Fold::Folded;
+    let hash_blob = hash_blob_in(root);
     rigger::ingest::sink_walked_batches(
         |sink| {
             rigger::ingest::ingest_project_batched(root, sink);
         },
         |keyed, excluded| {
-            let Some((events, fold)) = record_batch(store, graph, root, keyed, excluded)? else {
+            let Some((events, fold)) =
+                record_batch(store, graph, root, &hash_blob, keyed, excluded)?
+            else {
                 return Ok::<(), Box<dyn std::error::Error>>(());
             };
             counted += events;
@@ -669,13 +694,15 @@ fn ingest_tree(
 ///
 /// What is recorded is decided by [`rigger::ingest::entry_of_batch`], the one function both
 /// ingest sinks call. This sink hands it what differs from the run's: the log side read from the
-/// store for each batch ([`rigger::ingest::latest_generation`]), with no memo, and the one hash
-/// function bound to git under `root` ([`hash_blob_in`]). The entry is built by its one
+/// store for each batch ([`rigger::ingest::latest_generation`]), with no memo, and `hash`, the one
+/// hash function bound to git under `root` ([`hash_blob_in`]). The entry is built by its one
 /// constructor and carries no run id, there being no run, and it is appended and folded with its
-/// extraction through the ledger form of the folding store, in ONE store append and ONE graph
-/// transaction. A batch whose key names no identity, and a failed read of either side, of the
-/// bytes or of the hash, fails with that failure's text and records nothing, as a refused append
-/// does. A lost fold is answered, never said here: the build's line names it.
+/// extraction through the ledger form of the folding store, in ONE store append, the entry and its
+/// extraction committing in the transaction
+/// [`Projection::apply_generation`](rigger::contextgraph::Projection::apply_generation) states. A
+/// batch whose key names no identity, and a failed read of either side, of the bytes or of the
+/// hash, fails with that failure's text and records nothing, as a refused append does. A lost
+/// fold is answered, never said here: the build's line names it.
 ///
 /// An entry counts its batch's events unless the ledger form reports it a re-recording.
 #[cfg(feature = "symbols")]
@@ -683,6 +710,7 @@ fn record_batch(
     store: &dyn EventStore,
     graph: &dyn Projection,
     root: &str,
+    hash: &rigger::ingest::HashBlob,
     keyed: &[(String, &Event)],
     excluded: bool,
 ) -> Result<Option<(usize, contextgraph::Fold)>, Box<dyn std::error::Error>> {
@@ -692,7 +720,7 @@ fn record_batch(
         excluded,
         |identity| rigger::ingest::latest_generation(store, conductor::STREAM, identity),
         graph,
-        &hash_blob_in(root),
+        hash,
     )?;
     let Some(recorded) = recorded else {
         return Ok(None);
@@ -719,6 +747,7 @@ fn record_batch(
     _store: &dyn EventStore,
     _graph: &dyn Projection,
     _root: &str,
+    _hash: &(dyn Fn(&[u8]) -> Result<String, rigger::worktree::Error> + Sync),
     _keyed: &[(String, &Event)],
     _excluded: bool,
 ) -> Result<Option<(usize, contextgraph::Fold)>, Box<dyn std::error::Error>> {
@@ -727,9 +756,9 @@ fn record_batch(
 
 /// `rigger graph communities [--resolution <r>]` - the OFFLINE, DETERMINISTIC community-detection
 /// pass (spec 53, the CODE lens). It reads the project's already-folded coupling layer (the live
-/// `CALLS` / `REFERENCES` / `CONTAINS` edges among code-entity / file nodes), runs modularity-based
-/// detection over it at the given `--resolution` grain (default [`community::DEFAULT_RESOLUTION`]),
-/// and RECORDS the result as `CommunityAssigned` events - so the derived grouping is event-sourced
+/// `CALLS` / `REFERENCES` / `CONTAINS` edges among code-entity / file nodes, but a module
+/// declaration's `CONTAINS` onto its file, spec 117), runs modularity-based detection over it at
+/// the given `--resolution` grain (default [`community::DEFAULT_RESOLUTION`]), and RECORDS the result as `CommunityAssigned` events - so the derived grouping is event-sourced
 /// (the `IN_COMMUNITY` membership edges are a rebuildable fold of the log), never computed at request
 /// time. Re-running at a resolution with a NON-empty result supersedes only that grain's prior
 /// assignments (the fold's `fresh` boundary), so distinct grains coexist and the lens reads one live
@@ -775,8 +804,9 @@ fn cmd_graph_communities(args: &[String]) -> Res {
 /// `run` do (create-or-open under the cwd's `.rigger/`), and read the WHOLE live projection - the
 /// same direct, project-scoped, sorted read the dash's `/api/graph` provider consults. `derive`
 /// turns it into the pass's events plus its summary line; the events are appended in ONE store
-/// append and folded in ONE transaction (the shared batched append-and-fold authority), then the
-/// summary is printed.
+/// append and folded through the shared batched append-and-fold authority, at the transaction
+/// cadence [`Projection::apply_batch`](rigger::contextgraph::Projection::apply_batch) states,
+/// then the summary is printed.
 fn run_graph_pass(
     verb: &str,
     args: &[String],
@@ -814,6 +844,7 @@ fn run_graph_pass(
     let graph = open_graph(
         &db_path("graph.db"),
         &project_identity(),
+        &selection,
         &format!("graph {verb}"),
     )?;
 
@@ -1011,9 +1042,9 @@ pub(crate) fn cmd_symbols_index(args: &[String]) -> Res {
 /// EXACTLY as the MCP `rigger_emit` tool does (both call [`mcpserver::emit_event`]).
 /// The store and graph are opened the way `serve` opens them - the namespaced
 /// per-project event store and the `graph.db` projector on the `conductor::STREAM`.
-/// A bad / non-object JSON payload, or one whose shape the context-graph fold cannot apply
-/// (checked by the shared core before the append), is a clear error to stderr with a non-zero
-/// exit.
+/// A bad / non-object JSON payload, one whose shape the context-graph fold cannot apply, or a
+/// record whose id another author's kept record holds (both checked by the shared core before
+/// the append), is a clear error to stderr with a non-zero exit.
 pub(crate) fn cmd_emit(args: &[String]) -> Res {
     // Optional `--spawn <id>`: stamp the emit with the EMITTING spawn's id
     // ([`META_SPAWN`](conductor::META_SPAWN)) at RECORD time. A native courier's `rigger emit`
@@ -1023,7 +1054,10 @@ pub(crate) fn cmd_emit(args: &[String]) -> Res {
     // threads the worker's own spawn id here, exactly as the cli emit callback and the workflow
     // MCP server stamp their emits, so the recording the ReplayDriver later folds already
     // names its emitting spawn and is correlated by identity, never a shared-stream position.
-    let mut spawn: Option<&str> = None;
+    // Without the flag, the spawn id the host exported to its worker
+    // ([`SPAWN_ENV`](rigger::driver::SPAWN_ENV)) stamps the emit, so an agent session's emit is
+    // attributed even when it never passes the flag; the operator's own shell exports none.
+    let mut spawn: Option<String> = None;
     let mut positional: Vec<&String> = Vec::new();
     let mut it = args.iter();
     while let Some(a) = it.next() {
@@ -1031,12 +1065,13 @@ pub(crate) fn cmd_emit(args: &[String]) -> Res {
             spawn = Some(
                 it.next()
                     .ok_or("emit: --spawn expects a spawn id: rigger emit --spawn <id> <type> '<json-object>'")?
-                    .as_str(),
+                    .clone(),
             );
         } else {
             positional.push(a);
         }
     }
+    let spawn = spawn.or_else(|| std::env::var(rigger::driver::SPAWN_ENV).ok());
     let typ = positional
         .first()
         .ok_or("emit: expected a type: rigger emit [--spawn <id>] <type> '<json-object>'")?;
@@ -1072,14 +1107,15 @@ pub(crate) fn cmd_emit(args: &[String]) -> Res {
     let store = Namespaced::new(backend.as_ref(), &loc.identity());
 
     // Same args shape the MCP tool receives, so the append - the shared core both surfaces
-    // call - behaves identically here and over MCP. A non-empty `--spawn <id>` rides in
-    // `meta.spawn`, the same key the MCP server's `stamp_current_spawn` writes.
+    // call - behaves identically here and over MCP. A non-empty spawn id (the flag's, else the
+    // exported one) rides in `meta.spawn`, the same key the MCP server's `stamp_current_spawn`
+    // writes.
     let mut tool_args = serde_json::json!({ "type": typ, "data": data });
     if let Some(spawn) = spawn.filter(|s| !s.is_empty()) {
         let mut meta = serde_json::Map::new();
         meta.insert(
             conductor::META_SPAWN.to_string(),
-            serde_json::Value::String(spawn.to_string()),
+            serde_json::Value::String(spawn),
         );
         tool_args
             .as_object_mut()
@@ -1088,7 +1124,12 @@ pub(crate) fn cmd_emit(args: &[String]) -> Res {
     }
     // The event goes on the log FIRST; `graph.db` is opened only after (spec 101), and a fold
     // that cannot happen is reported as not folded, with the reason, instead of claimed.
-    let emitted = mcpserver::emit_event(&store, conductor::STREAM, || loc.graph(), &tool_args)?;
+    let emitted = mcpserver::emit_event(
+        &store,
+        conductor::STREAM,
+        || loc.graph(&selection),
+        &tool_args,
+    )?;
     println!(
         "emitted {typ} (position {}){}",
         emitted.position,
@@ -1241,7 +1282,13 @@ mod tests {
 
             let built = ingest_tree(&store, &graph, root).unwrap();
 
-            assert_eq!(built, (18, Fold::NotFolded(format!("graph: {FIRST_LOSS}"))));
+            assert_eq!(
+                built,
+                (
+                    18,
+                    Fold::NotFolded(crate::test_support::graph_error(FIRST_LOSS))
+                )
+            );
             assert_eq!(recorded(&store), only(walked_entries(tree.path())));
             assert_eq!(graph.folds.load(std::sync::atomic::Ordering::SeqCst), 6);
         }
@@ -1406,10 +1453,9 @@ mod tests {
             let root = tree.path().to_str().unwrap();
             let store = Store::open(":memory:").unwrap();
             let graph_dir = tempfile::tempdir().unwrap();
-            let graph =
-                Projector::open(graph_dir.path().join("graph.db").to_str().unwrap(), "test")
-                    .unwrap();
-            owe_a_rebuild(&graph);
+            let graph_db = graph_dir.path().join("graph.db");
+            let graph = Projector::open(graph_db.to_str().unwrap(), "test").unwrap();
+            owe_a_rebuild(&graph, &graph_db);
             let identities = walked_identities();
 
             let (counted, fold) = ingest_tree(&store, &graph, root).unwrap();
@@ -1418,10 +1464,9 @@ mod tests {
                 (counted, fold_loss_clause(&fold)),
                 (
                     18,
-                    format!(
-                        "; not folded into the context graph: graph: {}",
+                    crate::test_support::not_folded_suffix(&crate::test_support::graph_error(
                         contextgraph::REBUILD_OWED
-                    )
+                    ))
                 )
             );
             assert_eq!(recorded(&store), only(walked_entries(tree.path())));
@@ -1538,8 +1583,10 @@ mod tests {
 
             assert_eq!(
                 failure.to_string(),
-                "graph.db's current generation of gc/src/checks.rs could not be read: \
-                 graph: the generation could not be read"
+                format!(
+                    "graph.db's current generation of gc/src/checks.rs could not be read: {}",
+                    crate::test_support::graph_error("the generation could not be read")
+                )
             );
             assert_eq!(recorded(&store), only(Vec::new()));
             assert_eq!(graph.folds.load(std::sync::atomic::Ordering::SeqCst), 0);

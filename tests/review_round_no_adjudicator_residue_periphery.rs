@@ -126,6 +126,7 @@ fn a_lenses_only_panels_residue_is_restored_and_never_merged() {
         criteria: Vec::new(),
         log: &|_| {},
         hash_blob: &|_| Ok(String::new()),
+        check_emit: &rigger::contextgraph::check_emit,
     };
 
     let rs = run(&cfg, &deps).expect(

@@ -149,6 +149,7 @@ fn a_non_ancestor_amend_names_the_true_diff_not_the_triple_dot_under_report() {
         criteria: Vec::new(),
         log: &|_| {},
         hash_blob: &|_| Ok(String::new()),
+        check_emit: &rigger::contextgraph::check_emit,
     };
 
     let rs = run(&cfg, &deps).expect(

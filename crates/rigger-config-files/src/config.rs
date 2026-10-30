@@ -8,8 +8,9 @@ pub struct Config {
     pub agents: BTreeMap<String, AgentDef>,
     pub workflow: Workflow,
     /// The operator instruction layer (`.rigger/instructions/*.md`, filename order), composed
-    /// into every spawned agent's system prompt after the built-in layer
-    /// ([`crate::instructions::compose`]).
+    /// into every spawned agent's system prompt ([`crate::instructions::compose`]): a file
+    /// named as a built-in entry replaces that entry in place, its body not blank, or switches
+    /// it off, its body blank, and every other file follows the built-in layer.
     pub instructions: Vec<crate::instructions::Instruction>,
 }
 

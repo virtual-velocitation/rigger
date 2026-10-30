@@ -1,24 +1,34 @@
 //! Fold fixtures over the graph projector: folding a hand-built JSON event straight onto a
 //! `Projector` (the raw on-log JSON - never an in-crate payload struct - so a test pins the
-//! contract the log actually carries), the on-log payloads the code-ingest, decision and
+//! contract the log actually carries), the on-log payloads the code-ingest, decision, alias and
 //! reference folds read, the canonical spec-53 two-subsystem coupling seed, the spec-119
 //! show-renderer seed with the oracles its `rigger_graph` `show` and `around` objects are checked
 //! by, the live edges and calls a projector serves with the spec-119 enum's `CONTAINS` edges they
-//! are checked against, and the read-backs suites take of a folded
-//! `Graph`. `apply` returns `Err`
-//! on a fold failure, so every helper unwraps it: a successful call is itself evidence the
-//! payload folded.
+//! are checked against, the module declarations' `CONTAINS` edges it serves, the read-backs
+//! suites take of a folded `Graph`, the two read batches a rebuild source hands with a writer
+//! between them, a rebuild whose extraction a writer meets, the texts a lost or refused fold
+//! answers, the payload no judge accepts with the decision and the re-extracted batch built on it,
+//! an entry a test's re-extraction resolves to nothing and one it answers with that batch, what a
+//! test's rebuild source answers when it stops, the owed
+//! mark's path and the note a read-only surface prints while the file owes its rebuild. `apply`
+//! returns `Err` on a fold failure, so every helper that folds unwraps it - a
+//! successful call is itself evidence the payload folded - but [`fold_entry_result`], which
+//! answers the error text a failing fold meets, [`fold_of`] and [`rebuild_meeting_a_writer`],
+//! which answer what became of a public fold ([`rigger::contextgraph::Fold`]), [`rebuild_answer`],
+//! which answers what a rebuild did or its error as text, and the rebuild sources [`one_read`] and
+//! [`two_read_batches`], which hand on what their sink answers.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, UNIX_EPOCH};
 
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{
-    around, entity_site, site_fields, Candidate, EntitySite, Graph, Located, Node, Projection,
-    CODE_KIND_CONSTANT, CODE_KIND_FIELD, CODE_KIND_FUNCTION, KIND_ARCH_DECISION, KIND_CODE_ENTITY,
-    KIND_COMMUNITY, KIND_DESIGN_DOC, META_ACTOR, REL_CALLS, REL_IN_COMMUNITY, REL_REFERENCES,
-    TYPE_CODE_ENTITY_EXTRACTED, TYPE_DECISION_MADE, TYPE_DOC_CONCEPT_EXTRACTED, TYPE_EDGE_INFERRED,
-    TYPE_REVIEW_FINDING,
+    around, entity_site, site_fields, Candidate, EntitySite, EntryFold, Graph, Located, Node,
+    Projection, CODE_KIND_CONSTANT, CODE_KIND_FIELD, CODE_KIND_FUNCTION, CODE_KIND_TYPE,
+    KIND_ARCH_DECISION, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_DESIGN_DOC, KIND_FILE, LIST_SEP,
+    META_ACTOR, REF_KIND_CONST, REF_KIND_TYPE, REF_KIND_USE, REL_CALLS, REL_CONTAINS,
+    REL_IN_COMMUNITY, REL_REFERENCES, TYPE_CODE_ENTITY_EXTRACTED, TYPE_DECISION_MADE,
+    TYPE_DOC_CONCEPT_EXTRACTED, TYPE_EDGE_INFERRED, TYPE_REVIEW_FINDING,
 };
 use rigger::eventstore::Event;
 use rigger::retention::GenerationIngested;
@@ -86,6 +96,129 @@ pub fn generation_ingested(
     }
 }
 
+/// The ledger entry of `<prefix>/<file>` at `generation`, its batch extracted from no blob, at log
+/// position `pos` and valid from `secs` past the epoch, as the entry's one constructor builds it.
+pub fn entry_at(prefix: &str, file: &str, generation: &str, pos: u64, secs: u64) -> Event {
+    placed_at(
+        generation_ingested(prefix, file, generation, "", false).event(1),
+        pos,
+        secs,
+    )
+}
+
+/// A payload no type's judge accepts ([`rigger::contextgraph::check_fold_payload`]): malformed
+/// JSON.
+pub const POISON: &[u8] = b"{ not valid json";
+
+/// The ledger entry of `gc/src/a.rs` at generation `g-a`, at log position `position` and valid
+/// from `position` seconds past the epoch, which a test's re-extraction resolves to nothing
+/// ([`entry_at`]).
+pub fn unresolved_entry_at(position: u64) -> Event {
+    entry_at("gc", "src/a.rs", "g-a", position, position)
+}
+
+/// A decision at log position `position`, valid from `position` seconds past the epoch, whose
+/// payload is [`POISON`].
+pub fn poisoned_decision_at(position: u64) -> Event {
+    let poisoned = Event::new(rigger::contextgraph::TYPE_DECISION_MADE, POISON.to_vec());
+    placed_at(poisoned, position, position)
+}
+
+/// The ledger entries of `gc/src/b.rs` at generation `g-b`, one at each log position of
+/// `positions`, in order, each valid from its position in seconds past the epoch, which a test's
+/// re-extraction answers with [`poisoned_batch`] ([`entry_at`]).
+pub fn rejected_batch_entries(positions: impl IntoIterator<Item = u64>) -> Vec<Event> {
+    positions
+        .into_iter()
+        .map(|at| entry_at("gc", "src/b.rs", "g-b", at, at))
+        .collect()
+}
+
+/// A re-extracted batch whose one event, an extracted code entity, carries [`POISON`].
+pub fn poisoned_batch() -> Vec<Event> {
+    vec![Event::new(TYPE_CODE_ENTITY_EXTRACTED, POISON.to_vec())]
+}
+
+/// The `gc` identity a code file `file` keys its batch under, as its ledger entry names it.
+pub fn gc_identity(file: &str) -> String {
+    generation_ingested("gc", file, "", "", false).identity()
+}
+
+/// `e` at log position `pos`, valid from `secs` past the epoch.
+pub fn placed_at(e: Event, pos: u64, secs: u64) -> Event {
+    let mut e = e.with_valid_from(UNIX_EPOCH + Duration::from_secs(secs));
+    e.position = pos;
+    e
+}
+
+/// A fresh directory ([`super::temp_root`]) and the path of the `graph.db` file a store opened on
+/// it keeps.
+pub fn temp_graph_db() -> (tempfile::TempDir, String) {
+    let (dir, root) = super::temp_root();
+    (dir, format!("{root}/graph.db"))
+}
+
+/// The graph file `name` under `dir`, opened under the project `test`, the one a rebuild from a
+/// hand-built log folds into.
+pub fn graph_file_in(dir: &std::path::Path, name: &str) -> Projector {
+    Projector::open(dir.join(name).to_str().unwrap(), "test").unwrap()
+}
+
+/// Two projects, `ours` and `theirs`, sharing one fresh `graph.db` ([`temp_graph_db`]), with the
+/// directory that keeps it.
+pub fn ours_and_theirs() -> (tempfile::TempDir, Projector, Projector) {
+    let (dir, path) = temp_graph_db();
+    let ours = Projector::open(&path, "ours").unwrap();
+    let theirs = Projector::open(&path, "theirs").unwrap();
+    (dir, ours, theirs)
+}
+
+/// `secs` seconds as nanoseconds.
+pub fn nanos(secs: u64) -> i64 {
+    Duration::from_secs(secs).as_nanos() as i64
+}
+
+/// Fold `entry` onto `p` with `batch` as its batch, through `Projection::apply_generation` - the
+/// one fold that stages a tagged reference (spec 117) - answering which outcome it met.
+pub fn fold_entry_with(p: &dyn Projection, entry: &Event, batch: Vec<Event>) -> EntryFold {
+    fold_entry_result(p, entry, batch).unwrap()
+}
+
+/// [`fold_entry_with`]'s fold, answering the outcome it met or the text of the error it failed
+/// with.
+pub fn fold_entry_result(
+    p: &dyn Projection,
+    entry: &Event,
+    batch: Vec<Event>,
+) -> Result<EntryFold, String> {
+    p.apply_generation(entry, Box::new(move || Ok(Some(batch))))
+        .map_err(|e| e.0)
+}
+
+/// Fold `entry` onto `p` with `batch` as its batch ([`fold_entry_with`]) and insist the batch was
+/// asked for.
+pub fn entry_asked(p: &dyn Projection, entry: &Event, batch: Vec<Event>) {
+    assert_eq!(fold_entry_with(p, entry, batch), EntryFold::BatchAsked);
+}
+
+/// Fold `batch` as generation `generation` of `gc/<file>`, its entry at log position `pos` valid
+/// from `secs` ([`entry_at`]), and insist the batch was asked for ([`entry_asked`]).
+pub fn fold_asked(
+    p: &dyn Projection,
+    file: &str,
+    generation: &str,
+    pos: u64,
+    secs: u64,
+    batch: Vec<Event>,
+) {
+    entry_asked(p, &entry_at("gc", file, generation, pos, secs), batch);
+}
+
+/// Everything `p` serves - every node and edge of its whole graph - as one comparable JSON text.
+pub fn whole_json(p: &Projector) -> String {
+    serde_json::to_string(&p.whole().unwrap()).unwrap()
+}
+
 /// Every live edge `p` serves as `(from, rel, to, valid_from, source)`, sorted.
 pub fn live_edges(p: &Projector) -> Vec<(String, String, String, i64, u64)> {
     let mut edges: Vec<_> = p
@@ -144,6 +277,31 @@ pub fn landed(p: &Projector) -> Vec<(String, String, String, String)> {
     edges
 }
 
+/// Every live module `CONTAINS` edge `p` serves - one onto a `file` node (spec 117, A MODULE ROW
+/// REACHES ITS FILE) - as `(from, to, tier)`, sorted.
+pub fn module_edges(p: &Projector) -> Vec<(String, String, String)> {
+    let g = p.whole().unwrap();
+    let files: BTreeSet<&str> = g
+        .nodes
+        .iter()
+        .filter(|n| n.kind == KIND_FILE)
+        .map(|n| n.id.as_str())
+        .collect();
+    let mut edges: Vec<_> = g
+        .edges
+        .iter()
+        .filter(|e| e.rel == REL_CONTAINS && files.contains(e.to.as_str()))
+        .map(|e| (e.from.clone(), e.to.clone(), e.tier.clone()))
+        .collect();
+    edges.sort();
+    edges
+}
+
+/// The `AliasDefined` payload: `alias` names the node `canonical`.
+pub fn alias_json(alias: &str, canonical: &str) -> serde_json::Value {
+    serde_json::json!({ "alias": alias, "canonical": canonical })
+}
+
 /// The `(from, rel, to, tier)` rows of `f.rs`'s reference and of `f.rs::main`'s call, both
 /// landed on `to` at `tier`, in [`landed`]'s order ([`a_call_from`]).
 pub fn a_call_from_main(to: &str, tier: &str) -> Vec<(String, String, String, String)> {
@@ -166,13 +324,344 @@ pub fn a_call_from(
     .to_vec()
 }
 
-/// Fold `events` into `p` through the public fold, and insist they landed: the one spelling of
-/// seeding a graph a test then reads.
-pub fn folds(p: &dyn Projection, events: &[Event]) {
-    assert_eq!(
-        rigger::contextgraph::Fold::of_batch(|| rigger::contextgraph::wired(Some(p)), events),
-        rigger::contextgraph::Fold::Folded
+/// One live `REFERENCES` edge from `from` onto `to` at `tier`, as [`landed`] answers it.
+pub fn reference(from: &str, to: &str, tier: &str) -> (String, String, String, String) {
+    (from.into(), REL_REFERENCES.into(), to.into(), tier.into())
+}
+
+/// The text of a graph error whose reason is `reason`: the domain error's own display.
+pub fn graph_error(reason: &str) -> String {
+    rigger::contextgraph::Error(reason.to_string()).to_string()
+}
+
+/// What a fold on a surface wired with no context graph answers: the domain's own refusal
+/// ([`rigger::contextgraph::wired`]) as the fold displays it.
+pub fn unwired() -> String {
+    let Err(refused) = rigger::contextgraph::wired(None) else {
+        panic!("a surface wired with no graph refuses the fold");
+    };
+    refused.to_string()
+}
+
+/// The text of the graph error a fold meets on `path` when a directory stands where it writes a
+/// file.
+pub fn directory_refusal(path: impl std::fmt::Display) -> String {
+    graph_error(&(path.to_string() + ": Is a directory (os error 21)"))
+}
+
+/// What SQLite answers when the file a connection opens holds no database.
+pub const NOT_A_DATABASE: &str = "file is not a database";
+
+/// The clause a report line spells for events the graph did not fold, for `why`.
+pub fn not_folded(why: &str) -> String {
+    ["not folded into the context graph: ", why].concat()
+}
+
+/// The suffix a report line ends with when the graph did not fold the event it reports, for
+/// `why`: the [`not_folded`] clause after a `; `.
+pub fn not_folded_suffix(why: &str) -> String {
+    format!("; {}", not_folded(why))
+}
+
+/// The line a run surface prints when it recorded `events` run events whose fold the graph did
+/// not make, for `reason` - a graph error's reason, its `graph: ` prefix added ([`graph_error`]).
+pub fn recorded_not_folded(events: usize, reason: &str) -> String {
+    let recorded = format!("rigger: recorded {events} run event(s); ");
+    recorded + &not_folded(&graph_error(reason))
+}
+
+/// The tail a direct fold's not-folded error ends with, for events all of the project's run
+/// stream (spec 124, CAUSE TEXTS): a fold into a file without the `caught_up` cursor, or through a
+/// projector handed no log.
+pub const SETUP_PAYS: &str =
+    " - the next rigger setup finds the event missing from graph.db and folds it";
+
+/// The tail a call-run fold's not-folded error ends with (spec 124, CAUSE TEXTS): a fold of events
+/// all of the project's run stream into a file carrying the `caught_up` cursor, through a
+/// projector handed the log.
+pub const CATCH_UP_PAYS: &str = " - the next fold through the folding store catches it up";
+
+/// The error text of a fold not made for `reason`: the reason, then `pays`, the tail of the
+/// fold's path naming what folds the event later ([`SETUP_PAYS`] after a direct fold of the run
+/// stream, [`CATCH_UP_PAYS`] after a call).
+pub fn lost_fold(reason: &str, pays: &str) -> String {
+    [reason, pays].concat()
+}
+
+/// The error text of a call-run fold not made for `reason` (spec 124, CAUSE TEXTS): the graph
+/// error of `reason` ([`graph_error`]), then [`CATCH_UP_PAYS`] ([`lost_fold`]).
+pub fn lost_by_calls(reason: &str) -> String {
+    lost_fold(&graph_error(reason), CATCH_UP_PAYS)
+}
+
+/// The cause a fold answers past its ceiling `held` while another writer holds the write lock
+/// (spec 124, CAUSE TEXTS), `held` as the ceiling reads.
+pub fn lock_held_past(held: &str) -> String {
+    format!("graph.db's write lock stayed held past {held}")
+}
+
+/// The cause a call-run fold answers past its ceiling `held` after a call that advanced short of
+/// its position or met the log's head below it (spec 124, CAUSE TEXTS), `held` as the ceiling
+/// reads.
+pub fn catch_up_short_after(held: &str) -> String {
+    format!("graph.db's catch-up had not reached this event after {held}")
+}
+
+/// The cause a call-run fold answers while the file holds a rebuild's state (spec 124, CAUSE
+/// TEXTS).
+pub const UNFINISHED_REBUILD: &str = "graph.db holds an unfinished rebuild";
+
+/// What the generic fold answers a ledger entry, the reason of its refusal.
+pub const ENTRY_REFUSED: &str =
+    "a GenerationIngested entry folds only with its batch, through `Projection::apply_generation`";
+
+/// What the public fold answers a batch holding a ledger entry the constructor built, naming no
+/// stream: the generic fold's refusal ([`ENTRY_REFUSED`]), with no tail, since no later fold
+/// re-derives an event of no stream.
+pub fn entry_refusal() -> rigger::contextgraph::Fold {
+    rigger::contextgraph::Fold::NotFolded(graph_error(ENTRY_REFUSED))
+}
+
+/// What a test's rebuild source answers when it stops a rebuild mid-read.
+pub const SOURCE_INTERRUPTED: &str = "interrupted";
+
+/// A test's rebuild source, or the sink a source hands to, stopping a rebuild mid-read
+/// ([`SOURCE_INTERRUPTED`]).
+pub fn source_interrupted<T>() -> Result<T, rigger::contextgraph::Error> {
+    Err(rigger::contextgraph::Error(SOURCE_INTERRUPTED.to_string()))
+}
+
+/// The owed mark of the graph file `graph.db` in the directory `dir`: the file an older binary's
+/// lost fold left beside it, no cause of its rebuild (spec 124, THE MARK).
+pub fn owed_mark_in(dir: &std::path::Path) -> std::path::PathBuf {
+    dir.join("graph.db.owed")
+}
+
+/// Write the owed mark of the graph file `graph.db` in the directory `dir` ([`owed_mark_in`]),
+/// empty, as a fold that lost its event once left it, and answer its path: no fold writes it now
+/// (spec 124, AN APPENDER WAITS UNDER THE CEILING AND NEVER MARKS).
+pub fn mark_owed_in(dir: &std::path::Path) -> std::path::PathBuf {
+    let mark = owed_mark_in(dir);
+    std::fs::write(&mark, b"").unwrap();
+    mark
+}
+
+/// Stand a directory at the path of the owed mark of the graph file `graph_db` ([`owed_mark_in`]),
+/// a mark no removal can remove - its removal is refused naming it ([`directory_refusal`]) - and
+/// answer its path.
+pub fn unremovable_mark_beside(graph_db: &std::path::Path) -> std::path::PathBuf {
+    let mark = owed_mark_in(graph_db.parent().unwrap());
+    std::fs::create_dir(&mark).unwrap();
+    mark
+}
+
+/// Whether the owed mark of the graph file `graph_db` ([`owed_mark_in`]) stands beside it.
+pub fn mark_stands_beside(graph_db: &std::path::Path) -> bool {
+    owed_mark_in(graph_db.parent().unwrap()).exists()
+}
+
+/// The one note every read-only surface prints while `graph.db` owes its rebuild.
+pub fn rebuild_owed_note() -> String {
+    format!(
+        "note: {} - until then the context graph answers as it stands",
+        rigger::contextgraph::REBUILD_OWED
+    )
+}
+
+/// What the public fold answers on a graph that owes its rebuild: refused, naming the debt.
+pub fn owed_refusal() -> rigger::contextgraph::Fold {
+    rigger::contextgraph::Fold::NotFolded(graph_error(rigger::contextgraph::REBUILD_OWED))
+}
+
+/// What the emit tool answers for the event it appended at `position`: folded, or - given the
+/// `reason` its fold failed for - not folded, and why.
+pub fn emit_answer(position: u64, reason: Option<&str>) -> serde_json::Value {
+    match reason {
+        None => serde_json::json!({ "position": position, "folded": true }),
+        Some(reason) => {
+            serde_json::json!({ "position": position, "folded": false, "reason": reason })
+        }
+    }
+}
+
+/// The reason a failing batch function gives ([`blob_unread`]).
+pub const BLOB_UNREAD: &str = "the blob could not be read";
+
+/// A batch function's failing answer: the entry's blob could not be read ([`BLOB_UNREAD`]).
+pub fn blob_unread() -> Result<Option<Vec<Event>>, rigger::contextgraph::Error> {
+    Err(rigger::contextgraph::Error(BLOB_UNREAD.to_string()))
+}
+
+/// Fold `events` into `p` through the public fold, answering what became of them.
+pub fn fold_of(p: &dyn Projection, events: &[Event]) -> rigger::contextgraph::Fold {
+    rigger::contextgraph::Fold::of_batch(|| rigger::contextgraph::wired(Some(p)), events)
+}
+
+/// A REBUILD MEETING A WRITER (spec 122, EXTRACTION OUTSIDE THE WRITE TRANSACTION): rebuild the
+/// graph file `graph_db` under the project `test` from `source`, owed when `owed` says so, while
+/// `writer` folds `events` through the public fold ([`fold_of`]) between two waits on a barrier
+/// whose other party is the rebuild's first ask of its re-extraction, which answers `batch` only
+/// once the writer's fold has returned. A rebuild that ends or panics without asking meets the
+/// writer's two waits itself once it has returned, and a writer whose fold panics still meets the
+/// rebuild's second wait, so either goes red - the panic resumed once both have returned - rather
+/// than hangs. It insists the rebuild ran, pruning nothing ([`clean_rebuild`]), and asked its
+/// re-extraction once, and answers what became of the writer's fold.
+pub fn rebuild_meeting_a_writer(
+    graph_db: &str,
+    owed: bool,
+    source: &mut rigger::contextgraph::sqlite::RebuildSource,
+    writer: &(dyn Projection + Sync),
+    events: &[Event],
+    batch: &[Event],
+) -> rigger::contextgraph::Fold {
+    use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe};
+
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Barrier};
+
+    let barrier = Arc::new(Barrier::new(2));
+    let asked = Arc::new(AtomicUsize::new(0));
+    let (written, rebuilt) = std::thread::scope(|s| {
+        let folding = s.spawn(|| {
+            barrier.wait();
+            let written = catch_unwind(AssertUnwindSafe(|| fold_of(writer, events)));
+            barrier.wait();
+            written
+        });
+        let rebuilt = catch_unwind(AssertUnwindSafe(|| {
+            let (barrier, asked, batch) =
+                (Arc::clone(&barrier), Arc::clone(&asked), batch.to_vec());
+            rebuild_answer(
+                graph_db,
+                owed,
+                source,
+                resolving(move |_| {
+                    if asked.fetch_add(1, Ordering::SeqCst) == 0 {
+                        barrier.wait();
+                        barrier.wait();
+                    }
+                    Ok(Some(batch.clone()))
+                }),
+            )
+        }));
+        if asked.load(Ordering::SeqCst) == 0 {
+            barrier.wait();
+            barrier.wait();
+        }
+        (folding.join().unwrap(), rebuilt)
+    });
+    let (written, rebuilt) = (
+        written.unwrap_or_else(|panic| resume_unwind(panic)),
+        rebuilt.unwrap_or_else(|panic| resume_unwind(panic)),
     );
+    assert_eq!(rebuilt, clean_rebuild());
+    assert_eq!(
+        asked.load(Ordering::SeqCst),
+        1,
+        "the rebuild asks the entry's batch once"
+    );
+    written
+}
+
+/// What a rebuild that ran answers ([`rebuild_answer`]) when it pruned nothing.
+pub fn clean_rebuild() -> Result<Option<rigger::contextgraph::sqlite::Rebuilt>, String> {
+    Ok(Some(rigger::contextgraph::sqlite::Rebuilt::default()))
+}
+
+/// The factory a test installs as a projector's re-extraction ([`Projector::with_reextraction`]):
+/// each re-extraction a rebuild or catch-up call builds from it is a fresh copy of `answer`, so
+/// state `answer` shares - a counter, a log of what it was asked - is shared through what it
+/// captures.
+pub fn resolving(
+    answer: impl FnMut(&Event) -> Result<Option<Vec<Event>>, rigger::contextgraph::Error>
+        + Clone
+        + Send
+        + Sync
+        + 'static,
+) -> impl Fn() -> Box<rigger::contextgraph::sqlite::Reextract<'static>> + Send + Sync + 'static {
+    move || Box::new(answer.clone())
+}
+
+/// Rebuild the graph file `graph_db` under the project `test` from `source`, owed when `owed` says
+/// so, re-extracting each ledger entry its fold asks a batch for through the re-extraction
+/// `reextraction` builds for the rebuild ([`resolving`]) and reporting no progress, and answer
+/// what the rebuild did, its error as text.
+pub fn rebuild_answer(
+    graph_db: &str,
+    owed: bool,
+    source: &mut rigger::contextgraph::sqlite::RebuildSource,
+    reextraction: impl Fn() -> Box<rigger::contextgraph::sqlite::Reextract<'static>>
+        + Send
+        + Sync
+        + 'static,
+) -> Result<Option<rigger::contextgraph::sqlite::Rebuilt>, String> {
+    Projector::open(graph_db, "test")
+        .unwrap()
+        .with_reextraction(reextraction)
+        .rebuild(
+            &Projector::lock_rebuild(graph_db).unwrap(),
+            owed,
+            source,
+            &mut |_| {},
+        )
+        .map_err(|e| e.0)
+}
+
+/// Rebuild the graph file `graph_db` as [`rebuild_answer`] does, and insist the rebuild ran,
+/// pruning nothing ([`clean_rebuild`]).
+pub fn rebuild_clean(
+    graph_db: &str,
+    owed: bool,
+    source: &mut rigger::contextgraph::sqlite::RebuildSource,
+    reextraction: impl Fn() -> Box<rigger::contextgraph::sqlite::Reextract<'static>>
+        + Send
+        + Sync
+        + 'static,
+) {
+    assert_eq!(
+        rebuild_answer(graph_db, owed, source, reextraction),
+        clean_rebuild()
+    );
+}
+
+/// Fold `events` into `p` through the public fold ([`fold_of`]), and insist they landed: the one
+/// spelling of seeding a graph a test then reads.
+pub fn folds(p: &dyn Projection, events: &[Event]) {
+    assert_eq!(fold_of(p, events), rigger::contextgraph::Fold::Folded);
+}
+
+/// Fold each of `events` into `p` alone, in order, each in a transaction of its own ([`folds`]).
+pub fn folds_each(p: &dyn Projection, events: &[Event]) {
+    for e in events {
+        folds(p, std::slice::from_ref(e));
+    }
+}
+
+/// A rebuild source's one read past `after`: the events of `log` past it handed to `sink` as one
+/// read batch.
+pub fn one_read(
+    log: &[Event],
+    after: u64,
+    sink: &mut rigger::contextgraph::sqlite::RebuildSink,
+) -> Result<(), rigger::contextgraph::Error> {
+    rigger::contextgraph::sqlite::stream_past(log, after, usize::MAX, sink)
+}
+
+/// A rebuild source's one read past `after`: the events of `log` handed to `sink` as two read
+/// batches ([`one_read`] each), split before `log[split]`, with `between` run once the first is
+/// handed and before the second - where a fold pass holds no transaction, so a writer's commit
+/// lands there (spec 122, THE SEAM).
+pub fn two_read_batches(
+    log: &[Event],
+    split: usize,
+    after: u64,
+    sink: &mut rigger::contextgraph::sqlite::RebuildSink,
+    between: impl FnOnce(),
+) -> Result<(), rigger::contextgraph::Error> {
+    let (first, second) = log.split_at(split);
+    one_read(first, after, sink)?;
+    between();
+    one_read(second, after, sink)
 }
 
 /// Fold `e` onto `p` at log position `pos`.
@@ -479,6 +968,51 @@ pub fn kind_def_json(
     })
 }
 
+/// `head` marked `partial`, as a degraded parse's head is.
+pub fn marked_partial(mut head: serde_json::Value) -> serde_json::Value {
+    head["partial"] = true.into();
+    head
+}
+
+/// `payload` marked the head of its file's batch when `fresh`, and not when not: the flag on which
+/// the fold supersedes what the file's prior batch recorded.
+pub fn marked_fresh(mut payload: serde_json::Value, fresh: bool) -> serde_json::Value {
+    payload["fresh"] = fresh.into();
+    payload
+}
+
+/// `tests/t.rs`'s test reference to `name` at `line` heading its batch ([`marked_fresh`]), as
+/// event 0 of its generation `k1` (replay-keyed `gc/tests/t.rs@k1#0`), valid from `secs`, at no
+/// log position yet ([`t_rs_batch_reference`]).
+pub fn fresh_test_reference(name: &str, line: u32, secs: u64) -> Event {
+    t_rs_batch_reference(0, "k1", 0, name, line, secs)
+}
+
+/// `tests/t.rs`'s test reference to `name` at `line` at log position `pos`: event `index` of
+/// generation `generation`'s batch ([`code_batch_key`]), its head ([`test_reference_json`]) when
+/// `index` is 0, valid from `secs` ([`keyed_event`]).
+pub fn t_rs_batch_reference(
+    pos: u64,
+    generation: &str,
+    index: usize,
+    name: &str,
+    line: u32,
+    secs: u64,
+) -> Event {
+    let payload = test_reference_json("tests/t.rs", name, line, index == 0);
+    let key = code_batch_key("tests/t.rs", generation, index);
+    keyed_event(pos, TYPE_EDGE_INFERRED, payload, &key, secs)
+}
+
+/// The Rust definition of `name`, a `kind` at `line` in `file` ([`kind_def_json`]), as an unkeyed
+/// batch event, its batch's head when `fresh`.
+pub fn definition_event(file: &str, name: &str, kind: &str, line: u64, fresh: bool) -> Event {
+    event_of(
+        TYPE_CODE_ENTITY_EXTRACTED,
+        kind_def_json(file, name, kind, line, fresh),
+    )
+}
+
 /// The caller-less `EdgeInferred` payload: `file` references `name`.
 pub fn ref_json(file: &str, name: &str) -> serde_json::Value {
     serde_json::json!({ "file": file, "name": name, "lang": "rust" })
@@ -494,6 +1028,127 @@ pub fn edge_inferred(file: &str, name: &str) -> Vec<u8> {
 /// body, which the fold turns into `<file>::<caller> --CALLS--> <target>`.
 pub fn call_json(file: &str, name: &str, caller: &str) -> serde_json::Value {
     serde_json::json!({ "file": file, "name": name, "lang": "rust", "caller": caller })
+}
+
+/// A caller-attributed `EdgeInferred` call (spec 37) as an unkeyed event: `<file>::<caller>`
+/// calls `name` ([`call_json`]).
+pub fn call_event(file: &str, name: &str, caller: &str) -> Event {
+    event_of(TYPE_EDGE_INFERRED, call_json(file, name, caller))
+}
+
+/// The TAGGED `EdgeInferred` payload (spec 117): `file` references `name` as a `ref_kind`
+/// reference (`type`, `const` or `use`), from inside the enclosing definition `caller` when it
+/// has one, else from the file.
+pub fn tagged_ref_json(
+    file: &str,
+    name: &str,
+    ref_kind: &str,
+    caller: Option<&str>,
+) -> serde_json::Value {
+    let mut json = ref_json(file, name);
+    json["ref_kind"] = ref_kind.into();
+    if let Some(caller) = caller {
+        json["caller"] = caller.into();
+    }
+    json
+}
+
+/// The `ref_kind` reference `file` makes to `name` from `caller`, else from the file
+/// ([`tagged_ref_json`]), as an unkeyed batch event.
+pub fn tagged_ref(file: &str, name: &str, ref_kind: &str, caller: Option<&str>) -> Event {
+    event_of(
+        TYPE_EDGE_INFERRED,
+        tagged_ref_json(file, name, ref_kind, caller),
+    )
+}
+
+/// The file whose rows [`seed_unresolved_references`] stages: a file-level `use`, and the fns
+/// `scan` and `glance` reading what [`RESOLVING_FILE`] defines and what nothing does.
+pub const UNRESOLVED_FILE: &str = "src/reader.rs";
+
+/// The fn `scan` of [`UNRESOLVED_FILE`], a node reading unresolved leaves that is no file.
+pub const UNRESOLVED_SCAN: &str = "src/reader.rs::scan";
+
+/// The leaves of [`UNRESOLVED_FILE`]'s live rows that resolve to nothing, sorted and distinct
+/// (spec 117, UNRESOLVED REFERENCES ARE A READ).
+pub const UNRESOLVED_LEAVES: [&str; 4] = ["Elsewhere", "Hinted", "NOWHERE", "Unbuilt"];
+
+/// The file [`seed_unresolved_references`] defines the constant `CEILING` and the types `Halved`
+/// and `Hinted` in, staging no row of its own.
+pub const RESOLVING_FILE: &str = "src/definer.rs";
+
+/// The statement making every `refs` row's leaf a blob of its own bytes, which no read of it as
+/// text takes.
+pub const UNREADABLE_LEAVES: &str = "UPDATE refs SET leaf = CAST(leaf AS BLOB)";
+
+/// The error a read of a `refs` row's leaf as text meets once [`UNREADABLE_LEAVES`] ran.
+pub const UNREADABLE_LEAF: &str = "Invalid column type Blob at index: 0, name: leaf";
+
+/// Fold, each through `Projection::apply_generation` (the one fold that stages a row; spec 117):
+/// [`RESOLVING_FILE`] defining `CEILING`, `Halved` and `Hinted`; then [`UNRESOLVED_FILE`], its head
+/// carrying `partial`, whose file-level `use` of `Elsewhere`, whose fn `scan`'s `type` `Unbuilt`,
+/// `const` `CEILING`, `type` and `const` `Halved` and `type` `Hinted`, and whose fn `glance`'s
+/// `type` `Unbuilt`, `const` `NOWHERE` and `const` `Hinted` leave [`UNRESOLVED_LEAVES`]
+/// unresolved - `Unbuilt` read by two fns, `Halved` absent, its `type` row from `scan` resolving
+/// where its `const` row does not, and `Hinted` listed, its one resolving row read from `scan` and
+/// not from `glance`; then `src/bystander.rs`, whose file-level `type` of `Outlier` resolves to
+/// nothing.
+pub fn seed_unresolved_references(p: &dyn Projection) {
+    let fold = |file: &str, generation: &str, pos: u64, batch: Vec<Event>| {
+        fold_asked(p, file, generation, pos, 10 * pos, batch);
+    };
+    let defines = |name: &str, kind: &str, line: u64| {
+        definition_event(RESOLVING_FILE, name, kind, line, line == 1)
+    };
+    fold(
+        RESOLVING_FILE,
+        "g-definer",
+        1,
+        vec![
+            defines("CEILING", CODE_KIND_CONSTANT, 1),
+            defines("Halved", CODE_KIND_TYPE, 2),
+            defines("Hinted", CODE_KIND_TYPE, 3),
+        ],
+    );
+    let head = marked_partial(kind_def_json(
+        UNRESOLVED_FILE,
+        "scan",
+        CODE_KIND_FUNCTION,
+        1,
+        true,
+    ));
+    let from = |name: &str, ref_kind: &str, caller: Option<&str>| {
+        tagged_ref(UNRESOLVED_FILE, name, ref_kind, caller)
+    };
+    let (scan, glance) = (Some("scan"), Some("glance"));
+    fold(
+        UNRESOLVED_FILE,
+        "g-reader",
+        2,
+        vec![
+            event_of(TYPE_CODE_ENTITY_EXTRACTED, head),
+            definition_event(UNRESOLVED_FILE, "glance", CODE_KIND_FUNCTION, 2, false),
+            from("Elsewhere", REF_KIND_USE, None),
+            from("Unbuilt", REF_KIND_TYPE, scan),
+            from("CEILING", REF_KIND_CONST, scan),
+            from("Halved", REF_KIND_TYPE, scan),
+            from("Halved", REF_KIND_CONST, scan),
+            from("Hinted", REF_KIND_TYPE, scan),
+            from("Unbuilt", REF_KIND_TYPE, glance),
+            from("NOWHERE", REF_KIND_CONST, glance),
+            from("Hinted", REF_KIND_CONST, glance),
+        ],
+    );
+    let bystander = "src/bystander.rs";
+    fold(
+        bystander,
+        "g-bystander",
+        3,
+        vec![
+            definition_event(bystander, "observe", CODE_KIND_FUNCTION, 1, true),
+            tagged_ref(bystander, "Outlier", REF_KIND_TYPE, None),
+        ],
+    );
 }
 
 /// The `DecisionMade` payload. Each entry in `governs` folds a `decision --GOVERNS--> file` edge; a
@@ -577,6 +1232,12 @@ pub fn edge_inferred_evidence_json(file: &str, name: &str, line: u32) -> serde_j
     serde_json::json!({ "file": file, "name": name, "lang": "rust", "line": line, "is_test": true })
 }
 
+/// The test-origin reference of `file` to `name` at line `line` ([`edge_inferred_evidence_json`]),
+/// marked the head of its file's batch when `fresh`, and not when not ([`marked_fresh`]).
+pub fn test_reference_json(file: &str, name: &str, line: u32, fresh: bool) -> serde_json::Value {
+    marked_fresh(edge_inferred_evidence_json(file, name, line), fresh)
+}
+
 /// Fold into `p`, at log position `pos`, one test-origin reference from `file` line `line` to
 /// `name` ([`edge_inferred_evidence_json`]), as raw on-log JSON.
 pub fn apply_edge_inferred_evidence(p: &Projector, pos: u64, file: &str, name: &str, line: u32) {
@@ -643,34 +1304,48 @@ pub fn apply_governs_at(p: &Projector, pos: u64, id: &str, path: &str, secs: u64
 /// nodes (eight entities + four files), so at a high enough resolution every node isolates into
 /// its own community.
 pub fn seed_two_subsystems(p: &Projector) -> u64 {
-    // Definitions (each folds its file node + entity + CONTAINS).
-    def(p, 1, "src/combat/hit.rs", "strike");
-    def(p, 2, "src/combat/hit.rs", "block");
-    def(p, 3, "src/net/link.rs", "send");
-    def(p, 4, "src/net/link.rs", "recv");
-    def(p, 5, "src/render/draw.rs", "paint");
-    def(p, 6, "src/render/draw.rs", "shade");
-    def(p, 7, "src/ui/hud.rs", "layout");
-    def(p, 8, "src/ui/hud.rs", "show");
-
-    // Subsystem A: dense cross-file coupling between combat and net.
-    apply_call(p, 9, "src/combat/hit.rs", "send", "strike");
-    apply_call(p, 10, "src/combat/hit.rs", "recv", "strike");
-    apply_call(p, 11, "src/combat/hit.rs", "send", "block");
-    apply_call(p, 12, "src/net/link.rs", "strike", "send");
-    apply_call(p, 13, "src/net/link.rs", "block", "recv");
-
-    // Subsystem B: dense cross-file coupling between render and ui.
-    apply_call(p, 14, "src/render/draw.rs", "layout", "paint");
-    apply_call(p, 15, "src/render/draw.rs", "show", "paint");
-    apply_call(p, 16, "src/render/draw.rs", "layout", "shade");
-    apply_call(p, 17, "src/ui/hud.rs", "paint", "layout");
-    apply_call(p, 18, "src/ui/hud.rs", "shade", "show");
-
-    // A single weak bridge from A to B (one call): too thin to merge the two subsystems.
-    apply_call(p, 19, "src/combat/hit.rs", "paint", "strike");
-    20
+    // Definitions (each folds its file node + entity + CONTAINS), then the calls.
+    let mut pos = 0;
+    for (file, name) in TWO_SUBSYSTEM_DEFS {
+        pos += 1;
+        def(p, pos, file, name);
+    }
+    for (file, name, caller) in TWO_SUBSYSTEM_CALLS {
+        pos += 1;
+        apply_call(p, pos, file, name, caller);
+    }
+    pos + 1
 }
+
+/// The definitions of the canonical spec-53 TWO-SUBSYSTEM coupling graph, `(file, name)`:
+/// subsystem A spans `src/combat` and `src/net`, subsystem B `src/render` and `src/ui`.
+pub const TWO_SUBSYSTEM_DEFS: [(&str, &str); 8] = [
+    ("src/combat/hit.rs", "strike"),
+    ("src/combat/hit.rs", "block"),
+    ("src/net/link.rs", "send"),
+    ("src/net/link.rs", "recv"),
+    ("src/render/draw.rs", "paint"),
+    ("src/render/draw.rs", "shade"),
+    ("src/ui/hud.rs", "layout"),
+    ("src/ui/hud.rs", "show"),
+];
+
+/// The calls of the canonical spec-53 TWO-SUBSYSTEM coupling graph, `(file, name, caller)`: dense
+/// cross-file coupling between combat and net (A), then between render and ui (B), then a single
+/// weak bridge from A to B (one call), too thin to merge the two subsystems.
+pub const TWO_SUBSYSTEM_CALLS: [(&str, &str, &str); 11] = [
+    ("src/combat/hit.rs", "send", "strike"),
+    ("src/combat/hit.rs", "recv", "strike"),
+    ("src/combat/hit.rs", "send", "block"),
+    ("src/net/link.rs", "strike", "send"),
+    ("src/net/link.rs", "block", "recv"),
+    ("src/render/draw.rs", "layout", "paint"),
+    ("src/render/draw.rs", "show", "paint"),
+    ("src/render/draw.rs", "layout", "shade"),
+    ("src/ui/hud.rs", "paint", "layout"),
+    ("src/ui/hud.rs", "shade", "show"),
+    ("src/combat/hit.rs", "paint", "strike"),
+];
 
 /// The file the show-renderer seed's three definitions live in ([`seed_shown_nodes`]).
 pub const SHOWN_FILE: &str = "src/limits.rs";
@@ -821,6 +1496,43 @@ pub fn assert_finding_shows_past_the_depth_bound(finding: &serde_json::Value) {
     );
 }
 
+/// Spec 117, UNRESOLVED REFERENCES ARE A READ: `reader`, the `rigger_graph` `show` site of
+/// [`UNRESOLVED_FILE`] over [`seed_unresolved_references`], carries its `partial` and its
+/// [`UNRESOLVED_LEAVES`] joined by [`LIST_SEP`] as one `unresolved` key, and `definer`, that of
+/// [`RESOLVING_FILE`], which lists none, carries no `unresolved` key.
+pub fn assert_show_lists_unresolved_leaves(
+    reader: &serde_json::Value,
+    definer: &serde_json::Value,
+) {
+    assert_eq!(
+        [
+            reader.get("partial"),
+            reader.get("unresolved"),
+            definer.get("unresolved")
+        ],
+        [
+            Some(&serde_json::json!("true")),
+            Some(&serde_json::json!(UNRESOLVED_LEAVES.join(LIST_SEP))),
+            None
+        ],
+        "show carries the file's unresolved leaves beside partial, and no key for an empty list"
+    );
+}
+
+/// Spec 117, UNRESOLVED REFERENCES ARE A READ: `answer`, the `rigger_graph` `around` of
+/// [`UNRESOLVED_FILE`] at depth 1 over [`seed_unresolved_references`], loads the file and its two
+/// fns, none of them carrying an `unresolved` key.
+pub fn assert_around_lists_no_unresolved(answer: &serde_json::Value) {
+    assert_eq!(
+        around_nodes(answer)
+            .iter()
+            .map(|node| node.get("unresolved"))
+            .collect::<Vec<_>>(),
+        [None, None, None],
+        "around carries no unresolved key on any node"
+    );
+}
+
 /// Spec 119, SHOW IS ONE RENDERER: each of `nodes`, the `rigger_graph` `around` node objects of
 /// [`SHOWN_FILE`] at depth 1, carries no `summary` key and is [`entity_site`] over the `Node`
 /// [`around`] loads from `graph` at the degree the object carries less its `summary` entry,
@@ -871,6 +1583,23 @@ pub fn live_node_ids(g: &Graph, kind: &str) -> Vec<String> {
     ids
 }
 
+/// The live `file` node ids of `g` and its live `code-entity` node ids ([`live_node_ids`]), in
+/// that order: the node set a fold test compares whole.
+pub fn live_file_and_entity_ids(g: &Graph) -> [Vec<String>; 2] {
+    [KIND_FILE, KIND_CODE_ENTITY].map(|kind| live_node_ids(g, kind))
+}
+
+/// Each of `ids`, owned, in the order given.
+pub fn owned_ids(ids: &[&str]) -> Vec<String> {
+    ids.iter().map(|id| id.to_string()).collect()
+}
+
+/// The `file` node ids `files` and the `code-entity` node ids `entities`, each in the order
+/// given ([`owned_ids`]): the expected side of a [`live_file_and_entity_ids`] comparison.
+pub fn file_and_entity_ids(files: &[&str], entities: &[&str]) -> [Vec<String>; 2] {
+    [files, entities].map(owned_ids)
+}
+
 /// Every definition `p`'s whole graph holds - a code entity carrying a non-empty `name`, never a
 /// placeholder or a bare node - as its id, sorted.
 pub fn definition_ids(p: &Projector) -> Vec<String> {
@@ -910,6 +1639,24 @@ pub fn proven_by_attr(p: &Projector, id: &str) -> Option<String> {
 /// carrying a proof is not equal to them.
 pub fn definition(name: &str, kind: &str, line: u64) -> BTreeMap<String, String> {
     definition_in("rust", name, kind, line)
+}
+
+/// The attrs of a Rust definition `name`, a `kind` at `line` ([`definition`]), proven by the test
+/// references at the `file:line`s of `evidence`, in the order the proof lists them: their count as
+/// `proven_by` and their JSON list as `proof_evidence`.
+pub fn proven_definition(
+    name: &str,
+    kind: &str,
+    line: u64,
+    evidence: &[&str],
+) -> BTreeMap<String, String> {
+    let mut attrs = definition(name, kind, line);
+    attrs.insert("proven_by".to_string(), evidence.len().to_string());
+    attrs.insert(
+        "proof_evidence".to_string(),
+        serde_json::to_string(evidence).unwrap(),
+    );
+    attrs
 }
 
 /// The attrs of a definition `name` in the language `lang`, a `kind` at `line`, and of nothing

@@ -18,6 +18,7 @@ mod common;
 use common::git::run_git;
 
 use common::cli::graph_build_line;
+use common::cli::pin_identity;
 use common::cli::plant_stale_marker;
 use common::cli::read_run_events;
 use common::cli::reported_reclaimed_bytes;
@@ -36,6 +37,8 @@ use common::cli::temp_repoless_project;
 use common::cli::temp_store_project;
 use common::cli::validate_after_init;
 use common::cli::{assert_stopped_at_the_grounder, stopping_at_the_grounder};
+#[cfg(feature = "symbols")]
+use common::cli::{batch_events, recorded_and_walked};
 use common::cli::{escalate_solo_unit, REVIEWLESS_GIT_ESCALATING_UNIT_WORKFLOW};
 use common::cli::{
     write_scaffold, write_workflow_fixture, WorkflowFixture, ISOLATED_WORKER,
@@ -44,6 +47,7 @@ use common::cli::{
 use common::fixtures::assert_driver_guards_a_null_step;
 use common::fixtures::file_len;
 use common::fixtures::pgid_of;
+use common::fixtures::wave_lessons;
 use common::git::git_answer;
 use common::git::temp_git_project_with_commit;
 use common::mcp::McpSession;
@@ -132,6 +136,163 @@ fn emit_appends_and_folds_then_peers_shows_it() {
     assert!(
         out.contains("decision d1"),
         "unscoped peers must show d1; got: {out:?}"
+    );
+}
+
+/// The six files one `rigger_peers` call named when its whole-history reply overflowed the
+/// host's stdio frame and closed the session's transport.
+const SIX_HOT_FILES: [&str; 6] = [
+    "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+    "src/cli/setup.rs",
+    "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
+    "tests/ledger_rebuild.rs",
+    "tests/compaction_generations_periphery.rs",
+    "tests/common/fixtures/mod.rs",
+];
+
+/// How many decisions, lessons and findings [`seed_hot_files`] records about each hot file.
+const HOT_RECORDS_PER_FILE: usize = 40;
+
+/// Seed `root`'s run: one decision about `src/old.rs` before the run's boundary (HISTORICAL once
+/// the run starts), the run's `RunStarted`, then [`HOT_RECORDS_PER_FILE`] decisions, lessons and
+/// findings about each of [`SIX_HOT_FILES`], oldest first, each `{kind}-{n:03}` id numbered in
+/// that order and each summary over 2 KiB - many times every section's budget.
+fn seed_hot_files(root: &Path) {
+    use rigger::eventstore::{Event, ExpectedRevision};
+
+    let record =
+        |typ: &str, body: serde_json::Value| Event::new(typ, body.to_string().into_bytes());
+    let pad = "x".repeat(2048);
+    let mut events = vec![
+        record(
+            "DecisionMade",
+            serde_json::json!({"id": "d-old", "summary": "the prior run's ruling", "governs": ["src/old.rs"]}),
+        ),
+        common::fixtures::run_started("run-hot", &[]),
+    ];
+    for i in 0..HOT_RECORDS_PER_FILE {
+        for (f, file) in SIX_HOT_FILES.iter().enumerate() {
+            let n = i * SIX_HOT_FILES.len() + f;
+            events.push(record(
+                "DecisionMade",
+                serde_json::json!({"id": format!("d-{n:03}"), "summary": format!("ruling {n} {pad}"), "governs": [file]}),
+            ));
+            events.push(record(
+                "LessonLearned",
+                serde_json::json!({"id": format!("l-{n:03}"), "summary": format!("lesson {n} {pad}"), "about": [file]}),
+            ));
+            events.push(record(
+                "ReviewFinding",
+                serde_json::json!({"id": format!("f-{n:03}"), "by": "lens", "summary": format!("finding {n} {pad}"), "about": [file]}),
+            ));
+        }
+    }
+    common::cli::with_run_store(root, |store| {
+        store
+            .append(rigger::conductor::STREAM, ExpectedRevision::Any, &events)
+            .unwrap();
+    });
+}
+
+/// `rigger peers` and the `rigger_peers` tool over six hot files - each holding many times its
+/// budget of large decisions, lessons and findings - keep per section the NEWEST records under
+/// the one budget rule the prompt sections use (the conductor's verbatim count and byte budget
+/// per section), so neither the CLI nor a live `rigger mcp` session prints the whole history;
+/// both keep the same records, and the reply's tail counts what each section left out and says
+/// how to reach it. The budget filters by age, never by liveness: a prior run's decision still
+/// answers its own file, labeled HISTORICAL, with no tail.
+#[test]
+fn peers_of_six_hot_files_keeps_the_newest_under_the_shared_budget_through_the_cli_and_the_tool() {
+    use rigger::conductor::{DECISIONS_BUDGET_BYTES, FINDINGS_BUDGET_BYTES, LESSONS_BUDGET_BYTES};
+
+    let dir = temp_store_project();
+    let root = dir.path();
+    seed_hot_files(root);
+    let total = HOT_RECORDS_PER_FILE * SIX_HOT_FILES.len();
+    let budget = DECISIONS_BUDGET_BYTES + LESSONS_BUDGET_BYTES + FINDINGS_BUDGET_BYTES;
+
+    let mut args = vec!["peers"];
+    args.extend(SIX_HOT_FILES);
+    let out = run_rigger_ok(root, &args);
+    assert!(
+        out.len() <= budget + 1024,
+        "`rigger peers` over six hot files stays under the three sections' budgets; printed {} \
+         bytes",
+        out.len()
+    );
+    let kept = |kind: &str| out.lines().filter(|l| l.starts_with(kind)).count();
+    let (decisions, lessons, findings) = (kept("decision "), kept("lesson "), kept("finding "));
+    for (kind, prefix, n) in [
+        ("decision", "d", decisions),
+        ("lesson", "l", lessons),
+        ("finding", "f", findings),
+    ] {
+        assert!(
+            n >= 1 && n < total,
+            "the budget keeps some {kind}s and leaves the rest out; kept {n} of {total}"
+        );
+        assert!(
+            out.contains(&format!("{kind} {prefix}-{:03} ", total - 1))
+                && !out.contains(&format!("{kind} {prefix}-000 ")),
+            "the newest {kind} is kept and the oldest left out"
+        );
+    }
+    let tail = out.lines().last().unwrap_or_default();
+    for (kind, n) in [
+        ("decision", decisions),
+        ("lesson", lessons),
+        ("finding", findings),
+    ] {
+        assert!(
+            tail.contains(&format!("{} older {kind}(s)", total - n)),
+            "the tail counts the {kind}s left out; tail: {tail}"
+        );
+    }
+    assert!(
+        tail.contains("narrow with fewer files") && tail.contains("`rigger graph --show <id>`"),
+        "the tail says how to narrow or reach a left-out record by id; tail: {tail}"
+    );
+
+    let mut mcp = McpSession::start(root);
+    let reply = mcp.tool_call("rigger_peers", serde_json::json!({"files": SIX_HOT_FILES}));
+    mcp.finish_cleanly();
+    let structured = &reply["result"]["structuredContent"];
+    assert!(
+        structured.to_string().len() <= budget + 1024,
+        "the `rigger_peers` tool over six hot files stays under the same budgets; answered {} \
+         bytes",
+        structured.to_string().len()
+    );
+    let section = |name: &str| structured[name].as_array().map_or(0, Vec::len);
+    assert_eq!(
+        (
+            section("decisions"),
+            section("lessons"),
+            section("findings")
+        ),
+        (decisions, lessons, findings),
+        "the CLI and the tool keep the same records"
+    );
+    for (name, n) in [
+        ("decisions", decisions),
+        ("lessons", lessons),
+        ("findings", findings),
+    ] {
+        assert_eq!(
+            structured["left_out"][name],
+            total - n,
+            "the tool counts the {name} left out"
+        );
+    }
+    assert_eq!(
+        structured["left_out"]["note"], tail,
+        "the tool's tail is the CLI's"
+    );
+
+    assert_eq!(
+        run_rigger_ok(root, &["peers", "src/old.rs"]),
+        "decision d-old | HISTORICAL | the prior run's ruling | governs: src/old.rs\n",
+        "a prior run's decision still answers its own file, labeled, with no tail"
     );
 }
 
@@ -236,6 +397,58 @@ fn emit_review_finding_shows_in_peers() {
             && out.contains("about: combat.rs"),
         "peers must render the finding's id/by/about; got: {out:?}"
     );
+}
+
+/// A record citing a line of a file (`tests/x.rs:12`) or a span of its lines
+/// (`tests/x.rs:12-20`) is about that file, through the compiled binary: `rigger peers tests/x.rs`
+/// lists the finding, decision and lesson with their citations as recorded, and the graph links
+/// each to the file's node, so `rigger graph --around tests/x.rs` reaches all three.
+#[test]
+fn a_record_citing_lines_of_a_file_is_about_that_file_in_peers_and_the_graph() {
+    let dir = temp_store_project();
+    let root = dir.path();
+    for (type_, payload) in [
+        (
+            "ReviewFinding",
+            r#"{"id":"f1","by":"adversary","summary":"the doc misleads","about":["tests/x.rs:12"]}"#,
+        ),
+        (
+            "DecisionMade",
+            r#"{"id":"d1","summary":"retry twice","governs":["tests/x.rs:12-20"]}"#,
+        ),
+        (
+            "LessonLearned",
+            r#"{"id":"l1","summary":"never sleep in a test","about":["tests/x.rs:7"]}"#,
+        ),
+    ] {
+        run_rigger_ok(root, &["emit", type_, payload]);
+    }
+
+    let out = run_rigger_ok(root, &["peers", "tests/x.rs"]);
+    for line in [
+        "finding f1 | by adversary | the doc misleads | about: tests/x.rs:12",
+        "| retry twice | governs: tests/x.rs:12-20",
+        "lesson l1 | never sleep in a test | about: tests/x.rs:7",
+    ] {
+        assert!(
+            out.contains(line),
+            "peers tests/x.rs must list `{line}`; got: {out:?}"
+        );
+    }
+
+    let (out, err, ok) = run_around(root, "tests/x.rs", 1);
+    assert!(ok, "graph --around must succeed; stderr: {err}");
+    let nodes: Vec<&str> = out
+        .lines()
+        .filter_map(|l| l.trim().strip_prefix("node "))
+        .filter_map(|rest| rest.split_whitespace().next())
+        .collect();
+    for id in ["f1", "d1", "l1"] {
+        assert!(
+            nodes.contains(&id),
+            "{id} must be one hop from tests/x.rs; got: {out}"
+        );
+    }
 }
 
 /// Record a LIVENESS fault on `spawn_id`'s behalf in exactly the courier shape the native
@@ -2198,16 +2411,6 @@ fn symbol_index_is_byte_identical_across_processes() {
     );
 }
 
-/// How many batch events `entries` stand for: the sum of the event counts their replay keys
-/// carry.
-#[cfg(feature = "symbols")]
-fn batch_events(entries: &[common::fixtures::EntryRecord]) -> usize {
-    entries
-        .iter()
-        .map(|(_, _, key)| common::fixtures::entry_key_parts(key).2)
-        .sum()
-}
-
 /// Cold-checkout build (spec 45, criterion 3; spec 107, criterion 12): `rigger graph build`
 /// records the project's source as LEDGER ENTRIES and folds it into `.rigger/graph.db` with NO
 /// run.
@@ -2436,7 +2639,7 @@ fn the_new_kinds_reach_an_older_store_at_setup_and_the_next_build() {
 
     let dir = temp_rigger_project();
     let root = dir.path();
-    std::fs::write(rigger_file(root, "project.id"), "proj-older\n").unwrap();
+    pin_identity(root, "proj-older");
     std::fs::create_dir_all(root.join("src")).unwrap();
     std::fs::write(
         root.join(OLDER_STORE_CLOCK_PATH),
@@ -2471,17 +2674,18 @@ fn the_new_kinds_reach_an_older_store_at_setup_and_the_next_build() {
     let index = rigger::grounder::symbols::store::index_path(root.to_str().unwrap());
     std::fs::create_dir_all(index.parent().unwrap()).unwrap();
     std::fs::write(index, OLDER_STORE_INDEX).unwrap();
-    for (path, body) in [
-        (OLDER_STORE_KINDS_PATH, OLDER_STORE_KINDS_BODY),
-        ("lunar.go", "package lunar\n\nvar Albedo = 12\n"),
-        (
-            "crater.cs",
-            "class Crater\n{\n    public int Depth { get; set; }\n}\n",
-        ),
-        ("probe.js", "class Probe {\n  constructor() {}\n}\n"),
-    ] {
-        std::fs::write(root.join(path), body).unwrap();
-    }
+    common::fixtures::write_files(
+        root,
+        &[
+            (OLDER_STORE_KINDS_PATH, OLDER_STORE_KINDS_BODY),
+            ("lunar.go", "package lunar\n\nvar Albedo = 12\n"),
+            (
+                "crater.cs",
+                "class Crater\n{\n    public int Depth { get; set; }\n}\n",
+            ),
+            ("probe.js", "class Probe {\n  constructor() {}\n}\n"),
+        ],
+    );
     let identities = ["gc/src/clock.rs", "gc/src/kinds.rs"];
 
     setup_ok(root, &[("RIGGER_NPM", "true")]);
@@ -3292,8 +3496,8 @@ fn ground_ranked_via_cli_gives_ambiguous_definitions_zero_degree_and_pools_the_r
         .unwrap_or_else(|| panic!("expected a pooled Standalone reference row; got {out:?}"));
     assert!(
         standalone.contains("(degree 5)"),
-        "the Standalone row alone must carry the real aggregate unattributed reference count - \
-         genuinely different from the ambiguous definitions' degree, never a shared pooled \
+        "the Standalone row alone must carry the real aggregate unattributed call-reference \
+         count - genuinely different from the ambiguous definitions' degree, never a shared pooled \
          number printed on every row; got {out:?}"
     );
 }
@@ -3517,6 +3721,94 @@ fn emit_spawn_flag_stamps_the_emitting_spawn_id() {
     assert!(
         err.contains("--spawn expects a spawn id"),
         "the error names the missing spawn id; got: {err:?}"
+    );
+}
+
+/// A worker's `rigger emit` with no `--spawn` is stamped with the spawn its host exported
+/// (`RIGGER_SPAWN`), and an explicit `--spawn` wins over it. With the emitter known, a record
+/// whose id another unit or role's live record holds is refused with a non-zero exit naming the
+/// holder's position and unit/role - the graph keeps one record per id, so landing it would hide
+/// the holder - while the holder's own next attempt and an unstamped operator emit re-emit it.
+#[test]
+fn emit_stamps_the_exported_spawn_and_refuses_an_id_another_author_holds() {
+    let dir = temp_store_project();
+    let root = dir.path();
+    let decision = |id: &str| format!(r#"{{"id":"{id}","summary":"s"}}"#);
+    let emit = |spawn: Option<&str>, args: &[&str]| -> (String, String, bool) {
+        let argv: Vec<&str> = std::iter::once("emit")
+            .chain(args.iter().copied())
+            .collect();
+        match spawn {
+            Some(spawn) => run_rigger_envs(root, &argv, &[("RIGGER_SPAWN", spawn)]),
+            None => run_rigger(root, &argv),
+        }
+    };
+    let stamp_of = |id: &str| -> Vec<Option<String>> {
+        read_run_events(root)
+            .iter()
+            .filter(|e| e.type_ == "DecisionMade")
+            .filter(|e| serde_json::from_slice::<serde_json::Value>(&e.data).unwrap()["id"] == id)
+            .map(|e| e.meta.get(rigger::conductor::META_SPAWN).cloned())
+            .collect()
+    };
+
+    let (held, err, ok) = emit(
+        Some("u1/implementer#0"),
+        &["DecisionMade", &decision("d-x")],
+    );
+    assert!(ok, "the first author's emit lands; stderr: {err}");
+    let (_out, err, ok) = emit(
+        Some("u1/implementer#0"),
+        &[
+            "--spawn",
+            "u9/adjudicator#0",
+            "DecisionMade",
+            &decision("d-y"),
+        ],
+    );
+    assert!(ok, "an explicitly stamped emit lands; stderr: {err}");
+    assert_eq!(stamp_of("d-x"), [Some("u1/implementer#0".to_string())]);
+    assert_eq!(
+        stamp_of("d-y"),
+        [Some("u9/adjudicator#0".to_string())],
+        "--spawn wins over the exported spawn"
+    );
+
+    let position = held
+        .split("(position ")
+        .nth(1)
+        .and_then(|rest| rest.split(')').next())
+        .unwrap_or_else(|| panic!("the emit names its position: {held:?}"));
+    let (_out, err, ok) = emit(
+        Some("u2/implementer#0"),
+        &["DecisionMade", &decision("d-x")],
+    );
+    assert!(!ok, "another author's record under a held id is refused");
+    for named in [format!("position {position}"), "u1/implementer".to_string()] {
+        assert!(err.contains(&named), "the refusal names {named:?}: {err}");
+    }
+
+    let (_out, err, ok) = emit(
+        Some("u1/implementer#1"),
+        &["DecisionMade", &decision("d-x")],
+    );
+    assert!(
+        ok,
+        "the holder's own next attempt re-emits its id; stderr: {err}"
+    );
+    let (_out, err, ok) = emit(None, &["DecisionMade", &decision("d-x")]);
+    assert!(
+        ok,
+        "an unstamped operator emit re-emits the id; stderr: {err}"
+    );
+    assert_eq!(
+        stamp_of("d-x"),
+        [
+            Some("u1/implementer#0".to_string()),
+            Some("u1/implementer#1".to_string()),
+            None
+        ],
+        "the refused emit landed nothing"
     );
 }
 
@@ -6634,6 +6926,303 @@ stages:
     );
 }
 
+/// What one [`run_with_bridged_lines`] left behind.
+#[cfg(unix)]
+struct Bridged {
+    /// Everything the run said: stdout, stderr and every event's payload, one haystack.
+    said: String,
+    /// The run's events.
+    events: Vec<rigger::eventstore::Event>,
+    /// The task each worker spawn read on its stdin, in spawn order.
+    worker_tasks: Vec<String>,
+    /// The task each adjudicator spawn read on its stdin, in spawn order.
+    judge_tasks: Vec<String>,
+    /// Every commit the repository holds afterwards, one `{sha} {subject}` line each.
+    commits: Vec<String>,
+}
+
+/// The tasks the spawns of one fake agent saved in `dir`, one file per spawn named by its
+/// ordinal, in spawn order.
+#[cfg(unix)]
+fn saved_tasks(dir: &Path) -> Vec<String> {
+    let spawned = std::fs::read_dir(dir).unwrap().count();
+    (0..spawned)
+        .map(|n| std::fs::read_to_string(dir.join(n.to_string())).unwrap())
+        .collect()
+}
+
+/// One `rigger run` of a reviewed one-stage unit through the REAL cli host, whose fake `claude`
+/// worker prints `worker_lines` on its first spawn only and whose adjudicator prints
+/// `judge_lines` on its first `judge_prints` spawns, each before approving: the host bridges
+/// every emit line on an agent's stdout into the conductor's in-process emit. Two attempts, so a
+/// line refused on the worker's first spawn can be charged to that attempt and the second,
+/// printing nothing, carries the unit on.
+#[cfg(unix)]
+fn run_with_bridged_lines(worker_lines: &str, judge_lines: &str, judge_prints: usize) -> Bridged {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    let tasks = tempfile::tempdir().unwrap();
+    let task_dir = tasks.path().display();
+    let judged = tempfile::tempdir().unwrap();
+    let judge_dir = judged.path().display();
+    write_agent(
+        root,
+        "worker",
+        "Read, Edit",
+        "RIGGERTEST_WORKER: do the unit.",
+    );
+    write_agent(root, "a", "Read", "RIGGERTEST_LENS: review it.");
+    write_agent(
+        root,
+        "adv",
+        "Read",
+        "RIGGERTEST_ADVERSARY: try to break it.",
+    );
+    write_agent(
+        root,
+        "judge",
+        "Read",
+        "RIGGERTEST_ADJUDICATOR: adjudicate it.",
+    );
+    std::fs::write(
+        root.join(".rigger").join("workflow.yml"),
+        r#"defaults:
+  grounder: nop
+  budget: 60
+  max_retries: 2
+gates:
+  ok: { run: "true", kind: core }
+stages:
+  solo:
+    agent: worker
+    gates: [ok]
+    on_pass: none
+    review:
+      lenses: [a]
+      adversary: adv
+      adjudicator: judge
+"#,
+    )
+    .unwrap();
+    let (_fakebin, path_env) = install_fake_claude(&format!(
+        r#"  *RIGGERTEST_LENS*)
+    echo "reviewed: no blocker"
+    ;;
+  *RIGGERTEST_ADVERSARY*)
+    echo "tried and failed"
+    ;;
+  *RIGGERTEST_ADJUDICATOR*)
+    n=$(ls "{judge_dir}" | wc -l | tr -d ' ')
+    cat > "{judge_dir}/$n"
+    if [ "$n" -lt {judge_prints} ]; then
+      cat <<'LINES'
+{judge_lines}
+LINES
+    fi
+    echo '{{"verdict":"approve"}}'
+    ;;
+  *RIGGERTEST_WORKER*)
+    n=$(ls "{task_dir}" | wc -l | tr -d ' ')
+    cat > "{task_dir}/$n"
+    echo "pub fn work() {{}}" > work.rs
+    if [ "$n" = 0 ]; then
+      cat <<'LINES'
+{worker_lines}
+LINES
+    fi
+    ;;
+"#
+    ));
+    let (out, err, _ok) = run_rigger_envs(root, &["run"], &[("PATH", &path_env)]);
+    let events = read_run_events(root);
+    let said = [out, err]
+        .into_iter()
+        .chain(
+            events
+                .iter()
+                .map(|e| String::from_utf8_lossy(&e.data).into_owned()),
+        )
+        .collect::<Vec<_>>()
+        .join("\n");
+    let commits = git_answer(root, &["log", "--all", "--format=%H %s"])
+        .map(|log| log.lines().map(str::to_string).collect())
+        .unwrap_or_default();
+    Bridged {
+        said,
+        events,
+        worker_tasks: saved_tasks(tasks.path()),
+        judge_tasks: saved_tasks(judged.path()),
+        commits,
+    }
+}
+
+/// The `{unit}/{role}` seat stamped on each recorded `DecisionMade` whose id is `id`, in log order.
+#[cfg(unix)]
+fn decision_seats(events: &[rigger::eventstore::Event], id: &str) -> Vec<String> {
+    events
+        .iter()
+        .filter(|e| e.type_ == rigger::contextgraph::TYPE_DECISION_MADE)
+        .filter(|e| serde_json::from_slice::<serde_json::Value>(&e.data).unwrap()["id"] == id)
+        .map(|e| {
+            let spawn = e.meta.get(rigger::conductor::META_SPAWN);
+            rigger::spawn::unit_role_of(spawn.map_or("", String::as_str)).to_string()
+        })
+        .collect()
+}
+
+/// A record a cli-host agent prints on stdout reaches the log through the conductor's in-process
+/// emit, so it is judged by the same guard `rigger emit` runs: a payload the fold cannot apply -
+/// `governs` given as a string, not an array - is refused before the append, so the log holds no
+/// record the fold would pass over. The refusal is a defect in what the implementer printed, not
+/// an outage: it is charged to that attempt like a review reject, never rerun uncharged as
+/// infra, and the next attempt's prompt names it, so the agent learns why and the unit converges.
+/// The attempt's edits are committed as its checkpoint, as a gate failure's are, so its
+/// `UnitFailed` carries that sha and an escalation's teardown never discards them.
+#[cfg(unix)]
+#[test]
+fn a_cli_host_bridged_record_the_fold_cannot_apply_is_refused_and_charged_to_the_attempt_that_printed_it(
+) {
+    let refusal = "refusing to emit: DecisionMade payload field `governs`";
+    let Bridged {
+        said,
+        events,
+        worker_tasks: tasks,
+        commits,
+        ..
+    } = run_with_bridged_lines(
+        r#"{"type":"DecisionMade","data":{"id":"d-bad","summary":"s","governs":"src/work.rs"}}"#,
+        "",
+        0,
+    );
+    assert_eq!(
+        decision_seats(&events, "d-bad"),
+        Vec::<String>::new(),
+        "the refused record landed nothing"
+    );
+    assert!(
+        said.contains(refusal),
+        "the refusal reaches the spawn's error: {said}"
+    );
+    let failed: Vec<serde_json::Value> = events
+        .iter()
+        .filter(|e| e.type_ == rigger::ledger::TYPE_UNIT_FAILED)
+        .map(|e| serde_json::from_slice(&e.data).unwrap())
+        .collect();
+    assert_eq!(
+        failed
+            .iter()
+            .map(|f| (f["attempts"].as_u64(), f["cause"].as_str()))
+            .collect::<Vec<_>>(),
+        [(Some(1), Some("reject"))],
+        "the refusal is charged one attempt, as a reject: {failed:?}"
+    );
+    let reason = failed[0]["review_reason"].as_str().unwrap_or_default();
+    assert!(
+        reason.contains(refusal) && !reason.contains('\u{1}'),
+        "the charged failure carries the refusal, unmarked: {reason:?}"
+    );
+    let failed_sha = events
+        .iter()
+        .find(|e| e.type_ == rigger::ledger::TYPE_UNIT_FAILED)
+        .and_then(|e| e.meta.get(rigger::conductor::META_WORKTREE_SHA))
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        commits.contains(&format!("{failed_sha} rigger: solo attempt 1")),
+        "the refused attempt's edits are committed as its checkpoint, the sha its UnitFailed \
+         carries, as a gate failure's are: {failed_sha:?} in {commits:?}"
+    );
+    assert!(
+        !events.iter().any(|e| {
+            e.type_ == rigger::ledger::TYPE_UNIT_STATUS
+                && String::from_utf8_lossy(&e.data).contains(r#""status":"infra-retry""#)
+        }),
+        "a refusal is never rerun uncharged as infra"
+    );
+    assert_eq!(tasks.len(), 2, "the worker spawned once per attempt");
+    assert!(
+        !tasks[0].contains(refusal) && tasks[1].contains(refusal),
+        "the next attempt's prompt names the refusal: {:?}",
+        tasks[1]
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|e| e.type_ == rigger::ledger::TYPE_UNIT_ESCALATED),
+        "the next attempt, printing nothing refused, carries the unit on"
+    );
+}
+
+/// The run of [`run_with_bridged_lines`] whose worker prints a record under the id `d-x` and
+/// whose adjudicator prints one under the same id on its first `judge_prints` spawns: the
+/// reviewer's is refused before the append, naming the holder, so the implementer's record stays
+/// the one the graph keeps - the in-process emit stamps each bridged line with its spawn, whose
+/// `{unit}/{role}` seat is the author the guard compares. The adjudicator's verdict rides the
+/// same stdout, so a refused line costs its spawn the verdict: the spawn re-runs once, under its
+/// next retry id, told why, and never again. Returns the run.
+#[cfg(unix)]
+fn assert_a_reviewer_s_refused_record_re_runs_its_spawn_once(judge_prints: usize) -> Bridged {
+    let run = run_with_bridged_lines(
+        r#"{"type":"DecisionMade","data":{"id":"d-x","summary":"the worker's"}}"#,
+        r#"{"type":"DecisionMade","data":{"id":"d-x","summary":"the judge's"}}"#,
+        judge_prints,
+    );
+    let seats = decision_seats(&run.events, "d-x");
+    assert!(
+        !seats.is_empty() && seats.iter().all(|seat| seat == "solo/implementer"),
+        "only the implementer's record holds the id: {seats:?}"
+    );
+    assert_eq!(
+        run.judge_tasks.len(),
+        2,
+        "the refused adjudicator re-runs once, never again"
+    );
+    for named in [
+        r#"Your previous run's record was refused: refusing to emit DecisionMade "d-x""#,
+        "recorded by solo/implementer",
+    ] {
+        assert!(
+            run.judge_tasks[1].contains(named),
+            "the re-run's task names {named:?}: {}",
+            run.judge_tasks[1]
+        );
+    }
+    assert!(
+        !run.said.contains('\u{1}'),
+        "no control-character marker reaches what the run said: {}",
+        run.said
+    );
+    run
+}
+
+/// A cli-host reviewer whose record is refused once re-runs, told why, and its re-run's verdict
+/// carries the unit on.
+#[cfg(unix)]
+#[test]
+fn a_cli_host_reviewer_whose_bridged_record_another_seat_holds_re_runs_once_told_why() {
+    let run = assert_a_reviewer_s_refused_record_re_runs_its_spawn_once(1);
+    assert!(
+        run.said.contains(r#""status":"reviewed""#) && wave_lessons(&run.events).is_empty(),
+        "the re-run's approve carries the unit on: {}",
+        run.said
+    );
+}
+
+/// A cli-host reviewer refused again on its re-run fails its stage with the refusal: the
+/// review's own failure handling, its wave lesson naming the refusal.
+#[cfg(unix)]
+#[test]
+fn a_cli_host_reviewer_refused_again_fails_its_stage_with_the_refusal() {
+    let run = assert_a_reviewer_s_refused_record_re_runs_its_spawn_once(2);
+    let lessons = wave_lessons(&run.events);
+    assert!(
+        lessons
+            .iter()
+            .any(|l| l.contains(r#"refusing to emit DecisionMade "d-x""#)),
+        "the stage's wave lesson carries the refusal: {lessons:?}"
+    );
+}
+
 /// Spec 64 criterion 3, adjudication round 4 (`adv-u3c3r4-concurrent-lens-ensure-present-races-
 /// worktree-create`, `sdet-u3c3r4-concurrent-lenses-race-ensure-present-on-the-same-worktree`,
 /// `arch-u3c3r4-speculation-winner-sha-unguarded`, all UPHELD; fixed round 5 with a per-
@@ -7716,9 +8305,9 @@ fn step_carries_the_escalated_set_when_a_fixpoint_is_reached_with_a_wedged_unit(
     // actual stdout - not merely through `conductor::run` called directly in-process (the
     // implementer's own `mod tests` in src/conductor.rs), which can never observe whether
     // `cmd_step` truly wires `RunState::attention` onto the printed `Step`. `max_retries: 1`
-    // means this unit's first failure IS its escalation, so `worker-death-recurred` (which
-    // needs a SECOND failure) does not also fire here - this step isolates the `escalated`
-    // signal cleanly at the process boundary.
+    // means this unit's first failure IS its escalation, so `reject-recurrence` (which
+    // needs a still-remediating unit at the diagnose threshold) does not also fire here -
+    // this step isolates the `escalated` signal cleanly at the process boundary.
     assert!(
         line.contains(r#""attention":[{"kind":"escalated","unit":"solo","detail":"#),
         "an escalated fixpoint must stamp an attention entry naming the escalated unit, on \
@@ -7728,7 +8317,7 @@ fn step_carries_the_escalated_set_when_a_fixpoint_is_reached_with_a_wedged_unit(
     // Step 3 (review u69c5, finding sdet-u69c5-escalated-resume-restamp-untested-but-
     // verified-correct: no test drove a THIRD real `rigger step` after an escalation to
     // prove the `escalated` signal does not re-stamp on a RESUMED process - only
-    // worker-death-recurred/stalled-frontier and budget-final-tenth had that real-process-
+    // reject-recurrence/stalled-frontier and budget-final-tenth had that real-process-
     // boundary re-stamp guard coverage; this closes the gap). A FRESH process, nothing new
     // recorded - the run is already at its fixpoint, unchanged. The LEVEL-triggered
     // `escalated` set field must still re-surface (it reflects current truth every call,
@@ -9337,7 +9926,7 @@ fn seed_spawn_events_at(root: &Path, project: &str, rows: &[(rigger::eventstore:
 
     let rigger_dir = root.join(".rigger");
     std::fs::create_dir_all(&rigger_dir).unwrap();
-    std::fs::write(rigger_dir.join("project.id"), format!("{project}\n")).unwrap();
+    pin_identity(root, project);
     let db = rigger_dir.join("events.db");
     // Open through the real store first, so the schema is laid down exactly as the binary
     // itself would lay it down (mirrors seed_order_signature).
@@ -13356,7 +13945,7 @@ fn validate_residue_scan_surfaces_an_unreadable_store_conn_never_misreporting_li
 #[test]
 fn empty_repo_scaffold_path_prints_the_agent_collection_pointer() {
     const COLLECTION_URL: &str = "github.com/msitarzewski/agency-agents";
-    const HANDBOOK: &str = "docs/handbook/authoring-agents.md";
+    const HANDBOOK: &str = common::fixtures::AUTHORING_AGENTS_HANDBOOK;
 
     let dir = temp_project();
     let root = dir.path();
@@ -13548,12 +14137,7 @@ fn installed_rigger_workflow() -> String {
     let root = dir.path();
     setup_ok(root, &[("RIGGER_NPM", "true")]);
     let installed = root.join(".claude").join("workflows").join("rigger.js");
-    std::fs::read_to_string(&installed).unwrap_or_else(|e| {
-        panic!(
-            "rigger setup must install the workflow at {}; read failed: {e}",
-            installed.display()
-        )
-    })
+    common::fixtures::read_text(&installed)
 }
 
 /// The installed `/rigger` workflow defines the step-courier agent prompt (anchored on it so
@@ -14051,7 +14635,7 @@ fn step_migrates_legacy_history_to_the_minted_identity() {
 
     // Mint a durable identity DISTINCT from the basename (written directly so the test is
     // deterministic, independent of the temp dir's random basename).
-    std::fs::write(root.join(".rigger/project.id"), "durablemint\n").unwrap();
+    pin_identity(root, "durablemint");
 
     // A step opens the store with the minted identity: it migrates the legacy history once
     // and says so on stderr.
@@ -14105,7 +14689,7 @@ fn validate_warns_when_the_project_id_is_absent_and_is_silent_after_minting() {
     );
 
     // Mint it, then validate is SILENT on the identity advisory.
-    std::fs::write(root.join(".rigger/project.id"), "durable-xyz\n").unwrap();
+    pin_identity(root, "durable-xyz");
     let (_out, err2, ok2) = run_rigger(root, &["validate"]);
     assert!(ok2, "validate must succeed; stderr:\n{err2}");
     assert!(
@@ -14349,7 +14933,7 @@ fn stats_canary_over(project: &str, items: &[&str]) -> (tempfile::TempDir, Strin
     let dir = tempfile::tempdir().unwrap();
     let rigger = dir.path().join(".rigger");
     std::fs::create_dir_all(&rigger).unwrap();
-    std::fs::write(rigger.join("project.id"), format!("{project}\n")).unwrap();
+    pin_identity(dir.path(), project);
     let backend = Store::open(rigger.join("events.db").to_str().unwrap()).unwrap();
     let store = Namespaced::new(&backend, project);
     let events: Vec<Event> = std::iter::once(r#"{"id":"batch-1","status":"canary-run"}"#)
@@ -14614,6 +15198,46 @@ fn canary_rejects_unknown_arguments_and_a_missing_corpus() {
         err.contains("no items"),
         "the error explains the corpus is empty; stderr: {err}"
     );
+}
+
+/// Spec 120's THE COMMUNICATION DISCIPLINE IS A SHADOWABLE BUILT-IN, through the canary: given a
+/// project whose review panel's three agents share one persona and a one-item corpus, when the
+/// operator runs `rigger canary`, then the system prompt a panel spawn receives through the real
+/// subprocess driver is exactly `compose`'s output over that persona - the communication section
+/// once, the retired heading nowhere, nothing appended after the composed layers.
+#[cfg(unix)]
+#[test]
+fn canary_spawns_its_panel_with_the_composed_system_prompt_and_nothing_appended() {
+    use common::cli::run_capturing_system_prompt;
+    use common::fixtures::{assert_communication_once, composed_system_prompt};
+    let dir = temp_project();
+    let root = dir.path();
+    for id in ["lens", "adv", "judge"] {
+        write_agent(root, id, "Read", "You review the canary item.");
+    }
+    write_scaffold(
+        root,
+        &[],
+        "defaults:\n  grounder: nop\n  review:\n    lenses: [lens]\n    adversary: adv\n    \
+         adjudicator: judge\nstages:\n  solo:\n    agent: lens\n    on_pass: none\n",
+    );
+    let corpus = root.join("corpus");
+    std::fs::create_dir_all(&corpus).unwrap();
+    std::fs::write(
+        corpus.join("control.md"),
+        "---\nid: control\ndefect_class: none\nplanted: false\nanchor: src/lib.rs\n\
+         expected_verdict: approve\n---\nfn control() {}\n",
+    )
+    .unwrap();
+    let system = run_capturing_system_prompt(root, &["canary", "--corpus", "corpus"]);
+    let persona =
+        std::fs::read_to_string(common::cli::rigger_file(root, "agents").join("judge.md")).unwrap();
+    assert_eq!(
+        system,
+        composed_system_prompt(&persona),
+        "a panel spawn's system prompt is compose's output over its persona, nothing appended"
+    );
+    assert_communication_once(&system);
 }
 
 /// `rigger canary --jobs <n>` (spec 61 criterion 5, ITEM SHARDING AND THE JOBS CAP): the
@@ -14952,7 +15576,7 @@ fn seed_two_runs_with_models(root: &Path, project: &str, prev_model: &str, curr_
 
     let rigger = root.join(".rigger");
     std::fs::create_dir_all(&rigger).unwrap();
-    std::fs::write(rigger.join("project.id"), format!("{project}\n")).unwrap();
+    pin_identity(root, project);
 
     let backend = Store::open(rigger.join("events.db").to_str().unwrap()).unwrap();
     let store = Namespaced::new(&backend, project);
@@ -15080,11 +15704,7 @@ fn validate_detects_a_stream_whose_position_order_and_revision_order_disagree() 
         "rigger init must scaffold a valid config; stderr:\n{err}"
     );
     std::fs::create_dir_all(droot.join(".rigger")).unwrap();
-    std::fs::write(
-        droot.join(".rigger").join("project.id"),
-        "order-signature-project\n",
-    )
-    .unwrap();
+    pin_identity(droot, "order-signature-project");
     seed_order_signature(droot, "order-signature-project", 0);
     let (_out, err, ok) = run_rigger(droot, &["validate"]);
     assert!(
@@ -15232,7 +15852,7 @@ fn seed_two_runs_with_model_changes(root: &Path, project: &str, changes: &[(&str
 
     let rigger = root.join(".rigger");
     std::fs::create_dir_all(&rigger).unwrap();
-    std::fs::write(rigger.join("project.id"), format!("{project}\n")).unwrap();
+    pin_identity(root, project);
 
     let backend = Store::open(rigger.join("events.db").to_str().unwrap()).unwrap();
     let store = Namespaced::new(&backend, project);
@@ -16629,7 +17249,7 @@ fn emit_event_accepts_every_agent_context_event_and_appends_it() {
         });
         assert_eq!(
             emitted.fold,
-            rigger::contextgraph::Fold::NotFolded("graph: no context graph is wired".to_string()),
+            rigger::contextgraph::Fold::NotFolded(common::fixtures::unwired()),
             "with no graph wired the accepted emit folds nothing and says so"
         );
 
@@ -17359,8 +17979,7 @@ fn docs_rendered_skill_family(names: &[&str]) -> tempfile::TempDir {
         );
 
         let path = root.join(&rel);
-        let rendered = std::fs::read_to_string(&path)
-            .unwrap_or_else(|e| panic!("rigger docs must have written {rel}: {e}"));
+        let rendered = common::fixtures::read_text(&path);
         assert!(
             rendered.starts_with(&format!("---\nname: {name}\n")),
             "{name}: must open with its own loadable frontmatter; got: {}",
@@ -17433,8 +18052,7 @@ fn assert_setup_installs_each_skill(names: &[&str]) -> tempfile::TempDir {
             "setup must report installing {name}; got:\n{out}"
         );
 
-        let installed = std::fs::read_to_string(&installed_path)
-            .unwrap_or_else(|e| panic!("{name} was installed: {e}"));
+        let installed = common::fixtures::read_text(&installed_path);
         assert!(
             installed.starts_with(&format!("---\nname: {name}\n")),
             "the installed {name} skill must be loadable; got: {}",
@@ -20189,7 +20807,7 @@ fn release_ready_handoff_reaches_the_dash_export_snapshot() {
             ("UnitIntegrated", r#"{"id":"u1","commit":"abc"}"#),
         ],
     );
-    let (out, err, ok) = run_rigger(root, &["dash", "--export", "snapshot.html"]);
+    let (out, err, ok) = run_rigger(root, &common::cli::DASH_SNAPSHOT_ARGS);
     assert!(ok, "rigger dash --export must succeed; stderr:\n{err}");
     assert!(
         out.contains("wrote dash snapshot"),
@@ -20221,7 +20839,7 @@ fn release_ready_handoff_reaches_the_dash_export_snapshot() {
             ("UnitStarted", r#"{"id":"u2","agent":"worker"}"#),
         ],
     );
-    let (_out, err, ok) = run_rigger(root2, &["dash", "--export", "snapshot.html"]);
+    let (_out, err, ok) = run_rigger(root2, &common::cli::DASH_SNAPSHOT_ARGS);
     assert!(ok, "rigger dash --export must succeed; stderr:\n{err}");
     let html = std::fs::read_to_string(root2.join("snapshot.html"))
         .expect("the export writes the snapshot file");
@@ -21521,13 +22139,6 @@ fn shared_registry() -> (tempfile::TempDir, String, std::path::PathBuf) {
     (state, xdg, regdir)
 }
 
-/// A hermetic scratch root and its path, for the dash to resolve via `RIGGER_TMPDIR`.
-fn hermetic_scratch_root() -> (tempfile::TempDir, String) {
-    let scratch = tempfile::tempdir().unwrap();
-    let root = scratch.path().to_str().unwrap().to_string();
-    (scratch, root)
-}
-
 /// A foreign project holding NO `.rigger/workflow.yml` (so its scratch root falls to the plain
 /// `<root>/.rigger/tmp` default rung - the resolution its own `rigger` would use, per
 /// `foreign_instance_scratch_root`), its root, and its implementer's agent-liveness marker path.
@@ -21765,7 +22376,7 @@ fn touch_marker(path: &std::path::Path) {
 /// with BOTH signals quiet, it reaps exactly as spec 50 criterion 5 always has.
 fn assert_a_fresh_agent_marker_outlives_an_aged_out_registry(git_less_cwd: bool) {
     let (_state, xdg, regdir) = shared_registry();
-    let (_scratch, scratch_root) = hermetic_scratch_root();
+    let (_scratch, scratch_root) = common::fixtures::temp_root();
     let marker_path =
         rigger::liveness::marker_path(&scratch_root, "run-1", "u1c1/implementer#0").unwrap();
     let cwd = tempfile::tempdir().unwrap();
@@ -21857,7 +22468,7 @@ rigger::test_cases! {
 /// see every registered project's agent liveness; once that marker goes idle too, it reaps.
 fn assert_a_foreign_projects_fresh_agent_marker_holds_the_reap(already_stale: bool) {
     let (_state, xdg, regdir) = shared_registry();
-    let (_own_scratch, own_scratch_root) = hermetic_scratch_root();
+    let (_own_scratch, own_scratch_root) = common::fixtures::temp_root();
     let (_other_project, other_root, other_marker_path) = foreign_project_marker();
 
     let latch_project = tempfile::tempdir().unwrap();
@@ -21958,7 +22569,7 @@ fn a_landing_poll_racing_the_watchers_first_tick_does_not_erase_a_foreign_projec
 
     // The LAUNCHING project's own scratch root: hermetic and left EMPTY (no marker ever written
     // there), isolating the assertion to the foreign project's marker alone.
-    let (_own_scratch, own_scratch_root) = hermetic_scratch_root();
+    let (_own_scratch, own_scratch_root) = common::fixtures::temp_root();
 
     // A THIRD project supplies the `ever_seen_live` startup latch (see the test above for why this
     // one-time-write-then-decay shape isolates the assertion to the SECOND project's marker alone).
@@ -25533,12 +26144,7 @@ fn assert_mcp_serves_its_three_tools(
     );
     check_ground(&ground);
 
-    let out = mcp.finish();
-    assert!(
-        out.status.success(),
-        "rigger mcp must exit 0; stderr:\n{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
+    mcp.finish_cleanly();
 }
 
 rigger::test_cases! {
@@ -25679,12 +26285,7 @@ fn mcp_spawn_binds_writes_and_serves_no_result_tool_over_stdio() {
         "rigger_scratch must answer a non-empty path; got:\n{scratch}"
     );
 
-    let out = mcp.finish();
-    assert!(
-        out.status.success(),
-        "rigger mcp --spawn must exit 0; stderr:\n{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
+    mcp.finish_cleanly();
 
     // The DECISION landed, stamped with the bound spawn; the REFUSED one landed nothing.
     let recorded = read_run_events(root);
@@ -25796,12 +26397,7 @@ fn mcp_without_spawn_never_creates_the_progress_store() {
     // One real round trip (`call` panics unless it answers exactly one JSON-RPC line).
     mcp.call("tools/list", serde_json::json!({}));
 
-    let out = mcp.finish();
-    assert!(
-        out.status.success(),
-        "rigger mcp must exit 0; stderr:\n{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
+    mcp.finish_cleanly();
     assert!(
         !root.join(".rigger").join("progress.db").exists(),
         "a plain `rigger mcp` with no --spawn must never create progress.db"
@@ -25838,12 +26434,7 @@ fn mcp_without_spawn_reports_progress_and_scratch_as_unknown_tools_over_stdio() 
         );
     }
 
-    let out = mcp.finish();
-    assert!(
-        out.status.success(),
-        "rigger mcp must survive and exit 0 after the refused calls; stderr:\n{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
+    mcp.finish_cleanly();
 }
 
 /// PERIPHERY (round 2, closes `sdet-u104-mcp-spawn-scratch-no-real-parity-test-with-cmd-scratch`,
@@ -26934,12 +27525,7 @@ fn mcp_tool_call_edges_report_errors_for_unknown_tool_and_missing_required_argum
         "the session must keep answering after error responses; got:\n{list}"
     );
 
-    let out = mcp.finish();
-    assert!(
-        out.status.success(),
-        "rigger mcp must exit 0 after an error-only session; stderr:\n{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
+    mcp.finish_cleanly();
 }
 
 /// A malformed (non-JSON) line on `rigger mcp`'s stdin answers a JSON-RPC PARSE ERROR
@@ -26975,8 +27561,7 @@ fn mcp_survives_a_malformed_json_line_and_keeps_answering_afterward() {
         "a well-formed request right after a malformed one must still succeed; got:\n{line2}"
     );
 
-    let out = mcp.finish();
-    assert!(out.status.success());
+    mcp.finish_cleanly();
 }
 
 /// Spec 119, SHOW IS ONE RENDERER: GIVEN a graph holding a const, a field, a definition whose
@@ -27057,6 +27642,153 @@ fn graph_show_prints_each_node_through_the_one_site_renderer() {
             "{id}: the CLI prints site_fields"
         );
     }
+}
+
+/// Spec 117, UNRESOLVED REFERENCES ARE A READ: GIVEN a graph whose file `src/reader.rs`, a partial
+/// parse, stages rows of four leaves that resolve to nothing and whose file `src/definer.rs`
+/// stages none, WHEN the operator runs `rigger graph --show` on each file, THEN `src/reader.rs`
+/// prints its sorted distinct unresolved leaves joined by `contextgraph::LIST_SEP` on one
+/// `unresolved` line after its `partial` entry, and `src/definer.rs` prints no `unresolved` line.
+#[test]
+fn graph_show_prints_a_files_unresolved_leaves_after_its_partial_entry() {
+    use common::fixtures::{RESOLVING_FILE, UNRESOLVED_FILE, UNRESOLVED_LEAVES};
+    use rigger::contextgraph::LIST_SEP;
+
+    let dir = common::cli::unresolved_project();
+    let [reader, definer] =
+        [UNRESOLVED_FILE, RESOLVING_FILE].map(|file| common::cli::show_lines(dir.path(), file));
+    assert_eq!(
+        reader[3..5],
+        [
+            "  partial true".to_string(),
+            format!("  unresolved {}", UNRESOLVED_LEAVES.join(LIST_SEP))
+        ],
+        "the file's unresolved leaves print on the line after its partial entry"
+    );
+    assert_eq!(
+        definer
+            .iter()
+            .filter(|line| line.starts_with("  unresolved"))
+            .count(),
+        0,
+        "a file listing none prints no unresolved line"
+    );
+}
+
+/// Spec 117, UNRESOLVED REFERENCES ARE A READ: GIVEN the same graph, WHEN the operator runs `rigger
+/// graph --around src/reader.rs --depth 1`, THEN the queried file's node line is followed by
+/// `unresolved 4`, the count of its leaves, and no other node prints one; WHEN they run `--around
+/// src/definer.rs --depth 3`, whose subgraph reaches `src/reader.rs`, THEN no `unresolved` line
+/// prints, `src/definer.rs` listing none and `src/reader.rs` a neighbour.
+#[test]
+fn graph_around_prints_the_queried_files_unresolved_count_alone() {
+    use common::fixtures::{RESOLVING_FILE, UNRESOLVED_FILE};
+
+    let dir = common::cli::unresolved_project();
+    assert_eq!(
+        [(UNRESOLVED_FILE, 1), (RESOLVING_FILE, 3)].map(|(seed, depth)| run_around(
+            dir.path(),
+            seed,
+            depth
+        )
+        .0),
+        [
+            "subgraph around \"src/reader.rs\" (depth 1):\n\
+             \x20 node src/reader.rs            file\n\
+             \x20 unresolved 4\n\
+             \x20 node src/reader.rs::glance    code-entity\n\
+             \x20 node src/reader.rs::scan      code-entity\n\
+             \x20 edge src/reader.rs -CONTAINS-> src/reader.rs::glance\n\
+             \x20 edge src/reader.rs -CONTAINS-> src/reader.rs::scan\n",
+            "subgraph around \"src/definer.rs\" (depth 3):\n\
+             \x20 node src/definer.rs           file\n\
+             \x20 node src/definer.rs::CEILING  code-entity\n\
+             \x20 node src/definer.rs::Halved   code-entity\n\
+             \x20 node src/definer.rs::Hinted   code-entity\n\
+             \x20 node src/reader.rs            file\n\
+             \x20 node src/reader.rs::scan      code-entity\n\
+             \x20 edge src/definer.rs -CONTAINS-> src/definer.rs::CEILING\n\
+             \x20 edge src/reader.rs::scan -REFERENCES-> src/definer.rs::CEILING\n\
+             \x20 edge src/definer.rs -CONTAINS-> src/definer.rs::Halved\n\
+             \x20 edge src/reader.rs::scan -REFERENCES-> src/definer.rs::Halved\n\
+             \x20 edge src/definer.rs -CONTAINS-> src/definer.rs::Hinted\n\
+             \x20 edge src/reader.rs::scan -REFERENCES-> src/definer.rs::Hinted\n\
+             \x20 edge src/reader.rs -CONTAINS-> src/reader.rs::scan\n",
+        ],
+        "the queried file alone prints its count, and an empty list prints none"
+    );
+}
+
+/// Spec 117, UNRESOLVED REFERENCES ARE A READ: GIVEN the same graph with `src/aka.rs` an alias of
+/// `src/reader.rs`, WHEN the operator runs `rigger graph --around src/aka.rs --depth 1`, THEN it
+/// prints the canonical `src/reader.rs`'s subgraph, its node line followed by its `unresolved`
+/// line, under a header naming the query as typed.
+#[test]
+fn graph_around_an_alias_prints_the_canonical_files_node_and_unresolved_lines() {
+    use common::cli::UNRESOLVED_ALIAS;
+    use common::fixtures::UNRESOLVED_FILE;
+
+    let dir = common::cli::unresolved_project();
+    common::fixtures::apply_json(
+        &common::cli::open_graph(dir.path()),
+        4,
+        rigger::contextgraph::TYPE_ALIAS_DEFINED,
+        common::fixtures::alias_json(UNRESOLVED_ALIAS, UNRESOLVED_FILE),
+    );
+    let [aliased, canonical] =
+        [UNRESOLVED_ALIAS, UNRESOLVED_FILE].map(|seed| run_around(dir.path(), seed, 1).0);
+    assert_eq!(
+        aliased.lines().next(),
+        Some("subgraph around \"src/aka.rs\" (depth 1):"),
+        "the header names the query as typed"
+    );
+    assert!(
+        aliased.lines().skip(1).eq(canonical.lines().skip(1)),
+        "the alias answers the canonical file's subgraph, its node and unresolved lines among it"
+    );
+}
+
+/// Spec 117, UNRESOLVED REFERENCES ARE A READ: GIVEN the same graph, WHEN a `refs` row's leaf
+/// cannot be read and the operator runs `rigger graph --around src/reader.rs`, THEN the command
+/// fails naming the unreadable column, never printing the subgraph without the file's count.
+#[test]
+fn graph_around_fails_on_an_unreadable_unresolved_read() {
+    use common::fixtures::{UNREADABLE_LEAF, UNREADABLE_LEAVES, UNRESOLVED_FILE};
+    assert_eq!(
+        common::cli::around_unresolved_fails_after(UNREADABLE_LEAVES, UNRESOLVED_FILE),
+        UNREADABLE_LEAF
+    );
+}
+
+/// Spec 117, UNRESOLVED REFERENCES ARE A READ: GIVEN the same graph whose alias `src/aka.rs` names
+/// a canonical id that cannot be read, WHEN the operator runs `rigger graph --around src/aka.rs`,
+/// THEN the command fails naming the unreadable column, never answering the alias as a raw query.
+#[test]
+fn graph_around_fails_on_an_unreadable_alias() {
+    use common::cli::UNRESOLVED_ALIAS;
+    assert_eq!(
+        common::cli::around_unresolved_fails_after(
+            &format!(
+                "INSERT INTO aliases (alias, canonical_id) VALUES ('{UNRESOLVED_ALIAS}', x'00')"
+            ),
+            UNRESOLVED_ALIAS
+        ),
+        "Invalid column type Blob at index: 0, name: canonical_id"
+    );
+}
+
+/// Spec 117, UNRESOLVED REFERENCES ARE A READ: GIVEN the same graph, WHEN an edge's tier cannot be
+/// read and the operator runs `rigger graph --around src/reader.rs`, THEN the command fails naming
+/// the unreadable column, never printing an empty subgraph.
+#[test]
+fn graph_around_fails_on_an_unreadable_subgraph() {
+    assert_eq!(
+        common::cli::around_unresolved_fails_after(
+            "UPDATE edges SET tier = CAST(tier AS BLOB)",
+            common::fixtures::UNRESOLVED_FILE
+        ),
+        "Invalid column type Blob at index: 5, name: tier"
+    );
 }
 
 /// Spec 119, SHOW IS ONE RENDERER: GIVEN a definition the graph records at line 1 of a file whose
@@ -27158,7 +27890,7 @@ fn graph_show_heals_a_drifted_method_by_its_path_beside_a_same_named_one() {
         common::cli::show_lines(root, "src/pair.rs::T::new"),
         [
             "show src/pair.rs::T::new",
-            "  site: src/pair.rs:6   kind method   degree 1   (recorded line 4, now 6)",
+            "  site: src/pair.rs:6   kind method   degree 2   (recorded line 4, now 6)",
             "  name new",
             "  lang rust",
             "       6 |     fn new() -> T {",
@@ -27233,8 +27965,8 @@ fn graph_show_answers_a_struct_field_by_its_path() {
 /// `src/f.rs` whose method `new` sits at the path `T::new`, folded into a `graph.db` then stamped
 /// with fold rule 2 and holding a row at the flat id `src/f.rs::new` carrying `name`, as a binary
 /// folding before path ids left it, WHEN the operator runs `rigger setup`, THEN the file owed its
-/// rebuild, records fold rule 3 after it, no row at the flat id carries `name`, and the path id
-/// `src/f.rs::T::new` does.
+/// rebuild, records the current fold rule after it, no row at the flat id carries `name`, and the
+/// path id `src/f.rs::T::new` does.
 #[test]
 fn rigger_setup_rebuilds_a_rule_2_graph_db_leaving_no_flat_nested_id_named() {
     use common::cli::{
@@ -27288,16 +28020,97 @@ fn rigger_setup_rebuilds_a_rule_2_graph_db_leaving_no_flat_nested_id_named() {
             named("src/f.rs::new"),
             named("src/f.rs::T::new")
         ),
-        (3, false, true),
-        "the rebuilt file records fold rule 3, no row at the flat nested id carries name and the \
-         path id does"
+        (rigger::contextgraph::sqlite::PROJECTION_VERSION, false, true),
+        "the rebuilt file records the current fold rule, no row at the flat nested id carries name \
+         and the path id does"
+    );
+}
+
+/// A record citing lines of a file is about that file, AN OLDER GRAPH IS REBUILT: GIVEN a log
+/// holding a finding about `tests/x.rs:12`, folded into a `graph.db` then stamped with fold rule 3
+/// and holding the finding ABOUT an artifact at `tests/x.rs:12`, as a binary folding before a
+/// citation named its file left it, WHEN the operator runs `rigger setup`, THEN the file owed its
+/// rebuild, records the current fold rule after it, the finding is ABOUT `tests/x.rs` and no node
+/// sits at the citation.
+#[test]
+fn rigger_setup_rebuilds_a_rule_3_graph_db_folding_a_line_citation_about_its_file() {
+    use common::cli::{
+        exists, insert_node, open_graph, read_run_events, rigger_db, rigger_file,
+        run_stream_identity, seed_run_events, temp_store_project, user_version, version_and_owed,
+    };
+    let dir = temp_store_project();
+    let root = dir.path();
+    seed_run_events(
+        root,
+        &[(
+            rigger::contextgraph::TYPE_REVIEW_FINDING,
+            r#"{"id":"f1","by":"adversary","summary":"s","about":["tests/x.rs:12"]}"#,
+        )],
+    );
+    common::fixtures::folds(&open_graph(root), &read_run_events(root));
+    let graph_db = rigger_file(root, "graph.db");
+    let project = run_stream_identity(root);
+    let conn = rigger_db(root, "graph.db");
+    insert_node(
+        &conn,
+        &project,
+        "tests/x.rs:12",
+        rigger::contextgraph::KIND_ARTIFACT,
+        None,
+    );
+    conn.execute(
+        "UPDATE edges SET to_id = 'tests/x.rs:12' WHERE from_id = 'f1'",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+    common::fixtures::stamp_user_version(&graph_db, 3);
+    let about = |id: &str| {
+        exists(
+            &graph_db,
+            "SELECT EXISTS (SELECT 1 FROM edges
+              WHERE from_id = 'f1' AND rel = 'ABOUT' AND to_id = ?1 AND valid_to IS NULL)",
+            id,
+        )
+    };
+    assert_eq!(
+        (
+            version_and_owed(&graph_db, &project),
+            about("tests/x.rs:12"),
+            about("tests/x.rs")
+        ),
+        ((3, true), true, false),
+        "the rule-3 file owes its rebuild and holds the finding ABOUT the citation"
+    );
+
+    setup_ok(root, &[("RIGGER_NPM", "true")]);
+    let node = |id: &str| {
+        exists(
+            &graph_db,
+            "SELECT EXISTS (SELECT 1 FROM nodes WHERE id = ?1)",
+            id,
+        )
+    };
+    assert_eq!(
+        (
+            user_version(&graph_db),
+            about("tests/x.rs"),
+            node("tests/x.rs:12")
+        ),
+        (
+            rigger::contextgraph::sqlite::PROJECTION_VERSION,
+            true,
+            false
+        ),
+        "the rebuilt file records the current fold rule, the finding is ABOUT the file and no \
+         node sits at the citation"
     );
 }
 
 /// Spec 119, A BARE SHOW FINDS A LEAF OR PATH: GIVEN a project, WHEN the operator runs `rigger
-/// graph --around new`, a bare name where a seed is an exact id, THEN the empty answer's note
-/// names the exact-id seed form `<file>::<path>` and `rigger graph --show`, which resolves a bare
-/// name.
+/// graph --around new`, a bare name where a seed is an exact id or an alias of one (spec 117),
+/// THEN the empty answer's note names that seed form, `<file>::<path>` or its alias, and `rigger
+/// graph --show`, which resolves a bare name.
 #[test]
 fn graph_around_a_bare_name_notes_the_seed_form_and_show() {
     let dir = temp_project();
@@ -27309,8 +28122,8 @@ fn graph_around_a_bare_name_notes_the_seed_form_and_show() {
             .collect::<Vec<_>>(),
         [
             "subgraph around \"new\" (depth 2):",
-            "  (nothing found; a seed is an exact id, `<file>::<path>`, and `rigger graph --show \
-             <name>` resolves a bare name; has `rigger run` been run yet?)",
+            "  (nothing found; a seed is an exact id, `<file>::<path>`, or an alias of one, and \
+             `rigger graph --show <name>` resolves a bare name; has `rigger run` been run yet?)",
         ],
         "an empty around names the seed form and --show"
     );
@@ -27401,8 +28214,7 @@ fn mcp_rigger_graph_show_resolves_a_seeded_entity_and_reports_none_for_an_unknow
         "an unresolved show query must answer honestly none, never error; got:\n{missing}"
     );
 
-    let out = mcp.finish();
-    assert!(out.status.success());
+    mcp.finish_cleanly();
 }
 
 /// Spec 119, SHOW IS ONE RENDERER, at the `rigger mcp` binary: GIVEN the show-renderer seed
@@ -27426,11 +28238,9 @@ fn mcp_rigger_graph_show_and_around_render_every_node_through_site_fields() {
     seed_shown_nodes(&common::cli::open_graph(root));
 
     let mut mcp = McpSession::start(root);
-    let sites = SHOWN_IDS.map(|id| mcp.graph_tool(serde_json::json!({"show": id}))["site"].clone());
-    let nodes =
-        around_nodes(&mcp.graph_tool(serde_json::json!({"around": SHOWN_FILE, "depth": 1})));
-    let out = mcp.finish();
-    assert!(out.status.success(), "rigger mcp exits cleanly");
+    let sites = SHOWN_IDS.map(|id| mcp.shown_site(id));
+    let nodes = around_nodes(&mcp.around_answer(SHOWN_FILE));
+    mcp.finish_cleanly();
 
     assert_eq!(
         nodes
@@ -27454,6 +28264,30 @@ fn mcp_rigger_graph_show_and_around_render_every_node_through_site_fields() {
     let graph = common::cli::open_graph(root);
     assert_shows_are_site_fields(&graph, &sites);
     assert_around_is_entity_sites(&graph, &nodes);
+}
+
+/// Spec 117, UNRESOLVED REFERENCES ARE A READ, at the `rigger mcp` binary: GIVEN the project's own
+/// `graph.db` holding the rows `seed_unresolved_references` stages, WHEN an MCP client calls
+/// `rigger_graph` with `show` on `src/reader.rs` and on `src/definer.rs` and with `around` on
+/// `src/reader.rs` at depth 1, THEN the reader's site carries its leaves joined by
+/// `contextgraph::LIST_SEP` as one `unresolved` key beside its `partial`, the definer's carries no
+/// `unresolved` key, and no node of the `around` carries one.
+#[test]
+fn mcp_rigger_graph_show_carries_a_files_unresolved_leaves_and_around_carries_none() {
+    use common::fixtures::{
+        assert_around_lists_no_unresolved, assert_show_lists_unresolved_leaves, RESOLVING_FILE,
+        UNRESOLVED_FILE,
+    };
+
+    let dir = common::cli::unresolved_project();
+    common::cli::seed_store(dir.path());
+    let mut mcp = McpSession::start(dir.path());
+    let [reader, definer] = [UNRESOLVED_FILE, RESOLVING_FILE].map(|id| mcp.shown_site(id));
+    let around = mcp.around_answer(UNRESOLVED_FILE);
+    mcp.finish_cleanly();
+
+    assert_show_lists_unresolved_leaves(&reader, &definer);
+    assert_around_lists_no_unresolved(&around);
 }
 
 /// The shipped skill's lookup section states the graph-first rule for a human reader
@@ -27589,8 +28423,7 @@ fn instructions_on_a_fresh_project_prints_the_built_in_law_and_no_operator_layer
 #[test]
 fn instructions_prints_an_operator_file_after_the_built_in_law() {
     let proj = temp_project();
-    let dir = proj.path().join(".rigger").join("instructions");
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = common::fixtures::instructions_dir(proj.path());
     std::fs::write(
         dir.join("10-house.md"),
         "House rule: name every error path.\n",
@@ -27621,6 +28454,183 @@ fn instructions_prints_an_operator_file_after_the_built_in_law() {
     );
 }
 
+/// Spec 120's THE BUILT-IN LAYER NAMES NO LANGUAGE, operator-facing: given a fresh project, when
+/// the operator runs `rigger instructions`, then the binary prints the layers exactly as rendered,
+/// and the built-in layer it prints, before the operator layer opens, spells no marker of the
+/// MARKERS rule.
+#[test]
+fn instructions_prints_a_built_in_layer_that_names_no_language() {
+    let proj = temp_project();
+    let out = run_rigger_ok(proj.path(), &["instructions"]);
+    assert_eq!(
+        out,
+        rigger::instructions::render(&[]),
+        "with no operator file the binary prints every layer as rendered"
+    );
+    let built_in = common::fixtures::printed_built_in_layer(&out);
+    assert_eq!(
+        common::fixtures::language_marker_hits(built_in),
+        Vec::<&str>::new(),
+        "the built-in layer the binary prints names no language"
+    );
+}
+
+/// Spec 120's THE COMMUNICATION DISCIPLINE IS A SHADOWABLE BUILT-IN, operator-facing: given a
+/// fresh project, when the operator runs `rigger instructions`, then the built-in layer it prints
+/// closes with the `communication` section carrying its checked-in source's text, the section
+/// appears once, and the heading the conductor once appended appears nowhere.
+#[test]
+fn instructions_prints_the_communication_discipline_as_the_last_built_in() {
+    use common::fixtures::{
+        assert_communication_once, builtin_instruction_source, printed_built_in_layer,
+        COMMUNICATION_SECTION,
+    };
+    let proj = temp_project();
+    let out = run_rigger_ok(proj.path(), &["instructions"]);
+    let communication = format!(
+        "{COMMUNICATION_SECTION}{}\n",
+        repo_text(&builtin_instruction_source("communication")).trim_end()
+    );
+    assert!(
+        printed_built_in_layer(&out).ends_with(&communication),
+        "the built-in layer closes with the communication section and its source's text; \
+         got:\n{out}"
+    );
+    assert_communication_once(&out);
+}
+
+/// Spec 120, criterion 14: the handbook's built-in entry list is the built-in layer - one
+/// numbered entry per built-in entry, in the layer's order, each naming the checked-in source
+/// whose text is that entry's body.
+#[test]
+fn the_handbook_lists_every_built_in_entry_in_order_with_its_source() {
+    use common::fixtures::{builtin_instruction_source, AUTHORING_AGENTS_HANDBOOK};
+    let handbook = repo_text(AUTHORING_AGENTS_HANDBOOK);
+    let listed: Vec<(String, String)> = handbook
+        .lines()
+        .filter(|line| line.contains("Source: `"))
+        .map(|line| {
+            let entry = line.split_once(" - ").unwrap_or_default().0;
+            let source = line.rsplit_once("Source: ").unwrap_or_default().1;
+            (entry.to_string(), source.to_string())
+        })
+        .collect();
+    let layer: Vec<(String, String)> = rigger::instructions::BUILTIN
+        .iter()
+        .enumerate()
+        .map(|(at, (name, _))| {
+            (
+                format!("{}. `{name}`", at + 1),
+                format!("`{}`.", builtin_instruction_source(name)),
+            )
+        })
+        .collect();
+    assert_eq!(
+        listed, layer,
+        "the handbook numbers every built-in entry in the layer's order with its source"
+    );
+    for (name, body) in rigger::instructions::BUILTIN {
+        assert_eq!(
+            repo_text(&builtin_instruction_source(name)),
+            *body,
+            "the source the handbook names for {name:?} is that entry's body"
+        );
+    }
+}
+
+/// Spec 120's THE COMMUNICATION DISCIPLINE IS A SHADOWABLE BUILT-IN, end to end: given a project
+/// whose one stage spawns its worker through the real subprocess driver, when the operator runs
+/// `rigger run`, then the file the agent's `--system-prompt-file` names holds exactly `compose`'s
+/// output over the worker's persona - the communication section once, the retired heading
+/// nowhere, nothing appended after the composed layers.
+#[cfg(unix)]
+#[test]
+fn run_spawns_the_worker_with_the_composed_system_prompt_and_nothing_appended() {
+    use common::cli::run_capturing_system_prompt;
+    use common::fixtures::{assert_communication_once, composed_system_prompt};
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_workflow_fixture(root, &LIVENESS_WORKFLOW);
+    let system = run_capturing_system_prompt(root, &["run"]);
+    assert_eq!(
+        system,
+        composed_system_prompt(UNISOLATED_WORKER),
+        "the worker's system prompt is compose's output over its persona, nothing appended"
+    );
+    assert_communication_once(&system);
+}
+
+/// Spec 120's A SAME-NAMED OPERATOR FILE REPLACES A BUILT-IN, end to end: given a project whose
+/// `.rigger/instructions/` holds `communication.md` and the near name `communication .md`, when
+/// the operator runs `rigger run`, then the worker's system prompt opens its layers under the
+/// bare heading, carries the first file's body in the communication built-in's own section in
+/// that built-in's place, and appends the near-named file after the built-ins.
+#[cfg(unix)]
+#[test]
+fn run_spawns_the_worker_with_a_same_named_operator_file_in_place_of_its_built_in() {
+    use common::cli::run_capturing_system_prompt;
+    use common::fixtures::{
+        builtin_section, expected_composed_prompt, instructions_dir, persona,
+        COMMUNICATION_NEAR_NAME,
+    };
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_workflow_fixture(root, &LIVENESS_WORKFLOW);
+    let house = "Post each decision in the team channel.\n\n- One line, never batched.\n";
+    let near = "A near name replaces nothing.\n";
+    let instructions = instructions_dir(root);
+    std::fs::write(instructions.join("communication.md"), house).unwrap();
+    std::fs::write(
+        instructions.join(format!("{COMMUNICATION_NEAR_NAME}.md")),
+        near,
+    )
+    .unwrap();
+    let system = run_capturing_system_prompt(root, &["run"]);
+    assert_eq!(
+        system,
+        expected_composed_prompt(
+            &persona(UNISOLATED_WORKER),
+            &[
+                builtin_section("engineering-principles"),
+                builtin_section("working-discipline"),
+                ("communication", house),
+                (COMMUNICATION_NEAR_NAME, near),
+            ]
+        ),
+        "the same-named file's body stands in the communication section in its place, the \
+         near name appends after the built-ins, and the heading is bare"
+    );
+}
+
+/// Spec 120's AN EMPTY SAME-NAMED OPERATOR FILE SWITCHES A BUILT-IN OFF, end to end: given a
+/// project whose `.rigger/instructions/` holds an empty `working-discipline.md`, when the
+/// operator runs `rigger run`, then the worker's system prompt carries no section for the
+/// working-discipline built-in or for the file, and the other two built-ins stand unchanged in
+/// their order under the bare heading.
+#[cfg(unix)]
+#[test]
+fn run_spawns_the_worker_with_no_section_for_a_built_in_an_empty_same_named_file_switches_off() {
+    use common::cli::run_capturing_system_prompt;
+    use common::fixtures::{builtin_section, expected_composed_prompt, instructions_dir, persona};
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_workflow_fixture(root, &LIVENESS_WORKFLOW);
+    std::fs::File::create(instructions_dir(root).join("working-discipline.md")).unwrap();
+    let system = run_capturing_system_prompt(root, &["run"]);
+    assert_eq!(
+        system,
+        expected_composed_prompt(
+            &persona(UNISOLATED_WORKER),
+            &[
+                builtin_section("engineering-principles"),
+                builtin_section("communication"),
+            ]
+        ),
+        "the empty file switches the working-discipline built-in off and is not appended; \
+         every other section is unchanged"
+    );
+}
+
 /// `rigger prime` opens with the instructions in force on the absent-db path, counting the
 /// operator files.
 #[test]
@@ -27631,8 +28641,8 @@ fn prime_first_line_names_the_instructions_in_force_on_the_absent_db_path() {
     assert_eq!(
         out.lines().next(),
         Some(
-            "# Rigger instructions in force: engineering-principles, working-discipline - see \
-             rigger instructions"
+            "# Rigger instructions in force: engineering-principles, working-discipline, \
+             communication - see rigger instructions"
         ),
         "with no operator files the parenthetical is omitted; got:\n{out}"
     );
@@ -27644,8 +28654,7 @@ fn prime_first_line_names_the_instructions_in_force_on_the_absent_db_path() {
 fn prime_first_line_names_the_instructions_in_force_on_the_recent_decisions_path() {
     let proj = temp_store_project();
     let root = proj.path();
-    let dir = root.join(".rigger").join("instructions");
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = common::fixtures::instructions_dir(root);
     std::fs::write(dir.join("10-house.md"), "House rule.").unwrap();
     std::fs::write(dir.join("20-team.md"), "Team rule.").unwrap();
     let (out, err, ok) = run_rigger(root, &["prime"]);
@@ -27654,8 +28663,8 @@ fn prime_first_line_names_the_instructions_in_force_on_the_recent_decisions_path
     assert_eq!(
         lines.next(),
         Some(
-            "# Rigger instructions in force: engineering-principles, working-discipline (+2 \
-             operator files) - see rigger instructions"
+            "# Rigger instructions in force: engineering-principles, working-discipline, \
+             communication (+2 operator files) - see rigger instructions"
         ),
         "got:\n{out}"
     );
@@ -27666,8 +28675,9 @@ fn prime_first_line_names_the_instructions_in_force_on_the_recent_decisions_path
     );
 }
 
-/// `rigger init` scaffolds the operator instruction directory with its README and names it
-/// in the first-run summary.
+/// `rigger init` scaffolds the operator instruction directory with its README, the text of
+/// this repository's own committed `.rigger/instructions/README.md` (whitespace normalized),
+/// and names it in the first-run summary.
 #[test]
 fn init_scaffolds_the_instructions_readme_and_names_it() {
     let proj = temp_project();
@@ -27678,9 +28688,12 @@ fn init_scaffolds_the_instructions_readme_and_names_it() {
         out.contains("scaffolded .rigger/instructions/README.md"),
         "the first init names the instructions README; got:\n{out}"
     );
-    assert!(
-        root.join(".rigger/instructions/README.md").is_file(),
-        "the README exists after init"
+    assert_eq!(
+        rigger::wave::normalize_ws(&common::fixtures::instructions_readme_text(root)),
+        rigger::wave::normalize_ws(&common::fixtures::instructions_readme_text(
+            &common::repo::repo_root()
+        )),
+        "init writes the committed instructions README's text"
     );
     // The README documents the layer; it is not itself an operator instruction.
     let (out, err, ok) = run_rigger(root, &["instructions"]);
@@ -27689,20 +28702,6 @@ fn init_scaffolds_the_instructions_readme_and_names_it() {
         out.contains("(none)"),
         "the scaffolded README is not injected as an instruction; got:\n{out}"
     );
-}
-
-/// What the log of the project at `root` records as ledger entries, beside what a run records
-/// for the tree as it stands under the blob `git hash-object` gives each file.
-#[cfg(feature = "symbols")]
-type RecordedAndWalked = [Vec<common::fixtures::EntryRecord>; 2];
-
-#[cfg(feature = "symbols")]
-fn recorded_and_walked(root: &Path) -> RecordedAndWalked {
-    use common::fixtures::{entry_records, walked_git_entry_records};
-    [
-        entry_records(&read_run_events(root)),
-        walked_git_entry_records(root),
-    ]
 }
 
 /// A two-stage project holding the extraction tree's committed source file, for a run to walk.
@@ -27920,7 +28919,10 @@ fn validate_compares_graph_db_too_unless_it_owes_its_rebuild() {
         Some(common::cli::index_lag_advisory(&["churn.rs"]))
     );
 
-    common::fixtures::owe_a_rebuild(&common::cli::open_graph(root));
+    common::fixtures::owe_a_rebuild(
+        &common::cli::open_graph(root),
+        &common::cli::rigger_file(root, "graph.db"),
+    );
 
     assert_eq!(validate_index_lag(root), None);
 
@@ -28319,13 +29321,13 @@ fn reset_derived_refuses_a_held_rebuild_lock_then_an_unfinished_rebuild_and_chan
             (
                 false,
                 String::new(),
-                format!("{}\n", common::cli::REBUILD_LOCK_REFUSAL),
+                common::cli::rebuild_in_progress_line() + "\n",
                 true
             ),
             (
                 false,
                 String::new(),
-                format!("{}\n", common::cli::UNFINISHED_REBUILD_REFUSAL),
+                common::cli::unfinished_rebuild_refusal() + "\n",
                 true
             ),
             (
@@ -28910,7 +29912,10 @@ fn reset_derived_converts_each_latest_derived_batch_into_its_entry_in_place() {
     };
     #[cfg(feature = "symbols")]
     let folded_facts = facts(&common::cli::open_graph(root));
-    common::fixtures::owe_a_rebuild(&common::cli::open_graph(root));
+    common::fixtures::owe_a_rebuild(
+        &common::cli::open_graph(root),
+        &common::cli::rigger_file(root, "graph.db"),
+    );
     let (rebuilt, rebuilt_err, rebuilt_ok) =
         run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
     let behind = if cfg!(feature = "symbols") { 0 } else { 5 };
@@ -28924,7 +29929,7 @@ fn reset_derived_converts_each_latest_derived_batch_into_its_entry_in_place() {
         (
             true,
             [
-                "rebuilt graph.db from the event log".to_string(),
+                common::cli::REBUILT_LINE.to_string(),
                 format!(
                     "identities the tree holds a file for whose generation in graph.db is not \
                      their latest recording's: {behind}"

@@ -450,6 +450,7 @@ fn checkin_integrates_after_a_real_planner_supersede_of_a_fanout_baseline_lands_
         criteria: vec![crit_a.to_string(), crit_b.to_string()],
         log: &|_| {},
         hash_blob: &|_| Ok(String::new()),
+        check_emit: &rigger::contextgraph::check_emit,
     };
     let rs = run(&cfg, &deps).unwrap();
 

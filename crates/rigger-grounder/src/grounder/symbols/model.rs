@@ -121,7 +121,9 @@ pub struct Def {
     /// carries the attribute, so it must be carried on the definition since a reused persisted
     /// index never re-reads the source. Consumed at the events/index layer
     /// ([`crate::grounder::symbols::events`]'s `out_of_line_test_module_files`), which resolves it
-    /// relative to the declaring file's own directory. `#[serde(default)]` for the same
+    /// relative to the declaring file's own directory, or its module directory and inline chain
+    /// when nested in inline mods ([`Self::enclosing_inline_module_path`], whose doc gives examples
+    /// where that chain departs from rustc). `#[serde(default)]` for the same
     /// pre-86-index-compatibility reason as `is_test`/`is_out_of_line_module`; omitted from the
     /// wire form when `None` so the overwhelmingly common case stays byte-identical to before this
     /// field existed.
@@ -130,21 +132,28 @@ pub struct Def {
     /// Round 9 (`op-u86-c1-path-attribute-contract-is-rustc-s-and-unresolvable-never-excludes`):
     /// the `/`-joined chain of enclosing INLINE `mod name { .. }` names (outermost first) this
     /// out-of-line declaration sits nested inside, when any - the EXTRA directory-component chain
-    /// a `#[path]` override on it resolves under, one level per enclosing inline module, on top of
-    /// the declaring file's own module directory. `None` when the declaration sits directly at the
-    /// file's own top level (the overwhelmingly common case), in which case the override stays
-    /// directory-of-file-relative exactly as before this field existed. Verified against real
-    /// rustc (throwaway probe crates, not part of this tree): `mod outer { #[path = "foo.rs"] mod
+    /// its file resolves under, `#[path]` override or convention alike (spec 117 criterion 8), one
+    /// level per enclosing inline module, on top of the declaring file's own module directory, so
+    /// `mod outer { mod x; }` in `src/lib.rs` names `src/outer/x.rs`. Each level is the inline
+    /// name as written, so the chain names rustc's directory only where that name is the
+    /// directory. Among the departures: an inline parent with its own `#[path]` (under
+    /// `#[path = "dir"] mod outer { .. }` rustc looks in `dir/`) and a raw identifier
+    /// (`mod r#type { .. }`, where rustc reads `type/`). `None` when the declaration sits
+    /// directly at the file's own top level (the overwhelmingly common case), in which case an
+    /// override stays directory-of-file-relative exactly as before this field existed. Verified
+    /// against real rustc for a plain inline parent
+    /// (throwaway probe crates, not part of this tree): `mod outer { #[path = "foo.rs"] mod
     /// inner; }` in `src/lib.rs` resolves `foo.rs` against `src/outer/foo.rs`, and the identical
     /// nesting inside a LEAF file `src/parent.rs` resolves against `src/parent/outer/foo.rs` - the
-    /// file's own MODULE directory (what a plain, non-overridden out-of-line sibling of `parent.rs`
-    /// would already use) with `outer/` appended, never the file's bare directory. Captured
+    /// file's own MODULE directory (what a plain, non-overridden out-of-line sibling of
+    /// `parent.rs` would already use) with `outer/`
+    /// appended, never the file's bare directory. Captured
     /// structurally in [`crate::grounder::symbols::extract::extract`] alongside
     /// `is_out_of_line_module`/`path_override`, for the same reason: only the declaring file's own
     /// parsed tree can see its ancestor `mod_item` nodes. Consumed at the events/index layer
-    /// ([`crate::grounder::symbols::events::resolve_out_of_line_target`]'s `#[path]`-override
-    /// branch). `#[serde(default)]` for the same pre-round-9-index-compatibility reason as the
-    /// other out-of-line fields; omitted from the wire form when `None`.
+    /// ([`crate::grounder::symbols::events::module_candidates`], both branches).
+    /// `#[serde(default)]` for the same pre-round-9-index-compatibility reason as the other
+    /// out-of-line fields; omitted from the wire form when `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enclosing_inline_module_path: Option<String>,
 }
@@ -153,12 +162,14 @@ pub struct Def {
 /// reference occurs inside (the caller), named by its path ([`Def::path`], spec 119 criterion 8:
 /// `T::new`, `outer::inner`). `None` for a top-level reference outside every
 /// definition - an import or a module-level call; a file-level impl header's trait and type
-/// attribute to the impl block, a definition of its own. Set during extraction by attributing the
-/// reference to the innermost function-like definition whose range contains it, else the
-/// innermost definition of any kind but a declaration (spec 116). Serde-defaulted and omitted when
-/// `None` so a pre-37 persisted index folds as caller-less and a caller-less ref serializes
-/// byte-identically to before.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// attribute to the impl block, a definition of its own, and its trait's tagged `type` row to the
+/// self type's definition when the file defines that once (spec 117). Set during extraction by
+/// attributing the reference to the innermost function-like definition whose range contains it,
+/// else the innermost definition of any kind but a declaration (spec 116). Serde-defaulted and
+/// omitted when `None` so a pre-37 persisted index folds as caller-less and a caller-less ref
+/// serializes byte-identically to before. `Default` is the bare reference a tagged one is pushed
+/// from before attribution and the test-region pass fill its caller and test mark.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SymRef {
     pub name: String,
     pub line: u32,
@@ -172,6 +183,14 @@ pub struct SymRef {
     /// byte-identical-wire-form reason as `Def::is_test`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub is_test: bool,
+    /// Spec 117 (REFERENCES): what kind of non-call reference this is - a const read, a type
+    /// reference or an imported leaf of a `use`, the `EdgeInferred` payload's own spelling
+    /// (`contextgraph::REF_KIND_CONST`, `REF_KIND_TYPE`, `REF_KIND_USE`) - extracted for Rust
+    /// only; `None` for a call, every other language's reference included, which folds and counts
+    /// as before the field existed. A calls-only consumer reads [`FileSymbols::calls`].
+    /// Serde-defaulted and omitted when `None`, so a call serializes byte-identically to before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ref_kind: Option<String>,
 }
 
 /// One file's extracted symbols, tagged with the language it was parsed as (the scope key for
@@ -194,6 +213,16 @@ pub struct FileSymbols {
     /// before this field existed.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub partial: bool,
+}
+
+impl FileSymbols {
+    /// The file's CALL references, every reference with no [`SymRef::ref_kind`] (spec 117), in
+    /// `refs` order: the one filter each calls-only consumer reads - the reference degree, the
+    /// grounder's commonness, scoring and radius, and the test evidence - so no tagged reference
+    /// moves a count, a rank or a radius.
+    pub fn calls(&self) -> impl Iterator<Item = &SymRef> {
+        self.refs.iter().filter(|r| r.ref_kind.is_none())
+    }
 }
 
 /// The version of the grammar / tag-query set this build indexes with (architecture 5.5.3),
@@ -292,15 +321,16 @@ impl SymbolIndex {
         &self.files
     }
 
-    /// How many references name `name` WITHIN `lang` - the per-language fan-out degree an entity
-    /// row reports. SCOPED to `lang`: the cross-reference graph is per-language (5.5.2), so the
+    /// How many call references ([`FileSymbols::calls`]) name `name` WITHIN `lang` - the
+    /// per-language fan-out degree an entity row reports, which no tagged reference (spec 117)
+    /// moves. SCOPED to `lang`: the cross-reference graph is per-language (5.5.2), so the
     /// degree over it is too. A name that over-links in another language never inflates this
     /// count (a Python `parse` leaves the Rust `parse` degree untouched).
     pub fn reference_degree(&self, name: &str, lang: Lang) -> usize {
         self.files
             .values()
             .filter(|f| f.lang == lang)
-            .flat_map(|f| f.refs.iter())
+            .flat_map(FileSymbols::calls)
             .filter(|r| r.name == name)
             .count()
     }
@@ -341,6 +371,7 @@ mod tests {
                         line: 1,
                         enclosing: None,
                         is_test: false,
+                        ref_kind: None,
                     }],
                     partial: false,
                 },
@@ -367,6 +398,7 @@ mod tests {
                     line: 2,
                     enclosing: None,
                     is_test: false,
+                    ref_kind: None,
                 }],
                 partial: false,
             },
@@ -394,6 +426,7 @@ mod tests {
                         line: 1,
                         enclosing: None,
                         is_test: false,
+                        ref_kind: None,
                     }],
                     partial: false,
                 },
@@ -410,6 +443,7 @@ mod tests {
                     line: 3,
                     enclosing: None,
                     is_test: false,
+                    ref_kind: None,
                 }],
                 partial: false,
             },
@@ -425,6 +459,7 @@ mod tests {
                         line: 1,
                         enclosing: None,
                         is_test: false,
+                        ref_kind: None,
                     }],
                     partial: false,
                 },
@@ -466,6 +501,7 @@ mod tests {
                     line: 9,
                     enclosing: None,
                     is_test: false,
+                    ref_kind: None,
                 }],
                 partial: false,
             },

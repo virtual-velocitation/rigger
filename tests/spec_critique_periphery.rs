@@ -14,11 +14,11 @@ mod common;
 use std::path::Path;
 
 use common::cli::{
-    assert_selected_server, critique_finding_id, emit, read_run_events, rigger_file, run_payloads,
-    run_rigger, run_rigger_envs, run_rigger_ok, run_stream_identity, seed_run_events, seed_store,
-    temp_project, temp_repoless_project, write_spec_project,
+    assert_selected_server, critique_finding_id, emit, pin_identity, read_run_events, rigger_file,
+    run_payloads, run_rigger, run_rigger_envs, run_rigger_ok, run_stream_identity, seed_run_events,
+    seed_store, temp_project, temp_repoless_project, write_spec_project,
 };
-use common::fixtures::{git_ok, temp_git_project_with_commit};
+use common::fixtures::{composed_system_prompt, git_ok, temp_git_project_with_commit};
 use common::repo::{
     critique_stub_argv, critique_stub_record, critique_stub_spawns, critique_stub_task,
     write_critique_stub, write_critique_stub_reporting, CRITIQUE_CONN, CRITIQUE_SYSTEM_PROMPT,
@@ -239,9 +239,10 @@ fn a_spec_is_critiqued_once_per_text_and_answered_from_the_store_after() {
         system.starts_with("You are the CRITIC-PERSONA adversary."),
         "the critic's system prompt opens with the persona the workflow names:\n{system}"
     );
-    assert!(
-        system.contains("# Rigger communication discipline"),
-        "the system prompt carries the discipline every spawn gets:\n{system}"
+    assert_eq!(
+        system,
+        composed_system_prompt(CRITIC),
+        "the critic's system prompt is compose's output over its persona, as every spawn's is"
     );
 
     // ... the request and the result are on the critique's own stream, keyed on the hash.
@@ -1129,7 +1130,10 @@ fn a_graph_that_owes_its_rebuild_refuses_every_call_answered_or_not_naming_rigge
     let (_first, first_path) = stub(REJECT);
     let (_out, err, ok) = critique(root, SPEC_REL, &first_path, &scratch);
     assert!(ok, "the text is critiqued; stderr:\n{err}");
-    std::fs::write(rigger_file(root, "graph.db.owed"), "").unwrap();
+    common::fixtures::stamp_user_version(
+        &rigger_file(root, "graph.db"),
+        rigger::contextgraph::sqlite::PROJECTION_VERSION - 1,
+    );
     let refusal = rigger::contextgraph::rebuild_owed_refusal("critique");
 
     // When the graph owes its rebuild, a call the store would answer is refused ...
@@ -1286,7 +1290,7 @@ fn a_store_from_before_the_minted_identity_is_migrated_before_the_verbs_first_ap
         "DecisionMade",
         r#"{"id":"legacy-decision","summary":"pre-mint history","governs":["specs/9-demo.md"]}"#,
     );
-    std::fs::write(root.join(".rigger/project.id"), "durablemint\n").unwrap();
+    pin_identity(root, "durablemint");
     let (_work, path) = stub(REJECT);
 
     // ... when the spec is critiqued ...
@@ -1383,29 +1387,30 @@ fn every_spec_taking_verb_refuses_a_second_spec_and_an_unknown_flag_through_the_
     for (args, refusal) in [
         (
             ["run", SPEC_REL, "specs/other.md"],
-            "rigger: run: unexpected second positional argument \"specs/other.md\"\n",
+            "run: unexpected second positional argument \"specs/other.md\"",
         ),
-        (
-            ["run", "--frob", SPEC_REL],
-            "rigger: run: unknown flag \"--frob\"\n",
-        ),
+        (["run", "--frob", SPEC_REL], "run: unknown flag \"--frob\""),
         (
             ["workflow", SPEC_REL, "specs/other.md"],
-            "rigger: workflow: unexpected second positional argument \"specs/other.md\"\n",
+            "workflow: unexpected second positional argument \"specs/other.md\"",
         ),
         (
             ["workflow", SPEC_REL, "--frob"],
-            "rigger: workflow: unknown flag \"--frob\"\n",
+            "workflow: unknown flag \"--frob\"",
         ),
         (
             ["critique", SPEC_REL, "--frob"],
-            "rigger: critique: unknown flag \"--frob\"\n",
+            "critique: unknown flag \"--frob\"",
         ),
     ] {
         let (out, err, ok) = run_rigger_envs(root, &args, &envs);
         assert_eq!(
             (out.as_str(), err.as_str(), ok),
-            ("", refusal, false),
+            (
+                "",
+                (common::cli::refusal_line(refusal) + "\n").as_str(),
+                false
+            ),
             "{args:?} refuses through the shared rule, naming its verb"
         );
     }
@@ -1513,9 +1518,9 @@ fn an_unreadable_request_on_the_critique_stream_fails_the_attempt_count_and_spaw
     let (out, err, ok) = critique(root, SPEC_REL, &path, &root.join("scratch"));
     assert!(!ok, "an unreadable request fails the count");
     assert!(
-        err.contains(
-            "rigger: event store: a spawn request recorded on the critique stream is unreadable: "
-        ),
+        err.contains(&common::cli::refusal_line(
+            "event store: a spawn request recorded on the critique stream is unreadable: "
+        )),
         "the verb names the unreadable request:\n{err}"
     );
     assert!(

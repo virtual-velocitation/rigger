@@ -98,7 +98,7 @@ agent's output) on stderr.
 | `rigger_next` | (none) | `{id, prompt, model, tools, dir, blast_radius}`; `{id:"", done}` when nothing is queued (`done` distinguishes finished from not-yet) |
 | `rigger_result` | `{id, output, error?}` | unblocks the conductor's `Spawn` for `id` |
 | `rigger_emit` | `{type, data, meta?, valid_from?}` | appends the event to the log, live |
-| `rigger_peers` | `{files?}` | the peers' decisions/findings; scoped to `files` (the blast-radius) when given, else all |
+| `rigger_peers` | `{files?}` | the peers' decisions/lessons/findings, each section the newest under a byte budget with `left_out` counting the rest; scoped to `files` (the blast-radius) when given, else every file |
 
 ## Validation - now actually validated
 

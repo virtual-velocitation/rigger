@@ -281,7 +281,7 @@ const STATUS = {
 // protocols are spec 68's skills, referenced by name") - `halted` because a run stopped
 // mid-flight (a budget breaker trip, or a merged hung-liveness fault) is exactly the
 // interrupted-run / stale-heartbeat case `rigger-resume-a-run` diagnoses.
-// `worker-death-recurred` resolves to the churn skill (a unit's repeatedly failing attempts
+// `reject-recurrence` resolves to the churn skill (a unit's repeatedly failing attempts
 // is the same family `Signal::RejectRecurrence` maps to on the pull side).
 // `budget-final-tenth` resolves to the resume skill too - a preemptive, run-scoped warning
 // for the SAME halt an operator would otherwise only learn of via `halted` once it actually
@@ -295,7 +295,7 @@ const ATTENTION_RESPONSE = {
   'escalated': 'rigger-handle-an-escalation',
   'spec-defect': 'amend the spec and relaunch',
   'halted': 'rigger-resume-a-run',
-  'worker-death-recurred': 'rigger-diagnose-churn',
+  'reject-recurrence': 'rigger-diagnose-churn',
   'budget-final-tenth': 'rigger-resume-a-run',
   'stalled-frontier': 'stop the driver and diagnose before another round spends',
 }
@@ -307,12 +307,14 @@ const ATTENTION_RESPONSE = {
 // entirely on a clean step (criterion 5's `skip_serializing_if`), so the `|| []` guard only
 // ever normalizes that shape - it never manufactures an anomaly the wire did not report, and
 // an entry-less step renders nothing, keeping a clean run's log exactly as quiet as before
-// this criterion.
+// this criterion. A detail that already names its response (the reject-recurrence entry's own
+// text names its skill) gets no response suffix, so every line names its response once.
 function relayAttention(step) {
   for (const a of step.attention || []) {
     const subject = a.unit || 'run'
     const respond = ATTENTION_RESPONSE[a.kind] || 'rigger-watch-a-run'
-    log(`attention - ${a.kind}: ${subject} - ${a.detail} (respond: ${respond})`)
+    const suffix = a.detail.includes(respond) ? '' : ` (respond: ${respond})`
+    log(`attention - ${a.kind}: ${subject} - ${a.detail}${suffix}`)
   }
 }
 

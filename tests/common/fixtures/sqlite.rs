@@ -34,6 +34,45 @@ pub fn stamp_user_version(db: &std::path::Path, version: i64) {
         .expect("stamp user_version");
 }
 
+/// Remove the log table out from under a store that holds `db` open, so its next read fails.
+pub fn drop_the_log(db: &std::path::Path) {
+    rusqlite::Connection::open(db)
+        .unwrap()
+        .execute_batch("DROP TABLE events;")
+        .unwrap();
+}
+
+/// The id of the decision whose node a graph file refuses while [`the_disk_gives_out_at_d_boom`]
+/// stands in it.
+pub const D_BOOM: &str = "d-boom";
+
+/// The message every insert of the node [`D_BOOM`] aborts with in a graph file
+/// [`the_disk_gives_out_at_d_boom`] made refuse it.
+pub const DISK_GAVE_OUT: &str = "disk gave out";
+
+/// Make the graph file `db` refuse every insert of the node [`D_BOOM`] with [`DISK_GAVE_OUT`], as
+/// storage that gave out under that one write, until [`the_disk_recovers`]. The connection is
+/// opened for the statement and closed at once, so the test holds none to the file while the code
+/// under test writes it.
+pub fn the_disk_gives_out_at_d_boom(db: &std::path::Path) {
+    rusqlite::Connection::open(db)
+        .expect("open the graph file to fail a write in it")
+        .execute_batch(&format!(
+            "CREATE TRIGGER boom BEFORE INSERT ON nodes WHEN NEW.id = '{D_BOOM}'
+             BEGIN SELECT RAISE(ABORT, '{DISK_GAVE_OUT}'); END;"
+        ))
+        .expect("fail the insert of d-boom's node");
+}
+
+/// End the refusal [`the_disk_gives_out_at_d_boom`] made in the graph file `db`, through a
+/// connection opened for the statement and closed at once.
+pub fn the_disk_recovers(db: &std::path::Path) {
+    rusqlite::Connection::open(db)
+        .expect("open the graph file to recover its storage")
+        .execute_batch("DROP TRIGGER boom;")
+        .expect("drop the refusal of d-boom's node");
+}
+
 /// Bytes the file at `path` occupies on disk, or 0 when it is not there: a `-wal` does not exist
 /// before the first write and is deleted on a clean close, and neither absence is an error about
 /// the space a store occupies.

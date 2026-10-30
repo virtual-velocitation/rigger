@@ -1,6 +1,7 @@
 //! Periphery (contract / API / integration) tests for spec 49 criterion 2: the BATCHED-FOLD
-//! CADENCE. A file's whole event batch is appended in ONE store append and folded in ONE graph
-//! transaction, so the store's per-transaction cost is paid once per file, not once per event (the
+//! CADENCE. A file's whole event batch is appended in ONE store append and folded through ONE
+//! `apply_batch` call, at the transaction cadence the sqlite `Projector`'s own `apply_batch` doc
+//! states: many events per commit rather than one per event, which is what spec 49 needed (the
 //! measured cold-build throughput was transaction-cadence bound, not parse-bound). These run OUTSIDE
 //! the crate, over the library's PUBLIC surface (`rigger::...`), so they guard boundaries the
 //! inside-out unit tests are structurally blind to:
@@ -60,7 +61,7 @@ impl Projection for CapturingProjection {
         self.batch_positions
             .lock()
             .unwrap()
-            .push(events.iter().map(|e| e.position).collect());
+            .push(crate::common::fixtures::positions_of(events));
         if self.fail {
             return Err(CgError("fold failed".into()));
         }
@@ -133,7 +134,7 @@ fn append_and_fold_stamps_the_store_assigned_positions_and_never_folds_per_event
         .map(|e| e.position)
         .collect();
 
-    let reported: Vec<u64> = appended.placed().map(|(_, p)| p).collect();
+    let reported = common::fixtures::placed_positions(&appended);
     assert_eq!(
         reported, store_positions,
         "the report names, for every event handed in, the position the store actually holds it at"
@@ -221,7 +222,7 @@ fn append_and_fold_is_best_effort_on_fold_error_and_a_no_op_on_an_empty_batch() 
         );
     assert_eq!(
         appended.fold,
-        rigger::contextgraph::Fold::NotFolded("graph: fold failed".to_string()),
+        rigger::contextgraph::Fold::NotFolded(common::fixtures::graph_error("fold failed")),
         "the fold error is returned beside the append, for the caller to report"
     );
     let appended = appended.appended;
@@ -252,7 +253,7 @@ fn append_and_fold_is_best_effort_on_fold_error_and_a_no_op_on_an_empty_batch() 
         .unwrap();
     assert_eq!(
         appended2.fold,
-        rigger::contextgraph::Fold::NotFolded("graph: no context graph is wired".to_string()),
+        rigger::contextgraph::Fold::NotFolded(common::fixtures::unwired()),
         "graph=None folds nothing and says so"
     );
     let appended2 = appended2.appended;
@@ -272,11 +273,11 @@ fn append_and_fold_is_best_effort_on_fold_error_and_a_no_op_on_an_empty_batch() 
 }
 
 /// End-to-end integration seam: `rigger::ingest::FoldingStore::append_and_fold` folds a whole batch through a
-/// REAL sqlite `Projector` (its ONE-transaction `apply_batch` override), reached here through the
-/// PUBLIC ingest authority rather than the in-crate `super::` path the unit test uses. Building
-/// `DecisionMade` events (whose fold is always compiled, so this runs in both lanes) and reading the
-/// result back through the public `subgraph` proves the ingest -> contextgraph seam: one live
-/// `GOVERNS` edge per decision, folded from the batch alone.
+/// REAL sqlite `Projector` (its `apply_batch` override, at the transaction cadence that override's
+/// doc states), reached here through the PUBLIC ingest authority rather than the in-crate `super::`
+/// path the unit test uses. Building `DecisionMade` events (whose fold is always compiled, so this
+/// runs in both lanes) and reading the result back through the public `subgraph` proves the ingest
+/// -> contextgraph seam: one live `GOVERNS` edge per decision, folded from the batch alone.
 #[test]
 fn append_and_fold_folds_a_whole_batch_through_a_real_projector() {
     let store = Store::open(":memory:").unwrap();
@@ -349,9 +350,7 @@ fn projection_default_apply_batch_folds_each_event_through_apply_in_order_and_sh
     // Reference: folding each event through apply one at a time yields the identical record - so the
     // default's RESULT is exactly what applying each event in order would produce.
     let per_event = RecordingProjection::default();
-    for e in &batch {
-        common::fixtures::folds(&per_event, std::slice::from_ref(e));
-    }
+    common::fixtures::folds_each(&per_event, &batch);
     assert_eq!(
         *default_proj.applied.lock().unwrap(),
         *per_event.applied.lock().unwrap(),
@@ -365,11 +364,10 @@ fn projection_default_apply_batch_folds_each_event_through_apply_in_order_and_sh
         ..Default::default()
     };
     assert_eq!(
-        rigger::contextgraph::Fold::of_batch(
-            || rigger::contextgraph::wired(Some(&failing)),
-            &batch
-        ),
-        rigger::contextgraph::Fold::NotFolded("graph: apply failed at position 2".to_string()),
+        common::fixtures::fold_of(&failing, &batch),
+        rigger::contextgraph::Fold::NotFolded(common::fixtures::graph_error(
+            "apply failed at position 2"
+        )),
         "an apply error must surface from the default apply_batch"
     );
     assert_eq!(
@@ -596,15 +594,15 @@ fn a_folding_store_says_a_lost_fold_through_its_sink_and_a_graphless_one_stays_s
         .unwrap();
     assert_eq!(
         (
-            store.read_stream("run", 0, Direction::Forward).unwrap().len(),
+            store
+                .read_stream("run", 0, Direction::Forward)
+                .unwrap()
+                .len(),
             lines.lock().unwrap().clone(),
         ),
         (
             3,
-            vec![
-                "rigger: recorded 2 run event(s); not folded into the context graph: graph: fold failed"
-                    .to_string()
-            ]
+            vec![common::fixtures::recorded_not_folded(2, "fold failed")]
         ),
         "every append lands; only the refused fold into a wired graph is said"
     );
@@ -703,7 +701,7 @@ fn a_folding_store_opens_its_graph_only_after_the_append_is_on_the_log() {
                 .len(),
         );
         Err(rigger::contextgraph::Error(
-            "file is not a database".to_string(),
+            common::fixtures::NOT_A_DATABASE.to_string(),
         ))
     };
     let appended = rigger::ingest::FoldingStore::new(&store, Some(open), &log)
@@ -722,11 +720,10 @@ fn a_folding_store_opens_its_graph_only_after_the_append_is_on_the_log() {
         (
             vec![(0, 1)],
             vec![1],
-            vec![
-                "rigger: recorded 1 run event(s); not folded into the context graph: graph: file \
-                 is not a database"
-                    .to_string()
-            ]
+            vec![common::fixtures::recorded_not_folded(
+                1,
+                common::fixtures::NOT_A_DATABASE
+            )]
         ),
         "the event is on the log before the graph is opened, once, and the lost fold is said"
     );
@@ -744,7 +741,7 @@ fn a_folding_store_reads_exactly_what_the_store_it_wraps_holds() {
     store.append("run", ExpectedRevision::Any, &events).unwrap();
     let log = |_: &str| {};
     let folding = rigger::ingest::FoldingStore::new(&store, NO_GRAPH, &log);
-    let ids = |es: Vec<Event>| es.into_iter().map(|e| e.position).collect::<Vec<_>>();
+    let ids = |es: Vec<Event>| crate::common::fixtures::positions_of(&es);
     let filter = rigger::eventstore::Filter::default();
     let first = |s: rigger::eventstore::Subscription| {
         s.recv_timeout(std::time::Duration::from_secs(5))
@@ -754,6 +751,8 @@ fn a_folding_store_reads_exactly_what_the_store_it_wraps_holds() {
         (
             ids(folding.read_stream("run", 1, Direction::Forward).unwrap()),
             ids(folding.read_all(1, Direction::Forward, &filter).unwrap()),
+            ids(folding.read_all_page(1, &filter, 1).unwrap()),
+            folding.log_head().unwrap(),
             ids(folding
                 .read_stream_typed("run", 0, rigger::eventstore::TypeSelection::Only(&["A"]))
                 .unwrap()),
@@ -764,6 +763,8 @@ fn a_folding_store_reads_exactly_what_the_store_it_wraps_holds() {
         (
             vec![2, 3],
             vec![2, 3],
+            vec![2],
+            Some(3),
             vec![1, 3],
             Some(2),
             Some(3),
@@ -910,7 +911,7 @@ fn folding_into_a_held_graph_folds_there_and_over_none_folds_nothing() {
             vec![(0, 2), (1, 3)],
             true,
             vec![(0, 4)],
-            rigger::contextgraph::Fold::NotFolded("graph: no context graph is wired".to_string()),
+            rigger::contextgraph::Fold::NotFolded(common::fixtures::unwired()),
             vec![vec![2, 3]],
             0,
             3,

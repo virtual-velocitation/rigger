@@ -18,8 +18,10 @@
 
 mod common;
 
-use common::cli::nanos;
-use common::fixtures::{apply_governs_at, apply_json, governs, live_node_ids, seed_two_subsystems};
+use common::fixtures::nanos;
+use common::fixtures::{
+    apply_governs_at, apply_json, governs, live_node_ids, seed_two_subsystems, TWO_SUBSYSTEM_DEFS,
+};
 use common::repo::repo_text;
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{Graph, KIND_DECISION, KIND_FILE};
@@ -28,13 +30,14 @@ use rigger::retention::EPISODIC_TYPES;
 /// The feature gate `ingest` and `retention` are declared under.
 const STORE_GATE: &str = "#[cfg(any(feature = \"store\", not(feature = \"core\")))]";
 
-/// The four files `seed_two_subsystems` defines entities in.
-const SEEDED_FILES: [&str; 4] = [
-    "src/combat/hit.rs",
-    "src/net/link.rs",
-    "src/render/draw.rs",
-    "src/ui/hud.rs",
-];
+/// The files `seed_two_subsystems` defines entities in, in their seeded order.
+fn seeded_files() -> Vec<String> {
+    let mut files = TWO_SUBSYSTEM_DEFS
+        .map(|(file, _)| file.to_string())
+        .to_vec();
+    files.dedup();
+    files
+}
 
 #[test]
 fn each_moved_type_string_reads_the_same_through_the_conductor_and_the_ledger() {
@@ -141,10 +144,7 @@ fn folding_every_episodic_type_leaves_the_served_graph_as_it_stood_and_a_decisio
     let before_rows = rows(&before);
     assert_eq!(
         live_node_ids(&before, KIND_FILE),
-        SEEDED_FILES
-            .iter()
-            .map(|f| (*f).to_string())
-            .collect::<Vec<String>>(),
+        seeded_files(),
         "the served graph holds the four seeded files, so an unchanged read proves something"
     );
     assert_eq!(

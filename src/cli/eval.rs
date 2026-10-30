@@ -214,7 +214,7 @@ pub(crate) fn cmd_canary(args: &[String]) -> Res {
     // so the canary stream lands under the same identity `stats --canary` reads.
     let selection = store_selection(None, None)?;
     if selection.is_sqlite() {
-        migrate_local_identity()?;
+        migrate_local_identity(None)?;
     }
     let backend = resolve_store(&selection, &db_path("events.db"))?;
     let store = Namespaced::new(backend.as_ref(), &project_identity());
@@ -283,10 +283,10 @@ pub(crate) fn cmd_playbooks(args: &[String]) -> Res {
     // identity the conductor wrote, then READ (never fabricate) this project's run stream.
     let selection = store_selection(None, None)?;
     if selection.is_sqlite() {
-        migrate_local_identity()?;
+        migrate_local_identity(None)?;
     }
     let db = db_path("events.db");
-    let events = if !selection.is_sqlite() || Path::new(&db).exists() {
+    let events = if !selection.log_absent(&db) {
         let backend = resolve_store(&selection, &db)?;
         let store = Namespaced::new(backend.as_ref(), &project_identity());
         store.read_stream(conductor::STREAM, 0, Direction::Forward)?

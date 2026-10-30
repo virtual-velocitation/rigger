@@ -51,6 +51,21 @@ extern crate self as rigger;
 #[allow(dead_code, unused_imports)]
 #[path = "../../../tests/common/fixtures/fold.rs"]
 mod test_support;
+// The scratch fixture the fold fixtures name through `super::`, compiled here from the same
+// file as the root crate's tests.
+#[cfg(all(
+    test,
+    feature = "symbols",
+    any(feature = "store", not(feature = "core"))
+))]
+#[path = "../../../tests/common/fixtures/scratch.rs"]
+mod scratch_fixtures;
+#[cfg(all(
+    test,
+    feature = "symbols",
+    any(feature = "store", not(feature = "core"))
+))]
+use scratch_fixtures::temp_root;
 
 /// The event fixtures the fold tests stamp a batch's log positions with, compiled here from the
 /// same file as the root crate's tests.

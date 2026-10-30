@@ -331,19 +331,37 @@ impl<'a> Server<'a> {
             (Surface::SpawnBound, "rigger_emit") => self.tool_emit_bound(args),
             (Surface::SpawnBound, "rigger_progress") => self.tool_progress(args),
             (Surface::SpawnBound, "rigger_scratch") => self.tool_scratch(),
-            _ => return err(id, -32602, &format!("unknown tool {name}")),
+            _ => Err(ToolError::new(
+                INVALID_PARAMS,
+                format!("unknown tool {name}"),
+            )),
         };
+        // Every reply leaves through [`within_frame`], the server's one bound on a tool reply's
+        // frame: an oversized result drops its structured copy and cuts its text, an oversized
+        // error cuts its message, each with a marked tail.
         match result {
-            Ok(structured) => ok(
-                id,
-                json!({
-                    "content": [{"type": "text", "text": structured.to_string()}],
-                    "structuredContent": structured,
-                }),
-            ),
+            Ok(structured) => {
+                let text = structured.to_string();
+                let whole = ok(
+                    id.clone(),
+                    json!({
+                        "content": [{"type": "text", "text": text}],
+                        "structuredContent": structured,
+                    }),
+                );
+                if whole.len() <= TOOL_REPLY_FRAME_BUDGET_BYTES {
+                    return whole;
+                }
+                within_frame(&text, |text| {
+                    ok(
+                        id.clone(),
+                        json!({"content": [{"type": "text", "text": text}]}),
+                    )
+                })
+            }
             // A tool may request a specific JSON-RPC code (e.g. -32602 for an
             // unknown spawn id); otherwise an internal error is -32603.
-            Err(e) => err(id, e.code, &e.message),
+            Err(e) => within_frame(&e.message, |message| err(id.clone(), e.code, message)),
         }
     }
 
@@ -594,10 +612,10 @@ impl<'a> Server<'a> {
     /// List peers' decisions, lessons, AND review findings, optionally scoped to a
     /// blast-radius (§5.3). When the caller passes a `files` array (the agent's
     /// blast-radius), only decisions whose `governs`, lessons whose `about`, and findings
-    /// whose `about` intersect it come back; absent or empty, every one does. The findings
-    /// are how concurrent review lenses see each other's findings LIVE, before any of
-    /// them grounds again - the same side-car channel that surfaces peer decisions and the
-    /// lessons a capped prompt section elided.
+    /// whose `about` intersect it come back; absent or empty, every one does - each section the
+    /// newest under its budget (see [`peers_json`]). The findings are how concurrent review
+    /// lenses see each other's findings LIVE, before any of them grounds again - the same
+    /// side-car channel that surfaces peer decisions and lessons.
     fn tool_peers(&self, args: &Value) -> Result<Value, ToolError> {
         let files: Vec<String> = args
             .get("files")
@@ -755,14 +773,14 @@ impl<'a> Server<'a> {
         match self.surface() {
             Surface::SpawnBound => json!([
                 {"name": "rigger_emit", "description": "Record a decision on the shared event log, live, so other agents see it immediately. Stamped with the spawn this server is bound to; optionally set valid_from (the bi-temporal time the fact became true).", "inputSchema": {"type": "object", "properties": {"type": {"type": "string"}, "data": {"type": "object"}, "meta": {"type": "object", "description": "Metadata entries (string->string). meta.spawn, if set, must name THIS server's own bound spawn.", "additionalProperties": {"type": "string"}}, "valid_from": {"description": "When the fact became true: unix nanoseconds (integer) or an RFC3339 timestamp string.", "type": ["integer", "string"]}}, "required": ["type", "data"]}},
-                {"name": "rigger_peers", "description": "List the decisions, lessons, AND review findings recorded so far this run, so you do not work blind to them. Pass `files` to scope the result to decisions, lessons, and findings that touch those files; omit it to see every one.", "inputSchema": {"type": "object", "properties": {"files": {"type": "array", "items": {"type": "string"}}}}},
+                {"name": "rigger_peers", "description": "List the decisions, lessons, AND review findings recorded so far, this run's and earlier runs' (each decision labeled live or historical), so you do not work blind to them. Each section returns its newest records under a byte budget; when any are left out, `left_out` counts them and says how to read one by id. Pass `files` to scope the result to decisions, lessons, and findings that touch those files; omit it for every file.", "inputSchema": {"type": "object", "properties": {"files": {"type": "array", "items": {"type": "string"}}}}},
                 {"name": "rigger_ground", "description": "The MEMORY-adjacent intent lookup (spec 92): rank code entities by relevance to a natural-language query. Same as `rigger ground \"<query>\" [<k>]`.", "inputSchema": {"type": "object", "properties": {"query": {"type": "string", "description": "the natural-language query"}, "k": {"type": "integer", "description": "how many results (default 8)"}}, "required": ["query"]}},
                 {"name": "rigger_graph", "description": "The STRUCTURE and resolution lookups: pass `show` <entity> for its definition site (same as `rigger graph --show <entity>`), or `around` <file|entity> (optionally `depth`) for its structural neighborhood (same as `rigger graph --around <file|entity> --depth <n>`). Pass exactly one of `show`/`around`.", "inputSchema": {"type": "object", "properties": {"show": {"type": "string"}, "around": {"type": "string"}, "depth": {"type": "integer", "description": "neighborhood depth for `around` (default 2)"}}}},
                 {"name": "rigger_progress", "description": "Record one live progress line for the spawn this server is bound to, so an observer sees you working between milestones. Report one short line after each significant step; never batch them up.", "inputSchema": {"type": "object", "properties": {"activity": {"type": "string", "description": "a short one-line description of what you just did"}}, "required": ["activity"]}},
                 {"name": "rigger_scratch", "description": "Your own rigger-assigned scratch container - the one directory every probe repo, verification worktree, test build, or CARGO_TARGET_DIR you create must live under, never /tmp or a session scratchpad. Reaped the moment your result records.", "inputSchema": {"type": "object", "properties": {}}},
             ]),
             Surface::Lookup => json!([
-                {"name": "rigger_peers", "description": "List the decisions, lessons, AND review findings recorded so far this run, so you do not work blind to them. Pass `files` to scope the result to decisions, lessons, and findings that touch those files; omit it to see every one.", "inputSchema": {"type": "object", "properties": {"files": {"type": "array", "items": {"type": "string"}}}}},
+                {"name": "rigger_peers", "description": "List the decisions, lessons, AND review findings recorded so far, this run's and earlier runs' (each decision labeled live or historical), so you do not work blind to them. Each section returns its newest records under a byte budget; when any are left out, `left_out` counts them and says how to read one by id. Pass `files` to scope the result to decisions, lessons, and findings that touch those files; omit it for every file.", "inputSchema": {"type": "object", "properties": {"files": {"type": "array", "items": {"type": "string"}}}}},
                 {"name": "rigger_ground", "description": "The MEMORY-adjacent intent lookup (spec 92): rank code entities by relevance to a natural-language query. Same as `rigger ground \"<query>\" [<k>]`.", "inputSchema": {"type": "object", "properties": {"query": {"type": "string", "description": "the natural-language query"}, "k": {"type": "integer", "description": "how many results (default 8)"}}, "required": ["query"]}},
                 {"name": "rigger_graph", "description": "The STRUCTURE and resolution lookups: pass `show` <entity> for its definition site (same as `rigger graph --show <entity>`), or `around` <file|entity> (optionally `depth`) for its structural neighborhood (same as `rigger graph --around <file|entity> --depth <n>`). Pass exactly one of `show`/`around`.", "inputSchema": {"type": "object", "properties": {"show": {"type": "string"}, "around": {"type": "string"}, "depth": {"type": "integer", "description": "neighborhood depth for `around` (default 2)"}}}},
             ]),
@@ -770,7 +788,7 @@ impl<'a> Server<'a> {
                 {"name": "rigger_next", "description": "Pick up the next queued agent spawn. The id is empty when nothing is waiting.", "inputSchema": {"type": "object", "properties": {}}},
                 {"name": "rigger_result", "description": "Report an agent's final result by spawn id.", "inputSchema": {"type": "object", "properties": {"id": {"type": "string"}, "output": {"type": "string"}, "error": {"type": "string"}}, "required": ["id"]}},
                 {"name": "rigger_emit", "description": "Record a decision on the shared event log, live, so other agents see it immediately. Optionally set meta (e.g. the acting agent, which stamps the graph's DECIDED edge) and valid_from (the bi-temporal time the fact became true).", "inputSchema": {"type": "object", "properties": {"type": {"type": "string"}, "data": {"type": "object"}, "meta": {"type": "object", "description": "Metadata entries (string->string), e.g. {\"actor\": \"<agent-id>\"}.", "additionalProperties": {"type": "string"}}, "valid_from": {"description": "When the fact became true: unix nanoseconds (integer) or an RFC3339 timestamp string.", "type": ["integer", "string"]}}, "required": ["type", "data"]}},
-                {"name": "rigger_peers", "description": "List the decisions, lessons, AND review findings other agents have raised so far this run, so you do not work blind to them (concurrent reviewers see each other's findings live; lessons recover what a capped prompt section elided). Pass `files` (your blast-radius) to scope the result to decisions, lessons, and findings that touch those files; omit it to see every one.", "inputSchema": {"type": "object", "properties": {"files": {"type": "array", "items": {"type": "string"}, "description": "The agent's blast-radius: only decisions whose `governs`, and lessons and findings whose `about`, intersect these files are returned. Omit for all."}}}},
+                {"name": "rigger_peers", "description": "List the decisions, lessons, AND review findings other agents have recorded so far, this run's and earlier runs' (each decision labeled live or historical), so you do not work blind to them (concurrent reviewers see each other's findings live). Each section returns its newest records under a byte budget; when any are left out, `left_out` counts them and says how to read one by id. Pass `files` (your blast-radius) to scope the result to decisions, lessons, and findings that touch those files; omit it for every file.", "inputSchema": {"type": "object", "properties": {"files": {"type": "array", "items": {"type": "string"}, "description": "The agent's blast-radius: only decisions whose `governs`, and lessons and findings whose `about`, name one of these files (a `path:line` citation names its file) are returned. Omit for all."}}}},
                 {"name": "rigger_activity", "description": "The live per-agent view of the current run: one entry per in-flight agent with its stage, latest activity, how long since that activity and its last heartbeat, and its last event-store milestone (and how long ago - the blackout this fills). Rigger consolidates the run stream, the progress store, and the liveness markers and presents them here, so you get up-to-the-second agent state with no filesystem access of your own.", "inputSchema": {"type": "object", "properties": {}}},
             ]),
         }
@@ -834,7 +852,8 @@ pub fn emit_event<'g, G: std::ops::Deref<Target = dyn Projection + 'g>>(
 }
 
 /// The append half of [`emit_event`]: refuse what the emit surface refuses, append the event, and
-/// return it carrying the position the store issued.
+/// return it carrying the position the store issued and the stream it was appended to, so its fold
+/// reads it as the log does (spec 124, THE APPENDER).
 fn append_emit(store: &dyn EventStore, stream: &str, args: &Value) -> Result<Event, String> {
     let typ = args
         .get("type")
@@ -858,10 +877,6 @@ fn append_emit(store: &dyn EventStore, stream: &str, args: &Value) -> Result<Eve
     }
     let data = args.get("data").cloned().unwrap_or_else(|| json!({}));
     let bytes = serde_json::to_vec(&data).map_err(|e| e.to_string())?;
-    // Refuse a payload the context-graph fold cannot apply BEFORE the append: the fold would
-    // skip it silently, leaving an event in the log that never becomes a node.
-    rigger_graph_sqlite::contextgraph::check_fold_payload(typ, &bytes)
-        .map_err(|e| format!("rigger_emit: refusing to emit: {e}"))?;
 
     // The actor metadata stamps the DECIDED edge; valid_from sets the
     // bi-temporal validity (§6). Both are optional builder overrides.
@@ -877,39 +892,100 @@ fn append_emit(store: &dyn EventStore, stream: &str, args: &Value) -> Result<Eve
     if let Some(vf) = args.get("valid_from") {
         event = event.with_valid_from(parse_valid_from(vf)?);
     }
+    // The one emit guard every emit surface runs, on the event as built with its stamps and
+    // BEFORE the append, so what it refuses lands nothing.
+    rigger_graph_sqlite::contextgraph::check_emit(store, stream, &event)
+        .map_err(|e| format!("rigger_emit: {e}"))?;
 
-    event.position = store
+    let position = store
         .append(stream, ExpectedRevision::Any, std::slice::from_ref(&event))
         .and_then(|appended| appended.one(&format!("the {typ} on {stream:?}")))
         .map_err(|e| e.to_string())?;
-    Ok(event)
+    Ok(event.appended_at(stream, position))
 }
 
 /// The shared core of `rigger_peers` (the MCP tool) and `rigger peers` (the CLI):
 /// the peers' decisions, lessons, AND review findings, scoped to `files` (empty = all),
 /// EXACTLY as the MCP tool returns them - `{"decisions": [...], "lessons": [...],
-/// "findings": [...]}`. Both paths call this so the CLI and the MCP surface stay
-/// identical. The three sections mirror the three capped prompt sections
-/// (`graph_context`), so the elision note each capped section renders - "recover the
-/// full set with `rigger peers <file>`" - is honest for every section: what the prompt
-/// trims, this surface returns in full (adj-u1gap17).
+/// "findings": [...]}`, each in log order. Both paths call this so the CLI and the MCP
+/// surface stay identical. Each section keeps its NEWEST records under the matching capped
+/// prompt section's verbatim count and byte budget, through the conductor's one
+/// [`within_budget`](crate::conductor::within_budget) rule, so no file's history can grow a
+/// reply past a bound. When a section leaves records out, a `left_out` object counts them per
+/// section and carries the one-line `note` naming how to narrow the call or read a left-out
+/// record by id ([`RECORD_RECOVERY`](crate::conductor::RECORD_RECOVERY)).
 pub fn peers_json(peers: &Sidecar, files: &[String]) -> Value {
-    let decisions: Vec<Value> = peers
-        .peers_for::<crate::sidecar::PeerDecision>(files)
-        .iter()
-        .map(|d| json!({"id": d.id, "summary": d.summary, "governs": d.governs, "live": d.live}))
-        .collect();
-    let lessons: Vec<Value> = peers
-        .peers_for::<crate::sidecar::PeerLesson>(files)
-        .iter()
-        .map(|l| json!({"id": l.id, "summary": l.summary, "about": l.about}))
-        .collect();
-    let findings: Vec<Value> = peers
-        .peers_for::<crate::sidecar::PeerFinding>(files)
-        .iter()
-        .map(|f| json!({"id": f.id, "by": f.by, "summary": f.summary, "about": f.about}))
-        .collect();
-    json!({"decisions": decisions, "lessons": lessons, "findings": findings})
+    use crate::conductor::{
+        DECISIONS_BUDGET_BYTES, DECISIONS_VERBATIM_N, FINDINGS_BUDGET_BYTES, FINDINGS_VERBATIM_N,
+        LESSONS_BUDGET_BYTES, LESSONS_VERBATIM_N,
+    };
+    let (decisions, decisions_out) = newest_within(
+        peers
+            .peers_for::<crate::sidecar::PeerDecision>(files)
+            .iter()
+            .map(
+                |d| json!({"id": d.id, "summary": d.summary, "governs": d.governs, "live": d.live}),
+            ),
+        DECISIONS_VERBATIM_N,
+        DECISIONS_BUDGET_BYTES,
+    );
+    let (lessons, lessons_out) = newest_within(
+        peers
+            .peers_for::<crate::sidecar::PeerLesson>(files)
+            .iter()
+            .map(|l| json!({"id": l.id, "summary": l.summary, "about": l.about})),
+        LESSONS_VERBATIM_N,
+        LESSONS_BUDGET_BYTES,
+    );
+    let (findings, findings_out) = newest_within(
+        peers
+            .peers_for::<crate::sidecar::PeerFinding>(files)
+            .iter()
+            .map(|f| json!({"id": f.id, "by": f.by, "summary": f.summary, "about": f.about})),
+        FINDINGS_VERBATIM_N,
+        FINDINGS_BUDGET_BYTES,
+    );
+    let mut reply = json!({"decisions": decisions, "lessons": lessons, "findings": findings});
+    let counts: Vec<String> = [
+        (decisions_out, "decision"),
+        (lessons_out, "lesson"),
+        (findings_out, "finding"),
+    ]
+    .iter()
+    .filter(|(n, _)| *n > 0)
+    .map(|(n, noun)| format!("{n} older {noun}(s)"))
+    .collect();
+    if !counts.is_empty() {
+        reply["left_out"] = json!({
+            "decisions": decisions_out,
+            "lessons": lessons_out,
+            "findings": findings_out,
+            "note": format!(
+                "(+{} left out to keep this reply under budget - narrow with fewer files, or {})",
+                counts.join(", "),
+                crate::conductor::RECORD_RECOVERY
+            ),
+        });
+    }
+    reply
+}
+
+/// One `peers_json` section under its budget: `records` arrive in log order (oldest first), so
+/// the newest are walked first through the shared
+/// [`within_budget`](crate::conductor::within_budget) rule, each sized by its JSON rendering;
+/// the kept records return in log order beside how many were left out.
+fn newest_within(
+    records: impl DoubleEndedIterator<Item = Value> + ExactSizeIterator,
+    verbatim_n: usize,
+    budget_bytes: usize,
+) -> (Vec<Value>, usize) {
+    let total = records.len();
+    let mut kept = crate::conductor::within_budget(records.rev(), verbatim_n, budget_bytes, |r| {
+        r.to_string().len()
+    });
+    kept.reverse();
+    let left_out = total - kept.len();
+    (kept, left_out)
 }
 
 /// Parse a `valid_from` argument into a [`SystemTime`]: a JSON integer of unix
@@ -1016,6 +1092,41 @@ fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
     let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) as i64 + 2) / 5 + d as i64 - 1; // [0, 365]
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy; // [0, 146096]
     era * 146_097 + doe - 719_468
+}
+
+/// The byte bound on one tool reply's JSON-RPC frame: half the 16 MiB a host reads from an MCP
+/// server before it needs a message boundary, past which it closes the transport and the session
+/// loses every tool. Half leaves the frame's envelope and the truncation tail ample room.
+const TOOL_REPLY_FRAME_BUDGET_BYTES: usize = 8 * 1024 * 1024;
+
+/// Frame a tool reply carrying `text` through `frame`, kept under
+/// [`TOOL_REPLY_FRAME_BUDGET_BYTES`]: a frame that fits goes out whole; otherwise `text` is cut at
+/// a character boundary and a marked tail names how many bytes were left out and asks the caller
+/// to narrow the call, the cut shrinking in proportion to the overshoot until the escaped frame
+/// fits.
+fn within_frame(text: &str, frame: impl Fn(&str) -> String) -> String {
+    let whole = frame(text);
+    if whole.len() <= TOOL_REPLY_FRAME_BUDGET_BYTES {
+        return whole;
+    }
+    let mut keep = text.len().min(TOOL_REPLY_FRAME_BUDGET_BYTES);
+    loop {
+        while !text.is_char_boundary(keep) {
+            keep -= 1;
+        }
+        let framed = frame(&format!(
+            "{}\n[rigger: reply truncated - {} of {} bytes left out to stay under the {}-byte \
+             frame cap; narrow the call]",
+            &text[..keep],
+            text.len() - keep,
+            text.len(),
+            TOOL_REPLY_FRAME_BUDGET_BYTES
+        ));
+        if framed.len() <= TOOL_REPLY_FRAME_BUDGET_BYTES || keep == 0 {
+            return framed;
+        }
+        keep = keep * TOOL_REPLY_FRAME_BUDGET_BYTES / framed.len();
+    }
 }
 
 /// The JSON-RPC 2.0 success envelope. Private: both tool surfaces `Server` answers (the
@@ -1524,7 +1635,7 @@ mod tests {
             emit_event(&cli_store, "run", || wired(None), &args).expect("the core must append");
         assert_eq!(
             emitted.fold,
-            Fold::NotFolded("graph: no context graph is wired".to_string()),
+            Fold::NotFolded(crate::test_support::unwired()),
             "a surface wired with no graph folds nothing and says so"
         );
 
@@ -1645,6 +1756,151 @@ mod tests {
             events.is_empty(),
             "a refused emit must append NOTHING; found: {events:?}"
         );
+    }
+
+    /// Emit the `typ` record `id` through the one emit core, stamped with `spawn` as its
+    /// `meta.spawn` (unstamped when `None`): the position the store issued it.
+    fn emit_record(
+        store: &Store,
+        typ: &str,
+        id: &str,
+        spawn: Option<&str>,
+    ) -> Result<crate::eventstore::Position, String> {
+        let mut args = json!({"type": typ, "data": {"id": id, "summary": "s"}});
+        if let Some(spawn) = spawn {
+            args["meta"][crate::conductor::META_SPAWN] = json!(spawn);
+        }
+        emit_event(store, "run", || wired(None), &args).map(|emitted| emitted.position)
+    }
+
+    /// The records of the three graph record types `store` holds on `run`.
+    fn records_on_run(store: &Store) -> usize {
+        store
+            .read_stream("run", 0, Direction::Forward)
+            .unwrap()
+            .iter()
+            .filter(|e| crate::run::read::CARRY_OVER_TYPES.contains(&e.type_.as_str()))
+            .count()
+    }
+
+    /// Append a `RunStarted` boundary for run `run` to `store`'s `run` stream.
+    fn start_run(store: &Store, run: &str) {
+        let boundary = Event::new(
+            crate::run::TYPE_RUN_STARTED,
+            json!({"run": run, "spec": "s.md"}).to_string().into_bytes(),
+        );
+        store
+            .append("run", ExpectedRevision::Any, &[boundary])
+            .unwrap();
+    }
+
+    /// TWO AUTHORS, ONE ID: the graph keeps one node per record id, so a record whose id a live
+    /// record of ANOTHER unit or role already holds would hide that record from every reader but
+    /// the log. The one emit core refuses it, whatever the two records' types, lands nothing, and
+    /// names the holder's position and unit/role and the two ways on: a fresh id, or a decision
+    /// that supersedes the holder.
+    #[test]
+    fn a_record_whose_id_another_authors_live_record_holds_is_refused() {
+        for (typ, spawn) in [
+            ("DecisionMade", "u2/implementer#0"),
+            ("ReviewFinding", "u1/lens:sdet#0"),
+            ("LessonLearned", "u1/adjudicator#3~retry1"),
+        ] {
+            let store = Store::open(":memory:").unwrap();
+            let held = emit_record(&store, "DecisionMade", "d-x", Some("u1/implementer#0"))
+                .expect("the first author's record is accepted");
+            let err = emit_record(&store, typ, "d-x", Some(spawn))
+                .expect_err("another author's record under a held id must be refused");
+            for named in [
+                format!("position {held}"),
+                "u1/implementer".to_string(),
+                "new id".to_string(),
+                "supersedes".to_string(),
+            ] {
+                assert!(
+                    err.contains(&named),
+                    "the refusal of {typ} by {spawn} names {named:?}: {err}"
+                );
+            }
+            assert!(
+                !err.contains("u1/implementer#0"),
+                "the holder is named by its unit/role, never its attempt: {err}"
+            );
+            assert_eq!(records_on_run(&store), 1, "a refused emit appends nothing");
+        }
+    }
+
+    /// ONE AUTHOR RE-EMITS: the same unit and role re-emitting its own id is the update path (the
+    /// later record wins), across its remediation attempts and reviewer respawns alike, since the
+    /// author key leaves the attempt out; an unstamped emit - the operator's - is accepted over
+    /// any holder.
+    #[test]
+    fn the_holders_own_unit_and_role_and_an_unstamped_emit_re_emit_its_id() {
+        let store = Store::open(":memory:").unwrap();
+        for spawn in [
+            Some("u1/adjudicator#0"),
+            Some("u1/adjudicator#0"),
+            Some("u1/adjudicator#1"),
+            Some("u1/adjudicator#1~retry2"),
+            None,
+        ] {
+            emit_record(&store, "DecisionMade", "d-x", spawn)
+                .unwrap_or_else(|e| panic!("a re-emit stamped {spawn:?} is accepted: {e}"));
+        }
+        assert_eq!(records_on_run(&store), 5, "every re-emit is appended");
+    }
+
+    /// An UNSTAMPED holder - an operator's record - has no unit or role, so it is another
+    /// author to every stamped emit: an agent taking its id is refused, the refusal saying the
+    /// holder is unstamped.
+    #[test]
+    fn a_stamped_record_is_refused_over_an_unstamped_live_holder() {
+        let store = Store::open(":memory:").unwrap();
+        emit_record(&store, "DecisionMade", "d-x", None).unwrap();
+        let err = emit_record(&store, "DecisionMade", "d-x", Some("u1/implementer#0"))
+            .expect_err("an agent taking an operator record's id is refused");
+        assert!(err.contains("unstamped"), "{err}");
+        assert_eq!(records_on_run(&store), 1, "a refused emit appends nothing");
+    }
+
+    /// LIVE is the run attribution's rule: a decision or finding only a superseded run recorded
+    /// is history and refuses nothing, while the active run's own records do; a lesson is never
+    /// attributed away, so a lesson an earlier run recorded still holds its id.
+    #[test]
+    fn only_a_live_holder_or_a_lesson_refuses_an_id() {
+        let store = Store::open(":memory:").unwrap();
+        start_run(&store, "r1");
+        emit_record(&store, "DecisionMade", "d-x", Some("u1/implementer#0")).unwrap();
+        emit_record(&store, "ReviewFinding", "f-x", Some("u1/adversary#0")).unwrap();
+        emit_record(&store, "LessonLearned", "l-x", Some("u1/implementer#0")).unwrap();
+        start_run(&store, "r2");
+        emit_record(&store, "DecisionMade", "d-x", Some("u2/implementer#0"))
+            .expect("a superseded run's decision holds no id in the active run");
+        emit_record(&store, "ReviewFinding", "f-x", Some("u2/adversary#0"))
+            .expect("a superseded run's finding holds no id in the active run");
+        let err = emit_record(&store, "LessonLearned", "l-x", Some("u2/implementer#0"))
+            .expect_err("a lesson is never history, so it still holds its id");
+        assert!(err.contains("u1/implementer"), "{err}");
+        let err = emit_record(&store, "DecisionMade", "d-x", Some("u3/implementer#0"))
+            .expect_err("the active run's own decision holds its id");
+        assert!(err.contains("u2/implementer"), "{err}");
+    }
+
+    /// The spawn-bound `rigger_emit` tool reaches the same refusal through the one emit core:
+    /// its session is told who holds the id, and nothing is appended.
+    #[test]
+    fn the_emit_tool_refuses_an_id_another_authors_live_record_holds() {
+        let store = Store::open(":memory:").unwrap();
+        emit_record(&store, "DecisionMade", "d-x", Some("u1/implementer#0")).unwrap();
+        let driver = Driver::new();
+        let server = Server::new(&driver, &store, "run").with_spawn("u2/implementer#0");
+        let input = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"rigger_emit","arguments":{"type":"DecisionMade","data":{"id":"d-x","summary":"s"}}}}"#;
+        let resp = call(&server, input);
+        assert!(
+            resp.to_string().contains("u1/implementer"),
+            "the tool's reply names the holder: {resp}"
+        );
+        assert_eq!(records_on_run(&store), 1, "a refused emit appends nothing");
     }
 
     /// A `LessonLearned` whose `about` is an array of paths passes the shape check, is
@@ -2225,6 +2481,18 @@ mod tests {
         call(&server, &tools_call("rigger_graph", arguments))["result"]["structuredContent"].clone()
     }
 
+    /// The site object the `rigger_graph` `show` of `id` answers over `graph`
+    /// ([`shown_graph_answer`]).
+    fn shown_site(graph: &crate::contextgraph::sqlite::Projector, id: &str) -> Value {
+        shown_graph_answer(graph, json!({"show": id}))["site"].clone()
+    }
+
+    /// The `rigger_graph` `around` answer of `seed` at depth 1 over `graph`
+    /// ([`shown_graph_answer`]).
+    fn around_answer(graph: &crate::contextgraph::sqlite::Projector, seed: &str) -> Value {
+        shown_graph_answer(graph, json!({"around": seed, "depth": 1}))
+    }
+
     /// Spec 119, SHOW IS ONE RENDERER: the MCP `show` gives each node by exact id as its `id` and
     /// the `site_fields` entries as keys - `line` and `degree` JSON numbers, a `doc` holding a
     /// newline verbatim, an empty `lang` and the `proven_by` attr giving no key, an empty `kind`
@@ -2237,8 +2505,7 @@ mod tests {
 
         let graph = Projector::open(":memory:", "test").unwrap();
         seed_shown_nodes(&graph);
-        let sites =
-            SHOWN_IDS.map(|id| shown_graph_answer(&graph, json!({"show": id}))["site"].clone());
+        let sites = SHOWN_IDS.map(|id| shown_site(&graph, id));
         assert_eq!(
             sites,
             [
@@ -2278,8 +2545,8 @@ mod tests {
 
         let graph = Projector::open(":memory:", "test").unwrap();
         seed_shown_nodes(&graph);
-        let answer = shown_graph_answer(&graph, json!({"around": SHOWN_FILE, "depth": 1}));
-        let shown = |id: &str| shown_graph_answer(&graph, json!({"show": id}))["site"].clone();
+        let answer = around_answer(&graph, SHOWN_FILE);
+        let shown = |id: &str| shown_site(&graph, id);
         let nodes = crate::test_support::around_nodes(&answer);
         assert_eq!(
             nodes,
@@ -2296,6 +2563,27 @@ mod tests {
         );
         crate::test_support::assert_around_is_entity_sites(&graph, &nodes);
         crate::test_support::assert_finding_shows_past_the_depth_bound(&shown("f-shown"));
+    }
+
+    /// Spec 117, UNRESOLVED REFERENCES ARE A READ: the MCP `show` of a file node carries its
+    /// unresolved leaves as one `unresolved` key, joined by `LIST_SEP`, beside its `partial`; a
+    /// file listing none carries no `unresolved` key; and the MCP `around` of the file carries
+    /// spec 119's `entity_site` fields alone, none of its three nodes an `unresolved` key.
+    #[test]
+    fn rigger_graph_show_carries_a_files_unresolved_leaves_and_around_carries_none() {
+        use crate::test_support::{
+            assert_around_lists_no_unresolved, assert_show_lists_unresolved_leaves, fold_events,
+            seed_unresolved_references, RESOLVING_FILE, UNRESOLVED_FILE,
+        };
+
+        let graph = fold_events([]);
+        seed_unresolved_references(&graph);
+        let (reader, definer) = (
+            shown_site(&graph, UNRESOLVED_FILE),
+            shown_site(&graph, RESOLVING_FILE),
+        );
+        assert_show_lists_unresolved_leaves(&reader, &definer);
+        assert_around_lists_no_unresolved(&around_answer(&graph, UNRESOLVED_FILE));
     }
 
     /// Spec 101: a wired graph that owes its rebuild is refused by every tool whose answer depends
@@ -2359,11 +2647,10 @@ mod tests {
             .unwrap();
         assert_eq!(
             emitted["result"]["structuredContent"],
-            json!({
-                "position": log[0].position,
-                "folded": false,
-                "reason": format!("graph: {REBUILD_OWED}"),
-            }),
+            crate::test_support::emit_answer(
+                log[0].position,
+                Some(&crate::test_support::graph_error(REBUILD_OWED))
+            ),
             "the emit answers that the owed graph did not fold it, naming the rebuild"
         );
         assert_eq!(
@@ -2684,5 +2971,92 @@ mod tests {
                 "{name} must still answer on the spawn-bound surface; got:\n{resp}"
             );
         }
+    }
+
+    /// The frame size past which the host closes a stdio MCP server's transport: one message
+    /// over it and every rigger tool is gone for the rest of the session.
+    const HOST_FRAME_LIMIT_BYTES: usize = 16 * 1024 * 1024;
+
+    /// The one raw frame `server` writes in answer to `request`.
+    fn raw_frame(server: &Server, request: &str) -> String {
+        let mut out = Vec::new();
+        server.run(Cursor::new(request), &mut out).unwrap();
+        String::from_utf8(out).unwrap()
+    }
+
+    /// No tool result may overflow the host's frame: the `rigger_graph` `show` of a decision
+    /// whose summary alone is 9 MiB - carried twice whole, as text and as structured content -
+    /// comes back as one frame under the limit, its text cut with a marked tail and no
+    /// structured content beside it.
+    #[test]
+    fn an_oversized_tool_result_is_cut_under_the_frame_limit_with_a_marked_tail() {
+        use crate::contextgraph::sqlite::Projector;
+
+        let store = Store::open(":memory:").unwrap();
+        let driver = Driver::new();
+        let grounder = crate::grounder::Nop;
+        let graph = Projector::open(":memory:", "test").unwrap();
+        let payload = json!({
+            "id": "d-huge",
+            "summary": "y".repeat(9 * 1024 * 1024),
+            "governs": ["a.rs"],
+        });
+        let mut e = Event::new(
+            crate::contextgraph::TYPE_DECISION_MADE,
+            payload.to_string().into_bytes(),
+        );
+        e.position = 1;
+        crate::test_support::folds(&graph, std::slice::from_ref(&e));
+        let server = Server::new(&driver, &store, "run")
+            .with_graph(&graph)
+            .with_grounder(Ok(&grounder));
+
+        let frame = raw_frame(
+            &server,
+            &tools_call("rigger_graph", json!({"show": "d-huge"})),
+        );
+        assert!(
+            frame.len() < HOST_FRAME_LIMIT_BYTES,
+            "the reply frame stays under the host's limit; it was {} bytes",
+            frame.len()
+        );
+        let reply: Value = serde_json::from_str(frame.trim()).unwrap();
+        let text = reply["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(
+            text.starts_with('{') && text.contains("[rigger: reply truncated"),
+            "the text keeps the reply's head and marks the cut"
+        );
+        assert!(
+            reply["result"].get("structuredContent").is_none(),
+            "a cut reply carries no structured content"
+        );
+    }
+
+    /// A tool error is bounded by the same cap: a refused `rigger_emit` whose message echoes a
+    /// 17 MiB type comes back as one error frame under the limit, its message cut with a marked
+    /// tail.
+    #[test]
+    fn an_oversized_tool_error_is_cut_under_the_frame_limit_with_a_marked_tail() {
+        let store = Store::open(":memory:").unwrap();
+        let driver = Driver::new();
+        let server = Server::new(&driver, &store, "run");
+
+        let request = tools_call(
+            "rigger_emit",
+            json!({"type": "X".repeat(17 * 1024 * 1024), "data": {}}),
+        );
+        let frame = raw_frame(&server, &request);
+        assert!(
+            frame.len() < HOST_FRAME_LIMIT_BYTES,
+            "the error frame stays under the host's limit; it was {} bytes",
+            frame.len()
+        );
+        let reply: Value = serde_json::from_str(frame.trim()).unwrap();
+        let message = reply["error"]["message"].as_str().unwrap();
+        assert!(
+            message.starts_with("rigger_emit: refusing")
+                && message.contains("[rigger: reply truncated"),
+            "the message keeps its head and marks the cut"
+        );
     }
 }

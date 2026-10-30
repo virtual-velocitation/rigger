@@ -99,6 +99,7 @@ fn campaign(store: &Store, criterion: &str) -> Status {
         criteria: vec![criterion.to_string()],
         log: &|_| {},
         hash_blob: &|_| Ok(String::new()),
+        check_emit: &rigger::contextgraph::check_emit,
     };
     run(&cfg, &deps).unwrap().units[UNIT].status
 }

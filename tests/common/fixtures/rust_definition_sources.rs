@@ -3,8 +3,9 @@
 //! registered Rust query extracts and once on the graph a build folds; and the enum `E` before
 //! and after its variant `B` is removed, the sources CONTAINS IS STRUCTURE (spec 119) retires a
 //! variant's `CONTAINS` over; and the method `a::B::c` in two impls and then in one, the sources
-//! ONE PATH IS ONE EVENT (spec 119) picks and hands over a path's one event over. It names no
-//! crate, so every lane compiles it.
+//! ONE PATH IS ONE EVENT (spec 119) picks and hands over a path's one event over; and the tree
+//! REFERENCES ARE EXTRACTED AND ISOLATED (spec 117) is proven over. It names no crate, so every
+//! lane compiles it.
 
 /// THE RUST DEFINITIONS FIXTURE (spec 116 criterion 6): one Rust file holding every Rust
 /// definition type. Lines 1-2 an `extern crate` without and with an alias; 3-4 an item const
@@ -61,3 +62,31 @@ pub const METHOD_C_IN_TWO_IMPLS: &str =
 /// in the file-level `impl a::B`.
 pub const METHOD_C_IN_THE_FILE_LEVEL_IMPL: &str =
     "mod a {\n    struct B;\n\n\n\n}\nimpl a::B {\n    fn c() {}\n}\n";
+
+/// The definer file of [`REFERENCE_KINDS_TREE`].
+pub const REFERENCE_KINDS_DEFINER: &str = "src/shapes.rs";
+
+/// The user file of [`REFERENCE_KINDS_TREE`], whose references are of every kind.
+pub const REFERENCE_KINDS_USER: &str = "src/user.rs";
+
+/// The tree REFERENCES ARE EXTRACTED AND ISOLATED (spec 117) is proven over, each `(path,
+/// source)`: `src/shapes.rs` defines the struct `Kestrel`, the const `QUOTA_CAP` and the fn
+/// `draw`; `src/user.rs` imports `Kestrel` by a `use` (line 1) and, in `fn paint` (line 2), takes
+/// it as a parameter type, calls `draw` and reads `QUOTA_CAP` - one reference of each kind beside
+/// one call.
+pub const REFERENCE_KINDS_TREE: [(&str, &str); 2] = [
+    (
+        REFERENCE_KINDS_DEFINER,
+        "pub struct Kestrel;\npub const QUOTA_CAP: u32 = 3;\npub fn draw() {}\n",
+    ),
+    (
+        REFERENCE_KINDS_USER,
+        "use crate::shapes::Kestrel;\nfn paint(k: Kestrel) -> u32 { draw(); QUOTA_CAP }\n",
+    ),
+];
+
+/// The tagged references of [`REFERENCE_KINDS_TREE`]'s `src/user.rs`, one line each, `<line>
+/// <ref kind> <name> <caller>`: the `use` of `Kestrel` at the top level, then `fn paint`'s type
+/// reference to `Kestrel` and const read of `QUOTA_CAP`.
+pub const REFERENCE_KINDS_USER_TAGGED: &str =
+    "1 use Kestrel -\n2 type Kestrel paint\n2 const QUOTA_CAP paint";

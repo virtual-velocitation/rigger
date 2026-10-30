@@ -75,29 +75,28 @@ fn rigger_status_first_line_and_needs_you_section_are_the_consoles_own_fold() {
     }
 }
 
-/// The dock's OTHER two needs-you arms - the budget halt and worker-death-recurred, INCLUDING
+/// The dock's OTHER two needs-you arms - the budget halt and reject-recurrence, INCLUDING
 /// its resumed guard - proven through the same real `argv` -> `cmd_status` -> real-store round
 /// trip the escalated arm already gets above. Before this test, only the escalated arm was
 /// wired-proven through the real binary (sdet-u93c4-dock-budget-and-recurrence-arms-not-periphery-proven);
 /// the other two were proven only against hand-built in-memory `Event`s in `console.rs`'s own
 /// `mod tests`. Also pins the fix for adv-u93c4-c4-dock-resumed-unit-false-needs-you (dock's
-/// worker-death-recurred arm now mirrors `blocker::classify`'s resumed guard) through the real
+/// reject-recurrence arm now mirrors `blocker::classify`'s resumed guard) through the real
 /// binary, not only through `console.rs`'s own colocated unit test.
 #[test]
-fn rigger_status_needs_you_covers_budget_halt_and_worker_death_recurred_arms() {
+fn rigger_status_needs_you_covers_budget_halt_and_reject_recurrence_arms() {
     let proj = temp_store_project();
     let root = proj.path();
+    let threshold = rigger::blocker::REJECT_RECURRENCE_DIAGNOSE_THRESHOLD;
+    let failed = format!(r#"{{"id":"u-fail","attempts":{threshold},"cause":"reject"}}"#);
     seed_run_events(
         root,
         &[
-            // A unit past the recurrence threshold, never resumed: must appear.
+            // A unit at the reject-recurrence diagnose threshold, never resumed: must appear.
             ("UnitStarted", r#"{"id":"u-fail"}"#),
-            (
-                "UnitFailed",
-                r#"{"id":"u-fail","attempts":2,"cause":"reject"}"#,
-            ),
+            ("UnitFailed", failed.as_str()),
             // A unit an operator has since resumed: must NOT appear - the resumed guard
-            // dock's worker-death-recurred arm now shares with blocker::classify.
+            // dock's reject-recurrence arm now shares with blocker::classify.
             ("UnitStarted", r#"{"id":"u-resumed"}"#),
             (
                 "UnitFailed",
@@ -123,7 +122,7 @@ fn rigger_status_needs_you_covers_budget_halt_and_worker_death_recurred_arms() {
     assert_eq!(
         want.dock.needs_you.len(),
         2,
-        "fixture must exercise exactly the budget-halt and u-fail worker-death-recurred arms, \
+        "fixture must exercise exactly the budget-halt and u-fail reject-recurrence arms, \
          with u-resumed excluded: {:?}",
         want.dock.needs_you
     );
@@ -147,15 +146,18 @@ fn rigger_status_needs_you_covers_budget_halt_and_worker_death_recurred_arms() {
         "expected the budget-halt line; got:\n{out}"
     );
     assert!(
-        out.contains("u-fail: 2 attempts, still parked"),
-        "expected the worker-death-recurred line for u-fail; got:\n{out}"
+        out.contains(&format!(
+            "u-fail: {threshold} failed attempts, the loop is still remediating - audit the \
+             findings (rigger-diagnose-churn)"
+        )),
+        "expected the reject-recurrence line for u-fail; got:\n{out}"
     );
 
     // The regression this round fixes, pinned through the real binary: a just-resumed unit
     // must not read as still-needs-you.
     assert!(
-        !out.contains("u-resumed: 3 attempts, still parked"),
-        "a just-resumed unit must not appear as worker-death-recurred; got:\n{out}"
+        !out.contains(&rigger::ledger::AttentionEntry::reject_recurrence("u-resumed", 3).line()),
+        "a just-resumed unit must not appear as reject-recurrence; got:\n{out}"
     );
 }
 

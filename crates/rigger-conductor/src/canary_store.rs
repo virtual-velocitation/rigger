@@ -26,10 +26,10 @@ use crate::canary::{
 #[cfg(test)]
 use crate::canary::{is_batch_marker, latest_run};
 use crate::conductor::{
-    build_system_prompt, review_protocol, verdict_approves, AgentDriver, AgentResult, Error,
-    SpawnOpts,
+    review_protocol, verdict_approves, AgentDriver, AgentResult, Error, SpawnOpts,
 };
 use crate::config::{split_frontmatter, AgentDef, Config, ReviewPanel};
+use crate::contextgraph::query::referenced_id;
 use crate::contextgraph::TYPE_REVIEW_FINDING;
 use crate::eventstore::{Event, EventStore, ExpectedRevision};
 use crate::instructions::Instruction;
@@ -366,9 +366,14 @@ struct Finding {
 
 impl Finding {
     /// Whether this finding names `item`'s planted-defect file - the catch signal. Matching
-    /// is TOLERANT of how a live reviewer spells the same file (see [`paths_match`]).
+    /// is TOLERANT of how a live reviewer spells the same file (see [`paths_match`]), and a
+    /// citation of lines of a file (`src/sum.rs:12`) names that file ([`referenced_id`]).
     fn catches(&self, item: &CanaryItem) -> bool {
-        !item.anchor.is_empty() && self.about.iter().any(|f| paths_match(f, &item.anchor))
+        !item.anchor.is_empty()
+            && self
+                .about
+                .iter()
+                .any(|f| paths_match(referenced_id(f), &item.anchor))
     }
 }
 
@@ -579,7 +584,7 @@ fn canary_opts(
         unit: format!("canary:{}", item.id),
         stage: "canary".to_string(),
         attempt: 0,
-        system_prompt: build_system_prompt(&agent.prompt, instructions),
+        system_prompt: crate::instructions::compose(&agent.prompt, instructions),
         dir: String::new(),
         isolation: false,
         parallel: false,
@@ -718,7 +723,10 @@ mod tests {
         assert_eq!(opts.unit, "canary:item-1");
         assert_eq!(opts.stage, "canary");
         assert_eq!(opts.attempt, 0);
-        assert_eq!(opts.system_prompt, build_system_prompt(&a.prompt, &[]));
+        assert_eq!(
+            opts.system_prompt,
+            crate::instructions::compose(&a.prompt, &[])
+        );
         let house = [Instruction {
             name: "10-house".to_string(),
             body: "House rule for canaries.".to_string(),
@@ -869,6 +877,16 @@ mod tests {
                  catch",
             ),
             ("a.rs", "other.rs", false, "an unrelated file must not catch"),
+        ]);
+        catches_matches_a_citation_of_lines_of_the_anchor: assert_catches(&[
+            ("src/sum.rs", "src/sum.rs:12", true, "a line of the anchor must catch"),
+            (
+                "src/sum.rs",
+                "/home/dev/repo/src/sum.rs:3-9",
+                true,
+                "a span of lines of an absolute spelling of the anchor must catch",
+            ),
+            ("a.rs", "extra.rs:12", false, "a line of another file must not catch"),
         ]);
     }
 

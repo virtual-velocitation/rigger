@@ -30,7 +30,8 @@
 //! `Projector::open` -> `apply` -> `calls(Direction::Up)` surface:
 //!
 //!  - the `referenced_not_called` PUBLIC FIELD: an UP walk reports, beside the traversed caller DAG,
-//!    the FILE nodes that import / use the seed's name at file level but call it from no function -
+//!    the FILE nodes that import / use the seed's name at file level (or, a staged reference, from a
+//!    definition within them) but call it from no function -
 //!    callers are excluded, the DOWN walk leaves the field empty, and a missing seed yields an empty
 //!    field (never an error);
 //!  - the UP FRONTIER: a cross-file caller whose call name has MULTIPLE definitions comes back a
@@ -483,7 +484,8 @@ fn the_walk_is_project_scoped_and_never_surfaces_another_projects_calls_from_a_s
 fn the_up_walk_lists_referenced_but_not_called_files_at_the_public_boundary_and_excludes_callers() {
     // Spec 52 criterion 3, the UP direction's distinctive PUBLIC field `CallGraph.referenced_not_called`
     // (new in this unit). Beside the traversed caller DAG, an UP walk reports the FILE nodes that
-    // reference the seed's name at file level (a top-level import / use) but call it from NO function
+    // reference the seed's name at file level (a top-level import / use; a staged reference from a
+    // definition within them is listed too, spec 117) but call it from NO function
     // within them - the who-uses-this sites the caller DAG deliberately excludes. Proven over the
     // library's PUBLIC surface; the implementer's inside-out unit test asserts it inside the crate.
     let p = Projector::open(":memory:", "test").unwrap();

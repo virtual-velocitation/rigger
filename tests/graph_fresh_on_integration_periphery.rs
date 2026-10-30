@@ -139,6 +139,7 @@ fn a_landed_units_file_is_fresh_in_the_graph_immediately_after_integration() {
         criteria: Vec::new(),
         log: &|_| {},
         hash_blob: &|_| Ok(String::new()),
+        check_emit: &rigger::contextgraph::check_emit,
     };
 
     let rs = run(&cfg, &deps).unwrap();

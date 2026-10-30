@@ -30,8 +30,8 @@ use std::path::Path;
 
 use common::cli::applied_positions;
 use common::fixtures::{
-    decision_json, def_json, entry_of_a_batch, event_of, live_node_ids, naming, refused,
-    PreLedgerStore,
+    decision_json, def_json, entry_of_a_batch, event_of, live_node_ids, naming, placed_positions,
+    refused, PreLedgerStore,
 };
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{
@@ -40,7 +40,7 @@ use rigger::contextgraph::{
 };
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::Store;
-use rigger::eventstore::{Appended, Direction, Event, EventStore, ExpectedRevision, Filter};
+use rigger::eventstore::{Direction, Event, EventStore, ExpectedRevision, Filter};
 use rigger::ingest::{folding_into, DERIVED_INDEX_TYPES};
 use rigger::retention::{class_of, Class, EPISODIC_TYPES, PERCEPTION_TYPES};
 
@@ -57,11 +57,6 @@ fn rows_of_the_file(db: &Path) -> Vec<(u64, i64, String)> {
         .into_iter()
         .map(|e| (e.position, e.revision, e.type_))
         .collect()
-}
-
-/// The positions `appended` placed its events at, in batch order.
-fn positions(appended: &Appended) -> Vec<u64> {
-    appended.placed().map(|(_, at)| at).collect()
 }
 
 /// A decision `id` governing nothing.
@@ -143,7 +138,7 @@ fn a_derived_batch_through_the_composed_store_is_refused_by_name_and_spends_noth
         .append_and_fold(STREAM, ExpectedRevision::NoStream, &[decision("d1")])
         .expect("a batch holding no derived event is appended");
     assert_eq!(
-        (positions(&kept.appended), kept.fold),
+        (placed_positions(&kept.appended), kept.fold),
         (vec![1], Fold::Folded)
     );
     let one = (
@@ -173,7 +168,7 @@ fn a_derived_batch_through_the_composed_store_is_refused_by_name_and_spends_noth
         .append_and_fold(STREAM, ExpectedRevision::Exact(0), &[decision("d2")])
         .expect("the stream appends at the revision the refusal left it on");
     assert_eq!(
-        (positions(&next.appended), next.fold),
+        (placed_positions(&next.appended), next.fold),
         (vec![2], Fold::Folded)
     );
     assert_eq!(
@@ -193,7 +188,7 @@ fn a_derived_batch_through_the_composed_store_is_refused_by_name_and_spends_noth
     let alone = project
         .append(STREAM, ExpectedRevision::Exact(1), &[entry])
         .expect("a ledger entry is kept");
-    assert_eq!(positions(&alone), vec![3]);
+    assert_eq!(placed_positions(&alone), vec![3]);
     assert_eq!(group_head(), Some((3, "GenerationIngested".to_string())));
     assert_eq!(
         *said.lock().unwrap(),
@@ -306,7 +301,7 @@ fn a_log_holding_pre_ledger_derived_rows_reads_them_refuses_a_new_one_and_append
     let appended = project
         .append(STREAM, ExpectedRevision::Exact(1), &[decision("d1")])
         .expect("a kept event appends after the pre-ledger rows");
-    assert_eq!(positions(&appended), vec![3]);
+    assert_eq!(placed_positions(&appended), vec![3]);
     assert_eq!(
         held(),
         [pre_ledger, vec![(2, "DecisionMade".to_string())]].concat()

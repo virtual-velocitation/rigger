@@ -100,8 +100,7 @@ fn workflow_child_report(
     let status = workflow.status().expect("failed to spawn rigger workflow");
     assert!(!status.success(), "{fails_why}");
 
-    let report = std::fs::read_to_string(&out)
-        .unwrap_or_else(|e| panic!("the stub must run and write {}: {e}", out.display()));
+    let report = common::fixtures::read_text(&out);
     let (sentinel, ppid) = parse_report(&report);
     (sentinel, ppid, report)
 }

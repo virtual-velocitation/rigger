@@ -56,13 +56,12 @@ THE DOCK, decided: `view("dock")` returns three sections. Next: the run's next s
 from the fold - the adjudicator ruling on a unit in review, an implementer finishing a
 round, a rejected unit re-spawning for its next round, a blocked unit unblocking when its
 needs land, the capstone running, release-ready - the first one marked current. Needs you:
-every ledger attention entry (escalated, halted, worker death recurred, budget final tenth,
-stalled frontier), plus release-ready, reject recurrence (two or more rejects on an open unit),
-stale heartbeats and a session the ingester could not find; each item with its exact command
-chips, and when the list is empty the sentence "Nothing needs a human right now. Walk away -
-you will be tapped." Run: spec, base, steps, agents, decisions, findings, the latest decision
-id and time. The guarded buttons on items are spec 97's; this spec renders the commands as
-copyable chips.
+every ledger attention entry (escalated, halted, reject recurrence, budget final tenth,
+stalled frontier), plus release-ready, stale heartbeats and a session the ingester could not
+find; each item with its exact command chips, and when the list is empty the sentence
+"Nothing needs a human right now. Walk away - you will be tapped." Run: spec, base, steps,
+agents, decisions, findings, the latest decision id and time. The guarded buttons on items
+are spec 97's; this spec renders the commands as copyable chips.
 
 CONSTRAINTS WALK: a spawn with neither progress lines nor turns yet - the card reads
 `grounding` from the spawn time, and the ingester's not-found record surfaces if the session

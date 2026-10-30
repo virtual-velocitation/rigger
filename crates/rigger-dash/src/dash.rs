@@ -51,7 +51,7 @@ use crate::contextgraph::{
 // them.
 use crate::contextgraph::query::{
     bucket_label_index, defs_by_entity_suffix, fold_buckets, member_set, memory_rail_of,
-    neighborhood_of, node_file, node_label, node_leaf, node_name, Buckets,
+    neighborhood_of, node_file, node_label, node_leaf, node_name, referenced_id, Buckets,
 };
 pub use crate::contextgraph::query::{
     card, cluster_detail, cluster_key, clustered_overview, explain, memory_rail, neighborhood,
@@ -2681,12 +2681,15 @@ fn event_seed_ids(e: &Event) -> Vec<String> {
             ids.push(id);
         }
     }
-    // The files it concerns - the code the unit produced. A raw path that never became a canonical
-    // node contributes nothing when a consumer filters to real nodes, so it is harmless; the file
-    // is reached anyway via the content node's GOVERNS / ABOUT edge.
+    // The files it concerns - the code the unit produced - each read as the node id it names
+    // ([`referenced_id`]), so a `path:line` citation seeds its file: the citation names no node,
+    // and a seed naming none is dropped where a consumer keeps real nodes (the unit click's
+    // re-point) and leaves the file one hop further from the walk (the run's depth-2 pre-fetch).
+    // A spelling the fold canonicalizes to another id seeds nothing either; its file is still
+    // reached through the content node's GOVERNS / ABOUT edge.
     for f in field_str_array(e, files_key) {
         if !f.is_empty() {
-            ids.push(f);
+            ids.push(referenced_id(&f).to_string());
         }
     }
     ids
@@ -7537,6 +7540,27 @@ mod tests {
         );
     }
 
+    /// A record citing lines of a file (`path:line`, `path:from-to`) seeds that file, the node
+    /// the graph holds, never the citation, which names no node.
+    #[test]
+    fn graph_seeds_seed_the_file_a_record_citing_its_lines_names() {
+        let events = vec![
+            ev(
+                "DecisionMade",
+                r#"{"id":"d1","summary":"x","governs":["a.rs:3-9"]}"#,
+            ),
+            ev(
+                "ReviewFinding",
+                r#"{"id":"f1","by":"sdet","about":["b.rs:12"]}"#,
+            ),
+        ];
+        assert_eq!(
+            graph_seeds(&events),
+            ["a.rs", "b.rs", "d1", "f1"],
+            "the cited files are seeded, never the citations"
+        );
+    }
+
     #[test]
     fn a_units_seed_lands_on_the_neighborhood_of_its_decisions_and_files() {
         // Spec 43 criterion 5 (the click-to-seed re-point): with the KIND_UNIT node gone, seeding
@@ -7557,9 +7581,7 @@ mod tests {
             ),
         ]);
         let p = Projector::open(":memory:", "test").unwrap();
-        for e in &run {
-            crate::test_support::folds(&p, std::slice::from_ref(e));
-        }
+        crate::test_support::folds_each(&p, &run);
         let seeds = graph_seeds(&run);
         assert!(
             !seeds.contains(&"u1".to_string()),
@@ -7620,9 +7642,7 @@ mod tests {
         // Fold the run and pre-fetch its subgraph EXACTLY as the dash does (graph_seeds -> subgraph
         // depth 2), so the route sees the same in-memory graph production serves.
         let p = Projector::open(":memory:", "test").unwrap();
-        for e in &run {
-            crate::test_support::folds(&p, std::slice::from_ref(e));
-        }
+        crate::test_support::folds_each(&p, &run);
         let graph = p.subgraph(&graph_seeds(&run), 2).unwrap();
         assert!(
             !graph.nodes.iter().any(|n| n.id == "u1"),

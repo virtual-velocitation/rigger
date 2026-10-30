@@ -7,6 +7,7 @@ use serde::de::DeserializeOwned;
 use serde::Deserialize;
 
 use crate::contextgraph;
+use crate::contextgraph::query::referenced_id;
 use crate::eventstore::{self, Event, EventStore};
 use crate::run;
 
@@ -33,7 +34,7 @@ pub struct PeerDecision {
 /// This is how concurrent lenses see each other's findings LIVE: a lens emits a
 /// ReviewFinding, the side-car's catch-up subscription picks it up, and a fellow
 /// lens re-checking `rigger_peers` scoped to its files reads it back - the same
-/// channel that surfaces peer decisions, scoped on the finding's `about` files.
+/// channel that surfaces peer decisions, scoped on the files the finding's `about` names.
 #[derive(Clone, Debug, Deserialize)]
 pub struct PeerFinding {
     pub id: String,
@@ -47,9 +48,8 @@ pub struct PeerFinding {
 
 /// A lesson a prior run's escalation recorded, as the side-car surfaces it. Lessons
 /// fold ABOUT the files the failed unit touched, so they scope on `about` exactly like
-/// a [`PeerFinding`]. This is the recovery surface behind the lessons half of the
-/// prompt-budget elision note: when a hot file's lessons are trimmed from a prompt,
-/// `rigger peers <file>` returns the full set here (adj-u1gap17).
+/// a [`PeerFinding`], and `rigger peers <file>` lists them beside the file's decisions and
+/// findings (the newest under the lessons section's budget).
 #[derive(Clone, Debug, Deserialize)]
 pub struct PeerLesson {
     pub id: String,
@@ -64,7 +64,8 @@ pub struct PeerLesson {
 pub trait Peer: DeserializeOwned {
     /// The event type every record of this kind is decoded from.
     const EVENT_TYPE: &'static str;
-    /// The files a record of this kind is scoped on.
+    /// The references a record of this kind is scoped on, each naming the node id
+    /// [`referenced_id`] reads from it.
     const SCOPE: fn(&Self) -> &[String];
 
     /// Every record of this kind in `seen`, in stream order - each matching event's body
@@ -143,8 +144,10 @@ impl Sidecar {
     }
 
     /// The peer records of kind `T` scoped to an agent's blast-radius (§5.3): a peer record is
-    /// relevant only when its [`Peer::SCOPE`] files (a decision's `governs`, a finding's or
-    /// lesson's `about`) intersect the agent's blast-radius. An empty `blast_radius` means "no
+    /// relevant only when the files its [`Peer::SCOPE`] references name (a decision's `governs`,
+    /// a finding's or lesson's `about`) intersect the files the agent's blast-radius names, each
+    /// side read through [`referenced_id`] - so a record citing `a.rs:12` is scoped on `a.rs`. The
+    /// record comes back with its references as written. An empty `blast_radius` means "no
     /// scope" and returns every record (the unscoped [`Self::peers`] behavior), so a caller that
     /// does not know its files still sees its peers.
     pub fn peers_for<T: Peer>(&self, blast_radius: &[String]) -> Vec<T> {
@@ -153,9 +156,13 @@ impl Sidecar {
             return all;
         }
         let scope: std::collections::HashSet<&str> =
-            blast_radius.iter().map(String::as_str).collect();
+            blast_radius.iter().map(|f| referenced_id(f)).collect();
         all.into_iter()
-            .filter(|p| (T::SCOPE)(p).iter().any(|f| scope.contains(f.as_str())))
+            .filter(|p| {
+                (T::SCOPE)(p)
+                    .iter()
+                    .any(|f| scope.contains(referenced_id(f)))
+            })
             .collect()
     }
 }
@@ -231,8 +238,21 @@ mod tests {
         ids: [&str; 2],
         payload: impl Fn(&str, &str) -> serde_json::Value,
     ) -> Vec<P> {
+        peers_scoped_to(type_, ids, ["a.rs", "b.rs"], "a.rs", payload)
+    }
+
+    /// Appends two `type_` events built by `payload(id, file)`, `ids[i]` naming `files[i]`, reads
+    /// them back as `P`, asserts an empty blast-radius returns both, and returns the peers scoped
+    /// to `blast_radius`.
+    fn peers_scoped_to<P: Peer>(
+        type_: &str,
+        ids: [&str; 2],
+        files: [&str; 2],
+        blast_radius: &str,
+        payload: impl Fn(&str, &str) -> serde_json::Value,
+    ) -> Vec<P> {
         let store = Store::open(":memory:").unwrap();
-        for (id, file) in ids.into_iter().zip(["a.rs", "b.rs"]) {
+        for (id, file) in ids.into_iter().zip(files) {
             let data = serde_json::to_vec(&payload(id, file)).unwrap();
             store
                 .append("run", ExpectedRevision::Any, &[Event::new(type_, data)])
@@ -244,7 +264,61 @@ mod tests {
         let all = sidecar.peers_for::<P>(&[]);
         assert_eq!(all.len(), 2);
 
-        sidecar.peers_for::<P>(&["a.rs".into()])
+        sidecar.peers_for::<P>(&[blast_radius.into()])
+    }
+
+    /// The ids of the `P` records the side-car scopes to `blast_radius`, out of two built by
+    /// `payload(id, file)`: `on-a` citing `a.rs:12` and `on-b` citing `b.rs:12-20`.
+    fn ids_citing_lines_scoped_to<P: Peer>(
+        type_: &str,
+        blast_radius: &str,
+        payload: impl Fn(&str, &str) -> serde_json::Value,
+        id: fn(&P) -> &str,
+    ) -> Vec<String> {
+        peers_scoped_to::<P>(
+            type_,
+            ["on-a", "on-b"],
+            ["a.rs:12", "b.rs:12-20"],
+            blast_radius,
+            payload,
+        )
+        .iter()
+        .map(|p| id(p).to_string())
+        .collect()
+    }
+
+    /// A record citing a line of a file, or a span of its lines, is scoped on that file: the
+    /// decision, finding and lesson citing `a.rs:12` come back for the blast-radius `a.rs` and for
+    /// another line of it, `a.rs:40`, while those citing `b.rs:12-20` do not.
+    #[test]
+    fn a_record_citing_lines_of_a_file_is_scoped_on_that_file() {
+        for blast_radius in ["a.rs", "a.rs:40"] {
+            let scoped = [
+                ids_citing_lines_scoped_to::<PeerDecision>(
+                    contextgraph::TYPE_DECISION_MADE,
+                    blast_radius,
+                    |id, file| serde_json::json!({"id": id, "summary": "x", "governs": [file]}),
+                    |d| &d.id,
+                ),
+                ids_citing_lines_scoped_to::<PeerFinding>(
+                    contextgraph::TYPE_REVIEW_FINDING,
+                    blast_radius,
+                    |id, file| serde_json::json!({"id": id, "by": "lens", "summary": "x", "about": [file]}),
+                    |f| &f.id,
+                ),
+                ids_citing_lines_scoped_to::<PeerLesson>(
+                    contextgraph::TYPE_LESSON_LEARNED,
+                    blast_radius,
+                    |id, file| serde_json::json!({"id": id, "summary": "x", "about": [file]}),
+                    |l| &l.id,
+                ),
+            ];
+            assert_eq!(
+                scoped,
+                [["on-a"], ["on-a"], ["on-a"]],
+                "the decision, finding and lesson scoped to {blast_radius}"
+            );
+        }
     }
 
     crate::test_cases! {

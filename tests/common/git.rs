@@ -1,9 +1,12 @@
 //! Git fixtures for the integration suites, re-exported from [`super::fixtures`] - the one
 //! definition the crate's own unit tests share - plus the suite-only go-gitsemver fixture.
+//! The other suite-only fixtures beside it: a commit of given files, a linked worktree nested
+//! under a project, and the object database's reads - every object id it holds, the bytes of a
+//! blob - with the premise that it holds none.
 
 #![allow(unused_imports)]
 
-use super::fixtures::write_file;
+use super::fixtures::write_files;
 use std::path::{Path, PathBuf};
 
 pub use super::fixtures::{
@@ -12,12 +15,10 @@ pub use super::fixtures::{
     trimmed_stdout,
 };
 
-/// Write each `(path, content)` of `files` into `repo` through the shared [`write_file`], commit
+/// Write each `(path, content)` of `files` into `repo` through the shared [`write_files`], commit
 /// everything as `message` through [`git_commit_all`], and return the new HEAD.
 pub fn commit_files(repo: &Path, files: &[(&str, &str)], message: &str) -> String {
-    for (rel, content) in files {
-        write_file(&repo.join(rel), content.as_bytes());
-    }
+    write_files(repo, files);
     git_commit_all(repo, message);
     git_out(repo, &["rev-parse", "HEAD"])
 }
@@ -31,6 +32,40 @@ pub fn nested_worktree(root: &Path, name: &str) -> PathBuf {
     std::fs::create_dir_all(nested.parent().unwrap()).unwrap();
     git_ok(root, &["worktree", "add", "-q", nested.to_str().unwrap()]);
     nested
+}
+
+/// The id of every object the object database of the repository at `root` holds, loose or
+/// packed, in id order: empty for a repository that holds none.
+pub fn object_ids(root: &Path) -> std::collections::BTreeSet<String> {
+    git_out(
+        root,
+        &[
+            "cat-file",
+            "--batch-all-objects",
+            "--batch-check=%(objectname)",
+        ],
+    )
+    .lines()
+    .map(str::to_string)
+    .collect()
+}
+
+/// Assert, as a test's premise, that the object database of the repository at `root` holds no
+/// object ([`object_ids`] answers empty), so each object it holds afterwards is one the command
+/// under test wrote.
+pub fn assert_holds_no_object(root: &Path) {
+    assert_eq!(
+        object_ids(root),
+        std::collections::BTreeSet::new(),
+        "premise: the object database holds no object before the command runs"
+    );
+}
+
+/// The bytes the object database of the repository at `root` holds under the blob `id`, as
+/// `git cat-file blob` prints them, or `None` when it holds no such blob.
+pub fn held_blob(root: &Path, id: &str) -> Option<Vec<u8>> {
+    let out = run_git(root, &["cat-file", "blob", id]);
+    out.status.success().then_some(out.stdout)
 }
 
 /// A go-gitsemver fixture repository at `root`: `go-gitsemver.yml` matching this repo's own

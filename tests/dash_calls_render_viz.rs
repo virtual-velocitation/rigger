@@ -196,8 +196,9 @@ fn the_served_page_ships_the_directed_call_layered_render() {
         "a delegated listener must dispatch the two directed queries (data-calls-down / data-calls-up)"
     );
 
-    // The UP-walk SIDECAR: the flat "referenced but not called" who-uses list (files that import the
-    // seed's name but call it from no function) rides beside the traversed DAG.
+    // The UP-walk SIDECAR: the flat "referenced but not called" who-uses list (files that reference
+    // the seed's name - a file-level import or a definition's reference within them - but call it
+    // from no function) rides beside the traversed DAG.
     assert!(
         page.contains("referenced_not_called"),
         "the UP render must read the route's referenced_not_called sidecar"

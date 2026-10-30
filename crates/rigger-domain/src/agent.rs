@@ -244,6 +244,15 @@ pub fn parked_spawn(id: &str) -> Error {
     ))
 }
 
+/// Sentinel prefixed to the [`Error`] a spawn's in-process emit callback returns when the emit
+/// guard refused a record the agent emitted - a payload the fold cannot apply, or an id another
+/// seat holds - so the conductor tells the refusal (a defect in what the agent printed, charged
+/// to the implementer's attempt or re-run once with the refusal in every other author's prompt)
+/// from a spawn fault (an outage, rerun uncharged) without reading the guard's prose. It crosses the `AgentDriver` port inside the spawn's error, as [`PARKED_MARKER`]
+/// does, in the same control-character idiom; [`strip_failure_marker`] drops it before the
+/// text reaches an agent's prompt or the operator.
+pub const EMIT_REFUSED_MARKER: &str = "\u{1}rigger:emit-refused\u{1}";
+
 // ---- FAILURE CLASS (spec 104 criterion 5: A FAILURE HAS A CLASS) ----
 //
 // adj-u104c5 REQUIRED FIX 3 (arch-u104c5-failure-class-belongs-in-conductor-not-driver):
@@ -364,18 +373,27 @@ pub fn no_result_error(class: AgentFailure, message: String) -> Error {
     Error(format!("{FAILURE_MARKER}{class}{FAILURE_MARKER}{message}"))
 }
 
-/// Drop the [`FAILURE_MARKER`]-bracketed class [`no_result_error`] embeds ahead of its
-/// message, if present, leaving only the human-readable text (adj-u104c5 REQUIRED FIX 2,
-/// sdet-u104c5-failure-marker-leaks-unstripped-into-operator-visible-text). Unlike
-/// `PARKED_MARKER`/`PLAN_LANDING_MARKER`/`LAND_REFUSED_MARKER` - bare prefixes a plain
+/// Drop the class marker a driver spawn [`Error`] carries ahead of its message, if present,
+/// leaving only the human-readable text: the [`FAILURE_MARKER`]-bracketed class
+/// [`no_result_error`] embeds (adj-u104c5 REQUIRED FIX 2,
+/// sdet-u104c5-failure-marker-leaks-unstripped-into-operator-visible-text), or the
+/// [`EMIT_REFUSED_MARKER`] the conductor's agent emit puts ahead of an emit guard's refusal
+/// (dropped here because its readers - the implementer's attempt arm and the refused record's
+/// re-run - match it before this strip runs, while `PARKED_MARKER` and `BUDGET_MARKER` pass
+/// through untouched, since callers upstream still branch on them).
+/// Unlike `PARKED_MARKER`/`PLAN_LANDING_MARKER`/`LAND_REFUSED_MARKER` - bare prefixes a plain
 /// `.replace(MARKER, "")` cleans - [`FAILURE_MARKER`] brackets DATA (the class name) that
 /// the message ALSO repeats in prose (`no_result_error`'s own "class {class}"), so a bare
 /// `.replace` would leave that class name's raw text glued onto the message with nothing
-/// separating them. Every site that turns a driver spawn `Err` into operator-facing text (a
-/// lesson, an escalation reason, a wrapped stage error) calls this FIRST, exactly once,
-/// rather than re-deriving the strip; `e` carrying no marker (every other driver's error, or
-/// text already stripped) passes through byte-for-byte unchanged.
+/// separating them. Every site that turns a driver spawn `Err` into text an agent or the
+/// operator reads (a retry prompt, a lesson, an escalation reason, a wrapped stage error)
+/// calls this FIRST, exactly once, rather than re-deriving the strip; `e` carrying no marker
+/// (every other driver's error, or text already stripped) passes through byte-for-byte
+/// unchanged.
 pub fn strip_failure_marker(e: &Error) -> String {
+    if let Some(refusal) = e.0.strip_prefix(EMIT_REFUSED_MARKER) {
+        return refusal.to_string();
+    }
     let Some(rest) = e.0.strip_prefix(FAILURE_MARKER) else {
         return e.0.clone();
     };

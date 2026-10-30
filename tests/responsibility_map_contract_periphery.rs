@@ -52,7 +52,6 @@
 mod common;
 
 use common::repo::committed_json;
-use common::repo::repo_root;
 use common::repo::{assert_committed_json_round_trips, assert_committed_ledger_is_nonempty};
 use serde::Deserialize;
 
@@ -275,7 +274,7 @@ fn the_committed_map_and_its_lines_sibling_are_position_joined() {
     }
 }
 
-const REPORT_PATH: &str = "docs/audit/2026-09-simplification-audit.md";
+use common::repo::AUDIT_REPORT_PATH as REPORT_PATH;
 
 /// Section 1's per-entry citations (`render_section_1`'s own shared template for both the
 /// "Proposed module tree" and "Unassigned" lists: `` `{file}:{start}-{end}` `{name}` - {reason}
@@ -311,8 +310,7 @@ fn section_1_citations(report: &str) -> Vec<(String, String, usize, usize)> {
 /// `render_section_1` re-groups by module so bare array position does not correspond either).
 #[test]
 fn the_committed_report_section_1_cites_file_line_exactly_as_the_lines_sibling_records_them() {
-    let report = std::fs::read_to_string(repo_root().join(REPORT_PATH))
-        .unwrap_or_else(|e| panic!("{REPORT_PATH} is missing or unreadable ({e})"));
+    let report = common::repo::repo_text(REPORT_PATH);
     let citations = section_1_citations(&report);
     let lines = committed_json::<Vec<ConsumedMapEntryLines>>(MAP_LINES_PATH, "lines contract");
     assert_eq!(

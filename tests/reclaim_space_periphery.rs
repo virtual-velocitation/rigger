@@ -33,7 +33,7 @@
 
 mod common;
 
-use common::fixtures::{file_len, plant_free_pages, pragma_i64};
+use common::fixtures::{file_len, plant_free_pages, pragma_i64, DATABASE_IS_LOCKED};
 use rigger::eventstore::sqlite::{Reclamation, Store};
 use rigger::eventstore::{Direction, Error, Event, EventStore, ExpectedRevision};
 use std::sync::{Mutex, MutexGuard};
@@ -52,7 +52,7 @@ fn serial() -> MutexGuard<'static, ()> {
 /// What the store carries into [`Reclamation::compaction_error`] when the write lock is still
 /// held at the end of the engine's busy timeout.
 fn write_lock_held() -> String {
-    Error::Backend("database is locked".into()).to_string()
+    Error::Backend(DATABASE_IS_LOCKED.into()).to_string()
 }
 
 // ---------------------------------------------------------------------------------------

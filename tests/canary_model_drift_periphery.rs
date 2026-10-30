@@ -33,6 +33,7 @@ use std::path::Path;
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves.
 mod common;
 
+use common::cli::pin_identity;
 use common::cli::run_rigger;
 use common::cli::temp_project;
 
@@ -61,7 +62,7 @@ fn seed_two_runs(
 
     let rigger_dir = root.join(".rigger");
     std::fs::create_dir_all(&rigger_dir).unwrap();
-    std::fs::write(rigger_dir.join("project.id"), format!("{project}\n")).unwrap();
+    pin_identity(root, project);
 
     let backend = Store::open(rigger_dir.join("events.db").to_str().unwrap()).unwrap();
     let store = Namespaced::new(&backend, project);

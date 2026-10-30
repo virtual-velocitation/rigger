@@ -63,7 +63,17 @@ your committed tree:
 - `cargo test --test boundary_audit`, `sh .rigger/gates/content.sh style`,
   `sh .rigger/gates/content.sh no-os-kill` and `sh .rigger/gates/red-before-green.sh`;
 - every test binary your change touched, on both lanes: `cargo test -p <crate> --lib` or
-  `cargo test --test <file>`, then the same with `--no-default-features`.
+  `cargo test --test <file>`, then the same with `--no-default-features`. When your production
+  hunks touch `src/` or `crates/`, those binaries include every root test that reads a
+  checked-in file as text, edited by you or not, since a text pin goes red when a hunk moves
+  the text it reads: the top-level `tests/*.rs` files spelling one of the ways to the tree this
+  command names - the package root `CARGO_MANIFEST_DIR`, a compile-time include, a read given a
+  literal path (a root test runs from the package root), the audit-record reader and the
+  walkers, which read the root-relative path their caller hands them, and each `tests/common`
+  helper that resolves against the root, by its bare name so a turbofish call is found too -
+  which lists them and runs them in one invocation; run it again with
+  `xargs cargo test --no-default-features` as its last stage:
+  `git ls-files 'tests/*.rs' | awk -F/ 'NF == 2' | xargs awk 'index($0, "CARGO_MANIFEST_DIR") || index($0, "include_str!(") || index($0, "include_bytes!(") || index($0, "read_to_string(\"") || index($0, "fs::read(\"") || index($0, "read_dir(\"") || index($0, "File::open(\"") || index($0, "read_text(Path::new(\"") || index($0, "read_audit_record") || index($0, "production_sources") || index($0, "collect_rs_files") || index($0, "collect_files") || index($0, "for_each_rs_file") || index($0, "repo_root") || index($0, "repo_text") || index($0, "stub_path") || index($0, "write_critique_stub") || index($0, "committed_json") || index($0, "assert_committed_ledger_is_nonempty") || index($0, "assert_doc_carries_none_of") || index($0, "production_main_rs") || index($0, "worker_label") || index($0, "run_capturing_system_prompt") || index($0, "record_critique") || index($0, "record_clean_critique") || index($0, "refused_run") || index($0, "echo_agent_path") || index($0, "assert_no_src_line_gates_on") || index($0, "assert_real_tree_clean") { print FILENAME }' | sort -u | sed 's|^tests/||; s|\.rs$||; s|^|--test |' | xargs cargo test`.
 
 Each run above, the test binaries on both lanes and any `sh .rigger/gates/lanes.sh <lane>` run
 a unit asks of you included, takes minutes here: run it in the foreground with the Bash timeout
@@ -85,35 +95,12 @@ reach) and `tests/common/cli.rs` (root tests only); and the root integration fil
 `tests/*.rs`. The graph carries no test-helper node yet, so search all three with Read, awk or
 python3 before you write a helper, fixture, builder, expected line or oracle.
 
-The two counted checks. A renamed or retired name's old spelling is counted over the tracked
+The counted check. A renamed or retired name's old spelling is counted over the tracked
 files of `src/`, `crates/`, `tests/`, `docs/`, `skills/`, `scaffold/` and `.rigger/`, the
 `tests/*.rs` doc comments, `//!` module docs, comments and assertion messages included; the
 hook blocks grep and rg, so count with
 `git ls-files src crates tests docs skills scaffold .rigger | xargs awk -v t='<old>' 'index($0, t) { print FILENAME ":" FNR }'`.
-It prints nothing, or your hand-over names each line it prints with its reason. Every
-test-side shape you add, merged or not, is recorded as one `<unit>-test-shape-audit`
-DecisionMade naming each site FIXED or CHECKED, after a search of the three test homes above.
-The search is this command, one run per distinguishing expression, the expression its one
-argument; it reads every `.rs` file under a `tests/` directory whole, the contract module whole
-and each other file under `crates/*/src/` from its first `#[cfg(test)]` on, and the root crate's
-`src/` test modules the same way, and ends with the hit count:
-`git ls-files tests crates src | t='<expression>' xargs awk 'FNR == 1 { s = FILENAME ~ /(^|\/)tests\/.*\.rs$|\/contract\.rs$/ } FILENAME ~ /\.rs$/ && /^[[:space:]]*#\[cfg\((all\()?test/ { s = 1 } s && index($0, ENVIRON["t"]) { n++; print FILENAME ":" FNR ": " $0 } END { print n + 0 " hits" }'`.
-The expressions are the statements' own terms, never a body's name: every string literal each
-test-side body you add or edit spells, in full, and every call it makes outside the shared home
-with its first argument token (`create_dir_all(root.join(`, `for_extension("rs")`), the command
-run once per term. The bodies are read over the unit's whole range: a body you add whole, every
-statement, and a body you edit in the statements
-`git diff $(git merge-base rigger-run HEAD)..HEAD -- tests crates src` shows changed, a twin
-found only among statements you did not touch named in your hand-over as the tree's debt. A
-literal's term is the literal alone, its quotes inside the term
-(`t='"src/f.rs"'`) and nothing around it - never the call, format string or statement that
-spells it - one run per literal, none set aside as short or conventional (`"x"`, `":memory:"`, a
-fixture path), and every hit the run prints listed under its disposition. A `'` in the expression is written `'\''`. The record pastes each command as run, its hit
-count and every hit it printed, each FIXED or CHECKED, and the `sdet` lens re-runs each on the
-review tree. The record is organised by statement: each statement you add or edit is quoted
-with its `file:line` and followed by its terms and their searches, a single call into the
-shared home marked so with its callee named; a term the statement spells that the record lacks
-under it is a record defect the `sdet` lens blocks on.
+It prints nothing, or your hand-over names each line it prints with its reason.
 
 The sentence walk's generators, run at head against the base your prompt names (`rigger-run`
 when it names none): `git diff --name-only <base>..HEAD` lists the changed files, the `//!`
@@ -128,31 +115,30 @@ item's name, each read. The count and the caller lookup run once per item of the
 list - every item the hunks touch, new or pre-existing, its body or its doc changed - each
 item's count run as
 `git ls-files src crates tests docs skills scaffold .rigger | xargs awk -v t='<name>' 'index($0, t) { print FILENAME ":" FNR }'`
-with its name, and the record pairs each item of the hunk list with its count, the lines read
-and its callers. Each item the hunks add - a constant, static, list, closure, predicate - a SQL
-conjunct inside a query string included - or fn - carries beside its count its one-home line in one of the working discipline's three forms: `no
-other spelling` with the terms searched (its name count, its caller lookup and the fact's
-distinguishing literal - a table name, a kind string - run with the count above), `derived from
-<file:line>` or `pinned to <file:line> by <test>`. The item list is read from the hunks by shape as well as
-by name: every boolean expression they add - an `if`, `else if`, `while` or match-guard
-condition, each operand of an `&&` or `||` chain inside one, the body of a closure passed to
-`filter`, `any`, `all`, `retain`, `position` or `find`, a conjunct inside a query, format or
-macro string - is quoted with its `file:line` under the record's `ADDED PREDICATES` heading
-with its one-home line, a changed condition among them listed there too, and two of one fact
-are lifted to one home or `pinned to` each other. A set of named members - an array of
-constants, an `IN (..)` list, a `matches!` or `match` arm per member, an `||` chain of
-equalities - runs the count above once per member's name, every statement, `match` or macro
-call holding two or more members read as a second spelling of the set, and its line names the
-member sites it read. On every round, the first and each later one alike, `<base>` is the
-unit's merge base with that branch, `$(git merge-base rigger-run HEAD)`, so the walk's range is
-`$(git merge-base rigger-run HEAD)..HEAD`, the unit's whole range, never the round's delta your
-prompt carries. The walk is recorded as one `<unit>-sentence-walk` DecisionMade
-beside the `<unit>-test-shape-audit` one, naming what each generator returned and every
-sentence FIXED with its location. Each FIXED or new line of the record carries its witness
-beside that location: the `file:line` of the code at head that makes the sentence true. A
-sentence with a quantifier (every, all, always, any, a plural subject with a predicate) carries
-one witness per case the code splits its subject into - each arm, key component, filter
-condition or match branch - the cases named in the record.
+with its name. Each item the hunks add - a constant, static, list, closure, predicate - a SQL
+conjunct inside a query string included - or fn - carries its one-home line in one of the
+working discipline's three forms: `no other spelling` with the terms searched (its name count,
+its caller lookup and the fact's distinguishing literal - a table name, a kind string - run
+with the count above), `derived from <file:line>` or `pinned to <file:line> by <test>`. The
+item list is read from the hunks by shape as well as by name: every boolean expression they
+add - an `if`, `else if`, `while` or match-guard condition, each operand of an `&&` or `||`
+chain inside one, the body of a closure passed to `filter`, `any`, `all`, `retain`,
+`position` or `find`, a conjunct inside a query, format or macro string - is an item with its
+`file:line` and its one-home line, a changed condition among them included, and two of one
+fact are lifted to one home or `pinned to` each other. That set is read with one generator, run
+at head from the worktree root: it prints, as `file:line: text`, each line the walk's range adds
+to a production source under `src/` or `crates/*/src/`, above the file's test module (the first
+column-0 `#[cfg(test)]` over a `mod` body) and outside a comment, that carries a mark of one of
+those shapes, and each hit is read, the boolean expression it holds quoted as that item with its
+`file:line` and its one-home line, a hit that holds none passed over with no line of its own:
+`git diff -U0 $(git merge-base rigger-run HEAD)..HEAD -- src 'crates/*/src/*' | awk '/^\+\+\+ / { f = substr($0, 7); cut = 0; n = 0; m = 0; while ((getline line < f) > 0) { n++; if (line ~ /^#\[cfg\(test\)\]/) m = n; else if (m && line !~ /^[ \t]*(#\[|\/\/|$)/) { if (line ~ /^(pub(\([a-z]+\))? )?mod [^;]*[{]/) { cut = m; break } m = 0 } } close(f); next } /^@@ / { split($3, h, ","); at = substr(h[1], 2) + 0; next } /^\+/ { s = substr($0, 2); if ((!cut || at < cut) && s !~ /^[ \t]*\/\// && (index(s, " if ") || index(s, " while ") || index(s, " && ") || index(s, " || ") || index(s, "==") || index(s, "!=") || index(s, "<=") || index(s, ">=") || index(s, " < ") || index(s, " > ") || index(s, ".filter(") || index(s, ".any(") || index(s, ".all(") || index(s, ".retain(") || index(s, ".position(") || index(s, ".find(") || index(s, "is_some_and(") || index(s, "is_none_or(") || index(s, "is_ok_and(") || index(s, "is_err_and(") || index(s, "matches!(") || index(s, " AND ") || index(s, " OR ") || index(s, "WHERE "))) print f ":" at ": " s; at++ }'`
+A set of named members - an array of constants, an `IN (..)` list, a `matches!` or `match` arm
+per member, an `||` chain of equalities - runs the count above once per member's name, every
+statement, `match` or macro call holding two or more members read as a second spelling of the
+set, and its line names the member sites it read. On every round, the first and each later one
+alike, `<base>` is the unit's merge base with that branch, `$(git merge-base rigger-run HEAD)`,
+so the walk's range is `$(git merge-base rigger-run HEAD)..HEAD`, the unit's whole range, never
+the round's delta your prompt carries.
 
 Each rule the change rewrites is searched by two short terms for its old statement and for
 each label its cases carried (a name a doc, test or comment gives a case the old rule
@@ -166,9 +152,6 @@ when the joined text holds both terms, in either order and with any words, names
 between them, so a term in another case, or a sentence a rewrap splits across two lines, is
 still a hit, and ends with the hit count:
 `git ls-files | awk '/\.(rs|md|sh|yml|toml|json|js|mjs|html)$/' | a='<feature name>' b='<noun phrase>' xargs awk 'BEGIN { a = tolower(ENVIRON["a"]); b = tolower(ENVIRON["b"]) } FNR == 1 { p = "" } { s = tolower($0); sub(/^[[:space:]]*(\/\/[\/!]?|#+|\*)?[[:space:]]*/, "", s); j = p " " s } index(s, a) && index(s, b) || index(j, a) && index(j, b) && !(index(p, a) && index(p, b)) { n++; print FILENAME ":" FNR ": " $0 } { p = s } END { print n + 0 " hits" }'`.
-The `<unit>-sentence-walk` record pastes each command as run, its hit count and every hit it
-printed, each FIXED or CHECKED with its reason, or names the rewritten-rule set empty; the
-`sdet` lens re-derives the generators' sets and re-runs each search on the review tree.
 
 A changed condition rewrites a rule too: every boolean term your production hunks in `crates/`
 and `src/` add to or remove from a filter, guard or predicate, listed from
@@ -178,7 +161,19 @@ changes the rule its function answers. Its old statement is what the function's 
 paragraphs, the docs of the variants the answer maps to and the oracles asserting them - and
 each such consumer phrase runs as a pair of the search above, the function's name as the code
 spells it and the old answer's noun, one run per pair, every hit FIXED with the new qualifier
-or CHECKED with the reason it does not reach it.
+or CHECKED where it does not reach it.
+
+The walk is recorded as one `<unit>-sentence-walk` DecisionMade, bounded so you write it in one
+pass. It carries each generator and search command as run with its hit count, never its pasted
+hits; every sentence FIXED, with its `file:line` and the `file:line` of the code at head that
+makes it true, one witness per case for a sentence with a quantifier (every, all, always, any,
+a plural subject with a predicate) - each arm, key component, filter condition or match branch
+the code splits its subject into, the cases named; each doc block the unit added, by
+`file:line`, with its witness; each item the unit adds with its one-home line; and the CHECKED
+remainder as one count per command. It owes no per-hit or per-line disposition, no count block
+beside each item and no section of its own for added or changed conditions. This bounded record
+satisfies the hand-over; the `sdet` lens re-runs the generators and searches on the review tree
+and reads the hits itself.
 
 ## Every test asserts exactly
 

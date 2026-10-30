@@ -1,5 +1,7 @@
-//! Fixtures over the sqlite-backed event log.
+//! Fixtures over the `store`-gated surfaces: the sqlite-backed event log's minted events and replay
+//! keys, the machine-global instance registry, and git worktrees and their hooks.
 
+use rigger::config::RIGGER_DIR;
 use rigger::eventstore::Event;
 
 /// Race two `Worktree::create` calls against the ONE repository at `repo_path` for `rounds`
@@ -39,6 +41,30 @@ pub fn assert_concurrent_creates_succeed(
             rb.err()
         );
     }
+}
+
+/// A machine-global instance registry under a fresh `XDG_STATE_HOME` holding one entry, written by
+/// `writer`, for `project` at `root` (its local store under `root/.rigger/events.db`) last heard
+/// from at `heartbeat_ms`; returns the state home and the entry's file.
+pub fn seed_registry(
+    project: &str,
+    root: &str,
+    heartbeat_ms: u64,
+    writer: rigger::registry::Writer,
+) -> (tempfile::TempDir, std::path::PathBuf) {
+    let state_home = tempfile::tempdir().expect("create XDG_STATE_HOME");
+    let inst = rigger::registry::Instance {
+        project: project.to_string(),
+        root: root.to_string(),
+        store: rigger::registry::StoreIdentity::Local {
+            path: format!("{root}/{RIGGER_DIR}/events.db"),
+        },
+        heartbeat_ms,
+        writer,
+    };
+    let entry = rigger::registry::write(&rigger::registry::instances_dir(state_home.path()), &inst)
+        .expect("seed a registry entry");
+    (state_home, entry)
 }
 
 /// Every registry entry under `state_home` with its path, decoded through `Instance`'s own

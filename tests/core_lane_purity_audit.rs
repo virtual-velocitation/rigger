@@ -24,6 +24,8 @@
 //! authored and confirmed clean - see this file's own `verification` field in the JSON and this
 //! unit's own `DecisionMade` record.
 
+mod common;
+
 use std::fs;
 use std::path::Path;
 use std::process::Command;
@@ -37,7 +39,7 @@ const PURITY_RECORD: &str = "docs/audit/core-lane-purity.json";
 
 /// A line, 1-indexed, from a source file.
 fn nth_line(path: &str, line: u64) -> String {
-    let text = fs::read_to_string(path).unwrap_or_else(|e| panic!("reading {path}: {e}"));
+    let text = common::fixtures::read_text(Path::new(path));
     text.lines()
         .nth((line - 1) as usize)
         .unwrap_or_else(|| panic!("{path}:{line} - file has fewer lines than that"))
@@ -75,7 +77,7 @@ const CRATE_PATTERNS: &[&str] = &[
 /// is itself a banned import", is never misread as a real usage). Returns `(line, pattern)`
 /// pairs, 1-indexed, in file order.
 fn scan(path: &str) -> Vec<(usize, &'static str)> {
-    let text = fs::read_to_string(path).unwrap_or_else(|e| panic!("reading {path}: {e}"));
+    let text = common::fixtures::read_text(Path::new(path));
     let mut hits = Vec::new();
     for (i, line) in text.lines().enumerate() {
         if line.trim_start().starts_with("//") {
@@ -144,7 +146,7 @@ fn split_crate_parent(m: &str) -> Option<(String, String)> {
         }
         Some((dir, name)) => (format!("{src}/{dir}.rs"), name),
     };
-    let text = fs::read_to_string(&parent).unwrap_or_else(|e| panic!("reading {parent}: {e}"));
+    let text = common::fixtures::read_text(Path::new(&parent));
     Some((text, name.to_string()))
 }
 
@@ -270,10 +272,12 @@ fn no_core_module_imports_the_banned_set_outside_its_cited_store_gate() {
     assert_eq!(
         actual, expected_sorted,
         "the live banned-pattern scan over core_modules no longer matches \
-         docs/audit/core-lane-purity.json's found_occurrences - either a NEW banned import \
+         docs/audit/core-lane-purity.json's found_occurrences - a NEW banned import \
          landed in a core module (THE PURITY RULE violation, fix it or gate it and re-run \
-         RIGGER_AUDIT_WRITE=1-equivalent by hand to update the record), or a previously-gated \
-         one was removed (update the record to drop the stale citation)"
+         RIGGER_AUDIT_WRITE=1-equivalent by hand to update the record), a previously-gated \
+         one was removed (update the record to drop the stale citation), or a line added or \
+         removed above a cited one moved it (update the record to cite its line and its \
+         gated_by_line where they now stand)"
     );
 
     // Every cited occurrence's gated_by_line genuinely carries the required attribute text.

@@ -105,9 +105,19 @@
     "reason": "Two `new() -> Self::default()` constructors on two unrelated types, the idiomatic pairing clippy's `new_without_default` asks every `new` to have."
   },
   {
-    "id": "dup-bb7aa56f67d8",
+    "id": "dup-be2d1a3f8f8b",
     "disposition": "not-a-duplicate",
-    "reason": "Two builder setters on two different types setting different fields (`valid_from` on an event, `meta` on a spawn result)."
+    "reason": "Three one-line named fixtures over two different shared helpers: `plant_stale_marker` passes an hour's age to `plant_marker`, and `drop_the_cursor` and `drop_the_cursor_s_log` pass two different schema changes (the cursor table, the column recording its log) to `change_the_schema`."
+  },
+  {
+    "id": "dup-b7996d22b4c4",
+    "disposition": "not-a-duplicate",
+    "reason": "Three one-line named row fixtures of the catch-up's cause tables, each handing the row's path to a different shared helper: `without_a_cursor` drops the cursor table, `beside_another_log` records the cursor beside another log's identity, and `beside_no_log` drops the column recording its log."
+  },
+  {
+    "id": "dup-e45a74e51e8a",
+    "disposition": "not-a-duplicate",
+    "reason": "Four builder setters on three different types setting different fields (`valid_from` on an event, `meta` on a spawn result, `store` (the identity of the log it folds) and `lock_ceiling` on the graph projector, the last compiled for the graph crate's tests alone)."
   },
   {
     "id": "dup-3b3a41e03376",
@@ -350,7 +360,7 @@
     "reason": "Each ingest half's own file-batch entry point over a different source: the design pass walks the tree for concept and link events, the symbols pass parses code at the default parse width, and the workflow pass lowers `.rigger/workflow.yml` into one batch."
   },
   {
-    "id": "dup-833f66b34f28",
+    "id": "dup-8c8ae0851675",
     "disposition": "not-a-duplicate",
     "reason": "Two different lowerings sharing a name: symbols lowers one file's parsed `FileSymbols` into code-entity and edge events, while workflowdef lowers the workflow definition's stages, gates and roles into concept and link events."
   },
@@ -435,9 +445,9 @@
     "reason": "Two source slicers over different sources and markers: the step-courier prompt literal in the embedded workflow driver versus the `cmd_step` function body in `src/main.rs`."
   },
   {
-    "id": "dup-582bf6d9907e",
+    "id": "dup-1065bd3505a8",
     "disposition": "not-a-duplicate",
-    "reason": "Four predicates that each test membership in a different fixed vocabulary (intent-doc kinds, label-doc kinds, derived-index event types, Rust keywords); only the `matches!`/slice-contains shape is shared."
+    "reason": "Five predicates that each test membership in a different fixed vocabulary (intent-doc kinds, label-doc kinds, derived-index event types, Rust standard-library roots, Rust keywords); only the `matches!`/slice-contains shape is shared."
   },
   {
     "id": "dup-2a5626cb9627",
@@ -450,9 +460,9 @@
     "reason": "`spawn_is_recorded` checks a test driver's recorded spawn set while `is_shared` classifies a graph query result; the shared shape is a single boolean lookup."
   },
   {
-    "id": "dup-e2420edc22e9",
+    "id": "dup-cde89b281edb",
     "disposition": "not-a-duplicate",
-    "reason": "`unit_branch` names a unit's git branch while `key_expr` builds a SQL key expression; both are one-line `format!` calls over different templates."
+    "reason": "`unit_branch` names a unit's git branch, `key_expr` builds a SQL key expression, `proof_targets_sql` builds the read of the targets a key's proof rows resolve to and the test-side `not_folded_suffix` builds the `; ` clause a report line ends with when the graph did not fold its event; each is one `format!` call over a different template."
   },
   {
     "id": "dup-ebee743f02de",
@@ -515,7 +525,7 @@
     "reason": "Each store adapter's one forward read of a stream over its own backend: the sqlite `read_forward` steps one SQL statement over the events table, spelling a failure as its caller asks, the kurrentdb `read_forward` takes the first events of the gRPC forward read `forward_records` pulls. One per adapter is the design (spec 101); neither can serve the other's backend."
   },
   {
-    "id": "dup-a2973e00918e",
+    "id": "dup-2a4f88aea011",
     "disposition": "not-a-duplicate",
     "reason": "Tests that each assert a different property of a different served page or shipped file; only the fetch-then-contains shape is shared."
   },
@@ -750,14 +760,14 @@
     "reason": "CLI tests that each drive a different command through the shared project fixtures and run_rigger and assert a different outcome; they share only the arrange-run-assert idiom."
   },
   {
-    "id": "dup-c72ffc4edd8c",
+    "id": "dup-3cfa6389efb7",
     "disposition": "not-a-duplicate",
     "reason": "CLI tests that each drive a different command through the shared project fixtures and run_rigger and assert a different outcome; they share only the arrange-run-assert idiom."
   },
   {
-    "id": "dup-751f1b83af79",
+    "id": "dup-9418a9e1c36a",
     "disposition": "not-a-duplicate",
-    "reason": "Multi-step scenario tests over different workflows (budget halt, hung unbounded spawn, recurrence and stalled frontier) through the shared step_line fixture; each asserts a different attention sequence."
+    "reason": "Multi-step scenario tests over different workflows (budget halt, hung unbounded spawn) through the shared step_line fixture; each asserts a different attention sequence."
   },
   {
     "id": "dup-ea8a80f3da16",
@@ -835,11 +845,6 @@
     "reason": "`McpSession::from_command` is the one session constructor; `start_with` is a one-line call to it over the isolated `rigger_command`, and `start` a one-line default-arguments call to `start_with`; seven call sites open a plain `rigger mcp` session through `start`."
   },
   {
-    "id": "dup-e3a49d3d408e",
-    "disposition": "not-a-duplicate",
-    "reason": "Two unrelated one-line `format!` wrappers sharing only their token shape: the rebuild-owed note a read-only surface prints versus the platform's product binary file name."
-  },
-  {
     "id": "dup-e45a2413a3f0",
     "disposition": "not-a-duplicate",
     "reason": "Fold helpers that each build a different event type or payload (inferred edges, doc concepts, doc links, batch refs, unit integration, lang-less refs) over the shared `apply_json`."
@@ -860,14 +865,14 @@
     "reason": "Builder setters for two different declarations of the content-identity policy (how a key names its generation versus how a recording names its fact); the shared token shape is a one-field assignment."
   },
   {
-    "id": "dup-f876dbc68da1",
+    "id": "dup-821aa6735505",
     "disposition": "not-a-duplicate",
-    "reason": "One-line key, path, message and harness builders for different concerns (deferred-gate verdict and failure keys, review protocol text, namespace prefixes, workflow node ids, a critique run's unit name, a path's `gc` identity, retired-grounder error, the not-folded report line, the owed-rebuild refusal, a rebuild's shadow and pruned-copy file names, the edge text expression after a target column's first `::`, the driver test's worker-prompts harness completed by its check, the blast-radius eval's code-span wrapper); they share only the `format!` shape."
+    "reason": "One-line key, path, message and harness builders for different concerns (deferred-gate verdict and failure keys, review protocol text, namespace prefixes, workflow node ids, a critique run's unit name, a path's `gc` identity, retired-grounder error, the not-folded report line, the owed-rebuild refusal, the live-run refusals of `reset --derived` and of a new rebuild in `rigger setup`, a rebuild's shadow and pruned-copy file names, the edge text expression after a target column's first `::`, an id's file half before it, a staged reference row's liveness term, the proof rows' selection by one key column, the driver test's worker-prompts harness completed by its check, the blast-radius eval's code-span wrapper, a planted refusing trigger's text, a built-in instruction entry's checked-in source path, the appender's write-lock-held and short-catch-up cause texts for a ceiling); they share only the `format!` shape."
   },
   {
-    "id": "dup-ffc17308c029",
+    "id": "dup-db3e199dd312",
     "disposition": "not-a-duplicate",
-    "reason": "Five different lines spelled for different surfaces (the production phrase naming a log's derived events and file identities, the test-side expected `--derived` menu line and the test-side expected `rigger validate` log-bloat warning, each holding that phrase's text independently of the code it checks, the counts `rigger reset --derived` prints of its migration, and the bare menu's `--runs` line); they share only the `format!` shape."
+    "reason": "Seven different lines spelled for different surfaces (the production phrase naming a log's derived events and file identities, the test-side expected `--derived` menu line and the test-side expected `rigger validate` log-bloat warning, each holding that phrase's text independently of the code it checks, the counts `rigger reset --derived` prints of its migration, the bare menu's `--runs` line counting what is prunable, and the two test-side expected `rigger setup` lines, the rebuild's progress line at the log's head and the counts of what that rebuild pruned from the rebuilt graph, each holding its line's text independently of the setup code it checks); they share only the `format!` shape."
   },
   {
     "id": "dup-0b2669324614",
@@ -895,9 +900,9 @@
     "reason": "Two port methods of the `Namespaced` decorator, each forwarding its own inner call; the shared work (scoping the stream name) is already the one `scoped` both call."
   },
   {
-    "id": "dup-26b14e332411",
+    "id": "dup-b4990598bfd7",
     "disposition": "not-a-duplicate",
-    "reason": "Different SQL composed over one shared expression function: the partial group index's `CREATE INDEX` and the lookup's `SELECT` that seeks it over `group_expr`, and the graph store's member expression (`member_sql`) over `node_leaf_sql`; each shared expression is already the one function its readers call."
+    "reason": "Different SQL composed over one shared expression function: the partial group index's `CREATE INDEX` and the lookup's `SELECT` that seeks it over `group_expr`, which is already the one function both call."
   },
   {
     "id": "dup-3eb116c3c4c8",
@@ -907,12 +912,12 @@
   {
     "id": "dup-6ef712aab260",
     "disposition": "not-a-duplicate",
-    "reason": "Two port methods of the counting store double, each recording its own `CountedRead` variant before forwarding its own inner call; the shared work (recording, landing an interleaved write) is already the one `record`/`land_interleaved` pair both call."
+    "reason": "Two port methods of the counting store double, each recording its own `CountedRead` variant before forwarding its own inner call; the shared work (recording, running the hooks waiting on the call) is already the one `record`/`returned` pair both call."
   },
   {
-    "id": "dup-ff98ca74f1ca",
+    "id": "dup-fe96e15d8fa3",
     "disposition": "not-a-duplicate",
-    "reason": "One-line `format!` compositions of different keys and labels (adoption provenance, quarantine record, code-entity id, a KurrentDB group stream name, spawn-store subject, audit join, the closed-unit report line a `reset --runs` periphery case expects, the spec-critique prompt joining its fixed sections to the spec text, the no-critic line a run-start refusal periphery case expects, the halt a spec-defect stop's tests expect, the `<file>::` id-range SQL predicate the graph store's file-range readers embed) over different inputs."
+    "reason": "One-line `format!` compositions of different keys and labels (adoption provenance, quarantine record, code-entity id, a KurrentDB group stream name, spawn-store subject, audit join, the closed-unit report line a `reset --runs` periphery case expects, the spec-critique prompt joining its fixed sections to the spec text, the no-critic line a run-start refusal periphery case expects, the halt a spec-defect stop's tests expect, the `<file>::` id-range SQL predicate the graph store's file-range readers embed, the history prune's superseded-edges statement its count and its delete each build over their own verb, the module-declaration predicate the label degree and the relabel debt read, the change-only retarget of a `refs` row both settlements read) over different inputs."
   },
   {
     "id": "dup-da45cd3da239",
@@ -925,6 +930,11 @@
     "reason": "The folding store forwards two different port methods (the boundary lookup and the group lookup) to the store it wraps; each is a one-line delegation the port's signature makes look alike."
   },
   {
+    "id": "dup-e22da6af6331",
+    "disposition": "not-a-duplicate",
+    "reason": "The folding store and the `Namespaced` decorator each owe the port's `log_head`, which has no default (spec 124), and each body is the one call to the store it wraps: the head is the whole log's for both, so neither scopes nor records anything, and no shared work exists to lift. The one forwarding helper the tree has, `delegate_event_store_reads!`, is the test doubles' (`tests/common/fixtures/events.rs`), which no production decorator reaches, and `Namespaced` scopes every other read it forwards, so neither could expand it."
+  },
+  {
     "id": "dup-033af83f765c",
     "disposition": "not-a-duplicate",
     "reason": "Two port doubles' positions reads, each answering its own double's contract - the silent double reads nothing, the append-only port double refuses every read; the port method's signature is what makes them look alike."
@@ -935,7 +945,7 @@
     "reason": "`RunCtx::append_and_fold` is the run's one-event case: it stamps the run id and appends through the run's folding store (`Deps::folding`), whose append delegates to `ingest::FoldingStore::append_and_fold`, the one append-then-fold body, rather than re-implementing it."
   },
   {
-    "id": "dup-0f62ab248065",
+    "id": "dup-6b847cf11fc4",
     "disposition": "not-a-duplicate",
     "reason": "The CLI suite seeds a two-subsystem coupling graph into the real on-disk store through the folding store's `append_and_fold`, while the fold suite folds a different single-hub graph straight onto an in-memory projector."
   },
@@ -1020,14 +1030,24 @@
     "reason": "`unit_of_gate_key` splits a gate key at its `/gate:` marker, `unit_of` splits a spawn id at its last `/`, and `digest_address` takes the commit after a gate digest's `:` separator: three key grammars with different delimiters, each parsed in exactly one place."
   },
   {
-    "id": "dup-cc1f48bd7d99",
+    "id": "dup-3dc74f749a1a",
     "disposition": "not-a-duplicate",
-    "reason": "`f11` renders the plan critique's F11 advisory for one criterion and `graph_build_line` renders the line `rigger graph build` prints for an event count and a fold-loss clause: two test-side spellings of different product lines, each defined once, sharing only the shape of one `format!` over a number and a string."
+    "reason": "`f11` renders the plan critique's F11 advisory for one criterion, `graph_build_line` renders the line `rigger graph build` prints for an event count and a fold-loss clause, and the cursor fixtures' `catch_up_stopped` renders the head both of `rigger setup`'s catch-up stop lines share for a position and a reason: three test-side spellings of different product lines, each defined once, sharing only the shape of one `format!` over a number and a string."
   },
   {
-    "id": "dup-065ac962b8cf",
+    "id": "dup-cb013976dcf4",
     "disposition": "not-a-duplicate",
-    "reason": "All three already delegate to the one line picker `lines_where`; each names a different command's lines by its own predicate (the bare reset menu's `--derived` lines, the index-lag advisory's and the log-bloat advisory's)."
+    "reason": "`reclaimed_line` is the line `rigger reset --derived` prints for the bytes its compaction reclaimed, `caught_up_line` the line `rigger setup` prints for the events its catch-up folded and `emit_folded_line` the line `rigger emit` prints for the decision it appended and folded at a position: three test-side expected lines of different commands, each defined once, sharing only the shape of one `format!` over one number."
+  },
+  {
+    "id": "dup-3f04af8603ff",
+    "disposition": "not-a-duplicate",
+    "reason": "`setup.rs`'s `catch_up_stopped` is the production head of `rigger setup`'s two catch-up stop lines, which `catch_up_to_head` builds both from, while the cursor fixtures' `catch_up_stopped` is the tests' independent oracle of that head, which both expected stop lines build from and which must not reuse the code it checks (the root suites reach no binary-private fn), as `derived_key_parts` and its periphery oracle `split` are kept apart; each side spells the head once."
+  },
+  {
+    "id": "dup-90e32eb50d95",
+    "disposition": "not-a-duplicate",
+    "reason": "All four already delegate to the one line picker `lines_where`; each names a different command's lines by its own predicate (the bare reset menu's `--derived` lines, `rigger peers`' decision rows, the index-lag advisory's and the log-bloat advisory's)."
   },
   {
     "id": "dup-4b714a54ab5e",
@@ -1053,5 +1073,15 @@
     "id": "dup-9c17d63a062c",
     "disposition": "not-a-duplicate",
     "reason": "Each of the three blast-radius tests is already one call of the shared `assert_safe` fixture and differs only in its literals: a held path grounding on its own file, a trailing-underscore span matching its family by prefix, and a span matching only on identifier boundaries are three separate grounding rules, each pinned by its own named test so a regression names the rule it broke."
+  },
+  {
+    "id": "dup-aa4a3a0dfc34",
+    "disposition": "not-a-duplicate",
+    "reason": "`alias_json` and `ref_json` build two different on-log payloads, an `AliasDefined` alias and canonical against an `EdgeInferred` file, name and lang, sharing only the one-line `json!` literal shape."
+  },
+  {
+    "id": "dup-7df9b1a39032",
+    "disposition": "not-a-duplicate",
+    "reason": "`unit_diff` reads the `unit.diff` file the gate wrote into a String, while `subdirectory_of` creates the `sub` directory a command runs from through the shared `created_dir`; the two share only one `root.join` call and the signature shape."
   }
 ]

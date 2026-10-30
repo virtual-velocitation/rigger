@@ -21,11 +21,15 @@
 //!      the working directory's own top level.
 //!   6. **The number.** The bytes the command says it reclaimed are the bytes the log lost on
 //!      disk.
+//!   7. **The blob is written.** Inside a repository the entry the migration writes names a blob
+//!      the project's object database holds, the bytes the tree holds, though no commit holds it.
 
 mod common;
-use common::git::run_git;
+use common::fixtures::git_hash_object;
+use common::git::{assert_holds_no_object, held_blob, object_ids, run_git};
 
 use common::cli::migrated_lines;
+use common::cli::pin_identity;
 use common::cli::pre_ledger_batch;
 use common::cli::reclaimed_line;
 use common::cli::reported_reclaimed_bytes;
@@ -744,8 +748,7 @@ fn pinned_project() -> tempfile::TempDir {
 /// A temp project whose identity is pinned to `id` in `.rigger/project.id`.
 fn project_pinned_to(id: &str) -> tempfile::TempDir {
     let dir = temp_rigger_project();
-    std::fs::write(dir.path().join(".rigger").join("project.id"), id)
-        .expect("pin the project identity");
+    pin_identity(dir.path(), id);
     dir
 }
 
@@ -1027,7 +1030,7 @@ fn seed_project_under_the_legacy_namespace(root: &Path, rounds: u64) -> (String,
     // still matching the LEGACY prefix and the assertions below would be reading that ambiguity
     // rather than whether the history moved.
     let minted = MINTED_ID.to_string();
-    std::fs::write(root.join(".rigger").join("project.id"), &minted).expect("mint the identity");
+    pin_identity(root, &minted);
     assert!(
         !minted.starts_with(&legacy) && !legacy.starts_with(&minted),
         "neither identity may be a string prefix of the other, or the namespace assertions below \
@@ -1047,6 +1050,12 @@ fn seed_project_under_the_legacy_namespace(root: &Path, rounds: u64) -> (String,
 const TREE_BODY: &[u8] = b"pub fn alpha() {}\n";
 const WORKTREE_BODY: &[u8] = b"pub fn alpha() { let _nested = 1; }\n";
 
+/// Write [`TREE_BODY`] at `src/a.rs` under `root`: the file of the batch the seeding records.
+fn plant_the_tree_body(root: &Path) {
+    std::fs::create_dir_all(root.join("src")).expect("create src");
+    std::fs::write(root.join("src").join("a.rs"), TREE_BODY).expect("write the tree's file");
+}
+
 #[test]
 fn a_reset_from_a_nested_worktree_migrates_and_compacts_the_store_it_walked_up_to() {
     const ROUNDS: u64 = 4;
@@ -1060,8 +1069,7 @@ fn a_reset_from_a_nested_worktree_migrates_and_compacts_the_store_it_walked_up_t
     let (legacy_b, minted_b) =
         seed_project_under_the_legacy_namespace(from_worktree.path(), ROUNDS);
     for root in [from_root.path(), from_worktree.path()] {
-        std::fs::create_dir_all(root.join("src")).expect("create src");
-        std::fs::write(root.join("src").join("a.rs"), TREE_BODY).expect("write the tree's file");
+        plant_the_tree_body(root);
     }
 
     let nested = from_worktree.path().join("wt");
@@ -1373,4 +1381,43 @@ fn a_second_reset_of_a_migrated_log_sheds_nothing_and_leaves_the_file_as_it_stan
         NOTHING_TO_SHED_LINE.to_string() + LOG_LEFT_AS_IT_STANDS_LINE
     );
     assert_eq!(raw_rows(&rigger_file(root, "events.db")), migrated);
+}
+
+// ---------------------------------------------------------------------------------------
+// 24. THE BLOB IS WRITTEN: the entry the migration writes names a blob the project's object
+// database holds (spec 124, criterion 2).
+// ---------------------------------------------------------------------------------------
+
+/// GIVEN a project inside a repository whose object database holds no object, its log holding
+/// one pre-ledger batch of `src/a.rs` and its tree that file's bytes, uncommitted,
+/// WHEN the operator runs `rigger reset --derived`,
+/// THEN the migration writes the batch's ledger entry under the id git gives the bytes, and the
+/// object database holds that one object, the bytes the tree holds.
+#[test]
+fn a_reset_writes_the_blob_of_the_entry_it_migrates_into_the_object_database() {
+    let dir = temp_rigger_project();
+    let root = dir.path();
+    seed_project(root, 1);
+    plant_the_tree_body(root);
+    assert_holds_no_object(root);
+    let blob = git_hash_object(root, "src/a.rs", false);
+
+    let (out, err, ok) = run_rigger(root, &["reset", "--derived"]);
+
+    assert_eq!(
+        (ok, out),
+        (true, migrated_lines(1, 2, 0) + LOG_LEFT_AS_IT_STANDS_LINE),
+        "the migration converts the one batch; stderr: {err}"
+    );
+    assert_eq!(
+        entries(&raw_rows(&rigger_file(root, "events.db"))),
+        // The batch's first row, after the run's start at position 1.
+        vec![entry_at(2, &blob)],
+        "the entry records the blob of the bytes the tree holds"
+    );
+    assert_eq!(
+        (object_ids(root), held_blob(root, &blob)),
+        (BTreeSet::from([blob.clone()]), Some(TREE_BODY.to_vec())),
+        "the object database holds the entry's blob, the tree's bytes, and no other object"
+    );
 }

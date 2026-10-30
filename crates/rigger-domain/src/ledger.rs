@@ -229,12 +229,12 @@ pub const ATTENTION_ESCALATED: &str = "escalated";
 /// ([`AttentionEntry::escalation`]).
 pub const ATTENTION_SPEC_DEFECT: &str = "spec-defect";
 pub const ATTENTION_HALTED: &str = "halted";
-pub const ATTENTION_WORKER_DEATH_RECURRED: &str = "worker-death-recurred";
+pub const ATTENTION_REJECT_RECURRENCE: &str = "reject-recurrence";
 pub const ATTENTION_BUDGET_FINAL_TENTH: &str = "budget-final-tenth";
 pub const ATTENTION_STALLED_FRONTIER: &str = "stalled-frontier";
 
 /// The canonical kind order (spec 69, criterion 5; spec 112, criterion 5): escalated,
-/// spec-defect, halted, worker-death-recurred, budget-final-tenth, stalled-frontier.
+/// spec-defect, halted, reject-recurrence, budget-final-tenth, stalled-frontier.
 /// `conductor::compute_attention` and the console's dock sort their entries by it (a STABLE
 /// sort, so entries of the SAME kind keep their lexical unit order); `rigger step` (main.rs)
 /// re-sorts `attention` by it after appending the hung-liveness half of signal 2, which
@@ -245,7 +245,7 @@ pub fn attention_kind_rank(kind: &str) -> usize {
         ATTENTION_ESCALATED,
         ATTENTION_SPEC_DEFECT,
         ATTENTION_HALTED,
-        ATTENTION_WORKER_DEATH_RECURRED,
+        ATTENTION_REJECT_RECURRENCE,
         ATTENTION_BUDGET_FINAL_TENTH,
         ATTENTION_STALLED_FRONTIER,
     ];
@@ -267,7 +267,7 @@ pub struct AttentionEntry {
 }
 
 impl AttentionEntry {
-    /// A unit-scoped entry (escalated / spec-defect / worker-death-recurred / stalled-frontier).
+    /// A unit-scoped entry (escalated / spec-defect / reject-recurrence / stalled-frontier).
     pub fn unit_scoped(
         kind: &'static str,
         unit: impl Into<String>,
@@ -297,6 +297,21 @@ impl AttentionEntry {
                 "escalated after exhausting remediation",
             ),
         }
+    }
+
+    /// The entry for `unit` at `attempts` failed attempts that awaits a finding audit
+    /// ([`crate::blocker::awaits_finding_audit`]): the one text the console's needs-you dock and
+    /// the conductor's attention stamp both print, saying the loop is still remediating the unit
+    /// on its own and naming the operator's action, the `rigger-diagnose-churn` finding audit.
+    pub fn reject_recurrence(unit: impl Into<String>, attempts: u32) -> Self {
+        Self::unit_scoped(
+            ATTENTION_REJECT_RECURRENCE,
+            unit,
+            format!(
+                "{attempts} failed attempts, the loop is still remediating - audit the findings \
+                 (rigger-diagnose-churn)"
+            ),
+        )
     }
 
     /// The one-line render (spec 93, criterion 4): `"<subject>: <detail>"`, where a

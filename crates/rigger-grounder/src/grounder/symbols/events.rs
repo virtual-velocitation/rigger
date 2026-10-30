@@ -1,7 +1,8 @@
 //! The code-to-events emit pass (spec 29a): lowers an extracted `SymbolIndex` / `FileSymbols`
-//! into `CodeEntityExtracted` (one per path) and `EdgeInferred` (one per reference) events,
-//! which the always-compiled context-graph fold ingests into `code-entity` / `file` nodes and
-//! structural edges. Code structure thus becomes a rebuildable projection over the event log, not
+//! into `CodeEntityExtracted` (one per path) and `EdgeInferred` (one per reference, then one
+//! module row per out-of-line `mod` declaration naming a candidate file) events, which the
+//! always-compiled context-graph fold ingests into `code-entity` / `file` nodes and structural
+//! edges. Code structure thus becomes a rebuildable projection over the event log, not
 //! a mutable side index. This is the emit half; the fold half lives in `contextgraph::sqlite` and
 //! stays compiled in both lanes.
 
@@ -10,7 +11,8 @@ use crate::contextgraph::{
     CODE_KIND_CONSTRUCTOR, CODE_KIND_DECLARATION, CODE_KIND_FIELD, CODE_KIND_FUNCTION,
     CODE_KIND_IMPL, CODE_KIND_MACRO, CODE_KIND_METHOD, CODE_KIND_MODULE, CODE_KIND_OTHER,
     CODE_KIND_PROPERTY, CODE_KIND_STATIC, CODE_KIND_TRAIT, CODE_KIND_TYPE, CODE_KIND_VARIABLE,
-    CODE_KIND_VARIANT, TYPE_CODE_ENTITY_EXTRACTED, TYPE_EDGE_INFERRED,
+    CODE_KIND_VARIANT, MODULE_CANDIDATE_SEPARATOR, REF_KIND_MODULE, TYPE_CODE_ENTITY_EXTRACTED,
+    TYPE_EDGE_INFERRED,
 };
 use crate::eventstore::Event;
 use crate::grounder::symbols::model::{Def, FileSymbols, Kind, Lang, SymRef, SymbolIndex};
@@ -174,7 +176,9 @@ fn lower_file(path: &str, symbols: &FileSymbols, excluded: bool) -> Vec<Event> {
 /// PATH, ONE EVENT), for the definition at that path first by `CODE_KIND_PRECEDENCE`
 /// ([`path_precedence`]), then the lower line, then the order `extract` returns them, carrying
 /// its id path when that differs from its name and its parent's path when it has one, then one
-/// `EdgeInferred` per reference. Each set is emitted in a sorted, deterministic order so identical
+/// `EdgeInferred` per reference, then one module row per out-of-line `mod` declaration naming a
+/// candidate file (spec 117, A MODULE ROW REACHES ITS FILE). Each set is emitted in a
+/// deterministic order - the module rows in the order `extract` returns them - so identical
 /// source yields byte-identical events - the determinism-by-construction spec 29a requires: refs
 /// by name/line, and defs parent before child (spec 119, A PARENT IS EMITTED BEFORE ITS CHILD), by
 /// the length of each one's parent chain ([`chain_length`]), then leaf, then path, a total order
@@ -234,6 +238,7 @@ pub fn extract_events(file: &str, fs: &FileSymbols) -> Vec<Event> {
         }
     }
     let mut defs: Vec<&Def> = survivors
+        .clone()
         .filter(|d| std::ptr::eq(emitted[d.path.as_str()], *d))
         .collect();
     // Spec 119 (A PARENT IS EMITTED BEFORE ITS CHILD): two distinct paths never tie, so the
@@ -294,6 +299,36 @@ pub fn extract_events(file: &str, fs: &FileSymbols) -> Vec<Event> {
             is_test: false,
             // See the definition arm's identical field above.
             partial: fs.partial,
+            // Spec 117 (REFERENCES): a tagged reference's kind, absent for a call, so a call's
+            // event stays byte-identical to the form recorded before the field existed.
+            ref_kind: r.ref_kind.clone(),
+        };
+        events.push(Event::new(
+            TYPE_EDGE_INFERRED,
+            serde_json::to_vec(&payload).expect("edge payload serializes"),
+        ));
+    }
+
+    // Spec 117 (A MODULE ROW REACHES ITS FILE): after the references, one module row per
+    // surviving out-of-line `mod` declaration, in the order `extract` returns them, from the
+    // `mod` node's path and named by the declaration's candidates joined by
+    // [`MODULE_CANDIDATE_SEPARATOR`], so cfg-twin
+    // declarations with different candidates stay two rows; one naming no candidate lowers none.
+    for d in survivors.filter(|d| d.is_out_of_line_module) {
+        let candidates = module_candidates(file, d);
+        if candidates.is_empty() {
+            continue;
+        }
+        let payload = EdgeInferred {
+            file: file.to_string(),
+            name: candidates.join(MODULE_CANDIDATE_SEPARATOR),
+            lang: lang.to_string(),
+            fresh: false,
+            caller: Some(d.path.clone()),
+            line: 0,
+            is_test: false,
+            partial: fs.partial,
+            ref_kind: Some(REF_KIND_MODULE.to_string()),
         };
         events.push(Event::new(
             TYPE_EDGE_INFERRED,
@@ -388,6 +423,7 @@ fn empty_structural_boundary_event(file: &str, lang: &str, partial: bool) -> Eve
         line: 0,
         is_test: false,
         partial,
+        ref_kind: None,
     };
     Event::new(
         TYPE_EDGE_INFERRED,
@@ -407,7 +443,9 @@ fn empty_structural_boundary_event(file: &str, lang: &str, partial: bool) -> Eve
 /// contracts - "extract_events emits nothing for excluded content" and "no evidence is ever lost" -
 /// both hold, in two disjoint functions rather than one straining to prove both at once.
 ///
-/// A reference counts as evidence when EITHER: the whole file is at a dev-only path
+/// A reference counts as evidence only when it is a call ([`FileSymbols::calls`], spec 117: a
+/// type reference, const read or `use` is never evidence, so `proven_by` stands) and EITHER: the
+/// whole file is at a dev-only path
 /// ([`is_dev_only`] - every reference in a test, bench or example file is test-origin, whatever
 /// its own `is_test` marking, since the file itself exercises production code), OR the reference
 /// itself is `is_test` (a `#[cfg(test)]`/`#[test]` region inside an otherwise-included product
@@ -477,8 +515,7 @@ pub fn proof_events(file: &str, fs: &FileSymbols) -> Vec<Event> {
     let whole_file_test = is_dev_only(file);
     let lang = lang_str(fs.lang);
     let mut refs: Vec<&SymRef> = fs
-        .refs
-        .iter()
+        .calls()
         .filter(|r| whole_file_test || r.is_test)
         .collect();
     refs.sort_by(|a, b| a.name.cmp(&b.name).then(a.line.cmp(&b.line)));
@@ -502,6 +539,8 @@ pub fn proof_events(file: &str, fs: &FileSymbols) -> Vec<Event> {
                 // returns before it) - always `false`, a plain field-completeness requirement, not a
                 // meaningful signal here.
                 partial: false,
+                // Evidence is a call alone: `fs.calls()` above never yields a tagged reference.
+                ref_kind: None,
             };
             Event::new(
                 TYPE_EDGE_INFERRED,
@@ -536,6 +575,7 @@ fn empty_evidence_boundary_event(file: &str, lang: &str) -> Event {
         line: 0,
         is_test: true,
         partial: false,
+        ref_kind: None,
     };
     Event::new(
         TYPE_EDGE_INFERRED,
@@ -599,15 +639,26 @@ pub(crate) fn is_dev_only(path: &str) -> bool {
 }
 
 /// The directory component of a project-relative `path` (every segment except the file's own
-/// name) - the ONE place this repo splits a path this way, shared by [`module_dir`] and
-/// [`resolve_out_of_line_target`]'s `#[path]`-override branch, so the split-off-the-last-`/`
-/// idiom exists exactly once rather than twice with the identical shape.
+/// name) - the ONE place this repo splits a path this way, shared by [`is_dev_only`],
+/// [`module_dir`] and [`module_candidates`]' `#[path]`-override branch, so the
+/// split-off-the-last-`/` idiom exists exactly once.
 fn dir_of(path: &str) -> &str {
     path.rfind('/').map(|i| &path[..i]).unwrap_or("")
 }
 
+/// `rest` under the directory `base`: `<base>/<rest>`, or `rest` alone when `base` is empty (the
+/// project root) - the ONE place a module path joins a directory, shared by [`module_dir`] and
+/// [`module_candidates`].
+fn join_under(base: &str, rest: &str) -> String {
+    if base.is_empty() {
+        rest.to_string()
+    } else {
+        format!("{base}/{rest}")
+    }
+}
+
 /// Resolves `.` and `..` components, at ANY position, in a `/`-separated LOGICAL path string - the
-/// ONE place [`resolve_out_of_line_target`]'s `#[path]`-override branch normalizes a raw attribute
+/// ONE place [`module_candidates`]' `#[path]`-override branch normalizes a raw attribute
 /// value joined onto a directory before matching it against [`SymbolIndex::files`]'s keys. Those
 /// keys are always the project's own already-clean relative paths (never containing a literal `.`
 /// or `..` segment), so `std::fs::canonicalize` does not apply here - there is no real filesystem
@@ -623,11 +674,10 @@ fn dir_of(path: &str) -> &str {
 /// one and joining whatever segments remain computes a string that is syntactically a valid
 /// relative path but semantically WRONG (it claims to walk back further than the declaring file's
 /// own tree allows) - and nothing stops that wrong-but-plausible string from coincidentally
-/// matching a real, UNRELATED file's key, at which point the caller's `contains_key` check finds a
-/// match and silently drops that unrelated file's whole entity set from the graph. So this now
-/// returns `None` the instant a `..` has nothing real left to pop, letting the caller short-circuit
-/// to "unresolvable" immediately rather than running a lookup against a value that only LOOKS like
-/// a real path.
+/// matching a real, UNRELATED file's key, at which point the index lookup over the candidates finds
+/// a match and silently drops that unrelated file's whole entity set from the graph. So this now
+/// returns `None` the instant a `..` has nothing real left to pop, letting the caller name no
+/// candidate rather than one that only LOOKS like a real path.
 fn normalize_logical_path(path: &str) -> Option<String> {
     let mut stack: Vec<&str> = Vec::new();
     for segment in path.split('/') {
@@ -668,37 +718,45 @@ fn path_override_names_an_unresolvable_shape(p: &str) -> bool {
 }
 
 /// Round 7 (`op-u86c1-r7-out-of-line-module-resolution-follows-rust`): the MODULE DIRECTORY a
-/// declaring file `path`'s own out-of-line children resolve under, per Rust's real file-per-module
-/// convention - never simply `path`'s own directory (the round-6 bug,
+/// declaring file `path`'s own out-of-line children resolve under, read off the file's name
+/// alone, never simply `path`'s own directory (the round-6 bug,
 /// `sdet-u86c1-r6-out-of-line-mod-resolution-uses-declaring-files-directory-not-rusts-own-module-
-/// nesting-path`). A directory-style file (`mod.rs`, `lib.rs`, `main.rs` - a crate root or a
-/// directory module's own body-carrying file) owns its OWN directory: its `mod name;` children are
-/// same-directory siblings. Every OTHER file is itself a leaf submodule and, per Rust's convention,
-/// puts ITS OWN children in a NEW subdirectory named after its own stem (`foo.rs` -> `foo/`) -
-/// never a same-directory sibling.
+/// nesting-path`). A file named `mod.rs`, `lib.rs` or `main.rs` owns its OWN directory: its
+/// `mod name;` children are same-directory siblings. Every OTHER file is taken as a leaf submodule
+/// whose children sit in a NEW subdirectory named after its own stem (`foo.rs` -> `foo/`).
+/// The rule reads the file's name alone, while rustc decides by whether the file is a crate root,
+/// a `mod.rs`, or loaded through `#[path]`, so the two part ways on some files. Among them: a
+/// crate root of another name (`src/bin/tool.rs`, `build.rs`) and a `#[path]`-loaded file not
+/// named `mod.rs`, `lib.rs` or `main.rs`, both of which this rule puts one directory deeper than
+/// rustc; and a submodule file named `lib.rs` or `main.rs` (`src/sub/main.rs`), which this rule
+/// gives its own directory where rustc uses its stem.
 fn module_dir(path: &str) -> String {
     let dir = dir_of(path);
     let base = path.rsplit('/').next().unwrap_or(path);
     if base == "mod.rs" || base == "lib.rs" || base == "main.rs" {
         dir.to_string()
     } else {
-        let stem = base.strip_suffix(".rs").unwrap_or(base);
-        if dir.is_empty() {
-            stem.to_string()
-        } else {
-            format!("{dir}/{stem}")
-        }
+        join_under(dir, base.strip_suffix(".rs").unwrap_or(base))
     }
 }
 
-/// Round 7: the single file `d.name` names from `declaring_path`, resolved EXACTLY as rustc
-/// resolves it, matched against paths `idx` ACTUALLY holds (never assumed) at every step. Round 9
-/// (`op-u86-c1-path-attribute-contract-is-rustc-s-and-unresolvable-never-excludes`) closes the
-/// whole `#[path]`-override contract as one enumerated list:
+/// The candidate files this resolver names for the `mod` declaration `d` in `declaring_path`, in
+/// order, the first a caller holds winning (spec 117 criterion 8): a pure function of the
+/// declaring path and the declaration, reading no index, so a caller matches them against
+/// whatever files it holds. It applies Rust's file-per-module convention as the rules below
+/// spell it, and it departs from rustc on some declarations. Among them: every file
+/// [`module_dir`]'s name-only rule places differently from rustc; an enclosing inline mod carrying
+/// its own `#[path]`, which contributes its name to the chain, not its path; a raw-identifier
+/// declaration (`mod r#match;` names `r#match.rs` where rustc reads `match.rs`); a path given
+/// through `#[cfg_attr(.., path = "..")]`, which is not taken as an override; and both
+/// `<name>.rs` and `<name>/mod.rs` present, which rustc rejects (E0761) and where the first
+/// candidate wins here. Round 9
+/// (`op-u86-c1-path-attribute-contract-is-rustc-s-and-unresolvable-never-excludes`) sets out the
+/// `#[path]`-override rules this code applies as one enumerated list:
 /// 1. A `#[path = ".."]` override on the declaration ([`Def::path_override`], captured
-///    structurally at extraction time) takes precedence over the convention entirely. BASE
-///    DIRECTORY: when the declaration sits at the declaring file's own top level (the
-///    overwhelmingly common case), the base is the declaring file's own DIRECTORY
+///    structurally at extraction time) takes precedence over the convention entirely, naming one
+///    file or none. BASE DIRECTORY: when the declaration sits at the declaring file's own top
+///    level (the overwhelmingly common case), the base is the declaring file's own DIRECTORY
 ///    ([`dir_of`]) - never [`module_dir`], since `#[path]` is rustc's own escape hatch FROM the
 ///    file-per-module convention and is, at the file's top level, unconditionally
 ///    directory-of-file-relative regardless of whether the declaring file is itself a
@@ -706,71 +764,61 @@ fn module_dir(path: &str) -> String {
 ///    `mod outer { .. }` blocks ([`Def::enclosing_inline_module_path`]), the base is the
 ///    declaring file's own MODULE directory ([`module_dir`]) with the enclosing inline chain
 ///    appended - one directory component per inline module, outermost first - verified against
-///    real rustc (`Def::enclosing_inline_module_path`'s doc). ABSOLUTE / SCHEME REJECTION: an
-///    override that is itself an OS-absolute path, a URI scheme, or a Windows drive letter
-///    ([`path_override_names_an_unresolvable_shape`]) is UNRESOLVABLE outright, joined onto
-///    nothing - rustc uses an absolute `#[path]` as-is, never relative to any Rust-side
-///    directory, so it can never name a key this project-relative index holds; left unguarded, a
-///    root-level declaring file's EMPTY base directory would let the join degenerate to the raw
-///    override unchanged, and its leading `/` would then silently drop during normalization
-///    (the SAME rule that drops an ordinary `.` segment), coincidentally colliding with an
-///    unrelated real file exactly like the `..`-overflow defect below. NORMALIZATION: the joined
-///    `<base>/<override>` string is then [`normalize_logical_path`]'d (round 8,
-///    `sdet-u86c1-r7-path-override-dotdot-unresolved` /
+///    real rustc for a plain inline parent such as `mod outer`
+///    (`Def::enclosing_inline_module_path`'s doc gives examples where the chain departs).
+///    ABSOLUTE / SCHEME REJECTION: an override that is itself an OS-absolute path, a URI scheme,
+///    or a Windows drive letter
+///    ([`path_override_names_an_unresolvable_shape`]) names no file, joined onto nothing - rustc
+///    uses an absolute `#[path]` as-is, never relative to any Rust-side directory, so it can never
+///    name a key a project-relative index holds; left unguarded, a root-level declaring file's
+///    EMPTY base directory would let the join degenerate to the raw override unchanged, and its
+///    leading `/` would then silently drop during normalization (the SAME rule that drops an
+///    ordinary `.` segment), coincidentally colliding with an unrelated real file exactly like the
+///    `..`-overflow defect below. NORMALIZATION: the joined `<base>/<override>` string is then
+///    [`normalize_logical_path`]'d (round 8, `sdet-u86c1-r7-path-override-dotdot-unresolved` /
 ///    `adv-u86c1-r7-dot-slash-override-also-unresolved-not-just-dotdot`): a raw `#[path]` value
 ///    may itself contain `.` or `..` segments at any position (rustc resolves those purely
-///    lexically too), and `idx.files()`'s keys are always already-clean, so an unnormalized join
-///    would silently fail every `contains_key` lookup for such a value and leave its target
-///    unexcluded. Round 9 (`adv-u86c1-r8-overcount-dotdot-silently-excludes-an-unrelated-real-file`):
-///    normalization can itself fail - a `..` count exceeding the declaring directory's own depth -
-///    and that failure short-circuits this whole branch to `None` via `?` rather than running a
-///    `contains_key` lookup on a collapsed-but-wrong string that might coincidentally name a real,
-///    unrelated file. LOOKUP: the normalized key must equal a file `idx` actually holds; no match
-///    is UNRESOLVABLE. Every UNRESOLVABLE outcome above returns `None` - the declaration is
-///    ignored for exclusion purposes and nothing collapses onto another file; never a silent
-///    match on a wrong-but-plausible string.
-/// 2. Otherwise, the flat sibling `<module_dir>/<name>.rs`.
-/// 3. Otherwise, the nested directory-module form `<module_dir>/<name>/mod.rs`.
-/// 4. Otherwise `None` - a stale or unresolvable declaration excludes nothing.
-fn resolve_out_of_line_target(idx: &SymbolIndex, declaring_path: &str, d: &Def) -> Option<String> {
-    if let Some(p) = &d.path_override {
-        if path_override_names_an_unresolvable_shape(p) {
-            return None;
+///    lexically too), and an index's keys are always already-clean, so an unnormalized join would
+///    silently match no key for such a value. Round 9
+///    (`adv-u86c1-r8-overcount-dotdot-silently-excludes-an-unrelated-real-file`): normalization can
+///    itself fail - a `..` count exceeding the declaring directory's own depth - and that failure
+///    names no file rather than a collapsed-but-wrong string that might coincidentally name a
+///    real, unrelated file.
+/// 2. Otherwise the convention's two, under the declaring file's [`module_dir`] with the enclosing
+///    inline-mod chain appended, as the override nested in one takes it, so `mod outer { mod x; }`
+///    in `src/lib.rs` names `src/outer/x.rs` first: the flat `<dir>/<name>.rs`, then the
+///    directory-module form `<dir>/<name>/mod.rs`.
+fn module_candidates(declaring_path: &str, d: &Def) -> Vec<String> {
+    let module_dir = module_dir(declaring_path);
+    let inline_dir = match &d.enclosing_inline_module_path {
+        Some(chain) => join_under(&module_dir, chain),
+        None => module_dir,
+    };
+    match &d.path_override {
+        Some(p) if path_override_names_an_unresolvable_shape(p) => Vec::new(),
+        Some(p) => {
+            let base = match d.enclosing_inline_module_path {
+                Some(_) => inline_dir.as_str(),
+                None => dir_of(declaring_path),
+            };
+            normalize_logical_path(&join_under(base, p))
+                .into_iter()
+                .collect()
         }
-        let base = match &d.enclosing_inline_module_path {
-            Some(chain) => {
-                let module_dir = module_dir(declaring_path);
-                if module_dir.is_empty() {
-                    chain.clone()
-                } else {
-                    format!("{module_dir}/{chain}")
-                }
-            }
-            None => dir_of(declaring_path).to_string(),
-        };
-        let joined = if base.is_empty() {
-            p.clone()
-        } else {
-            format!("{base}/{p}")
-        };
-        let resolved = normalize_logical_path(&joined)?;
-        return idx.files().contains_key(&resolved).then_some(resolved);
+        None => [format!("{}.rs", d.name), format!("{}/mod.rs", d.name)]
+            .map(|leaf| join_under(&inline_dir, &leaf))
+            .into(),
     }
-    let dir = module_dir(declaring_path);
-    let flat = if dir.is_empty() {
-        format!("{}.rs", d.name)
-    } else {
-        format!("{dir}/{}.rs", d.name)
-    };
-    if idx.files().contains_key(&flat) {
-        return Some(flat);
-    }
-    let nested = if dir.is_empty() {
-        format!("{}/mod.rs", d.name)
-    } else {
-        format!("{dir}/{}/mod.rs", d.name)
-    };
-    idx.files().contains_key(&nested).then_some(nested)
+}
+
+/// Round 7: the one file `d.name` resolves to from `declaring_path`, matched against paths `idx`
+/// ACTUALLY holds (never assumed): the first of its [`module_candidates`] `idx` holds, or `None`
+/// when it holds none - a stale or unresolvable declaration excludes nothing and nothing collapses
+/// onto another file. It is no closer to rustc than [`module_candidates`] is.
+fn resolve_out_of_line_target(idx: &SymbolIndex, declaring_path: &str, d: &Def) -> Option<String> {
+    module_candidates(declaring_path, d)
+        .into_iter()
+        .find(|candidate| idx.files().contains_key(candidate))
 }
 
 /// Round 6 (`op-u86c1-r5-close-every-remaining-test-shape` item 2), resolution fixed in round 7
@@ -1007,6 +1055,7 @@ mod tests {
                 line: 5,
                 enclosing: None,
                 is_test: false,
+                ref_kind: None,
             }],
             partial: false,
         };
@@ -1054,12 +1103,14 @@ mod tests {
                     line: 2,
                     enclosing: None,
                     is_test: false,
+                    ref_kind: None,
                 },
                 SymRef {
                     name: "apply".to_string(),
                     line: 4,
                     enclosing: None,
                     is_test: false,
+                    ref_kind: None,
                 },
             ],
             partial: false,
@@ -1113,6 +1164,7 @@ mod tests {
                     line: 2,
                     enclosing: Some("F".to_string()),
                     is_test: false,
+                    ref_kind: None,
                 },
                 // A top-level `use` outside every definition: no caller.
                 SymRef {
@@ -1120,6 +1172,7 @@ mod tests {
                     line: 5,
                     enclosing: None,
                     is_test: false,
+                    ref_kind: None,
                 },
             ],
             partial: false,
@@ -1258,6 +1311,7 @@ mod tests {
                 line: 2,
                 enclosing: None,
                 is_test: false,
+                ref_kind: None,
             }],
             partial: false,
         }
@@ -1611,21 +1665,208 @@ mod tests {
     #[test]
     fn a_mod_declared_in_a_file_opening_an_inner_cfg_test_joins_the_out_of_line_test_module_files()
     {
-        let mut idx = super::SymbolIndex::default();
-        for (path, src) in [
-            ("src/lib.rs", "#![cfg(test)]\nfn first() {}\nmod x;\n"),
-            ("src/x.rs", "fn y() {}\n"),
+        use crate::graph_fixtures::{DECLARING_FILE, MODULE_FILE};
+        assert_out_of_line_test_module_files_hold_src_x(&[
+            (DECLARING_FILE, "#![cfg(test)]\nfn first() {}\nmod x;\n"),
+            (MODULE_FILE, crate::symbol_index::FN_Y),
             (
                 "src/main.rs",
                 "#[cfg(test)]\nuse y;\nfn first() {}\nmod z;\n",
             ),
             ("src/z.rs", "fn w() {}\n"),
-        ] {
-            idx.insert_file(path.to_string(), crate::symbol_index::extracted("rs", src));
-        }
+        ]);
+    }
+
+    /// Asserts the out-of-line test module files of the Rust `files` are `src/x.rs`
+    /// ([`crate::graph_fixtures::MODULE_FILE`]) alone.
+    fn assert_out_of_line_test_module_files_hold_src_x(files: &[(&str, &str)]) {
         assert_eq!(
-            super::out_of_line_test_module_files(&idx),
-            std::collections::BTreeSet::from(["src/x.rs".to_string()])
+            super::out_of_line_test_module_files(&crate::symbol_index::extracted_rust_index(files)),
+            std::collections::BTreeSet::from([crate::graph_fixtures::MODULE_FILE.to_string()])
+        );
+    }
+
+    /// The module rows [`super::extract_events`] lowers from `symbols` as the declaring file's,
+    /// as on-log payloads.
+    fn module_rows_of(symbols: &FileSymbols) -> Vec<serde_json::Value> {
+        let declaring = crate::graph_fixtures::DECLARING_FILE;
+        let edges = super::extract_events(declaring, symbols);
+        crate::event_fixtures::payloads_of_type(&edges, TYPE_EDGE_INFERRED)
+            .into_iter()
+            .filter(|row| row["ref_kind"] == crate::contextgraph::REF_KIND_MODULE)
+            .collect()
+    }
+
+    /// A crate root at the walk's root: a declaring path with no directory.
+    const ROOT_DECLARING_FILE: &str = "lib.rs";
+
+    /// A declaring file owning no module directory, so its own stem is its module directory.
+    const NESTED_DECLARING_FILE: &str = "src/foo.rs";
+
+    /// Spec 117, A MODULE ROW REACHES ITS FILE: a module row is the declaring file's, in its
+    /// language and partiality, from the `mod` node's path, at no line, neither `fresh` nor a
+    /// test's.
+    #[test]
+    fn a_module_row_carries_the_declaring_files_language_and_partiality() {
+        use crate::contextgraph::{EdgeInferred, MODULE_CANDIDATE_SEPARATOR, REF_KIND_MODULE};
+        use crate::graph_fixtures::DECLARING_FILE;
+        for partial in [false, true] {
+            let mut symbols = crate::symbol_index::extracted("rs", crate::symbol_index::MOD_X);
+            symbols.partial = partial;
+            let declaration = out_of_line_declaration(&symbols);
+            let candidates = super::module_candidates(DECLARING_FILE, declaration);
+            let expected = EdgeInferred {
+                file: DECLARING_FILE.to_string(),
+                name: candidates.join(MODULE_CANDIDATE_SEPARATOR),
+                lang: super::lang_str(symbols.lang).to_string(),
+                fresh: false,
+                caller: Some(declaration.path.clone()),
+                line: 0,
+                is_test: false,
+                partial,
+                ref_kind: Some(REF_KIND_MODULE.to_string()),
+            };
+            let rows = module_rows_of(&symbols);
+            assert_eq!(
+                rows,
+                [serde_json::to_value(&expected).unwrap()],
+                "{partial}"
+            );
+        }
+    }
+
+    /// Spec 117 criterion 8: the candidates [`super::module_candidates`] names, in order, for each
+    /// declaration the table holds, read off the declaring path and the declaration alone - a
+    /// `#[path]` override's one file under the declaring file's directory, or its module
+    /// directory and inline chain when nested, none for an absolute or over-climbing override;
+    /// else `x.rs` then `x/mod.rs` under the module directory and the enclosing inline-mod chain.
+    #[test]
+    fn module_candidates_name_the_candidates_of_each_tabled_declaration_in_order() {
+        use crate::graph_fixtures::{DECLARING_FILE, DIR_MODULE_FILE, MODULE_FILE};
+        use crate::symbol_index::{ABSOLUTE_PATH_MOD_X, INLINE_MOD_X, MOD_X, PATH_MOD_X};
+        let cases: [(&str, &str, &[&str]); 10] = [
+            (DECLARING_FILE, PATH_MOD_X, &["src/gen/real.rs"]),
+            (
+                ROOT_DECLARING_FILE,
+                "#[path = \"real.rs\"]\nmod x;\n",
+                &["real.rs"],
+            ),
+            (
+                DECLARING_FILE,
+                "mod outer {\n    #[path = \"real.rs\"]\n    mod x;\n}\n",
+                &["src/outer/real.rs"],
+            ),
+            (DECLARING_FILE, ABSOLUTE_PATH_MOD_X, &[]),
+            (DECLARING_FILE, "#[path = \"../../x.rs\"]\nmod x;\n", &[]),
+            (DECLARING_FILE, MOD_X, &[MODULE_FILE, DIR_MODULE_FILE]),
+            (
+                NESTED_DECLARING_FILE,
+                MOD_X,
+                &["src/foo/x.rs", "src/foo/x/mod.rs"],
+            ),
+            (ROOT_DECLARING_FILE, MOD_X, &["x.rs", "x/mod.rs"]),
+            (
+                DECLARING_FILE,
+                INLINE_MOD_X,
+                &["src/outer/x.rs", "src/outer/x/mod.rs"],
+            ),
+            (
+                ROOT_DECLARING_FILE,
+                INLINE_MOD_X,
+                &["outer/x.rs", "outer/x/mod.rs"],
+            ),
+        ];
+        for (declaring, src, candidates) in cases {
+            let symbols = crate::symbol_index::extracted("rs", src);
+            assert_eq!(
+                super::module_candidates(declaring, out_of_line_declaration(&symbols)),
+                candidates,
+                "{declaring}: {src}"
+            );
+        }
+    }
+
+    /// Spec 117 criterion 8: a declaring file whose name lacks `.rs` (one indexed as Rust under a
+    /// `--language` override) keeps its whole name as its module directory's last component, so
+    /// `src/foo` names the candidates `src/foo.rs` does.
+    #[test]
+    fn module_candidates_of_a_declaring_file_without_the_rust_extension_keep_its_whole_name() {
+        let symbols = crate::symbol_index::extracted("rs", crate::symbol_index::MOD_X);
+        let declaration = &symbols.defs[0];
+        assert_eq!(
+            super::module_candidates("src/foo", declaration),
+            super::module_candidates(NESTED_DECLARING_FILE, declaration)
+        );
+    }
+
+    /// Spec 117 criterion 8: a declaration resolves to the first of its [`super::module_candidates`]
+    /// the index holds, so of `x.rs` and `x/mod.rs` both held, `#[cfg(test)] mod x;` excludes
+    /// `x.rs` alone.
+    #[test]
+    fn a_test_mod_resolves_to_the_first_of_its_candidates_the_index_holds() {
+        use crate::graph_fixtures::{DECLARING_FILE, DIR_MODULE_FILE, MODULE_FILE};
+        assert_out_of_line_test_module_files_hold_src_x(&[
+            (DECLARING_FILE, crate::symbol_index::CFG_TEST_MOD_X),
+            (MODULE_FILE, crate::symbol_index::FN_Y),
+            (DIR_MODULE_FILE, crate::symbol_index::FN_Y),
+        ]);
+    }
+
+    use crate::symbol_index::{
+        INLINE_TEST_MOD_HELPER, INLINE_TEST_MOD_TARGET, INLINE_TEST_MOD_TREE,
+    };
+
+    /// Spec 117 criterion 8, A DEV-ONLY INLINE MOD'S TARGET IS DEV-ONLY: the file a
+    /// `#[cfg(test)] mod x;` inside an inline `mod outer` names, `outer/x.rs` under the declaring
+    /// file's module directory, joins the out-of-line test module files.
+    #[test]
+    fn an_inline_mods_cfg_test_mod_target_joins_the_out_of_line_test_module_files() {
+        assert_eq!(
+            super::out_of_line_test_module_files(&crate::symbol_index::extracted_rust_index(
+                &INLINE_TEST_MOD_TREE
+            )),
+            std::collections::BTreeSet::from([INLINE_TEST_MOD_TARGET.to_string()])
+        );
+    }
+
+    /// Spec 117 criterion 8: [`INLINE_TEST_MOD_TARGET`] folded as production, then re-recorded at
+    /// its next generation under the flag the out-of-line test module files give it, retires its
+    /// production nodes, its file node with them.
+    #[test]
+    fn an_inline_mods_cfg_test_mod_target_re_recorded_dev_only_retires_its_production_nodes() {
+        use crate::test_support::{
+            file_and_entity_ids, fold_events, fold_generation, live_file_and_entity_ids,
+            GENERATION_AFTER, GENERATION_BEFORE,
+        };
+
+        let idx = crate::symbol_index::extracted_rust_index(&INLINE_TEST_MOD_TREE);
+        let symbols = &idx.files()[INLINE_TEST_MOD_TARGET];
+        let p = fold_events([]);
+        let mut pos = 0;
+        fold_generation(
+            &p,
+            &mut pos,
+            INLINE_TEST_MOD_TARGET,
+            GENERATION_BEFORE,
+            super::lower_file(INLINE_TEST_MOD_TARGET, symbols, false),
+        );
+        assert_eq!(
+            live_file_and_entity_ids(&p.whole().unwrap()),
+            file_and_entity_ids(&[INLINE_TEST_MOD_TARGET], &[INLINE_TEST_MOD_HELPER]),
+            "folded as production, the target holds its file and its definition"
+        );
+        let excluded = super::out_of_line_test_module_files(&idx).contains(INLINE_TEST_MOD_TARGET);
+        fold_generation(
+            &p,
+            &mut pos,
+            INLINE_TEST_MOD_TARGET,
+            GENERATION_AFTER,
+            super::lower_file(INLINE_TEST_MOD_TARGET, symbols, excluded),
+        );
+        assert_eq!(
+            live_file_and_entity_ids(&p.whole().unwrap()),
+            file_and_entity_ids(&[], &[]),
+            "re-recorded under its dev-only flag, the target's production nodes retire"
         );
     }
 
@@ -1670,12 +1911,14 @@ mod tests {
                     line: 6,
                     enclosing: Some("aaa_test_item".into()),
                     is_test: true,
+                    ref_kind: None,
                 },
                 SymRef {
                     name: "product_fn".into(),
                     line: 2,
                     enclosing: None,
                     is_test: false,
+                    ref_kind: None,
                 },
             ],
             partial: false,
@@ -2933,5 +3176,247 @@ mod tests {
             ["method a::B::c@8 in impl a::B"],
             "the winner removed: the other's line and parent"
         );
+    }
+
+    /// Spec 117 criterion 6: a production file's const read, type reference and `use` each
+    /// emit an `EdgeInferred` carrying its `ref_kind`, while the ones inside its `#[cfg(test)]`
+    /// region and every one of a dev-only file emit no tagged event, and the evidence a file's
+    /// batch carries ([`super::proof_events`]) names its call references alone.
+    #[test]
+    fn test_code_and_dev_only_files_emit_no_tagged_event_and_evidence_is_calls_alone() {
+        let src = "\
+use crate::store::Ledger;
+pub fn product(k: Kestrel) -> u8 { QUOTA_CAP }
+#[cfg(test)]
+mod tests {
+    use crate::model::Plover;
+    const LOCAL_CAP: u8 = 1;
+    fn t(p: Plover) -> u8 { super::product(make()); LOCAL_CAP }
+}
+";
+        let production = [
+            ("Kestrel", "type"),
+            ("Ledger", "use"),
+            ("QUOTA_CAP", "const"),
+        ];
+        for (path, tagged) in [("src/a.rs", &production[..]), ("tests/a.rs", &[][..])] {
+            let edges = crate::event_fixtures::payloads_of_type(
+                &super::bytes_batch(path, Some(src.as_bytes()), false),
+                TYPE_EDGE_INFERRED,
+            );
+            let kinds = crate::event_fixtures::tagged_payloads(&edges);
+            assert_eq!(kinds, tagged, "{path}: the tagged events");
+            let evidence: Vec<&str> = edges
+                .iter()
+                .filter(|p| p["is_test"] == true)
+                .filter_map(|p| p["name"].as_str())
+                .collect();
+            assert_eq!(evidence, ["make", "product"], "{path}: the evidence");
+        }
+    }
+
+    /// Spec 117 criterion 6: an impl header's trait `type` row is emitted after the untagged
+    /// reference of the same name and site, from the self type's path, carrying its `ref_kind`.
+    #[test]
+    fn an_impl_trait_row_follows_the_untagged_header_reference() {
+        let fs = crate::symbol_index::extracted(
+            "rs",
+            "trait Draw {}\nstruct Kestrel;\nimpl Draw for Kestrel {}\n",
+        );
+        let edges = crate::event_fixtures::payloads_of_type(
+            &super::extract_events("a.rs", &fs),
+            TYPE_EDGE_INFERRED,
+        );
+        let refs = crate::event_fixtures::named_references(&edges);
+        let header = Some("impl Draw for Kestrel");
+        assert_eq!(
+            refs,
+            [
+                (Some("Draw"), header, None),
+                (Some("Draw"), Some("Kestrel"), Some("type")),
+                (Some("Kestrel"), header, None),
+            ]
+        );
+    }
+
+    /// Spec 117 criterion 1, STAGED REFERENCES: over the real extraction folded as ledger
+    /// entries, `src/a.rs`'s `use` of a fn, its field naming a type and its fn reading a const,
+    /// each defined once in `src/b.rs`, are each one `inferred` `REFERENCES` edge onto that
+    /// definition whichever file folds first, and none once `src/c.rs` defines each leaf again.
+    #[test]
+    fn a_use_a_field_type_and_a_const_read_reach_their_one_definition_in_either_fold_order() {
+        use crate::contextgraph::TIER_INFERRED;
+        use crate::test_support::landed;
+
+        let a = (
+            "src/a.rs",
+            "use crate::b::helper;\npub struct Nest {\n    k: Kestrel,\n}\n\
+             pub fn read() -> u8 {\n    QUOTA_CAP\n}\n",
+        );
+        let b = (
+            "src/b.rs",
+            "pub const QUOTA_CAP: u8 = 1;\npub struct Kestrel;\npub fn helper() {}\n",
+        );
+        let c = ("src/c.rs", b.1);
+        let references = |p: &Projector| -> Vec<(String, String, String)> {
+            landed(p)
+                .into_iter()
+                .filter(|(_, rel, ..)| rel == REL_REFERENCES)
+                .map(|(from, _, to, tier)| (from, to, tier))
+                .collect()
+        };
+        let resolved: Vec<(String, String, String)> = [
+            ("src/a.rs", "src/b.rs::helper"),
+            ("src/a.rs::Nest.k", "src/b.rs::Kestrel"),
+            ("src/a.rs::read", "src/b.rs::QUOTA_CAP"),
+        ]
+        .map(|(from, to)| (from.into(), to.into(), TIER_INFERRED.into()))
+        .into();
+        for order in [[a, b], [b, a]] {
+            let p = Projector::open(":memory:", "test").unwrap();
+            fold_source(&p, 1, order[0]);
+            fold_source(&p, 2, order[1]);
+            assert_eq!(references(&p), resolved, "{:?} first", order[0].0);
+            fold_source(&p, 3, c);
+            assert_eq!(
+                references(&p),
+                [],
+                "a second definition of each leaf leaves every row unresolved"
+            );
+        }
+    }
+
+    /// The one out-of-line `mod` declaration `symbols` holds.
+    fn out_of_line_declaration(symbols: &FileSymbols) -> &Def {
+        symbols
+            .defs
+            .iter()
+            .find(|d| d.is_out_of_line_module)
+            .expect("the source declares a module out of line")
+    }
+
+    /// Fold `file` holding `source` at log position `pos` ([`fold_batch`]), its batch the walk's
+    /// ([`super::bytes_batch`]) for a file no exclusion covers - the fold that stages a row.
+    fn fold_source(p: &Projector, pos: u64, (file, source): (&str, &str)) {
+        let batch = super::bytes_batch(file, Some(source.as_bytes()), false);
+        fold_batch(p, pos, file, batch);
+    }
+
+    /// Fold `batch` as the generation of `file`'s ledger entry its log position `pos` names, at
+    /// that position and valid from `pos` seconds.
+    fn fold_batch(p: &Projector, pos: u64, file: &str, batch: Vec<Event>) {
+        crate::test_support::fold_asked(p, file, &pos.to_string(), pos, pos, batch);
+    }
+
+    /// Spec 117 criterion 3: [`super::extract_events`] lowers an out-of-line `mod` declaration to
+    /// one module row from its `mod` node's path, named by its [`super::module_candidates`]
+    /// joined by `\n`, and a declaration naming no candidate to none.
+    #[test]
+    fn extract_events_lowers_a_mod_declaration_to_one_module_row_naming_its_candidates() {
+        use crate::contextgraph::{MODULE_CANDIDATE_SEPARATOR, REF_KIND_MODULE};
+        use crate::graph_fixtures::DECLARING_FILE;
+        use crate::symbol_index::{ABSOLUTE_PATH_MOD_X, INLINE_MOD_X, MOD_X};
+        for source in [MOD_X, INLINE_MOD_X, ABSOLUTE_PATH_MOD_X] {
+            let symbols = crate::symbol_index::extracted("rs", source);
+            let declaration = out_of_line_declaration(&symbols);
+            let candidates = super::module_candidates(DECLARING_FILE, declaration)
+                .join(MODULE_CANDIDATE_SEPARATOR);
+            let module_rows = module_rows_of(&symbols);
+            let rows = crate::event_fixtures::named_references(&module_rows);
+            let expected: Vec<_> = (!candidates.is_empty())
+                .then_some((
+                    Some(candidates.as_str()),
+                    Some(declaration.path.as_str()),
+                    Some(REF_KIND_MODULE),
+                ))
+                .into_iter()
+                .collect();
+            assert_eq!(rows, expected, "{source}");
+        }
+    }
+
+    /// Spec 117 criterion 3, A MODULE ROW REACHES ITS FILE: over the real extraction folded as
+    /// ledger entries, each tabled declaration in [`DECLARING_FILE`] - a `#[path]` override,
+    /// `x.rs`, `x/mod.rs`, both, and `mod outer { mod x; }` - is one `extracted` `CONTAINS` from
+    /// its `mod` node onto the first of its [`super::module_candidates`] holding a `file` node,
+    /// whichever file folds first, and none while no candidate holds one.
+    ///
+    /// [`DECLARING_FILE`]: crate::graph_fixtures::DECLARING_FILE
+    #[test]
+    fn a_mod_declaration_reaches_the_first_candidate_holding_a_file_node_in_either_fold_order() {
+        use crate::contextgraph::{query::entity_id, TIER_EXTRACTED};
+        use crate::graph_fixtures::DECLARING_FILE;
+        use crate::symbol_index::{FN_Y, INLINE_MOD_X, MOD_X, PATH_MOD_X};
+        use crate::test_support::module_edges;
+        // (the declaring source, the candidates folded as files by index, the one reached)
+        let cases: [(&str, &[usize], usize); 5] = [
+            (PATH_MOD_X, &[0], 0),
+            (MOD_X, &[0], 0),
+            (MOD_X, &[1], 1),
+            (MOD_X, &[0, 1], 0),
+            (INLINE_MOD_X, &[0], 0),
+        ];
+        for (source, held, reached) in cases {
+            let symbols = crate::symbol_index::extracted("rs", source);
+            let declaration = out_of_line_declaration(&symbols);
+            let candidates = super::module_candidates(DECLARING_FILE, declaration);
+            let edge = (
+                entity_id(DECLARING_FILE, &declaration.path),
+                candidates[reached].clone(),
+                TIER_EXTRACTED.to_string(),
+            );
+            for declared_first in [true, false] {
+                let p = crate::test_support::fold_events([]);
+                let mut pos = 0;
+                let mut fold = |file: &str, source: &str| {
+                    pos += 1;
+                    fold_source(&p, pos, (file, source));
+                };
+                if declared_first {
+                    fold(DECLARING_FILE, source);
+                    assert_eq!(module_edges(&p), [], "{source}: no candidate holds a file");
+                }
+                for &i in held {
+                    fold(&candidates[i], FN_Y);
+                }
+                if !declared_first {
+                    fold(DECLARING_FILE, source);
+                }
+                assert_eq!(
+                    module_edges(&p),
+                    std::slice::from_ref(&edge),
+                    "{source}: declared first {declared_first}"
+                );
+            }
+        }
+    }
+
+    /// Spec 117 criterion 3: a `mod x;` in dev-only code stages no row - one under
+    /// `#[cfg(test)]`, one in a file under `tests/`, and one in a file the walk lowers under its
+    /// excluded flag - so its first candidate folded as a file gains no module edge.
+    #[test]
+    fn a_mod_declaration_in_dev_only_code_stages_no_row() {
+        use crate::graph_fixtures::DECLARING_FILE;
+        use crate::symbol_index::{CFG_TEST_MOD_X, FN_Y, MOD_X};
+        use crate::test_support::module_edges;
+        let under_tests = format!("tests/{DECLARING_FILE}");
+        let cases = [
+            (DECLARING_FILE, CFG_TEST_MOD_X, false),
+            (under_tests.as_str(), MOD_X, false),
+            (DECLARING_FILE, MOD_X, true),
+        ];
+        for (file, source, excluded) in cases {
+            let symbols = crate::symbol_index::extracted("rs", source);
+            let target = &super::module_candidates(file, out_of_line_declaration(&symbols))[0];
+            let p = crate::test_support::fold_events([]);
+            let batch = super::bytes_batch(file, Some(source.as_bytes()), excluded);
+            fold_batch(&p, 1, file, batch);
+            fold_source(&p, 2, (target, FN_Y));
+            assert_eq!(
+                module_edges(&p),
+                [],
+                "{file}: {source}, excluded {excluded}"
+            );
+        }
     }
 }

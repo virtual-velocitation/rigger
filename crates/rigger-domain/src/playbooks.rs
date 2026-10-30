@@ -2,6 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::contextgraph::query::referenced_id;
 use crate::contextgraph::TYPE_LESSON_LEARNED;
 use crate::eventstore::Event;
 
@@ -31,8 +32,9 @@ pub struct Playbook {
     pub id: String,
     /// The distilled lesson body (the deduplicated `LessonLearned` summary).
     pub summary: String,
-    /// The TRIGGER PREDICATE: the sorted union of every folded lesson's `about` files, the
-    /// blast radius the injector overlaps against an agent's grounded seed to rank relevance.
+    /// The TRIGGER PREDICATE: the sorted union of every folded lesson's `about` files (a
+    /// `path:line` citation read as the file it cites, [`referenced_id`]), the blast radius the
+    /// injector overlaps against an agent's grounded seed to rank relevance.
     pub triggers: Vec<String>,
     /// How many `LessonLearned` events collapsed into this one playbook (>= 1).
     pub lessons: usize,
@@ -69,7 +71,7 @@ pub fn distill(events: &[Event]) -> Vec<Playbook> {
         }
         let entry = folded.entry(summary).or_default();
         for f in l.about {
-            let f = f.trim();
+            let f = referenced_id(f.trim());
             if !f.is_empty() {
                 entry.0.insert(f.to_string());
             }

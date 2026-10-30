@@ -1,9 +1,10 @@
 //! Deterministic coupling-community detection (spec 53, the CODE lens): the OFFLINE pass that
 //! groups code entities and files by how densely they call and reference one another - the
 //! "subsystem" a maintainer holds in their head - regardless of directory. It reads the live
-//! coupling layer (the `CALLS` / `REFERENCES` / `CONTAINS` edges among code-entity / file nodes)
-//! already folded into the projection, runs modularity-based community detection over it, and
-//! turns the result into `CommunityAssigned` events. The fold (the always-compiled projector arm)
+//! coupling layer (the `CALLS` / `REFERENCES` / `CONTAINS` edges among code-entity / file nodes,
+//! but a module declaration's `CONTAINS` onto its file) already folded into the projection, runs
+//! modularity-based community detection over it, and turns the result into `CommunityAssigned`
+//! events. The fold (the always-compiled projector arm)
 //! turns each event into an `IN_COMMUNITY` membership edge, so the derived grouping is EVENT-SOURCED
 //! (a rebuildable projection over the log), never computed at request time.
 //!
@@ -46,8 +47,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::contextgraph::query::{leaf_of, node_name};
 use crate::contextgraph::{
-    is_call_target, CommunityAssigned, Graph, KIND_CODE_ENTITY, REL_CALLS, REL_CONTAINS,
-    REL_REFERENCES, TIER_AMBIGUOUS, TYPE_COMMUNITY_ASSIGNED,
+    declares_a_module, is_call_target, CommunityAssigned, Graph, KIND_CODE_ENTITY, REL_CALLS,
+    REL_CONTAINS, REL_REFERENCES, TIER_AMBIGUOUS, TYPE_COMMUNITY_ASSIGNED,
 };
 use crate::eventstore::Event;
 
@@ -85,7 +86,8 @@ fn fnv1a_hex(s: &str) -> String {
 /// community detection runs over. Its nodes are exactly the code-entity / file ids that participate
 /// in at least one coupling edge (a node with none is not part of any community and simply keeps its
 /// kind bucket in the lens), stored SORTED so a node's index is its id rank. Edges collapse each
-/// unordered pair of the live `CALLS` / `REFERENCES` / `CONTAINS` edges into ONE undirected edge
+/// unordered pair of the live `CALLS` / `REFERENCES` / `CONTAINS` edges, a module declaration's
+/// `CONTAINS` onto its file excluded ([`declares_a_module`]), into ONE undirected edge
 /// weighted by multiplicity; self-loops and the unresolved [`TIER_AMBIGUOUS`] tier are dropped
 /// (the spec's "resolvable tiers only, weighted by edge multiplicity").
 pub struct Coupling {
@@ -104,11 +106,13 @@ pub struct Coupling {
 }
 
 impl Coupling {
-    /// Build the coupling graph from the WHOLE projection graph (as [`crate::contextgraph::sqlite::Projector::whole`]
-    /// returns it - live edges only, project-scoped, sorted). Keeps only the `CALLS` / `REFERENCES`
-    /// / `CONTAINS` structural edges at resolvable tiers (never [`TIER_AMBIGUOUS`]), collapses each
-    /// unordered node pair to one undirected edge weighted by how many such edges join it, and drops
-    /// self-loops. A node with no surviving coupling edge is excluded (it joins no community).
+    /// Build the coupling graph from the WHOLE projection graph (as
+    /// `rigger_graph_sqlite::contextgraph::sqlite::Projector::whole` returns it - live edges only,
+    /// project-scoped, sorted). Keeps only the `CALLS` / `REFERENCES` / `CONTAINS` structural edges
+    /// at resolvable tiers (never [`TIER_AMBIGUOUS`]), but a module declaration's `CONTAINS` onto a
+    /// `file` node ([`declares_a_module`]), collapses each unordered node pair to one undirected
+    /// edge weighted by how many such edges join it, and drops self-loops. A node with no surviving
+    /// coupling edge is excluded (it joins no community).
     pub fn from_graph(g: &Graph) -> Self {
         // Index real DEFINITIONS by leaf so a cross-file reference that folded onto a bare
         // same-file placeholder can be redirected to the definition it actually reaches. A
@@ -155,9 +159,12 @@ impl Coupling {
         // input layer through ONE assembly, and the canonical hash string is identical by
         // construction. Self-loops (a same-file reference onto its own caller, or a bare placeholder
         // that resolved back onto its file-mate) are dropped inside `from_edges`.
+        // A module declaration's `CONTAINS` onto its file couples nothing ([`declares_a_module`]).
+        let kind_of = g.kinds();
         let edges = g.edges.iter().filter_map(|e| {
             let coupling = e.rel == REL_CALLS || e.rel == REL_REFERENCES || e.rel == REL_CONTAINS;
-            if !coupling || e.tier == TIER_AMBIGUOUS {
+            let declaration = declares_a_module(&e.rel, kind_of.get(e.to.as_str()).copied());
+            if !coupling || declaration || e.tier == TIER_AMBIGUOUS {
                 return None;
             }
             Some((canon(&e.from), canon(&e.to)))
@@ -633,7 +640,8 @@ mod tests {
         for (node, comm) in &a.members {
             by_comm.entry(comm.clone()).or_default().push(node.clone());
         }
-        // Undirected adjacency over the coupling edges (same filter as detection).
+        // Undirected adjacency over the coupling relations detection reads; no fixture this
+        // checks holds a module declaration's `CONTAINS`, which detection also skips.
         let mut adj: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         for e in &g.edges {
             let coupling = e.rel == REL_CALLS || e.rel == REL_REFERENCES || e.rel == REL_CONTAINS;
@@ -869,6 +877,18 @@ mod tests {
         assert_eq!(
             m["src/b.rs"], m["src/a.rs::foo"],
             "file B couples to A's definition across the directory line (one community)"
+        );
+    }
+
+    /// Spec 117, A MODULE ROW REACHES ITS FILE: a `mod` node's `CONTAINS` onto its module's
+    /// `file` node declares the module and couples nothing, while its file's `CONTAINS` onto the
+    /// `mod` node couples the two, so the module file joins no community.
+    #[test]
+    fn from_graph_couples_no_mod_to_its_module_file() {
+        use crate::test_support::{module_graph, DECLARING_FILE, MOD_NODE};
+        assert_eq!(
+            Coupling::from_graph(&module_graph()).nodes,
+            [DECLARING_FILE, MOD_NODE]
         );
     }
 

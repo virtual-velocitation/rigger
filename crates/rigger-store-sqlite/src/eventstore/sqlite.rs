@@ -76,6 +76,27 @@ fn latest_in_group_sql() -> String {
 
 const COLS: &str = "position, stream, type, id, data, meta, valid_from, recorded_at, revision";
 
+/// The global read behind [`EventStore::read_all`] in `dir`: the events past position `?1`
+/// (exclusive) whose stream matches the slice pattern `?2`, in log order.
+fn all_sql(dir: Direction) -> String {
+    format!(
+        "SELECT {COLS} FROM events WHERE position > ?1 AND stream LIKE ?2 ORDER BY position {}",
+        direction_sql(dir)
+    )
+}
+
+/// THE PAGE behind [`EventStore::read_all_page`] (spec 124): the forward global read cut at `?3`
+/// rows - one range seek of the position key that stops at the page's last row, so a page past a
+/// long run of events reads the page and never the run.
+fn page_sql() -> String {
+    format!("{} LIMIT ?3", all_sql(Direction::Forward))
+}
+
+/// The head behind [`EventStore::log_head`]: the AUTOINCREMENT sequence's row for `events`, the
+/// highest position the table has issued. Deleting the top event leaves the row standing, and a
+/// table that has issued no position has no row.
+const LOG_HEAD_SQL: &str = "SELECT seq FROM sqlite_sequence WHERE name = 'events'";
+
 /// Where a typed read from revision `?2` starts in the log: the position of the stream's first
 /// event at or above that revision - one seek of the `(stream, revision)` index.
 const TYPED_READ_START_SQL: &str =
@@ -451,6 +472,21 @@ impl Store {
         )
     }
 
+    /// When the event at `position` was recorded - its store stamp - read by one point lookup of
+    /// the position, or none where the store holds no event there: what `rigger setup`'s seeding of
+    /// a graph's `caught_up` cursor reads a missing position's age through (spec 124, THE CLOCKS).
+    pub fn recorded_at(&self, position: Position) -> Result<Option<SystemTime>, Error> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT recorded_at FROM events WHERE position = ?1",
+            [position as i64],
+            |r| r.get::<_, i64>(0),
+        )
+        .optional()
+        .map(|stamp| stamp.map(from_nanos))
+        .map_err(be)
+    }
+
     /// The one reader of a live selection: plan it ([`plan_derived_prune`]) for the
     /// `(stream_prefix, stream, identity)` it names, then read the stream's rows past `after` -
     /// the columns `cols`, the position first - in position order, skip every row the plan sheds,
@@ -631,7 +667,7 @@ fn read_derived(
         let key: Option<String> = row.get(2).map_err(be)?;
         let valid_from: i64 = row.get(3).map_err(be)?;
         let named = key.as_deref().and_then(crate::ingest::derived_key_parts);
-        if type_ == crate::retention::TYPE_GENERATION_INGESTED {
+        if crate::retention::is_ledger_entry(&type_) {
             if let Some((identity, _)) = named {
                 let entry = read
                     .entries
@@ -1283,17 +1319,30 @@ impl EventStore for Store {
         dir: Direction,
         filter: &Filter,
     ) -> Result<Vec<Event>, Error> {
-        let order = direction_sql(dir);
         let like = like_of(filter);
         let conn = self.conn.lock().unwrap();
-        let sql = format!(
-            "SELECT {COLS} FROM events WHERE position > ?1 AND stream LIKE ?2 ORDER BY position {order}"
-        );
-        let mut stmt = conn.prepare(&sql).map_err(be)?;
-        let rows = stmt
-            .query_map(params![from as i64, like], row_to_event)
+        global_events(&conn, &all_sql(dir), params![from as i64, like]).map_err(be)
+    }
+
+    /// One seek of the position key cut at `max` rows ([`page_sql`]).
+    fn read_all_page(
+        &self,
+        from: Position,
+        filter: &Filter,
+        max: usize,
+    ) -> Result<Vec<Event>, Error> {
+        let like = like_of(filter);
+        let conn = self.conn.lock().unwrap();
+        global_events(&conn, &page_sql(), params![from as i64, like, max as i64]).map_err(be)
+    }
+
+    fn log_head(&self) -> Result<Option<Position>, Error> {
+        let conn = self.conn.lock().unwrap();
+        let seq: Option<i64> = conn
+            .query_row(LOG_HEAD_SQL, [], |r| r.get(0))
+            .optional()
             .map_err(be)?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(be)
+        Ok(seq.map(|seq| seq as Position))
     }
 
     fn subscribe_all(&self, from: Position, filter: &Filter) -> Result<Subscription, Error> {
@@ -1469,10 +1518,23 @@ where
 }
 
 fn poll_all(conn: &Connection, after: Position, like: &str) -> rusqlite::Result<Vec<Event>> {
-    let mut stmt = conn.prepare(&format!(
-        "SELECT {COLS} FROM events WHERE position > ?1 AND stream LIKE ?2 ORDER BY position ASC"
-    ))?;
-    let rows = stmt.query_map(params![after as i64, like], row_to_event)?;
+    global_events(
+        conn,
+        &all_sql(Direction::Forward),
+        params![after as i64, like],
+    )
+}
+
+/// The events one global read answers: `sql` over `binds`, each row as an [`Event`], in the order
+/// the query hands them back. The read behind [`EventStore::read_all`], its page and the global
+/// subscription's poll.
+fn global_events(
+    conn: &Connection,
+    sql: &str,
+    binds: impl rusqlite::Params,
+) -> rusqlite::Result<Vec<Event>> {
+    let mut stmt = conn.prepare(sql)?;
+    let rows = stmt.query_map(binds, row_to_event)?;
     rows.collect()
 }
 
@@ -1504,27 +1566,35 @@ mod tests {
     /// EVERY LOOKUP IS ONE SEEK (spec 101): sqlite's own plan for the boundary lookup is one search
     /// of the stream-and-type index, and for the group lookup one search of the partial group index
     /// over the stream and the group entry - never a scan of the table and never a sort step, so
-    /// neither cost grows with the events the stream holds.
+    /// neither cost grows with the events the stream holds. The page (spec 124) is one range
+    /// search of the position key with no sort step, so its `LIMIT` stops the read at the page's
+    /// last row.
     #[test]
     fn each_lookup_is_one_seek_of_its_index() {
         let s = Store::open(":memory:").unwrap();
         let conn = s.conn.lock().unwrap();
-        for (sql, key, plan) in [
+        let rows: [(String, &[&dyn rusqlite::ToSql], &str); 3] = [
             (
                 LAST_POSITION_SQL.to_string(),
-                "RunStarted",
+                &[&"rigger", &"RunStarted"],
                 "SEARCH events USING INDEX idx_events_stream_type (stream=? AND type=?)",
             ),
             (
                 latest_in_group_sql(),
-                "gc/a.rs",
+                &[&"rigger", &"gc/a.rs"],
                 "SEARCH events USING INDEX idx_events_group (stream=? AND <expr>=?)",
             ),
-        ] {
+            (
+                page_sql(),
+                &[&0_i64, &"proj-a-%", &256_i64],
+                "SEARCH events USING INTEGER PRIMARY KEY (rowid>?)",
+            ),
+        ];
+        for (sql, bound, plan) in rows {
             let got: Vec<String> = conn
                 .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
                 .unwrap()
-                .query_map(params!["rigger", key], |r| r.get::<_, String>(3))
+                .query_map(bound, |r| r.get::<_, String>(3))
                 .unwrap()
                 .collect::<Result<_, _>>()
                 .unwrap();
@@ -1534,6 +1604,51 @@ mod tests {
                 "a single index search with no scan and no sort step"
             );
         }
+    }
+
+    /// THE HEAD (spec 124): the embedded log's head is the newest position its `AUTOINCREMENT`
+    /// sequence issued - none on a log that issued none, the newest append's whatever its stream,
+    /// and kept when the row it was issued to is gone, since sqlite never issues that position
+    /// again.
+    #[test]
+    fn the_head_is_the_newest_position_the_sequence_issued_whether_or_not_the_row_is_held() {
+        use crate::test_support::ev;
+        let s = Store::open(":memory:").unwrap();
+        assert_eq!(
+            s.log_head().unwrap(),
+            None,
+            "a log that issued no position has no head"
+        );
+        s.append(
+            "a",
+            ExpectedRevision::Any,
+            &[ev("A0", "{}"), ev("A1", "{}")],
+        )
+        .unwrap();
+        s.append("b", ExpectedRevision::Any, &[ev("B0", "{}")])
+            .unwrap();
+        assert_eq!(
+            s.log_head().unwrap(),
+            Some(3),
+            "the head is the newest position issued, whatever its stream"
+        );
+        s.conn
+            .lock()
+            .unwrap()
+            .execute("DELETE FROM events WHERE position = 3", [])
+            .unwrap();
+        assert_eq!(
+            s.log_head().unwrap(),
+            Some(3),
+            "a position issued to a row the log no longer holds still counts"
+        );
+        s.append("a", ExpectedRevision::Any, &[ev("A2", "{}")])
+            .unwrap();
+        assert_eq!(
+            s.log_head().unwrap(),
+            Some(4),
+            "the next append lands above the head"
+        );
     }
 
     /// An events file written before the group index existed gains it when it is opened, so the

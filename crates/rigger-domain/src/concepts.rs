@@ -91,11 +91,7 @@ fn is_label_doc(kind: &str) -> bool {
 /// assembly ([`Coupling::from_edges`]) so ONE deterministic detection runs over this layer exactly as
 /// it runs over the coupling layer.
 pub fn intent_layer(g: &Graph) -> Coupling {
-    let kind_of: BTreeMap<&str, &str> = g
-        .nodes
-        .iter()
-        .map(|n| (n.id.as_str(), n.kind.as_str()))
-        .collect();
+    let kind_of = g.kinds();
     let endpoint_is_doc = |id: &str| kind_of.get(id).map(|k| is_intent_doc(k)).unwrap_or(false);
     let edges = g.edges.iter().filter_map(|e| {
         if !is_intent_rel(&e.rel) {

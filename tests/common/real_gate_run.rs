@@ -128,5 +128,6 @@ fn deps<'a>(store: &'a Store, driver: &'a RealDriverSpy) -> Deps<'a> {
         criteria: Vec::new(),
         log: &|_| {},
         hash_blob: &|_| Ok(String::new()),
+        check_emit: &rigger::contextgraph::check_emit,
     }
 }

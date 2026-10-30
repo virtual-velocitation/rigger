@@ -119,6 +119,7 @@ fn proposal_integrates_verified_by(proposals: &[&[&str]], output: &'static str, 
         criteria: vec![CRITERION.to_string()],
         log: &|_| {},
         hash_blob: &|_| Ok(String::new()),
+        check_emit: &rigger::contextgraph::check_emit,
     };
     let rs = run(&cfg, &deps).unwrap();
 

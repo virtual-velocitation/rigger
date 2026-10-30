@@ -19,6 +19,9 @@
 //! lanes run every other test.
 
 mod common;
+#[cfg(feature = "symbols")]
+#[path = "common/symbol_index.rs"]
+mod symbol_index;
 
 use common::cli::{
     ambiguous_show, open_graph, run_rigger_ok, seed_rigger_dir, show_head, temp_project,
@@ -638,7 +641,7 @@ fn tiers_after_the_fn_retires(beside: Option<&str>) -> (Vec<String>, bool) {
     }
     drop(graph);
 
-    let graph = common::cli::rebuilt_graph(dir.path(), &[("f.rs", "fn y() {}\n")]);
+    let graph = common::cli::rebuilt_graph(dir.path(), &[("f.rs", symbol_index::FN_Y)]);
     let member_stands = graph
         .whole()
         .unwrap()

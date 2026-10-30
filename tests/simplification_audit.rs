@@ -99,7 +99,9 @@ use common::repo::repo_root;
 #[path = "common/source_audit.rs"]
 mod source_audit;
 use source_audit::{
-    char_literal_len, is_ident_char, skip_string_literal, tokenize, RawKind, RawTok,
+    char_literal_len, close_of, follows_keyword, imported_names, is_definition_site, is_ident_char,
+    is_keyword, qualifier_before, ref_punct, ref_token, skip_string_literal, tokenize, RawKind,
+    RawTok,
 };
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -850,8 +852,7 @@ fn scan_target_files_with_content(root: &Path) -> (Vec<ScannedFn>, HashMap<&'sta
     let mut contents = HashMap::new();
     for rel in TARGET_FILES {
         let path = root.join(rel);
-        let content = fs::read_to_string(&path)
-            .unwrap_or_else(|e| panic!("simplification_audit: cannot read {rel}: {e}"));
+        let content = common::fixtures::read_text(&path);
         out.extend(scan_file(rel, &content));
         contents.insert(rel, content);
     }
@@ -1818,7 +1819,7 @@ fn render_section_1(entries: &[MapEntry], lines: &[MapEntryLines]) -> String {
 // REPORT ASSEMBLY (placeholders for the sections this unit does NOT own)
 // =========================================================================================
 
-const REPORT_PATH: &str = "docs/audit/2026-09-simplification-audit.md";
+use common::repo::AUDIT_REPORT_PATH as REPORT_PATH;
 const MAP_PATH: &str = "docs/audit/responsibility-map.json";
 
 /// Spec 90 criterion 2: the UNGUARDED sibling carrying [`MAP_PATH`]'s line spans (see
@@ -1977,7 +1978,7 @@ fn prefix_len(n: usize) -> usize {
     n - min_overlap.min(n) + 1
 }
 
-const CATALOG_PATH: &str = "docs/audit/duplication-catalog.json";
+use common::repo::DUPLICATION_CATALOG_PATH as CATALOG_PATH;
 
 /// Spec 90 criterion 2: the UNGUARDED sibling carrying [`CATALOG_PATH`]'s line spans, moved out
 /// of the guarded file so a pin bump or a sibling unit's own insertion elsewhere never perturbs
@@ -2469,8 +2470,7 @@ fn scan_dirs(root: &Path, dirs: &[String]) -> Vec<FileScan> {
                 .unwrap_or(&path)
                 .to_string_lossy()
                 .replace('\\', "/");
-            let content = fs::read_to_string(&path)
-                .unwrap_or_else(|e| panic!("simplification_audit: cannot read {rel}: {e}"));
+            let content = common::fixtures::read_text(&path);
             let chars: Vec<char> = content.chars().collect();
             let tokens = tokenize(&chars);
             let core = scan_file_core(&rel, &content);
@@ -3312,8 +3312,7 @@ struct Disposition {
 /// The committed [`DISPOSITIONS_PATH`] under `root` - the ONE reader of that sidecar.
 fn load_dispositions(root: &Path) -> Vec<Disposition> {
     let path = root.join(DISPOSITIONS_PATH);
-    let raw = fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("{DISPOSITIONS_PATH} is missing or unreadable ({e})"));
+    let raw = common::fixtures::read_text(&path);
     serde_json::from_str(&raw)
         .unwrap_or_else(|e| panic!("{DISPOSITIONS_PATH} is not a disposition list: {e}"))
 }
@@ -3774,8 +3773,7 @@ fn replace_section_2(existing: &str, section_2: &str) -> String {
 
 /// The lines of the repo file `rel`.
 fn repo_lines(rel: &str) -> Vec<String> {
-    fs::read_to_string(repo_root().join(rel))
-        .unwrap_or_else(|e| panic!("the report cites {rel}, which is unreadable ({e})"))
+    common::repo::repo_text(rel)
         .lines()
         .map(str::to_string)
         .collect()
@@ -5778,30 +5776,6 @@ struct RefSite {
     tok_idx: usize,
 }
 
-fn ref_punct(tok: Option<&RawTok>, text: &str) -> bool {
-    tok.map(|t| t.kind == RawKind::Punct && t.text == text)
-        .unwrap_or(false)
-}
-
-/// The identifier immediately in front of a `qualifier::name`-shaped occurrence at `toks[i]`,
-/// or `None` when `toks[i]` is not `::`-preceded at all. Spec 87 round-1 addendum
-/// (`op-u87c2-round-1-ambiguity-covers-free-fns-too`): "the tokenizer's existing
-/// `preceded_by_coloncolon` signal" carried one step further, to name WHICH qualifier a
-/// `::`-qualified reference names, so a bare-name collision between two `Free`/`ImplAssoc` fns
-/// can attribute a qualified call site to the one it actually means.
-fn qualifier_before(toks: &[RawTok], i: usize) -> Option<String> {
-    if i < 3 {
-        return None;
-    }
-    if ref_punct(toks.get(i - 1), ":") && ref_punct(toks.get(i - 2), ":") {
-        let q = toks.get(i - 3)?;
-        if q.kind == RawKind::Ident || q.kind == RawKind::Keyword {
-            return Some(q.text.clone());
-        }
-    }
-    None
-}
-
 /// Index ranges into `tokens` (half-open `[start, end)`) occupied by the CONTENT of a `#[...]`
 /// attribute - every token strictly between the `#`/`[` that opens it and its own matching `]`,
 /// the `#` and both brackets themselves excluded. Spec 87 round-1 fix, class 2 of
@@ -5823,19 +5797,7 @@ fn attribute_token_ranges(tokens: &[RawTok]) -> Vec<(usize, usize)> {
             continue;
         }
         let start = i + 2;
-        let mut depth = 1i32;
-        let mut j = start;
-        while j < tokens.len() {
-            if tokens[j].kind == RawKind::Punct && tokens[j].text == "[" {
-                depth += 1;
-            } else if tokens[j].kind == RawKind::Punct && tokens[j].text == "]" {
-                depth -= 1;
-                if depth == 0 {
-                    break;
-                }
-            }
-            j += 1;
-        }
+        let j = close_of(tokens, i + 1, "]");
         ranges.push((start, j.min(tokens.len())));
         i = j + 1;
     }
@@ -5923,14 +5885,16 @@ fn resolve_out_of_line_test_files(files: &[(String, String)]) -> BTreeSet<String
 /// The declaring file's OWN "file-per-module" directory - mirrors `crates/rigger-grounder/src/grounder/symbols/
 /// events.rs`'s production `module_dir` exactly (spec 87 round-1 fix,
 /// `resolvers_agree_on_a_transitive_second_hop`): for `mod.rs`/`lib.rs`/`main.rs`, its own
-/// PARENT directory (these three names never introduce a new directory level of their own); for
-/// any other file `name.rs`, `<parent>/name` - real rustc convention: a plain file's own
-/// children live under a directory NAMED after it (`src/outer.rs`'s `mod inner;` resolves to
-/// `src/outer/inner.rs`, never a `src/inner.rs` sibling). An earlier version of this function
-/// used the plain PARENT directory unconditionally - correct for a top-level or `mod.rs`
-/// declaring file (where the two coincide) but wrong the moment a transitive second hop's
-/// declaring file is an ordinary nested file, exactly what the resolver-agreement test with the
-/// canonical production resolver caught.
+/// PARENT directory (the rule takes these three names to introduce no directory level of their
+/// own); for any other file `name.rs`, `<parent>/name` - rustc's convention for a plain
+/// submodule file, whose own children live under a directory NAMED after it (`src/outer.rs`'s
+/// `mod inner;` resolves to `src/outer/inner.rs`, never a `src/inner.rs` sibling). The rule
+/// reads the name alone, so it departs from rustc on some files, among them a crate root of
+/// another name (`src/bin/tool.rs`) and a submodule file named `main.rs` (`src/sub/main.rs`).
+/// An earlier version of this function used the plain PARENT directory unconditionally -
+/// correct for a top-level or `mod.rs` declaring file (where the two coincide) but wrong the
+/// moment a transitive second hop's declaring file is an ordinary nested file, exactly what the
+/// resolver-agreement test with the canonical production resolver caught.
 fn declaring_file_module_dir(declaring_file: &str) -> String {
     let dir = Path::new(declaring_file)
         .parent()
@@ -5954,8 +5918,8 @@ fn declaring_file_module_dir(declaring_file: &str) -> String {
 
 /// Resolve one [`OutOfLineMod`]'s target file: a `#[path = ".."]` override first - resolved
 /// relative to `declaring_file`'s own PARENT directory, rustc's own escape hatch from the
-/// file-per-module convention (unconditionally directory-of-file-relative, matching the
-/// production resolver's identical `#[path]` rule) - else `name.rs`, else `name/mod.rs`,
+/// file-per-module convention (directory-of-file-relative at the file's top level, the
+/// production resolver's `#[path]` rule there) - else `name.rs`, else `name/mod.rs`,
 /// resolved relative to `declaring_file`'s own [`declaring_file_module_dir`] (spec 87 Design's
 /// exact three forms) - `None` if nothing at that path exists in `exists` (a mod pointing
 /// outside the given file set, e.g. into `build/`, resolves to nothing and is ignored, matching
@@ -6033,8 +5997,7 @@ fn collect_files_with_content(root: &Path, dirs: &[String]) -> Vec<(String, Stri
                 .unwrap_or(&p)
                 .to_string_lossy()
                 .replace('\\', "/");
-            let content = fs::read_to_string(&p)
-                .unwrap_or_else(|e| panic!("dead-code sweep: cannot read {rel}: {e}"));
+            let content = common::fixtures::read_text(&p);
             (rel, content)
         })
         .collect()
@@ -6128,9 +6091,7 @@ fn all_ident_ref_sites(
             // real tree (`new`/`drop` before this fix) and pinned by this criterion's own
             // ambiguous-associated-fn fixtures. THE RULE (round 3): every OTHER `Ident` token
             // is a reference to its own text, unconditionally - no shape test of any kind.
-            let is_definition_site =
-                i > 0 && f.tokens[i - 1].kind == RawKind::Keyword && f.tokens[i - 1].text == "fn";
-            if is_definition_site {
+            if is_definition_site(&f.tokens, i) {
                 continue;
             }
             let production = is_production_line(t.line);
@@ -6375,53 +6336,6 @@ fn impl_assoc_qualifier(f: &ScannedFn) -> String {
     impl_self_type(f.enclosing_impl.as_deref().unwrap_or_default())
 }
 
-/// Per-file map: an imported bare name -> its qualifying module segment, for a SIMPLE
-/// `use path::to::name;` import (spec 87 round-1 addendum: "a `use module::name;` ... resolving
-/// to it") - the last two `::`-separated path segments become `(name, qualifier)`. Deliberately
-/// narrow: a group import (`use a::{b, c};`), a glob (`use a::*;`), or a renamed import
-/// (`use a::b as c;`) is NOT resolved, an accepted, disclosed textual-scanner limitation (this is
-/// used only to ATTRIBUTE a bare call site during ambiguity resolution - missing one of these
-/// shapes costs a missed disambiguation, never a wrong one, since an unattributed reference is
-/// simply credited to no definition, never a false one).
-fn use_import_qualifiers(tokens: &[RawTok]) -> HashMap<String, String> {
-    let mut out = HashMap::new();
-    let mut i = 0usize;
-    while i < tokens.len() {
-        if tokens[i].kind != RawKind::Keyword || tokens[i].text != "use" {
-            i += 1;
-            continue;
-        }
-        let mut j = i + 1;
-        let mut segments: Vec<String> = Vec::new();
-        let mut simple = true;
-        while j < tokens.len() {
-            match (&tokens[j].kind, tokens[j].text.as_str()) {
-                (RawKind::Punct, ";") => {
-                    j += 1;
-                    break;
-                }
-                (RawKind::Ident, _) => segments.push(tokens[j].text.clone()),
-                (RawKind::Keyword, "self" | "crate" | "super") => {
-                    segments.push(tokens[j].text.clone())
-                }
-                (RawKind::Punct, ":") => {}
-                (RawKind::Keyword, "as") | (RawKind::Punct, "{" | "}" | "*" | ",") => {
-                    simple = false;
-                }
-                _ => {}
-            }
-            j += 1;
-        }
-        if simple && segments.len() >= 2 {
-            let name = segments[segments.len() - 1].clone();
-            let qualifier = segments[segments.len() - 2].clone();
-            out.insert(name, qualifier);
-        }
-        i = j;
-    }
-    out
-}
-
 /// The innermost function whose span contains `line` in `file`, if any.
 fn innermost_fn_at(file: &FileScan, line: usize) -> Option<&ScannedFn> {
     file.fns
@@ -6471,24 +6385,19 @@ fn local_binding_type(
     self_type: Option<&str>,
 ) -> Option<String> {
     let lo = toks.partition_point(|t| t.line < f.start_line);
-    let is_kw = |j: usize, kw: &str| {
-        toks.get(j)
-            .map(|t| t.kind == RawKind::Keyword && t.text == kw)
-            .unwrap_or(false)
-    };
     let mut found: Option<Option<String>> = None;
     for j in lo..use_idx {
         let t = &toks[j];
         if t.kind != RawKind::Ident || t.text != name || j == 0 {
             continue;
         }
-        let before = if is_kw(j - 1, "mut") && j >= 2 {
+        let before = if follows_keyword(toks, j, "mut") && j >= 2 {
             j - 2
         } else {
             j - 1
         };
         let typed = ref_punct(toks.get(j + 1), ":") && !ref_punct(toks.get(j + 2), ":");
-        if is_kw(before, "let") {
+        if ref_token(toks.get(before), RawKind::Keyword, "let") {
             found = Some(if typed {
                 type_named_at(toks, j + 2, self_type)
             } else if ref_punct(toks.get(j + 1), "=") {
@@ -6510,7 +6419,9 @@ fn local_binding_type(
             && (ref_punct(toks.get(before), "(") || ref_punct(toks.get(before), ","))
         {
             found = Some(type_named_at(toks, j + 2, self_type));
-        } else if is_kw(before, "for") || ref_punct(toks.get(before), "|") {
+        } else if ref_token(toks.get(before), RawKind::Keyword, "for")
+            || ref_punct(toks.get(before), "|")
+        {
             found = Some(None);
         }
     }
@@ -6589,7 +6500,15 @@ fn build_dead_code_candidates(
     }
     let use_imports: HashMap<&str, HashMap<String, String>> = files
         .iter()
-        .map(|fsc| (fsc.rel.as_str(), use_import_qualifiers(&fsc.tokens)))
+        .map(|fsc| {
+            (
+                fsc.rel.as_str(),
+                imported_names(&fsc.tokens)
+                    .into_iter()
+                    .filter(|(_, owner)| !is_keyword(owner))
+                    .collect(),
+            )
+        })
         .collect();
 
     let categories: HashMap<(&str, usize), DispatchCategory> = candidates
@@ -6651,7 +6570,10 @@ fn build_dead_code_candidates(
         // `ImplAssoc` get real per-definition ATTRIBUTION when the name is shared, tried in
         // order: (1) a `::`-qualified call site whose qualifier textually matches this
         // definition's own (a type name for `ImplAssoc`, a module name for `Free`); (2) a bare
-        // call resolved through the REFERENCING file's own `use module::name;` import; (3) for
+        // call resolved through the REFERENCING file's own `use` import of it, a path
+        // `use module::name;` or a member of a `module::{..}` group ([`imported_names`]), where an
+        // import owned by a keyword such as `crate`, `self` or `super` names no module this
+        // comparison reads and so resolves nothing, as if the file had no such import; (3) for
         // `Free` only, a bare call sitting in the SAME FILE as this definition - Rust's own
         // lexical scoping resolves an unqualified sibling call with no `use` needed at all (the
         // extremely common case: two files each defining and bare-calling their own same-named
@@ -10217,8 +10139,8 @@ mod tests {
         );
         /// outer.rs is test (declared #[cfg(test)] from lib.rs); outer.rs's OWN `mod inner;` has
         /// no local #[cfg(test)] at all, but the whole file is already test, so inner.rs must be
-        /// pulled in too. `outer.rs`'s own children resolve under `src/outer/` (rustc's real
-        /// file-per-module convention for a non-`mod.rs` declaring file), never a `src/inner.rs`
+        /// pulled in too. `outer.rs`'s own children resolve under `src/outer/` (rustc's
+        /// file-per-module convention for a plain submodule file), never a `src/inner.rs`
         /// sibling - `declaring_file_module_dir`'s own doc names the earlier version of this
         /// resolver that got this wrong.
         transitive_closure_pulls_in_a_second_hop_regardless_of_its_own_local_attribute:
@@ -10297,8 +10219,8 @@ mod tests {
             ),
             ("src/generated/probe.rs", "pub fn helper() {}\n"),
         ]);
-        /// `outer.rs`'s own children resolve under `src/outer/` (rustc's real file-per-module
-        /// convention for a non-`mod.rs` declaring file) - this fixture caught a real bug in
+        /// `outer.rs`'s own children resolve under `src/outer/` (rustc's file-per-module
+        /// convention for a plain submodule file) - this fixture caught a real bug in
         /// `resolve_mod_target`'s prior (sibling-directory) resolution, fixed alongside adding
         /// this test; see `declaring_file_module_dir`'s own doc.
         #[cfg(feature = "symbols")]
@@ -10572,6 +10494,14 @@ mod tests {
         );
     }
 
+    /// `distiller`'s `rebuild`, one of two unrelated top-level free fns sharing the bare name.
+    const DISTILLER_REBUILD: (&str, &str) =
+        ("src/distiller.rs", "pub fn rebuild() -> u32 {\n    1\n}\n");
+
+    /// `playbooks`'s `rebuild`, the other sharer of [`DISTILLER_REBUILD`]'s bare name.
+    const PLAYBOOKS_REBUILD: (&str, &str) =
+        ("src/playbooks.rs", "pub fn rebuild() -> u32 {\n    2\n}\n");
+
     /// Over the `files` fixture tree, exactly one `rebuild` is flagged (ambiguous) - the one in
     /// `file`. Returns it.
     fn the_one_flagged_rebuild(files: &[(&str, &str)], file: &str) -> DeadCodeCandidate {
@@ -10590,11 +10520,11 @@ mod tests {
         a_free_fn_bare_name_collision_where_only_one_sharer_has_a_real_caller_flags_the_other: assert_eq!(
             the_one_flagged_rebuild(
             &[
-                ("src/distiller.rs", "pub fn rebuild() -> u32 {\n    1\n}\n"),
-                ("src/playbooks.rs", "pub fn rebuild() -> u32 {\n    2\n}\n"),
+                DISTILLER_REBUILD,
+                PLAYBOOKS_REBUILD,
                 ("src/main.rs", "fn main() {\n    let _ = playbooks::rebuild();\n}\n"),
             ],
-                "src/distiller.rs",
+                DISTILLER_REBUILD.0,
             )
             .ambiguous_with,
             vec!["src/playbooks.rs:1".to_string()]
@@ -10615,12 +10545,36 @@ mod tests {
         /// attributes to that specific definition, same as a `module::rebuild()` call site would.
         a_bare_call_resolved_through_a_use_import_attributes_to_the_imported_definition: the_one_flagged_rebuild(
             &[
-                ("src/distiller.rs", "pub fn rebuild() -> u32 {\n    1\n}\n"),
-                ("src/playbooks.rs", "pub fn rebuild() -> u32 {\n    2\n}\n"),
+                DISTILLER_REBUILD,
+                PLAYBOOKS_REBUILD,
                 ("src/main.rs", "use crate::playbooks::rebuild;\nfn main() {\n    let _ = rebuild();\n}\n"),
             ],
-            "src/distiller.rs",
+            DISTILLER_REBUILD.0,
         );
+        /// The same attribution through a group import: a bare `rebuild()` call in a file whose
+        /// `use` names it inside a `playbooks::{..}` group nested in another group attributes to
+        /// `playbooks`'s definition, the module of the group that holds it.
+        a_bare_call_resolved_through_a_group_use_import_attributes_to_the_imported_definition: the_one_flagged_rebuild(
+            &[
+                DISTILLER_REBUILD,
+                PLAYBOOKS_REBUILD,
+                ("src/main.rs", "use crate::{distiller::Report, playbooks::{rebuild, Playbook}};\nfn main() {\n    let _ = rebuild();\n}\n"),
+            ],
+            DISTILLER_REBUILD.0,
+        );
+        /// A test module's `use super::{..}` group naming the file's own `rebuild` resolves no
+        /// module the attribution compares: the file's production bare call still attributes
+        /// locally, so only the uncalled `playbooks` sharer is flagged.
+        a_super_group_import_in_a_test_module_leaves_a_same_file_call_attributed_locally: {
+            let distiller = format!(
+                "{}pub fn sample() -> u32 {{\n    rebuild()\n}}\n#[cfg(test)]\nmod tests {{\n    use super::{{rebuild, sample}};\n}}\n",
+                DISTILLER_REBUILD.1
+            );
+            the_one_flagged_rebuild(
+                &[(DISTILLER_REBUILD.0, &distiller), PLAYBOOKS_REBUILD],
+                PLAYBOOKS_REBUILD.0,
+            )
+        };
     }
 
     rigger::test_cases! {
@@ -11265,8 +11219,7 @@ mod config_key_readers {
             UNREAD_KEY_ALLOWLIST.is_empty(),
             "the unread-key allowlist must be empty - wire or delete each key: {UNREAD_KEY_ALLOWLIST:?}"
         );
-        let content = fs::read_to_string(repo_root().join(CONFIG_SCHEMA_FILE))
-            .unwrap_or_else(|e| panic!("cannot read {CONFIG_SCHEMA_FILE}: {e}"));
+        let content = common::repo::repo_text(CONFIG_SCHEMA_FILE);
         let fields = schema_fields(&content);
         assert!(
             fields.iter().any(|(s, f)| s == "Defaults" && f == "budget")

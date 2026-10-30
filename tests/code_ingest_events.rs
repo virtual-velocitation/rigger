@@ -752,7 +752,8 @@ fn extract_events_emits_one_event_per_path_and_reference_threading_the_file_labe
     // Drive the per-file emit API DIRECTLY - `project_batches` only reaches `extract_events`
     // transitively, so its own contract is otherwise unpinned. The pass emits one
     // CodeEntityExtracted per path (spec 119, ONE PATH, ONE EVENT) and one EdgeInferred per
-    // reference; that CARDINALITY is the core of the extract-as-events pass, yet no other periphery
+    // reference, besides a module row per out-of-line `mod` declaration (this source declares
+    // none); that CARDINALITY is the core of the extract-as-events pass, yet no other periphery
     // test asserts it (the determinism test checks only non-empty + defs-before-refs). A regression
     // that dropped, doubled, or mis-typed a def/ref event would fold a wrong graph - and, once the
     // rebuild criterion replays the log, a wrong REBUILT graph - while every existing test stayed

@@ -19,7 +19,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-f876dbc68da1",
+    "id": "dup-821aa6735505",
     "classification": "near",
     "sites": [
       {
@@ -79,7 +79,27 @@
       },
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "live_ref_sql",
+        "content_hash": "6fd90a8c2eed6379"
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
         "name": "edge_text_sql",
+        "content_hash": "6fd90a8c2eed6379"
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "file_half_sql",
+        "content_hash": "6fd90a8c2eed6379"
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "proof_rows_by",
+        "content_hash": "6fd90a8c2eed6379"
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "refusing",
         "content_hash": "6fd90a8c2eed6379"
       },
       {
@@ -118,6 +138,11 @@
         "content_hash": "b0b4170272f04fb7"
       },
       {
+        "file": "src/cli/hygiene.rs",
+        "name": "live_writer_refusal",
+        "content_hash": "6fd90a8c2eed6379"
+      },
+      {
         "file": "src/cli/mod.rs",
         "name": "skill_source_rel",
         "content_hash": "6fd90a8c2eed6379"
@@ -128,9 +153,29 @@
         "content_hash": "6fd90a8c2eed6379"
       },
       {
+        "file": "src/cli/setup.rs",
+        "name": "live_run_rebuild_refusal",
+        "content_hash": "6fd90a8c2eed6379"
+      },
+      {
         "file": "tests/canary_model_drift_periphery.rs",
         "name": "prose_claiming",
         "content_hash": "6fd90a8c2eed6379"
+      },
+      {
+        "file": "tests/common/fixtures/fold.rs",
+        "name": "lock_held_past",
+        "content_hash": "b0b4170272f04fb7"
+      },
+      {
+        "file": "tests/common/fixtures/fold.rs",
+        "name": "catch_up_short_after",
+        "content_hash": "b0b4170272f04fb7"
+      },
+      {
+        "file": "tests/common/fixtures/instructions.rs",
+        "name": "builtin_instruction_source",
+        "content_hash": "b0b4170272f04fb7"
       },
       {
         "file": "tests/halted_spawn_wip_recovery_periphery.rs",
@@ -148,7 +193,7 @@
         "content_hash": "6fd90a8c2eed6379"
       }
     ],
-    "proposed_home": "a new shared module (sites span 16 files: crates/rigger-conductor/src/blast_radius_eval.rs, crates/rigger-conductor/src/conductor.rs, crates/rigger-domain/src/contextgraph.rs, crates/rigger-domain/src/review.rs, crates/rigger-domain/src/spawn.rs, crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs, crates/rigger-grounder/src/grounder/mod.rs, crates/rigger-grounder/src/grounder/workflowdef.rs, crates/rigger-grounder/src/ingest.rs, crates/rigger-store-sqlite/src/eventstore/namespace.rs, crates/rigger-worktree-git/src/worktree.rs, src/cli/mod.rs, tests/canary_model_drift_periphery.rs, tests/halted_spawn_wip_recovery_periphery.rs, tests/native_driver_pipelining_behavior.rs, tests/regate_landed_on_resume_periphery.rs)",
+    "proposed_home": "a new shared module (sites span 20 files: crates/rigger-conductor/src/blast_radius_eval.rs, crates/rigger-conductor/src/conductor.rs, crates/rigger-domain/src/contextgraph.rs, crates/rigger-domain/src/review.rs, crates/rigger-domain/src/spawn.rs, crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs, crates/rigger-grounder/src/grounder/mod.rs, crates/rigger-grounder/src/grounder/workflowdef.rs, crates/rigger-grounder/src/ingest.rs, crates/rigger-store-sqlite/src/eventstore/namespace.rs, crates/rigger-worktree-git/src/worktree.rs, src/cli/hygiene.rs, src/cli/mod.rs, src/cli/setup.rs, tests/canary_model_drift_periphery.rs, tests/common/fixtures/fold.rs, tests/common/fixtures/instructions.rs, tests/halted_spawn_wip_recovery_periphery.rs, tests/native_driver_pipelining_behavior.rs, tests/regate_landed_on_resume_periphery.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
@@ -256,7 +301,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-ff98ca74f1ca",
+    "id": "dup-fe96e15d8fa3",
     "classification": "near",
     "sites": [
       {
@@ -281,8 +326,23 @@
       },
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "retarget_sql",
+        "content_hash": "dd84157febaa78c9"
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
         "name": "id_range_sql",
         "content_hash": "5d23ae9ae3e76aee"
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "superseded_edges_sql",
+        "content_hash": "5d23ae9ae3e76aee"
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "declaration_sql",
+        "content_hash": "dd84157febaa78c9"
       },
       {
         "file": "crates/rigger-store-sqlite/src/eventstore/kurrentdb.rs",
@@ -406,7 +466,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-2b8f802a2dc3",
+    "id": "dup-f66d1a9d9447",
     "classification": "semantic",
     "sites": [
       {
@@ -417,7 +477,7 @@
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
         "name": "integrate_plan_commits_wraps_any_hard_error_with_the_plan_landing_marker",
-        "content_hash": "ea999bb38f84fe93"
+        "content_hash": "f3ef6a1fc794314b"
       },
       {
         "file": "crates/rigger-domain/src/agent.rs",
@@ -428,11 +488,6 @@
         "file": "crates/rigger-domain/src/ingest.rs",
         "name": "a_walk_reaches_every_batch_past_a_failed_one_and_answers_the_first_error",
         "content_hash": "759be2b81949a05f"
-      },
-      {
-        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
-        "name": "a_storage_error_in_a_rebuild_propagates_and_the_next_rebuild_resumes_and_folds_it",
-        "content_hash": "42988f6041c63d74"
       },
       {
         "file": "crates/rigger-grounder/src/grounder/mod.rs",
@@ -457,7 +512,7 @@
       {
         "file": "tests/batched_fold_cadence.rs",
         "name": "append_and_fold_is_best_effort_on_fold_error_and_a_no_op_on_an_empty_batch",
-        "content_hash": "5fb726832c6fe0ec"
+        "content_hash": "22258618be4ecac8"
       },
       {
         "file": "tests/canary_item_sharding_jobs_cap_periphery.rs",
@@ -468,6 +523,11 @@
         "file": "tests/cli.rs",
         "name": "run_workflow_prints_the_budget_halt_reason_on_stderr_when_its_conductor_returns",
         "content_hash": "c0f6e3d647f2a511"
+      },
+      {
+        "file": "tests/compaction_generations_periphery.rs",
+        "name": "setup_whose_rebuild_meets_a_storage_error_fails_and_the_next_setup_folds_the_event",
+        "content_hash": "b3774553a56bb20d"
       },
       {
         "file": "tests/grounder_name_contract.rs",
@@ -528,7 +588,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-e2420edc22e9",
+    "id": "dup-cde89b281edb",
     "classification": "near",
     "sites": [
       {
@@ -537,12 +597,22 @@
         "content_hash": "9c80ca639aa5a725"
       },
       {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "proof_targets_sql",
+        "content_hash": "14b162c1828e22af"
+      },
+      {
         "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
         "name": "key_expr",
         "content_hash": "14b162c1828e22af"
+      },
+      {
+        "file": "tests/common/fixtures/fold.rs",
+        "name": "not_folded_suffix",
+        "content_hash": "9c80ca639aa5a725"
       }
     ],
-    "proposed_home": "a new shared module (sites span 2 files: crates/rigger-conductor/src/conductor.rs, crates/rigger-store-sqlite/src/eventstore/sqlite.rs)",
+    "proposed_home": "a new shared module (sites span 4 files: crates/rigger-conductor/src/conductor.rs, crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs, crates/rigger-store-sqlite/src/eventstore/sqlite.rs, tests/common/fixtures/fold.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
@@ -693,7 +763,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-2b3843316743",
+    "id": "dup-04900f58b78e",
     "classification": "semantic",
     "sites": [
       {
@@ -810,6 +880,11 @@
         "file": "src/cli/run.rs",
         "name": "Command::new",
         "content_hash": "da3ee123d4540dd7"
+      },
+      {
+        "file": "src/cli/setup.rs",
+        "name": "Command::new",
+        "content_hash": "7bc9b4eef80706b2"
       },
       {
         "file": "src/cli/setup.rs",
@@ -1153,11 +1228,11 @@
       }
     ],
     "proposed_home": "a single injected process-spawn port every Command::new site routes through instead of constructing its own Command",
-    "note": "mandatory sweep: Command::new call sites - 91 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: Command::new call sites - 92 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-39249656bd34",
+    "id": "dup-f695fc3de61b",
     "classification": "semantic",
     "sites": [
       {
@@ -1174,16 +1249,6 @@
         "file": "crates/rigger-conductor/src/conductor.rs",
         "name": "\"{root}/.rigger/graph.db\"",
         "content_hash": "0b2d0bfef85b4398"
-      },
-      {
-        "file": "crates/rigger-config-files/src/config_store.rs",
-        "name": "\".rigger\"",
-        "content_hash": "c2dfa05b7c5ac948"
-      },
-      {
-        "file": "crates/rigger-config-files/src/config_store.rs",
-        "name": "\"create .rigger/instructions\"",
-        "content_hash": "647e8aea340be175"
       },
       {
         "file": "crates/rigger-config-files/src/config_store.rs",
@@ -1317,6 +1382,26 @@
       },
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "\"local:/p/.rigger/events.db\"",
+        "content_hash": "072cce40fb047d0b"
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "\"local:/q/.rigger/events.db\"",
+        "content_hash": "0f9a789fd6d9cb74"
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "\"local:/p/.rigger/events.db\"",
+        "content_hash": "072cce40fb047d0b"
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "\"local:/elsewhere/.rigger/events.db\"",
+        "content_hash": "e24c26c0d9d4cbdb"
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
         "name": "\".rigger/workflow.yml\"",
         "content_hash": "e24c26c0d9d4cbdb"
       },
@@ -1429,6 +1514,16 @@
         "file": "crates/rigger-process/src/reap.rs",
         "name": "\"a relocated/cache-home-style authorized_root with no .rigger/tmp relationship \\\n             must still authorize the reap\"",
         "content_hash": "25597419b8dbb616"
+      },
+      {
+        "file": "crates/rigger-store-sqlite/src/registry.rs",
+        "name": "\"/p/.rigger/events.db\"",
+        "content_hash": "c4bc3aea22d42434"
+      },
+      {
+        "file": "crates/rigger-store-sqlite/src/registry.rs",
+        "name": "\"local:/p/.rigger/events.db\"",
+        "content_hash": "e24c26c0d9d4cbdb"
       },
       {
         "file": "crates/rigger-store-sqlite/src/registry.rs",
@@ -1556,16 +1651,6 @@
         "content_hash": "052897e17aced00a"
       },
       {
-        "file": "src/cli/hygiene.rs",
-        "name": "\"a `rigger step` is running right now (it holds .rigger/step.lock)\"",
-        "content_hash": "e24c1bc0d9d4b92a"
-      },
-      {
-        "file": "src/cli/hygiene.rs",
-        "name": "\"/home/dev/proj/.rigger/events.db\"",
-        "content_hash": "c4bc3aea22d42434"
-      },
-      {
         "file": "src/cli/mod.rs",
         "name": "\"the server event store is selected but no connection string is set - provide one via \\\n         --conn <url>, the KURRENTDB_CONN environment variable, or the .rigger/store.conn \\\n         secret file\"",
         "content_hash": "25597419b8dbb616"
@@ -1689,11 +1774,6 @@
         "file": "src/cli/mod.rs",
         "name": "\".rigger\"",
         "content_hash": "f522588c3dd5424c"
-      },
-      {
-        "file": "src/cli/mod.rs",
-        "name": "\".rigger\"",
-        "content_hash": "6f737e98b475978b"
       },
       {
         "file": "src/cli/mod.rs",
@@ -1982,7 +2062,7 @@
       },
       {
         "file": "src/cli/setup.rs",
-        "name": "\"The count and the caller lookup run once per item of the walk's hunk list - every \\\n             item the hunks touch, new or pre-existing, its body or its doc changed - each \\\n             item's count run as `git ls-files src crates tests docs skills scaffold .rigger | \\\n             xargs awk -v t='<name>' 'index($0, t) { print FILENAME \\\":\\\" FNR }'` with its name, \\\n             and the record pairs each item of the hunk list with its count, the lines read and \\\n             its callers.\"",
+        "name": "\"The count and the caller lookup run once per item of the walk's hunk list - every \\\n             item the hunks touch, new or pre-existing, its body or its doc changed - each \\\n             item's count run as `git ls-files src crates tests docs skills scaffold .rigger | \\\n             xargs awk -v t='<name>' 'index($0, t) { print FILENAME \\\":\\\" FNR }'` with its name.\"",
         "content_hash": "25597419b8dbb616"
       },
       {
@@ -2038,6 +2118,11 @@
       {
         "file": "src/main.rs",
         "name": "\"rigger - a config-driven, event-sourced multi-agent dev-loop harness\\n\\n\\\nusage:\\n  \\\nrigger run [spec] [opts]    run the workflow (opts below)\\n  \\\nrigger step [--spec <path>]      advance the run one frontier via the replay driver\\n            \\\n[--base <ref>]        and print the newly parked spawn wave + a done flag\\n                              \\\nas JSON. --base (default origin/main) anchors a NEW run\\n                              \\\nbranch; if it is unresolvable the branch is created off\\n                              \\\nHEAD. An existing run branch is reused, never reset.\\n                              \\\n--fresh begins a NEW run for the spec even if the latest\\n                              \\\nmatches (pass on the first step to restart a wedged run);\\n                              \\\n--rebase-definition accepts a drifted definition and\\n                              \\\ncontinues, else a live-run step HALTS on definition drift\\n  \\\nrigger reported <id>        exit 0 iff spawn <id> already has a recorded result in\\n                              \\\nthis project's run stream (else non-zero). A read-only check\\n                              \\\nof whether a spawn reported yet; the death courier records\\n                              \\\natomically instead via `rigger result --if-absent`\\n  \\\nrigger prompt <id>          print the parked spawn's full prompt (persona + task).\\n                              \\\nThe step wave is a slim manifest; each worker fetches its\\n                              \\\nown prompt from the log by spawn id (spawn-by-reference);\\n                              \\\nit refuses a spawn that already ended on a real result\\n  \\\nrigger scratch <id>         print spawn <id>'s own rigger-assigned scratch container\\n                              \\\n(the exact dir the per-spawn reclaim reaps at its terminus);\\n                              \\\na worker points agent-created scratch and manual\\n                              \\\nCARGO_TARGET_DIR there instead of an unbucketed literal\\n  \\\nrigger workflow [spec]      turn-key: launch the per-project Node driver, which\\n                              \\\nspawns `rigger serve`, runs each agent via the Agent\\n                              \\\nSDK, and drives the loop (one command; run `rigger\\n                              \\\nsetup` first - it provisions the driver in .rigger/shim/)\\n  \\\nrigger serve [opts]         run as an MCP server the driver connects to\\n  \\\nrigger graph --around <id>  print the context subgraph around a node\\n  \\\nrigger graph --show <entity> print an entity's definition site + line-numbered body\\n                              \\\n(the text half of lookup; resolves a full id, a bare name or a path)\\n  \\\nrigger graph build          fold the project's source into the graph from a cold\\n                              \\\ncheckout (no run required)\\n  \\\nrigger graph communities    derive the code lens's coupling communities offline and\\n                              \\\n[--resolution <r>]          record them as events (deterministic; default r=1.0)\\n  \\\nrigger graph concepts       derive the concepts lens's intent-layer grouping offline\\n                              \\\n[--resolution <r>]          and record them as events (deterministic; default r=1.0)\\n  \\\nrigger stats                print the run's operator metrics: first-pass yield,\\n                              \\\nper-gate remediation counts, escalation rate, and\\n                              \\\nreview approve/reject counts. --canary reports the\\n                              \\\nlatest canary run's judge-the-judges recall scorecard\\n  \\\nrigger canary               run the review panel against the seeded-defect corpus\\n            \\\n[--corpus <dir>]         (default ./canaries) and score per-tier catch rate,\\n                              \\\nadjudicator correctness, and verdict stability under\\n                              \\\nfinding-order shuffle, into the project's canary stream\\n                              \\\n(read back with `rigger stats --canary`)\\n            \\\n[--jobs <n>]              caps the total concurrent review-panel spawns\\n                              \\\nacross sharded items and each item's lens fan-out\\n                              \\\ntogether (default: the crate's default worker\\n                              \\\nwidth, floored at 2)\\n            \\\n[--model <tier>=<id>]    pins a tier's (lens/adversary/adjudicator)\\n                              \\\nmodel for this run only, repeatable; the scorecard\\n                              \\\nheader prints its resolved id\\n  \\\nrigger playbooks --rebuild  reconstruct the distilled playbook pool under\\n                              \\\n.rigger/playbooks/ from the recorded LessonLearned\\n                              \\\nstream: deduplicated, trigger-scoped agent-files the\\n                              \\\nlessons injector ranks by blast-radius relevance (a\\n                              \\\nrebuildable projection of the log, never hand-edited)\\n  \\\nrigger replay <run|latest>  re-drive a completed run's recorded trajectory under a\\n            \\\n--against <rev>          candidate config (workflow + prompts at git <rev>) in an\\n                              \\\nisolated scratch namespace, and print the stats diff\\n                              \\\nvs the recorded baseline. Never writes the real run\\n                              \\\nstream - past runs become a regression corpus for a\\n                              \\\nconfig edit (\\\"did that change regress first-pass yield?\\\")\\n  \\\nrigger status [--json|--line] present the live per-agent view of the current run: for\\n                              \\\neach in-flight agent, what it is doing (latest progress),\\n                              \\\nits heartbeat age, and how long since its last store event\\n                              \\\n(the blackout). --json prints the shim/dash machine shape;\\n                              \\\n--line prints only the one-line statusline (the same line\\n                              \\\n`rigger setup` registers as the editor's status bar)\\n  \\\nrigger dash [--port <n>]    serve the read-only observability page on 127.0.0.1\\n                              \\\n(default port 7420) with live past/present/future views;\\n                              \\\n--export <path> writes the equivalent static snapshot\\n  \\\nrigger watch [--interval <s>] the driver-independent watchdog: polls the store,\\n            \\\n[--once]                  process table, and status for the five rigger-watch-a-run\\n                              \\\nsignals (escalated blockers, heartbeat staleness, dash\\n                              \\\nliveness, reject-recurrence trend, frontier progress) plus\\n                              \\\nstore integrity and a red CI check on the run branch's tip\\n                              \\\n(read with gh; a CI gh cannot read is noted on stderr),\\n                              \\\nprinting one line per anomaly naming signal, subject,\\n                              \\\nand response. --once prints standing\\n                              \\\nanomalies and exits (cron/CI); default streams (poll every\\n                              \\\n180s, dedup'd) and never talks to the driver - it works\\n                              \\\nwith the driver dead\\n  \\\nrigger ground <query> [k]   print up to k (default 8) repo references the project's\\n                              \\\nconfigured grounder finds for <query>, as `file:line: text`\\n  \\\nrigger reindex <file>...    incrementally re-index the named files in the project's\\n                              \\\npersisted grounding index (the grounder's reindex), so a\\n                              \\\nlater `rigger ground` reflects just-landed changes\\n  \\\nrigger symbols-index [dir]  build + persist the structural symbol index over [dir]\\n                              \\\n(default .) and print its path + file count - the fresh-\\n                              \\\nprocess determinism harness for the symbols grounder (spec 15)\\n  \\\nrigger emit <type> <json>   append {{type, data:<json>}} to the event store and fold\\n                              \\\nit into the context graph (the CLI form of rigger_emit)\\n  \\\nrigger progress <id> <act>  record one live progress line for spawn <id> to the\\n                              \\\nseparate .rigger/progress.db (never the run stream), so an\\n                              \\\nobserver can see what a working agent is doing between\\n                              \\\nmilestones - `rigger status` and the dash present it\\n  \\\nrigger result <id> [out]    record a parked spawn's outcome to the run log so the next\\n                              \\\nstep advances past it: <out> (or stdin) is the agent's output\\n                              \\\n(with --error, its failure message). It refuses to replace\\n                              \\\nthe result of a spawn that already ended unless\\n                              \\\n--supersede (the explicit repair); a step's liveness\\n                              \\\nfault is always replaceable. --if-absent records only\\n                              \\\nif the id has no result; --meta <json> adds bookkeeping\\n  \\\nrigger peers [file ...]     print peer decisions, lessons, and findings from the\\n                              \\\ncontext graph, scoped to the given files (the CLI form of\\n                              \\\nrigger_peers)\\n  \\\nrigger reset --runs         drop every superseded / dead run's decisions and\\n                              \\\nfindings from the context graph, keeping every lesson and\\n                              \\\nthe active run's own decisions/findings. Sheds dead-run\\n                              \\\ngrounding noise without wiping the store: it deletes no\\n                              \\\nevent. reset itself does write the log once, on a store\\n                              \\\nstill under the legacy basename namespace: the one-time\\n                              \\\nidentity migration renames those streams and records one\\n                              \\\nDecisionMade before either mode prunes. When no driver is\\n                              \\\nalive and every spawn of the run has ended on a real\\n                              \\\nresult, it also closes the current run's units whose\\n                              \\\nbranch work is landed on rigger-run, appending the\\n                              \\\nUnitIntegrated a hand landing never recorded; a dead run's\\n                              \\\nhung spawn (answered only by the step's liveness fault)\\n                              \\\nkeeps them open and is named with its remedy,\\n                              \\\n`rigger result <id>`. It removes a stale graph.db.pruned,\\n                              \\\nthe pruned copy a rebuild's stopped swap\\n                              \\\nleft, unless another `rigger setup` or `rigger reset` holds graph.db.lock\\n  \\\nrigger reset --derived      migrate the EVENT LOG, once: rewrite the first row of\\n                              \\\neach file's latest derived batch into that generation's\\n                              \\\nledger entry, in place, delete every other derived\\n                              \\\nevent, and vacuum so the file shrinks on disk.\\n                              \\\nEvery other event survives;\\n                              \\\ncomposes with --runs (each sheds its own accumulation).\\n                              \\\nRefuses while the run is live (a held step lock, an\\n                              \\\nin-flight spawn's marker inside its wall-clock bound,\\n                              \\\nor a driver registration's heartbeat inside the idle\\n                              \\\nwindow), naming what is live (a dead driver's run is\\n                              \\\nnot): the migration\\n                              \\\nleaves revision gaps by design, and a stale writer can\\n                              \\\nreissue one and reorder the log - the corruption this\\n                              \\\nguard exists to prevent. --force-live skips the check\\n                              \\\nentirely and checks nothing: pass it only once you are\\n                              \\\ncertain no writer is using this store, since forcing\\n                              \\\npast a genuinely live writer is exactly that corruption\\n  \\\nrigger reset --build-cache  reclaim the SHARED gate build cache (a pure cache,\\n                              \\\nalways safe to cold-rebuild) under the scratch root.\\n                              \\\nComposes freely with --runs/--derived (each sheds its\\n                              \\\nown accumulation); reports the exact bytes reclaimed,\\n                              \\\nor 0 when there was nothing to reclaim. Refuses loudly\\n                              \\\n- never waiting - while a rigger-launched build still\\n                              \\\nholds the cache's guard lock; retry once it is idle\\n  \\\nrigger reset --scratch-orphans\\n                              \\\nreclaim every cache-home scratch root (under\\n                              \\\n$XDG_CACHE_HOME/rigger, else ~/.cache/rigger) whose repo\\n                              \\\nno longer exists: a root keyed on a deleted checkout or a\\n                              \\\ntest fixture's tempdir has no owner left to reclaim it.\\n                              \\\nRigger does this itself whenever it creates a default-\\n                              \\\nplaced root; this is the explicit on-demand form. Reports\\n                              \\\nthe number of roots reclaimed; composes with the others\\n  \\\nrigger critique <spec>      critique the spec before any run: the workflow's critic\\n                              \\\n(the plan-critique gate's adversary, else\\n                              \\\ndefaults.review.adversary) reads the spec text and its\\n                              \\\nfindings and verdict are recorded keyed on the text's\\n                              \\\ncontent hash, so unchanged text is answered from the\\n                              \\\nrecord with no spawn; takes --eventstore/--conn as run does\\n  \\\nrigger validate             load and validate the workflow + agents\\n  \\\nrigger init                 set up a project: scaffold .rigger/ (workflow.yml +\\n                              \\\nan agents/ folder) and install the Claude Code\\n                              \\\nSessionStart hook (it runs `rigger prime`)\\n  \\\nrigger setup                full setup: everything `init` does, PLUS install the\\n                              \\\nnative /rigger Claude Code workflow (.claude/workflows/\\n                              \\\nrigger.js) and provision the JS driver (.rigger/shim/ +\\n                              \\\nnpm install). After it: run `/rigger <spec>` in Claude\\n                              \\\nCode (primary), or `rigger workflow` as a fallback\\n  \\\nrigger docs                 render the code-derived docs (every registry skill and\\n                              \\\nhandbook page) into their committed paths\\n  \\\nrigger prime [<spec>]       print recent decisions (what the hook runs); given a spec\\n                              \\\npath, also names `rigger validate <spec>` (the pre-launch\\n                              \\\nspec lint) as a next step\\n  \\\nrigger instructions         print the instructions every spawned agent is held to:\\n                              \\\nthe built-in law and working discipline, then each\\n                              \\\noperator file in .rigger/instructions/ (filename\\n                              \\\norder)\\n  \\\nrigger version              print the crate version and the build-provenance id\\n                              \\\n(a git commit/describe embedded at build time) so an\\n                              \\\nagent can identify the exact binary. Also `--version`\\n\\n\\\nrun/serve options:\\n  \\\n--driver <cli|workflow>          cli (default): standalone claude subprocess;\\n                                   \\\nworkflow: in-Claude-Code MCP server\\n  \\\n--eventstore <sqlite|kurrentdb>  sqlite (default): embedded file in .rigger/;\\n                                   \\\nkurrentdb: shared server backend, always available\\n  \\\n--conn <url>                     KurrentDB connection url (or set KURRENTDB_CONN)\\n  \\\n--fresh                          begin a NEW run even if the latest run matches this\\n                                   \\\nspec (which is otherwise adopted/resumed). The evented\\n                                   \\\nrestart for a run wedged in a terminal state (e.g. an\\n                                   \\\nescalated plan-critique) whose spec is unchanged; the\\n                                   \\\nprior run stays in the log as history and context\\n  \\\n--rebase-definition              accept an on-disk definition (workflow.yml + agent\\n                                   \\\nprompts) that drifted from what this live run pinned at\\n                                   \\\nstart: record the supersession and continue instead of\\n                                   \\\nhalting. The explicit mid-campaign-edit escape (a live\\n                                   \\\nrun otherwise HALTS loudly on definition drift)\\n\\n\\\nstorage and graph live in ./.rigger/ (per project, like .git/), scoped to the\\n\\\nproject identity so one backend can hold many projects without their data mixing.\\n\"",
+        "content_hash": "25597419b8dbb616"
+      },
+      {
+        "file": "tests/a_module_row_reaches_its_file_periphery.rs",
+        "name": "\"graph communities: detected 1 community over 2 coupled node(s) at resolution 1 \\\n         (2 membership event(s) recorded into .rigger/graph.db)\\n\"",
         "content_hash": "25597419b8dbb616"
       },
       {
@@ -2319,6 +2404,11 @@
         "file": "tests/cli.rs",
         "name": "\".rigger\"",
         "content_hash": "b4f6780144fa9e9f"
+      },
+      {
+        "file": "tests/cli.rs",
+        "name": "\".rigger\"",
+        "content_hash": "fab45089dfff5214"
       },
       {
         "file": "tests/cli.rs",
@@ -2738,17 +2828,7 @@
       {
         "file": "tests/cli.rs",
         "name": "\".rigger/project.id\"",
-        "content_hash": "69179fb3070fab20"
-      },
-      {
-        "file": "tests/cli.rs",
-        "name": "\".rigger/project.id\"",
         "content_hash": "cfbcbe47c2c581ac"
-      },
-      {
-        "file": "tests/cli.rs",
-        "name": "\".rigger/project.id\"",
-        "content_hash": "69179fb3070fab20"
       },
       {
         "file": "tests/cli.rs",
@@ -2769,11 +2849,6 @@
         "file": "tests/cli.rs",
         "name": "\".rigger\"",
         "content_hash": "090bbeba5641ea09"
-      },
-      {
-        "file": "tests/cli.rs",
-        "name": "\".rigger\"",
-        "content_hash": "fab45089dfff5214"
       },
       {
         "file": "tests/cli.rs",
@@ -3132,23 +3207,8 @@
       },
       {
         "file": "tests/cli.rs",
-        "name": "\".rigger\"",
-        "content_hash": "6f737e98b475978b"
-      },
-      {
-        "file": "tests/cli.rs",
-        "name": "\".rigger\"",
-        "content_hash": "c2dfa05b7c5ac948"
-      },
-      {
-        "file": "tests/cli.rs",
         "name": "\"scaffolded .rigger/instructions/README.md\"",
         "content_hash": "d53ae5846f4d060f"
-      },
-      {
-        "file": "tests/cli.rs",
-        "name": "\".rigger/instructions/README.md\"",
-        "content_hash": "3fb4b4655dac6074"
       },
       {
         "file": "tests/cli.rs",
@@ -3192,7 +3252,7 @@
       },
       {
         "file": "tests/common/cli.rs",
-        "name": "\"rigger: reset --derived: the migration rewrites and deletes rows of the event log and \\\n     vacuums the file, which is a mechanic of the embedded .rigger/events.db store; this project \\\n     is configured for the server-backed store, where the migration does not run. Re-run it \\\n     against a project on the sqlite backend. Refusing rather than reporting a migration that did \\\n     not happen.\\n\"",
+        "name": "\"reset --derived: the migration rewrites and deletes rows of the event log and vacuums the \\\n         file, which is a mechanic of the embedded .rigger/events.db store; this project is \\\n         configured for the server-backed store, where the migration does not run. Re-run it \\\n         against a project on the sqlite backend. Refusing rather than reporting a migration that \\\n         did not happen.\"",
         "content_hash": "25597419b8dbb616"
       },
       {
@@ -3231,9 +3291,9 @@
         "content_hash": "25597419b8dbb616"
       },
       {
-        "file": "tests/common/layer_cli.rs",
-        "name": "\".rigger\"",
-        "content_hash": "eb4fced0969e6c77"
+        "file": "tests/common/fixtures/liveness.rs",
+        "name": "\"a `rigger step` is running right now (it holds .rigger/step.lock)\"",
+        "content_hash": "e24c1bc0d9d4b92a"
       },
       {
         "file": "tests/common/layer_cli.rs",
@@ -3263,22 +3323,12 @@
       {
         "file": "tests/compaction_generations_periphery.rs",
         "name": "\".rigger\"",
-        "content_hash": "175029481360777f"
-      },
-      {
-        "file": "tests/compaction_generations_periphery.rs",
-        "name": "\".rigger\"",
         "content_hash": "0a68549443b7c66d"
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
         "name": "\"rigger: migrated project identity - renamed 1 stream(s) from the legacy namespace \\\n         {legacy:?} to the minted identity {minted:?} (.rigger/project.id); recorded its \\\n         decision (position {position}){fold}\\n\"",
         "content_hash": "25597419b8dbb616"
-      },
-      {
-        "file": "tests/compaction_generations_periphery.rs",
-        "name": "\".rigger\"",
-        "content_hash": "7a7f99994acd24d9"
       },
       {
         "file": "tests/config_unknown_key_dotted_path_periphery.rs",
@@ -3712,7 +3762,7 @@
       },
       {
         "file": "tests/projections_stay_local.rs",
-        "name": "\"the graph projection must be opened by the LOCAL sqlite Projector at the resolved \\\n         store's .rigger/graph.db (`Projector::open(&self.file(\\\"graph.db\\\") ...)`); the \\\n         canonical local construction is gone\"",
+        "name": "\"the graph projection must be opened for write at the resolved store's .rigger/graph.db \\\n         (`open_graph_for_write(&self.file(\\\"graph.db\\\") ...)`); the canonical local construction \\\n         is gone\"",
         "content_hash": "25597419b8dbb616"
       },
       {
@@ -3853,22 +3903,12 @@
       {
         "file": "tests/reset_derived_compaction_periphery.rs",
         "name": "\".rigger\"",
-        "content_hash": "54c2f825b098dcb4"
-      },
-      {
-        "file": "tests/reset_derived_compaction_periphery.rs",
-        "name": "\".rigger\"",
         "content_hash": "5164efc064547d69"
       },
       {
         "file": "tests/reset_derived_compaction_periphery.rs",
         "name": "\"create .rigger\"",
         "content_hash": "5164efc064547d69"
-      },
-      {
-        "file": "tests/reset_derived_compaction_periphery.rs",
-        "name": "\".rigger\"",
-        "content_hash": "3681f8f62b9b02e3"
       },
       {
         "file": "tests/reset_derived_compaction_periphery.rs",
@@ -3969,11 +4009,6 @@
         "file": "tests/spec_critique_periphery.rs",
         "name": "\".rigger\"",
         "content_hash": "090bbeba5641ea09"
-      },
-      {
-        "file": "tests/spec_critique_periphery.rs",
-        "name": "\".rigger/project.id\"",
-        "content_hash": "69179fb3070fab20"
       },
       {
         "file": "tests/statusline_command_periphery.rs",
@@ -4202,7 +4237,7 @@
       }
     ],
     "proposed_home": "one .rigger-relative path-composition helper",
-    "note": "mandatory sweep: .rigger-path string literals - 608 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: .rigger-path string literals - 600 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {
@@ -4647,7 +4682,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-99a8136efbc4",
+    "id": "dup-38e1ee983333",
     "classification": "semantic",
     "sites": [
       {
@@ -4826,6 +4861,16 @@
         "content_hash": "0a68549443b7c66d"
       },
       {
+        "file": "tests/proofs_settle_once_periphery.rs",
+        "name": "\"/proc/thread-self/schedstat\"",
+        "content_hash": "80b7f6cc644adb8f"
+      },
+      {
+        "file": "tests/proofs_settle_once_periphery.rs",
+        "name": "\"/proc/thread-self/schedstat names the thread's CPU time\"",
+        "content_hash": "6330ce3a5a38ef8d"
+      },
+      {
         "file": "tests/simplification_audit.rs",
         "name": "\"/proc/<pid>/stat or /proc/<pid>/status field-extraction functions\"",
         "content_hash": "e24c1bc0d9d4b92a"
@@ -4927,7 +4972,7 @@
       }
     ],
     "proposed_home": "crates/rigger-process/src/reap.rs as the one /proc-reading module (dash.rs's own /proc readers already duplicate reap.rs's field-after-the-comm's-closing-paren /proc/<pid>/stat parse - see the report's worked example)",
-    "note": "mandatory sweep: /proc-path string literals - 55 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: /proc-path string literals - 57 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {
@@ -4955,7 +5000,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-a2973e00918e",
+    "id": "dup-2a4f88aea011",
     "classification": "near",
     "sites": [
       {
@@ -4974,17 +5019,12 @@
         "content_hash": "5150fcc6015ab76e"
       },
       {
-        "file": "tests/projections_stay_local.rs",
-        "name": "the_graph_and_progress_projections_open_via_the_local_sqlite_constructors",
-        "content_hash": "5150fcc6015ab76e"
-      },
-      {
         "file": "tests/store_resolution.rs",
         "name": "the_single_resolver_exists_and_the_old_per_command_helper_is_retired",
         "content_hash": "f3ff49e3f09ecb9d"
       }
     ],
-    "proposed_home": "a new shared module (sites span 4 files: crates/rigger-dash/src/dash.rs, tests/console_palette_periphery.rs, tests/projections_stay_local.rs, tests/store_resolution.rs)",
+    "proposed_home": "a new shared module (sites span 3 files: crates/rigger-dash/src/dash.rs, tests/console_palette_periphery.rs, tests/store_resolution.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
@@ -5238,7 +5278,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-582bf6d9907e",
+    "id": "dup-1065bd3505a8",
     "classification": "near",
     "sites": [
       {
@@ -5257,12 +5297,17 @@
         "content_hash": "5c594c241556f52a"
       },
       {
+        "file": "crates/rigger-grounder/src/grounder/symbols/extract.rs",
+        "name": "is_std_root",
+        "content_hash": "e647e7c4790ca790"
+      },
+      {
         "file": "tests/common/source_audit.rs",
         "name": "is_keyword",
         "content_hash": "5c594c241556f52a"
       }
     ],
-    "proposed_home": "a new shared module (sites span 3 files: crates/rigger-domain/src/concepts.rs, crates/rigger-domain/src/ingest.rs, tests/common/source_audit.rs)",
+    "proposed_home": "a new shared module (sites span 4 files: crates/rigger-domain/src/concepts.rs, crates/rigger-domain/src/ingest.rs, crates/rigger-grounder/src/grounder/symbols/extract.rs, tests/common/source_audit.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
@@ -5411,8 +5456,8 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-bb7aa56f67d8",
-    "classification": "exact",
+    "id": "dup-e45a74e51e8a",
+    "classification": "near",
     "sites": [
       {
         "file": "crates/rigger-domain/src/eventstore.rs",
@@ -5423,9 +5468,19 @@
         "file": "crates/rigger-domain/src/spawn.rs",
         "name": "with_meta",
         "content_hash": "9b5f8275cb17e75c"
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "with_store_identity",
+        "content_hash": "9b5f8275cb17e75c"
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "with_lock_ceiling",
+        "content_hash": "3e40e29c76dbbd85"
       }
     ],
-    "proposed_home": "a new shared module (sites span 2 files: crates/rigger-domain/src/eventstore.rs, crates/rigger-domain/src/spawn.rs)",
+    "proposed_home": "a new shared module (sites span 3 files: crates/rigger-domain/src/eventstore.rs, crates/rigger-domain/src/spawn.rs, crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
@@ -5861,7 +5916,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-cc1f48bd7d99",
+    "id": "dup-3dc74f749a1a",
     "classification": "near",
     "sites": [
       {
@@ -5873,9 +5928,14 @@
         "file": "tests/common/cli.rs",
         "name": "graph_build_line",
         "content_hash": "38180b457a1c8e5d"
+      },
+      {
+        "file": "tests/common/fixtures/cursor.rs",
+        "name": "catch_up_stopped",
+        "content_hash": "89bc7a8b68cb459b"
       }
     ],
-    "proposed_home": "a new shared module (sites span 2 files: crates/rigger-domain/src/spec.rs, tests/common/cli.rs)",
+    "proposed_home": "a new shared module (sites span 3 files: crates/rigger-domain/src/spec.rs, tests/common/cli.rs, tests/common/fixtures/cursor.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
@@ -6118,9 +6178,14 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-3cd6f7f2cb9b",
+    "id": "dup-3be22153e14f",
     "classification": "semantic",
     "sites": [
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "Connection::open_with_flags",
+        "content_hash": "c9fe8bd11b5e51a4"
+      },
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
         "name": "Connection::open_with_flags",
@@ -6129,12 +6194,7 @@
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
         "name": "Connection::open",
-        "content_hash": "35f31d57463e4054"
-      },
-      {
-        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
-        "name": "Connection::open",
-        "content_hash": "c2fafa28e98b7a5d"
+        "content_hash": "fd7ee6cf1afd2aa1"
       },
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
@@ -6144,17 +6204,7 @@
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
         "name": "Connection::open",
-        "content_hash": "a53e241130fed625"
-      },
-      {
-        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
-        "name": "Connection::open",
-        "content_hash": "1953385dcb5ae89a"
-      },
-      {
-        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
-        "name": "Connection::open",
-        "content_hash": "a53e241130fed625"
+        "content_hash": "b1ad5143fd332b66"
       },
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
@@ -6169,12 +6219,27 @@
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
         "name": "Connection::open",
+        "content_hash": "90e84efb036cf79e"
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "Connection::open",
+        "content_hash": "b1ad5143fd332b66"
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "Connection::open",
         "content_hash": "1953385dcb5ae89a"
       },
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
         "name": "Connection::open",
-        "content_hash": "1103d16a349001ad"
+        "content_hash": "fab1ba2a543fef66"
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "Connection::open",
+        "content_hash": "b1ad5143fd332b66"
       },
       {
         "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
@@ -6205,6 +6270,11 @@
         "file": "crates/rigger-store-sqlite/src/sqlite.rs",
         "name": "Connection::open",
         "content_hash": "51b969072f57b125"
+      },
+      {
+        "file": "src/cli/mod.rs",
+        "name": "Connection::open",
+        "content_hash": "a26e651ef0fda2a7"
       },
       {
         "file": "src/cli/mod.rs",
@@ -6254,17 +6324,37 @@
       {
         "file": "tests/common/cli.rs",
         "name": "Connection::open",
-        "content_hash": "21e10304a9cde36f"
-      },
-      {
-        "file": "tests/common/cli.rs",
-        "name": "Connection::open",
         "content_hash": "a26e651ef0fda2a7"
       },
       {
         "file": "tests/common/cli.rs",
         "name": "Connection::open",
         "content_hash": "6ad0a4b6d2a9cca4"
+      },
+      {
+        "file": "tests/common/fixtures/cursor.rs",
+        "name": "Connection::open",
+        "content_hash": "21e10304a9cde36f"
+      },
+      {
+        "file": "tests/common/fixtures/cursor.rs",
+        "name": "Connection::open",
+        "content_hash": "a26e651ef0fda2a7"
+      },
+      {
+        "file": "tests/common/fixtures/cursor.rs",
+        "name": "Connection::open",
+        "content_hash": "a26e651ef0fda2a7"
+      },
+      {
+        "file": "tests/common/fixtures/cursor.rs",
+        "name": "Connection::open",
+        "content_hash": "a26e651ef0fda2a7"
+      },
+      {
+        "file": "tests/common/fixtures/passed_over.rs",
+        "name": "Connection::open",
+        "content_hash": "21e10304a9cde36f"
       },
       {
         "file": "tests/common/fixtures/sqlite.rs",
@@ -6284,12 +6374,37 @@
       {
         "file": "tests/common/fixtures/sqlite.rs",
         "name": "Connection::open",
+        "content_hash": "a26e651ef0fda2a7"
+      },
+      {
+        "file": "tests/common/fixtures/sqlite.rs",
+        "name": "Connection::open",
+        "content_hash": "a26e651ef0fda2a7"
+      },
+      {
+        "file": "tests/common/fixtures/sqlite.rs",
+        "name": "Connection::open",
+        "content_hash": "a26e651ef0fda2a7"
+      },
+      {
+        "file": "tests/common/fixtures/sqlite.rs",
+        "name": "Connection::open",
         "content_hash": "e4bfcfaa4e39b2d2"
+      },
+      {
+        "file": "tests/common/fixtures/write_lock.rs",
+        "name": "Connection::open",
+        "content_hash": "21e10304a9cde36f"
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
         "name": "Connection::open",
         "content_hash": "21e10304a9cde36f"
+      },
+      {
+        "file": "tests/compaction_generations_periphery.rs",
+        "name": "Connection::open",
+        "content_hash": "a26e651ef0fda2a7"
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
@@ -6314,22 +6429,7 @@
       {
         "file": "tests/compaction_generations_periphery.rs",
         "name": "Connection::open",
-        "content_hash": "6ad0a4b6d2a9cca4"
-      },
-      {
-        "file": "tests/compaction_generations_periphery.rs",
-        "name": "Connection::open",
-        "content_hash": "6ad0a4b6d2a9cca4"
-      },
-      {
-        "file": "tests/compaction_generations_periphery.rs",
-        "name": "Connection::open",
-        "content_hash": "6ad0a4b6d2a9cca4"
-      },
-      {
-        "file": "tests/compaction_generations_periphery.rs",
-        "name": "Connection::open",
-        "content_hash": "21e10304a9cde36f"
+        "content_hash": "a26e651ef0fda2a7"
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
@@ -6399,11 +6499,6 @@
       {
         "file": "tests/run_boundary_lookup_periphery.rs",
         "name": "Connection::open",
-        "content_hash": "a26e651ef0fda2a7"
-      },
-      {
-        "file": "tests/run_boundary_lookup_periphery.rs",
-        "name": "Connection::open",
         "content_hash": "6ad0a4b6d2a9cca4"
       },
       {
@@ -6418,31 +6513,7 @@
       }
     ],
     "proposed_home": "one sqlite-connection-opening adapter function every caller is injected with",
-    "note": "mandatory sweep: sqlite Connection::open call sites - 59 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
-    "disposition": "not-a-duplicate"
-  },
-  {
-    "id": "dup-26b14e332411",
-    "classification": "exact",
-    "sites": [
-      {
-        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
-        "name": "member_sql",
-        "content_hash": "0b8660f5890d2a0c"
-      },
-      {
-        "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
-        "name": "group_index_sql",
-        "content_hash": "0b8660f5890d2a0c"
-      },
-      {
-        "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
-        "name": "latest_in_group_sql",
-        "content_hash": "0b8660f5890d2a0c"
-      }
-    ],
-    "proposed_home": "a new shared module (sites span 2 files: crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs, crates/rigger-store-sqlite/src/eventstore/sqlite.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "note": "mandatory sweep: sqlite Connection::open call sites - 66 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {
@@ -6480,6 +6551,30 @@
       }
     ],
     "proposed_home": "sqlite::support (consolidate these 2 sites into one function in this file)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-b7996d22b4c4",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "without_a_cursor",
+        "content_hash": "be203444bdaee5ba"
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "beside_another_log",
+        "content_hash": "cb0df4af5c8ca40f"
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "beside_no_log",
+        "content_hash": "be203444bdaee5ba"
+      }
+    ],
+    "proposed_home": "sqlite::support (consolidate these 3 sites into one function in this file)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
@@ -6747,13 +6842,13 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-833f66b34f28",
+    "id": "dup-8c8ae0851675",
     "classification": "semantic",
     "sites": [
       {
         "file": "crates/rigger-grounder/src/grounder/symbols/events.rs",
         "name": "extract_events",
-        "content_hash": "f4d097213b04a5f6"
+        "content_hash": "68390af1db36d0c7"
       },
       {
         "file": "crates/rigger-grounder/src/grounder/workflowdef.rs",
@@ -6785,13 +6880,13 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-0a7f026597b0",
+    "id": "dup-476c04e8fc6f",
     "classification": "semantic",
     "sites": [
       {
         "file": "crates/rigger-grounder/src/grounder/symbols/extract.rs",
         "name": "extract",
-        "content_hash": "ca2eae99978ec77b"
+        "content_hash": "91060d996590ada5"
       },
       {
         "file": "tests/common/source_audit.rs",
@@ -6971,6 +7066,25 @@
     "disposition": "not-a-duplicate"
   },
   {
+    "id": "dup-e22da6af6331",
+    "classification": "exact",
+    "sites": [
+      {
+        "file": "crates/rigger-grounder/src/ingest.rs",
+        "name": "log_head",
+        "content_hash": "754cbfeff6037d7f"
+      },
+      {
+        "file": "crates/rigger-store-sqlite/src/eventstore/namespace.rs",
+        "name": "log_head",
+        "content_hash": "754cbfeff6037d7f"
+      }
+    ],
+    "proposed_home": "a new shared module (sites span 2 files: crates/rigger-grounder/src/ingest.rs, crates/rigger-store-sqlite/src/eventstore/namespace.rs)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
     "id": "dup-e10b6988960c",
     "classification": "exact",
     "sites": [
@@ -7140,6 +7254,25 @@
       }
     ],
     "proposed_home": "namespace::namespaced",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-b4990598bfd7",
+    "classification": "exact",
+    "sites": [
+      {
+        "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
+        "name": "group_index_sql",
+        "content_hash": "0b8660f5890d2a0c"
+      },
+      {
+        "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
+        "name": "latest_in_group_sql",
+        "content_hash": "0b8660f5890d2a0c"
+      }
+    ],
+    "proposed_home": "sqlite::support (consolidate these 2 sites into one function in this file)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
@@ -7315,13 +7448,23 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-ffc17308c029",
+    "id": "dup-db3e199dd312",
     "classification": "near",
     "sites": [
       {
         "file": "src/cli/hygiene.rs",
         "name": "derived_count_phrase",
         "content_hash": "b5bb3e7cbaf9fefe"
+      },
+      {
+        "file": "tests/common/cli.rs",
+        "name": "rebuilt_through_the_head",
+        "content_hash": "abc61f9406535fc4"
+      },
+      {
+        "file": "tests/common/cli.rs",
+        "name": "pruned_from_the_rebuilt_graph",
+        "content_hash": "abc61f9406535fc4"
       },
       {
         "file": "tests/common/cli.rs",
@@ -7563,6 +7706,25 @@
     "disposition": "not-a-duplicate"
   },
   {
+    "id": "dup-3f04af8603ff",
+    "classification": "semantic",
+    "sites": [
+      {
+        "file": "src/cli/setup.rs",
+        "name": "catch_up_stopped",
+        "content_hash": "6207475a6d263499"
+      },
+      {
+        "file": "tests/common/fixtures/cursor.rs",
+        "name": "catch_up_stopped",
+        "content_hash": "89bc7a8b68cb459b"
+      }
+    ],
+    "proposed_home": "one shared `catch_up_stopped` helper (e.g. relocated into `tests/common`) rather than each file defining its own",
+    "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "disposition": "not-a-duplicate"
+  },
+  {
     "id": "dup-dc79af9af1c6",
     "classification": "near",
     "sites": [
@@ -7756,6 +7918,25 @@
     "disposition": "not-a-duplicate"
   },
   {
+    "id": "dup-7df9b1a39032",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "tests/checkin_mutation_diff_base_periphery.rs",
+        "name": "unit_diff",
+        "content_hash": "25086d968b6a3f4a"
+      },
+      {
+        "file": "tests/reset_derived_live_writer_guard_periphery.rs",
+        "name": "subdirectory_of",
+        "content_hash": "934e356dd284bb09"
+      }
+    ],
+    "proposed_home": "a new shared module (sites span 2 files: tests/checkin_mutation_diff_base_periphery.rs, tests/reset_derived_live_writer_guard_periphery.rs)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
     "id": "dup-5e768c7156e7",
     "classification": "near",
     "sites": [
@@ -7933,7 +8114,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-751f1b83af79",
+    "id": "dup-9418a9e1c36a",
     "classification": "near",
     "sites": [
       {
@@ -7945,14 +8126,9 @@
         "file": "tests/cli.rs",
         "name": "step_attention_never_restamps_a_hung_unbounded_spawn_when_repo_less",
         "content_hash": "eed3d55535d62241"
-      },
-      {
-        "file": "tests/step_attention_periphery.rs",
-        "name": "recurrence_and_stalled_frontier_survive_real_process_boundaries",
-        "content_hash": "f2137133a2af6105"
       }
     ],
-    "proposed_home": "a new shared module (sites span 2 files: tests/cli.rs, tests/step_attention_periphery.rs)",
+    "proposed_home": "cli::support (consolidate these 2 sites into one function in this file)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
@@ -7995,7 +8171,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-c72ffc4edd8c",
+    "id": "dup-3cfa6389efb7",
     "classification": "near",
     "sites": [
       {
@@ -8017,14 +8193,9 @@
         "file": "tests/cli.rs",
         "name": "workflow_with_no_spec_path_never_mentions_the_spec_lint",
         "content_hash": "222759f2ade2d565"
-      },
-      {
-        "file": "tests/cli.rs",
-        "name": "init_scaffolds_the_instructions_readme_and_names_it",
-        "content_hash": "ac6ce8509142b691"
       }
     ],
-    "proposed_home": "cli::support (consolidate these 5 sites into one function in this file)",
+    "proposed_home": "cli::support (consolidate these 4 sites into one function in this file)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
@@ -8172,12 +8343,41 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-065ac962b8cf",
+    "id": "dup-cb013976dcf4",
+    "classification": "exact",
+    "sites": [
+      {
+        "file": "tests/common/cli.rs",
+        "name": "emit_folded_line",
+        "content_hash": "b051a6d6f4b01ca2"
+      },
+      {
+        "file": "tests/common/cli.rs",
+        "name": "reclaimed_line",
+        "content_hash": "b051a6d6f4b01ca2"
+      },
+      {
+        "file": "tests/common/fixtures/cursor.rs",
+        "name": "caught_up_line",
+        "content_hash": "b051a6d6f4b01ca2"
+      }
+    ],
+    "proposed_home": "a new shared module (sites span 2 files: tests/common/cli.rs, tests/common/fixtures/cursor.rs)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-90e32eb50d95",
     "classification": "exact",
     "sites": [
       {
         "file": "tests/common/cli.rs",
         "name": "derived_menu_lines",
+        "content_hash": "abcb3e0cce3666b0"
+      },
+      {
+        "file": "tests/common/cli.rs",
+        "name": "decision_lines",
         "content_hash": "abcb3e0cce3666b0"
       },
       {
@@ -8191,7 +8391,31 @@
         "content_hash": "abcb3e0cce3666b0"
       }
     ],
-    "proposed_home": "cli::support (consolidate these 3 sites into one function in this file)",
+    "proposed_home": "cli::support (consolidate these 4 sites into one function in this file)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-be2d1a3f8f8b",
+    "classification": "exact",
+    "sites": [
+      {
+        "file": "tests/common/cli.rs",
+        "name": "plant_stale_marker",
+        "content_hash": "cf2875f4b5f0d6df"
+      },
+      {
+        "file": "tests/common/fixtures/cursor.rs",
+        "name": "drop_the_cursor",
+        "content_hash": "cf2875f4b5f0d6df"
+      },
+      {
+        "file": "tests/common/fixtures/cursor.rs",
+        "name": "drop_the_cursor_s_log",
+        "content_hash": "cf2875f4b5f0d6df"
+      }
+    ],
+    "proposed_home": "a new shared module (sites span 2 files: tests/common/cli.rs, tests/common/fixtures/cursor.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
@@ -8315,6 +8539,25 @@
     "disposition": "not-a-duplicate"
   },
   {
+    "id": "dup-aa4a3a0dfc34",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "tests/common/fixtures/fold.rs",
+        "name": "alias_json",
+        "content_hash": "900f8e4854ed74e5"
+      },
+      {
+        "file": "tests/common/fixtures/fold.rs",
+        "name": "ref_json",
+        "content_hash": "a701c937883397c7"
+      }
+    ],
+    "proposed_home": "fold::support (consolidate these 2 sites into one function in this file)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
     "id": "dup-c3c8358993cf",
     "classification": "near",
     "sites": [
@@ -8420,13 +8663,13 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-0f62ab248065",
+    "id": "dup-6b847cf11fc4",
     "classification": "semantic",
     "sites": [
       {
         "file": "tests/community_detection_cli.rs",
         "name": "seed_coupling",
-        "content_hash": "ee30c3d8f24eef00"
+        "content_hash": "6be01d79c9a2b86a"
       },
       {
         "file": "tests/community_fold_periphery.rs",
@@ -8454,25 +8697,6 @@
       }
     ],
     "proposed_home": "a new shared module (sites span 2 files: tests/community_fold_periphery.rs, tests/concepts_fold_periphery.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
-    "id": "dup-e3a49d3d408e",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "tests/compaction_generations_periphery.rs",
-        "name": "rebuild_owed_note",
-        "content_hash": "b10d50f791eb338a"
-      },
-      {
-        "file": "tests/product_binary_authority_periphery.rs",
-        "name": "product_file_name",
-        "content_hash": "214fd7349ebe59dd"
-      }
-    ],
-    "proposed_home": "a new shared module (sites span 2 files: tests/compaction_generations_periphery.rs, tests/product_binary_authority_periphery.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },

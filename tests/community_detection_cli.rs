@@ -28,7 +28,7 @@ use std::path::Path;
 use rigger::conductor;
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{
-    Projection, KIND_COMMUNITY, REL_IN_COMMUNITY, TYPE_CODE_ENTITY_EXTRACTED, TYPE_EDGE_INFERRED,
+    Projection, KIND_COMMUNITY, REL_IN_COMMUNITY, TYPE_CODE_ENTITY_EXTRACTED,
 };
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::Store;
@@ -39,7 +39,9 @@ use rigger::ingest::folding_into;
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves,
 // and every suite that spawns the product then dies with a bare NotFound.
 mod common;
-use common::fixtures::{call_json, code_entity_json, event_of};
+use common::fixtures::{
+    call_event, code_entity_json, event_of, TWO_SUBSYSTEM_CALLS, TWO_SUBSYSTEM_DEFS,
+};
 #[path = "common/layer_cli.rs"]
 mod layer_cli;
 use layer_cli::{member_of, rigger_db, LayerCli};
@@ -58,13 +60,6 @@ fn def(file: &str, name: &str) -> Event {
         TYPE_CODE_ENTITY_EXTRACTED,
         code_entity_json(file, name, "function", 1, "rust"),
     )
-}
-
-/// A caller-attributed `EdgeInferred` call (spec 37): `<file>::<caller> --CALLS--> <name>`, landing
-/// on the BARE same-file placeholder `<file>::%<name>` the detection pass resolves by its unique
-/// leaf when `name` is defined in ANOTHER file - the cross-directory coupling detection spans.
-fn call(file: &str, name: &str, caller: &str) -> Event {
-    event_of(TYPE_EDGE_INFERRED, call_json(file, name, caller))
 }
 
 /// The subcommand under test: `rigger graph communities`, its live layer the `KIND_COMMUNITY`
@@ -102,31 +97,11 @@ fn seed_coupling(root: &Path) {
     let store = Namespaced::new(&pre_ledger, IDENTITY);
     let graph = Projector::open(&rigger_db(root, "graph.db"), IDENTITY).unwrap();
 
-    let events = vec![
-        // Definitions.
-        def("src/combat/hit.rs", "strike"),
-        def("src/combat/hit.rs", "block"),
-        def("src/net/link.rs", "send"),
-        def("src/net/link.rs", "recv"),
-        def("src/render/draw.rs", "paint"),
-        def("src/render/draw.rs", "shade"),
-        def("src/ui/hud.rs", "layout"),
-        def("src/ui/hud.rs", "show"),
-        // Subsystem A: dense cross-file coupling combat <-> net.
-        call("src/combat/hit.rs", "send", "strike"),
-        call("src/combat/hit.rs", "recv", "strike"),
-        call("src/combat/hit.rs", "send", "block"),
-        call("src/net/link.rs", "strike", "send"),
-        call("src/net/link.rs", "block", "recv"),
-        // Subsystem B: dense cross-file coupling render <-> ui.
-        call("src/render/draw.rs", "layout", "paint"),
-        call("src/render/draw.rs", "show", "paint"),
-        call("src/render/draw.rs", "layout", "shade"),
-        call("src/ui/hud.rs", "paint", "layout"),
-        call("src/ui/hud.rs", "shade", "show"),
-        // A single weak bridge A -> B (one call): too thin to fuse the subsystems.
-        call("src/combat/hit.rs", "paint", "strike"),
-    ];
+    let events: Vec<Event> = TWO_SUBSYSTEM_DEFS
+        .map(|(file, name)| def(file, name))
+        .into_iter()
+        .chain(TWO_SUBSYSTEM_CALLS.map(|(file, name, caller)| call_event(file, name, caller)))
+        .collect();
     let done = folding_into(&store, Some(&graph as &dyn Projection), &|_| {})
         .append_and_fold(conductor::STREAM, ExpectedRevision::Any, &events)
         .expect("seed the coupling graph through the real append-and-fold seam");
@@ -213,6 +188,6 @@ rigger::test_cases! {
         COMMUNITIES.a_malformed_resolution_or_unknown_argument_fails_loudly();
     re_running_a_grain_reproduces_the_byte_identical_live_layer:
         COMMUNITIES.re_running_a_grain_reproduces_the_byte_identical_live_layer();
-    a_pass_whose_fold_is_lost_to_a_lock_says_so_and_the_next_pass_refuses:
-        COMMUNITIES.a_pass_whose_fold_is_lost_to_a_lock_says_so_and_the_next_pass_refuses();
+    a_pass_behind_a_held_lock_folds_once_it_is_released_and_marks_nothing:
+        COMMUNITIES.a_pass_behind_a_held_lock_folds_once_it_is_released_and_marks_nothing();
 }

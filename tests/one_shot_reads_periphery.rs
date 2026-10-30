@@ -486,7 +486,7 @@ fn the_one_shot_commands_answer_from_the_run_without_materializing_a_derived_or_
 
     // The dash snapshot: the current run alone.
     assert_eq!(
-        rigger_ok(root, &["dash", "--export", "snapshot.html"]),
+        rigger_ok(root, &common::cli::DASH_SNAPSHOT_ARGS),
         "wrote dash snapshot to snapshot.html\n"
     );
     let html = std::fs::read_to_string(root.join("snapshot.html")).unwrap();
@@ -902,12 +902,11 @@ fn a_run_read_through_the_namespace_is_a_log_prefix_whatever_a_concurrent_writer
         ]
     };
     let before = ["d-a", "l-a", "f-b", "", "", "d-c", "f-c", ""];
-    let owned = |ids: &[&str]| ids.iter().map(|id| id.to_string()).collect::<Vec<_>>();
     let read_with_writer = |after: usize, stream: &str, tag: &str| -> (Vec<String>, usize) {
         let counted = ReadCountingStore::new(&backend).interleaving(after, stream, late(tag));
         let events =
             rigger::run::read::read_run(&Namespaced::new(&counted, "alpha"), STREAM).unwrap();
-        let positions: Vec<u64> = events.iter().map(|e| e.position).collect();
+        let positions: Vec<u64> = crate::common::fixtures::positions_of(&events);
         let mut ordered = positions.clone();
         ordered.sort_unstable();
         ordered.dedup();
@@ -918,7 +917,7 @@ fn a_run_read_through_the_namespace_is_a_log_prefix_whatever_a_concurrent_writer
     assert_eq!(
         read_with_writer(0, &alpha_run, "w0"),
         (
-            owned(&[&before[..], &["d-w0", "s-w0"]].concat()),
+            common::fixtures::owned_ids(&[&before[..], &["d-w0", "s-w0"]].concat()),
             fixture.cost() + 3
         ),
         "a write before the carry-over read: its decision is read by both typed reads, held once"
@@ -926,7 +925,7 @@ fn a_run_read_through_the_namespace_is_a_log_prefix_whatever_a_concurrent_writer
     assert_eq!(
         read_with_writer(1, &alpha_run, "w1"),
         (
-            owned(&[&before[..], &["d-w0", "s-w0", "d-w1", "s-w1"]].concat()),
+            common::fixtures::owned_ids(&[&before[..], &["d-w0", "s-w0", "d-w1", "s-w1"]].concat()),
             fixture.cost() + 2 + 1 + 2
         ),
         "a write between the typed reads is in the slice: read whole, never a decision missing \

@@ -35,6 +35,8 @@
 //! reaches into a private field or a raw connection, so it exercises exactly what an external
 //! consumer of the port can exercise.
 
+mod common;
+
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Direction, Error, Event, EventStore, ExpectedRevision, Filter};
 use std::sync::{Arc, Barrier};
@@ -296,7 +298,9 @@ fn exact_revision_race_across_real_connections_serializes_through_the_named_conf
                      UNIQUE(stream, revision) failure leak through: {message}"
                 );
                 assert!(
-                    !message.to_lowercase().contains("database is locked")
+                    !message
+                        .to_lowercase()
+                        .contains(common::fixtures::DATABASE_IS_LOCKED)
                         && !message.to_lowercase().contains("locked"),
                     "round {round}: a losing racer must never see a raw SQLite lock error - \
                      the write-lock queueing this criterion's own design section names must \

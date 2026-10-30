@@ -1,16 +1,20 @@
-//! Shared fixtures for the persisted symbol index's wire-format suites: building a one-file
-//! index, saving it through the real `store` boundary and reading the bytes back, writing a
-//! hand-authored `index.json` under the current extraction generation and loading a legacy one
-//! through the real `store::load`, projecting a file's definitions, its test-marked
-//! definitions and references and its references with their callers, checking a language's definition
-//! types against a file's definitions, checking a language's definitions fixture whole and a source's callers whole,
-//! projecting a file's definition extents, checking the variant names a file's kinds persist
-//! under, and looking up a registered language.
-//! Included by each suite, and by the grounder crate for its unit tests, through `#[path]`; a suite uses the
-//! subset it needs (hence the module-wide `dead_code` allowance, the same convention
-//! `tests/common/mod.rs` keeps). Every lane compiles it; `registered` and `extracted`, with
-//! `assert_definitions_fixture` and `assert_callers` through it, alone reach a grammar and are held by the `symbols`
-//! lane only.
+//! Shared fixtures for the persisted symbol index's wire-format suites: building a one-file index,
+//! building one from Rust sources, a tree whose inline mod declares a `#[cfg(test)]` mod out of
+//! line, the `mod x;` declaration sources, the one-fn source the module-row tests extract and
+//! the one-`use` source,
+//! saving it through the real `store` boundary and reading the bytes back, writing a hand-authored
+//! `index.json` under the current extraction generation and loading a legacy one through the real
+//! `store::load`, building a tree's index and reloading it, projecting a file's definitions, its
+//! test-marked definitions and references and its call references with their callers, checking a
+//! language's definition types against a file's definitions, checking a language's definitions
+//! fixture whole and a source's callers whole, projecting a file's definition extents, checking the
+//! variant names a file's kinds persist under, rendering and checking a file's tagged references,
+//! and looking up a registered language. Included by each suite, and by the grounder crate for its
+//! unit tests, through `#[path]`; a suite uses the subset it needs (hence the module-wide
+//! `dead_code` allowance, the same convention `tests/common/mod.rs` keeps). Every lane compiles it;
+//! `registered` and `extracted`, with `assert_definitions_fixture` and `assert_callers` through it,
+//! alone reach a grammar and are held by the `symbols` lane only, as is `extracted_rust_index`,
+//! which calls `extracted`.
 
 #![allow(dead_code)]
 
@@ -43,6 +47,7 @@ pub fn sym_ref(name: &str, line: u32, enclosing: Option<&str>, is_test: bool) ->
         line,
         enclosing: enclosing.map(Into::into),
         is_test,
+        ref_kind: None,
     }
 }
 
@@ -54,6 +59,16 @@ pub fn rust_file(defs: Vec<Def>, refs: Vec<SymRef>) -> FileSymbols {
         refs,
         partial: false,
     }
+}
+
+/// A fully-parsed Rust file defining the function `f` and holding `refs`.
+pub fn defining_f(refs: Vec<SymRef>) -> FileSymbols {
+    rust_file(vec![def(Kind::Function, "f")], refs)
+}
+
+/// The call to `G` on line 2, inside the function `f` ([`defining_f`]).
+pub fn g_called_in_f() -> SymRef {
+    sym_ref("G", 2, Some("f"), false)
 }
 
 /// An index holding `symbols` under `path`, saved through the real `store::save` under a fresh
@@ -128,6 +143,17 @@ pub fn saved_with_key(path: &str, symbols: FileSymbols, key: &str, why: &str) ->
     saved.reload()
 }
 
+/// The index the public `build_index` builds over the tree at `root`, beside that index saved
+/// through the real `store::save` and read back through the real `store::load`: the one trip of
+/// an extracted index across the persistence boundary.
+#[cfg(feature = "symbols")]
+pub fn built_and_reloaded(root: &str) -> (SymbolIndex, SymbolIndex) {
+    let idx = rigger::grounder::symbols::build_index(root, None);
+    store::save(&idx, root).unwrap();
+    let loaded = store::load(root).expect("the built index persists and reloads");
+    (idx, loaded)
+}
+
 /// The grammar and query entry registered for the extension `ext`: the one lookup of a registered
 /// language, for a test that reads a source under it. It names the grammar, so only the
 /// `symbols` lane holds it.
@@ -146,6 +172,49 @@ pub fn extracted(ext: &str, src: &str) -> FileSymbols {
     rigger::grounder::symbols::extract::extract(src, entry.lang, &entry.language, entry.tags_query)
         .expect("the registered query extracts the source")
 }
+
+/// An index holding each `(path, src)` of `files` as the Rust symbols [`extracted`] reads off
+/// `src`, under `path`.
+#[cfg(feature = "symbols")]
+pub fn extracted_rust_index(files: &[(&str, &str)]) -> SymbolIndex {
+    let mut idx = SymbolIndex::default();
+    for (path, src) in files {
+        idx.insert_file(path.to_string(), extracted("rs", src));
+    }
+    idx
+}
+
+/// The file `mod outer { #[cfg(test)] mod x; }` in [`INLINE_TEST_MOD_TREE`]'s `src/lib.rs`
+/// names: the first of its module candidates the tree holds.
+pub const INLINE_TEST_MOD_TARGET: &str = "src/outer/x.rs";
+
+/// The entity id of the `helper` [`INLINE_TEST_MOD_TREE`] defines in [`INLINE_TEST_MOD_TARGET`].
+pub const INLINE_TEST_MOD_HELPER: &str = "src/outer/x.rs::helper";
+
+/// A crate root declaring `x` out of line under `#[cfg(test)]` inside the inline `mod outer`,
+/// beside [`INLINE_TEST_MOD_TARGET`] defining `helper`, and no `src/x.rs`.
+pub const INLINE_TEST_MOD_TREE: [(&str, &str); 2] = [
+    (
+        "src/lib.rs",
+        "mod outer {\n    #[cfg(test)]\n    mod x;\n}\n",
+    ),
+    (INLINE_TEST_MOD_TARGET, "pub fn helper() {}\n"),
+];
+
+/// A Rust source declaring the module `x` out of line.
+pub const MOD_X: &str = "mod x;\n";
+/// [`MOD_X`] under `#[cfg(test)]`.
+pub const CFG_TEST_MOD_X: &str = "#[cfg(test)]\nmod x;\n";
+/// [`MOD_X`] through a `#[path]` override naming `gen/real.rs`.
+pub const PATH_MOD_X: &str = "#[path = \"gen/real.rs\"]\nmod x;\n";
+/// [`MOD_X`] through an absolute `#[path]` override, which names no file.
+pub const ABSOLUTE_PATH_MOD_X: &str = "#[path = \"/etc/x.rs\"]\nmod x;\n";
+/// [`MOD_X`] inside the inline `mod outer`.
+pub const INLINE_MOD_X: &str = "mod outer {\n    mod x;\n}\n";
+/// A Rust source defining the fn `y`.
+pub const FN_Y: &str = "fn y() {}\n";
+/// A Rust file holding one `use` and nothing else: its whole extraction is one tagged reference.
+pub const USE_ONLY_SOURCE: &str = "use crate::store::Ledger;\n";
 
 /// Every definition of `fs` as `(line, end line, name)`, sorted: the one projection of each
 /// `Def`'s extent the extent tests compare whole.
@@ -186,8 +255,8 @@ pub fn assert_one_def_per_row(fs: &FileSymbols, rows: &[(&str, Kind, &str)]) {
 }
 
 /// A language's definitions fixture `src`, read through the grammar and query registered for
-/// `ext`, parses whole and holds exactly the definitions `defs` and the references `refs`, each
-/// with its caller, and each row of `rows`, the language's DEFINITION TYPES, names exactly one
+/// `ext`, parses whole and holds exactly the definitions `defs` and the call references `refs`,
+/// each with its caller, and each row of `rows`, the language's DEFINITION TYPES, names exactly one
 /// of those definitions.
 #[cfg(feature = "symbols")]
 pub fn assert_definitions_fixture(
@@ -204,8 +273,8 @@ pub fn assert_definitions_fixture(
     assert_callers(ext, src, refs);
 }
 
-/// The references the registered query for `ext` extracts from `src`, each with its caller, are
-/// exactly `refs` ([`refs_with_callers`]): the one check of a source text's callers whole.
+/// The call references the registered query for `ext` extracts from `src`, each with its caller,
+/// are exactly `refs` ([`refs_with_callers`]): the one check of a source text's callers whole.
 #[cfg(feature = "symbols")]
 pub fn assert_callers(ext: &str, src: &str, refs: &[(u32, &str, Option<&str>)]) {
     assert_eq!(refs_with_callers(&extracted(ext, src)), refs);
@@ -235,16 +304,50 @@ fn test_by_line<'a>(marked: impl Iterator<Item = (bool, u32, &'a str)>) -> TestL
     lines
 }
 
-/// Every reference of `fs` as `(line, name, caller)`, sorted: the one projection the caller-rule
-/// tests of the extractor and of the registry compare whole.
+/// Every call reference of `fs` ([`FileSymbols::calls`], a reference with no `ref_kind`) as
+/// `(line, name, caller)`, sorted: the one projection the caller-rule tests of the extractor and
+/// of the registry compare whole.
 pub fn refs_with_callers(fs: &FileSymbols) -> Vec<(u32, &str, Option<&str>)> {
     let mut refs: Vec<_> = fs
-        .refs
-        .iter()
+        .calls()
         .map(|r| (r.line, r.name.as_str(), r.enclosing.as_deref()))
         .collect();
     refs.sort();
     refs
+}
+
+/// Every tagged reference of `fs` (spec 117: one carrying a `ref_kind`), one line each,
+/// `<line> <ref kind> <name> <caller>`, the caller `-` for a top-level one, sorted by line, then
+/// name, then kind, then caller and joined by `\n`: the one rendering the reference-kind tests
+/// of the extractor compare whole.
+pub fn tagged_refs(fs: &FileSymbols) -> String {
+    let mut tagged: Vec<_> = fs
+        .refs
+        .iter()
+        .filter_map(|r| {
+            let kind = r.ref_kind.as_deref()?;
+            Some((
+                r.line,
+                r.name.as_str(),
+                kind,
+                r.enclosing.as_deref().unwrap_or("-"),
+            ))
+        })
+        .collect();
+    tagged.sort();
+    tagged
+        .iter()
+        .map(|(line, name, kind, caller)| format!("{line} {kind} {name} {caller}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The tagged references the registered query for `ext` extracts from `src`, rendered by
+/// [`tagged_refs`], are exactly `expected`, `case` naming the rule they follow: the one check of
+/// a source text's tagged references whole.
+#[cfg(feature = "symbols")]
+pub fn assert_tagged_refs(ext: &str, src: &str, expected: &str, case: &str) {
+    assert_eq!(tagged_refs(&extracted(ext, src)), expected, "{case}");
 }
 
 /// A hand-authored `index.json` body holding `file` alone, a Rust file of the definitions `defs`

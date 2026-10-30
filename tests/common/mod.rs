@@ -155,14 +155,20 @@ pub fn rigger_bin() -> PathBuf {
 /// `XDG_STATE_HOME` the same way. A call site that wants to test HOMELESS behavior
 /// specifically (no `HOME`, no `XDG_CACHE_HOME`) still can: `.env_remove("XDG_CACHE_HOME")`
 /// chained on the returned `Command` wins, exactly like a later `.env()` override does.
+///
+/// Also strips an ambient [`rigger::driver::SPAWN_ENV`]: a suite run from inside an agent
+/// session inherits that session's spawn id, which would stamp every fixture `rigger emit` as
+/// that spawn's and subject it to the emit core's id-ownership check. A test that drives the
+/// stamp re-sets it with `.env(...)` on the returned `Command`, which wins.
 pub fn rigger_courier() -> Command {
     let mut cmd = Command::new(rigger_bin());
     unfenced(&mut cmd);
     cmd
 }
 
-/// Applies [`rigger_courier`]'s own env hygiene (the `STORE_FENCE_ENV`/`KURRENTDB_CONN`
-/// strip and the `XDG_CACHE_HOME` pin - see that function's doc comment for the full WHY)
+/// Applies [`rigger_courier`]'s own env hygiene (the `STORE_FENCE_ENV`/`KURRENTDB_CONN`/
+/// `SPAWN_ENV` strip and the `XDG_CACHE_HOME` pin - see that function's doc comment for the
+/// full WHY)
 /// to an ALREADY-CONSTRUCTED `Command`, for the one class of call site `rigger_courier`
 /// itself cannot cover: a suite that drives the product binary through an intermediate
 /// shell (`sh -c "<installed hook command>"`) rather than invoking it directly. That
@@ -184,6 +190,7 @@ pub fn rigger_courier() -> Command {
 pub fn unfenced(cmd: &mut Command) -> &mut Command {
     cmd.env_remove(rigger::gate::STORE_FENCE_ENV);
     cmd.env_remove("KURRENTDB_CONN");
+    cmd.env_remove(rigger::driver::SPAWN_ENV);
     cmd.env("XDG_CACHE_HOME", test_cache_home());
     cmd
 }
@@ -475,13 +482,17 @@ pub fn project_events(root: &str) -> Vec<rigger::eventstore::Event> {
         .collect()
 }
 
-/// The `CodeEntityExtracted` payloads the production whole-project ingest emits for `root`.
+/// The payloads of every `type_` event the production whole-project ingest emits for `root`.
+#[cfg(feature = "symbols")]
+pub fn project_payloads(root: &Path, type_: &str) -> Vec<serde_json::Value> {
+    fixtures::payloads_of_type(&project_events(root.to_str().unwrap()), type_)
+}
+
+/// The `CodeEntityExtracted` payloads the production whole-project ingest emits for `root`
+/// ([`project_payloads`]).
 #[cfg(feature = "symbols")]
 pub fn code_entity_payloads(root: &Path) -> Vec<serde_json::Value> {
-    fixtures::payloads_of_type(
-        &project_events(root.to_str().unwrap()),
-        rigger::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
-    )
+    project_payloads(root, rigger::contextgraph::TYPE_CODE_ENTITY_EXTRACTED)
 }
 
 /// A payload's `name` and one key's JSON value, `None` when it has no such key.

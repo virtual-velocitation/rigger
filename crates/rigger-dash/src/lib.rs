@@ -70,6 +70,13 @@ mod event_fixtures;
 #[allow(dead_code, unused_imports)]
 #[path = "../../../tests/common/fixtures/fold.rs"]
 mod fold_fixtures;
+// The scratch fixture the fold fixtures name through `super::`, compiled here from the same
+// file as the root crate's tests.
+#[cfg(all(test, any(feature = "store", not(feature = "core"))))]
+#[path = "../../../tests/common/fixtures/scratch.rs"]
+mod scratch_fixtures;
+#[cfg(all(test, any(feature = "store", not(feature = "core"))))]
+use scratch_fixtures::temp_root;
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 #[allow(dead_code, unused_imports)]
 #[path = "../../../tests/common/fixtures/graph.rs"]

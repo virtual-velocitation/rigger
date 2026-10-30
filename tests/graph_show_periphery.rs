@@ -134,8 +134,10 @@ fn graph_show_and_around_with_no_store_print_the_not_found_note() {
 /// adds its nested method and its file-mate, never the placeholder, the bare parent or the
 /// `artifact` its id range holds; on the nested method depth 1 prints its file and depth 2 its
 /// file-mate too; and the placeholder, the bare parent and the artifact reach no file at depth 2,
-/// nor a member whose file the store holds no node for at depth 1. Lane-independent: the rows are
-/// written straight into the store the binary reads.
+/// nor a member whose file the store holds no node for at depth 1, while that file's path, which
+/// no node holds and so resolves to nothing, seeds the walk as typed and reaches the member at
+/// depth 1 (spec 117). Lane-independent: the rows are written straight into the store the binary
+/// reads.
 #[test]
 fn graph_around_a_file_lists_its_members_and_a_member_its_file_with_no_contains() {
     let dir = temp_project();
@@ -171,6 +173,11 @@ fn graph_around_a_file_lists_its_members_and_a_member_its_file_with_no_contains(
         (RANGE_ARTIFACT, 2, vec![(RANGE_ARTIFACT, KIND_ARTIFACT)]),
         (
             FILELESS_MEMBER,
+            1,
+            vec![(FILELESS_MEMBER, KIND_CODE_ENTITY)],
+        ),
+        (
+            file_half(FILELESS_MEMBER),
             1,
             vec![(FILELESS_MEMBER, KIND_CODE_ENTITY)],
         ),

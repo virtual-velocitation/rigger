@@ -30,8 +30,10 @@ pub mod grounder;
 /// predicate the live run and the standalone `rigger graph build` both seed from.
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod ingest;
-/// Instruction injection: the built-in engineering law and working discipline and the operator's
-/// `.rigger/instructions/*.md` layered into every spawned agent's system prompt.
+/// Instruction injection: the built-in engineering law, working discipline and communication
+/// discipline, each unless a same-named operator file replaces or switches it off, and every
+/// other `.rigger/instructions/*.md` file, layered into every spawned agent's system prompt; a
+/// same-named file is never layered itself.
 pub mod instructions;
 pub mod ledger;
 pub mod metrics;
@@ -80,6 +82,10 @@ mod graph_fixtures;
 mod ingest_fixtures;
 #[cfg(test)]
 #[allow(dead_code, unused_imports)]
+#[path = "../../../tests/common/fixtures/instructions.rs"]
+mod instructions_fixtures;
+#[cfg(test)]
+#[allow(dead_code, unused_imports)]
 #[path = "../../../tests/common/fixtures/spawn.rs"]
 mod spawn_fixtures;
 #[cfg(test)]
@@ -88,5 +94,6 @@ mod test_support {
     pub use crate::graph_fixtures::*;
     #[cfg(any(feature = "store", not(feature = "core")))]
     pub use crate::ingest_fixtures::*;
+    pub use crate::instructions_fixtures::*;
     pub use crate::spawn_fixtures::*;
 }

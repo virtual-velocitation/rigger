@@ -274,7 +274,9 @@ fn identifier_shaped(token: &str) -> bool {
 }
 
 /// Every distinct `(name, language)` pair's occurrence count across the WHOLE index, counting
-/// DEFINITIONS always and REFERENCES only when `count_refs` is set - the ONE counting pass
+/// DEFINITIONS always and CALL references
+/// ([`FileSymbols::calls`](crate::grounder::symbols::model::FileSymbols::calls), never a tagged
+/// one, spec 117) only when `count_refs` is set - the ONE counting pass
 /// [`commonness_map`] and [`ambiguity_map`] both share (spec 92 criterion 3 remediation,
 /// arch-u92c3-cutoff-formula-duplicated-not-shared's DRY finding applied to this pair too: two
 /// near-identical scan loops over the same data, one function body now covers both). Keyed by
@@ -290,7 +292,7 @@ fn name_occurrence_map(idx: &SymbolIndex, count_refs: bool) -> BTreeMap<(&str, L
             *counts.entry((d.name.as_str(), fs.lang)).or_insert(0) += 1;
         }
         if count_refs {
-            for r in &fs.refs {
+            for r in fs.calls() {
                 *counts.entry((r.name.as_str(), fs.lang)).or_insert(0) += 1;
             }
         }
@@ -298,18 +300,19 @@ fn name_occurrence_map(idx: &SymbolIndex, count_refs: bool) -> BTreeMap<(&str, L
     counts
 }
 
-/// Every distinct `(name, language)` pair's total DEFINITION+REFERENCE occurrence count (spec 92
-/// criterion 3, RANKED BY INTENT): the inverse-document-frequency proxy Design names - "a token
-/// in hundreds of files - `run`, `new`, `tests` - carries near-zero weight." The ONE authority
-/// [`scored_hits`] draws a matched ENTITY's own commonness from (looked up by the entity's OWN
-/// resolved `(name, Lang)` pair, never the raw query term - a CONTAINS-tier term is by
-/// definition a substring and so is almost never itself a key here), for ranking (rarer wins a
-/// tie). NOT the signal [`Symbols::has_strong_match`] gates on - a popular but UNAMBIGUOUS
-/// entity (one definition, many call sites, e.g. `criterion_stable_id`) must rank low here (it
-/// is genuinely the specific thing a caller meant when they typed its exact name) without being
-/// misread as "too common to be a confident match" - that second, distinct question is
-/// [`ambiguity_map`]'s (spec 92 criterion 3 remediation, adj-u92c3-verdict-reject: the two were
-/// wrongly conflated by an earlier round of this unit).
+/// Every distinct `(name, language)` pair's total DEFINITION+CALL-REFERENCE occurrence count (spec
+/// 92 criterion 3, RANKED BY INTENT; a tagged reference counts none, spec 117,
+/// [`FileSymbols::calls`](crate::grounder::symbols::model::FileSymbols::calls)): the
+/// inverse-document-frequency proxy Design names - "a token in hundreds of files - `run`, `new`,
+/// `tests` - carries near-zero weight." The ONE authority [`scored_hits`] draws a matched ENTITY's
+/// own commonness from (looked up by the entity's OWN resolved `(name, Lang)` pair, never the raw
+/// query term - a CONTAINS-tier term is by definition a substring and so is almost never itself a
+/// key here), for ranking (rarer wins a tie). NOT the signal [`Symbols::has_strong_match`] gates
+/// on - a popular but UNAMBIGUOUS entity (one definition, many call sites, e.g.
+/// `criterion_stable_id`) must rank low here (it is genuinely the specific thing a caller meant
+/// when they typed its exact name) without being misread as "too common to be a confident match" -
+/// that second, distinct question is [`ambiguity_map`]'s (spec 92 criterion 3 remediation,
+/// adj-u92c3-verdict-reject: the two were wrongly conflated by an earlier round of this unit).
 fn commonness_map(idx: &SymbolIndex) -> BTreeMap<(&str, Lang), usize> {
     name_occurrence_map(idx, true)
 }
@@ -322,7 +325,7 @@ fn commonness_map(idx: &SymbolIndex) -> BTreeMap<(&str, Lang), usize> {
 /// definition, 37 references in this very repo, must read as a confident match); a name defined
 /// many times over in unrelated places (`run`, `new`, `parse`) is genuinely ambiguous regardless
 /// of reference volume. This is the ONE authority [`Symbols::has_strong_match`] gates its cutoff
-/// on - never [`commonness_map`]'s raw def+ref occurrence volume, which conflates one entity's
+/// on - never [`commonness_map`]'s raw def+call-ref occurrence volume, which conflates one entity's
 /// own popularity with tree-wide name ambiguity (the defect this map exists to fix). Its cutoff
 /// is [`crate::grounder::symbols::model::percentile_cutoff`].
 fn ambiguity_map(idx: &SymbolIndex) -> BTreeMap<(&str, Lang), usize> {
@@ -408,7 +411,9 @@ impl ScoredHit<'_> {
     }
 }
 
-/// Score every (file, line) definition/reference location in `idx` against `terms`, ranked by
+/// Score every (file, line) definition/call-reference location in `idx` against `terms` (a
+/// tagged reference, spec 117, never a location:
+/// [`FileSymbols::calls`](crate::grounder::symbols::model::FileSymbols::calls)), ranked by
 /// [`ScoredHit::rank`] - the ONE scored, sorted pass both [`Symbols::ground`] and
 /// [`Symbols::ground_ranked`] consume, so the two views can never disagree on ranking. A
 /// location that matches more than one term (or both an EXACT and a CONTAINS candidate) keeps
@@ -486,7 +491,7 @@ fn scored_hits<'a>(idx: &'a SymbolIndex, terms: &[&str]) -> Vec<ScoredHit<'a>> {
         for d in &fs.defs {
             score_one(d.name.as_str(), d.line, HitKind::Def, 3, d.is_test);
         }
-        for r in &fs.refs {
+        for r in fs.calls() {
             score_one(r.name.as_str(), r.line, HitKind::Ref, 2, r.is_test);
         }
     }
@@ -558,17 +563,19 @@ impl Grounder for Symbols {
     ///
     /// - `precise` (the grounding contract) is the STRUCTURAL view - the files that DEFINE the
     ///   queried symbols (and any file the tree holds that a path term names) ranked ABOVE the
-    ///   files that REFERENCE them - capped at `k`. It is what seeds an agent's prompt, so it
-    ///   favors precision.
+    ///   files whose call references name them
+    ///   ([`FileSymbols::calls`](crate::grounder::symbols::model::FileSymbols::calls), spec 117: a
+    ///   tagged reference places no file) - capped at `k`. It is what seeds an agent's prompt, so
+    ///   it favors precision.
     /// - `safe` (the safety contract) is the structural view UNIONed, UNCAPPED, with a
     ///   whole-identifier text search (the EXISTING [`Grep`] walk) for each named symbol the index
     ///   does NOT define - the fallback for references a name index never sees (a string-literal
     ///   event name, a constant prefix, a name nothing defines yet), outside spec files and the
     ///   regenerated audit. A defined name and a path are never text-searched.
     /// - A HUB term (a name referenced across much of the tree) fails SAFE through `safe` itself:
-    ///   every file that defines or references it is in the view, never truncated, so the
-    ///   partitioning consumer's overlap test keeps the unit apart from exactly the units that
-    ///   share one of those files - and pairs it with every unit that shares none.
+    ///   every file that defines it or holds a call reference to it is in the view, never
+    ///   truncated, so the partitioning consumer's overlap test keeps the unit apart from exactly
+    ///   the units that share one of those files - and pairs it with every unit that shares none.
     ///
     /// Determinism is by construction: `files()` is a `BTreeMap`, so both structural passes visit
     /// files in sorted path order (the ranked `precise` / structural head of `safe`), and the
@@ -626,7 +633,7 @@ impl Grounder for Symbols {
                 if !named.is_empty() || !defines.is_empty() {
                     definers.push(path.as_str());
                 }
-                if fs.refs.iter().any(|r| names.contains(&r.name.as_str())) {
+                if fs.calls().any(|r| names.contains(&r.name.as_str())) {
                     referencers.push(path.as_str());
                 }
             }
@@ -732,8 +739,9 @@ impl Grounder for Symbols {
     /// unique by construction, so two DIFFERENT definitions sharing a name (the constraints
     /// walk: "a name defined in two files - `ground` returns both entities as separate rows")
     /// never collapse into one, even when they share a file (six same-named methods on six
-    /// structs in one file stay six rows). A REFERENCE is absorbed into its SOLE definer's row
-    /// when the name has EXACTLY one definition anywhere in the tree; a name with ZERO or
+    /// structs in one file stay six rows). A REFERENCE - a call reference, the one kind
+    /// [`scored_hits`] reads (spec 117) - is absorbed into its SOLE definer's row when the name
+    /// has EXACTLY one definition anywhere in the tree; a name with ZERO or
     /// AMBIGUOUS (multiple) definitions is never guessed at - its references stand alone as
     /// their own (unattributed) entity rather than being pinned to one of several candidates.
     /// `degree` is the real [`SymbolIndex::reference_degree`] for the entity's name and
@@ -807,7 +815,7 @@ impl Grounder for Symbols {
                 continue;
             }
             // An AMBIGUOUS (more than one same-language definition) entity's own Def row
-            // reports an attributable degree of 0, never the tree-wide reference count (spec
+            // reports an attributable degree of 0, never the tree-wide call-reference count (spec
             // 92 criterion 3 remediation round 6, adj-u92c3-r5-verdict-reject /
             // adv-u92c3r5-ambiguous-definition-degree-inflated-and-triplicated): the
             // Standalone row for this same `(name, Lang)` exists SPECIFICALLY because a
@@ -815,10 +823,11 @@ impl Grounder for Symbols {
             // must never turn around and claim that identical unattributable pool as its own
             // - the opposite of what creating the Standalone row already decided. An
             // UNAMBIGUOUS (exactly one definer) Def row keeps the real
-            // `reference_degree` - every reference to that name genuinely IS this entity's
+            // `reference_degree` - every call reference to that name genuinely IS this entity's
             // own, nothing is pooled. A Standalone row always keeps the real
-            // `reference_degree` too - it IS the pooled, unattributed reference count, by
-            // construction of why it exists at all.
+            // `reference_degree` too - it IS the pooled, unattributed call-reference count
+            // (`FileSymbols::calls`: no tagged reference counts, spec 117), by construction of
+            // why it exists at all.
             let degree = match key {
                 EntityKey::Def(..) if def_count > 1 => 0,
                 _ => idx.reference_degree(h.name, h.lang),
@@ -852,7 +861,7 @@ impl Grounder for Symbols {
     ///    `unwrap_or(0)` = rarest convention. Judging `scored_hits`' resolved
     ///    [`ScoredHit::name`] (the entity actually matched) instead closes that gap.
     /// 2. Draws its cutoff from [`ambiguity_map`] (distinct-DEFINITION count per `(name, Lang)`)
-    ///    rather than [`commonness_map`] (raw def+ref occurrence count): a single-definition,
+    ///    rather than [`commonness_map`] (raw def+call-ref occurrence count): a single-definition,
     ///    heavily-referenced entity (`criterion_stable_id`, `sweep_terminal` - this repo's own
     ///    Done-when audit fixtures) is completely unambiguous and must never be misclassified
     ///    as tree-wide-common merely because it is called often.
@@ -2034,9 +2043,9 @@ mod tests {
             });
         assert_eq!(
             standalone.degree, 5,
-            "the Standalone row alone carries the real aggregate unattributed reference count - \
-             genuinely different from the ambiguous Def rows' degree, never a shared pooled \
-             number; got {ranked:?}"
+            "the Standalone row alone carries the real aggregate unattributed call-reference \
+             count - genuinely different from the ambiguous Def rows' degree, never a shared \
+             pooled number; got {ranked:?}"
         );
     }
 
@@ -2209,6 +2218,7 @@ mod tests {
             line,
             enclosing: None,
             is_test: false,
+            ref_kind: None,
         }
     }
 
@@ -2285,13 +2295,14 @@ mod tests {
     crate::test_cases! {
         /// [`scored_hits`]' own tie-break, `let better = ..` (grounder.rs, three clauses over one
         /// (file, line) location's accumulated best candidate): clause 1 is `hit_tier >
-        /// slot.tier` - a STRICTLY higher tier always wins, no matter how the two candidates compare
-        /// on commonness or lexical kind. Two hand-built candidates collide at the SAME (file, line)
-        /// in each cluster below (the only way [`scored_hits`]' `best.entry(..).and_modify(..)`
-        /// tie-break ever runs at all): a definition is always scored before any reference in the
-        /// SAME file ([`scored_hits`]'s own `for d in &fs.defs { .. } for r in &fs.refs { .. }`), so
-        /// the definition is always the initial slot (`or_insert`) and the reference is always the
-        /// challenger (`and_modify`) whenever both match at one location.
+        /// slot.tier` - a STRICTLY higher tier always wins, no matter how the two candidates
+        /// compare on commonness or lexical kind. Two hand-built candidates collide at the SAME
+        /// (file, line) in each cluster below (the only way [`scored_hits`]'
+        /// `best.entry(..).and_modify(..)` tie-break ever runs at all): a definition is always
+        /// scored before any reference in the SAME file ([`scored_hits`]'s own `for d in &fs.defs
+        /// { .. } for r in fs.calls() { .. }`), so the definition is always the initial slot
+        /// (`or_insert`) and the reference is always the challenger (`and_modify`) whenever both
+        /// match at one location.
         scored_hits_a_strictly_higher_tier_always_wins_over_a_worse_commonness_and_lexical: assert_slots(
             vec![
                 // Cluster A (line 10): the SLOT is a CONTAINS-tier (1) definition that is
@@ -2416,5 +2427,56 @@ mod tests {
                 ),
             ],
         );
+    }
+
+    /// Spec 117 criterion 6: a type reference, a const read and a `use` move no count, rank or
+    /// radius - [`SymbolIndex::reference_degree`], [`name_occurrence_map`], [`scored_hits`],
+    /// [`Symbols::ground_ranked`] and [`Symbols::blast_radius`] count call references alone - over
+    /// an index holding one of each beside a call.
+    #[test]
+    fn tagged_references_move_no_degree_commonness_rank_or_radius() {
+        use crate::rust_definition_sources::{
+            REFERENCE_KINDS_DEFINER as DEFINER, REFERENCE_KINDS_USER as USER,
+        };
+        let idx = crate::symbol_index::extracted_rust_index(
+            &crate::rust_definition_sources::REFERENCE_KINDS_TREE,
+        );
+        assert_eq!(
+            crate::symbol_index::tagged_refs(&idx.files()[USER]),
+            crate::rust_definition_sources::REFERENCE_KINDS_USER_TAGGED
+        );
+        let names = ["Kestrel", "QUOTA_CAP", "draw"];
+        assert_eq!(
+            names.map(|n| idx.reference_degree(n, Lang::Rust)),
+            [0, 0, 1]
+        );
+        let occurrences = name_occurrence_map(&idx, true);
+        assert_eq!(names.map(|n| occurrences[&(n, Lang::Rust)]), [1, 1, 2]);
+        let mut hits: Vec<(&str, u32)> = scored_hits(&idx, &names)
+            .iter()
+            .map(|h| (h.file, h.line))
+            .collect();
+        hits.sort();
+        assert_eq!(hits, [(DEFINER, 1), (DEFINER, 2), (DEFINER, 3), (USER, 2)]);
+        let g = Symbols {
+            root: String::new(),
+            override_lang: None,
+            idx: Mutex::new(idx),
+            fingerprints: Mutex::default(),
+        };
+        let ranked: Vec<(String, u32, usize)> = g
+            .ground_ranked("Kestrel draw", 8)
+            .into_iter()
+            .map(|r| (r.loc.file, r.loc.line, r.degree))
+            .collect();
+        assert_eq!(ranked, [(DEFINER.into(), 1, 0), (DEFINER.into(), 3, 1)]);
+        for (query, radius) in [
+            ("`Kestrel` `QUOTA_CAP`", &[DEFINER][..]),
+            ("`draw`", &[DEFINER, USER][..]),
+        ] {
+            let br = g.blast_radius(query, 8);
+            let radius: Vec<String> = radius.iter().map(|f| f.to_string()).collect();
+            assert_eq!((br.precise, br.safe), (radius.clone(), radius), "{query}");
+        }
     }
 }

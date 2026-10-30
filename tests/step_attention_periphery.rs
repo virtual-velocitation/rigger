@@ -1,6 +1,6 @@
 //! Spec 69, criterion 5 (THE STEP STAMPS ATTENTION) - the two watching-discipline signals
 //! that need MULTIPLE, SEPARATE real `rigger step` OS processes reading a real on-disk
-//! store to prove at all: worker-death-recurred and stalled-frontier, and the "once per
+//! store to prove at all: reject-recurrence and stalled-frontier, and the "once per
 //! threshold crossing" guarantee holding ACROSS a fresh process, not merely across two
 //! function calls inside one long-lived test process.
 //!
@@ -169,7 +169,15 @@ stages:
 "#,
 };
 
-/// Spec 69, criterion 5: worker-death-recurred and stalled-frontier, driven across FIVE
+/// `u`'s reject-recurrence entry at `attempts`, as `rigger step` prints it on its wire.
+fn recurrence_wire(attempts: u32) -> String {
+    serde_json::to_string(&rigger::ledger::AttentionEntry::reject_recurrence(
+        "u", attempts,
+    ))
+    .expect("an attention entry serializes")
+}
+
+/// Spec 69, criterion 5: reject-recurrence and stalled-frontier, driven across FIVE
 /// separate `rigger step` subprocesses against ONE persisted on-disk store, each round
 /// exactly as a real courier/driver cycle would leave it.
 #[test]
@@ -208,7 +216,8 @@ fn recurrence_and_stalled_frontier_survive_real_process_boundaries() {
          fresh process reading it back from disk; got: {line:?}"
     );
 
-    // Attempt #1 fails - the SECOND failure on this unit - a recurrence.
+    // Attempt #1 fails - the SECOND failure on this unit, one below the reject-recurrence
+    // diagnose threshold: the loop is still remediating on its own, so nothing stamps.
     seed_run_events(
         root,
         &[("SpawnResult", r#"{"id":"u/implementer#1","output":"done"}"#)],
@@ -219,16 +228,14 @@ fn recurrence_and_stalled_frontier_survive_real_process_boundaries() {
         "round 3 must park the remediation attempt #2; got: {line:?}"
     );
     assert!(
-        line.contains(
-            r#""attention":[{"kind":"worker-death-recurred","unit":"u","detail":"2 attempts"}]"#
-        ),
-        "a unit's SECOND recorded failure must stamp exactly one worker-death-recurred entry, \
-         read back fresh from the on-disk store by a brand-new process; got: {line:?}"
+        !line.contains("attention"),
+        "a unit's SECOND recorded failure is below the diagnose threshold and must stamp \
+         nothing, read back fresh from the on-disk store by a brand-new process; got: {line:?}"
     );
 
-    // Attempt #2 fails - the THIRD failure, AND the unit now carries more than two recorded
-    // (failed) results while a fresh attempt (#3) parks still unanswered: the stalled-frontier
-    // signal joins the recurrence.
+    // Attempt #2 fails - the THIRD failure reaches the diagnose threshold, AND the unit now
+    // carries more than two recorded (failed) results while a fresh attempt (#3) parks still
+    // unanswered: the stalled-frontier signal joins the recurrence.
     seed_run_events(
         root,
         &[("SpawnResult", r#"{"id":"u/implementer#2","output":"done"}"#)],
@@ -239,11 +246,12 @@ fn recurrence_and_stalled_frontier_survive_real_process_boundaries() {
         "round 4 must park the remediation attempt #3, still unanswered; got: {line:?}"
     );
     assert!(
-        line.contains(
-            r#""attention":[{"kind":"worker-death-recurred","unit":"u","detail":"3 attempts"},{"kind":"stalled-frontier","unit":"u","detail":"3 recorded results, still parked"}]"#
-        ),
-        "the THIRD recorded failure must stamp BOTH a recurrence and a stalled-frontier \
-         entry, in order, on a fresh process's own stdout; got: {line:?}"
+        line.contains(&format!(
+            r#""attention":[{},{{"kind":"stalled-frontier","unit":"u","detail":"3 recorded results, still parked"}}]"#,
+            recurrence_wire(3)
+        )),
+        "the THIRD recorded failure must stamp BOTH a reject-recurrence and a \
+         stalled-frontier entry, in order, on a fresh process's own stdout; got: {line:?}"
     );
 
     // Round 5: NOTHING new recorded - attempt #3 is still the same parked, unanswered spawn,
@@ -280,13 +288,13 @@ fn recurrence_and_stalled_frontier_survive_real_process_boundaries() {
 fn attention_kind_rank_orders_the_six_known_kinds_and_sorts_an_unknown_kind_last() {
     use rigger::ledger::{
         attention_kind_rank, ATTENTION_BUDGET_FINAL_TENTH, ATTENTION_ESCALATED, ATTENTION_HALTED,
-        ATTENTION_SPEC_DEFECT, ATTENTION_STALLED_FRONTIER, ATTENTION_WORKER_DEATH_RECURRED,
+        ATTENTION_REJECT_RECURRENCE, ATTENTION_SPEC_DEFECT, ATTENTION_STALLED_FRONTIER,
     };
 
     let escalated = attention_kind_rank(ATTENTION_ESCALATED);
     let spec_defect = attention_kind_rank(ATTENTION_SPEC_DEFECT);
     let halted = attention_kind_rank(ATTENTION_HALTED);
-    let recurred = attention_kind_rank(ATTENTION_WORKER_DEATH_RECURRED);
+    let recurred = attention_kind_rank(ATTENTION_REJECT_RECURRENCE);
     let final_tenth = attention_kind_rank(ATTENTION_BUDGET_FINAL_TENTH);
     let stalled = attention_kind_rank(ATTENTION_STALLED_FRONTIER);
     assert!(
@@ -296,7 +304,7 @@ fn attention_kind_rank_orders_the_six_known_kinds_and_sorts_an_unknown_kind_last
             && recurred < final_tenth
             && final_tenth < stalled,
         "the six known kinds must rank in the canonical spec order (escalated, spec-defect, \
-         halted, worker-death-recurred, budget-final-tenth, stalled-frontier); got {escalated} \
+         halted, reject-recurrence, budget-final-tenth, stalled-frontier); got {escalated} \
          {spec_defect} {halted} {recurred} {final_tenth} {stalled}"
     );
 
@@ -313,7 +321,7 @@ fn attention_kind_rank_orders_the_six_known_kinds_and_sorts_an_unknown_kind_last
         ATTENTION_SPEC_DEFECT,
         ATTENTION_BUDGET_FINAL_TENTH,
         ATTENTION_ESCALATED,
-        ATTENTION_WORKER_DEATH_RECURRED,
+        ATTENTION_REJECT_RECURRENCE,
     ];
     kinds.sort_by_key(|k| attention_kind_rank(k));
     assert_eq!(
@@ -322,7 +330,7 @@ fn attention_kind_rank_orders_the_six_known_kinds_and_sorts_an_unknown_kind_last
             ATTENTION_ESCALATED,
             ATTENTION_SPEC_DEFECT,
             ATTENTION_HALTED,
-            ATTENTION_WORKER_DEATH_RECURRED,
+            ATTENTION_REJECT_RECURRENCE,
             ATTENTION_BUDGET_FINAL_TENTH,
             ATTENTION_STALLED_FRONTIER,
         ],
@@ -362,7 +370,7 @@ fn marker_path_for_wave_item(line: &str, id: &str) -> String {
 }
 
 /// Two independent stages that never pass: `u` keeps failing its gate (the exact
-/// worker-death-recurred/stalled-frontier scenario above), `h` parks and is later driven
+/// reject-recurrence/stalled-frontier scenario above), `h` parks and is later driven
 /// hung via a planted stale marker. Both share `max_wall_clock` (so BOTH carry a
 /// `marker_path` in the wave - proving the ordering test below reads the RIGHT item's path)
 /// and `max_retries: 5` (so `u` is never escalated across the whole scenario, matching
@@ -397,13 +405,13 @@ stages:
 /// end" bug would look identical to a correct canonical-order merge. This test drives a
 /// hung spawn (`h`) CO-OCCURRING, in the SAME real `rigger step` process, with two OTHER
 /// signals `compute_attention` already produced for a DIFFERENT unit (`u`):
-/// worker-death-recurred (canonical rank 2) and stalled-frontier (rank 4) - both AFTER
-/// `halted`'s rank 1. A naive append-at-the-end bug would print `worker-death-recurred,
+/// reject-recurrence (canonical rank 3) and stalled-frontier (rank 5) - both AFTER
+/// `halted`'s rank 2. A naive append-at-the-end bug would print `reject-recurrence,
 /// stalled-frontier, halted` (wrong order); only a genuine stable re-sort produces `halted,
-/// worker-death-recurred, stalled-frontier` (`halted` moved to the FRONT of an
+/// reject-recurrence, stalled-frontier` (`halted` moved to the FRONT of an
 /// already-built two-entry array).
 #[test]
-fn hung_liveness_halt_lands_ahead_of_real_worker_death_and_stalled_frontier_signals() {
+fn hung_liveness_halt_lands_ahead_of_real_reject_recurrence_and_stalled_frontier_signals() {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
     write_workflow_fixture(root, &ATTENTION_ORDERING_WORKFLOW);
@@ -432,7 +440,7 @@ fn hung_liveness_halt_lands_ahead_of_real_worker_death_and_stalled_frontier_sign
         "u's first recorded failure crosses no threshold; got: {out:?}"
     );
 
-    // u's second failure - a recurrence, the ONLY signal this round.
+    // u's second failure - still below the diagnose threshold, and h still healthy.
     seed_run_events(
         root,
         &[("SpawnResult", r#"{"id":"u/implementer#1","output":"done"}"#)],
@@ -440,20 +448,18 @@ fn hung_liveness_halt_lands_ahead_of_real_worker_death_and_stalled_frontier_sign
     let (out, err, ok) = run_rigger(root, &["step"]);
     assert!(ok, "round 3 step must succeed; stderr: {err}");
     assert!(
-        out.trim().contains(
-            r#""attention":[{"kind":"worker-death-recurred","unit":"u","detail":"2 attempts"}]"#
-        ),
-        "round 3 must stamp exactly the recurrence signal, h still healthy; got: {out:?}"
+        !out.trim().contains("attention"),
+        "u's second recorded failure crosses no threshold, h still healthy; got: {out:?}"
     );
 
     // NOW plant h's stale marker - the sweep will find it stale on the NEXT step, the exact
-    // same round u's third failure crosses BOTH worker-death-recurred and stalled-frontier.
+    // same round u's third failure crosses BOTH reject-recurrence and stalled-frontier.
     plant_stale_marker(std::path::Path::new(&h_marker));
 
-    // u's third failure crosses worker-death-recurred AND stalled-frontier in the SAME call
-    // `compute_attention` produces (ranks 2 and 4, already correctly ordered between
+    // u's third failure crosses reject-recurrence AND stalled-frontier in the SAME call
+    // `compute_attention` produces (ranks 3 and 5, already correctly ordered between
     // themselves); the same real step's sweep independently finds h newly hung, and main.rs
-    // must merge its `halted` entry (rank 1) in FRONT of both.
+    // must merge its `halted` entry (rank 2) in FRONT of both.
     seed_run_events(
         root,
         &[("SpawnResult", r#"{"id":"u/implementer#2","output":"done"}"#)],
@@ -462,7 +468,7 @@ fn hung_liveness_halt_lands_ahead_of_real_worker_death_and_stalled_frontier_sign
     assert_eq!(
         line.matches(r#"{"kind":"#).count(),
         3,
-        "round 4 must stamp exactly three attention entries (halted, worker-death-recurred, \
+        "round 4 must stamp exactly three attention entries (halted, reject-recurrence, \
          stalled-frontier), no fewer and no more; got: {line:?}"
     );
     let halted_pos = line
@@ -476,7 +482,7 @@ fn hung_liveness_halt_lands_ahead_of_real_worker_death_and_stalled_frontier_sign
          got: {line:?}"
     );
     let recurred_pos = line
-        .find(r#"{"kind":"worker-death-recurred","unit":"u","detail":"3 attempts"}"#)
+        .find(&recurrence_wire(3))
         .unwrap_or_else(|| panic!("round 4's recurrence entry must still stamp; got: {line:?}"));
     let stalled_pos = line
         .find(
@@ -563,11 +569,12 @@ fn run_relay_attention(step_json: &str) -> Option<Vec<String>> {
 /// wire (criterion 5, proven at the real binary boundary by
 /// `recurrence_and_stalled_frontier_survive_real_process_boundaries` above) actually reaches and
 /// RENDERS correctly through the real, unmodified `relayAttention` the driver ships - never a
-/// hand-typed stand-in for either side. Drives the same worker-death-recurred ->
+/// hand-typed stand-in for either side. Drives the same reject-recurrence ->
 /// stalled-frontier progression as that test (real `rigger step` subprocesses against a real
-/// on-disk store), lifts the REAL `attention` array a real process printed - at round 3 (one
-/// entry) and round 4 (two entries, in wire order) - straight off that process's own stdout,
-/// and feeds it, byte for byte, into the real extracted `relayAttention`.
+/// on-disk store), feeds round 3's REAL wire (one failure below the diagnose threshold, no
+/// `attention` key at all) and round 4's REAL `attention` array (two entries, in wire order),
+/// straight off each process's own stdout, byte for byte, into the real extracted
+/// `relayAttention`.
 #[test]
 fn relay_attention_renders_the_real_wire_produced_by_a_real_step_process() {
     let dir = temp_repoless_project();
@@ -584,32 +591,21 @@ fn relay_attention_renders_the_real_wire_produced_by_a_real_step_process() {
     let (_out, err, ok) = run_rigger(root, &["step"]);
     assert!(ok, "round 2 step must succeed; stderr: {err}");
 
-    // Round 3: the first attention crossing (worker-death-recurred alone) - lift the REAL
-    // one-entry wire and render it for real.
+    // Round 3: the second failure, one below the diagnose threshold - the REAL wire carries
+    // no `attention` key, and the real relay must render it as nothing.
     seed_run_events(
         root,
         &[("SpawnResult", r#"{"id":"u/implementer#1","output":"done"}"#)],
     );
     let (out, err, ok) = run_rigger(root, &["step"]);
     assert!(ok, "round 3 step must succeed; stderr: {err}");
-    let step: serde_json::Value = serde_json::from_str(out.trim())
-        .unwrap_or_else(|e| panic!("round 3 step must print valid JSON: {e}; stdout: {out:?}"));
-    let attention = step
-        .get("attention")
-        .unwrap_or_else(|| panic!("round 3 must have stamped attention; stdout: {out:?}"));
-    let step_for_relay = serde_json::json!({ "attention": attention }).to_string();
-
-    let Some(lines) = run_relay_attention(&step_for_relay) else {
+    let Some(lines) = run_relay_attention(out.trim()) else {
         return; // node unavailable; graceful absence, mirrored from src/main.rs's own gate.
     };
-    assert_eq!(
-        lines,
-        vec![
-            "attention - worker-death-recurred: u - 2 attempts (respond: rigger-diagnose-churn)"
-                .to_string()
-        ],
-        "the real relayAttention must render round 3's real single-entry wire as one narrator \
-         line naming the kind, unit, detail and mapped response; got {lines:?}"
+    assert!(
+        lines.is_empty(),
+        "the real relayAttention must render round 3's real below-threshold wire as no \
+         narrator line at all; got {lines:?}"
     );
 
     // Round 4: the SAME real process now stamps TWO entries in one wire - the multi-entry
@@ -630,14 +626,17 @@ fn relay_attention_renders_the_real_wire_produced_by_a_real_step_process() {
     assert_eq!(
         lines,
         vec![
-            "attention - worker-death-recurred: u - 3 attempts (respond: rigger-diagnose-churn)"
-                .to_string(),
+            format!(
+                "attention - reject-recurrence: u - {}",
+                rigger::ledger::AttentionEntry::reject_recurrence("u", 3).detail
+            ),
             "attention - stalled-frontier: u - 3 recorded results, still parked (respond: stop \
              the driver and diagnose before another round spends)"
                 .to_string(),
         ],
         "round 4's real TWO-entry wire must render as two narrator lines in the SAME order the \
-         wire carries them, each with its own mapped response; got {lines:?}"
+         wire carries them, each naming its own mapped response once - the reject-recurrence \
+         detail already names it, so no suffix repeats it; got {lines:?}"
     );
 }
 
@@ -678,8 +677,8 @@ fn relay_attention_falls_back_on_an_unrecognized_kind_and_defaults_a_run_scoped_
 /// Spec 69, criterion 6: "log lines only, no new stops" - and specifically, a step that crossed
 /// no threshold must render NOTHING. `AttentionEntry`'s wire never carries the `attention` key
 /// at all on a clean step (criterion 5's `skip_serializing_if`, proven at the real binary
-/// boundary by `recurrence_and_stalled_frontier_survive_real_process_boundaries`'s round-1/2/5
-/// assertions above: `!line.contains("attention")`) - this proves the JS CONSUMER side of that
+/// boundary by `recurrence_and_stalled_frontier_survive_real_process_boundaries`'s
+/// round-1/2/3/5 assertions above: `!line.contains("attention")`) - this proves the JS CONSUMER side of that
 /// same omission: the real, unmodified `relayAttention`, run for real, prints nothing for BOTH
 /// the genuinely-absent-key shape a clean step actually sends and the present-but-empty-array
 /// shape, so neither can regress into a spurious narrator line or a thrown error on an absent
@@ -705,7 +704,7 @@ fn relay_attention_renders_nothing_for_a_clean_step_in_either_shape() {
 /// trip) - each constructed as the exact wire shape `ledger::AttentionEntry` produces for that
 /// kind (unit-scoped `escalated` and `spec-defect` carry `unit`; run-scoped
 /// `halted`/`budget-final-tenth` omit it, same as the fallback test above), and driven through
-/// the real, unmodified `relayAttention`. `worker-death-recurred` and `stalled-frontier` are
+/// the real, unmodified `relayAttention`. `reject-recurrence` and `stalled-frontier` are
 /// proven from the REAL wire above, not re-derived here - together these six cases cover every
 /// kind `ledger::attention_kind_rank`'s own canonical order enumerates.
 #[test]
@@ -786,7 +785,7 @@ fn attention_response_mirrors_the_pull_side_signal_response_for_every_shared_ski
         ("escalated", Signal::Escalated),
         ("spec-defect", Signal::SpecDefect),
         ("halted", Signal::DeadDriver),
-        ("worker-death-recurred", Signal::RejectRecurrence),
+        ("reject-recurrence", Signal::RejectRecurrence),
         ("budget-final-tenth", Signal::DeadDriver),
         ("stalled-frontier", Signal::FrontierStall),
     ] {

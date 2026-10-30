@@ -104,6 +104,17 @@ pub fn git_answer(dir: impl AsRef<Path>, args: &[&str]) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
+/// The repository directory `git rev-parse --git-dir` answers under `dir` ([`git_answer`]), or
+/// `None` when `dir` is outside any repository.
+pub fn git_dir(dir: impl AsRef<Path>) -> Option<String> {
+    git_answer(dir, &["rev-parse", "--git-dir"])
+}
+
+/// Assert, as a test's premise, that `dir` is outside any repository: [`git_dir`] answers `None`.
+pub fn assert_outside_any_repository(dir: impl AsRef<Path>) {
+    assert_eq!(git_dir(dir), None, "the tree is outside any repository");
+}
+
 /// The object id git computes for the file at `path` under `dir` (`git hash-object`), the file
 /// also written to the repository's object database as a loose object when `write`.
 pub fn git_hash_object(dir: impl AsRef<Path>, path: &str, write: bool) -> String {
@@ -140,20 +151,23 @@ pub fn commit_at_fixed_date(dir: impl AsRef<Path>, message: &str) -> Output {
     succeeded(output_of(command, &args), &args)
 }
 
-/// `git init -q` at `root` - a bare repository with no commit, for a test that only needs `root`
-/// to sit inside a git work tree.
+/// `git init -q` at `root` - a repository with no commit, for a test that only needs `root` to
+/// sit inside a git work tree.
 pub fn git_init_quiet(root: &Path) {
     run_git(root, &["init", "-q"]);
 }
 
-/// The object file of the loose object `id` in the repository at `root`, made writable so a test
-/// can cut or corrupt it (git writes object files read-only).
+/// The directory the loose object `id` goes in, in the repository at `root`: the objects
+/// directory's entry named by the id's first two hex digits.
+pub fn loose_object_directory(root: &Path, id: &str) -> std::path::PathBuf {
+    root.join(".git").join("objects").join(&id[..2])
+}
+
+/// The object file of the loose object `id` in the repository at `root`, in its
+/// [`loose_object_directory`], made writable so a test can cut or corrupt it (git writes object
+/// files read-only).
 pub fn loose_object(root: &Path, id: &str) -> std::path::PathBuf {
-    let path = root
-        .join(".git")
-        .join("objects")
-        .join(&id[..2])
-        .join(&id[2..]);
+    let path = loose_object_directory(root, id).join(&id[2..]);
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
     path
 }

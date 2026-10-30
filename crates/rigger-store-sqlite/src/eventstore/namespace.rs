@@ -14,13 +14,46 @@ use super::{
 
 /// Namespaced wraps an EventStore so all of its data is scoped to one project.
 pub struct Namespaced<'a> {
-    inner: &'a dyn EventStore,
+    inner: Inner<'a>,
     prefix: String,
+}
+
+/// The store a [`Namespaced`] scopes: borrowed for the wrapper's life ([`Namespaced::new`]), or
+/// held by it ([`Namespaced::owning`]).
+enum Inner<'a> {
+    Borrowed(&'a dyn EventStore),
+    Held(std::sync::Arc<dyn EventStore>),
+}
+
+impl<'a> std::ops::Deref for Inner<'a> {
+    type Target = dyn EventStore + 'a;
+
+    /// The store, borrowed or held.
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Inner::Borrowed(inner) => *inner,
+            Inner::Held(inner) => &**inner,
+        }
+    }
+}
+
+impl Namespaced<'static> {
+    /// Scope `inner` to the named project, holding it: a scoped store of its own, which a caller
+    /// can hold as the port itself (`Arc<dyn EventStore>`) where no borrow outlives it.
+    pub fn owning(inner: std::sync::Arc<dyn EventStore>, project: &str) -> Self {
+        Self::scoping(Inner::Held(inner), project)
+    }
 }
 
 impl<'a> Namespaced<'a> {
     /// Scope inner to the named project.
     pub fn new(inner: &'a dyn EventStore, project: &str) -> Self {
+        Self::scoping(Inner::Borrowed(inner), project)
+    }
+
+    /// The one constructor both forms read: `inner` scoped to `project`'s streams
+    /// ([`Namespaced::prefix_for`]).
+    fn scoping(inner: Inner<'a>, project: &str) -> Self {
         Namespaced {
             inner,
             prefix: Self::prefix_for(project),
@@ -119,6 +152,24 @@ impl EventStore for Namespaced<'_> {
     ) -> Result<Vec<Event>, Error> {
         let events = self.inner.read_all(from, dir, &self.scope_filter(filter))?;
         Ok(self.strip(events))
+    }
+
+    fn read_all_page(
+        &self,
+        from: Position,
+        filter: &Filter,
+        max: usize,
+    ) -> Result<Vec<Event>, Error> {
+        let events = self
+            .inner
+            .read_all_page(from, &self.scope_filter(filter), max)?;
+        Ok(self.strip(events))
+    }
+
+    /// The whole log's head, never the namespace's: every append lands above it, whatever
+    /// namespace it writes.
+    fn log_head(&self) -> Result<Option<Position>, Error> {
+        self.inner.log_head()
     }
 
     fn subscribe_all(&self, from: Position, filter: &Filter) -> Result<Subscription, Error> {
@@ -265,10 +316,89 @@ mod tests {
         assert_eq!(backend.last_position("run", "RunStarted").unwrap(), None);
     }
 
+    /// The page is scoped and stripped as every global read of the wrapper is, and its positions
+    /// are the log's; the head is the whole log's, so a sibling project's append moves it.
+    #[test]
+    fn the_page_reads_within_the_namespace_and_the_head_is_the_whole_logs() {
+        use crate::test_support::ev;
+        let backend = Store::open(":memory:").unwrap();
+        let alpha = Namespaced::new(&backend, "alpha");
+        let beta = Namespaced::new(&backend, "beta");
+        alpha
+            .append(
+                "run",
+                ExpectedRevision::Any,
+                &[ev("A0", "{}"), ev("A1", "{}")],
+            )
+            .unwrap();
+        beta.append("run", ExpectedRevision::Any, &[ev("B0", "{}")])
+            .unwrap();
+        alpha
+            .append("run", ExpectedRevision::Any, &[ev("A2", "{}")])
+            .unwrap();
+        for (from, max, expected) in [
+            (1, 1, vec![("run", "A1", 2)]),
+            (2, 1, vec![("run", "A2", 4)]),
+            (
+                0,
+                3,
+                vec![("run", "A0", 1), ("run", "A1", 2), ("run", "A2", 4)],
+            ),
+            (4, 1, vec![]),
+        ] {
+            let page = alpha.read_all_page(from, &Filter::default(), max).unwrap();
+            assert_eq!(
+                page.iter()
+                    .map(|e| (e.stream.as_str(), e.type_.as_str(), e.position))
+                    .collect::<Vec<_>>(),
+                expected,
+                "the page from {from} bounded at {max} holds alpha's events alone, unprefixed"
+            );
+        }
+        assert_eq!(
+            (alpha.log_head().unwrap(), beta.log_head().unwrap()),
+            (Some(4), Some(4)),
+            "each namespace answers the whole log's head"
+        );
+    }
+
     #[test]
     fn passes_the_contract() {
         let backend = Store::open(":memory:").unwrap();
         let scoped = Namespaced::new(&backend, "contract");
         crate::eventstore::contract::assert_contract(&scoped);
+    }
+
+    /// The owning form is a store of its own, held as the port: it passes the contract, and it
+    /// scopes to the namespace the borrowing form writes, reading its project's events alone.
+    #[test]
+    fn the_owning_form_is_held_as_the_port_and_scopes_as_the_borrowing_form() {
+        use crate::test_support::ev;
+        use std::sync::Arc;
+        let contract: Arc<dyn EventStore> = Arc::new(Namespaced::owning(
+            Arc::new(Store::open(":memory:").unwrap()),
+            "contract",
+        ));
+        crate::eventstore::contract::assert_contract(&*contract);
+
+        let backend: Arc<dyn EventStore> = Arc::new(Store::open(":memory:").unwrap());
+        let alpha: Arc<dyn EventStore> =
+            Arc::new(Namespaced::owning(Arc::clone(&backend), "alpha"));
+        Namespaced::new(&*backend, "beta")
+            .append("run", ExpectedRevision::Any, &[ev("B0", "{}")])
+            .unwrap();
+        Namespaced::new(&*backend, "alpha")
+            .append("run", ExpectedRevision::Any, &[ev("A1", "{}")])
+            .unwrap();
+        assert_eq!(
+            alpha
+                .read_all(0, Direction::Forward, &Filter::default())
+                .unwrap()
+                .iter()
+                .map(|e| (e.stream.as_str(), e.type_.as_str(), e.position))
+                .collect::<Vec<_>>(),
+            vec![("run", "A1", 2)],
+            "the owning form reads alpha's events alone, unprefixed"
+        );
     }
 }

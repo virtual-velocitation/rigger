@@ -146,6 +146,20 @@ mod tests {
         assert!(add.id.starts_with("playbook-"));
     }
 
+    /// A lesson citing lines of a file (`path:line`, `path:from-to`) triggers on that file.
+    #[test]
+    fn a_lesson_citing_lines_of_a_file_triggers_on_that_file() {
+        let pool = distill(&[
+            lesson("guard the checked add", &["a.rs:12", "b.rs:3-9"]),
+            lesson("guard the checked add", &["a.rs"]),
+        ]);
+        assert_eq!(
+            pool.iter().map(|p| p.triggers.clone()).collect::<Vec<_>>(),
+            [["a.rs".to_string(), "b.rs".to_string()]],
+            "the trigger scope is the files the lessons cite"
+        );
+    }
+
     #[test]
     fn render_is_a_native_agent_file_that_round_trips() {
         // The pool files are rigger's native agent-file shape, so they parse with the SAME

@@ -55,11 +55,14 @@ fn reset_handed_no_mode_names_the_derived_mode_as_the_migration() {
         (
             false,
             "",
-            "rigger: reset: expected at least one mode: rigger reset --runs (prune the context \
-             graph), rigger reset --derived (migrate the event log's derived events into ledger \
-             entries), rigger reset --build-cache (reclaim the shared gate build cache), and/or \
-             rigger reset --scratch-orphans (reclaim cache-home scratch roots whose repo is \
-             gone)\n",
+            (common::cli::refusal_line(
+                "reset: expected at least one mode: rigger reset --runs (prune the context \
+                 graph), rigger reset --derived (migrate the event log's derived events into \
+                 ledger entries), rigger reset --build-cache (reclaim the shared gate build \
+                 cache), and/or rigger reset --scratch-orphans (reclaim cache-home scratch roots \
+                 whose repo is gone)"
+            ) + "\n")
+                .as_str(),
             true,
         ),
         "a reset handed no mode names the modes and changes nothing"

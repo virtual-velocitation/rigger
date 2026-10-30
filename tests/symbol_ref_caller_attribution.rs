@@ -26,9 +26,9 @@
 #[path = "common/symbol_index.rs"]
 mod symbol_index;
 
-use rigger::grounder::symbols::model::{Kind, Lang};
+use rigger::grounder::symbols::model::Lang;
 use symbol_index::{
-    assert_saved_without_key, def, legacy_file, rust_file, saved_with_key, sym_ref,
+    assert_saved_without_key, defining_f, g_called_in_f, legacy_file, saved_with_key, sym_ref,
 };
 
 // ---- serialized-form / back-compat contract (parser-free model + store: BOTH feature lanes) ----
@@ -42,10 +42,10 @@ fn a_caller_less_reference_serializes_byte_identically_to_the_pre37_form() {
     // whole "wholly additive, no re-serialization churn" contract (spec 37).
     assert_saved_without_key(
         "a.rs",
-        rust_file(
-            vec![def(Kind::Function, "f")],
-            vec![sym_ref("G", 2, None, false), sym_ref("H", 3, None, false)],
-        ),
+        defining_f(vec![
+            sym_ref("G", 2, None, false),
+            sym_ref("H", 3, None, false),
+        ]),
         "enclosing",
         "a caller-less index must omit the enclosing key entirely (byte-identical to the pre-37 \
          on-disk form)",
@@ -61,10 +61,7 @@ fn a_caller_attributed_reference_serializes_and_reloads_its_enclosing_name() {
     // one reds.
     let loaded = saved_with_key(
         "a.rs",
-        rust_file(
-            vec![def(Kind::Function, "f")],
-            vec![sym_ref("G", 2, Some("f"), false)],
-        ),
+        defining_f(vec![g_called_in_f()]),
         "enclosing",
         "a caller-attributed reference must serialize its enclosing key",
     );
@@ -136,8 +133,6 @@ fn extractor_attribution_survives_the_build_index_save_load_pipeline() {
     // attribute to that function AND survive serialization, and a top-level reference must stay
     // caller-less across the round-trip. A regression that lost the attribution, or a serde change
     // that dropped the field on save/load, reds here.
-    use rigger::grounder::symbols::build_index;
-    use rigger::grounder::symbols::store;
     let dir = tempfile::tempdir().unwrap();
     // `fn f` calls `G()`; the `impl Draw for Widget` header's `Draw` bound attributes to the impl
     // block (a definition of its own); the top-level `setup!()` call belongs to no definition.
@@ -148,9 +143,7 @@ fn extractor_attribution_survives_the_build_index_save_load_pipeline() {
     .unwrap();
     let root = dir.path().to_str().unwrap();
 
-    let idx = build_index(root, None);
-    store::save(&idx, root).unwrap();
-    let loaded = store::load(root).expect("the built index persists and reloads");
+    let (_, loaded) = symbol_index::built_and_reloaded(root);
 
     let refs = &loaded
         .files()

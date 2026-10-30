@@ -412,11 +412,12 @@ pub(crate) fn cmd_resume_unit(args: &[String]) -> Res {
     }
     // The resume goes on the log first; `graph.db` is opened only after (spec 101), so a graph
     // that cannot be had costs the operator's recovery verb only the fold, which it says.
-    rigger::ingest::FoldingStore::new(&store, Some(|| loc.graph()), &stderr_line).append(
-        conductor::STREAM,
-        ExpectedRevision::Any,
-        std::slice::from_ref(&ev),
-    )?;
+    rigger::ingest::FoldingStore::new(&store, Some(|| loc.graph(&selection)), &stderr_line)
+        .append(
+            conductor::STREAM,
+            ExpectedRevision::Any,
+            std::slice::from_ref(&ev),
+        )?;
 
     println!(
         "resumed unit {unit_id:?}: {attempts_granted} attempt(s) granted (by operator) - the \
@@ -534,7 +535,7 @@ pub(crate) fn cmd_step(args: &[String]) -> Res {
     // before opening the run backend (spec 09, Gap 20). A no-op unless `.rigger/project.id`
     // was minted with an id distinct from the basename and the legacy namespace still holds
     // the history; refuses loudly if both namespaces are populated.
-    migrate_local_identity()?;
+    migrate_local_identity(None)?;
 
     let selection = store_selection(None, None)?;
     // Register this instance in the machine-global discovery registry (spec 50, criterion 2):
@@ -549,7 +550,12 @@ pub(crate) fn cmd_step(args: &[String]) -> Res {
     // the graph's applied ledger holds every position the step wrote (the conductor folds its own
     // through the same store). Opened before any append, so a graph that owes its rebuild refuses
     // the step before it writes anything the graph would miss.
-    let graph = open_graph(&db_path("graph.db"), &project_identity(), "step")?;
+    let graph = open_graph(
+        &db_path("graph.db"),
+        &project_identity(),
+        &selection,
+        "step",
+    )?;
     let folding = rigger::ingest::folding_into(&store, Some(&graph), &stderr_line);
 
     // The definition hash this step pins / re-checks (spec 13, unit 1): the digest of the
@@ -832,6 +838,7 @@ pub(crate) fn cmd_step(args: &[String]) -> Res {
         criteria,
         log: &stderr_line,
         hash_blob: &hash_blob,
+        check_emit: &rigger::contextgraph::check_emit,
     };
     let rs = conductor::run(&cfg, &deps)?;
 
@@ -999,7 +1006,7 @@ pub(crate) fn cmd_step(args: &[String]) -> Res {
 /// inside `conductor::run` itself).
 ///
 /// `attention` already carries whatever `compute_attention` built (escalated / spec-defect /
-/// budget-halted / worker-death-recurred / budget-final-tenth / stalled-frontier, in THAT
+/// budget-halted / reject-recurrence / budget-final-tenth / stalled-frontier, in THAT
 /// canonical order). Pushes ONE run-scoped `halted` entry - built lazily via `reason` only
 /// when actually needed, since `liveness::halt_reason` walks the whole hung set - when
 /// `newly_hung` is true AND no `halted` entry is already present (a budget halt this same
@@ -1431,7 +1438,7 @@ fn run_cli(parsed: &RunArgs) -> Res {
     // streams in the local `.rigger/events.db`; a shared KurrentDB backend is out of scope.
     let selection = store_selection(parsed.store, parsed.conn.as_deref())?;
     if selection.is_sqlite() {
-        migrate_local_identity()?;
+        migrate_local_identity(None)?;
     }
     // Register this instance in the machine-global discovery registry (spec 50, criterion 2).
     // `rigger run` drives the WHOLE run in-process through a single `conductor::run` below, so the
@@ -1442,7 +1449,7 @@ fn run_cli(parsed: &RunArgs) -> Res {
     let _registration = register_run_instance(&repo, &selection);
     let backend = resolve_store(&selection, &db_path("events.db"))?;
     let store = Namespaced::new(backend.as_ref(), &project_identity());
-    let graph = open_graph(&db_path("graph.db"), &project_identity(), "run")?;
+    let graph = open_graph(&db_path("graph.db"), &project_identity(), &selection, "run")?;
     // `--fresh`: begin a NEW run before driving, so the conductor's own `ensure_started`
     // adopts this just-minted boundary instead of the (possibly wedged) latest run. See
     // `runscope_store::start_fresh` - the evented restart for a terminal escalation on an
@@ -1488,6 +1495,7 @@ fn run_cli(parsed: &RunArgs) -> Res {
         criteria,
         log: &stderr_line,
         hash_blob: &hash_blob,
+        check_emit: &rigger::contextgraph::check_emit,
     };
     // Always-on dash (spec 19b, unit 1): auto-start a `rigger dash` serving this run before
     // the loop begins, so an active harness is never invisible. Held for the whole run - the
@@ -1796,7 +1804,7 @@ fn run_workflow(parsed: &RunArgs, command: &str) -> Res {
     // One-time spec-09 identity migration before opening the run backend (local-sqlite only).
     let selection = store_selection(parsed.store, parsed.conn.as_deref())?;
     if selection.is_sqlite() {
-        migrate_local_identity()?;
+        migrate_local_identity(None)?;
     }
     // Register this instance in the machine-global discovery registry (spec 50, criterion 2). Like
     // `rigger run`, the served conductor drives the whole run in-process (on the background thread
@@ -1811,7 +1819,7 @@ fn run_workflow(parsed: &RunArgs, command: &str) -> Res {
     // adopts this boundary rather than the latest (possibly wedged) run. `true`: this is the
     // MCP-serving path, so the notice must land on stderr, mirroring the reminder three lines
     // above (spec 66, criterion 5 escalation remedy round 2) - stdout stays the pure MCP wire.
-    let graph = open_graph(&db_path("graph.db"), &project_identity(), "run")?;
+    let graph = open_graph(&db_path("graph.db"), &project_identity(), &selection, "run")?;
     fresh_run_if_requested(
         parsed,
         &rigger::ingest::folding_into(&store, Some(&graph), &stderr_line),
@@ -1865,6 +1873,7 @@ fn run_workflow(parsed: &RunArgs, command: &str) -> Res {
                 criteria,
                 log: &stderr_line,
                 hash_blob: &hash_blob,
+                check_emit: &rigger::contextgraph::check_emit,
             };
             // The halt reason goes to stderr, never stdout: stdout is the MCP transport.
             match conductor::run(&cfg, &deps) {
@@ -2845,15 +2854,20 @@ pub(crate) fn cmd_result(args: &[String]) -> Res {
     // is safe: a plain worker/courier result folds to nothing.
     //
     // AFTER the durable append, as `emit_event` does: the record already landed in the log, so a
-    // fold that cannot happen (a graph that owes its rebuild, or one locked past its busy
-    // timeout) never fails a result the log holds - but it is SAID, with the reason, because a
-    // current graph that missed the fold keeps the result out of grounding until the next `rigger
-    // setup` rebuilds it (the result's position is a hole in the graph's applied ledger, and a
-    // `SpawnResult` is in the live selection that rebuild folds), and until then a lost
-    // adjudicator verdict keeps its discarded findings in grounding. A `--if-absent` no-op
-    // appended nothing, so there is nothing new to fold (the prior record already did).
+    // fold that cannot happen (a graph that owes its rebuild, or one whose write lock or catch-up
+    // held the fold past the appender's ceiling) never fails a result the log holds - but it is
+    // SAID, with the reason, because a
+    // current graph that missed the fold keeps the result out of grounding until a later `rigger
+    // setup` folds it (a graph that owes its rebuild re-derives it from the live selection a
+    // `SpawnResult` is in, and so does a file not yet carrying the cursor whose seeding finds the
+    // hole the result left in its applied ledger old; setup's catch-up folds any other such hole
+    // forward from the file's cursor), and until then a lost adjudicator verdict keeps its
+    // discarded findings in grounding. A `--if-absent` no-op appended nothing, so there is nothing
+    // new to fold (the prior record already did).
     if let Some(pos) = recorded {
-        if let contextgraph::Fold::NotFolded(why) = fold_recorded_result(&loc, &res, pos) {
+        if let contextgraph::Fold::NotFolded(why) =
+            fold_recorded_result(&loc, &selection, &res, pos)
+        {
             println!("{}", not_folded(&why));
         }
     }
@@ -2908,27 +2922,34 @@ fn reclaim_spawn_scratch(loc: &StoreLocation, prior: &[Event], spawn_id: &str) {
 /// `position`, so an adjudicator verdict that disposes a review's findings invalidates their
 /// graph edges (the `contextgraph` `TYPE_SPAWN_RESULT` fold arm), and answer what became of the
 /// fold. This is the result-channel counterpart of [`mcpserver::emit_event`]: rebuild the
-/// appended event, stamp it with the position the append returned, and fold it through the one
-/// [`contextgraph::Fold::of`] into the graph [`StoreLocation::graph`] opens, the same opener
-/// [`cmd_emit`] hands the emit core.
+/// appended event, stamp it with the position the append returned and the run stream
+/// ([`conductor::STREAM`]) the result was recorded on, and fold it through the one
+/// [`contextgraph::Fold::of`] into the graph [`StoreLocation::graph`] opens under the store
+/// `selection` the courier resolved, the same opener [`cmd_emit`] hands the emit core.
 ///
 /// The result is already on the log, so nothing here fails it: a graph that owes its rebuild,
-/// one locked past its busy timeout, or a result that will not serialize (unreachable for one
-/// that just serialized to append) is answered as [`contextgraph::Fold::NotFolded`], with the
-/// reason, for the caller to report. Either way the fold is a debt `rigger setup` pays: a graph
-/// that owes its rebuild re-derives the result from the log when setup rebuilds it, and a current
-/// graph that missed it is left with a hole in its applied ledger at the result's position, which
-/// the next setup reads against the log and rebuilds (a `SpawnResult` is in the live selection).
+/// one whose write lock or catch-up held it past the appender's ceiling (spec 124), or a result
+/// that will not serialize (unreachable for one that just serialized to append) is answered as
+/// [`contextgraph::Fold::NotFolded`], with the reason, for the caller to report. A graph that
+/// owes its rebuild re-derives the result from the
+/// log when `rigger setup` rebuilds it, and a current graph that missed it is left with a hole in
+/// its applied ledger at the result's position (a `SpawnResult` is in the live selection): setup's
+/// seeding of a file not yet carrying the `caught_up` cursor reads that ledger against the log up
+/// to the bound [`contextgraph::sqlite::Projector::seed_cursor`] names, and rebuilds the file for
+/// a hole there it finds old (spec 124); a hole above the file's cursor, a young one the seeding
+/// seeds the cursor below included, setup's catch-up folds forward from that cursor
+/// ([`contextgraph::sqlite::Projector::catch_up`]).
 fn fold_recorded_result(
     loc: &StoreLocation,
+    selection: &StoreSelection,
     res: &spawn::SpawnResult,
     pos: rigger::eventstore::Position,
 ) -> contextgraph::Fold {
     match res.to_event() {
-        Ok(mut event) => {
-            event.position = pos;
-            contextgraph::Fold::of(loc.graph(), &event)
-        }
+        Ok(event) => contextgraph::Fold::of(
+            loc.graph(selection),
+            &event.appended_at(conductor::STREAM, pos),
+        ),
         Err(e) => contextgraph::Fold::NotFolded(e.to_string()),
     }
 }
@@ -4289,7 +4310,7 @@ mod tests {
     }
 
     /// The merge must land the hung-liveness `halted` entry in its CANONICAL position
-    /// (escalated, halted, worker-death-recurred, budget-final-tenth, stalled-frontier) even
+    /// (escalated, halted, reject-recurrence, budget-final-tenth, stalled-frontier) even
     /// when `compute_attention` already produced entries both BEFORE and AFTER that slot in
     /// the SAME step (a different unit independently escalating, and a third stalling) - a
     /// naive push-to-the-end would leave `halted` stuck last, violating the wire's

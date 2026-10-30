@@ -182,8 +182,7 @@ fn clear_recording_cargo_env() {
 /// REAL spawned process received, never a `Command` inspected in-process without ever
 /// being run.
 fn read_recording(dump_file: &std::path::Path) -> String {
-    std::fs::read_to_string(dump_file)
-        .unwrap_or_else(|e| panic!("reading the recording-cargo dump file {dump_file:?}: {e}"))
+    common::fixtures::read_text(dump_file)
 }
 
 /// One real `build_wasm_artifact` call through the recording cargo fixture.

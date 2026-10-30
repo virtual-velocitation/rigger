@@ -190,16 +190,20 @@ pub const REL_RAISED: &str = "RAISED";
 /// A definition's parent CONTAINS it (spec 29a; spec 119, CONTAINS IS STRUCTURE): the structural
 /// edge from an enum to its variant, a struct, union or variant to its field, an impl or trait
 /// to its associated item, an inline mod or enclosing fn to its item, and from a `file` node to
-/// each `code-entity` node folded from a definition of that file with no parent.
+/// each `code-entity` node folded from a definition of that file with no parent; and from a
+/// `mod x;` node to the file its module row resolves to (spec 117, A MODULE ROW REACHES ITS
+/// FILE), which declares a module and couples nothing ([`declares_a_module`]).
 pub const REL_CONTAINS: &str = "CONTAINS";
-/// A file REFERENCES a code symbol (spec 29a): the structural edge folded from an
-/// `EdgeInferred` event, from the referencing `file` node to the referenced symbol's
-/// file-scoped `code-entity` id. A confidence tier is layered onto this edge by a later
-/// criterion; this criterion only makes the structural edge exist.
+/// A file REFERENCES a code symbol (spec 29a): the structural edge folded from a call reference's
+/// `EdgeInferred` event (one with no `ref_kind`; a tagged one folds none, spec 117), from the
+/// referencing `file` node to the referenced symbol's file-scoped `code-entity` id. A confidence
+/// tier is layered onto this edge by a later criterion; this criterion only makes the structural
+/// edge exist.
 pub const REL_REFERENCES: &str = "REFERENCES";
 /// A caller-attributed call edge (spec 37): `<file>::<caller> --CALLS--> <callee>`, folded from an
 /// `EdgeInferred` whose `caller` is set - the path of the enclosing definition the reference was
-/// attributed to.
+/// attributed to - and that carries no `ref_kind` (a tagged reference folds no CALLS edge, spec
+/// 117).
 /// It is added ALONGSIDE the file-level [`REL_REFERENCES`] edge (purely additive; the same callee
 /// resolution the REFERENCES edge uses), so one `subgraph` around a symbol answers "who calls it" by
 /// function, not merely "referenced from which file". A reference outside every definition
@@ -281,7 +285,8 @@ pub const REL_REVIEWS_LIGHT: &str = "REVIEWS_LIGHT";
 
 // Edge confidence tiers (spec 29a, addendum 6.2). Every folded edge carries one, the
 // `precise`/`safe` split of the two-view blast radius made a first-class edge attribute. The
-// three tiers partition the reference set, so the graph keeps EVERY reference: a later traversal
+// three tiers partition the call-reference set, so the graph keeps EVERY call reference (a
+// tagged reference, one carrying a `ref_kind`, folds no edge - spec 117): a later traversal
 // reads the EXTRACTED sub-graph as the precise prompt seed and the structural reach
 // EXTRACTED u INFERRED as the blast radius's safe view (addendum 2.4).
 /// An explicit-in-source structural fact: a definition's containment, or a reference resolved to
@@ -342,6 +347,16 @@ pub struct Graph {
     pub edges: Vec<Edge>,
 }
 
+impl Graph {
+    /// Each node's kind by its id.
+    pub fn kinds(&self) -> BTreeMap<&str, &str> {
+        self.nodes
+            .iter()
+            .map(|n| (n.id.as_str(), n.kind.as_str()))
+            .collect()
+    }
+}
+
 /// The direction of a directed `CALLS` traversal (spec 52). `Down` follows CALLEES - the
 /// EXECUTION PATH, "what does this call, transitively"; `Up` follows CALLERS - the CALL SITES,
 /// "who calls this". A [`Projection::calls`] walk is depth-bounded and layered in exactly one
@@ -384,10 +399,12 @@ pub struct CallEdge {
 /// per-node `layer`/`frontier` and per-edge `back` metadata the neighborhood view does not carry.
 ///
 /// `referenced_not_called` is the UP direction's flat, NON-traversed sidecar (empty for `Down`): the
-/// FILE nodes that reference the seed's leaf at file level (a `REFERENCES` edge whose target binds
-/// the leaf, [`query::node_leaf`]) but carry NO caller-attributed `CALLS` edge to it from within
-/// the file - the imports / uses a "who-uses-this" reader cares about, which the layered caller
-/// DAG (functions that CALL the seed) deliberately does not include. Sorted by id, deterministic across polls.
+/// FILE nodes that reference the seed's leaf at file level or from a definition within them (a
+/// `REFERENCES` edge whose target binds the leaf, [`query::node_leaf`], a staged reference's from
+/// the fn that reads it, spec 117) but carry NO caller-attributed `CALLS` edge to it from within
+/// the file - the imports / uses and definitions' references a "who-uses-this" reader cares about,
+/// which the layered caller DAG (functions that CALL the seed) deliberately does not include.
+/// Sorted by id, deterministic across polls.
 #[derive(Clone, Debug, Default)]
 pub struct CallGraph {
     pub nodes: Vec<CallNode>,
@@ -395,15 +412,16 @@ pub struct CallGraph {
     pub referenced_not_called: Vec<Node>,
 }
 
-/// The resolution of a `rigger graph --show <entity>` query (spec 58, the TEXT half of lookup).
-/// A PORT-owned type (spec 92's fix round moved it here from the sqlite adapter, so
+/// The resolution of a `rigger graph --show <entity>` query (spec 58, the TEXT half of lookup). A
+/// PORT-owned type (spec 92's fix round moved it here from the sqlite adapter, so
 /// [`Projection::locate`] returns the same kind of type every sibling `Projection` method does,
-/// never a concrete adapter's own type): [`sqlite::Projector::locate`] resolves the query for the
-/// show surfaces (`rigger graph --show` and `rigger_graph`'s `show`) - a full `<file>::<path>` node
-/// id, a bare name matched as a definition's leaf, a path by its id suffix or a flat
-/// `<file>::<name>` as a leaf in that file (spec 119, A BARE SHOW FINDS A LEAF OR PATH), where an
-/// `--around` seed is an exact id only - and returns one of three honest outcomes, never a guess
-/// among candidates.
+/// never a concrete adapter's own type):
+/// `rigger_graph_sqlite::contextgraph::sqlite::Projector::locate` resolves the query for the show
+/// surfaces (`rigger graph --show` and `rigger_graph`'s `show`) - a full `<file>::<path>` node id,
+/// a bare name matched as a definition's leaf, a path by its id suffix or a flat `<file>::<name>`
+/// as a leaf in that file (spec 119, A BARE SHOW FINDS A LEAF OR PATH), where an `--around` seed is
+/// an exact id or an alias resolved to its canonical id (spec 117), never a bare name looked up by
+/// its leaf - and returns one of three honest outcomes, never a guess among candidates.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Located {
     /// Exactly one entity resolved: its definition site and graph facts, from which the CLI reads
@@ -418,9 +436,10 @@ pub enum Located {
 }
 
 /// A single located node (spec 58; spec 119, SHOW IS ONE RENDERER): where it lives, how it sits in
-/// the graph and the attrs it carries, built by [`entity_site`] alone, so every show surface prints
-/// the entries [`site_fields`] gives, the MCP `around` less its `summary`, and the CLI bounds the
-/// body it reads from the working tree.
+/// the graph and the attrs it carries, those built by [`entity_site`] alone, so every show surface
+/// prints the entries [`site_fields`] gives, the MCP `around` less its `summary`, and the CLI
+/// bounds the body it reads from the working tree. Only the adapter's site read fills its
+/// [`unresolved`](EntitySite::unresolved) leaves (spec 117, UNRESOLVED REFERENCES ARE A READ).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EntitySite {
     /// The node id (`<file>::<path>` for a definition).
@@ -439,7 +458,15 @@ pub struct EntitySite {
     pub degree: usize,
     /// The node's attrs, whole; [`site_fields`] gives the closed list of them a surface prints.
     pub attrs: BTreeMap<String, String>,
+    /// A `file` node's unresolved references (spec 117, UNRESOLVED REFERENCES ARE A READ): the
+    /// sorted distinct leaves of its live `type`, `const` and `use` rows that resolve to nothing,
+    /// read at its site read; empty for any other node and for a site [`entity_site`] builds.
+    pub unresolved: Vec<String>,
 }
+
+/// The one separator a list-valued [`site_fields`] entry joins its items by (spec 117), so a
+/// surface prints a list one way.
+pub const LIST_SEP: &str = ", ";
 
 /// The attrs [`site_fields`] gives after the site entries, in their order: the closed list a show
 /// surface prints (`title` and `doc` a knowledge node's, `by`, `unit` and `summary` a finding's,
@@ -454,7 +481,8 @@ const SITE_ATTRS: [&str; 8] = [
 /// (`0` when absent or unparseable), its `kind` attr when non-empty else its graph kind, and its
 /// attrs whole. The adapter's `site_of` calls it over the row it read with that row's one-hop
 /// degree, and the MCP `around` over each node of the `Graph` it loaded with the node's edge count
-/// there, so neither reads a node twice.
+/// there, so neither reads a node twice. It lists no unresolved leaf, which the adapter's site read
+/// alone adds (spec 117).
 pub fn entity_site(node: &Node, degree: usize) -> EntitySite {
     let attr = |key: &str| node.attrs.get(key).map(String::as_str);
     EntitySite {
@@ -467,16 +495,18 @@ pub fn entity_site(node: &Node, degree: usize) -> EntitySite {
         line: attr("line").and_then(|line| line.parse().ok()).unwrap_or(0),
         degree,
         attrs: node.attrs.clone(),
+        unresolved: Vec::new(),
     }
 }
 
 /// The ordered closed list of entries a show surface prints for `site` (spec 119, SHOW IS ONE
-/// RENDERER): `file`, `line`, `kind`, `degree`, then [`SITE_ATTRS`]' order - `line` and `degree`
-/// JSON numbers, every other entry its recorded value verbatim. A node with no `file` has no
-/// `line` entry either; `kind` and `degree` are always given; an attr whose value is empty gives
-/// no entry. The CLI prints it (its live healed line and a value's newlines collapsed at print
-/// only), the MCP `show` carries it as keys beside the node's `id`, and the MCP `around` the same
-/// less its `summary` entry.
+/// RENDERER): `file`, `line`, `kind`, `degree`, then [`SITE_ATTRS`]' order, then `unresolved`
+/// (spec 117) - `line` and `degree` JSON numbers, `unresolved` the site's unresolved leaves joined
+/// by [`LIST_SEP`], every other entry its recorded value verbatim. A node with no `file` has no
+/// `line` entry either; `kind` and `degree` are always given; an attr whose value is empty, and an
+/// empty unresolved list, give no entry. The CLI prints it (its live healed line and a value's
+/// newlines collapsed at print only), the MCP `show` carries it as keys beside the node's `id`,
+/// and the MCP `around` the same less its `summary` entry.
 pub fn site_fields(site: &EntitySite) -> Vec<(&'static str, serde_json::Value)> {
     let located = site.file.iter().flat_map(|file| {
         [
@@ -494,11 +524,18 @@ pub fn site_fields(site: &EntitySite) -> Vec<(&'static str, serde_json::Value)> 
             .filter(|value| !value.is_empty())
             .map(|value| (key, serde_json::Value::from(value.as_str())))
     });
-    located.chain(graph).chain(attrs).collect()
+    let unresolved = (!site.unresolved.is_empty())
+        .then(|| ("unresolved", site.unresolved.join(LIST_SEP).into()));
+    located
+        .chain(graph)
+        .chain(attrs)
+        .chain(unresolved)
+        .collect()
 }
 
-/// One disambiguation candidate for an ambiguous query (spec 58): the full node id and its
-/// file. [`sqlite::Projector::locate`] returns these SORTED by id, so the listing is deterministic.
+/// One disambiguation candidate for an ambiguous query (spec 58): the full node id and its file.
+/// `rigger_graph_sqlite::contextgraph::sqlite::Projector::locate` returns these SORTED by id, so
+/// the listing is deterministic.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Candidate {
     /// The candidate's full `<file>::<path>` node id.
@@ -517,7 +554,8 @@ pub const TYPE_LESSON_LEARNED: &str = "LessonLearned";
 pub const TYPE_ALIAS_DEFINED: &str = "AliasDefined";
 pub const TYPE_ALIAS_UNRESOLVED: &str = "AliasUnresolved";
 /// A review finding a lens / adversary raised about a unit's files. Folded into a
-/// KIND_FINDING node ABOUT each file, plus a RAISED edge from the acting reviewer.
+/// KIND_FINDING node ABOUT each file it cites (a `path:line` citation names its file), the
+/// acting reviewer kept as the node's `by` attribute, never a RAISED edge (spec 43).
 pub const TYPE_REVIEW_FINDING: &str = "ReviewFinding";
 /// One definition extracted from a source file (spec 29a): the extraction pass emits one per
 /// path (spec 119, ONE PATH, ONE EVENT), and the always-compiled fold turns it into a
@@ -525,8 +563,11 @@ pub const TYPE_REVIEW_FINDING: &str = "ReviewFinding";
 /// none (spec 119). Always compiled, so the light lane folds it with the extraction pass absent.
 pub const TYPE_CODE_ENTITY_EXTRACTED: &str = "CodeEntityExtracted";
 /// One reference extracted from a source file (spec 29a): the extraction pass emits one per
-/// reference, and the always-compiled fold turns it into a `REFERENCES` structural edge from
-/// the file container node to the referenced symbol's code-entity id.
+/// reference, and the always-compiled fold turns a call reference into a `REFERENCES` structural
+/// edge from the file container node to the referenced symbol's code-entity id; a tagged one
+/// (`ref_kind`, spec 117) folds its file container node alone, and a ledger entry's batch stages
+/// it as a row whose `REFERENCES` edge lives while one definition answers it (spec 117, STAGED
+/// REFERENCES).
 pub const TYPE_EDGE_INFERRED: &str = "EdgeInferred";
 /// One design-intent concept extracted from a doc (spec 29b): the design-intent extraction pass
 /// emits one per concept, and the always-compiled fold turns it into a `design-doc` /
@@ -693,8 +734,12 @@ pub enum Fold {
     /// The events are in the graph.
     Folded,
     /// The events are not in the graph, for this reason: the graph could not be had (unopenable,
-    /// not wired), owes its rebuild ([`REBUILD_OWED`]), or refused the write (held past its
-    /// busy timeout).
+    /// not wired), owes its rebuild ([`REBUILD_OWED`]), or did not fold them - its fold failed, or
+    /// another writer's write lock or its catch-up held them past the appender's ceiling (spec
+    /// 124). A projection that records positions it passed over may also answer here an
+    /// event of its own recorded passed over, before or by this fold, with that position's cause:
+    /// that event is not in the graph, and which of its batch's other events are committed when
+    /// it answers is the projection's transaction cadence ([`Projection::apply_batch`]).
     NotFolded(String),
 }
 
@@ -704,22 +749,24 @@ pub enum Fold {
 #[must_use = "the outcome says whether the entry's batch was asked for"]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EntryFold {
-    /// The projection had already folded the entry's position: nothing was written and the batch
-    /// was never asked for.
+    /// The projection had already folded the entry's position when the fold reached it: nothing
+    /// was written at that position, and the batch, asked for or not, folded nothing.
     AlreadyApplied,
-    /// The entry names the generation its identity already holds: only its position was recorded
-    /// and the batch was never asked for.
+    /// The entry names the generation its identity already holds: only its position was recorded,
+    /// and the batch, asked for or not, folded nothing.
     ReRecording,
     /// The entry's position was recorded and its batch was asked for, once. A resolved batch
-    /// folded at the entry's position and installed its generation; an unresolved one folded
-    /// nothing and left the identity's facts and current generation as they stood.
+    /// folded at the entry's position and installed its generation; an unresolved one, answered
+    /// so rather than passed over ([`Projection::apply_generation`]), folded nothing and left the
+    /// identity's facts and current generation as they stood.
     BatchAsked,
 }
 
 /// The function [`Projection::apply_generation`] asks for an entry's batch, at most once: the
 /// batch's events, `None` when no source resolves the entry, or an error, which fails the fold.
-/// It runs inside the fold's transaction, while the projection is held for that write: it must
-/// not read or fold the projection it is handed to, and must do no slow work there.
+/// It runs inside the fold's transaction, while the projection is held for that write, or just
+/// before that transaction opens, as [`Projection::apply_generation`] says: it must not read or
+/// fold the projection it is handed to, and must do no slow work there.
 pub type EntryBatch<'a> = Box<dyn FnOnce() -> Result<Option<Vec<Event>>, Error> + 'a>;
 
 /// The permission to fold into a [`Projection`] through [`Projection::apply`] and
@@ -740,9 +787,12 @@ impl Fold {
         Self::settle(graph.and_then(|g| g.apply(event, FoldAccess(()))))
     }
 
-    /// Fold `events` in one transaction into the graph `graph` yields, or say why they were not
-    /// folded - the graph could not be had, or refused them. No events is nothing to fold, so it is
-    /// folded without opening the graph.
+    /// Fold `events` into the graph `graph` yields through [`Projection::apply_batch`], or say why
+    /// they were not folded - the graph could not be had, or refused them, or one of them is a
+    /// position the graph recorded passed over, whose cause is answered: which of the batch's
+    /// other events the graph has committed when it answers is its transaction cadence, as
+    /// [`Projection::apply_batch`] says. No events is nothing to fold, so it is folded without
+    /// opening the graph.
     pub fn of_batch<'g, G: std::ops::Deref<Target = dyn Projection + 'g>>(
         graph: impl FnOnce() -> Result<G, Error>,
         events: &[Event],
@@ -800,30 +850,50 @@ macro_rules! owed_older_rule {
     };
 }
 
-/// The one spelling of [`OWED_LOST_FOLD`], a literal so [`REBUILD_OWED`] is composed from it.
+/// Why a graph owes its rebuild ([`Projection::rebuild_owed`]): it records an older fold rule.
+pub const OWED_OLDER_RULE: &str = owed_older_rule!();
+
+/// The one spelling of [`OWED_LOST_FOLD`], a literal so [`REBUILD_OWED_FOR_LOST_FOLD`] is composed
+/// from it.
 macro_rules! owed_lost_fold {
     () => {
         "it misses an event the log holds"
     };
 }
 
-/// Why a graph owes its rebuild ([`Projection::rebuild_owed`]): it records an older fold rule.
-pub const OWED_OLDER_RULE: &str = owed_older_rule!();
+/// The one spelling of the refusal of a graph that owes one rebuild for the cause its tokens name,
+/// a literal frame each such refusal is composed from ([`REBUILD_OWED`],
+/// [`REBUILD_OWED_FOR_LOST_FOLD`]), naming the one command that pays it.
+macro_rules! rebuild_owed_for {
+    ($($cause:tt)*) => {
+        concat!(
+            "graph.db owes one rebuild from the event log (",
+            $($cause)*,
+            ") - run `rigger setup` to rebuild it"
+        )
+    };
+}
 
-/// Why a graph owes its rebuild ([`Projection::rebuild_owed`]): it does not hold an event the log
-/// does - a fold into it failed, or its process died between the append and the fold.
+/// Why `rigger setup` rebuilds a graph from the log when the seeding of its catch-up cursor finds
+/// the prefix it folded violated (spec 124): it misses an event of the log that only a rebuild
+/// folds in order, or its record of what it folded runs past the log's end, as when the log is
+/// replaced beneath it, or that record is of another log, as when the event store is switched
+/// beneath it. Never a cause the graph records: the graph owes no rebuild for it
+/// ([`Projection::rebuild_owed`]), and the one fold refused for it is one meeting a record of
+/// another log ([`REBUILD_OWED_FOR_LOST_FOLD`]).
 pub const OWED_LOST_FOLD: &str = owed_lost_fold!();
 
 /// What a projection that owes its rebuild ([`Projection::rebuild_owed`]) answers in place of a
 /// fold, and what every command that depends on the fold says when it refuses: the one spelling of
-/// the refusal, naming both causes a rebuild is owed for and the one command that pays it.
-pub const REBUILD_OWED: &str = concat!(
-    "graph.db owes one rebuild from the event log (",
-    owed_older_rule!(),
-    ", or ",
-    owed_lost_fold!(),
-    ") - run `rigger setup` to rebuild it"
-);
+/// the refusal, naming the one cause the graph records a rebuild owed for, the older fold rule
+/// ([`OWED_OLDER_RULE`]), and the one command that pays it.
+pub const REBUILD_OWED: &str = rebuild_owed_for!(owed_older_rule!());
+
+/// What a fold answers in place of folding when the graph's record of what it folded is of
+/// another log than the one the fold reads, or of a log it cannot name (spec 124, A LOG SWITCHED
+/// UNDER A STANDING GRAPH): the refusal naming the lost fold ([`OWED_LOST_FOLD`]) that the next
+/// `rigger setup`'s seeding finds and pays with the rebuild.
+pub const REBUILD_OWED_FOR_LOST_FOLD: &str = rebuild_owed_for!(owed_lost_fold!());
 
 /// The refusal `command`, whose answer depends on the fold, gives while the graph owes its
 /// rebuild.
@@ -838,16 +908,21 @@ pub trait Projection: Send + Sync {
     /// [`Fold::of`], which holds the [`FoldAccess`] it takes.
     fn apply(&self, e: &Event, access: FoldAccess) -> Result<(), Error>;
 
-    /// Fold a whole batch of events into the graph in ONE transaction, idempotently per global
-    /// position - the batched analogue of [`apply`](Projection::apply). The result is exactly what
-    /// applying each event in order would produce; the only difference is transaction CADENCE.
+    /// Fold a whole batch of events into the graph, idempotently per global position - the
+    /// batched analogue of [`apply`](Projection::apply). The graph it leaves is exactly what
+    /// applying each event in order would produce; the only difference is transaction CADENCE,
+    /// which the implementation chooses. One exception to the answer: an implementation that
+    /// records positions passed over may meet one of the batch's own positions recorded so, and
+    /// then answers the first such position's cause where the default loop stops at it; which of
+    /// the batch's other events it has committed when it answers is its transaction cadence, which
+    /// the sqlite `Projector`'s own `apply_batch` doc states for each of its paths.
     ///
     /// The default folds each event through [`apply`](Projection::apply) (one transaction per
     /// event), so an implementation with no cheaper batch path is unaffected and every `apply`
-    /// still runs. The sqlite [`Projector`](crate::contextgraph::sqlite::Projector) OVERRIDES it to
-    /// open ONE transaction for the whole batch: that is what lets an ingest sink fold a file's
-    /// whole batch at the store's transaction cost of ONE commit instead of one per event (spec 49
-    /// - the measured cold-build throughput was transaction-cadence bound, not parse-bound).
+    /// still runs. The sqlite `rigger_graph_sqlite::contextgraph::sqlite::Projector` OVERRIDES it,
+    /// at the transaction cadence its own `apply_batch` doc states: folding many events per commit
+    /// rather than one per event is what spec 49 needed, the measured cold-build throughput being
+    /// transaction-cadence bound, not parse-bound.
     fn apply_batch(&self, events: &[Event], access: FoldAccess) -> Result<(), Error> {
         for e in events {
             self.apply(e, access)?;
@@ -856,18 +931,23 @@ pub trait Projection: Send + Sync {
     }
 
     /// Fold one ledger entry of perception - `entry`, a `GenerationIngested` event - with its
-    /// batch, in ONE transaction, and answer which of three things happened ([`EntryFold`]): an
-    /// entry whose position this projection already folded folds nothing; one naming the
-    /// generation its identity already holds records only its position; any other records its
-    /// position and asks `batch` for the entry's batch, once. A batch `batch` answers folds event
-    /// by event at the entry's position and valid-time, every event asserted under the entry's
-    /// identity and generation, never under a key the event carries, and installs that
-    /// generation; an entry `batch` answers `None` for folds nothing; an error from `batch` fails
-    /// the fold. `batch` runs inside that transaction, while this projection is held for the
-    /// write: it must not read or fold this projection, and must do no slow work there. A ledger
-    /// entry folds only here: an implementor that folds refuses one on
-    /// [`apply`](Projection::apply) and [`apply_batch`](Projection::apply_batch). It takes no
-    /// [`FoldAccess`].
+    /// batch, and answer which of three things happened ([`EntryFold`]): an entry whose position
+    /// this projection already folded folds nothing - or, when it recorded that position passed
+    /// over, answers that position's cause as its error; one naming the generation its identity
+    /// already holds records only its position; any other records its position and asks `batch`
+    /// for the entry's batch, once. A batch `batch` answers folds event by event at the entry's
+    /// position and valid-time, every event asserted under the entry's identity and generation,
+    /// never under a key the event carries, and installs that generation, all in the ONE
+    /// transaction that records the entry's position; an entry `batch` answers `None` for folds
+    /// nothing; an error from `batch` fails the fold. A projection that records positions passed
+    /// over may instead record the entry's position so - its own payload or an event of its batch
+    /// rejected, or its batch `None` - and answer that cause as its error. `batch` runs inside
+    /// that transaction, while this projection is held for the write, or just before it opens: it
+    /// must not read or fold this projection, and must do no slow work there; which of the two the
+    /// sqlite `Projector` does on each of its paths its own `apply_generation` doc states. A ledger
+    /// entry folds with a batch it is handed only here: an implementor that folds refuses one
+    /// handed to [`apply`](Projection::apply) or [`apply_batch`](Projection::apply_batch), or
+    /// folds it there with the batch its own source derives for it. It takes no [`FoldAccess`].
     fn apply_generation(&self, entry: &Event, batch: EntryBatch<'_>) -> Result<EntryFold, Error>;
 
     /// The generation this projection currently holds for the `<prefix>/<file>` identity
@@ -876,11 +956,11 @@ pub trait Projection: Send + Sync {
     fn current_generation(&self, identity: &str) -> Result<Option<String>, Error>;
 
     /// Whether this projection says, without reading the log, that it owes one rebuild from it
-    /// (spec 101) - it was folded under an older fold rule, or a fold into it failed and marked it
-    /// as missing an event the log holds: until `rigger setup` pays it nothing folds into it, and
-    /// nothing whose answer depends on the fold may answer from it - it refuses with
-    /// [`REBUILD_OWED`]. An event it misses that nothing marked is found by `rigger setup`, which
-    /// reads the projection's record of what it folded against the log.
+    /// (spec 101) - it was folded under an older fold rule: until `rigger setup` pays it nothing
+    /// folds into it, and nothing whose answer depends on the fold may answer from it - it refuses
+    /// with [`REBUILD_OWED`]. A fold that fails never makes it owe one (spec 124): an event it
+    /// misses is found by `rigger setup`, or by the next fold through a folding store, which read
+    /// the projection's record of what it folded against the log.
     fn rebuild_owed(&self) -> Result<bool, Error>;
 
     /// The connected subgraph reachable from any seed within depth hops (the FEED arc / an
@@ -902,10 +982,10 @@ pub trait Projection: Send + Sync {
     /// layered DAG; a recursion edge is marked ([`CallEdge::back`]) rather than duplicated.
     ///
     /// The default returns an empty [`CallGraph`], so a projection with no directed-walk support (a
-    /// test double, or a not-yet-overriding adapter) degrades to an empty view rather than erroring.
-    /// The sqlite [`Projector`](crate::contextgraph::sqlite::Projector) OVERRIDES it with the real
-    /// walk. Read-only over the projection; an empty graph or a seed with no calls yields an empty
-    /// [`CallGraph`], never an error.
+    /// test double, or a not-yet-overriding adapter) degrades to an empty view rather than
+    /// erroring. The sqlite `rigger_graph_sqlite::contextgraph::sqlite::Projector` OVERRIDES it
+    /// with the real walk. Read-only over the projection; an empty graph or a seed with no calls
+    /// yields an empty [`CallGraph`], never an error.
     fn calls(
         &self,
         _seed: &[String],
@@ -923,14 +1003,15 @@ pub trait Projection: Send + Sync {
     /// `graph --show <entity>` / `rigger_graph`'s `show` selector lookup, put on the trait so a
     /// caller holding only `&dyn Projection` (`mcpserver::Server`, wired via
     /// [`with_graph`](crate::mcpserver::Server::with_graph) exactly like [`subgraph`] already is)
-    /// can serve it without reaching for the concrete [`sqlite::Projector`] across the crate
-    /// boundary - the DI extension that retired the operator MCP surface's second read loop
-    /// rather than adding one. Mirrors [`sqlite::Projector::locate`]: a full `<file>::<path>` id
-    /// resolves directly (a nameless code entity's or artifact's only once nothing else does);
-    /// else a bare name matches as a definition's leaf, a path (`Struct.field`) by its id suffix
-    /// and a flat `<file>::<name>` as a leaf in that file (spec 119, A BARE SHOW FINDS A LEAF OR
-    /// PATH); and the three outcomes ([`Located`], a port-owned type - see its doc) are never a
-    /// guess among candidates.
+    /// can serve it without reaching for the concrete
+    /// `rigger_graph_sqlite::contextgraph::sqlite::Projector` across the crate boundary - the DI
+    /// extension that retired the operator MCP surface's second read loop rather than adding one.
+    /// Mirrors `rigger_graph_sqlite::contextgraph::sqlite::Projector::locate`: a full
+    /// `<file>::<path>` id resolves directly (a nameless code entity's or artifact's only once
+    /// nothing else does); else a bare name matches as a definition's leaf, a path (`Struct.field`)
+    /// by its id suffix and a flat `<file>::<name>` as a leaf in that file (spec 119, A BARE SHOW
+    /// FINDS A LEAF OR PATH); and the three outcomes ([`Located`], a port-owned type - see its doc)
+    /// are never a guess among candidates.
     /// The default returns `Located::None`, so a projection with no locate support (a test double)
     /// degrades honestly rather than erroring - the sqlite `Projector` OVERRIDES it with the real
     /// lookup.
@@ -1046,6 +1127,69 @@ impl CodeEntityExtracted {
     }
 }
 
+/// The [`EdgeInferred::ref_kind`] of a TYPE reference (spec 117): a Rust type name, an uppercase
+/// path segment, a struct literal's or pattern's name, or an impl header's trait.
+pub const REF_KIND_TYPE: &str = "type";
+/// The [`EdgeInferred::ref_kind`] of a CONST read (spec 117): an all-caps Rust identifier read in
+/// expression position, or the final identifier of a whole expression path.
+pub const REF_KIND_CONST: &str = "const";
+/// The [`EdgeInferred::ref_kind`] of a USE (spec 117): one imported leaf of a Rust `use`.
+pub const REF_KIND_USE: &str = "use";
+/// The [`EdgeInferred::ref_kind`] of a MODULE row (spec 117, A MODULE ROW REACHES ITS FILE): one
+/// Rust `mod x;`, its `name` the candidate files of the declaration joined by
+/// [`MODULE_CANDIDATE_SEPARATOR`].
+pub const REF_KIND_MODULE: &str = "module";
+
+/// What a module row's `name` joins its candidate files by ([`REF_KIND_MODULE`]): a newline. The
+/// log carries it, so its spelling is fixed.
+pub const MODULE_CANDIDATE_SEPARATOR: &str = "\n";
+
+/// The definition kinds a reference of `ref_kind` resolves onto (spec 117, KIND CANDIDATES): a
+/// [`REF_KIND_TYPE`] a type or a trait, a [`REF_KIND_CONST`] a constant or a static, a
+/// [`REF_KIND_USE`] every kind of [`CODE_KIND_PRECEDENCE`] a `use` can import - all but a method
+/// and the [`NON_TARGET_KINDS`] - and any other value none: a [`REF_KIND_MODULE`] row, which
+/// resolves onto a `file` node instead, and every kind that stages no row ([`staged_rel`]).
+pub fn reference_candidate_kinds(ref_kind: &str) -> Vec<&'static str> {
+    match ref_kind {
+        REF_KIND_TYPE => vec![CODE_KIND_TYPE, CODE_KIND_TRAIT],
+        REF_KIND_CONST => vec![CODE_KIND_CONSTANT, CODE_KIND_STATIC],
+        REF_KIND_USE => CODE_KIND_PRECEDENCE
+            .into_iter()
+            .filter(|kind| *kind != CODE_KIND_METHOD && !NON_TARGET_KINDS.contains(kind))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// The reference kinds a leaf resolves (spec 117, KIND CANDIDATES): exactly those
+/// [`reference_candidate_kinds`] names a candidate for, held to its arms by a test, so a module
+/// row's kind is never one of them.
+pub const LEAF_REF_KINDS: [&str; 3] = [REF_KIND_TYPE, REF_KIND_CONST, REF_KIND_USE];
+
+/// The relations a staged `refs` row's edge is of (spec 117): every value [`staged_rel`] answers,
+/// held to its arms by a test.
+pub const STAGED_RELS: [&str; 2] = [REL_REFERENCES, REL_CONTAINS];
+
+/// The relation a staged `refs` row of `ref_kind` is an edge of (spec 117): a [`REL_REFERENCES`]
+/// for a kind a leaf resolves ([`LEAF_REF_KINDS`]), a [`REL_CONTAINS`] for a module row
+/// ([`REF_KIND_MODULE`]), and none for any other value, which stages no row.
+pub fn staged_rel(ref_kind: &str) -> Option<&'static str> {
+    match ref_kind {
+        REF_KIND_MODULE => Some(REL_CONTAINS),
+        kind if LEAF_REF_KINDS.contains(&kind) => Some(REL_REFERENCES),
+        _ => None,
+    }
+}
+
+/// Whether a `rel` edge onto a node of kind `target_kind` declares a module (spec 117, A MODULE
+/// ROW REACHES ITS FILE): a [`REL_CONTAINS`] onto a [`KIND_FILE`] node, the edge a `mod x;`
+/// reaches its file by. A declaration is not coupling, so no community or label degree counts it,
+/// and the blast radius's reachability walk never crosses it, though the subgraph that walk runs
+/// over may hold the module file.
+pub fn declares_a_module(rel: &str, target_kind: Option<&str>) -> bool {
+    rel == REL_CONTAINS && target_kind == Some(KIND_FILE)
+}
+
 /// The `EdgeInferred` payload (spec 29a): one reference the extraction pass emits. Shares the
 /// same one-contract discipline as [`CodeEntityExtracted`]: emitted by the feature-gated pass,
 /// folded by the always-compiled arm.
@@ -1078,12 +1222,14 @@ pub struct EdgeInferred {
     /// the index version to `ts-tags-v4`), same-file, the innermost
     /// enclosing function before any other definition (spec 116). `None` for a top-level
     /// reference outside every definition (an import or a module-level call; a file-level impl
-    /// header's trait and type attribute to the impl block, a definition of its own). The emit
-    /// pass carries what extraction attributed onto the `SymRef`; the fold, when it is present,
-    /// adds a `<file>::<caller> --CALLS--> <callee>` edge ALONGSIDE the existing file-level
-    /// `REFERENCES` edge (a later criterion owns that fold). Serde-defaulted and omitted when
-    /// `None`, so a pre-37 log folds as caller-less and a caller-less reference serializes
-    /// byte-identically to before - the CALLS edge is purely additive to the code layer.
+    /// header's trait and type attribute to the impl block, a definition of its own, and its
+    /// trait's tagged `type` row to the self type's definition when the file defines that once,
+    /// spec 117). The emit pass carries what extraction attributed onto the `SymRef`; the fold,
+    /// when it is present on a call reference (no `ref_kind`), adds a `<file>::<caller> --CALLS-->
+    /// <callee>` edge ALONGSIDE the existing file-level `REFERENCES` edge (a later criterion owns
+    /// that fold). Serde-defaulted and omitted when `None`, so a pre-37 log folds as caller-less
+    /// and a caller-less reference serializes byte-identically to before - the CALLS edge is purely
+    /// additive to the code layer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub caller: Option<String>,
     /// The reference's 1-based source line (spec 86 criterion 2). Unused by a STRUCTURAL reference
@@ -1108,6 +1254,18 @@ pub struct EdgeInferred {
     /// `fresh` already rides whichever event happens to be the file's batch boundary.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub partial: bool,
+    /// Spec 117 (REFERENCES): the kind of a non-call reference, a Rust type reference, const
+    /// read or imported leaf ([`REF_KIND_TYPE`], [`REF_KIND_CONST`] or [`REF_KIND_USE`]), or a
+    /// module row ([`REF_KIND_MODULE`]); absent for a call, which folds as before the field
+    /// existed. The event arm runs a tagged event's structural head alone (the `fresh` supersede
+    /// and the file node) and folds nothing else from it; a ledger entry's batch stages it as a
+    /// row ([`staged_rel`]), a leaf kind's an edge while one definition of its
+    /// [`reference_candidate_kinds`] answers its name (spec 117, STAGED REFERENCES), a module
+    /// row's while one of its candidates holds a `file` node (A MODULE ROW REACHES ITS FILE).
+    /// Serde-defaulted and omitted when absent, so a call's wire form is byte-identical to
+    /// before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ref_kind: Option<String>,
 }
 
 /// Serde `skip_serializing_if` predicate: an `EdgeInferred::line` of `0` is never a real 1-based
@@ -1325,6 +1483,121 @@ mod kind_rank_rule {
     }
 }
 
+/// Spec 117, KIND CANDIDATES: the definition kinds each reference kind resolves onto.
+#[cfg(test)]
+mod reference_candidate_kinds_rule {
+    use super::*;
+
+    /// The reference kinds each test below asks the rule about: the three it names candidates
+    /// for, a module row's kind, a call's and the empty value.
+    const ASKED: [&str; 6] = ["type", "const", "use", "module", "call", ""];
+
+    #[test]
+    fn each_reference_kind_names_its_candidate_kinds_and_any_other_none() {
+        let candidates = ASKED.map(reference_candidate_kinds);
+        assert_eq!(
+            candidates,
+            [
+                vec!["type", "trait"],
+                vec!["constant", "static"],
+                vec![
+                    "type",
+                    "trait",
+                    "impl",
+                    "function",
+                    "macro",
+                    "constructor",
+                    "variant",
+                    "constant",
+                    "static",
+                    "variable",
+                    "module",
+                    "other",
+                ],
+                vec![],
+                vec![],
+                vec![],
+            ],
+            "a use imports any kind but a method, a field, a property or a declaration"
+        );
+    }
+
+    /// [`LEAF_REF_KINDS`] is the rule's own set: exactly the asked kinds it names a candidate
+    /// for, in their order, so a module row's kind is never among them.
+    #[test]
+    fn the_leaf_reference_kinds_are_the_kinds_the_rule_names_candidates_for() {
+        assert_eq!(
+            ASKED
+                .into_iter()
+                .filter(|kind| !reference_candidate_kinds(kind).is_empty())
+                .collect::<Vec<_>>(),
+            LEAF_REF_KINDS
+        );
+    }
+
+    /// Each asked kind's row is an edge of its relation: a leaf kind's a `REFERENCES`, a module
+    /// row's a `CONTAINS`, and a call's or the empty value's none.
+    #[test]
+    fn each_staged_kind_names_the_relation_its_row_is_an_edge_of() {
+        assert_eq!(
+            ASKED.map(staged_rel),
+            [
+                Some(REL_REFERENCES),
+                Some(REL_REFERENCES),
+                Some(REL_REFERENCES),
+                Some(REL_CONTAINS),
+                None,
+                None
+            ]
+        );
+    }
+
+    /// [`STAGED_RELS`] is the rule's own set: exactly the relations [`staged_rel`] answers, in
+    /// the order the asked kinds first name them.
+    #[test]
+    fn the_staged_relations_are_the_relations_the_rule_answers() {
+        let mut answered: Vec<&str> = ASKED.into_iter().filter_map(staged_rel).collect();
+        answered.dedup();
+        assert_eq!(answered, STAGED_RELS);
+    }
+
+    /// A module is declared by a `CONTAINS` onto a `file` node alone: never by another relation
+    /// onto one, nor by a `CONTAINS` onto a code entity or an absent node.
+    #[test]
+    fn a_contains_onto_a_file_node_alone_declares_a_module() {
+        let declared = [REL_CONTAINS, REL_REFERENCES].map(|rel| {
+            [Some(KIND_FILE), Some(KIND_CODE_ENTITY), None].map(|kind| declares_a_module(rel, kind))
+        });
+        assert_eq!(declared, [[true, false, false], [false, false, false]]);
+    }
+
+    /// The log joins a module row's candidates by a newline, so an event already on the log
+    /// splits as it was joined.
+    #[test]
+    fn a_module_rows_candidates_are_newline_joined_on_the_log() {
+        assert_eq!(MODULE_CANDIDATE_SEPARATOR, "\n");
+    }
+}
+
+#[cfg(test)]
+mod graph_kinds {
+    use super::*;
+    use crate::test_support::{module_graph, DECLARING_FILE, MODULE_FILE, MOD_NODE};
+
+    /// [`Graph::kinds`] maps each node's id to its kind.
+    #[test]
+    fn a_graphs_kinds_map_each_node_id_to_its_kind() {
+        assert_eq!(
+            module_graph().kinds(),
+            BTreeMap::from([
+                (DECLARING_FILE, KIND_FILE),
+                (MOD_NODE, KIND_CODE_ENTITY),
+                (MODULE_FILE, KIND_FILE),
+            ])
+        );
+    }
+}
+
 #[cfg(test)]
 mod caller_wire_contract {
     use super::EdgeInferred;
@@ -1345,6 +1618,7 @@ mod caller_wire_contract {
             line: 0,
             is_test: false,
             partial: false,
+            ref_kind: None,
         };
         let wire = serde_json::to_vec(&edge).unwrap();
         let back: EdgeInferred = serde_json::from_slice(&wire).unwrap();
@@ -1371,6 +1645,7 @@ mod caller_wire_contract {
             line: 0,
             is_test: false,
             partial: false,
+            ref_kind: None,
         };
         let wire = String::from_utf8(serde_json::to_vec(&edge).unwrap()).unwrap();
         assert_eq!(
@@ -1475,9 +1750,9 @@ mod locate_default {
     use crate::test_support::MinimalProjection;
 
     /// A projection with no locate support degrades HONESTLY to `Located::None` rather than
-    /// erroring or panicking - the same honesty the [`crate::contextgraph::sqlite::Projector`]
-    /// override promises for a genuinely unmatched query, just for every query on a projection
-    /// that never indexed definitions at all.
+    /// erroring or panicking - the same honesty the
+    /// `rigger_graph_sqlite::contextgraph::sqlite::Projector` override promises for a genuinely
+    /// unmatched query, just for every query on a projection that never indexed definitions at all.
     #[test]
     fn a_projection_with_no_override_reports_none_never_errors() {
         assert_eq!(MinimalProjection.locate("anything").unwrap(), Located::None);
@@ -1731,6 +2006,7 @@ mod site_renderer {
                 line: 12,
                 degree: 3,
                 attrs: all.attrs.clone(),
+                unresolved: vec![],
             },
             "an extensionless file's definition names its file and keeps every attr"
         );
@@ -1807,6 +2083,22 @@ mod site_renderer {
                 ("unit", json!("u7")),
                 ("summary", json!("s")),
                 ("partial", json!("true")),
+            ]
+        );
+    }
+
+    /// Spec 117, UNRESOLVED REFERENCES ARE A READ: a site's unresolved leaves give the entry
+    /// `unresolved` after `partial`, joined by [`LIST_SEP`].
+    #[test]
+    fn site_fields_gives_the_unresolved_leaves_after_partial_joined_by_the_list_separator() {
+        let file = node_with_attrs("src/lister.rs", KIND_FILE, &[("partial", "true")]);
+        let mut site = entity_site(&file, 2);
+        site.unresolved = vec!["Quill".to_string(), "Rook".to_string()];
+        assert_eq!(
+            site_fields(&site)[4..],
+            [
+                ("partial", json!("true")),
+                ("unresolved", json!("Quill, Rook")),
             ]
         );
     }

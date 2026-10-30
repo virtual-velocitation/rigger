@@ -24,7 +24,8 @@
 //! authored and confirmed clean on all 4 (target x lane) combinations - see this file's own
 //! `verification` field and this unit's own `DecisionMade` record.
 
-use std::fs;
+mod common;
+
 use std::path::Path;
 use std::process::Command;
 
@@ -38,8 +39,7 @@ const STAGE1_RECORD: &str = "docs/audit/stage1-compiler-pass.json";
 /// A line, 1-indexed, from a source file - the same indexing the record's own `line` fields
 /// use (matching every other file:line citation in this codebase's audit reports).
 fn nth_line(path: &Path, line: usize) -> String {
-    let text =
-        fs::read_to_string(path).unwrap_or_else(|e| panic!("reading {}: {e}", path.display()));
+    let text = common::fixtures::read_text(path);
     text.lines()
         .nth(line - 1)
         .unwrap_or_else(|| panic!("{}:{line} - file has fewer lines than that", path.display()))

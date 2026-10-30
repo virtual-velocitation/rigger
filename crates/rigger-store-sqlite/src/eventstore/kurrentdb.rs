@@ -43,8 +43,8 @@ use std::time::{Duration, SystemTime};
 
 use kurrentdb::{
     AppendToStreamOptions, Client, ClientSettings, CurrentRevision, EventData,
-    Position as KdbPosition, ReadAllOptions, ReadStreamOptions, RecordedEvent, ResolvedEvent,
-    StreamPosition, StreamState, SubscribeToAllOptions, SubscribeToStreamOptions,
+    Position as KdbPosition, ReadAllOptions, ReadStream, ReadStreamOptions, RecordedEvent,
+    ResolvedEvent, StreamPosition, StreamState, SubscribeToAllOptions, SubscribeToStreamOptions,
     SubscriptionFilter,
 };
 use serde::{Deserialize, Serialize};
@@ -441,6 +441,38 @@ fn first_match<X, T>(
     Ok(None)
 }
 
+/// THE PAGE over a forward `$all` pull that starts at `from` (the server's start is inclusive),
+/// each record as its commit position and the event it delivers, if any: the delivered events of
+/// the records [`past`] `from`, up to `max` of them. The pull stops at the record that ends the
+/// page, the one record it reads past it. A failed pull ends the page in an error naming the
+/// read, never a short page.
+fn page_of(
+    records: impl IntoIterator<Item = Result<(Position, Option<Event>), kurrentdb::Error>>,
+    from: Position,
+    max: usize,
+) -> Result<Vec<Event>, Error> {
+    let mut page: Vec<Event> = Vec::new();
+    for record in records {
+        let (commit, event) =
+            record.map_err(|e| Error::Backend(format!("kurrentdb: read all page: {e}")))?;
+        if !past(from, commit) {
+            continue;
+        }
+        if page.len() >= max {
+            break;
+        }
+        page.extend(event);
+    }
+    Ok(page)
+}
+
+/// Whether a record at `commit` lies past the trait's exclusive `$all` boundary `from`, which
+/// the server's inclusive start reads too: a `from` of 0 is the log's start, so every record is
+/// past it, one the server issued at commit 0 included.
+fn past(from: Position, commit: Position) -> bool {
+    from == 0 || commit > from
+}
+
 /// The group lookup's scan over a group stream's newest-first links, each as the id it reserved
 /// and the event its revision holds: the first link whose revision holds exactly the event it
 /// reserved. A link holding nothing or another write is skipped; a group stream the server does
@@ -469,24 +501,39 @@ fn newest_revision(
 }
 
 impl Store {
-    /// THE PULLER: the ONE read of a stream this adapter drives - `stream` read as `opts` say,
-    /// each record pulled from the server only when the consumer asks for it, so a consumer that
-    /// stops early reads nothing past where it stopped. A failure to open the read is its one
-    /// item; a failure mid-stream is the item it met. The newest-first read and the forward read
-    /// are this one pull with their own options ([`Store::newest_first`], [`Store::forward_records`]).
+    /// THE PULLER: the ONE read this adapter drives, of a stream ([`Store::pull`]) or of `$all`
+    /// ([`Store::pull_all`]) - each record of the read `opened` pulled from the server only when
+    /// the consumer asks for it, so a consumer that stops early reads nothing past where it
+    /// stopped. A failure to open the read is its one item; a failure mid-read is the item it met.
+    fn pulled(
+        &self,
+        opened: Result<ReadStream, kurrentdb::Error>,
+    ) -> impl Iterator<Item = Result<ResolvedEvent, kurrentdb::Error>> + '_ {
+        let mut read = opened.map_err(Some);
+        std::iter::from_fn(move || match &mut read {
+            Ok(rs) => self.rt.block_on(rs.next()).transpose(),
+            Err(opened) => opened.take().map(Err),
+        })
+    }
+
+    /// `stream` read as `opts` say, through the one puller ([`Store::pulled`]). The newest-first
+    /// read and the forward read are this pull with their own options ([`Store::newest_first`],
+    /// [`Store::forward_records`]).
     fn pull(
         &self,
         stream: &str,
         opts: ReadStreamOptions,
     ) -> impl Iterator<Item = Result<ResolvedEvent, kurrentdb::Error>> + '_ {
-        let mut read = self
-            .rt
-            .block_on(self.client.read_stream(stream, &opts))
-            .map_err(Some);
-        std::iter::from_fn(move || match &mut read {
-            Ok(rs) => self.rt.block_on(rs.next()).transpose(),
-            Err(opened) => opened.take().map(Err),
-        })
+        self.pulled(self.rt.block_on(self.client.read_stream(stream, &opts)))
+    }
+
+    /// `$all` read as `opts` say, through the one puller ([`Store::pulled`]): the global read, its
+    /// page, the log's head and a typed read are this pull with their own options.
+    fn pull_all(
+        &self,
+        opts: &ReadAllOptions,
+    ) -> impl Iterator<Item = Result<ResolvedEvent, kurrentdb::Error>> + '_ {
+        self.pulled(self.rt.block_on(self.client.read_all(opts)))
     }
 
     /// THE NEWEST-FIRST READ: `stream` read backward from its end with links resolved (a stream
@@ -822,34 +869,53 @@ impl EventStore for Store {
         let opts = ReadAllOptions::default()
             .position(all_position(from))
             .forwards();
-        let mut out = self.rt.block_on(async {
-            let mut rs = self
-                .client
-                .read_all(&opts)
-                .await
-                .map_err(|e| Error::Backend(format!("kurrentdb: read all: {e}")))?;
-            let mut out = Vec::new();
-            loop {
-                match rs.next().await {
-                    Ok(Some(ev)) => {
-                        if let Some(rec) = original(&ev) {
-                            if let Some(e) = to_event(rec, filter) {
-                                if from == 0 || e.position > from {
-                                    out.push(e);
-                                }
-                            }
-                        }
-                    }
-                    Ok(None) => break,
-                    Err(e) => return Err(Error::Backend(format!("kurrentdb: read all: {e}"))),
+        let mut out = Vec::new();
+        for pulled in self.pull_all(&opts) {
+            let ev = pulled.map_err(|e| Error::Backend(format!("kurrentdb: read all: {e}")))?;
+            if let Some(e) = original(&ev).and_then(|rec| to_event(rec, filter)) {
+                if past(from, e.position) {
+                    out.push(e);
                 }
             }
-            Ok::<_, Error>(out)
-        })?;
+        }
         if matches!(dir, Direction::Backward) {
             out.reverse();
         }
         Ok(out)
+    }
+
+    /// A forward `$all` read from `from` the SERVER filters on stream name ([`all_filter`]), so a
+    /// record of another prefix never leaves it, each record pulled as [`page_of`] asks: the read
+    /// stops at the record that ends the page, so a page past a long run of events reads the page
+    /// and never the run.
+    fn read_all_page(
+        &self,
+        from: Position,
+        filter: &Filter,
+        max: usize,
+    ) -> Result<Vec<Event>, Error> {
+        let opts = ReadAllOptions::default()
+            .position(all_position(from))
+            .forwards()
+            .filter(all_filter(filter));
+        let records = self.pull_all(&opts).filter_map(|pulled| {
+            pulled
+                .map(|ev| original(&ev).map(|rec| (rec.position.commit, to_event(rec, filter))))
+                .transpose()
+        });
+        page_of(records, from, max)
+    }
+
+    /// One backward `$all` read of one record from the log's end: the commit of the last record
+    /// the server holds, whatever stream or event it is, a system record included.
+    fn log_head(&self) -> Result<Option<Position>, Error> {
+        let opts = ReadAllOptions::default()
+            .position(StreamPosition::End)
+            .backwards()
+            .max_count(1);
+        first_match(self.pull_all(&opts), "log head", |ev| {
+            original(&ev).map(|rec| rec.position.commit)
+        })
     }
 
     fn subscribe_all(&self, from: Position, filter: &Filter) -> Result<Subscription, Error> {
@@ -937,20 +1003,16 @@ impl EventStore for Store {
         let Some(start) = typed_read_start(from, anchor)? else {
             return Ok(Vec::new());
         };
-        let mut rs = self
-            .rt
-            .block_on(self.client.read_all(&typed_read_options(start, selection)))
-            .map_err(|e| Error::Backend(format!("kurrentdb: read typed: {e}")))?;
-        let pulls =
-            std::iter::from_fn(|| self.rt.block_on(rs.next()).transpose()).filter_map(|pulled| {
-                pulled
-                    .map(|ev| {
-                        original(&ev)
-                            .map(|rec| rec.stream_id().to_string())
-                            .map(|id| (id, ev))
-                    })
-                    .transpose()
-            });
+        let opts = typed_read_options(start, selection);
+        let pulls = self.pull_all(&opts).filter_map(|pulled| {
+            pulled
+                .map(|ev| {
+                    original(&ev)
+                        .map(|rec| rec.stream_id().to_string())
+                        .map(|id| (id, ev))
+                })
+                .transpose()
+        });
         records_of(pulls, stream, |ev| {
             original(ev).and_then(|rec| to_event(rec, &Filter::default()))
         })
@@ -1429,6 +1491,97 @@ mod tests {
         }
     }
 
+    /// The records a forward `$all` read hands back, oldest first, as `(commit, the type of the
+    /// event it delivers)` - `None` for a record no caller is delivered - each delivered event
+    /// stamped at its record's commit.
+    fn oldest_first<'a>(
+        records: &'a [(u64, Option<&'a str>)],
+    ) -> impl Iterator<Item = Result<(Position, Option<Event>), kurrentdb::Error>> + 'a {
+        records.iter().map(|(commit, t)| {
+            let event = t.map(|t| {
+                let mut event = Event::new(t, Vec::new());
+                event.position = *commit;
+                event
+            });
+            Ok((*commit, event))
+        })
+    }
+
+    /// A log of single-event commits at 10, 20, 30 and 40, with a record no caller is delivered
+    /// (25) between the second and the third.
+    const PAGED_LOG: &[(u64, Option<&str>)] = &[
+        (10, Some("A")),
+        (20, Some("B")),
+        (25, None),
+        (30, Some("C")),
+        (40, Some("D")),
+    ];
+
+    /// Spec 124, the server half of the page: from `from` (exclusive) at most `max` delivered
+    /// events, and the read pulls no record past the one that ends the page.
+    #[test]
+    fn a_page_holds_at_most_max_events_past_from_and_stops_at_the_record_ending_it() {
+        type Row<'a> = (
+            &'a [(u64, Option<&'a str>)],
+            Position,
+            usize,
+            &'a [(&'a str, Position)],
+            usize,
+        );
+        let rows: &[Row] = &[
+            // A bound of 0 reads nothing, pulling only the record that ends the page.
+            (PAGED_LOG, 0, 0, &[], 1),
+            (PAGED_LOG, 0, 1, &[("A", 10)], 2),
+            // A page ends at the record past its `max`-th event, an undelivered one included; a
+            // page still short of `max` at the undelivered record reads across it to the next
+            // event.
+            (PAGED_LOG, 0, 2, &[("A", 10), ("B", 20)], 3),
+            (PAGED_LOG, 0, 3, &[("A", 10), ("B", 20), ("C", 30)], 5),
+            // A bound past the log reads every event of it, pulling every record.
+            (
+                PAGED_LOG,
+                0,
+                5,
+                &[("A", 10), ("B", 20), ("C", 30), ("D", 40)],
+                5,
+            ),
+            // `from` is exclusive: the record at it and every record before it are passed over.
+            (PAGED_LOG, 10, 1, &[("B", 20)], 3),
+            (PAGED_LOG, 20, 1, &[("C", 30)], 5),
+            (PAGED_LOG, 40, 1, &[], 5),
+            // A `from` of 0 is the log's start, so a record the server issued at commit 0 is read.
+            (&[(0, Some("Z"))], 0, 1, &[("Z", 0)], 1),
+        ];
+        for (log, from, max, page, pulls) in rows {
+            let pulled = std::cell::Cell::new(0);
+            let read = oldest_first(log).inspect(|_| pulled.set(pulled.get() + 1));
+            let got: Vec<(String, Position)> = page_of(read, *from, *max)
+                .unwrap()
+                .into_iter()
+                .map(|e| (e.type_, e.position))
+                .collect();
+            let want: Vec<(String, Position)> =
+                page.iter().map(|(t, p)| (t.to_string(), *p)).collect();
+            assert_eq!(
+                (got, pulled.get()),
+                (want, *pulls),
+                "the page of {log:?} from {from} bounded at {max}, and the records it pulled"
+            );
+        }
+    }
+
+    /// A server failure mid-read ends the page in an error naming the read, never a short page.
+    #[test]
+    fn a_page_whose_read_fails_is_an_error_naming_the_read() {
+        let failed = oldest_first(&[(10, Some("A"))]).chain([Err(kurrentdb::Error::AccessDenied)]);
+        match page_of(failed, 0, 4) {
+            Err(Error::Backend(msg)) => {
+                assert_eq!(msg, "kurrentdb: read all page: Access denied error")
+            }
+            other => panic!("a server failure must be a backend error, got {other:?}"),
+        }
+    }
+
     /// A store over a server that never answers.
     fn unreachable_store() -> Store {
         // One thread, not a worker per core: the test runner caps the address space.
@@ -1467,6 +1620,19 @@ mod tests {
             unreachable_store().last_position("run", "RunStarted"),
             "kurrentdb: last position: ",
         );
+    }
+
+    /// Spec 124: the page read and the head read reach the server and report its failure, each
+    /// naming its step - never an empty page or an absent head that would read as an empty log.
+    #[test]
+    fn the_page_and_head_reads_report_an_unreachable_server_as_an_error_naming_their_step() {
+        let store = unreachable_store();
+        assert_names_step(
+            "the page read",
+            store.read_all_page(0, &Filter::default(), 4),
+            "kurrentdb: read all page: ",
+        );
+        assert_names_step("the head read", store.log_head(), "kurrentdb: log head: ");
     }
 
     /// Spec 101: every group-lookup shell reaches the server through its own step. An append with

@@ -78,15 +78,19 @@ impl Dock {
 /// - **halted** - the run's spawn budget is currently spent
 ///   ([`blocker::budget_halt`], the same durable fact [`blocker::classify`]'s
 ///   run-level [`blocker::Kind::Budget`] line already surfaces).
-/// - **worker-death-recurred** - a unit currently [`Status::Failed`] (mid-remediation,
-///   still parked awaiting its next attempt) with two or more recorded
-///   attempts AND no in-effect resume grant ([`ledger::Unit::resumed`] is
-///   `None`) - the same threshold, and the same resumed guard,
-///   [`blocker::classify`]'s `RejectRecurrence`/`Resumed` arms use, so a unit
-///   on the "needs you" list is always also visible on the current-blocker
-///   list as `reject-recurrence` (never a surprise entry with nothing else to
-///   point at), and a unit an operator has just resumed reads as "the
-///   operator already acted", never as still needing one.
+/// - **reject-recurrence** - a unit [`blocker::awaits_finding_audit`] holds for: currently
+///   [`Status::Failed`] (mid-remediation: the status holds from its failure until its next
+///   green, whether or not its next attempt is already running) with recorded attempts at or
+///   past [`blocker::REJECT_RECURRENCE_DIAGNOSE_THRESHOLD`] AND no in-effect resume grant
+///   ([`ledger::Unit::resumed`] is `None`). The dock, the conductor's reject-recurrence
+///   attention stamp and `rigger watch`'s reject-recurrence-trend signal read that one
+///   constant, so the dock taps an operator at the count the diagnose-churn procedure starts
+///   from, never on a failure below it. [`blocker::classify`] lists every failed, unresumed unit as
+///   `reject-recurrence`, with no threshold, and a resumed one as `resumed` (the same guard),
+///   so a unit on the "needs you" list is always also visible on the current-blocker list as
+///   `reject-recurrence` (never a surprise entry with nothing else to point at), and a unit an
+///   operator has just resumed reads as "the operator already acted", never as still needing
+///   one.
 ///
 /// Deterministically ordered by [`ledger::attention_kind_rank`], lexical by
 /// unit within a kind (both `run.units` and the resulting `Vec` walk are
@@ -108,12 +112,8 @@ pub fn dock(run: &RunState, events: &[Event]) -> Dock {
     }
 
     for (id, u) in &run.units {
-        if u.status == Status::Failed && u.attempts >= 2 && u.resumed.is_none() {
-            needs_you.push(AttentionEntry::unit_scoped(
-                ledger::ATTENTION_WORKER_DEATH_RECURRED,
-                id.clone(),
-                format!("{} attempts, still parked", u.attempts),
-            ));
+        if blocker::awaits_finding_audit(u) {
+            needs_you.push(AttentionEntry::reject_recurrence(id, u.attempts));
         }
     }
 
@@ -591,20 +591,6 @@ mod tests {
             .lines(),
             vec!["run: budget spent 10/10"]
         );
-        /// The dock lists a unit past the recurrence threshold that is STILL failed
-        /// (mid-remediation, parked awaiting its next attempt) - never an escalated or
-        /// integrated one, which have left `Failed` for good.
-        dock_lists_a_unit_still_failed_past_the_recurrence_threshold: docked_one(
-            &[
-                ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"u-churn"}"#),
-                ev(
-                    ledger::TYPE_UNIT_FAILED,
-                    r#"{"id":"u-churn","attempts":3,"cause":"reject"}"#,
-                ),
-            ],
-            ledger::ATTENTION_WORKER_DEATH_RECURRED,
-            "u-churn",
-        );
     }
 
     /// A budget halt already RESOLVED (a later unit-lifecycle event followed
@@ -635,12 +621,12 @@ mod tests {
     /// A unit an operator has just resumed (`rigger resume-unit`, spec 88) is
     /// re-parked at `Status::Failed` with `resumed = Some` - the exact state
     /// `blocker::classify`'s own resumed guard already excludes from
-    /// `RejectRecurrence`. The dock's worker-death-recurred arm must agree: a
+    /// `RejectRecurrence`. The dock's reject-recurrence arm must agree: a
     /// just-resumed unit reads "the operator already acted", not "still needs
     /// you" - mirrors `dock_drops_a_resolved_budget_halt`'s "operator already
     /// acted -> dock silent" pattern for the budget arm.
     #[test]
-    fn dock_drops_a_resumed_unit_from_worker_death_recurred() {
+    fn dock_drops_a_resumed_unit_from_reject_recurrence() {
         let events = vec![
             ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"u-resumed"}"#),
             ev(
@@ -666,22 +652,47 @@ mod tests {
         );
     }
 
-    /// A unit's FIRST failure (attempts == 1) is not a recurrence yet, so the
-    /// dock stays silent on it - mirrors `blocker::classify`'s own
-    /// `RejectRecurrence` numbering (`#1/max` still prints, but the dock's
-    /// bar is "recurred", i.e. failed more than once).
-    #[test]
-    fn dock_is_silent_on_a_units_first_failure() {
-        let events = vec![
-            ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"u-once"}"#),
-            ev(
-                ledger::TYPE_UNIT_FAILED,
-                r#"{"id":"u-once","attempts":1,"cause":"reject"}"#,
-            ),
+    /// The dock of a run whose one unit, `u-churn`, is failed and unresumed at `attempts`.
+    fn dock_of_a_failed_unit(attempts: u32) -> Dock {
+        let failed = format!(r#"{{"id":"u-churn","attempts":{attempts},"cause":"reject"}}"#);
+        let events = [
+            ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"u-churn"}"#),
+            ev(ledger::TYPE_UNIT_FAILED, &failed),
         ];
-        let run = ledger::project(&events).unwrap();
-        let d = dock(&run, &events);
-        assert!(d.needs_you.is_empty(), "{:?}", d.needs_you);
+        dock(&ledger::project(&events).unwrap(), &events)
+    }
+
+    /// The dock listing `u-churn` alone, as reject-recurrence at `attempts`.
+    fn docked_as_recurred(attempts: u32) -> Dock {
+        Dock {
+            needs_you: vec![AttentionEntry::reject_recurrence("u-churn", attempts)],
+        }
+    }
+
+    crate::test_cases! {
+        /// A failed, unresumed unit below the reject-recurrence diagnose threshold is remediating
+        /// on its own, so the dock is silent on it - here at its first failure.
+        dock_is_silent_on_a_units_first_failure: assert_eq!(
+            dock_of_a_failed_unit(1),
+            Dock::default()
+        );
+        /// The dock is silent at the attempt just under the threshold too - the bound's own edge,
+        /// which any lower bound lists.
+        dock_is_silent_on_a_failed_unit_just_below_the_diagnose_threshold: assert_eq!(
+            dock_of_a_failed_unit(blocker::REJECT_RECURRENCE_DIAGNOSE_THRESHOLD - 1),
+            Dock::default()
+        );
+        /// At the threshold `rigger watch`'s reject-recurrence-trend signal alerts on, the dock
+        /// lists the failed, unresumed unit as needing an operator.
+        dock_lists_a_failed_unit_at_the_diagnose_threshold: assert_eq!(
+            dock_of_a_failed_unit(blocker::REJECT_RECURRENCE_DIAGNOSE_THRESHOLD),
+            docked_as_recurred(blocker::REJECT_RECURRENCE_DIAGNOSE_THRESHOLD)
+        );
+        /// Past the threshold the dock still lists the unit, for as long as it stays failed.
+        dock_lists_a_failed_unit_past_the_diagnose_threshold: assert_eq!(
+            dock_of_a_failed_unit(blocker::REJECT_RECURRENCE_DIAGNOSE_THRESHOLD + 1),
+            docked_as_recurred(blocker::REJECT_RECURRENCE_DIAGNOSE_THRESHOLD + 1)
+        );
     }
 
     /// A clean run (no units at all) needs nobody: an empty dock, and the

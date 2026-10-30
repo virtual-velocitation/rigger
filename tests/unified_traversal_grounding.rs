@@ -30,7 +30,9 @@ use common::git::temp_git_project_with_commit;
 mod source_audit;
 use source_audit::gate_name_in;
 
-use rigger::conductor::{run, AgentDriver, AgentResult, Deps, Error, SpawnOpts};
+use rigger::conductor::{
+    run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, REVIEWER_DISCIPLINE,
+};
 use rigger::config::{AgentDef, Config, Gate, Stage};
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{
@@ -43,10 +45,14 @@ use rigger::eventstore::sqlite::Store;
 use rigger::gate::ExecRunner;
 use rigger::grounder::{Grounder, Ref};
 use rigger::spawn::ROLE_SDET_AUTHOR;
+use rigger::wave::normalize_ws;
 use serde_json::{json, Value};
 
 use common::cli::{planted_graph, temp_project};
 use common::fixtures::apply_next_json;
+use common::fixtures::assert_system_prompt_carries_the_review_method_once;
+use common::fixtures::assert_task_prompt_carries_only_the_reviewer_contract;
+use common::fixtures::language_marker_hits;
 use common::fixtures::{
     edge, file_half, member_graph, BARE_PARENT, LEAF_PLACEHOLDER, NESTED_METHOD, RANGE_ARTIFACT,
 };
@@ -139,6 +145,8 @@ struct ReviewDriver {
     finding: Value,
     /// `(agent id, prompt)` for every spawn, in spawn order.
     prompts: Mutex<Vec<(String, String)>>,
+    /// The system prompt of every spawn, in spawn order, so the nth is `prompts`' nth spawn's.
+    system_prompts: Mutex<Vec<String>>,
 }
 
 impl AgentDriver for ReviewDriver {
@@ -146,13 +154,17 @@ impl AgentDriver for ReviewDriver {
         &self,
         agent: &AgentDef,
         prompt: &str,
-        _opts: &SpawnOpts,
+        opts: &SpawnOpts,
         emit: &dyn Fn(&str, Value) -> Result<(), Error>,
     ) -> Result<AgentResult, Error> {
         self.prompts
             .lock()
             .unwrap()
             .push((agent.id.clone(), prompt.to_string()));
+        self.system_prompts
+            .lock()
+            .unwrap()
+            .push(opts.system_prompt.clone());
         // The lens raises its finding to the graph (the review_protocol channel), so the adversary
         // and the adjudicator - which ground AFTER it - retrieve it through `graph_context`, never a
         // hand-threaded stdout block. This is the exact cross-tier path the implement-only trim must
@@ -205,24 +217,32 @@ fn run_and_capture_prompts_grounded(
     grounder: &dyn Grounder,
     coverage: &str,
 ) -> Vec<String> {
+    let cfg = single_stage_cfg(Stage {
+        name: "s".into(),
+        agent: "impl".into(),
+        coverage: coverage.into(),
+        ..Default::default()
+    });
+    capture_prompts(&cfg, graph, grounder)
+}
+
+/// A config of the one stage `stage`, run by an agent whose id is the stage's own `agent`.
+fn single_stage_cfg(stage: Stage) -> Config {
     let mut cfg = Config::default();
     cfg.agents.insert(
-        "impl".into(),
+        stage.agent.clone(),
         AgentDef {
-            id: "impl".into(),
+            id: stage.agent.clone(),
             ..Default::default()
         },
     );
-    cfg.workflow.stages.insert(
-        "s".into(),
-        Stage {
-            name: "s".into(),
-            agent: "impl".into(),
-            coverage: coverage.into(),
-            ..Default::default()
-        },
-    );
+    cfg.workflow.stages.insert(stage.name.clone(), stage);
+    cfg
+}
 
+/// Drive `conductor::run` over `cfg`, grounded by `grounder` over `graph`, and return every prompt
+/// the driver was asked to spawn: the one run every capturing helper here shares.
+fn capture_prompts(cfg: &Config, graph: &Projector, grounder: &dyn Grounder) -> Vec<String> {
     let store = Store::open(":memory:").unwrap();
     let driver = CapturingDriver::default();
     let deps = Deps {
@@ -235,10 +255,11 @@ fn run_and_capture_prompts_grounded(
         criteria: Vec::new(),
         log: &|_| {},
         hash_blob: &|_| Ok(String::new()),
+        check_emit: &rigger::contextgraph::check_emit,
     };
     // The prompt is captured before the spawn returns, so the run's terminal disposition
     // (integrate / not) is irrelevant to what this periphery layer observes.
-    let _ = run(&cfg, &deps);
+    let _ = run(cfg, &deps);
     let prompts = driver.prompts.lock().unwrap().clone();
     prompts
 }
@@ -263,41 +284,14 @@ fn run_and_capture_producer_prompts(graph: &Projector) -> Vec<String> {
     let grounder = SeedGrounder {
         file: "core.rs".into(),
     };
-    let mut cfg = Config::default();
-    cfg.agents.insert(
-        "plan".into(),
-        AgentDef {
-            id: "plan".into(),
-            ..Default::default()
-        },
-    );
-    cfg.workflow.stages.insert(
-        "p".into(),
-        Stage {
-            name: "p".into(),
-            agent: "plan".into(),
-            // A non-empty `produces` marks this a PRODUCER (planner) stage: it emits a DAG, not code.
-            produces: "unit".into(),
-            ..Default::default()
-        },
-    );
-
-    let store = Store::open(":memory:").unwrap();
-    let driver = CapturingDriver::default();
-    let deps = Deps {
-        store: &store,
-        driver: &driver,
-        gates: &ExecRunner,
-        repo: String::new(),
-        grounder: Some(&grounder),
-        graph: Some(graph),
-        criteria: Vec::new(),
-        log: &|_| {},
-        hash_blob: &|_| Ok(String::new()),
-    };
-    let _ = run(&cfg, &deps);
-    let prompts = driver.prompts.lock().unwrap().clone();
-    prompts
+    let cfg = single_stage_cfg(Stage {
+        name: "p".into(),
+        agent: "plan".into(),
+        // A non-empty `produces` marks this a PRODUCER (planner) stage: it emits a DAG, not code.
+        produces: "unit".into(),
+        ..Default::default()
+    });
+    capture_prompts(&cfg, graph, &grounder)
 }
 
 /// A fresh in-memory unified graph, the fixture every prompt-boundary test folds its seed into.
@@ -678,6 +672,7 @@ fn run_and_capture_sdet_author_prompts(graph: &Projector) -> Vec<String> {
         criteria: Vec::new(),
         log: &|_| {},
         hash_blob: &|_| Ok(String::new()),
+        check_emit: &rigger::contextgraph::check_emit,
     };
     // The prompt is captured before the spawn returns, so the run's terminal disposition is
     // irrelevant to what this periphery layer observes.
@@ -698,6 +693,15 @@ fn run_and_capture_sdet_author_prompts(graph: &Projector) -> Vec<String> {
 /// the SAME full slice the producer keeps and the implement slice drops, so a regression that hands
 /// review the implement slice surfaces HERE, at the review call site.
 fn run_and_capture_review_prompts(graph: &Projector, finding: Value) -> Vec<(String, String)> {
+    run_and_capture_review_spawns(graph, finding).0
+}
+
+/// The `(agent id, prompt)` and the system prompt of every review spawn
+/// [`run_and_capture_review_prompts`] describes, each in spawn order.
+fn run_and_capture_review_spawns(
+    graph: &Projector,
+    finding: Value,
+) -> (Vec<(String, String)>, Vec<String>) {
     let grounder = SeedGrounder {
         file: "core.rs".into(),
     };
@@ -732,6 +736,7 @@ fn run_and_capture_review_prompts(graph: &Projector, finding: Value) -> Vec<(Str
         adjudicator: "adj".into(),
         finding,
         prompts: Mutex::new(Vec::new()),
+        system_prompts: Mutex::new(Vec::new()),
     };
     let deps = Deps {
         store: &store,
@@ -747,12 +752,14 @@ fn run_and_capture_review_prompts(graph: &Projector, finding: Value) -> Vec<(Str
         criteria: Vec::new(),
         log: &|_| {},
         hash_blob: &|_| Ok(String::new()),
+        check_emit: &rigger::contextgraph::check_emit,
     };
     // Prompts are captured before each spawn returns, so the run's terminal disposition is irrelevant
     // to what this periphery layer observes.
     let _ = run(&cfg, &deps);
     let all = driver.prompts.lock().unwrap().clone();
-    all
+    let system = driver.system_prompts.lock().unwrap().clone();
+    (all, system)
 }
 
 /// Criterion 3 (this unit OWNS the review-path-preservation guardrail): the spec-36 trim is
@@ -909,15 +916,20 @@ fn the_review_prompt_carries_the_three_verb_lookup_pointer() {
     }
 }
 
-/// Spec 113 (THE CORE NAMES NO GATE), at the review boundary end to end: the reviewer discipline
-/// every review tier receives forbids running a gate's own tool by naming the generic mechanism,
-/// never the one gate the core once knew or its tool. The conductor's in-process
-/// `every_reviewer_prompt_leaves_the_gates_and_their_tools_to_the_gates` pins the assembled
-/// strings; this pins the exact bytes the lens, the adversary AND the adjudicator each receive
-/// through the `AgentDriver` port during a live fan-out `run`, so a review call site that dropped
-/// the discipline, or a core string that named the gate or its tool again, reddens here.
+/// Spec 113 (THE CORE NAMES NO GATE), at the review boundary end to end: no line of the task
+/// prompt the lens, the adversary AND the adjudicator each receive through the `AgentDriver` port
+/// during a live fan-out `run` names the one gate the core once knew or its tool. Spec 120's THE
+/// REVIEWER PROMPT CARRIES ONLY THE CONTRACT at the same boundary: each tier's task prompt carries
+/// the reviewer discipline whole and once, and none of the review method `## When you review`
+/// holds, so a review call site that dropped the discipline, or a core string that restated the
+/// method, reddens here; and each tier's system prompt, received through the same port, carries
+/// each review sentence `## When you review` holds exactly once, so the method the task prompt no
+/// longer carries still reaches every tier, through the working-discipline body, which this
+/// run's empty operator layer neither replaces nor switches off. Spec 120's THE
+/// BUILT-IN LAYER NAMES NO LANGUAGE: the discipline as received spells no marker of the MARKERS
+/// rule.
 #[test]
-fn every_review_spawn_is_forbidden_a_gates_tool_without_naming_the_gate_or_its_tool() {
+fn every_review_spawn_carries_the_reviewer_contract_without_naming_the_gate_or_its_tool() {
     let graph = Projector::open(":memory:", "test").unwrap();
     let finding = json!({
         "id": "f_sweep",
@@ -926,25 +938,30 @@ fn every_review_spawn_is_forbidden_a_gates_tool_without_naming_the_gate_or_its_t
         "summary": "a lens finding about the seed file",
         "about": ["core.rs"],
     });
-    let prompts = run_and_capture_review_prompts(&graph, finding);
+    let (prompts, system_prompts) = run_and_capture_review_spawns(&graph, finding);
     let roles: Vec<&str> = prompts.iter().map(|(id, _)| id.as_str()).collect();
     assert_eq!(
         roles,
         vec!["lens", "adversary", "adj"],
         "the three review tiers spawn once each, in order"
     );
-    for (role, prompt) in &prompts {
-        assert_eq!(
-            prompt
-                .matches(
-                    "Never run a gate's own tool, directly or through a verify helper: the gate \
-                     evidence in your prompt is that gate's verdict, and a reviewer's run only \
-                     repeats it at review cost."
+    for ((role, prompt), system) in prompts.iter().zip(&system_prompts) {
+        let tier = format!("{role:?} review");
+        assert_task_prompt_carries_only_the_reviewer_contract(&tier, prompt, REVIEWER_DISCIPLINE);
+        assert_system_prompt_carries_the_review_method_once(&tier, &normalize_ws(system));
+        let discipline = prompt
+            .find(REVIEWER_DISCIPLINE)
+            .map(|at| &prompt[at..at + REVIEWER_DISCIPLINE.len()])
+            .unwrap_or_else(|| {
+                panic!(
+                    "the {role:?} review prompt must carry the reviewer discipline whole; prompt \
+                     was:\n{prompt}"
                 )
-                .count(),
-            1,
-            "the {role:?} review prompt carries the gate-tool discipline exactly once; prompt \
-             was:\n{prompt}"
+            });
+        assert_eq!(
+            language_marker_hits(discipline),
+            Vec::<&str>::new(),
+            "the reviewer discipline the {role:?} review tier receives names no language"
         );
         for line in prompt.lines() {
             assert_eq!(
@@ -1041,7 +1058,7 @@ rigger::test_cases! {
     ///
     /// Non-vacuous: the definition note is uniquely identified by "more definition(s)" (the decisions /
     /// lessons / findings notes say "older <noun>(s)"), so the assertions isolate the code section from
-    /// the legitimate `rigger peers` those other notes name. Rendering the recovery command as `rigger
+    /// the by-id graph recovery those other notes name. Rendering the recovery command as `rigger
     /// peers` (the pre-fix behavior) flips BOTH assertions: the positive (honest command absent) and the
     /// negative (dishonest command present).
     the_spawn_prompt_code_neighborhood_elision_note_names_the_honest_graph_around_recovery: {

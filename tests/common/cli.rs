@@ -2,7 +2,7 @@
 //! running it, seeding the stores it reads, and reading back what it wrote.
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rigger::config::RIGGER_DIR;
@@ -141,16 +141,85 @@ pub fn edge_lines(out: &str) -> Vec<(String, String, String)> {
 /// Run `rigger <args...>` in `cwd` with extra environment `envs` and return
 /// (stdout, stderr, success).
 pub fn run_rigger_envs(cwd: &Path, args: &[&str], envs: &[(&str, &str)]) -> (String, String, bool) {
-    // Bound to `state` so the dir lives until after the command runs.
+    // Bound to `_state` so the dir lives until after the command runs.
+    let (_state, child) = spawn_rigger(cwd, args, envs);
+    rigger_outcome(child)
+}
+
+/// [`run_rigger_envs`] bounded in time: `rigger <args...>` in `cwd` with extra environment `envs`,
+/// spawned and polled up to `tries` times 25 ms apart ([`super::fixtures::wait_until_for`]),
+/// `meanwhile` handed its pid at each poll while it runs. Its (stdout, stderr, success) once it
+/// ends within them, or `None` once they are spent, the process ended and reaped through its handle
+/// ([`super::fixtures::cleanup`]) first. Its output is read once it has ended, so it suits a
+/// command whose output fits a pipe.
+pub fn run_rigger_within(
+    cwd: &Path,
+    args: &[&str],
+    envs: &[(&str, &str)],
+    tries: u32,
+    mut meanwhile: impl FnMut(u32),
+) -> Option<(String, String, bool)> {
+    let (_state, mut child) = spawn_rigger(cwd, args, envs);
+    let pid = child.id();
+    let ended = super::fixtures::wait_until_for(tries, || {
+        meanwhile(pid);
+        !matches!(child.try_wait(), Ok(None))
+    });
+    if !ended {
+        super::fixtures::cleanup(&mut child);
+        return None;
+    }
+    Some(rigger_outcome(child))
+}
+
+/// `rigger <args...>` in `cwd` with extra environment `envs` ([`rigger_command`]) spawned under a
+/// fresh `XDG_STATE_HOME`, its stdin closed and its stdout and stderr piped as `Command::output`
+/// runs a command; the state dir is returned beside the child, which it must outlive.
+fn spawn_rigger(cwd: &Path, args: &[&str], envs: &[(&str, &str)]) -> (tempfile::TempDir, Child) {
     let state = tempfile::tempdir().expect("create a temp XDG_STATE_HOME for the rigger run");
-    let out = rigger_command(cwd, args, envs, state.path())
-        .output()
+    let child = rigger_command(cwd, args, envs, state.path())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .expect("failed to spawn the rigger binary");
+    (state, child)
+}
+
+/// The (stdout, stderr, success) of the rigger run `child` ([`spawn_rigger`]), read once it ends.
+fn rigger_outcome(child: Child) -> (String, String, bool) {
+    let out = child
+        .wait_with_output()
+        .expect("wait for the rigger run to end");
     (
         String::from_utf8_lossy(&out.stdout).into_owned(),
         String::from_utf8_lossy(&out.stderr).into_owned(),
         out.status.success(),
     )
+}
+
+/// Run `rigger <args>` in `cwd` with the checked-in prompt-capture agent first on PATH as
+/// `claude`, assert the command succeeds, and return the system prompt the last agent it spawned
+/// was handed: the text of the file its `--system-prompt-file` named.
+pub fn run_capturing_system_prompt(cwd: &Path, args: &[&str]) -> String {
+    let work = tempfile::tempdir().unwrap();
+    let path = super::repo::stub_path(work.path(), "claude", Some("prompt-capture-agent.sh"));
+    let (out, err, ok) = run_rigger_envs(
+        cwd,
+        args,
+        &[
+            ("PATH", &path),
+            (
+                super::fixtures::PROMPT_CAPTURE_DIR,
+                work.path().to_str().unwrap(),
+            ),
+        ],
+    );
+    assert!(
+        ok,
+        "rigger {args:?} must succeed; stderr: {err}\nstdout: {out}"
+    );
+    super::fixtures::captured_system_prompt(work.path())
 }
 
 /// `rigger setup` in `cwd` with extra environment `envs`, which must succeed: its stdout.
@@ -279,9 +348,12 @@ pub fn refused_new_run(command: &str, spec: &str, open: Option<&[String]>) -> St
             serde_json::json!(ids).to_string(),
         ),
     };
+    let refused = refusal_line(&format!(
+        "{command}: refusing to begin a new run on {spec}: {why}"
+    ));
     format!(
-        "rigger: {command}: refusing to begin a new run on {spec}: {why}\n  {CRITIQUE_ROUTE}   \
-         rigger critique {spec}\n  {route} rigger emit DecisionMade '{}'\n",
+        "{refused}\n  {CRITIQUE_ROUTE}   rigger critique {spec}\n  {route} rigger emit \
+         DecisionMade '{}'\n",
         printed_decision(spec, &resolves)
     )
 }
@@ -302,6 +374,19 @@ pub fn seed_store(root: &Path) {
     let rigger = root.join(".rigger");
     std::fs::create_dir_all(&rigger).unwrap();
     std::fs::File::create(rigger.join("events.db")).unwrap();
+}
+
+/// A store seeded under an owning root that has no UTF-8 path ([`seed_store`]), and that root,
+/// beside the temporary directory it was made in, which removes both when dropped.
+#[cfg(unix)]
+pub fn store_at_a_non_utf8_root() -> (tempfile::TempDir, PathBuf) {
+    use std::os::unix::ffi::OsStrExt;
+    let parent = tempfile::tempdir().expect("create the parent of the non-UTF-8 root");
+    let root = parent
+        .path()
+        .join(std::ffi::OsStr::from_bytes(b"owning-\xff-root"));
+    seed_store(&root);
+    (parent, root)
 }
 
 /// The project identity the binary resolves for `root`, mirrored here for seeding: the
@@ -333,6 +418,12 @@ pub fn run_stream_identity(root: &Path) -> String {
         .unwrap_or_else(|| "rigger".to_string())
 }
 
+/// Pins the identity of the project rooted at `root` to `identity`: its `project.id` under the
+/// state directory written as `identity` and a newline, which [`run_stream_identity`] reads back.
+pub fn pin_identity(root: &Path, identity: &str) {
+    std::fs::write(rigger_file(root, "project.id"), format!("{identity}\n")).unwrap();
+}
+
 /// The fold rule a `graph.db` records (its `user_version`).
 pub fn user_version(db: &Path) -> i64 {
     super::fixtures::pragma_i64(db, "user_version")
@@ -360,17 +451,118 @@ pub fn version_and_owed(db: &Path, project: &str) -> (i64, bool) {
 pub fn seed_run_events(root: &Path, events: &[(&str, &str)]) {
     let rigger_dir = root.join(".rigger");
     std::fs::create_dir_all(&rigger_dir).unwrap();
-    with_run_store(root, |store| {
-        for &(ty, body) in events {
-            store
-                .append(
-                    rigger::conductor::STREAM,
-                    ExpectedRevision::Any,
-                    &[Event::new(ty, body.as_bytes().to_vec())],
-                )
-                .unwrap();
+    with_run_store(root, |store| append_run_events(store, events));
+}
+
+/// Append `(type, json body)` run events to `store`'s run stream, in order, one append each.
+pub fn append_run_events<B: AsRef<str>>(store: &dyn EventStore, events: &[(&str, B)]) {
+    for (ty, body) in events {
+        store
+            .append(
+                rigger::conductor::STREAM,
+                ExpectedRevision::Any,
+                &[Event::new(*ty, body.as_ref().as_bytes().to_vec())],
+            )
+            .unwrap();
+    }
+}
+
+/// The spawn [`one_unanswered_spawn`] requests and never answers.
+pub const SPAWN: &str = "a/implementer#0";
+
+/// Run `run`, whose one unit `a` is mid-spawn: [`SPAWN`] requested with the wall-clock bound
+/// `bound` (`None`: unbounded) and never answered - what a driver that died mid-spawn leaves
+/// behind.
+pub fn one_unanswered_spawn(run: &str, bound: Option<u64>) -> Vec<(&'static str, String)> {
+    let bound = bound.map_or(String::new(), |secs| format!(r#","max_wall_clock":{secs}"#));
+    vec![
+        (
+            "RunStarted",
+            format!(r#"{{"run":"{run}","criteria":["crit"]}}"#),
+        ),
+        (
+            "UnitStarted",
+            r#"{"id":"a","branch":"rigger/u/a"}"#.to_string(),
+        ),
+        (
+            "SpawnRequested",
+            format!(r#"{{"id":"{SPAWN}","unit":"a","stage":"implement","prompt":"go"{bound}}}"#),
+        ),
+    ]
+}
+
+/// Seeds `events` into `root`'s run stream, in order.
+pub fn seed_owned(root: &Path, events: &[(&str, String)]) {
+    let borrowed: Vec<(&str, &str)> = events.iter().map(|(t, b)| (*t, b.as_str())).collect();
+    seed_run_events(root, &borrowed);
+}
+
+/// The traces a run's driver leaves where a liveness reader looks for them: [`SPAWN`]'s liveness
+/// marker for each `(run id, secs ago)` planted under a fresh `RIGGER_TMPDIR` scratch root, and,
+/// given a heartbeat age, the driver registration of the store at a root last heard from that many
+/// ms back, in a fresh `XDG_STATE_HOME`'s registry.
+pub struct DriverTraces {
+    scratch: tempfile::TempDir,
+    state_home: Option<tempfile::TempDir>,
+}
+
+impl DriverTraces {
+    /// The traces `markers` and `heartbeat_ms_ago` (`None`: no registration) leave for the store
+    /// at `root`.
+    pub fn left(root: &Path, markers: &[(&str, u64)], heartbeat_ms_ago: Option<u64>) -> Self {
+        let scratch = tempfile::tempdir().expect("create the scratch root the markers live under");
+        let scratch_root = scratch.path().to_str().unwrap();
+        for (run, secs_ago) in markers {
+            plant_marker(
+                &rigger::liveness::marker_path(scratch_root, run, SPAWN).unwrap(),
+                *secs_ago,
+            );
         }
-    });
+        let toplevel = super::git::git_out(root, &["rev-parse", "--show-toplevel"]);
+        let state_home = heartbeat_ms_ago.map(|ago| {
+            super::fixtures::seed_registry(
+                "proj",
+                &toplevel,
+                rigger::registry::now_ms() - ago,
+                rigger::registry::Writer::Driver,
+            )
+            .0
+        });
+        Self {
+            scratch,
+            state_home,
+        }
+    }
+
+    /// The env a `rigger` run reads these traces through, followed by `extra`.
+    pub fn envs<'a>(&'a self, extra: &[(&'a str, &'a str)]) -> Vec<(&'a str, &'a str)> {
+        let mut envs = vec![("RIGGER_TMPDIR", self.scratch.path().to_str().unwrap())];
+        // With no entry to seed, the binary's own fresh state home holds no registration at all.
+        if let Some(home) = &self.state_home {
+            envs.push(("XDG_STATE_HOME", home.path().to_str().unwrap()));
+        }
+        envs.extend_from_slice(extra);
+        envs
+    }
+}
+
+/// The age, in whole seconds, a refusal names for [`SPAWN`]'s liveness marker: the digits that
+/// follow `<SPAWN> (marker touched `.
+pub fn named_marker_age(err: &str) -> u64 {
+    let lead = format!("{SPAWN} (marker touched ");
+    let at = err
+        .find(&lead)
+        .unwrap_or_else(|| panic!("the refusal must name {SPAWN}'s marker age; stderr: {err:?}"))
+        + lead.len();
+    let digits: String = err[at..].chars().take_while(char::is_ascii_digit).collect();
+    digits
+        .parse()
+        .unwrap_or_else(|e| panic!("{SPAWN}'s marker age {digits:?} must be whole seconds: {e}"))
+}
+
+/// The idle window, in whole seconds, as the refusal states it.
+pub fn idle_window_secs() -> u64 {
+    rigger::registry::DEFAULT_IDLE_MS / 1000
 }
 
 /// `f` over `root`'s own project namespace of its on-disk `.rigger/events.db` - the store the
@@ -412,6 +604,11 @@ pub fn read_run_events(root: &Path) -> Vec<Event> {
             .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
             .unwrap()
     })
+}
+
+/// The position of the newest event in `root`'s namespaced run stream ([`read_run_events`]).
+pub fn run_log_head(root: &Path) -> u64 {
+    read_run_events(root).last().unwrap().position
 }
 
 /// The id of the run [`rigger::run::current_run_id`] resolves over `root`'s own run stream
@@ -496,6 +693,39 @@ pub fn planted_graph(root: &Path, graph: &rigger::contextgraph::Graph) -> Projec
     planted
 }
 
+/// An alias the CLI's alias tests define of
+/// [`UNRESOLVED_FILE`](super::fixtures::UNRESOLVED_FILE) (spec 117).
+pub const UNRESOLVED_ALIAS: &str = "src/aka.rs";
+
+/// A [`temp_project`] whose own graph holds the rows
+/// [`seed_unresolved_references`](super::fixtures::seed_unresolved_references) stages (spec 117,
+/// UNRESOLVED REFERENCES ARE A READ).
+pub fn unresolved_project() -> tempfile::TempDir {
+    let dir = temp_project();
+    seed_rigger_dir(dir.path());
+    super::fixtures::seed_unresolved_references(&open_graph(dir.path()));
+    dir
+}
+
+/// The error `rigger graph --around <seed> --depth 1` fails with over an [`unresolved_project`]
+/// once `sql` ran on its graph, the command printing nothing on stdout and its stderr that error
+/// alone, behind the opening of a graph error's [`refusal_line`] ([`super::fixtures::graph_error`]).
+pub fn around_unresolved_fails_after(sql: &str, seed: &str) -> String {
+    let dir = unresolved_project();
+    rigger_db(dir.path(), "graph.db")
+        .execute_batch(sql)
+        .unwrap();
+    let (out, err, ok) = run_around(dir.path(), seed, 1);
+    assert!(
+        out.is_empty() && !ok,
+        "the around fails printing nothing; stderr:\n{err}"
+    );
+    err.strip_prefix(&refusal_line(&super::fixtures::graph_error("")))
+        .map(str::trim_end)
+        .unwrap_or_else(|| panic!("a graph error; stderr:\n{err}"))
+        .to_string()
+}
+
 /// The stdout `rigger graph --show <query>` prints when several definitions answer `query`: the
 /// candidate count, then each `(id, file)` of `cands` on its own line, in their order, and no body.
 pub fn ambiguous_show(query: &str, cands: &[(&str, &str)]) -> String {
@@ -557,16 +787,6 @@ pub fn show_recorded(
     )
 }
 
-/// Hold `graph_db` under another writer's write lock while `run` runs, past every busy timeout
-/// the binary waits on, and hand back what `run` returned once the lock is released.
-pub fn with_graph_locked<T>(graph_db: &Path, run: impl FnOnce() -> T) -> T {
-    let holder = rusqlite::Connection::open(graph_db).unwrap();
-    holder.execute_batch("BEGIN IMMEDIATE").unwrap();
-    let out = run();
-    holder.execute_batch("ROLLBACK").unwrap();
-    out
-}
-
 /// The fold state of the graph at `graph_db` that decides how FUTURE events fold (spec 101, "the
 /// identity"): every recorded test reference and where it resolved (pending ones included), the restorable attrs a retired node keeps, each
 /// identity's current generation, the node and edge assertions of live generations (edges by their
@@ -613,11 +833,8 @@ pub fn fold_state(graph_db: &Path) -> Vec<String> {
 /// The whole live projection of the graph at `graph_db`, read under `project`, and its
 /// [`fold_state`], as one comparable value: spec 101's comparison surface.
 pub fn graph_identity(graph_db: &Path, project: &str) -> (String, Vec<String>) {
-    let whole = Projector::open(graph_db.to_str().unwrap(), project)
-        .unwrap()
-        .whole()
-        .unwrap();
-    (serde_json::to_string(&whole).unwrap(), fold_state(graph_db))
+    let graph = Projector::open(graph_db.to_str().unwrap(), project).unwrap();
+    (super::fixtures::whole_json(&graph), fold_state(graph_db))
 }
 
 /// Whether `db`'s applied ledger records `position`.
@@ -626,6 +843,167 @@ pub fn applied(db: &Path, position: u64) -> bool {
         db,
         "SELECT EXISTS (SELECT 1 FROM applied WHERE position = ?1)",
         position,
+    )
+}
+
+/// Whether the graph file at `db` records each of `positions` applied ([`applied`]), in order.
+pub fn applied_each(db: &Path, positions: &[u64]) -> Vec<bool> {
+    positions.iter().map(|&at| applied(db, at)).collect()
+}
+
+/// The position and type of each event of `root`'s run log ([`run_log`]) that its `graph.db`'s
+/// applied ledger does not record ([`applied`]), in log order: empty once every event is folded.
+pub fn unfolded_run_events(root: &Path) -> Vec<(u64, String)> {
+    let graph_db = rigger_file(root, "graph.db");
+    run_log(root)
+        .into_iter()
+        .filter(|(position, _)| !applied(&graph_db, *position))
+        .collect()
+}
+
+/// What `rigger setup` prints before it rebuilds a `graph.db` that owes its rebuild only because
+/// it misses an event the log holds.
+pub const LOST_FOLD_REBUILD_LINE: &str = "rebuilding graph.db from the event log: it misses an \
+     event the log holds, so the log's live selection is refolded once";
+
+/// What `rigger setup` prints before it rebuilds a `graph.db` that owes its rebuild only because
+/// it was folded under an older fold rule.
+pub const OLDER_RULE_REBUILD_LINE: &str = "rebuilding graph.db from the event log: it was folded \
+     under an older fold rule, so the log's live selection is refolded once";
+
+/// What `rigger setup` prints before it rebuilds a `graph.db` that owes its rebuild for both
+/// causes: it was folded under an older fold rule, and it misses an event the log holds.
+pub const BOTH_CAUSES_REBUILD_LINE: &str = "rebuilding graph.db from the event log: it was folded \
+     under an older fold rule, and it misses an event the log holds, so the log's live selection \
+     is refolded once";
+
+/// What a command or tool whose answer depends on the fold answers after its name when it refuses
+/// because `graph.db` owes its rebuild
+/// ([`rebuild_owed_refusal`](rigger::contextgraph::rebuild_owed_refusal)): spec 124's MARK LINES
+/// text, its one cause the older fold rule the file records - the lost fold is the seeding's
+/// verdict, never named here.
+pub const REBUILD_OWED_TEXT: &str = "graph.db owes one rebuild from the event log (it was folded \
+     under an older fold rule) - run `rigger setup` to rebuild it";
+
+/// The arguments of `rigger dash --export` writing its snapshot to `snapshot.html` in the
+/// project root.
+pub const DASH_SNAPSHOT_ARGS: [&str; 3] = ["dash", "--export", "snapshot.html"];
+
+/// What `rigger setup` prints once its rebuild is in place.
+pub const REBUILT_LINE: &str = "rebuilt graph.db from the event log";
+
+/// The progress line `rigger setup` prints when its rebuild has folded `events` events and reached
+/// the log's head at position `head`.
+pub fn rebuilt_through_the_head(events: usize, head: u64) -> String {
+    format!("rebuilt {events} events, through position {head} of {head} (100%)")
+}
+
+/// What `rigger setup` prints once it has pruned `nodes` dead-run nodes and reclaimed `edges`
+/// superseded edges from the graph it rebuilt.
+pub fn pruned_from_the_rebuilt_graph(nodes: usize, edges: usize) -> String {
+    format!(
+        "pruned {nodes} dead-run node(s) and reclaimed {edges} superseded edge(s) from the rebuilt \
+         graph"
+    )
+}
+
+/// How the stdout of a `rigger emit` that appended its event and folded it into `graph.db` ends.
+pub const EMIT_FOLDED_ENDING: &str = " and folded it into the context graph\n";
+
+/// The stdout of a `rigger emit` that appended its `DecisionMade` at `position` and folded it into
+/// `graph.db` ([`EMIT_FOLDED_ENDING`]).
+pub fn emit_folded_line(position: u64) -> String {
+    format!("emitted DecisionMade (position {position}){EMIT_FOLDED_ENDING}")
+}
+
+/// What `rigger setup` prints, exiting zero, when the transaction that seeds the `graph.db` cursor
+/// meets another writer's lock past the busy timeout (spec 124, CATCH-UP LINES).
+pub const SEEDING_SKIPPED_LINE: &str = "graph.db catch-up was not started: another writer holds \
+     the write lock - the next rigger setup starts it";
+
+/// Backdate every event `root`'s `.rigger/events.db` holds past the catch-up horizon
+/// ([`super::fixtures::past_the_horizon`]), through [`backdate_the_log_by`] (spec 124, HORIZON IN
+/// TESTS): what a binary test whose `rigger setup` must rebuild over a hole below an applied
+/// position calls before that setup.
+pub fn backdate_the_log(root: &Path) {
+    backdate_the_log_by(root, super::fixtures::past_the_horizon());
+}
+
+/// Record every event `root`'s `.rigger/events.db` holds `age` earlier than it was, through a
+/// connection of its own (spec 124, HORIZON IN TESTS): how a binary test ages the events whose
+/// store stamps `rigger setup`'s seeding reads.
+pub fn backdate_the_log_by(root: &Path, age: Duration) {
+    rigger_db(root, "events.db")
+        .execute(
+            "UPDATE events SET recorded_at = recorded_at - ?1",
+            [age.as_nanos() as i64],
+        )
+        .unwrap();
+}
+
+/// Remove the store file `name` under `root`'s `.rigger` and the `-wal` and `-shm` files sqlite
+/// keeps beside it, each where it exists: a store file an operator deletes before the next `rigger
+/// setup`.
+pub fn remove_the_store_file(root: &Path, name: &str) {
+    for file in [
+        name.to_string(),
+        format!("{name}-wal"),
+        format!("{name}-shm"),
+    ] {
+        let path = rigger_file(root, &file);
+        if path.exists() {
+            std::fs::remove_file(path).unwrap();
+        }
+    }
+}
+
+/// The lines of `rigger setup`'s stdout `out` that report how it brought `graph.db` up to the log:
+/// the cause it rebuilds for, that it rebuilt, how its catch-up ended or that it was not started,
+/// and what the file passed over, in the order printed.
+pub fn rebuild_lines(out: &str) -> Vec<String> {
+    out.lines()
+        .filter(|l| {
+            l.starts_with("rebuilding graph.db")
+                || l.starts_with("rebuilt graph.db")
+                || l.starts_with("caught graph.db up")
+                || l.starts_with("graph.db catch-up")
+                || l.starts_with("passed over ")
+        })
+        .map(str::to_string)
+        .collect()
+}
+
+/// The [`rebuild_lines`] of a `rigger setup` that printed `cause` before it rebuilt a `graph.db`
+/// and passed nothing over: that line, then that it rebuilt.
+pub fn rebuilt_for(cause: &str) -> Vec<String> {
+    vec![cause.to_string(), REBUILT_LINE.to_string()]
+}
+
+/// The [`rebuilt_for`] lines of a `rigger setup` that rebuilt a `graph.db` missing an event the
+/// log holds: the lost-fold cause, then that it rebuilt.
+pub fn rebuilt_for_a_lost_fold() -> Vec<String> {
+    rebuilt_for(LOST_FOLD_REBUILD_LINE)
+}
+
+/// The [`rebuild_lines`] of a `rigger setup` that rebuilt a `graph.db` missing an event the log
+/// holds ([`rebuilt_for_a_lost_fold`]) and that then counts events passed over, by cause:
+/// `rejected` rejected payloads, `failed` fold failures and `unresolved` entries resolved to nothing
+/// ([`passed_over_line`]).
+pub fn rebuilt_passing_over(rejected: usize, failed: usize, unresolved: usize) -> Vec<String> {
+    let mut lines = rebuilt_for_a_lost_fold();
+    lines.push(passed_over_line(rejected, failed, unresolved));
+    lines
+}
+
+/// The line `rigger setup` prints once its graph step ends while `graph.db` counts events passed
+/// over, by cause (spec 124, CATCH-UP LINES): `rejected` rejected payloads, `failed` fold failures
+/// and `unresolved` entries resolved to nothing, counted by cause and in total
+/// ([`super::fixtures::passed_over_counts`]).
+pub fn passed_over_line(rejected: usize, failed: usize, unresolved: usize) -> String {
+    let (n, by_cause) = super::fixtures::passed_over_counts(rejected, failed, unresolved);
+    format!(
+        "passed over {n} event(s) the fold could not fold {by_cause}, recorded as folded - {}",
+        super::fixtures::RETRIED_BY_A_LATER_RULE
     )
 }
 
@@ -650,10 +1028,39 @@ pub fn exists(db: &Path, sql: &str, param: impl rusqlite::ToSql) -> bool {
 /// What a rebuild that reports nothing hands its progress callback.
 pub fn no_progress(_: rigger::contextgraph::sqlite::RebuildProgress) {}
 
-/// The graph projection of `root`'s own `.rigger/graph.db`, under its run-stream identity.
+/// The graph projection of `root`'s own `.rigger/graph.db`, under its run-stream identity, folding
+/// the log the binary's open of it folds there ([`local_log_identity`]).
 pub fn open_graph(root: &Path) -> Projector {
     let id = run_stream_identity(root);
-    Projector::open(rigger_file(root, "graph.db").to_str().unwrap(), &id).unwrap()
+    Projector::open(rigger_file(root, "graph.db").to_str().unwrap(), &id)
+        .unwrap()
+        .with_store_identity(local_log_identity(root))
+}
+
+/// The identity of `root`'s own `.rigger/events.db` as a binary run in `root` records it beside a
+/// graph's cursor: the path under the directory the binary's working directory resolves `root` to.
+pub fn local_log_identity(root: &Path) -> String {
+    let resolved = root.canonicalize().unwrap();
+    rigger::registry::StoreIdentity::Local {
+        path: rigger_file(&resolved, "events.db")
+            .to_string_lossy()
+            .into_owned(),
+    }
+    .log_identity()
+}
+
+/// [`open_graph`] folding forward from `root`'s own project namespace of its `.rigger/events.db`
+/// ([`Projector::with_log`]), as every open of the binary that folds is wired.
+pub fn open_graph_with_its_log(root: &Path) -> Projector {
+    let (events_db, id) = (rigger_file(root, "events.db"), run_stream_identity(root));
+    open_graph(root).with_log(move || {
+        let backend = Store::open(events_db.to_str().unwrap())
+            .map_err(|e| rigger::contextgraph::Error(e.to_string()))?;
+        Ok(std::sync::Arc::new(Namespaced::owning(
+            std::sync::Arc::new(backend),
+            &id,
+        )))
+    })
 }
 
 /// The graph `rigger graph build` folds over a fresh [`temp_project`] holding each of `files`, a
@@ -668,9 +1075,7 @@ pub fn built_graph(files: &[(&str, &str)]) -> (tempfile::TempDir, Projector) {
 /// `(root-relative path, source text)` pair, is written there: a first build, or a rebuild over
 /// the files' next generation.
 pub fn rebuilt_graph(root: &Path, files: &[(&str, &str)]) -> Projector {
-    for (path, source) in files {
-        std::fs::write(root.join(path), source).unwrap();
-    }
+    super::fixtures::write_files(root, files);
     run_rigger_ok(root, &["graph", "build"]);
     open_graph(root)
 }
@@ -795,6 +1200,11 @@ pub fn derived_menu_lines(stdout: &str) -> Vec<&str> {
     lines_where(stdout, |line| line.starts_with("--derived:"))
 }
 
+/// The decision rows of what `rigger peers` printed, in order.
+pub fn decision_lines(stdout: &str) -> Vec<&str> {
+    lines_where(stdout, |line| line.starts_with("decision "))
+}
+
 /// The line `rigger reset --derived` prints, ended, when the log's file held no free page.
 pub const LOG_LEFT_AS_IT_STANDS_LINE: &str =
     "reset --derived: the log file holds no reclaimable free page, so it was left as it stands \
@@ -805,23 +1215,68 @@ pub fn reclaimed_line(bytes: u64) -> String {
     format!("reset --derived: compacted the log file and reclaimed {bytes} byte(s) on disk\n")
 }
 
-/// The line a command refused at `graph.db.lock` ends its stderr with, whoever holds the lock.
-pub const REBUILD_LOCK_REFUSAL: &str =
-    "rigger: graph: graph.db.lock is held by another `rigger setup` or `rigger reset`";
+/// The line the binary ends a failed command's stderr with: `rigger: ` before the `error` the
+/// command failed on.
+pub fn refusal_line(error: &str) -> String {
+    let mut line = String::from("rigger: ");
+    line.push_str(error);
+    line
+}
+
+/// The line a rigger command that exited successfully when `ok` says so ended its stderr `err`
+/// with, when it failed - a [`refusal_line`] for an error it refused on - and `None` when it
+/// succeeded.
+pub fn failure_line(ok: bool, err: &str) -> Option<String> {
+    (!ok).then(|| err.lines().last().unwrap_or_default().to_owned())
+}
+
+/// The [`refusal_line`] `rigger setup` ends its stderr with when its failure is the owed mark
+/// beside `graph.db` it cannot remove - a directory stands at its path
+/// ([`unremovable_mark_beside`](super::fixtures::unremovable_mark_beside)) - naming the mark as
+/// setup reaches it, under the project root's rigger dir; never once its catch-up stopped at a
+/// failure, whose stop line ends its stderr instead.
+pub fn unremovable_mark_refusal() -> String {
+    refusal_line(&super::fixtures::directory_refusal(
+        super::fixtures::owed_mark_in(Path::new(RIGGER_DIR)).display(),
+    ))
+}
+
+/// The [`refusal_line`] a command ends its stderr with when it refuses the store at `root` for
+/// the scratch root it cannot resolve, the store's owning root having no UTF-8 path
+/// ([`super::fixtures::unresolved_scratch_root_refusal`]).
+pub fn unresolved_scratch_root_refusal_line(root: &Path) -> String {
+    refusal_line(&super::fixtures::unresolved_scratch_root_refusal(
+        &root.join(RIGGER_DIR),
+    ))
+}
+
+/// The [`refusal_line`] a command refused at `graph.db.lock` ends its stderr with, whoever holds
+/// the lock: the graph error [`rigger::contextgraph::sqlite::REBUILD_IN_PROGRESS`].
+pub fn rebuild_in_progress_line() -> String {
+    let refused = super::fixtures::graph_error(rigger::contextgraph::sqlite::REBUILD_IN_PROGRESS);
+    refusal_line(&refused)
+}
 
 /// The whole stderr of `rigger reset --derived` on a project configured for the server-backed
-/// store, where the migration does not run.
-pub const SERVER_BACKED_DERIVED_REFUSAL: &str =
-    "rigger: reset --derived: the migration rewrites and deletes rows of the event log and \
-     vacuums the file, which is a mechanic of the embedded .rigger/events.db store; this project \
-     is configured for the server-backed store, where the migration does not run. Re-run it \
-     against a project on the sqlite backend. Refusing rather than reporting a migration that did \
-     not happen.\n";
+/// store, where the migration does not run: one [`refusal_line`], ended.
+pub fn server_backed_derived_refusal() -> String {
+    refusal_line(
+        "reset --derived: the migration rewrites and deletes rows of the event log and vacuums the \
+         file, which is a mechanic of the embedded .rigger/events.db store; this project is \
+         configured for the server-backed store, where the migration does not run. Re-run it \
+         against a project on the sqlite backend. Refusing rather than reporting a migration that \
+         did not happen.",
+    ) + "\n"
+}
 
-/// The line `rigger reset --derived` ends its stderr with over a rebuild left unfinished.
-pub const UNFINISHED_REBUILD_REFUSAL: &str =
-    "rigger: reset --derived: a rebuild of graph.db was left unfinished - run `rigger setup` to \
-     finish it";
+/// The [`refusal_line`] `rigger reset --derived` ends its stderr with over a rebuild left
+/// unfinished.
+pub fn unfinished_rebuild_refusal() -> String {
+    refusal_line(
+        "reset --derived: a rebuild of graph.db was left unfinished - run `rigger setup` to finish \
+         it",
+    )
+}
 
 /// The rebuild lock of the `graph.db` of `root`, held as a `rigger setup` or a `rigger reset`
 /// holds `graph.db.lock`, until it is dropped.
@@ -898,6 +1353,30 @@ pub fn site_entries_as_printed(
 /// `lost`, its fold-loss clause: empty when the build lost no fold.
 pub fn graph_build_line(events: usize, lost: &str) -> String {
     format!("graph build: ingested {events} code-ingest event(s) into .rigger/graph.db{lost}\n")
+}
+
+/// How many batch events `entries` stand for: the sum of the event counts their replay keys
+/// carry.
+#[cfg(feature = "symbols")]
+pub fn batch_events(entries: &[super::fixtures::EntryRecord]) -> usize {
+    entries
+        .iter()
+        .map(|(_, _, key)| super::fixtures::entry_key_parts(key).2)
+        .sum()
+}
+
+/// What the log of the project at `root` records as ledger entries, beside what a run records
+/// for the tree as it stands under the blob `git hash-object` gives each file.
+#[cfg(feature = "symbols")]
+pub type RecordedAndWalked = [Vec<super::fixtures::EntryRecord>; 2];
+
+#[cfg(feature = "symbols")]
+pub fn recorded_and_walked(root: &Path) -> RecordedAndWalked {
+    use super::fixtures::{entry_records, walked_git_entry_records};
+    [
+        entry_records(&read_run_events(root)),
+        walked_git_entry_records(root),
+    ]
 }
 
 /// The entity count a `rigger graph build` reports (`... ingested <n> ...`).
@@ -982,36 +1461,12 @@ pub fn configure_workdir(root: &Path, extra: &str) -> (tempfile::TempDir, String
     (relocated, scratch_root)
 }
 
-/// A machine-global instance registry under a fresh `XDG_STATE_HOME` holding one entry for
-/// `project` at `root` (its local store under `root/.rigger/events.db`) last heard from at
-/// `heartbeat_ms`; returns the state home and the entry's file.
-pub fn seed_registry(project: &str, root: &str, heartbeat_ms: u64) -> (tempfile::TempDir, PathBuf) {
-    let state_home = tempfile::tempdir().expect("create XDG_STATE_HOME");
-    let inst = rigger::registry::Instance {
-        project: project.to_string(),
-        root: root.to_string(),
-        store: rigger::registry::StoreIdentity::Local {
-            path: format!("{root}/{RIGGER_DIR}/events.db"),
-        },
-        heartbeat_ms,
-        writer: rigger::registry::Writer::Driver,
-    };
-    let entry = rigger::registry::write(&rigger::registry::instances_dir(state_home.path()), &inst)
-        .expect("seed a registry entry");
-    (state_home, entry)
-}
-
 /// The current time as nanoseconds since the Unix epoch.
 pub fn now_nanos() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos() as i64
-}
-
-/// `secs` seconds as nanoseconds.
-pub fn nanos(secs: u64) -> i64 {
-    Duration::from_secs(secs).as_nanos() as i64
 }
 
 /// The payload of one extracted code entity, `alpha` in `src/a.rs`.
@@ -1167,7 +1622,7 @@ pub fn stopping_at_the_grounder(workflow: &str) -> String {
 /// names, which a new grounder extends. `what` names the entry in the failure.
 pub fn assert_stopped_at_the_grounder(output: &(String, String, bool), what: &str) {
     let (out, err, ok) = output;
-    let clause = format!("rigger: unknown grounder \"{REJECTED_GROUNDER}\"");
+    let clause = refusal_line(&format!("unknown grounder \"{REJECTED_GROUNDER}\""));
     assert!(
         !ok && err
             .lines()

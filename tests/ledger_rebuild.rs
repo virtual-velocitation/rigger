@@ -1,9 +1,11 @@
 //! Spec 107, criterion 5 - THE GRAPH REBUILDS FROM LEDGER AND TREE.
 //!
 //! A ledger entry names a generation and where its bytes were; the batch itself is nowhere on the
-//! log. These tests hold that `rigger setup`'s rebuild re-extracts each entry's batch from the
-//! repository's object database, the tree's file or no bytes, in that order, and folds it through
-//! the ledger fold, so the rebuilt `graph.db` is the one the incremental folds built.
+//! log. These tests hold that `rigger setup`'s rebuild re-extracts the batch of each entry its fold
+//! asks one for (one not yet folded, whose payload parses and whose generation its identity does
+//! not already hold) from the repository's object database, the tree's file or no bytes, in that
+//! order, and folds it through the ledger fold, so the rebuilt `graph.db` is the one the
+//! incremental folds built.
 //!
 //! Every incremental side is folded from hand-built entries through
 //! `Projection::apply_generation` with batches written out here as literal payloads, so the
@@ -11,8 +13,9 @@
 //! comparison is spec 101's surface: the whole live projection and the fold state.
 //!
 //! The resolved folds, the resolution sources, the equalities and the dating run in the default
-//! lane. The light lane compiles no extraction, so there every entry folds nothing and the hole a
-//! refused fold left is still paid.
+//! lane. The light lane compiles no extraction, so there every entry its fold asks a batch for
+//! folds nothing and is passed over as resolved to nothing (spec 124), and the hole a refused fold
+//! left is still paid.
 
 mod common;
 
@@ -20,42 +23,32 @@ use std::path::Path;
 use std::time::{Duration, UNIX_EPOCH};
 
 use common::cli::{
-    applied, graph_identity, init_event_log, no_progress, read_run_events, rigger_file,
+    applied, applied_each, graph_identity, init_event_log, no_progress, passed_over_line,
+    read_run_events, rebuild_lines, rebuilt_for_a_lost_fold, rebuilt_passing_over, rigger_file,
     run_stream_identity, setup_ok, temp_project, with_pre_ledger_run_store, with_run_store,
+    REBUILT_LINE,
 };
 use common::fixtures::{
-    events_of, folds, generation_ingested, held_generations, walked_generation, write_text,
-    DOCUMENT_PATH, SOURCE_PATH, TEST_MODULE_PATH, WORKFLOW_PATH,
+    caught_up_line, drop_the_cursor, events_of, folds, generation_ingested, held_generations,
+    judged_cause, mark_stands_beside, passed_over_rows, rejected_row, walked_generation,
+    write_text, DOCUMENT_PATH, SOURCE_PATH, TEST_MODULE_PATH, WORKFLOW_PATH,
 };
-use rigger::contextgraph::sqlite::{Projector, RebuildSink, Rebuilt};
+use rigger::contextgraph::sqlite::{
+    Projector, RebuildSink, FOLD_FAILED, PAYLOAD_REJECTED, RESOLVED_TO_NOTHING,
+};
 use rigger::contextgraph::{wired, EntryFold, Error, Fold, Projection, TYPE_CODE_ENTITY_EXTRACTED};
 use rigger::eventstore::{Event, ExpectedRevision};
 use rigger::retention::{GenerationIngested, TYPE_GENERATION_INGESTED};
 
 #[cfg(feature = "symbols")]
-use common::cli::{nanos, run_rigger_envs, temp_repoless_project};
+use common::cli::{backdate_the_log, run_rigger_envs, temp_repoless_project};
 #[cfg(feature = "symbols")]
 use common::fixtures::{
-    git_hash_object, git_ok, git_ok_with_identity, git_out, live_edges, loose_object,
+    git_hash_object, git_ok, git_ok_with_identity, git_out, live_edges, loose_object, nanos,
     no_bytes_batch, walked_batch, DOCUMENT_BODY, SOURCE_BODY, TEST_MODULE_BODY, WORKFLOW_BODY,
 };
 #[cfg(feature = "symbols")]
 use rigger::contextgraph::{REL_CONTAINS, REL_DOC_REFERENCES, REL_SPECIFIES};
-
-/// What `rigger setup` prints before it rebuilds a `graph.db` that misses an event the log holds.
-const LOST_FOLD_REBUILD_LINE: &str = "rebuilding graph.db from the event log: it misses an event \
-     the log holds, so the log's live selection is refolded once";
-
-/// What `rigger setup` prints once its rebuild is in place.
-const REBUILT_LINE: &str = "rebuilt graph.db from the event log";
-
-/// The tail every lost fold's error ends with.
-const SETUP_PAYS: &str =
-    " - the next `rigger setup` finds the event missing from graph.db and rebuilds it";
-
-/// What the public fold reports for a ledger entry, before [`SETUP_PAYS`].
-const ENTRY_REFUSED: &str = "graph: a GenerationIngested entry folds only with its batch, through \
-                             `Projection::apply_generation`";
 
 /// The generation the extraction tree's fixture records for the batch under `prefix` for `path`,
 /// as a graph answers the generation it holds.
@@ -180,25 +173,18 @@ fn setup(cwd: &Path) -> (String, String, bool) {
 
 /// `rigger setup` in `cwd`, which must succeed: the lines it prints about its rebuild.
 fn setup_rebuild_lines(cwd: &Path) -> Vec<String> {
-    let out = setup_ok(cwd, &[("RIGGER_NPM", "true")]);
-    out.lines()
-        .filter(|l| {
-            l.starts_with("rebuilding graph.db")
-                || l.starts_with("rebuilt graph.db")
-                || l.starts_with("passed over ")
-        })
-        .map(str::to_string)
-        .collect()
+    rebuild_lines(&setup_ok(cwd, &[("RIGGER_NPM", "true")]))
 }
 
-/// Give the directory `cwd` an event log, and let `rigger setup` settle its scaffold and its
-/// identity before anything is recorded: the project identity the binary now resolves there.
+/// Give the directory `cwd` an event log, and let `rigger setup` settle its scaffold, its identity
+/// and its `graph.db` before anything is recorded: the project identity the binary now resolves
+/// there.
 fn settled(cwd: &Path) -> String {
     init_event_log(cwd);
     assert_eq!(
         setup_rebuild_lines(cwd),
         Vec::<String>::new(),
-        "a project with no graph.db owes no rebuild"
+        "a cold start beside an empty log creates graph.db and owes no rebuild"
     );
     run_stream_identity(cwd)
 }
@@ -268,10 +254,13 @@ fn fold_incrementally(
     outcomes
 }
 
-/// Make sure `cwd`'s `graph.db` stands, as a command that opened it left it: a file whose ledger
-/// misses whatever the log gained by a plain append.
+/// Make sure `cwd`'s `graph.db` stands as a fold made it before the `caught_up` cursor existed: a
+/// file without the cursor ([`drop_the_cursor`]) whose ledger misses whatever the log gained by a
+/// plain append, which the next `rigger setup`'s seeding reads against the log.
 fn stand_graph(cwd: &Path, project: &str) {
-    drop(Projector::open(rigger_file(cwd, "graph.db").to_str().unwrap(), project).unwrap());
+    let graph_db = rigger_file(cwd, "graph.db");
+    drop(Projector::open(graph_db.to_str().unwrap(), project).unwrap());
+    drop_the_cursor(&graph_db);
 }
 
 /// The generation `cwd`'s `graph.db` holds for each of `identities`, in order.
@@ -326,13 +315,16 @@ fn commit_sources(root: &Path) {
 /// Given a repository whose history holds the first generation of a source file and a design
 /// document and a source file since deleted, whose tree holds their second generations, an
 /// out-of-line test module and the workflow definition, and a log of entries one process recorded
-/// that all resolve, when the operator runs `rigger setup`, then the rebuilt `graph.db` equals the
-/// one the incremental folds built: the superseded generations resolved from their blobs, the
-/// entry whose blob git does not hold from the tree's file, the workflow definition's from the
-/// tree's `.rigger/workflow.yml`, and the deleted file's entry with no blob from no bytes.
+/// that all resolve, when `stand` leaves `graph.db` as the route under test finds it and the
+/// operator runs `rigger setup`, then setup says `said` of `graph.db`, and the `graph.db` it folds
+/// equals the one the incremental folds built: the superseded generations resolved from their
+/// blobs, the entry whose blob git does not hold from the tree's file, the workflow definition's
+/// from the tree's `.rigger/workflow.yml`, and the deleted file's entry with no blob from no bytes.
 #[cfg(feature = "symbols")]
-#[test]
-fn setup_rebuilds_from_blobs_tree_files_and_no_bytes_the_graph_the_incremental_folds_built() {
+fn setup_folds_from_blobs_tree_files_and_no_bytes_the_graph_the_incremental_folds_built(
+    stand: fn(&Path, &str),
+    said: Vec<String>,
+) {
     let dir = temp_project();
     let root = dir.path();
     write_text(root, SOURCE_PATH, SOURCE_BODY);
@@ -439,19 +431,19 @@ fn setup_rebuilds_from_blobs_tree_files_and_no_bytes_the_graph_the_incremental_f
         fold_incrementally(&incremental, &project, root, &recordings),
         vec![EntryFold::BatchAsked; 9]
     );
-    stand_graph(root, &project);
+    stand(root, &project);
 
     assert_eq!(
         setup_rebuild_lines(root),
-        vec![LOST_FOLD_REBUILD_LINE, REBUILT_LINE],
-        "the rebuild folds every entry and passes none over"
+        said,
+        "setup folds every entry and passes none over"
     );
 
     let graph_db = rigger_file(root, "graph.db");
     assert_eq!(
         graph_identity(&graph_db, &project),
         graph_identity(&incremental, &project),
-        "the rebuilt graph.db is the incremental one, fold state included"
+        "the graph.db setup folded is the incremental one, fold state included"
     );
     assert_eq!(
         generations(
@@ -549,8 +541,38 @@ fn setup_rebuilds_from_blobs_tree_files_and_no_bytes_the_graph_the_incremental_f
     assert_eq!(
         setup_rebuild_lines(root),
         Vec::<String>::new(),
-        "a paid rebuild is not owed again"
+        "a graph.db folded to the log's head owes nothing again"
     );
+}
+
+rigger::test_cases! {
+    /// The file stands as a fold made it before the cursor existed ([`stand_graph`]): its empty
+    /// ledger beside the log is a lost fold, which setup's rebuild pays.
+    #[cfg(feature = "symbols")]
+    setup_rebuilds_from_blobs_tree_files_and_no_bytes_the_graph_the_incremental_folds_built:
+        setup_folds_from_blobs_tree_files_and_no_bytes_the_graph_the_incremental_folds_built(
+            stand_graph,
+            rebuilt_for_a_lost_fold(),
+        );
+    /// The file keeps the cursor its cold start seeded at 0, and every entry was recorded just now:
+    /// setup folds the file forward from that cursor, re-extracting each entry its fold asks a
+    /// batch for.
+    #[cfg(feature = "symbols")]
+    setup_catches_up_over_young_entries_from_blobs_tree_files_and_no_bytes:
+        setup_folds_from_blobs_tree_files_and_no_bytes_the_graph_the_incremental_folds_built(
+            |_, _| (),
+            vec![caught_up_line(9)],
+        );
+    /// The file keeps the cursor its cold start seeded at 0, and every entry was recorded longer
+    /// ago than the catch-up horizon ([`backdate_the_log`]): setup still folds the file forward
+    /// from that cursor, re-extracting each entry its fold asks a batch for, rather than rebuilding
+    /// over them.
+    #[cfg(feature = "symbols")]
+    setup_catches_up_over_entries_older_than_the_horizon_from_blobs_tree_files_and_no_bytes:
+        setup_folds_from_blobs_tree_files_and_no_bytes_the_graph_the_incremental_folds_built(
+            |root, _| backdate_the_log(root),
+            vec![caught_up_line(9)],
+        );
 }
 
 /// Given a tree that is not a git repository, whose entries name blobs no object database holds,
@@ -612,10 +634,7 @@ fn setup_outside_a_repository_resolves_every_entry_from_the_trees_files() {
     );
     stand_graph(root, &project);
 
-    assert_eq!(
-        setup_rebuild_lines(root),
-        vec![LOST_FOLD_REBUILD_LINE, REBUILT_LINE]
-    );
+    assert_eq!(setup_rebuild_lines(root), rebuilt_for_a_lost_fold());
     assert_eq!(
         graph_identity(&rigger_file(root, "graph.db"), &project),
         graph_identity(&incremental, &project)
@@ -647,7 +666,7 @@ fn setup_outside_a_repository_resolves_every_entry_from_the_trees_files() {
 /// that subdirectory, then each entry's path is read from the repository's top level: the entry
 /// naming the top level's file resolves, the entry naming the subdirectory's file by its path
 /// from the top level resolves, and the entry naming it by its path from the working directory
-/// resolves nothing.
+/// resolves nothing and is passed over.
 #[cfg(feature = "symbols")]
 #[test]
 fn setup_in_a_repository_subdirectory_resolves_from_the_top_level_not_the_working_directory() {
@@ -723,10 +742,7 @@ fn setup_in_a_repository_subdirectory_resolves_from_the_top_level_not_the_workin
     );
     stand_graph(&sub, &project);
 
-    assert_eq!(
-        setup_rebuild_lines(&sub),
-        vec![LOST_FOLD_REBUILD_LINE, REBUILT_LINE]
-    );
+    assert_eq!(setup_rebuild_lines(&sub), rebuilt_passing_over(0, 0, 1));
     assert_eq!(
         generations(
             &sub,
@@ -777,12 +793,12 @@ fn live_facts_without(
 
 /// Given a log holding entries no source resolves - a superseded generation of a design document
 /// between two recordings of the generation the repository holds, and the latest generation of a
-/// source file - when the operator runs `rigger setup`, then the rebuild completes; every
-/// identity whose latest entry resolves holds the live facts and the current generation the
-/// incremental folds reached; the superseded unresolved entry folded nothing, so the link it
-/// dropped keeps the valid-time of the first recording where the incremental graph dated it at
-/// the return; and the identity whose latest entry does not resolve holds what its latest
-/// resolvable entry gave.
+/// source file - when the operator runs `rigger setup`, then the rebuild completes, passing both
+/// over as resolved to nothing and saying so; every identity whose latest entry resolves holds
+/// the live facts and the current generation the incremental folds reached; the superseded
+/// unresolved entry folded nothing, so the link it dropped keeps the valid-time of the first
+/// recording where the incremental graph dated it at the return; and the identity whose latest
+/// entry does not resolve holds what its latest resolvable entry gave.
 #[cfg(feature = "symbols")]
 #[test]
 fn a_rebuild_over_an_entry_no_source_resolves_reaches_the_facts_of_every_latest_entry_that_does() {
@@ -854,11 +870,16 @@ fn a_rebuild_over_an_entry_no_source_resolves_reaches_the_facts_of_every_latest_
 
     assert_eq!(
         setup_rebuild_lines(root),
-        vec![LOST_FOLD_REBUILD_LINE, REBUILT_LINE],
-        "an unresolved entry is folded, not passed over"
+        rebuilt_passing_over(0, 0, 2),
+        "an unresolved entry is passed over, and setup says so"
     );
 
     let graph_db = rigger_file(root, "graph.db");
+    assert_eq!(
+        passed_over_rows(graph_db.to_str().unwrap()),
+        [positions[3], positions[5]].map(|at| (at, RESOLVED_TO_NOTHING.to_string())),
+        "each entry no source resolves is passed over with its cause"
+    );
     assert_eq!(
         live_facts_without(&graph_db, &project, GONE_PATH),
         live_facts_without(&incremental, &project, GONE_PATH),
@@ -921,7 +942,7 @@ fn a_rebuild_over_an_entry_no_source_resolves_reaches_the_facts_of_every_latest_
         positions
             .iter()
             .all(|position| applied(&graph_db, *position)),
-        "every entry's position is recorded, resolved or not"
+        "every entry's position is recorded, resolved or passed over"
     );
 }
 
@@ -931,29 +952,37 @@ fn one_by_one(log: &[Event]) -> impl FnMut(u64, &mut RebuildSink) -> Result<(), 
 }
 
 /// Rebuild the graph file `db` under `project` from `log`, one event to a committed batch,
-/// re-extracting each entry through `ingest::resolve_entry` over `root` and a batch process
-/// started for this pass, as `rigger setup` binds them.
+/// re-extracting each entry its fold asks a batch for through `ingest::resolve_entry` over `root`
+/// and a batch process the pass's own re-extraction starts, as `rigger setup` binds them.
 #[cfg(feature = "symbols")]
 fn rebuild_resolving(
     db: &Path,
     project: &str,
     log: &[Event],
     root: &Path,
-) -> Result<Option<Rebuilt>, String> {
-    let mut blobs = rigger::worktree::BlobBatch::start(root);
-    assert!(blobs.is_some(), "the tree is a repository");
-    Projector::rebuild(
-        &Projector::lock_rebuild(db.to_str().unwrap()).unwrap(),
-        project,
-        true,
-        &mut one_by_one(log),
-        &mut |entry| {
-            let mut source = |id: &str| blobs.as_mut().unwrap().blob(id).map_err(|e| Error(e.0));
-            rigger::ingest::resolve_entry(root, entry, Some(&mut source))
-        },
-        &mut no_progress,
-    )
-    .map_err(|e| e.0)
+) -> Result<Option<rigger::contextgraph::sqlite::Rebuilt>, String> {
+    let root = root.to_path_buf();
+    Projector::open(db.to_str().unwrap(), project)
+        .unwrap()
+        .with_reextraction(
+            move || -> Box<rigger::contextgraph::sqlite::Reextract<'static>> {
+                let root = root.clone();
+                let mut blobs = rigger::worktree::BlobBatch::start(&root).unwrap();
+                assert!(blobs.is_some(), "the tree is a repository");
+                Box::new(move |entry: &Event| {
+                    let mut source =
+                        |id: &str| blobs.as_mut().unwrap().blob(id).map_err(|e| Error(e.0));
+                    rigger::ingest::resolve_entry(&root, entry, Some(&mut source))
+                })
+            },
+        )
+        .rebuild(
+            &Projector::lock_rebuild(db.to_str().unwrap()).unwrap(),
+            true,
+            &mut one_by_one(log),
+            &mut no_progress,
+        )
+        .map_err(|e| e.0)
 }
 
 /// Given a log whose second entry names a loose object whose body is truncated, when a rebuild
@@ -1013,10 +1042,10 @@ fn a_batch_process_that_dies_mid_pass_fails_the_rebuild_and_the_resumed_pass_equ
     for db in [&single, &resumed] {
         drop(Projector::open(db.to_str().unwrap(), &project).unwrap());
     }
-    let untouched = Rebuilt::default();
+    let untouched = common::fixtures::clean_rebuild();
     assert_eq!(
         rebuild_resolving(&single, &project, &log, root),
-        Ok(Some(untouched)),
+        untouched.clone(),
         "a single pass over the untouched repository"
     );
 
@@ -1050,7 +1079,9 @@ fn a_batch_process_that_dies_mid_pass_fails_the_rebuild_and_the_resumed_pass_equ
     let graph_db = rigger_file(root, "graph.db");
     let stood = graph_identity(&graph_db, &project);
     let (out, err, ok) = setup(root);
-    let refused = format!("rigger: graph: event store: {died}");
+    let refused = common::cli::refusal_line(&common::fixtures::graph_error(&format!(
+        "event store: {died}"
+    )));
     assert_eq!(
         (
             ok,
@@ -1063,19 +1094,13 @@ fn a_batch_process_that_dies_mid_pass_fails_the_rebuild_and_the_resumed_pass_equ
     );
 
     std::fs::write(&object, &whole).unwrap();
-    assert_eq!(
-        rebuild_resolving(&resumed, &project, &log, root),
-        Ok(Some(untouched))
-    );
+    assert_eq!(rebuild_resolving(&resumed, &project, &log, root), untouched);
     assert_eq!(
         graph_identity(&resumed, &project),
         graph_identity(&single, &project),
         "the pass resumed once the object is restored equals a single pass"
     );
-    assert_eq!(
-        setup_rebuild_lines(root),
-        vec![LOST_FOLD_REBUILD_LINE, REBUILT_LINE]
-    );
+    assert_eq!(setup_rebuild_lines(root), rebuilt_for_a_lost_fold());
     assert_eq!(
         graph_identity(&graph_db, &project),
         graph_identity(&single, &project),
@@ -1099,10 +1124,12 @@ fn source_entry() -> Event {
 }
 
 /// Given a `graph.db` that owes nothing, and an entry appended through a plain append and handed
-/// to the generic fold, which refuses it and marks the graph as owing its rebuild, when the
-/// operator runs `rigger setup`, then the rebuild pays the hole through the ledger fold: the
-/// entry's position is recorded, and a second setup owes nothing. Where an extraction is
-/// compiled, the entry's batch is folded from the tree's file; where none is, it folds nothing.
+/// to the generic fold, which refuses it writing no mark (spec 124, AN APPENDER WAITS UNDER THE
+/// CEILING AND NEVER MARKS), when the operator runs `rigger setup`, then its seeding finds the
+/// empty ledger beside the log a lost fold and the rebuild pays the hole through the ledger fold:
+/// the entry's position is recorded, and a second setup owes nothing. Where an extraction is
+/// compiled, the entry's batch is folded from the tree's file; where none is, it resolves to
+/// nothing and is passed over, which each setup says.
 #[test]
 fn an_entry_the_generic_fold_refused_is_paid_by_setup_through_the_ledger_fold() {
     let dir = temp_project();
@@ -1118,48 +1145,52 @@ fn an_entry_the_generic_fold_refused_is_paid_by_setup_through_the_ledger_fold() 
         let graph = Projector::open(graph_db.to_str().unwrap(), &project).unwrap();
         assert_eq!(
             Fold::of(wired(Some(&graph as &dyn Projection)), &entry),
-            Fold::NotFolded(format!("{ENTRY_REFUSED}{SETUP_PAYS}"))
+            common::fixtures::entry_refusal()
         );
     }
     assert_eq!(
         (
-            rigger_file(root, "graph.db.owed").exists(),
+            mark_stands_beside(&graph_db),
             applied(&graph_db, entry.position)
         ),
-        (true, false),
-        "the refusal marks the graph owed and records no position"
+        (false, false),
+        "the refusal writes no mark and records no position"
     );
 
+    #[cfg(feature = "symbols")]
+    let (held, passed_over) = (held_generation("gc", SOURCE_PATH), Vec::new());
+    #[cfg(not(feature = "symbols"))]
+    let (held, passed_over) = (None, vec![passed_over_line(0, 0, 1)]);
     assert_eq!(
         setup_rebuild_lines(root),
-        vec![LOST_FOLD_REBUILD_LINE, REBUILT_LINE]
+        [rebuilt_for_a_lost_fold(), passed_over.clone()].concat()
     );
     assert_eq!(
         (
-            rigger_file(root, "graph.db.owed").exists(),
+            mark_stands_beside(&graph_db),
             applied(&graph_db, entry.position)
         ),
         (false, true),
-        "the rebuild folded the entry through the ledger fold and dropped the mark"
+        "the rebuild folded the entry through the ledger fold, writing no mark"
     );
-    #[cfg(feature = "symbols")]
-    let held = held_generation("gc", SOURCE_PATH);
-    #[cfg(not(feature = "symbols"))]
-    let held = None;
     assert_eq!(generations(root, &project, &["gc/src/lib.rs"]), vec![held]);
     assert_eq!(
         setup_rebuild_lines(root),
-        Vec::<String>::new(),
+        passed_over,
         "a paid hole is not owed again"
     );
 }
 
 /// Given entries on the log that no fold reached, in the lane that compiles no extraction, when
-/// the operator runs `rigger setup`, then each entry folds nothing - no generation, no fact - its
-/// position is recorded all the same, and a second setup owes nothing.
+/// `stand` leaves `graph.db` as the route under test finds it and the operator runs `rigger
+/// setup`, then setup says `said` of `graph.db`: each entry folds nothing, no generation and no
+/// fact, and is passed over as resolved to nothing, its position recorded all the same, and a
+/// second setup owes nothing and still says what the file passed over.
 #[cfg(not(feature = "symbols"))]
-#[test]
-fn without_an_extraction_every_entry_folds_nothing_and_its_position_is_recorded() {
+fn without_an_extraction_every_entry_folds_nothing_and_its_position_is_recorded(
+    stand: fn(&Path, &str),
+    said: Vec<String>,
+) {
     use common::fixtures::{planted_extraction_tree, write_file};
 
     let dir = planted_extraction_tree(write_file);
@@ -1184,13 +1215,17 @@ fn without_an_extraction_every_entry_folds_nothing_and_its_position_is_recorded(
         fold_incrementally(&nothing_folded, &project, root, &recordings),
         vec![EntryFold::BatchAsked; 4]
     );
-    stand_graph(root, &project);
+    stand(root, &project);
 
-    assert_eq!(
-        setup_rebuild_lines(root),
-        vec![LOST_FOLD_REBUILD_LINE, REBUILT_LINE]
-    );
+    assert_eq!(setup_rebuild_lines(root), said);
     let graph_db = rigger_file(root, "graph.db");
+    assert_eq!(
+        passed_over_rows(graph_db.to_str().unwrap()),
+        positions
+            .iter()
+            .map(|&at| (at, RESOLVED_TO_NOTHING.to_string()))
+            .collect::<Vec<_>>()
+    );
     assert_eq!(
         (
             generations(
@@ -1203,24 +1238,40 @@ fn without_an_extraction_every_entry_folds_nothing_and_its_position_is_recorded(
                     "gw/.rigger/workflow.yml",
                 ]
             ),
-            positions
-                .iter()
-                .map(|position| applied(&graph_db, *position))
-                .collect::<Vec<_>>(),
+            applied_each(&graph_db, &positions),
         ),
         (vec![None, None, None, None], vec![true; 4])
     );
     assert_eq!(
         graph_identity(&graph_db, &project),
         graph_identity(&nothing_folded, &project),
-        "the rebuilt graph holds what a graph every entry folded nothing into holds"
+        "the graph setup folded holds what a graph every entry folded nothing into holds"
     );
-    assert_eq!(setup_rebuild_lines(root), Vec::<String>::new());
+    assert_eq!(setup_rebuild_lines(root), vec![passed_over_line(0, 0, 4)]);
 }
 
-/// Given an entry on the log whose payload does not parse, beside one whose payload does, when
-/// the operator runs `rigger setup`, then the rebuild completes, says it passed the one event
-/// over, and records both positions, so the next setup owes nothing.
+rigger::test_cases! {
+    /// The file stands as a fold made it before the cursor existed ([`stand_graph`]): setup's
+    /// rebuild folds the entries.
+    #[cfg(not(feature = "symbols"))]
+    a_rebuild_without_an_extraction_folds_nothing_for_each_entry_and_records_its_position:
+        without_an_extraction_every_entry_folds_nothing_and_its_position_is_recorded(
+            stand_graph,
+            rebuilt_passing_over(0, 0, 4),
+        );
+    /// The file keeps the cursor its cold start seeded at 0: setup's catch-up folds the entries.
+    #[cfg(not(feature = "symbols"))]
+    a_catch_up_without_an_extraction_folds_nothing_for_each_entry_and_records_its_position:
+        without_an_extraction_every_entry_folds_nothing_and_its_position_is_recorded(
+            |_, _| (),
+            vec![caught_up_line(4), passed_over_line(0, 0, 4)],
+        );
+}
+
+/// Given an entry on the log whose payload does not parse, beside one whose payload does but
+/// which no source resolves, when the operator runs `rigger setup`, then the rebuild completes,
+/// passes both over with their causes and says so, and records both positions, so the next setup
+/// owes nothing and still says what the file passed over.
 #[test]
 fn an_entry_whose_payload_does_not_parse_is_passed_over_by_a_rebuild_that_completes() {
     let dir = temp_project();
@@ -1230,34 +1281,43 @@ fn an_entry_whose_payload_does_not_parse_is_passed_over_by_a_rebuild_that_comple
     let unparsable = append_unfolded(root, Event::new(TYPE_GENERATION_INGESTED, b"{}".to_vec()));
     let parsable = append_unfolded(root, source_entry());
 
-    assert_eq!(
-        setup_rebuild_lines(root),
-        vec![
-            LOST_FOLD_REBUILD_LINE,
-            REBUILT_LINE,
-            "passed over 1 event(s) whose payload the fold rejects, recorded as folded",
-        ]
-    );
+    assert_eq!(setup_rebuild_lines(root), rebuilt_passing_over(1, 0, 1));
     let graph_db = rigger_file(root, "graph.db");
     assert_eq!(
-        [unparsable, parsable].map(|position| applied(&graph_db, position)),
-        [true, true]
+        (
+            applied_each(&graph_db, &[unparsable, parsable]),
+            passed_over_rows(graph_db.to_str().unwrap()),
+        ),
+        (
+            vec![true, true],
+            vec![
+                (unparsable, unparsable_entry_cause()),
+                (parsable, RESOLVED_TO_NOTHING.to_string()),
+            ]
+        )
     );
     assert_eq!(
         generations(root, &project, &["gc/src/lib.rs"]),
         vec![None],
         "the tree holds no file at the parsable entry's path, so it folded nothing"
     );
-    assert_eq!(setup_rebuild_lines(root), Vec::<String>::new());
+    assert_eq!(setup_rebuild_lines(root), vec![passed_over_line(1, 0, 1)]);
 }
 
-/// `Projector::rebuild` handed a re-extracting function that answers a batch event whose payload
-/// the fold rejects fails with the fold's error, rather than passing the entry over: it records no
-/// position and leaves `graph.db` as it stood. An entry whose own payload does not parse is passed
-/// over without the function being asked, and the same log rebuilt with a function whose batch
-/// folds completes.
+/// The cause a ledger entry whose own payload is `{}` - no generation the fold can parse - is
+/// passed over with.
+fn unparsable_entry_cause() -> String {
+    judged_cause(PAYLOAD_REJECTED, TYPE_GENERATION_INGESTED, b"{}")
+}
+
+/// `Projector::rebuild` under a re-extraction that answers a batch event whose payload the fold
+/// rejects passes the entry over as a fold failure, with the judge's text, and completes: both
+/// positions are recorded and the entry installs no generation. An entry whose own payload does
+/// not parse is passed over without the re-extraction being asked. A rebuild of the same log under
+/// a re-extraction whose batch folds retries the entry and folds it, passing over again only the
+/// entry whose own payload does not parse.
 #[test]
-fn a_rebuild_whose_re_extracted_batch_the_fold_rejects_fails_rather_than_passing_it_over() {
+fn a_rebuild_passes_a_re_extracted_batch_the_fold_rejects_over_as_a_fold_failure_and_completes() {
     const PROJECT: &str = "proj-ledger";
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("graph.db");
@@ -1268,45 +1328,58 @@ fn a_rebuild_whose_re_extracted_batch_the_fold_rejects_fails_rather_than_passing
     entry.position = 2;
     let log = [unparsable, entry];
 
-    let poison: &[u8] = b"{ not valid json";
-    let rejected = serde_json::from_slice::<serde_json::Value>(poison)
-        .unwrap_err()
-        .to_string();
-    let asked = std::cell::RefCell::new(Vec::new());
+    let poison = common::fixtures::POISON;
+    let asked = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let rebuild = |batch: Vec<Event>| {
-        Projector::rebuild(
-            &Projector::lock_rebuild(db.to_str().unwrap()).unwrap(),
-            PROJECT,
-            true,
-            &mut one_by_one(&log),
-            &mut |entry| {
-                asked.borrow_mut().push(entry.position);
+        let asked = std::sync::Arc::clone(&asked);
+        Projector::open(db.to_str().unwrap(), PROJECT)
+            .unwrap()
+            .with_reextraction(common::fixtures::resolving(move |entry| {
+                asked.lock().unwrap().push(entry.position);
                 Ok(Some(batch.clone()))
-            },
-            &mut no_progress,
-        )
-        .map_err(|e| e.0)
+            }))
+            .rebuild(
+                &Projector::lock_rebuild(db.to_str().unwrap()).unwrap(),
+                true,
+                &mut one_by_one(&log),
+                &mut no_progress,
+            )
+            .map_err(|e| e.0)
     };
-    let before = graph_identity(&db, PROJECT);
+    let generation = || {
+        Projector::open(db.to_str().unwrap(), PROJECT)
+            .unwrap()
+            .current_generation("gc/src/lib.rs")
+            .unwrap()
+    };
 
     assert_eq!(
-        rebuild(vec![Event::new(
-            TYPE_CODE_ENTITY_EXTRACTED,
-            poison.to_vec()
-        )]),
-        Err(rejected)
+        rebuild(common::fixtures::poisoned_batch()),
+        common::fixtures::clean_rebuild()
     );
-    let shadow = dir.path().join("graph.db.rebuild");
     assert_eq!(
         (
-            asked.borrow().clone(),
-            graph_identity(&db, PROJECT),
-            applied(&shadow, 1),
-            applied(&shadow, 2),
+            asked.lock().unwrap().clone(),
+            passed_over_rows(db.to_str().unwrap()),
+            generation(),
+            applied(&db, 1),
+            applied(&db, 2),
         ),
-        (vec![2], before, true, false),
-        "the unparsable entry was passed over unasked, the rejected batch failed the rebuild, \
-         and nothing recorded the entry folded"
+        (
+            vec![2],
+            vec![
+                rejected_row(&log[0]),
+                (
+                    2,
+                    judged_cause(FOLD_FAILED, TYPE_CODE_ENTITY_EXTRACTED, poison)
+                ),
+            ],
+            None,
+            true,
+            true
+        ),
+        "the unparsable entry was passed over unasked, the rejected batch was passed over as a \
+         fold failure, and the rebuild completed recording both"
     );
 
     assert_eq!(
@@ -1314,18 +1387,23 @@ fn a_rebuild_whose_re_extracted_batch_the_fold_rejects_fails_rather_than_passing
             "CodeEntityExtracted",
             r#"{"file":"src/lib.rs","name":"alpha","kind":"function","line":1,"lang":"rust","fresh":true}"#,
         )])),
-        Ok(Some(Rebuilt::default())),
-        "the resumed rebuild folds the entry, and passes over nothing more"
+        common::fixtures::clean_rebuild(),
+        "a rebuild whose batch folds retries the entry"
     );
-    assert_eq!(asked.borrow().clone(), vec![2, 2]);
-    let graph = Projector::open(db.to_str().unwrap(), PROJECT).unwrap();
+    assert_eq!(asked.lock().unwrap().clone(), vec![2, 2]);
     assert_eq!(
         (
-            graph.current_generation("gc/src/lib.rs").unwrap(),
+            passed_over_rows(db.to_str().unwrap()),
+            generation(),
             applied(&db, 1),
             applied(&db, 2),
         ),
-        (held_generation("gc", SOURCE_PATH), true, true)
+        (
+            vec![rejected_row(&log[0])],
+            held_generation("gc", SOURCE_PATH),
+            true,
+            true
+        )
     );
 }
 
@@ -1346,9 +1424,10 @@ fn git_invocations_of_setup(cwd: &Path) -> Vec<String> {
         .collect()
 }
 
-/// Every `git` invocation of a `rigger setup` whose rebuild folds no entry and whose report finds
-/// no identity behind its latest recording, in order: the ones its scaffold and its identity
-/// make, and none for a root or an object database.
+/// Every `git` invocation of a `rigger setup` whose rebuild and catch-up hand their re-extractions
+/// no entry and whose report finds no identity behind its latest recording, in order: the ones its
+/// scaffold and its identity make, and none for the root its re-extractions and its report read or
+/// for an object database ([`FIRST_ENTRY_GIT`]).
 #[cfg(feature = "symbols")]
 const SETUP_OWN_GIT: [&str; 5] = [
     "rev-parse --show-toplevel",
@@ -1358,25 +1437,39 @@ const SETUP_OWN_GIT: [&str; 5] = [
     "rev-parse --git-path hooks",
 ];
 
+/// [`SETUP_OWN_GIT`] split where a `rigger setup` asks git what its fold of `graph.db` needs - its
+/// rebuild, the rebuild's report and its catch-up: before its scaffold's last question, the hooks
+/// directory.
+#[cfg(feature = "symbols")]
+fn setup_own_git_around_its_fold() -> (&'static [&'static str], &'static [&'static str]) {
+    SETUP_OWN_GIT.split_at(4)
+}
+
+/// Every `git` invocation a re-extraction compiled with an extraction makes at the first entry it
+/// meets when no reader of its write open's root has read it before, in order: that root, whether
+/// an object database stands there, and the one `git cat-file --batch` process it reads that
+/// database through. One meeting its first entry after the root was read asks the last two alone,
+/// and one compiled without an extraction asks neither of them.
+const FIRST_ENTRY_GIT: [&str; 3] = [
+    "rev-parse --show-toplevel",
+    "rev-parse --git-dir",
+    "cat-file --batch",
+];
+
 /// How often `rigger setup` in `cwd` asked git whether an object database stands there, and how
-/// many `git cat-file --batch` processes it started.
+/// many `git cat-file --batch` processes it started: the last two of [`FIRST_ENTRY_GIT`].
 fn blob_source_starts_of_setup(cwd: &Path) -> (usize, usize) {
     let invocations = git_invocations_of_setup(cwd);
     let asked = |args: &str| invocations.iter().filter(|line| *line == args).count();
-    (asked("rev-parse --git-dir"), asked("cat-file --batch"))
+    let [_, object_database, batch] = FIRST_ENTRY_GIT;
+    (asked(object_database), asked(batch))
 }
 
-/// Given a repository whose log holds three entries, two of them resolving only from the blobs
-/// they name, when the operator runs `rigger setup`, then the rebuild decides once whether an
-/// object database can be asked and reads every blob from one `git cat-file --batch` process;
-/// and a setup that owes no rebuild, a rebuild over a log holding no entry, and a rebuild
-/// outside a repository each start none - the last after asking, once, and finding no
-/// repository.
+/// Settle a repository at `root` ([`settled`]) and record three entries past what its graph
+/// folded, recorded from a tree that then moves on, so each resolves from the blob it names alone:
+/// the project's identity.
 #[cfg(feature = "symbols")]
-#[test]
-fn a_rebuild_reads_every_entrys_blob_from_one_batch_process_started_at_its_first_entry() {
-    let dir = temp_project();
-    let root = dir.path();
+fn record_entries_resolving_from_their_blobs_alone(root: &Path) -> String {
     write_text(root, SOURCE_PATH, SOURCE_BODY);
     write_text(root, DOCUMENT_PATH, DOCUMENT_BODY);
     let first_source = git_hash_object(root, SOURCE_PATH, true);
@@ -1385,7 +1478,6 @@ fn a_rebuild_reads_every_entrys_blob_from_one_batch_process_started_at_its_first
     // The tree moves on, so both first generations resolve from the object database alone.
     write_text(root, SOURCE_PATH, SOURCE_WITHOUT_HELPER);
     std::fs::remove_file(root.join(DOCUMENT_PATH)).unwrap();
-    let walked = |prefix, path| events_of(walked_batch(prefix, path));
     let recordings = [
         recording(
             "gc",
@@ -1393,7 +1485,7 @@ fn a_rebuild_reads_every_entrys_blob_from_one_batch_process_started_at_its_first
             &first_source,
             false,
             10,
-            walked("gc", SOURCE_PATH),
+            events_of(walked_batch("gc", SOURCE_PATH)),
         ),
         recording(
             "gd",
@@ -1401,7 +1493,7 @@ fn a_rebuild_reads_every_entrys_blob_from_one_batch_process_started_at_its_first
             &first_document,
             false,
             11,
-            walked("gd", DOCUMENT_PATH),
+            events_of(walked_batch("gd", DOCUMENT_PATH)),
         ),
         recording(
             "gd",
@@ -1409,21 +1501,22 @@ fn a_rebuild_reads_every_entrys_blob_from_one_batch_process_started_at_its_first
             &first_source,
             false,
             12,
-            walked("gd", SOURCE_PATH),
+            events_of(walked_batch("gd", SOURCE_PATH)),
         ),
     ];
     record(root, &recordings);
-    stand_graph(root, &project);
+    project
+}
 
-    assert_eq!(
-        blob_source_starts_of_setup(root),
-        (1, 1),
-        "one question and one batch process for three entries"
-    );
+/// Assert that the graph at `root` holds, of each identity whose entry
+/// [`record_entries_resolving_from_their_blobs_alone`] recorded, the generation that entry folds
+/// from the blob it names, failing with `why`.
+#[cfg(feature = "symbols")]
+fn assert_each_entry_held_from_its_blob(root: &Path, project: &str, why: &str) {
     assert_eq!(
         generations(
             root,
-            &project,
+            project,
             &["gc/src/lib.rs", "gd/docs/architecture.md", "gd/src/lib.rs"]
         ),
         vec![
@@ -1431,12 +1524,80 @@ fn a_rebuild_reads_every_entrys_blob_from_one_batch_process_started_at_its_first
             held_generation("gd", DOCUMENT_PATH),
             held_generation("gd", SOURCE_PATH),
         ],
-        "each entry resolved from the blob the one process answered"
+        "{why}"
+    );
+}
+
+/// Given a repository whose log holds three entries past the cursor its cold start seeded, each
+/// resolving only from the blob it names, when the operator runs `rigger setup`, then its catch-up
+/// folds each entry in a call of its own and asks git for the tree's root once across the calls,
+/// read from the one cell its write open shares, while each call asks for the object database and
+/// starts a batch process of its own; and a setup at the log's head makes its own invocations
+/// alone, its catch-up asking git for nothing.
+#[cfg(feature = "symbols")]
+#[test]
+fn a_catch_up_asks_git_for_the_root_once_across_its_calls_and_each_call_for_its_own_batch() {
+    let dir = temp_project();
+    let root = dir.path();
+    let project = record_entries_resolving_from_their_blobs_alone(root);
+    let (before_catch_up, after_catch_up) = setup_own_git_around_its_fold();
+    let [_, each_later_call @ ..] = FIRST_ENTRY_GIT;
+
+    assert_eq!(
+        git_invocations_of_setup(root),
+        [
+            before_catch_up,
+            &FIRST_ENTRY_GIT,
+            &each_later_call,
+            &each_later_call,
+            after_catch_up,
+        ]
+        .concat(),
+        "the root is asked of git once across the catch-up's three calls, and each call asks for \
+         the object database and starts its own batch process"
+    );
+    assert_each_entry_held_from_its_blob(
+        root,
+        &project,
+        "each entry folded from the blob its call's batch process answered",
     );
     assert_eq!(
         git_invocations_of_setup(root),
         SETUP_OWN_GIT,
-        "a setup that owes no rebuild starts no git process beyond its scaffold's own"
+        "a setup whose catch-up meets no entry makes its own git invocations alone"
+    );
+}
+
+/// Given a repository whose log holds three entries, each resolving only from the blob it names
+/// ([`record_entries_resolving_from_their_blobs_alone`]), when the operator runs `rigger setup`,
+/// then the rebuild decides once whether an object database can be asked and reads every blob
+/// from one `git cat-file --batch` process; and a setup that owes no rebuild and whose catch-up
+/// meets no entry, a rebuild over a log holding no entry, and a rebuild outside a repository each
+/// start none - the last after asking, once, and finding no repository.
+#[cfg(feature = "symbols")]
+#[test]
+fn a_rebuild_reads_every_entrys_blob_from_one_batch_process_started_at_its_first_entry() {
+    let dir = temp_project();
+    let root = dir.path();
+    let project = record_entries_resolving_from_their_blobs_alone(root);
+    let walked = |prefix, path| events_of(walked_batch(prefix, path));
+    stand_graph(root, &project);
+
+    assert_eq!(
+        blob_source_starts_of_setup(root),
+        (1, 1),
+        "one question and one batch process for three entries"
+    );
+    assert_each_entry_held_from_its_blob(
+        root,
+        &project,
+        "each entry resolved from the blob the one process answered",
+    );
+    assert_eq!(
+        git_invocations_of_setup(root),
+        SETUP_OWN_GIT,
+        "a setup that owes no rebuild and whose catch-up meets no entry starts no git process \
+         beyond its scaffold's and identity's own"
     );
 
     // A rebuild that meets no entry never starts the process.
@@ -1450,8 +1611,8 @@ fn a_rebuild_reads_every_entrys_blob_from_one_batch_process_started_at_its_first
     assert_eq!(
         git_invocations_of_setup(bare.path()),
         SETUP_OWN_GIT,
-        "a rebuild that folds no entry and reports no identity behind its recording asks git for \
-         neither a root nor an object database"
+        "a rebuild that meets no entry and reports no identity behind its recording makes its \
+         scaffold's and identity's git invocations alone"
     );
     assert!(
         applied(&rigger_file(bare.path(), "graph.db"), position),
@@ -1525,10 +1686,7 @@ fn without_an_extraction_a_rebuild_over_entries_starts_no_batch_process() {
     assert_eq!(blob_source_starts_of_setup(root), (0, 0));
     let graph_db = rigger_file(root, "graph.db");
     assert_eq!(
-        positions
-            .iter()
-            .map(|position| applied(&graph_db, *position))
-            .collect::<Vec<_>>(),
+        applied_each(&graph_db, &positions),
         vec![true, true],
         "the rebuild that started no process did fold both entries"
     );
@@ -1540,7 +1698,7 @@ fn without_an_extraction_a_rebuild_over_entries_starts_no_batch_process() {
 /// would resolve it to the file's committed bytes, when the operator removes the truncated object
 /// and runs `rigger setup`, then git answers both objects missing, the third name is never asked,
 /// the rebuild completes, and the rebuilt `graph.db` equals the incremental one: the first two
-/// entries resolved from the tree's files and the third resolved nothing.
+/// entries resolved from the tree's files and the third resolved nothing and is passed over.
 #[cfg(feature = "symbols")]
 #[test]
 fn an_object_git_does_not_answer_falls_to_the_tree_and_a_name_that_is_no_object_id_is_not_asked() {
@@ -1605,11 +1763,11 @@ fn an_object_git_does_not_answer_falls_to_the_tree_and_a_name_that_is_no_object_
     std::fs::write(&truncated, &whole[..whole.len() - 6]).unwrap();
     std::fs::write(loose_object(root, &document), b"garbage").unwrap();
     let (out, err, ok) = setup(root);
-    let refused = format!(
-        "rigger: graph: event store: git cat-file --batch stopped while answering object \
-         {source}: restore the object or remove it, after which git answers it missing and its \
-         entry resolves from the tree"
-    );
+    let refused = common::cli::refusal_line(&common::fixtures::graph_error(&format!(
+        "event store: git cat-file --batch stopped while answering object {source}: restore the \
+         object or remove it, after which git answers it missing and its entry resolves from the \
+         tree"
+    )));
     assert_eq!(
         (ok, err.lines().last()),
         (false, Some(refused.as_str())),
@@ -1620,8 +1778,8 @@ fn an_object_git_does_not_answer_falls_to_the_tree_and_a_name_that_is_no_object_
     std::fs::remove_file(&truncated).unwrap();
     assert_eq!(
         setup_rebuild_lines(root),
-        vec![LOST_FOLD_REBUILD_LINE, REBUILT_LINE],
-        "the rebuild completes and passes no entry over"
+        rebuilt_passing_over(0, 0, 1),
+        "the rebuild completes and passes over only the entry no source resolves"
     );
     let graph_db = rigger_file(root, "graph.db");
     assert_eq!(
@@ -1636,10 +1794,7 @@ fn an_object_git_does_not_answer_falls_to_the_tree_and_a_name_that_is_no_object_
                 &project,
                 &["gc/src/lib.rs", "gd/docs/architecture.md", "gc/src/gone.rs"]
             ),
-            positions
-                .iter()
-                .map(|position| applied(&graph_db, *position))
-                .collect::<Vec<_>>(),
+            applied_each(&graph_db, &positions),
         ),
         (
             vec![
@@ -1650,9 +1805,9 @@ fn an_object_git_does_not_answer_falls_to_the_tree_and_a_name_that_is_no_object_
             vec![true, true, true],
         ),
         "the two entries git answered missing for resolved from the tree, and the entry whose \
-         name is no object id resolved nothing and is recorded all the same"
+         name is no object id resolved nothing and is recorded passed over"
     );
-    assert_eq!(setup_rebuild_lines(root), Vec::<String>::new());
+    assert_eq!(setup_rebuild_lines(root), vec![passed_over_line(0, 0, 1)]);
 }
 
 /// Given a repository whose tree holds, beside a source file the walk visits, four files the walk
@@ -1660,8 +1815,8 @@ fn an_object_git_does_not_answer_falls_to_the_tree_and_a_name_that_is_no_object_
 /// only through a symbolic link, and a workflow definition at a path that is not the workflow
 /// definition's - each holding bytes that extract to the generation an entry names for its path,
 /// when the operator runs `rigger setup`, then the rebuild reads the tree by the tree's one read
-/// rule: the visited file's entry resolves, the four others resolve nothing and are recorded all
-/// the same, and the rebuilt `graph.db` equals the one whose incremental folds resolved nothing
+/// rule: the visited file's entry resolves, the four others resolve nothing and are recorded
+/// passed over, and the rebuilt `graph.db` equals the one whose incremental folds resolved nothing
 /// for them. For its five entries the rebuild asks git once where the tree is rooted and once
 /// whether an object database stands there, and starts one batch process.
 #[cfg(feature = "symbols")]
@@ -1742,19 +1897,10 @@ fn setup_reads_only_the_files_the_walk_visits_and_asks_git_for_its_root_once() {
     stand_graph(root, &project);
 
     // The rebuild runs before the scaffold's last question, the hooks directory.
-    let (before_rebuild, after_rebuild) = SETUP_OWN_GIT.split_at(4);
+    let (before_rebuild, after_rebuild) = setup_own_git_around_its_fold();
     assert_eq!(
         git_invocations_of_setup(root),
-        [
-            before_rebuild,
-            &[
-                "rev-parse --show-toplevel",
-                "rev-parse --git-dir",
-                "cat-file --batch",
-            ],
-            after_rebuild,
-        ]
-        .concat(),
+        [before_rebuild, &FIRST_ENTRY_GIT, after_rebuild].concat(),
         "the root and the object database are each asked of git once, at the first entry"
     );
 
@@ -1772,10 +1918,7 @@ fn setup_reads_only_the_files_the_walk_visits_and_asks_git_for_its_root_once() {
                     "gw/elsewhere.yml",
                 ]
             ),
-            positions
-                .iter()
-                .map(|position| applied(&graph_db, *position))
-                .collect::<Vec<_>>(),
+            applied_each(&graph_db, &positions),
         ),
         (
             vec![
@@ -1787,14 +1930,15 @@ fn setup_reads_only_the_files_the_walk_visits_and_asks_git_for_its_root_once() {
             ],
             vec![true; 5],
         ),
-        "only the file the walk visits is read; every entry's position is recorded"
+        "only the file the walk visits is read; every entry's position is recorded, the four \
+         unvisited ones passed over"
     );
     assert_eq!(
         graph_identity(&graph_db, &project),
         graph_identity(&incremental, &project),
         "the rebuilt graph.db is the incremental one, fold state included"
     );
-    assert_eq!(setup_rebuild_lines(root), Vec::<String>::new());
+    assert_eq!(setup_rebuild_lines(root), vec![passed_over_line(0, 0, 4)]);
 }
 
 // Spec 107, criterion 6 - THE REBUILD REPORTS WHAT THE NEXT INGEST RECORDS.
@@ -1971,10 +2115,7 @@ fn the_rebuild_reports_the_identities_behind_their_latest_recording_whose_file_t
     assert_eq!(
         (
             generations(root, &project, &REPORT_IDENTITIES),
-            positions
-                .iter()
-                .map(|position| applied(&graph_db, *position))
-                .collect::<Vec<_>>(),
+            applied_each(&graph_db, &positions),
         ),
         (report_fixture_generations(), vec![true; 7]),
         "the number is read from the rebuilt graph these generations stand in"
@@ -2003,18 +2144,25 @@ fn a_rebuild_interrupted_and_resumed_reports_the_number_a_single_pass_does() {
         .position(|event| event.position == positions[2])
         .unwrap();
 
-    let interrupted = Projector::rebuild(
-        &Projector::lock_rebuild(graph_db.to_str().unwrap()).unwrap(),
-        &project,
-        true,
-        &mut |after, sink: &mut RebuildSink| {
-            rigger::contextgraph::sqlite::stream_past(&log[..=through], after, 1, sink)?;
-            Err(Error("interrupted".to_string()))
-        },
-        &mut |entry| rigger::ingest::resolve_entry(root, entry, None),
-        &mut no_progress,
+    let tree = root.to_path_buf();
+    let interrupted = Projector::open(graph_db.to_str().unwrap(), &project)
+        .unwrap()
+        .with_reextraction(common::fixtures::resolving(move |entry| {
+            rigger::ingest::resolve_entry(&tree, entry, None)
+        }))
+        .rebuild(
+            &Projector::lock_rebuild(graph_db.to_str().unwrap()).unwrap(),
+            true,
+            &mut |after, sink: &mut RebuildSink| {
+                rigger::contextgraph::sqlite::stream_past(&log[..=through], after, 1, sink)?;
+                common::fixtures::source_interrupted()
+            },
+            &mut no_progress,
+        );
+    assert_eq!(
+        interrupted.map_err(|e| e.0),
+        Err(common::fixtures::SOURCE_INTERRUPTED.to_string())
     );
-    assert_eq!(interrupted.map_err(|e| e.0), Err("interrupted".to_string()));
     let shadow = rigger_file(root, "graph.db.rebuild");
     assert_eq!(
         (
@@ -2032,10 +2180,7 @@ fn a_rebuild_interrupted_and_resumed_reports_the_number_a_single_pass_does() {
             report_lines(&out),
             out.lines().any(|l| l == REBUILT_LINE),
             generations(root, &project, &REPORT_IDENTITIES),
-            positions
-                .iter()
-                .map(|position| applied(&graph_db, *position))
-                .collect::<Vec<_>>(),
+            applied_each(&graph_db, &positions),
         ),
         (
             vec![report_fixture_line().as_str()],
@@ -2365,17 +2510,17 @@ fn unparsable_source_entry() -> Event {
     )
 }
 
-/// Given a rebuild that folds no ledger entry, when the operator runs `rigger setup`, then the
-/// report asks git where the tree is rooted only once an identity is behind its latest
-/// recording: over keyed derived rows the rebuilt graph holds the generation of it prints a zero
-/// and asks git nothing beyond the scaffold's own questions, and over a recording the rebuild
+/// Given a rebuild that hands its re-extraction no ledger entry, when the operator runs `rigger
+/// setup`, then the report asks git where the tree is rooted only once an identity is behind its
+/// latest recording: over keyed derived rows the rebuilt graph holds the generation of it prints a
+/// zero and asks git nothing beyond the scaffold's own questions, and over a recording the rebuild
 /// passed over it asks for the root once, with no object database asked, and counts the file.
 #[cfg(feature = "symbols")]
 #[test]
 fn the_report_asks_git_for_the_root_only_once_an_identity_is_behind_its_recording() {
     let zero = report_line(0);
     let one = report_line(1);
-    let (before_rebuild, after_rebuild) = SETUP_OWN_GIT.split_at(4);
+    let (before_rebuild, after_rebuild) = setup_own_git_around_its_fold();
     let behind = || {
         let mut rows = keyed_source_rows();
         rows.push(unparsable_source_entry());
