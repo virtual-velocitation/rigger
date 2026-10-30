@@ -350,9 +350,9 @@
     "reason": "One pins the unattributed-correct-reject count over planted items and the other the control and control-false-positive counts over known-good items: different canary metrics that only share the `canary_outcome` fixture."
   },
   {
-    "id": "dup-edcfd444cd88",
+    "id": "dup-6f3fb4f23036",
     "disposition": "not-a-duplicate",
-    "reason": "Three durable integrate-row records that already share the one `record_integrate_row` authority, each passing a different row key, status token and evidence payload (the run tip; the unit and run tips; the landed sha and pre-merge tip)."
+    "reason": "Two durable integrate-row records that already share the one `record_integrate_row` authority, each passing a different row key, status token and evidence payload (the run tip; the unit and run tips)."
   },
   {
     "id": "dup-f2eee0c78cd6",

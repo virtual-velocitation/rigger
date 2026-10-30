@@ -540,7 +540,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-edcfd444cd88",
+    "id": "dup-6f3fb4f23036",
     "classification": "near",
     "sites": [
       {
@@ -551,11 +551,6 @@
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
         "name": "record_landing_intent",
-        "content_hash": "063993e2bd4a1d95"
-      },
-      {
-        "file": "crates/rigger-conductor/src/conductor.rs",
-        "name": "record_landed",
         "content_hash": "063993e2bd4a1d95"
       }
     ],
