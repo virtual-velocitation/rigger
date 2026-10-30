@@ -303,7 +303,7 @@ neither moves: "This is a critique of a SPEC, not code: the text below is a desi
 criteria, written before any run builds them." is task framing, and "Read the spec and the
 repository; the finding lines and the verdict line of your final message are the only output." is
 part of the voided-duties clause. The moved constants are deleted; pins of their sentences move
-to the template's section through the shipped-text helper; the critic's spawn path and
+to the templates' sections through the shipped-text helper; the critic's spawn path and
 `NO_CRITIC_CLAUSE` stay criterion 10's. Criterion 15's test reads the scaffold templates through
 the shipped-text helper and asserts that `.rigger/agents/adversary.md` and
 `.rigger/agents/adjudicator.md` carry the moved sentences under `## When you critique a spec or a
@@ -311,18 +311,23 @@ plan`. A persona without the section still critiques: the binary's
 prompt stands alone, and the output contract decides the verdict. The DAG critique prompt reaches
 two spawns, the adversary (`conductor.rs:8235`) and the gate's adjudicator (:8257), whose verdict
 gates the fan-out. Criterion 15 therefore lands the method in both personas and both scaffold
-templates (the adjudicator's at `src/cli/setup.rs:1967-1985`), each in its role's voice under `## When you critique a spec or a plan`: the adversary's
+templates (the adjudicator's at `src/cli/setup.rs:1967-1985`), each in its role's voice with the moved sentences verbatim, under `## When you critique a spec or a plan`: the adversary's
 section carries the stance, the hunts, Rules 7 and 8, the blast-radius note, the ownership defects,
 the unit-size rule, the overlap rule and the ban (how to find); the section names three classes, the
 parts that apply to a spec only (the two hunts and the ban), to a DAG only (the numberless unit-size
 rule and the overlap rule) and to both a spec and a DAG (the stance, Rules 7 and 8, the blast-radius
-note and the ownership defects), so the plan gate's scope is unchanged; the adjudicator's section
-carries the judging rule, the one home of the moved "Reject ONLY for" scope sentence (a finding stands
+note and the ownership defects); the adjudicator's section carries the same moved text, verbatim, of
+every DAG-only and both part but the stance (Rules 7 and 8, the blast-radius note, the ownership
+defects, the numberless unit-size rule and the overlap rule), so criterion 15's pins read one text
+and the plan gate's scope is unchanged for both spawns, and beside it the judging rule, the one home
+of the moved "Reject ONLY for" scope sentence (a finding stands
 when it names a Rule 7 ownership defect, a Rule 8 open disposition, a bundled or twin criterion, a
 unit over the cap the prompt states, or a defect in a criterion's own text that no decomposition can
-remove; mechanical file overlap alone never does), its fix being the kept cause rule's: a re-plan for
-`decomposition-conflict`, the run stopping for `spec-ambiguity`; the ban on criterion edits stays in
-the adversary's section only, where it belongs to the spec critique. Each section also states that
+remove; mechanical file overlap alone never does; this gloss reads the verbatim sentence with the
+ownership defects the same section carries, where twin and bundled units count as Rule 7 defects),
+its fix being the kept cause rule's: a re-plan for `decomposition-conflict`, the run stopping for
+`spec-ambiguity`; the stance and the hunts stay the adversary's, and the ban on criterion edits
+stays in the adversary's section only, where it belongs to the spec critique. Each section also states that
 in a plan critique the moved text's criterion reads as a unit (twin and bundled criteria are twin
 and bundled units) and Rules 7 and 8 and the unit-size rule read as written. Each section also
 names its scope, beside the moved text: in a spec or plan critique its rules decide which finding
@@ -826,7 +831,7 @@ TEST PLACEMENT (criterion -> test homes; the fixtures each test uses):
 | 12 | `src/cli/setup.rs` tests iterating `BUILTIN` and `REVIEWER_DISCIPLINE` under the MARKERS rule (the root crate reaches both; the shipped-text helper PR #117 adds is the one home of the texts); the existing tests BASE names, edited |
 | 13 | `conductor.rs` tests pinning the constant's three sentences; `src/cli/setup.rs` tests pinning the `## When you review` heading and its sentences in the working-discipline body; the pins that move, edited |
 | 14 | `instructions.rs` tests (the third entry's name and body); `conductor.rs` tests (the spawn path's prompt equals `compose`'s output, the `## communication` section once, no "(non-negotiable)"); `canary_store.rs`'s prompt test; `src/cli/critique.rs` tests (the critic's `SpawnOpts.system_prompt` equal to `compose`'s output); the existing pins of the constant, edited |
-| 15 | `review.rs` tests for `spec_critique_prompt`'s sections; `conductor.rs` tests for the DAG critique prompt; `src/cli/setup.rs` tests through the shipped-text helper for the template's section, and reading `.rigger/agents/adversary.md` and `.rigger/agents/adjudicator.md` for the moved sentences under that heading; the existing pins of the moved sentences, edited |
+| 15 | `review.rs` tests for `spec_critique_prompt`'s sections; `conductor.rs` tests for the DAG critique prompt; `src/cli/setup.rs` tests through the shipped-text helper for both templates' sections (the adjudicator's carrying the adversary's moved DAG-only and both sentences but the stance, beside its judging rule), and reading `.rigger/agents/adversary.md` and `.rigger/agents/adjudicator.md` for the moved sentences under that heading; the existing pins of the moved sentences, edited |
 
 ARTIFACT OWNERSHIP (owner = the criterion of the first production caller):
 
@@ -845,7 +850,7 @@ ARTIFACT OWNERSHIP (owner = the criterion of the first production caller):
 | the BUILTIN bodies' language-neutral wording, `REVIEWER_DISCIPLINE`'s toolchain wording | 12 |
 | `REVIEWER_DISCIPLINE`'s split, the `## When you review` section, their pins | 13 |
 | `BUILTIN`'s `communication` entry, the removal of `RIGGER_COMMUNICATION` and `build_system_prompt`, the handbook's entry list | 14 |
-| the two critique prompts' framing, the deletion of the method constants, the `## When you critique a spec or a plan` section in the persona and the template | 15 |
+| the two critique prompts' framing, the deletion of the method constants, the `## When you critique a spec or a plan` section in both personas and both templates | 15 |
 
 ## Global constraints
 
