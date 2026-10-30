@@ -1160,7 +1160,7 @@
     ]
   },
   {
-    "id": "dup-1d1226659885",
+    "id": "dup-7d418812274d",
     "sites": [
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
@@ -3119,28 +3119,28 @@
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 28828,
-        "end_line": 28828
+        "start_line": 28908,
+        "end_line": 28908
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 28891,
-        "end_line": 28891
+        "start_line": 28971,
+        "end_line": 28971
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 28929,
-        "end_line": 28929
+        "start_line": 29009,
+        "end_line": 29009
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 29392,
-        "end_line": 29392
+        "start_line": 29472,
+        "end_line": 29472
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 29410,
-        "end_line": 29410
+        "start_line": 29490,
+        "end_line": 29490
       },
       {
         "file": "tests/common/cli.rs",
@@ -3209,18 +3209,23 @@
       },
       {
         "file": "tests/common/fixtures/instructions.rs",
-        "start_line": 201,
-        "end_line": 201
+        "start_line": 209,
+        "end_line": 209
       },
       {
         "file": "tests/common/fixtures/instructions.rs",
-        "start_line": 212,
-        "end_line": 212
+        "start_line": 236,
+        "end_line": 236
       },
       {
         "file": "tests/common/fixtures/instructions.rs",
-        "start_line": 214,
-        "end_line": 214
+        "start_line": 246,
+        "end_line": 246
+      },
+      {
+        "file": "tests/common/fixtures/instructions.rs",
+        "start_line": 248,
+        "end_line": 248
       },
       {
         "file": "tests/common/fixtures/liveness.rs",

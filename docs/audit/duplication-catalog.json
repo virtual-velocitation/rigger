@@ -1232,7 +1232,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-1d1226659885",
+    "id": "dup-7d418812274d",
     "classification": "semantic",
     "sites": [
       {
@@ -3282,7 +3282,12 @@
       },
       {
         "file": "tests/common/fixtures/instructions.rs",
-        "name": "\"{}\\n\\nBuilt-in:\\n\\n## engineering-principles (built-in)\\n{}\\n\\n## working-discipline \\\n         (switched off by .rigger/instructions/working-discipline.md)\\n\\n## communication \\\n         (replaced by .rigger/instructions/communication.md)\\n{REPLACING_COMMUNICATION_BODY}\\n\\\n         {RENDERED_OPERATOR_HEADING}\\n## 30-style\\n{UNSHADOWING_STYLE_BODY}\\n\"",
+        "name": "\"\\n## communication (replaced by .rigger/instructions/communication.md)\\n{printed}\\n\"",
+        "content_hash": "25597419b8dbb616"
+      },
+      {
+        "file": "tests/common/fixtures/instructions.rs",
+        "name": "\"{}\\n\\nBuilt-in:\\n\\n## engineering-principles (built-in)\\n{}\\n\\n## working-discipline \\\n         (switched off by .rigger/instructions/working-discipline.md)\\n{communication}\\\n         {RENDERED_OPERATOR_HEADING}\\n## 30-style\\n{UNSHADOWING_STYLE_BODY}\\n{tail}\"",
         "content_hash": "25597419b8dbb616"
       },
       {
@@ -4242,7 +4247,7 @@
       }
     ],
     "proposed_home": "one .rigger-relative path-composition helper",
-    "note": "mandatory sweep: .rigger-path string literals - 601 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: .rigger-path string literals - 602 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {

@@ -197,11 +197,45 @@ pub fn shadowing_operator_layer() -> Vec<rigger::instructions::Instruction> {
 /// What `rigger instructions` prints over [`shadowing_operator_layer`], spelled without calling
 /// `render`: each built-in in `BUILTIN` order with its state, then the one unshadowed file.
 pub fn rendered_shadowing_layer() -> String {
+    rendered_shadowing_layer_replaced_by(REPLACING_COMMUNICATION_BODY)
+}
+
+/// What `rigger instructions` prints over [`shadowing_operator_layer`] whose communication file's
+/// body prints as `printed`, spelled without calling `render`: the communication built-in replaced
+/// by that body.
+pub fn rendered_shadowing_layer_replaced_by(printed: &str) -> String {
+    rendered_beside_the_shadowing_entries(
+        &format!(
+            "\n## communication (replaced by .rigger/instructions/communication.md)\n{printed}\n"
+        ),
+        "",
+    )
+}
+
+/// What `rigger instructions` prints over [`shadowing_operator_layer`] whose communication file is
+/// renamed to the near name `near`, spelled without calling `render`: the communication built-in in
+/// force with its shipped body, and the near-named file listed after `30-style` under the operator
+/// heading.
+pub fn rendered_near_named_layer(near: &str) -> String {
+    rendered_beside_the_shadowing_entries(
+        &format!(
+            "{RENDERED_COMMUNICATION_SECTION}{}\n",
+            builtin_body("communication").trim_end()
+        ),
+        &format!("\n## {near}\n{REPLACING_COMMUNICATION_BODY}\n"),
+    )
+}
+
+/// What `rigger instructions` prints over a layer holding [`shadowing_operator_layer`]'s
+/// `30-style` and empty `working-discipline` files: the engineering-principles built-in in force,
+/// the working-discipline one switched off, then `communication` - the communication built-in's
+/// section as printed - then the operator heading, `30-style`, and `tail`, the operator files
+/// printed after it.
+fn rendered_beside_the_shadowing_entries(communication: &str, tail: &str) -> String {
     format!(
         "{}\n\nBuilt-in:\n\n## engineering-principles (built-in)\n{}\n\n## working-discipline \
-         (switched off by .rigger/instructions/working-discipline.md)\n\n## communication \
-         (replaced by .rigger/instructions/communication.md)\n{REPLACING_COMMUNICATION_BODY}\n\
-         {RENDERED_OPERATOR_HEADING}\n## 30-style\n{UNSHADOWING_STYLE_BODY}\n",
+         (switched off by .rigger/instructions/working-discipline.md)\n{communication}\
+         {RENDERED_OPERATOR_HEADING}\n## 30-style\n{UNSHADOWING_STYLE_BODY}\n{tail}",
         rigger::instructions::HEADING,
         builtin_body("engineering-principles").trim_end()
     )

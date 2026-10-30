@@ -28706,6 +28706,86 @@ fn instructions_validate_and_prime_report_a_blank_same_named_file_as_switching_i
     }
 }
 
+/// Spec 120's EVERY BUILT-IN'S STATE IS REPORTED through the loader, the replaced side of the
+/// blank boundary: given the named-entry fixture whose communication file holds a body that is not
+/// blank - one led by a byte order mark, or two byte order marks, which stripping the one leading
+/// mark leaves not blank - when the operator runs `rigger instructions`, `rigger validate` and
+/// `rigger prime`, then each reports that built-in replaced, `rigger instructions` printing the
+/// file's body with only its first leading mark stripped.
+#[test]
+fn instructions_validate_and_prime_report_a_same_named_file_led_by_a_byte_order_mark_as_replacing()
+{
+    use common::cli::{
+        assert_prime_names_the_shadowing_layer_states,
+        assert_validate_names_the_shadowed_built_ins, write_operator_layer,
+    };
+    use common::fixtures::{
+        rendered_shadowing_layer_replaced_by, shadowing_operator_layer,
+        REPLACING_COMMUNICATION_BODY, SHADOWING_LAYER_ADVISORIES,
+    };
+    let proj = temp_project();
+    let root = proj.path();
+    write_workflow_fixture(root, &LIVENESS_WORKFLOW);
+    for (body, printed) in [
+        (
+            format!("\u{feff}{REPLACING_COMMUNICATION_BODY}"),
+            REPLACING_COMMUNICATION_BODY,
+        ),
+        ("\u{feff}\u{feff}".to_string(), "\u{feff}"),
+    ] {
+        let mut layer = shadowing_operator_layer();
+        layer[1].body = body;
+        write_operator_layer(root, &layer);
+        assert_eq!(
+            run_rigger_ok(root, &["instructions"]),
+            rendered_shadowing_layer_replaced_by(printed),
+            "the communication built-in is replaced by the file's body, one leading mark stripped: \
+             {:?}",
+            layer[1].body
+        );
+        assert_validate_names_the_shadowed_built_ins(root, &SHADOWING_LAYER_ADVISORIES);
+        assert_prime_names_the_shadowing_layer_states(root, &[]);
+    }
+}
+
+/// Spec 120's EVERY BUILT-IN'S STATE IS REPORTED beside a near name: given the named-entry fixture
+/// whose replacing communication file is named instead by a near name - a case variant, or the
+/// built-in's name with a trailing space - when the operator runs `rigger instructions`, `rigger
+/// validate` and `rigger prime`, then each reports the communication built-in in force: `rigger
+/// instructions` prints its shipped body and lists the near-named file under the operator heading,
+/// `rigger validate` warns only of the switched-off built-in, and `rigger prime` lists the
+/// communication built-in unmarked and counts the near-named file as an operator file.
+#[test]
+fn instructions_validate_and_prime_report_a_built_in_in_force_beside_a_near_named_file() {
+    use common::cli::{assert_validate_names_the_shadowed_built_ins, write_operator_layer};
+    use common::fixtures::{
+        rendered_near_named_layer, shadowing_operator_layer, COMMUNICATION_NEAR_NAME,
+        SHADOWING_LAYER_ADVISORIES,
+    };
+    for near in ["Communication", COMMUNICATION_NEAR_NAME] {
+        let proj = temp_project();
+        let root = proj.path();
+        write_workflow_fixture(root, &LIVENESS_WORKFLOW);
+        let mut layer = shadowing_operator_layer();
+        layer[1].name = near.to_string();
+        write_operator_layer(root, &layer);
+        assert_eq!(
+            run_rigger_ok(root, &["instructions"]),
+            rendered_near_named_layer(near),
+            "the near name {near:?} shadows nothing and is listed as an operator file"
+        );
+        assert_validate_names_the_shadowed_built_ins(root, &SHADOWING_LAYER_ADVISORIES[..1]);
+        assert_eq!(
+            common::cli::prime_first_line(root, &[]).as_deref(),
+            Some(
+                "# Rigger instructions in force: engineering-principles, communication (+2 \
+                 operator files) - see rigger instructions"
+            ),
+            "the near name {near:?} leaves the communication built-in in force and is counted"
+        );
+    }
+}
+
 /// Spec 120's EVERY BUILT-IN'S STATE IS REPORTED, the arm with nothing shadowed: given a project
 /// whose `.rigger/instructions/` holds only a near name of the communication built-in and a file
 /// of another name, when the operator runs `rigger validate`, then it succeeds and warns of no
