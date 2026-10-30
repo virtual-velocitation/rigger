@@ -2791,13 +2791,12 @@ fn opens_racing_the_rebuild_neither_wait_nor_undo_it() {
     let (resume, resume_rx) = channel::<()>();
     let rebuilder = {
         let (events_db, graph_db) = (store.events_db.clone(), store.graph_db.clone());
-        let project = store.project();
+        let (root, project) = (store.root().to_path_buf(), store.project());
         std::thread::spawn(move || {
             let backend = Store::open(events_db.to_str().unwrap()).unwrap();
             let mut batches = 0;
             let mut source = live_selection_of(&backend, &project, 1);
-            let ran = Projector::open(graph_db.to_str().unwrap(), &project)
-                .unwrap()
+            let ran = common::cli::open_graph(&root)
                 .rebuild(
                     &Projector::lock_rebuild(graph_db.to_str().unwrap()).unwrap(),
                     false,
@@ -3334,13 +3333,12 @@ fn an_emit_while_the_rebuild_folds_its_tail_waits_for_the_tail_and_is_met_exactl
     let (resume, resume_rx) = channel::<()>();
     let rebuilder = {
         let (events_db, graph_db) = (store.events_db.clone(), store.graph_db.clone());
-        let project = store.project();
+        let (root, project) = (store.root().to_path_buf(), store.project());
         std::thread::spawn(move || {
             let backend = Store::open(events_db.to_str().unwrap()).unwrap();
             let mut source = live_selection_of(&backend, &project, 1);
             let mut reads = 0;
-            Projector::open(graph_db.to_str().unwrap(), &project)
-                .unwrap()
+            common::cli::open_graph(&root)
                 .rebuild(
                     &Projector::lock_rebuild(graph_db.to_str().unwrap()).unwrap(),
                     false,
