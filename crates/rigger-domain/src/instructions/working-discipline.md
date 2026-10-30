@@ -31,8 +31,8 @@ turn is not over - use the alternative.
 
 When you author a change, you report only once the tree you hand over meets every rule below.
 Each rule is an outcome and the check that proves it; run each check yourself, in your
-worktree, before you report. Your persona names this project's commands, test homes and the
-tool that searches them.
+worktree, before you report; the checks owe no record. Your persona names this project's
+commands, test homes and the tool that searches them.
 
 - **The gates confirm, never discover.** Every gate the stage names is green on your committed
   tree before you report. Check: run the gate commands your persona lists, as the workflow
@@ -52,108 +52,14 @@ tool that searches them.
   several values reads as one table.
 - **Every sentence about the changed behaviour is true at head.** The doc comments of each item
   you changed and of its callers, module docs, test names, test docs, assertion messages and
-  operator docs say what the code at head does. Check: enumerate the walked set, each member
-  from what generates it - the module doc of every file the change touches (the
-  changed-file list); the doc comment and every comment in the body of each item the change
-  touches (the hunks); the doc of the interface item a changed function or any caller of one
-  implements and of the interface a changed implementation is for (the implementation headers); the doc of every item a changed
-  hunk names, callee, constant or type returned (the hunk's identifiers); the doc of every
-  caller of a changed item, read from the project's graph at depth 1 (`rigger graph --around
-  <file>::<item> --depth 1`, the lines naming callers; the default depth returns the item's
-  whole file neighbourhood and is not the caller set), or your persona's fallback; and every
-  tracked line outside the hunks that spells a changed item's name, counted over every root as
-  an old spelling is below - and read each against the code at head, leaving it true or fixing it;
-  when you rename or retire a name, walk every spelling of the old term through the tree. The
-  old spelling occurs zero times in the tree outside git history, counted over every root (test
-  docs, test comments and assertion messages are sentences too), or your hand-over names each
-  remaining occurrence as a deliberate mention with its reason. The record is owed on every
-  change and is bounded, so you write it in one pass: one whole-tree DecisionMade carrying each
-  generator and search command as run with its hit count, never its pasted hits; every
-  sentence FIXED, with its location and its witness; each doc block the change adds, by
-  location, with its witness; each item the change adds with its one-home line; and the
-  CHECKED remainder as one count per command, no per-line disposition, per-item count block or
-  heading owed. That record satisfies the hand-over. The name count and the depth-1 caller read
-  run once per item the hunks touch, new or pre-existing, its body or its doc changed. The
-  walk's range is the unit's whole range, the merge base with
-  the run branch to head, on every round, never a round's delta alone: a sentence you wrote in
-  an earlier round is a member again whenever a later round changes the behaviour it states,
-  so a record, or a round's addendum, whose sets are re-derived over a round's delta is a
-  record you cannot write. Every sentence the record marks FIXED, and every doc block it names
-  as added, carries its witness, the `file:line` of the code at head that makes it true - the
-  arm, the guard, the call, the constant; two witnesses when one would not make the whole
-  sentence true - and a sentence
-  with no witness is a claim, not a record; a claim that quantifies over a set - every, all,
-  always, any, a plural subject with a predicate - is witnessed once per case the code splits
-  that set into (each arm that assigns the value, each component of a key or comparator, each
-  condition of a filter or guard, each branch of a case statement), the record naming the cases and a
-  witness per case, and a case the claim does not hold for makes the sentence false, to be
-  narrowed or FIXED, never witnessed at the case it does hold for. A sentence you leave CHECKED
-  is read the same way, claim by claim, and counted, not listed; a sentence whose claim is the
-  question a rule the change rewrites answers is a spelling of that rule, whatever other rule
-  its words also fit. A rule the change rewrites - a condition
-  the code decides by, such as what a call lands on or what a tier means - has spellings no
-  generator above reaches: prose that states it without naming a changed item. So every
-  spelling of each rewritten rule is walked too, and its search is an instrument, not a claim:
-  write down, for the rule's OLD statement and for each label its cases carried, a pair of short
-  terms: the feature's name as the code spells it (the flag `--around`, the function, field, variant
-  or table the rule concerns) and the rule's shortest distinguishing noun phrase (`exact id`,
-  `import`, `collision`) - the words a sentence stating it cannot be written without, and each
-  name the docs, test names and comments give a case the old rule decided (a "cross-file
-  caller" for the calls only the old rule sent across files) - and run one recorded search for
-  each pair over every tracked text line: code, doc comments, body comments, test names and
-  docs, assertion messages, specs and operator docs, where a hit is a line, joined with the line
-  before, that holds both terms, in either order and with any words, names or code spans
-  between them. A term is a name or a noun phrase of at most three words: a search whose one
-  term is a sentence fragment of more than three words misses the sentence that puts the
-  feature's name or a qualifier between its words, and is a record you cannot write. Every hit
-  is read: one that spells the retired rule is FIXED, and one that does not - a spec's account
-  of the pre-change state, a history note, a different rule sharing the words - is CHECKED and
-  counted. A rewritten rule with no search is a walk not done; a change that rewrites no rule
-  runs no rule search. A rule is
-  rewritten whenever a condition of it changes - a boolean term your production hunks add to or
-  remove from a filter, guard, case-arm guard or predicate a function applies - even when no
-  sentence of yours moves, and its old statement is what the function's consumers spell: the
-  notes they print, their Returns paragraphs, the docs of the variants the answer maps to and
-  the oracles that assert them, read from the function's callers at depth 1 in the project's
-  graph and their callers' output sentences. For each changed condition write down the rule it
-  changes - the question the function answers - and, for each phrase of the old answer as the
-  consumers spell it, the pair of the function's name as the code spells it and the old
-  answer's noun, and run the rule search for each pair: every hit is FIXED, carrying the
-  new qualifier, or CHECKED where the qualifier does not reach it (a call that passes no path,
-  say). The reviewing lens whose persona assigns the duty re-derives each generator's set on
-  the review tree from the diff and the graph - the changed-file list; each hunk's
-  identifiers, cross-references and constants included; the body comments of each changed
-  item; the implementation headers; the depth-1 callers; the tracked lines spelling a changed
-  item's name - over the unit's whole range, never the round's delta its prompt carries,
-  re-runs each recorded rule-spelling search and reads the hits itself against the code at
-  head. The lens derives the changed-condition set itself from the unit's production hunks
-  over the whole range - every added or removed boolean term inside a filter, guard or
-  predicate - names the rule each changes, and reads every consumer sentence of that
-  function - its depth-1 callers' notes, Returns paragraphs, variant docs and oracles -
-  against the condition at head. The lens runs the two-term search itself - the feature's
-  name AND the rule's noun phrase for each rule the change rewrites, the function's name AND
-  the old answer's noun for each changed condition it derives, both terms on one joined line
-  with any words between them. The lens reads each sentence it finds claim by claim against
-  the unit's change, with a witness per claim at head; for a quantified claim it enumerates
-  the cases itself from the code at head and reads the claim against each. A sentence at head
-  that misstates the changed behaviour - a claim the code at head does not make true, a
-  quantified claim failing at any of its cases, a consumer sentence stating a changed
-  condition's pre-change answer - is a BLOCKING finding on its own, citing its location and
-  the code that contradicts it; a missing per-hit disposition, per-item count block or
-  heading in the record is never one. The lens's review-complete record is bounded the same
-  way, so it is written in one pass: each generator and search command the lens ran, with its
-  hit count; each BLOCKING finding, citing the sentence's location and the location of the
-  code at head that contradicts it; the lens's own witness at head for each sentence the
-  author's record marks FIXED and each doc block the change adds, one per case for a
-  quantified sentence; and the remainder it read as one count per command, with its verdict.
-  The remainder owes no per-sentence listing of claims and witnesses, and a counted verdict
-  over it is a record the lens can write; the lens still re-derives every set, re-runs every
-  search and reads every hit at head. A record a reviewer requires, such as a pattern audit
-  among a rejection's required items, is bounded the same way: each search command with its hit
-  count; each hit that states the audited shape, FIXED, with its witness at head; and the
-  remainder as one count per command, with its verdict. A required item never asks for every
-  hit to be listed or dispositioned, and a search term found inside a longer identifier is not
-  a hit.
+  operator docs say what the code at head does. Check: read the module doc of each file the
+  change touches, and the doc of each item it touches and of each caller of that item, which the
+  project's graph names at depth 1 (`rigger graph --around <file>::<item> --depth 1`), against
+  the code at head, leaving each true or fixing it; when you rename or retire a name, walk every
+  spelling of the old term through the tree. The old spelling occurs zero times in the tree
+  outside git history, counted over every root (test docs, test comments and assertion messages
+  are sentences too), or your hand-over names each remaining occurrence as a deliberate mention
+  with its reason.
 - **Nothing is added that nothing reads.** A field, index, parameter, helper or variant that no
   code reads after your change, under any build configuration, is removed. Check: name its reader.
 - **The red test stands as it went red.** The green commit makes the red test pass without
@@ -163,49 +69,12 @@ tool that searches them.
   read from the spelling that exists, or held equal to it by a test. A predicate is a boolean
   expression or a SQL conjunct, one inside a query string, a format string or a macro argument
   the production code executes included, read as the code's own expression, each operator and
-  literal of it. Check: name its home. The
-  `<unit>-sentence-walk` record carries, for each constant, static, list, closure or
-  predicate your production hunks add, its one-home line in one of three forms: `no
-  other spelling` with the terms searched - the name count and the graph lookup the walk
-  already runs, and the fact's distinguishing literal (a table name, a kind string); `derived
-  from <file:line>`, the hunk reading the existing spelling; or `pinned to <file:line> by
-  <test>`, where a derivation is impossible and a test holds the two spellings equal. The `no
-  other spelling` search runs the fragment's distinguishing literal (the column with its
-  operator, the subquery's table) over the whole tree, pre-existing spellings included; a fact
-  the tree already spells is `derived from` that spelling, the hunk and the existing sites
-  reading one function, or `pinned to` it, and a fact the tree already spells twice is lifted at all
-  three sites - the pre-existing pair is the tree's debt, and the unit's third spelling makes it
-  the unit's. The walk's item list is derived from the production hunks by shape as well as by
-  name, since a predicate has no name the count could list: every boolean expression the hunks
-  add - an `if`, `else if` or `while` condition or a pattern guard, each operand of an `&&` or `||`
-  chain inside one, the body of a closure passed to `filter`, `any`, `all`, `retain`, `position`
-  or `find`, and every conjunct inside a query string, format string or macro argument the
-  production code executes - is an item, named by its `file:line`, with its one-home line. A
-  predicate that is also a changed condition is both: its rule search runs and its one-home
-  line is carried, and neither stands in for the other. Two added predicates stating one
-  fact - the same condition at
-  two sites, or one condition and its negation - are one fact spelled twice: lifted to one home
-  both sites read (a function or a value) or `pinned to` each other by a test that holds them equal,
-  never two `no other spelling` lines. An added set of named members - an array or slice of
-  constants, an `IN (..)` list, a pattern test or a case statement with an arm per member, an `||` chain
-  of equalities - runs its `no other spelling` search as the name count of EACH member, and
-  every site where two or more of the members occur within one statement, one case statement or one
-  macro call is read as a candidate second spelling of the set: one found makes the set
-  `derived from` a single named home both sites read (a const list or a function), or the hunk's
-  spelling is a DRY defect lifted before hand-over, and the one-home line names the member sites
-  it read. An added item with no line is a record you cannot write. The reviewing lens whose
-  persona assigns the duty derives the set of added constants, statics, lists, closures and predicates itself from the
-  production hunks, query strings included, and compares it with the record's one-home lines:
-  an added item the record has no line for is a BLOCKING finding on its own. The reviewing lens
-  whose persona assigns the duty reads the walk record's
-  one-home lines for every item the unit adds: an added item with no line, or a line false at
-  head - the fact has another spelling the line does not name, or the named derivation or pin
-  does not exist - is a BLOCKING finding on its own (DRY, single responsibility). The
-  reviewing lens whose persona assigns the duty derives the added set by the same shapes,
-  every added predicate and every added set of named members included, and runs the member
-  search itself for every added
-  set: an added predicate with no line, two added predicates of one fact with two lines, or a
-  second spelling of a set the line does not name, is a BLOCKING finding on its own.
+  literal of it. Check: name its home.
+- **A whole-tree audit a rejection requires is bounded.** When a rejection's required items name
+  a pattern - one defect shape recurring across sites - every site of that shape is fixed.
+  Check: the audit record the rejection asks for names each search command you ran with its hit
+  count and each site you fixed with its location at head, and counts the rest; it never lists
+  or dispositions every hit, and a search term found inside a longer identifier is not a hit.
 - **A probe that edits your tree is over before your turn is.** A reversion probe, or any check
   that edits your worktree, runs to completion and restores the tree before your turn ends,
   never as a detached or background job: the attempt checkpoint commits whatever the worktree
@@ -223,6 +92,16 @@ through the project's test command - create your own throwaway scratch worktree 
 Never run a gate's command as the gate runs it, directly or through a verify helper: the gate
 evidence in your prompt is that gate's verdict, and a reviewer's run only repeats it at review
 cost; the one targeted reproduction above is not a gate run.
+
+A finding blocks the change only when it is one of three classes: (a) wrong code - the change does
+the wrong thing or breaks something; (b) a Done-when criterion the change leaves unmet; (c) a
+missing test for a behaviour a Done-when criterion names. Every other finding - docs wording,
+naming, a fact with two homes, test shape, comment density, a record, a principle bent without
+breaking anything - is a note: raise it with its location; it never fails the unit. Where the
+workflow has a check-in stage - a stage that needs the fan-out implement template - that stage
+fixes the run's notes once, before its gates; without one, the notes stay in the run's log for the
+operator. A blocking finding names its class and, for (b) or (c), the criterion it reads; a verdict
+whose findings are all notes is an approval, and a rejection requires only its blocking findings.
 
 ## Fan out the mechanical work
 

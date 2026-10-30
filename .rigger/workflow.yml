@@ -76,9 +76,9 @@ defaults:
   # TIER 2: the adversary reviews THE LENSES' findings and tries to prove them
   # wrong - higher bar, surfaces what they all missed, refutes overreach (it
   # reviews the reviews; it is not a parallel lens). TIER 3: the adjudicator is the
-  # neutral final judge - it weighs the lenses against the adversary, is EXTREMELY
-  # strict on design/architecture adherence, and its approve/reject verdict GATES
-  # the unit's integration. Declared once; inherited by the implement stage and
+  # neutral final judge - it weighs the lenses against the adversary, blocks only on
+  # wrong code, an unmet Done-when criterion or a missing test for one (every other
+  # finding a note), and its approve/reject verdict GATES the unit's integration. Declared once; inherited by the implement stage and
   # every planner-proposed unit.
   review:
     lenses: [architecture-reviewer, sdet]   # tier 1: the expert lenses

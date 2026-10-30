@@ -16,9 +16,11 @@ pub const WHEN_YOU_REVIEW_HEADING: &str = "## When you review";
 /// The working-discipline body's fan-out section heading.
 pub const FAN_OUT_HEADING: &str = "## Fan out the mechanical work";
 
-/// The three review sentences the working-discipline body's `## When you review` section holds,
-/// in its order: the review method a reviewer prompt's discipline no longer carries.
-pub const WHEN_YOU_REVIEW: [&str; 3] = [
+/// The seven review sentences the working-discipline body's `## When you review` section holds,
+/// in its order: the review method a reviewer prompt's discipline no longer carries, then the
+/// review rule - the three classes a blocking finding falls in, every other finding a note, where
+/// the run's notes go, and what a blocking finding names.
+pub const WHEN_YOU_REVIEW: [&str; 7] = [
     "Never re-run the gate battery, or any gate the gate evidence shows green on the tree under \
      review: the gates are the instrument that grades the work, and a review judges what they \
      cannot see.",
@@ -28,6 +30,18 @@ pub const WHEN_YOU_REVIEW: [&str; 3] = [
     "Never run a gate's command as the gate runs it, directly or through a verify helper: the gate \
      evidence in your prompt is that gate's verdict, and a reviewer's run only repeats it at review \
      cost; the one targeted reproduction above is not a gate run.",
+    "A finding blocks the change only when it is one of three classes: (a) wrong code - the change \
+     does the wrong thing or breaks something; (b) a Done-when criterion the change leaves unmet; \
+     (c) a missing test for a behaviour a Done-when criterion names.",
+    "Every other finding - docs wording, naming, a fact with two homes, test shape, comment \
+     density, a record, a principle bent without breaking anything - is a note: raise it with its \
+     location; it never fails the unit.",
+    "Where the workflow has a check-in stage - a stage that needs the fan-out implement template \
+     - that stage fixes the run's notes once, before its gates; without one, the notes stay in the \
+     run's log for the operator.",
+    "A blocking finding names its class and, for (b) or (c), the criterion it reads; a verdict \
+     whose findings are all notes is an approval, and a rejection requires only its blocking \
+     findings.",
 ];
 
 /// The review `tier`'s task `prompt` carries the reviewer `discipline` exactly once and none of the

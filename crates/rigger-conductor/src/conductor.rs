@@ -37,13 +37,14 @@ pub use rigger_domain::review::verdict_approves;
 pub use rigger_domain::review::VERDICT_APPROVE;
 use rigger_domain::review::{
     adjudicator_roster, emitted_verdict_approves, glob_matches, has_verdict_line, review_roster,
-    route_review_tier, verdict_compensates, TierRouting, PLAN_CRITIQUE_RULES,
+    route_review_tier, run_notes, verdict_compensates, RunNote, TierRouting, PLAN_CRITIQUE_RULES,
 };
 #[cfg(test)]
 use rigger_domain::review::{path_is_high_risk, TIER_FULL, TIER_LIGHT};
 use rigger_domain::wave::{
     baseline_units, coverage_gap, criterion_remainder, criterion_stable_id, critique_gate_name,
-    fan_out_lenses, first_stage_named, is_fan_out, is_fan_out_template, is_producer, wave_ready,
+    fan_out_lenses, first_stage_named, is_check_in, is_fan_out, is_fan_out_template, is_producer,
+    wave_ready,
 };
 pub use rigger_domain::wave::{blast_radius_conflicts, normalize_ws, ungated_fan_out_templates};
 // The agent-host port, moved inward to `rigger-domain` (workspace split) so the driver adapters
@@ -5102,7 +5103,8 @@ impl RunCtx<'_> {
     /// the unit back and what goes to the operator. On a LATER round, each REQUIRED item
     /// [`ReviewRound::blocks`] does not keep is recorded as a lesson for the operator about its
     /// file and leaves the verdict; a reject that leaves no item converges to an approve whose
-    /// evidence is [`CONVERGED`]. Returns the verdict, its reason, and the REQUIRED list the
+    /// evidence is [`CONVERGED`] above the verdict text, so the notes that round upheld are
+    /// read from it like an approve's. Returns the verdict, its reason, and the REQUIRED list the
     /// next round holds the unit to. A first round's reject keeps every item, and so does a
     /// reject blaming infrastructure. `ordinal` is the stage run's infra retry ordinal, so an
     /// infra rerun's review records its own lessons.
@@ -5144,7 +5146,7 @@ impl RunCtx<'_> {
             )?;
         }
         if kept.is_empty() && !dropped.is_empty() {
-            return Ok((true, CONVERGED.to_string(), kept));
+            return Ok((true, format!("{CONVERGED}\n{reason}"), kept));
         }
         Ok((false, reason, kept))
     }
@@ -5860,8 +5862,15 @@ impl RunCtx<'_> {
                 // ONLY the implement stage, so the slice is keyed on the implement stage specifically
                 // via `implement_slice`: a true implement stage gets the trimmed slice, a producer
                 // keeps the FULL context (adv-u36c1-planner-first-spawn-trimmed).
-                let prompt =
+                let mut prompt =
                     self.build_prompt_with_failure(st, &prior, attempts, implement_slice(st))?;
+                // The check-in stage's first attempt is the run's note sweep: its prompt ends
+                // with the notes the run's review upheld, read from the log at stage entry. A
+                // later attempt answers its gates, as every stage's does.
+                if attempts == 0 && is_check_in(st, &self.cfg.workflow.stages) {
+                    let notes = run_notes(&events).map_err(|e| Error(e.to_string()))?;
+                    prompt.push_str(&notes_block(&notes));
+                }
                 // spec 72 round-2 REJECT fix (adv-u72c1-metaspawn-remedy-viable-but-
                 // undercosted): stamp META_SPAWN alongside the actor, not only the actor,
                 // so a producer/planner spawn's UnitProposed events carry THIS spawn's own
@@ -7901,7 +7910,8 @@ impl RunCtx<'_> {
     /// `adversary_id` are the routed panel's own lens agent ids and adversary agent id
     /// (spec 67, criterion 4) - the CALLER's already-routed values (light or full),
     /// combined via [`adjudicator_roster`] into this spawn's [`SpawnOpts::reviews`] roster.
-    /// Its prompt says how a reject names its REQUIRED list ([`REQUIRED_PROTOCOL`]) and, on
+    /// Its prompt says which findings its verdict line upholds ([`UPHELD_PROTOCOL`]), how a
+    /// reject names its REQUIRED list ([`REQUIRED_PROTOCOL`]) and, on
     /// a later review round, ends with that round's block, where a reject naming no
     /// REQUIRED item is degenerate ([`ReviewerOutput::RoundVerdict`]).
     // Each argument is a distinct, already-documented review input (stage, agent id, dir,
@@ -7934,7 +7944,7 @@ impl RunCtx<'_> {
         // driven) - so it carries the SAME reviewer discipline those two tiers get via
         // `review_protocol` (spec 103, criterion 6), appended directly here.
         let prompt = format!(
-            "{}{REVIEWER_DISCIPLINE}{REQUIRED_PROTOCOL}{}",
+            "{}{REVIEWER_DISCIPLINE}{UPHELD_PROTOCOL}{REQUIRED_PROTOCOL}{}",
             self.review_base_prompt(st, dir)?,
             round.map(ReviewRound::block).unwrap_or_default()
         );
@@ -12683,6 +12693,36 @@ pub const REVIEWER_DISCIPLINE: &str = " Never write to this unit's own worktree 
 /// adjudicator's prompt by [`RunCtx::run_adjudicator`].
 const REQUIRED_PROTOCOL: &str = " On a reject, your verdict line also lists every item the next attempt must fix, as \"required\":[{\"finding\":\"<what must change>\",\"path\":\"<the repo-relative file it is in>\",\"correctness\":<true for a correctness defect, else false>,\"pattern\":\"<the defect's shape when it recurs across sites, else empty>\"}].";
 
+/// What an adjudicator's verdict line names beside the verdict, approve or reject: the id of
+/// every finding it agrees is real, a note among them, which is how a workflow's check-in stage
+/// learns the notes it fixes ([`run_notes`]). Appended to every adjudicator's prompt by
+/// [`RunCtx::run_adjudicator`], before [`REQUIRED_PROTOCOL`].
+const UPHELD_PROTOCOL: &str = " Your verdict line lists as \"upheld\":[\"<finding id>\"] every finding you agree is real, a note as well as a blocking one: the upheld notes are the run's notes, fixed once by the workflow's check-in stage where it has one.";
+
+/// The block the check-in stage's first prompt ends with when the run's review upheld any
+/// finding (`notes`, from [`run_notes`]): each note once, with its locations and text, and what
+/// the stage does with them. Empty for no note, so the stage's prompt is then unchanged.
+fn notes_block(notes: &[RunNote]) -> String {
+    if notes.is_empty() {
+        return String::new();
+    }
+    let mut block = String::from("\n\nRUN NOTES: the review of this run upheld these findings:\n");
+    for note in notes {
+        let at = if note.about.is_empty() {
+            String::new()
+        } else {
+            format!(" ({})", note.about.join(", "))
+        };
+        block.push_str(&format!("- {}{at}: {}\n", note.id, note.summary));
+    }
+    block.push_str(
+        "Check each note against the current tree. Fix, in one pass, every note that is still \
+         true; leave a note that is false or already fixed. A note owes no record beyond the \
+         commit that fixes it.\n",
+    );
+    block
+}
+
 /// A LATER REVIEW ROUND: an earlier round judged the unit at `base` and sent it back, its
 /// worktree has since changed `delta` ([`RunCtx::round_delta`]), and `required` is the
 /// REQUIRED list that round left open - the one this attempt's implementer was handed. A
@@ -12745,8 +12785,9 @@ fn rejects_without_required(output: &str) -> bool {
             .is_some_and(|a| a.verdict.is_some() && a.required.is_empty() && !a.is_infra_fault())
 }
 
-/// The `reviewed` evidence of a later round's reject that converged: every item it required
-/// was a finding outside its delta and no correctness defect, so each went to the operator.
+/// The first line of the `reviewed` evidence of a later round's reject that converged: every
+/// item it required was a finding outside its delta and no correctness defect, so each went to
+/// the operator. The verdict text follows it.
 const CONVERGED: &str = "converged";
 
 /// One `- <path>: <finding>` line per REQUIRED item, followed for a pattern item by
@@ -16872,6 +16913,250 @@ mod tests {
             count(&two, "sweep"),
             "a three-criterion spec runs the check-in gate as many times as a two-criterion one"
         );
+    }
+
+    // --- THE CHECK-IN STAGE IS THE RUN'S NOTE SWEEP ---
+
+    /// The two criteria a note-sweep run covers.
+    const SWEEP_CRITERIA: [&str; 2] = ["the first slice lands", "the second slice lands"];
+
+    /// The baseline unit a note-sweep run builds for criterion `n` (1-based).
+    fn sweep_unit(n: usize) -> String {
+        unit_slug(n, SWEEP_CRITERIA[n - 1])
+    }
+
+    /// A lens's `ReviewFinding` of `id` about `about` saying `summary`.
+    fn lens_finding(id: &str, about: &[&str], summary: &str) -> (String, Value) {
+        (
+            contextgraph::TYPE_REVIEW_FINDING.to_string(),
+            json!({"id": id, "summary": summary, "about": about}),
+        )
+    }
+
+    /// Run the check-in fixture ([`fan_out_checkin_cfg`]) over [`SWEEP_CRITERIA`] in a real
+    /// repository under a `lens` + `adj` review panel, the store first holding `seed` (none
+    /// for an empty slice): each spawn named in `emits` emits its records, each adjudicator
+    /// spawn named in `verdicts` answers its verdict line and every other adjudicator spawn
+    /// approves upholding nothing. Every implementer spawn writes a file of its own, so each
+    /// review round has a delta. Returns the run's state and the driver.
+    fn run_sweep(
+        emits: Vec<(String, Vec<(String, Value)>)>,
+        verdicts: Vec<(String, &str)>,
+        seed: &[Event],
+    ) -> (RunState, Stub) {
+        let mut cfg = fan_out_checkin_cfg("ok", "ok");
+        for id in ["lens", "adj"] {
+            cfg.agents.insert(id.into(), agent(id));
+        }
+        cfg.workflow.defaults.review = config::ReviewPanel {
+            lenses: vec!["lens".into()],
+            adjudicator: "adj".into(),
+            ..Default::default()
+        };
+        let writes = [
+            (sweep_unit(1), 0),
+            (sweep_unit(2), 0),
+            (sweep_unit(2), 1),
+            ("checkin".to_string(), 0),
+        ];
+        let driver = Stub {
+            output_by_agent: HashMap::from([
+                ("lens".to_string(), "lens: reviewed".to_string()),
+                ("adj".to_string(), r#"{"verdict":"approve"}"#.to_string()),
+            ]),
+            output_by_spawn_id: verdicts
+                .into_iter()
+                .map(|(id, verdict)| (id, verdict.to_string()))
+                .collect(),
+            emits_by_spawn_id: emits.into_iter().collect(),
+            write_files_by_spawn_id: writes
+                .iter()
+                .map(|(unit, attempt)| {
+                    (
+                        spawn_id(unit, ROLE_IMPLEMENTER, *attempt),
+                        vec![format!("{unit}-{attempt}.rs")],
+                    )
+                })
+                .collect(),
+            ..Stub::new()
+        };
+        let repo = temp_git_project_with_commit();
+        let st = Store::open(":memory:").unwrap();
+        if !seed.is_empty() {
+            seed_events_in_run(&st, &SWEEP_CRITERIA, seed);
+        }
+        let deps = Deps {
+            repo: repo.path().to_str().unwrap().to_string(),
+            ..stub_deps(
+                &st,
+                &driver,
+                SWEEP_CRITERIA.iter().map(|c| c.to_string()).collect(),
+            )
+        };
+        let rs = run_isolated(&cfg, &deps).unwrap();
+        assert_eq!(
+            rs.units["checkin"].status,
+            ledger::Status::Integrated,
+            "the fixture's check-in stage must run and integrate"
+        );
+        (rs, driver)
+    }
+
+    /// The prompt the check-in stage's agent was first spawned with: the last `worker`
+    /// prompt, since the check-in stage runs once every unit has integrated.
+    fn checkin_prompt(driver: &Stub) -> String {
+        driver
+            .prompts_for("worker")
+            .last()
+            .cloned()
+            .expect("the check-in stage's agent spawned")
+    }
+
+    #[test]
+    fn the_checkin_prompt_carries_each_upheld_note_of_an_integrated_unit_once() {
+        // Two units integrate with upheld notes. The second's first round rejects, upholding a
+        // note and a blocking finding; its second round rejects on only a wording item outside
+        // its delta, so it converges, upholding the note again, its lens having raised it again,
+        // and a note of its own: the check-in stage's first prompt carries each upheld finding
+        // once, in id order, with the text the latest round recorded. A unit seeded into the run
+        // that never integrated upheld a note too, and it is not carried.
+        let (u1, u2) = (sweep_unit(1), sweep_unit(2));
+        let lens = lens_role("lens");
+        let ghost = [
+            Event::new(
+                contextgraph::TYPE_REVIEW_FINDING,
+                serde_json::to_vec(
+                    &json!({"id": "ghost-note", "by": "lens", "summary": "never landed", "about": ["src/ghost.rs"]}),
+                )
+                .unwrap(),
+            ),
+            Event::new(
+                ledger::TYPE_UNIT_FAILED,
+                serde_json::to_vec(&json!({
+                    "id": "ghost-unit",
+                    "attempts": 1,
+                    "cause": "reject",
+                    "review_reason": r#"{"verdict":"reject","upheld":["ghost-note"]}"#,
+                }))
+                .unwrap(),
+            ),
+        ];
+        let (rs, driver) = run_sweep(
+            vec![
+                (
+                    spawn_id(&u1, &lens, 0),
+                    vec![lens_finding("n-one", &["src/a.rs:3"], "name the bound")],
+                ),
+                (
+                    spawn_id(&u2, &lens, 0),
+                    vec![
+                        lens_finding("n-two", &["src/b.rs"], "first wording"),
+                        lens_finding("b-two", &["src/b.rs:9"], "the read is unscoped"),
+                    ],
+                ),
+                (
+                    spawn_id(&u2, &lens, 1),
+                    vec![
+                        lens_finding("n-two", &["src/b.rs:4"], "latest wording"),
+                        lens_finding("c-two", &["src/b.rs:7"], "reword the doc comment"),
+                    ],
+                ),
+            ],
+            vec![
+                (
+                    spawn_id(&u1, ROLE_ADJUDICATOR, 0),
+                    r#"{"verdict":"approve","upheld":["n-one"]}"#,
+                ),
+                (
+                    spawn_id(&u2, ROLE_ADJUDICATOR, 0),
+                    r#"{"verdict":"reject","upheld":["n-two","b-two"],"required":[{"finding":"close the unscoped read","path":"src/b.rs","correctness":true}]}"#,
+                ),
+                (
+                    spawn_id(&u2, ROLE_ADJUDICATOR, 1),
+                    r#"{"verdict":"reject","upheld":["n-two","c-two"],"required":[{"finding":"reword the doc comment","path":"src/b.rs","correctness":false}]}"#,
+                ),
+            ],
+            &ghost,
+        );
+        let want = [
+            RunNote {
+                id: "b-two".into(),
+                about: vec!["src/b.rs:9".into()],
+                summary: "the read is unscoped".into(),
+            },
+            RunNote {
+                id: "c-two".into(),
+                about: vec!["src/b.rs:7".into()],
+                summary: "reword the doc comment".into(),
+            },
+            RunNote {
+                id: "n-one".into(),
+                about: vec!["src/a.rs:3".into()],
+                summary: "name the bound".into(),
+            },
+            RunNote {
+                id: "n-two".into(),
+                about: vec!["src/b.rs:4".into()],
+                summary: "latest wording".into(),
+            },
+        ];
+        assert_eq!(
+            rs.units.get("ghost-unit").map(|u| u.status),
+            Some(ledger::Status::Failed),
+            "premise: the seeded unit is the run's own and never integrated"
+        );
+        assert!(
+            !notes_block(&want).is_empty(),
+            "premise: four notes render a block"
+        );
+        assert_eq!(
+            rs.units[&u2].attempts, 1,
+            "premise: the second unit's second round converged, charged nothing more"
+        );
+        assert_eq!(
+            checkin_prompt(&driver),
+            format!("{EMIT_PROTOCOL}{}", notes_block(&want)),
+            "the check-in prompt is today's, then each upheld note once"
+        );
+        let judged = driver.prompts_for("adj");
+        assert_eq!(judged.len(), 4, "premise: four review rounds were judged");
+        for prompt in judged {
+            assert!(
+                prompt.contains(UPHELD_PROTOCOL),
+                "every adjudicator is told to list the notes it upholds:\n{prompt}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_run_with_no_upheld_note_runs_its_checkin_stage_as_before() {
+        // No adjudicator upholds anything, though a lens raised a finding: the check-in stage's
+        // prompt is byte-for-byte the prompt it had before the sweep, and the run spawns
+        // exactly the agents it spawned before - each unit's implementer, lens and adjudicator,
+        // then the check-in stage's.
+        let (u1, u2) = (sweep_unit(1), sweep_unit(2));
+        let lens = lens_role("lens");
+        let (_, driver) = run_sweep(
+            vec![(
+                spawn_id(&u1, &lens, 0),
+                vec![lens_finding("n-one", &["src/a.rs:3"], "name the bound")],
+            )],
+            Vec::new(),
+            &[],
+        );
+        assert_eq!(checkin_prompt(&driver), EMIT_PROTOCOL);
+        let mut want = Vec::new();
+        for unit in [u1.as_str(), u2.as_str(), "checkin"] {
+            want.extend([
+                spawn_id(unit, ROLE_IMPLEMENTER, 0),
+                spawn_id(unit, &lens, 0),
+                spawn_id(unit, ROLE_ADJUDICATOR, 0),
+            ]);
+        }
+        let mut spawned = driver.spawn_ids();
+        spawned.sort();
+        want.sort();
+        assert_eq!(spawned, want, "no spawn beyond the run's own");
     }
 
     #[test]
@@ -30897,15 +31182,14 @@ mod tests {
 
     /// A later round's reject whose every item is a non-correctness finding outside the delta
     /// that round reviewed converges: each item is recorded as a lesson for the operator about
-    /// its file, and the unit lands on that round, approved "converged", charged nothing more.
+    /// its file, and the unit lands on that round, approved "converged" above the verdict text,
+    /// charged nothing more.
     #[test]
     fn a_round_two_reject_on_only_out_of_delta_wording_lands_and_records_operator_lessons() {
+        let converging = r#"{"verdict":"reject","required":[{"finding":"reword the doc comment","path":"feature.rs","correctness":false}]}"#;
         let (rs, events, _) = run_review_rounds(&[
             (adjudicator_at(0, 0), REJECT_FEATURE),
-            (
-                adjudicator_at(1, 0),
-                r#"{"verdict":"reject","required":[{"finding":"reword the doc comment","path":"feature.rs","correctness":false}]}"#,
-            ),
+            (adjudicator_at(1, 0), converging),
         ]);
         assert_eq!(rs.units["implement"].status, ledger::Status::Integrated);
         assert_eq!(
@@ -30928,8 +31212,8 @@ mod tests {
             .collect();
         assert_eq!(
             reviewed.last().map(|b| b["evidence"]["review"].clone()),
-            Some(json!("converged")),
-            "the converged round's approve says so: {reviewed:?}"
+            Some(json!(format!("converged\n{converging}"))),
+            "the converged round's approve says so, above the verdict text: {reviewed:?}"
         );
     }
 

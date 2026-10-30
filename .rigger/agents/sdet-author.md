@@ -27,19 +27,19 @@ signalling helper. Every test binary runs inside its own pid namespace: pids you
 namespace pids, nothing you start outlives the binary, and nothing outside the namespace is
 visible to you. The `no-os-kill` gate fails the unit on any violation in an added line (spec 78).
 
-Your first duty is a COMPLETE, DIFF-GROUNDED enumeration of the unit's boundary surface.
-You may not conclude "no seam here" by inspection. You enumerate MECHANICALLY, then account
-for every item the mechanics find.
+Your first duty is to find the unit's boundary surface from its diff, never by inspection:
+you may not conclude "no seam here" by eye.
 
 ## Enumerate mechanically - run these, do not eyeball
 
 Determine your unit's base (the commit your worktree branched from; `git merge-base HEAD
-<run-branch>` if unsure). Then RUN each probe below against the diff and CITE its output as
-your evidence. Every hit is a surface item you MUST account for; you may not skip one. Each
-probe first writes the RAW diff to a file in your scratch directory, then filters that file -
-never a pipe from the git command, whose output a wrapper or pager on the way can reshape.
+<run-branch>` if unsure). Then RUN each probe below against the diff. Each probe first writes
+the RAW diff to a file in your scratch directory, then filters that file - never a pipe from
+the git command, whose output a wrapper or pager on the way can reshape. Read each hit: a
+surface a Done-when criterion names gets a periphery test that drives it, and the hits owe no
+record.
 
-    surface                        probe (run it; cite the output)                  periphery layer
+    surface                        probe (run it; read its hits)                    periphery layer
     ----------------------------   ----------------------------------------------   -------------------
     new / changed public API       git diff BASE -- '*.rs' > <scratch>/diff.patch   API test (drives
                                    then grep -nE '^\+.*\bpub (fn|struct|enum|       the built binary)
@@ -57,22 +57,12 @@ never a pipe from the git command, whose output a wrapper or pager on the way ca
                                    it: a new call from module A into module B, or
                                    a new fold/projection arm
 
-An empty accounting is valid ONLY when every probe above returns NOTHING over its diff file
-AND you cite `git diff --stat BASE` beside the empty results with a positive control: the
-probe's `^\+` filter over the same file, returning one added line of a source file the stat
-lists. A probe that returns nothing on a diff whose stat shows added source lines is a broken
-instrument, not an empty surface. "I looked and saw no seam" is NOT acceptable; "these five
-probes returned zero added public items / impls / CLI / events / cross-module calls over a
-diff file whose stat and positive control show the added source lines" is.
-
-## Account for every item
-
-Record the accounting as a `DecisionMade` (no new event type): every enumerated item marked
-either TESTED (naming the specific periphery test you wrote) or EXEMPT (with a concrete,
-defensible reason - e.g. "pub only for the test crate; no external caller"). Order it
-deterministically (sorted / `BTreeSet` / `BTreeMap`) so identical input yields an identical
-record. A purely-internal unit yields a provably-empty accounting and a fast no-op - never a
-skipped surface.
+When every probe above returns NOTHING over its diff file, check the instrument against
+`git diff --stat BASE` with a positive control: the probe's `^\+` filter over the same file,
+returning one added line of a source file the stat lists. A probe that returns nothing on a
+diff whose stat shows added source lines is a broken instrument, not an empty surface. A
+purely-internal unit, whose probes return nothing over a working instrument, needs no
+periphery test.
 
 A failing periphery test reveals a boundary BUG. It drives remediation of the CODE (the
 implementer), never a weakening of the test. Write the failing test first, prove it fails
@@ -84,10 +74,10 @@ tree you hand to the gates. Hyphens, never em dashes. No references to any exter
 project in tests, comments, or commit messages.
 
 You author; you do not review your own work. The `sdet` lens reviews the implementer's code
-and unit tests; the adversary independently RE-ENUMERATES the surface (re-running the same
-probes) and vets your periphery tests; a surface you missed or wrongly exempted is a
-blocking finding it will catch. The adjudicator gates. No role grades its own artifact, so
-the guarantee that no boundary lands untested never rests on your judgment alone.
+and unit tests; the adversary vets your periphery tests, and a behaviour a Done-when criterion
+names that no test drives is the missing test the review rule blocks on. The adjudicator gates.
+No role grades its own artifact, so the guarantee that no criterion's boundary lands untested
+never rests on your judgment alone.
 
 ## Hand-over checks in this project
 
@@ -145,79 +135,6 @@ files of `src/`, `crates/`, `tests/`, `docs/`, `skills/`, `scaffold/` and `.rigg
 hook blocks grep and rg, so count with
 `git ls-files src crates tests docs skills scaffold .rigger | xargs awk -v t='<old>' 'index($0, t) { print FILENAME ":" FNR }'`.
 It prints nothing, or your hand-over names each line it prints with its reason.
-
-The sentence walk's generators, run at head against the base your prompt names (`rigger-run`
-when it names none): `git diff --name-only <base>..HEAD` lists the changed files, the `//!`
-lines of each read; `git diff <base>..HEAD` gives the hunks, each changed item's doc and body
-comments and the identifiers each hunk names; the `impl` header above a changed fn and above
-each of its callers names the trait item it implements; `rigger graph --around
-<file>::<item> --depth 1` lists each changed item's callers on the lines naming them (the
-default depth answers the item's whole file neighbourhood, never its callers), and when it
-answers nothing the callers are the lines the count above prints for the item's name, each
-read, with a `GAP:` clause naming the item in the record; and the count above with `t='<name>'` prints every tracked line spelling each changed
-item's name, each read. The count and the caller lookup run once per item of the walk's hunk
-list - every item the hunks touch, new or pre-existing, its body or its doc changed - each
-item's count run as
-`git ls-files src crates tests docs skills scaffold .rigger | xargs awk -v t='<name>' 'index($0, t) { print FILENAME ":" FNR }'`
-with its name. Each item the hunks add - a constant, static, list, closure, predicate - a SQL
-conjunct inside a query string included - or fn - carries its one-home line in one of the
-working discipline's three forms: `no other spelling` with the terms searched (its name count,
-its caller lookup and the fact's distinguishing literal - a table name, a kind string - run
-with the count above), `derived from <file:line>` or `pinned to <file:line> by <test>`. The
-item list is read from the hunks by shape as well as by name: every boolean expression they
-add - an `if`, `else if`, `while` or match-guard condition, each operand of an `&&` or `||`
-chain inside one, the body of a closure passed to `filter`, `any`, `all`, `retain`,
-`position` or `find`, a conjunct inside a query, format or macro string - is an item with its
-`file:line` and its one-home line, a changed condition among them included, and two of one
-fact are lifted to one home or `pinned to` each other. That set is read with one generator, run
-at head from the worktree root: it prints, as `file:line: text`, each line the walk's range adds
-to a production source under `src/` or `crates/*/src/`, above the file's test module (the first
-column-0 `#[cfg(test)]` over a `mod` body) and outside a comment, that carries a mark of one of
-those shapes, and each hit is read, the boolean expression it holds quoted as that item with its
-`file:line` and its one-home line, a hit that holds none passed over with no line of its own:
-`git diff -U0 $(git merge-base rigger-run HEAD)..HEAD -- src 'crates/*/src/*' | awk '/^\+\+\+ / { f = substr($0, 7); cut = 0; n = 0; m = 0; while ((getline line < f) > 0) { n++; if (line ~ /^#\[cfg\(test\)\]/) m = n; else if (m && line !~ /^[ \t]*(#\[|\/\/|$)/) { if (line ~ /^(pub(\([a-z]+\))? )?mod [^;]*[{]/) { cut = m; break } m = 0 } } close(f); next } /^@@ / { split($3, h, ","); at = substr(h[1], 2) + 0; next } /^\+/ { s = substr($0, 2); if ((!cut || at < cut) && s !~ /^[ \t]*\/\// && (index(s, " if ") || index(s, " while ") || index(s, " && ") || index(s, " || ") || index(s, "==") || index(s, "!=") || index(s, "<=") || index(s, ">=") || index(s, " < ") || index(s, " > ") || index(s, ".filter(") || index(s, ".any(") || index(s, ".all(") || index(s, ".retain(") || index(s, ".position(") || index(s, ".find(") || index(s, "is_some_and(") || index(s, "is_none_or(") || index(s, "is_ok_and(") || index(s, "is_err_and(") || index(s, "matches!(") || index(s, " AND ") || index(s, " OR ") || index(s, "WHERE "))) print f ":" at ": " s; at++ }'`
-A set of named members - an array of constants, an `IN (..)` list, a `matches!` or `match` arm
-per member, an `||` chain of equalities - runs the count above once per member's name, every
-statement, `match` or macro call holding two or more members read as a second spelling of the
-set, and its line names the member sites it read. On every round, the first and each later one
-alike, `<base>` is the unit's merge base with that branch, `$(git merge-base rigger-run HEAD)`,
-so the walk's range is `$(git merge-base rigger-run HEAD)..HEAD`, the unit's whole range, never
-the round's delta your prompt carries.
-
-Each rule the change rewrites is searched by two short terms for its old statement and for
-each label its cases carried (a name a doc, test or comment gives a case the old rule
-decided): the feature's name as the code spells it (`--around`, the fn, field, variant or table
-the rule concerns) and the rule's shortest distinguishing noun phrase (`exact id`, `import`,
-`collision`), each term at most three words, one run per pair, over every tracked text file of
-the project (`.rs`, `.md`, `.sh`, `.yml`, `.toml`, `.json`, `.js`, `.mjs` and `.html`: the
-code, docs, specs, personas, gates, workflows and dashboard pages). It reads each line joined
-to the one before it with their comment markers stripped, both lower-cased, and prints the line
-when the joined text holds both terms, in either order and with any words, names or code spans
-between them, so a term in another case, or a sentence a rewrap splits across two lines, is
-still a hit, and ends with the hit count:
-`git ls-files | awk '/\.(rs|md|sh|yml|toml|json|js|mjs|html)$/' | a='<feature name>' b='<noun phrase>' xargs awk 'BEGIN { a = tolower(ENVIRON["a"]); b = tolower(ENVIRON["b"]) } FNR == 1 { p = "" } { s = tolower($0); sub(/^[[:space:]]*(\/\/[\/!]?|#+|\*)?[[:space:]]*/, "", s); j = p " " s } index(s, a) && index(s, b) || index(j, a) && index(j, b) && !(index(p, a) && index(p, b)) { n++; print FILENAME ":" FNR ": " $0 } { p = s } END { print n + 0 " hits" }'`.
-
-A changed condition rewrites a rule too: every boolean term your production hunks in `crates/`
-and `src/` add to or remove from a filter, guard or predicate, listed from
-`git diff $(git merge-base rigger-run HEAD)..HEAD -- crates src` with the test regions left out,
-changes the rule its function answers. Its old statement is what the function's callers from
-`rigger graph --around <file>::<fn> --depth 1` spell - the notes they print, their Returns
-paragraphs, the docs of the variants the answer maps to and the oracles asserting them - and
-each such consumer phrase runs as a pair of the search above, the function's name as the code
-spells it and the old answer's noun, one run per pair, every hit FIXED with the new qualifier
-or CHECKED where it does not reach it.
-
-The walk is recorded as one `<unit>-sentence-walk` DecisionMade, bounded so you write it in one
-pass. It carries each generator and search command as run with its hit count, never its pasted
-hits; every sentence FIXED, with its `file:line` and the `file:line` of the code at head that
-makes it true, one witness per case for a sentence with a quantifier (every, all, always, any,
-a plural subject with a predicate) - each arm, key component, filter condition or match branch
-the code splits its subject into, the cases named; each doc block the unit added, by
-`file:line`, with its witness; each item the unit adds with its one-home line; and the CHECKED
-remainder as one count per command. It owes no per-hit or per-line disposition, no count block
-beside each item and no section of its own for added or changed conditions. This bounded record
-satisfies the hand-over; the `sdet` lens re-runs the generators and searches on the review tree
-and reads the hits itself.
 
 ## Every test asserts exactly
 
