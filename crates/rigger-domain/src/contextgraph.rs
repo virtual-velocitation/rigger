@@ -412,16 +412,16 @@ pub struct CallGraph {
     pub referenced_not_called: Vec<Node>,
 }
 
-/// The resolution of a `rigger graph --show <entity>` query (spec 58, the TEXT half of lookup).
-/// A PORT-owned type (spec 92's fix round moved it here from the sqlite adapter, so
+/// The resolution of a `rigger graph --show <entity>` query (spec 58, the TEXT half of lookup). A
+/// PORT-owned type (spec 92's fix round moved it here from the sqlite adapter, so
 /// [`Projection::locate`] returns the same kind of type every sibling `Projection` method does,
-/// never a concrete adapter's own type): [`sqlite::Projector::locate`] resolves the query for the
-/// show surfaces (`rigger graph --show` and `rigger_graph`'s `show`) - a full `<file>::<path>` node
-/// id, a bare name matched as a definition's leaf, a path by its id suffix or a flat
-/// `<file>::<name>` as a leaf in that file (spec 119, A BARE SHOW FINDS A LEAF OR PATH), where an
-/// `--around` seed is an exact id or an alias resolved to its canonical id (spec 117), never a bare
-/// name looked up by its leaf - and returns one of three honest outcomes, never a guess among
-/// candidates.
+/// never a concrete adapter's own type):
+/// `rigger_graph_sqlite::contextgraph::sqlite::Projector::locate` resolves the query for the show
+/// surfaces (`rigger graph --show` and `rigger_graph`'s `show`) - a full `<file>::<path>` node id,
+/// a bare name matched as a definition's leaf, a path by its id suffix or a flat `<file>::<name>`
+/// as a leaf in that file (spec 119, A BARE SHOW FINDS A LEAF OR PATH), where an `--around` seed is
+/// an exact id or an alias resolved to its canonical id (spec 117), never a bare name looked up by
+/// its leaf - and returns one of three honest outcomes, never a guess among candidates.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Located {
     /// Exactly one entity resolved: its definition site and graph facts, from which the CLI reads
@@ -533,8 +533,9 @@ pub fn site_fields(site: &EntitySite) -> Vec<(&'static str, serde_json::Value)> 
         .collect()
 }
 
-/// One disambiguation candidate for an ambiguous query (spec 58): the full node id and its
-/// file. [`sqlite::Projector::locate`] returns these SORTED by id, so the listing is deterministic.
+/// One disambiguation candidate for an ambiguous query (spec 58): the full node id and its file.
+/// `rigger_graph_sqlite::contextgraph::sqlite::Projector::locate` returns these SORTED by id, so
+/// the listing is deterministic.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Candidate {
     /// The candidate's full `<file>::<path>` node id.
@@ -893,7 +894,7 @@ pub trait Projection: Send + Sync {
     ///
     /// The default folds each event through [`apply`](Projection::apply) (one transaction per
     /// event), so an implementation with no cheaper batch path is unaffected and every `apply`
-    /// still runs. The sqlite [`Projector`](crate::contextgraph::sqlite::Projector) OVERRIDES it,
+    /// still runs. The sqlite `rigger_graph_sqlite::contextgraph::sqlite::Projector` OVERRIDES it,
     /// at the transaction cadence its own `apply_batch` doc states: folding many events per commit
     /// rather than one per event is what spec 49 needed, the measured cold-build throughput being
     /// transaction-cadence bound, not parse-bound.
@@ -957,10 +958,10 @@ pub trait Projection: Send + Sync {
     /// layered DAG; a recursion edge is marked ([`CallEdge::back`]) rather than duplicated.
     ///
     /// The default returns an empty [`CallGraph`], so a projection with no directed-walk support (a
-    /// test double, or a not-yet-overriding adapter) degrades to an empty view rather than erroring.
-    /// The sqlite [`Projector`](crate::contextgraph::sqlite::Projector) OVERRIDES it with the real
-    /// walk. Read-only over the projection; an empty graph or a seed with no calls yields an empty
-    /// [`CallGraph`], never an error.
+    /// test double, or a not-yet-overriding adapter) degrades to an empty view rather than
+    /// erroring. The sqlite `rigger_graph_sqlite::contextgraph::sqlite::Projector` OVERRIDES it
+    /// with the real walk. Read-only over the projection; an empty graph or a seed with no calls
+    /// yields an empty [`CallGraph`], never an error.
     fn calls(
         &self,
         _seed: &[String],
@@ -978,14 +979,15 @@ pub trait Projection: Send + Sync {
     /// `graph --show <entity>` / `rigger_graph`'s `show` selector lookup, put on the trait so a
     /// caller holding only `&dyn Projection` (`mcpserver::Server`, wired via
     /// [`with_graph`](crate::mcpserver::Server::with_graph) exactly like [`subgraph`] already is)
-    /// can serve it without reaching for the concrete [`sqlite::Projector`] across the crate
-    /// boundary - the DI extension that retired the operator MCP surface's second read loop
-    /// rather than adding one. Mirrors [`sqlite::Projector::locate`]: a full `<file>::<path>` id
-    /// resolves directly (a nameless code entity's or artifact's only once nothing else does);
-    /// else a bare name matches as a definition's leaf, a path (`Struct.field`) by its id suffix
-    /// and a flat `<file>::<name>` as a leaf in that file (spec 119, A BARE SHOW FINDS A LEAF OR
-    /// PATH); and the three outcomes ([`Located`], a port-owned type - see its doc) are never a
-    /// guess among candidates.
+    /// can serve it without reaching for the concrete
+    /// `rigger_graph_sqlite::contextgraph::sqlite::Projector` across the crate boundary - the DI
+    /// extension that retired the operator MCP surface's second read loop rather than adding one.
+    /// Mirrors `rigger_graph_sqlite::contextgraph::sqlite::Projector::locate`: a full
+    /// `<file>::<path>` id resolves directly (a nameless code entity's or artifact's only once
+    /// nothing else does); else a bare name matches as a definition's leaf, a path (`Struct.field`)
+    /// by its id suffix and a flat `<file>::<name>` as a leaf in that file (spec 119, A BARE SHOW
+    /// FINDS A LEAF OR PATH); and the three outcomes ([`Located`], a port-owned type - see its doc)
+    /// are never a guess among candidates.
     /// The default returns `Located::None`, so a projection with no locate support (a test double)
     /// degrades honestly rather than erroring - the sqlite `Projector` OVERRIDES it with the real
     /// lookup.
@@ -1724,9 +1726,9 @@ mod locate_default {
     use crate::test_support::MinimalProjection;
 
     /// A projection with no locate support degrades HONESTLY to `Located::None` rather than
-    /// erroring or panicking - the same honesty the [`crate::contextgraph::sqlite::Projector`]
-    /// override promises for a genuinely unmatched query, just for every query on a projection
-    /// that never indexed definitions at all.
+    /// erroring or panicking - the same honesty the
+    /// `rigger_graph_sqlite::contextgraph::sqlite::Projector` override promises for a genuinely
+    /// unmatched query, just for every query on a projection that never indexed definitions at all.
     #[test]
     fn a_projection_with_no_override_reports_none_never_errors() {
         assert_eq!(MinimalProjection.locate("anything").unwrap(), Located::None);
