@@ -1701,7 +1701,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "47420adacc902531"
+    "content_hash": "b0b07fc8ea9d4263"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -2061,7 +2061,15 @@
     "is_test": false,
     "proposed_module": "conductor::schedule",
     "reason": "name contains \"criterion\" (unit scheduling); grouped under `conductor::schedule`.",
-    "content_hash": "055e36d172bbd65a"
+    "content_hash": "3d75e27a775deea6"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "branch_commit",
+    "is_test": false,
+    "proposed_module": "conductor::integrated_probe",
+    "reason": "method inside `impl IntegratedProbe`; grouped with its other `IntegratedProbe` methods.",
+    "content_hash": "f12dc5859b1d0249"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -2069,7 +2077,7 @@
     "is_test": false,
     "proposed_module": "conductor::schedule",
     "reason": "name contains \"criterion\" (unit scheduling); grouped under `conductor::schedule`.",
-    "content_hash": "4820324f843e3113"
+    "content_hash": "2265ff5613e13114"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -2077,7 +2085,15 @@
     "is_test": false,
     "proposed_module": "conductor::schedule",
     "reason": "name contains \"criterion\" (unit scheduling); grouped under `conductor::schedule`.",
-    "content_hash": "75ffd1b04be36485"
+    "content_hash": "17dd0567e56b6f19"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "on_run_branch",
+    "is_test": false,
+    "proposed_module": null,
+    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
+    "content_hash": "ffd1eae6b8a36dc5"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -3205,7 +3221,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "9293ea103d949587"
+    "content_hash": "f0da0473c990597d"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
