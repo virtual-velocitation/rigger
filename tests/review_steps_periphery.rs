@@ -18,33 +18,37 @@
 //!
 //! Past those sits a list running: the compiled `rigger step` walks one repeating a kind, a fresh
 //! process per step, each step printed under its own token with the roster of every earlier one.
+//! The walk runs through an adjudicator's reject into a next round, the log it leaves parses back
+//! through `review_step_of`, and a map-form run rebased onto its canonical list keeps its ids.
 
 mod common;
 
 use common::cli::{
-    cargo_project, loaded_config, rigger_file, run_rigger, run_rigger_ok, temp_project,
-    write_scaffold,
+    cargo_project, loaded_config, read_run_events, rigger_file, run_rigger, run_rigger_ok,
+    temp_project, write_scaffold,
 };
 #[cfg(feature = "symbols")]
 use common::cli::{edge_lines, run_around};
 use common::fixtures::{
     adversary_first_steps, agent, count_status_marker, lenses, light_of, panel_of,
     panel_rule_refusals, repeated_kind_lists, repo_review_panel, separator_refusal,
-    speculation_regen_door_cfg, WriteAndApprove, ADVERSARY_FIRST_LIST, EMIT_ONLY,
-    LIGHT_PANEL_FORMS, PANEL_AGENTS, PANEL_SCOPES, REPEATED_KIND_LIST,
+    speculation_regen_door_cfg, status_markers, WriteAndApprove, ADVERSARY_FIRST_LIST, EMIT_ONLY,
+    LIGHT_PANEL_FORMS, PANEL_AGENTS, PANEL_SCOPES, REJECT_FEATURE, REPEATED_KIND_LIST,
 };
 use common::git::{commit_files, temp_git_project_with_commit};
 use common::repo::repo_root;
-use rigger::conductor::{run, Deps, STREAM};
+use rigger::conductor::{run, Deps, META_REPLAY_KEY, STREAM};
 use rigger::config::ReviewStep::{self, Adjudicator, Adversary};
 use rigger::config::{AgentDef, ReviewPanel};
 use rigger::config_store::parse_workflow;
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Direction, Event, EventStore};
 use rigger::gate::ExecRunner;
-use rigger::ledger;
 use rigger::metrics::META_MODEL_ALIAS;
-use std::path::Path;
+use rigger::spawn::{
+    requests, review_step_of, spawn_role, ReviewKind, SpawnEvent, SpawnResult, TYPE_SPAWN_RESULT,
+};
+use std::path::{Path, PathBuf};
 
 /// The panel a stage named `s` carries when its `review:` key is the flow mapping `panel`, read
 /// through the production workflow parser and the stage-panel resolution the conductor uses.
@@ -394,6 +398,72 @@ fn printed_step(root: &Path) -> (Vec<(String, Vec<String>)>, bool) {
     (wave, step["done"] == serde_json::json!(true))
 }
 
+/// The answer a finding reviewer gives a walk's step.
+const NO_BLOCKER: &str = "reviewed: no blocker";
+
+/// The adjudicator verdict that lands a walk's round.
+const APPROVE: &str = r#"{"verdict":"approve"}"#;
+
+/// One step of a walk: its tokens, the roster each of them parks with and the answer each gets.
+type WalkedStep<'a> = (&'a [&'a str], &'a [&'a str], &'a str);
+
+/// The workflow of a walk, for [`declaring`]: one stage `s` reviewed by its `{panel}`.
+const WALKED_WORKFLOW: &str = "defaults:\n  grounder: nop\n  budget: 60\ngates:\n  ok: { run: \
+                               \"true\", kind: core }\nstages:\n  s:\n    agent: a\n    gates: \
+                               [ok]\n    on_pass: none\n    review: {panel}\n";
+
+/// Drives a project reviewed by `panel` past its implementer: `rigger step` parks that spawn
+/// alone, and its commit of `feature.rs` and its result open the round. Returns the unit's
+/// worktree.
+fn implement_reviewed_by(root: &Path, panel: &str) -> PathBuf {
+    write_panel_project(root, &declaring(WALKED_WORKFLOW, panel));
+    let (wave, done) = printed_step(root);
+    assert_eq!(wave, [("s/implementer#0".to_string(), vec![])]);
+    assert!(!done);
+    let worktree = common::default_scratch_root(root).join("rigger-wt-s");
+    commit_files(&worktree, &[("feature.rs", "pub fn work() {}\n")], "wip");
+    run_rigger_ok(root, &["result", "s/implementer#0", "implemented the unit"]);
+    worktree
+}
+
+/// Walks `steps` of stage `s` at `attempt`, a process per step: each parks exactly its tokens
+/// under its roster and `rigger result` answers every one of them.
+fn walk_steps(root: &Path, attempt: u32, steps: &[WalkedStep]) {
+    for (tokens, roster, answer) in steps {
+        let ids: Vec<String> = tokens
+            .iter()
+            .map(|token| format!("s/{token}#{attempt}"))
+            .collect();
+        let (wave, done) = printed_step(root);
+        let roster: Vec<String> = roster.iter().map(|token| token.to_string()).collect();
+        let parked = ids.iter().map(|id| (id.clone(), roster.clone()));
+        assert_eq!(wave, parked.collect::<Vec<_>>(), "{ids:?}");
+        assert!(!done, "{ids:?}");
+        for id in &ids {
+            run_rigger_ok(root, &["result", id, answer]);
+        }
+    }
+}
+
+/// The five steps of [`REPEATED_KIND_LIST`], its adjudicator step answering `verdict`.
+fn repeated_kind_round(verdict: &str) -> [WalkedStep<'_>; 5] {
+    [
+        (&["lens:a", "lens:b"], &[], NO_BLOCKER),
+        (&["adversary"], &["lens:a", "lens:b"], NO_BLOCKER),
+        (&["lens:y@2"], &[], NO_BLOCKER),
+        (
+            &["adversary@2"],
+            &["lens:a", "lens:b", "adversary", "lens:y@2"],
+            NO_BLOCKER,
+        ),
+        (
+            &["adjudicator"],
+            &["lens:a", "lens:b", "adversary", "lens:y@2", "adversary@2"],
+            verdict,
+        ),
+    ]
+}
+
 /// Given a list repeating the lens and adversary kinds, when the operator drives it through
 /// `rigger step`, a process per step answered by `rigger result`, then each step parks under its
 /// own token with the roster of every earlier spawn, and the adjudicator's approve ends the run.
@@ -401,48 +471,166 @@ fn printed_step(root: &Path) -> (Vec<(String, Vec<String>)>, bool) {
 fn rigger_step_walks_a_list_repeating_a_kind_under_each_steps_token_and_roster() {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
-    write_panel_project(
-        root,
-        &format!(
-            "defaults:\n  grounder: nop\n  budget: 60\ngates:\n  ok: {{ run: \"true\", kind: \
-             core }}\nstages:\n  s:\n    agent: a\n    gates: [ok]\n    on_pass: none\n    \
-             review: {REPEATED_KIND_LIST}\n"
-        ),
+    implement_reviewed_by(root, REPEATED_KIND_LIST);
+    walk_steps(root, 0, &repeated_kind_round(APPROVE));
+    assert_eq!(printed_step(root), (vec![], true));
+}
+
+/// Given a list repeating a kind, when its adjudicator step rejects, then the reject is the
+/// round's as at HEAD: no `reviewed` stamp lands, the implementer is handed the required item at
+/// the next attempt, a second `rigger step` on that parked spawn mints nothing new, and the next
+/// round runs every step again under the same tokens and rosters. The log the walk leaves parses
+/// back through `review_step_of`, and `is_adjudicator` picks out the two verdicts, each read.
+#[test]
+fn rigger_step_takes_a_rejected_list_through_remediation_into_a_round_of_the_same_tokens() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    let worktree = implement_reviewed_by(root, REPEATED_KIND_LIST);
+
+    walk_steps(root, 0, &repeated_kind_round(REJECT_FEATURE));
+    assert_eq!(
+        status_markers(&read_run_events(root), "reviewed").count(),
+        0
     );
 
-    let (wave, done) = printed_step(root);
-    assert_eq!(wave, [("s/implementer#0".to_string(), vec![])]);
-    assert!(!done);
-    let worktree = common::default_scratch_root(root).join("rigger-wt-s");
-    commit_files(&worktree, &[("work.rs", "pub fn work() {}\n")], "wip");
-    run_rigger_ok(root, &["result", "s/implementer#0", "implemented the unit"]);
+    let remediation = (vec![("s/implementer#1".to_string(), vec![])], false);
+    assert_eq!(printed_step(root), remediation);
+    assert_eq!(
+        printed_step(root),
+        remediation,
+        "a parked spawn parks again"
+    );
+    commit_files(
+        &worktree,
+        &[("feature.rs", "pub fn work() -> u8 { 1 }\n")],
+        "fix",
+    );
+    run_rigger_ok(root, &["result", "s/implementer#1", "closed the finding"]);
 
-    let no_blocker = "reviewed: no blocker";
-    for (ids, roster, answer) in [
-        (&["s/lens:a#0", "s/lens:b#0"][..], &[][..], no_blocker),
-        (&["s/adversary#0"], &["lens:a", "lens:b"], no_blocker),
-        (&["s/lens:y@2#0"], &[], no_blocker),
-        (
-            &["s/adversary@2#0"],
-            &["lens:a", "lens:b", "adversary", "lens:y@2"],
-            no_blocker,
-        ),
-        (
-            &["s/adjudicator#0"],
-            &["lens:a", "lens:b", "adversary", "lens:y@2", "adversary@2"],
-            r#"{"verdict":"approve"}"#,
-        ),
-    ] {
-        let (wave, done) = printed_step(root);
-        let roster: Vec<String> = roster.iter().map(|token| token.to_string()).collect();
-        let parked = ids.iter().map(|id| (id.to_string(), roster.clone()));
-        assert_eq!(wave, parked.collect::<Vec<_>>(), "{ids:?}");
-        assert!(!done, "{ids:?}");
-        for id in ids {
-            run_rigger_ok(root, &["result", id, answer]);
-        }
-    }
+    walk_steps(root, 1, &repeated_kind_round(APPROVE));
     assert_eq!(printed_step(root), (vec![], true));
+
+    let events = read_run_events(root);
+    let requests = requests(&events).unwrap();
+    let mut parsed: Vec<_> = requests
+        .iter()
+        .map(|request| (request.id.as_str(), review_step_of(spawn_role(&request.id))))
+        .collect();
+    parsed.sort_by_key(|(id, _)| *id);
+    assert_eq!(
+        parsed,
+        [
+            ("s/adjudicator#0", Some((ReviewKind::Adjudicator, 1))),
+            ("s/adjudicator#1", Some((ReviewKind::Adjudicator, 1))),
+            ("s/adversary#0", Some((ReviewKind::Adversary, 1))),
+            ("s/adversary#1", Some((ReviewKind::Adversary, 1))),
+            ("s/adversary@2#0", Some((ReviewKind::Adversary, 2))),
+            ("s/adversary@2#1", Some((ReviewKind::Adversary, 2))),
+            ("s/implementer#0", None),
+            ("s/implementer#1", None),
+            ("s/lens:a#0", Some((ReviewKind::Lens, 1))),
+            ("s/lens:a#1", Some((ReviewKind::Lens, 1))),
+            ("s/lens:b#0", Some((ReviewKind::Lens, 1))),
+            ("s/lens:b#1", Some((ReviewKind::Lens, 1))),
+            ("s/lens:y@2#0", Some((ReviewKind::Lens, 2))),
+            ("s/lens:y@2#1", Some((ReviewKind::Lens, 2))),
+        ]
+    );
+    let request_of = |id: &str| requests.iter().find(|request| request.id == id).unwrap();
+    for (id, handed) in [("s/implementer#0", 0), ("s/implementer#1", 1)] {
+        let required = "- feature.rs: close the unscoped read";
+        let prompt = &request_of(id).prompt;
+        assert_eq!(prompt.matches(required).count(), handed, "{id}");
+    }
+    for id in ["s/adjudicator#0", "s/adjudicator#1"] {
+        let reviews = &request_of(id).reviews;
+        let roster: Vec<_> = reviews.iter().map(|token| review_step_of(token)).collect();
+        assert_eq!(
+            roster,
+            [
+                Some((ReviewKind::Lens, 1)),
+                Some((ReviewKind::Lens, 1)),
+                Some((ReviewKind::Adversary, 1)),
+                Some((ReviewKind::Lens, 2)),
+                Some((ReviewKind::Adversary, 2)),
+            ],
+            "{id}"
+        );
+    }
+
+    let verdicts: Vec<(String, Option<String>)> = events
+        .iter()
+        .filter(|e| e.type_ == TYPE_SPAWN_RESULT)
+        .map(|e| SpawnResult::from_event(e).unwrap())
+        .filter(SpawnResult::is_adjudicator)
+        .map(|result| {
+            let verdict = result.adjudication().and_then(|read| read.verdict);
+            (result.id, verdict)
+        })
+        .collect();
+    assert_eq!(
+        verdicts,
+        [
+            ("s/adjudicator#0".to_string(), Some("reject".to_string())),
+            ("s/adjudicator#1".to_string(), Some("approve".to_string())),
+        ]
+    );
+    let stamps: Vec<&str> = status_markers(&events, "reviewed")
+        .map(|e| e.meta[META_REPLAY_KEY].as_str())
+        .collect();
+    assert_eq!(stamps, ["s/reviewed#1"]);
+}
+
+/// Given a run parked mid-round on a map-form panel, when the operator rewrites the panel as the
+/// list spelling its canonical sequence and rebases, then the recorded step answers from the log
+/// and the rest of the round parks under the ids and rosters the map form mints, each requested
+/// once.
+#[test]
+fn rigger_step_rebased_from_a_map_onto_its_canonical_list_keeps_the_rounds_ids() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    implement_reviewed_by(root, "{ lenses: [a, b], adversary: x, adjudicator: z }");
+    walk_steps(root, 0, &[(&["lens:a", "lens:b"], &[], NO_BLOCKER)]);
+
+    write_panel_project(
+        root,
+        &declaring(
+            WALKED_WORKFLOW,
+            "{ steps: [{ lenses: [a, b] }, { adversary: x }, { adjudicator: z }] }",
+        ),
+    );
+    let (_, err, ok) = run_rigger(root, &["step"]);
+    assert!(!ok, "premise: the rewrite drifts the pinned definition");
+    assert!(err.contains("definition drift"), "{err}");
+    run_rigger_ok(root, &["step", "--rebase-definition"]);
+
+    walk_steps(
+        root,
+        0,
+        &[
+            (&["adversary"], &["lens:a", "lens:b"], NO_BLOCKER),
+            (
+                &["adjudicator"],
+                &["lens:a", "lens:b", "adversary"],
+                APPROVE,
+            ),
+        ],
+    );
+    assert_eq!(printed_step(root), (vec![], true));
+
+    let requests = requests(&read_run_events(root)).unwrap();
+    let mut ids: Vec<&str> = requests.iter().map(|request| request.id.as_str()).collect();
+    ids.sort();
+    assert_eq!(
+        ids,
+        [
+            "s/adjudicator#0",
+            "s/adversary#0",
+            "s/implementer#0",
+            "s/lens:a#0",
+            "s/lens:b#0",
+        ]
+    );
 }
 
 /// Given a full panel over a light panel in any pairing of the two forms, when the operator
@@ -690,12 +878,7 @@ fn agent_with_its_own_alias(id: &str) -> AgentDef {
 
 /// The model alias on each `reviewed` status of `events`, in log order.
 fn reviewed_aliases(events: &[Event]) -> Vec<String> {
-    events
-        .iter()
-        .filter(|e| {
-            e.type_ == ledger::TYPE_UNIT_STATUS
-                && String::from_utf8_lossy(&e.data).contains(r#""status":"reviewed""#)
-        })
+    status_markers(events, "reviewed")
         .map(|e| e.meta.get(META_MODEL_ALIAS).cloned().unwrap_or_default())
         .collect()
 }
@@ -765,4 +948,13 @@ rigger::test_cases! {
         panel_of(&[], "", ""),
         &[],
     );
+    /// A list repeating a kind stamps its one adjudicator step, past every token ahead of it.
+    a_winner_of_a_list_repeating_a_kind_stamps_its_adjudicator_steps_alias:
+        assert_winner_reviewed_aliases(
+            parsed_panel(
+                "{ steps: [{ lenses: [lens] }, { adversary: adv }, { lenses: [lens] }, \
+                 { adversary: adv }, { adjudicator: judge }] }",
+            ),
+            &["judge-model"],
+        );
 }

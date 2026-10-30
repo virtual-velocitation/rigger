@@ -14683,7 +14683,7 @@ mod tests {
     use crate::test_support::{
         critique_stage, fan_out_stage, plan_stage, review_stage_cfg, workflow_cfg,
     };
-    use crate::test_support::{MergeBreakDriver, MERGE_BREAK_BASE};
+    use crate::test_support::{MergeBreakDriver, MERGE_BREAK_BASE, REJECT_FEATURE};
     use std::path::Path;
 
     /// Shared test doubles and case bodies for this module's same-shaped tests.
@@ -31181,10 +31181,6 @@ mod tests {
         );
         cfg
     }
-
-    /// Round 0's reject of the `per_unit_panel_cfg` unit: one correctness item, in the file
-    /// round 0 wrote.
-    const REJECT_FEATURE: &str = r#"{"verdict":"reject","required":[{"finding":"close the unscoped read","path":"feature.rs","correctness":true}]}"#;
 
     /// The `per_unit_panel_cfg` adjudicator's spawn id at `attempt`, or its `retry`-th
     /// respawn.
