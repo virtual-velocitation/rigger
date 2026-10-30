@@ -955,7 +955,11 @@ CATCH-UP LINES (criterion 4), the exact texts:
 MARK LINES (criterion 6): `REBUILD_OWED` reads "graph.db owes one rebuild from the event log (it was
 folded under an older fold rule) - run `rigger setup` to rebuild it"; the `rebuilding graph.db ...:
 it misses an event the log holds` line is printed only for a file without `caught_up` whose seeding
-finds a prefix violation. Every other setup line stays as it is.
+finds a prefix violation. Setup removes the mark and says nothing of it, beside a file that carries
+`caught_up` at its last step or once its file is gone; a mark no removal can remove fails setup with
+its stderr ending in a line naming the mark, and a catch-up that stopped at a failure fails setup
+with its own line (CATCH-UP LINES) whatever the removal answered. Every other setup line stays as it
+is.
 
 RETIRED TESTS: a test is rewritten by the criterion whose tree first turns it red, keeping what it
 asserts beside the change, never deleted without a replacement; the mark's part of a test stays with
