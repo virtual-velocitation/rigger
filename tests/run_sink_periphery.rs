@@ -614,10 +614,10 @@ fn the_public_sink_answer_for_a_deleted_file_and_one_out_of_scope_names_no_blob_
 /// shape, one whose key names a prefix no half extracts, and no batch at all,
 /// THEN each fails naming the key and asks no hash;
 /// AND WHEN it asks about the reindexed source batch under `worktree::hash_blob` bound to a root
-/// that does not exist, so the hash process cannot start,
+/// that does not exist, so the git the hash starts fails to change into it,
 /// THEN it fails naming the identity and the hash's own failure - the command and the root.
 #[test]
-fn the_public_sink_answer_fails_naming_a_key_with_no_identity_and_a_hash_that_cannot_start() {
+fn the_public_sink_answer_fails_naming_a_key_with_no_identity_and_a_hash_whose_root_is_missing() {
     let tree = committed_tree();
     let root = tree.path();
     let files = Files::new();
@@ -645,8 +645,8 @@ fn the_public_sink_answer_fails_naming_a_key_with_no_identity_and_a_hash_that_ca
     );
 
     let nowhere = root.join("no-such-root");
-    let cannot_start = |bytes: &[u8]| rigger::worktree::hash_blob(&nowhere, bytes);
-    let why = cannot_start(b"").unwrap_err();
+    let hash_in_nowhere = |bytes: &[u8]| rigger::worktree::hash_blob(&nowhere, bytes);
+    let why = hash_in_nowhere(b"").unwrap_err();
     assert!(
         why.0.starts_with(&format!(
             "git hash-object --no-filters --stdin in {}: ",
@@ -656,7 +656,7 @@ fn the_public_sink_answer_fails_naming_a_key_with_no_identity_and_a_hash_that_ca
     );
 
     assert_eq!(
-        handed.answer(root, &files, &cannot_start),
+        handed.answer(root, &files, &hash_in_nowhere),
         Err(format!("the bytes of {SOURCE} could not be hashed: {why}"))
     );
     assert_eq!(entry_records(&files.log()), Vec::new());
