@@ -957,7 +957,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "29dcc3d1341ea65b"
+    "content_hash": "62a30095edd2416d"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -1061,7 +1061,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "40fe40e55cd6e5df"
+    "content_hash": "54a0d235b6d2c596"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -1093,7 +1093,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "d64312268ca6f0c0"
+    "content_hash": "66d374d01874f829"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -1101,7 +1101,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "f4ccaf7d51f4427c"
+    "content_hash": "1bc2b093c56f3da0"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -1109,7 +1109,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "7978cd74f6bda323"
+    "content_hash": "67ddf91757ce2cc5"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -1149,7 +1149,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "2e0c58b39909a900"
+    "content_hash": "5ce5b85fd9ab55e9"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -1157,7 +1157,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "deba5e8533df42cb"
+    "content_hash": "b0789c094d87f44b"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -5926,6 +5926,30 @@
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
     "content_hash": "ca90041d24917757"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "review_identity",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "0e92710dbb638cc2"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "assert_review_identity",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "e588800e22bc5e89"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "tiered_review_panel",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "22536b485caf3f72"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",

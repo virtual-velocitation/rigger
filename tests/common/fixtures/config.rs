@@ -46,14 +46,29 @@ pub fn cfg_for(ids: &[&str]) -> Config {
     c
 }
 
-/// A review panel of `lenses`, adversary `adv` and adjudicator `adj`, with no tier policy.
-pub fn panel_with_lenses(lenses: &[&str]) -> ReviewPanel {
+/// A review panel of `lenses`, `adversary` and `adjudicator`, with no tier policy.
+pub fn panel_of(lenses: &[&str], adversary: &str, adjudicator: &str) -> ReviewPanel {
     ReviewPanel {
         lenses: lenses.iter().map(|s| (*s).to_string()).collect(),
-        adversary: "adv".into(),
-        adjudicator: "adj".into(),
+        adversary: adversary.into(),
+        adjudicator: adjudicator.into(),
         tiers: None,
     }
+}
+
+/// A review panel of `lenses`, adversary `adv` and adjudicator `adj`, with no tier policy.
+pub fn panel_with_lenses(lenses: &[&str]) -> ReviewPanel {
+    panel_of(lenses, "adv", "adj")
+}
+
+/// The panel this repository's `.rigger/workflow.yml` declares for its implement stage, held
+/// equal to that file by `tests/review_steps_periphery.rs`.
+pub fn repo_review_panel() -> ReviewPanel {
+    panel_of(
+        &["architecture-reviewer", "sdet"],
+        "adversary",
+        "adjudicator",
+    )
 }
 
 /// A `core` gate running `run` with no declared inputs.

@@ -373,13 +373,60 @@ pub struct ReviewPanel {
     pub tiers: Option<Box<ReviewDepth>>,
 }
 
+/// One step of a panel's review sequence ([`ReviewPanel::steps`]): a lens step of the agents it
+/// runs in parallel, the adversary that refutes the steps before it, or the adjudicator whose
+/// verdict gates integration.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ReviewStep {
+    Lenses(Vec<String>),
+    Adversary(String),
+    Adjudicator(String),
+}
+
+impl ReviewStep {
+    /// The agent ids this step spawns, in declared order: a lens step's lenses, else its one
+    /// agent.
+    pub fn agents(&self) -> &[String] {
+        match self {
+            ReviewStep::Lenses(ids) => ids,
+            ReviewStep::Adversary(id) | ReviewStep::Adjudicator(id) => std::slice::from_ref(id),
+        }
+    }
+
+    /// The agent of an adjudicator step, else `None`.
+    pub fn adjudicator(&self) -> Option<&str> {
+        match self {
+            ReviewStep::Adjudicator(id) => Some(id),
+            ReviewStep::Lenses(_) | ReviewStep::Adversary(_) => None,
+        }
+    }
+}
+
 impl ReviewPanel {
-    /// Whether this panel has any review tier configured. An empty panel runs no
+    /// The panel's review sequence, the one authority every reader of its roster goes through:
+    /// the CANONICAL SEQUENCE of the map form, `Lenses` when `lenses` is non-empty, then
+    /// `Adversary` when `adversary` is set, then `Adjudicator` when `adjudicator` is set. The
+    /// `tiers` light panel is a panel of its own and names no step here.
+    pub fn steps(&self) -> Vec<ReviewStep> {
+        let mut steps = Vec::new();
+        if !self.lenses.is_empty() {
+            steps.push(ReviewStep::Lenses(self.lenses.clone()));
+        }
+        if !self.adversary.is_empty() {
+            steps.push(ReviewStep::Adversary(self.adversary.clone()));
+        }
+        if !self.adjudicator.is_empty() {
+            steps.push(ReviewStep::Adjudicator(self.adjudicator.clone()));
+        }
+        steps
+    }
+
+    /// Whether this panel names no review step ([`Self::steps`]). An empty panel runs no
     /// per-unit review (the historical implement-then-integrate behavior). A
     /// `tiers` policy alone (no roster) is meaningless - there is no full panel to
     /// reduce from - so it does not make a panel non-empty.
     pub fn is_empty(&self) -> bool {
-        self.lenses.is_empty() && self.adversary.is_empty() && self.adjudicator.is_empty()
+        self.steps().is_empty()
     }
 
     /// The configured risk-tiered depth policy, if any.
@@ -401,26 +448,30 @@ impl ReviewPanel {
         ids
     }
 
-    /// The agent ids on this panel's own top-level roster - the lenses, the adversary and the
-    /// adjudicator - WITHOUT the opt-in light-tier roster [`Self::agent_ids`] adds: the roster a
-    /// unit that stays on the full panel reviews itself with.
+    /// The agent ids on this panel's own top-level roster - the agents of each of its
+    /// [`Self::steps`] in step order, so the lenses, the adversary and the adjudicator -
+    /// WITHOUT the opt-in light-tier roster [`Self::agent_ids`] adds: the roster a unit that
+    /// stays on the full panel reviews itself with.
     pub fn full_roster(&self) -> Vec<String> {
-        let mut ids = self.lenses.clone();
-        push_reviewers(&mut ids, &self.adversary, &self.adjudicator);
-        ids
+        self.steps()
+            .iter()
+            .flat_map(|step| step.agents().iter().cloned())
+            .collect()
     }
 
-    /// The GATING agent ids this panel names: the adjudicator on this tier and,
-    /// recursively, the light tier's adjudicator. A gating agent's result-channel
-    /// verdict gates integration; the lenses and the adversary do NOT render a gating
-    /// verdict (the adversary "does not render the final verdict"), so only adjudicators
+    /// The GATING agent ids this panel names: the agent of its adjudicator step
+    /// ([`Self::steps`]) and, recursively, the light tier's adjudicator. A gating agent's
+    /// result-channel verdict gates integration; the lenses and the adversary do NOT render a
+    /// gating verdict (the adversary "does not render the final verdict"), so only adjudicators
     /// are collected here. This is the roster the verdict-line lint
     /// ([`lint_gating_verdict_lines`]) inspects.
     pub fn gating_agent_ids(&self) -> Vec<String> {
-        let mut ids = Vec::new();
-        if !self.adjudicator.is_empty() {
-            ids.push(self.adjudicator.clone());
-        }
+        let mut ids: Vec<String> = self
+            .steps()
+            .iter()
+            .filter_map(ReviewStep::adjudicator)
+            .map(str::to_string)
+            .collect();
         if let Some(depth) = self.depth() {
             ids.extend(depth.light.gating_agent_ids());
         }
@@ -1504,4 +1555,103 @@ pub fn find_cycle(stages: &BTreeMap<String, Stage>) -> Option<String> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A map-form panel of `lenses`, `adversary` and `adjudicator` with no tier policy.
+    fn panel(lenses: &[&str], adversary: &str, adjudicator: &str) -> ReviewPanel {
+        ReviewPanel {
+            lenses: lenses.iter().map(|l| l.to_string()).collect(),
+            adversary: adversary.into(),
+            adjudicator: adjudicator.into(),
+            tiers: None,
+        }
+    }
+
+    /// `full` carrying a `tiers` policy whose light panel is `light`.
+    fn tiered(full: ReviewPanel, light: ReviewPanel) -> ReviewPanel {
+        ReviewPanel {
+            tiers: Some(Box::new(ReviewDepth {
+                light,
+                threshold: 5,
+                high_risk_paths: Vec::new(),
+            })),
+            ..full
+        }
+    }
+
+    #[test]
+    fn a_map_form_panel_steps_through_its_set_lenses_adversary_and_adjudicator_in_that_order() {
+        let ab = || ReviewStep::Lenses(vec!["a".into(), "b".into()]);
+        let x = || ReviewStep::Adversary("x".into());
+        let z = || ReviewStep::Adjudicator("z".into());
+        for (panel, steps) in [
+            (panel(&["a", "b"], "x", "z"), vec![ab(), x(), z()]),
+            (panel(&["a", "b"], "x", ""), vec![ab(), x()]),
+            (panel(&["a", "b"], "", "z"), vec![ab(), z()]),
+            (panel(&["a", "b"], "", ""), vec![ab()]),
+            (panel(&[], "x", "z"), vec![x(), z()]),
+            (panel(&[], "x", ""), vec![x()]),
+            (panel(&[], "", "z"), vec![z()]),
+            (panel(&[], "", ""), vec![]),
+            // The light panel is a panel of its own: `steps` is the full panel's sequence.
+            (
+                tiered(panel(&["a", "b"], "", "z"), panel(&["c"], "", "w")),
+                vec![ab(), z()],
+            ),
+        ] {
+            assert_eq!(panel.steps(), steps, "{panel:?}");
+        }
+    }
+
+    #[test]
+    fn the_panel_accessors_read_its_steps_then_its_light_panel() {
+        // (panel, is_empty, full_roster, gating_agent_ids, agent_ids)
+        for (panel, empty, full, gating, all) in [
+            (
+                panel(&["a", "b"], "x", "z"),
+                false,
+                vec!["a", "b", "x", "z"],
+                vec!["z"],
+                vec!["a", "b", "x", "z"],
+            ),
+            (
+                panel(&["a", "b"], "", ""),
+                false,
+                vec!["a", "b"],
+                vec![],
+                vec!["a", "b"],
+            ),
+            (panel(&[], "x", ""), false, vec!["x"], vec![], vec!["x"]),
+            (panel(&[], "", "z"), false, vec!["z"], vec!["z"], vec!["z"]),
+            (panel(&[], "", ""), true, vec![], vec![], vec![]),
+            (
+                tiered(panel(&["a", "b"], "x", "z"), panel(&["c"], "", "w")),
+                false,
+                vec!["a", "b", "x", "z"],
+                vec!["z", "w"],
+                vec!["a", "b", "x", "z", "c", "w"],
+            ),
+            // A `tiers` policy alone names no step, so the panel stays empty.
+            (
+                tiered(panel(&[], "", ""), panel(&["c"], "", "w")),
+                true,
+                vec![],
+                vec!["w"],
+                vec!["c", "w"],
+            ),
+        ] {
+            assert_eq!(panel.is_empty(), empty, "is_empty of {panel:?}");
+            assert_eq!(panel.full_roster(), full, "full_roster of {panel:?}");
+            assert_eq!(
+                panel.gating_agent_ids(),
+                gating,
+                "gating_agent_ids of {panel:?}"
+            );
+            assert_eq!(panel.agent_ids(), all, "agent_ids of {panel:?}");
+        }
+    }
 }

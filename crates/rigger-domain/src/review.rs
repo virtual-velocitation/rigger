@@ -7,14 +7,15 @@ use std::path::{Component, Path, PathBuf};
 
 use serde_json::Value;
 
+use crate::config::{ReviewPanel, ReviewStep};
 use crate::contextgraph::query::referenced_id;
 use crate::contextgraph::{TYPE_DECISION_MADE, TYPE_REVIEW_FINDING};
 use crate::eventstore::{Error as StoreError, Event, EventStore, Position, TypeSelection};
 use crate::ledger;
 use crate::playbooks::fnv1a_64;
 use crate::spawn::{
-    attempt_of, lens_role, requests, result_of, spawn_id, Adjudication, SpawnEvent, SpawnResult,
-    ROLE_ADVERSARY, TYPE_SPAWN_REQUESTED, TYPE_SPAWN_RESULT,
+    attempt_of, bare_review_role, requests, result_of, spawn_id, Adjudication, ReviewKind,
+    SpawnEvent, SpawnResult, ROLE_ADVERSARY, TYPE_SPAWN_REQUESTED, TYPE_SPAWN_RESULT,
 };
 
 /// The two review-depth tiers a unit routes to: `TIER_LIGHT` runs the reduced roster,
@@ -250,27 +251,56 @@ pub fn verdict_compensates(output: &str) -> Option<String> {
     None
 }
 
-/// The adversary's routed review roster (spec 67, criterion 4): the unit's lens AGENT ids
-/// (`ReviewPanel::lenses` / [`fan_out_lenses`]'s raw values), rendered as the same
-/// review-attribution role tokens ([`lens_role`]) a `ReviewFinding.by` already carries - so
-/// the driver names EXACTLY who the adversary is grounding against, never a guessed set.
-/// Pure over the panel's own lens list, so it stays correct for whichever panel the
-/// conductor actually routed to (light or full) - the caller always passes THAT panel's
-/// lenses, never a static declaration.
-pub fn review_roster(lenses: &[String]) -> Vec<String> {
-    lenses.iter().map(|id| lens_role(id)).collect()
-}
-
-/// The adjudicator's routed review roster (spec 67, criterion 4): [`review_roster`]'s same
-/// lens roster, PLUS [`ROLE_ADVERSARY`] when an adversary tier actually ran for this panel
-/// (`adversary_id` non-empty) - never a fabricated entry for a panel with no adversary
-/// (e.g. a reduced light tier).
-pub fn adjudicator_roster(lenses: &[String], adversary_id: &str) -> Vec<String> {
-    let mut roster = review_roster(lenses);
-    if !adversary_id.is_empty() {
-        roster.push(ROLE_ADVERSARY.to_string());
+/// The routed review roster of the step at `index` in `steps` (spec 67, criterion 4): the role
+/// token `mint` spells for every agent of every step before it, in step order (a lens step's
+/// agents in declared order), each minted with its step's [`ReviewKind`] and that step's 1-based
+/// ordinal among the steps of its kind. A lens step reviews independently of the others, so
+/// its roster is empty. `index` may be `steps.len()`, the roster a step appended after them
+/// would carry. Pure over the steps of the panel the conductor actually routed to (light or
+/// full), so the driver names EXACTLY the spawns a reviewer grounds against, never a guessed
+/// set.
+pub fn step_roster(
+    steps: &[ReviewStep],
+    index: usize,
+    mint: impl Fn(ReviewKind, &str, u32) -> String,
+) -> Vec<String> {
+    if let Some(ReviewStep::Lenses(_)) = steps.get(index) {
+        return Vec::new();
+    }
+    let mut ordinals: BTreeMap<ReviewKind, u32> = BTreeMap::new();
+    let mut roster = Vec::new();
+    for step in steps.iter().take(index) {
+        let kind = match step {
+            ReviewStep::Lenses(_) => ReviewKind::Lens,
+            ReviewStep::Adversary(_) => ReviewKind::Adversary,
+            ReviewStep::Adjudicator(_) => ReviewKind::Adjudicator,
+        };
+        let k = *ordinals.entry(kind).and_modify(|k| *k += 1).or_insert(1);
+        roster.extend(step.agents().iter().map(|agent| mint(kind, agent, k)));
     }
     roster
+}
+
+/// The adversary's routed review roster: the [`step_roster`] of an adversary step after a lens
+/// step of `lenses`, so each lens agent's [`lens_role`](crate::spawn::lens_role) token, the one
+/// a `ReviewFinding.by` already carries. It is [`adjudicator_roster`] with no adversary.
+pub fn review_roster(lenses: &[String]) -> Vec<String> {
+    adjudicator_roster(lenses, "")
+}
+
+/// The adjudicator's routed review roster: the [`step_roster`], minted by [`bare_review_role`],
+/// of an adjudicator step after a lens step of `lenses` and an adversary step when
+/// `adversary_id` is set, so [`review_roster`]'s lens roster plus [`ROLE_ADVERSARY`] only when
+/// an adversary ran - never a fabricated entry for a panel with no adversary (e.g. a reduced
+/// light tier).
+pub fn adjudicator_roster(lenses: &[String], adversary_id: &str) -> Vec<String> {
+    let steps = ReviewPanel {
+        lenses: lenses.to_vec(),
+        adversary: adversary_id.to_string(),
+        ..Default::default()
+    }
+    .steps();
+    step_roster(&steps, steps.len(), bare_review_role)
 }
 
 /// The plan-critique rules both critique prompts read (spec 112): the Rule 7 and Rule 8 bullets
@@ -1503,5 +1533,123 @@ mod tests {
             PathBuf::from("/work/repo")
         );
         assert_eq!(spec_root(Path::new("/proj"), ""), PathBuf::from("/proj"));
+    }
+
+    /// A lens step of `agents`.
+    fn lens_step(agents: &[&str]) -> ReviewStep {
+        ReviewStep::Lenses(agents.iter().map(|a| a.to_string()).collect())
+    }
+
+    /// A minter spelling each token's kind, agent and 1-based ordinal among the steps of its
+    /// kind, so a roster shows which step each of its tokens came from.
+    fn ordinal_mint(kind: ReviewKind, agent: &str, k: u32) -> String {
+        format!("{kind:?}:{agent}:{k}")
+    }
+
+    #[test]
+    fn a_step_roster_mints_every_spawn_of_every_earlier_step_and_a_lens_step_none() {
+        let x = || ReviewStep::Adversary("x".into());
+        let z = || ReviewStep::Adjudicator("z".into());
+        let canonical: &[ReviewStep] = &[lens_step(&["a", "b"]), x(), z()];
+        let dropped: &[ReviewStep] = &[lens_step(&["a", "b"]), z()];
+        let no_lenses: &[ReviewStep] = &[x(), z()];
+        let one_step: &[ReviewStep] = &[z()];
+        let five: &[ReviewStep] = &[lens_step(&["a", "b"]), x(), lens_step(&["c"]), x(), z()];
+        let lens_twice: &[ReviewStep] = &[lens_step(&["a"]), lens_step(&["a"]), z()];
+        let bare: fn(ReviewKind, &str, u32) -> String = bare_review_role;
+        let ordinal: fn(ReviewKind, &str, u32) -> String = ordinal_mint;
+        let rows = [
+            (canonical, 0, bare, vec![]),
+            (canonical, 1, bare, vec!["lens:a", "lens:b"]),
+            (canonical, 2, bare, vec!["lens:a", "lens:b", "adversary"]),
+            // One past the last step: the roster a step appended after them would carry.
+            (
+                canonical,
+                3,
+                bare,
+                vec!["lens:a", "lens:b", "adversary", "adjudicator"],
+            ),
+            // The DROPPED adversary: the adjudicator's roster names the lenses alone.
+            (dropped, 1, bare, vec!["lens:a", "lens:b"]),
+            (no_lenses, 0, bare, vec![]),
+            (no_lenses, 1, bare, vec!["adversary"]),
+            (one_step, 0, bare, vec![]),
+            (five, 0, ordinal, vec![]),
+            (five, 1, ordinal, vec!["Lens:a:1", "Lens:b:1"]),
+            // A lens step after the adversary still carries no roster.
+            (five, 2, ordinal, vec![]),
+            (
+                five,
+                3,
+                ordinal,
+                vec!["Lens:a:1", "Lens:b:1", "Adversary:x:1", "Lens:c:2"],
+            ),
+            (
+                five,
+                4,
+                ordinal,
+                vec![
+                    "Lens:a:1",
+                    "Lens:b:1",
+                    "Adversary:x:1",
+                    "Lens:c:2",
+                    "Adversary:x:2",
+                ],
+            ),
+            (
+                five,
+                5,
+                ordinal,
+                vec![
+                    "Lens:a:1",
+                    "Lens:b:1",
+                    "Adversary:x:1",
+                    "Lens:c:2",
+                    "Adversary:x:2",
+                    "Adjudicator:z:1",
+                ],
+            ),
+            // A lens agent in two lens steps is rostered once per step, under each step's token.
+            (lens_twice, 2, ordinal, vec!["Lens:a:1", "Lens:a:2"]),
+            (lens_twice, 2, bare, vec!["lens:a", "lens:a"]),
+            (lens_twice, 1, ordinal, vec![]),
+        ];
+        for (steps, index, mint, roster) in rows {
+            assert_eq!(
+                step_roster(steps, index, mint),
+                roster,
+                "{steps:?} at {index}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_review_and_adjudicator_rosters_are_the_canonical_sequences_step_rosters() {
+        // (lenses, adversary, review_roster, adjudicator_roster): the rows the step-roster
+        // table above pins for the same canonical sequences under the bare minter.
+        let ab: Vec<String> = vec!["a".into(), "b".into()];
+        for (lenses, adversary, review, adjudicator) in [
+            (
+                &ab[..],
+                "x",
+                vec!["lens:a", "lens:b"],
+                vec!["lens:a", "lens:b", "adversary"],
+            ),
+            (
+                &ab[..],
+                "",
+                vec!["lens:a", "lens:b"],
+                vec!["lens:a", "lens:b"],
+            ),
+            (&[][..], "x", vec![], vec!["adversary"]),
+            (&[][..], "", vec![], vec![]),
+        ] {
+            assert_eq!(review_roster(lenses), review, "review_roster({lenses:?})");
+            assert_eq!(
+                adjudicator_roster(lenses, adversary),
+                adjudicator,
+                "adjudicator_roster({lenses:?}, {adversary:?})"
+            );
+        }
     }
 }
