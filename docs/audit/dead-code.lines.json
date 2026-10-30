@@ -1,13 +1,1 @@
-[
-  {
-    "file": "crates/rigger-domain/src/spawn.rs",
-    "name": "lens_agent_of",
-    "line": 213,
-    "test_only_references": [
-      {
-        "file": "crates/rigger-domain/src/spawn.rs",
-        "line": 1381
-      }
-    ]
-  }
-]
+[]

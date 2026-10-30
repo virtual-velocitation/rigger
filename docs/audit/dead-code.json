@@ -1,15 +1,1 @@
-[
-  {
-    "name": "lens_agent_of",
-    "file": "crates/rigger-domain/src/spawn.rs",
-    "content_hash": "4a90832b377e7ea4",
-    "visibility": "pub",
-    "ambiguous": false,
-    "test_only_references": [
-      {
-        "file": "crates/rigger-domain/src/spawn.rs",
-        "content_hash": "861ff64775d4d586"
-      }
-    ]
-  }
-]
+[]

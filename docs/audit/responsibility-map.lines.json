@@ -8943,1176 +8943,1176 @@
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "stage_of_role",
     "start_line": 2535,
-    "end_line": 2546
+    "end_line": 2543
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "role_and_agent",
-    "start_line": 2554,
-    "end_line": 2575
+    "start_line": 2553,
+    "end_line": 2579
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "gates_status",
-    "start_line": 2596,
-    "end_line": 2603
+    "start_line": 2600,
+    "end_line": 2607
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "advanced_past_gates",
-    "start_line": 2614,
-    "end_line": 2617
+    "start_line": 2618,
+    "end_line": 2621
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "unit_live_status",
-    "start_line": 2622,
-    "end_line": 2631
+    "start_line": 2626,
+    "end_line": 2635
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "spec_of",
-    "start_line": 2636,
-    "end_line": 2644
+    "start_line": 2640,
+    "end_line": 2648
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "graph_seeds",
-    "start_line": 2656,
-    "end_line": 2664
+    "start_line": 2660,
+    "end_line": 2668
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "event_seed_ids",
-    "start_line": 2671,
-    "end_line": 2697
+    "start_line": 2675,
+    "end_line": 2701
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "unit_seeds",
-    "start_line": 2709,
-    "end_line": 2732
+    "start_line": 2713,
+    "end_line": 2736
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "repoint_seed",
-    "start_line": 2747,
-    "end_line": 2760
+    "start_line": 2751,
+    "end_line": 2764
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "is_console_event",
-    "start_line": 2802,
-    "end_line": 2804
+    "start_line": 2806,
+    "end_line": 2808
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "console_event_wire",
-    "start_line": 2816,
-    "end_line": 2825
+    "start_line": 2820,
+    "end_line": 2829
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "console_progress_wire",
-    "start_line": 2832,
-    "end_line": 2840
+    "start_line": 2836,
+    "end_line": 2844
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "event_view",
-    "start_line": 2844,
-    "end_line": 2855
+    "start_line": 2848,
+    "end_line": 2859
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "field_str",
-    "start_line": 2858,
-    "end_line": 2864
+    "start_line": 2862,
+    "end_line": 2868
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "field_str_array",
-    "start_line": 2868,
-    "end_line": 2879
-  },
-  {
-    "file": "crates/rigger-dash/src/dash.rs",
-    "name": "now_unix",
-    "start_line": 2881,
+    "start_line": 2872,
     "end_line": 2883
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
+    "name": "now_unix",
+    "start_line": 2885,
+    "end_line": 2887
+  },
+  {
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "state_json",
-    "start_line": 2892,
-    "end_line": 2911
+    "start_line": 2896,
+    "end_line": 2915
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "events_json",
-    "start_line": 2917,
-    "end_line": 2925
+    "start_line": 2921,
+    "end_line": 2929
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "console_snapshot_json",
-    "start_line": 2932,
-    "end_line": 2987
+    "start_line": 2936,
+    "end_line": 2991
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "live_page",
-    "start_line": 2991,
-    "end_line": 2993
+    "start_line": 2995,
+    "end_line": 2997
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "console_page",
-    "start_line": 2999,
-    "end_line": 3001
+    "start_line": 3003,
+    "end_line": 3005
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "render_export",
-    "start_line": 3008,
-    "end_line": 3028
+    "start_line": 3012,
+    "end_line": 3032
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "escape_for_script",
-    "start_line": 3041,
-    "end_line": 3054
+    "start_line": 3045,
+    "end_line": 3058
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "new",
-    "start_line": 3076,
-    "end_line": 3082
+    "start_line": 3080,
+    "end_line": 3086
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "rendered",
-    "start_line": 3085,
-    "end_line": 3087
+    "start_line": 3089,
+    "end_line": 3091
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "text",
-    "start_line": 3088,
-    "end_line": 3094
+    "start_line": 3092,
+    "end_line": 3098
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "binary",
-    "start_line": 3100,
-    "end_line": 3102
+    "start_line": 3104,
+    "end_line": 3106
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "reason",
-    "start_line": 3104,
-    "end_line": 3114
+    "start_line": 3108,
+    "end_line": 3118
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "write_to",
-    "start_line": 3124,
-    "end_line": 3140
+    "start_line": 3128,
+    "end_line": 3144
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "route",
-    "start_line": 3149,
-    "end_line": 3330
+    "start_line": 3153,
+    "end_line": 3334
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "percent_decode",
-    "start_line": 3339,
-    "end_line": 3357
+    "start_line": 3343,
+    "end_line": 3361
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "query_param",
-    "start_line": 3360,
-    "end_line": 3366
+    "start_line": 3364,
+    "end_line": 3370
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "parse_request_line",
-    "start_line": 3370,
-    "end_line": 3375
+    "start_line": 3374,
+    "end_line": 3379
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "serve_on",
-    "start_line": 3406,
-    "end_line": 3448
+    "start_line": 3410,
+    "end_line": 3452
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "handle_conn",
-    "start_line": 3464,
-    "end_line": 3643
+    "start_line": 3468,
+    "end_line": 3647
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "env_duration_ms",
-    "start_line": 3660,
-    "end_line": 3667
+    "start_line": 3664,
+    "end_line": 3671
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "write_sse",
-    "start_line": 3682,
-    "end_line": 3693
+    "start_line": 3686,
+    "end_line": 3697
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "write_retained_window_gone",
-    "start_line": 3702,
-    "end_line": 3708
+    "start_line": 3706,
+    "end_line": 3712
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "serve_console_stream",
-    "start_line": 3732,
-    "end_line": 3857
+    "start_line": 3736,
+    "end_line": 3861
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "get_static",
-    "start_line": 3892,
-    "end_line": 3905
+    "start_line": 3896,
+    "end_line": 3909
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "assert_console_page_carries",
-    "start_line": 3909,
-    "end_line": 3915
+    "start_line": 3913,
+    "end_line": 3919
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "seeded_run",
-    "start_line": 3917,
-    "end_line": 3929
+    "start_line": 3921,
+    "end_line": 3933
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "local_instance",
-    "start_line": 3931,
-    "end_line": 3941
+    "start_line": 3935,
+    "end_line": 3945
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "instance_views_project_a_sorted_credential_free_landing",
-    "start_line": 3949,
-    "end_line": 4000
+    "start_line": 3953,
+    "end_line": 4004
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "instance_view_age_floors_at_zero_for_a_future_heartbeat",
-    "start_line": 4007,
-    "end_line": 4015
+    "start_line": 4011,
+    "end_line": 4019
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "api_instances_route_renders_the_landing_list",
-    "start_line": 4022,
-    "end_line": 4054
+    "start_line": 4026,
+    "end_line": 4058
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "console_core_wasm_route_serves_the_embedded_artifact_as_application_wasm",
-    "start_line": 4061,
-    "end_line": 4066
+    "start_line": 4065,
+    "end_line": 4070
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "console_core_wasm_artifact_is_under_the_three_megabyte_budget",
-    "start_line": 4071,
-    "end_line": 4083
+    "start_line": 4075,
+    "end_line": 4087
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "embedded_artifact_matches_a_fresh_independent_nested_build",
-    "start_line": 4095,
-    "end_line": 4123
+    "start_line": 4099,
+    "end_line": 4127
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "console_route_serves_the_shell_page_with_mock_regions_and_both_theme_token_blocks",
-    "start_line": 4135,
-    "end_line": 4185
+    "start_line": 4139,
+    "end_line": 4189
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "console_route_never_references_an_external_url",
-    "start_line": 4191,
-    "end_line": 4200
+    "start_line": 4195,
+    "end_line": 4204
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "console_fonts_route_serves_each_embedded_font_and_its_license_text",
-    "start_line": 4207,
-    "end_line": 4243
+    "start_line": 4211,
+    "end_line": 4247
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "console_page_wires_the_theme_toggles_persistence_round_trip",
-    "start_line": 4259,
-    "end_line": 4271
+    "start_line": 4263,
+    "end_line": 4275
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "root_serves_the_embedded_page_with_the_placeholder_resolved",
-    "start_line": 4274,
-    "end_line": 4288
+    "start_line": 4278,
+    "end_line": 4292
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "gates_status_never_fabricates_passed_for_an_off_linear_unverdicted_unit",
-    "start_line": 4299,
-    "end_line": 4349
+    "start_line": 4303,
+    "end_line": 4353
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "free_port_from_returns_the_start_port_when_free_and_the_next_free_one_when_it_is_taken",
-    "start_line": 4356,
-    "end_line": 4392
+    "start_line": 4360,
+    "end_line": 4396
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "bind_singleton_binds_the_exact_port_and_never_searches",
-    "start_line": 4399,
-    "end_line": 4448
+    "start_line": 4403,
+    "end_line": 4452
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "bind_singleton_short_circuits_on_an_already_serving_rigger_dash",
-    "start_line": 4459,
-    "end_line": 4532
+    "start_line": 4463,
+    "end_line": 4536
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "serve_reply",
-    "start_line": 4540,
-    "end_line": 4550
+    "start_line": 4544,
+    "end_line": 4554
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "serve_dribble",
-    "start_line": 4554,
-    "end_line": 4572
+    "start_line": 4558,
+    "end_line": 4576
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "timed_dash_probe",
-    "start_line": 4577,
-    "end_line": 4587
+    "start_line": 4581,
+    "end_line": 4591
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "assert_pid_probe",
-    "start_line": 4590,
-    "end_line": 4592
+    "start_line": 4594,
+    "end_line": 4596
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "dash_serving_on_is_false_for_a_non_dash_listener",
-    "start_line": 4599,
-    "end_line": 4604
+    "start_line": 4603,
+    "end_line": 4608
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "dash_serving_on_is_bounded_against_a_byte_dribbling_holder",
-    "start_line": 4615,
-    "end_line": 4632
+    "start_line": 4619,
+    "end_line": 4636
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "dash_serving_on_recognizes_the_header_fast_even_if_the_holder_never_finishes_the_block",
-    "start_line": 4655,
-    "end_line": 4677
+    "start_line": 4659,
+    "end_line": 4681
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "dash_serving_pid_on_is_none_when_nothing_answers",
-    "start_line": 4769,
-    "end_line": 4772
+    "start_line": 4773,
+    "end_line": 4776
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "bind_singleton_cold_race_loser_resolves_across_the_accept_window",
-    "start_line": 4780,
-    "end_line": 4809
+    "start_line": 4784,
+    "end_line": 4813
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "the_page_layout_cannot_scroll_the_body_horizontally",
-    "start_line": 4820,
-    "end_line": 4855
+    "start_line": 4824,
+    "end_line": 4859
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "the_landing_view_lists_instances_and_threads_the_attach_selector",
-    "start_line": 4866,
-    "end_line": 4903
+    "start_line": 4870,
+    "end_line": 4907
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "css_rule",
-    "start_line": 4908,
-    "end_line": 4917
+    "start_line": 4912,
+    "end_line": 4921
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "the_dashboard_fits_one_screen_with_internal_scroll",
-    "start_line": 4928,
-    "end_line": 4973
+    "start_line": 4932,
+    "end_line": 4977
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "cells_fit_or_wrap_and_wide_cells_scroll_in_their_own_container",
-    "start_line": 4987,
-    "end_line": 5021
+    "start_line": 4991,
+    "end_line": 5025
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "the_decision_history_renders_each_decision_as_a_native_details_with_preview_and_full_body",
-    "start_line": 5036,
-    "end_line": 5038
+    "start_line": 5040,
+    "end_line": 5042
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "state_endpoint_projects_the_seeded_run",
-    "start_line": 5041,
-    "end_line": 5069
+    "start_line": 5045,
+    "end_line": 5073
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "console_event_filter_admits_only_the_named_run_lifecycle_types",
-    "start_line": 5076,
-    "end_line": 5117
+    "start_line": 5080,
+    "end_line": 5121
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "console_event_wire_matches_console_cores_wire_event_shape",
-    "start_line": 5123,
-    "end_line": 5131
+    "start_line": 5127,
+    "end_line": 5135
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "console_event_wire_carries_recorded_at",
-    "start_line": 5139,
-    "end_line": 5145
+    "start_line": 5143,
+    "end_line": 5149
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "console_event_wire_with_a_malformed_body_degrades_to_null_data",
-    "start_line": 5151,
-    "end_line": 5158
+    "start_line": 5155,
+    "end_line": 5162
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "console_progress_wire_with_a_malformed_body_degrades_to_empty_id_and_activity",
-    "start_line": 5164,
-    "end_line": 5171
+    "start_line": 5168,
+    "end_line": 5175
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "console_snapshot_endpoint_filters_events_carries_progress_liveness_and_definitions",
-    "start_line": 5174,
-    "end_line": 5251
+    "start_line": 5178,
+    "end_line": 5255
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "state_carries_the_live_agent_activity",
-    "start_line": 5254,
-    "end_line": 5315
+    "start_line": 5258,
+    "end_line": 5319
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "state_counts_grep_fallbacks_and_carries_them_in_the_review_outcomes_data",
-    "start_line": 5318,
-    "end_line": 5384
+    "start_line": 5322,
+    "end_line": 5388
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "done",
-    "start_line": 5399,
-    "end_line": 5404
+    "start_line": 5403,
+    "end_line": 5408
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "run_tree_projects_the_spine_with_collapse_expand_and_driver_lines",
-    "start_line": 5393,
-    "end_line": 5579
+    "start_line": 5397,
+    "end_line": 5583
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "every_step_token_reads_as_its_kind",
-    "start_line": 5586,
-    "end_line": 5645
+    "start_line": 5590,
+    "end_line": 5649
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "the_run_tree_groups_every_step_under_its_kind",
-    "start_line": 5650,
-    "end_line": 5696
+    "start_line": 5654,
+    "end_line": 5700
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "review_verdicts_come_straight_from_the_metrics_classification",
-    "start_line": 5701,
-    "end_line": 5730
+    "start_line": 5705,
+    "end_line": 5734
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "events_endpoint_is_since_exclusive",
-    "start_line": 5733,
-    "end_line": 5743
+    "start_line": 5737,
+    "end_line": 5747
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "no_mutating_endpoint_exists",
-    "start_line": 5749,
-    "end_line": 5778
+    "start_line": 5753,
+    "end_line": 5782
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "export_inlines_the_snapshot_as_a_static_page",
-    "start_line": 5781,
-    "end_line": 5810
+    "start_line": 5785,
+    "end_line": 5814
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "export_neutralizes_a_script_breakout_in_the_inlined_state",
-    "start_line": 5818,
-    "end_line": 5865
+    "start_line": 5822,
+    "end_line": 5869
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "decision_view_strikes_through_superseded_entries",
-    "start_line": 5868,
-    "end_line": 5894
+    "start_line": 5872,
+    "end_line": 5898
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "cluster_key_folds_paths_by_directory_and_dev_loop_nodes_by_kind",
-    "start_line": 5905,
-    "end_line": 5970
+    "start_line": 5909,
+    "end_line": 5974
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "clustered_overview_under_files_lens_admits_only_code_entities_keyed_by_their_own_file",
-    "start_line": 5982,
-    "end_line": 6070
+    "start_line": 5986,
+    "end_line": 6074
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "cluster_detail_drills_a_cluster_to_its_members_and_caps_a_big_one_by_degree",
-    "start_line": 6089,
-    "end_line": 6332
+    "start_line": 6093,
+    "end_line": 6336
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "cluster_detail_under_files_lens_is_unconditionally_empty",
-    "start_line": 6341,
-    "end_line": 6386
+    "start_line": 6345,
+    "end_line": 6390
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "code_lens_buckets_code_entities_by_community_excludes_other_kinds_and_reports_underived_grain",
-    "start_line": 6403,
-    "end_line": 6596
+    "start_line": 6407,
+    "end_line": 6600
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "concepts_lens_buckets_members_by_concept_excludes_membershipless_nodes_and_reports_underived_grain",
-    "start_line": 6610,
-    "end_line": 6845
+    "start_line": 6614,
+    "end_line": 6849
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "tiered_chain_graph",
-    "start_line": 6851,
-    "end_line": 6868
+    "start_line": 6855,
+    "end_line": 6872
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "the_graph_route_returns_a_tier_tagged_seeded_neighborhood_as_json",
-    "start_line": 6871,
-    "end_line": 6935
+    "start_line": 6875,
+    "end_line": 6939
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "the_graph_route_percent_decodes_the_seed_so_select_to_seed_reaches_ids_with_special_chars",
-    "start_line": 6938,
-    "end_line": 6989
+    "start_line": 6942,
+    "end_line": 6993
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "the_graph_route_degrades_gracefully_for_an_unknown_seed_and_an_empty_graph",
-    "start_line": 6992,
-    "end_line": 7023
+    "start_line": 6996,
+    "end_line": 7027
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "the_graph_route_is_read_only_a_non_get_is_405",
-    "start_line": 7026,
-    "end_line": 7046
+    "start_line": 7030,
+    "end_line": 7050
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "the_graph_route_dispatches_cluster_overview_and_seed_by_parameter",
-    "start_line": 7055,
-    "end_line": 7157
+    "start_line": 7059,
+    "end_line": 7161
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "the_overview_route_degrades_gracefully_on_an_empty_graph",
-    "start_line": 7171,
-    "end_line": 7225
+    "start_line": 7175,
+    "end_line": 7229
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "neighborhood_bounds_by_depth_follows_both_directions_and_skips_invalidated_edges",
-    "start_line": 7228,
-    "end_line": 7282
+    "start_line": 7232,
+    "end_line": 7286
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "neighborhood_flags_god_nodes_by_degree_within_the_returned_neighborhood",
-    "start_line": 7285,
-    "end_line": 7318
+    "start_line": 7289,
+    "end_line": 7322
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "path_is_the_shortest_route_between_two_selected_nodes_over_currently_valid_edges",
-    "start_line": 7321,
-    "end_line": 7393
+    "start_line": 7325,
+    "end_line": 7397
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "the_graph_route_flags_god_nodes_and_returns_the_query_path_between_two_selected_nodes",
-    "start_line": 7396,
-    "end_line": 7463
+    "start_line": 7400,
+    "end_line": 7467
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "provenance_graph",
-    "start_line": 7470,
-    "end_line": 7507
+    "start_line": 7474,
+    "end_line": 7511
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "explain_returns_a_nodes_incident_edges_as_source_and_tier_tagged_provenance",
-    "start_line": 7510,
-    "end_line": 7557
+    "start_line": 7514,
+    "end_line": 7561
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "the_graph_route_carries_the_seed_nodes_explain_provenance",
-    "start_line": 7560,
-    "end_line": 7625
+    "start_line": 7564,
+    "end_line": 7629
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "graph_seeds_enumerate_decisions_findings_and_their_files_never_units",
-    "start_line": 7628,
-    "end_line": 7659
+    "start_line": 7632,
+    "end_line": 7663
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "graph_seeds_seed_the_file_a_record_citing_its_lines_names",
-    "start_line": 7664,
-    "end_line": 7680
+    "start_line": 7668,
+    "end_line": 7684
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "a_units_seed_lands_on_the_neighborhood_of_its_decisions_and_files",
-    "start_line": 7683,
-    "end_line": 7725
+    "start_line": 7687,
+    "end_line": 7729
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "the_run_tree_click_to_seed_route_lands_a_unit_on_a_real_neighborhood",
-    "start_line": 7728,
-    "end_line": 7832
+    "start_line": 7732,
+    "end_line": 7836
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "unit_seeds_scope_content_to_the_owning_unit",
-    "start_line": 7835,
-    "end_line": 7888
+    "start_line": 7839,
+    "end_line": 7892
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "repoint_seed_passes_a_known_node_and_re_points_a_unit_id",
-    "start_line": 7891,
-    "end_line": 7927
+    "start_line": 7895,
+    "end_line": 7931
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "a_unit_view_carries_the_spec_defect_reason_of_a_gate_stopped_on_one",
-    "start_line": 7933,
-    "end_line": 7962
+    "start_line": 7937,
+    "end_line": 7966
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "the_spec_defect_block_prints_a_stopped_gate_s_reason_before_the_uncovered_text",
-    "start_line": 7968,
-    "end_line": 7987
+    "start_line": 7972,
+    "end_line": 7991
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "build_state_on_an_empty_run_is_empty_not_a_panic",
-    "start_line": 7990,
-    "end_line": 8009
+    "start_line": 7994,
+    "end_line": 8013
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "release_ready_is_surfaced_on_the_dash_only_for_a_done_run",
-    "start_line": 8020,
-    "end_line": 8109
+    "start_line": 8024,
+    "end_line": 8113
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "release_ready_pr_command_newline_renders_as_a_real_line_break_not_a_collapsed_run_on",
-    "start_line": 8127,
-    "end_line": 8182
+    "start_line": 8131,
+    "end_line": 8186
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "request_line_parsing_extracts_method_and_target",
-    "start_line": 8185,
-    "end_line": 8192
+    "start_line": 8189,
+    "end_line": 8196
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "query_param_reads_since",
-    "start_line": 8195,
-    "end_line": 8202
+    "start_line": 8199,
+    "end_line": 8206
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "endpoints_serve_over_a_real_socket_against_a_seeded_store",
-    "start_line": 8210,
-    "end_line": 8288
+    "start_line": 8214,
+    "end_line": 8292
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "a_post_over_a_real_socket_is_refused_without_touching_the_store",
-    "start_line": 8294,
-    "end_line": 8345
+    "start_line": 8298,
+    "end_line": 8349
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "the_graph_provider_is_consulted_only_on_graph_requests_not_the_state_poll",
-    "start_line": 8356,
-    "end_line": 8468
+    "start_line": 8360,
+    "end_line": 8472
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "dash_marker_round_trips_through_its_on_disk_record",
-    "start_line": 8473,
-    "end_line": 8483
+    "start_line": 8477,
+    "end_line": 8487
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "dash_marker_parse_rejects_a_malformed_record",
-    "start_line": 8486,
-    "end_line": 8505
+    "start_line": 8490,
+    "end_line": 8509
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "dash_marker_reads_none_for_an_absent_file",
-    "start_line": 8508,
-    "end_line": 8526
+    "start_line": 8512,
+    "end_line": 8530
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "format_held_port_always_names_the_address_even_with_no_holder",
-    "start_line": 8531,
-    "end_line": 8543
+    "start_line": 8535,
+    "end_line": 8547
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "format_held_port_names_the_pid_and_state_for_a_running_holder",
-    "start_line": 8546,
-    "end_line": 8563
+    "start_line": 8550,
+    "end_line": 8567
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "format_held_port_names_the_pid_alone_when_its_state_is_not_discoverable",
-    "start_line": 8566,
-    "end_line": 8574
+    "start_line": 8570,
+    "end_line": 8578
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "format_held_port_gives_the_stopped_listener_diagnosis_naming_resume_or_kill",
-    "start_line": 8577,
-    "end_line": 8592
+    "start_line": 8581,
+    "end_line": 8596
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "pid_holding_port_finds_the_pid_of_a_listener_bound_in_this_process",
-    "start_line": 8595,
-    "end_line": 8607
+    "start_line": 8599,
+    "end_line": 8611
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "pid_holding_port_is_none_for_a_port_nothing_is_listening_on",
-    "start_line": 8610,
-    "end_line": 8626
+    "start_line": 8614,
+    "end_line": 8630
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "assert_names_this_process_as_holder",
-    "start_line": 8634,
-    "end_line": 8647
+    "start_line": 8638,
+    "end_line": 8651
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "describe_held_port_if_confirmed_is_none_when_nothing_holds_the_port",
-    "start_line": 8676,
-    "end_line": 8692
+    "start_line": 8680,
+    "end_line": 8696
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "dash_start_needed_is_true_when_none_serving_and_false_when_one_serves",
-    "start_line": 8695,
-    "end_line": 8712
+    "start_line": 8699,
+    "end_line": 8716
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "dash_answer_on_tells_a_silent_holder_from_an_empty_port",
-    "start_line": 8717,
-    "end_line": 8723
+    "start_line": 8721,
+    "end_line": 8727
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "an_interrupted_probe_read_is_read_again_inside_the_window",
-    "start_line": 8731,
-    "end_line": 8753
+    "start_line": 8735,
+    "end_line": 8757
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "a_probe_error_reads_as_the_peer_a_silent_holder_or_the_probe_failing",
-    "start_line": 8762,
-    "end_line": 8794
+    "start_line": 8766,
+    "end_line": 8798
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "a_failed_probe_answers_neither_serving_nor_gone",
-    "start_line": 8799,
-    "end_line": 8807
+    "start_line": 8803,
+    "end_line": 8811
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "dash_status_trusts_a_url_with_no_marker_and_catches_a_marker_that_lies",
-    "start_line": 8810,
-    "end_line": 8884
+    "start_line": 8814,
+    "end_line": 8888
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "dash_status_never_names_the_unattributed_pid_sentinel_as_a_dead_process",
-    "start_line": 8896,
-    "end_line": 8912
+    "start_line": 8900,
+    "end_line": 8916
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "url_port_parses_the_recorded_shape_and_rejects_anything_else",
-    "start_line": 8915,
-    "end_line": 8936
+    "start_line": 8919,
+    "end_line": 8940
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "dash_status_probes_the_urls_own_port_when_the_marker_names_a_different_dash",
-    "start_line": 8952,
-    "end_line": 8992
+    "start_line": 8956,
+    "end_line": 8996
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "should_reap_singleton_reaps_only_when_no_registered_instance_is_live",
-    "start_line": 8995,
-    "end_line": 9033
+    "start_line": 8999,
+    "end_line": 9037
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "should_reap_singleton_never_reaps_while_a_fresh_agent_liveness_signal_is_present",
-    "start_line": 9036,
-    "end_line": 9069
+    "start_line": 9040,
+    "end_line": 9073
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "the_page_carries_the_directed_call_layered_render",
-    "start_line": 9081,
-    "end_line": 9152
+    "start_line": 9085,
+    "end_line": 9156
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "cnode",
-    "start_line": 9170,
-    "end_line": 9180
-  },
-  {
-    "file": "crates/rigger-dash/src/dash.rs",
-    "name": "layer_of",
-    "start_line": 9182,
+    "start_line": 9174,
     "end_line": 9184
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
+    "name": "layer_of",
+    "start_line": 9186,
+    "end_line": 9188
+  },
+  {
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "ids",
-    "start_line": 9185,
-    "end_line": 9187
+    "start_line": 9189,
+    "end_line": 9191
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "calls_view_down_signs_callees_positive_and_carries_frontier_and_back",
-    "start_line": 9193,
-    "end_line": 9248
+    "start_line": 9197,
+    "end_line": 9252
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "calls_view_up_negates_callers_and_carries_the_referenced_sidecar",
-    "start_line": 9253,
-    "end_line": 9292
+    "start_line": 9257,
+    "end_line": 9296
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "calls_view_both_centers_the_seed_with_callees_right_and_callers_left",
-    "start_line": 9298,
-    "end_line": 9346
+    "start_line": 9302,
+    "end_line": 9350
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "a_plain_neighborhood_omits_every_additive_call_field",
-    "start_line": 9352,
-    "end_line": 9389
+    "start_line": 9356,
+    "end_line": 9393
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "calls_route_runs_the_traversal_for_view_calls_and_declines_otherwise",
-    "start_line": 9396,
-    "end_line": 9450
+    "start_line": 9400,
+    "end_line": 9454
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "calls_route_clamps_depth_and_defaults_the_tier_floor",
-    "start_line": 9456,
-    "end_line": 9484
+    "start_line": 9460,
+    "end_line": 9488
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "calls_route_walks_both_directions_for_dir_both",
-    "start_line": 9489,
-    "end_line": 9507
+    "start_line": 9493,
+    "end_line": 9511
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "finding_node",
-    "start_line": 9529,
-    "end_line": 9539
+    "start_line": 9533,
+    "end_line": 9543
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "rationale_graph",
-    "start_line": 9555,
-    "end_line": 9588
+    "start_line": 9559,
+    "end_line": 9592
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "leaf_fields",
-    "start_line": 9591,
-    "end_line": 9593
+    "start_line": 9595,
+    "end_line": 9597
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "node_rationale_returns_attached_leaves_ordered_by_kind_then_id",
-    "start_line": 9599,
-    "end_line": 9613
+    "start_line": 9603,
+    "end_line": 9617
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "a_finding_leaf_carries_content_only_never_the_by_or_unit_machinery",
-    "start_line": 9619,
-    "end_line": 9642
+    "start_line": 9623,
+    "end_line": 9646
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "a_handbook_rule_and_a_supersedes_edge_are_not_rationale",
-    "start_line": 9648,
-    "end_line": 9661
+    "start_line": 9652,
+    "end_line": 9665
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "an_invalidated_edge_is_not_live_rationale",
-    "start_line": 9666,
-    "end_line": 9674
+    "start_line": 9670,
+    "end_line": 9678
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "a_node_without_rationale_returns_none",
-    "start_line": 9679,
-    "end_line": 9689
+    "start_line": 9683,
+    "end_line": 9693
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "the_batch_covers_the_visible_set_and_keeps_only_nodes_with_rationale",
-    "start_line": 9695,
-    "end_line": 9720
+    "start_line": 9699,
+    "end_line": 9724
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "the_batch_is_deterministic_across_request_order_and_dedups",
-    "start_line": 9725,
-    "end_line": 9742
+    "start_line": 9729,
+    "end_line": 9746
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "the_explain_route_returns_the_batch_in_one_request",
-    "start_line": 9748,
-    "end_line": 9787
+    "start_line": 9752,
+    "end_line": 9791
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "an_absent_explain_leaves_the_graph_route_unchanged",
-    "start_line": 9793,
-    "end_line": 9817
+    "start_line": 9797,
+    "end_line": 9821
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "memory_rail_lists_decisions_findings_and_concepts_excluding_lessons",
-    "start_line": 9838,
-    "end_line": 9881
+    "start_line": 9842,
+    "end_line": 9885
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "memory_rail_is_empty_for_a_node_with_no_governing_memory",
-    "start_line": 9886,
-    "end_line": 9893
+    "start_line": 9890,
+    "end_line": 9897
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "memory_rail_concepts_are_live_from_node_realizes_edges_to_a_concept_target_deduped_by_id",
-    "start_line": 9914,
-    "end_line": 9991
+    "start_line": 9918,
+    "end_line": 9995
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "the_seeded_route_carries_memory_without_adding_a_single_node_to_the_neighborhood",
-    "start_line": 9999,
-    "end_line": 10049
+    "start_line": 10003,
+    "end_line": 10053
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "a_cluster_drill_carries_no_memory_field",
-    "start_line": 10055,
-    "end_line": 10075
+    "start_line": 10059,
+    "end_line": 10079
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "card_graph",
-    "start_line": 10101,
-    "end_line": 10151
+    "start_line": 10105,
+    "end_line": 10155
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "card_of_a_code_entity_carries_file_line_degree_community_concepts_and_memory_counts",
-    "start_line": 10154,
-    "end_line": 10197
+    "start_line": 10158,
+    "end_line": 10201
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "card_of_a_membership_less_entity_has_no_community_and_no_line",
-    "start_line": 10203,
-    "end_line": 10211
+    "start_line": 10207,
+    "end_line": 10215
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "card_of_a_proven_code_entity_carries_proven_by_and_proof_evidence",
-    "start_line": 10219,
-    "end_line": 10246
+    "start_line": 10223,
+    "end_line": 10250
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "card_of_an_unproven_code_entity_has_proven_by_zero_and_no_evidence",
-    "start_line": 10254,
-    "end_line": 10259
+    "start_line": 10258,
+    "end_line": 10263
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "assert_card_reports_no_proof",
-    "start_line": 10263,
-    "end_line": 10272
+    "start_line": 10267,
+    "end_line": 10276
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "card_of_a_file_lists_its_contained_entities_as_top_entities",
-    "start_line": 10299,
-    "end_line": 10336
+    "start_line": 10303,
+    "end_line": 10340
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "card_of_a_concept_lists_its_realizing_members_as_top_evidence",
-    "start_line": 10341,
-    "end_line": 10361
+    "start_line": 10345,
+    "end_line": 10365
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "card_of_a_concept_carries_each_top_evidence_members_own_kind",
-    "start_line": 10370,
-    "end_line": 10395
+    "start_line": 10374,
+    "end_line": 10399
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "card_of_a_file_carries_each_top_entity_members_own_kind",
-    "start_line": 10402,
-    "end_line": 10416
+    "start_line": 10406,
+    "end_line": 10420
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "card_of_an_unknown_id_is_none",
-    "start_line": 10421,
-    "end_line": 10424
+    "start_line": 10425,
+    "end_line": 10428
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "the_card_route_serves_a_known_subjects_card_and_null_for_an_unknown_one",
-    "start_line": 10430,
-    "end_line": 10472
+    "start_line": 10434,
+    "end_line": 10476
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "cluster_counts",
-    "start_line": 10481,
-    "end_line": 10486
+    "start_line": 10485,
+    "end_line": 10490
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "unresolved_frontiers",
-    "start_line": 10489,
-    "end_line": 10494
+    "start_line": 10493,
+    "end_line": 10498
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "reproject_files_beside_a_member",
-    "start_line": 10508,
-    "end_line": 10537
+    "start_line": 10512,
+    "end_line": 10541
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "reproject_files_resolves_a_placeholder_onto_the_nested_definition_of_its_leaf",
-    "start_line": 10569,
-    "end_line": 10583
+    "start_line": 10573,
+    "end_line": 10587
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "reproject_files_folds_an_extensionless_files_entity_under_its_file",
-    "start_line": 10598,
-    "end_line": 10614
+    "start_line": 10602,
+    "end_line": 10618
   }
 ]

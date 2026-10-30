@@ -137,9 +137,20 @@ pub enum ReviewKind {
 }
 
 impl ReviewKind {
-    /// The tier label this kind's spawns fold and group under.
+    /// The tier label this kind's spawns fold and group under, whichever step they sit in.
+    ///
+    /// ```
+    /// # use rigger_domain::spawn::ReviewKind;
+    /// assert_eq!(ReviewKind::Lens.tier(), "lens");
+    /// assert_eq!(ReviewKind::Adversary.tier(), "adversary");
+    /// assert_eq!(ReviewKind::Adjudicator.tier(), "adjudicator");
+    /// ```
     pub fn tier(self) -> &'static str {
-        ""
+        match self {
+            ReviewKind::Lens => crate::canary::TIER_LENS,
+            ReviewKind::Adversary => crate::canary::TIER_ADVERSARY,
+            ReviewKind::Adjudicator => ROLE_ADJUDICATOR,
+        }
     }
 }
 
@@ -184,10 +195,7 @@ pub fn review_step_role(kind: ReviewKind, agent: &str, k: u32) -> String {
 /// assert_eq!(review_step_of("implementer"), None);
 /// ```
 pub fn review_step_of(role: &str) -> Option<(ReviewKind, u32)> {
-    let (token, k) = match role.split_once(STEP_TOKEN_SEPARATOR) {
-        None => (role, 1),
-        Some((token, suffix)) => (token, step_suffix(suffix)?),
-    };
+    let (token, k) = step_token(role)?;
     let kind = if token == ROLE_ADVERSARY {
         ReviewKind::Adversary
     } else if token == ROLE_ADJUDICATOR {
@@ -200,6 +208,15 @@ pub fn review_step_of(role: &str) -> Option<(ReviewKind, u32)> {
     (kind != ReviewKind::Adjudicator || k == 1).then_some((kind, k))
 }
 
+/// `role` split at [`STEP_TOKEN_SEPARATOR`] into its token and step ordinal: a role with no
+/// separator is step 1, and a suffix [`step_suffix`] refuses is `None`.
+fn step_token(role: &str) -> Option<(&str, u32)> {
+    match role.split_once(STEP_TOKEN_SEPARATOR) {
+        None => Some((role, 1)),
+        Some((token, suffix)) => Some((token, step_suffix(suffix)?)),
+    }
+}
+
 /// The step ordinal a token's `suffix` spells after [`STEP_TOKEN_SEPARATOR`]: an ASCII decimal
 /// with no leading zero and no sign, at least 2 and at most `u32::MAX`.
 fn step_suffix(suffix: &str) -> Option<u32> {
@@ -209,9 +226,18 @@ fn step_suffix(suffix: &str) -> Option<u32> {
     suffix.parse().ok().filter(|k| *k >= 2)
 }
 
-/// The agent id a lens token `role` names, bare or stepped, or `None` for any other role.
-pub fn lens_agent_of(_role: &str) -> Option<&str> {
-    None
+/// The agent id the lens token `role` names, bare or stepped, or `None` for any other role and
+/// for a step suffix [`review_step_of`] refuses. `role` is [`spawn_role`]'s output.
+///
+/// ```
+/// # use rigger_domain::spawn::lens_agent_of;
+/// assert_eq!(lens_agent_of("lens:sdet"), Some("sdet"));
+/// assert_eq!(lens_agent_of("lens:sdet@2"), Some("sdet"));
+/// assert_eq!(lens_agent_of("lens:sdet@1"), None);
+/// assert_eq!(lens_agent_of("adversary@2"), None);
+/// ```
+pub fn lens_agent_of(role: &str) -> Option<&str> {
+    step_token(role)?.0.strip_prefix(LENS_ROLE_PREFIX)
 }
 
 /// Derive a spawn's DETERMINISTIC id from its position in the run structure: the

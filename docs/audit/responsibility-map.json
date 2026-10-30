@@ -11925,7 +11925,7 @@
     "is_test": false,
     "proposed_module": "dash::render",
     "reason": "name contains \"role\" (HTML rendering); grouped under `dash::render`.",
-    "content_hash": "6891c3b738d6ea72"
+    "content_hash": "05453f8a0a87f8bf"
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
@@ -11933,7 +11933,7 @@
     "is_test": false,
     "proposed_module": "dash::render",
     "reason": "name contains \"role\" (HTML rendering); grouped under `dash::render`.",
-    "content_hash": "7c4d0bf034f393f9"
+    "content_hash": "420450d3e8386c02"
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",

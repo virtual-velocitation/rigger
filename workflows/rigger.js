@@ -329,9 +329,20 @@ function roleOf(req) {
   return afterUnit.split(/[#~]/)[0]
 }
 
-// bareRoleOf reads a role through the step grammar.
+// bareRoleOf reads a role through the review step grammar `spawn::review_step_of` owns on the Rust
+// side, for a lookup that keys on the kind: a later step's token strips to its first step's
+// (`lens:c@2` -> `lens:c`, `adversary@2` -> `adversary`), a role with no `@` stays itself, and any
+// other `@` - `@1`, a leading zero, a non-decimal, a step past u32, `adjudicator@2` - reads as the
+// empty string no table names, so it falls to each lookup's default. It mirrors the grammar and
+// never decides a kind; the token table in tests/phase_of_role_mapping_periphery.rs holds it equal
+// to the Rust parser on every row.
 function bareRoleOf(role) {
-  return role
+  const at = role.indexOf('@')
+  if (at === -1) return role
+  const bare = role.slice(0, at)
+  const step = role.slice(at + 1)
+  const isStep = /^[1-9]\d*$/.test(step) && Number(step) >= 2 && Number(step) <= 4294967295
+  return isStep && (bare === 'adversary' || bare.startsWith('lens:')) ? bare : ''
 }
 
 // phaseOf maps a wave item onto one of the fixed `meta.phases` groups (spec 67, criterion 1).
@@ -340,19 +351,21 @@ function bareRoleOf(role) {
 // an `implementer`, the critique gate as `adversary`/`adjudicator` - unmapped, those would
 // split the two meta-stages across Build/Review instead of the one Plan group they belong to).
 // Every other item is a per-criterion unit, and its ROLE decides the rest: the three review
-// tiers (`lens:*`, `adversary`, `adjudicator`) group under `Review`; `implementer` and every
-// other role - INCLUDING one this mapping does not yet recognize - group under `Build`, a
+// tiers (`lens:*`, `adversary`, `adjudicator`), every later step included, group under `Review`;
+// `implementer` and every other role - INCLUDING one this mapping does not yet recognize, and a
+// `@` spelling that is no step (`bareRoleOf` above) - group under `Build`, a
 // fail-visible default that keeps an unknown role's row visible under ongoing work rather than
 // dropping it. Courier placement (the Drive lane) is criterion 3's, at its own call sites.
 function phaseOf(req) {
   if (req.unit === 'plan' || req.unit === 'plan-critique') return 'Plan'
-  const role = roleOf(req)
-  if (role === 'adversary' || role === 'adjudicator' || role.startsWith('lens')) return 'Review'
+  const role = bareRoleOf(roleOf(req))
+  if (role === 'adversary' || role === 'adjudicator' || role.startsWith('lens:')) return 'Review'
   return 'Build'
 }
 
 // PERSONA_VERB maps each REAL role token - the id's role half, from the deterministic
-// <unit>/<role>#<attempt> spawn id (spec 18) - to the human action phrase naming that persona's
+// <unit>/<role>#<attempt> spawn id (spec 18), read through `bareRoleOf` so a later review step
+// takes its kind's entry - to the human action phrase naming that persona's
 // MANDATE (spec 67 Design): the criterion sentence alone would render every tier of one unit
 // identically, so the verb is what actually distinguishes them. This is the ROSTER-LESS base
 // phrase for every role, including adversary/adjudicator: it is what `workerLabel` renders for a
@@ -384,7 +397,8 @@ const PERSONA_VERB = {
 // adjudicator's with lenses plus adversary") to a function inlining that roster into
 // PERSONA_VERB's own base phrase for the SAME role - the adversary's mandate names WHO it is
 // disproving ("challenge ... of <roster>"), the adjudicator's names WHO it is weighing ("weigh
-// <roster> and rule"). Consulted ONLY when `req.reviews` is a real, non-empty array (`workerLabel`
+// <roster> and rule"), and a later adversary step reads the adversary's entry through `bareRoleOf`.
+// Consulted ONLY when `req.reviews` is a real, non-empty array (`workerLabel`
 // below); a lens, an unmapped role, or a roster-less item (an older conductor, an empty panel)
 // never reaches this table and renders PERSONA_VERB's base phrase unchanged - the driver renders
 // EXACTLY what the conductor stamped, never a guessed or stale roster of its own.
@@ -393,15 +407,16 @@ const ROSTER_VERB = {
   'adjudicator': (roster) => `weigh ${roster.join(', ')} and rule`,
 }
 
-// personaOf title-cases a role for display, segment by segment on its ':'/'-' separators (e.g.
-// `lens:architecture-reviewer` -> `Lens:Architecture-Reviewer`), with one documented exception:
+// personaOf title-cases a role for display, segment by segment on its ':'/'-'/'@' separators (e.g.
+// `lens:architecture-reviewer` -> `Lens:Architecture-Reviewer`, `adversary@2` -> `Adversary@2`),
+// with one documented exception:
 // the `sdet` segment renders as the acronym `SDET` (e.g. `lens:sdet` -> `Lens:SDET`, `sdet-author`
 // -> `SDET-Author`) rather than merely capitalized, per spec 67 Design's own example.
 function personaOf(role) {
   return role
-    .split(/([:-])/)
+    .split(/([:@-])/)
     .map((seg) =>
-      seg === ':' || seg === '-'
+      seg === ':' || seg === '@' || seg === '-'
         ? seg
         : seg.toLowerCase() === 'sdet'
           ? 'SDET'
@@ -444,7 +459,8 @@ function roleAttempt(id) {
 // workerLabel renders a titled wave item's display label per spec 67 criterion 2 (ROWS LEAD WITH
 // THE PERSONA): `<Persona> - <action phrase> #<attempt>: <subject>`. Role and attempt come from
 // the id's own deterministic <unit>/<role>#<attempt>[~retry{n}] shape (spec 18, via `roleAttempt`
-// above); the action phrase is PERSONA_VERB's mandate for a known role, or the generic `review`
+// above); the action phrase is PERSONA_VERB's mandate for a known role, looked up by its
+// `bareRoleOf` so a later review step reads its kind's mandate, or the generic `review`
 // verb for an unmapped one (an unmapped custom lens still reads with its OWN persona token, never
 // a bare slug); the subject is `req.title`'s first sentence, whitespace-normalized, passed WHOLE.
 // An untitled item (no `req.title`, or one that whitespace-normalizes to empty) falls back to
@@ -453,12 +469,13 @@ function roleAttempt(id) {
 // REVIEW TIERS NAME THEIR TARGETS (spec 67 criterion 4): when `req.reviews` is a real, non-empty
 // array - the roster the CONDUCTOR routed this panel to, never a driver guess - and the role has
 // a `ROSTER_VERB` entry (adversary/adjudicator only), the action phrase inlines that roster via
-// `ROSTER_VERB[role](reviews)` instead of `PERSONA_VERB`'s roster-less base. Every other case
+// `ROSTER_VERB[bare](reviews)` instead of `PERSONA_VERB`'s roster-less base. Every other case
 // (an absent/empty `req.reviews`, a lens, an unmapped role) renders `PERSONA_VERB`'s base phrase
 // unchanged - a roster-less item renders the phrase without the roster clause, exactly as before
 // this criterion.
 //
-// The persona itself is `personaOf(role)` title-casing the role - EXCEPT for the two run-wide
+// The persona itself is `personaOf(role)` title-casing the whole role, so a later step keeps its
+// `@k` where the lookups above do not - EXCEPT for the two run-wide
 // META-STAGE units (`plan`, `plan-critique`), whose role half is always an ordinary role
 // (`implementer`/`replan`, `adversary`/`adjudicator`) and so can never itself carry the "Plan" /
 // "Plan-Critique" persona a reader needs to recognize these rows: rendering them as a plain
@@ -477,7 +494,8 @@ function workerLabel(req) {
   const persona =
     req.unit === 'plan' ? 'Plan' : req.unit === 'plan-critique' ? 'Plan-Critique' : personaOf(role)
   const roster = Array.isArray(req.reviews) ? req.reviews.filter((r) => typeof r === 'string' && r) : []
-  const verb = roster.length && ROSTER_VERB[role] ? ROSTER_VERB[role](roster) : PERSONA_VERB[role] || 'review'
+  const bare = bareRoleOf(role)
+  const verb = roster.length && ROSTER_VERB[bare] ? ROSTER_VERB[bare](roster) : PERSONA_VERB[bare] || 'review'
   return `${persona} - ${verb} #${attempt}: ${subject}`
 }
 

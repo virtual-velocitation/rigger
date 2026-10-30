@@ -2530,26 +2530,25 @@ enum LifecycleStage {
 }
 
 /// Map a spawn's role token to its lifecycle stage. The implementer and the SDET periphery
-/// author write at the build seam (Implement); the lenses, adversary, and adjudicator review
-/// (Review). Anything else is not a spine leaf.
+/// author write at the build seam (Implement); every step of the lenses, adversary, and
+/// adjudicator reviews (Review). Anything else is not a spine leaf.
 fn stage_of_role(role: &str) -> LifecycleStage {
     if role == spawn::ROLE_IMPLEMENTER || role == spawn::ROLE_SDET_AUTHOR {
         LifecycleStage::Implement
-    } else if role == spawn::ROLE_ADVERSARY
-        || role == spawn::ROLE_ADJUDICATOR
-        || role.starts_with("lens:")
-    {
+    } else if spawn::review_step_of(role).is_some() {
         LifecycleStage::Review
     } else {
         LifecycleStage::Other
     }
 }
 
-/// The (role-group label, agent label) for a spawn id. A `lens:X` spawn groups under the
-/// `lens` role with agent `X` (e.g. sdet / arch); every other role keeps its token and labels
-/// the agent by its remediation attempt (`attempt#N`). A Gap-18 reviewer RESPAWN carries a
-/// `~retryN` suffix that shares the original's attempt ordinal, so the agent label appends a
-/// ` retryN` marker - otherwise a respawn and its original would collapse to the IDENTICAL
+/// The (role-group label, agent label) for a spawn id. A review token groups under its kind's
+/// tier, so a `lens:X` spawn sits under the `lens` role with agent `X` (e.g. sdet / arch) and an
+/// `adversary@2` under `adversary`; every other role keeps its token. Anything but a lens labels
+/// the agent by its remediation attempt (`attempt#N`). A later review step appends ` step K` so
+/// two steps of one kind stay apart, a first step adding nothing. A Gap-18 reviewer RESPAWN
+/// carries a `~retryN` suffix that shares the original's attempt ordinal, so the agent label ends
+/// with a ` retryN` marker - otherwise a respawn and its original would collapse to the IDENTICAL
 /// label (an indistinguishable pair precisely on the remediation path an operator inspects).
 fn role_and_agent(id: &str) -> (String, String) {
     let role = spawn::spawn_role(id);
@@ -2557,21 +2556,26 @@ fn role_and_agent(id: &str) -> (String, String) {
     // grammar (it both mints and parses `#{attempt}` / `~retry{n}`), so this view adapter never
     // re-parses the id structure and cannot drift if the separators move with the struct.
     let retry = spawn::retry_of(id);
-    if let Some(agent) = role.strip_prefix("lens:") {
-        let label = if retry > 0 {
-            format!("{agent} retry{retry}")
-        } else {
-            agent.to_string()
-        };
-        ("lens".to_string(), label)
+    let attempt = format!("attempt#{}", spawn::attempt_of(id));
+    let (group, who, k) = match spawn::review_step_of(role) {
+        Some((kind, k)) => (
+            kind.tier(),
+            spawn::lens_agent_of(role).map_or(attempt, str::to_string),
+            k,
+        ),
+        None => (role, attempt, 1),
+    };
+    let step = if k >= 2 {
+        format!(" step {k}")
     } else {
-        let label = if retry > 0 {
-            format!("attempt#{} retry{retry}", spawn::attempt_of(id))
-        } else {
-            format!("attempt#{}", spawn::attempt_of(id))
-        };
-        (role.to_string(), label)
-    }
+        String::new()
+    };
+    let retry = if retry > 0 {
+        format!(" retry{retry}")
+    } else {
+        String::new()
+    };
+    (group.to_string(), format!("{who}{step}{retry}"))
 }
 
 /// The Gates driver line's live outcome for a unit (spec 30 c3), read from the RECORDED gate
