@@ -141,10 +141,7 @@ pub fn move_the_cursor(graph_db: &Path, to: u64) {
 /// Drop the `caught_up` cursor of the graph file at `graph_db`, through a connection of its own:
 /// the file as a fold made it before the cursor existed, or as an older binary's swap left it.
 pub fn drop_the_cursor(graph_db: &Path) {
-    rusqlite::Connection::open(graph_db)
-        .unwrap()
-        .execute_batch("DROP TABLE caught_up")
-        .unwrap();
+    change_the_schema(graph_db, "DROP TABLE caught_up");
 }
 
 /// Record `store` as the identity of the log beside the `caught_up` cursor of the graph file at
@@ -160,9 +157,14 @@ pub fn record_the_cursor_beside(graph_db: &Path, store: &str) {
 /// identity of its log, through a connection of its own, the position kept: the cursor as a binary
 /// that recorded no identity left it.
 pub fn drop_the_cursor_s_log(graph_db: &Path) {
+    change_the_schema(graph_db, "ALTER TABLE caught_up DROP COLUMN store");
+}
+
+/// Run the schema change `sql` on the graph file at `graph_db`, through a connection of its own.
+fn change_the_schema(graph_db: &Path, sql: &str) {
     rusqlite::Connection::open(graph_db)
         .unwrap()
-        .execute_batch("ALTER TABLE caught_up DROP COLUMN store")
+        .execute_batch(sql)
         .unwrap();
 }
 
