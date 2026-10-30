@@ -2010,7 +2010,8 @@ mod tests {
     use crate::test_support::tool_available;
     use crate::test_support::AUTHORING_AGENTS_HANDBOOK;
     use crate::test_support::{
-        FAN_OUT_HEADING, HAND_OVER_HEADING, WHEN_YOU_REVIEW, WHEN_YOU_REVIEW_HEADING,
+        ADJUDICATOR_JUDGING_RULE, ADVERSARY_CRITIQUE_METHOD, CRITIQUE_METHOD, FAN_OUT_HEADING,
+        HAND_OVER_HEADING, WHEN_YOU_CRITIQUE_HEADING, WHEN_YOU_REVIEW, WHEN_YOU_REVIEW_HEADING,
     };
 
     /// Spec 101: a graph rebuild reports its progress in tenths of the log positions it covers -
@@ -4016,6 +4017,100 @@ mod tests {
             0,
             "the fan-out section leaves the battery rule to `## When you review`"
         );
+    }
+
+    /// The critique method is the persona's: each critiquing persona, committed and scaffold
+    /// template alike, holds its sentences once, all under `## When you critique a spec or a
+    /// plan`, and holds none of the other role's: the stance, the hunts and the ban stay the
+    /// adversary's, the judging rule the adjudicator's.
+    #[test]
+    fn each_critiquing_persona_holds_its_method_under_when_you_critique() {
+        let adversary = [CRITIQUE_METHOD.as_slice(), &ADVERSARY_CRITIQUE_METHOD].concat();
+        let adjudicator = [CRITIQUE_METHOD.as_slice(), &ADJUDICATOR_JUDGING_RULE].concat();
+        for (persona, holds, leaves) in [
+            ("adversary.md", adversary, &ADJUDICATOR_JUDGING_RULE[..]),
+            (
+                "adjudicator.md",
+                adjudicator,
+                &ADVERSARY_CRITIQUE_METHOD[..],
+            ),
+        ] {
+            let shipped: Vec<(String, String)> = every_shipped_persona()
+                .into_iter()
+                .filter(|(at, _)| at.rsplit(['/', ' ']).next() == Some(persona))
+                .collect();
+            assert_eq!(
+                shipped
+                    .iter()
+                    .map(|(at, _)| at.as_str())
+                    .collect::<Vec<_>>(),
+                [
+                    format!(".rigger/agents/{persona}"),
+                    format!("SCAFFOLD_AGENTS {persona}")
+                ],
+                "the committed persona and its scaffold template"
+            );
+            for (at, text) in shipped {
+                let whole = rigger::wave::normalize_ws(&text);
+                let section =
+                    rigger::wave::normalize_ws(persona_section(&text, WHEN_YOU_CRITIQUE_HEADING));
+                for sentence in &holds {
+                    assert_eq!(
+                        (
+                            section.matches(sentence).count(),
+                            whole.matches(sentence).count()
+                        ),
+                        (1, 1),
+                        "{at} holds {sentence:?} once, under its critique section:\n{section}"
+                    );
+                }
+                for sentence in leaves {
+                    assert_eq!(
+                        whole.matches(sentence).count(),
+                        0,
+                        "{at} leaves {sentence:?} to the other role"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Where the method lands in this repository's personas: in the adversary's section after its
+    /// COVERAGE hunt and before its Exhaustion item, both of which stay, and in the adjudicator's
+    /// new section after its verdict-channel paragraph.
+    #[test]
+    fn the_committed_critique_method_keeps_the_persona_passages_around_it() {
+        let adversary = [CRITIQUE_METHOD.as_slice(), &ADVERSARY_CRITIQUE_METHOD].concat();
+        let adjudicator = [CRITIQUE_METHOD.as_slice(), &ADJUDICATOR_JUDGING_RULE].concat();
+        for (file, method, after, before) in [
+            (
+                "adversary.md",
+                adversary,
+                "- COVERAGE, your first hunt:",
+                Some("- Exhaustion: after the hunts,"),
+            ),
+            (
+                "adjudicator.md",
+                adjudicator,
+                "So: END YOUR RESULT OUTPUT with a single JSON line",
+                None,
+            ),
+        ] {
+            let text = rigger::wave::normalize_ws(&committed_persona(file));
+            let at = |needle: &str| {
+                text.find(needle)
+                    .unwrap_or_else(|| panic!("{file} carries {needle:?}"))
+            };
+            let end = before.map_or(text.len(), at);
+            for sentence in method {
+                let from = at(sentence);
+                assert_eq!(
+                    (at(after) < from, from < end),
+                    (true, true),
+                    "{file} holds {sentence:?} after {after:?} and before {before:?}"
+                );
+            }
+        }
     }
 
     /// The section of a persona `text` that opens at `heading`, up to the next `## ` heading or

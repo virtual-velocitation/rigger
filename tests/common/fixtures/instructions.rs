@@ -1,6 +1,8 @@
 //! Built-in instruction fixtures, shared by the instruction layer's unit tests, the conductor's
 //! prompt tests, the binary's shipped-text tests and the integration suites: the working-discipline
 //! body's section headings and the review method its `## When you review` section holds; the
+//! critique method the adversary and adjudicator personas hold under their
+//! `## When you critique a spec or a plan` section; the
 //! headings a composed system prompt carries, the handbook chapter that lists the built-in entries
 //! and their checked-in sources, each entry's body by name, a near name that shadows no
 //! built-in, the non-empty bodies that still switch a built-in off, two operator files that shadow
@@ -45,6 +47,70 @@ pub const WHEN_YOU_REVIEW: [&str; 7] = [
     "A blocking finding names its class and, for (b) or (c), the criterion it reads; a verdict \
      whose findings are all notes is an approval, and a rejection requires only its blocking \
      findings.",
+];
+
+/// The section heading a critiquing persona holds the critique method under.
+pub const WHEN_YOU_CRITIQUE_HEADING: &str = "## When you critique a spec or a plan";
+
+/// The critique sentences both the adversary's and the adjudicator's section hold: the section's
+/// scope, how a plan critique reads the text, Rules 7 and 8, the blast-radius note, the ownership
+/// defects, the numberless unit-size rule and the overlap rule.
+pub const CRITIQUE_METHOD: [&str; 8] = [
+    "In a spec or plan critique this section's rules decide which finding blocks; the working \
+     discipline's review rule decides a unit diff's findings.",
+    "In a plan critique this section's criterion reads as a unit (twin and bundled criteria are \
+     twin and bundled units), and Rules 7 and 8 and the unit-size rule read as written.",
+    "- Rule 7 (mitigation ownership): every demanded mitigation must be owned by exactly one unit, \
+     with the exclusion named on its neighbors; an unassigned or ambiguously-owned mitigation - \
+     two units that will fight over the same concern through the shared context graph - is a \
+     reject.",
+    "- Rule 8 (open dispositions): a unit must not leave a disposition open for a reviewer to \
+     re-litigate; an undecided disposition is a reject.",
+    "NOTE on shared blast radius: units whose file footprints OVERLAP are NOT a defect. \
+     `partition: by-blast-radius` runs them in SEPARATE sequential batches (each branches off the \
+     prior batch's integrated tree), and per-unit worktree isolation keeps every reviewer on its \
+     own diff - so overlap integrates cleanly and reviews independently. Do NOT reject merely \
+     because two units touch the same file. Reject a shared-file split ONLY when it is a genuine \
+     OWNERSHIP or COHERENCE defect (rule 7) - two units that cannot own their concern cleanly - \
+     not for mechanical overlap the partitioner already serializes.",
+    "Ownership defects: twin criteria (two checkboxes claiming one concern) and bundling (one \
+     checkbox carrying two mitigations) are each a BLOCKING finding.",
+    "- Unit size: a unit over the cap your prompt states is a BLOCKING finding.",
+    "- Overlap: judge ownership/coherence, not the overlap.",
+];
+
+/// The critique sentences the adversary's section alone holds: the three classes the rules fall
+/// in, the stance, the two hunts and the ban.
+pub const ADVERSARY_CRITIQUE_METHOD: [&str; 6] = [
+    "These rules fall in three classes. To a spec only: the two hunts and the ban. To a DAG only: \
+     the unit-size rule and the overlap rule. To both a spec and a DAG: the stance, Rules 7 and 8, \
+     the blast-radius note and the ownership defects.",
+    "Default to skepticism: assume the author missed something, and try to prove the spec \
+     self-contradictory or undecided; never soften a finding to converge. Cite the criterion \
+     number or Design block title for every finding.",
+    "Run these hunts, and name the hunt in each finding it produces:",
+    "- LANDING ORDER: for every ordered pair of criteria (A, B) sharing a command, a store read, a \
+     file or a counter, ask \"if A lands first on a tree without B, does A's own text hold?\"; \
+     every no is a finding.",
+    "- UNDECIDED CORNER: for every criterion's mechanism, walk the corners empty, repeated, \
+     reverted, DROPPED (a fact present in an earlier generation and absent in a later one), \
+     concurrent, crash-resume, cold start and existing data; each corner no Design sentence \
+     decides is a finding.",
+    "The ban: a fix is a Design or Global-constraint change, never a criterion edit.",
+];
+
+/// The critique sentences the adjudicator's section alone holds: its judging rule, the one home of
+/// the "Reject ONLY for" scope, what that scope reads as, and the fix a reject's cause selects.
+pub const ADJUDICATOR_JUDGING_RULE: [&str; 3] = [
+    "Reject ONLY for a rule 7 (ownership) or rule 8 (open disposition) defect, a unit over the \
+     size cap, or a defect in a criterion's own text that no decomposition can remove - never for \
+     mechanical blast-radius overlap alone.",
+    "A finding stands when it names a Rule 7 ownership defect, a Rule 8 open disposition, a \
+     bundled or twin criterion, a unit over the cap the prompt states, or a defect in a \
+     criterion's own text that no decomposition can remove; mechanical file overlap alone never \
+     does; twin and bundled units count as Rule 7 defects.",
+    "The fix is the cause rule's: a re-plan for `decomposition-conflict`, the run stopping for \
+     `spec-ambiguity`.",
 ];
 
 /// The review `tier`'s task `prompt` carries the reviewer `discipline` exactly once and none of the

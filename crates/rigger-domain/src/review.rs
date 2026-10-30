@@ -1141,91 +1141,30 @@ mod tests {
         );
     }
 
+    /// The critique method is the persona's: the prompt is the task framing, the voided-duties
+    /// clause, the output contract and the spec verbatim, byte for byte and nothing else.
     #[test]
-    fn the_plan_critique_rules_are_the_rule_seven_and_eight_bullets_and_the_overlap_note() {
-        assert!(PLAN_CRITIQUE_RULES.starts_with("- Rule 7 (mitigation ownership): "));
-        let rule_8 = PLAN_CRITIQUE_RULES
-            .find("\n- Rule 8 (open dispositions): ")
-            .expect("the Rule 8 bullet");
-        let note = PLAN_CRITIQUE_RULES
-            .find("\nNOTE on shared blast radius: ")
-            .expect("the shared blast radius note");
-        assert!(rule_8 < note, "Rule 8 precedes the note");
-        assert!(PLAN_CRITIQUE_RULES.ends_with("the partitioner already serializes.\n\n"));
-    }
-
-    #[test]
-    fn the_spec_critique_prompt_runs_its_sections_in_order_and_ends_with_the_spec_verbatim() {
+    fn the_spec_critique_prompt_is_only_its_framing_voided_duties_and_output_contract() {
         let text = "# 9 - A spec\n\n## Done when\n\n- [ ] a test proves X\n";
-        let prompt = spec_critique_prompt("specs/9-a.md", text);
-        let at = |needle: &str| {
-            prompt
-                .find(needle)
-                .unwrap_or_else(|| panic!("the prompt carries {needle:?}:\n{prompt}"))
-        };
-        let order = [
-            at(CRITIQUE_STANCE),
-            at(PLAN_CRITIQUE_RULES),
-            at(CRITIQUE_OWNERSHIP),
-            at(CRITIQUE_HUNTS),
-            at(CRITIQUE_BAN),
-            at(CRITIQUE_OUTPUT_CONTRACT),
-            at("The spec under critique, `specs/9-a.md`, verbatim:\n\n"),
-        ];
-        assert_eq!(order[0], 0, "the stance opens the prompt");
-        assert!(
-            order.windows(2).all(|w| w[0] < w[1]),
-            "sections (i) to (vii) appear in that order: {order:?}"
-        );
-        assert!(prompt.ends_with(text), "the spec text is the verbatim tail");
-        assert!(
-            !prompt.contains("Unit size"),
-            "no unit-size line in a spec critique"
+        assert_eq!(
+            spec_critique_prompt("specs/9-a.md", text),
+            format!(
+                "This is a critique of a SPEC, not code: the text below is a design and its \
+                 Done-when criteria, written before any run builds them. In your persona's \
+                 critique rules a unit reads as a criterion, and a reject as a BLOCKING finding. \
+                 Every persona or discipline duty that conflicts with a spec critique is void for \
+                 this task: reviewing lenses and a diff, the rule against rendering a verdict, \
+                 running gates or any build or test command, editing a file, and recording \
+                 through `rigger_emit`, `rigger_progress` or `rigger_scratch`. Read the spec and \
+                 the repository; the finding lines and the verdict line of your final message are \
+                 the only output.\n\n{CRITIQUE_OUTPUT_CONTRACT}The spec under critique, \
+                 `specs/9-a.md`, verbatim:\n\n{text}"
+            )
         );
     }
 
     #[test]
-    fn the_spec_critique_sections_carry_their_decided_duties() {
-        for duty in [
-            "critique of a SPEC, not code",
-            "skepticism",
-            "assume the author missed something",
-            "self-contradictory or undecided",
-            "never soften",
-            "criterion number or Design block title",
-            "a unit reads as a criterion",
-            "a reject as a BLOCKING finding",
-            "reviewing lenses and a diff",
-            "the rule against rendering a verdict",
-            "running gates or any build or test command",
-            "editing a file",
-            "`rigger_emit`, `rigger_progress` or `rigger_scratch`",
-            "the finding lines and the verdict line of your final message are the only output",
-        ] {
-            assert!(CRITIQUE_STANCE.contains(duty), "the stance names {duty:?}");
-        }
-        for defect in [
-            "twin criteria",
-            "two checkboxes claiming one concern",
-            "bundling",
-        ] {
-            assert!(
-                CRITIQUE_OWNERSHIP.contains(defect),
-                "ownership names {defect:?}"
-            );
-        }
-        for hunt in [
-            "LANDING ORDER",
-            "if A lands first on a tree without B, does A's own text hold?",
-            "UNDECIDED CORNER",
-            "empty, repeated, reverted, DROPPED",
-            "a fact present in an earlier generation and absent in a later one",
-            "concurrent, crash-resume, cold start and existing data",
-        ] {
-            assert!(CRITIQUE_HUNTS.contains(hunt), "the hunts name {hunt:?}");
-        }
-        assert!(CRITIQUE_BAN
-            .contains("a fix is a Design or Global-constraint change, never a criterion edit"));
+    fn the_critique_output_contract_carries_the_finding_lines_and_the_verdict_line() {
         for line in [
             "<critic id> | BLOCKING | <criterion n or Design block title> | <exact reading that \
              breaks> | <smallest Design change that closes it>\n",

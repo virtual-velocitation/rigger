@@ -1242,7 +1242,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-7d418812274d",
+    "id": "dup-48b96a52c147",
     "classification": "semantic",
     "sites": [
       {
@@ -2029,6 +2029,11 @@
         "file": "src/cli/setup.rs",
         "name": "\".rigger\"",
         "content_hash": "e0bfdcaa206b1ef7"
+      },
+      {
+        "file": "src/cli/setup.rs",
+        "name": "\".rigger/agents/{persona}\"",
+        "content_hash": "452d91e7f980731f"
       },
       {
         "file": "src/cli/setup.rs",
@@ -4257,7 +4262,7 @@
       }
     ],
     "proposed_home": "one .rigger-relative path-composition helper",
-    "note": "mandatory sweep: .rigger-path string literals - 602 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: .rigger-path string literals - 603 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {

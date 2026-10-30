@@ -26,7 +26,7 @@ use common::repo::{
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Direction, Event, EventStore, ExpectedRevision, Filter};
-use rigger::review::{critique_hash, critique_spawn_id, spec_critique_prompt, PLAN_CRITIQUE_RULES};
+use rigger::review::{critique_hash, critique_spawn_id, spec_critique_prompt};
 use rigger::spawn::{TYPE_SPAWN_REQUESTED, TYPE_SPAWN_RESULT};
 use rigger::wave::NO_CRITIC_CLAUSE;
 use serde_json::{json, Value};
@@ -187,9 +187,10 @@ fn a_spec_is_critiqued_once_per_text_and_answered_from_the_store_after() {
         task.ends_with(SPEC),
         "the critique prompt ends with the spec text verbatim:\n{task}"
     );
-    assert!(
-        task.contains(PLAN_CRITIQUE_RULES),
-        "the prompt carries the shared rules"
+    assert_eq!(
+        task,
+        spec_critique_prompt(SPEC_REL, SPEC),
+        "the task is the critique prompt and nothing else: the method is the persona's"
     );
     assert!(
         task.contains("`specs/9-demo.md`"),

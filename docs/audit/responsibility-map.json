@@ -8153,27 +8153,27 @@
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "critique_over",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "999a6183cf921a52"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "one_unit_critique",
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "cf256fbc08bbc2bf"
+    "content_hash": "9423b83cdb714846"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
-    "name": "the_plan_critique_prompt_names_the_cross_unit_rules",
+    "name": "the_dag_critique_prompt_is_only_its_framing_and_its_verdict_contract",
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "98fa4e77b5f39717"
-  },
-  {
-    "file": "crates/rigger-conductor/src/conductor.rs",
-    "name": "the_dag_critique_prompt_pushes_the_shared_plan_critique_rules_between_opener_and_size",
-    "is_test": true,
-    "proposed_module": "conductor::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "77f41265fcdda25e"
+    "content_hash": "179b2b75aedd5952"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",

@@ -12,11 +12,9 @@ use rigger::ledger::TYPE_UNIT_ESCALATED;
 /// remove, and for `decomposition-conflict` on every defect a re-plan can fix and when unsure.
 pub const DAG_CRITIQUE_VERDICT_PARAGRAPH: &str = "Render your final verdict as a JSON line: \
     {\"verdict\":\"approve\"} to release the fan-out, or {\"verdict\":\"reject\"} to send the \
-    decomposition back to the planner. Reject ONLY for a rule 7 (ownership) or rule 8 (open \
-    disposition) defect, a unit over the size cap, or a defect in a criterion's own text that no \
-    decomposition can remove - never for mechanical blast-radius overlap alone. A reject's cause \
-    follows this gate's contract, which governs it over any generic cause wording in your \
-    persona: \"cause\":\"spec-ambiguity\" only when the upheld defect is in a criterion's own \
+    decomposition back to the planner. A reject's cause follows this gate's contract, which \
+    governs it over any generic cause wording in your persona: \
+    \"cause\":\"spec-ambiguity\" only when the upheld defect is in a criterion's own \
     text and no decomposition can remove it (two criteria that contradict under every landing \
     order, a criterion no plan can satisfy, a demanded mitigation no criterion owns); \
     \"cause\":\"decomposition-conflict\" for every defect a re-plan can fix (twin units, a \

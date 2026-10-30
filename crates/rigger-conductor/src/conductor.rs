@@ -47708,64 +47708,97 @@ mod tests {
         );
     }
 
-    /// Run `critique_cfg` over one proposed unit serving one criterion; returns the driver,
-    /// which recorded the planner's and the adjudicator's prompts.
-    fn one_unit_critique() -> CritiqueDriver {
+    /// Run `critique_cfg` over proposed `units`, each `(id, file, criterion)` grounding to its
+    /// `file`; returns the driver, which recorded the planner's and the adjudicator's prompts.
+    fn critique_over(units: &[(&str, &str, &str)]) -> CritiqueDriver {
         let dir = tempfile::tempdir().unwrap();
-        let criterion = "the widget renderer is implemented";
-        std::fs::write(dir.path().join("feature.rs"), format!("// {criterion}\n")).unwrap();
+        for (_, file, criterion) in units {
+            let path = dir.path().join(file);
+            let text = std::fs::read_to_string(&path).unwrap_or_default();
+            std::fs::write(path, format!("{text}// {criterion}\n")).unwrap();
+        }
         let cfg = critique_cfg();
         let st = Store::open(":memory:").unwrap();
-        let driver = CritiqueDriver::new(vec![(
-            TYPE_UNIT_PROPOSED.to_string(),
-            json!({"id":"u-a","agent":"worker","criterion":criterion,"needs":["plan-critique"],"gates":["ok"]}),
-        )]);
+        let driver = CritiqueDriver::new(
+            units
+                .iter()
+                .map(|(id, _, criterion)| {
+                    (
+                        TYPE_UNIT_PROPOSED.to_string(),
+                        json!({"id":id,"agent":"worker","criterion":criterion,"needs":["plan-critique"],"gates":["ok"]}),
+                    )
+                })
+                .collect(),
+        );
         let grep = crate::grounder::Grep {
             root: dir.path().to_string_lossy().into_owned(),
         };
         let deps = Deps {
             grounder: Some(&grep),
-            ..stub_deps(&st, &driver, vec![criterion.to_string()])
+            ..stub_deps(
+                &st,
+                &driver,
+                units.iter().map(|(_, _, c)| c.to_string()).collect(),
+            )
         };
         let _ = run_isolated(&cfg, &deps).unwrap();
         driver
     }
 
-    #[test]
-    fn the_plan_critique_prompt_names_the_cross_unit_rules() {
-        // The gate prompt must NAME its review targets: mitigation ownership (rule 7) and
-        // open dispositions (rule 8) as REJECT criteria, plus the shared-blast-radius note
-        // (informational - the partitioner serializes overlap; not a reject trigger).
-        let driver = one_unit_critique();
-        let prompts = driver.adj_prompts.lock().unwrap();
-        let prompt = prompts
-            .first()
-            .expect("the adjudicator must have been spawned");
-        for target in ["blast radius", "mitigation", "disposition"] {
-            assert!(
-                prompt.to_lowercase().contains(target),
-                "the plan-critique prompt must name rule targets ({target:?}); got:\n{prompt}"
-            );
-        }
+    /// Run `critique_cfg` over one proposed unit serving one criterion; returns the driver,
+    /// which recorded the planner's and the adjudicator's prompts.
+    fn one_unit_critique() -> CritiqueDriver {
+        critique_over(&[("u-a", "feature.rs", "the widget renderer is implemented")])
     }
 
-    /// Spec 112, criterion 1: the DAG critique reads its rules from the one const the spec
-    /// critique prompt reads ([`rigger_domain::review::PLAN_CRITIQUE_RULES`]), pushed right
-    /// after its DAG opener and right before its unit-size line.
+    /// The critique method is the persona's: over a disjoint DAG and an overlapping one, the DAG
+    /// critique prompt is its opener, the cap framing, the unit and overlap list and its verdict
+    /// and cause paragraph, byte for byte and nothing else.
     #[test]
-    fn the_dag_critique_prompt_pushes_the_shared_plan_critique_rules_between_opener_and_size() {
-        let driver = one_unit_critique();
-        let prompt = driver.adj_prompts.lock().unwrap()[0].clone();
-        let opener = "that per-unit review cannot see:\n";
-        let rules_at = prompt.find(opener).expect("the DAG opener") + opener.len();
-        let size_at = prompt
-            .find("- Unit size (blocking): ")
-            .expect("the unit-size line");
-        assert_eq!(
-            &prompt[rules_at..size_at],
-            rigger_domain::review::PLAN_CRITIQUE_RULES,
-            "the opener, then the shared rules byte for byte, then the unit-size line:\n{prompt}"
-        );
+    fn the_dag_critique_prompt_is_only_its_framing_and_its_verdict_contract() {
+        const WIDGET: &str = "the widget renderer is implemented";
+        const GADGET: &str = "the gadget renderer is implemented";
+        let unit = |id: &str, criterion: &str, file: &str| {
+            format!(
+                "- `{id}`: criterion={criterion:?}; needs=[plan-critique]; \
+                 blast radius=[{file}]\n"
+            )
+        };
+        let table = [
+            (
+                [("u-a", "a.rs", WIDGET), ("u-b", "b.rs", GADGET)],
+                format!(
+                    "{}{}\nBlast-radius overlap (informational): every proposed unit has a \
+                     DISJOINT blast radius.\n",
+                    unit("u-a", WIDGET, "a.rs"),
+                    unit("u-b", GADGET, "b.rs"),
+                ),
+            ),
+            (
+                [("u-a", "a.rs", WIDGET), ("u-b", "a.rs", GADGET)],
+                format!(
+                    "{}{}\nBlast-radius overlap (informational - the partitioner serializes \
+                     these into sequential batches):\n- units `u-a` and `u-b` both touch: a.rs\n",
+                    unit("u-a", WIDGET, "a.rs"),
+                    unit("u-b", GADGET, "a.rs"),
+                ),
+            ),
+        ];
+        for (units, list) in table {
+            let driver = critique_over(&units);
+            let prompt = driver.adj_prompts.lock().unwrap()[0].clone();
+            assert_eq!(
+                prompt,
+                format!(
+                    "You are the plan-critique gate. Review the PROPOSED unit DAG below - the \
+                     decomposition the planner produced - BEFORE any implementer runs, and judge \
+                     it against the decomposition rules in your persona: the CROSS-UNIT rules \
+                     that per-unit review cannot see.\n\n{cap}\n\nProposed units:\n{list}\n\
+                     {DAG_CRITIQUE_VERDICT_PARAGRAPH}\n",
+                    cap = unit_size_cap(),
+                )
+            );
+        }
     }
 
     /// One unit size cap, measuring review scope and never code shape, reaches both the
