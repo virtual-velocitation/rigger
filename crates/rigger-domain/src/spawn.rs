@@ -116,6 +116,33 @@ pub fn lens_role(agent_id: &str) -> String {
     format!("lens:{agent_id}")
 }
 
+/// The kind of a review step: what a roster minter reads to spell the role token of an agent
+/// that step spawned.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ReviewKind {
+    Lens,
+    Adversary,
+    Adjudicator,
+}
+
+/// The review-attribution role token of `agent` in a step of `kind`: [`lens_role`] for a lens,
+/// [`ROLE_ADVERSARY`] or [`ROLE_ADJUDICATOR`] for the other two. The step's 1-based ordinal
+/// among the steps of its kind, `_k`, is not spelled, so each kind keeps one token.
+///
+/// ```
+/// # use rigger_domain::spawn::{bare_review_role, ReviewKind};
+/// assert_eq!(bare_review_role(ReviewKind::Lens, "sdet", 2), "lens:sdet");
+/// assert_eq!(bare_review_role(ReviewKind::Adversary, "red-team", 1), "adversary");
+/// assert_eq!(bare_review_role(ReviewKind::Adjudicator, "judge", 1), "adjudicator");
+/// ```
+pub fn bare_review_role(kind: ReviewKind, agent: &str, _k: u32) -> String {
+    match kind {
+        ReviewKind::Lens => lens_role(agent),
+        ReviewKind::Adversary => ROLE_ADVERSARY.to_string(),
+        ReviewKind::Adjudicator => ROLE_ADJUDICATOR.to_string(),
+    }
+}
+
 /// Derive a spawn's DETERMINISTIC id from its position in the run structure: the
 /// `unit` id, the stage/`role` token, and the 0-based remediation `attempt`.
 ///

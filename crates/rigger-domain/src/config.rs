@@ -373,13 +373,60 @@ pub struct ReviewPanel {
     pub tiers: Option<Box<ReviewDepth>>,
 }
 
+/// One step of a panel's review sequence ([`ReviewPanel::steps`]): a lens step of the agents it
+/// runs in parallel, the adversary that refutes the steps before it, or the adjudicator whose
+/// verdict gates integration.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ReviewStep {
+    Lenses(Vec<String>),
+    Adversary(String),
+    Adjudicator(String),
+}
+
+impl ReviewStep {
+    /// The agent ids this step spawns, in declared order: a lens step's lenses, else its one
+    /// agent.
+    pub fn agents(&self) -> &[String] {
+        match self {
+            ReviewStep::Lenses(ids) => ids,
+            ReviewStep::Adversary(id) | ReviewStep::Adjudicator(id) => std::slice::from_ref(id),
+        }
+    }
+
+    /// The agent of an adjudicator step, else `None`.
+    pub fn adjudicator(&self) -> Option<&str> {
+        match self {
+            ReviewStep::Adjudicator(id) => Some(id),
+            ReviewStep::Lenses(_) | ReviewStep::Adversary(_) => None,
+        }
+    }
+}
+
 impl ReviewPanel {
-    /// Whether this panel has any review tier configured. An empty panel runs no
+    /// The panel's review sequence, the one authority every reader of its roster goes through:
+    /// the CANONICAL SEQUENCE of the map form, `Lenses` when `lenses` is non-empty, then
+    /// `Adversary` when `adversary` is set, then `Adjudicator` when `adjudicator` is set. The
+    /// `tiers` light panel is a panel of its own and names no step here.
+    pub fn steps(&self) -> Vec<ReviewStep> {
+        let mut steps = Vec::new();
+        if !self.lenses.is_empty() {
+            steps.push(ReviewStep::Lenses(self.lenses.clone()));
+        }
+        if !self.adversary.is_empty() {
+            steps.push(ReviewStep::Adversary(self.adversary.clone()));
+        }
+        if !self.adjudicator.is_empty() {
+            steps.push(ReviewStep::Adjudicator(self.adjudicator.clone()));
+        }
+        steps
+    }
+
+    /// Whether this panel names no review step ([`Self::steps`]). An empty panel runs no
     /// per-unit review (the historical implement-then-integrate behavior). A
     /// `tiers` policy alone (no roster) is meaningless - there is no full panel to
     /// reduce from - so it does not make a panel non-empty.
     pub fn is_empty(&self) -> bool {
-        self.lenses.is_empty() && self.adversary.is_empty() && self.adjudicator.is_empty()
+        self.steps().is_empty()
     }
 
     /// The configured risk-tiered depth policy, if any.
@@ -401,26 +448,30 @@ impl ReviewPanel {
         ids
     }
 
-    /// The agent ids on this panel's own top-level roster - the lenses, the adversary and the
-    /// adjudicator - WITHOUT the opt-in light-tier roster [`Self::agent_ids`] adds: the roster a
-    /// unit that stays on the full panel reviews itself with.
+    /// The agent ids on this panel's own top-level roster - the agents of each of its
+    /// [`Self::steps`] in step order, so the lenses, the adversary and the adjudicator -
+    /// WITHOUT the opt-in light-tier roster [`Self::agent_ids`] adds: the roster a unit that
+    /// stays on the full panel reviews itself with.
     pub fn full_roster(&self) -> Vec<String> {
-        let mut ids = self.lenses.clone();
-        push_reviewers(&mut ids, &self.adversary, &self.adjudicator);
-        ids
+        self.steps()
+            .iter()
+            .flat_map(|step| step.agents().iter().cloned())
+            .collect()
     }
 
-    /// The GATING agent ids this panel names: the adjudicator on this tier and,
-    /// recursively, the light tier's adjudicator. A gating agent's result-channel
-    /// verdict gates integration; the lenses and the adversary do NOT render a gating
-    /// verdict (the adversary "does not render the final verdict"), so only adjudicators
+    /// The GATING agent ids this panel names: the agent of its adjudicator step
+    /// ([`Self::steps`]) and, recursively, the light tier's adjudicator. A gating agent's
+    /// result-channel verdict gates integration; the lenses and the adversary do NOT render a
+    /// gating verdict (the adversary "does not render the final verdict"), so only adjudicators
     /// are collected here. This is the roster the verdict-line lint
     /// ([`lint_gating_verdict_lines`]) inspects.
     pub fn gating_agent_ids(&self) -> Vec<String> {
-        let mut ids = Vec::new();
-        if !self.adjudicator.is_empty() {
-            ids.push(self.adjudicator.clone());
-        }
+        let mut ids: Vec<String> = self
+            .steps()
+            .iter()
+            .filter_map(ReviewStep::adjudicator)
+            .map(str::to_string)
+            .collect();
         if let Some(depth) = self.depth() {
             ids.extend(depth.light.gating_agent_ids());
         }

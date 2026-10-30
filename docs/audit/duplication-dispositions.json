@@ -795,7 +795,7 @@
     "reason": "Assertions over two different audit scanners in two suites (the OS-kill scan and the same-named-helper clustering), each with its own finding type and message."
   },
   {
-    "id": "dup-78c48ff4c88e",
+    "id": "dup-a8dadbc19895",
     "disposition": "not-a-duplicate",
     "reason": "Two levels of one rule, not two copies: `ReviewPanel::gating_agent_ids` names one panel's gating agents, and the config-level `gating_agent_ids` unions that method over the default panel and every stage's panel plus each stage's standalone adjudicator. The workspace split put the panel method in the domain crate and the Config-level fold beside `Config`, so the two same-named functions now sit in different files."
   },
@@ -1055,9 +1055,14 @@
     "reason": "Two unit tests of two unrelated pure text functions (the derived-count phrase of `rigger reset` vs the audit report's pluralizer), each two exact-value assertions; they share only the assert_eq shape."
   },
   {
-    "id": "dup-b1d15044e7fc",
+    "id": "dup-e4413ba06992",
     "disposition": "not-a-duplicate",
-    "reason": "`is_empty`/`is_any` report emptiness of five different types (a config section, a failure filter, a CLI selection, a run's unended spawns, a criterion's code terms) over their own fields."
+    "reason": "`is_empty`/`is_any` report emptiness of four different types (a failure filter, a CLI selection, a run's unended spawns, a criterion's code terms) over their own fields."
+  },
+  {
+    "id": "dup-34d133ea2afb",
+    "disposition": "not-a-duplicate",
+    "reason": "`ReviewPanel::is_empty` and `driver_dead` each report the emptiness of a list their own type derives - a review panel's steps, a hygiene probe's live-run reasons - through one `is_empty` call; the two share a one-line shape, not a rule."
   },
   {
     "id": "dup-877c7e2e92fb",

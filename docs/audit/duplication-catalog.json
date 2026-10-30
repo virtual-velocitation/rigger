@@ -4374,7 +4374,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-78c48ff4c88e",
+    "id": "dup-a8dadbc19895",
     "classification": "semantic",
     "sites": [
       {
@@ -4385,7 +4385,7 @@
       {
         "file": "crates/rigger-domain/src/config.rs",
         "name": "gating_agent_ids",
-        "content_hash": "cc89e0ac652d7025"
+        "content_hash": "da849794923a5497"
       }
     ],
     "proposed_home": "one shared `gating_agent_ids` helper (e.g. relocated into `tests/common`) rather than each file defining its own",
@@ -5297,36 +5297,21 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-b1d15044e7fc",
+    "id": "dup-34d133ea2afb",
     "classification": "near",
     "sites": [
       {
         "file": "crates/rigger-domain/src/config.rs",
         "name": "is_empty",
-        "content_hash": "cf6543cd3e3ea7e9"
+        "content_hash": "73240fd83f2ade7e"
       },
       {
-        "file": "crates/rigger-domain/src/failure.rs",
-        "name": "is_any",
-        "content_hash": "cf6543cd3e3ea7e9"
-      },
-      {
-        "file": "crates/rigger-driver/src/liveness.rs",
-        "name": "is_empty",
-        "content_hash": "18ad5b7d4c8e656d"
-      },
-      {
-        "file": "crates/rigger-grounder/src/grounder/symbols/grounder.rs",
-        "name": "is_empty",
-        "content_hash": "d19a14204dd654eb"
-      },
-      {
-        "file": "src/cli/mod.rs",
-        "name": "is_empty",
-        "content_hash": "a62e8a31ebb3436b"
+        "file": "src/cli/hygiene.rs",
+        "name": "driver_dead",
+        "content_hash": "9ff0568361175440"
       }
     ],
-    "proposed_home": "a new shared module (sites span 5 files: crates/rigger-domain/src/config.rs, crates/rigger-domain/src/failure.rs, crates/rigger-driver/src/liveness.rs, crates/rigger-grounder/src/grounder/symbols/grounder.rs, src/cli/mod.rs)",
+    "proposed_home": "a new shared module (sites span 2 files: crates/rigger-domain/src/config.rs, src/cli/hygiene.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
@@ -5552,6 +5537,35 @@
       }
     ],
     "proposed_home": "a new shared module (sites span 2 files: crates/rigger-domain/src/failure.rs, crates/rigger-domain/src/gate.rs)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-e4413ba06992",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "crates/rigger-domain/src/failure.rs",
+        "name": "is_any",
+        "content_hash": "cf6543cd3e3ea7e9"
+      },
+      {
+        "file": "crates/rigger-driver/src/liveness.rs",
+        "name": "is_empty",
+        "content_hash": "18ad5b7d4c8e656d"
+      },
+      {
+        "file": "crates/rigger-grounder/src/grounder/symbols/grounder.rs",
+        "name": "is_empty",
+        "content_hash": "d19a14204dd654eb"
+      },
+      {
+        "file": "src/cli/mod.rs",
+        "name": "is_empty",
+        "content_hash": "a62e8a31ebb3436b"
+      }
+    ],
+    "proposed_home": "a new shared module (sites span 4 files: crates/rigger-domain/src/failure.rs, crates/rigger-driver/src/liveness.rs, crates/rigger-grounder/src/grounder/symbols/grounder.rs, src/cli/mod.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
