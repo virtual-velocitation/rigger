@@ -2496,6 +2496,221 @@ mod tests {
         assert!((m.review_quality.adversary_precision() - 0.5).abs() < 1e-9);
     }
 
+    /// `review_tier` reads a spawn id's role token through its kind: a later step's token, and
+    /// its `~retry{n}` respawn, is its kind's tier, and a token that is no review token is no
+    /// tier at all.
+    #[test]
+    fn review_tier_reads_every_step_token_as_its_kind() {
+        let cases: &[(Option<&str>, &[&str])] = &[
+            (
+                Some("lens"),
+                &[
+                    "u/lens:a#0",
+                    "u/lens:a#0~retry1",
+                    "u/lens:a@2#0",
+                    "u/lens:a@2#1~retry1",
+                ],
+            ),
+            (
+                Some("adversary"),
+                &[
+                    "u/adversary#0",
+                    "u/adversary#0~retry1",
+                    "u/adversary@2#0",
+                    "u/adversary@2#0~retry2",
+                    "u/adversary@4294967295#0",
+                ],
+            ),
+            (
+                Some("adjudicator"),
+                &["u/adjudicator#0", "u/adjudicator#0~retry1"],
+            ),
+            (
+                None,
+                &[
+                    "u/adversary@4294967296#0",
+                    "u/adversary@1#0",
+                    "u/adversary@01#0",
+                    "u/adversary@x#0",
+                    "u/lens:a@1#0",
+                    "u/lens:a@x#0",
+                    "u/adjudicator@2#0",
+                    "u/implementer#0",
+                    "u/implementer@2#0",
+                ],
+            ),
+        ];
+        for (tier, ids) in cases {
+            for id in *ids {
+                assert_eq!(review_tier(id), *tier, "{id}");
+            }
+        }
+    }
+
+    /// `actor_tier` splits a finding's actor on the adversary kind: every adversary step is the
+    /// adversary tier, and every other actor, a raw agent id and a token that is no review token
+    /// included, stays on the lens arm.
+    #[test]
+    fn actor_tier_splits_every_actor_on_the_adversary_kind() {
+        for (actor, tier) in [
+            ("adversary", "adversary"),
+            ("adversary@2", "adversary"),
+            ("adversary@4294967295", "adversary"),
+            ("lens:a", "lens"),
+            ("lens:a@2", "lens"),
+            ("sdet", "lens"),
+            ("adversary@1", "lens"),
+            ("adversary@01", "lens"),
+            ("adversary@x", "lens"),
+            ("adversary@4294967296", "lens"),
+        ] {
+            assert_eq!(actor_tier(actor), tier, "{actor}");
+        }
+    }
+
+    /// An expected map of a [`ReviewQuality`]: one `(key, first, second)` row per entry, `entry`
+    /// building the value.
+    fn keyed<V>(rows: &[(&str, u64, u64)], entry: fn(u64, u64) -> V) -> BTreeMap<String, V> {
+        rows.iter()
+            .map(|&(key, first, second)| (key.to_string(), entry(first, second)))
+            .collect()
+    }
+
+    /// Each store folds to its exact [`ReviewQuality`]. A bare-token store folds as it did before
+    /// any later step existed. In a mixed store cost and precision read the kind and survival
+    /// keeps the whole token: two adversary steps on one file are still adversary-only, a lens
+    /// step AFTER the adversary spoils it, and an upheld `adversary@2` finding is the adversary
+    /// tier's. A token that is no review token costs no tier and raises on the lens arm.
+    #[test]
+    fn a_store_folds_each_review_token_by_its_kind() {
+        let reject = r#"{"verdict":"reject","upheld":["a1","a3","a4","l2"],"discarded":["a2","l1"],"cause":"genuine-defect"}"#;
+        let counts = |raised, upheld| FindingCounts { raised, upheld };
+        let cost = |spawns, upheld| TierCost { spawns, upheld };
+        for (store, events, want) in [
+            (
+                "bare tokens",
+                vec![
+                    review_spawn("u", "lens:a", 0),
+                    review_spawn("u", "lens:b", 0),
+                    review_spawn("u", "adversary", 0),
+                    courier_finding("a1", "adversary", &["src/only.rs"]),
+                    courier_finding("a2", "adversary", &["src/shared.rs"]),
+                    courier_finding("a3", "adversary", &["src/shared.rs"]),
+                    courier_finding("l1", "lens:a", &["src/shared.rs"]),
+                    courier_finding("l2", "lens:b", &["src/own.rs"]),
+                    adjudication("u", 0, reject),
+                ],
+                ReviewQuality {
+                    finding_survival: keyed(
+                        &[("adversary", 3, 2), ("lens:a", 1, 0), ("lens:b", 1, 1)],
+                        counts,
+                    ),
+                    overlap_files: 1,
+                    finding_files: 3,
+                    adversary_only: FindingCounts {
+                        raised: 1,
+                        upheld: 1,
+                    },
+                    tier_cost: keyed(
+                        &[("adjudicator", 1, 0), ("adversary", 1, 2), ("lens", 2, 1)],
+                        cost,
+                    ),
+                    adjudications: 1,
+                    upheld_unattributed: 1,
+                    ..ReviewQuality::default()
+                },
+            ),
+            (
+                "bare and stepped tokens",
+                vec![
+                    review_spawn("u", "lens:a", 0),
+                    review_spawn("u", "adversary", 0),
+                    review_spawn("u", "lens:a@2", 0),
+                    review_spawn("u", "adversary@2", 0),
+                    review_spawn("u", "adversary@2", 1),
+                    courier_finding("a1", "adversary", &["src/only.rs"]),
+                    courier_finding("a2", "adversary@2", &["src/only.rs"]),
+                    courier_finding("a3", "adversary", &["src/late.rs"]),
+                    courier_finding("a4", "adversary@2", &["src/own.rs"]),
+                    courier_finding("l1", "lens:a", &["src/lens.rs"]),
+                    courier_finding("l2", "lens:a@2", &["src/late.rs"]),
+                    adjudication("u", 0, reject),
+                ],
+                ReviewQuality {
+                    finding_survival: keyed(
+                        &[
+                            ("adversary", 2, 2),
+                            ("adversary@2", 2, 1),
+                            ("lens:a", 1, 0),
+                            ("lens:a@2", 1, 1),
+                        ],
+                        counts,
+                    ),
+                    overlap_files: 2,
+                    finding_files: 4,
+                    adversary_only: FindingCounts {
+                        raised: 3,
+                        upheld: 2,
+                    },
+                    tier_cost: keyed(
+                        &[("adjudicator", 1, 0), ("adversary", 3, 3), ("lens", 2, 1)],
+                        cost,
+                    ),
+                    adjudications: 1,
+                    ..ReviewQuality::default()
+                },
+            ),
+            (
+                "no review token",
+                vec![
+                    review_spawn("u", "adversary@1", 0),
+                    review_spawn("u", "lens:a@x", 0),
+                    review_spawn("u", "adjudicator@2", 0),
+                    courier_finding("a1", "adversary", &["src/shared.rs"]),
+                    courier_finding("a3", "adversary@1", &["src/shared.rs"]),
+                    adjudication("u", 0, reject),
+                ],
+                ReviewQuality {
+                    finding_survival: keyed(&[("adversary", 1, 1), ("adversary@1", 1, 1)], counts),
+                    overlap_files: 1,
+                    finding_files: 1,
+                    tier_cost: keyed(
+                        &[("adjudicator", 1, 0), ("adversary", 0, 1), ("lens", 0, 1)],
+                        cost,
+                    ),
+                    adjudications: 1,
+                    upheld_unattributed: 2,
+                    ..ReviewQuality::default()
+                },
+            ),
+        ] {
+            assert_eq!(project(&events).review_quality, want, "{store}");
+        }
+    }
+
+    /// Spawn timing stays keyed by the whole token, so a later step is its own timing row.
+    #[test]
+    fn spawn_timing_keeps_a_later_step_as_its_own_row() {
+        let m = project(&[
+            spawn_requested("u/adversary#0", 0),
+            spawn_result_at("u/adversary#0", 4),
+            spawn_requested("u/adversary@2#0", 0),
+            spawn_result_at("u/adversary@2#0", 6),
+        ]);
+        let rows: Vec<(&str, u64, Duration)> = m
+            .spawn_timing
+            .iter()
+            .map(|(role, t)| (role.as_str(), t.count, t.total))
+            .collect();
+        assert_eq!(
+            rows,
+            vec![
+                ("adversary", 1, Duration::from_secs(4)),
+                ("adversary@2", 1, Duration::from_secs(6)),
+            ]
+        );
+    }
+
     /// A finding citing lines of a file (`path:line`, `path:from-to`) is about that file: it
     /// overlaps a lens's finding about the same file, and an adversary finding citing it is not
     /// adversary-only.

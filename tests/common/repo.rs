@@ -340,8 +340,8 @@ pub fn missing_rows(text: &str, table: &[(&str, &str)], label: &str) -> Vec<Stri
 }
 
 /// Run the REAL `workerLabel(req)` - extracted verbatim from the shipped `workflows/rigger.js`
-/// along with the `PERSONA_VERB`/`ROSTER_VERB` tables and the `personaOf`/`firstSentence`/
-/// `roleAttempt` helpers it calls - under a real `node` subprocess, for a wave item `id` titled
+/// along with the `PERSONA_VERB`/`ROSTER_VERB` tables and the `bareRoleOf`/`personaOf`/
+/// `firstSentence`/`roleAttempt` helpers it calls - under a real `node` subprocess, for a wave item `id` titled
 /// `title`, stamped with `req.unit` and `req.reviews` when given (omitted entirely otherwise, as
 /// an ordinary build unit's wave item). Returns the rendered label, or `None` when `node` is not
 /// on PATH (missing node is an environment fact, never a test failure).
@@ -354,6 +354,7 @@ pub fn worker_label(
     let src = repo_text("workflows/rigger.js");
     let verb_table = super::fixtures::js_declaration(&src, "const PERSONA_VERB = {");
     let roster_table = super::fixtures::js_declaration(&src, "const ROSTER_VERB = {");
+    let bare_role_of = super::fixtures::js_declaration(&src, "function bareRoleOf(role) {");
     let persona_of = super::fixtures::js_declaration(&src, "function personaOf(role) {");
     let first_sentence = super::fixtures::js_declaration(&src, "function firstSentence(s) {");
     let role_attempt = super::fixtures::js_declaration(&src, "function roleAttempt(id) {");
@@ -373,8 +374,9 @@ pub fn worker_label(
     }
     let req = req.to_string();
     let script = format!(
-        "{verb_table}\n{roster_table}\n{persona_of}\n{first_sentence}\n{role_attempt}\n\
-         {worker_label}\nprocess.stdout.write(workerLabel(JSON.parse(process.argv[2])) + '\\n')\n"
+        "{verb_table}\n{roster_table}\n{bare_role_of}\n{persona_of}\n{first_sentence}\n\
+         {role_attempt}\n{worker_label}\n\
+         process.stdout.write(workerLabel(JSON.parse(process.argv[2])) + '\\n')\n"
     );
 
     let node = std::env::var("RIGGER_NODE").unwrap_or_else(|_| "node".to_string());

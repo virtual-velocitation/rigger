@@ -329,6 +329,11 @@ function roleOf(req) {
   return afterUnit.split(/[#~]/)[0]
 }
 
+// bareRoleOf reads a role through the step grammar.
+function bareRoleOf(role) {
+  return role
+}
+
 // phaseOf maps a wave item onto one of the fixed `meta.phases` groups (spec 67, criterion 1).
 // The two run-wide meta-stages are special-cased on the UNIT, ahead of any role read: `plan`
 // and `plan-critique` are `Plan` regardless of which role spawns them (the planner spawns as

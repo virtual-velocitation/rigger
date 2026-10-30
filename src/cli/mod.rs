@@ -10393,6 +10393,35 @@ mod tests {
         );
     }
 
+    /// Spec 120, criterion 9: every table lookup of the driver reads a review step's token
+    /// through `bareRoleOf`, and the persona alone keeps the full token, so a later step takes
+    /// its kind's phrase and still names itself. Behaviour lives in the periphery tests that run
+    /// the extracted functions; this pins the wiring on the shipped text.
+    #[test]
+    fn the_driver_reads_every_step_token_through_its_bare_role() {
+        let code = strip_line_comments(RIGGER_WORKFLOW);
+        let cases = [
+            (
+                "function phaseOf(req) {",
+                "const role = bareRoleOf(roleOf(req))",
+            ),
+            (
+                "function workerLabel(req) {",
+                "const bare = bareRoleOf(role)",
+            ),
+            ("function workerLabel(req) {", "PERSONA_VERB[bare]"),
+            ("function workerLabel(req) {", "ROSTER_VERB[bare]"),
+            ("function workerLabel(req) {", "personaOf(role)"),
+        ];
+        for (declaration, wiring) in cases {
+            let body = js_declaration(&code, declaration);
+            assert!(
+                body.contains(wiring),
+                "{declaration} lacks {wiring}: {body}"
+            );
+        }
+    }
+
     /// Spec 67, criterion 5 (THIS unit OWNS meta matching reality). `meta.phases` must
     /// declare exactly the four groups a spawn can render under - `Plan`, `Build`, `Review`,
     /// `Drive` - never the retired `Integrate` (conductor-only work: it spawns no agent of

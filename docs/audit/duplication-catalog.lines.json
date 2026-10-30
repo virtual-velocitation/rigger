@@ -64,8 +64,8 @@
       },
       {
         "file": "crates/rigger-domain/src/spawn.rs",
-        "start_line": 298,
-        "end_line": 300
+        "start_line": 310,
+        "end_line": 312
       },
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
@@ -254,8 +254,8 @@
       },
       {
         "file": "crates/rigger-domain/src/spawn.rs",
-        "start_line": 226,
-        "end_line": 228
+        "start_line": 238,
+        "end_line": 240
       },
       {
         "file": "crates/rigger-driver/src/driver/claude_code.rs",
@@ -384,8 +384,8 @@
       },
       {
         "file": "crates/rigger-domain/src/spawn.rs",
-        "start_line": 332,
-        "end_line": 334
+        "start_line": 344,
+        "end_line": 346
       }
     ]
   },
@@ -794,13 +794,13 @@
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 12002,
-        "end_line": 12002
+        "start_line": 12031,
+        "end_line": 12031
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 12036,
-        "end_line": 12036
+        "start_line": 12065,
+        "end_line": 12065
       },
       {
         "file": "src/cli/run.rs",
@@ -984,8 +984,8 @@
       },
       {
         "file": "tests/common/repo.rs",
-        "start_line": 384,
-        "end_line": 384
+        "start_line": 386,
+        "end_line": 386
       },
       {
         "file": "tests/common/served.rs",
@@ -1094,8 +1094,8 @@
       },
       {
         "file": "tests/phase_of_role_mapping_periphery.rs",
-        "start_line": 59,
-        "end_line": 59
+        "start_line": 66,
+        "end_line": 66
       },
       {
         "file": "tests/principle_gates_wiring.rs",
@@ -1259,13 +1259,13 @@
       },
       {
         "file": "crates/rigger-dash/src/dash.rs",
-        "start_line": 3935,
-        "end_line": 3935
+        "start_line": 3936,
+        "end_line": 3936
       },
       {
         "file": "crates/rigger-dash/src/dash.rs",
-        "start_line": 3986,
-        "end_line": 3986
+        "start_line": 3987,
+        "end_line": 3987
       },
       {
         "file": "crates/rigger-domain/src/config.rs",
@@ -1734,8 +1734,8 @@
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 10843,
-        "end_line": 10843
+        "start_line": 10872,
+        "end_line": 10872
       },
       {
         "file": "src/cli/setup.rs",
@@ -4279,8 +4279,8 @@
       },
       {
         "file": "crates/rigger-domain/src/metrics.rs",
-        "start_line": 2739,
-        "end_line": 2741
+        "start_line": 2954,
+        "end_line": 2956
       },
       {
         "file": "tests/plan_critique_spec_defect_stop_periphery.rs",
@@ -4564,28 +4564,28 @@
       },
       {
         "file": "crates/rigger-dash/src/dash.rs",
-        "start_line": 8478,
-        "end_line": 8478
+        "start_line": 8596,
+        "end_line": 8596
       },
       {
         "file": "crates/rigger-dash/src/dash.rs",
-        "start_line": 8486,
-        "end_line": 8486
+        "start_line": 8604,
+        "end_line": 8604
       },
       {
         "file": "crates/rigger-dash/src/dash.rs",
-        "start_line": 8493,
-        "end_line": 8493
+        "start_line": 8611,
+        "end_line": 8611
       },
       {
         "file": "crates/rigger-dash/src/dash.rs",
-        "start_line": 8517,
-        "end_line": 8517
+        "start_line": 8635,
+        "end_line": 8635
       },
       {
         "file": "crates/rigger-dash/src/dash.rs",
-        "start_line": 8559,
-        "end_line": 8559
+        "start_line": 8677,
+        "end_line": 8677
       },
       {
         "file": "crates/rigger-process/src/holders.rs",
@@ -4844,8 +4844,8 @@
     "sites": [
       {
         "file": "crates/rigger-dash/src/dash.rs",
-        "start_line": 4060,
-        "end_line": 4065
+        "start_line": 4061,
+        "end_line": 4066
       },
       {
         "file": "tests/simplification_audit.rs",
@@ -4864,13 +4864,13 @@
     "sites": [
       {
         "file": "crates/rigger-dash/src/dash.rs",
-        "start_line": 4819,
-        "end_line": 4854
+        "start_line": 4820,
+        "end_line": 4855
       },
       {
         "file": "crates/rigger-dash/src/dash.rs",
-        "start_line": 4865,
-        "end_line": 4902
+        "start_line": 4866,
+        "end_line": 4903
       },
       {
         "file": "tests/console_palette_periphery.rs",
@@ -4889,8 +4889,8 @@
     "sites": [
       {
         "file": "crates/rigger-dash/src/dash.rs",
-        "start_line": 9064,
-        "end_line": 9066
+        "start_line": 9182,
+        "end_line": 9184
       },
       {
         "file": "tests/common/fixtures/graph.rs",
@@ -4904,8 +4904,8 @@
     "sites": [
       {
         "file": "crates/rigger-dash/src/dash.rs",
-        "start_line": 9067,
-        "end_line": 9069
+        "start_line": 9185,
+        "end_line": 9187
       },
       {
         "file": "crates/rigger-grounder/src/grounder/workflowdef.rs",
@@ -4919,13 +4919,13 @@
     "sites": [
       {
         "file": "crates/rigger-dash/src/dash.rs",
-        "start_line": 9675,
-        "end_line": 9699
+        "start_line": 9793,
+        "end_line": 9817
       },
       {
         "file": "crates/rigger-dash/src/dash.rs",
-        "start_line": 9937,
-        "end_line": 9957
+        "start_line": 10055,
+        "end_line": 10075
       },
       {
         "file": "tests/metadata_card_periphery.rs",
@@ -4939,8 +4939,8 @@
     "sites": [
       {
         "file": "crates/rigger-dash/src/dash.rs",
-        "start_line": 9983,
-        "end_line": 10033
+        "start_line": 10101,
+        "end_line": 10151
       },
       {
         "file": "tests/metadata_card_periphery.rs",
@@ -4954,8 +4954,8 @@
     "sites": [
       {
         "file": "crates/rigger-dash/src/dash.rs",
-        "start_line": 10312,
-        "end_line": 10354
+        "start_line": 10430,
+        "end_line": 10472
       },
       {
         "file": "tests/metadata_card_periphery.rs",
@@ -5234,8 +5234,8 @@
       },
       {
         "file": "crates/rigger-domain/src/spawn.rs",
-        "start_line": 721,
-        "end_line": 724
+        "start_line": 733,
+        "end_line": 736
       },
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
@@ -5424,8 +5424,8 @@
       },
       {
         "file": "crates/rigger-domain/src/spawn.rs",
-        "start_line": 727,
-        "end_line": 729
+        "start_line": 739,
+        "end_line": 741
       }
     ]
   },
@@ -5494,8 +5494,8 @@
       },
       {
         "file": "crates/rigger-domain/src/metrics.rs",
-        "start_line": 2518,
-        "end_line": 2546
+        "start_line": 2733,
+        "end_line": 2761
       }
     ]
   },
@@ -5504,13 +5504,13 @@
     "sites": [
       {
         "file": "crates/rigger-domain/src/metrics.rs",
-        "start_line": 2967,
-        "end_line": 2986
+        "start_line": 3182,
+        "end_line": 3201
       },
       {
         "file": "crates/rigger-domain/src/metrics.rs",
-        "start_line": 2995,
-        "end_line": 3013
+        "start_line": 3210,
+        "end_line": 3228
       }
     ]
   },
@@ -5519,13 +5519,13 @@
     "sites": [
       {
         "file": "crates/rigger-domain/src/spawn.rs",
-        "start_line": 489,
-        "end_line": 491
+        "start_line": 501,
+        "end_line": 503
       },
       {
         "file": "crates/rigger-domain/src/spawn.rs",
-        "start_line": 495,
-        "end_line": 497
+        "start_line": 507,
+        "end_line": 509
       }
     ]
   },
@@ -5534,8 +5534,8 @@
     "sites": [
       {
         "file": "crates/rigger-domain/src/spawn.rs",
-        "start_line": 712,
-        "end_line": 718
+        "start_line": 724,
+        "end_line": 730
       },
       {
         "file": "tests/dash_run_tree_spine.rs",
@@ -5924,8 +5924,8 @@
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 12489,
-        "end_line": 12489
+        "start_line": 12518,
+        "end_line": 12518
       },
       {
         "file": "tests/cli.rs",
@@ -7074,8 +7074,8 @@
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 11652,
-        "end_line": 11655
+        "start_line": 11681,
+        "end_line": 11684
       }
     ]
   },
@@ -7084,8 +7084,8 @@
     "sites": [
       {
         "file": "src/cli/mod.rs",
-        "start_line": 10631,
-        "end_line": 10640
+        "start_line": 10660,
+        "end_line": 10669
       },
       {
         "file": "tests/cli.rs",
@@ -7099,13 +7099,13 @@
     "sites": [
       {
         "file": "src/cli/mod.rs",
-        "start_line": 11920,
-        "end_line": 11929
+        "start_line": 11949,
+        "end_line": 11958
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 11967,
-        "end_line": 11986
+        "start_line": 11996,
+        "end_line": 12015
       }
     ]
   },
@@ -7464,8 +7464,8 @@
       },
       {
         "file": "tests/worker_persona_label_periphery.rs",
-        "start_line": 307,
-        "end_line": 328
+        "start_line": 330,
+        "end_line": 351
       }
     ]
   },

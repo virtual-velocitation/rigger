@@ -2522,6 +2522,7 @@ fn rollup(children: &[TreeNode]) -> String {
 }
 
 /// Which lifecycle stage a review/implement ROLE belongs to.
+#[derive(Debug, PartialEq, Eq)]
 enum LifecycleStage {
     Implement,
     Review,
@@ -5575,6 +5576,123 @@ mod tests {
             "the run tree ships in the emitted state"
         );
         assert!(body.contains("u30-c1"));
+    }
+
+    /// Every spawn id reads as its review kind: the lifecycle stage, the role group it folds
+    /// under and its agent label. A later step sits under its kind with ` step <k>` before any
+    /// retry marker, a bare token keeps the label it always had, and a spelling `review_step_of`
+    /// refuses is no review token, so it lands in `Other` under its whole role.
+    #[test]
+    fn every_step_token_reads_as_its_kind() {
+        use LifecycleStage::{Implement, Other, Review};
+        let cases: &[(&str, LifecycleStage, &str, &str)] = &[
+            ("u/implementer#1", Implement, "implementer", "attempt#1"),
+            ("u/sdet-author#0", Implement, "sdet-author", "attempt#0"),
+            ("u/lens:c#0", Review, "lens", "c"),
+            ("u/lens:c#0~retry1", Review, "lens", "c retry1"),
+            ("u/adversary#2", Review, "adversary", "attempt#2"),
+            (
+                "u/adversary#2~retry1",
+                Review,
+                "adversary",
+                "attempt#2 retry1",
+            ),
+            ("u/adjudicator#0", Review, "adjudicator", "attempt#0"),
+            (
+                "u/adjudicator#0~retry2",
+                Review,
+                "adjudicator",
+                "attempt#0 retry2",
+            ),
+            ("u/lens:c@2#0", Review, "lens", "c step 2"),
+            ("u/lens:c@2#0~retry1", Review, "lens", "c step 2 retry1"),
+            ("u/lens:c@10#0", Review, "lens", "c step 10"),
+            ("u/adversary@2#1", Review, "adversary", "attempt#1 step 2"),
+            (
+                "u/adversary@2#1~retry3",
+                Review,
+                "adversary",
+                "attempt#1 step 2 retry3",
+            ),
+            (
+                "u/adversary@4294967295#0",
+                Review,
+                "adversary",
+                "attempt#0 step 4294967295",
+            ),
+            (
+                "u/adversary@4294967296#0",
+                Other,
+                "adversary@4294967296",
+                "attempt#0",
+            ),
+            ("u/adversary@1#0", Other, "adversary@1", "attempt#0"),
+            ("u/adversary@01#0", Other, "adversary@01", "attempt#0"),
+            ("u/adversary@x#0", Other, "adversary@x", "attempt#0"),
+            ("u/lens:c@1#0", Other, "lens:c@1", "attempt#0"),
+            ("u/lens:c@x#0", Other, "lens:c@x", "attempt#0"),
+            ("u/adjudicator@2#0", Other, "adjudicator@2", "attempt#0"),
+            ("u/custom#0", Other, "custom", "attempt#0"),
+        ];
+        for (id, stage, role, agent) in cases {
+            assert_eq!(stage_of_role(spawn::spawn_role(id)), *stage, "{id}");
+            assert_eq!(
+                role_and_agent(id),
+                (role.to_string(), agent.to_string()),
+                "{id}"
+            );
+        }
+    }
+
+    /// The run tree folds a panel with a repeated kind into one Review group per kind, each later
+    /// step an agent row under its kind, and a spelling no minter writes stays out of Review.
+    #[test]
+    fn the_run_tree_groups_every_step_under_its_kind() {
+        let mut events = vec![ev(
+            "UnitStarted",
+            r#"{"id":"u30-c1","spec_criterion":"the shell"}"#,
+        )];
+        for role in [
+            "lens:a",
+            "adversary",
+            "lens:a@2",
+            "adversary@2",
+            "adjudicator",
+            "adversary@1",
+        ] {
+            let req = crate::spawn::test_request("u30-c1", "review", role, 0, role);
+            events.push(req.to_event().unwrap());
+        }
+        let state = build_state(
+            &positioned(events),
+            &Graph::default(),
+            false,
+            &[],
+            &HashMap::new(),
+            3,
+            "rigger-run",
+            "origin/main",
+        )
+        .unwrap();
+        let unit = &state.tree[0].children[0];
+        let stages: Vec<&str> = unit.children.iter().map(|s| s.label.as_str()).collect();
+        assert_eq!(stages, vec!["Review"]);
+        let shape: Vec<(&str, Vec<&str>)> = unit.children[0]
+            .children
+            .iter()
+            .map(|role| {
+                let agents = role.children.iter().map(|a| a.label.as_str()).collect();
+                (role.label.as_str(), agents)
+            })
+            .collect();
+        assert_eq!(
+            shape,
+            vec![
+                ("adjudicator", vec!["attempt#0"]),
+                ("adversary", vec!["attempt#0", "attempt#0 step 2"]),
+                ("lens", vec!["a", "a step 2"]),
+            ]
+        );
     }
 
     /// Review verdicts on the wire are exactly `metrics::project`'s classification, never a

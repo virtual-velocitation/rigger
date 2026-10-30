@@ -136,6 +136,13 @@ pub enum ReviewKind {
     Adjudicator,
 }
 
+impl ReviewKind {
+    /// The tier label this kind's spawns fold and group under.
+    pub fn tier(self) -> &'static str {
+        ""
+    }
+}
+
 /// The role token of `agent` in the `k`-th step of `kind`, `k` being 1-based and counted among
 /// the steps of that kind in [`ReviewPanel::steps`](crate::config::ReviewPanel::steps): the kind's
 /// own token, [`lens_role`], [`ROLE_ADVERSARY`] or [`ROLE_ADJUDICATOR`], at `k == 1`, and from
@@ -200,6 +207,11 @@ fn step_suffix(suffix: &str) -> Option<u32> {
         return None;
     }
     suffix.parse().ok().filter(|k| *k >= 2)
+}
+
+/// The agent id a lens token `role` names, bare or stepped, or `None` for any other role.
+pub fn lens_agent_of(_role: &str) -> Option<&str> {
+    None
 }
 
 /// Derive a spawn's DETERMINISTIC id from its position in the run structure: the
@@ -1322,44 +1334,63 @@ mod tests {
 
     /// The one parser of a review token: a bare token is step 1, the suffix is `@` and an ASCII
     /// decimal of at least 2 that fits a `u32`, with no leading zero and no sign, and `@k` exists
-    /// for the lens and adversary kinds only.
+    /// for the lens and adversary kinds only. `lens_agent_of` reads the same spellings: a lens
+    /// token names its agent whichever step it sits in, and anything else names none.
     #[test]
-    fn review_step_of_reads_each_token_and_refuses_every_other_spelling() {
+    fn the_token_readers_read_each_token_and_refuse_every_other_spelling() {
         use ReviewKind::{Adjudicator, Adversary, Lens};
-        for (role, read) in [
-            ("lens:a", Some((Lens, 1))),
-            ("adversary", Some((Adversary, 1))),
-            ("adjudicator", Some((Adjudicator, 1))),
-            ("lens:", Some((Lens, 1))),
-            ("lens:c@2", Some((Lens, 2))),
-            ("adversary@2", Some((Adversary, 2))),
-            ("adversary@10", Some((Adversary, 10))),
-            ("adversary@4294967295", Some((Adversary, u32::MAX))),
-            ("adversary@4294967296", None),
-            ("lens:a@4294967296", None),
-            ("adversary@1", None),
-            ("adversary@0", None),
-            ("adversary@01", None),
-            ("adversary@+2", None),
-            ("adversary@-2", None),
-            ("adversary@", None),
-            ("adversary@x", None),
-            ("adversary@2x", None),
-            ("lens:a@1", None),
-            ("lens:a@01", None),
-            ("lens:a@x", None),
-            ("lens:a@2@3", None),
-            ("lens:a@@2", None),
-            ("adjudicator@2", None),
-            ("adjudicator@1", None),
-            ("implementer", None),
-            ("implementer@2", None),
-            ("sdet-author", None),
-            ("lensing", None),
-            ("@2", None),
-            ("", None),
+        for (role, read, agent) in [
+            ("lens:a", Some((Lens, 1)), Some("a")),
+            ("adversary", Some((Adversary, 1)), None),
+            ("adjudicator", Some((Adjudicator, 1)), None),
+            ("lens:", Some((Lens, 1)), Some("")),
+            ("lens:c@2", Some((Lens, 2)), Some("c")),
+            (
+                "lens:architecture-reviewer@4294967295",
+                Some((Lens, u32::MAX)),
+                Some("architecture-reviewer"),
+            ),
+            ("adversary@2", Some((Adversary, 2)), None),
+            ("adversary@10", Some((Adversary, 10)), None),
+            ("adversary@4294967295", Some((Adversary, u32::MAX)), None),
+            ("adversary@4294967296", None, None),
+            ("lens:a@4294967296", None, None),
+            ("adversary@1", None, None),
+            ("adversary@0", None, None),
+            ("adversary@01", None, None),
+            ("adversary@+2", None, None),
+            ("adversary@-2", None, None),
+            ("adversary@", None, None),
+            ("adversary@x", None, None),
+            ("adversary@2x", None, None),
+            ("lens:a@1", None, None),
+            ("lens:a@01", None, None),
+            ("lens:a@x", None, None),
+            ("lens:a@2@3", None, None),
+            ("lens:a@@2", None, None),
+            ("adjudicator@2", None, None),
+            ("adjudicator@1", None, None),
+            ("implementer", None, None),
+            ("implementer@2", None, None),
+            ("sdet-author", None, None),
+            ("lensing", None, None),
+            ("@2", None, None),
+            ("", None, None),
         ] {
             assert_eq!(review_step_of(role), read, "{role:?}");
+            assert_eq!(lens_agent_of(role), agent, "{role:?}");
+        }
+    }
+
+    /// A kind's tier is the label its spawns fold and group under, the seeds' own spellings.
+    #[test]
+    fn a_review_kind_reads_as_its_tier_label() {
+        for (kind, tier) in [
+            (ReviewKind::Lens, crate::canary::TIER_LENS),
+            (ReviewKind::Adversary, crate::canary::TIER_ADVERSARY),
+            (ReviewKind::Adjudicator, ROLE_ADJUDICATOR),
+        ] {
+            assert_eq!(kind.tier(), tier, "{kind:?}");
         }
     }
 

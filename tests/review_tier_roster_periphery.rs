@@ -11,8 +11,8 @@ mod common;
 
 use common::repo::worker_label;
 
-/// Run the REAL `workerLabel(req)` - extracted verbatim along with `PERSONA_VERB`,
-/// `ROSTER_VERB`, and the `personaOf`/`firstSentence`/`roleAttempt` helpers it calls - under a
+/// Run the REAL `workerLabel(req)` - extracted verbatim along with `PERSONA_VERB`, `ROSTER_VERB`,
+/// and the `bareRoleOf`/`personaOf`/`firstSentence`/`roleAttempt` helpers it calls - under a
 /// real `node` subprocess, with `req.reviews` set to `reviews` (pass `None` to omit the field
 /// entirely - the "an older conductor" case). Returns the rendered label, or `None` when `node`
 /// is not on PATH - the same graceful-absence contract this crate's other JS-extraction tests
@@ -120,6 +120,85 @@ rigger::test_cases! {
         Some(&["lens:sdet"]),
         "Adversary - challenge the findings, assumptions, and rigor of lens:sdet #2: \
          challenge the one lens.",
+    );
+}
+
+rigger::test_cases! {
+    /// A later adversary step takes the adversary's roster phrase, naming the tokens the steps
+    /// before it ran under, while its persona keeps the full token.
+    a_later_adversary_step_renders_its_roster_under_its_full_token: assert_rendered_label(
+        "u1/adversary@2#0",
+        "challenge the steps before it.",
+        Some(&["lens:sdet", "adversary", "lens:sdet@2"]),
+        "Adversary@2 - challenge the findings, assumptions, and rigor of lens:sdet, adversary, \
+         lens:sdet@2 #0: challenge the steps before it.",
+    );
+    /// A respawn of a later step reads the same token: the suffix `roleAttempt` strips never
+    /// reaches the lookup.
+    a_respawn_of_a_later_adversary_step_keeps_its_roster: assert_rendered_label(
+        "u1/adversary@2#1~retry2",
+        "challenge the steps before it.",
+        Some(&["lens:sdet"]),
+        "Adversary@2 - challenge the findings, assumptions, and rigor of lens:sdet #1: \
+         challenge the steps before it.",
+    );
+    /// The highest step a token can spell still reads as its kind.
+    the_highest_step_token_renders_the_adversary_phrase: assert_rendered_label(
+        "u1/adversary@4294967295#0",
+        "challenge the steps before it.",
+        Some(&["lens:sdet"]),
+        "Adversary@4294967295 - challenge the findings, assumptions, and rigor of lens:sdet #0: \
+         challenge the steps before it.",
+    );
+    /// A later lens step's roster stays empty on the wire, and a roster it happened to carry is
+    /// still never rendered: a lens has its base phrase as in the first step.
+    a_later_lens_step_renders_its_base_phrase_with_no_roster_clause: assert_rendered_label(
+        "u1/lens:sdet@2#0",
+        "evaluate the tests again.",
+        Some(&["lens:sdet"]),
+        "Lens:SDET@2 - evaluate testing effectiveness #0: evaluate the tests again.",
+    );
+    /// A token one past the highest step is no review token: the generic verb, no roster.
+    a_step_past_the_highest_renders_no_roster_phrase: assert_rendered_label(
+        "u1/adversary@4294967296#0",
+        "challenge.",
+        Some(&["lens:sdet"]),
+        "Adversary@4294967296 - review #0: challenge.",
+    );
+    /// `@1` is no review token, whatever kind it follows.
+    an_at_one_token_renders_no_roster_phrase: assert_rendered_label(
+        "u1/adversary@1#0",
+        "challenge.",
+        Some(&["lens:sdet"]),
+        "Adversary@1 - review #0: challenge.",
+    );
+    /// A leading zero is no review token.
+    a_leading_zero_token_renders_no_roster_phrase: assert_rendered_label(
+        "u1/adversary@02#0",
+        "challenge.",
+        Some(&["lens:sdet"]),
+        "Adversary@02 - review #0: challenge.",
+    );
+    /// A suffix that is no decimal is no review token, and the persona still keeps it.
+    a_non_decimal_token_renders_no_roster_phrase: assert_rendered_label(
+        "u1/adversary@x#0",
+        "challenge.",
+        Some(&["lens:sdet"]),
+        "Adversary@X - review #0: challenge.",
+    );
+    /// `adjudicator@k` is never minted, so it reads neither the roster phrase nor the base one.
+    a_stepped_adjudicator_token_renders_no_roster_phrase: assert_rendered_label(
+        "u1/adjudicator@2#0",
+        "weigh.",
+        Some(&["lens:sdet"]),
+        "Adjudicator@2 - review #0: weigh.",
+    );
+    /// A lens token with `@1` is no review token either, so its mapped verb does not apply.
+    an_at_one_lens_token_renders_the_generic_verb: assert_rendered_label(
+        "u1/lens:sdet@1#0",
+        "evaluate.",
+        None,
+        "Lens:SDET@1 - review #0: evaluate.",
     );
 }
 

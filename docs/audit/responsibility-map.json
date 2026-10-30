@@ -10993,6 +10993,14 @@
   },
   {
     "file": "src/cli/mod.rs",
+    "name": "the_driver_reads_every_step_token_through_its_bare_role",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "491167d25f0629f7"
+  },
+  {
+    "file": "src/cli/mod.rs",
     "name": "meta_matches_reality_drops_integrate_and_the_unit_stage_construction",
     "is_test": true,
     "proposed_module": "main::tests",
@@ -12590,6 +12598,22 @@
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
     "content_hash": "810a5b1ec3c1ab2e"
+  },
+  {
+    "file": "crates/rigger-dash/src/dash.rs",
+    "name": "every_step_token_reads_as_its_kind",
+    "is_test": true,
+    "proposed_module": "dash::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "1944d78c1c49c433"
+  },
+  {
+    "file": "crates/rigger-dash/src/dash.rs",
+    "name": "the_run_tree_groups_every_step_under_its_kind",
+    "is_test": true,
+    "proposed_module": "dash::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "f64acb7d402bfdc0"
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",

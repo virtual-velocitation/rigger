@@ -102,6 +102,22 @@ fn every_documented_role_maps_to_its_own_persona_and_action_phrase() {
             "Adversary - challenge the findings, assumptions, and rigor",
         ),
         ("u2/adjudicator#1", None, "Adjudicator - weigh and rule"),
+        // A later review step reads its kind's phrase and keeps its whole token as the persona.
+        (
+            "u2/lens:sdet@2#0",
+            None,
+            "Lens:SDET@2 - evaluate testing effectiveness",
+        ),
+        (
+            "u2/lens:architecture-reviewer@3#0",
+            None,
+            "Lens:Architecture-Reviewer@3 - evaluate architectural integrity",
+        ),
+        (
+            "u2/adversary@2#1",
+            None,
+            "Adversary@2 - challenge the findings, assumptions, and rigor",
+        ),
         (
             // The planning unit's own producer spawn (conductor.rs:4139): a plain ROLE_IMPLEMENTER
             // under unit "plan" - the persona still reads "Plan", never "Implementer".
@@ -190,6 +206,13 @@ rigger::test_cases! {
         "check something unusual.",
         None,
         "Lens:Custom-Checker - review #0: check something unusual.",
+    );
+    /// A later step of that unmapped lens reads the same: its whole token, the generic verb.
+    a_later_step_of_an_unmapped_custom_lens_keeps_its_whole_token: assert_worker_label(
+        "u3/lens:custom-checker@2#0",
+        "check something unusual.",
+        None,
+        "Lens:Custom-Checker@2 - review #0: check something unusual.",
     );
     /// Internal whitespace (newlines, tabs, runs of spaces) in the title is collapsed to single
     /// spaces before the sentence is cut - the same normalization the pre-existing `work` line
