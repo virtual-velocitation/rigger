@@ -14668,6 +14668,7 @@ mod tests {
         run_log, spec_defect_halt_text, stop_records, the_stop_records, wave_lessons,
         DAG_CRITIQUE_VERDICT_PARAGRAPH, DAG_DISJOINT_OVERLAP, DAG_PRIOR_REJECT_HEADER,
         STOP_ESCALATED_KEY, STOP_LESSON_KEY, STOP_SPEC_DEFECT_KEY, UNIT_SIZE_CAP_SENTENCE,
+        WIDGET_CRITERION,
     };
     use crate::test_support::{
         critique_stage, fan_out_stage, plan_stage, review_stage_cfg, workflow_cfg,
@@ -48136,9 +48137,6 @@ mod tests {
             "the gate must integrate exactly once across the resume, not re-emit"
         );
     }
-
-    /// The criterion the plan-critique resume fixtures plan against.
-    const WIDGET_CRITERION: &str = "the widget renderer is implemented";
 
     /// PLAN_PROTOCOL shape: the split units carry `needs:[]` (only sibling ids ever appear
     /// here, never the gate) - the exact shape that bypassed the pre-gate wave.

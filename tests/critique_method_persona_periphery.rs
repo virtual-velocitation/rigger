@@ -10,7 +10,9 @@
 //! and then only the task framing and the output contract - the prompt's "rules in your persona"
 //! naming a persona the spawn really carries - and that a consumer's persona with no such section
 //! is kept across a re-run of the scaffolding verbs and still critiques over the same task.
-//! `rigger critique`'s task is held by `tests/spec_critique_periphery.rs`.
+//! `rigger critique`'s task is held by `tests/spec_critique_periphery.rs`, which compares it to
+//! `spec_critique_prompt`, and that prompt's bytes by the whole-prompt pin in
+//! `crates/rigger-domain/src/review.rs`.
 //!
 //! The rows are the adjudicator of the first round, for the prompt no reject precedes, and the
 //! adversary and the adjudicator of the re-plan round, for the prompt that opens with the reject.
@@ -22,33 +24,39 @@
 mod common;
 
 use common::cli::{
-    loaded_config, propose_unit_via_rigger_emit, rigger_file, run_rigger_envs_ok, run_rigger_ok,
+    loaded_config, plan_the_widget, rigger_file, run_rigger_envs_ok, run_rigger_ok,
     temp_repoless_project, with_run_store,
 };
 use common::fixtures::{
     assert_holds_its_critique_method, composed_system_prompt, critique_method_by_persona,
     critique_reject, dag_critique_prompt, persona_section, read_text, DAG_DISJOINT_OVERLAP,
-    DAG_PRIOR_REJECT_HEADER, WHEN_YOU_CRITIQUE_HEADING,
+    DAG_PRIOR_REJECT_HEADER, WHEN_YOU_CRITIQUE_HEADING, WIDGET_CRITERION, WIDGET_UNIT,
 };
-use rigger::conductor::review_protocol;
-use rigger::spawn::ROLE_ADVERSARY;
-use serde_json::json;
 use std::path::Path;
 
 /// The agent the scaffolded workflow's implement template fans out to.
 const WORKER: &str = "rust-engineer";
-
-/// The one unit the planner proposes.
-const UNIT: &str = "u-widget";
-
-/// The criterion [`UNIT`] serves.
-const CRITERION: &str = "the widget renderer is implemented";
 
 /// The blast radius a unit of a project with no grounded source lists.
 const NONE_GROUNDED: &str = "(none grounded)";
 
 /// What an adversary's result says: its findings go to the graph, never through this line.
 const REVIEWED: &str = "reviewed the DAG";
+
+/// The findings protocol that closes the adversary's task, spelled whole: an oracle reading the
+/// production text would pass over a method sentence added to it.
+const ADVERSARY_FINDINGS_PROTOCOL: &str = "Record each review finding you raise by calling the \
+    rigger_emit tool the moment you raise it, with type \"ReviewFinding\" and data:\n\
+    {\"id\":\"<short-id>\",\"by\":\"adversary\",\"summary\":\"<one line>\",\
+    \"about\":[\"<file>\"]}\n\
+    The `by` field ATTRIBUTES the finding to you - keep it EXACTLY as \"adversary\" so the \
+    review-quality metrics can measure your findings' survival even when you run out-of-process \
+    (where the conductor stamps no actor for you). This writes the finding to the shared context \
+    graph live, so the adversary, the adjudicator, and your fellow reviewers see it immediately \
+    (via grounding and rigger_peers) and address or refute it. Never write to this unit's own \
+    worktree - it is the tree being judged, not yours to edit. A reproduction builds into the \
+    build cache your spawn carries: the unit's review cache, never the cache the unit's gates \
+    use. Leave the unit's worktree exactly as you found it.";
 
 /// A repo-less project `rigger init` scaffolded, its fleet and workflow exactly as the verb wrote
 /// them.
@@ -61,16 +69,6 @@ fn scaffolded_project() -> tempfile::TempDir {
 /// The text of `root`'s agent definition `file`.
 fn agent_text(root: &Path, file: &str) -> String {
     read_text(&rigger_file(root, &format!("agents/{file}")))
-}
-
-/// Answer the parked planner spawn `spawn` as a courier does: its proposal, then its result.
-fn plan(root: &Path, spawn: &str) {
-    propose_unit_via_rigger_emit(
-        root,
-        spawn,
-        &json!({"id": UNIT, "agent": WORKER, "criterion": CRITERION, "needs": []}),
-    );
-    run_rigger_ok(root, &["result", spawn, "proposed the DAG"]);
 }
 
 /// Answer the parked spawn `spawn` with `output`, returning what `rigger prompt` serves it, as a
@@ -104,12 +102,12 @@ fn served_over_a_reject_and_its_re_plan(root: &Path, reject: &str) -> [String; 3
         rigger::run_store::start_fresh(store, &[], "", "", "", "specs/widget.md").unwrap();
     });
     run_rigger_ok(root, &["step"]);
-    plan(root, "plan/implementer#0");
+    plan_the_widget(root, "plan/implementer#0", WORKER);
     run_rigger_ok(root, &["result", "plan-critique/adversary#0", REVIEWED]);
     run_rigger_ok(root, &["step"]);
     let first_adjudicator = serve_and_answer(root, "plan-critique/adjudicator#0", reject);
     run_rigger_ok(root, &["step"]);
-    plan(root, "plan/replan#1");
+    plan_the_widget(root, "plan/replan#1", WORKER);
     run_rigger_ok(root, &["step"]);
     let second_adversary = serve_and_answer(root, "plan-critique/adversary#1", REVIEWED);
     run_rigger_ok(root, &["step"]);
@@ -132,7 +130,12 @@ fn expected_tasks(root: &Path, reject: &str) -> [(&'static str, String); 3] {
     let first_round = dag_critique_prompt(
         &[
             ["checkin", checkin, "implement", NONE_GROUNDED],
-            [UNIT, CRITERION, "plan-critique", NONE_GROUNDED],
+            [
+                WIDGET_UNIT,
+                WIDGET_CRITERION,
+                "plan-critique",
+                NONE_GROUNDED,
+            ],
         ],
         DAG_DISJOINT_OVERLAP,
     );
@@ -144,7 +147,7 @@ fn expected_tasks(root: &Path, reject: &str) -> [(&'static str, String); 3] {
         ("adjudicator.md", first_round),
         (
             "adversary.md",
-            format!("{second_round}{}", review_protocol(ROLE_ADVERSARY)),
+            format!("{second_round}{ADVERSARY_FINDINGS_PROTOCOL}"),
         ),
         ("adjudicator.md", second_round),
     ]

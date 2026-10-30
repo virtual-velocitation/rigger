@@ -1,12 +1,18 @@
-//! Plan-critique fixtures: the whole DAG critique prompt, with the unit size cap sentence, the
-//! disjoint overlap text, the line a re-plan round opens with and the verdict paragraph it is
-//! spelled from, the adjudicator's reject line and the records a spec-defect stop appends (spec
-//! 112, criterion 5).
+//! Plan-critique fixtures: the widget unit a scripted planner proposes, the whole DAG critique
+//! prompt, with the unit size cap sentence, the disjoint overlap text, the line a re-plan round
+//! opens with and the verdict paragraph it is spelled from, the adjudicator's reject line and the
+//! records a spec-defect stop appends (spec 112, criterion 5).
 
 use rigger::conductor::{META_REPLAY_KEY, TYPE_SPEC_DEFECT};
 use rigger::contextgraph::TYPE_LESSON_LEARNED;
 use rigger::eventstore::Event;
 use rigger::ledger::TYPE_UNIT_ESCALATED;
+
+/// The one unit a scripted planner proposes.
+pub const WIDGET_UNIT: &str = "u-widget";
+
+/// The criterion [`WIDGET_UNIT`] serves, which the plan-critique fixtures plan against.
+pub const WIDGET_CRITERION: &str = "the widget renderer is implemented";
 
 /// The verdict paragraph every round of the DAG critique prompt closes with: its cause contract
 /// asks for `spec-ambiguity` - the cause the spec-defect stop reads, spelled here as the

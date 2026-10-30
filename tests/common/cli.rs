@@ -118,6 +118,19 @@ pub fn propose_unit_via_rigger_emit(root: &Path, spawn: &str, body: &serde_json:
     );
 }
 
+/// Answer the parked planner spawn `spawn` as a courier does: its proposal of the one
+/// [`WIDGET_UNIT`](super::fixtures::WIDGET_UNIT), handed to `agent`, then its result.
+pub fn plan_the_widget(root: &Path, spawn: &str, agent: &str) {
+    let unit = serde_json::json!({
+        "id": super::fixtures::WIDGET_UNIT,
+        "agent": agent,
+        "criterion": super::fixtures::WIDGET_CRITERION,
+        "needs": [],
+    });
+    propose_unit_via_rigger_emit(root, spawn, &unit);
+    run_rigger_ok(root, &["result", spawn, "proposed the DAG"]);
+}
+
 /// Run `rigger <args...>` in `cwd`, asserting it exits 0 (naming its stderr when it does not),
 /// and return its stdout.
 pub fn run_rigger_ok(cwd: &Path, args: &[&str]) -> String {
