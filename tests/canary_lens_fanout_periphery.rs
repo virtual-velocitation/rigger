@@ -1,5 +1,5 @@
 //! Periphery (integration) test for spec 61 criterion 4 (LENS FAN-OUT), unit u61c4:
-//! `score_item`'s tier-1 lens loop now fans out over `crate::parallel::map_ordered`.
+//! `score_item` fans each lens step's agents out over `crate::parallel::map_ordered`.
 //!
 //! Criterion 5 (ITEM SHARDING AND THE JOBS CAP, unit u61c5b) landed after this test was
 //! first written and changed WHAT width `run_canary` threads into the lens tier:
