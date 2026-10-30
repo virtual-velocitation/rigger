@@ -933,10 +933,9 @@ pub trait Projection: Send + Sync {
     /// Whether this projection says, without reading the log, that it owes one rebuild from it
     /// (spec 101) - it was folded under an older fold rule: until `rigger setup` pays it nothing
     /// folds into it, and nothing whose answer depends on the fold may answer from it - it refuses
-    /// with [`REBUILD_OWED`]. A fold that fails writes no mark now, and the mark an older binary
-    /// wrote when a fold into it failed is no cause (spec 124): an event it misses is found by
-    /// `rigger setup`, or by the next fold through a folding store, which read the projection's
-    /// record of what it folded against the log.
+    /// with [`REBUILD_OWED`]. A fold that fails never makes it owe one (spec 124): an event it
+    /// misses is found by `rigger setup`, or by the next fold through a folding store, which read
+    /// the projection's record of what it folded against the log.
     fn rebuild_owed(&self) -> Result<bool, Error>;
 
     /// The connected subgraph reachable from any seed within depth hops (the FEED arc / an
