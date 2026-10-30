@@ -2391,7 +2391,7 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
     // `harvest_proposed` below exactly as before. The `integrated`/`terminal` guards in
     // `harvest_proposed` keep a baseline that already started/integrated in a prior
     // window from being yanked out from under its own work.
-    ctx.harvest_proposed(&mut stages, &mut proposed, &integrated, &terminal)?;
+    ctx.harvest_proposed(&mut stages, &mut proposed, &mut integrated, &mut terminal)?;
 
     // Coverage gate (§3.2, §8). A planner (`produces`) stage DEFERS coverage to
     // after planning: it has no units yet, so we run the planning wave + harvest
@@ -2428,7 +2428,7 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
                 &mut terminal,
                 &mut in_flight,
             )?;
-            ctx.harvest_proposed(&mut stages, &mut proposed, &integrated, &terminal)?;
+            ctx.harvest_proposed(&mut stages, &mut proposed, &mut integrated, &mut terminal)?;
         }
         // If the workflow wires a plan-critique stage, review the PROPOSED DAG with its
         // adversary + adjudicator BEFORE any implementer runs. A reject loops the planner
@@ -2565,7 +2565,7 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
                 ctx.trip_budget_breaker()?;
                 break;
             }
-            ctx.harvest_proposed(&mut stages, &mut proposed, &integrated, &terminal)?;
+            ctx.harvest_proposed(&mut stages, &mut proposed, &mut integrated, &mut terminal)?;
             // Post-integration compensation (spec 12, unit 4): a review this wave may have
             // proven a PRIOR integrated unit wrong. Drain the queued rollbacks now, between
             // waves (single-threaded), reverting the condemned unit's integrating commit(s)
@@ -3258,8 +3258,8 @@ impl<'a> RunCtx<'a> {
 }
 
 /// An event of `type_` carrying `payload`, with each `(key, value)` of `meta` whose value is
-/// non-empty stamped in its metadata: the one build [`RunCtx::emit_meta`] and
-/// [`RunCtx::emit_agent`] share.
+/// non-empty stamped in its metadata: the one build [`RunCtx::emit_meta`],
+/// [`RunCtx::emit_agent`] and the replay-keyed [`RunCtx::keyed_event`] share.
 fn event_with_meta(type_: &str, payload: Value, meta: &[(&str, &str)]) -> Result<Event, Error> {
     let mut ev = Event::new(type_, serde_json::to_vec(&payload)?);
     for (k, v) in meta {
@@ -3268,6 +3268,31 @@ fn event_with_meta(type_: &str, payload: Value, meta: &[(&str, &str)]) -> Result
         }
     }
     Ok(ev)
+}
+
+/// The `UnitStarted` body of stage `st` as unit `name`, the one shape every start records - the
+/// full lifecycle's ([`RunCtx::start_and_run_stage`]) and a landed unit's
+/// ([`RunCtx::land_if_landed`]) alike - so the ledger, status and the dash read both one way.
+/// `branch` is the unit's checkpoint branch (empty for a landed unit, which has none) and
+/// `adopted_from` the earlier attempt whose branch it continues, as `(unit, tip, spec)`.
+fn unit_started_payload(
+    name: &str,
+    st: &Stage,
+    branch: &str,
+    adopted_from: Option<&(String, String, String)>,
+) -> Value {
+    json!({
+        "id": name,
+        "unit": name,
+        "spec_criterion": st.coverage,
+        "criterion": st.coverage,
+        "criterion_id": st.criterion_id,
+        "agent": st.agent,
+        "needs": st.needs,
+        "branch": branch,
+        "adopted_from": adopted_from
+            .map(|(unit, tip, spec)| json!({"unit": unit, "tip": tip, "spec": spec})),
+    })
 }
 
 impl RunCtx<'_> {
@@ -3421,23 +3446,52 @@ impl RunCtx<'_> {
         payload: Value,
         extra: &[(&str, &str)],
     ) -> Result<(), Error> {
-        {
-            // A first insert means this key is new work; a repeat means the log already
-            // carries it (seeded at run start) or this process already emitted it - a
-            // replay, so append nothing. Holding the lock only around the set guard lets
-            // concurrent units in a wave append their own keyed events in parallel.
-            if !self.replayed_keys.insert(key) {
-                return Ok(());
-            }
+        match self.keyed_event(key, type_, payload, extra)? {
+            Some(ev) => self.append_and_fold(ev).map(|_| ()),
+            None => Ok(()),
         }
-        let mut ev =
-            Event::new(type_, serde_json::to_vec(&payload)?).with_meta(META_REPLAY_KEY, key);
-        for (k, v) in extra {
-            if !v.is_empty() {
-                ev = ev.with_meta(*k, *v);
-            }
+    }
+
+    /// The event [`emit_keyed_meta`](RunCtx::emit_keyed_meta) appends under replay `key`:
+    /// `payload` as `type_`, with `extra` and the key stamped in its metadata - or `None` when
+    /// the key is a replay. A first call CLAIMS the key, so its caller appends what it returns.
+    fn keyed_event(
+        &self,
+        key: &str,
+        type_: &str,
+        payload: Value,
+        extra: &[(&str, &str)],
+    ) -> Result<Option<Event>, Error> {
+        // A first insert means this key is new work; a repeat means the log already
+        // carries it (seeded at run start) or this process already emitted it - a
+        // replay, so append nothing. Holding the lock only around the set guard lets
+        // concurrent units in a wave append their own keyed events in parallel.
+        if !self.replayed_keys.insert(key) {
+            return Ok(None);
         }
-        self.append_and_fold(ev).map(|_| ())
+        Ok(Some(
+            event_with_meta(type_, payload, extra)?.with_meta(META_REPLAY_KEY, key),
+        ))
+    }
+
+    /// Several `(key, type, payload)` replay-keyed events appended TOGETHER, in one append, so
+    /// a crash never records some of them without the rest. Each is built by
+    /// [`keyed_event`](RunCtx::keyed_event), so a replayed key adds nothing, and an append that
+    /// wrote fewer events than it was handed is the lost write it is.
+    fn emit_keyed_together(&self, events: Vec<(String, &str, Value)>) -> Result<(), Error> {
+        let mut fresh = Vec::new();
+        for (key, type_, payload) in events {
+            fresh.extend(self.keyed_event(&key, type_, payload, &[])?);
+        }
+        let written = self.append_and_fold_batch(&fresh)?.written();
+        if written != fresh.len() {
+            return Err(Error(format!(
+                "{} of {} keyed events of this run were not recorded on {STREAM:?}",
+                fresh.len() - written,
+                fresh.len()
+            )));
+        }
+        Ok(())
     }
 
     /// THE RUN'S INGEST SINK (spec 107): record one file's batch, as a walk handed it with its
@@ -4360,19 +4414,7 @@ impl RunCtx<'_> {
         self.emit_keyed_meta(
             &format!("{name}/started"),
             ledger::TYPE_UNIT_STARTED,
-            json!({
-                "id": name,
-                "unit": name,
-                "spec_criterion": st.coverage,
-                "criterion": st.coverage,
-                "criterion_id": st.criterion_id,
-                "agent": st.agent,
-                "needs": st.needs,
-                "branch": unit_branch(name),
-                "adopted_from": adopted_from
-                    .as_ref()
-                    .map(|(unit, tip, spec)| json!({"unit": unit, "tip": tip, "spec": spec})),
-            }),
+            unit_started_payload(name, st, &unit_branch(name), adopted_from.as_ref()),
             // UnitStarted is a once-per-unit checkpoint, so it names the model the unit's
             // FIRST attempt asks for - rung 0 of any cascade. The per-attempt rungs a
             // remediating unit escalates through ride on the per-attempt green/verified
@@ -11609,6 +11651,73 @@ impl RunCtx<'_> {
             .unwrap_or(true)
     }
 
+    /// Every run's lifecycle events, read by type ([`crate::run::read::ADOPTION_TYPES`]): the
+    /// history the cross-run criterion reads ([`prior_criterion_unit`], [`recorded_adoption`],
+    /// [`landed_criterion_unit`]) fold, and never a prior run's other events (spec 101).
+    fn read_lifecycle(&self) -> Result<Vec<Event>, Error> {
+        Ok(self.deps.store.read_stream_typed(
+            STREAM,
+            0,
+            crate::eventstore::TypeSelection::Only(&crate::run::read::ADOPTION_TYPES),
+        )?)
+    }
+
+    /// Land stage `st` with no spawn when an earlier run of this run's spec already integrated
+    /// its criterion ([`landed_criterion_unit`]) and every commit of that attempt is on the
+    /// branch this run integrates into ([`on_run_branch`]): record its `UnitStarted` and a
+    /// `UnitIntegrated` whose commit is [`REVIEW_ONLY_NO_ARTIFACT`] - no worktree, implementer,
+    /// gates, review or merge, the way a producer stage integrates - and whose `landed_from`
+    /// names the earlier unit, its run, this run's spec path and that unit's commit, which a
+    /// later run checks in place of the marker. Both are replay-keyed and appended together, so
+    /// a resumed step records nothing again and a crash never leaves one without the other.
+    /// Returns whether it landed; a stage that did not keeps the full lifecycle, branch adoption
+    /// included.
+    ///
+    /// `lifecycle` is the caller's one read of every run's lifecycle events, made at the first
+    /// stage that serves a criterion and reused for the rest.
+    fn land_if_landed(
+        &self,
+        st: &Stage,
+        lifecycle: &mut Option<Vec<Event>>,
+    ) -> Result<bool, Error> {
+        if st.criterion_id.is_empty() {
+            return Ok(false);
+        }
+        if lifecycle.is_none() {
+            *lifecycle = Some(self.read_lifecycle()?);
+        }
+        let events = lifecycle.as_deref().unwrap_or_default();
+        let Some(landed) = landed_criterion_unit(events, &st.criterion_id, &st.name) else {
+            return Ok(false);
+        };
+        if !on_run_branch(&self.deps.repo, &landed.commits) {
+            return Ok(false);
+        }
+        let name = st.name.as_str();
+        self.emit_keyed_together(vec![
+            (
+                format!("{name}/started"),
+                ledger::TYPE_UNIT_STARTED,
+                unit_started_payload(name, st, "", None),
+            ),
+            (
+                format!("{name}/landed"),
+                ledger::TYPE_UNIT_INTEGRATED,
+                json!({
+                    "id": name,
+                    "commit": REVIEW_ONLY_NO_ARTIFACT,
+                    "landed_from": {
+                        "unit": landed.unit,
+                        "run": landed.run,
+                        "spec": crate::run::current_run_spec_path(events),
+                        "commit": landed.commits.last(),
+                    },
+                }),
+            ),
+        ])?;
+        Ok(true)
+    }
+
     /// ADOPTION KEYS ON THE CRITERION (spec 88, decided; round 4 corrects the crash
     /// durability per operator ruling
     /// `op-u88c2-round-4-adoption-keys-corrected-escalated-baselines-are-always-
@@ -11741,11 +11850,7 @@ impl RunCtx<'_> {
         // Adoption is decided across runs by contract (spec 88: a criterion's abandoned attempt
         // from an earlier run is adopted), so it reads every run's LIFECYCLE events by type -
         // the only ones its rules consult - and never a prior run's other events (spec 101).
-        let events = self.deps.store.read_stream_typed(
-            STREAM,
-            0,
-            crate::eventstore::TypeSelection::Only(&crate::run::read::ADOPTION_TYPES),
-        )?;
+        let events = self.read_lifecycle()?;
         let spec = current_run_spec(&events);
         if let Some((prior, tip, prior_spec)) =
             recorded_adoption(&events, &st.name, &st.criterion_id, &spec)
@@ -12001,10 +12106,13 @@ impl RunCtx<'_> {
         &self,
         stages: &mut BTreeMap<String, Stage>,
         proposed: &mut HashSet<String>,
-        integrated: &HashSet<String>,
-        terminal: &HashSet<String>,
+        integrated: &mut HashSet<String>,
+        terminal: &mut HashSet<String>,
     ) -> Result<(), Error> {
         let events = self.read_current_run()?;
+        // Every run's lifecycle events, read once, at the first added stage that serves a
+        // criterion ([`RunCtx::land_if_landed`]).
+        let mut lifecycle = None;
         // GATE INHERITANCE (spec 103, decided): the fan-out template's gates are the
         // base every proposed unit's stage carries below - a proposal's own `gates`
         // field is accepted for compatibility and UNIONED in ([`union_gates`]), so a
@@ -12376,6 +12484,7 @@ impl RunCtx<'_> {
             // the SAME `with_gate_hold` authority the same-id fold path re-applies, so a
             // refined re-emit stays held behind the gate exactly as its first proposal was.
             let needs = with_gate_hold(u.needs, &u.id, gate.as_ref());
+            let id = u.id.clone();
             stages.insert(
                 u.id.clone(),
                 Stage {
@@ -12398,6 +12507,15 @@ impl RunCtx<'_> {
                     ..Default::default()
                 },
             );
+            // A LANDED CRITERION IS NOT BUILT AGAIN: a unit whose criterion an earlier run of
+            // this spec already integrated reaches Integrated here, as it enters the DAG, with
+            // no spawn, so its dependents are ready at once. Decided here, where a resumed step
+            // and a fresh step both add the unit, so the two agree; a unit already terminal in
+            // this run (landed by an earlier step, or built) is left as it stands.
+            if !terminal.contains(&id) && self.land_if_landed(&stages[&id], &mut lifecycle)? {
+                integrated.insert(id.clone());
+                terminal.insert(id);
+            }
         }
         Ok(())
     }
@@ -13729,52 +13847,18 @@ fn current_run_spec(events: &[Event]) -> String {
 /// tie-break: two prior units sharing a criterion, a replanned run, resolve to the most
 /// recent tip).
 ///
-/// SPEC-SCOPED (round 3, criterion-id-unscoped-crosses-specs): [`criterion_stable_id`] is
-/// only `position` + a content hash of the criterion TEXT - two unrelated specs whose
-/// criterion at the same position is byte-for-byte identical text (this repo's own
-/// corpus proved this happens today: several specs share the boilerplate "both feature
-/// lanes green..." as their 3rd Done-when item) mint the IDENTICAL `criterion_id`. Without
-/// scoping, a fresh unit for spec B's criterion could adopt spec A's abandoned attempt at
-/// its own, textually-identical criterion - real content contamination across unrelated
-/// specs. So a candidate only ever counts when its OWN `[RunStarted, next RunStarted)`
-/// window's spec ([`crate::run::RunStarted::spec`], stemmed through the SAME
-/// [`ledger::spec_stem`] authority `pr_head_branch` uses) matches `this_unit`'s - the
-/// LAST `RunStarted` in `events`, since this call always runs live within the current
-/// (still-open) run and that is exactly this unit's own owning spec. A store with no
-/// `RunStarted` at all (a legacy pre-spec-82 log, or a bare unit test) resolves every
-/// spec identity to the same empty string, so matching is UNCHANGED there.
+/// SPEC-SCOPED (round 3, criterion-id-unscoped-crosses-specs): a candidate counts only when
+/// its own run's spec is `this_unit`'s - the LAST `RunStarted` in `events`, since this call
+/// always runs live within the current (still-open) run - for the reason
+/// [`criterion_history`] gives.
 ///
-/// A single forward fold over `events` in LOG order (deliberately the WHOLE stream, not
-/// [`crate::run::current_run`] - a prior run's `UnitStarted` lives BEFORE the current
-/// run's boundary by construction, and that is exactly the history this looks for):
-/// every `UnitStarted` whose OWN `criterion_id` matches, AND whose spec (at the moment it
-/// started) matches the target spec, becomes the new leading candidate (with the spec it
-/// was recorded under), so the LAST one walked (the most recent) is what survives. The
-/// integrated-exclusion set is keyed on `(id, criterion_id, spec)`, never bare id: a
-/// planner id carries no cross-run uniqueness guarantee (nothing enforces one - a slug
-/// can be reused across two runs, or two specs, for two different criteria), so a later
-/// integration of the SAME id for a DIFFERENT criterion or spec must never mask an
-/// EARLIER, still-abandoned attempt at THIS criterion sharing that id. `UnitIntegrated`
-/// itself carries only `id` (no `criterion_id`/spec), so the criterion and spec an
-/// integration actually satisfied are looked up off the most recent `UnitStarted` walked
-/// for that id so far - a unit cannot integrate before it starts, so its `UnitStarted`
-/// always precedes its `UnitIntegrated` earlier in this same log, regardless of how many
-/// resumed processes wrote the two events.
-///
-/// TEMPORAL (round 3, exclusion-set-permanent-blocks-a-genuine-redo): a later
-/// COMPENSATION (spec 12, unit 4 - a `UnitFailed` carrying [`META_COMPENSATED`] metadata,
-/// never a new event type) proves an integrated unit's work wrong and reverts it -
-/// genuinely un-integrating its criterion again, an established mechanism this same
-/// fold must honor rather than treat the exclusion set as monotonic-only. So a
-/// compensation walked for an id CLEARS that id's `(id, criterion, spec)` triple from the
-/// set (using the same "most recently walked `UnitStarted`" lookup `UnitIntegrated`
-/// uses), letting a genuine later redo adopt the reverted unit's still-existing branch
-/// instead of being permanently barred from its reviewed progress. An ORDINARY
-/// remediation `UnitFailed` (no `META_COMPENSATED`) touches nothing - only a real
-/// compensation reopens the exclusion.
-///
-/// The final candidate is returned only when `(candidate, criterion_id, candidate's own
-/// spec)` is NOT in that set at the end of the fold.
+/// The candidate is the most recent start [`criterion_history`] walks for this criterion under
+/// this spec (deliberately over the WHOLE stream, not [`crate::run::current_run`] - a prior run's
+/// `UnitStarted` lives BEFORE the current run's boundary by construction, and that is exactly the
+/// history this looks for), returned only when it is not standing integrated at the end of the
+/// fold - so a compensation that reverted its integrate makes it adoptable again (TEMPORAL, round
+/// 3, exclusion-set-permanent-blocks-a-genuine-redo), and an ORDINARY remediation `UnitFailed`
+/// reopens nothing.
 ///
 /// This deliberately does NOT re-search for an OLDER non-integrated unit when the most
 /// recent one for this criterion already integrated: a criterion whose latest attempt
@@ -13789,62 +13873,206 @@ fn prior_criterion_unit(events: &[Event], criterion_id: &str, this_unit: &str) -
     if criterion_id.is_empty() {
         return None;
     }
-    let target_spec = current_run_spec(events);
-    // (id, spec) at the moment of selection, so a LATER RunStarted encountered further
-    // along the fold (a still-later, unrelated run reusing the same id) can never
-    // retroactively change which spec THIS candidate was actually recorded under.
-    let mut candidate: Option<(String, String)> = None;
-    let mut current_spec = String::new();
-    // The criterion (and spec) each id's most recently walked `UnitStarted` served -
-    // consulted when that id later reaches `UnitIntegrated` (or a compensating
-    // `UnitFailed`), neither of which carries a criterion/spec of its own to key the
-    // exclusion set on directly.
-    let mut started_criterion: HashMap<String, String> = HashMap::new();
-    let mut started_spec: HashMap<String, String> = HashMap::new();
-    let mut integrated: HashSet<(String, String, String)> = HashSet::new();
-    for e in events {
-        if e.type_ == crate::run::TYPE_RUN_STARTED {
-            if let Ok(rs) = serde_json::from_slice::<crate::run::RunStarted>(&e.data) {
-                current_spec = ledger::spec_stem(&rs.spec);
-            }
-        } else if e.type_ == ledger::TYPE_UNIT_STARTED {
-            if let Ok(u) = serde_json::from_slice::<StartedCriterionProbe>(&e.data) {
-                if !u.id.is_empty() {
-                    if u.id != this_unit
-                        && u.criterion_id == criterion_id
-                        && current_spec == target_spec
-                    {
-                        candidate = Some((u.id.clone(), current_spec.clone()));
-                    }
-                    started_criterion.insert(u.id.clone(), u.criterion_id);
-                    started_spec.insert(u.id, current_spec.clone());
-                }
-            }
-        } else if e.type_ == ledger::TYPE_UNIT_INTEGRATED {
-            if let Ok(u) = serde_json::from_slice::<StartedCriterionProbe>(&e.data) {
-                if !u.id.is_empty() {
-                    if let Some(served) = started_criterion.get(&u.id).cloned() {
-                        let spec = started_spec.get(&u.id).cloned().unwrap_or_default();
-                        integrated.insert((u.id, served, spec));
-                    }
-                }
-            }
-        } else if e.type_ == ledger::TYPE_UNIT_FAILED
-            && e.meta.get(META_COMPENSATED).is_some_and(|c| !c.is_empty())
-        {
-            if let Ok(u) = serde_json::from_slice::<StartedCriterionProbe>(&e.data) {
-                if let Some(served) = started_criterion.get(&u.id).cloned() {
-                    let spec = started_spec.get(&u.id).cloned().unwrap_or_default();
-                    integrated.remove(&(u.id, served, spec));
-                }
-            }
+    let history = criterion_history(events, criterion_id, &current_run_spec(events));
+    let (candidate, _) = history
+        .starts
+        .into_iter()
+        .rev()
+        .find(|(id, _)| id != this_unit)?;
+    (!history.standing.contains_key(&candidate)).then_some(candidate)
+}
+
+/// One criterion's lifecycle under one spec, across every run [`criterion_history`] folds: the
+/// ONE fold both [`prior_criterion_unit`] (which abandoned attempt a fresh unit adopts) and
+/// [`landed_criterion_unit`] (whether an earlier run already landed the criterion) read, so the
+/// two can never disagree on which attempts integrated.
+struct CriterionHistory {
+    /// Every `UnitStarted` that served the criterion under the target spec, in log order, as
+    /// `(unit id, id of the run it started in)`.
+    starts: Vec<(String, String)>,
+    /// The units whose integration of the criterion under the target spec stands - integrated,
+    /// and not reverted by a compensation since - each with the commit it put on its run branch
+    /// ([`IntegratedProbe::branch_commit`]).
+    standing: HashMap<String, String>,
+}
+
+/// The fields [`criterion_history`] reads from a [`ledger::TYPE_UNIT_INTEGRATED`] event: the unit,
+/// the commit it records and, for a unit that landed with no spawn ([`RunCtx::land_if_landed`]),
+/// the earlier commit its `landed_from` carries.
+#[derive(Deserialize)]
+struct IntegratedProbe {
+    id: String,
+    #[serde(default)]
+    commit: String,
+    #[serde(default)]
+    landed_from: Option<LandedFromProbe>,
+}
+
+/// The commit an [`IntegratedProbe`]'s `landed_from` carries.
+#[derive(Deserialize)]
+struct LandedFromProbe {
+    #[serde(default)]
+    commit: String,
+}
+
+impl IntegratedProbe {
+    /// The commit this integrate put on its run branch: its own, or, behind the no-artifact
+    /// marker, the earlier commit its `landed_from` carries - empty when it carries none, so a
+    /// unit with no real commit is never on any branch ([`on_run_branch`]).
+    fn branch_commit(self) -> String {
+        if self.commit == REVIEW_ONLY_NO_ARTIFACT {
+            self.landed_from.map(|from| from.commit).unwrap_or_default()
+        } else {
+            self.commit
         }
     }
-    candidate
-        .filter(|(c, spec)| {
-            !integrated.contains(&(c.clone(), criterion_id.to_string(), spec.clone()))
-        })
-        .map(|(c, _)| c)
+}
+
+/// The [`CriterionHistory`] of `criterion_id` under `target_spec` (a spec stem,
+/// [`current_run_spec`]'s shape): a single forward fold over `events` in LOG order.
+///
+/// Each `RunStarted` opens a `[RunStarted, next RunStarted)` window whose spec
+/// ([`crate::run::RunStarted::spec`], stemmed through the SAME [`ledger::spec_stem`] authority
+/// `pr_head_branch` uses) and run id every start inside it carries. A start counts only when its
+/// OWN `criterion_id` matches AND its window's spec is the target spec (SPEC-SCOPED, round 3,
+/// criterion-id-unscoped-crosses-specs): [`criterion_stable_id`] is only `position` + a content
+/// hash of the criterion TEXT, so two unrelated specs whose criterion at the same position is
+/// byte-for-byte identical text (this repo's own corpus has several sharing the boilerplate "both
+/// feature lanes green..." as their 3rd Done-when item) mint the IDENTICAL id, and without the
+/// scope one spec's attempt would read as the other's. A store with no `RunStarted` at all (a
+/// legacy pre-spec-82 log, or a bare unit test) resolves every spec identity to the same empty
+/// string, so matching is unchanged there.
+///
+/// `UnitIntegrated` and a compensating `UnitFailed` (spec 12, unit 4 - [`META_COMPENSATED`]
+/// metadata, never a new event type) carry only an id, so what they act on is that id's most
+/// recently walked `UnitStarted` - a unit cannot integrate before it starts, so its start always
+/// precedes its integrate in the log, however many resumed processes wrote the two. An integrate
+/// makes the id standing when that start served this criterion under the target spec, and a
+/// compensation clears it again; a planner id carries no cross-run uniqueness guarantee, so an
+/// integrate of the SAME id for a DIFFERENT criterion or spec never masks this criterion's
+/// attempt. An ORDINARY remediation `UnitFailed` touches nothing.
+fn criterion_history(events: &[Event], criterion_id: &str, target_spec: &str) -> CriterionHistory {
+    let mut history = CriterionHistory {
+        starts: Vec::new(),
+        standing: HashMap::new(),
+    };
+    let (mut spec, mut run) = (String::new(), String::new());
+    // Whether each id's most recently walked start served this criterion under the target spec.
+    let mut serves: HashMap<String, bool> = HashMap::new();
+    let unit = |e: &Event| {
+        serde_json::from_slice::<StartedCriterionProbe>(&e.data)
+            .ok()
+            .filter(|u| !u.id.is_empty())
+    };
+    for e in events {
+        match e.type_.as_str() {
+            crate::run::TYPE_RUN_STARTED => {
+                if let Ok(rs) = serde_json::from_slice::<crate::run::RunStarted>(&e.data) {
+                    spec = ledger::spec_stem(&rs.spec);
+                    run = rs.run;
+                }
+            }
+            ledger::TYPE_UNIT_STARTED => {
+                if let Some(u) = unit(e) {
+                    let served = u.criterion_id == criterion_id && spec == target_spec;
+                    if served {
+                        history.starts.push((u.id.clone(), run.clone()));
+                    }
+                    serves.insert(u.id, served);
+                }
+            }
+            ledger::TYPE_UNIT_INTEGRATED => {
+                if let Some(u) = serde_json::from_slice::<IntegratedProbe>(&e.data)
+                    .ok()
+                    .filter(|u| serves.get(&u.id) == Some(&true))
+                {
+                    history.standing.insert(u.id.clone(), u.branch_commit());
+                }
+            }
+            ledger::TYPE_UNIT_FAILED
+                if e.meta.get(META_COMPENSATED).is_some_and(|c| !c.is_empty()) =>
+            {
+                if let Some(u) = unit(e).filter(|u| serves.get(&u.id) == Some(&true)) {
+                    history.standing.remove(&u.id);
+                }
+            }
+            _ => {}
+        }
+    }
+    history
+}
+
+/// An earlier run's landing of a criterion ([`landed_criterion_unit`]).
+struct LandedCriterion {
+    /// The attempt's most recent unit, the one a new unit's `landed_from` names.
+    unit: String,
+    /// The run that attempt ran in.
+    run: String,
+    /// The commit each unit of the attempt put on its run branch, in start order, so the last
+    /// is `unit`'s.
+    commits: Vec<String>,
+}
+
+/// The earlier landing `this_unit` rests on when an EARLIER run of this run's spec already landed
+/// `criterion_id` in the log - so the unit reaches Integrated with no spawn
+/// ([`RunCtx::land_if_landed`]) once its commits are on this run's branch ([`on_run_branch`]) -
+/// or `None`, and it takes the full lifecycle.
+///
+/// `events` are every run's lifecycle events ([`crate::run::read::ADOPTION_TYPES`]); only the
+/// slice BEFORE the current run's `RunStarted` is folded ([`criterion_history`]), never the whole
+/// stream minus `this_unit` by id: a planner mints the same slug for the same criterion text in
+/// every run, so excluding by id would hide the very integrate this looks for. The latest attempt
+/// decides, as it does for [`prior_criterion_unit`]: the run of the most recent start that served
+/// the criterion under this spec is its latest attempt, and the criterion is landed only when
+/// every unit of that attempt (each part of a split) stands integrated - one a compensation
+/// reverted, or one that never integrated, leaves it open. The unit named is that attempt's most
+/// recent start, beside the commit of every unit of the attempt.
+///
+/// Never landed: an empty `criterion_id` (the plan, plan-critique and check-in stages), an empty
+/// spec identity (a run that recorded no spec cannot be shown to be the same spec), and a unit
+/// that already started in the current run (it is on its own path).
+fn landed_criterion_unit(
+    events: &[Event],
+    criterion_id: &str,
+    this_unit: &str,
+) -> Option<LandedCriterion> {
+    let spec = current_run_spec(events);
+    if criterion_id.is_empty() || spec.is_empty() {
+        return None;
+    }
+    let this_run = crate::run::current_run(events);
+    let started_here = this_run.iter().any(|e| {
+        e.type_ == ledger::TYPE_UNIT_STARTED
+            && serde_json::from_slice::<StartedCriterionProbe>(&e.data)
+                .is_ok_and(|u| u.id == this_unit)
+    });
+    if started_here {
+        return None;
+    }
+    let earlier = &events[..events.len() - this_run.len()];
+    let history = criterion_history(earlier, criterion_id, &spec);
+    let (unit, run) = history.starts.last()?.clone();
+    let commits = history
+        .starts
+        .iter()
+        .filter(|(_, started_in)| *started_in == run)
+        .map(|(id, _)| history.standing.get(id).cloned())
+        .collect::<Option<Vec<String>>>()?;
+    Some(LandedCriterion { unit, run, commits })
+}
+
+/// Whether every one of `commits` is in the history of the branch checked out in `repo`: the run
+/// branch every integrate lands on ([`Worktree::land`]) and every compensation reverts on. The
+/// log alone never lands a criterion, since a run branch deleted, recreated or reset after the
+/// earlier run no longer holds its work. `false` with no repository, with no commit, and for an
+/// empty commit or one git cannot place in that history ([`worktree::is_ancestor`]), so a unit
+/// with nothing to check is built again: the guard only ever errs toward a rebuild.
+fn on_run_branch(repo: &str, commits: &[String]) -> bool {
+    !repo.is_empty()
+        && !commits.is_empty()
+        && commits
+            .iter()
+            .all(|commit| !commit.is_empty() && worktree::is_ancestor(repo, commit, "HEAD"))
 }
 
 /// The `(criterion_id, spec)` THIS BARE unit id's branch was most recently started under,
@@ -17696,9 +17924,9 @@ mod tests {
         }
 
         let mut proposed: HashSet<String> = HashSet::new();
-        let integrated: HashSet<String> = HashSet::new();
-        let terminal: HashSet<String> = HashSet::new();
-        ctx.harvest_proposed(&mut stages, &mut proposed, &integrated, &terminal)
+        let mut integrated: HashSet<String> = HashSet::new();
+        let mut terminal: HashSet<String> = HashSet::new();
+        ctx.harvest_proposed(&mut stages, &mut proposed, &mut integrated, &mut terminal)
             .unwrap();
 
         // (a) EXACTLY ONE stage for u-a carrying the REFINED needs (the u-b edge): the
@@ -17836,9 +18064,9 @@ mod tests {
 
         let mut stages = seed_refine_dag(&deps.criteria);
         let mut proposed: HashSet<String> = HashSet::new();
-        let integrated: HashSet<String> = HashSet::new();
-        let terminal: HashSet<String> = HashSet::new();
-        ctx.harvest_proposed(&mut stages, &mut proposed, &integrated, &terminal)
+        let mut integrated: HashSet<String> = HashSet::new();
+        let mut terminal: HashSet<String> = HashSet::new();
+        ctx.harvest_proposed(&mut stages, &mut proposed, &mut integrated, &mut terminal)
             .unwrap();
 
         // The retarget did NOT move u-a's coverage: it still serves criterion A.
@@ -17901,9 +18129,9 @@ mod tests {
 
         let mut stages = seed_refine_dag(&deps.criteria);
         let mut proposed: HashSet<String> = HashSet::new();
-        let integrated: HashSet<String> = HashSet::new();
-        let terminal: HashSet<String> = HashSet::new();
-        ctx.harvest_proposed(&mut stages, &mut proposed, &integrated, &terminal)
+        let mut integrated: HashSet<String> = HashSet::new();
+        let mut terminal: HashSet<String> = HashSet::new();
+        ctx.harvest_proposed(&mut stages, &mut proposed, &mut integrated, &mut terminal)
             .unwrap();
 
         // The gate stage is UNTOUCHED: its fan-out hold `needs = [plan]` survives, its
@@ -17961,14 +18189,14 @@ mod tests {
 
         let mut stages = seed_refine_dag(&deps.criteria);
         let mut proposed: HashSet<String> = HashSet::new();
-        let integrated: HashSet<String> = HashSet::new();
-        let terminal: HashSet<String> = HashSet::new();
-        ctx.harvest_proposed(&mut stages, &mut proposed, &integrated, &terminal)
+        let mut integrated: HashSet<String> = HashSet::new();
+        let mut terminal: HashSet<String> = HashSet::new();
+        ctx.harvest_proposed(&mut stages, &mut proposed, &mut integrated, &mut terminal)
             .unwrap();
         let after_first = shape(&stages);
 
         // A second harvest over the identical event stream, as every later wave runs.
-        ctx.harvest_proposed(&mut stages, &mut proposed, &integrated, &terminal)
+        ctx.harvest_proposed(&mut stages, &mut proposed, &mut integrated, &mut terminal)
             .unwrap();
         let after_second = shape(&stages);
 
@@ -18029,9 +18257,9 @@ mod tests {
 
         let mut stages = seed_refine_dag(&deps.criteria);
         let mut proposed: HashSet<String> = HashSet::new();
-        let integrated: HashSet<String> = HashSet::new();
-        let terminal: HashSet<String> = HashSet::new();
-        ctx.harvest_proposed(&mut stages, &mut proposed, &integrated, &terminal)
+        let mut integrated: HashSet<String> = HashSet::new();
+        let mut terminal: HashSet<String> = HashSet::new();
+        ctx.harvest_proposed(&mut stages, &mut proposed, &mut integrated, &mut terminal)
             .unwrap();
 
         // BOTH distinct-id split units survive as their OWN stages - the fold keyed on id,
@@ -18267,11 +18495,265 @@ mod tests {
         ctx.harvest_proposed(
             &mut stages,
             &mut HashSet::new(),
-            &HashSet::new(),
-            &HashSet::new(),
+            &mut HashSet::new(),
+            &mut HashSet::new(),
         )
         .unwrap();
         stages
+    }
+
+    /// The spec both runs of a landed-criterion row run under, unless the row moves run 1.
+    const LANDED_SPEC: &str = "specs/7-landed-criteria.md";
+
+    /// The commit run 1's integrate of criterion A records.
+    #[derive(Clone, Copy)]
+    enum Run1Commit {
+        /// A commit in the history of the branch the new run integrates into.
+        OnBranch,
+        /// A commit the repository holds that the branch's history does not, as after a reset.
+        OffBranch,
+        /// The no-artifact marker, with no `landed_from` commit behind it: nothing to check.
+        Marker,
+    }
+
+    /// One row of the landed-criterion table: run 1 ran under `run1_spec` and integrated criterion
+    /// A as `u-a-1` at `run1_commit`, a compensation reverting that integrate when `compensated`,
+    /// and, when `split`, left a second part of A (`u-a-2`) failed beside it; when `relanded`, a
+    /// run 2 landed A through the skip and the run driven is run 3; that run is driven as one step
+    /// or, when `resumed`, as two (the first parks `u-b`'s implementer); `lands` says whether its
+    /// `u-a` reaches Integrated with no spawn.
+    #[derive(Clone, Copy)]
+    struct LandedRow {
+        run1_spec: &'static str,
+        run1_commit: Run1Commit,
+        compensated: bool,
+        split: bool,
+        relanded: bool,
+        resumed: bool,
+        lands: bool,
+    }
+
+    /// The base row: run 1 of the same spec integrated A on the run branch, nothing reverted it,
+    /// so run 2's A lands.
+    const LANDS: LandedRow = LandedRow {
+        run1_spec: LANDED_SPEC,
+        run1_commit: Run1Commit::OnBranch,
+        compensated: false,
+        split: false,
+        relanded: false,
+        resumed: false,
+        lands: true,
+    };
+
+    /// A CRITERION AN EARLIER RUN OF THE SAME SPEC INTEGRATED IS NOT BUILT AGAIN: over a seeded
+    /// log where run 1 integrated criterion A and left criterion B failed, run 2 plans `u-a` for A
+    /// and `u-b` for B, `u-b` needing `u-a`, in a repository whose checked-out branch is the run
+    /// branch. Per `row`, `u-a` either reaches Integrated with no spawn - recorded once, with the
+    /// no-artifact marker, naming the earlier unit and run 1's commit - or takes the full
+    /// lifecycle; `u-b` always spawns and integrates.
+    fn assert_landed_criterion(row: LandedRow) {
+        let crit_a = "criterion A: the metrics module is implemented";
+        let crit_b = "criterion B: the stats endpoint is implemented";
+        let (cid_a, cid_b) = (
+            criterion_stable_id(1, crit_a),
+            criterion_stable_id(2, crit_b),
+        );
+        let criteria = vec![crit_a.to_string(), crit_b.to_string()];
+        let run_started = |run: &str, spec: &str| {
+            Event::new(
+                crate::run::TYPE_RUN_STARTED,
+                serde_json::to_vec(&json!({"run": run, "spec": spec, "criteria": criteria}))
+                    .unwrap(),
+            )
+        };
+        let repo = temp_git_project_with_commit();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        git_ok(
+            &repo_path,
+            &["commit", "--allow-empty", "-q", "-m", "run 1 integrates A"],
+        );
+        let run1_commit = match row.run1_commit {
+            Run1Commit::OnBranch => git_out(&repo_path, &["rev-parse", "HEAD"]),
+            Run1Commit::OffBranch => git_out(
+                &repo_path,
+                &[
+                    "commit-tree",
+                    "HEAD^{tree}",
+                    "-p",
+                    "HEAD",
+                    "-m",
+                    "off the run branch",
+                ],
+            ),
+            Run1Commit::Marker => REVIEW_ONLY_NO_ARTIFACT.to_string(),
+        };
+        let integrate = |data: Value| {
+            Event::new(
+                ledger::TYPE_UNIT_INTEGRATED,
+                serde_json::to_vec(&data).unwrap(),
+            )
+        };
+        let mut log = vec![
+            run_started("run-1", row.run1_spec),
+            started_with_criterion("u-a-1", &cid_a),
+            integrate(json!({"id": "u-a-1", "commit": run1_commit})),
+        ];
+        if row.compensated {
+            log.push(compensated("u-a-1"));
+        }
+        if row.split {
+            log.extend([
+                started_with_criterion("u-a-2", &cid_a),
+                plain_failure("u-a-2", 1),
+            ]);
+        }
+        log.extend([
+            started_with_criterion("u-b-1", &cid_b),
+            plain_failure("u-b-1", 1),
+        ]);
+        if row.relanded {
+            log.extend([
+                run_started("run-2", LANDED_SPEC),
+                started_with_criterion("u-a", &cid_a),
+                integrate(json!({
+                    "id": "u-a",
+                    "commit": REVIEW_ONLY_NO_ARTIFACT,
+                    "landed_from": {
+                        "unit": "u-a-1",
+                        "run": "run-1",
+                        "spec": LANDED_SPEC,
+                        "commit": run1_commit,
+                    },
+                })),
+                started_with_criterion("u-b", &cid_b),
+                plain_failure("u-b", 1),
+            ]);
+        }
+        let (current, from) = if row.relanded {
+            ("run-3", ("u-a", "run-2"))
+        } else {
+            ("run-2", ("u-a-1", "run-1"))
+        };
+        log.push(run_started(current, LANDED_SPEC));
+        let st = Store::open(":memory:").unwrap();
+        st.append(STREAM, ExpectedRevision::Any, &log).unwrap();
+
+        let cfg = supersede_cfg();
+        // `u-b` needs `u-a`, so it spawns only once `u-a` is Integrated: a landed `u-a` frees it
+        // in the same step.
+        let mut b = proposal_data("u-b", crit_b, &cid_b);
+        b["needs"] = json!(["u-a"]);
+        let proposals: Vec<(String, Value)> = [proposal_data("u-a", crit_a, &cid_a), b]
+            .into_iter()
+            .map(|data| (TYPE_UNIT_PROPOSED.to_string(), data))
+            .collect();
+        let parks: Vec<String> = if row.resumed {
+            vec![spawn_id("u-b", ROLE_IMPLEMENTER, 0)]
+        } else {
+            Vec::new()
+        };
+        let steps: Vec<(ledger::RunState, Vec<String>)> = parks
+            .iter()
+            .map(Some)
+            .chain([None])
+            .map(|park| {
+                let driver = Stub {
+                    emits_by_agent: HashMap::from([("planner".to_string(), proposals.clone())]),
+                    park_spawn_ids: park.into_iter().cloned().collect(),
+                    ..Stub::new()
+                };
+                let deps = Deps {
+                    repo: repo_path.clone(),
+                    ..stub_deps(&st, &driver, criteria.clone())
+                };
+                let rs = run_isolated(&cfg, &deps).unwrap();
+                (rs, driver.spawn_ids())
+            })
+            .collect();
+        let spawns: Vec<&String> = steps.iter().flat_map(|(_, ids)| ids).collect();
+        let rs = &steps.last().unwrap().0;
+
+        let spawned = |unit: &str| spawns.iter().any(|id| id.starts_with(&format!("{unit}/")));
+        assert_eq!(
+            !spawned("u-a"),
+            row.lands,
+            "u-a spawns exactly when its criterion is not landed: {spawns:?}"
+        );
+        assert!(spawned("u-b"), "u-b spawns: {spawns:?}");
+        for unit in ["u-a", "u-b"] {
+            assert_eq!(rs.units[unit].status, ledger::Status::Integrated, "{unit}");
+        }
+        let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let of_a = |type_: &str| -> Vec<Value> {
+            crate::run::current_run(&events)
+                .iter()
+                .filter(|e| e.type_ == type_)
+                .map(|e| serde_json::from_slice::<Value>(&e.data).unwrap())
+                .filter(|data| data["id"] == "u-a")
+                .collect()
+        };
+        assert_eq!(of_a(ledger::TYPE_UNIT_STARTED).len(), 1, "u-a starts once");
+        let integrates = of_a(ledger::TYPE_UNIT_INTEGRATED);
+        assert_eq!(integrates.len(), 1, "u-a integrates once: {integrates:?}");
+        let landed_from = &integrates[0]["landed_from"];
+        if row.lands {
+            assert_eq!(integrates[0]["commit"], REVIEW_ONLY_NO_ARTIFACT);
+            assert_eq!(landed_from["unit"], from.0, "names the earlier unit");
+            assert_eq!(landed_from["run"], from.1, "names the earlier run");
+            assert_eq!(
+                landed_from["commit"],
+                run1_commit.as_str(),
+                "carries run 1's commit"
+            );
+        } else {
+            assert!(
+                landed_from.is_null(),
+                "a built unit rests on no earlier one"
+            );
+        }
+    }
+
+    crate::test_cases! {
+        /// The base row: run 1 of the same spec integrated A, so run 2's A lands with no spawn.
+        a_criterion_an_earlier_run_of_the_spec_integrated_lands_with_no_spawn:
+            assert_landed_criterion(LANDS);
+        /// A criterion landed under a DIFFERENT spec path never counts: A is built.
+        a_criterion_landed_under_another_spec_is_built_again:
+            assert_landed_criterion(LandedRow {
+                run1_spec: "specs/8-other.md",
+                lands: false,
+                ..LANDS
+            });
+        /// A compensation that reverted run 1's integrate of A reopens it: A is built.
+        a_compensated_integrate_of_the_criterion_is_built_again:
+            assert_landed_criterion(LandedRow { compensated: true, lands: false, ..LANDS });
+        /// A criterion run 1 split, with one part integrated and the other failed, is not landed:
+        /// A is built.
+        a_criterion_whose_earlier_split_left_a_part_unintegrated_is_built_again:
+            assert_landed_criterion(LandedRow { split: true, lands: false, ..LANDS });
+        /// A resumed step of run 2 agrees with its first: A lands once and never spawns.
+        a_resumed_step_of_the_new_run_never_spawns_the_landed_criterion:
+            assert_landed_criterion(LandedRow { resumed: true, ..LANDS });
+        /// Run 1's integrate commit is not in the run branch's history (the branch was reset
+        /// since): the log alone never lands A, so it is built again.
+        a_criterion_whose_earlier_commit_is_off_the_run_branch_is_built_again:
+            assert_landed_criterion(LandedRow {
+                run1_commit: Run1Commit::OffBranch,
+                lands: false,
+                ..LANDS
+            });
+        /// A run 3 over a run 2 that landed A through the skip lands A again, its `landed_from`
+        /// naming run 2's unit and carrying run 1's commit.
+        a_third_run_lands_the_criterion_again_on_the_first_runs_commit:
+            assert_landed_criterion(LandedRow { relanded: true, ..LANDS });
+        /// Run 1's integrate records the no-artifact marker with no earlier commit behind it:
+        /// with nothing to check on the run branch, A is built again.
+        an_earlier_integrate_with_no_commit_to_check_is_built_again:
+            assert_landed_criterion(LandedRow {
+                run1_commit: Run1Commit::Marker,
+                lands: false,
+                ..LANDS
+            });
     }
 
     /// Two planner proposals for `criterion` - `u-ep1` from an earlier episode, then `u-ep2` from
@@ -18541,8 +19023,8 @@ mod tests {
             ("u-ep2", crit_x, cid_x.clone(), "plan/replan#1"),
         ];
 
-        let integrated: HashSet<String> = HashSet::new();
-        let terminal: HashSet<String> = HashSet::new();
+        let mut integrated: HashSet<String> = HashSet::new();
+        let mut terminal: HashSet<String> = HashSet::new();
 
         // RESUME: the whole history is already in the store (a crash-then-restart
         // shape) before the fresh process's ONE pre-wave catch-up call.
@@ -18559,8 +19041,8 @@ mod tests {
             .harvest_proposed(
                 &mut stages_resume,
                 &mut proposed_resume,
-                &integrated,
-                &terminal,
+                &mut integrated,
+                &mut terminal,
             )
             .unwrap();
 
@@ -18576,7 +19058,12 @@ mod tests {
         for (id, crit, cid, spawn) in &history {
             append_proposal(&st_live, id, crit, cid, Some(spawn));
             ctx_live
-                .harvest_proposed(&mut stages_live, &mut proposed_live, &integrated, &terminal)
+                .harvest_proposed(
+                    &mut stages_live,
+                    &mut proposed_live,
+                    &mut integrated,
+                    &mut terminal,
+                )
                 .unwrap();
         }
 
@@ -18633,8 +19120,8 @@ mod tests {
         let cid = criterion_stable_id(1, criterion);
         let criteria = vec![criterion.to_string()];
 
-        let integrated: HashSet<String> = HashSet::new();
-        let terminal: HashSet<String> = HashSet::new();
+        let mut integrated: HashSet<String> = HashSet::new();
+        let mut terminal: HashSet<String> = HashSet::new();
 
         // RESUME: the entire legacy-then-identified history is already in the
         // store before the fresh process's ONE catch-up call.
@@ -18652,8 +19139,8 @@ mod tests {
             .harvest_proposed(
                 &mut stages_resume,
                 &mut proposed_resume,
-                &integrated,
-                &terminal,
+                &mut integrated,
+                &mut terminal,
             )
             .unwrap();
 
@@ -18680,11 +19167,21 @@ mod tests {
 
         append_proposal(&st_live, "u-legacy-1", criterion, &cid, None);
         ctx_live
-            .harvest_proposed(&mut stages_live, &mut proposed_live, &integrated, &terminal)
+            .harvest_proposed(
+                &mut stages_live,
+                &mut proposed_live,
+                &mut integrated,
+                &mut terminal,
+            )
             .unwrap();
         append_proposal(&st_live, "u-legacy-2", criterion, &cid, None);
         ctx_live
-            .harvest_proposed(&mut stages_live, &mut proposed_live, &integrated, &terminal)
+            .harvest_proposed(
+                &mut stages_live,
+                &mut proposed_live,
+                &mut integrated,
+                &mut terminal,
+            )
             .unwrap();
         // MUTUAL SIBLINGS: with only the two legacy proposals folded so far and no
         // later identified episode yet, BOTH survive - neither cannibalizes the
@@ -18698,7 +19195,12 @@ mod tests {
 
         append_proposal(&st_live, "u-new", criterion, &cid, Some("plan/replan#1"));
         ctx_live
-            .harvest_proposed(&mut stages_live, &mut proposed_live, &integrated, &terminal)
+            .harvest_proposed(
+                &mut stages_live,
+                &mut proposed_live,
+                &mut integrated,
+                &mut terminal,
+            )
             .unwrap();
 
         assert!(
@@ -18811,7 +19313,7 @@ mod tests {
 
             // Wave 1: harvest the initial proposals. u-a enters the DAG as a GENUINE
             // proposed unit (it went through the add path), carrying its gate-held needs.
-            ctx.harvest_proposed(&mut stages, &mut proposed, &integrated, &terminal)
+            ctx.harvest_proposed(&mut stages, &mut proposed, &mut integrated, &mut terminal)
                 .unwrap();
             assert!(
                 proposed.contains("u-a"),
@@ -18840,7 +19342,7 @@ mod tests {
 
             // Wave 2: harvest again over the full stream (as every later wave does). The
             // late re-emit names a SETTLED unit, so the fold guard skips it.
-            ctx.harvest_proposed(&mut stages, &mut proposed, &integrated, &terminal)
+            ctx.harvest_proposed(&mut stages, &mut proposed, &mut integrated, &mut terminal)
                 .unwrap();
 
             // The settled unit's needs are UNCHANGED: the late refinement did not fold in.
@@ -18906,9 +19408,9 @@ mod tests {
         let ctx = RunCtx::for_test(&cfg, &deps);
         let mut stages = seed_refine_dag(&deps.criteria);
         let mut proposed: HashSet<String> = HashSet::new();
-        let integrated: HashSet<String> = HashSet::new();
-        let terminal: HashSet<String> = HashSet::new();
-        ctx.harvest_proposed(&mut stages, &mut proposed, &integrated, &terminal)
+        let mut integrated: HashSet<String> = HashSet::new();
+        let mut terminal: HashSet<String> = HashSet::new();
+        ctx.harvest_proposed(&mut stages, &mut proposed, &mut integrated, &mut terminal)
             .unwrap();
 
         // (a) Supersedes-a-baseline: the template's own gate survives even though the
@@ -18931,7 +19433,7 @@ mod tests {
             Some(criterion_stable_id(1, crit_a)),
             "extra2",
         );
-        ctx.harvest_proposed(&mut stages, &mut proposed, &integrated, &terminal)
+        ctx.harvest_proposed(&mut stages, &mut proposed, &mut integrated, &mut terminal)
             .unwrap();
         assert_eq!(
             stages["u-a"].gates,
@@ -18950,7 +19452,7 @@ mod tests {
             None,
             "extra3",
         );
-        ctx.harvest_proposed(&mut stages, &mut proposed, &integrated, &terminal)
+        ctx.harvest_proposed(&mut stages, &mut proposed, &mut integrated, &mut terminal)
             .unwrap();
         assert_eq!(
             stages["u-new"].gates,
