@@ -1,18 +1,20 @@
-//! Spec 120, criterion 6 (THE MAP FORM IS THE CANONICAL SEQUENCE), from outside the conductor.
+//! Spec 120, criteria 6 (THE MAP FORM IS THE CANONICAL SEQUENCE) and 7 (THE LIST FORM DECLARES
+//! ANY SEQUENCE), from outside the conductor.
 //!
 //! The conductor's own tests pin `ReviewPanel::steps` over hand-built panels and pin the
-//! review identity surface over a recording driver. Three facts sit past their reach: the
+//! review identity surface over a recording driver. Four facts sit past their reach: the
 //! panel a workflow FILE declares reaches `steps()` through the production parser, whatever
 //! order the file spells its keys in; the repository panel those identity goldens are captured
-//! over is the one `.rigger/workflow.yml` declares, not a copy that drifted from it; and a
+//! over is the one `.rigger/workflow.yml` declares, not a copy that drifted from it; a
 //! speculation winner's deferred `reviewed` stamp reads the panel's adjudicator step through
-//! the real `rigger::conductor::run`, or is absent when the panel has none.
+//! the real `rigger::conductor::run`, or is absent when the panel has none; and an operator's
+//! `steps:` list in `.rigger/workflow.yml` is what `rigger validate` accepts or refuses.
 
 mod common;
 
-use common::cli::loaded_config;
+use common::cli::{loaded_config, rigger_file, run_rigger, run_rigger_ok, temp_project};
 use common::fixtures::{
-    agent, count_status_marker, panel_of, repo_review_panel, speculation_regen_door_cfg,
+    agent, count_status_marker, lenses, panel_of, repo_review_panel, speculation_regen_door_cfg,
     WriteAndApprove,
 };
 use common::git::temp_git_project_with_commit;
@@ -26,11 +28,6 @@ use rigger::eventstore::{Direction, Event, EventStore};
 use rigger::gate::ExecRunner;
 use rigger::ledger;
 use rigger::metrics::META_MODEL_ALIAS;
-
-/// A lens step of `ids`.
-fn lenses(ids: &[&str]) -> ReviewStep {
-    ReviewStep::Lenses(ids.iter().map(|id| (*id).to_string()).collect())
-}
 
 /// The panel a stage named `s` carries when its `review:` key is the flow mapping `panel`, read
 /// through the production workflow parser and the stage-panel resolution the conductor uses.
@@ -114,6 +111,69 @@ fn the_repository_workflow_declares_the_identity_fixtures_panel() {
     assert!(
         panel.depth().is_none(),
         "the fixture declares no tier policy, so the file's implement panel must not either"
+    );
+}
+
+/// A `rigger init` project whose `defaults.review` is the list `steps` in place of the three map
+/// keys the scaffold writes.
+fn project_reviewing_with(steps: &str) -> tempfile::TempDir {
+    let project = temp_project();
+    run_rigger_ok(project.path(), &["init"]);
+    let workflow = rigger_file(project.path(), "workflow.yml");
+    let scaffolded = std::fs::read_to_string(&workflow).expect("read the scaffolded workflow");
+    let (before, panel) = scaffolded
+        .split_once("  review:\n")
+        .expect("the scaffold declares defaults.review");
+    let after = panel
+        .splitn(4, '\n')
+        .nth(3)
+        .expect("the scaffold's panel is its three map keys");
+    std::fs::write(
+        &workflow,
+        format!("{before}  review:\n    steps: {steps}\n{after}"),
+    )
+    .expect("write the workflow");
+    project
+}
+
+/// Given a project declaring its review as a list running the adversary ahead of the lenses,
+/// when the operator validates it, it passes and the workflow loads that very sequence.
+#[test]
+fn rigger_validate_accepts_a_list_form_workflow_and_it_loads_as_declared() {
+    let project = project_reviewing_with(
+        "[{ adversary: adversary }, { lenses: [architecture-reviewer, sdet] }, \
+         { adjudicator: adjudicator }]",
+    );
+    let (_out, err, ok) = run_rigger(project.path(), &["validate"]);
+    assert!(ok, "validate must accept the list; stderr:\n{err}");
+    assert_eq!(
+        loaded_config(project.path())
+            .workflow
+            .defaults
+            .review
+            .steps(),
+        [
+            Adversary("adversary".into()),
+            lenses(&["architecture-reviewer", "sdet"]),
+            Adjudicator("adjudicator".into()),
+        ]
+    );
+}
+
+/// Given a project declaring a list the panel rules forbid, when the operator validates it, it
+/// fails and its last line names the scope, the entry and the rule.
+#[test]
+fn rigger_validate_refuses_a_step_after_the_adjudicator_naming_the_scope_and_entry() {
+    let project =
+        project_reviewing_with("[{ adjudicator: adjudicator }, { adversary: adversary }]");
+    let (_out, err, ok) = run_rigger(project.path(), &["validate"]);
+    assert!(!ok, "validate must refuse the list; stderr:\n{err}");
+    assert_eq!(
+        err.lines().last(),
+        Some(
+            "rigger: config: defaults.review steps[0] is an adjudicator step with a step after \
+             it: the adjudicator step is the last step"
+        )
     );
 }
 

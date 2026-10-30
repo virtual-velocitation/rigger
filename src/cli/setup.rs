@@ -2352,6 +2352,19 @@ mod tests {
             assert_eq!(review.lenses, ["architecture-reviewer", "sdet"], "{label}");
             assert_eq!(review.adversary, "adversary", "{label}");
             assert_eq!(review.adjudicator, "adjudicator", "{label}");
+            // The rendering keeps the map form, so it reads as the canonical sequence.
+            assert_eq!(
+                review.steps(),
+                [
+                    config::ReviewStep::Lenses(vec![
+                        "architecture-reviewer".to_string(),
+                        "sdet".to_string()
+                    ]),
+                    config::ReviewStep::Adversary("adversary".to_string()),
+                    config::ReviewStep::Adjudicator("adjudicator".to_string()),
+                ],
+                "{label}"
+            );
             // The default grounder, set explicitly.
             assert_eq!(cfg.workflow.defaults.grounder, "symbols", "{label}");
             // A NON-ZERO spawn budget so an unattended `rigger run` cannot spawn unboundedly.

@@ -133,3 +133,43 @@ pub fn unbounded_wall_clock_advisory(cfg: &Config) -> Option<String> {
         unbounded.join(", ")
     ))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The gating ids a config collects read each panel through its accessors, in either form:
+    /// a map form naming one agent as lens and adjudicator, a list form naming one agent in two
+    /// steps and a tiers panel, a list naming its adjudicator after the rest.
+    #[test]
+    fn gating_agent_ids_read_a_panel_of_either_form_and_its_light_panel() {
+        for (panel, gating) in [
+            ("{ lenses: [a, b], adjudicator: a }", vec!["a"]),
+            (
+                "{ steps: [{ lenses: [a, b] }, { adversary: a }, { adjudicator: b }] }",
+                vec!["b"],
+            ),
+            (
+                "{ adjudicator: z, tiers: { threshold: 1, light: { adjudicator: y } } }",
+                vec!["y", "z"],
+            ),
+            (
+                "{ steps: [{ adjudicator: z }], tiers: { light: { steps: [{ adjudicator: z }] } } }",
+                vec!["z"],
+            ),
+            ("{ steps: [{ lenses: [a] }, { adversary: x }] }", vec![]),
+        ] {
+            let body = format!("stages:\n  s:\n    agent: worker\n    review: {panel}\n");
+            let cfg = Config {
+                workflow: parse_yaml_naming_unknown_keys(&body)
+                    .unwrap_or_else(|e| panic!("parse {body}: {e}")),
+                ..Default::default()
+            };
+            assert_eq!(
+                gating_agent_ids(&cfg),
+                gating.into_iter().map(str::to_string).collect(),
+                "{panel}"
+            );
+        }
+    }
+}

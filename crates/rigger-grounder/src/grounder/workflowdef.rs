@@ -518,6 +518,61 @@ mod tests {
         }
     }
 
+    /// Whichever scope declares the panel, each of `reviewers_of`'s two lists names an agent
+    /// once and the lists stay apart, so a stage draws one `REVIEWS` and one `REVIEWS_LIGHT`
+    /// edge per agent: a map form naming one agent as lens and adjudicator, a list form naming
+    /// one agent in two steps and a tiers panel whose light roster shares the full panel's ids.
+    #[test]
+    fn reviewers_of_names_each_agent_once_within_each_of_its_two_lists() {
+        for template in [
+            "stages:\n  implement:\n    agent: worker\n    review: {panel}\n",
+            "defaults:\n  review: {panel}\nstages:\n  implement:\n    agent: worker\n",
+        ] {
+            for (panel, full, light) in [
+                (
+                    "{ lenses: [a, b], adjudicator: a }",
+                    vec!["a", "b"],
+                    Vec::new(),
+                ),
+                (
+                    "{ steps: [{ lenses: [a, b] }, { adversary: a }, { adjudicator: b }] }",
+                    vec!["a", "b"],
+                    Vec::new(),
+                ),
+                (
+                    "{ lenses: [a, b], adjudicator: z, \
+                     tiers: { threshold: 1, light: { lenses: [b, c], adjudicator: z } } }",
+                    vec!["a", "b", "z"],
+                    vec!["b", "c", "z"],
+                ),
+            ] {
+                let body = template.replace("{panel}", panel);
+                let wf = config_store::parse_workflow(&body).unwrap();
+                assert_eq!(
+                    reviewers_of(&wf, &wf.stages["implement"]),
+                    (
+                        full.iter().map(|id| id.to_string()).collect(),
+                        light.iter().map(|id| id.to_string()).collect()
+                    ),
+                    "{body}"
+                );
+                let (_concepts, links) = extract(&wf);
+                let edges = |rel: &str| -> Vec<String> {
+                    links
+                        .iter()
+                        .filter(|(_, r, to)| *r == rel && to == "stage:implement")
+                        .map(|(from, _, _)| from.clone())
+                        .collect()
+                };
+                let agents = |ids: &[&str]| -> Vec<String> {
+                    ids.iter().map(|id| format!("agent:{id}")).collect()
+                };
+                assert_eq!(edges(REL_REVIEWS), agents(&full), "{body}");
+                assert_eq!(edges(REL_REVIEWS_LIGHT), agents(&light), "{body}");
+            }
+        }
+    }
+
     #[test]
     fn a_real_on_disk_workflow_yml_with_tiers_still_tags_the_light_roster_distinctly() {
         // Same guarantee as the in-process fixture above, but through a REAL on-disk

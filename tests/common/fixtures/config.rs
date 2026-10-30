@@ -1,7 +1,7 @@
 //! Workflow-configuration fixtures: agents, review panels and gates, and the project
 //! directories a test creates, the operator instruction directory among them.
 
-use rigger::config::{AgentDef, Config, Gate, ReviewPanel, Stage};
+use rigger::config::{AgentDef, Config, Gate, ReviewPanel, ReviewStep, Stage};
 use std::path::{Path, PathBuf};
 
 /// `dir`, created with its parents.
@@ -44,6 +44,11 @@ pub fn cfg_for(ids: &[&str]) -> Config {
         c.agents.insert((*id).to_string(), agent(id));
     }
     c
+}
+
+/// A lens step of `ids`.
+pub fn lenses(ids: &[&str]) -> ReviewStep {
+    ReviewStep::Lenses(ids.iter().map(|id| (*id).to_string()).collect())
 }
 
 /// A review panel of `lenses`, `adversary` and `adjudicator`, with no tier policy.

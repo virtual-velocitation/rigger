@@ -1561,16 +1561,6 @@ pub fn find_cycle(stages: &BTreeMap<String, Stage>) -> Option<String> {
 mod tests {
     use super::*;
 
-    /// A map-form panel of `lenses`, `adversary` and `adjudicator` with no tier policy.
-    fn panel(lenses: &[&str], adversary: &str, adjudicator: &str) -> ReviewPanel {
-        ReviewPanel {
-            lenses: lenses.iter().map(|l| l.to_string()).collect(),
-            adversary: adversary.into(),
-            adjudicator: adjudicator.into(),
-            tiers: None,
-        }
-    }
-
     /// `full` carrying a `tiers` policy whose light panel is `light`.
     fn tiered(full: ReviewPanel, light: ReviewPanel) -> ReviewPanel {
         ReviewPanel {
@@ -1583,23 +1573,37 @@ mod tests {
         }
     }
 
+    /// The panel the flow mapping `yaml` declares, through the production parser.
+    fn parsed(yaml: &str) -> ReviewPanel {
+        parse_yaml_naming_unknown_keys(yaml).unwrap_or_else(|e| panic!("parse {yaml}: {e}"))
+    }
+
     #[test]
     fn a_map_form_panel_steps_through_its_set_lenses_adversary_and_adjudicator_in_that_order() {
         let ab = || ReviewStep::Lenses(vec!["a".into(), "b".into()]);
         let x = || ReviewStep::Adversary("x".into());
         let z = || ReviewStep::Adjudicator("z".into());
         for (panel, steps) in [
-            (panel(&["a", "b"], "x", "z"), vec![ab(), x(), z()]),
-            (panel(&["a", "b"], "x", ""), vec![ab(), x()]),
-            (panel(&["a", "b"], "", "z"), vec![ab(), z()]),
-            (panel(&["a", "b"], "", ""), vec![ab()]),
-            (panel(&[], "x", "z"), vec![x(), z()]),
-            (panel(&[], "x", ""), vec![x()]),
-            (panel(&[], "", "z"), vec![z()]),
-            (panel(&[], "", ""), vec![]),
+            (
+                parsed("{ lenses: [a, b], adversary: x, adjudicator: z }"),
+                vec![ab(), x(), z()],
+            ),
+            (parsed("{ lenses: [a, b], adversary: x }"), vec![ab(), x()]),
+            (
+                parsed("{ lenses: [a, b], adjudicator: z }"),
+                vec![ab(), z()],
+            ),
+            (parsed("{ lenses: [a, b] }"), vec![ab()]),
+            (parsed("{ adversary: x, adjudicator: z }"), vec![x(), z()]),
+            (parsed("{ adversary: x }"), vec![x()]),
+            (parsed("{ adjudicator: z }"), vec![z()]),
+            (parsed("{}"), vec![]),
             // The light panel is a panel of its own: `steps` is the full panel's sequence.
             (
-                tiered(panel(&["a", "b"], "", "z"), panel(&["c"], "", "w")),
+                tiered(
+                    parsed("{ lenses: [a, b], adjudicator: z }"),
+                    parsed("{ lenses: [c], adjudicator: w }"),
+                ),
                 vec![ab(), z()],
             ),
         ] {
@@ -1608,28 +1612,120 @@ mod tests {
     }
 
     #[test]
+    fn a_list_form_panel_steps_through_its_declared_entries_in_their_order() {
+        let ab = || ReviewStep::Lenses(vec!["a".into(), "b".into()]);
+        let x = || ReviewStep::Adversary("x".into());
+        let z = || ReviewStep::Adjudicator("z".into());
+        for (yaml, steps) in [
+            (
+                "{ steps: [{ lenses: [a, b] }, { adversary: x }, { adjudicator: z }] }",
+                vec![ab(), x(), z()],
+            ),
+            // The declared order, never the canonical one.
+            (
+                "{ steps: [{ adversary: x }, { lenses: [a, b] }, { adjudicator: z }] }",
+                vec![x(), ab(), z()],
+            ),
+            ("{ steps: [{ adjudicator: z }] }", vec![z()]),
+            ("{ steps: [] }", vec![]),
+            // A key is set when non-empty, in an entry as in a map.
+            (
+                "{ steps: [{ lenses: [a, b], adversary: \"\" }, { lenses: [], adjudicator: z }] }",
+                vec![ab(), z()],
+            ),
+            // `steps: null` reads as absent, so the map keys answer.
+            (
+                "{ steps: null, lenses: [a, b], adjudicator: z }",
+                vec![ab(), z()],
+            ),
+            ("{ steps: null }", vec![]),
+            // The light panel is a panel of its own.
+            (
+                "{ steps: [{ adjudicator: z }], tiers: { light: { steps: [{ adversary: x }] } } }",
+                vec![z()],
+            ),
+            // `Config::validate` refuses these, but a parse that skips it reads them too, so
+            // `steps` answers: an entry names the steps of the keys it set, and the map keys
+            // beside a list are not read.
+            ("{ steps: [{}] }", vec![]),
+            (
+                "{ steps: [{ lenses: [a, b], adjudicator: z }] }",
+                vec![ab(), z()],
+            ),
+            ("{ steps: [{ adjudicator: z }], adversary: x }", vec![z()]),
+        ] {
+            assert_eq!(parsed(yaml).steps(), steps, "{yaml}");
+        }
+    }
+
+    /// A stage whose panel is empty, in either form, inherits `defaults.review`; a stage whose
+    /// list names a step reviews with its own panel.
+    #[test]
+    fn a_stage_with_an_empty_panel_inherits_the_default_panel() {
+        let defaults = || vec![ReviewStep::Adjudicator("z".into())];
+        for (review, steps) in [
+            ("{ steps: [] }", defaults()),
+            ("{}", defaults()),
+            ("{ lenses: [] }", defaults()),
+            ("{ steps: null }", defaults()),
+            (
+                "{ steps: [{ adversary: x }] }",
+                vec![ReviewStep::Adversary("x".into())],
+            ),
+        ] {
+            let body = format!(
+                "defaults:\n  review: {{ adjudicator: z }}\nstages:\n  s:\n    review: {review}\n"
+            );
+            let workflow: Workflow =
+                parse_yaml_naming_unknown_keys(&body).unwrap_or_else(|e| panic!("{body}: {e}"));
+            assert_eq!(
+                workflow
+                    .effective_review_panel(&workflow.stages["s"])
+                    .steps(),
+                steps,
+                "{review}"
+            );
+        }
+    }
+
+    #[test]
     fn the_panel_accessors_read_its_steps_then_its_light_panel() {
         // (panel, is_empty, full_roster, gating_agent_ids, agent_ids)
         for (panel, empty, full, gating, all) in [
             (
-                panel(&["a", "b"], "x", "z"),
+                parsed("{ lenses: [a, b], adversary: x, adjudicator: z }"),
                 false,
                 vec!["a", "b", "x", "z"],
                 vec!["z"],
                 vec!["a", "b", "x", "z"],
             ),
             (
-                panel(&["a", "b"], "", ""),
+                parsed("{ lenses: [a, b] }"),
                 false,
                 vec!["a", "b"],
                 vec![],
                 vec!["a", "b"],
             ),
-            (panel(&[], "x", ""), false, vec!["x"], vec![], vec!["x"]),
-            (panel(&[], "", "z"), false, vec!["z"], vec!["z"], vec!["z"]),
-            (panel(&[], "", ""), true, vec![], vec![], vec![]),
             (
-                tiered(panel(&["a", "b"], "x", "z"), panel(&["c"], "", "w")),
+                parsed("{ adversary: x }"),
+                false,
+                vec!["x"],
+                vec![],
+                vec!["x"],
+            ),
+            (
+                parsed("{ adjudicator: z }"),
+                false,
+                vec!["z"],
+                vec!["z"],
+                vec!["z"],
+            ),
+            (parsed("{}"), true, vec![], vec![], vec![]),
+            (
+                tiered(
+                    parsed("{ lenses: [a, b], adversary: x, adjudicator: z }"),
+                    parsed("{ lenses: [c], adjudicator: w }"),
+                ),
                 false,
                 vec!["a", "b", "x", "z"],
                 vec!["z", "w"],
@@ -1637,12 +1733,68 @@ mod tests {
             ),
             // A `tiers` policy alone names no step, so the panel stays empty.
             (
-                tiered(panel(&[], "", ""), panel(&["c"], "", "w")),
+                tiered(parsed("{}"), parsed("{ lenses: [c], adjudicator: w }")),
                 true,
                 vec![],
                 vec!["w"],
                 vec!["c", "w"],
             ),
+            // One agent as lens and adjudicator, in the map form, is named once.
+            (
+                parsed("{ lenses: [a, b], adjudicator: a }"),
+                false,
+                vec!["a", "b"],
+                vec!["a"],
+                vec!["a", "b"],
+            ),
+            (
+                parsed("{ lenses: [a], adversary: a, adjudicator: a }"),
+                false,
+                vec!["a"],
+                vec!["a"],
+                vec!["a"],
+            ),
+            // One agent in two steps of a list, at its first step.
+            (
+                parsed("{ steps: [{ adversary: b }, { lenses: [a, b] }, { adjudicator: a }] }"),
+                false,
+                vec!["b", "a"],
+                vec!["a"],
+                vec!["b", "a"],
+            ),
+            // Under tiers the full panel's ids come first, then the light ids not yet listed.
+            (
+                tiered(
+                    parsed("{ lenses: [a, b], adversary: x, adjudicator: z }"),
+                    parsed("{ lenses: [c, a], adjudicator: z }"),
+                ),
+                false,
+                vec!["a", "b", "x", "z"],
+                vec!["z"],
+                vec!["a", "b", "x", "z", "c"],
+            ),
+            (
+                tiered(
+                    parsed("{ lenses: [a], adjudicator: z }"),
+                    parsed("{ lenses: [a], adversary: z, adjudicator: y }"),
+                ),
+                false,
+                vec!["a", "z"],
+                vec!["z", "y"],
+                vec!["a", "z", "y"],
+            ),
+            (
+                tiered(
+                    parsed("{ steps: [{ adversary: x }, { lenses: [a] }, { adjudicator: z }] }"),
+                    parsed("{ steps: [{ lenses: [a, c] }, { adjudicator: y }] }"),
+                ),
+                false,
+                vec!["x", "a", "z"],
+                vec!["z", "y"],
+                vec!["x", "a", "z", "c", "y"],
+            ),
+            // The empty list is the empty panel.
+            (parsed("{ steps: [] }"), true, vec![], vec![], vec![]),
         ] {
             assert_eq!(panel.is_empty(), empty, "is_empty of {panel:?}");
             assert_eq!(panel.full_roster(), full, "full_roster of {panel:?}");

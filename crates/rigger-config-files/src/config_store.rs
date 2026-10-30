@@ -29,7 +29,7 @@ use crate::instructions::Instruction;
 #[cfg(test)]
 use crate::config::{
     lint_gating_verdict_lines, literal_is_emit_payload, puts_verdict_on_result_channel,
-    unbounded_wall_clock_advisory, Gate, ReviewDepth, ReviewPanel, Stage,
+    unbounded_wall_clock_advisory, Gate, ReviewDepth, ReviewPanel, ReviewStep, Stage,
 };
 #[cfg(test)]
 use crate::failure;
@@ -361,6 +361,7 @@ mod tests {
     use crate::test_support::agent as agent_def;
     use crate::test_support::agent_with_prompt;
     use crate::test_support::instructions_dir;
+    use crate::test_support::{cfg_for, lenses};
 
     // ---- instruction injection: the operator layer loader ----
 
@@ -1858,9 +1859,19 @@ agent: worker\n";
         }
     }
 
+    /// The refusal of a tiers policy whose enclosing full panel has no adjudicator step.
+    const NO_FULL_ADJUDICATOR_STEP: &str = "a review.tiers policy requires its enclosing (full) \
+        panel to name an adjudicator step (the gating verdict is mandatory on every review tier \
+        - a high-risk unit routes to the full panel, so an empty/adjudicator-less full panel \
+        would approve it with no verdict)";
+
+    /// The refusal of a tiers policy whose light panel has no adjudicator step.
+    const NO_LIGHT_ADJUDICATOR_STEP: &str = "review.tiers.light must name an adjudicator step \
+        (the gating verdict is mandatory on every review tier - only the adversary flexes)";
+
     /// A config declaring agent `a` whose default review is `full` with a tiers policy routing
-    /// risk below 2 to the `light` panel must fail validation (`why`).
-    fn assert_tiered_review_invalid(full: ReviewPanel, light: ReviewPanel, why: &str) {
+    /// risk below 2 to the `light` panel is refused with exactly `refusal`.
+    fn assert_tiered_review_invalid(full: ReviewPanel, light: ReviewPanel, refusal: &str) {
         let mut cfg = Config::default();
         cfg.agents.insert("a".into(), agent_def("a"));
         cfg.workflow.defaults.review = ReviewPanel {
@@ -1871,7 +1882,7 @@ agent: worker\n";
             })),
             ..full
         };
-        assert!(cfg.validate().is_err(), "{why}");
+        assert_eq!(cfg.validate().expect_err(refusal).0, refusal);
     }
 
     crate::test_cases! {
@@ -1880,7 +1891,7 @@ agent: worker\n";
         validate_catches_an_unknown_light_panel_agent: assert_tiered_review_invalid(
             panel(&["a"], "a"),
             panel(&["ghost"], "a"),
-            "an unknown light-panel lens must fail validation",
+            "defaults.review references unknown agent \"ghost\"",
         );
         /// The adjudicator's gating verdict is mandatory on every tier - only the adversary
         /// flexes (spec 03 / spec 13 unit 4). A configured light panel that names no
@@ -1889,7 +1900,7 @@ agent: worker\n";
         validate_rejects_a_light_panel_with_no_adjudicator: assert_tiered_review_invalid(
             panel(&["a"], "a"),
             panel(&["a"], ""),
-            "a light panel with no adjudicator must fail validation",
+            &format!("defaults.{NO_LIGHT_ADJUDICATOR_STEP}"),
         );
         /// The gating verdict is mandatory on EVERY tier, including the FULL one a high-risk
         /// unit routes to (remediation of sdet-u13-empty-full-tiers-skips-adjudicator). A tiers
@@ -1902,7 +1913,7 @@ agent: worker\n";
             assert_tiered_review_invalid(
                 panel(&[], ""),
                 panel(&["a"], "a"),
-                "a tiers policy on a full panel that names no adjudicator must fail validation",
+                &format!("defaults.{NO_FULL_ADJUDICATOR_STEP}"),
             );
     }
 
@@ -1964,9 +1975,434 @@ agent: worker\n";
                 ..Default::default()
             },
         );
-        assert!(
-            cfg.validate().is_err(),
-            "a stage review declaring only a tiers policy (no full adjudicator) must fail validation"
+        assert_eq!(
+            cfg.validate().expect_err("no full adjudicator step").0,
+            format!("stage \"implement\" {NO_FULL_ADJUDICATOR_STEP}")
+        );
+    }
+
+    /// The ids of the agents a panel of this module's tables names.
+    const PANEL_AGENTS: [&str; 5] = ["a", "b", "x", "y", "z"];
+
+    /// A read of one scope's panel out of a parsed workflow.
+    type PanelRead = fn(&Workflow) -> &ReviewPanel;
+
+    /// The four scopes a panel is declared in, each as the name its refusal gives the scope, a
+    /// workflow declaring the flow mapping `{panel}` there and the read of that panel. The two
+    /// full scopes come first: only a light panel owes an adjudicator step of itself, so a row
+    /// with none runs over `PANEL_SCOPES[..2]`.
+    const PANEL_SCOPES: [(&str, &str, PanelRead); 4] = [
+        (
+            "defaults.review",
+            "defaults:\n  review: {panel}\n",
+            |wf| &wf.defaults.review,
+        ),
+        (
+            "stage \"s\" review",
+            "stages:\n  s:\n    agent: a\n    review: {panel}\n",
+            |wf| &wf.stages["s"].review,
+        ),
+        (
+            "defaults.review.tiers.light",
+            "defaults:\n  review:\n    adjudicator: z\n    tiers:\n      light: {panel}\n",
+            |wf| light_of(&wf.defaults.review),
+        ),
+        (
+            "stage \"s\" review.tiers.light",
+            "stages:\n  s:\n    agent: a\n    review:\n      adjudicator: z\n      tiers:\n        \
+             light: {panel}\n",
+            |wf| light_of(&wf.stages["s"].review),
+        ),
+    ];
+
+    /// The light panel of `panel`'s tiers policy.
+    fn light_of(panel: &ReviewPanel) -> &ReviewPanel {
+        &panel.depth().expect("the scope declares tiers").light
+    }
+
+    /// A config of [`PANEL_AGENTS`] whose workflow is `template` declaring the flow mapping
+    /// `panel`, parsed and not yet validated.
+    fn config_declaring(template: &str, panel: &str) -> Config {
+        let body = template.replace("{panel}", panel);
+        let mut cfg = cfg_for(&PANEL_AGENTS);
+        cfg.workflow = parse_workflow(&body).unwrap_or_else(|e| panic!("parse {body}: {e}"));
+        cfg
+    }
+
+    /// Each of `scopes` accepts the flow mapping `panel`, which steps through exactly `steps`.
+    fn assert_accepted_in(scopes: &[(&str, &str, PanelRead)], panel: &str, steps: &[ReviewStep]) {
+        for (scope, template, read) in scopes {
+            let cfg = config_declaring(template, panel);
+            if let Err(e) = cfg.validate() {
+                panic!("{scope} must accept {panel}: {e}");
+            }
+            assert_eq!(read(&cfg.workflow).steps(), steps, "{scope}: {panel}");
+        }
+    }
+
+    /// Every scope refuses each flow mapping of `rows`, with exactly its message after the name
+    /// of the scope.
+    fn assert_refused_in_every_scope(rows: &[(&str, String)]) {
+        for (panel, message) in rows {
+            for (scope, template, _) in PANEL_SCOPES {
+                let refusal = config_declaring(template, panel).validate();
+                let refusal = refusal
+                    .expect_err(&format!("{scope} must refuse {panel}"))
+                    .0;
+                assert_eq!(refusal, format!("{scope} {message}"), "{panel}");
+            }
+        }
+    }
+
+    /// The three kinds in the canonical order, as the rows below name them.
+    fn lens_a_adversary_x_adjudicator_z() -> [ReviewStep; 3] {
+        [
+            lenses(&["a"]),
+            ReviewStep::Adversary("x".into()),
+            ReviewStep::Adjudicator("z".into()),
+        ]
+    }
+
+    crate::test_cases! {
+        /// A list of the three kinds in the canonical order steps through them in every scope.
+        validate_accepts_a_list_of_the_three_kinds: assert_accepted_in(
+            &PANEL_SCOPES,
+            "{ steps: [{ lenses: [a] }, { adversary: x }, { adjudicator: z }] }",
+            &lens_a_adversary_x_adjudicator_z(),
+        );
+        /// A list declares any sequence: the adversary may run ahead of the lenses.
+        validate_accepts_an_adversary_before_the_lenses: assert_accepted_in(
+            &PANEL_SCOPES,
+            "{ steps: [{ adversary: x }, { lenses: [a] }, { adjudicator: z }] }",
+            &[
+                ReviewStep::Adversary("x".into()),
+                lenses(&["a"]),
+                ReviewStep::Adjudicator("z".into()),
+            ],
+        );
+        /// One agent may serve in several steps: only one `lenses` step refuses a repeat.
+        validate_accepts_one_agent_in_several_steps: assert_accepted_in(
+            &PANEL_SCOPES,
+            "{ steps: [{ lenses: [a, b] }, { adversary: a }, { adjudicator: b }] }",
+            &[
+                lenses(&["a", "b"]),
+                ReviewStep::Adversary("a".into()),
+                ReviewStep::Adjudicator("b".into()),
+            ],
+        );
+        /// The lone adjudicator is both the only step and the last.
+        validate_accepts_a_lone_adjudicator_step: assert_accepted_in(
+            &PANEL_SCOPES,
+            "{ steps: [{ adjudicator: z }] }",
+            &[ReviewStep::Adjudicator("z".into())],
+        );
+        /// A key is set when non-empty, so an entry's empty keys beside its one set key leave
+        /// it an entry of that key.
+        validate_accepts_an_entry_whose_other_keys_are_empty: assert_accepted_in(
+            &PANEL_SCOPES,
+            "{ steps: [{ lenses: [a], adversary: \"\" }, { lenses: [], adjudicator: z }] }",
+            &[lenses(&["a"]), ReviewStep::Adjudicator("z".into())],
+        );
+        /// `steps: null` reads as absent, so the map keys beside it are the map form.
+        validate_reads_a_null_steps_as_the_map_form: assert_accepted_in(
+            &PANEL_SCOPES,
+            "{ steps: null, lenses: [a], adversary: x, adjudicator: z }",
+            &lens_a_adversary_x_adjudicator_z(),
+        );
+        /// A map key is set when non-empty, so empty map keys beside a list refuse nothing.
+        validate_accepts_empty_map_keys_beside_a_list: assert_accepted_in(
+            &PANEL_SCOPES,
+            "{ lenses: [], adversary: \"\", adjudicator: \"\", steps: [{ adjudicator: z }] }",
+            &[ReviewStep::Adjudicator("z".into())],
+        );
+        /// Only a tiers policy owes an adjudicator step: outside one a list may have none.
+        validate_accepts_a_list_with_no_adjudicator_step: assert_accepted_in(
+            &PANEL_SCOPES[..2],
+            "{ steps: [{ lenses: [a] }, { adversary: x }] }",
+            &[lenses(&["a"]), ReviewStep::Adversary("x".into())],
+        );
+        /// The empty list is the panel of no steps.
+        validate_accepts_an_empty_list: assert_accepted_in(&PANEL_SCOPES[..2], "{ steps: [] }", &[]);
+    }
+
+    /// A panel setting `steps` and any map key is refused, the keys it set named; an empty list
+    /// is set, and this refusal comes ahead of the entries it would otherwise read.
+    #[test]
+    fn validate_refuses_a_panel_setting_steps_and_a_map_key() {
+        let both = |keys: &str| {
+            format!(
+                "sets steps and {keys}: a panel declares its steps as a list or as a map, \
+                 never both"
+            )
+        };
+        assert_refused_in_every_scope(&[
+            ("{ steps: [], lenses: [a] }", both("lenses")),
+            ("{ steps: [], adversary: x }", both("adversary")),
+            ("{ steps: [], adjudicator: z }", both("adjudicator")),
+            (
+                "{ steps: [{ adjudicator: z }], lenses: [a], adjudicator: z }",
+                both("lenses, adjudicator"),
+            ),
+            (
+                "{ steps: [{ adjudicator: z }], lenses: [a], adversary: x, adjudicator: z }",
+                both("lenses, adversary, adjudicator"),
+            ),
+            ("{ steps: [{}], lenses: [a] }", both("lenses")),
+        ]);
+    }
+
+    /// An entry setting no key or several is refused at its 0-based index, a key being set when
+    /// non-empty, and ahead of what its keys name.
+    #[test]
+    fn validate_refuses_an_entry_not_setting_exactly_one_key() {
+        let keys = |i: usize, n: usize| {
+            format!(
+                "steps[{i}] sets {n} keys: an entry sets exactly one of lenses, adversary, \
+                 adjudicator"
+            )
+        };
+        assert_refused_in_every_scope(&[
+            ("{ steps: [{}, { adjudicator: z }] }", keys(0, 0)),
+            ("{ steps: [{ adjudicator: z }, {}] }", keys(1, 0)),
+            ("{ steps: [{ lenses: [] }] }", keys(0, 0)),
+            ("{ steps: [{ adversary: \"\" }] }", keys(0, 0)),
+            ("{ steps: [{ lenses: [a], adversary: x }] }", keys(0, 2)),
+            (
+                "{ steps: [{ adjudicator: z }, { lenses: [a], adversary: x, adjudicator: z }] }",
+                keys(1, 3),
+            ),
+            ("{ steps: [{ lenses: [a, a], adversary: x }] }", keys(0, 2)),
+        ]);
+    }
+
+    /// An agent named twice in one `lenses` step is refused in either form, a list naming the
+    /// step's index.
+    #[test]
+    fn validate_refuses_an_agent_named_twice_in_one_lens_step() {
+        let twice = |step: &str, id: &str| {
+            format!("{step} names agent {id:?} twice: a lens step runs each agent once")
+        };
+        assert_refused_in_every_scope(&[
+            ("{ lenses: [a, a], adjudicator: z }", twice("lenses", "a")),
+            (
+                "{ lenses: [a, b, b], adjudicator: z }",
+                twice("lenses", "b"),
+            ),
+            (
+                "{ steps: [{ lenses: [a, a] }, { adjudicator: z }] }",
+                twice("steps[0]", "a"),
+            ),
+            (
+                "{ steps: [{ adversary: x }, { lenses: [a, b, a] }, { adjudicator: z }] }",
+                twice("steps[1]", "a"),
+            ),
+        ]);
+    }
+
+    /// What the refusal of an agent id holding `@` says after naming the agent.
+    const SEPARATOR_RULE: &str =
+        "an agent id never contains '@', the separator of a step token; rename the agent";
+
+    /// An agent id holding `@` anywhere in a panel is refused in either form, ahead of the
+    /// unknown-agent refusal its id would otherwise draw.
+    #[test]
+    fn validate_refuses_a_panel_agent_id_holding_the_step_token_separator() {
+        assert_refused_in_every_scope(&[
+            (
+                "{ lenses: [a, \"l@k\"], adjudicator: z }",
+                format!("lenses names agent \"l@k\": {SEPARATOR_RULE}"),
+            ),
+            (
+                "{ adversary: \"@k\", adjudicator: z }",
+                format!("adversary names agent \"@k\": {SEPARATOR_RULE}"),
+            ),
+            (
+                "{ adjudicator: \"k@\" }",
+                format!("adjudicator names agent \"k@\": {SEPARATOR_RULE}"),
+            ),
+            (
+                "{ steps: [{ lenses: [\"l@k\"] }, { adjudicator: z }] }",
+                format!("steps[0] names agent \"l@k\": {SEPARATOR_RULE}"),
+            ),
+            (
+                "{ steps: [{ adversary: x }, { adjudicator: \"j@k\" }] }",
+                format!("steps[1] names agent \"j@k\": {SEPARATOR_RULE}"),
+            ),
+        ]);
+    }
+
+    /// The agent id of a stage's own field holding `@` is refused, naming the field.
+    #[test]
+    fn validate_refuses_a_stage_agent_field_holding_the_step_token_separator() {
+        for (field, declaration) in [
+            ("agent", "agent: \"w@k\""),
+            ("agents", "agents: [a, \"w@k\"]"),
+            ("adversary", "adversary: \"w@k\""),
+            ("adjudicator", "adjudicator: \"w@k\""),
+        ] {
+            let template = format!("stages:\n  s:\n    {declaration}\n");
+            let refusal = config_declaring(&template, "").validate();
+            assert_eq!(
+                refusal.expect_err(field).0,
+                format!("stage \"s\" {field} names agent \"w@k\": {SEPARATOR_RULE}")
+            );
+        }
+    }
+
+    /// An agent the `agents` map declares under an id holding `@` is refused, with nothing
+    /// naming it.
+    #[test]
+    fn validate_refuses_an_agents_map_key_holding_the_step_token_separator() {
+        assert_eq!(
+            cfg_for(&["a", "w@k"]).validate().expect_err("w@k").0,
+            format!("agents names agent \"w@k\": {SEPARATOR_RULE}")
+        );
+    }
+
+    /// A panel has at most one adjudicator step, last. A second adjudicator is refused at its
+    /// own index ahead of the repeated-kind refusal, so this refusal outlives that one.
+    #[test]
+    fn validate_refuses_a_second_adjudicator_step_or_a_step_after_the_adjudicator() {
+        let second =
+            |i: usize| format!("steps[{i}] is a second adjudicator step: a panel has at most one");
+        let followed = |i: usize| {
+            format!(
+                "steps[{i}] is an adjudicator step with a step after it: the adjudicator step \
+                 is the last step"
+            )
+        };
+        assert_refused_in_every_scope(&[
+            (
+                "{ steps: [{ adjudicator: y }, { adjudicator: z }] }",
+                second(1),
+            ),
+            (
+                "{ steps: [{ lenses: [a] }, { adjudicator: y }, { adjudicator: z }] }",
+                second(2),
+            ),
+            (
+                "{ steps: [{ adjudicator: y }, { lenses: [a] }, { adjudicator: z }] }",
+                second(2),
+            ),
+            (
+                "{ steps: [{ adjudicator: z }, { lenses: [a] }] }",
+                followed(0),
+            ),
+            (
+                "{ steps: [{ lenses: [a] }, { adjudicator: z }, { adversary: x }] }",
+                followed(1),
+            ),
+        ]);
+    }
+
+    /// A list naming two steps of one kind is refused at the repeat, until the runner can tell
+    /// two steps of one kind apart.
+    #[test]
+    fn validate_refuses_a_list_repeating_a_step_kind() {
+        let repeats = |i: usize, kind: &str| {
+            format!("steps[{i}] repeats the {kind} step kind: a list names one step of each kind")
+        };
+        assert_refused_in_every_scope(&[
+            (
+                "{ steps: [{ lenses: [a] }, { lenses: [b] }, { adjudicator: z }] }",
+                repeats(1, "lenses"),
+            ),
+            (
+                "{ steps: [{ adversary: x }, { lenses: [a] }, { adversary: y }] }",
+                repeats(2, "adversary"),
+            ),
+        ]);
+    }
+
+    /// A tiers policy owes an adjudicator step on both its tiers, read from `steps()` so either
+    /// form answers.
+    #[test]
+    fn validate_requires_an_adjudicator_step_on_both_tiers_in_either_form() {
+        let light = "tiers: { light: { adjudicator: z } }";
+        for (panel, message) in [
+            (
+                format!("{{ lenses: [a], {light} }}"),
+                NO_FULL_ADJUDICATOR_STEP,
+            ),
+            (
+                format!("{{ steps: [{{ lenses: [a] }}], {light} }}"),
+                NO_FULL_ADJUDICATOR_STEP,
+            ),
+            (
+                format!("{{ steps: [], {light} }}"),
+                NO_FULL_ADJUDICATOR_STEP,
+            ),
+            (
+                "{ adjudicator: z, tiers: { light: { lenses: [a] } } }".to_string(),
+                NO_LIGHT_ADJUDICATOR_STEP,
+            ),
+            (
+                "{ adjudicator: z, tiers: { light: { steps: [{ lenses: [a] }] } } }".to_string(),
+                NO_LIGHT_ADJUDICATOR_STEP,
+            ),
+            (
+                "{ steps: [{ adjudicator: z }], tiers: { light: { steps: [] } } }".to_string(),
+                NO_LIGHT_ADJUDICATOR_STEP,
+            ),
+        ] {
+            let [(_, defaults, _), (_, stage, _), ..] = PANEL_SCOPES;
+            for (template, prefix) in [(defaults, "defaults."), (stage, "stage \"s\" ")] {
+                let refusal = config_declaring(template, &panel).validate();
+                assert_eq!(
+                    refusal.expect_err(&panel).0,
+                    format!("{prefix}{message}"),
+                    "{panel}"
+                );
+            }
+        }
+    }
+
+    /// `tiers.light` takes either form under a full panel of either form.
+    #[test]
+    fn a_light_panel_takes_either_form_under_a_full_panel_of_either_form() {
+        for panel in [
+            "{ steps: [{ adjudicator: z }], tiers: { light: { adversary: x, adjudicator: y } } }",
+            "{ adjudicator: z, tiers: { light: { steps: [{ adversary: x }, { adjudicator: y }] } } }",
+            "{ steps: [{ adjudicator: z }], tiers: { light: { steps: [{ adversary: x }, { adjudicator: y }] } } }",
+        ] {
+            assert_accepted_in(&PANEL_SCOPES[..2], panel, &[ReviewStep::Adjudicator("z".into())]);
+            for (_, template, read) in &PANEL_SCOPES[..2] {
+                let workflow = config_declaring(template, panel).workflow;
+                assert_eq!(
+                    light_of(read(&workflow)).steps(),
+                    [
+                        ReviewStep::Adversary("x".into()),
+                        ReviewStep::Adjudicator("y".into())
+                    ],
+                    "{panel}"
+                );
+            }
+        }
+    }
+
+    /// A key no entry takes fails the parse, naming its path.
+    #[test]
+    fn a_step_entry_with_an_unknown_key_fails_the_parse_naming_its_path() {
+        let refusal = parse_workflow("defaults:\n  review:\n    steps:\n      - lens: [a]\n");
+        assert_eq!(
+            refusal.expect_err("an unknown entry key").0,
+            "parse workflow: defaults.review.steps[0].lens: unknown key"
+        );
+    }
+
+    /// The map form is unchanged: this repository's real workflow loads through the production
+    /// path, which validates it, and steps through the canonical sequence.
+    #[test]
+    fn the_repository_workflow_loads_unchanged() {
+        let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
+        let cfg = load(root).unwrap_or_else(|e| panic!("the repository workflow loads: {e}"));
+        assert_eq!(
+            cfg.workflow.defaults.review.steps(),
+            [
+                lenses(&["architecture-reviewer", "sdet"]),
+                ReviewStep::Adversary("adversary".into()),
+                ReviewStep::Adjudicator("adjudicator".into()),
+            ]
         );
     }
 
