@@ -11663,13 +11663,15 @@ impl RunCtx<'_> {
     }
 
     /// Land stage `st` with no spawn when an earlier run of this run's spec already integrated
-    /// its criterion ([`landed_criterion_unit`]): record its `UnitStarted` and a
+    /// its criterion ([`landed_criterion_unit`]) and every commit of that attempt is on the
+    /// branch this run integrates into ([`on_run_branch`]): record its `UnitStarted` and a
     /// `UnitIntegrated` whose commit is [`REVIEW_ONLY_NO_ARTIFACT`] - no worktree, implementer,
     /// gates, review or merge, the way a producer stage integrates - and whose `landed_from`
-    /// names the earlier unit, its run and this run's spec path. Both are replay-keyed and
-    /// appended together, so a resumed step records nothing again and a crash never leaves one
-    /// without the other. Returns whether it landed; a stage that did not keeps the full
-    /// lifecycle, branch adoption included.
+    /// names the earlier unit, its run, this run's spec path and that unit's commit, which a
+    /// later run checks in place of the marker. Both are replay-keyed and appended together, so
+    /// a resumed step records nothing again and a crash never leaves one without the other.
+    /// Returns whether it landed; a stage that did not keeps the full lifecycle, branch adoption
+    /// included.
     ///
     /// `lifecycle` is the caller's one read of every run's lifecycle events, made at the first
     /// stage that serves a criterion and reused for the rest.
@@ -11685,9 +11687,12 @@ impl RunCtx<'_> {
             *lifecycle = Some(self.read_lifecycle()?);
         }
         let events = lifecycle.as_deref().unwrap_or_default();
-        let Some((unit, run)) = landed_criterion_unit(events, &st.criterion_id, &st.name) else {
+        let Some(landed) = landed_criterion_unit(events, &st.criterion_id, &st.name) else {
             return Ok(false);
         };
+        if !on_run_branch(&self.deps.repo, &landed.commits) {
+            return Ok(false);
+        }
         let name = st.name.as_str();
         self.emit_keyed_together(vec![
             (
@@ -11702,9 +11707,10 @@ impl RunCtx<'_> {
                     "id": name,
                     "commit": REVIEW_ONLY_NO_ARTIFACT,
                     "landed_from": {
-                        "unit": unit,
-                        "run": run,
+                        "unit": landed.unit,
+                        "run": landed.run,
                         "spec": crate::run::current_run_spec_path(events),
+                        "commit": landed.commits.last(),
                     },
                 }),
             ),
@@ -13873,7 +13879,7 @@ fn prior_criterion_unit(events: &[Event], criterion_id: &str, this_unit: &str) -
         .into_iter()
         .rev()
         .find(|(id, _)| id != this_unit)?;
-    (!history.standing.contains(&candidate)).then_some(candidate)
+    (!history.standing.contains_key(&candidate)).then_some(candidate)
 }
 
 /// One criterion's lifecycle under one spec, across every run [`criterion_history`] folds: the
@@ -13884,9 +13890,42 @@ struct CriterionHistory {
     /// Every `UnitStarted` that served the criterion under the target spec, in log order, as
     /// `(unit id, id of the run it started in)`.
     starts: Vec<(String, String)>,
-    /// The units whose integration of the criterion under the target spec stands: integrated,
-    /// and not reverted by a compensation since.
-    standing: HashSet<String>,
+    /// The units whose integration of the criterion under the target spec stands - integrated,
+    /// and not reverted by a compensation since - each with the commit it put on its run branch
+    /// ([`IntegratedProbe::branch_commit`]).
+    standing: HashMap<String, String>,
+}
+
+/// The fields [`criterion_history`] reads from a [`ledger::TYPE_UNIT_INTEGRATED`] event: the unit,
+/// the commit it records and, for a unit that landed with no spawn ([`RunCtx::land_if_landed`]),
+/// the earlier commit its `landed_from` carries.
+#[derive(Deserialize)]
+struct IntegratedProbe {
+    id: String,
+    #[serde(default)]
+    commit: String,
+    #[serde(default)]
+    landed_from: Option<LandedFromProbe>,
+}
+
+/// The commit an [`IntegratedProbe`]'s `landed_from` carries.
+#[derive(Deserialize)]
+struct LandedFromProbe {
+    #[serde(default)]
+    commit: String,
+}
+
+impl IntegratedProbe {
+    /// The commit this integrate put on its run branch: its own, or, behind the no-artifact
+    /// marker, the earlier commit its `landed_from` carries - empty when it carries none, so a
+    /// unit with no real commit is never on any branch ([`on_run_branch`]).
+    fn branch_commit(self) -> String {
+        if self.commit == REVIEW_ONLY_NO_ARTIFACT {
+            self.landed_from.map(|from| from.commit).unwrap_or_default()
+        } else {
+            self.commit
+        }
+    }
 }
 
 /// The [`CriterionHistory`] of `criterion_id` under `target_spec` (a spec stem,
@@ -13915,7 +13954,7 @@ struct CriterionHistory {
 fn criterion_history(events: &[Event], criterion_id: &str, target_spec: &str) -> CriterionHistory {
     let mut history = CriterionHistory {
         starts: Vec::new(),
-        standing: HashSet::new(),
+        standing: HashMap::new(),
     };
     let (mut spec, mut run) = (String::new(), String::new());
     // Whether each id's most recently walked start served this criterion under the target spec.
@@ -13943,8 +13982,11 @@ fn criterion_history(events: &[Event], criterion_id: &str, target_spec: &str) ->
                 }
             }
             ledger::TYPE_UNIT_INTEGRATED => {
-                if let Some(u) = unit(e).filter(|u| serves.get(&u.id) == Some(&true)) {
-                    history.standing.insert(u.id);
+                if let Some(u) = serde_json::from_slice::<IntegratedProbe>(&e.data)
+                    .ok()
+                    .filter(|u| serves.get(&u.id) == Some(&true))
+                {
+                    history.standing.insert(u.id.clone(), u.branch_commit());
                 }
             }
             ledger::TYPE_UNIT_FAILED
@@ -13960,9 +14002,21 @@ fn criterion_history(events: &[Event], criterion_id: &str, target_spec: &str) ->
     history
 }
 
-/// The earlier unit `this_unit` rests on, as `(unit, run)`, when an EARLIER run of this run's
-/// spec already landed `criterion_id` - so the unit reaches Integrated with no spawn
-/// ([`RunCtx::land_if_landed`]) - or `None`, and it takes the full lifecycle.
+/// An earlier run's landing of a criterion ([`landed_criterion_unit`]).
+struct LandedCriterion {
+    /// The attempt's most recent unit, the one a new unit's `landed_from` names.
+    unit: String,
+    /// The run that attempt ran in.
+    run: String,
+    /// The commit each unit of the attempt put on its run branch, in start order, so the last
+    /// is `unit`'s.
+    commits: Vec<String>,
+}
+
+/// The earlier landing `this_unit` rests on when an EARLIER run of this run's spec already landed
+/// `criterion_id` in the log - so the unit reaches Integrated with no spawn
+/// ([`RunCtx::land_if_landed`]) once its commits are on this run's branch ([`on_run_branch`]) -
+/// or `None`, and it takes the full lifecycle.
 ///
 /// `events` are every run's lifecycle events ([`crate::run::read::ADOPTION_TYPES`]); only the
 /// slice BEFORE the current run's `RunStarted` is folded ([`criterion_history`]), never the whole
@@ -13972,7 +14026,7 @@ fn criterion_history(events: &[Event], criterion_id: &str, target_spec: &str) ->
 /// the criterion under this spec is its latest attempt, and the criterion is landed only when
 /// every unit of that attempt (each part of a split) stands integrated - one a compensation
 /// reverted, or one that never integrated, leaves it open. The unit named is that attempt's most
-/// recent start.
+/// recent start, beside the commit of every unit of the attempt.
 ///
 /// Never landed: an empty `criterion_id` (the plan, plan-critique and check-in stages), an empty
 /// spec identity (a run that recorded no spec cannot be shown to be the same spec), and a unit
@@ -13981,7 +14035,7 @@ fn landed_criterion_unit(
     events: &[Event],
     criterion_id: &str,
     this_unit: &str,
-) -> Option<(String, String)> {
+) -> Option<LandedCriterion> {
     let spec = current_run_spec(events);
     if criterion_id.is_empty() || spec.is_empty() {
         return None;
@@ -13997,13 +14051,28 @@ fn landed_criterion_unit(
     }
     let earlier = &events[..events.len() - this_run.len()];
     let history = criterion_history(earlier, criterion_id, &spec);
-    let latest = history.starts.last()?.clone();
-    history
+    let (unit, run) = history.starts.last()?.clone();
+    let commits = history
         .starts
         .iter()
-        .filter(|(_, run)| *run == latest.1)
-        .all(|(id, _)| history.standing.contains(id))
-        .then_some(latest)
+        .filter(|(_, started_in)| *started_in == run)
+        .map(|(id, _)| history.standing.get(id).cloned())
+        .collect::<Option<Vec<String>>>()?;
+    Some(LandedCriterion { unit, run, commits })
+}
+
+/// Whether every one of `commits` is in the history of the branch checked out in `repo`: the run
+/// branch every integrate lands on ([`Worktree::land`]) and every compensation reverts on. The
+/// log alone never lands a criterion, since a run branch deleted, recreated or reset after the
+/// earlier run no longer holds its work. `false` with no repository, with no commit, and for an
+/// empty commit or one git cannot place in that history ([`worktree::is_ancestor`]), so a unit
+/// with nothing to check is built again: the guard only ever errs toward a rebuild.
+fn on_run_branch(repo: &str, commits: &[String]) -> bool {
+    !repo.is_empty()
+        && !commits.is_empty()
+        && commits
+            .iter()
+            .all(|commit| !commit.is_empty() && worktree::is_ancestor(repo, commit, "HEAD"))
 }
 
 /// The `(criterion_id, spec)` THIS BARE unit id's branch was most recently started under,
