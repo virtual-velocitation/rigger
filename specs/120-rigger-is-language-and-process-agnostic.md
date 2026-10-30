@@ -66,12 +66,16 @@ declaring agents a, b, c, x and z and one stage, runs `config_store::parse_workf
 
 **BASE, decided here.** This spec lands on `rigger-run` after PR #117 (the removal of mutation
 testing from the core instruction layer and the personas) is merged to main and merged into
-`rigger-run`. On that tree the bodies name no gate's procedure: the review
-procedures they keep (the sentence walk, the one-home rule, the test-side shape search and each
-lens's re-derivation) are guidance to authors and reviewers that no declared gate performs, which a
-consumer replaces or switches off through criteria 2 and 3; S2's clause names a hand procedure that
+`rigger-run`. PR #122 (the review profile) is merged into `rigger-run` before the run's next unit
+spawns; the Design's citations that Global constraints reads on PR #122's tree point into that
+tree. On that tree the bodies name no gate's procedure: the rules they keep (the hand-over's
+outcomes under `## Hand over a tree the gates only confirm`, `working-discipline.md:30-84`, each
+with the check that proves it and none owing a record, and the review method and review rule under
+`## When you review`, :86-104) are guidance to authors and reviewers, none a procedure standing in
+for a declared gate, which a consumer replaces or switches off through criteria 2 and 3; S2's
+clause names a hand procedure that
 re-creates a declared gate's function, which PR #117 removed; the probe rule and its tokens are gone at the launch base. The tree is named by the run's launch
-record (the merge of PR #117 into `rigger-run`), the citations staying those read at 1185c8c6, and the launch
+record (the merge of PR #117 into `rigger-run`), its citations read as Global constraints states, and the launch
 record confirms, before the run starts, that `REVIEWER_DISCIPLINE` at the launch base holds the five
 sentences REVIEWER CONTRACT quotes verbatim (the fifth in its launch-base wording), is `pub`, and that the shipped-text helper exists, and that neither built-in body
 spells `mutants::skip` or names a probe-rule swallow; a hit stops the launch like any other mismatch.
@@ -81,12 +85,7 @@ rewording and the edit of every existing test that pins a reworded phrase (`inst
 test a reworded phrase breaks); criteria 2 to 5 own no body text. The bodies drop every language construct
 they name, each with its replacement: `#[allow]` (a lint suppression); `fn` (function); `crate` and
 `crates` (package); `impl` (implementation); `trait` (interface); the `//!` module doc (the module
-doc); `matches!`, a `match` with an arm per member and the match-guard condition (a pattern test, a
-case statement with an arm per member, a pattern guard); each branch of a match (each branch of a
-case statement); the match-arm guard (a case-arm guard); the argument-token examples
-`create_dir_all(root.join(` and `for_extension("rs")` (a path built from a root and a name, a
-file-extension argument); rustdoc's doc links (`[...]`, `working-discipline.md:179`)
-(cross-references); the wasm `core` lane sentence (the inner layer compiles without the outer
+doc); the wasm `core` lane sentence (the inner layer compiles without the outer
 layers); "on any feature lane" (`working-discipline.md:208`) becomes "under any build
 configuration"; the project's package dependency chain (dropped, leaving: package dependencies point one
 way, pinned by a structural test); the English "to match its output" (`engineering-principles.md:41`)
@@ -103,14 +102,8 @@ rules"; the host name at `:9` becomes "the agent host"; `engineering-principles.
 sentence) is dropped; `:21` "the conformance suites" becomes "a port's conformance tests"; `:23`
 "conductor code" becomes "use-case code"; `:15-16` "the dependency order below" goes with the
 chain; `engineering-principles.md:24-25` "the pure `core` lane keeps compiling without them" (and
-the inner layer keeps compiling without them); every sentence in either body that spells "the
-SDET lens" or "the architecture lens" at the launch base (`working-discipline.md:88`, :177, :292,
-:295 and :299-300 at 1185c8c6) is reworded so each becomes "the reviewing lens whose persona
-assigns the duty", and later "the lens" references stay as written, so the routing rule stays in the text; criterion 12 edits no persona.
-This repository's personas already assign them: `.rigger/agents/sdet.md:20-22` (the shape search
-and the sentence walk re-derivation) and `.rigger/agents/architecture-reviewer.md:16` (the one-home
-and member search), read at 1185c8c6; a missing assignment in any project is its operator's edit
-between runs, never a unit's, so no definition drift arises. This enumeration is the closed anchor set criterion 12 rewords. Its unit also
+the inner layer keeps compiling without them); criterion 12 edits no persona. This enumeration is
+the closed anchor set criterion 12 rewords. Its unit also
 walks both bodies for any other term naming this repository's own code as one consumer project
 (its crates, modules, adapters, paths, personas, helpers, gates, lanes, host) and lists each in its
 hand-over for the operator; that listing raises no finding. Rigger's product vocabulary every
@@ -221,7 +214,7 @@ lists it under the operator heading, which is how an operator sees it did not sh
   directory is read no second time.
 - `BUILTIN` SURFACE, decided here: criterion 5's README assertion and criterion 12's MARKERS assertion
   are the only two new assertions that iterate every `BUILTIN` entry, each excluding the other; the
-  HEAD test `an_empty_persona_still_receives_every_built_in_layer` (`instructions.rs:131-147`) is
+  HEAD test `an_empty_persona_still_receives_every_built_in_layer` (`instructions.rs:216-233`) is
   pre-existing and exempt. Criteria 2 and 3 assert over named entries and read only `compose`'s
   output, and criterion 4 reads only `render`'s, `shadow_advisories`' and
   `instructions_in_force_line`'s output over a fixture of named entries ("each built-in" there means
@@ -230,7 +223,7 @@ lists it under the operator heading, which is how an operator sees it did not sh
   operator file, as at HEAD.
 - Until criterion 4 lands, `render` and `instructions_in_force_line` print as at HEAD, a shadowing
   file listed as an operator file.
-- The module-doc sentence at `instructions.rs:10-12` ("no configuration removes it", :11) has one
+- The module-doc sentence at `instructions.rs:10-14` ("no configuration removes it" at 1185c8c6, :11) has one
   owner: criterion 2 rewrites it into the replace rule, keeping "reaches every agent rigger spawns";
   criterion 3 appends the switch-off clause to the sentence criterion 2 wrote and qualifies "reaches
   every agent" with "unless switched off".
@@ -279,10 +272,10 @@ lines.
 out of the binary into the `adversary` persona: `CRITIQUE_STANCE`'s skepticism and citation
 sentences, `PLAN_CRITIQUE_RULES` (Rule 7, Rule 8, the blast-radius note), `CRITIQUE_OWNERSHIP`,
 `CRITIQUE_HUNTS` and `CRITIQUE_BAN` become the body of the `## When you critique a spec or a plan`
-section in `.rigger/agents/adversary.md` (after brief 93's COVERAGE hunt and before its
-Exhaustion item, both of which stay; criterion 15 rewords the moved "Run two hunts" to "Run these
+section in `.rigger/agents/adversary.md` (`:17`, after its COVERAGE hunt, :19, and before its
+Exhaustion item, :20, both of which stay; criterion 15 rewords the moved "Run two hunts" to "Run these
 hunts", the one allowed edit to the verbatim move) and in the
-scaffold's adversary persona template in `src/cli/setup.rs`, the consumer's overridable default; the
+scaffold's adversary persona template (`src/cli/setup.rs:1951-1966`), the consumer's overridable default; the
 persona is the workflow definition. The DAG critique's method residue moves with it: the unit-size
 bullet (`conductor.rs:7876-7882`): its rule moves as persona prose without a number ("a unit over
 the cap your prompt states is a BLOCKING finding"), and the DAG prompt keeps `unit_size_cap()`'s
@@ -315,7 +308,7 @@ through the shipped-text helper; the repository personas' sections are the unit'
 prompt stands alone, and the output contract decides the verdict. The DAG critique prompt reaches
 two spawns, the adversary (`conductor.rs:8235`) and the gate's adjudicator (:8257), whose verdict
 gates the fan-out. Criterion 15 therefore lands the method in both personas and both scaffold
-templates, each in its role's voice under `## When you critique a spec or a plan`: the adversary's
+templates (the adjudicator's at `src/cli/setup.rs:1967-1985`), each in its role's voice under `## When you critique a spec or a plan`: the adversary's
 section carries the stance, the hunts, Rules 7 and 8, the blast-radius note, the ownership defects
 and the ban (how to find); the section names which parts apply to a spec only (the two hunts, the
 ownership defects and the ban) and which to both a spec and a DAG (the stance, Rules 7 and 8, the
@@ -324,13 +317,17 @@ when it names a Rule 7 ownership defect, a Rule 8 open disposition, a bundled or
 unit over the cap the prompt states, or a defect in a criterion's own text that no decomposition can
 remove; mechanical file overlap alone never does), its fix being the kept cause rule's: a re-plan for
 `decomposition-conflict`, the run stopping for `spec-ambiguity`; the ban on criterion edits stays in
-the adversary's section only, where it belongs to the spec critique. Two role-voiced sections are not a duplicate under the one-home
+the adversary's section only, where it belongs to the spec critique. Each section also names its
+scope, beside the moved text: in a spec or plan critique its rules decide which finding blocks, and
+the working discipline's review rule (`working-discipline.md:96-104`), against which the
+adjudicator persona weighs every finding it upholds (`.rigger/agents/adjudicator.md:11`, its
+template's at `src/cli/setup.rs:1977-1980`), decides a unit diff's findings. Two role-voiced sections are not a duplicate under the one-home
 rule: the home of a method is the persona of the role that applies it. This
 repository's `.rigger/agents/*.md` are a consumer's copies of the scaffold, outside the one-home
 rule: the template is the shipped default and the repository's persona is its owner's
 configuration, free to diverge (this repository's already do), so no test holds a repository
-persona's section equal to its template's. At the launch base
-`.rigger/agents/adjudicator.md` has no plan-critique passage: its verdict-channel paragraph (the
+persona's section equal to its template's.
+`.rigger/agents/adjudicator.md` has no plan-critique passage: its verdict-channel paragraph (`:28-30`, the
 result-line rule that holds for every adjudication, a plan-critique decomposition included) stays
 where it is, word for word, and criterion 15 adds `## When you critique a spec or a plan` as a new
 section after it. The opener "the decomposition rules in your persona" is
@@ -383,22 +380,22 @@ process under the store fence; a project in git with no store; and a directory o
 **INTERIM SENTENCES, decided here.** A handbook, README or module-doc sentence OUT OF SCOPE assigns
 to a named criterion is rewritten when that criterion lands. An earlier unit whose behaviour makes
 it false leaves it as it is: its hand-over lists the sentence as assigned to that criterion, and its
-reviewers raise no finding on it. The assignments: `authoring-agents.md:85`, `:90` and
-the switch-off clause appended to the module-doc sentence criterion 2 wrote to 3; `:92` and
-`instructions.rs:10-12` to 2; `:94`'s report states to 4 and its entry count to 14; `src/main.rs:359-362` to 4; `:87-88` to 12; the instructions README to 5;
+reviewers raise no finding on it. The assignments: `authoring-agents.md:85`, `:91` and
+the switch-off clause appended to the module-doc sentence criterion 2 wrote to 3; `:93` and
+`instructions.rs:10-14` to 2; `:95`'s report states to 4 and its entry count to 14; `src/main.rs:359-362` to 4; `:87-88` to 12; the instructions README to 5;
 `agentic-sdlc.md:62-68`, `README.md:19` and `:27` and the `authoring-loops.md` lines to 1; `best-practices.md:25` to 1;
-`docs.rs:552-553` to 10; `docs.rs:2514-2518` ("every spawn receives") to 3; `compose`'s doc (`instructions.rs:47-49`) and `BUILTIN`'s doc (:24) to 3;
-`render`'s doc (:64) to 4; the `ReviewPanel` struct doc (`crates/rigger-domain/src/config.rs:347-352`)
+`docs.rs:552-553` to 10; `docs.rs:2514-2518` ("every spawn receives") to 3; `compose`'s doc (`instructions.rs:120-126`) and `BUILTIN`'s doc (:27-39) to 3;
+`render`'s doc (:147) to 4; the `ReviewPanel` struct doc (`crates/rigger-domain/src/config.rs:347-352`)
 to 7; the `spawn.rs` docs of `spawn_id`, `ROLE_ADVERSARY`, `ROLE_ADJUDICATOR` and `lens_role` (one
 fixed token per kind, the tier numbers) to 8; `REVIEWER_DISCIPLINE`'s doc
-(`conductor.rs:12515-12528`) to 13; `run_adversary`'s and `run_adjudicator`'s roster docs
+(`conductor.rs:12672-12687`) to 13; `run_adversary`'s and `run_adjudicator`'s roster docs
 (`conductor.rs:7673-7676`, :7727-7730) to 6; the free `build_system_prompt`'s and
 `RIGGER_COMMUNICATION`'s docs are criterion 14's, deleted with them, and
 `RunCtx::build_system_prompt`'s doc is criterion 14's, rewritten; `review_protocol`'s doc
 (`conductor.rs:12483-12505`) is criterion 8's; `review_roster`'s and `adjudicator_roster`'s docs
 (`review.rs:250-265`) are criterion 6's; the docs of the deleted method constants (`review.rs:273-276`,
 :293, :306, :311, :322) are criterion 15's, deleted with them; `authoring-agents.md:85`'s entry
-count and the third item after `:88` are criterion 14's; `:85`'s "reaches every agent" wording stays
+count and the third item (`:89`) are criterion 14's; `:85`'s "reaches every agent" wording stays
 criterion 3's; the layer diagram at `authoring-agents.md:82` is criterion 14's, rewritten "persona +
 built-in instructions (communication among them) + operator instructions"; the module-doc diagram
 at `instructions.rs:5-8` is criterion 14's: it drops the parenthetical "(+ the communication
@@ -663,14 +660,14 @@ steps) and `docs/handbook/README.md:27` (the glossary's review-panel line) and `
 adversarial review" phrase), `authoring-loops.md:106` and `docs/handbook/best-practices.md:25`
 (the "three-tier shape" sentence, reworded to call the three steps the default sequence a consumer
 may extend), all criterion 1's; and
-`authoring-agents.md:85-96`, split by owner: `:94` (the report's states) is criterion 4's, `:87-88` (the bodies) criterion 12's; `:85` (reaches every agent), `:90` and the switch-off clause appended to
-the module-doc sentence criterion 2 wrote are criterion 3's; `:92` (appended after the built-ins)
-and the `instructions.rs:10-12` sentence (reaches every agent anywhere, no configuration removes it)
-are criterion 2's. That split (2: `:92`; 3: `:85`'s "reaches every agent"
-wording, `:90`; 4: `:94`'s report states, not its count phrase; 12: `:87-88`; 14: the entry count on `:85`, the
-entry count on `:94` ("the two built-in entries first" becoming "the built-in entries first"), the third item after `:88`,
+`authoring-agents.md:85-97`, split by owner: `:95` (the report's states) is criterion 4's, `:87-88` (the bodies) criterion 12's; `:85` (reaches every agent), `:91` and the switch-off clause appended to
+the module-doc sentence criterion 2 wrote are criterion 3's; `:93` (appended after the built-ins)
+and the `instructions.rs:10-14` sentence (reaches every agent anywhere, no configuration removes it, at 1185c8c6)
+are criterion 2's. That split (2: `:93`; 3: `:85`'s "reaches every agent"
+wording, `:91`; 4: `:95`'s report states, not its count phrase; 12: `:87-88`; 14: the entry count on `:85`, the
+entry count on `:95` ("the two built-in entries first" at 1185c8c6 becoming "the built-in entries first"), the third item (`:89`),
 and the layer diagram at `:82`) is the one authority over those named phrases of
-`authoring-agents.md:82-96`, not over whole lines. The `rigger instructions` help text (`src/main.rs:359-362`, "the built-in law
+`authoring-agents.md:82-97`, not over whole lines. The `rigger instructions` help text (`src/main.rs:359-362`, "the built-in law
 and working discipline, then each operator file") is criterion 4's, reworded to "each built-in with
 its state (in force, replaced, switched off), then each unshadowed operator file"; criteria 2, 3
 and 14 leave it as written. `authoring-loops.md`'s
@@ -847,9 +844,16 @@ ARTIFACT OWNERSHIP (owner = the criterion of the first production caller):
 ## Global constraints
 
 - Hyphens, never em or en dashes, ASCII only, in every added line.
-- A line citation names the symbol at the tree it was read on (1185c8c6, on `rigger-run`); the
-  symbol name governs, the line being a pointer only; a `.md` anchor is identified by its quoted
-  phrase, its line a pointer at 1185c8c6 only.
+- A line citation names the symbol at the tree it was read on; the symbol name governs, the line
+  being a pointer only, and a `.md` anchor is identified by its quoted phrase. In the Design and
+  Notes, a citation of text that stands on rigger-run at 7004d93f (PR #122's tree) in the
+  built-in layer (`crates/rigger-domain/src/instructions.rs`, `instructions/*.md`), a persona
+  (`.rigger/agents/*.md`), a scaffold persona template, `REVIEWER_DISCIPLINE` and its doc, or a
+  handbook page points at its line there. A citation that quotes words 7004d93f does not carry,
+  every citation in the Goal and the Done-when, and every other citation point at their line at
+  1185c8c6 (on `rigger-run`). The Done-when's
+  `authoring-agents.md` pointers `:85`, `:87-88`, `:90`, `:92` and `:94` stand at `:85`, `:87-88`,
+  `:91`, `:93` and `:95` on 7004d93f.
 - No new event type; no new dependency.
 - Every lane `.rigger/gates/lanes.sh` runs green (clippy -D warnings, test), `cargo fmt --check`
   passes on the tree, and the default lane's test suite.
