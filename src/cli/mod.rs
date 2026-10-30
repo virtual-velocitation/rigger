@@ -3207,15 +3207,34 @@ fn run_tip_ci(repo: &str) -> watch::CiProbe {
         .output();
     match read {
         Err(e) => watch::CiProbe::Unknown(format!("gh could not run: {e}")),
-        Ok(out) if !out.status.success() => {
+        Ok(out) => {
+            let stdout = String::from_utf8_lossy(&out.stdout);
             let stderr = String::from_utf8_lossy(&out.stderr);
+            ci_probe_from_gh_read(
+                &sha,
+                if out.status.success() {
+                    Ok(&*stdout)
+                } else {
+                    Err(&*stderr)
+                },
+            )
+        }
+    }
+}
+
+/// The CI reading of what `gh api` answered for commit `sha`: its stdout when the call succeeded,
+/// read by [`ci_probe_from_check_runs`], or its stderr when it failed, which reads as unknown
+/// with the first non-blank line as its reason.
+fn ci_probe_from_gh_read(sha: &str, read: Result<&str, &str>) -> watch::CiProbe {
+    match read {
+        Ok(body) => ci_probe_from_check_runs(sha, body),
+        Err(stderr) => {
             let reason = stderr
                 .lines()
                 .find(|l| !l.trim().is_empty())
                 .unwrap_or("no output");
             watch::CiProbe::Unknown(format!("gh api failed: {}", reason.trim()))
         }
-        Ok(out) => ci_probe_from_check_runs(&sha, &String::from_utf8_lossy(&out.stdout)),
     }
 }
 
