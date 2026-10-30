@@ -2934,11 +2934,11 @@ project identity so one backend can hold many projects without their data mixing
 - `tests/cli.rs:27405-27405` `".rigger"`
 - `tests/cli.rs:27438-27438` `".rigger"`
 - `tests/cli.rs:28181-28181` `".rigger"`
-- `tests/cli.rs:28956-28956` `"scaffolded .rigger/instructions/README.md"`
-- `tests/cli.rs:29019-29019` `"gw/.rigger/workflow.yml"`
-- `tests/cli.rs:29057-29057` `"gw/.rigger/workflow.yml"`
-- `tests/cli.rs:29520-29520` `"gw/.rigger/workflow.yml"`
-- `tests/cli.rs:29538-29538` `"gw/.rigger/workflow.yml"`
+- `tests/cli.rs:28961-28961` `"scaffolded .rigger/instructions/README.md"`
+- `tests/cli.rs:29024-29024` `"gw/.rigger/workflow.yml"`
+- `tests/cli.rs:29062-29062` `"gw/.rigger/workflow.yml"`
+- `tests/cli.rs:29525-29525` `"gw/.rigger/workflow.yml"`
+- `tests/cli.rs:29543-29543` `"gw/.rigger/workflow.yml"`
 - `tests/common/cli.rs:541-541` `".rigger"`
 - `tests/common/cli.rs:552-552` `".rigger"`
 - `tests/common/cli.rs:586-586` `".rigger"`

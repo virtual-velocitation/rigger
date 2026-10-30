@@ -28708,13 +28708,14 @@ fn instructions_validate_and_prime_report_a_blank_same_named_file_as_switching_i
 
 /// Spec 120's EVERY BUILT-IN'S STATE IS REPORTED through the loader, the replaced side of the
 /// blank boundary: given the named-entry fixture whose communication file holds a body that is not
-/// blank - one led by a byte order mark, or two byte order marks, which stripping the one leading
-/// mark leaves not blank - when the operator runs `rigger instructions`, `rigger validate` and
-/// `rigger prime`, then each reports that built-in replaced, `rigger instructions` printing the
-/// file's body with only its first leading mark stripped.
+/// blank - one led by a byte order mark, one ending in trailing whitespace as a saved file does, or
+/// two byte order marks, which stripping the one leading mark leaves not blank - when the operator
+/// runs `rigger instructions`, `rigger validate` and `rigger prime`, then each reports that
+/// built-in replaced, `rigger instructions` printing the file's body with only its first leading
+/// mark and its trailing whitespace stripped.
 #[test]
-fn instructions_validate_and_prime_report_a_same_named_file_led_by_a_byte_order_mark_as_replacing()
-{
+fn instructions_validate_and_prime_report_a_same_named_file_with_a_leading_mark_or_trailing_whitespace_as_replacing(
+) {
     use common::cli::{
         assert_prime_names_the_shadowing_layer_states,
         assert_validate_names_the_shadowed_built_ins, write_operator_layer,
@@ -28731,6 +28732,10 @@ fn instructions_validate_and_prime_report_a_same_named_file_led_by_a_byte_order_
             format!("\u{feff}{REPLACING_COMMUNICATION_BODY}"),
             REPLACING_COMMUNICATION_BODY,
         ),
+        (
+            format!("{REPLACING_COMMUNICATION_BODY}\n \t\n"),
+            REPLACING_COMMUNICATION_BODY,
+        ),
         ("\u{feff}\u{feff}".to_string(), "\u{feff}"),
     ] {
         let mut layer = shadowing_operator_layer();
@@ -28739,8 +28744,8 @@ fn instructions_validate_and_prime_report_a_same_named_file_led_by_a_byte_order_
         assert_eq!(
             run_rigger_ok(root, &["instructions"]),
             rendered_shadowing_layer_replaced_by(printed),
-            "the communication built-in is replaced by the file's body, one leading mark stripped: \
-             {:?}",
+            "the communication built-in is replaced by the file's body, one leading mark and its \
+             trailing whitespace stripped: {:?}",
             layer[1].body
         );
         assert_validate_names_the_shadowed_built_ins(root, &SHADOWING_LAYER_ADVISORIES);
