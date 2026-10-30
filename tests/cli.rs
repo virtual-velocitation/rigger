@@ -28900,30 +28900,44 @@ fn prime_and_instructions_beside_a_store_in_a_subdirectory_report_the_project_s_
 /// stands in it, when the operator runs `rigger instructions` and `rigger prime` there, then
 /// neither can name the project, so each reports every built-in in force and no operator file:
 /// `rigger instructions` exits 0 printing the built-ins and `(none)`, and `rigger prime` prints its
-/// in-force line, then fails at its store lookup with exit 1. A process cannot remove its own
-/// working directory on Windows.
+/// in-force line, then fails at its store lookup with exit 1 - unless the gate store fence names
+/// its store with no working directory to read, when it goes on to that store's empty decisions
+/// and exits 0. A process cannot remove its own working directory on Windows.
 #[cfg(unix)]
 #[test]
 fn instructions_and_prime_from_a_deleted_directory_report_the_built_ins_alone() {
-    use common::cli::{run_rigger_from_deleted, write_operator_layer};
+    use common::cli::{run_rigger_from_deleted, scratch_store_fence, write_operator_layer};
     use common::fixtures::{
         rendered_built_ins_only_layer, shadowing_operator_layer, subdirectory_of,
         BUILT_INS_ONLY_IN_FORCE_LINE,
     };
-    for (report, printed, code) in [
-        ("instructions", rendered_built_ins_only_layer(), 0),
-        ("prime", format!("{BUILT_INS_ONLY_IN_FORCE_LINE}\n"), 1),
+    let (_scratch, fence) = scratch_store_fence();
+    let fenced = [(rigger::gate::STORE_FENCE_ENV, fence.as_str())];
+    for (report, envs, printed, code) in [
+        ("instructions", &[][..], rendered_built_ins_only_layer(), 0),
+        (
+            "prime",
+            &[][..],
+            format!("{BUILT_INS_ONLY_IN_FORCE_LINE}\n"),
+            1,
+        ),
+        (
+            "prime",
+            &fenced[..],
+            format!("{BUILT_INS_ONLY_IN_FORCE_LINE}\n# Rigger: recent decisions\n(none yet)\n"),
+            0,
+        ),
     ] {
         let proj = temp_project();
         write_operator_layer(proj.path(), &shadowing_operator_layer());
-        let out = run_rigger_from_deleted(&subdirectory_of(proj.path()), &[report]);
+        let out = run_rigger_from_deleted(&subdirectory_of(proj.path()), &[report], envs);
         assert_eq!(
             (
                 String::from_utf8_lossy(&out.stdout).as_ref(),
                 out.status.code()
             ),
             (printed.as_str(), Some(code)),
-            "`rigger {report}` from a deleted directory; stderr:\n{}",
+            "`rigger {report}` from a deleted directory with {envs:?}; stderr:\n{}",
             String::from_utf8_lossy(&out.stderr)
         );
     }

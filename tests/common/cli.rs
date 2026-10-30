@@ -231,12 +231,18 @@ pub fn assert_reported_from_a_worktree(
 /// since the fence isolates the store and never names the project's root.
 pub fn assert_reported_under_the_store_fence(root: &Path, report: Reporter) {
     write_operator_layer(root, &super::fixtures::shadowing_operator_layer());
+    let (_scratch, fence) = scratch_store_fence();
+    report(root, &[(rigger::gate::STORE_FENCE_ENV, fence.as_str())]);
+}
+
+/// A scratch directory, and the path inside it a test pins the gate store fence
+/// (`rigger::gate::STORE_FENCE_ENV`) to: a store outside every project, which the binary creates.
+/// The directory must outlive the process it fences.
+pub fn scratch_store_fence() -> (tempfile::TempDir, String) {
     let scratch = tempfile::tempdir().expect("create the fence's scratch dir");
     let fence = scratch.path().join("store-fence");
-    report(
-        root,
-        &[(rigger::gate::STORE_FENCE_ENV, fence.to_str().unwrap())],
-    );
+    let fence = fence.to_str().unwrap().to_string();
+    (scratch, fence)
 }
 
 /// `rigger instructions` run in `cwd` prints the layers of the named-entry fixture
@@ -427,12 +433,13 @@ pub fn run_rigger_in_state_home(cwd: &Path, state_home: &Path, args: &[&str]) ->
         .expect("the rigger binary runs")
 }
 
-/// Run `rigger <args>` from the empty directory `dir` with `dir` deleted: a spawn cannot enter a
-/// directory already gone, so a shell enters it, removes it and execs the binary, with the
-/// environment [`rigger_command`] sets, and the process starts with no working directory to read.
-pub fn run_rigger_from_deleted(dir: &Path, args: &[&str]) -> Output {
+/// Run `rigger <args>` with extra environment `envs` from the empty directory `dir` with `dir`
+/// deleted: a spawn cannot enter a directory already gone, so a shell enters it, removes it and
+/// execs the binary, with the environment [`rigger_command`] sets, and the process starts with no
+/// working directory to read.
+pub fn run_rigger_from_deleted(dir: &Path, args: &[&str], envs: &[(&str, &str)]) -> Output {
     let state = tempfile::tempdir().expect("create a temp XDG_STATE_HOME for the rigger run");
-    let rigger = rigger_command(dir, args, &[], state.path());
+    let rigger = rigger_command(dir, args, envs, state.path());
     let mut shell = Command::new("sh");
     shell
         .args(["-c", r#"cd "$1" && rmdir "$1" && shift && exec "$@""#, "sh"])
