@@ -853,22 +853,47 @@ macro_rules! owed_older_rule {
 /// Why a graph owes its rebuild ([`Projection::rebuild_owed`]): it records an older fold rule.
 pub const OWED_OLDER_RULE: &str = owed_older_rule!();
 
+/// The one spelling of [`OWED_LOST_FOLD`], a literal so [`REBUILD_OWED_FOR_LOST_FOLD`] is composed
+/// from it.
+macro_rules! owed_lost_fold {
+    () => {
+        "it misses an event the log holds"
+    };
+}
+
+/// The one spelling of the refusal of a graph that owes one rebuild for the cause its tokens name,
+/// a literal frame each such refusal is composed from ([`REBUILD_OWED`],
+/// [`REBUILD_OWED_FOR_LOST_FOLD`]), naming the one command that pays it.
+macro_rules! rebuild_owed_for {
+    ($($cause:tt)*) => {
+        concat!(
+            "graph.db owes one rebuild from the event log (",
+            $($cause)*,
+            ") - run `rigger setup` to rebuild it"
+        )
+    };
+}
+
 /// Why `rigger setup` rebuilds a graph from the log when the seeding of its catch-up cursor finds
 /// the prefix it folded violated (spec 124): it misses an event of the log that only a rebuild
 /// folds in order, or its record of what it folded runs past the log's end, as when the log is
-/// replaced beneath it. A verdict of that seeding alone, never a cause the graph records: the
-/// graph owes no rebuild for it ([`Projection::rebuild_owed`]) and refuses no fold.
-pub const OWED_LOST_FOLD: &str = "it misses an event the log holds";
+/// replaced beneath it, or that record is of another log, as when the event store is switched
+/// beneath it. Never a cause the graph records: the graph owes no rebuild for it
+/// ([`Projection::rebuild_owed`]), and the one fold refused for it is one meeting a record of
+/// another log ([`REBUILD_OWED_FOR_LOST_FOLD`]).
+pub const OWED_LOST_FOLD: &str = owed_lost_fold!();
 
 /// What a projection that owes its rebuild ([`Projection::rebuild_owed`]) answers in place of a
 /// fold, and what every command that depends on the fold says when it refuses: the one spelling of
-/// the refusal, naming the one cause a rebuild is owed for, the older fold rule
+/// the refusal, naming the one cause the graph records a rebuild owed for, the older fold rule
 /// ([`OWED_OLDER_RULE`]), and the one command that pays it.
-pub const REBUILD_OWED: &str = concat!(
-    "graph.db owes one rebuild from the event log (",
-    owed_older_rule!(),
-    ") - run `rigger setup` to rebuild it"
-);
+pub const REBUILD_OWED: &str = rebuild_owed_for!(owed_older_rule!());
+
+/// What a fold answers in place of folding when the graph's record of what it folded is of
+/// another log than the one the fold reads, or of a log it cannot name (spec 124, A LOG SWITCHED
+/// UNDER A STANDING GRAPH): the refusal naming the lost fold ([`OWED_LOST_FOLD`]) that the next
+/// `rigger setup`'s seeding finds and pays with the rebuild.
+pub const REBUILD_OWED_FOR_LOST_FOLD: &str = rebuild_owed_for!(owed_lost_fold!());
 
 /// The refusal `command`, whose answer depends on the fold, gives while the graph owes its
 /// rebuild.

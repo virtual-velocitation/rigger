@@ -603,6 +603,11 @@ pub enum Inert {
     RebuildState,
     /// The file records an older fold rule ([`OWED_OLDER_RULE`]).
     OlderRule,
+    /// The file's `caught_up` cursor was recorded beside another log than the one its projector
+    /// folds, or beside none ([`log_switched`]; spec 124, A LOG SWITCHED UNDER A STANDING GRAPH):
+    /// the prefix it claims is not of this log, so the rebuild setup's seeding owes the file
+    /// ([`Seeding::Ran`]) seeds it anew.
+    LogSwitched,
     /// The file carries no `caught_up` cursor.
     NoCursor,
 }
@@ -8079,6 +8084,18 @@ mod tests {
         crate::test_support::drop_the_cursor(Path::new(path))
     }
 
+    /// The graph file at `path` whose `caught_up` cursor was recorded beside a server's log, not
+    /// the log its projector folds.
+    fn beside_another_log(path: &str) {
+        crate::test_support::record_the_cursor_beside(Path::new(path), "shared:5cfaa9387d2839e1")
+    }
+
+    /// The graph file at `path` whose `caught_up` cursor records no log, as a cursor whose table
+    /// predates that identity.
+    fn beside_no_log(path: &str) {
+        crate::test_support::drop_the_cursor_s_log(Path::new(path))
+    }
+
     /// Spec 124, ONE PROCEDURE: a foreign non-entry folds in order. A decision past the cursor and
     /// one superseding it, another project's position between them, fold as log order folds them -
     /// the superseded decision's `GOVERNS` edge invalidated, the superseding one's live - in one
@@ -8265,12 +8282,13 @@ mod tests {
 
     /// Spec 124, ONE PROCEDURE: a file whose rebuild seeds or repairs its cursor folds no catch-up
     /// of its own ([`CatchUp::Inert`]), opening no log and writing nothing - one holding a
-    /// rebuild's state, one recording an older fold rule over what it folded, one without
-    /// `caught_up` - and of two such causes standing together the first in that order is the
-    /// answer; the owed mark standing beside the file changes no answer.
+    /// rebuild's state, one recording an older fold rule over what it folded, one whose cursor
+    /// was recorded beside another log or beside none, one without `caught_up` - and of two such
+    /// causes standing together the first in that order is the answer; the owed mark standing
+    /// beside the file changes no answer.
     #[test]
     fn catch_up_on_a_file_its_rebuild_seeds_or_repairs_opens_no_log_and_answers_inert() {
-        let cases: [(&str, &[Stand], Inert, Option<Position>); 6] = [
+        let cases: [(&str, &[Stand], Inert, Option<Position>); 9] = [
             (
                 "a rebuild's state",
                 &[a_standing_tail],
@@ -8283,7 +8301,25 @@ mod tests {
                 Inert::OlderRule,
                 Some(0),
             ),
+            (
+                "a cursor recorded beside another log",
+                &[beside_another_log],
+                Inert::LogSwitched,
+                Some(0),
+            ),
+            (
+                "a cursor recorded beside no log",
+                &[beside_no_log],
+                Inert::LogSwitched,
+                Some(0),
+            ),
             ("no cursor", &[without_a_cursor], Inert::NoCursor, None),
+            (
+                "an older fold rule beside a cursor recorded beside another log",
+                &[beside_another_log, folded_under_an_older_rule],
+                Inert::OlderRule,
+                Some(0),
+            ),
             (
                 "a rebuild's state beside an older fold rule",
                 &[folded_under_an_older_rule, a_standing_tail],
@@ -8339,12 +8375,13 @@ mod tests {
     }
 
     /// Spec 124, ONE PROCEDURE: a cause another writer brings about between a call's page read and
-    /// its cut - a rebuild's state, an older fold rule, the cursor dropped - is read again under the
-    /// cut's write lock: the call answers it ([`CatchUp::Inert`]), folding nothing, leaving the
-    /// cursor as it stood and reading no second page.
+    /// its cut - a rebuild's state, an older fold rule, the cursor recorded beside another log or
+    /// beside none, the cursor dropped - is read again under the cut's write lock: the call answers
+    /// it ([`CatchUp::Inert`]), folding nothing, leaving the cursor as it stood and reading no
+    /// second page.
     #[test]
     fn catch_up_meeting_a_cause_under_its_write_lock_answers_inert_folding_nothing() {
-        let cases: [(&str, Stand, Inert, Option<Position>); 3] = [
+        let cases: [(&str, Stand, Inert, Option<Position>); 5] = [
             (
                 "a rebuild's state",
                 a_standing_tail,
@@ -8355,6 +8392,18 @@ mod tests {
                 "an older fold rule",
                 folded_under_an_older_rule,
                 Inert::OlderRule,
+                Some(0),
+            ),
+            (
+                "a cursor recorded beside another log",
+                beside_another_log,
+                Inert::LogSwitched,
+                Some(0),
+            ),
+            (
+                "a cursor recorded beside no log",
+                beside_no_log,
+                Inert::LogSwitched,
                 Some(0),
             ),
             ("no cursor", without_a_cursor, Inert::NoCursor, None),
@@ -9811,9 +9860,12 @@ mod tests {
     /// Spec 124, THE APPENDER and CAUSE TEXTS: an appender returns at once, inside its ceiling,
     /// when a call fails at a position other than its own ledger entry, with the call's error and
     /// the call-run suffix; when a call meets an older fold rule another writer stamped, with the
-    /// refusal of a file that owes its rebuild; and when its own position is passed over by its
-    /// call, or was recorded passed over before its direct fold on a file without the cursor, with
-    /// the cause it was passed over for and no suffix. None writes the mark.
+    /// refusal of a file that owes its rebuild; when a call meets a cursor recorded beside another
+    /// log, with the refusal naming the lost fold, folding nothing, before the success test, which
+    /// would read that log's prefix as its own; and when its own position is passed over by its
+    /// call, or was
+    /// recorded passed over before its direct fold on a file without the cursor, with the cause it
+    /// was passed over for and no suffix. None writes the mark.
     #[test]
     fn an_appender_returns_at_once_on_a_foreign_failure_an_owed_rebuild_or_its_position_passed_over(
     ) {
@@ -9828,7 +9880,10 @@ mod tests {
             let (_, cause) = crate::test_support::rejected_row(&copies[0]);
             Fold::NotFolded(graph_error(&cause))
         };
-        let cases: [(&str, Handed, Answer); 4] = [
+        // The refusal of a file whose cursor records another log, naming the fold it lost.
+        let lost_fold_refusal: Answer =
+            |_| Fold::NotFolded(graph_error(crate::contextgraph::REBUILD_OWED_FOR_LOST_FOLD));
+        let cases: [(&str, Handed, Answer); 6] = [
             (
                 "a foreign entry failing its call",
                 |path, _, p| {
@@ -9855,6 +9910,25 @@ mod tests {
                     (copies, p)
                 },
                 |_| crate::test_support::owed_refusal(),
+            ),
+            (
+                "a cursor recorded beside another log below its own position",
+                |path, _, p| {
+                    let copies = one_decision(path);
+                    beside_another_log(path);
+                    (copies, p)
+                },
+                lost_fold_refusal,
+            ),
+            (
+                "a cursor recorded beside another log at its own position",
+                |path, _, p| {
+                    let copies = one_decision(path);
+                    crate::test_support::move_the_cursor(Path::new(path), 1);
+                    beside_another_log(path);
+                    (copies, p)
+                },
+                lost_fold_refusal,
             ),
             (
                 "its own position passed over by its call",
