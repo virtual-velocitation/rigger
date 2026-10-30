@@ -283,6 +283,7 @@ use common::fixtures::gate_def;
 use common::fixtures::gated_scratch_cfg;
 use common::fixtures::has_status_marker;
 use common::fixtures::mk_stage;
+use common::fixtures::payloads_of_type;
 use common::fixtures::review_or_adjudicate;
 use common::fixtures::scratch_cfg;
 use common::fixtures::FifoAtLandingDriver;
@@ -740,25 +741,19 @@ impl AgentDriver for ResolverRegeneratesDriver {
     }
 }
 
-/// The `evidence.sha` of every integrate row with `status` that `unit` recorded, in log order.
-fn integrate_row_shas(events: &[Event], unit: &str, status: &str) -> Vec<String> {
-    events
-        .iter()
-        .filter(|e| e.type_ == ledger::TYPE_UNIT_STATUS)
-        .map(|e| serde_json::from_slice::<Value>(&e.data).unwrap())
-        .filter(|v| v["id"] == unit && v["status"] == status)
-        .filter_map(|v| v["evidence"]["sha"].as_str().map(String::from))
-        .collect()
-}
-
-/// The `commit` of every `UnitIntegrated` event `unit` recorded, in log order.
-fn integrated_commits(events: &[Event], unit: &str) -> Vec<String> {
-    events
-        .iter()
-        .filter(|e| e.type_ == ledger::TYPE_UNIT_INTEGRATED)
-        .map(|e| serde_json::from_slice::<Value>(&e.data).unwrap())
-        .filter(|v| v["id"] == unit)
-        .filter_map(|v| v["commit"].as_str().map(String::from))
+/// The string at `pointer` (`/commit`, `/evidence/sha`) of every `type_` event `unit` recorded
+/// whose `status` is `status` (`None` for an event that carries no status), in log order.
+fn recorded_by(
+    events: &[Event],
+    type_: &str,
+    unit: &str,
+    status: Option<&str>,
+    pointer: &str,
+) -> Vec<String> {
+    payloads_of_type(events, type_)
+        .into_iter()
+        .filter(|v| v["id"] == unit && v["status"].as_str() == status)
+        .filter_map(|v| v.pointer(pointer).and_then(Value::as_str).map(String::from))
         .collect()
 }
 
@@ -809,15 +804,23 @@ fn unit_integrated_records_the_landed_sha_on_every_merge_loop_path() {
                 ledger::Status::Integrated,
                 "{case}: {name} integrates"
             );
-            let landed = integrate_row_shas(&events, name, "integrate-landed");
-            let regenerated =
-                integrate_row_shas(&events, name, "integrate-conflict-regenerate-commit");
+            let row_shas = |status: &str| {
+                recorded_by(
+                    &events,
+                    ledger::TYPE_UNIT_STATUS,
+                    name,
+                    Some(status),
+                    "/evidence/sha",
+                )
+            };
+            let landed = row_shas("integrate-landed");
+            let regenerated = row_shas("integrate-conflict-regenerate-commit");
             // One landing, and the regeneration after it named that same sha: it committed nothing.
             looped_back |= !regenerated.is_empty() && regenerated == landed;
             let landed_at = landed.last().cloned().unwrap_or_default();
             assert!(!landed_at.is_empty(), "{case}: {name} records its landing");
             assert_eq!(
-                integrated_commits(&events, name),
+                recorded_by(&events, ledger::TYPE_UNIT_INTEGRATED, name, None, "/commit"),
                 vec![landed_at],
                 "{case}: {name}'s UnitIntegrated carries the sha it landed at"
             );
