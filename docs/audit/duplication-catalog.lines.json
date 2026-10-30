@@ -144,13 +144,13 @@
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 4774,
-        "end_line": 4776
+        "start_line": 4775,
+        "end_line": 4777
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 5280,
-        "end_line": 5286
+        "start_line": 5281,
+        "end_line": 5287
       },
       {
         "file": "src/cli/setup.rs",
@@ -774,28 +774,28 @@
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 5727,
-        "end_line": 5727
+        "start_line": 5728,
+        "end_line": 5728
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 8121,
-        "end_line": 8121
+        "start_line": 8122,
+        "end_line": 8122
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 10290,
-        "end_line": 10290
+        "start_line": 10291,
+        "end_line": 10291
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 12001,
-        "end_line": 12001
+        "start_line": 12002,
+        "end_line": 12002
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 12035,
-        "end_line": 12035
+        "start_line": 12036,
+        "end_line": 12036
       },
       {
         "file": "src/cli/run.rs",
@@ -819,13 +819,13 @@
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 3770,
-        "end_line": 3770
+        "start_line": 3771,
+        "end_line": 3771
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 3799,
-        "end_line": 3799
+        "start_line": 3800,
+        "end_line": 3800
       },
       {
         "file": "src/cli/validate.rs",
@@ -1594,23 +1594,18 @@
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 2246,
-        "end_line": 2246
+        "start_line": 2247,
+        "end_line": 2247
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 3519,
-        "end_line": 3519
+        "start_line": 3520,
+        "end_line": 3520
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 4928,
-        "end_line": 4928
-      },
-      {
-        "file": "src/cli/mod.rs",
-        "start_line": 5855,
-        "end_line": 5855
+        "start_line": 4929,
+        "end_line": 4929
       },
       {
         "file": "src/cli/mod.rs",
@@ -1619,18 +1614,18 @@
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 6972,
-        "end_line": 6972
+        "start_line": 5857,
+        "end_line": 5857
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 6976,
-        "end_line": 6976
+        "start_line": 6973,
+        "end_line": 6973
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 7011,
-        "end_line": 7011
+        "start_line": 6977,
+        "end_line": 6977
       },
       {
         "file": "src/cli/mod.rs",
@@ -1639,98 +1634,103 @@
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 7174,
-        "end_line": 7174
+        "start_line": 7013,
+        "end_line": 7013
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 7210,
-        "end_line": 7210
+        "start_line": 7175,
+        "end_line": 7175
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 7245,
-        "end_line": 7245
+        "start_line": 7211,
+        "end_line": 7211
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 7256,
-        "end_line": 7256
+        "start_line": 7246,
+        "end_line": 7246
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 7369,
-        "end_line": 7369
+        "start_line": 7257,
+        "end_line": 7257
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 7459,
-        "end_line": 7459
+        "start_line": 7370,
+        "end_line": 7370
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 7694,
-        "end_line": 7694
+        "start_line": 7460,
+        "end_line": 7460
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 8147,
-        "end_line": 8147
+        "start_line": 7695,
+        "end_line": 7695
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 8186,
-        "end_line": 8186
+        "start_line": 8148,
+        "end_line": 8148
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 8232,
-        "end_line": 8232
+        "start_line": 8187,
+        "end_line": 8187
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 8243,
-        "end_line": 8243
+        "start_line": 8233,
+        "end_line": 8233
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 8867,
-        "end_line": 8867
+        "start_line": 8244,
+        "end_line": 8244
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 8869,
-        "end_line": 8869
+        "start_line": 8868,
+        "end_line": 8868
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 8946,
-        "end_line": 8946
+        "start_line": 8870,
+        "end_line": 8870
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 8982,
-        "end_line": 8982
+        "start_line": 8947,
+        "end_line": 8947
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 9024,
-        "end_line": 9024
+        "start_line": 8983,
+        "end_line": 8983
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 9130,
-        "end_line": 9130
+        "start_line": 9025,
+        "end_line": 9025
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 9578,
-        "end_line": 9578
+        "start_line": 9131,
+        "end_line": 9131
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 10842,
-        "end_line": 10842
+        "start_line": 9579,
+        "end_line": 9579
+      },
+      {
+        "file": "src/cli/mod.rs",
+        "start_line": 10843,
+        "end_line": 10843
       },
       {
         "file": "src/cli/setup.rs",
@@ -1809,28 +1809,23 @@
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 2439,
-        "end_line": 2439
+        "start_line": 2440,
+        "end_line": 2440
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 2506,
-        "end_line": 2506
+        "start_line": 2507,
+        "end_line": 2507
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 2511,
-        "end_line": 2511
+        "start_line": 2512,
+        "end_line": 2512
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 2537,
-        "end_line": 2537
-      },
-      {
-        "file": "src/cli/setup.rs",
-        "start_line": 2565,
-        "end_line": 2565
+        "start_line": 2538,
+        "end_line": 2538
       },
       {
         "file": "src/cli/setup.rs",
@@ -1839,18 +1834,18 @@
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 2583,
-        "end_line": 2583
+        "start_line": 2567,
+        "end_line": 2567
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 2903,
-        "end_line": 2903
+        "start_line": 2584,
+        "end_line": 2584
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 2957,
-        "end_line": 2957
+        "start_line": 2904,
+        "end_line": 2904
       },
       {
         "file": "src/cli/setup.rs",
@@ -1864,28 +1859,28 @@
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 2968,
-        "end_line": 2968
+        "start_line": 2960,
+        "end_line": 2960
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 2985,
-        "end_line": 2985
+        "start_line": 2969,
+        "end_line": 2969
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 2991,
-        "end_line": 2991
+        "start_line": 2986,
+        "end_line": 2986
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 2994,
-        "end_line": 2994
+        "start_line": 2992,
+        "end_line": 2992
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 2997,
-        "end_line": 2997
+        "start_line": 2995,
+        "end_line": 2995
       },
       {
         "file": "src/cli/setup.rs",
@@ -1894,8 +1889,8 @@
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 3006,
-        "end_line": 3006
+        "start_line": 2999,
+        "end_line": 2999
       },
       {
         "file": "src/cli/setup.rs",
@@ -1914,58 +1909,58 @@
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 3019,
-        "end_line": 3019
+        "start_line": 3010,
+        "end_line": 3010
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 3022,
-        "end_line": 3022
+        "start_line": 3020,
+        "end_line": 3020
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 3025,
-        "end_line": 3025
+        "start_line": 3023,
+        "end_line": 3023
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 3378,
-        "end_line": 3378
+        "start_line": 3026,
+        "end_line": 3026
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 3407,
-        "end_line": 3407
+        "start_line": 3379,
+        "end_line": 3379
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 3437,
-        "end_line": 3437
+        "start_line": 3408,
+        "end_line": 3408
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 3515,
-        "end_line": 3515
+        "start_line": 3438,
+        "end_line": 3438
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 3745,
-        "end_line": 3745
+        "start_line": 3516,
+        "end_line": 3516
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 4023,
-        "end_line": 4023
+        "start_line": 3746,
+        "end_line": 3746
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 4234,
-        "end_line": 4234
+        "start_line": 4024,
+        "end_line": 4024
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 4236,
-        "end_line": 4236
+        "start_line": 4235,
+        "end_line": 4235
       },
       {
         "file": "src/cli/setup.rs",
@@ -1979,18 +1974,23 @@
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 4258,
-        "end_line": 4258
+        "start_line": 4239,
+        "end_line": 4239
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 4261,
-        "end_line": 4261
+        "start_line": 4259,
+        "end_line": 4259
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 4263,
-        "end_line": 4263
+        "start_line": 4262,
+        "end_line": 4262
+      },
+      {
+        "file": "src/cli/setup.rs",
+        "start_line": 4264,
+        "end_line": 4264
       },
       {
         "file": "src/cli/validate.rs",
@@ -4339,8 +4339,8 @@
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 6703,
-        "end_line": 6709
+        "start_line": 6704,
+        "end_line": 6710
       },
       {
         "file": "tests/simplification_audit.rs",
@@ -5139,8 +5139,8 @@
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 3559,
-        "end_line": 3564
+        "start_line": 3560,
+        "end_line": 3565
       }
     ]
   },
@@ -5804,8 +5804,8 @@
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 2728,
-        "end_line": 2742
+        "start_line": 2729,
+        "end_line": 2743
       }
     ]
   },
@@ -5904,13 +5904,13 @@
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 5504,
-        "end_line": 5504
+        "start_line": 5505,
+        "end_line": 5505
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 12488,
-        "end_line": 12488
+        "start_line": 12489,
+        "end_line": 12489
       },
       {
         "file": "tests/cli.rs",
@@ -6979,8 +6979,8 @@
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 5317,
-        "end_line": 5319
+        "start_line": 5318,
+        "end_line": 5320
       }
     ]
   },
@@ -7004,8 +7004,8 @@
     "sites": [
       {
         "file": "src/cli/mod.rs",
-        "start_line": 3938,
-        "end_line": 3957
+        "start_line": 3939,
+        "end_line": 3958
       },
       {
         "file": "tests/reset_build_cache_periphery.rs",
@@ -7019,8 +7019,8 @@
     "sites": [
       {
         "file": "src/cli/mod.rs",
-        "start_line": 5540,
-        "end_line": 5547
+        "start_line": 5541,
+        "end_line": 5548
       },
       {
         "file": "tests/cli.rs",
@@ -7039,13 +7039,13 @@
     "sites": [
       {
         "file": "src/cli/mod.rs",
-        "start_line": 7956,
-        "end_line": 8011
+        "start_line": 7957,
+        "end_line": 8012
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 8014,
-        "end_line": 8053
+        "start_line": 8015,
+        "end_line": 8054
       }
     ]
   },
@@ -7054,13 +7054,13 @@
     "sites": [
       {
         "file": "src/cli/mod.rs",
-        "start_line": 10310,
-        "end_line": 10321
+        "start_line": 10311,
+        "end_line": 10322
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 11651,
-        "end_line": 11654
+        "start_line": 11652,
+        "end_line": 11655
       }
     ]
   },
@@ -7069,8 +7069,8 @@
     "sites": [
       {
         "file": "src/cli/mod.rs",
-        "start_line": 10630,
-        "end_line": 10639
+        "start_line": 10631,
+        "end_line": 10640
       },
       {
         "file": "tests/cli.rs",
@@ -7084,13 +7084,13 @@
     "sites": [
       {
         "file": "src/cli/mod.rs",
-        "start_line": 11919,
-        "end_line": 11928
+        "start_line": 11920,
+        "end_line": 11929
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 11966,
-        "end_line": 11985
+        "start_line": 11967,
+        "end_line": 11986
       }
     ]
   },

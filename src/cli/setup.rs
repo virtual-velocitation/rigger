@@ -1627,10 +1627,11 @@ fn instructions_in_force_line(operator: &[instructions::Instruction]) -> String 
 /// exactly as it was - no lint mention.
 pub(crate) fn cmd_prime(args: &[String]) -> Res {
     let spec_path = args.first();
-    // A session started in a subdirectory or a unit worktree reads the project's instruction layer
-    // under the main repo root governing the cwd, never the cwd's own, with or without a store and
-    // inside a gate's store fence alike ([`project_instruction_layer`]); its store and identity
-    // come from the one store-location authority every courier resolves through.
+    // A session started in a subdirectory or a unit worktree of a git repository reads the
+    // project's instruction layer under the main repo root, never the cwd's own, and outside git
+    // the layer at the cwd, with or without a store and inside a gate's store fence alike
+    // ([`project_instruction_layer`]); its store and identity come from the one store-location
+    // authority every courier resolves through.
     println!(
         "{}",
         instructions_in_force_line(&project_instruction_layer()?)

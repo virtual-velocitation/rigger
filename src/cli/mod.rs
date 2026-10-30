@@ -1493,13 +1493,14 @@ fn store_if_any() -> Result<Option<(StoreLocation, StoreSelection)>, Box<dyn std
 
 /// The operator instruction layer the instruction reporters (`rigger prime`, `rigger
 /// instructions`) report, read under the project root governing the cwd ([`project_root`]) - so a
-/// reporter run from a subdirectory or a nested worktree reads the project's layer, never the
-/// subdirectory's own. The resolved store is never consulted: under the gate store fence it is a
-/// scratch store whose parent is no project.
+/// reporter run from a subdirectory or a nested worktree of a git repository reads the project's
+/// layer, never the subdirectory's own, and outside git reads the layer at the cwd. A cwd that
+/// cannot be read ([`cwd`]) holds no layer, so the reporters report the built-ins alone. The
+/// resolved store is never consulted: under the gate store fence it is a scratch store whose parent
+/// is no project.
 fn project_instruction_layer() -> Result<Vec<instructions::Instruction>, Box<dyn std::error::Error>>
 {
-    let root = project_root(&std::env::current_dir()?);
-    Ok(config_store::load_instructions(&root)?)
+    Ok(config_store::load_instructions(&project_root(&cwd()))?)
 }
 
 /// The project root governing `start`: the main repo root ([`main_repo_root`]), else, outside any
