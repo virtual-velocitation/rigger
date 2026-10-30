@@ -675,11 +675,6 @@
     "reason": "`walk` is the recursive helper that `fingerprint_subtree` calls, not a second copy of it."
   },
   {
-    "id": "dup-ece604793e18",
-    "disposition": "not-a-duplicate",
-    "reason": "Named constructors of one port double that each delegate to the shared `built` with different arguments."
-  },
-  {
     "id": "dup-56fda398784b",
     "disposition": "not-a-duplicate",
     "reason": "The store-secrets `write_store_conn` also locks the file to owner-only so the permission warning stays out of its cases; the precedence one writes it plain."
@@ -838,11 +833,6 @@
     "id": "dup-28ac8c722172",
     "disposition": "not-a-duplicate",
     "reason": "`run::current_run_id` is the one resolution over an event list; the MCP server method only reads its own event source (the served store's current run) and takes the id from it."
-  },
-  {
-    "id": "dup-4f6fb68b58e5",
-    "disposition": "not-a-duplicate",
-    "reason": "`McpSession::from_command` is the one session constructor; `start_with` is a one-line call to it over the isolated `rigger_command`, and `start` a one-line default-arguments call to `start_with`; seven call sites open a plain `rigger mcp` session through `start`."
   },
   {
     "id": "dup-e45a2413a3f0",
