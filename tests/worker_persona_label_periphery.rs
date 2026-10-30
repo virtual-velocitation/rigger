@@ -17,8 +17,9 @@ use common::repo::repo_text;
 use common::repo::worker_label;
 
 /// Run the REAL `workerLabel(req)` - extracted verbatim from the shipped `workflows/rigger.js`
-/// along with the `PERSONA_VERB` table and the `personaOf`/`firstSentence` helpers it calls -
-/// under a real `node` subprocess. `workerLabel` depends on no injected global (no `log`, no
+/// along with the `PERSONA_VERB`/`ROSTER_VERB` tables and the `bareRoleOf`/`personaOf`/
+/// `firstSentence`/`roleAttempt` helpers it calls - under a real `node` subprocess.
+/// `workerLabel` depends on no injected global (no `log`, no
 /// `agent`), so nothing needs stubbing. Returns the rendered label, or `None` when `node` is not
 /// on PATH - the same graceful-absence contract `tests/step_attention_periphery.rs::
 /// run_relay_attention` and `src/main.rs`'s own `node --check` test already establish for this

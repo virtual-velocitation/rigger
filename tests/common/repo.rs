@@ -341,10 +341,10 @@ pub fn missing_rows(text: &str, table: &[(&str, &str)], label: &str) -> Vec<Stri
 
 /// Run the REAL `workerLabel(req)` - extracted verbatim from the shipped `workflows/rigger.js`
 /// along with the `PERSONA_VERB`/`ROSTER_VERB` tables and the `bareRoleOf`/`personaOf`/
-/// `firstSentence`/`roleAttempt` helpers it calls - under a real `node` subprocess, for a wave item `id` titled
-/// `title`, stamped with `req.unit` and `req.reviews` when given (omitted entirely otherwise, as
-/// an ordinary build unit's wave item). Returns the rendered label, or `None` when `node` is not
-/// on PATH (missing node is an environment fact, never a test failure).
+/// `firstSentence`/`roleAttempt` helpers it calls - under a real `node` subprocess, for a wave
+/// item `id` titled `title`, stamped with `req.unit` and `req.reviews` when given (omitted
+/// entirely otherwise, as an ordinary build unit's wave item). Returns the rendered label, or
+/// `None` when `node` is not on PATH (missing node is an environment fact, never a test failure).
 pub fn worker_label(
     id: &str,
     title: &str,
