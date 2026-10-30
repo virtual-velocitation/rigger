@@ -3171,16 +3171,18 @@ struct RunCtx<'a> {
     /// [`Worktree::diff_names`] (merge-base mode) against the OLDER base this landing merged from.
     pending_landing: Mutex<HashMap<String, (u32, String, String)>>,
     /// Every durably-recorded `integrate-landed` row (spec 103, criterion 3 - RE-GATE WHAT
-    /// LANDED), per `(unit, attempt)`: `(pass, sha, pre_merge)`. Seeded ONCE at run start
-    /// from the prior log ([`landings_from_log`]) and never removed - unlike
-    /// [`pending_landing`](RunCtx::pending_landing), which stops tracking a landing the
-    /// instant it closes. Consulted at the TOP of
+    /// LANDED), per `(unit, attempt)`: `(pass, sha, pre_merge)`. Seeded at run start from
+    /// the prior log ([`landings_from_log`]) and kept in step live by
+    /// [`RunCtx::record_landed`], so it always holds what a fresh process would fold from the
+    /// same log; never removed - unlike [`pending_landing`](RunCtx::pending_landing), which
+    /// stops tracking a landing the instant it closes. Consulted at the TOP of
     /// [`integrate_and_emit`](RunCtx::integrate_and_emit) exactly when the `pending_landing` lookup
     /// finds nothing pending and nothing is owed: that combination alone cannot distinguish
     /// "never landed anything" from "landed for real, crashed before the post-merge re-gate
     /// that must follow it ever ran" - this map is the durable fact that can, so a real
     /// merge's re-gate still runs on resume instead of the unit silently reaching
-    /// `UnitIntegrated` ungated.
+    /// `UnitIntegrated` ungated. Also the fallback [`RunCtx::landed_at`] reads when the merge
+    /// loop's last pass landed nothing new.
     landed: Mutex<HashMap<String, (u32, String, String)>>,
     /// The declarative failure taxonomy (spec 10, unit 2): the SINGLE authority the
     /// conductor folds its gate-failure classification from, built once from
@@ -9894,7 +9896,7 @@ impl RunCtx<'_> {
         // genuinely never ran (or failed) instead leaves `files` non-empty, `already_landed`
         // `None`, and this loop runs for real - it durably re-records row 4 itself once
         // `land` actually succeeds, same as any other resumed pass.
-        let (commit, pre_merge) = if let Some((landed_pass, unit_tip, run_tip)) = already_landed {
+        let (merged, merged_from) = if let Some((landed_pass, unit_tip, run_tip)) = already_landed {
             self.record_landed(&st.name, attempt, landed_pass, &unit_tip, &run_tip)?;
             clear_attempt(&self.pending_landing, &st.name, attempt);
             (unit_tip, run_tip)
@@ -9932,14 +9934,17 @@ impl RunCtx<'_> {
                         // TABLE row 1's after-record: clean (nothing conflicted).
                         self.record_merge_outcome(&st.name, attempt, pass, &[])?;
                         if c.is_empty() {
-                            // A true no-op pass within a LIVE loop iteration (e.g. the follow-up
-                            // check after a confined/owed regenerate round found nothing further
-                            // to land): the already-landed-but-uncrecorded case this function's
-                            // OWN entry already special-cased before this loop ever starts (see
-                            // `pending_landing` above) never reaches here - a resumed call whose
-                            // FIRST pass would otherwise hit this exact branch takes that earlier
-                            // fast path instead, recording row 4's after-record without ever
-                            // re-attempting `merge_into_worktree`/`land` at all.
+                            // A pass that merged nothing new (e.g. the follow-up check after a
+                            // confined/owed regenerate round found nothing further to land, or
+                            // a resumed catch-up whose regeneration was already committed): the
+                            // empty commit is not the result - `Self::landed_at`, below the
+                            // loop, resolves it to the attempt's latest recorded landing. The
+                            // already-landed-but-unrecorded case this function's OWN entry
+                            // special-cases before this loop ever starts (see `pending_landing`
+                            // above) never reaches here - a resumed call whose FIRST pass would
+                            // otherwise hit this exact branch takes that earlier fast path
+                            // instead, recording row 4's after-record without ever re-attempting
+                            // `merge_into_worktree`/`land` at all.
                             break (c, pre_merge);
                         }
                         // TABLE row 4: land this pass's resolved commit onto the run branch,
@@ -10144,6 +10149,7 @@ impl RunCtx<'_> {
                 }
             }
         };
+        let (commit, pre_merge) = self.landed_at(&st.name, attempt, merged, merged_from);
         // spec 12, unit 5: re-run the FULL gate suite against the MERGED run-branch tree
         // BEFORE emitting UnitIntegrated. A unit's pre-merge gates ran in its OWN worktree, so
         // an UNPREDICTED overlap - two batch-mates the grounder placed together that edit the
@@ -10949,7 +10955,9 @@ impl RunCtx<'_> {
     /// `integrate-landing-intent` recorded as `run_tip` - carried here too so a LATER resume,
     /// after the `pending_landing` lookup has stopped seeing this landing (matched, no longer
     /// pending), can still recover both the landed sha AND the pre-landing tip from this row
-    /// alone via [`landed`](RunCtx::landed), never from live process state.
+    /// alone via [`landed`](RunCtx::landed), never from live process state. The live
+    /// [`landed`](RunCtx::landed) entry is updated in the same step, so this process reads the
+    /// landing exactly as a resumed one folds it from the log.
     fn record_landed(
         &self,
         unit: &str,
@@ -10964,7 +10972,43 @@ impl RunCtx<'_> {
             unit,
             attempt,
             json!({"sha": sha, "pre_merge": pre_merge}),
-        )
+        )?;
+        self.landed.lock().unwrap().insert(
+            conflict_regenerate_key(unit, attempt),
+            (pass, sha.to_string(), pre_merge.to_string()),
+        );
+        Ok(())
+    }
+
+    /// The ONE place that decides the `(commit, pre_merge)` `unit`'s `attempt` integrates at:
+    /// the commit `UnitIntegrated` records, the post-merge re-gate covers and a red re-gate
+    /// rolls back to `pre_merge` from. `merged`/`merged_from` are what the merge loop's final
+    /// pass produced; when that pass landed something they stand. When it merged nothing new
+    /// (`merged` empty: the follow-up pass after an owed regeneration whose tree the
+    /// resolver's own commit already carried, or a resumed catch-up's), the attempt's latest
+    /// recorded landing ([`landed`](RunCtx::landed)) is what the unit landed at, never an
+    /// empty commit that reads as a unit that landed nothing. An attempt with no landing at
+    /// all keeps the empty commit: a stage with nothing to land.
+    ///
+    /// The fallback's `pre_merge` is safe to roll back to: an empty pass means the worktree's
+    /// HEAD equals the run branch's tip ([`Worktree::merge_into_worktree`]), so nothing landed
+    /// after the recorded landing, and a reset to its `pre_merge` undoes this unit alone. A
+    /// sibling that landed while the lock was dropped for the regeneration makes that pass
+    /// merge its tip, a non-empty commit that lands and stands.
+    fn landed_at(
+        &self,
+        unit: &str,
+        attempt: u32,
+        merged: String,
+        merged_from: String,
+    ) -> (String, String) {
+        if !merged.is_empty() {
+            return (merged, merged_from);
+        }
+        match cached(&self.landed, &conflict_regenerate_key(unit, attempt)) {
+            Some((_, sha, pre_merge)) => (sha, pre_merge),
+            None => (merged, merged_from),
+        }
     }
 
     /// The ONE mutation authority every spec 88 criterion 1 round 4 TABLE row-record above
