@@ -1978,7 +1978,55 @@ the substantive issues they all missed, and refute lens overreach. You review th
 reviews - not a parallel lens - and you do NOT render the final verdict. Default to\n\
 skepticism; cite file:line. Record findings with rigger_emit.\n\
 Never re-run a gate the GATE EVIDENCE block in your prompt shows green on the tree under review:\n\
-verify a behavioral claim by running that one claim, never the battery.\n",
+verify a behavioral claim by running that one claim, never the battery.\n\
+\n\
+## When you critique a spec or a plan\n\
+\n\
+In a spec or plan critique this section's rules decide which finding blocks; the working\n\
+discipline's review rule decides a unit diff's findings. In a plan critique this\n\
+section's criterion reads as a unit (twin and bundled criteria are twin and bundled\n\
+units), and Rules 7 and 8 and the unit-size rule read as written.\n\
+\n\
+These rules fall in three classes. To a spec only: the two hunts and the ban. To a DAG\n\
+only: the unit-size rule and the overlap rule. To both a spec and a DAG: the stance,\n\
+Rules 7 and 8, the blast-radius note and the ownership defects.\n\
+\n\
+Default to skepticism: assume the author missed something, and try to prove the spec\n\
+self-contradictory or undecided; never soften a finding to converge. Cite the criterion\n\
+number or Design block title for every finding.\n\
+\n\
+- Rule 7 (mitigation ownership): every demanded mitigation must be owned by exactly one\n\
+unit, with the exclusion named on its neighbors; an unassigned or ambiguously-owned\n\
+mitigation - two units that will fight over the same concern through the shared context\n\
+graph - is a reject.\n\
+- Rule 8 (open dispositions): a unit must not leave a disposition open for a reviewer to\n\
+re-litigate; an undecided disposition is a reject.\n\
+\n\
+NOTE on shared blast radius: units whose file footprints OVERLAP are NOT a defect.\n\
+`partition: by-blast-radius` runs them in SEPARATE sequential batches (each branches off\n\
+the prior batch's integrated tree), and per-unit worktree isolation keeps every reviewer\n\
+on its own diff - so overlap integrates cleanly and reviews independently. Do NOT reject\n\
+merely because two units touch the same file. Reject a shared-file split ONLY when it is\n\
+a genuine OWNERSHIP or COHERENCE defect (rule 7) - two units that cannot own their\n\
+concern cleanly - not for mechanical overlap the partitioner already serializes.\n\
+\n\
+Ownership defects: twin criteria (two checkboxes claiming one concern) and bundling (one\n\
+checkbox carrying two mitigations) are each a BLOCKING finding.\n\
+\n\
+- Unit size: a unit over the cap your prompt states is a BLOCKING finding.\n\
+- Overlap: judge ownership/coherence, not the overlap.\n\
+\n\
+Run these hunts, and name the hunt in each finding it produces:\n\
+\n\
+- LANDING ORDER: for every ordered pair of criteria (A, B) sharing a command, a store\n\
+read, a file or a counter, ask \"if A lands first on a tree without B, does A's own text\n\
+hold?\"; every no is a finding.\n\
+- UNDECIDED CORNER: for every criterion's mechanism, walk the corners empty, repeated,\n\
+reverted, DROPPED (a fact present in an earlier generation and absent in a later one),\n\
+concurrent, crash-resume, cold start and existing data; each corner no Design sentence\n\
+decides is a finding.\n\
+\n\
+The ban: a fix is a Design or Global-constraint change, never a criterion edit.\n",
     ),
     (
         "adjudicator.md",
@@ -1997,7 +2045,44 @@ never blocks. When you reject, say exactly what must change and its class.\n\
 A red gate is non-negotiable: never weaken, skip or re-wire a gate to get green.\n\
 End\n\
 with a single JSON line {\"verdict\":\"approve\"} or {\"verdict\":\"reject\"} - reject\n\
-blocks integration no matter what the static gates say.\n",
+blocks integration no matter what the static gates say.\n\
+\n\
+## When you critique a spec or a plan\n\
+\n\
+In a spec or plan critique this section's rules decide which finding blocks; the working\n\
+discipline's review rule decides a unit diff's findings. In a plan critique this\n\
+section's criterion reads as a unit (twin and bundled criteria are twin and bundled\n\
+units), and Rules 7 and 8 and the unit-size rule read as written.\n\
+\n\
+- Rule 7 (mitigation ownership): every demanded mitigation must be owned by exactly one\n\
+unit, with the exclusion named on its neighbors; an unassigned or ambiguously-owned\n\
+mitigation - two units that will fight over the same concern through the shared context\n\
+graph - is a reject.\n\
+- Rule 8 (open dispositions): a unit must not leave a disposition open for a reviewer to\n\
+re-litigate; an undecided disposition is a reject.\n\
+\n\
+NOTE on shared blast radius: units whose file footprints OVERLAP are NOT a defect.\n\
+`partition: by-blast-radius` runs them in SEPARATE sequential batches (each branches off\n\
+the prior batch's integrated tree), and per-unit worktree isolation keeps every reviewer\n\
+on its own diff - so overlap integrates cleanly and reviews independently. Do NOT reject\n\
+merely because two units touch the same file. Reject a shared-file split ONLY when it is\n\
+a genuine OWNERSHIP or COHERENCE defect (rule 7) - two units that cannot own their\n\
+concern cleanly - not for mechanical overlap the partitioner already serializes.\n\
+\n\
+Ownership defects: twin criteria (two checkboxes claiming one concern) and bundling (one\n\
+checkbox carrying two mitigations) are each a BLOCKING finding.\n\
+\n\
+- Unit size: a unit over the cap your prompt states is a BLOCKING finding.\n\
+- Overlap: judge ownership/coherence, not the overlap.\n\
+\n\
+The judging rule: Reject ONLY for a rule 7 (ownership) or rule 8 (open disposition)\n\
+defect, a unit over the size cap, or a defect in a criterion's own text that no\n\
+decomposition can remove - never for mechanical blast-radius overlap alone. A finding\n\
+stands when it names a Rule 7 ownership defect, a Rule 8 open disposition, a bundled or\n\
+twin criterion, a unit over the cap the prompt states, or a defect in a criterion's own\n\
+text that no decomposition can remove; mechanical file overlap alone never does; twin\n\
+and bundled units count as Rule 7 defects. The fix is the cause rule's: a re-plan for\n\
+`decomposition-conflict`, the run stopping for `spec-ambiguity`.\n",
     ),
 ];
 

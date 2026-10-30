@@ -306,59 +306,20 @@ pub fn adjudicator_roster(lenses: &[String], adversary_id: &str) -> Vec<String> 
     step_roster(&steps, steps.len(), review_step_role)
 }
 
-/// The plan-critique rules both critique prompts read (spec 112): the Rule 7 and Rule 8 bullets
-/// and the note on shared blast radius, exactly as the DAG critique has always pushed them. The
-/// DAG critique pushes them after its opener; the spec critique pushes them after its stance,
-/// which tells the critic a unit reads as a criterion and a reject as a BLOCKING finding.
-pub const PLAN_CRITIQUE_RULES: &str =
-    "- Rule 7 (mitigation ownership): every demanded mitigation must be owned by \
-     exactly one unit, with the exclusion named on its neighbors; an unassigned or \
-     ambiguously-owned mitigation - two units that will fight over the same concern \
-     through the shared context graph - is a reject.\n\
-     - Rule 8 (open dispositions): a unit must not leave a disposition open for a \
-     reviewer to re-litigate; an undecided disposition is a reject.\n\
-     NOTE on shared blast radius: units whose file footprints OVERLAP are NOT a \
-     defect. `partition: by-blast-radius` runs them in SEPARATE sequential batches \
-     (each branches off the prior batch's integrated tree), and per-unit worktree \
-     isolation keeps every reviewer on its own diff - so overlap integrates cleanly \
-     and reviews independently. Do NOT reject merely because two units touch the \
-     same file. Reject a shared-file split ONLY when it is a genuine OWNERSHIP or \
-     COHERENCE defect (rule 7) - two units that cannot own their concern cleanly - \
-     not for mechanical overlap the partitioner already serializes.\n\n";
+/// The spec critique's task framing and voided-duties clause: what is under critique, how the
+/// critic's persona rules read on a spec, and the duties this task voids. The critique method
+/// itself is the persona's, under its `## When you critique a spec or a plan` section.
+const CRITIQUE_FRAMING: &str =
+    "This is a critique of a SPEC, not code: the text below is a design \
+     and its Done-when criteria, written before any run builds them. In your persona's critique \
+     rules a unit reads as a criterion, and a reject as a BLOCKING finding. Every persona or \
+     discipline duty that conflicts with a spec critique is void for this task: reviewing lenses \
+     and a diff, the rule against rendering a verdict, running gates or any build or test command, \
+     editing a file, and recording through `rigger_emit`, `rigger_progress` or `rigger_scratch`. \
+     Read the spec and the repository; the finding lines and the verdict line of your final \
+     message are the only output.\n\n";
 
-/// Section (i) of the spec critique prompt: the stance, and the persona and discipline duties a
-/// spec critique voids.
-const CRITIQUE_STANCE: &str = "This is a critique of a SPEC, not code: the text below is a design \
-     and its Done-when criteria, written before any run builds them. Default to skepticism: \
-     assume the author missed something, and try to prove the spec self-contradictory or \
-     undecided; never soften a finding to converge. Cite the criterion number or Design block \
-     title for every finding. In the rules below a unit reads as a criterion, and a reject as a \
-     BLOCKING finding. Every persona or discipline duty that conflicts with a spec critique is \
-     void for this task: reviewing lenses and a diff, the rule against rendering a verdict, \
-     running gates or any build or test command, editing a file, and recording through \
-     `rigger_emit`, `rigger_progress` or `rigger_scratch`. Read the spec and the repository; the \
-     finding lines and the verdict line of your final message are the only output.\n\nThe rules:\n";
-
-/// Section (iii): the two ownership defects a spec can carry.
-const CRITIQUE_OWNERSHIP: &str = "Ownership defects in a spec: twin criteria (two checkboxes \
-     claiming one concern) and bundling (one checkbox carrying two mitigations) are each a \
-     BLOCKING finding.\n\n";
-
-/// Section (iv): the two named hunts.
-const CRITIQUE_HUNTS: &str = "Run two hunts, and name the hunt in each finding it produces:\n\
-     - LANDING ORDER: for every ordered pair of criteria (A, B) sharing a command, a store read, \
-     a file or a counter, ask \"if A lands first on a tree without B, does A's own text hold?\"; \
-     every no is a finding.\n\
-     - UNDECIDED CORNER: for every criterion's mechanism, walk the corners empty, repeated, \
-     reverted, DROPPED (a fact present in an earlier generation and absent in a later one), \
-     concurrent, crash-resume, cold start and existing data; each corner no Design sentence \
-     decides is a finding.\n\n";
-
-/// Section (v): the ban on criterion edits.
-const CRITIQUE_BAN: &str = "The ban: a fix is a Design or Global-constraint change, never a \
-     criterion edit.\n\n";
-
-/// Section (vi): the critic's output contract.
+/// The critic's output contract.
 const CRITIQUE_OUTPUT_CONTRACT: &str = "The output contract: one finding per line, then the \
      verdict as the last line:\n\n\
      <critic id> | BLOCKING | <criterion n or Design block title> | <exact reading that breaks> \
@@ -369,13 +330,14 @@ const CRITIQUE_OUTPUT_CONTRACT: &str = "The output contract: one finding per lin
      NON-BLOCKING; any other line is prose. `<critic id>` is your own short label for the \
      finding. The verdict is reject when any line is BLOCKING, else approve.\n\n";
 
-/// The spec critique prompt (spec 112): the stance, [`PLAN_CRITIQUE_RULES`], the ownership
-/// defects, the two hunts, the ban on criterion edits, the output contract, and the spec text
-/// verbatim as its tail - in that order, from the spec path and text alone.
+/// The spec critique prompt (spec 112): the task framing with the voided-duties clause, the
+/// output contract, and the spec text verbatim as its tail - in that order, from the spec path
+/// and text alone. The method stands in the critic's persona; a persona without it still
+/// critiques under the output contract.
 pub fn spec_critique_prompt(spec_path: &str, spec_text: &str) -> String {
     format!(
-        "{CRITIQUE_STANCE}{PLAN_CRITIQUE_RULES}{CRITIQUE_OWNERSHIP}{CRITIQUE_HUNTS}{CRITIQUE_BAN}\
-         {CRITIQUE_OUTPUT_CONTRACT}The spec under critique, `{spec_path}`, verbatim:\n\n{spec_text}"
+        "{CRITIQUE_FRAMING}{CRITIQUE_OUTPUT_CONTRACT}The spec under critique, `{spec_path}`, \
+         verbatim:\n\n{spec_text}"
     )
 }
 

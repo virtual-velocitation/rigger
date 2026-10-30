@@ -38,7 +38,7 @@ pub use rigger_domain::review::VERDICT_APPROVE;
 use rigger_domain::review::{
     adjudicator_roster, emitted_verdict_approves, glob_matches, has_verdict_line, review_roster,
     route_review_tier, run_notes, step_ordinal, step_roster, verdict_compensates, RunNote,
-    TierRouting, PLAN_CRITIQUE_RULES,
+    TierRouting,
 };
 #[cfg(test)]
 use rigger_domain::review::{path_is_high_risk, TIER_FULL, TIER_LIGHT};
@@ -8051,17 +8051,16 @@ impl RunCtx<'_> {
         units
     }
 
-    /// Build the plan-critique reviewer prompt (Unit 1, spec 10): the proposed unit DAG,
-    /// the deterministic rule-6 blast-radius analysis, and the three decomposition review
-    /// targets NAMED in the prompt (handbook rules 6-8: shared blast radius, mitigation
-    /// ownership, open dispositions - [`PLAN_CRITIQUE_RULES`], the text the spec critique
-    /// prompt reads too), plus the unit size cap ([`unit_size_cap`]) as a blocking rule
-    /// pushed after them, and closes with the verdict paragraph, whose cause contract tells a
-    /// defect in a criterion's own text (`spec-ambiguity`, which can stop the run - spec 112,
-    /// criterion 5) from one a re-plan can fix. On a re-plan it leads with the prior rejection so
-    /// the reviewer judges the revised DAG against what was wrong before. The same prompt
-    /// feeds the adversary (which appends the review_protocol and emits findings) and the
-    /// adjudicator (whose stdout verdict gates the fan-out).
+    /// Build the plan-critique reviewer prompt (Unit 1, spec 10): the task framing and the
+    /// output contract, never the method, which stands in each reviewer's persona. It names
+    /// those decomposition rules, states the unit size cap ([`unit_size_cap`]), lists the
+    /// proposed unit DAG and the deterministic rule-6 blast-radius analysis, and closes with the
+    /// verdict paragraph, whose cause contract tells a defect in a criterion's own text
+    /// (`spec-ambiguity`, which can stop the run - spec 112, criterion 5) from one a re-plan can
+    /// fix. On a re-plan it leads with the prior rejection so the reviewer judges the revised
+    /// DAG against what was wrong before. The same prompt feeds the adversary (which appends the
+    /// review_protocol and emits findings) and the adjudicator (whose stdout verdict gates the
+    /// fan-out).
     fn build_dag_critique_prompt(
         &self,
         stages: &BTreeMap<String, Stage>,
@@ -8075,19 +8074,11 @@ impl RunCtx<'_> {
             b.push_str(prior_reason.trim());
             b.push_str("\n\nThe planner has since revised the DAG; re-review it below.\n\n");
         }
-        b.push_str(
+        b.push_str(&format!(
             "You are the plan-critique gate. Review the PROPOSED unit DAG below - the \
              decomposition the planner produced - BEFORE any implementer runs, and judge \
-             it against the CROSS-UNIT decomposition rules (docs/handbook/authoring-loops.md \
-             rules 7-8) that per-unit review cannot see:\n",
-        );
-        // The Rule 7 and Rule 8 bullets and the shared-blast-radius note: the one text the spec
-        // critique prompt reads too (spec 112).
-        b.push_str(PLAN_CRITIQUE_RULES);
-        b.push_str(&format!(
-            "- Unit size (blocking): {} A unit over the cap is a reject with \
-             \"cause\":\"decomposition-conflict\", which sends the DAG back to the planner to \
-             split it into ordered units.\n\n",
+             it against the decomposition rules in your persona: the CROSS-UNIT rules that \
+             per-unit review cannot see.\n\n{}\n\n",
             unit_size_cap()
         ));
         b.push_str("Proposed units:\n");
@@ -8120,7 +8111,7 @@ impl RunCtx<'_> {
         } else {
             b.push_str(
                 "\nBlast-radius overlap (informational - the partitioner serializes these \
-                 into sequential batches; judge ownership/coherence, not the overlap):\n",
+                 into sequential batches):\n",
             );
             for (a, other, shared) in conflicts {
                 b.push_str(&format!(
@@ -8135,10 +8126,7 @@ impl RunCtx<'_> {
         b.push_str(&format!(
             "\nRender your final verdict as a JSON line: {{\"verdict\":\"approve\"}} to \
              release the fan-out, or {{\"verdict\":\"reject\"}} to send the decomposition \
-             back to the planner. Reject ONLY for a rule 7 (ownership) or rule 8 \
-             (open disposition) defect, a unit over the size cap, or a defect in a \
-             criterion's own text that no decomposition can remove - never for mechanical \
-             blast-radius overlap alone. A reject's cause follows this gate's contract, \
+             back to the planner. A reject's cause follows this gate's contract, \
              which governs it over any generic cause wording in your persona: \
              \"cause\":\"{}\" only when the upheld defect is in a criterion's \
              own text and no decomposition can remove it (two criteria that contradict \
