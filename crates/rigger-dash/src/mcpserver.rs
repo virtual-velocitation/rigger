@@ -897,12 +897,11 @@ fn append_emit(store: &dyn EventStore, stream: &str, args: &Value) -> Result<Eve
     rigger_graph_sqlite::contextgraph::check_emit(store, stream, &event)
         .map_err(|e| format!("rigger_emit: {e}"))?;
 
-    event.position = store
+    let position = store
         .append(stream, ExpectedRevision::Any, std::slice::from_ref(&event))
         .and_then(|appended| appended.one(&format!("the {typ} on {stream:?}")))
         .map_err(|e| e.to_string())?;
-    event.stream = stream.to_string();
-    Ok(event)
+    Ok(event.appended_at(stream, position))
 }
 
 /// The shared core of `rigger_peers` (the MCP tool) and `rigger peers` (the CLI):

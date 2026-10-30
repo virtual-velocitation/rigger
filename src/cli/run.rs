@@ -2946,11 +2946,10 @@ fn fold_recorded_result(
     pos: rigger::eventstore::Position,
 ) -> contextgraph::Fold {
     match res.to_event() {
-        Ok(mut event) => {
-            event.position = pos;
-            event.stream = conductor::STREAM.to_string();
-            contextgraph::Fold::of(loc.graph(selection), &event)
-        }
+        Ok(event) => contextgraph::Fold::of(
+            loc.graph(selection),
+            &event.appended_at(conductor::STREAM, pos),
+        ),
         Err(e) => contextgraph::Fold::NotFolded(e.to_string()),
     }
 }

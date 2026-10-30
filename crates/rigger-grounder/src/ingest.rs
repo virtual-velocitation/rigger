@@ -49,12 +49,9 @@ fn placed(stream: &str, events: &[Event], appended: &Appended) -> Result<Vec<Eve
     Ok(appended
         .placed()
         .filter_map(|(i, position)| {
-            events.get(i).map(|e| {
-                let mut e = e.clone();
-                e.position = position;
-                e.stream = stream.to_string();
-                e
-            })
+            events
+                .get(i)
+                .map(|e| e.clone().appended_at(stream, position))
         })
         .collect())
 }

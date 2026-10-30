@@ -168,6 +168,15 @@ impl Event {
         self
     }
 
+    /// This event as an append placed it: on `stream`, at the `position` the append's report
+    /// gave it - the two stamps a writer that keeps the event it handed the store takes from
+    /// that report.
+    pub fn appended_at(mut self, stream: &str, position: Position) -> Self {
+        self.stream = stream.to_string();
+        self.position = position;
+        self
+    }
+
     /// The payload decoded as a `T`, or `None` when it is not one - the sentinel arm that keeps
     /// a fold panic-free on a malformed, foreign or partial event.
     pub fn decode<T: serde::de::DeserializeOwned>(&self) -> Option<T> {
