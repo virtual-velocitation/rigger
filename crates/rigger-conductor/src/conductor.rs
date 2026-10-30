@@ -18274,6 +18274,162 @@ mod tests {
         stages
     }
 
+    /// The spec both runs of a landed-criterion row run under, unless the row moves run 1.
+    const LANDED_SPEC: &str = "specs/7-landed-criteria.md";
+
+    /// One row of the landed-criterion table: run 1 ran under `run1_spec` and integrated criterion
+    /// A as `u-a-1`, a compensation reverting that integrate when `compensated`, and, when `split`,
+    /// left a second part of A (`u-a-2`) failed beside it; run 2 is driven as one step or, when
+    /// `resumed`, as two (the first parks `u-b`'s implementer); `lands` says whether run 2's `u-a`
+    /// reaches Integrated with no spawn.
+    #[derive(Clone, Copy)]
+    struct LandedRow {
+        run1_spec: &'static str,
+        compensated: bool,
+        split: bool,
+        resumed: bool,
+        lands: bool,
+    }
+
+    /// The base row: run 1 of the same spec integrated A, nothing reverted it, so run 2's A lands.
+    const LANDS: LandedRow = LandedRow {
+        run1_spec: LANDED_SPEC,
+        compensated: false,
+        split: false,
+        resumed: false,
+        lands: true,
+    };
+
+    /// A CRITERION AN EARLIER RUN OF THE SAME SPEC INTEGRATED IS NOT BUILT AGAIN: over a seeded
+    /// log where run 1 integrated criterion A and left criterion B failed, run 2 plans `u-a` for A
+    /// and `u-b` for B. Per `row`, `u-a` either reaches Integrated with no spawn - recorded once,
+    /// with the no-artifact marker, naming run 1's `u-a-1` - or takes the full lifecycle; `u-b`
+    /// always spawns and integrates.
+    fn assert_landed_criterion(row: LandedRow) {
+        let crit_a = "criterion A: the metrics module is implemented";
+        let crit_b = "criterion B: the stats endpoint is implemented";
+        let (cid_a, cid_b) = (
+            criterion_stable_id(1, crit_a),
+            criterion_stable_id(2, crit_b),
+        );
+        let criteria = vec![crit_a.to_string(), crit_b.to_string()];
+        let run_started = |run: &str, spec: &str| {
+            Event::new(
+                crate::run::TYPE_RUN_STARTED,
+                serde_json::to_vec(&json!({"run": run, "spec": spec, "criteria": criteria}))
+                    .unwrap(),
+            )
+        };
+        let mut log = vec![
+            run_started("run-1", row.run1_spec),
+            started_with_criterion("u-a-1", &cid_a),
+            integrated("u-a-1"),
+        ];
+        if row.compensated {
+            log.push(compensated("u-a-1"));
+        }
+        if row.split {
+            log.extend([
+                started_with_criterion("u-a-2", &cid_a),
+                plain_failure("u-a-2", 1),
+            ]);
+        }
+        log.extend([
+            started_with_criterion("u-b-1", &cid_b),
+            plain_failure("u-b-1", 1),
+            run_started("run-2", LANDED_SPEC),
+        ]);
+        let st = Store::open(":memory:").unwrap();
+        st.append(STREAM, ExpectedRevision::Any, &log).unwrap();
+
+        let cfg = supersede_cfg();
+        let proposals: Vec<(String, Value)> = [
+            proposal_data("u-a", crit_a, &cid_a),
+            proposal_data("u-b", crit_b, &cid_b),
+        ]
+        .into_iter()
+        .map(|data| (TYPE_UNIT_PROPOSED.to_string(), data))
+        .collect();
+        let parks: Vec<String> = if row.resumed {
+            vec![spawn_id("u-b", ROLE_IMPLEMENTER, 0)]
+        } else {
+            Vec::new()
+        };
+        let steps: Vec<(ledger::RunState, Vec<String>)> = parks
+            .iter()
+            .map(Some)
+            .chain([None])
+            .map(|park| {
+                let driver = Stub {
+                    emits_by_agent: HashMap::from([("planner".to_string(), proposals.clone())]),
+                    park_spawn_ids: park.into_iter().cloned().collect(),
+                    ..Stub::new()
+                };
+                let rs = run_isolated(&cfg, &stub_deps(&st, &driver, criteria.clone())).unwrap();
+                (rs, driver.spawn_ids())
+            })
+            .collect();
+        let spawns: Vec<&String> = steps.iter().flat_map(|(_, ids)| ids).collect();
+        let rs = &steps.last().unwrap().0;
+
+        let spawned = |unit: &str| spawns.iter().any(|id| id.starts_with(&format!("{unit}/")));
+        assert_eq!(
+            !spawned("u-a"),
+            row.lands,
+            "u-a spawns exactly when its criterion is not landed: {spawns:?}"
+        );
+        assert!(spawned("u-b"), "u-b spawns: {spawns:?}");
+        for unit in ["u-a", "u-b"] {
+            assert_eq!(rs.units[unit].status, ledger::Status::Integrated, "{unit}");
+        }
+        let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let of_a = |type_: &str| -> Vec<Value> {
+            crate::run::current_run(&events)
+                .iter()
+                .filter(|e| e.type_ == type_)
+                .map(|e| serde_json::from_slice::<Value>(&e.data).unwrap())
+                .filter(|data| data["id"] == "u-a")
+                .collect()
+        };
+        assert_eq!(of_a(ledger::TYPE_UNIT_STARTED).len(), 1, "u-a starts once");
+        let integrates = of_a(ledger::TYPE_UNIT_INTEGRATED);
+        assert_eq!(integrates.len(), 1, "u-a integrates once: {integrates:?}");
+        let landed_from = &integrates[0]["landed_from"];
+        if row.lands {
+            assert_eq!(integrates[0]["commit"], REVIEW_ONLY_NO_ARTIFACT);
+            assert_eq!(landed_from["unit"], "u-a-1", "names run 1's unit");
+            assert_eq!(landed_from["run"], "run-1", "names run 1");
+        } else {
+            assert!(
+                landed_from.is_null(),
+                "a built unit rests on no earlier one"
+            );
+        }
+    }
+
+    crate::test_cases! {
+        /// The base row: run 1 of the same spec integrated A, so run 2's A lands with no spawn.
+        a_criterion_an_earlier_run_of_the_spec_integrated_lands_with_no_spawn:
+            assert_landed_criterion(LANDS);
+        /// A criterion landed under a DIFFERENT spec path never counts: A is built.
+        a_criterion_landed_under_another_spec_is_built_again:
+            assert_landed_criterion(LandedRow {
+                run1_spec: "specs/8-other.md",
+                lands: false,
+                ..LANDS
+            });
+        /// A compensation that reverted run 1's integrate of A reopens it: A is built.
+        a_compensated_integrate_of_the_criterion_is_built_again:
+            assert_landed_criterion(LandedRow { compensated: true, lands: false, ..LANDS });
+        /// A criterion run 1 split, with one part integrated and the other failed, is not landed:
+        /// A is built.
+        a_criterion_whose_earlier_split_left_a_part_unintegrated_is_built_again:
+            assert_landed_criterion(LandedRow { split: true, lands: false, ..LANDS });
+        /// A resumed step of run 2 agrees with its first: A lands once and never spawns.
+        a_resumed_step_of_the_new_run_never_spawns_the_landed_criterion:
+            assert_landed_criterion(LandedRow { resumed: true, ..LANDS });
+    }
+
     /// Two planner proposals for `criterion` - `u-ep1` from an earlier episode, then `u-ep2` from
     /// a later one, each `(data.episode, meta.spawn)` in `episodes` telling the episodes apart
     /// (`how`) - fold to exactly one live owner: the LATER episode's unit. Returns the stages.
