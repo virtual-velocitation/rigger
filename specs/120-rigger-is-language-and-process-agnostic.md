@@ -274,7 +274,8 @@ sentences, `PLAN_CRITIQUE_RULES` (Rule 7, Rule 8, the blast-radius note), `CRITI
 `CRITIQUE_HUNTS` and `CRITIQUE_BAN` become the body of the `## When you critique a spec or a plan`
 section in `.rigger/agents/adversary.md` (`:17`, after its COVERAGE hunt, :19, and before its
 Exhaustion item, :20, both of which stay; criterion 15 rewords the moved "Run two hunts" to "Run these
-hunts", the one allowed edit to the verbatim move) and in the
+hunts" and the moved "Ownership defects in a spec:" to "Ownership defects:" (the both class), the two
+allowed edits to the verbatim move) and in the
 scaffold's adversary persona template (`src/cli/setup.rs:1951-1966`), the consumer's overridable default; the
 persona is the workflow definition. The DAG critique's method residue moves with it: the unit-size
 bullet (`conductor.rs:7876-7882`): its rule moves as persona prose without a number ("a unit over
@@ -282,7 +283,7 @@ the cap your prompt states is a BLOCKING finding"), and the DAG prompt keeps `un
 text verbatim as its cap framing (no edit to the function or `MAX_UNIT_ADDED_LINES`, both spec
 121's, which also moves the function's second sentence out of the binary), so the number has one
 home, the scope sentence beginning "Reject
-ONLY for" (:7927-7931) and the overlap parenthetical "judge ownership/coherence, not the overlap"
+ONLY for" (:7927-7931), which lands in the adjudicator's judging rule only, and the overlap rule "judge ownership/coherence, not the overlap"
 (:7913-7914); the opener's citation of `docs/handbook/authoring-loops.md` rules 7-8 becomes "the
 decomposition rules in your persona", since a consumer repository has no such page.
 `PLAN_PROTOCOL`'s copy of the cap and `MAX_UNIT_ADDED_LINES` are spec 121's. The binary keeps, in both prompts, the task framing (what is
@@ -309,16 +310,19 @@ prompt stands alone, and the output contract decides the verdict. The DAG critiq
 two spawns, the adversary (`conductor.rs:8235`) and the gate's adjudicator (:8257), whose verdict
 gates the fan-out. Criterion 15 therefore lands the method in both personas and both scaffold
 templates (the adjudicator's at `src/cli/setup.rs:1967-1985`), each in its role's voice under `## When you critique a spec or a plan`: the adversary's
-section carries the stance, the hunts, Rules 7 and 8, the blast-radius note, the ownership defects
-and the ban (how to find); the section names which parts apply to a spec only (the two hunts, the
-ownership defects and the ban) and which to both a spec and a DAG (the stance, Rules 7 and 8, the
-blast-radius note), so the plan gate's scope is unchanged; the adjudicator's section carries the judging rule (a finding stands
+section carries the stance, the hunts, Rules 7 and 8, the blast-radius note, the ownership defects,
+the unit-size rule, the overlap rule and the ban (how to find); the section names three classes, the
+parts that apply to a spec only (the two hunts and the ban), to a DAG only (the numberless unit-size
+rule and the overlap rule) and to both a spec and a DAG (the stance, Rules 7 and 8, the blast-radius
+note and the ownership defects), so the plan gate's scope is unchanged; the adjudicator's section
+carries the judging rule, the one home of the moved "Reject ONLY for" scope sentence (a finding stands
 when it names a Rule 7 ownership defect, a Rule 8 open disposition, a bundled or twin criterion, a
 unit over the cap the prompt states, or a defect in a criterion's own text that no decomposition can
 remove; mechanical file overlap alone never does), its fix being the kept cause rule's: a re-plan for
 `decomposition-conflict`, the run stopping for `spec-ambiguity`; the ban on criterion edits stays in
-the adversary's section only, where it belongs to the spec critique. Each section also names its
-scope, beside the moved text: in a spec or plan critique its rules decide which finding blocks, and
+the adversary's section only, where it belongs to the spec critique. Each section also states that
+in a plan critique a unit reads as a criterion, and names its scope, beside the moved text: in a
+spec or plan critique its rules decide which finding blocks, and
 the working discipline's review rule (`working-discipline.md:96-104`), against which the
 adjudicator persona weighs every finding it upholds (`.rigger/agents/adjudicator.md:11`, its
 template's at `src/cli/setup.rs:1977-1980`), decides a unit diff's findings. Two role-voiced sections are not a duplicate under the one-home
@@ -353,29 +357,24 @@ the expected signal, not a defect.
 **THE LAYER ROOT, decided here.** The two reporters of the instruction layer in force (`rigger
 prime` through `instructions_in_force_line`, `rigger instructions` through `render`) read
 `.rigger/instructions/` under ONE root resolved by ONE function, criterion 4's `project_root` (with
-`project_instruction_layer` over it, `src/cli/mod.rs`): the working-tree top level of the main
-worktree that governs the cwd. That is `git rev-parse --show-toplevel` for the main checkout, a
-subdirectory of it, a submodule (its own working tree) and a separate-git-dir repository; the main
-worktree's top level for a linked worktree; the start directory itself outside git. It is NEVER a
-store location, fenced under `RIGGER_STORE_FENCE_DIR` or not (a store location is store isolation,
-not a project root), never the raw cwd and never the parent of `git rev-parse --git-common-dir` (no
-working tree in a submodule or a separate-git-dir repository). `rigger validate` is not one of them
+`project_instruction_layer` over it, `src/cli/mod.rs`): `main_repo_root` as it stands
+(`src/cli/mod.rs`, unchanged by this spec), else the start directory. It is NEVER a store location,
+fenced under `RIGGER_STORE_FENCE_DIR` or not (a store location is store isolation, not a project
+root), and never the raw cwd. `rigger validate` is not one of them
 and is unchanged: it keeps loading the tree it runs from (`.`, `src/cli/validate.rs:163`) and the
 `shadow_advisories` bullet above stands, because validate answers what THIS tree declares (its
 definition and the layer that tree would put in force; from a subdirectory it fails loudly as
 today), while prime and instructions answer what is in force for a spawn, the layer every spawn is
 composed from at the driver's start (`self.cfg.instructions` in `RunCtx::build_system_prompt`,
-`conductor.rs:10792`, loaded from the operator checkout), hence the main worktree's root. The
-correction is made in `main_repo_root`'s own git call (`src/cli/mod.rs`), with no parallel root
-finder: `project_root` stays the thin main root, else the start directory, over it; no caller is
-re-routed by this paragraph; and its existing callers (the store walk's boundary in
-`walk_stores_from`, `config_rigger_dir`, `server_store_location`, `resolve_main_worktree_or_refuse`)
-resolve the same corrected main root, the only change they see being the correction itself in a
-submodule or a separate-git-dir repository. Criterion 4's reporter placement table, a periphery
+`conductor.rs:10792`, loaded from the operator checkout), hence the main worktree's root. There is
+no parallel root finder: `project_root` is the thin main root, else the start directory, over
+`main_repo_root`; no caller is re-routed by this paragraph, and no caller of `main_repo_root` (the
+store walk's boundary in `walk_stores_from`, `config_rigger_dir`, `server_store_location`,
+`resolve_main_worktree_or_refuse`) changes. Criterion 4's reporter placement table, a periphery
 test running the built binary's `prime` and `instructions` over the shadowing fixture and asserting
 each row prints the plain root's lines, carries one row per shape: the root and a subdirectory of a
-plain checkout, of a submodule, of a separate-git-dir repository and of a linked worktree; a gate
-process under the store fence; a project in git with no store; and a directory outside git.
+plain checkout, a linked worktree, a gate process under the store fence, a project in git with no
+store, and a directory outside git.
 
 **INTERIM SENTENCES, decided here.** A handbook, README or module-doc sentence OUT OF SCOPE assigns
 to a named criterion is rewritten when that criterion lands. An earlier unit whose behaviour makes
@@ -679,7 +678,9 @@ prescribes`, and carries no `grounder:` line. A
 by role token, so a token whose agent or position changed under the rebase may resume another step's
 recorded spawn or session, exactly as the bare adjudicator token does today when `adjudicator: z`
 becomes `adjudicator: w`; the operator's remedy is to let the unit's open round finish, or reset the
-unit, before rebasing a panel; this spec adds no rebase rule. Spec 121 owns the audit's remaining prescriptions: the graph-first lookup method and
+unit, before rebasing a panel; this spec adds no rebase rule. Root resolution in a submodule or a
+separate-git-dir repository stays as at HEAD (`main_repo_root` unchanged; the driver refuses a run
+there). Spec 121 owns the audit's remaining prescriptions: the graph-first lookup method and
 the grep-guard hook (`write_lookup_pointer`, `hooks.rs:25-27`, the `lookup` helper); the helpers'
 two homes (`HELPER_AGENTS` passed inline by `spawn_config_args`); the cadence clauses in
 `EMIT_PROTOCOL`, `review_protocol`, `DECISIONS_HEADER` and the shim; the progress cadence in the four
@@ -828,7 +829,7 @@ ARTIFACT OWNERSHIP (owner = the criterion of the first production caller):
 | --- | --- |
 | `resolve_layers` and its `Replaced` state, `HEADING` printed bare, the module-doc replace sentence | 2 |
 | the `SwitchedOff` state, the `SwitchedOff` arm inside `compose`, the module-doc clause that an empty same-named file switches a built-in off | 3 |
-| `render`'s labels, `shadow_advisories`, its `cmd_validate` call, `instructions_in_force_line` reading `resolve_layers` | 4 |
+| `render`'s labels, `shadow_advisories`, its `cmd_validate` call, `instructions_in_force_line` reading `resolve_layers`, `project_root`, `project_instruction_layer`, the reporter placement table | 4 |
 | `SCAFFOLD_INSTRUCTIONS_README`, `.rigger/instructions/README.md` | 5 |
 | `ReviewStep`, `ReviewPanel::steps`, the derived `is_empty`/`agent_ids`/`full_roster`/`gating_agent_ids` in today's shape over the canonical sequence, the one step loop in `review_unit` with the adjudicator read as at HEAD, the speculation stamp through `steps()`, `step_roster`, the `review_roster`/`adjudicator_roster` wrappers and the loop's roster input (`step_roster` per step) | 6 |
 | `ReviewStepDecl`, `ReviewPanel.steps`, the `Some` arm of `steps`, every refusal (the one-adjudicator-last refusal permanent, the repeated-kind refusal interim), the new `validate_depth` rule, the load-unchanged check over the repo's workflow and every scaffold template set, the dedup of `agent_ids`/`full_roster`/`gating_agent_ids` (first-step order, full panel then light) and the naming-once behaviour of `reviewers_of` through them | 7 |
