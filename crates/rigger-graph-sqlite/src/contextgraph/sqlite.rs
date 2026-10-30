@@ -420,7 +420,8 @@ pub struct Projector {
     /// nothing.
     reextraction: Option<ReextractionFactory>,
     /// The identity of the event log this projector folds ([`Projector::with_store_identity`]):
-    /// what the seeding and a rebuild record beside the `caught_up` cursor they create; empty for a
+    /// what the seeding and a rebuild record beside the `caught_up` cursor they create, and what
+    /// the seeding and every catch-up compare the cursor's with ([`log_switched`]); empty for a
     /// projector told none.
     store: String,
     /// The longest an appender in [`Projector::guarded`] waits for its own positions to fold
@@ -1060,7 +1061,8 @@ impl Projector {
     /// This projector, folding the event log whose identity is `store` (spec 124, A LOG SWITCHED
     /// UNDER A STANDING GRAPH): the text its seeding ([`Projector::seed_cursor`]) and its rebuild's
     /// shadow open and drop ([`Projector::rebuild`]) record beside the `caught_up` cursor they
-    /// create ([`create_cursor`]).
+    /// create ([`create_cursor`]), and that the seeding and every [`Projector::catch_up`] call
+    /// compare the cursor's with ([`log_switched`]).
     pub fn with_store_identity(mut self, store: String) -> Self {
         self.store = store;
         self
