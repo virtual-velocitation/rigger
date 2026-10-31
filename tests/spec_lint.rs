@@ -1955,14 +1955,15 @@ fn spec_lint_self_clean_over_the_committed_corpus() {
     // Spec 112's preflight tells, pinned at their observed corpus totals as a regression
     // snapshot (specs/112 Design, *The corpus snapshot*): advisory output on historical
     // specs, no precision claimed or vetted. F10 fires on specs/22 (criteria 1 and 2 both
-    // measure `Store` and `emit_event`) and specs/101 (criteria 2 and 3 both measure
-    // `rigger step`); F11 counts both of its tells, the identity claim naming no comparison
-    // surface and the identity claim whose spec decides no removal in Design or Notes. A
-    // changed total means a real spec edit (re-pin after reviewing the hits) or a regression
-    // in a tell; a Design amendment to spec 112 that moves a total re-pins it in the same
-    // commit.
+    // measure `Store` and `emit_event`), specs/101 (criteria 2 and 3 both measure
+    // `rigger step`) and specs/105 (criteria 2 and 5 both measure `claude` and `rigger run`,
+    // and THE EVENTS splits their ownership at that seam); F11 counts both of its tells, the
+    // identity claim naming no comparison surface and the identity claim whose spec decides
+    // no removal in Design or Notes. A changed total means a real spec edit (re-pin after
+    // reviewing the hits) or a regression in a tell; a Design amendment to spec 112 that moves
+    // a total re-pins it in the same commit.
     assert_eq!(
-        f10_total, 3,
+        f10_total, 5,
         "F10 landing-order circularity's corpus-wide total is pinned to its observed count"
     );
     assert_eq!(
@@ -1974,7 +1975,7 @@ fn spec_lint_self_clean_over_the_committed_corpus() {
          adds none)"
     );
     assert_eq!(
-        f1_total, 214,
+        f1_total, 213,
         "F1 ownership's corpus-wide total is pinned to sdet's round-5 independently \
          cross-checked count (194), minus the 3 hits removed by giving specs/66's own \
          criteria 4/5/6 an OWNS sentence (`u66c3-self-clean-ownership-gap-fix`, required by \
@@ -2019,7 +2020,8 @@ fn spec_lint_self_clean_over_the_committed_corpus() {
          specs/101's closing lanes checkbox an OWNS sentence (operator review 2026-10-01; \
          specs/112 adds none, every criterion of it carrying one), minus 1 hit removed by the \
          rewrite of specs/107 giving its closing lanes checkbox an OWNS sentence (operator \
-         review 2026-10-05), reviewed \
+         review 2026-10-05), minus 1 hit removed by the rewrite of specs/105 giving its \
+         closing lanes checkbox an OWNS sentence (`u105r2-c2-f1-repin`), reviewed \
          directly against the advisory text, not a heuristic regression; a changed total means \
          either a real spec edit (update this pin after reviewing the new/removed hits) \
          or a regression in the heuristic"
