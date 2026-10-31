@@ -373,25 +373,32 @@ the expected signal, not a defect.
 
 **THE LAYER ROOT, decided here.** The two reporters of the instruction layer in force (`rigger
 prime` through `instructions_in_force_line`, `rigger instructions` through `render`) read
-`.rigger/instructions/` under ONE root resolved by ONE function, criterion 4's `project_root` (with
-`project_instruction_layer` over it, `src/cli/mod.rs`): `main_repo_root` as it stands
-(`src/cli/mod.rs`, unchanged by this spec), else the start directory. It is NEVER a store location,
-fenced under `RIGGER_STORE_FENCE_DIR` or not (a store location is store isolation, not a project
-root), and never the raw cwd. `rigger validate` is not one of them
+`.rigger/instructions/` under ONE root resolved by ONE function, `instruction_layer_root` (with
+`project_instruction_layer` over it, `src/cli/mod.rs`): the nearest directory holding
+`.rigger/workflow.yml`, walking from the cwd's position mapped into the main worktree (its path
+relative to its own worktree top, joined onto `project_root`) up to `project_root`, else
+`project_root`. `project_root` is criterion 4's: `main_repo_root` as it stands (`src/cli/mod.rs`,
+unchanged by this spec), else the start directory. The walk keys on `workflow.yml`, the file a
+tree's `load_run_config(".")` needs, so a bare store or an instructions directory in a subdirectory
+never stops it, and it starts from the mapped position, so a linked or nested worktree's own
+tracked `.rigger/` is never read. The root is NEVER a store location, fenced under
+`RIGGER_STORE_FENCE_DIR` or not (a store location is store isolation, not a project root), and never
+the raw cwd. `rigger validate` is not one of them
 and is unchanged: it keeps loading the tree it runs from (`.`, `src/cli/validate.rs:163`) and the
 `shadow_advisories` bullet above stands, because validate answers what THIS tree declares (its
 definition and the layer that tree would put in force; from a subdirectory it fails loudly as
 today), while prime and instructions answer what is in force for a spawn, the layer every spawn is
 composed from at the driver's start (`self.cfg.instructions` in `RunCtx::build_system_prompt`,
-`conductor.rs:10792`, loaded from the operator checkout), hence the main worktree's root. There is
-no parallel root finder: `project_root` is the thin main root, else the start directory, over
-`main_repo_root`; no caller is re-routed by this paragraph, and no caller of `main_repo_root` (the
-store walk's boundary in `walk_stores_from`, `config_rigger_dir`, `server_store_location`,
-`resolve_main_worktree_or_refuse`) changes. Criterion 4's reporter placement table, a periphery
-test running the built binary's `prime` and `instructions` over the shadowing fixture and asserting
+`conductor.rs:10792`, loaded from the operator checkout), hence the main worktree's project. There
+is no parallel root finder: `instruction_layer_root` only walks below `project_root`, which stays
+the thin main root, else the start directory, over `main_repo_root`. `config_rigger_dir` and
+`server_store_location` read `project_root`, and the store walk's boundary in `walk_stores_from` and
+`resolve_main_worktree_or_refuse` read `main_repo_root`, each with the answer it had. Criterion 4's
+reporter placement table, a periphery test running the built binary's `prime` and `instructions` over the shadowing fixture and asserting
 each row prints the plain root's lines, carries one row per shape: the root and a subdirectory of a
 plain checkout, a linked worktree, a gate process under the store fence, a project in git with no
-store, and a directory outside git.
+store, a directory outside git, and a project below the repository root, from itself, from below
+it and from that position in a linked worktree.
 
 **INTERIM SENTENCES, decided here.** A handbook, README or module-doc sentence OUT OF SCOPE assigns
 to a named criterion is rewritten when that criterion lands. An earlier unit whose behaviour makes

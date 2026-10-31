@@ -8973,7 +8973,7 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "3c7d9fff73d637d5"
+    "content_hash": "8d1579a80b5080dc"
   },
   {
     "file": "src/cli/mod.rs",
@@ -9053,7 +9053,23 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "12f03dc16ee0a7f5"
+    "content_hash": "8a27e907f57aba6e"
+  },
+  {
+    "file": "src/cli/mod.rs",
+    "name": "instruction_layer_root",
+    "is_test": false,
+    "proposed_module": null,
+    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
+    "content_hash": "fd9398926201fe81"
+  },
+  {
+    "file": "src/cli/mod.rs",
+    "name": "worktree_prefix",
+    "is_test": false,
+    "proposed_module": null,
+    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
+    "content_hash": "e8c7eb41f71b38b6"
   },
   {
     "file": "src/cli/mod.rs",

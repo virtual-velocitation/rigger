@@ -18,6 +18,7 @@ use serde::Deserialize;
 use crate::config::{
     check_agent_id, err, find_cycle, index_agents, parse_agent, parse_yaml_naming_unknown_keys,
     resolve_wall_clocks, AgentDef, Config, Defaults, Error, StoreConfig, Workflow, RIGGER_DIR,
+    WORKFLOW_FILE,
 };
 use crate::gate::GateRequirements;
 use crate::instructions::Instruction;
@@ -70,7 +71,7 @@ pub struct LoadedConfig {
 pub fn load_with_gate_requirements(dir: &str) -> Result<LoadedConfig, Error> {
     let base = Path::new(dir).join(RIGGER_DIR);
     let mut agents = load_agents(&base.join("agents"))?;
-    let workflow = load_workflow(&base.join("workflow.yml"))?;
+    let workflow = load_workflow(&base.join(WORKFLOW_FILE))?;
     resolve_wall_clocks(&mut agents, &workflow.defaults);
     let instructions = load_instructions(Path::new(dir))?;
     let cfg = Config {
@@ -226,7 +227,7 @@ fn read_workflow_probe<P>(rigger_dir: &Path, label: &str) -> Result<P, Error>
 where
     P: serde::de::DeserializeOwned + Default,
 {
-    let body = match std::fs::read_to_string(rigger_dir.join("workflow.yml")) {
+    let body = match std::fs::read_to_string(rigger_dir.join(WORKFLOW_FILE)) {
         Ok(b) => b,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(P::default()),
         Err(e) => return Err(err(format!("read {label}: {e}"))),

@@ -152,7 +152,7 @@ fn init_project(
     let agents_dir = rigger_dir.join("agents");
     std::fs::create_dir_all(&agents_dir)?;
     let wrote_workflow = write_if_absent(
-        &rigger_dir.join("workflow.yml"),
+        &rigger_dir.join(WORKFLOW_FILE),
         &scaffold_workflow(matched.map(|(_, spec)| spec)),
     )?;
     let instructions_dir = rigger_dir.join("instructions");
@@ -419,7 +419,7 @@ fn get_referenced_agent_ids(
 ) -> Result<std::collections::HashSet<String>, Box<dyn std::error::Error>> {
     use std::collections::HashSet;
 
-    let workflow_path = root.join(RIGGER_DIR).join("workflow.yml");
+    let workflow_path = root.join(RIGGER_DIR).join(WORKFLOW_FILE);
     if !workflow_path.exists() {
         return Ok(HashSet::new());
     }
@@ -1628,10 +1628,10 @@ fn instructions_in_force_line(operator: &[instructions::Instruction]) -> String 
 pub(crate) fn cmd_prime(args: &[String]) -> Res {
     let spec_path = args.first();
     // A session started in a subdirectory or a unit worktree of a git repository reads the
-    // project's instruction layer under the main repo root, never the cwd's own, and outside git
-    // the layer at the cwd, with or without a store and inside a gate's store fence alike
-    // ([`project_instruction_layer`]); its store and identity come from the one store-location
-    // authority every courier resolves through.
+    // instruction layer of the project at or above its place in the main checkout, never a
+    // worktree's own, and outside git the layer at the cwd, with or without a store and inside a
+    // gate's store fence alike ([`project_instruction_layer`]); its store and identity come from
+    // the one store-location authority every courier resolves through.
     println!(
         "{}",
         instructions_in_force_line(&project_instruction_layer()?)

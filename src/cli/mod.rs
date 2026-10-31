@@ -44,7 +44,7 @@ use rigger::spawn::SpawnEvent;
 use rigger::worktree::{RunBranchSetup, Worktree};
 use rigger::{hooks, mcpserver, playbooks, progress, spawn, spawn_store, spec, subprocess, watch};
 
-use rigger::config::RIGGER_DIR;
+use rigger::config::{RIGGER_DIR, WORKFLOW_FILE};
 
 mod critique;
 mod dashboard;
@@ -1142,9 +1142,9 @@ fn definition_hash(dir: &str) -> Result<String, Box<dyn std::error::Error>> {
     let mut buf = String::new();
     // workflow.yml first, tagged so an (impossible-here) empty agents set is still distinct
     // from an empty workflow.
-    let workflow = std::fs::read_to_string(base.join("workflow.yml"))
-        .map_err(|e| format!("definition hash: read {RIGGER_DIR}/workflow.yml: {e}"))?;
-    push_definition_section(&mut buf, "workflow.yml", &workflow);
+    let workflow = std::fs::read_to_string(base.join(WORKFLOW_FILE))
+        .map_err(|e| format!("definition hash: read {RIGGER_DIR}/{WORKFLOW_FILE}: {e}"))?;
+    push_definition_section(&mut buf, WORKFLOW_FILE, &workflow);
     // Every agent definition, folded in sorted-filename order so the hash is independent of
     // directory iteration order.
     let agents_dir = base.join("agents");
@@ -1492,15 +1492,44 @@ fn store_if_any() -> Result<Option<(StoreLocation, StoreSelection)>, Box<dyn std
 }
 
 /// The operator instruction layer the instruction reporters (`rigger prime`, `rigger
-/// instructions`) report, read under the project root governing the cwd ([`project_root`]) - so a
-/// reporter run from a subdirectory or a nested worktree of a git repository reads the project's
-/// layer, never the subdirectory's own, and outside git reads the layer at the cwd. A cwd that
-/// cannot be read ([`cwd`]) holds no layer, so the reporters report the built-ins alone. The
-/// resolved store is never consulted: under the gate store fence it is a scratch store whose parent
-/// is no project.
+/// instructions`) report, read at the project governing the cwd ([`instruction_layer_root`]). A
+/// cwd that cannot be read ([`cwd`]) holds no layer, so the reporters report the built-ins alone.
+/// The resolved store is never consulted: under the gate store fence it is a scratch store whose
+/// parent is no project.
 fn project_instruction_layer() -> Result<Vec<instructions::Instruction>, Box<dyn std::error::Error>>
 {
-    Ok(config_store::load_instructions(&project_root(&cwd()))?)
+    Ok(config_store::load_instructions(&instruction_layer_root(
+        &cwd(),
+    ))?)
+}
+
+/// The directory whose instruction layer governs `start`: the nearest one holding a workflow
+/// definition ([`WORKFLOW_FILE`]), walking from `start`'s position mapped into the main checkout
+/// ([`worktree_prefix`] under [`project_root`]) up to the project root, else the project root. So
+/// a project set up below the repository root reports the layer `rigger validate` reports there,
+/// from that directory and from below it; a subdirectory holding no workflow definition reports
+/// the project's layer, never its own; and a linked or nested worktree reports the main checkout's
+/// layer, since the walk never reads the worktree's own files. Outside git it is `start`.
+fn instruction_layer_root(start: &Path) -> PathBuf {
+    let root = project_root(start);
+    worktree_prefix(start)
+        .ancestors()
+        .map(|prefix| root.join(prefix))
+        .find(|dir| dir.join(RIGGER_DIR).join(WORKFLOW_FILE).is_file())
+        .unwrap_or(root)
+}
+
+/// `start`'s path relative to the top of its own worktree: empty at the top and outside git.
+fn worktree_prefix(start: &Path) -> PathBuf {
+    match subprocess::git_in(start)
+        .args(["rev-parse", "--show-prefix"])
+        .output()
+    {
+        Ok(out) if out.status.success() => {
+            PathBuf::from(String::from_utf8_lossy(&out.stdout).trim_end())
+        }
+        _ => PathBuf::new(),
+    }
 }
 
 /// The project root governing `start`: the main repo root ([`main_repo_root`]), else, outside any

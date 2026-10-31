@@ -20,6 +20,10 @@ use crate::spawn::{ReviewKind, STEP_TOKEN_SEPARATOR};
 /// spelling of that directory name; every path under it is built from this.
 pub const RIGGER_DIR: &str = ".rigger";
 
+/// The workflow definition's file under [`RIGGER_DIR`], whose presence marks a directory as a
+/// project. The ONE spelling of that file name.
+pub const WORKFLOW_FILE: &str = "workflow.yml";
+
 #[derive(Debug, thiserror::Error)]
 #[error("config: {0}")]
 pub struct Error(pub String);
