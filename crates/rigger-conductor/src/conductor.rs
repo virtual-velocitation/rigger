@@ -15691,6 +15691,53 @@ mod tests {
         );
     }
 
+    /// [`branch_is_foreign`] answers `expected` for a stage that serves no criterion, under
+    /// the run spec `120-this-spec`, about a branch whose recorded owner is `owner` (`why`).
+    fn assert_criterion_less_branch_is_foreign(
+        owner: Option<(&str, &str)>,
+        expected: bool,
+        why: &str,
+    ) {
+        let owner = owner.map(|(criterion, spec)| (criterion.to_string(), spec.to_string()));
+        assert_eq!(
+            branch_is_foreign(&owner, "", "120-this-spec"),
+            expected,
+            "{why}"
+        );
+    }
+
+    crate::test_cases! {
+        /// A check-in branch last started under another spec is that run's work.
+        branch_is_foreign_for_a_criterion_less_stage_when_the_owner_spec_differs:
+            assert_criterion_less_branch_is_foreign(
+                Some(("", "124-another-spec")),
+                true,
+                "a criterion-less owner under another spec is foreign",
+            );
+        /// A check-in branch last started under this run's spec is the stage's own work.
+        branch_is_foreign_is_false_for_a_criterion_less_stage_under_its_own_spec:
+            assert_criterion_less_branch_is_foreign(
+                Some(("", "120-this-spec")),
+                false,
+                "a criterion-less owner under this run's spec is the stage's own",
+            );
+        /// A stage with no criterion compares the spec alone, so an owner's criterion id never
+        /// makes a branch under this run's spec foreign.
+        branch_is_foreign_reads_only_the_spec_for_a_criterion_less_stage:
+            assert_criterion_less_branch_is_foreign(
+                Some(("c1-aaa", "120-this-spec")),
+                false,
+                "the spec alone decides for a stage that serves no criterion",
+            );
+        /// A branch with no recorded owner keeps its historical reuse.
+        branch_is_foreign_is_false_for_a_criterion_less_stage_with_no_recorded_owner:
+            assert_criterion_less_branch_is_foreign(
+                None,
+                false,
+                "no recorded provenance is never foreign",
+            );
+    }
+
     /// The UnitStarted event for `id`, keyed exactly as [`Self::start_and_run_stage`]
     /// would find it - used to locate a freshly-run unit's own recorded event out of a
     /// real store, rather than assuming its position.

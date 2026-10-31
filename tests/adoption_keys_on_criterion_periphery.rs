@@ -151,8 +151,8 @@
 //! successful `branch_tip`).
 
 use common::fixtures::{critique_stage, fan_out_stage, plan_stage, workflow_cfg};
-use common::git::git_answer;
 use common::git::init_repo;
+use common::git::{commit_files, git_answer};
 use std::path::Path;
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -166,7 +166,7 @@ use rigger::conductor::{
     TYPE_UNIT_PROPOSED,
 };
 use rigger::conductor::{META_COMPENSATED, META_CONTRADICTION};
-use rigger::config::{AgentDef, Config};
+use rigger::config::{AgentDef, Config, Stage};
 use rigger::contextgraph;
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Direction, Error as StoreError, Event, EventStore, ExpectedRevision};
@@ -2566,4 +2566,155 @@ fn a_crash_after_the_quarantine_record_but_before_the_canonical_delete_completes
          record and the delete on the earlier round"
     );
     assert!(repo.path().join("run3-own-work.txt").exists());
+}
+
+/// The spec the second run of every check-in row below is launched under.
+const CHECKIN_RUN_SPEC: &str = "specs/120-a-stage-that-serves-no-criterion.md";
+
+/// A workflow of one criterion-less `checkin` stage: `worker` implements, the one gate runs
+/// `gate_run`, and the stage merges on pass. No production path stamps a criterion on it, so
+/// its branch is the bare `rigger/u/checkin` under every run and every spec.
+fn checkin_cfg(gate_run: &str, repo: &Path) -> Config {
+    let mut cfg = workflow_cfg(
+        &["worker"],
+        &[("gate", gate_run)],
+        vec![Stage {
+            name: "checkin".into(),
+            agent: "worker".into(),
+            gates: vec!["gate".into()],
+            on_pass: "merge".into(),
+            ..Default::default()
+        }],
+    );
+    cfg.workflow.defaults.workdir = common::isolated_workdir(repo);
+    cfg.workflow.defaults.max_retries = 1;
+    cfg
+}
+
+/// A criterion-less `checkin` stage meets a `rigger/u/checkin` branch carrying earlier work
+/// and is then run under [`CHECKIN_RUN_SPEC`]. The earlier branch is left by an escalated run
+/// of the same stage under `owner_spec`, or, for `None`, committed by hand so the log records
+/// no owner at all. `quarantined_from` is the spec stem the earlier branch must be quarantined
+/// as owned by, or `None` when the stage must adopt it.
+///
+/// A quarantined branch is moved to its `rigger/orphaned/` ref, recorded with the one
+/// `branch-quarantined` mark, and the stage starts off HEAD, so the earlier work never reaches
+/// the base. An adopted branch carries the earlier work into the base beside the stage's own,
+/// with no quarantine ref and no mark.
+fn assert_a_criterion_less_stage_meets_an_earlier_branch(
+    owner_spec: Option<&str>,
+    quarantined_from: Option<&str>,
+) {
+    let repo = tempfile::tempdir().unwrap();
+    init_repo(repo.path());
+    let store = Store::open(":memory:").unwrap();
+    let repo_str = repo.path().to_str().unwrap();
+    let branch = "rigger/u/checkin";
+
+    match owner_spec {
+        Some(spec) => {
+            start_fresh(&store, &[], "", "", "", spec).unwrap();
+            let driver = WritesFileDriver {
+                file_name: "prior-work.txt".into(),
+                content: "the earlier check-in's work\n".into(),
+            };
+            let rs = run(
+                &checkin_cfg("false", repo.path()),
+                &bare_deps(&store, &driver, &ExecRunner, repo_str),
+            )
+            .unwrap();
+            assert_eq!(
+                rs.units["checkin"].status,
+                ledger::Status::Escalated,
+                "premise: an always-failing gate escalates the earlier check-in, keeping its branch"
+            );
+        }
+        None => {
+            git_ok(repo.path(), &["checkout", "-q", "-b", branch]);
+            commit_files(
+                repo.path(),
+                &[("prior-work.txt", "work on a branch no run started\n")],
+                "work on a branch no run started",
+            );
+            git_ok(repo.path(), &["checkout", "-q", "-"]);
+        }
+    }
+    let prior_tip = git_answer(repo.path(), &["rev-parse", branch])
+        .expect("premise: the earlier branch exists with a resolvable tip");
+
+    start_fresh(&store, &[], "", "", "", CHECKIN_RUN_SPEC).unwrap();
+    let driver = WritesFileDriver {
+        file_name: "own-work.txt".into(),
+        content: "this run's own check-in work\n".into(),
+    };
+    let rs = run(
+        &checkin_cfg("true", repo.path()),
+        &bare_deps(&store, &driver, &ExecRunner, repo_str),
+    )
+    .unwrap();
+    assert_eq!(
+        rs.units["checkin"].status,
+        ledger::Status::Integrated,
+        "the stage runs its ordinary lifecycle through to integration"
+    );
+    assert!(repo.path().join("own-work.txt").exists());
+    assert_eq!(
+        repo.path().join("prior-work.txt").exists(),
+        quarantined_from.is_none(),
+        "the earlier work reaches the base exactly when the stage adopted its branch"
+    );
+
+    let quarantine = format!("rigger/orphaned/checkin-{}", &prior_tip[..12]);
+    let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+    let records: Vec<Value> = events
+        .iter()
+        .filter(|e| is_quarantine_record_write(e))
+        .filter_map(|e| serde_json::from_slice::<Value>(&e.data).ok())
+        .collect();
+    let expected_records: Vec<Value> = quarantined_from
+        .map(|stem| {
+            json!({
+                "id": "checkin",
+                "status": "branch-quarantined",
+                "criterion_id": "",
+                "spec": stem,
+                "quarantined_to": {"branch": quarantine, "tip": prior_tip},
+            })
+        })
+        .into_iter()
+        .collect();
+    assert_eq!(
+        records, expected_records,
+        "the quarantine is recorded once, naming the earlier owner and the ref it moved to"
+    );
+    assert_eq!(
+        git_answer(
+            repo.path(),
+            &[
+                "for-each-ref",
+                "--format=%(refname:short) %(objectname)",
+                "refs/heads/rigger/orphaned/",
+            ],
+        ),
+        quarantined_from.map(|_| format!("{quarantine} {prior_tip}")),
+        "the earlier work survives under its quarantine ref exactly when it was quarantined"
+    );
+}
+
+rigger::test_cases! {
+    /// A check-in branch last started under another spec is that run's work: the stage
+    /// quarantines and records it, then starts off HEAD, so its gates judge this run's tree.
+    a_criterion_less_stages_branch_last_started_under_another_spec_is_quarantined_and_recorded:
+        assert_a_criterion_less_stage_meets_an_earlier_branch(
+            Some("specs/124-another-spec.md"),
+            Some("124-another-spec"),
+        );
+    /// A check-in branch last started under this run's own spec is this stage's own earlier
+    /// work, and the stage adopts it.
+    a_criterion_less_stages_branch_last_started_under_this_runs_spec_is_adopted:
+        assert_a_criterion_less_stage_meets_an_earlier_branch(Some(CHECKIN_RUN_SPEC), None);
+    /// A check-in branch no run is recorded as starting has no provenance to judge, and the
+    /// stage adopts it as before.
+    a_criterion_less_stages_branch_with_no_recorded_owner_is_adopted:
+        assert_a_criterion_less_stage_meets_an_earlier_branch(None, None);
 }
