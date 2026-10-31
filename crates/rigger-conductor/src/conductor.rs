@@ -441,7 +441,9 @@ fn adoption_provenance_key(unit: &str, criterion_id: &str, spec: &str) -> String
 /// keyed on the QUARANTINED content's own `(unit, criterion_id, spec)` identity - the
 /// `(criterion_id, spec)` [`branch_owner`] proved the foreign occupant actually belongs
 /// to, never the colliding unit's own `st.criterion_id`/spec (those are unrelated by
-/// construction - that is exactly what "foreign" means). Mirrors
+/// construction - that is exactly what "foreign" means). For a stage that serves no
+/// criterion the owner's criterion id is empty too, and the spec alone sets the two apart
+/// ([`branch_is_foreign`]). Mirrors
 /// [`adoption_provenance_key`]'s identical scoping rationale: a planner slug carries no
 /// cross-run uniqueness guarantee, so the quarantine record must resolve by the content's
 /// real identity, never the bare id alone. The `quarantined:` infix carries no `/gate:`
@@ -11854,8 +11856,9 @@ impl RunCtx<'_> {
     /// Returns `Some((prior_unit_id, tip_sha, spec))` when a decision exists (freshly
     /// made this call, or recovered from a crash-resumed prior call), for the caller to
     /// stamp on `UnitStarted` as `adopted_from`. Returns `None` for: a repo-less run; a
-    /// unit that serves no criterion at all (`st.criterion_id` empty - the
-    /// plan/plan-critique infrastructure stages); no recorded decision AND no prior
+    /// stage that serves no criterion at all (`st.criterion_id` empty - plan,
+    /// plan-critique, check-in), which is never adopted across runs and only ever passes
+    /// the foreign-owner check below; no recorded decision AND no prior
     /// un-integrated attempt for this (spec, criterion); a prior candidate whose own
     /// branch is already gone (nothing to adopt - the unit simply starts fresh, exactly
     /// as before this feature existed); or - the common repeat case - a unit whose
@@ -11935,32 +11938,50 @@ impl RunCtx<'_> {
     /// already-guarded create is a no-op, the emit is idempotent under its replay key, and
     /// the delete is idempotent) - closing the create-then-delete window above AND the
     /// delete-then-emit window, with the one existing gate and no new durable state.
+    ///
+    /// A STAGE THAT SERVES NO CRITERION SHARES ONE NAME ACROSS RUNS: plan, plan-critique and
+    /// check-in carry no criterion id, so [`unit_branch`] maps each to the same bare ref under
+    /// every run and every spec. Such a stage is never adopted across runs - adoption is keyed
+    /// on (spec, criterion) - so it skips [`recorded_adoption`] and the prior-candidate
+    /// fallback, but its existing branch passes the same foreign-owner check and quarantine
+    /// below: a branch [`branch_owner`] shows last started under another spec is that run's
+    /// work, and the stage starts off HEAD rather than have its gates judge a stale tree.
     fn adopt_prior_criterion_branch(
         &self,
         st: &Stage,
     ) -> Result<Option<(String, String, String)>, Error> {
-        if self.deps.repo.is_empty() || st.criterion_id.is_empty() {
+        if self.deps.repo.is_empty() {
             return Ok(None);
         }
         let branch = unit_branch(&st.name);
+        let serves_criterion = !st.criterion_id.is_empty();
+        // A stage that serves no criterion has only the foreign-owner check below, which
+        // reads an existing branch alone; with none there is nothing to read the log for
+        // (and `prior_criterion_unit` names no candidate for an empty criterion id).
+        if !serves_criterion && !worktree::branch_exists(&self.deps.repo, &branch) {
+            return Ok(None);
+        }
         // Adoption is decided across runs by contract (spec 88: a criterion's abandoned attempt
         // from an earlier run is adopted), so it reads every run's LIFECYCLE events by type -
         // the only ones its rules consult - and never a prior run's other events (spec 101).
         let events = self.read_lifecycle()?;
         let spec = current_run_spec(&events);
-        if let Some((prior, tip, prior_spec)) =
-            recorded_adoption(&events, &st.name, &st.criterion_id, &spec)
-        {
-            if !worktree::branch_exists(&self.deps.repo, &branch) {
-                Worktree::create_branch_at(&self.deps.repo, &branch, &tip)?;
+        if serves_criterion {
+            if let Some((prior, tip, prior_spec)) =
+                recorded_adoption(&events, &st.name, &st.criterion_id, &spec)
+            {
+                if !worktree::branch_exists(&self.deps.repo, &branch) {
+                    Worktree::create_branch_at(&self.deps.repo, &branch, &tip)?;
+                }
+                return Ok(Some((prior, tip, prior_spec)));
             }
-            return Ok(Some((prior, tip, prior_spec)));
         }
         if worktree::branch_exists(&self.deps.repo, &branch) {
             // No decision was ever recorded for this EXACT (unit, criterion, spec)
-            // triple (checked above). Before trusting this as "this branch carries only
-            // its own prior work", confirm it actually IS this unit's own history: a
-            // literal slug collision with an unrelated (criterion, spec) must never let
+            // triple (checked above; a stage that serves no criterion never has one).
+            // Before trusting this as "this branch carries only its own prior work",
+            // confirm it actually IS this unit's own history: a literal slug or stage
+            // name collision with an unrelated (criterion, spec) must never let
             // that unrelated content ride into THIS unit's tree (the primary blocker
             // fix above).
             let owner = branch_owner(&events, &st.name);
@@ -14221,13 +14242,18 @@ fn branch_owner(events: &[Event], unit_id: &str) -> Option<(String, String)> {
 /// time) so each axis is directly, cheaply unit-testable without a real repo. `None`
 /// (no recorded provenance at all - a pre-spec-88 legacy branch) is never foreign - the
 /// caller preserves the historical behavior.
+///
+/// A stage that serves no criterion (`criterion_id` empty: plan, plan-critique, check-in)
+/// has no criterion axis to compare, so the spec alone decides: its branch is foreign
+/// exactly when the owner was started under another spec than this run's.
 fn branch_is_foreign(owner: &Option<(String, String)>, criterion_id: &str, spec: &str) -> bool {
     match owner {
-        // A recorded start with NO criterion id is UNKNOWN provenance, never proof of a
-        // foreign occupant: every `UnitStarted` written before this feature landed (the
-        // whole live run it landed in, 2026-09-13) carries none, and treating "" as
-        // "a different criterion" quarantined a unit's own live branch out from under
-        // its worktree (u88c5, spec 88). Unknown resolves like `None`: historical reuse.
+        Some((_, owner_spec)) if criterion_id.is_empty() => owner_spec != spec,
+        // For a criterion unit, a recorded start with NO criterion id is UNKNOWN
+        // provenance, never proof of a foreign occupant: every `UnitStarted` written before
+        // this feature landed (the whole live run it landed in, 2026-09-13) carries none, and
+        // treating "" as "a different criterion" quarantined a unit's own live branch out from
+        // under its worktree (u88c5, spec 88). Unknown resolves like `None`: historical reuse.
         Some((owner_criterion, _)) if owner_criterion.is_empty() => false,
         Some((owner_criterion, owner_spec)) => {
             owner_criterion != criterion_id || owner_spec != spec
@@ -37923,11 +37949,14 @@ mod tests {
             .unwrap()
             .len();
 
-        let step = |store: &dyn EventStore, graph: Option<&dyn Projection>| -> Vec<CountedRead> {
+        let step = |store: &dyn EventStore,
+                    graph: Option<&dyn Projection>,
+                    repo: &str|
+         -> Vec<CountedRead> {
             let counted = ReadCountingStore::new(store);
             let driver = crate::driver::replay::ReplayDriver::new(&counted, "");
             let deps = Deps {
-                repo: root_str.clone(),
+                repo: repo.to_string(),
                 graph,
                 ..stub_deps(&counted, &driver, Vec::new())
             };
@@ -37935,8 +37964,12 @@ mod tests {
             assert_eq!(rs.units["s"].status, ledger::Status::Grounding);
             counted.reads()
         };
-        let ingesting = step(&inner, Some(&graph));
-        let not_ingesting = step(&twin, None);
+        let ingesting = step(&inner, Some(&graph), &root_str);
+        // The twin steps over a fresh project of its own: a stage meeting an existing branch
+        // reads the lifecycle for that branch's owner, so a twin over `root` would meet the
+        // branch the ingesting step left there and make a read the ingesting step did not.
+        let twin_repo = temp_git_project_with_commit();
+        let not_ingesting = step(&twin, None, twin_repo.path().to_str().unwrap());
 
         // The twin reads only the run from its boundary and the carry-over by type ...
         let one_read: Vec<CountedRead> = fixture
