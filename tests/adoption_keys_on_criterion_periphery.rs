@@ -2591,18 +2591,33 @@ fn checkin_cfg(gate_run: &str, repo: &Path) -> Config {
     cfg
 }
 
+/// Where HEAD stands against the earlier branch's tip when the check-in stage meets it.
+#[derive(Clone, Copy, PartialEq)]
+enum EarlierTip {
+    /// The tip carries a commit HEAD lacks.
+    AheadOfHead,
+    /// HEAD holds the tip and one commit past it, so the branch carries nothing HEAD lacks.
+    InHead,
+    /// As [`EarlierTip::InHead`], and a call that crashed partway through quarantining the
+    /// branch already made its quarantine ref.
+    InHeadWithQuarantineBegun,
+}
+
 /// A criterion-less `checkin` stage meets a `rigger/u/checkin` branch carrying earlier work
 /// and is then run under [`CHECKIN_RUN_SPEC`]. The earlier branch is left by an escalated run
 /// of the same stage under `owner_spec`, or, for `None`, committed by hand so the log records
-/// no owner at all. `quarantined_from` is the spec stem the earlier branch must be quarantined
-/// as owned by, or `None` when the stage must adopt it.
+/// no owner at all; `earlier` says where HEAD stands against its tip. `quarantined_from` is the
+/// spec stem the earlier branch must be quarantined as owned by, or `None` when the stage must
+/// adopt it or, with its tip in HEAD, delete it.
 ///
 /// A quarantined branch is moved to its `rigger/orphaned/` ref, recorded with the one
-/// `branch-quarantined` mark, and the stage starts off HEAD, so the earlier work never reaches
-/// the base. An adopted branch carries the earlier work into the base beside the stage's own,
-/// with no quarantine ref and no mark.
+/// `branch-quarantined` mark, and the stage starts off HEAD. An adopted branch carries the
+/// earlier work into the base beside the stage's own, with no quarantine ref and no mark. A
+/// deleted one leaves no ref and no mark. When HEAD holds the tip, HEAD has also moved one
+/// commit past it, and the stage's gate passes only on a tree started off HEAD.
 fn assert_a_criterion_less_stage_meets_an_earlier_branch(
     owner_spec: Option<&str>,
+    earlier: EarlierTip,
     quarantined_from: Option<&str>,
 ) {
     let repo = tempfile::tempdir().unwrap();
@@ -2641,6 +2656,24 @@ fn assert_a_criterion_less_stage_meets_an_earlier_branch(
     }
     let prior_tip = git_answer(repo.path(), &["rev-parse", branch])
         .expect("premise: the earlier branch exists with a resolvable tip");
+    let quarantine = format!("rigger/orphaned/checkin-{}", &prior_tip[..12]);
+    let tip_in_head = earlier != EarlierTip::AheadOfHead;
+    if tip_in_head {
+        git_ok(repo.path(), &["merge", "-q", "--ff-only", branch]);
+        commit_files(
+            repo.path(),
+            &[("later-base.txt", "the base moved past the earlier branch\n")],
+            "the base moves past the earlier branch",
+        );
+    }
+    if earlier == EarlierTip::InHeadWithQuarantineBegun {
+        git_ok(repo.path(), &["branch", &quarantine, &prior_tip]);
+    }
+    let gate = if tip_in_head {
+        "test -f later-base.txt"
+    } else {
+        "true"
+    };
 
     start_fresh(&store, &[], "", "", "", CHECKIN_RUN_SPEC).unwrap();
     let driver = WritesFileDriver {
@@ -2648,7 +2681,7 @@ fn assert_a_criterion_less_stage_meets_an_earlier_branch(
         content: "this run's own check-in work\n".into(),
     };
     let rs = run(
-        &checkin_cfg("true", repo.path()),
+        &checkin_cfg(gate, repo.path()),
         &bare_deps(&store, &driver, &ExecRunner, repo_str),
     )
     .unwrap();
@@ -2660,11 +2693,11 @@ fn assert_a_criterion_less_stage_meets_an_earlier_branch(
     assert!(repo.path().join("own-work.txt").exists());
     assert_eq!(
         repo.path().join("prior-work.txt").exists(),
-        quarantined_from.is_none(),
-        "the earlier work reaches the base exactly when the stage adopted its branch"
+        quarantined_from.is_none() || tip_in_head,
+        "the earlier work reaches the base exactly when the stage adopted its branch or HEAD \
+         already held it"
     );
 
-    let quarantine = format!("rigger/orphaned/checkin-{}", &prior_tip[..12]);
     let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
     let records: Vec<Value> = events
         .iter()
@@ -2707,14 +2740,36 @@ rigger::test_cases! {
     a_criterion_less_stages_branch_last_started_under_another_spec_is_quarantined_and_recorded:
         assert_a_criterion_less_stage_meets_an_earlier_branch(
             Some("specs/124-another-spec.md"),
+            EarlierTip::AheadOfHead,
+            Some("124-another-spec"),
+        );
+    /// A check-in branch last started under another spec whose tip HEAD already holds carries
+    /// nothing HEAD lacks: the stage deletes it with no quarantine ref and no mark, and starts
+    /// off HEAD.
+    a_criterion_less_stages_foreign_branch_whose_tip_head_holds_is_deleted_unrecorded:
+        assert_a_criterion_less_stage_meets_an_earlier_branch(
+            Some("specs/124-another-spec.md"),
+            EarlierTip::InHead,
+            None,
+        );
+    /// A quarantine a crashed call began on such a branch, its ref already made, is finished
+    /// and recorded rather than its canonical name deleted with that ref left unrecorded.
+    a_criterion_less_stages_begun_quarantine_of_a_tip_head_holds_is_finished_and_recorded:
+        assert_a_criterion_less_stage_meets_an_earlier_branch(
+            Some("specs/124-another-spec.md"),
+            EarlierTip::InHeadWithQuarantineBegun,
             Some("124-another-spec"),
         );
     /// A check-in branch last started under this run's own spec is this stage's own earlier
     /// work, and the stage adopts it.
     a_criterion_less_stages_branch_last_started_under_this_runs_spec_is_adopted:
-        assert_a_criterion_less_stage_meets_an_earlier_branch(Some(CHECKIN_RUN_SPEC), None);
+        assert_a_criterion_less_stage_meets_an_earlier_branch(
+            Some(CHECKIN_RUN_SPEC),
+            EarlierTip::AheadOfHead,
+            None,
+        );
     /// A check-in branch no run is recorded as starting has no provenance to judge, and the
     /// stage adopts it as before.
     a_criterion_less_stages_branch_with_no_recorded_owner_is_adopted:
-        assert_a_criterion_less_stage_meets_an_earlier_branch(None, None);
+        assert_a_criterion_less_stage_meets_an_earlier_branch(None, EarlierTip::AheadOfHead, None);
 }
