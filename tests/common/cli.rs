@@ -489,6 +489,15 @@ pub fn emit(root: &Path, typ: &str, json: &str) {
     assert!(ok, "emit {typ} must succeed; stderr: {err}");
 }
 
+/// What the emit surface answers the type `typ`, which no agent may emit: the sentence of its
+/// refusal that names the type and the types an agent may emit.
+pub fn emit_refused(typ: &str) -> String {
+    format!(
+        "refusing to emit {typ:?}: only agent context events (DecisionMade, ReviewFinding, \
+         LessonLearned, UnitProposed) may be emitted this way."
+    )
+}
+
 /// Record the critic's `answer` as the critique of `spec`'s current text in the project at `root`
 /// (spec 112): `rigger critique <spec>` with the checked-in critique stub, answering `answer`,
 /// first on `PATH` for that one call only, so a fixture's own fake agent keeps its `PATH` slot for

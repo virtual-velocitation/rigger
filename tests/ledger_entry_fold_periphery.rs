@@ -36,7 +36,7 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use common::cli::{
-    applied_positions, read_run_events, rigger_file, run_rigger, temp_store_project,
+    applied_positions, emit_refused, read_run_events, rigger_file, run_rigger, temp_store_project,
 };
 use common::fixtures::{
     decision_json, event_of, generation_ingested, live_edges, live_node_ids, nanos, placed_at,
@@ -63,11 +63,6 @@ const BATCH_ASKED: (Result<EntryFold, String>, u32) = (Ok(EntryFold::BatchAsked)
 
 /// What [`fold_through_port`] answers for a re-recording: folded without asking its batch.
 const RE_RECORDED: (Result<EntryFold, String>, u32) = (Ok(EntryFold::ReRecording), 0);
-
-/// What the emit surface answers a type no agent may emit.
-const EMIT_REFUSED: &str = "refusing to emit \"GenerationIngested\": only agent context events \
-                            (DecisionMade, ReviewFinding, LessonLearned, UnitProposed) may be \
-                            emitted this way.";
 
 /// The on-log payload of the entry `gc/src/a.rs` at `h1`, extracted from blob `b10b` under the
 /// walk's flag.
@@ -751,7 +746,10 @@ fn rigger_emit_refuses_a_ledger_entry_appends_nothing_and_leaves_the_graph_owing
 
     // Then the emit is refused, nothing is appended and no fold was lost.
     assert!(!ok, "the emit must fail; stderr:\n{err}");
-    assert!(err.contains(EMIT_REFUSED), "stderr:\n{err}");
+    assert!(
+        err.contains(&emit_refused("GenerationIngested")),
+        "stderr:\n{err}"
+    );
     assert_eq!(run_types(root), Vec::<String>::new());
     assert!(!rigger_file(root, "graph.db.owed").exists());
 
