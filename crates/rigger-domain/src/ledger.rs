@@ -4,11 +4,12 @@
 //! this projection and the context graph.
 
 use std::collections::BTreeMap;
+use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
 
 use crate::eventstore::Event;
-use crate::run::TYPE_RUN_STARTED;
+use crate::run::{RunHeld, HOLD_BY_OPERATOR, TYPE_RUN_HELD, TYPE_RUN_RELEASED, TYPE_RUN_STARTED};
 
 /// Status of a unit of work, over its lifecycle
 /// pending -> grounding -> red -> green -> verified -> reviewed -> integrated.
@@ -216,6 +217,20 @@ pub struct RunState {
     /// same `RunStarted` body. Empty on a legacy run (predates this field) or a no-spec
     /// workflow run; the head-name derivation then degrades to the run-short-id alone.
     pub spec_path: String,
+    /// The run's open hold: `Some` while a [`TYPE_RUN_HELD`] has no later
+    /// [`TYPE_RUN_RELEASED`] in the slice [`project`] was handed.
+    pub hold: Option<Hold>,
+}
+
+/// A run's open hold, folded from the `RunHeld` events since its last `RunReleased`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Hold {
+    /// When the hold started: the valid time of its first `RunHeld` in log order.
+    pub since: SystemTime,
+    /// Whether this is an operator hold: any of its `RunHeld` events is by the operator.
+    pub operator: bool,
+    /// Its latest `RunHeld`, whose cause is the hold's cause.
+    pub latest: RunHeld,
 }
 
 /// One of the watching-discipline signals `AttentionEntry::kind` carries: spec 69's five, and
@@ -603,6 +618,17 @@ impl RunState {
                 self.run_id = p.run;
                 self.spec_path = p.spec;
             }
+            TYPE_RUN_HELD => {
+                let latest: RunHeld = serde_json::from_slice(&e.data)?;
+                let open = self.hold.take();
+                self.hold = Some(Hold {
+                    since: open.as_ref().map_or(e.valid_from, |hold| hold.since),
+                    operator: open.is_some_and(|hold| hold.operator)
+                        || latest.by == HOLD_BY_OPERATOR,
+                    latest,
+                });
+            }
+            TYPE_RUN_RELEASED => self.hold = None,
             TYPE_UNIT_STARTED => {
                 let p: UnitStarted = serde_json::from_slice(&e.data)?;
                 let u = self.unit(&p.id);

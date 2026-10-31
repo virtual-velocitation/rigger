@@ -3440,8 +3440,8 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 - `crates/rigger-console/src/console/map.rs:1253-1256` `module_of_a_leaf_src_file_is_its_stem_never_the_file_name`
 - `crates/rigger-console/src/console/map.rs:1285-1289` `district_purpose_uses_the_curated_table_when_present`
-- `crates/rigger-domain/src/ledger.rs:1053-1060` `short_run_id_truncates_to_twelve_chars_and_passes_shorter_ids_through`
-- `crates/rigger-domain/src/ledger.rs:1063-1078` `spec_stem_extracts_and_sanitizes_the_file_stem`
+- `crates/rigger-domain/src/ledger.rs:1079-1086` `short_run_id_truncates_to_twelve_chars_and_passes_shorter_ids_through`
+- `crates/rigger-domain/src/ledger.rs:1089-1104` `spec_stem_extracts_and_sanitizes_the_file_stem`
 - `crates/rigger-domain/src/progress.rs:361-364` `each_run_reports_on_its_own_stream_and_a_run_less_report_on_the_bare_one`
 - `tests/simplification_audit.rs:7286-7297` `impl_self_type_strips_a_trailing_where_clause_on_a_non_generic_self_type`
 - `tests/simplification_audit.rs:7317-7328` `impl_self_type_strips_a_leading_dyn_token_on_the_self_type`
@@ -3744,7 +3744,7 @@ Proposed home: `one shared `current_run_id` helper (e.g. relocated into `tests/c
 mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
 
 - `crates/rigger-dash/src/mcpserver.rs:562-564` `current_run_id`
-- `crates/rigger-domain/src/run.rs:208-210` `current_run_id`
+- `crates/rigger-domain/src/run.rs:250-252` `current_run_id`
 
 #### `dup-468c9f4fc26f` (semantic, 2 sites)
 
@@ -3902,7 +3902,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 - `crates/rigger-domain/src/failure.rs:45-51` `as_str`
 - `crates/rigger-domain/src/gate.rs:97-103` `as_str`
-- `crates/rigger-domain/src/ledger.rs:47-59` `as_str`
+- `crates/rigger-domain/src/ledger.rs:48-60` `as_str`
 
 #### `dup-3b3a41e03376` (exact, 3 sites)
 
@@ -3985,9 +3985,9 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `crates/rigger-domain/src/metrics.rs:1516-1521` `failed`
 - `crates/rigger-domain/src/metrics.rs:1523-1528` `integrated`
 - `crates/rigger-domain/src/metrics.rs:1530-1532` `escalated`
-- `crates/rigger-domain/src/run.rs:653-655` `decision`
-- `crates/rigger-domain/src/run.rs:656-658` `finding`
-- `crates/rigger-domain/src/run.rs:659-661` `lesson`
+- `crates/rigger-domain/src/run.rs:695-697` `decision`
+- `crates/rigger-domain/src/run.rs:698-700` `finding`
+- `crates/rigger-domain/src/run.rs:701-703` `lesson`
 
 #### `dup-d07779dc106d` (near, 2 sites)
 
