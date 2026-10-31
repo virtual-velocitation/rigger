@@ -73,8 +73,9 @@ pub const MAX_CONCURRENCY: usize = 4;
 /// ledger as the single source and these are re-exports.
 pub const TYPE_GATE_PROMOTED: &str = ledger::TYPE_GATE_PROMOTED;
 pub const TYPE_GATE_DEMOTED: &str = ledger::TYPE_GATE_DEMOTED;
-/// A proposed unit with no spec criterion - refused (anti-fragmentation, §8). A re-export of
-/// `ledger::TYPE_SCOPE_CREEP`, the single source of the string.
+/// A refused proposal (anti-fragmentation, section 8): a proposed unit with no spec
+/// criterion, or a same-id refine whose text resolves to a criterion its unit does not serve.
+/// A re-export of `ledger::TYPE_SCOPE_CREEP`, the single source of the string.
 pub const TYPE_SCOPE_CREEP: &str = ledger::TYPE_SCOPE_CREEP;
 pub use crate::blocker::TYPE_BUDGET_EXHAUSTED;
 /// The run is halting because the plan left a spec criterion uncovered - the
@@ -8224,10 +8225,13 @@ impl RunCtx<'_> {
             "The plan-critique gate REJECTED your previous decomposition:\n{}\n\nRevise \
              the unit DAG to resolve it, then re-emit your UnitProposed refinements. To \
              REFINE an existing unit, re-emit it under its EXACT existing unit-id - the \
-             refinement UPDATES that unit in place (its needs edges are replaced); use a \
-             NEW unit-id ONLY for a genuinely new or split unit. Re-emitting a refinement \
-             under a NEW id does NOT refine - it adds a second unit for that criterion, \
-             the duplicate-ownership defect this gate rejects.\n\n{}",
+             refinement UPDATES that unit in place: its criterion text, when given, becomes \
+             the unit's text and its needs edges are replaced. The unit keeps the criterion \
+             it serves, so a re-emit naming a DIFFERENT criterion keeps the unit's text; use \
+             a NEW unit-id ONLY for a genuinely new or split unit. A NEW id serving a \
+             criterion replaces every unit an earlier pass proposed for it that this pass \
+             does not re-emit, so re-emitting a refinement under a NEW id drops the unit it \
+             meant to refine instead of refining it.\n\n{}",
             feedback.trim(),
             self.build_prompt(plan_st)?
         );
@@ -12332,10 +12336,10 @@ impl RunCtx<'_> {
             }
             // Update-in-place on a same-id re-emit (spec 31 crit 1). A `UnitProposed`
             // whose id already names a stage is a REFINEMENT, never a second unit: FOLD
-            // its re-emitted `needs` (with the plan-critique gate-hold re-applied) into
-            // that ONE stage instead of skipping. Before this, the re-emit hit the
-            // `proposed.contains` short-circuit and was dropped, so a same-id refine never
-            // "took" and the planner had to mint a NEW id, ADDING a second unit per
+            // its re-emitted text, `needs` (with the plan-critique gate-hold re-applied)
+            // and gates into that ONE stage instead of skipping. Before this, the re-emit
+            // hit the `proposed.contains` short-circuit and was dropped, so a same-id refine
+            // never "took" and the planner had to mint a NEW id, ADDING a second unit per
             // criterion - the rule-7 duplicate-ownership the loop could not clear.
             //
             // We fold ONLY when the id names an actual PROPOSED unit (already in
@@ -12352,25 +12356,49 @@ impl RunCtx<'_> {
             //   - `!integrated && !terminal`: a started/integrated/terminal stage is NEVER
             //     mutated, so a late refinement can never disturb work already in flight.
             //
-            // NEEDS only: on the contemplated refine path (same criterion, refined needs)
-            // coverage is unchanged, so re-resolving it is a no-op; on a RETARGET (coverage
-            // moved to a DIFFERENT criterion) re-resolving `existing.coverage` WITHOUT also
-            // re-running the add path's baseline re-supersession would orphan the vacated
-            // criterion (its baseline was already removed) and double-own the new one -
-            // breaking the one-unit-per-criterion invariant THIS criterion owns. So the
-            // fold leaves coverage on the unit's originally-resolved criterion.
+            // THE TEXT FOLD: the refine's text resolves exactly as a first proposal's does
+            // ([`RunCtx::resolve_served_criterion`]; unmatched text stays raw, the add
+            // path's genuinely-new sub-unit shape), and replaces the unit's coverage ONLY
+            // when it resolves to the criterion the unit already serves. A RETARGET (text
+            // resolving to a DIFFERENT criterion) keeps the unit's text and criterion: moving
+            // `existing.coverage` WITHOUT also re-running the add path's baseline
+            // re-supersession would orphan the vacated criterion (its baseline was already
+            // removed) and double-own the new one - breaking the one-unit-per-criterion
+            // invariant THIS criterion owns. The refused retarget records a `ScopeCreep`
+            // signal, keyed on the refining event's log position so every later harvest and
+            // a resume's cold fold record it once (the key carries no `/gate:`, so
+            // [`unit_of_gate_key`] never reads it as a gate key). A refine with no text keeps
+            // the unit's text.
             //
-            // Re-folding on a later harvest is idempotent: it REPLACES `needs` with the
-            // same gate-held value (never appends), so an identical event sequence rebuilds
-            // an identical DAG.
+            // Re-folding on a later harvest is idempotent: it REPLACES `needs` and the text
+            // with the same values (never appends), and the log's later refine is folded
+            // last, so an identical event sequence rebuilds an identical DAG.
             if stages.contains_key(&u.id) {
                 if proposed.contains(&u.id)
                     && !integrated.contains(&u.id)
                     && !terminal.contains(&u.id)
                 {
                     let refined_needs = with_gate_hold(u.needs, &u.id, gate.as_ref());
+                    let refined_text = (!u.coverage.trim().is_empty()).then(|| {
+                        self.resolve_served_criterion(&u.coverage, &u.criterion_id)
+                            .unwrap_or_else(|| (String::new(), u.coverage.clone()))
+                    });
                     if let Some(existing) = stages.get_mut(&u.id) {
                         existing.needs = refined_needs;
+                        match refined_text {
+                            Some((served, text)) if served == existing.criterion_id => {
+                                existing.coverage = text;
+                            }
+                            Some(_) => self.emit_keyed(
+                                &format!("{}/refine-retarget#{}", u.id, e.position),
+                                TYPE_SCOPE_CREEP,
+                                json!({
+                                    "unit": u.id,
+                                    "reason": "same-id refine resolves to a criterion its unit does not serve; the unit keeps its text and criterion",
+                                }),
+                            )?,
+                            None => {}
+                        }
                         // GATE INHERITANCE (spec 103, decided): a same-id refine is one
                         // of the three ways a proposal reaches the DAG, so its own
                         // named gates (if any) are unioned onto the existing list too -
@@ -12457,10 +12485,10 @@ impl RunCtx<'_> {
                 // echoed stable id FIRST, then a whitespace-normalized prose fallback
                 // (spec 18 §3.3). This is the ADD path: it both resolves coverage AND
                 // supersedes the served criterion's baseline as one coupled step - the two
-                // are inseparable, which is exactly why the same-id fold path above folds
-                // NEEDS ONLY and never re-resolves coverage on its own.
+                // are inseparable, which is exactly why the same-id fold path above takes a
+                // refine's text only on the criterion its unit already serves.
                 let served = self.resolve_served_criterion(&u.coverage, &u.criterion_id);
-                if let Some((criterion_id, criterion)) = served {
+                if let Some((criterion_id, coverage)) = served {
                     // Enforce ONE LIVE UNIT PER CRITERION (the dual-chain fix): remove
                     // every not-yet-started, non-terminal stage already serving this
                     // criterion FROM AN EARLIER EPISODE (spec 72, THE SUPERSEDE RULE) -
@@ -12545,8 +12573,9 @@ impl RunCtx<'_> {
                     // so it grounds on and records the real criterion even when the planner
                     // paraphrased, and keeps whatever ownership sentence a split part
                     // carries past it, so two parts of one criterion never become twins
-                    // and each part's contract names the half it owns.
-                    u.coverage = part_coverage(&criterion, &u.coverage);
+                    // and each part's contract names the half it owns ([`part_coverage`],
+                    // applied by the resolution above).
+                    u.coverage = coverage;
                     // THE STAMP (spec 72, outcome-level): carry the criterion's own
                     // stable id onto the stage this proposal becomes - not only a
                     // conductor-synthesized baseline gets one from here on. Without this
@@ -12638,8 +12667,10 @@ impl RunCtx<'_> {
     /// stable id FIRST (spec 18 §3.3), then fall back to whitespace-normalized prose, so
     /// the id strictly takes precedence and a proposal that echoes a valid id never
     /// resolves to a different criterion whose text it happened to paste. Returns the
-    /// served criterion's stable id and its EXACT text, or `None` when the proposal maps
-    /// to no criterion (an empty coverage, or a genuinely-new split the planner intends).
+    /// served criterion's stable id and the coverage the proposal carries for it - the
+    /// EXACT criterion text plus any ownership sentence past it ([`part_coverage`]) - or
+    /// `None` when the proposal maps to no criterion (an empty coverage, or a
+    /// genuinely-new split the planner intends).
     ///
     /// The criteria are DISPLAYED to the planner as `- [<id>] <text>` (`plan_protocol`),
     /// so a planner that echoes "the id shown next to that criterion" naturally copies
@@ -12650,12 +12681,12 @@ impl RunCtx<'_> {
     /// it resolves to the longest criterion the text opens with ([`criterion_remainder`]),
     /// so a split part carrying its ownership sentence past the criterion still resolves.
     ///
-    /// This is the ONE resolution authority for `harvest_proposed`'s ADD path, which
-    /// resolves a proposal's coverage AND supersedes the served criterion's baseline as
-    /// one coupled step. The same-id fold path (spec 31) does NOT re-resolve coverage: a
-    /// standalone coverage re-resolve without that paired re-supersession would orphan the
-    /// vacated criterion and double-own the retarget target, so a refinement folds its
-    /// NEEDS only and leaves coverage on the criterion the add path first resolved.
+    /// This is the ONE resolution authority for both of `harvest_proposed`'s paths. The
+    /// ADD path resolves a proposal's coverage AND supersedes the served criterion's
+    /// baseline as one coupled step. The same-id fold path (spec 31) resolves a refine's
+    /// text the same way but takes it only when it resolves to the criterion the unit
+    /// already serves: a retarget without that paired re-supersession would orphan the
+    /// vacated criterion and double-own the retarget target.
     fn resolve_served_criterion(
         &self,
         coverage: &str,
@@ -12678,7 +12709,7 @@ impl RunCtx<'_> {
                     .filter(|(_, c)| criterion_remainder(c, coverage).is_some())
                     .min_by_key(|(_, c)| std::cmp::Reverse(normalize_ws(c).len()))
             })
-            .map(|(i, c)| (criterion_stable_id(i + 1, c), c.clone()))
+            .map(|(i, c)| (criterion_stable_id(i + 1, c), part_coverage(c, coverage)))
     }
 }
 
@@ -18257,14 +18288,15 @@ mod tests {
     #[test]
     fn a_coverage_retarget_re_emit_preserves_one_unit_per_criterion() {
         // spec 31 crit 1 (one-unit-per-criterion under a coverage RETARGET). A same-id
-        // re-emit folds its refined NEEDS only; it must NOT re-target the unit's coverage
-        // to a DIFFERENT criterion. Re-targeting `existing.coverage` WITHOUT also re-running
+        // re-emit takes its refined text only when that text resolves to the criterion its
+        // unit already serves; it must NOT re-target the unit's coverage to a DIFFERENT
+        // criterion. Re-targeting `existing.coverage` WITHOUT also re-running
         // the add path's baseline re-supersession would ORPHAN the vacated criterion (its
         // baseline was already removed when the unit first served it) and DOUBLE-OWN the
         // retarget target (its own unit PLUS the retargeted one) - the exact rule-7
         // duplicate ownership this criterion exists to eliminate. So a re-emit of u-a
-        // (serving criterion A) that now cites criterion B leaves u-a on A, folds only its
-        // needs, and both criteria keep exactly one owner. RED against a fold that writes
+        // (serving criterion A) that now cites criterion B leaves u-a's text on A, still folds
+        // its needs, and both criteria keep exactly one owner. RED against a fold that writes
         // `existing.coverage` (u-a moves to B: A orphaned, B double-owned).
         let crit_a = "criterion A: the alpha module is implemented";
         let crit_b = "criterion B: the beta module is implemented";
@@ -18296,7 +18328,7 @@ mod tests {
         // The retarget did NOT move u-a's coverage: it still serves criterion A.
         assert_eq!(
             stages["u-a"].coverage, crit_a,
-            "a coverage-retarget re-emit must fold NEEDS only and leave u-a on criterion A; got {:?}",
+            "a coverage-retarget re-emit must leave u-a's text on criterion A; got {:?}",
             stages["u-a"].coverage
         );
         // The refined needs still folded in (NEEDS is the refinable field).
@@ -18434,6 +18466,264 @@ mod tests {
             1,
             "the refined needs edge must not double on a second harvest; got {:?}",
             stages["u-a"].needs
+        );
+    }
+
+    /// The state the refined unit `u-a` is in when its same-id refines fold.
+    #[derive(Clone, Copy)]
+    enum RefinedUnit {
+        NotStarted,
+        Integrated,
+        Terminal,
+    }
+
+    /// The criterion a same-id refine fixture's proposal echoes by id, and the one its unit
+    /// ends up serving: criterion A, criterion B, or none.
+    #[derive(Clone, Copy)]
+    enum Cites {
+        A,
+        B,
+        Nothing,
+    }
+
+    const REFINE_CRIT_A: &str = "criterion A: the alpha module is implemented";
+    const REFINE_CRIT_B: &str = "criterion B: the beta module is implemented";
+    const FIRST_OWNS: &str = "THIS UNIT OWNS the alpha parser only.";
+    const SECOND_OWNS: &str = "THIS UNIT OWNS the alpha parser and its error type.";
+    const UNMATCHED_TEXT: &str = "a logging helper the alpha module calls";
+    const UNMATCHED_REFINED: &str = "a logging helper the alpha module calls, with rotation";
+
+    impl Cites {
+        fn id(self) -> String {
+            match self {
+                Cites::A => criterion_stable_id(1, REFINE_CRIT_A),
+                Cites::B => criterion_stable_id(2, REFINE_CRIT_B),
+                Cites::Nothing => String::new(),
+            }
+        }
+    }
+
+    /// `u-b` serves criterion B, then `u-a` is proposed and refined under its own id by each
+    /// of `proposals` in log order (`(text, the criterion it echoes)`, the first adding the
+    /// unit), and the harvest runs with `u-a` in `state`. `u-a` must end on contract `text`
+    /// serving `serves` - the text its task block hands an implementer - each criterion
+    /// keeps exactly one owner, and `scope_creeps` ScopeCreep signals name `u-a`. A second
+    /// harvest of the same log and a cold fold of it (a fresh process seeded from the log,
+    /// as a resume runs) rebuild the identical DAG and record no further signal.
+    fn assert_same_id_refine(
+        state: RefinedUnit,
+        proposals: &[(String, Cites)],
+        (text, serves): (&str, Cites),
+        scope_creeps: usize,
+    ) {
+        let cfg = supersede_cfg();
+        let st = Store::open(":memory:").unwrap();
+        let mut log = vec![("u-b", REFINE_CRIT_B, Cites::B.id(), Vec::new())];
+        log.extend(
+            proposals
+                .iter()
+                .map(|(t, cites)| ("u-a", t.as_str(), cites.id(), Vec::new())),
+        );
+        append_proposals(&st, &log);
+        let driver = Stub::new();
+        let deps = stub_deps(
+            &st,
+            &driver,
+            vec![REFINE_CRIT_A.to_string(), REFINE_CRIT_B.to_string()],
+        );
+        let fresh_sets = || {
+            let (mut integrated, mut terminal) = (HashSet::new(), HashSet::new());
+            match state {
+                RefinedUnit::NotStarted => {}
+                RefinedUnit::Integrated => {
+                    integrated.insert("u-a".to_string());
+                }
+                RefinedUnit::Terminal => {
+                    terminal.insert("u-a".to_string());
+                }
+            }
+            (HashSet::<String>::new(), integrated, terminal)
+        };
+        let scope_creep_units = || -> Vec<Value> {
+            let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
+            payloads_of_type(&events, TYPE_SCOPE_CREEP)
+                .iter()
+                .map(|p| p["unit"].clone())
+                .collect()
+        };
+        let want_creeps = vec![json!("u-a"); scope_creeps];
+
+        let ctx = RunCtx::for_test(&cfg, &deps);
+        let mut stages = seed_refine_dag(&deps.criteria);
+        let (mut proposed, mut integrated, mut terminal) = fresh_sets();
+        ctx.harvest_proposed(&mut stages, &mut proposed, &mut integrated, &mut terminal)
+            .unwrap();
+
+        assert_eq!(
+            (
+                stages["u-a"].coverage.as_str(),
+                stages["u-a"].criterion_id.clone()
+            ),
+            (text, serves.id()),
+            "u-a's folded contract and served criterion"
+        );
+        assert!(
+            task_block(&stages["u-a"]).ends_with(&format!(":\n{text}\n\n")),
+            "the task block must hand an implementer the folded contract; got {:?}",
+            task_block(&stages["u-a"])
+        );
+        let owners = |criterion_id: String| -> Vec<String> {
+            stages
+                .values()
+                .filter(|s| s.criterion_id == criterion_id)
+                .map(|s| s.name.clone())
+                .collect()
+        };
+        let a_owner = match serves {
+            Cites::A => "u-a".to_string(),
+            Cites::B | Cites::Nothing => baseline_id(1, REFINE_CRIT_A),
+        };
+        assert_eq!(
+            owners(Cites::A.id()),
+            vec![a_owner],
+            "criterion A's one owner"
+        );
+        assert_eq!(
+            owners(Cites::B.id()),
+            vec!["u-b".to_string()],
+            "criterion B's one owner"
+        );
+        assert_eq!(scope_creep_units(), want_creeps, "the ScopeCreep signals");
+
+        let shape = stage_shape(&stages);
+        ctx.harvest_proposed(&mut stages, &mut proposed, &mut integrated, &mut terminal)
+            .unwrap();
+        assert_eq!(
+            stage_shape(&stages),
+            shape,
+            "a second harvest of the same log"
+        );
+        assert_eq!(
+            scope_creep_units(),
+            want_creeps,
+            "a second harvest's signals"
+        );
+
+        let mut cold = RunCtx::for_test(&cfg, &deps);
+        cold.replayed_keys = crate::replay_keys::ReplayKeys::seeded(
+            &st.read_stream(STREAM, 0, Direction::Forward).unwrap(),
+        );
+        let mut cold_stages = seed_refine_dag(&deps.criteria);
+        let (mut proposed, mut integrated, mut terminal) = fresh_sets();
+        cold.harvest_proposed(
+            &mut cold_stages,
+            &mut proposed,
+            &mut integrated,
+            &mut terminal,
+        )
+        .unwrap();
+        assert_eq!(
+            stage_shape(&cold_stages),
+            shape,
+            "a cold fold of the same log"
+        );
+        assert_eq!(scope_creep_units(), want_creeps, "a cold fold's signals");
+    }
+
+    crate::test_cases! {
+        a_same_id_refine_of_a_not_started_unit_takes_its_new_text: assert_same_id_refine(
+            RefinedUnit::NotStarted,
+            &[
+                (REFINE_CRIT_A.into(), Cites::A),
+                (format!("{REFINE_CRIT_A} {FIRST_OWNS}"), Cites::A),
+            ],
+            (&format!("{REFINE_CRIT_A}\n\n{FIRST_OWNS}"), Cites::A),
+            0,
+        );
+        the_later_of_two_same_id_refines_wins: assert_same_id_refine(
+            RefinedUnit::NotStarted,
+            &[
+                (REFINE_CRIT_A.into(), Cites::A),
+                (format!("{REFINE_CRIT_A} {FIRST_OWNS}"), Cites::A),
+                (format!("{REFINE_CRIT_A} {SECOND_OWNS}"), Cites::A),
+            ],
+            (&format!("{REFINE_CRIT_A}\n\n{SECOND_OWNS}"), Cites::A),
+            0,
+        );
+        a_same_id_refine_resolving_to_another_criterion_keeps_the_units_text_and_owner: assert_same_id_refine(
+            RefinedUnit::NotStarted,
+            &[
+                (REFINE_CRIT_A.into(), Cites::A),
+                (format!("{REFINE_CRIT_A} {FIRST_OWNS}"), Cites::A),
+                (format!("{REFINE_CRIT_B} {SECOND_OWNS}"), Cites::B),
+            ],
+            (&format!("{REFINE_CRIT_A}\n\n{FIRST_OWNS}"), Cites::A),
+            1,
+        );
+        a_same_id_refine_echoing_another_criterions_id_resolves_by_the_id_first: assert_same_id_refine(
+            RefinedUnit::NotStarted,
+            &[
+                (REFINE_CRIT_A.into(), Cites::A),
+                (format!("{REFINE_CRIT_A} {FIRST_OWNS}"), Cites::B),
+            ],
+            (REFINE_CRIT_A, Cites::A),
+            1,
+        );
+        a_same_id_refine_paraphrasing_its_criterion_carries_the_criterion_alone: assert_same_id_refine(
+            RefinedUnit::NotStarted,
+            &[
+                (format!("{REFINE_CRIT_A} {FIRST_OWNS}"), Cites::A),
+                ("the alpha module gets built".into(), Cites::A),
+            ],
+            (REFINE_CRIT_A, Cites::A),
+            0,
+        );
+        a_same_id_refine_with_no_text_keeps_the_units_text: assert_same_id_refine(
+            RefinedUnit::NotStarted,
+            &[
+                (format!("{REFINE_CRIT_A} {FIRST_OWNS}"), Cites::A),
+                (String::new(), Cites::Nothing),
+            ],
+            (&format!("{REFINE_CRIT_A}\n\n{FIRST_OWNS}"), Cites::A),
+            0,
+        );
+        a_same_id_refine_of_an_integrated_unit_changes_nothing: assert_same_id_refine(
+            RefinedUnit::Integrated,
+            &[
+                (REFINE_CRIT_A.into(), Cites::A),
+                (format!("{REFINE_CRIT_A} {FIRST_OWNS}"), Cites::A),
+                (format!("{REFINE_CRIT_B} {SECOND_OWNS}"), Cites::B),
+            ],
+            (REFINE_CRIT_A, Cites::A),
+            0,
+        );
+        a_same_id_refine_of_a_terminal_unit_changes_nothing: assert_same_id_refine(
+            RefinedUnit::Terminal,
+            &[
+                (REFINE_CRIT_A.into(), Cites::A),
+                (format!("{REFINE_CRIT_A} {FIRST_OWNS}"), Cites::A),
+                (format!("{REFINE_CRIT_B} {SECOND_OWNS}"), Cites::B),
+            ],
+            (REFINE_CRIT_A, Cites::A),
+            0,
+        );
+        a_same_id_refine_of_an_unmatched_sub_unit_takes_its_new_text: assert_same_id_refine(
+            RefinedUnit::NotStarted,
+            &[
+                (UNMATCHED_TEXT.into(), Cites::Nothing),
+                (UNMATCHED_REFINED.into(), Cites::Nothing),
+            ],
+            (UNMATCHED_REFINED, Cites::Nothing),
+            0,
+        );
+        a_same_id_refine_moving_an_unmatched_sub_unit_onto_a_criterion_keeps_it_unmatched: assert_same_id_refine(
+            RefinedUnit::NotStarted,
+            &[
+                (UNMATCHED_TEXT.into(), Cites::Nothing),
+                (format!("{REFINE_CRIT_A} {FIRST_OWNS}"), Cites::A),
+            ],
+            (UNMATCHED_TEXT, Cites::Nothing),
+            1,
         );
     }
 
