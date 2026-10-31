@@ -707,11 +707,13 @@ pub(crate) fn cmd_setup(args: &[String]) -> Res {
     // overlay (base branch, specs location) merged into the render. Drift-aware like the
     // workflow, so a rerun on an up-to-date repo changes nothing.
     let skills = install_skills(root)?;
-    // Install the docs-regenerating git pre-commit hook (spec 24): on `git commit` it runs
-    // `rigger docs` and stages any changed rendered outputs into the SAME commit, so a commit
-    // that changes a documented code fact carries its freshly rendered docs. Drift-aware and
-    // non-destructive like the installs above - a rerun on an already-installed hook changes
-    // nothing, and any pre-existing pre-commit hook is chained, never clobbered.
+    // Install the docs-checking git pre-commit hook (spec 24): on `git commit` it runs
+    // `rigger docs --check` and refuses the commit when a rendered output the repo tracks
+    // differs from a fresh render or has unstaged changes, so a commit that changes a
+    // documented code fact must carry its freshly rendered docs; it never writes or stages
+    // anything itself. Drift-aware and non-destructive like the installs above - a rerun on
+    // an already-installed hook changes nothing, an older build's managed block is replaced
+    // in place, and any pre-existing pre-commit hook is chained, never clobbered.
     let hook = install_precommit_hook(root)?;
     let provisioned = provision_shim(root)?;
     // Register the operator's own MCP lookup surface (spec 92, criterion 4: IN EVERY
@@ -812,8 +814,9 @@ pub(crate) fn cmd_setup(args: &[String]) -> Res {
     }
     match hook {
         InstallOutcome::Installed => println!(
-            "installed the docs pre-commit hook - each commit now regenerates the using-rigger \
-             docs and stages any change into that same commit"
+            "installed the docs pre-commit hook - each commit now checks every rendered docs \
+             output this repo tracks against a fresh render, and refuses a drifted or \
+             unstaged one"
         ),
         InstallOutcome::Refreshed => {
             println!("refreshed the docs pre-commit hook to match this rigger build")
