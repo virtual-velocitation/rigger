@@ -3134,28 +3134,28 @@
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 28961,
-        "end_line": 28961
+        "start_line": 29018,
+        "end_line": 29018
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 29024,
-        "end_line": 29024
+        "start_line": 29081,
+        "end_line": 29081
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 29062,
-        "end_line": 29062
+        "start_line": 29119,
+        "end_line": 29119
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 29525,
-        "end_line": 29525
+        "start_line": 29582,
+        "end_line": 29582
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 29543,
-        "end_line": 29543
+        "start_line": 29600,
+        "end_line": 29600
       },
       {
         "file": "tests/common/cli.rs",

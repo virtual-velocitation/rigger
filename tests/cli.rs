@@ -28885,19 +28885,76 @@ fn prime_and_instructions_outside_git_with_no_store_read_the_layer_at_the_cwd() 
     assert_reporters_in(root, &ceiling);
 }
 
-/// Spec 120's EVERY BUILT-IN'S STATE IS REPORTED, beside a store below the project root: given a
-/// project whose `.rigger/instructions/` holds the named-entry fixture and whose subdirectory holds
-/// a store of its own, when the operator runs `rigger instructions` and `rigger prime` in that
-/// subdirectory, then each reports the project's layer, never the layer beside the store it finds.
+/// Spec 120's EVERY BUILT-IN'S STATE IS REPORTED, beside a `.rigger/` that marks no project: given
+/// a project whose `.rigger/instructions/` holds the named-entry fixture and whose subdirectory
+/// holds a store of its own, or an operator layer of its own, with no `workflow.yml` either way,
+/// when the operator runs `rigger instructions` and `rigger prime` in that subdirectory, then each
+/// reports the project's layer, never the layer beside the directory it finds.
 #[test]
-fn prime_and_instructions_beside_a_store_in_a_subdirectory_report_the_project_s_layer() {
+fn prime_and_instructions_beside_a_store_or_a_layer_in_a_subdirectory_report_the_project_s_layer() {
     use common::cli::{assert_reporters_in, seed_store, write_operator_layer};
-    use common::fixtures::{shadowing_operator_layer, subdirectory_of};
-    let proj = temp_project();
-    let sub = subdirectory_of(proj.path());
-    seed_store(&sub);
-    write_operator_layer(proj.path(), &shadowing_operator_layer());
-    assert_reporters_in(&sub, &[]);
+    use common::fixtures::{
+        house_and_team_operator_layer, shadowing_operator_layer, subdirectory_of,
+    };
+    let own_layer = |sub: &Path| write_operator_layer(sub, &house_and_team_operator_layer());
+    for beside in [&seed_store as &dyn Fn(&Path), &own_layer] {
+        let proj = temp_project();
+        let sub = subdirectory_of(proj.path());
+        beside(&sub);
+        write_operator_layer(proj.path(), &shadowing_operator_layer());
+        assert_reporters_in(&sub, &[]);
+    }
+}
+
+/// Spec 120's THE LAYER ROOT, a project below the repository root: given a git repository whose
+/// root holds one operator layer and whose subdirectory is a project `rigger init` set up, holding
+/// the named-entry fixture, when the operator runs `rigger instructions`, `rigger validate` and
+/// `rigger prime` in that project and the two reporters in a directory below it, then each reports
+/// that project's layer, the one `rigger validate` reports there, never the repository root's.
+#[test]
+fn prime_and_instructions_in_a_project_below_the_repository_root_report_that_project_s_layer() {
+    use common::cli::{
+        assert_reporters_in, assert_reporters_name_the_shadowing_layer_states, write_operator_layer,
+    };
+    use common::fixtures::{
+        house_and_team_operator_layer, shadowing_operator_layer, subdirectory_of,
+        temp_git_project_with_commit,
+    };
+    let repo = temp_git_project_with_commit();
+    write_operator_layer(repo.path(), &house_and_team_operator_layer());
+    let project = subdirectory_of(repo.path());
+    run_rigger_ok(&project, &["init"]);
+    write_operator_layer(&project, &shadowing_operator_layer());
+    assert_reporters_name_the_shadowing_layer_states(&project);
+    assert_reporters_in(&subdirectory_of(&project), &[]);
+}
+
+/// Spec 120's THE LAYER ROOT, from a worktree: given a committed git repository whose subdirectory
+/// is a project holding the named-entry fixture, uncommitted, and a linked worktree, nested or
+/// relocated, whose same subdirectory is a project holding another layer, when the operator runs
+/// `rigger instructions` and `rigger prime` in the worktree's subdirectory, then each reports the
+/// main checkout's project at that position, never the worktree's own.
+#[test]
+fn prime_and_instructions_below_the_root_of_a_worktree_report_the_main_checkout_s_project() {
+    use common::cli::{assert_reporters_in, write_operator_layer};
+    use common::fixtures::{
+        house_and_team_operator_layer, shadowing_operator_layer, subdirectory_of,
+        temp_git_project_with_commit,
+    };
+    use common::git::{nested_worktree, relocated_worktree};
+    for worktree in [nested_worktree, relocated_worktree] {
+        let repo = temp_git_project_with_commit();
+        let wt = worktree(repo.path(), "rigger-wt-below-root-layer");
+        for (root, layer) in [
+            (repo.path(), shadowing_operator_layer()),
+            (wt.as_path(), house_and_team_operator_layer()),
+        ] {
+            let project = subdirectory_of(root);
+            write_workflow_fixture(&project, &LIVENESS_WORKFLOW);
+            write_operator_layer(&project, &layer);
+        }
+        assert_reporters_in(&wt.join("sub"), &[]);
+    }
 }
 
 /// Spec 120's EVERY BUILT-IN'S STATE IS REPORTED, from a deleted directory: given a subdirectory of
