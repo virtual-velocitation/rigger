@@ -2565,7 +2565,7 @@ fn role_and_agent(id: &str) -> (String, String) {
         ),
         None => (role, attempt, 1),
     };
-    let step = if k >= 2 {
+    let step = if spawn::is_later_step(k) {
         format!(" step {k}")
     } else {
         String::new()

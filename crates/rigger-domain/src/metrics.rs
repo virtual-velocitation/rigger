@@ -249,8 +249,8 @@ fn review_tier(spawn_id: &str) -> Option<&'static str> {
 /// the per-tier cost and adversary-precision folds share.
 fn actor_tier(actor: &str) -> &'static str {
     match review_step_of(actor) {
-        Some((ReviewKind::Adversary, _)) => crate::canary::TIER_ADVERSARY,
-        _ => crate::canary::TIER_LENS,
+        Some((ReviewKind::Adversary, _)) => crate::spawn::TIER_ADVERSARY,
+        _ => crate::spawn::TIER_LENS,
     }
 }
 
@@ -1057,12 +1057,12 @@ pub fn project(events: &[Event]) -> Metrics {
         }
         // Adversary-ONLY: a finding of any adversary step about files NO lens step also
         // flagged, whichever ran first.
-        if actor_tier(actor) == crate::canary::TIER_ADVERSARY {
+        if actor_tier(actor) == crate::spawn::TIER_ADVERSARY {
             let files = finding_about.get(id).cloned().unwrap_or_default();
             let shared_with_a_lens = files.iter().any(|f| {
                 file_actors.get(f).is_some_and(|acts| {
                     acts.iter()
-                        .any(|a| !a.is_empty() && actor_tier(a) == crate::canary::TIER_LENS)
+                        .any(|a| !a.is_empty() && actor_tier(a) == crate::spawn::TIER_LENS)
                 })
             });
             if !shared_with_a_lens {
@@ -1276,7 +1276,7 @@ pub fn project_canary(events: &[Event]) -> CanaryMetrics {
     // Seed both tiers so a run reports a `0/0` for a tier that never caught, rather than
     // omitting it (a silent absence reads as "not measured", not "caught nothing"). The
     // findings-volume total is seeded the same way, for the same reason.
-    for tier in [crate::canary::TIER_LENS, crate::canary::TIER_ADVERSARY] {
+    for tier in [crate::spawn::TIER_LENS, crate::spawn::TIER_ADVERSARY] {
         m.tier_catch.insert(tier.to_string(), TierCatch::default());
         m.findings_raised.insert(tier.to_string(), 0);
     }
@@ -1285,8 +1285,8 @@ pub fn project_canary(events: &[Event]) -> CanaryMetrics {
     // with an empty (unmeasured) resolved id, so the header always names all three rather
     // than silently omitting one the header event never reported.
     for tier in [
-        crate::canary::TIER_LENS,
-        crate::canary::TIER_ADVERSARY,
+        crate::spawn::TIER_LENS,
+        crate::spawn::TIER_ADVERSARY,
         crate::spawn::ROLE_ADJUDICATOR,
     ] {
         m.resolved_models.insert(tier.to_string(), String::new());

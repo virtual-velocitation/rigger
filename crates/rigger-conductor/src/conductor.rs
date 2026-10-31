@@ -37,8 +37,8 @@ pub use rigger_domain::review::verdict_approves;
 pub use rigger_domain::review::VERDICT_APPROVE;
 use rigger_domain::review::{
     adjudicator_roster, emitted_verdict_approves, glob_matches, has_verdict_line, review_roster,
-    route_review_tier, run_notes, step_ordinal, step_roster, verdict_compensates, RunNote,
-    TierRouting,
+    route_review_tier, run_notes, step_adjudicator, step_ordinal, step_roster, verdict_compensates,
+    RunNote, TierRouting,
 };
 #[cfg(test)]
 use rigger_domain::review::{path_is_high_risk, TIER_FULL, TIER_LIGHT};
@@ -6959,7 +6959,7 @@ impl RunCtx<'_> {
         // above legitimately keeps `winner_sha`: it records what the gates verified, not
         // what the review judged.
         let steps = self.cfg.workflow.effective_review_panel(st).steps();
-        if let Some(adjudicator) = steps.iter().find_map(ReviewStep::adjudicator) {
+        if let Some(adjudicator) = step_adjudicator(&steps) {
             self.emit_keyed_meta(
                 &format!("{}/reviewed#{lane}", st.name),
                 ledger::TYPE_UNIT_STATUS,
@@ -7189,8 +7189,7 @@ impl RunCtx<'_> {
                 any_lens_parked,
                 None,
                 None,
-                // A lens judges the diff directly, so it carries no roster (spec 67, c4).
-                &[],
+                &step_roster(&[ReviewStep::Lenses(lenses.clone())], 0, review_step_role),
             )?;
             if !st.adversary.is_empty() {
                 self.run_finding_reviewer(
@@ -7510,16 +7509,15 @@ impl RunCtx<'_> {
         let resume = round
             .map(|r| self.review_resume_task(st, dir, r))
             .transpose()?;
-        let lens = kind == ReviewKind::Lens;
         self.run_reviewer(
             st,
-            if lens { "lens" } else { "adversary" },
+            kind.tier(),
             &role,
             agent_id,
             dir,
             attempt,
             ordinal,
-            lens,
+            kind == ReviewKind::Lens,
             // Stdout is NOT the verdict - the findings go to the graph - so an empty stdout is
             // degenerate only when the reviewer also emitted no ReviewFinding.
             ReviewerOutput::Findings,
@@ -7979,7 +7977,7 @@ impl RunCtx<'_> {
             .transpose()?;
         let result = self.run_reviewer(
             st,
-            "adjudicator",
+            ReviewKind::Adjudicator.tier(),
             &review_step_role(ReviewKind::Adjudicator, adj_id, 1),
             adj_id,
             dir,
@@ -16530,8 +16528,12 @@ mod tests {
                 .entry(a.id.clone())
                 .or_default()
                 .push(prompt.to_string());
-            self.call_order.lock().unwrap().push(a.id.clone());
+            // Under one guard, so one spawn records both and two lens threads cannot pair one
+            // lens's id with the other's turn.
+            let mut call_order = self.call_order.lock().unwrap();
+            call_order.push(a.id.clone());
             self.spawn_ids.lock().unwrap().push(opts.id.clone());
+            drop(call_order);
             self.resumes.lock().unwrap().push((
                 opts.id.clone(),
                 opts.resumed_from.clone(),
@@ -34351,8 +34353,7 @@ mod tests {
     /// REAL `SpawnOpts.reviews` the driver received, mirroring the review_unit-path
     /// assertions above on the fan-out path.
     #[test]
-    fn the_fan_out_review_loops_adversary_and_adjudicator_spawns_are_stamped_with_the_routed_roster(
-    ) {
+    fn the_fan_out_review_loops_spawns_are_stamped_with_the_routed_roster() {
         // No `agent` + a populated `agents` lens list routes this to the STANDALONE fan-out
         // review path (`is_fan_out`), never `review_unit`.
         let driver = roster_run(
@@ -34366,6 +34367,13 @@ mod tests {
             &["lensA", "lensB"],
             "adversary",
         );
+        for lens in ["lensA", "lensB"] {
+            assert_eq!(
+                driver.reviews_for(lens),
+                Some(Vec::new()),
+                "a lens judges the diff directly, so {lens} carries no roster"
+            );
+        }
         assert_eq!(
             driver.reviews_for("adversary"),
             Some(vec!["lens:lensA".to_string(), "lens:lensB".to_string()]),

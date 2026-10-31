@@ -2250,7 +2250,7 @@ const ADVERSARIAL_SAMPLE_CLOSED_BEFORE_REDRAW: &[&str] = &[
      now live once in the shared store fixtures",
     "`crates/rigger-grounder/src/grounder/workflowdef.rs` `full_reviewers_of` repeated the head of \
      `ReviewPanel::agent_ids`; both now call `ReviewPanel::full_roster`, and every \
-     adversary/adjudicator pair goes through `config::push_reviewers`",
+     adversary/adjudicator pair goes through `config::keyed_steps`",
     "`tests/common/fixtures/graph.rs` `summarized_node` was re-rolled as an inline closure by \
      `tests/rationale_overlay_data.rs`; it now calls it",
     "`crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs` `tier_default_matches_the_extracted_const` was repeated inline \

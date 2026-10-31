@@ -91,7 +91,7 @@ fn parse_canary_args(args: &[String]) -> Result<CanaryArgs, Box<dyn std::error::
                 })?;
                 if !matches!(
                     tier,
-                    canary::TIER_LENS | canary::TIER_ADVERSARY | spawn::ROLE_ADJUDICATOR
+                    spawn::TIER_LENS | spawn::TIER_ADVERSARY | spawn::ROLE_ADJUDICATOR
                 ) {
                     return Err(format!(
                         "canary: --model names unknown tier {tier:?} (tiers: lens, adversary, \

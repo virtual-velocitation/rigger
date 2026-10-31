@@ -1061,7 +1061,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "54a0d235b6d2c596"
+    "content_hash": "e1eddf9283975438"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -1093,7 +1093,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "0855c40225a664ca"
+    "content_hash": "615595b07084ecf9"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -1109,7 +1109,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "e249b02e88a95be5"
+    "content_hash": "7d7e784851daa12e"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -1149,7 +1149,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "e88e5cce6903dcbf"
+    "content_hash": "8ea7b413dcd234e2"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -2869,7 +2869,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "ad3c1edccb740f90"
+    "content_hash": "581b7de31031d4fa"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -5993,11 +5993,11 @@
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
-    "name": "the_fan_out_review_loops_adversary_and_adjudicator_spawns_are_stamped_with_the_routed_roster",
+    "name": "the_fan_out_review_loops_spawns_are_stamped_with_the_routed_roster",
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "ca90041d24917757"
+    "content_hash": "23524d291fdfc08b"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -11949,7 +11949,7 @@
     "is_test": false,
     "proposed_module": "dash::render",
     "reason": "name contains \"role\" (HTML rendering); grouped under `dash::render`.",
-    "content_hash": "420450d3e8386c02"
+    "content_hash": "ee4538583bb6d905"
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",

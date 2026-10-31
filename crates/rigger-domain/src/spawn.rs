@@ -97,6 +97,12 @@ pub const ROLE_ADVERSARY: &str = "adversary";
 /// The role token of a unit review's adjudicator step (the gating verdict), of which a panel has
 /// one at most.
 pub const ROLE_ADJUDICATOR: &str = "adjudicator";
+/// The tier label of every lens spawn, whichever step it sits in: what the dash groups under and
+/// the metrics and the canary fold and report under. A constant so a `match` can name it; the
+/// label is [`ReviewKind::tier`]'s, and the adjudicator's is [`ROLE_ADJUDICATOR`].
+pub const TIER_LENS: &str = ReviewKind::Lens.tier();
+/// The tier label of every adversary spawn, whichever step it sits in.
+pub const TIER_ADVERSARY: &str = ReviewKind::Adversary.tier();
 /// The role token for the SDET periphery-test AUTHOR (spec 32): the write-capable role
 /// that authors the periphery test layer (contract / API / integration) at the build
 /// seam - after the implementer emits green and before the pre-gate commit - so no
@@ -145,10 +151,10 @@ impl ReviewKind {
     /// assert_eq!(ReviewKind::Adversary.tier(), "adversary");
     /// assert_eq!(ReviewKind::Adjudicator.tier(), "adjudicator");
     /// ```
-    pub fn tier(self) -> &'static str {
+    pub const fn tier(self) -> &'static str {
         match self {
-            ReviewKind::Lens => crate::canary::TIER_LENS,
-            ReviewKind::Adversary => crate::canary::TIER_ADVERSARY,
+            ReviewKind::Lens => "lens",
+            ReviewKind::Adversary => ROLE_ADVERSARY,
             ReviewKind::Adjudicator => ROLE_ADJUDICATOR,
         }
     }
@@ -174,11 +180,17 @@ pub fn review_step_role(kind: ReviewKind, agent: &str, k: u32) -> String {
         ReviewKind::Adversary => ROLE_ADVERSARY.to_string(),
         ReviewKind::Adjudicator => return ROLE_ADJUDICATOR.to_string(),
     };
-    if k >= 2 {
+    if is_later_step(k) {
         format!("{token}{STEP_TOKEN_SEPARATOR}{k}")
     } else {
         token
     }
+}
+
+/// Whether the `k`-th step of a kind is marked with its `k`, on a role token and on a dash label
+/// alike: step 1 reads bare.
+pub fn is_later_step(k: u32) -> bool {
+    k >= 2
 }
 
 /// The kind and the 1-based step ordinal the review role token `role` spells, the one parser of
@@ -223,7 +235,7 @@ fn step_suffix(suffix: &str) -> Option<u32> {
     if !matches!(suffix.as_bytes().first(), Some(b'1'..=b'9')) {
         return None;
     }
-    suffix.parse().ok().filter(|k| *k >= 2)
+    suffix.parse().ok().filter(|k| is_later_step(*k))
 }
 
 /// The agent id the lens token `role` names, bare or stepped, or `None` for any other role and
@@ -1411,12 +1423,14 @@ mod tests {
     /// A kind's tier is the label its spawns fold and group under, the seeds' own spellings.
     #[test]
     fn a_review_kind_reads_as_its_tier_label() {
-        for (kind, tier) in [
-            (ReviewKind::Lens, crate::canary::TIER_LENS),
-            (ReviewKind::Adversary, crate::canary::TIER_ADVERSARY),
-            (ReviewKind::Adjudicator, ROLE_ADJUDICATOR),
+        for (tier, label) in [
+            (ReviewKind::Lens.tier(), "lens"),
+            (ReviewKind::Adversary.tier(), "adversary"),
+            (ReviewKind::Adjudicator.tier(), "adjudicator"),
+            (TIER_LENS, "lens"),
+            (TIER_ADVERSARY, "adversary"),
         ] {
-            assert_eq!(kind.tier(), tier, "{kind:?}");
+            assert_eq!(tier, label);
         }
     }
 

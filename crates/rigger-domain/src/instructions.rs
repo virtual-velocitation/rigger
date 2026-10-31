@@ -19,7 +19,7 @@
 //! what their agents are held to; `rigger validate` warns of each shadowed built-in
 //! ([`shadow_advisories`]).
 
-use crate::config::RIGGER_DIR;
+use crate::config::{INSTRUCTIONS_DIR, RIGGER_DIR};
 
 /// One instruction section: `name` is the file stem (or the built-in id) and `body` its text.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -222,9 +222,9 @@ fn shadowed_by(layer: &BuiltInLayer) -> Option<String> {
         .map(|verb| format!("{verb} by {}", operator_path(&format!("{}.md", layer.name))))
 }
 
-/// `file` under the operator layer's directory, `.rigger/instructions`, as the reports name it.
+/// `file` under the operator layer's directory, as the reports name it.
 fn operator_path(file: &str) -> String {
-    format!("{RIGGER_DIR}/instructions/{file}")
+    format!("{RIGGER_DIR}/{INSTRUCTIONS_DIR}/{file}")
 }
 
 fn push_section(out: &mut String, name: &str, body: &str) {

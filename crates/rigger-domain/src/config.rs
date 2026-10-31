@@ -24,6 +24,10 @@ pub const RIGGER_DIR: &str = ".rigger";
 /// project. The ONE spelling of that file name.
 pub const WORKFLOW_FILE: &str = "workflow.yml";
 
+/// The operator instruction layer's directory under [`RIGGER_DIR`]. The ONE spelling of that
+/// directory name.
+pub const INSTRUCTIONS_DIR: &str = "instructions";
+
 #[derive(Debug, thiserror::Error)]
 #[error("config: {0}")]
 pub struct Error(pub String);
@@ -420,8 +424,23 @@ fn keyed_steps(lenses: &[String], adversary: &str, adjudicator: &str) -> Vec<Rev
     steps
 }
 
+/// The position in `steps` of each adjudicator step, in order.
+fn adjudicator_positions(steps: &[ReviewStep]) -> impl Iterator<Item = usize> + '_ {
+    steps
+        .iter()
+        .enumerate()
+        .filter(|(_, step)| step.adjudicator().is_some())
+        .map(|(i, _)| i)
+}
+
+/// Every step key in the CANONICAL SEQUENCE ([`keyed_steps`], with every key set).
+fn step_keys() -> Vec<&'static str> {
+    let steps = keyed_steps(&[String::new()], "set", "set");
+    steps.iter().map(ReviewStep::key).collect()
+}
+
 /// `ids` in order, each id at its first position only.
-fn first_seen(ids: impl IntoIterator<Item = String>) -> Vec<String> {
+pub fn first_seen(ids: impl IntoIterator<Item = String>) -> Vec<String> {
     let mut seen = HashSet::new();
     ids.into_iter()
         .filter(|id| seen.insert(id.clone()))
@@ -516,7 +535,7 @@ impl ReviewPanel {
 
     /// Whether one of this panel's [`Self::steps`] is an adjudicator step.
     fn has_adjudicator_step(&self) -> bool {
-        self.steps().iter().any(|step| step.adjudicator().is_some())
+        adjudicator_positions(&self.steps()).next().is_some()
     }
 
     /// Every agent id this panel references, each once: the [`Self::full_roster`] AND, when a
@@ -588,8 +607,8 @@ impl ReviewPanel {
             let keys = entry.steps().len();
             if keys != 1 {
                 return Err(format!(
-                    "{scope} steps[{i}] sets {keys} keys: an entry sets exactly one of lenses, \
-                     adversary, adjudicator"
+                    "{scope} steps[{i}] sets {keys} keys: an entry sets exactly one of {}",
+                    step_keys().join(", ")
                 ));
             }
         }
@@ -610,11 +629,7 @@ impl ReviewPanel {
                 check_agent_id(id).map_err(|m| format!("{scope} {label} {m}"))?;
             }
         }
-        let mut adjudicators = steps
-            .iter()
-            .enumerate()
-            .filter(|(_, step)| step.adjudicator().is_some())
-            .map(|(i, _)| i);
+        let mut adjudicators = adjudicator_positions(&steps);
         if let Some(first) = adjudicators.next() {
             if let Some(second) = adjudicators.next() {
                 return Err(format!(
@@ -981,42 +996,42 @@ impl Stage {
     /// standalone-review adversary/adjudicator, and any per-stage `review` override
     /// panel).
     pub fn agent_ids(&self) -> Vec<String> {
-        let mut ids = Vec::new();
-        if !self.agent.is_empty() {
-            ids.push(self.agent.clone());
-        }
-        ids.extend(self.agents.iter().cloned());
-        push_reviewers(&mut ids, &self.adversary, &self.adjudicator);
+        let mut ids: Vec<String> = self.own_agents().map(|(_, id)| id.to_string()).collect();
         ids.extend(self.review.agent_ids());
         ids
+    }
+
+    /// Each agent id the stage's own agent fields name, labelled with its field: `agent`, the
+    /// `agents` list, `adversary`, `adjudicator`. An unset field defaults to `""`, never an
+    /// agent id, so it names none.
+    fn own_agents(&self) -> impl Iterator<Item = (&'static str, &str)> {
+        fn set<'a>(field: &'static str, id: &'a str) -> Option<(&'static str, &'a str)> {
+            (!id.is_empty()).then_some((field, id))
+        }
+        set("agent", &self.agent)
+            .into_iter()
+            .chain(self.agents.iter().map(|id| ("agents", id.as_str())))
+            .chain(set("adversary", &self.adversary))
+            .chain(set("adjudicator", &self.adjudicator))
     }
 
     /// Refuse an agent id holding the step token separator in one of the stage's own agent
     /// fields, with a bare message opening on the field; its `review` panel answers for itself
     /// ([`ReviewPanel::validate_steps`]).
     pub fn validate_agent_ids(&self) -> Result<(), String> {
-        let fields = std::iter::once(("agent", &self.agent))
-            .chain(self.agents.iter().map(|id| ("agents", id)))
-            .chain([
-                ("adversary", &self.adversary),
-                ("adjudicator", &self.adjudicator),
-            ]);
-        for (field, id) in fields {
+        for (field, id) in self.own_agents() {
             check_agent_id(id).map_err(|m| format!("{field} {m}"))?;
         }
         Ok(())
     }
 }
 
-/// Append a reviewer pair to `ids` - the `adversary` then the `adjudicator`, each only when set
-/// (an unset `adversary:`/`adjudicator:` field defaults to `""`, never an agent id).
+/// Append a reviewer pair to `ids`, the CANONICAL SEQUENCE ([`keyed_steps`]) of a stage's own
+/// `adversary` and `adjudicator` fields: the `adversary` then the `adjudicator`, each only when
+/// set.
 pub fn push_reviewers(ids: &mut Vec<String>, adversary: &str, adjudicator: &str) {
-    ids.extend(
-        [adversary, adjudicator]
-            .into_iter()
-            .filter(|id| !id.is_empty())
-            .map(str::to_string),
-    );
+    let steps = keyed_steps(&[], adversary, adjudicator);
+    ids.extend(steps.iter().flat_map(|step| step.agents().iter().cloned()));
 }
 
 /// The event-store SELECTION a project's committed config pins (§48 rung 4, the project-config

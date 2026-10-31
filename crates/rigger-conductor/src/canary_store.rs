@@ -35,7 +35,7 @@ use crate::eventstore::{Event, EventStore, ExpectedRevision};
 use crate::instructions::Instruction;
 use crate::ledger::TYPE_UNIT_STATUS;
 use crate::spawn::{review_step_role, ReviewKind, ROLE_ADJUDICATOR};
-use rigger_domain::review::step_ordinal;
+use rigger_domain::review::{step_adjudicator, step_ordinal};
 
 /// A single canary corpus item: a micro-unit under review with its GROUND TRUTH. Parsed
 /// from a `canaries/<id>.md` file - YAML frontmatter (these fields) plus a markdown body
@@ -244,7 +244,8 @@ pub fn run_canary(
     jobs: usize,
     on_item: &(dyn Fn(&CanaryOutcome, Duration) + Sync),
 ) -> Result<CanaryReport, Error> {
-    adjudicator_of(&panel.steps())?;
+    let steps = panel.steps();
+    let adjudicator = adjudicator_of(&steps)?;
     let batch = uuid::Uuid::new_v4().to_string();
     // Open the batch with its marker so the fold can scope to this run.
     append(
@@ -270,7 +271,7 @@ pub fn run_canary(
     let (item_workers, lens_workers) = spawn_budget(jobs, corpus.len());
     let (scored, _engaged) = crate::parallel::map_ordered(corpus, item_workers, |item| {
         let start = Instant::now();
-        let outcome = score_item(driver, cfg, panel, item, lens_workers);
+        let outcome = score_item(driver, cfg, &steps, adjudicator, item, lens_workers);
         // Fire the progress hook the INSTANT this item's own score completes, on
         // whichever worker thread just finished it - NOT after map_ordered has joined
         // every item_workers thread. The aggregation loop below only ever sees the
@@ -395,22 +396,19 @@ fn paths_match(about: &str, anchor: &str) -> bool {
 /// canary judges nothing without the gating verdict, so [`run_canary`] refuses before it opens
 /// a batch.
 fn adjudicator_of(steps: &[ReviewStep]) -> Result<&str, Error> {
-    steps
-        .iter()
-        .find_map(ReviewStep::adjudicator)
-        .ok_or_else(|| {
-            Error(
-                "canary: the review panel names no adjudicator - the canary measures the \
-                 gating verdict, so an adjudicator is required"
-                    .into(),
-            )
-        })
+    step_adjudicator(steps).ok_or_else(|| {
+        Error(
+            "canary: the review panel names no adjudicator - the canary measures the gating \
+             verdict, so an adjudicator is required"
+                .into(),
+        )
+    })
 }
 
-/// Score one canary item: run the lens and adversary steps of [`ReviewPanel::steps`] in order,
-/// each agent under its step's [`review_step_role`] token, collecting their findings, then the
-/// adjudicator twice - once with the findings in natural order and once reversed - to judge
-/// the verdict AND probe it for position bias. Every lens step scores the lens tier and every
+/// Score one canary item: run the lens and adversary steps of `steps` in order, each agent under
+/// its step's [`review_step_role`] token, collecting their findings, then `adjudicator`, the
+/// agent of the adjudicator step, twice - once with the findings in natural order and once
+/// reversed - to judge the verdict AND probe it for position bias. Every lens step scores the lens tier and every
 /// adversary step the adversary tier ([`ReviewKind::tier`]).
 ///
 /// `lens_workers` is the pool width `crate::parallel::map_ordered` fans each step's agents
@@ -423,12 +421,11 @@ fn adjudicator_of(steps: &[ReviewStep]) -> Result<&str, Error> {
 fn score_item(
     driver: &dyn AgentDriver,
     cfg: &Config,
-    panel: &ReviewPanel,
+    steps: &[ReviewStep],
+    adjudicator: &str,
     item: &CanaryItem,
     lens_workers: usize,
 ) -> Result<(CanaryOutcome, BTreeMap<String, String>), Error> {
-    let steps = panel.steps();
-    let adjudicator = adjudicator_of(&steps)?;
     let mut caught = BTreeSet::new();
     let mut findings: Vec<Finding> = Vec::new();
     // The findings-volume measure (FINDINGS VOLUME criterion): how many findings each tier
@@ -457,7 +454,7 @@ fn score_item(
             continue;
         }
         let tier = kind.tier();
-        let k = step_ordinal(&steps, index);
+        let k = step_ordinal(steps, index);
         let (results, _engaged) =
             crate::parallel::map_ordered(step.agents(), lens_workers, |agent| {
                 run_review_tier(driver, cfg, item, agent, &review_step_role(kind, agent, k))
@@ -696,6 +693,19 @@ mod tests {
     use crate::test_support::PANEL_AGENTS as STEP_AGENTS;
     use crate::test_support::{anchor_of, ADVERSARY_FIRST_LIST, REPEATED_KIND_LIST};
 
+    /// [`score_item`] over `panel`'s steps and its adjudicator, as [`run_canary`] calls it.
+    fn score_panel_item(
+        driver: &dyn AgentDriver,
+        cfg: &Config,
+        panel: &ReviewPanel,
+        item: &CanaryItem,
+        lens_workers: usize,
+    ) -> Result<(CanaryOutcome, BTreeMap<String, String>), Error> {
+        let steps = panel.steps();
+        let adjudicator = adjudicator_of(&steps)?;
+        score_item(driver, cfg, &steps, adjudicator, item, lens_workers)
+    }
+
     fn panel() -> ReviewPanel {
         ReviewPanel {
             lenses: vec!["sdet".into()],
@@ -925,7 +935,7 @@ mod tests {
         };
         let it = item("leak", "resource-leak", true, "reject", "adversary");
         let (outcome, _resolved) =
-            score_item(&driver, &cfg_for(PANEL_AGENTS), &panel(), &it, 1).unwrap();
+            score_panel_item(&driver, &cfg_for(PANEL_AGENTS), &panel(), &it, 1).unwrap();
         assert_eq!(outcome.caught_by, vec![TIER_ADVERSARY.to_string()]);
         assert!(
             !outcome.verdict_approved,
@@ -950,7 +960,7 @@ mod tests {
         };
         let it = item("clean", "none", false, "approve", "");
         let (outcome, _resolved) =
-            score_item(&driver, &cfg_for(PANEL_AGENTS), &panel(), &it, 1).unwrap();
+            score_panel_item(&driver, &cfg_for(PANEL_AGENTS), &panel(), &it, 1).unwrap();
         assert!(
             outcome.caught_by.is_empty(),
             "a known-good unit catches nothing"
@@ -976,7 +986,7 @@ mod tests {
         };
         let it = item("offbyone", "off-by-one", true, "reject", "adversary");
         let (outcome, _resolved) =
-            score_item(&driver, &cfg_for(PANEL_AGENTS), &panel(), &it, 1).unwrap();
+            score_panel_item(&driver, &cfg_for(PANEL_AGENTS), &panel(), &it, 1).unwrap();
         assert!(
             !outcome.stable,
             "a verdict that flips on finding order must be scored unstable"
@@ -1024,7 +1034,7 @@ mod tests {
         };
         let it = item("nothing", "none", false, "approve", "");
         let (outcome, _resolved) =
-            score_item(&driver, &cfg_for(PANEL_AGENTS), &panel, &it, 1).unwrap();
+            score_panel_item(&driver, &cfg_for(PANEL_AGENTS), &panel, &it, 1).unwrap();
         assert!(outcome.stable, "zero findings are trivially stable");
         assert_eq!(
             driver.calls.load(std::sync::atomic::Ordering::SeqCst),
@@ -1084,7 +1094,7 @@ mod tests {
         let p = panel_with_lenses(&lenses);
         let it = item("fanout", "off-by-one", true, "reject", "lens");
 
-        let (outcome, _resolved) = score_item(&driver, &c, &p, &it, lenses.len()).unwrap();
+        let (outcome, _resolved) = score_panel_item(&driver, &c, &p, &it, lenses.len()).unwrap();
         assert_eq!(
             outcome.caught_by,
             vec![TIER_LENS.to_string()],
@@ -1113,8 +1123,8 @@ mod tests {
             resolved_model: String::new(),
         };
 
-        let serial = score_item(&driver, &c, &p, &it, 1).unwrap();
-        let parallel = score_item(&driver, &c, &p, &it, lenses.len()).unwrap();
+        let serial = score_panel_item(&driver, &c, &p, &it, 1).unwrap();
+        let parallel = score_panel_item(&driver, &c, &p, &it, lenses.len()).unwrap();
         assert_eq!(
             serial, parallel,
             "the parallel lens fan-out scores identically to the serial order"
@@ -1140,7 +1150,7 @@ mod tests {
             resolved_model: String::new(),
         };
 
-        let (outcome, _resolved) = score_item(&driver, &c, &p, &it, lenses.len()).unwrap();
+        let (outcome, _resolved) = score_panel_item(&driver, &c, &p, &it, lenses.len()).unwrap();
         assert!(
             outcome.caught_by.is_empty(),
             "nobody caught this (unplanted-for-this-driver) anchor"
@@ -1171,7 +1181,8 @@ mod tests {
             resolved_model: String::new(),
         };
         let it = item("quiet", "off-by-one", true, "reject", "lens");
-        let (outcome, _resolved) = score_item(&driver, &cfg_for(PANEL_AGENTS), &p, &it, 1).unwrap();
+        let (outcome, _resolved) =
+            score_panel_item(&driver, &cfg_for(PANEL_AGENTS), &p, &it, 1).unwrap();
         assert_eq!(
             outcome.findings_raised.get(TIER_ADVERSARY),
             Some(&0),
@@ -1945,7 +1956,7 @@ mod tests {
         panel: &str,
     ) -> (CanaryOutcome, BTreeMap<String, String>) {
         let cfg = cfg_for(&STEP_AGENTS);
-        score_item(driver, &cfg, &declared_panel(panel), &step_item(), 1).unwrap()
+        score_panel_item(driver, &cfg, &declared_panel(panel), &step_item(), 1).unwrap()
     }
 
     /// `panel` spawns exactly `expected`, in that order: each `(role token, agent)`, every roster
@@ -2145,7 +2156,7 @@ mod tests {
         let mut cfg = cfg_for(&STEP_AGENTS);
         cfg.agents.remove(missing);
         let panel = declared_panel(REPEATED_KIND_LIST);
-        let failure = score_item(&driver, &cfg, &panel, &step_item(), 1).unwrap_err();
+        let failure = score_panel_item(&driver, &cfg, &panel, &step_item(), 1).unwrap_err();
         assert_eq!(failure.0, error);
         assert_eq!(driver.spawned_roles(), spawned);
     }
@@ -2192,7 +2203,7 @@ mod tests {
         );
         let c = cfg_for(&["lens-a", "lens-b", "lens-c", "lens-d", "adv", "adj"]);
         let it = item("fanout", "off-by-one", true, "reject", "lens");
-        let (outcome, _resolved) = score_item(&driver, &c, &p, &it, 2).unwrap();
+        let (outcome, _resolved) = score_panel_item(&driver, &c, &p, &it, 2).unwrap();
         assert_eq!(outcome.caught_by, vec![TIER_LENS.to_string()]);
     }
 
@@ -2307,7 +2318,7 @@ mod tests {
             resolved_model: "resolved-id-x".to_string(),
         };
 
-        let (_outcome, resolved) = score_item(&driver, &c, &p, &it, 1).unwrap();
+        let (_outcome, resolved) = score_panel_item(&driver, &c, &p, &it, 1).unwrap();
         assert_eq!(
             resolved.get(TIER_LENS),
             Some(&"resolved-id-x".to_string()),
@@ -2335,7 +2346,7 @@ mod tests {
         };
         let it = item("unmeasured", "off-by-one", true, "reject", "lens");
         let (_outcome, resolved) =
-            score_item(&driver, &cfg_for(PANEL_AGENTS), &panel(), &it, 1).unwrap();
+            score_panel_item(&driver, &cfg_for(PANEL_AGENTS), &panel(), &it, 1).unwrap();
         assert!(
             resolved.is_empty(),
             "an empty AgentResult::resolved_model must not be recorded as any tier's id: {resolved:?}"

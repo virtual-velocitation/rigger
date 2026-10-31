@@ -275,6 +275,11 @@ pub fn step_roster(
     roster
 }
 
+/// The agent of the adjudicator step of `steps`, the one a panel gates on, else `None`.
+pub fn step_adjudicator(steps: &[ReviewStep]) -> Option<&str> {
+    steps.iter().find_map(ReviewStep::adjudicator)
+}
+
 /// The 1-based ordinal of `steps[index]` among the steps of its kind, the `k` of
 /// [`review_step_role`]: a pure function of the sequence and the index, so a resumed process
 /// counts what the first one counted.

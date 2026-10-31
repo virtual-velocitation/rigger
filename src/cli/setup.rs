@@ -155,7 +155,7 @@ fn init_project(
         &rigger_dir.join(WORKFLOW_FILE),
         &scaffold_workflow(matched.map(|(_, spec)| spec)),
     )?;
-    let instructions_dir = rigger_dir.join("instructions");
+    let instructions_dir = rigger_dir.join(INSTRUCTIONS_DIR);
     std::fs::create_dir_all(&instructions_dir)?;
     let wrote_instructions_readme = write_if_absent(
         &instructions_dir.join(config_store::INSTRUCTIONS_README),

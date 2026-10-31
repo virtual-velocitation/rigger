@@ -17,8 +17,8 @@ use serde::Deserialize;
 
 use crate::config::{
     check_agent_id, err, find_cycle, index_agents, parse_agent, parse_yaml_naming_unknown_keys,
-    resolve_wall_clocks, AgentDef, Config, Defaults, Error, StoreConfig, Workflow, RIGGER_DIR,
-    WORKFLOW_FILE,
+    resolve_wall_clocks, AgentDef, Config, Defaults, Error, StoreConfig, Workflow,
+    INSTRUCTIONS_DIR, RIGGER_DIR, WORKFLOW_FILE,
 };
 use crate::gate::GateRequirements;
 use crate::instructions::Instruction;
@@ -91,7 +91,7 @@ pub fn load_with_gate_requirements(dir: &str) -> Result<LoadedConfig, Error> {
 /// is not part of it. An absent directory is an empty layer; any other read failure is an
 /// error naming the path, never a silently thinner layer.
 pub fn load_instructions(dir: &Path) -> Result<Vec<Instruction>, Error> {
-    let ins_dir = dir.join(RIGGER_DIR).join("instructions");
+    let ins_dir = dir.join(RIGGER_DIR).join(INSTRUCTIONS_DIR);
     let entries = match std::fs::read_dir(&ins_dir) {
         Ok(entries) => entries,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),

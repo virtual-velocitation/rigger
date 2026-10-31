@@ -44,7 +44,7 @@ use rigger::spawn::SpawnEvent;
 use rigger::worktree::{RunBranchSetup, Worktree};
 use rigger::{hooks, mcpserver, playbooks, progress, spawn, spawn_store, spec, subprocess, watch};
 
-use rigger::config::{RIGGER_DIR, WORKFLOW_FILE};
+use rigger::config::{INSTRUCTIONS_DIR, RIGGER_DIR, WORKFLOW_FILE};
 
 mod critique;
 mod dashboard;

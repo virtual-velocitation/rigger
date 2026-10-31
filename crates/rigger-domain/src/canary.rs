@@ -46,10 +46,8 @@ pub const STATUS_CANARY_RUN: &str = "canary-run";
 /// it is appended AFTER it, before the next batch's marker (if any).
 pub const STATUS_CANARY_HEADER: &str = "canary-header";
 
-/// The tier-1 label (the expert lenses, collectively) catch rate is reported for.
-pub const TIER_LENS: &str = "lens";
-/// The tier-2 label (the adversary) catch rate is reported for.
-pub const TIER_ADVERSARY: &str = "adversary";
+/// The tier labels catch rate is reported for.
+pub use crate::spawn::{TIER_ADVERSARY, TIER_LENS};
 
 /// The metadata key tagging a canary outcome (and its batch marker) with the canary run
 /// it belongs to.
