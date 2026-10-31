@@ -10393,7 +10393,7 @@ mod tests {
              the unit check, ahead of any role-based branch: {body}"
         );
 
-        // The three review-tier roles - lens:* (tier-1), adversary, adjudicator - map to
+        // The three review-tier roles - lens:*, adversary, adjudicator - map to
         // Review, named individually so a mapping that drops one of the three is caught.
         assert!(
             body.contains("adversary") && body.contains("adjudicator") && body.contains("lens"),

@@ -48,26 +48,32 @@ use std::process::Command;
 /// .rs::run_relay_attention` and `src/main.rs`'s own `node --check` test already establish for
 /// this crate (missing node is an environment fact, never a test failure).
 fn run_phase_of(id: &str, unit: &str) -> Option<String> {
+    let req = serde_json::json!({ "id": id, "unit": unit, "stage": "irrelevant" }).to_string();
+    run_driver_reader("phaseOf(JSON.parse(process.argv[2]))", &req)
+}
+
+/// Evaluate `call` over the real role readers of `workflows/rigger.js`, with `arg` as the node
+/// script's `process.argv[2]`: its printed value, or `None` when `node` is unavailable.
+fn run_driver_reader(call: &str, arg: &str) -> Option<String> {
     let src = repo_text("workflows/rigger.js");
     let role_of_fn = js_declaration(&src, "function roleOf(req) {");
     let bare_role_of_fn = js_declaration(&src, "function bareRoleOf(role) {");
     let phase_of_fn = js_declaration(&src, "function phaseOf(req) {");
-    let req = serde_json::json!({ "id": id, "unit": unit, "stage": "irrelevant" }).to_string();
 
     let script = format!(
         "{role_of_fn}\n{bare_role_of_fn}\n{phase_of_fn}\n\
-         process.stdout.write(String(phaseOf(JSON.parse(process.argv[2]))))\n"
+         process.stdout.write(String({call}))\n"
     );
 
     let node = std::env::var("RIGGER_NODE").unwrap_or_else(|_| "node".to_string());
     let mut f = tempfile::NamedTempFile::new().unwrap();
     std::io::Write::write_all(&mut f, script.as_bytes()).unwrap();
 
-    match Command::new(&node).arg(f.path()).arg(&req).output() {
+    match Command::new(&node).arg(f.path()).arg(arg).output() {
         Ok(out) => {
             assert!(
                 out.status.success(),
-                "the real phaseOf must run without throwing on req {req}: {}",
+                "the real {call} must run without throwing on {arg}: {}",
                 String::from_utf8_lossy(&out.stderr)
             );
             Some(String::from_utf8_lossy(&out.stdout).into_owned())
@@ -166,6 +172,8 @@ const TOKENS: &[(&str, Option<(ReviewKind, u32)>)] = &[
     ("adversary@1", None),
     ("lens:a@01", None),
     ("adversary@01", None),
+    ("lens:a@02", None),
+    ("adversary@02", None),
     ("lens:a@x", None),
     ("adversary@x", None),
     ("adjudicator@2", None),
@@ -176,8 +184,9 @@ const TOKENS: &[(&str, Option<(ReviewKind, u32)>)] = &[
 ];
 
 /// Every row of [`TOKENS`] reads alike on both sides of the seam: `review_step_of` gives the
-/// row's exact answer, and the real `phaseOf` over that token, plain and on a `~retry{n}` respawn,
-/// is `Review` for a review token and the `Build` default for anything else.
+/// row's exact answer, the real `phaseOf` over that token, plain and on a `~retry{n}` respawn,
+/// is `Review` for a review token and the `Build` default for anything else, and the real
+/// `bareRoleOf` strips a token the parser reads, keeps a role with no `@` and empties any other.
 #[test]
 fn the_rust_parser_and_the_driver_agree_on_every_token() {
     for (token, read) in TOKENS {
@@ -185,6 +194,14 @@ fn the_rust_parser_and_the_driver_agree_on_every_token() {
         let phase = if read.is_some() { "Review" } else { "Build" };
         for id in [format!("u1/{token}#0"), format!("u1/{token}#3~retry1")] {
             phase_of_resolves(phase, &[("u1", &id)]);
+        }
+        let bare = match (read, token.split_once('@')) {
+            (Some(_), Some((bare, _))) => bare,
+            (None, Some(_)) => "",
+            (_, None) => token,
+        };
+        if let Some(out) = run_driver_reader("bareRoleOf(process.argv[2])", token) {
+            assert_eq!(out, bare, "bareRoleOf({token:?})");
         }
     }
 }

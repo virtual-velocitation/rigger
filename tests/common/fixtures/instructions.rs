@@ -2,8 +2,7 @@
 //! prompt tests, the binary's shipped-text tests and the integration suites: the working-discipline
 //! body's section headings and the review method its `## When you review` section holds; the
 //! critique method the adversary and adjudicator personas hold under their
-//! `## When you critique a spec or a plan` section, each persona's share of it and the check that
-//! a persona's text holds that share; the
+//! `## When you critique a spec or a plan` section and each persona's share of it; the
 //! headings a composed system prompt carries, the handbook chapter that lists the built-in entries
 //! and their checked-in sources, each entry's body by name, a near name that shadows no
 //! built-in, the non-empty bodies that still switch a built-in off, two operator files that shadow
@@ -133,39 +132,13 @@ pub fn critique_method_by_persona(
 }
 
 /// The section of `text` that `heading` opens, up to the next `## ` heading or the end of `text`.
-pub fn persona_section<'a>(text: &'a str, heading: &str) -> &'a str {
+pub fn markdown_section<'a>(text: &'a str, heading: &str) -> &'a str {
     let from = text.find(heading).expect("the text carries the heading");
     let rest = &text[from + heading.len()..];
     let to = rest
         .find("\n## ")
         .map_or(text.len(), |at| from + heading.len() + at);
     &text[from..to]
-}
-
-/// The persona `text`, which `at` names, holds each sentence of `holds` once, under its critique
-/// section, and none of `leaves`. Gated as `wave` is, since the core lane compiles this fixture
-/// without it.
-#[cfg(any(feature = "store", not(feature = "core")))]
-pub fn assert_holds_its_critique_method(at: &str, text: &str, holds: &[&str], leaves: &[&str]) {
-    let whole = rigger::wave::normalize_ws(text);
-    let section = rigger::wave::normalize_ws(persona_section(text, WHEN_YOU_CRITIQUE_HEADING));
-    for sentence in holds {
-        assert_eq!(
-            (
-                section.matches(sentence).count(),
-                whole.matches(sentence).count()
-            ),
-            (1, 1),
-            "{at} holds {sentence:?} once, under its critique section:\n{section}"
-        );
-    }
-    for sentence in leaves {
-        assert_eq!(
-            whole.matches(sentence).count(),
-            0,
-            "{at} leaves {sentence:?} to the other role"
-        );
-    }
 }
 
 /// The review `tier`'s task `prompt` carries the reviewer `discipline` exactly once and none of the
@@ -319,6 +292,16 @@ pub fn shadowing_operator_layer() -> Vec<rigger::instructions::Instruction> {
 /// `render`: each built-in in `BUILTIN` order with its state, then the one unshadowed file.
 pub fn rendered_shadowing_layer() -> String {
     rendered_shadowing_layer_replaced_by(REPLACING_COMMUNICATION_BODY)
+}
+
+/// What `rigger instructions` prints over [`shadowing_operator_layer`] without its one unshadowed
+/// file, spelled without calling `render`: the same built-in states over `(none)` under the
+/// operator heading.
+pub fn rendered_every_file_shadowing_layer() -> String {
+    rendered_shadowing_layer().replace(
+        &format!("\n## 30-style\n{UNSHADOWING_STYLE_BODY}\n"),
+        "(none)\n",
+    )
 }
 
 /// What `rigger instructions` prints over [`shadowing_operator_layer`] whose communication file's

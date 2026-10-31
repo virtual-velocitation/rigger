@@ -245,9 +245,9 @@ mod tests {
     use super::*;
     use crate::test_support::{
         assert_carries_the_review_method, builtin_body, builtin_section,
-        house_and_team_operator_layer, op, rendered_shadowing_layer, shadowing_operator_layer,
-        COMMUNICATION_NEAR_NAME, NON_EMPTY_BLANK_BODIES, RENDERED_OPERATOR_HEADING,
-        REPLACING_COMMUNICATION_BODY, SHADOWING_LAYER_ADVISORIES,
+        house_and_team_operator_layer, op, rendered_every_file_shadowing_layer,
+        rendered_shadowing_layer, shadowing_operator_layer, COMMUNICATION_NEAR_NAME,
+        NON_EMPTY_BLANK_BODIES, REPLACING_COMMUNICATION_BODY, SHADOWING_LAYER_ADVISORIES,
     };
 
     #[test]
@@ -829,10 +829,10 @@ mod tests {
     /// An operator layer whose every file shadows a built-in leaves no operator file to print.
     #[test]
     fn render_says_none_when_every_operator_file_shadows_a_built_in() {
-        let out = render(&shadowing_operator_layer()[1..]);
-        assert!(
-            out.ends_with(&format!("{RENDERED_OPERATOR_HEADING}(none)\n")),
-            "an all-shadowing operator layer renders as (none); got:\n{out}"
+        assert_eq!(
+            render(&shadowing_operator_layer()[1..]),
+            rendered_every_file_shadowing_layer(),
+            "an all-shadowing operator layer renders as (none)"
         );
     }
 

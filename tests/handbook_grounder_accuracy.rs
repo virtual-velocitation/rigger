@@ -31,13 +31,14 @@
 //!
 //! Like the sibling doc pins, this test reads the committed files (resolved from
 //! `CARGO_MANIFEST_DIR`, so it does not depend on the process CWD), parses text, and touches
-//! no backend symbol: the workflow parser and its validation are the one production path it runs.
+//! no backend symbol: the production code it runs is the workflow parser, its validation and two
+//! text readers, `fenced_code_lines` and `normalize_ws`.
 //! It is deliberately NOT feature-gated: it runs identically in both lanes.
 
 mod common;
 
 use common::fixtures::{
-    agent_with_prompt, cfg_for, persona_section as section, read_text as read, repeated_kind_steps,
+    agent_with_prompt, cfg_for, markdown_section as section, read_text as read, repeated_kind_steps,
 };
 use common::repo::repo_root;
 use rigger::config_store::parse_workflow;
@@ -225,11 +226,14 @@ fn yaml_block(text: &str) -> String {
     body.join("\n")
 }
 
+/// The heading of the agnostic rule's section of `authoring-loops.md`.
+const WHAT_RIGGER_PRESCRIBES: &str = "## What rigger prescribes";
+
 /// Each page stating the rule, with the heading it stands under and its sentences.
 const STATED_RULES: [(&str, &str, &[&str]); 2] = [
     (
         "authoring-loops.md",
-        "## What rigger prescribes",
+        WHAT_RIGGER_PRESCRIBES,
         &[
             "Rigger is language and process agnostic: the binary provides tools to agents and \
              executes the workflow definition, and it prescribes nothing about how work is done \
@@ -276,7 +280,8 @@ fn each_page_states_the_rule_under_its_heading_by_words() {
 #[test]
 fn the_review_ceremony_example_validates_to_its_five_steps() {
     let text = handbook_page("authoring-loops.md");
-    let example = yaml_block(under_heading(&text, "### The review ceremony"));
+    let prescribes = section(&text, WHAT_RIGGER_PRESCRIBES);
+    let example = yaml_block(under_heading(prescribes, "### The review ceremony"));
     let workflow = format!("{example}\n{ONE_STAGE}");
 
     let mut cfg = cfg_for(&["a", "b", "c", "x"]);

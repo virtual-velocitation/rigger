@@ -15209,7 +15209,7 @@ fn canary_rejects_unknown_arguments_and_a_missing_corpus() {
 #[test]
 fn canary_spawns_its_panel_with_the_composed_system_prompt_and_nothing_appended() {
     use common::cli::run_capturing_system_prompt;
-    use common::fixtures::{assert_communication_once, composed_system_prompt};
+    use common::fixtures::{assert_communication_once, composed_system_prompt, CONTROL_ITEM};
     let dir = temp_project();
     let root = dir.path();
     for id in ["lens", "adv", "judge"] {
@@ -15223,12 +15223,7 @@ fn canary_spawns_its_panel_with_the_composed_system_prompt_and_nothing_appended(
     );
     let corpus = root.join("corpus");
     std::fs::create_dir_all(&corpus).unwrap();
-    std::fs::write(
-        corpus.join("control.md"),
-        "---\nid: control\ndefect_class: none\nplanted: false\nanchor: src/lib.rs\n\
-         expected_verdict: approve\n---\nfn control() {}\n",
-    )
-    .unwrap();
+    std::fs::write(corpus.join("control.md"), CONTROL_ITEM).unwrap();
     let system = run_capturing_system_prompt(root, &["canary", "--corpus", "corpus"]);
     let persona =
         std::fs::read_to_string(common::cli::rigger_file(root, "agents").join("judge.md")).unwrap();
@@ -28675,30 +28670,16 @@ fn prime_first_line_names_the_instructions_in_force_on_the_recent_decisions_path
 /// built-in - when the operator runs `rigger instructions`, `rigger validate` twice and `rigger
 /// prime`, then each names every built-in's state: the layers as rendered, one warning per
 /// shadowed built-in on a success exit with the same lines on the repeat, and the in-force line.
+/// The working-discipline file reads as switching off over every blank body: an empty one, a lone
+/// byte order mark, ASCII whitespace, a byte order mark before an em space.
 #[test]
 fn instructions_validate_and_prime_report_each_built_in_s_state() {
-    use common::cli::{assert_reporters_name_the_shadowing_layer_states, write_operator_layer};
-    use common::fixtures::shadowing_operator_layer;
-    let proj = temp_project();
-    let root = proj.path();
-    write_workflow_fixture(root, &LIVENESS_WORKFLOW);
-    write_operator_layer(root, &shadowing_operator_layer());
-    assert_reporters_name_the_shadowing_layer_states(root);
-}
-
-/// Spec 120's EVERY BUILT-IN'S STATE IS REPORTED through the loader: given the named-entry
-/// fixture whose working-discipline file holds a blank body other than an empty one - a lone byte
-/// order mark, ASCII whitespace, a byte order mark before an em space - when the operator runs
-/// `rigger instructions`, `rigger validate` twice and `rigger prime`, then each reports that
-/// built-in switched off exactly as for the empty file.
-#[test]
-fn instructions_validate_and_prime_report_a_blank_same_named_file_as_switching_its_built_in_off() {
     use common::cli::{assert_reporters_name_the_shadowing_layer_states, write_operator_layer};
     use common::fixtures::{shadowing_operator_layer, NON_EMPTY_BLANK_BODIES};
     let proj = temp_project();
     let root = proj.path();
     write_workflow_fixture(root, &LIVENESS_WORKFLOW);
-    for blank in NON_EMPTY_BLANK_BODIES {
+    for blank in std::iter::once("").chain(NON_EMPTY_BLANK_BODIES) {
         let mut layer = shadowing_operator_layer();
         layer[2].body = blank.to_string();
         write_operator_layer(root, &layer);

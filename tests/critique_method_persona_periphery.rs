@@ -29,7 +29,7 @@ use common::cli::{
 };
 use common::fixtures::{
     assert_holds_its_critique_method, composed_system_prompt, critique_method_by_persona,
-    critique_reject, dag_critique_prompt, persona_section, read_text, DAG_DISJOINT_OVERLAP,
+    critique_reject, dag_critique_prompt, markdown_section, read_text, DAG_DISJOINT_OVERLAP,
     DAG_PRIOR_REJECT_HEADER, WHEN_YOU_CRITIQUE_HEADING, WIDGET_CRITERION, WIDGET_UNIT,
 };
 use std::path::Path;
@@ -161,7 +161,7 @@ type Arrange = fn(&Path);
 fn strike_the_critique_sections(root: &Path) {
     for (file, _, _) in critique_method_by_persona() {
         let text = agent_text(root, file);
-        let section = persona_section(&text, WHEN_YOU_CRITIQUE_HEADING);
+        let section = markdown_section(&text, WHEN_YOU_CRITIQUE_HEADING);
         std::fs::write(
             rigger_file(root, &format!("agents/{file}")),
             text.replace(section, ""),

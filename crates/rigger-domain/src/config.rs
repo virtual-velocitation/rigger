@@ -355,7 +355,7 @@ impl FailureRuleDef {
 
 /// ReviewPanel is the sequence of review steps a unit reviews ITSELF with ([`Self::steps`]). It is
 /// declared once on `defaults.review` and applied to every implementer unit; a stage may
-/// override it with its own `review` block (§3.2). The sequence takes one of two forms: the MAP
+/// override it with its own `review` block (section 3.2). The sequence takes one of two forms: the MAP
 /// form sets the keys `lenses` (parallel), `adversary` (refutes the lenses) and `adjudicator`
 /// (the neutral verdict that gates integration), each optional, and runs them in that canonical
 /// order; the LIST form sets `steps` and runs its entries in the order they are declared, at
@@ -759,7 +759,7 @@ pub struct Defaults {
     /// `grounder::grounder_for` / `main::select_grounder`).
     #[serde(default)]
     pub grounder: String,
-    /// The review panel applied to every implementer unit (§3.2): each
+    /// The review panel applied to every implementer unit (section 3.2): each
     /// unit runs its own lifecycle and reviews ITSELF with this panel unless its
     /// stage overrides it with a `review` block. Declared once here, inherited by
     /// every planner-proposed unit too.
@@ -858,9 +858,10 @@ pub struct Stage {
     pub adversary: String,
     #[serde(default)]
     pub adjudicator: String,
-    /// An optional per-stage override of `defaults.review` (§3.2): when set, this
-    /// stage's units review themselves with this panel instead of the workflow
-    /// default. Absent (the common case) means the unit uses `defaults.review`.
+    /// An optional per-stage override of `defaults.review` (section 3.2): when it names a
+    /// reviewer, this stage's units review themselves with this panel instead of the workflow
+    /// default. Absent or empty in either form, `steps: []` included, means the unit uses
+    /// `defaults.review`: a stage cannot turn review off.
     #[serde(default)]
     pub review: ReviewPanel,
     #[serde(default)]
@@ -1175,8 +1176,9 @@ pub struct Workflow {
 }
 
 impl Workflow {
-    /// The review panel a unit reviews ITSELF with (§3.2): a stage's own `review` override when it
-    /// sets one, otherwise this workflow's `defaults.review`. Declared once and inherited by every
+    /// The review panel a unit reviews ITSELF with (section 3.2): a stage's own `review` override
+    /// when it names a reviewer, otherwise this workflow's `defaults.review`, so an empty panel in
+    /// either form inherits the default. Declared once and inherited by every
     /// implementer unit, including planner-proposed units.
     ///
     /// Extracted here (spec 92 criterion 2) from `conductor::RunCtx::effective_review_panel`, which

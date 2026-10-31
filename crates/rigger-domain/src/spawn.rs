@@ -614,10 +614,11 @@ pub struct SpawnRequest {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub title: String,
     /// The routed review roster a review-tier spawn (adversary/adjudicator) judges (spec 67,
-    /// criterion 4): the unit's lens role tokens (e.g. `["lens:sdet",
-    /// "lens:architecture-reviewer"]`) for the adversary, plus [`ROLE_ADVERSARY`] for the
-    /// adjudicator - stamped by the CONDUCTOR from the actually-routed panel (light or full),
-    /// never guessed by the driver, so a replayed or tier-reduced roster is never stale.
+    /// criterion 4): the role tokens of the spawns of every review step before it (e.g.
+    /// `["lens:sdet", "lens:architecture-reviewer"]` for an adversary after one lens step, those
+    /// plus [`ROLE_ADVERSARY`] for the adjudicator after that adversary, and a later step of a
+    /// kind under its own token) - stamped by the CONDUCTOR from the actually-routed panel (light
+    /// or full), never guessed by the driver, so a replayed or tier-reduced roster is never stale.
     /// Carried onto [`WaveItem`] so the printed wave `rigger step` emits surfaces it for
     /// `workflows/rigger.js` to render inside the action phrase. Omitted from the wire when
     /// empty (a lens spawn, an empty panel, or an older conductor) - a purely additive,
@@ -1396,6 +1397,7 @@ mod tests {
             ("adversary@1", None, None),
             ("adversary@0", None, None),
             ("adversary@01", None, None),
+            ("adversary@02", None, None),
             ("adversary@+2", None, None),
             ("adversary@-2", None, None),
             ("adversary@", None, None),
@@ -1403,6 +1405,7 @@ mod tests {
             ("adversary@2x", None, None),
             ("lens:a@1", None, None),
             ("lens:a@01", None, None),
+            ("lens:a@02", None, None),
             ("lens:a@x", None, None),
             ("lens:a@2@3", None, None),
             ("lens:a@@2", None, None),

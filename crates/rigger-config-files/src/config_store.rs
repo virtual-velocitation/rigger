@@ -376,9 +376,10 @@ mod tests {
     use crate::test_support::agent_with_prompt;
     use crate::test_support::instructions_dir;
     use crate::test_support::{
-        adversary_first_steps, cfg_for, lenses, light_of, panel_rule_refusals, repeated_kind_lists,
-        separator_refusal, PanelRead, ADVERSARY_FIRST_LIST, EMIT_ONLY, LIGHT_PANEL_FORMS,
-        NO_FULL_ADJUDICATOR_STEP, NO_LIGHT_ADJUDICATOR_STEP, PANEL_AGENTS, PANEL_SCOPES,
+        adversary_first_steps, cfg_for, declaring, lenses, light_of, panel_rule_refusals,
+        repeated_kind_lists, repo_review_steps, separator_refusal, PanelRead, ADVERSARY_FIRST_LIST,
+        EMIT_ONLY, LIGHT_PANEL_FORMS, NO_FULL_ADJUDICATOR_STEP, NO_LIGHT_ADJUDICATOR_STEP,
+        PANEL_AGENTS, PANEL_SCOPES,
     };
 
     // ---- instruction injection: the operator layer loader ----
@@ -1992,7 +1993,7 @@ agent: worker\n";
 
     /// [`config_of`] the workflow `template` declaring the flow mapping `panel`.
     fn config_declaring(template: &str, panel: &str) -> Config {
-        config_of(&template.replace("{panel}", panel))
+        config_of(&declaring(template, panel))
     }
 
     /// Each of `scopes` accepts the flow mapping `panel`, which steps through exactly `steps`.
@@ -2141,14 +2142,7 @@ agent: worker\n";
     fn the_repository_workflow_loads_unchanged() {
         let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
         let cfg = load(root).unwrap_or_else(|e| panic!("the repository workflow loads: {e}"));
-        assert_eq!(
-            cfg.workflow.defaults.review.steps(),
-            [
-                lenses(&["architecture-reviewer", "sdet"]),
-                ReviewStep::Adversary("adversary".into()),
-                ReviewStep::Adjudicator("adjudicator".into()),
-            ]
-        );
+        assert_eq!(cfg.workflow.defaults.review.steps(), repo_review_steps());
     }
 
     /// Spec 83 criterion 2, round 2 (the reject's own required fix): [`read_scratch_defaults`]

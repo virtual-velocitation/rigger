@@ -2,8 +2,8 @@
 //! SEQUENCE), 8 (A LIST-FORM SEQUENCE RUNS), 9 (TOKEN READERS CLASSIFY EVERY STEP BY ITS KIND) and
 //! 10 (PANEL READERS READ EVERY STEP), from outside the conductor.
 //!
-//! The conductor's own tests pin `ReviewPanel::steps` over hand-built panels and pin the
-//! review identity surface over a recording driver. Four facts sit past their reach: the
+//! The domain's own tests pin `ReviewPanel::steps` over hand-built panels and the conductor's
+//! pin the review identity surface over a recording driver. Four facts sit past their reach: the
 //! panel a workflow FILE declares reaches `steps()` through the production parser, whatever
 //! order the file spells its keys in; the repository panel those identity goldens are captured
 //! over is the one `.rigger/workflow.yml` declares, not a copy that drifted from it; a
@@ -43,20 +43,21 @@ use common::cli::{
 #[cfg(feature = "symbols")]
 use common::cli::{edge_lines, run_around};
 use common::fixtures::{
-    adversary_first_steps, agent, count_status_marker, lenses, light_of, panel_of,
-    panel_rule_refusals, repeated_kind_lists, repo_review_panel, separator_refusal,
-    speculation_regen_door_cfg, status_markers, WriteAndApprove, ADVERSARY_FIRST_LIST, EMIT_ONLY,
-    LIGHT_PANEL_FORMS, PANEL_AGENTS, PANEL_SCOPES, REJECT_FEATURE, REPEATED_KIND_LIST,
+    adversary_first_steps, agent_with_its_own_alias, count_status_marker, declaring, lenses,
+    light_of, panel_of, panel_rule_refusals, repeated_kind_lists, repo_review_panel,
+    repo_review_steps, separator_refusal, speculation_regen_door_cfg, status_markers,
+    WriteAndApprove, ADVERSARY_FIRST_LIST, EMIT_ONLY, LIGHT_PANEL_FORMS, PANEL_AGENTS,
+    PANEL_SCOPES, REJECT_FEATURE, REPEATED_KIND_LIST,
 };
 #[cfg(unix)]
-use common::fixtures::{read_text, PROMPT_CAPTURE_DIR};
+use common::fixtures::{read_text, CONTROL_ITEM, PROMPT_CAPTURE_DIR};
 use common::git::{commit_files, temp_git_project_with_commit};
 use common::repo::repo_root;
 #[cfg(unix)]
 use common::repo::stub_path;
 use rigger::conductor::{run, Deps, META_REPLAY_KEY, STREAM};
+use rigger::config::ReviewPanel;
 use rigger::config::ReviewStep::{self, Adjudicator, Adversary};
-use rigger::config::{AgentDef, ReviewPanel};
 use rigger::config_store::parse_workflow;
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Direction, Event, EventStore};
@@ -131,16 +132,6 @@ fn a_tiered_map_keeps_its_full_steps_and_gives_its_light_panel_its_own() {
     );
     let light = &panel.depth().expect("the map declares tiers").light;
     assert_eq!(light.steps(), [lenses(&["c"]), Adjudicator("w".into())]);
-}
-
-/// The steps the repository's workflow and every rendering of it declare, spelled literally so
-/// no parse or accessor under test stands behind the expected value.
-fn repo_review_steps() -> [ReviewStep; 3] {
-    [
-        lenses(&["architecture-reviewer", "sdet"]),
-        Adversary("adversary".into()),
-        Adjudicator("adjudicator".into()),
-    ]
 }
 
 /// The panel the identity goldens run over is the panel the repository declares: this repo's
@@ -231,16 +222,6 @@ fn write_panel_project(root: &Path, workflow: &str) {
         .map(|(id, persona)| (*id, persona.as_str()));
     write_scaffold(root, &agents, workflow);
 }
-
-/// `template` of [`PANEL_SCOPES`] declaring the flow mapping `panel`.
-fn declaring(template: &str, panel: &str) -> String {
-    template.replace("{panel}", panel)
-}
-
-/// A corpus file for a known-good control.
-#[cfg(unix)]
-const CONTROL_ITEM: &str = "---\nid: control\ndefect_class: none\nplanted: false\nanchor: \
-     src/lib.rs\nexpected_verdict: approve\n---\nfn control() {}\n";
 
 /// `root` as a project declaring `panel` as its `defaults.review`, with `item` its one corpus file.
 #[cfg(unix)]
@@ -1345,7 +1326,7 @@ fn a_stage_of_no_steps_inherits_the_default_list_and_a_stage_list_replaces_it() 
 /// Given a project `rigger init` rendered, with no gate template set and with one, when the
 /// operator validates it, it passes and its review is the canonical sequence.
 #[test]
-fn every_workflow_rigger_init_renders_validates_as_the_canonical_sequence() {
+fn a_workflow_rigger_init_renders_validates_as_the_canonical_sequence_with_or_without_gates() {
     for (project, summary) in [
         (temp_project(), "config valid: 6 agents, 4 stages, 0 gates"),
         (cargo_project(), "config valid: 6 agents, 4 stages, 5 gates"),
@@ -1519,14 +1500,6 @@ fn graph_around_gives_a_reviewer_of_either_form_one_edge_of_each_tier() {
             ],
             "{workflow}"
         );
-    }
-}
-
-/// An agent `id` spawned with the model alias `<id>-model`, so a stamp names which agent it read.
-fn agent_with_its_own_alias(id: &str) -> AgentDef {
-    AgentDef {
-        model: format!("{id}-model"),
-        ..agent(id)
     }
 }
 

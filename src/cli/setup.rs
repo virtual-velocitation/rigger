@@ -2095,7 +2095,7 @@ mod tests {
     use crate::test_support::tool_available;
     use crate::test_support::AUTHORING_AGENTS_HANDBOOK;
     use crate::test_support::{
-        assert_holds_its_critique_method, critique_method_by_persona, persona_section,
+        assert_holds_its_critique_method, critique_method_by_persona, markdown_section,
         ADJUDICATOR_JUDGING_RULE, ADVERSARY_CRITIQUE_METHOD, CRITIQUE_METHOD, FAN_OUT_HEADING,
         HAND_OVER_HEADING, WHEN_YOU_REVIEW, WHEN_YOU_REVIEW_HEADING,
     };
@@ -4097,7 +4097,7 @@ mod tests {
             "the review section appears once, after the hand-over section"
         );
         assert_eq!(
-            persona_section(&body, FAN_OUT_HEADING)
+            markdown_section(&body, FAN_OUT_HEADING)
                 .matches("battery")
                 .count(),
             0,
@@ -4172,7 +4172,9 @@ mod tests {
     }
 
     /// Every agent text rigger ships: the committed personas and the scaffold seeds, each
-    /// labelled with where it lives.
+    /// labelled with where it lives. The personas of `examples/demo` stay out: the demo is a
+    /// consumer project owning its agents, and a persona with no critique section still critiques
+    /// under the binary's output contract.
     fn every_shipped_persona() -> Vec<(String, String)> {
         let mut all: Vec<(String, String)> = committed_personas()
             .into_iter()
@@ -4325,7 +4327,7 @@ mod tests {
                 "{file}: the test block appears {want} time(s)"
             );
             if want == 1 {
-                let block = rigger::wave::normalize_ws(persona_section(&text, HEADING));
+                let block = rigger::wave::normalize_ws(markdown_section(&text, HEADING));
                 for wanted in [
                     "- Assert exact values, never existence:",
                     "- Pin every boundary from both sides:",
@@ -4372,7 +4374,7 @@ mod tests {
                 "{file}: the hand-over block belongs to the author roles alone"
             );
             if author {
-                blocks.push(persona_section(&text, HEADING).to_string());
+                blocks.push(markdown_section(&text, HEADING).to_string());
             }
         }
         assert_eq!(blocks.len(), 2, "both author roles carry the block");

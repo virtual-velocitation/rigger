@@ -917,7 +917,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "20a9f41e9032c98e"
+    "content_hash": "d5ff31ecff57be11"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -1117,7 +1117,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "b81152e77ea6a9e9"
+    "content_hash": "ab9f67ae0411e879"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -4605,7 +4605,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "2dbc16259679d6e5"
+    "content_hash": "96b10ffc7f13f7ab"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -5317,7 +5317,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "59994636054f66a3"
+    "content_hash": "17e5557f7af1fd35"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -6005,7 +6005,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "0e92710dbb638cc2"
+    "content_hash": "9352f4abc2fbf797"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -11005,7 +11005,7 @@
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "0f74ad7528547522"
+    "content_hash": "ccd6cbfbb6ff7f63"
   },
   {
     "file": "src/cli/mod.rs",

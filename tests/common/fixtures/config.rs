@@ -29,6 +29,14 @@ pub fn agent(id: &str) -> AgentDef {
     }
 }
 
+/// An agent `id` spawned with the model alias `<id>-model`, so a stamp names which agent it read.
+pub fn agent_with_its_own_alias(id: &str) -> AgentDef {
+    AgentDef {
+        model: format!("{id}-model"),
+        ..agent(id)
+    }
+}
+
 /// An agent definition `id` whose persona (the markdown body of its definition) is `prompt`.
 pub fn agent_with_prompt(id: &str, prompt: &str) -> AgentDef {
     AgentDef {
@@ -78,8 +86,23 @@ pub fn repo_review_panel() -> ReviewPanel {
     )
 }
 
+/// The steps the repository's workflow and every rendering of it declare, spelled literally so
+/// no parse or accessor under test stands behind the expected value.
+pub fn repo_review_steps() -> [ReviewStep; 3] {
+    [
+        lenses(&["architecture-reviewer", "sdet"]),
+        ReviewStep::Adversary("adversary".to_string()),
+        ReviewStep::Adjudicator("adjudicator".to_string()),
+    ]
+}
+
 /// The ids of the agents a panel of the tables below names.
 pub const PANEL_AGENTS: [&str; 5] = ["a", "b", "x", "y", "z"];
+
+/// `template` of [`PANEL_SCOPES`] declaring the flow mapping `panel`.
+pub fn declaring(template: &str, panel: &str) -> String {
+    template.replace("{panel}", panel)
+}
 
 /// A read of one scope's panel out of a parsed workflow.
 pub type PanelRead = fn(&Workflow) -> &ReviewPanel;
@@ -294,6 +317,10 @@ fn panel_separator_refusals() -> Vec<(&'static str, String)> {
             separator_refusal("steps[0]", "l@k"),
         ),
         (
+            "{ steps: [{ adversary: \"x@k\" }, { adjudicator: z }] }",
+            separator_refusal("steps[0]", "x@k"),
+        ),
+        (
             "{ steps: [{ adversary: x }, { adjudicator: \"j@k\" }] }",
             separator_refusal("steps[1]", "j@k"),
         ),
@@ -340,12 +367,8 @@ fn adjudicator_placement_refusals() -> Vec<(&'static str, String)> {
 /// the prefix each of them gives a tier refusal.
 fn tier_refusal_rows(panel: &str, refusal: &str) -> [(String, String); 2] {
     let [(_, defaults, _), (_, stage, _), ..] = PANEL_SCOPES;
-    [(defaults, "defaults."), (stage, "stage \"s\" ")].map(|(template, prefix)| {
-        (
-            template.replace("{panel}", panel),
-            format!("{prefix}{refusal}"),
-        )
-    })
+    [(defaults, "defaults."), (stage, "stage \"s\" ")]
+        .map(|(template, prefix)| (declaring(template, panel), format!("{prefix}{refusal}")))
 }
 
 /// The workflows whose tiers policy leaves a tier short of an adjudicator step, in either form,
@@ -422,10 +445,7 @@ pub fn panel_rule_refusals() -> Vec<(String, String)> {
     rows.extend(stage_separator_refusals());
     for (panel, message) in panels {
         rows.extend(PANEL_SCOPES.map(|(scope, template, _)| {
-            (
-                template.replace("{panel}", panel),
-                format!("{scope} {message}"),
-            )
+            (declaring(template, panel), format!("{scope} {message}"))
         }));
     }
     rows

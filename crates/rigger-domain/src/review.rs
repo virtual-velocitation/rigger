@@ -1580,7 +1580,8 @@ mod tests {
     #[test]
     fn the_review_and_adjudicator_rosters_are_the_canonical_sequences_step_rosters() {
         // (lenses, adversary, review_roster, adjudicator_roster): the rows the step-roster
-        // table above pins for the same canonical sequences under the real minter.
+        // table above pins under the real minter, and the sequence with neither key, which that
+        // table holds no row for.
         let ab: Vec<String> = vec!["a".into(), "b".into()];
         for (lenses, adversary, review, adjudicator) in [
             (

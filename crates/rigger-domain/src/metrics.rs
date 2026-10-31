@@ -501,8 +501,10 @@ pub struct ReviewQuality {
     /// such, not a silent always-zero.
     pub finding_survival: BTreeMap<String, FindingCounts>,
     /// Files carrying findings from TWO OR MORE distinct actors - the same defect flagged
-    /// by more than one lens. The numerator of the lens-overlap rate (retroactive over
-    /// all history).
+    /// by more than one reviewer. An actor is a role token, so a step of the panel is its own
+    /// actor: one adversary agent at two steps, or one lens at two, overlaps with itself, the
+    /// second step being an independent reading of the diff. The numerator of the lens-overlap
+    /// rate (retroactive over all history).
     pub overlap_files: u64,
     /// Files carrying at least one finding - the denominator of the lens-overlap rate.
     pub finding_files: u64,

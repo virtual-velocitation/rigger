@@ -291,9 +291,8 @@ pub fn run_canary(
         append(store, outcome.to_event(&batch))?;
         outcomes.push(outcome);
         // MODEL PINNING criterion: fold this item's per-tier resolved-model observations
-        // into the run-level header - the last non-empty observation per tier wins (a
-        // homogeneously pinned/config'd tier resolves identically on every spawn in
-        // practice, so which spawn happens to be "last" is not observable).
+        // into the run-level header - the last non-empty observation per tier wins, so a tier
+        // whose steps resolve to different models records its last spawn's.
         for (tier, id) in item_resolved {
             resolved_models.insert(tier, id);
         }

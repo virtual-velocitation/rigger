@@ -998,7 +998,7 @@ fn a_workflow_with_no_critic_is_refused_first_and_no_store_or_graph_is_created()
             "rigger critique: refusing to critique {outside}: the workflow names neither the \
              plan-critique gate's adversary nor an adversary step in defaults.review"
         )),
-        "the no-critic refusal names the spec as given and both keys:\n{err}"
+        "the no-critic refusal names the spec as given and both places a critic is named:\n{err}"
     );
     assert!(
         !err.contains("outside the repository") && !err.contains("loop-ready"),
