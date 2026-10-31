@@ -91,10 +91,18 @@ pub const TYPE_SPAWN_REQUESTED: &str = "SpawnRequested";
 
 /// The role token for the unit's implementer (the stage's own `agent`).
 pub const ROLE_IMPLEMENTER: &str = "implementer";
-/// The role token for a unit review's tier-2 adversary.
+/// The role token of a unit review's first adversary step; a later one is
+/// [`review_step_role`]'s `adversary@<k>`.
 pub const ROLE_ADVERSARY: &str = "adversary";
-/// The role token for a unit review's tier-3 adjudicator (the gating verdict).
+/// The role token of a unit review's adjudicator step (the gating verdict), of which a panel has
+/// one at most.
 pub const ROLE_ADJUDICATOR: &str = "adjudicator";
+/// The tier label of every lens spawn, whichever step it sits in: what the dash groups under and
+/// the metrics and the canary fold and report under. A constant so a `match` can name it; the
+/// label is [`ReviewKind::tier`]'s, and the adjudicator's is [`ROLE_ADJUDICATOR`].
+pub const TIER_LENS: &str = ReviewKind::Lens.tier();
+/// The tier label of every adversary spawn, whichever step it sits in.
+pub const TIER_ADVERSARY: &str = ReviewKind::Adversary.tier();
 /// The role token for the SDET periphery-test AUTHOR (spec 32): the write-capable role
 /// that authors the periphery test layer (contract / API / integration) at the build
 /// seam - after the implementer emits green and before the pre-gate commit - so no
@@ -104,16 +112,144 @@ pub const ROLE_ADJUDICATOR: &str = "adjudicator";
 /// (`lens:sdet`), which reviews the implementer's code and cannot write.
 pub const ROLE_SDET_AUTHOR: &str = "sdet-author";
 
-/// The role token for a tier-1 review lens. A stage runs several lenses in parallel,
-/// so the lens's own agent id disambiguates them within one attempt: two lenses on
-/// the same unit+attempt get distinct spawn ids because their role tokens differ.
+/// The separator of a review role token's step ordinal: `lens:c@2`, `adversary@2`. It is none of
+/// the `/`, `#` and `~` of a spawn id, so [`spawn_role`] and [`unit_of`] read a stepped id as they
+/// read any other, and an agent id never holds it.
+pub const STEP_TOKEN_SEPARATOR: char = '@';
+
+/// What every lens token opens with, before the lens's agent id.
+const LENS_ROLE_PREFIX: &str = "lens:";
+
+/// The role token of a review lens in the first lens step; a later step's is
+/// [`review_step_role`]'s. A step runs its lenses in parallel, so the lens's own agent id
+/// disambiguates them within one attempt: two lenses on the same unit+attempt get distinct spawn
+/// ids because their role tokens differ.
 ///
 /// ```
 /// # use rigger_domain::spawn::lens_role;
 /// assert_eq!(lens_role("sdet"), "lens:sdet");
 /// ```
 pub fn lens_role(agent_id: &str) -> String {
-    format!("lens:{agent_id}")
+    format!("{LENS_ROLE_PREFIX}{agent_id}")
+}
+
+/// The kind of a review step: what [`review_step_role`] reads to spell the role token of an agent
+/// that step spawns.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReviewKind {
+    Lens,
+    Adversary,
+    Adjudicator,
+}
+
+impl ReviewKind {
+    /// The tier label this kind's spawns fold and group under, whichever step they sit in.
+    ///
+    /// ```
+    /// # use rigger_domain::spawn::ReviewKind;
+    /// assert_eq!(ReviewKind::Lens.tier(), "lens");
+    /// assert_eq!(ReviewKind::Adversary.tier(), "adversary");
+    /// assert_eq!(ReviewKind::Adjudicator.tier(), "adjudicator");
+    /// ```
+    pub const fn tier(self) -> &'static str {
+        match self {
+            ReviewKind::Lens => "lens",
+            ReviewKind::Adversary => ROLE_ADVERSARY,
+            ReviewKind::Adjudicator => ROLE_ADJUDICATOR,
+        }
+    }
+}
+
+/// The role token of `agent` in the `k`-th step of `kind`, `k` being 1-based and counted among
+/// the steps of that kind in [`ReviewPanel::steps`](crate::config::ReviewPanel::steps): the kind's
+/// own token, [`lens_role`], [`ROLE_ADVERSARY`] or [`ROLE_ADJUDICATOR`], at `k == 1`, and from
+/// `k == 2` that token followed by [`STEP_TOKEN_SEPARATOR`] and `k`. A panel has one adjudicator
+/// step at most, so the adjudicator's token never carries `k`. The inverse is
+/// [`review_step_of`].
+///
+/// ```
+/// # use rigger_domain::spawn::{review_step_role, ReviewKind};
+/// assert_eq!(review_step_role(ReviewKind::Lens, "sdet", 1), "lens:sdet");
+/// assert_eq!(review_step_role(ReviewKind::Lens, "sdet", 2), "lens:sdet@2");
+/// assert_eq!(review_step_role(ReviewKind::Adversary, "red-team", 3), "adversary@3");
+/// assert_eq!(review_step_role(ReviewKind::Adjudicator, "judge", 1), "adjudicator");
+/// ```
+pub fn review_step_role(kind: ReviewKind, agent: &str, k: u32) -> String {
+    let token = match kind {
+        ReviewKind::Lens => lens_role(agent),
+        ReviewKind::Adversary => ROLE_ADVERSARY.to_string(),
+        ReviewKind::Adjudicator => return ROLE_ADJUDICATOR.to_string(),
+    };
+    if is_later_step(k) {
+        format!("{token}{STEP_TOKEN_SEPARATOR}{k}")
+    } else {
+        token
+    }
+}
+
+/// Whether the `k`-th step of a kind is marked with its `k`, on a role token and on a dash label
+/// alike: step 1 reads bare.
+pub fn is_later_step(k: u32) -> bool {
+    k >= 2
+}
+
+/// The kind and the 1-based step ordinal the review role token `role` spells, the one parser of
+/// a [`review_step_role`] token, or `None` for any other role. A bare token is step 1, and an
+/// `adjudicator@k` is no token since none is minted. `role` is [`spawn_role`]'s output: a raw id
+/// is never passed here, so a `~retry{n}` suffix is already trimmed.
+///
+/// ```
+/// # use rigger_domain::spawn::{review_step_of, ReviewKind};
+/// assert_eq!(review_step_of("lens:sdet"), Some((ReviewKind::Lens, 1)));
+/// assert_eq!(review_step_of("adversary@2"), Some((ReviewKind::Adversary, 2)));
+/// assert_eq!(review_step_of("adversary@1"), None);
+/// assert_eq!(review_step_of("adjudicator@2"), None);
+/// assert_eq!(review_step_of("implementer"), None);
+/// ```
+pub fn review_step_of(role: &str) -> Option<(ReviewKind, u32)> {
+    let (token, k) = step_token(role)?;
+    let kind = if token == ROLE_ADVERSARY {
+        ReviewKind::Adversary
+    } else if token == ROLE_ADJUDICATOR {
+        ReviewKind::Adjudicator
+    } else if token.starts_with(LENS_ROLE_PREFIX) {
+        ReviewKind::Lens
+    } else {
+        return None;
+    };
+    (kind != ReviewKind::Adjudicator || k == 1).then_some((kind, k))
+}
+
+/// `role` split at [`STEP_TOKEN_SEPARATOR`] into its token and step ordinal: a role with no
+/// separator is step 1, and a suffix [`step_suffix`] refuses is `None`.
+fn step_token(role: &str) -> Option<(&str, u32)> {
+    match role.split_once(STEP_TOKEN_SEPARATOR) {
+        None => Some((role, 1)),
+        Some((token, suffix)) => Some((token, step_suffix(suffix)?)),
+    }
+}
+
+/// The step ordinal a token's `suffix` spells after [`STEP_TOKEN_SEPARATOR`]: an ASCII decimal
+/// with no leading zero and no sign, at least 2 and at most `u32::MAX`.
+fn step_suffix(suffix: &str) -> Option<u32> {
+    if !matches!(suffix.as_bytes().first(), Some(b'1'..=b'9')) {
+        return None;
+    }
+    suffix.parse().ok().filter(|k| is_later_step(*k))
+}
+
+/// The agent id the lens token `role` names, bare or stepped, or `None` for any other role and
+/// for a step suffix [`review_step_of`] refuses. `role` is [`spawn_role`]'s output.
+///
+/// ```
+/// # use rigger_domain::spawn::lens_agent_of;
+/// assert_eq!(lens_agent_of("lens:sdet"), Some("sdet"));
+/// assert_eq!(lens_agent_of("lens:sdet@2"), Some("sdet"));
+/// assert_eq!(lens_agent_of("lens:sdet@1"), None);
+/// assert_eq!(lens_agent_of("adversary@2"), None);
+/// ```
+pub fn lens_agent_of(role: &str) -> Option<&str> {
+    step_token(role)?.0.strip_prefix(LENS_ROLE_PREFIX)
 }
 
 /// Derive a spawn's DETERMINISTIC id from its position in the run structure: the
@@ -125,12 +261,12 @@ pub fn lens_role(agent_id: &str) -> String {
 /// lets a recorded result be matched back to the call that produced it across
 /// processes (§4, spec 04).
 ///
-/// A stage produces at most one spawn per role per attempt, so the triple
-/// `(unit, role, attempt)` names a spawn uniquely. The id is kept human-readable
-/// (rather than an opaque hash) because it is the handle a courier passes to
-/// `rigger result <id>`. Unit ids and role tokens are drawn from the run structure
-/// (kebab identifiers and the fixed role vocabulary above), neither of which
-/// contains the `/` or `#` separators, so the rendering is unambiguous.
+/// A stage produces at most one spawn per role per attempt, each step of a review holding its
+/// own [`review_step_role`] token, so the triple `(unit, role, attempt)` names a spawn uniquely.
+/// The id is kept human-readable (rather than an opaque hash) because it is the handle a courier
+/// passes to `rigger result <id>`. Unit ids and role tokens are drawn from the run structure
+/// (kebab identifiers and the role tokens above), neither of which contains the `/` or `#`
+/// separators, so the rendering is unambiguous.
 ///
 /// ```
 /// # use rigger_domain::spawn::{spawn_id, lens_role, ROLE_IMPLEMENTER};
@@ -478,10 +614,11 @@ pub struct SpawnRequest {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub title: String,
     /// The routed review roster a review-tier spawn (adversary/adjudicator) judges (spec 67,
-    /// criterion 4): the unit's lens role tokens (e.g. `["lens:sdet",
-    /// "lens:architecture-reviewer"]`) for the adversary, plus [`ROLE_ADVERSARY`] for the
-    /// adjudicator - stamped by the CONDUCTOR from the actually-routed panel (light or full),
-    /// never guessed by the driver, so a replayed or tier-reduced roster is never stale.
+    /// criterion 4): the role tokens of the spawns of every review step before it (e.g.
+    /// `["lens:sdet", "lens:architecture-reviewer"]` for an adversary after one lens step, those
+    /// plus [`ROLE_ADVERSARY`] for the adjudicator after that adversary, and a later step of a
+    /// kind under its own token) - stamped by the CONDUCTOR from the actually-routed panel (light
+    /// or full), never guessed by the driver, so a replayed or tier-reduced roster is never stale.
     /// Carried onto [`WaveItem`] so the printed wave `rigger step` emits surfaces it for
     /// `workflows/rigger.js` to render inside the action phrase. Omitted from the wire when
     /// empty (a lens spawn, an empty panel, or an older conductor) - a purely additive,
@@ -668,10 +805,13 @@ impl SpawnResult {
     }
 
     /// Whether this is an ADJUDICATOR result: the role token of its spawn id (see
-    /// [`spawn_role`]) is [`ROLE_ADJUDICATOR`]. Only an adjudicator result carries a
-    /// gating verdict, so only it disposes a review's findings.
+    /// [`spawn_role`]) reads as the adjudicator kind through [`review_step_of`]. Only an
+    /// adjudicator result carries a gating verdict, so only it disposes a review's findings.
     pub fn is_adjudicator(&self) -> bool {
-        spawn_role(&self.id) == ROLE_ADJUDICATOR
+        matches!(
+            review_step_of(spawn_role(&self.id)),
+            Some((ReviewKind::Adjudicator, _))
+        )
     }
 
     /// Parse this ADJUDICATOR result's grown verdict line (spec 11) into its
@@ -1211,6 +1351,133 @@ mod tests {
             ),
             ("spec-ambiguity", true, false, false, false, false)
         );
+    }
+
+    /// STEP ROLE TOKENS (spec 120): a step spells its kind's token, and from the second step of
+    /// that kind `@<k>` after it, while the adjudicator, one step at most, never spells `@k`.
+    #[test]
+    fn a_review_step_role_spells_its_kinds_token_and_an_ordinal_from_the_second_step() {
+        for (kind, agent, k, token) in [
+            (ReviewKind::Lens, "c", 1, "lens:c"),
+            (ReviewKind::Lens, "c", 2, "lens:c@2"),
+            (ReviewKind::Lens, "c", 10, "lens:c@10"),
+            (ReviewKind::Adversary, "x", 1, "adversary"),
+            (ReviewKind::Adversary, "x", 2, "adversary@2"),
+            (ReviewKind::Adversary, "x", 3, "adversary@3"),
+            (ReviewKind::Adjudicator, "z", 1, "adjudicator"),
+            (ReviewKind::Adjudicator, "z", 2, "adjudicator"),
+        ] {
+            assert_eq!(review_step_role(kind, agent, k), token, "{kind:?} {k}");
+        }
+    }
+
+    /// The one parser of a review token: a bare token is step 1, the suffix is `@` and an ASCII
+    /// decimal of at least 2 that fits a `u32`, with no leading zero and no sign, and `@k` exists
+    /// for the lens and adversary kinds only. `lens_agent_of` reads the same spellings: a lens
+    /// token names its agent whichever step it sits in, and anything else names none.
+    #[test]
+    fn the_token_readers_read_each_token_and_refuse_every_other_spelling() {
+        use ReviewKind::{Adjudicator, Adversary, Lens};
+        for (role, read, agent) in [
+            ("lens:a", Some((Lens, 1)), Some("a")),
+            ("adversary", Some((Adversary, 1)), None),
+            ("adjudicator", Some((Adjudicator, 1)), None),
+            ("lens:", Some((Lens, 1)), Some("")),
+            ("lens:c@2", Some((Lens, 2)), Some("c")),
+            (
+                "lens:architecture-reviewer@4294967295",
+                Some((Lens, u32::MAX)),
+                Some("architecture-reviewer"),
+            ),
+            ("adversary@2", Some((Adversary, 2)), None),
+            ("adversary@10", Some((Adversary, 10)), None),
+            ("adversary@4294967295", Some((Adversary, u32::MAX)), None),
+            ("adversary@4294967296", None, None),
+            ("lens:a@4294967296", None, None),
+            ("adversary@1", None, None),
+            ("adversary@0", None, None),
+            ("adversary@01", None, None),
+            ("adversary@02", None, None),
+            ("adversary@+2", None, None),
+            ("adversary@-2", None, None),
+            ("adversary@", None, None),
+            ("adversary@x", None, None),
+            ("adversary@2x", None, None),
+            ("lens:a@1", None, None),
+            ("lens:a@01", None, None),
+            ("lens:a@02", None, None),
+            ("lens:a@x", None, None),
+            ("lens:a@2@3", None, None),
+            ("lens:a@@2", None, None),
+            ("adjudicator@2", None, None),
+            ("adjudicator@1", None, None),
+            ("implementer", None, None),
+            ("implementer@2", None, None),
+            ("sdet-author", None, None),
+            ("lensing", None, None),
+            ("@2", None, None),
+            ("", None, None),
+        ] {
+            assert_eq!(review_step_of(role), read, "{role:?}");
+            assert_eq!(lens_agent_of(role), agent, "{role:?}");
+        }
+    }
+
+    /// A kind's tier is the label its spawns fold and group under, the seeds' own spellings.
+    #[test]
+    fn a_review_kind_reads_as_its_tier_label() {
+        for (tier, label) in [
+            (ReviewKind::Lens.tier(), "lens"),
+            (ReviewKind::Adversary.tier(), "adversary"),
+            (ReviewKind::Adjudicator.tier(), "adjudicator"),
+            (TIER_LENS, "lens"),
+            (TIER_ADVERSARY, "adversary"),
+        ] {
+            assert_eq!(tier, label);
+        }
+    }
+
+    /// `review_step_of` is the inverse of `review_step_role` over `spawn_role`'s output, a
+    /// `~retry{n}` respawn suffix trimmed: a token survives the spawn id it rides.
+    #[test]
+    fn a_minted_review_token_reads_back_through_its_spawn_id() {
+        for (kind, k) in [
+            (ReviewKind::Lens, 1),
+            (ReviewKind::Lens, 2),
+            (ReviewKind::Lens, u32::MAX),
+            (ReviewKind::Adversary, 1),
+            (ReviewKind::Adversary, 2),
+            (ReviewKind::Adversary, u32::MAX),
+            (ReviewKind::Adjudicator, 1),
+        ] {
+            let role = review_step_role(kind, "agent", k);
+            for id in [spawn_id("u", &role, 3), spawn_retry_id("u", &role, 3, 2)] {
+                assert_eq!(spawn_role(&id), role, "{id}");
+                assert_eq!(review_step_of(spawn_role(&id)), Some((kind, k)), "{id}");
+            }
+        }
+    }
+
+    /// Only the adjudicator's token carries a gating verdict: a retry of it still does, and no
+    /// other token reads as one, an `adjudicator@k` no minter spells included.
+    #[test]
+    fn is_adjudicator_reads_the_token_of_the_spawn_id() {
+        for (id, adjudicator) in [
+            ("u/adjudicator#0", true),
+            ("u/adjudicator#0~retry2", true),
+            ("u/adjudicator@2#0", false),
+            ("u/adversary#0", false),
+            ("u/adversary@2#0", false),
+            ("u/lens:adjudicator#0", false),
+            ("u/lens:a@2#0", false),
+            ("u/implementer#0", false),
+        ] {
+            assert_eq!(
+                SpawnResult::ok(id, "").is_adjudicator(),
+                adjudicator,
+                "{id}"
+            );
+        }
     }
 
     #[test]

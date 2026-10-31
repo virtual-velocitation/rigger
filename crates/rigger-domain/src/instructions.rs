@@ -14,8 +14,12 @@
 //! so neither the entry nor the file is injected ([`resolve_layers`]). The OPERATOR layer is
 //! every other `*.md` under `.rigger/instructions/`, in filename order, read by the store-gated
 //! loader in `config_store` and carried on `Config::instructions`, so this module stays pure
-//! and compiles in the `core` lane. `rigger instructions` prints the composed layers ([`render`])
-//! so an operator can read exactly what their agents are held to.
+//! and compiles in the `core` lane. `rigger instructions` prints every layer, each built-in with
+//! its state - in force, replaced or switched off - ([`render`]) so an operator can read exactly
+//! what their agents are held to; `rigger validate` warns of each shadowed built-in
+//! ([`shadow_advisories`]).
+
+use crate::config::{INSTRUCTIONS_DIR, RIGGER_DIR};
 
 /// One instruction section: `name` is the file stem (or the built-in id) and `body` its text.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -67,6 +71,27 @@ pub enum LayerState<'a> {
     /// An operator file of the same name with a blank body switches the entry off: nothing is
     /// in force in its place.
     SwitchedOff,
+}
+
+impl<'a> LayerState<'a> {
+    /// The body in force in the entry's place: the shipped body ([`LayerState::BuiltIn`]), the
+    /// operator file's ([`LayerState::Replaced`]), or `None` for a switched-off entry.
+    pub fn in_force(self) -> Option<&'a str> {
+        match self {
+            LayerState::BuiltIn(body) | LayerState::Replaced(body) => Some(body),
+            LayerState::SwitchedOff => None,
+        }
+    }
+
+    /// How a same-named operator file shadows the entry, as the reports word it: `replaced`,
+    /// `switched off`, or `None` when no operator file shadows it.
+    pub fn shadow_verb(self) -> Option<&'static str> {
+        match self {
+            LayerState::BuiltIn(_) => None,
+            LayerState::Replaced(_) => Some("replaced"),
+            LayerState::SwitchedOff => Some("switched off"),
+        }
+    }
 }
 
 /// One built-in entry, in [`BUILTIN`] order, with the state the operator layer left it in.
@@ -131,11 +156,8 @@ pub fn compose(persona: &str, operator: &[Instruction]) -> String {
     out.push_str(HEADING);
     out.push('\n');
     for layer in &layers.builtins {
-        match layer.state {
-            LayerState::BuiltIn(body) | LayerState::Replaced(body) => {
-                push_section(&mut out, layer.name, body)
-            }
-            LayerState::SwitchedOff => {}
+        if let Some(body) = layer.state.in_force() {
+            push_section(&mut out, layer.name, body);
         }
     }
     for ins in layers.operator {
@@ -144,29 +166,77 @@ pub fn compose(persona: &str, operator: &[Instruction]) -> String {
     out
 }
 
-/// The text `rigger instructions` prints: every layer in injection order, named.
+/// The text `rigger instructions` prints, read from [`resolve_layers`]: every built-in in
+/// [`BUILTIN`] order labelled with its state - `(built-in)` with its shipped body, `(replaced by
+/// .rigger/instructions/<name>.md)` with the operator file's body, or `(switched off by
+/// .rigger/instructions/<name>.md)` with no body - then each operator file that shadows no
+/// built-in, by name, or `(none)` when no such file remains.
 pub fn render(operator: &[Instruction]) -> String {
+    let layers = resolve_layers(operator);
     let mut out = String::new();
     out.push_str(HEADING);
-    out.push_str("\n\nBuilt-in (every agent rigger spawns, not removable):\n");
-    for (name, body) in BUILTIN {
-        push_section(&mut out, name, body);
+    out.push_str("\n\nBuilt-in:\n");
+    for layer in &layers.builtins {
+        let label = shadowed_by(layer).unwrap_or_else(|| "built-in".to_string());
+        let heading = format!("{} ({label})", layer.name);
+        match layer.state.in_force() {
+            Some(body) => push_section(&mut out, &heading, body),
+            None => push_heading(&mut out, &heading),
+        }
     }
-    out.push_str("\nOperator (.rigger/instructions/*.md, filename order):\n");
-    if operator.is_empty() {
+    out.push_str(&format!(
+        "\nOperator ({}, filename order):\n",
+        operator_path("*.md")
+    ));
+    if layers.operator.is_empty() {
         out.push_str("(none)\n");
     }
-    for ins in operator {
+    for ins in layers.operator {
         push_section(&mut out, &ins.name, &ins.body);
     }
     out
 }
 
+/// One warning line per built-in an operator file replaces or switches off, in [`BUILTIN`]
+/// order, read from [`resolve_layers`]: `warning: built-in instruction <name> is replaced by
+/// .rigger/instructions/<name>.md` or `... is switched off by .rigger/instructions/<name>.md`.
+/// A layer that shadows no built-in yields none. `rigger validate` prints each to stderr and
+/// still succeeds.
+pub fn shadow_advisories(operator: &[Instruction]) -> Vec<String> {
+    resolve_layers(operator)
+        .builtins
+        .iter()
+        .filter_map(|layer| {
+            shadowed_by(layer)
+                .map(|by| format!("warning: built-in instruction {} is {by}", layer.name))
+        })
+        .collect()
+}
+
+/// What shadows `layer`: `replaced by <file>` or `switched off by <file>`, the file being the
+/// operator file named as the built-in, or `None` for a built-in no operator file shadows.
+fn shadowed_by(layer: &BuiltInLayer) -> Option<String> {
+    layer
+        .state
+        .shadow_verb()
+        .map(|verb| format!("{verb} by {}", operator_path(&format!("{}.md", layer.name))))
+}
+
+/// `file` under the operator layer's directory, as the reports name it.
+fn operator_path(file: &str) -> String {
+    format!("{RIGGER_DIR}/{INSTRUCTIONS_DIR}/{file}")
+}
+
 fn push_section(out: &mut String, name: &str, body: &str) {
+    push_heading(out, name);
+    out.push_str(body.trim_end());
+    out.push('\n');
+}
+
+/// A section's `## <name>` heading line, after a blank line.
+fn push_heading(out: &mut String, name: &str) {
     out.push_str("\n## ");
     out.push_str(name);
-    out.push('\n');
-    out.push_str(body.trim_end());
     out.push('\n');
 }
 
@@ -174,23 +244,17 @@ fn push_section(out: &mut String, name: &str, body: &str) {
 mod tests {
     use super::*;
     use crate::test_support::{
-        assert_carries_the_review_method, builtin_body, builtin_section, COMMUNICATION_NEAR_NAME,
+        assert_carries_the_review_method, builtin_body, builtin_section,
+        house_and_team_operator_layer, op, rendered_every_file_shadowing_layer,
+        rendered_shadowing_layer, shadowing_operator_layer, COMMUNICATION_NEAR_NAME,
+        NON_EMPTY_BLANK_BODIES, REPLACING_COMMUNICATION_BODY, SHADOWING_LAYER_ADVISORIES,
     };
-
-    fn op(name: &str, body: &str) -> Instruction {
-        Instruction {
-            name: name.into(),
-            body: body.into(),
-        }
-    }
 
     #[test]
     fn compose_places_persona_then_builtin_then_operator_in_order() {
-        let sys = compose(
-            "You are the persona.",
-            &[op("10-house", "House rule."), op("20-team", "Team rule.")],
-        );
-        let persona = sys.find("You are the persona.").expect("persona leads");
+        let persona = "You are the persona.";
+        let sys = compose(persona, &house_and_team_operator_layer());
+        let persona = sys.find(persona).expect("persona leads");
         let heading = sys
             .find(HEADING)
             .expect("the instructions heading follows the persona");
@@ -304,10 +368,14 @@ mod tests {
         builtin_body("working-discipline")
     }
 
-    /// The prompt `compose("P.", ..)` must return: the persona, the bare [`HEADING`], then each
+    /// The persona this module's `compose` tests compose over and [`expected_prompt`] expects;
+    /// only the tests of the persona's place and of an empty persona name their own.
+    const PERSONA: &str = "P.";
+
+    /// The prompt `compose(PERSONA, ..)` must return: the persona, the bare [`HEADING`], then each
     /// named section in order, its body with trailing whitespace trimmed.
     fn expected_prompt(sections: &[(&str, &str)]) -> String {
-        crate::test_support::expected_composed_prompt("P.", sections)
+        crate::test_support::expected_composed_prompt(PERSONA, sections)
     }
 
     /// Spec 120, criterion 2: an operator file named as a built-in byte for byte replaces that
@@ -316,7 +384,7 @@ mod tests {
     #[test]
     fn a_same_named_operator_file_replaces_the_built_in_body_in_place_under_the_bare_heading() {
         let body = "Our team posts every decision in the run channel.\n- One line each.";
-        let sys = compose("P.", &[op("communication", body)]);
+        let sys = compose(PERSONA, &[op("communication", body)]);
         assert_eq!(
             sys,
             expected_prompt(&[
@@ -344,7 +412,7 @@ mod tests {
                 "\u{feff}Team discipline.",
             ),
         ] {
-            let sys = compose("P.", &[op("working-discipline", file_body)]);
+            let sys = compose(PERSONA, &[op("working-discipline", file_body)]);
             assert_eq!(
                 sys,
                 expected_prompt(&[
@@ -362,7 +430,7 @@ mod tests {
     #[test]
     fn a_near_name_shadows_nothing_and_appends_after_the_built_ins() {
         let sys = compose(
-            "P.",
+            PERSONA,
             &[
                 op("Communication", "Case rule."),
                 op(COMMUNICATION_NEAR_NAME, "Space rule."),
@@ -386,8 +454,8 @@ mod tests {
     /// section nor the file's is injected, and every other section is unchanged.
     #[test]
     fn a_blank_same_named_file_switches_its_built_in_off() {
-        for blank in ["", "\u{feff}", " \t\n", "\u{feff}\u{2003}\n"] {
-            let sys = compose("P.", &[op("engineering-principles", blank)]);
+        for blank in std::iter::once(Default::default()).chain(NON_EMPTY_BLANK_BODIES) {
+            let sys = compose(PERSONA, &[op("engineering-principles", blank)]);
             assert_eq!(
                 sys,
                 expected_prompt(&[
@@ -403,7 +471,7 @@ mod tests {
     /// second U+FEFF, not blank, so it replaces the built-in rather than switching it off.
     #[test]
     fn a_body_of_two_byte_order_marks_replaces_rather_than_switches_off() {
-        let sys = compose("P.", &[op("engineering-principles", "\u{feff}\u{feff}")]);
+        let sys = compose(PERSONA, &[op("engineering-principles", "\u{feff}\u{feff}")]);
         assert_eq!(
             sys,
             expected_prompt(&[
@@ -421,7 +489,7 @@ mod tests {
     #[test]
     fn two_blank_same_named_files_switch_two_built_ins_off_and_leave_the_operator_layer() {
         let sys = compose(
-            "P.",
+            PERSONA,
             &[
                 op("communication", "\u{3000}"),
                 op("40-ops", "Ops rule."),
@@ -444,7 +512,7 @@ mod tests {
     #[test]
     fn the_heading_stays_when_every_built_in_is_switched_off() {
         let sys = compose(
-            "P.",
+            PERSONA,
             &[
                 op("engineering-principles", "\u{a0}"),
                 op("working-discipline", "\u{feff} "),
@@ -714,7 +782,7 @@ mod tests {
 
     #[test]
     fn compose_places_the_working_discipline_after_the_law_and_before_the_operator_layer() {
-        let sys = compose("P.", &[op("10-house", "House rule.")]);
+        let sys = compose(PERSONA, &house_and_team_operator_layer()[..1]);
         let law = sys.find("## engineering-principles").expect("the law");
         let discipline = sys.find("## working-discipline").expect(
             "the working discipline reaches this spawn, which no operator file switches off",
@@ -735,7 +803,7 @@ mod tests {
                 && none.contains("(none)"),
             "an empty operator layer renders as (none); got:\n{none}"
         );
-        let some = render(&[op("10-house", "House rule.")]);
+        let some = render(&house_and_team_operator_layer()[..1]);
         assert!(
             !some.contains("(none)") && some.contains("## 10-house"),
             "operator files render by name; got:\n{some}"
@@ -744,5 +812,50 @@ mod tests {
             some.find("engineering-principles").unwrap() < some.find("10-house").unwrap(),
             "built-ins render first"
         );
+    }
+
+    /// Over the named-entry fixture, `render` prints the built-in kept in force with its shipped
+    /// body, the replaced one with the operator file's body and the switched-off one with no body,
+    /// each labelled with its state, then the one file that shadows nothing.
+    #[test]
+    fn render_names_each_built_in_of_the_fixture_as_in_force_replaced_or_switched_off() {
+        assert_eq!(
+            render(&shadowing_operator_layer()),
+            rendered_shadowing_layer(),
+            "each built-in is printed with its state and only the unshadowed file is an operator file"
+        );
+    }
+
+    /// An operator layer whose every file shadows a built-in leaves no operator file to print.
+    #[test]
+    fn render_says_none_when_every_operator_file_shadows_a_built_in() {
+        assert_eq!(
+            render(&shadowing_operator_layer()[1..]),
+            rendered_every_file_shadowing_layer(),
+            "an all-shadowing operator layer renders as (none)"
+        );
+    }
+
+    /// `shadow_advisories` names each built-in an operator file replaces or switches off, in
+    /// `BUILTIN` order, and nothing for a layer that shadows none: an empty one, a near name, or a
+    /// file of another name.
+    #[test]
+    fn shadow_advisories_name_each_shadowed_built_in_and_nothing_else() {
+        assert_eq!(
+            shadow_advisories(&shadowing_operator_layer()),
+            SHADOWING_LAYER_ADVISORIES,
+            "one advisory per replaced or switched-off built-in"
+        );
+        for layer in [
+            Vec::new(),
+            vec![op(COMMUNICATION_NEAR_NAME, REPLACING_COMMUNICATION_BODY)],
+            shadowing_operator_layer()[..1].to_vec(),
+        ] {
+            assert_eq!(
+                shadow_advisories(&layer),
+                Vec::<String>::new(),
+                "a layer that shadows no built-in advises nothing: {layer:?}"
+            );
+        }
     }
 }

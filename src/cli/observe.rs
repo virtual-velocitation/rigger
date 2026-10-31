@@ -248,20 +248,19 @@ pub(crate) fn cmd_status(args: &[String]) -> Res {
     // anywhere yet, until the first `rigger run`, and again after any store reset) must
     // render [`NO_RUN_RECORDED_LINE`] with exit 0 instead of propagating
     // `require_store_dir`'s refusal - the SAME graceful degradation the console's own
-    // empty-store shell takes (spec 94 CONSTRAINTS WALK), never a second wording. Matched by
-    // DOWNCASTING on [`NoStoreFound`] specifically (never a string match on its message), so
-    // every OTHER `--line` failure (a corrupt store, an unreadable stream) still propagates
-    // exactly as before this round - only the no-store-at-all case degrades. The default and
-    // `--json` paths below are human-invoked and keep the CLI's existing hard refusal
-    // unchanged: this fast path is `--line`-only.
+    // empty-store shell takes (spec 94 CONSTRAINTS WALK), never a second wording. Matched through
+    // [`store_if_any`], which DOWNCASTS on [`NoStoreFound`] specifically (never a string match on
+    // its message), so every OTHER `--line` failure (a corrupt store, an unreadable stream) still
+    // propagates exactly as before this round - only the no-store-at-all case degrades. The
+    // default and `--json` paths below are human-invoked and keep the CLI's existing hard
+    // refusal unchanged: this fast path is `--line`-only.
     let (loc, selection) = if line {
-        match require_store_dir() {
-            Ok(pair) => pair,
-            Err(e) if e.downcast_ref::<NoStoreFound>().is_some() => {
+        match store_if_any()? {
+            Some(pair) => pair,
+            None => {
                 println!("{NO_RUN_RECORDED_LINE}");
                 return Ok(());
             }
-            Err(e) => return Err(e),
         }
     } else {
         require_store_dir()?

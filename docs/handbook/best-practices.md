@@ -22,7 +22,7 @@ Everything below was learned running Rigger on itself - including the failures. 
 
 ## Review
 
-**8. Make review adversarial by construction, and never soften it to converge.** Parallel friendly lenses converge on the obvious. The three-tier shape - lenses, then an adversary rewarded for proving the lenses wrong, then a neutral adjudicator - exists because it keeps catching real defects that single-pass review waves through. When cycles drag, the fix is better first-pass work or deeper remediation (`max_retries`), never a friendlier adversary. A weakened adversary launders defects as "reviewed".
+**8. Make review adversarial by construction, and never soften it to converge.** Parallel friendly lenses converge on the obvious. The default sequence of three steps - lenses, then an adversary rewarded for proving the lenses wrong, then a neutral adjudicator - exists because it keeps catching real defects that single-pass review waves through, and a consumer may extend it. When cycles drag, the fix is better first-pass work or deeper remediation (`max_retries`), never a friendlier adversary. A weakened adversary launders defects as "reviewed".
 
 **9. Every finding is a prevention failure - mine it.** A reviewer catching a defect means the implementer shipped it and every upstream check missed it. Fix the instance, then improve the system: the defect class goes into the reviewers' hunt-lists (detection) and into the implementer's prompt or a gate (prevention). Prevention beats detection - a prevented defect costs no cycle. This is the self-improvement loop; run it every time, and the same failure class stops recurring.
 

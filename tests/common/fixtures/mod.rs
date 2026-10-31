@@ -104,6 +104,32 @@ pub use store::*;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use write_lock::*;
 
+/// The persona `text`, which `at` names, holds each sentence of `holds` once, under its critique
+/// section, and none of `leaves`. It lives here, beside the re-exports, because only the root
+/// tests call it and it reads `rigger::wave`, which the crates mounting the instruction fixtures
+/// one at a time need not name.
+pub fn assert_holds_its_critique_method(at: &str, text: &str, holds: &[&str], leaves: &[&str]) {
+    let whole = rigger::wave::normalize_ws(text);
+    let section = rigger::wave::normalize_ws(markdown_section(text, WHEN_YOU_CRITIQUE_HEADING));
+    for sentence in holds {
+        assert_eq!(
+            (
+                section.matches(sentence).count(),
+                whole.matches(sentence).count()
+            ),
+            (1, 1),
+            "{at} holds {sentence:?} once, under its critique section:\n{section}"
+        );
+    }
+    for sentence in leaves {
+        assert_eq!(
+            whole.matches(sentence).count(),
+            0,
+            "{at} leaves {sentence:?} to the other role"
+        );
+    }
+}
+
 /// The text of the README in `root`'s operator instruction directory. It lives here, beside the
 /// re-exports, because it reads through two areas' fixtures ([`read_text`] and
 /// [`instructions_dir`]) that other crates mount one at a time.

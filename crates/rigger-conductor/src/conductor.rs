@@ -12,7 +12,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::budget::{self, BuildBudget};
-use crate::config::{AgentDef, Config, RegenerateRule, Stage};
+use crate::config::{AgentDef, Config, RegenerateRule, ReviewStep, Stage};
 #[cfg(test)]
 use crate::config_store;
 use crate::contextgraph::{self, Graph, Projection};
@@ -27,8 +27,8 @@ use crate::liveness;
 use crate::playbooks::fnv1a_64;
 use crate::safety;
 use crate::spawn::{
-    self, lens_role, spawn_id, spawn_retry_id, speculation_group_id, ROLE_ADJUDICATOR,
-    ROLE_ADVERSARY, ROLE_IMPLEMENTER, ROLE_SDET_AUTHOR,
+    self, review_step_role, spawn_id, spawn_retry_id, speculation_group_id, ReviewKind,
+    ROLE_ADJUDICATOR, ROLE_ADVERSARY, ROLE_IMPLEMENTER, ROLE_SDET_AUTHOR,
 };
 #[cfg(test)]
 use crate::spawn_store;
@@ -37,7 +37,8 @@ pub use rigger_domain::review::verdict_approves;
 pub use rigger_domain::review::VERDICT_APPROVE;
 use rigger_domain::review::{
     adjudicator_roster, emitted_verdict_approves, glob_matches, has_verdict_line, review_roster,
-    route_review_tier, run_notes, verdict_compensates, RunNote, TierRouting, PLAN_CRITIQUE_RULES,
+    route_review_tier, run_notes, step_adjudicator, step_ordinal, step_roster, verdict_compensates,
+    RunNote, TierRouting,
 };
 #[cfg(test)]
 use rigger_domain::review::{path_is_high_risk, TIER_FULL, TIER_LIGHT};
@@ -4708,10 +4709,10 @@ impl RunCtx<'_> {
         attempt: u32,
         parallel: bool,
         st: &Stage,
-        // The routed review roster (spec 67, criterion 4): empty for a lens, the unit's
-        // lens roster for the adversary, and that roster plus the adversary for the
-        // adjudicator - always the CALLER's already-computed value (`run_reviewer`'s own
-        // `reviews` parameter), never re-derived here.
+        // The routed review roster (spec 67, criterion 4): empty for a lens, else the role tokens
+        // of every review step before this spawn's ([`step_roster`]) - always the CALLER's
+        // already-computed value (`run_reviewer`'s own `reviews` parameter), never re-derived
+        // here.
         reviews: &[String],
     ) -> Result<SpawnOpts, Error> {
         self.assert_isolated_cwd(role, agent_id, dir)?;
@@ -4910,28 +4911,31 @@ impl RunCtx<'_> {
         Some((base, paths))
     }
 
-    /// Run the three-tier review of THIS unit's diff and return the outcome (whether
-    /// it is approved, plus the adjudicator's verdict reasoning) (§3.2). The three
-    /// tiers communicate THROUGH THE CONTEXT GRAPH - the system's actual cross-agent
+    /// Run the review of THIS unit's diff over the routed panel's steps
+    /// ([`ReviewPanel::steps`](crate::config::ReviewPanel::steps)), in step order, and return
+    /// the outcome (whether it is approved, plus the adjudicator's verdict reasoning) (section 3.2).
+    /// The steps communicate THROUGH THE CONTEXT GRAPH - the system's actual cross-agent
     /// memory - not through the conductor hand-threading one agent's stdout into the
-    /// next agent's prompt. TIER 1: the expert lenses review the diff in parallel and
+    /// next agent's prompt. A LENS step: the expert lenses review the diff in parallel and
     /// EMIT each finding as a ReviewFinding (the review_protocol); the projector folds
-    /// each finding ABOUT the unit's files live. TIER 2: the adversary GROUNDS after
-    /// the lenses, so `graph_context` already surfaces their findings, and it tries to
-    /// prove them wrong, emitting its own findings the same way. TIER 3: the
-    /// adjudicator grounds last, reads BOTH the lenses' and the adversary's findings
+    /// each finding ABOUT the unit's files live. The ADVERSARY step GROUNDS after the steps
+    /// before it, so `graph_context` already surfaces their findings, and it tries to
+    /// prove them wrong, emitting its own findings the same way. The ADJUDICATOR step
+    /// grounds last, reads every earlier step's findings
     /// from the graph, and renders the gating verdict - it approves ONLY on an
     /// explicit `approve` (fail-closed), blocking the merge otherwise no matter what
-    /// the static gates said. So the three tiers inform each other via the graph
+    /// the static gates said. So the steps inform each other via the graph
     /// (concurrent lenses see each other live via the side-car), never running
-    /// mutually blind and never via spliced prompts. The lenses/adversary/adjudicator
+    /// mutually blind and never via spliced prompts. Each step's spawns carry its
+    /// [`step_roster`], the role tokens of every earlier step's spawns (a lens step's is
+    /// empty), as their `SpawnOpts::reviews`. The lenses/adversary/adjudicator
     /// review the unit (they produce no code), so they DON'T own a fresh worktree -
     /// but they still run IN the unit's worktree (`dir`), reading the actual code
     /// under review, never in the live main checkout where a stray Bash/Edit would
     /// corrupt the repo (the worktree-isolation fix). After the adjudicator approves,
     /// the unit is marked `reviewed` and its evidence carries the verdict reason
     /// (item 4). An empty panel runs no review and approves trivially (the historical
-    /// behavior).
+    /// behavior), and a panel with no adjudicator step approves once its steps ran.
     /// `defer_reviewed` (spec 13, unit 3): when TRUE the approved `reviewed` status is NOT
     /// emitted here - it is carried on the outcome (`adj_resolved`) for the winning speculation
     /// candidate to re-emit keyed by its lane. A candidate that is approved but does NOT win
@@ -4953,13 +4957,13 @@ impl RunCtx<'_> {
     /// the default lane - threaded in so the risk-tier routing (spec 03 / spec 13 unit 4) selects
     /// the LIGHT or FULL
     /// panel from the observable risk (blast-radius size, a high-risk-path hit, an empty radius,
-    /// or flapped gates) BEFORE running any tier. With no depth policy configured, routing
+    /// or flapped gates) BEFORE running any step. With no depth policy configured, routing
     /// returns the effective panel unchanged and logs nothing, so behavior is byte-for-byte
     /// unchanged (tiering is opt-in).
     ///
     /// `any_parked` (spec 64 c1 round 4, sdet-u1c1-r3-unit-worktree-torn-down-beside-genuine-
     /// park) is the CALLER's out-of-band any-parked signal, passed straight through to
-    /// [`Self::run_review_agents_concurrently`] for the lens tier - the ONE tier that runs a
+    /// [`Self::run_review_agents_concurrently`] for a lens step - the ONE step kind that runs a
     /// concurrent chunk where a genuine error can mask a co-chunked sibling's park in whichever
     /// single `Result` this function propagates. `run_stage` (the single-lane caller) reads it
     /// after `run_single_stage` returns, apart from the propagated `Result`, so a lens's park
@@ -4969,13 +4973,13 @@ impl RunCtx<'_> {
     /// `run_fan_out_review_loop`. The adversary and adjudicator are single sequential spawns (no
     /// concurrent chunk to mask), so a park/budget-refusal from either of THEM still shows up
     /// directly on the propagated `Result`, unchanged. `run_speculation`'s call site does not
-    /// read the signal back (an Err from ANY tier here already propagates out of its phase-B
+    /// read the signal back (an Err from ANY step here already propagates out of its phase-B
     /// loop via `?` without touching any candidate's worktree, so it is already conservative);
     /// it passes a throwaway `AtomicBool` to satisfy this shared signature.
     ///
     /// `prior_required` is the REQUIRED list this attempt's implementer was handed. On a LATER
     /// review round - one whose unit an earlier round of the same branch judged
-    /// ([`Self::round_delta`]) - every tier reviews the delta since that round against it
+    /// ([`Self::round_delta`]) - every step reviews the delta since that round against it
     /// ([`ReviewRound`]); a reject's own REQUIRED list rides back on the outcome.
     // Each argument is a distinct, already-documented review input (stage, worktree dir,
     // attempt, the two routing/deferral flags, the blast-radius view, the caller's
@@ -4997,8 +5001,8 @@ impl RunCtx<'_> {
         blast_radius: &[String],
         any_parked: &std::sync::atomic::AtomicBool,
         // Ensure-on-park, defense in depth (spec 64 criterion 3, round 4): the unit's
-        // OWN worktree `dir` names, threaded straight to `run_reviewer` (via each tier
-        // helper below) so it can re-assert immediately before EVERY tier's spawn, and
+        // OWN worktree `dir` names, threaded straight to `run_reviewer` (via each step's
+        // helper below) so it can re-assert immediately before EVERY step's spawn, and
         // read again immediately before this function's own `reviewed`-sha stamp -
         // never inferred or reconstructed here.
         wt: Option<&Worktree>,
@@ -5007,7 +5011,7 @@ impl RunCtx<'_> {
         // Risk-tiered review depth (spec 03 / spec 13 unit 4): route this unit to the
         // LIGHT or FULL panel from its observable risk - the grounded blast-radius size,
         // any high-risk-path hit, and whether the gates `flapped` (the caller-supplied
-        // gate-outcome signal) - BEFORE running any tier. When a depth policy is
+        // gate-outcome signal) - BEFORE running any step. When a depth policy is
         // configured, LOG the decision with its inputs; when it is not, `routing.panel`
         // IS the effective panel and nothing is logged, so behavior is byte-for-byte
         // unchanged (tiering is opt-in).
@@ -5020,11 +5024,11 @@ impl RunCtx<'_> {
             return Ok(ReviewOutcome::approved(String::new()));
         }
         // A REVIEW ROUND LEAVES THE TREE IT REVIEWED (spec 103, criterion 6): the sha
-        // `dir` carries at THIS unit+attempt's first entry, before any tier's spawn, is
-        // the sha every tier below is about to judge - the one ground truth
-        // `guard_review_round_tree` restores to if a tier's spawn leaves residue behind.
+        // `dir` carries at THIS unit+attempt's first entry, before any step's spawn, is
+        // the sha every step below is about to judge - the one ground truth
+        // `guard_review_round_tree` restores to if a step's spawn leaves residue behind.
         // LOG-DERIVED on a later re-entry (round 3): see `review_round_start_sha`'s own
-        // doc comment for why a live re-read here would silently adopt an earlier tier's
+        // doc comment for why a live re-read here would silently adopt an earlier step's
         // already-committed residue as this round's new baseline.
         let round_start_sha = self.review_round_start_sha(&st.name, attempt, dir)?;
         // A LATER REVIEW ROUND reviews the delta since the round that sent the unit back,
@@ -5037,87 +5041,76 @@ impl RunCtx<'_> {
                 required: prior_required.to_vec(),
                 audit: audit_id(&st.name, attempt),
             });
-        let lenses = panel.lenses.clone();
-        let adversary = panel.adversary.clone();
-        let adjudicator = panel.adjudicator.clone();
-        // TIER 1: the lenses emit their findings to the graph (review_protocol); the
-        // projector folds them ABOUT the unit's files live.
-        if !lenses.is_empty() {
-            // Spec 64 c1 round 4: forward the CALLER's any-parked signal (see this
-            // function's doc comment) rather than a throwaway local - `run_stage` reads it
-            // back after `run_single_stage` returns, so the unit's own worktree survives a
-            // lens park even when a co-chunked sibling's genuine error is what this call's
-            // `?` propagates below.
-            //
-            // A REVIEW ROUND LEAVES THE TREE IT REVIEWED even on a genuine crash here
-            // (spec 103, criterion 6, adv-u103c6-guard-skipped-on-tier-err): a lens tier
-            // has no LATER tier to guard the tree on its behalf if ITS OWN spawn is what
-            // errors, so this site guards itself via `map_err` before the `?` unwinds.
-            self.run_review_agents_concurrently(
-                st,
-                &lenses,
-                dir,
-                attempt,
-                ordinal,
-                any_parked,
-                wt,
-                round.as_ref(),
-            )
-            .map_err(|e| {
+        // THE STEP LOOP: the panel's review sequence ([`ReviewPanel::steps`]) runs in step order,
+        // each step grounding AFTER every step before it, so `graph_context` surfaces their
+        // findings, each step spawning under its [`review_step_role`] token, computed from
+        // `steps()` so a resumed process mints what the first one minted, and carrying its
+        // [`step_roster`]: the role tokens of every earlier step's spawns, empty for a lens step. A
+        // lens step's lenses emit their findings to the graph (review_protocol); the projector
+        // folds them ABOUT the unit's files live. The adversary tries to prove the steps before it
+        // wrong and emits its own findings. A step waits for every lens of an earlier step to
+        // FINISH, never for the first findings to appear: it weighs each lens's final position (a
+        // lens with no finding reads as "clean" only once it has ended - until then it may still be
+        // about to raise one), and a lens step's join is where a lens's park or error surfaces
+        // before any later step spends a spawn. The adjudicator reads every earlier step's findings
+        // from the graph and renders the gating verdict.
+        let steps = panel.steps();
+        let mut verdict = None;
+        for (index, step) in steps.iter().enumerate() {
+            let roster = step_roster(&steps, index, review_step_role);
+            let k = step_ordinal(&steps, index);
+            let ran = match step {
+                // Spec 64 c1 round 4: forward the CALLER's any-parked signal (see this
+                // function's doc comment) rather than a throwaway local - `run_stage` reads it
+                // back after `run_single_stage` returns, so the unit's own worktree survives a
+                // lens park even when a co-chunked sibling's genuine error is what this call's
+                // `?` propagates below.
+                ReviewStep::Lenses(ids) => self.run_review_agents_concurrently(
+                    st,
+                    ids,
+                    dir,
+                    attempt,
+                    ordinal,
+                    k,
+                    any_parked,
+                    wt,
+                    round.as_ref(),
+                    &roster,
+                ),
+                ReviewStep::Adversary(id) => self.run_finding_reviewer(
+                    st,
+                    ReviewKind::Adversary,
+                    id,
+                    dir,
+                    attempt,
+                    ordinal,
+                    k,
+                    wt,
+                    round.as_ref(),
+                    &roster,
+                ),
+                ReviewStep::Adjudicator(id) => self
+                    .run_adjudicator(st, id, dir, attempt, ordinal, wt, &roster, round.as_ref())
+                    .map(|judged| verdict = Some((id.as_str(), judged))),
+            };
+            // A REVIEW ROUND LEAVES THE TREE IT REVIEWED even on a genuine crash (spec 103,
+            // criterion 6, adv-u103c6-guard-skipped-on-tier-err): a step has no LATER step to
+            // guard the tree on its behalf if ITS OWN spawn is what errors, and residue an
+            // earlier step committed must not outlive that crash either, so each step guards
+            // itself via `map_err` before the `?` unwinds.
+            ran.map_err(|e| {
                 self.guard_review_round_tree_on_tier_err(wt, dir, &st.name, &round_start_sha, e)
             })?;
         }
-        // TIER 2: the adversary grounds AFTER the lenses, so `graph_context` surfaces
-        // their findings; it tries to prove them wrong and emits its own findings. It waits
-        // for every lens to FINISH, never for the first findings to appear: it weighs each
-        // lens's final position (a lens with no finding reads as "clean" only once it has
-        // ended - until then it may still be about to raise one), and the lens tier's join is
-        // where a lens's park or error surfaces before any later tier spends a spawn.
-        if !adversary.is_empty() {
-            // Same guard-on-crash discipline as tier 1 above: residue the (already
-            // completed) lens tier committed must not outlive an adversary crash either.
-            self.run_adversary(
-                st,
-                &adversary,
-                dir,
-                attempt,
-                ordinal,
-                wt,
-                &lenses,
-                round.as_ref(),
-            )
-            .map_err(|e| {
-                self.guard_review_round_tree_on_tier_err(wt, dir, &st.name, &round_start_sha, e)
-            })?;
-        }
-        if adjudicator.is_empty() {
-            // The round's last real result was the adversary's (or the lenses', if the
-            // adversary is empty too) - guard the tree here, at ITS end, before returning.
-            self.guard_review_round_tree(wt, dir, &st.name, &round_start_sha)?;
-            return Ok(ReviewOutcome::approved(String::new()));
-        }
-        // TIER 3: the adjudicator grounds last, reads the lenses' and adversary's
-        // findings from the graph, and renders the gating verdict.
-        let (approved, reason, adj_resolved) = self
-            .run_adjudicator(
-                st,
-                &adjudicator,
-                dir,
-                attempt,
-                ordinal,
-                wt,
-                &lenses,
-                &adversary,
-                round.as_ref(),
-            )
-            .map_err(|e| {
-                self.guard_review_round_tree_on_tier_err(wt, dir, &st.name, &round_start_sha, e)
-            })?;
-        // The round's last result is now recorded (the adjudicator's own spawn, the last
-        // tier that can run): guard the tree BEFORE acting on the verdict either way, so a
-        // reject sees the judged sha too (`failed_sha` below reads `dir` after this
-        // returns) and an approve's own stamp (right below) never has to re-derive it.
+        // The round's last result is now recorded (the last step's own spawn): guard the tree
+        // BEFORE acting on the verdict either way, so a reject sees the judged sha too
+        // (`failed_sha` below reads `dir` after this returns) and an approve's own stamp (right
+        // below) never has to re-derive it.
         self.guard_review_round_tree(wt, dir, &st.name, &round_start_sha)?;
+        // A panel with no adjudicator step renders no gating verdict, so it approves.
+        let Some((adjudicator, (approved, reason, adj_resolved))) = verdict else {
+            return Ok(ReviewOutcome::approved(String::new()));
+        };
         // A COMPENSATION target (spec 12, unit 4): the verdict may name a PRIOR integrated
         // unit as the real defect source, INDEPENDENTLY of whether it approves this unit.
         // Carried on the outcome so the run loop can roll that unit back after the wave.
@@ -5177,7 +5170,7 @@ impl RunCtx<'_> {
                     "evidence": review_evidence(&reason),
                 }),
                 &[
-                    (META_MODEL_ALIAS, &self.agent_model(&adjudicator, attempt)),
+                    (META_MODEL_ALIAS, &self.agent_model(adjudicator, attempt)),
                     (META_MODEL_RESOLVED, &adj_resolved),
                     // The approved worktree sha (spec 11, unit 1): pairs with a prior
                     // reject on the SAME sha to surface reviewer flip-flop. THE sha the
@@ -5262,10 +5255,10 @@ impl RunCtx<'_> {
     /// tier), is residue: a reviewer's own tooling breaking protocol, or an out-of-band actor,
     /// never legitimate implementer work (the implementer already committed and gated before
     /// the round began). Called from `review_unit` on EVERY exit (spec 103 criterion 6, round 2,
-    /// adv-u103c6-guard-skipped-on-tier-err): directly, at each point the round's LAST
-    /// tier result is recorded on the SUCCESS path (whichever of the adjudicator, the
-    /// adversary, or the lenses actually ran last), before the verdict is acted on either
-    /// way; and via [`Self::guard_review_round_tree_on_tier_err`] on the ERROR path, when
+    /// adv-u103c6-guard-skipped-on-tier-err): directly, once after the step loop on the
+    /// SUCCESS path (whichever of the adjudicator, the adversary, or the lenses actually ran
+    /// last), before the verdict is acted on either way; and via
+    /// [`Self::guard_review_round_tree_on_tier_err`] on the ERROR path, when
     /// any tier's own spawn returns a genuine (non-parked) error - so residue an EARLIER
     /// tier left behind before a LATER tier's crash is still named and restored rather than
     /// surviving on the kept branch for the next attempt to silently inherit. The
@@ -5340,17 +5333,17 @@ impl RunCtx<'_> {
     }
 
     /// The ERROR-path twin of [`Self::guard_review_round_tree`] (spec 103, criterion 6,
-    /// round 2, adv-u103c6-guard-skipped-on-tier-err): `review_unit` calls the three tiers
-    /// (lenses, adversary, adjudicator) through `?`, so a genuine tier-spawn crash used to
-    /// propagate straight out, BEFORE either of that function's own call sites (which only
-    /// sit on the SUCCESS path, after a tier returns `Ok`) ever ran. That let residue an
-    /// EARLIER tier committed by breaking protocol survive - unrestored, unnamed in any
+    /// round 2, adv-u103c6-guard-skipped-on-tier-err): `review_unit` runs each step of the
+    /// panel through `?`, so a genuine spawn crash used to propagate straight out, BEFORE that
+    /// function's own call site (which only sits on the SUCCESS path, after a step returns
+    /// `Ok`) ever ran. That let residue an
+    /// EARLIER step committed by breaking protocol survive - unrestored, unnamed in any
     /// lesson - on the branch a later attempt resumes from, which then treats it as the
     /// implementer's own committed work: exactly the failure this criterion exists to
     /// prevent.
     ///
-    /// Called from every tier call site in `review_unit` via `.map_err(...)`, so it sees
-    /// EVERY tier error, parked or not - and only acts on the genuine ones. A PARKED exit
+    /// Called from the step loop's one call site in `review_unit` via `.map_err(...)`, so it
+    /// sees EVERY step's error, parked or not - and only acts on the genuine ones. A PARKED exit
     /// (`is_parked`) is not a crash: the driver has not resolved this spawn yet (an
     /// unrecorded stepwise/replay frontier), so THIS call could not have left new residue,
     /// and the caller must unwind with the tree untouched for a later step to resume - the
@@ -7023,8 +7016,8 @@ impl RunCtx<'_> {
         // `reviewed` stamp uses inline, never a fresh live read here. `verified#{lane}`
         // above legitimately keeps `winner_sha`: it records what the gates verified, not
         // what the review judged.
-        let panel = self.cfg.workflow.effective_review_panel(st);
-        if !panel.is_empty() && !panel.adjudicator.is_empty() {
+        let steps = self.cfg.workflow.effective_review_panel(st).steps();
+        if let Some(adjudicator) = step_adjudicator(&steps) {
             self.emit_keyed_meta(
                 &format!("{}/reviewed#{lane}", st.name),
                 ledger::TYPE_UNIT_STATUS,
@@ -7034,10 +7027,7 @@ impl RunCtx<'_> {
                     "evidence": review_evidence(&review.reason),
                 }),
                 &[
-                    (
-                        META_MODEL_ALIAS,
-                        &self.agent_model(&panel.adjudicator, lane),
-                    ),
+                    (META_MODEL_ALIAS, &self.agent_model(adjudicator, lane)),
                     (META_MODEL_RESOLVED, &review.adj_resolved),
                     (META_WORKTREE_SHA, &review.round_start_sha),
                     (META_SPEC_GROUP, group),
@@ -7252,12 +7242,27 @@ impl RunCtx<'_> {
                 dir,
                 attempts,
                 0,
+                // The fan-out stage's one lens step, so its bare tokens.
+                1,
                 any_lens_parked,
                 None,
                 None,
+                &step_roster(&[ReviewStep::Lenses(lenses.clone())], 0, review_step_role),
             )?;
             if !st.adversary.is_empty() {
-                self.run_adversary(st, &st.adversary, dir, attempts, 0, None, &lenses, None)?;
+                self.run_finding_reviewer(
+                    st,
+                    ReviewKind::Adversary,
+                    &st.adversary,
+                    dir,
+                    attempts,
+                    0,
+                    // The fan-out stage's one adversary step, so its bare token.
+                    1,
+                    None,
+                    None,
+                    &review_roster(&lenses),
+                )?;
             }
             // The neutral adjudicator's verdict gates the stage (§3.2), fail-closed:
             // it approves ONLY on an explicit `approve`, blocking integration
@@ -7272,8 +7277,7 @@ impl RunCtx<'_> {
                     attempts,
                     0,
                     None,
-                    &lenses,
-                    &st.adversary,
+                    &adjudicator_roster(&lenses, &st.adversary),
                     None,
                 )?
             };
@@ -7404,9 +7408,9 @@ impl RunCtx<'_> {
         }
     }
 
-    /// Run the expert lenses (tier 1) concurrently. Each lens REVIEWS the diff and
+    /// Run the expert lenses of one lens step concurrently. Each lens REVIEWS the diff and
     /// EMITS its findings to the shared context graph as ReviewFindings (the
-    /// review_protocol), so the later tiers and concurrent lenses retrieve them via
+    /// review_protocol), so the later steps and concurrent lenses retrieve them via
     /// grounding + the side-car rather than via the conductor splicing one lens's
     /// stdout into another agent's prompt. The lenses produce no code to integrate, so
     /// they own NO worktree of their own and never integrate (item 6: a reviewing lens
@@ -7433,9 +7437,9 @@ impl RunCtx<'_> {
     /// somewhere else - `any_parked` is that somewhere else, read by `run_fan_out_stage`
     /// separately from the propagated Err.
     // Each argument is a distinct review input - the stage, its lens ids, the worktree dir,
-    // the attempt and its infra retry ordinal, the any-parked out-param, the unit worktree,
-    // the later-round block - the same primitive-argument shape `run_reviewer` carries this
-    // allow for.
+    // the attempt and its infra retry ordinal, the step's ordinal among the lens steps, the
+    // any-parked out-param, the unit worktree, the later-round block, the lens step's roster -
+    // the same primitive-argument shape `run_reviewer` carries this allow for.
     #[allow(clippy::too_many_arguments)]
     fn run_review_agents_concurrently(
         &self,
@@ -7444,9 +7448,14 @@ impl RunCtx<'_> {
         dir: &str,
         attempt: u32,
         ordinal: u32,
+        // The step's 1-based ordinal among the lens steps ([`step_ordinal`]), the `k` of the
+        // token every lens of this step spawns under.
+        k: u32,
         any_parked: &std::sync::atomic::AtomicBool,
         wt: Option<&Worktree>,
         round: Option<&ReviewRound>,
+        // The roster every lens of this step carries ([`step_roster`]), the caller's value.
+        roster: &[String],
     ) -> Result<(), Error> {
         // Bounded fan-out pool (§6): run the lenses in chunks of at most
         // MAX_CONCURRENCY, each chunk a scoped thread group. Every lens still runs;
@@ -7456,7 +7465,20 @@ impl RunCtx<'_> {
                 let handles: Vec<_> = chunk
                     .iter()
                     .map(|a| {
-                        s.spawn(move || self.run_lens(st, a, dir, attempt, ordinal, wt, round))
+                        s.spawn(move || {
+                            self.run_finding_reviewer(
+                                st,
+                                ReviewKind::Lens,
+                                a,
+                                dir,
+                                attempt,
+                                ordinal,
+                                k,
+                                wt,
+                                round,
+                                roster,
+                            )
+                        })
                     })
                     .collect();
                 handles.into_iter().map(|h| h.join().unwrap()).collect()
@@ -7495,56 +7517,73 @@ impl RunCtx<'_> {
         Ok(())
     }
 
-    /// Run a single review lens. A lens reviews - it writes no code - so it owns NO
-    /// worktree and its output is never integrated (item 6); it runs IN the unit's
-    /// worktree (`dir`) so it reads the actual code under review and any stray write
-    /// (every lens has Bash; the sdet lens has Edit/Write) lands in the throwaway
-    /// worktree, never the live main checkout. It is prompted with the grounded base
-    /// prompt plus the review_protocol, so it EMITS each finding it raises to the
-    /// shared context graph (the cross-agent memory), where the adversary, the
-    /// adjudicator, and its fellow lenses retrieve it. Its stdout is no longer captured
-    /// to thread into another agent's prompt - the graph is the channel. Budget-refused
-    /// spawns (item 9) surface as an error so the run halts.
-    // Each argument is a distinct review input (stage, agent id, dir, attempt and its infra
-    // retry ordinal, the ensure-on-park worktree, the later-round block) - the same
-    // primitive-argument shape `run_reviewer` carries this allow for.
+    /// Run one reviewer whose output is its findings, never a verdict: one lens of a lens step or
+    /// the adversary of an adversary step, under its step's [`review_step_role`] token. `kind` is
+    /// [`ReviewKind::Lens`] or [`ReviewKind::Adversary`], an adjudicator's output being a verdict.
+    /// `k` is the step's 1-based ordinal among the steps of `kind` ([`step_ordinal`]).
+    ///
+    /// A reviewer writes no code, so it owns NO worktree and its output is never integrated
+    /// (item 6); it runs IN the unit's worktree (`dir`), so it reads the actual code under review
+    /// and any stray write (every lens has Bash; the sdet lens has Edit/Write) lands in the
+    /// throwaway worktree, never the live main checkout. It is prompted with the grounded base
+    /// prompt plus the review_protocol, so it EMITS each finding it raises to the shared context
+    /// graph (the cross-agent memory), where every later step and its fellow lenses retrieve it.
+    /// Its stdout is no longer captured to thread into another agent's prompt - the graph is the
+    /// channel. Budget-refused spawns (item 9) surface as an error so the run halts.
+    ///
+    /// A lens step's lenses run side by side and judge the diff directly. An adversary step is one
+    /// sequential spawn that tries to prove the steps before it wrong: it runs AFTER them, so
+    /// their ReviewFindings are already folded into the graph and its grounded prompt (via
+    /// `graph_context`) surfaces them. Its output does NOT gate the stage; it informs the
+    /// adjudicator's judgment via the graph.
+    ///
+    /// `roster` is the step's routed review roster (spec 67, criterion 4) - the CALLER's
+    /// already-computed value over the routed panel (light or full), [`step_roster`] or
+    /// [`review_roster`], empty for a lens - stamped verbatim as this spawn's
+    /// [`SpawnOpts::reviews`].
+    // Each argument is a distinct review input (stage, step kind, agent id, dir, attempt and its
+    // infra retry ordinal, the step's ordinal, the ensure-on-park worktree, the later-round block,
+    // the step's roster) - the same primitive-argument shape `run_reviewer` carries this allow
+    // for.
     #[allow(clippy::too_many_arguments)]
-    fn run_lens(
+    fn run_finding_reviewer(
         &self,
         st: &Stage,
+        kind: ReviewKind,
         agent_id: &str,
         dir: &str,
         attempt: u32,
         ordinal: u32,
+        k: u32,
         wt: Option<&Worktree>,
         round: Option<&ReviewRound>,
+        roster: &[String],
     ) -> Result<(), Error> {
-        // A lens's output is not a verdict - it emits its findings to the graph - so the
-        // substantive result is discarded here; the shared `run_reviewer` loop only needs
-        // it to be non-degenerate (Gap 18) before the review proceeds. The lens attributes
-        // each finding to its ROLE token so the courier path carries attribution too.
-        let prompt = self.build_review_prompt(st, dir, &lens_role(agent_id), round)?;
+        // The output is not a verdict - the findings go to the graph - so the substantive result
+        // is discarded here; the shared `run_reviewer` loop only needs it to be non-degenerate
+        // (Gap 18) before the review proceeds. The reviewer attributes each finding to its
+        // step's token so the courier path carries attribution too.
+        let role = review_step_role(kind, agent_id, k);
+        let prompt = self.build_review_prompt(st, dir, &role, round)?;
         let resume = round
             .map(|r| self.review_resume_task(st, dir, r))
             .transpose()?;
         self.run_reviewer(
             st,
-            "lens",
-            &lens_role(agent_id),
+            kind.tier(),
+            &role,
             agent_id,
             dir,
             attempt,
             ordinal,
-            true,
-            // A lens's stdout is NOT its verdict - it emits findings to the graph - so an
-            // empty stdout is degenerate only when it also emitted no ReviewFinding.
+            kind == ReviewKind::Lens,
+            // Stdout is NOT the verdict - the findings go to the graph - so an empty stdout is
+            // degenerate only when the reviewer also emitted no ReviewFinding.
             ReviewerOutput::Findings,
             &prompt,
             resume.as_deref(),
             wt,
-            // A lens judges the diff directly, not another tier's output - it carries no
-            // review roster (spec 67, criterion 4; that's the adversary/adjudicator's job).
-            &[],
+            roster,
         )?;
         Ok(())
     }
@@ -7552,7 +7591,7 @@ impl RunCtx<'_> {
     /// Run a single reviewer spawn of any tier (lens/adversary/adjudicator) with the
     /// Gap-18 degenerate-result respawn loop, returning its GUARANTEED-non-degenerate
     /// result. This is the ONE authority for the check-and-respawn behavior across all
-    /// three tiers - `run_lens`/`run_adversary` discard the returned result, while
+    /// three tiers - [`Self::run_finding_reviewer`] discards the returned result, while
     /// `run_adjudicator` reads its verdict.
     ///
     /// A DEGENERATE reviewer result is an INFRASTRUCTURE fault, not a verdict (spec 07):
@@ -7581,16 +7620,17 @@ impl RunCtx<'_> {
     /// reads why; a second refusal, or one at the window's last id, takes the stage error below,
     /// its text unmarked.
     ///
-    /// `tier` is the human label the audit trail/`reviewer_spawn_opts` use; `role` is the
-    /// deterministic-id role token (`lens_role(agent)` / [`ROLE_ADVERSARY`] /
-    /// [`ROLE_ADJUDICATOR`]); `parallel` sets the reviewer's isolation-opt (§6, lenses run
-    /// in parallel); `output` selects the tier-specific degeneracy signal (see
+    /// `tier` is the kind label the audit trail/`reviewer_spawn_opts` and the error text use,
+    /// the same for every step of a kind; `role` is the step's deterministic-id role token
+    /// ([`review_step_role`], the plan-critique gate's own at that gate); `parallel` sets the
+    /// reviewer's isolation-opt (lenses run in parallel); `output` selects the tier-specific
+    /// degeneracy signal (see
     /// [`reviewer_result_is_degenerate`](RunCtx::reviewer_result_is_degenerate)); `prompt`
     /// is the tier's already-grounded prompt. A budget-refused respawn surfaces the budget
     /// sentinel exactly like the original spawn. `reviews` is the routed review roster
     /// (spec 67, criterion 4) this spawn's `SpawnOpts` carries verbatim - empty for a lens,
-    /// the unit's lens roster for the adversary, that roster plus the adversary for the
-    /// adjudicator - always the CALLER's already-computed value, never re-derived here.
+    /// the tokens of every earlier step's spawns for an adversary or the adjudicator - always
+    /// the CALLER's already-computed value, never re-derived here.
     #[allow(clippy::too_many_arguments)]
     fn run_reviewer(
         &self,
@@ -7680,7 +7720,8 @@ impl RunCtx<'_> {
                 // Stamp the reviewer's ROLE token (not its raw agent id) as the actor, so
                 // the in-process attribution matches the `by` role token the same reviewer
                 // carries on the out-of-process courier path (see `review_protocol`): a
-                // finding is attributed the ONE same way (`lens:<id>` / adversary) on both
+                // finding is attributed the ONE same way (its step's token: `lens:<id>`,
+                // `adversary`, or either with `@<k>` from a kind's second step) on both
                 // driver paths, which is what lets the review-quality folds key an upheld
                 // finding to its tier regardless of which driver recorded it. ALSO stamp
                 // this spawn's deterministic id ([`META_SPAWN`]) so an approve-shaped verdict
@@ -7943,62 +7984,6 @@ impl RunCtx<'_> {
         Ok(!replayed)
     }
 
-    /// Run the adversary: a single agent that reviews the lenses' findings and the
-    /// diff and tries to prove the lenses wrong (§3.2). It runs AFTER the lenses, so
-    /// the lenses' ReviewFindings are already folded into the graph and its grounded
-    /// prompt (via `graph_context`) surfaces them - it retrieves the lenses' findings
-    /// through the graph, not from a hand-threaded block. It then EMITS its own
-    /// findings (the review_protocol) so the adjudicator reads them the same way. Like
-    /// the adjudicator it reviews - it produces no code to integrate, so it owns no
-    /// worktree of its own; it runs IN the unit's worktree (`dir`), never the live
-    /// main checkout - and unlike the adjudicator its output does NOT gate the stage;
-    /// it informs the adjudicator's judgment via the graph. `lenses` is the routed panel's
-    /// own lens agent ids (spec 67, criterion 4) - the CALLER's already-routed value (light
-    /// or full), stamped verbatim as this spawn's [`SpawnOpts::reviews`] roster via
-    /// [`review_roster`].
-    // Each argument is a distinct review input (stage, agent id, dir, attempt and its infra
-    // retry ordinal, the ensure-on-park worktree, the routed lens roster, the later-round
-    // block) - the same primitive-argument shape `run_reviewer` carries this allow for.
-    #[allow(clippy::too_many_arguments)]
-    fn run_adversary(
-        &self,
-        st: &Stage,
-        adv_id: &str,
-        dir: &str,
-        attempt: u32,
-        ordinal: u32,
-        wt: Option<&Worktree>,
-        lenses: &[String],
-        round: Option<&ReviewRound>,
-    ) -> Result<(), Error> {
-        // Like a lens, the adversary emits its findings to the graph rather than
-        // returning a verdict, so its substantive result is discarded; `run_reviewer`
-        // only needs it non-degenerate (Gap 18) before the adjudicator grounds. It
-        // attributes each finding to ROLE_ADVERSARY so the courier path carries attribution.
-        let prompt = self.build_review_prompt(st, dir, ROLE_ADVERSARY, round)?;
-        let resume = round
-            .map(|r| self.review_resume_task(st, dir, r))
-            .transpose()?;
-        self.run_reviewer(
-            st,
-            "adversary",
-            ROLE_ADVERSARY,
-            adv_id,
-            dir,
-            attempt,
-            ordinal,
-            false,
-            // Like a lens, the adversary's stdout is discarded (findings go to the graph),
-            // so an empty stdout is degenerate only when it emitted no ReviewFinding.
-            ReviewerOutput::Findings,
-            &prompt,
-            resume.as_deref(),
-            wt,
-            &review_roster(lenses),
-        )?;
-        Ok(())
-    }
-
     /// Run the adjudicator and return whether it approves PLUS its raw output (the
     /// verdict reasoning). Its verdict gates the stage. The adjudicator grounds LAST,
     /// so the lenses' and the adversary's ReviewFindings are already in the graph and
@@ -8006,18 +7991,18 @@ impl RunCtx<'_> {
     /// tiers by retrieving their findings through the graph, not from a hand-threaded
     /// block. The reviewer produces no code to integrate. The returned output is the
     /// verdict reason: it is folded into the unit's `reviewed` evidence on approval
-    /// (item 4) and into the next attempt's prompt on a reject (item 5). `lenses` and
-    /// `adversary_id` are the routed panel's own lens agent ids and adversary agent id
-    /// (spec 67, criterion 4) - the CALLER's already-routed values (light or full),
-    /// combined via [`adjudicator_roster`] into this spawn's [`SpawnOpts::reviews`] roster.
+    /// (item 4) and into the next attempt's prompt on a reject (item 5). `roster` is the
+    /// step's routed review roster (spec 67, criterion 4) - the CALLER's already-computed value
+    /// over the routed panel (light or full), [`step_roster`] or [`adjudicator_roster`] -
+    /// stamped verbatim as this spawn's [`SpawnOpts::reviews`].
     /// Its prompt says which findings its verdict line upholds ([`UPHELD_PROTOCOL`]), how a
     /// reject names its REQUIRED list ([`REQUIRED_PROTOCOL`]) and, on
     /// a later review round, ends with that round's block, where a reject naming no
     /// REQUIRED item is degenerate ([`ReviewerOutput::RoundVerdict`]).
     // Each argument is a distinct, already-documented review input (stage, agent id, dir,
-    // attempt, the ensure-on-park worktree, the routed lens/adversary roster inputs and the
-    // review round) - the same primitive-argument shape `run_reviewer`/`reviewer_spawn_opts`
-    // already carry this allow for.
+    // attempt, the ensure-on-park worktree, the step's roster and the review round) - the same
+    // primitive-argument shape `run_reviewer`/`reviewer_spawn_opts` already carry this allow
+    // for.
     #[allow(clippy::too_many_arguments)]
     fn run_adjudicator(
         &self,
@@ -8027,8 +8012,7 @@ impl RunCtx<'_> {
         attempt: u32,
         ordinal: u32,
         wt: Option<&Worktree>,
-        lenses: &[String],
-        adversary_id: &str,
+        roster: &[String],
         round: Option<&ReviewRound>,
     ) -> Result<(bool, String, String), Error> {
         // Unlike the other tiers the adjudicator's result IS the verdict, so it is read
@@ -8053,8 +8037,8 @@ impl RunCtx<'_> {
             .transpose()?;
         let result = self.run_reviewer(
             st,
-            "adjudicator",
-            ROLE_ADJUDICATOR,
+            ReviewKind::Adjudicator.tier(),
+            &review_step_role(ReviewKind::Adjudicator, adj_id, 1),
             adj_id,
             dir,
             attempt,
@@ -8071,7 +8055,7 @@ impl RunCtx<'_> {
             &prompt,
             resume.as_deref(),
             wt,
-            &adjudicator_roster(lenses, adversary_id),
+            roster,
         )?;
         // The resolved model the adjudicator ran as (spec 05 line 52) rides back with the
         // verdict so the `reviewed` status - this spawn's unit event - can carry it.
@@ -8125,17 +8109,16 @@ impl RunCtx<'_> {
         units
     }
 
-    /// Build the plan-critique reviewer prompt (Unit 1, spec 10): the proposed unit DAG,
-    /// the deterministic rule-6 blast-radius analysis, and the three decomposition review
-    /// targets NAMED in the prompt (handbook rules 6-8: shared blast radius, mitigation
-    /// ownership, open dispositions - [`PLAN_CRITIQUE_RULES`], the text the spec critique
-    /// prompt reads too), plus the unit size cap ([`unit_size_cap`]) as a blocking rule
-    /// pushed after them, and closes with the verdict paragraph, whose cause contract tells a
-    /// defect in a criterion's own text (`spec-ambiguity`, which can stop the run - spec 112,
-    /// criterion 5) from one a re-plan can fix. On a re-plan it leads with the prior rejection so
-    /// the reviewer judges the revised DAG against what was wrong before. The same prompt
-    /// feeds the adversary (which appends the review_protocol and emits findings) and the
-    /// adjudicator (whose stdout verdict gates the fan-out).
+    /// Build the plan-critique reviewer prompt (Unit 1, spec 10): the task framing and the
+    /// output contract, never the method, which stands in each reviewer's persona. It names
+    /// those decomposition rules, states the unit size cap ([`unit_size_cap`]), lists the
+    /// proposed unit DAG and the deterministic rule-6 blast-radius analysis, and closes with the
+    /// verdict paragraph, whose cause contract tells a defect in a criterion's own text
+    /// (`spec-ambiguity`, which can stop the run - spec 112, criterion 5) from one a re-plan can
+    /// fix. On a re-plan it leads with the prior rejection so the reviewer judges the revised
+    /// DAG against what was wrong before. The same prompt feeds the adversary (which appends the
+    /// review_protocol and emits findings) and the adjudicator (whose stdout verdict gates the
+    /// fan-out).
     fn build_dag_critique_prompt(
         &self,
         stages: &BTreeMap<String, Stage>,
@@ -8149,19 +8132,11 @@ impl RunCtx<'_> {
             b.push_str(prior_reason.trim());
             b.push_str("\n\nThe planner has since revised the DAG; re-review it below.\n\n");
         }
-        b.push_str(
+        b.push_str(&format!(
             "You are the plan-critique gate. Review the PROPOSED unit DAG below - the \
              decomposition the planner produced - BEFORE any implementer runs, and judge \
-             it against the CROSS-UNIT decomposition rules (docs/handbook/authoring-loops.md \
-             rules 7-8) that per-unit review cannot see:\n",
-        );
-        // The Rule 7 and Rule 8 bullets and the shared-blast-radius note: the one text the spec
-        // critique prompt reads too (spec 112).
-        b.push_str(PLAN_CRITIQUE_RULES);
-        b.push_str(&format!(
-            "- Unit size (blocking): {} A unit over the cap is a reject with \
-             \"cause\":\"decomposition-conflict\", which sends the DAG back to the planner to \
-             split it into ordered units.\n\n",
+             it against the decomposition rules in your persona: the CROSS-UNIT rules that \
+             per-unit review cannot see.\n\n{}\n\n",
             unit_size_cap()
         ));
         b.push_str("Proposed units:\n");
@@ -8194,7 +8169,7 @@ impl RunCtx<'_> {
         } else {
             b.push_str(
                 "\nBlast-radius overlap (informational - the partitioner serializes these \
-                 into sequential batches; judge ownership/coherence, not the overlap):\n",
+                 into sequential batches):\n",
             );
             for (a, other, shared) in conflicts {
                 b.push_str(&format!(
@@ -8209,10 +8184,7 @@ impl RunCtx<'_> {
         b.push_str(&format!(
             "\nRender your final verdict as a JSON line: {{\"verdict\":\"approve\"}} to \
              release the fan-out, or {{\"verdict\":\"reject\"}} to send the decomposition \
-             back to the planner. Reject ONLY for a rule 7 (ownership) or rule 8 \
-             (open disposition) defect, a unit over the size cap, or a defect in a \
-             criterion's own text that no decomposition can remove - never for mechanical \
-             blast-radius overlap alone. A reject's cause follows this gate's contract, \
+             back to the planner. A reject's cause follows this gate's contract, \
              which governs it over any generic cause wording in your persona: \
              \"cause\":\"{}\" only when the upheld defect is in a criterion's \
              own text and no decomposition can remove it (two criteria that contradict \
@@ -8349,7 +8321,8 @@ impl RunCtx<'_> {
 
     /// Run the adversarial plan-critique gate (Unit 1, spec 10): the existing adversary +
     /// adjudicator review the PROPOSED unit DAG BEFORE any implementer runs. It runs
-    /// SYNCHRONOUSLY inside the producer prelude (after the planner wave + harvest), not as
+    /// SYNCHRONOUSLY inside the producer prelude (after the planner wave and its harvest, or,
+    /// under a parking driver, parked beside the planner in the same step), not as
     /// a main-loop stage, so its reject can loop the PLANNER - a coupling the per-stage DAG
     /// scheduler does not express - while the fan-out stays gated on its release. Returns how
     /// the gate ended ([`GateEnd`]): the caller runs the implement waves only when it released
@@ -12903,18 +12876,17 @@ const PLAN_PROTOCOL: &str = "You are the planner. The conductor has ALREADY crea
 /// later tiers (and concurrent lenses) retrieve it via grounding + rigger_peers,
 /// never via the conductor splicing one agent's stdout into another's prompt.
 ///
-/// `actor` is the reviewer's ROLE token ([`lens_role`]`(agent)` for a lens,
-/// [`ROLE_ADVERSARY`] for the adversary) that the finding's `by` field carries. This is
-/// what makes finding attribution reach the SAME log the adjudicator's `SpawnResult`
-/// lands on: the in-process (cli) driver stamps [`contextgraph::META_ACTOR`] on the
-/// finding for us, but an OUT-OF-PROCESS reviewer (the courier / workflow path) emits
-/// its finding through `rigger emit`, which stamps no actor - so on THAT path, where the
-/// adjudicator's upheld/cause `SpawnResult` is the only place the verdict is recorded,
-/// the `by` field is the sole attribution the review-quality folds (finding survival,
-/// adversary precision, per-tier cost) can key an upheld finding on. Carrying the role
-/// token (not the raw agent id) keeps it consistent with the [`spawn_id`] role the
-/// per-tier `SpawnResult` cost fold reads, so both driver paths attribute a finding the
-/// same single way. See [`crate::metrics`].
+/// `actor` is the reviewer's ROLE token, its step's [`review_step_role`] (`lens:<agent>` or
+/// `adversary`, with `@<k>` from a kind's second step on), that the finding's `by` field carries.
+/// This is what makes finding attribution reach the SAME log the adjudicator's `SpawnResult` lands
+/// on: the in-process (cli) driver stamps [`contextgraph::META_ACTOR`] on the finding for us, but
+/// an OUT-OF-PROCESS reviewer (the courier / workflow path) emits its finding through
+/// `rigger emit`, which stamps no actor - so on THAT path, where the adjudicator's upheld/cause
+/// `SpawnResult` is the only place the verdict is recorded, the `by` field is the sole attribution
+/// the review-quality folds (finding survival, adversary precision, per-tier cost) can key an
+/// upheld finding on. Carrying the role token (not the raw agent id) keeps it consistent with the
+/// [`spawn_id`] role the per-tier `SpawnResult` cost fold reads, so both driver paths attribute a
+/// finding the same single way. See [`crate::metrics`].
 ///
 /// `pub(crate)` so the canary runner (spec 13, unit 5) appends the SAME finding-emission
 /// protocol to its reviewer prompts, so a canary reviewer attributes each finding by the
@@ -14860,8 +14832,10 @@ mod tests {
     use crate::gate::ExecRunner;
     use crate::instructions::Instruction;
     use crate::spawn::attempt_of;
+    use crate::spawn::lens_role;
     use crate::spawn::SpawnEvent;
     use crate::test_support::agent;
+    use crate::test_support::agent_with_its_own_alias;
     use crate::test_support::agent_with_prompt;
     use crate::test_support::commit_at_fixed_date;
     use crate::test_support::count_of_type;
@@ -14871,6 +14845,7 @@ mod tests {
     use crate::test_support::git_out;
     use crate::test_support::has_status_marker as has_status;
     use crate::test_support::one_gated_stage_cfg;
+    use crate::test_support::repo_review_panel;
     use crate::test_support::run_git;
     use crate::test_support::run_isolated;
     use crate::test_support::temp_git_project_with_commit;
@@ -14880,14 +14855,16 @@ mod tests {
         assert_winner_reviewed_sha_is_round_start, speculation_regen_door_cfg,
     };
     use crate::test_support::{
-        critique_reject, keyed_index, keyed_payload, payloads_of_type, run_log,
-        spec_defect_halt_text, stop_records, the_stop_records, wave_lessons,
-        DAG_CRITIQUE_VERDICT_PARAGRAPH, STOP_ESCALATED_KEY, STOP_LESSON_KEY, STOP_SPEC_DEFECT_KEY,
+        critique_reject, dag_critique_prompt, keyed_index, keyed_payload, payloads_of_type,
+        run_log, spec_defect_halt_text, stop_records, the_stop_records, wave_lessons,
+        DAG_CRITIQUE_VERDICT_PARAGRAPH, DAG_DISJOINT_OVERLAP, DAG_PRIOR_REJECT_HEADER,
+        STOP_ESCALATED_KEY, STOP_LESSON_KEY, STOP_SPEC_DEFECT_KEY, UNIT_SIZE_CAP_SENTENCE,
+        WIDGET_CRITERION,
     };
     use crate::test_support::{
         critique_stage, fan_out_stage, plan_stage, review_stage_cfg, workflow_cfg,
     };
-    use crate::test_support::{MergeBreakDriver, MERGE_BREAK_BASE};
+    use crate::test_support::{MergeBreakDriver, MERGE_BREAK_BASE, REJECT_FEATURE};
     use std::path::Path;
 
     /// Shared test doubles and case bodies for this module's same-shaped tests.
@@ -16572,6 +16549,8 @@ mod tests {
         /// carries the unit's ACTUALLY-routed lens roster (plus the adversary, for the
         /// adjudicator), never a guessed or stale one.
         reviews_by_agent: Mutex<HashMap<String, Vec<String>>>,
+        /// The routed review roster of each spawn, by id, so two steps of one agent read apart.
+        reviews_by_spawn_id: Mutex<HashMap<String, Vec<String>>>,
         /// Every prompt each agent was spawned with, in order, keyed by agent id.
         /// Used to assert the cross-tier findings block (item 1) and the prior-failure
         /// block on a retry (items 3 + 5) reached the right agent's prompt.
@@ -16661,6 +16640,7 @@ mod tests {
                 system_prompt_by_agent: Mutex::new(HashMap::new()),
                 titles_by_agent: Mutex::new(HashMap::new()),
                 reviews_by_agent: Mutex::new(HashMap::new()),
+                reviews_by_spawn_id: Mutex::new(HashMap::new()),
                 prompts_by_agent: Mutex::new(HashMap::new()),
                 call_order: Mutex::new(Vec::new()),
                 targets_by_agent: Mutex::new(HashMap::new()),
@@ -16778,14 +16758,22 @@ mod tests {
                 .lock()
                 .unwrap()
                 .insert(a.id.clone(), opts.reviews.clone());
+            self.reviews_by_spawn_id
+                .lock()
+                .unwrap()
+                .insert(opts.id.clone(), opts.reviews.clone());
             self.prompts_by_agent
                 .lock()
                 .unwrap()
                 .entry(a.id.clone())
                 .or_default()
                 .push(prompt.to_string());
-            self.call_order.lock().unwrap().push(a.id.clone());
+            // Under one guard, so one spawn records both and two lens threads cannot pair one
+            // lens's id with the other's turn.
+            let mut call_order = self.call_order.lock().unwrap();
+            call_order.push(a.id.clone());
             self.spawn_ids.lock().unwrap().push(opts.id.clone());
+            drop(call_order);
             self.resumes.lock().unwrap().push((
                 opts.id.clone(),
                 opts.resumed_from.clone(),
@@ -25618,6 +25606,7 @@ mod tests {
                     lenses: vec!["lens".into()],
                     adversary: adversary.into(),
                     adjudicator: "judge".into(),
+                    steps: None,
                     tiers: None,
                 },
                 ..Default::default()
@@ -27385,7 +27374,7 @@ mod tests {
 
     #[test]
     fn a_degenerate_lens_result_respawns_the_lens_before_the_review_proceeds() {
-        // The respawn loop wraps ALL THREE reviewer roles: a degenerate tier-1 LENS is
+        // The respawn loop wraps ALL THREE reviewer roles: a degenerate LENS is
         // respawned the same way an adjudicator is (a shared helper, one authority), so a
         // flaky lens spawn does not corrupt the review.
         let store = Store::open(":memory:").unwrap();
@@ -27727,6 +27716,7 @@ mod tests {
             lenses: vec!["lens".into()],
             adversary: "adversary".into(),
             adjudicator: "adj".into(),
+            steps: None,
             tiers: None,
         };
         cfg.workflow.stages.insert(
@@ -28184,6 +28174,7 @@ mod tests {
             lenses: vec!["lensA".into(), "lensB".into()],
             adversary: "adversary".into(),
             adjudicator: "adj".into(),
+            steps: None,
             tiers: None,
         };
         cfg.workflow.stages.insert(
@@ -28247,6 +28238,7 @@ mod tests {
             lenses: vec!["lensA".into(), "lensB".into()],
             adversary: "adversary".into(),
             adjudicator: "adj".into(),
+            steps: None,
             tiers,
         }
     }
@@ -28820,6 +28812,7 @@ mod tests {
             lenses: vec!["lensA".into(), "lensB".into()],
             adversary: "adversary".into(),
             adjudicator: "adj".into(),
+            steps: None,
             tiers: None,
         };
         cfg.workflow.stages.insert(
@@ -30302,6 +30295,7 @@ mod tests {
             lenses: vec!["lensA".into(), "lensB".into()],
             adversary: "adversary".into(),
             adjudicator: "adj".into(),
+            steps: None,
             tiers: None,
         };
         cfg.workflow.stages.insert(
@@ -30453,6 +30447,7 @@ mod tests {
             lenses: vec!["lensA".into()],
             adversary: "adversary".into(),
             adjudicator: "adj".into(),
+            steps: None,
             tiers: None,
         };
         cfg.workflow.stages.insert(
@@ -30517,6 +30512,7 @@ mod tests {
             lenses: vec!["lens".into()],
             adversary: String::new(),
             adjudicator: "adj".into(),
+            steps: None,
             tiers: None,
         };
         cfg.workflow.stages.insert(
@@ -30591,6 +30587,7 @@ mod tests {
                     lenses: vec!["lens".into()],
                     adversary: "adversary".into(),
                     adjudicator: "adjudicator".into(),
+                    steps: None,
                     tiers: None,
                 },
                 ..Default::default()
@@ -31398,6 +31395,7 @@ mod tests {
             lenses: vec!["lens".into()],
             adversary: "adversary".into(),
             adjudicator: "adj".into(),
+            steps: None,
             tiers: None,
         };
         if let Some(bound) = max_retries {
@@ -31415,10 +31413,6 @@ mod tests {
         );
         cfg
     }
-
-    /// Round 0's reject of the `per_unit_panel_cfg` unit: one correctness item, in the file
-    /// round 0 wrote.
-    const REJECT_FEATURE: &str = r#"{"verdict":"reject","required":[{"finding":"close the unscoped read","path":"feature.rs","correctness":true}]}"#;
 
     /// The `per_unit_panel_cfg` adjudicator's spawn id at `attempt`, or its `retry`-th
     /// respawn.
@@ -31535,6 +31529,14 @@ mod tests {
 
     /// [`run_review_rounds`] over [`session_stub`] and [`session_cfg`].
     fn run_session_rounds(verdicts: &[(String, &str)]) -> (RunState, Vec<Event>, Stub) {
+        run_session_rounds_of(&session_cfg(), verdicts)
+    }
+
+    /// [`run_review_rounds`] over [`session_stub`] and `cfg`.
+    fn run_session_rounds_of(
+        cfg: &Config,
+        verdicts: &[(String, &str)],
+    ) -> (RunState, Vec<Event>, Stub) {
         let repo = temp_git_project_with_commit();
         let driver = session_stub(verdicts);
         let st = Store::open(":memory:").unwrap();
@@ -31542,7 +31544,7 @@ mod tests {
             repo: repo.path().to_str().unwrap().to_string(),
             ..stub_deps(&st, &driver, Vec::new())
         };
-        let rs = run_isolated(&session_cfg(), &deps).unwrap();
+        let rs = run_isolated(cfg, &deps).unwrap();
         let events = st
             .read_all(0, Direction::Forward, &Filter::default())
             .unwrap();
@@ -31656,6 +31658,259 @@ mod tests {
             implementer.contains(item) && implementer.contains("do not start over"),
             "the implementer is sent its prior-failure block:\n{implementer}"
         );
+    }
+
+    /// A list repeating the lens kind and the adversary kind, one agent in both adversary steps,
+    /// the adjudicator step last: every shape a step token tells apart.
+    fn repeated_kind_panel() -> config::ReviewPanel {
+        serde_json::from_value(json!({"steps": [
+            {"lenses": ["a", "b"]},
+            {"adversary": "x"},
+            {"lenses": ["c"]},
+            {"adversary": "x"},
+            {"adjudicator": "judge"},
+        ]}))
+        .expect("a list panel")
+    }
+
+    /// The reviewers of [`repeated_kind_panel`] short of its adjudicator.
+    const REPEATED_KIND_REVIEWERS: [&str; 4] = ["a", "b", "c", "x"];
+
+    /// A repo-less stage `s` of `worker` reviewed by `panel`, which names no agent but
+    /// [`REPEATED_KIND_REVIEWERS`] and `judge`: `on_pass: none` stops it short of integrate.
+    fn listed_panel_cfg(panel: config::ReviewPanel) -> Config {
+        let mut ids = vec!["worker", "judge"];
+        ids.extend(REPEATED_KIND_REVIEWERS);
+        workflow_cfg(
+            &ids,
+            &[],
+            vec![Stage {
+                name: "s".into(),
+                agent: "worker".into(),
+                on_pass: "none".into(),
+                review: panel,
+                ..Default::default()
+            }],
+        )
+    }
+
+    /// `driver` runs [`listed_panel_cfg`] of `panel`: the run's result and its log.
+    fn run_listed_panel(
+        panel: config::ReviewPanel,
+        driver: &Stub,
+    ) -> (Result<RunState, Error>, Vec<Event>) {
+        let store = Store::open(":memory:").unwrap();
+        let deps = stub_deps(&store, driver, Vec::new());
+        let run = run_isolated(&listed_panel_cfg(panel), &deps);
+        let events = store
+            .read_all(0, Direction::Forward, &Filter::default())
+            .unwrap();
+        (run, events)
+    }
+
+    /// STEP ROLE TOKENS: each step of a list spawns under its own token, the second step of a
+    /// kind under `@2`, one step at a time, and each adversary and adjudicator step is handed the
+    /// tokens of every spawn before it while a lens step, whatever its index, is handed none.
+    #[test]
+    fn a_list_repeating_a_kind_spawns_each_step_under_its_token_with_its_roster() {
+        let driver = approving_panel_stub(&REPEATED_KIND_REVIEWERS);
+        let (run, _) = run_listed_panel(repeated_kind_panel(), &driver);
+        run.expect("the panel approves");
+
+        let mut ids = driver.spawn_ids();
+        ids[1..3].sort(); // The one step that runs concurrently: lenses a and b.
+        assert_eq!(
+            ids,
+            [
+                "s/implementer#0",
+                "s/lens:a#0",
+                "s/lens:b#0",
+                "s/adversary#0",
+                "s/lens:c@2#0",
+                "s/adversary@2#0",
+                "s/adjudicator#0",
+            ]
+        );
+        for (id, roster) in [
+            ("s/lens:a#0", vec![]),
+            ("s/lens:b#0", vec![]),
+            ("s/adversary#0", vec!["lens:a", "lens:b"]),
+            ("s/lens:c@2#0", vec![]),
+            (
+                "s/adversary@2#0",
+                vec!["lens:a", "lens:b", "adversary", "lens:c@2"],
+            ),
+            (
+                "s/adjudicator#0",
+                vec!["lens:a", "lens:b", "adversary", "lens:c@2", "adversary@2"],
+            ),
+        ] {
+            assert_eq!(
+                cached(&driver.reviews_by_spawn_id, id),
+                Some(roster.iter().map(|r| r.to_string()).collect()),
+                "{id}"
+            );
+        }
+        // A lens step fans out; an adversary and the adjudicator each stand alone.
+        let opts = driver.opts_by_agent.lock().unwrap();
+        for (agent, parallel) in [
+            ("a", true),
+            ("b", true),
+            ("c", true),
+            ("x", false),
+            ("judge", false),
+        ] {
+            assert_eq!(opts[agent].1, parallel, "{agent}");
+        }
+    }
+
+    /// THE ROUND'S VERDICT: the adjudicator step's approve stamps `reviewed`, after every repeat
+    /// of a kind ran, and a list with no adjudicator step approves when its last step ends, with
+    /// no stamp.
+    #[test]
+    fn a_repeated_list_is_judged_by_its_adjudicator_step_and_stamped_only_by_one() {
+        let no_adjudicator_step: config::ReviewPanel = serde_json::from_value(json!({"steps": [
+            {"adversary": "x"},
+            {"adversary": "x"},
+        ]}))
+        .expect("a list panel");
+        for (panel, last_spawn, stamped) in [
+            (repeated_kind_panel(), "s/adjudicator#0", true),
+            (no_adjudicator_step, "s/adversary@2#0", false),
+        ] {
+            let driver = approving_panel_stub(&REPEATED_KIND_REVIEWERS);
+            let (run, events) = run_listed_panel(panel, &driver);
+            run.expect("the panel approves");
+            assert_eq!(driver.spawn_ids().last().unwrap(), last_spawn);
+            assert_eq!(has_status(&events, "reviewed"), stamped, "{last_spawn}");
+        }
+    }
+
+    /// `repeated_kind_panel` as the panel of [`session_cfg`], every agent of it declared.
+    fn repeated_kind_session_cfg() -> Config {
+        let mut cfg = session_cfg();
+        for id in REPEATED_KIND_REVIEWERS.into_iter().chain(["judge"]) {
+            cfg.agents.insert(id.into(), agent(id));
+        }
+        cfg.workflow.defaults.review = repeated_kind_panel();
+        cfg
+    }
+
+    /// The adjudicator step's reject is the round's, as at HEAD, and the next round resumes one
+    /// session per step token: one agent in two adversary steps holds two sessions, each
+    /// continued by its own token and never by the other's.
+    #[test]
+    fn a_rejected_list_runs_a_next_round_and_each_step_token_resumes_its_own_session() {
+        let (rs, _, driver) = run_session_rounds_of(
+            &repeated_kind_session_cfg(),
+            &[
+                (adjudicator_at(0, 0), REJECT_FEATURE),
+                (adjudicator_at(1, 0), r#"{"verdict":"approve"}"#),
+            ],
+        );
+        assert_eq!(rs.units["implement"].status, ledger::Status::Integrated);
+        for role in [
+            "lens:a",
+            "lens:b",
+            "adversary",
+            "lens:c@2",
+            "adversary@2",
+            ROLE_ADJUDICATOR,
+        ] {
+            let first = spawn_id("implement", role, 0);
+            let (from, _) = driver.resume_of(&first).expect("round 0 spawns every step");
+            assert_eq!(from, "", "{first} starts a fresh session");
+            let (from, _) = driver
+                .resume_of(&spawn_id("implement", role, 1))
+                .expect("round 1 spawns every step");
+            assert_eq!(from, format!("sess-{first}"), "{role}");
+        }
+    }
+
+    /// The token is the step's label: the `by` a reviewer is told to write and the actor its
+    /// findings are recorded under are the token of the step, never the kind's first step's.
+    #[test]
+    fn a_step_token_is_the_by_of_its_protocol_and_the_actor_of_its_findings() {
+        let finding = |id: &str| {
+            let finding_type = contextgraph::TYPE_REVIEW_FINDING.to_string();
+            (finding_type, json!({"id": id}))
+        };
+        let driver = Stub {
+            emits_by_spawn_id: HashMap::from([
+                ("s/adversary#0".to_string(), vec![finding("one")]),
+                ("s/lens:c@2#0".to_string(), vec![finding("two")]),
+                ("s/adversary@2#0".to_string(), vec![finding("three")]),
+            ]),
+            ..approving_panel_stub(&REPEATED_KIND_REVIEWERS)
+        };
+        let (run, events) = run_listed_panel(repeated_kind_panel(), &driver);
+        run.expect("the panel approves");
+
+        for (agent_id, spawn, by) in [
+            ("x", 0, r#""by":"adversary""#),
+            ("x", 1, r#""by":"adversary@2""#),
+            ("c", 0, r#""by":"lens:c@2""#),
+        ] {
+            let prompts = driver.prompts_for(agent_id);
+            assert_eq!(
+                prompts[spawn].matches(r#""by":"#).count(),
+                prompts[spawn].matches(by).count(),
+                "every `by` {agent_id}'s spawn {spawn} is told to write is its token:\n{}",
+                prompts[spawn]
+            );
+            assert!(prompts[spawn].contains(by), "{agent_id} spawn {spawn}");
+        }
+        let mut actors: Vec<(String, &str)> = events
+            .iter()
+            .filter(|e| e.type_ == contextgraph::TYPE_REVIEW_FINDING)
+            .map(|e| {
+                let id = serde_json::from_slice::<Value>(&e.data).unwrap()["id"]
+                    .as_str()
+                    .unwrap()
+                    .to_string();
+                (id, e.meta[contextgraph::META_ACTOR].as_str())
+            })
+            .collect();
+        actors.sort();
+        assert_eq!(
+            actors,
+            [
+                ("one".to_string(), "adversary"),
+                ("three".to_string(), "adversary@2"),
+                ("two".to_string(), "lens:c@2"),
+            ]
+        );
+    }
+
+    /// A step of a repeated kind that only answers degenerately spawns its respawns under its
+    /// own token, and the halt keeps the kind's label while naming the step's retry id.
+    #[test]
+    fn a_degenerate_later_step_respawns_and_halts_under_its_token() {
+        let retries = [
+            "s/adversary@2#0",
+            "s/adversary@2#0~retry1",
+            "s/adversary@2#0~retry2",
+        ];
+        let driver = Stub {
+            output_by_spawn_id: retries
+                .iter()
+                .map(|id| (id.to_string(), " \n".to_string()))
+                .collect(),
+            ..approving_panel_stub(&REPEATED_KIND_REVIEWERS)
+        };
+        let (run, _) = run_listed_panel(repeated_kind_panel(), &driver);
+        let Err(Error(halt)) = run else {
+            panic!("an all-degenerate step halts the run");
+        };
+        assert!(
+            halt.starts_with(r#"stage "s" adversary "x" returned empty/whitespace-only output"#),
+            "the halt keeps the kind's label: {halt}"
+        );
+        assert!(
+            halt.contains(r#"`rigger result "s/adversary@2#0~retry2" --supersede"#),
+            "the recovery names the step's own retry id: {halt}"
+        );
+        assert_eq!(driver.spawn_ids()[5..], retries);
     }
 
     /// A RESUMED review tier judges a new commit too: its later-round task carries the gate
@@ -32197,6 +32452,7 @@ mod tests {
             lenses: vec!["lens".into()],
             adversary: "adversary".into(),
             adjudicator: "adj".into(),
+            steps: None,
             tiers: None,
         };
         cfg.workflow.stages.insert(
@@ -32349,6 +32605,7 @@ mod tests {
             lenses: vec!["lens".into()],
             adversary: "adversary".into(),
             adjudicator: "adj".into(),
+            steps: None,
             tiers: None,
         };
         // NOTE: defaults.max_retries deliberately left unset (0 -> falls back to 3).
@@ -32403,6 +32660,7 @@ mod tests {
             lenses: vec!["lens".into()],
             adversary: "adversary".into(),
             adjudicator: "adj".into(),
+            steps: None,
             tiers: None,
         };
         cfg.workflow.defaults.max_retries = 2;
@@ -32679,6 +32937,7 @@ mod tests {
             lenses: vec!["lens".into()],
             adversary: "adversary".into(),
             adjudicator: "adj".into(),
+            steps: None,
             tiers: None,
         };
         cfg.workflow.defaults.max_retries = CAP;
@@ -34286,6 +34545,7 @@ mod tests {
                     lenses: vec!["lensA".into(), "lensB".into()],
                     adversary: "adversary".into(),
                     adjudicator: "judge".into(),
+                    steps: None,
                     tiers: Some(Box::new(crate::config::ReviewDepth {
                         light,
                         // One grounded file, well under threshold, no high-risk path: every
@@ -34336,7 +34596,7 @@ mod tests {
     /// above all drive `review_unit` (the per-unit review path, reached through a stage
     /// carrying an `agent`) - they never exercise `run_fan_out_review_loop`, the
     /// STANDALONE three-tier review stage's OWN call site (`is_fan_out`: no `agent`, a
-    /// populated `agents` lens list). It calls the identical `run_adversary`/
+    /// populated `agents` lens list). It calls the identical `run_finding_reviewer`/
     /// `run_adjudicator` helpers, but is a second, independent wiring the mutation
     /// accounting cannot see (the mutation tool mutates function bodies, not which caller
     /// passes which argument) - a swapped or dropped roster argument at THIS call site
@@ -34344,8 +34604,7 @@ mod tests {
     /// REAL `SpawnOpts.reviews` the driver received, mirroring the review_unit-path
     /// assertions above on the fan-out path.
     #[test]
-    fn the_fan_out_review_loops_adversary_and_adjudicator_spawns_are_stamped_with_the_routed_roster(
-    ) {
+    fn the_fan_out_review_loops_spawns_are_stamped_with_the_routed_roster() {
         // No `agent` + a populated `agents` lens list routes this to the STANDALONE fan-out
         // review path (`is_fan_out`), never `review_unit`.
         let driver = roster_run(
@@ -34359,6 +34618,13 @@ mod tests {
             &["lensA", "lensB"],
             "adversary",
         );
+        for lens in ["lensA", "lensB"] {
+            assert_eq!(
+                driver.reviews_for(lens),
+                Some(Vec::new()),
+                "a lens judges the diff directly, so {lens} carries no roster"
+            );
+        }
         assert_eq!(
             driver.reviews_for("adversary"),
             Some(vec!["lens:lensA".to_string(), "lens:lensB".to_string()]),
@@ -34374,6 +34640,217 @@ mod tests {
             ]),
             "run_fan_out_review_loop's adjudicator spawn must carry the lens roster plus \
              the adversary token"
+        );
+    }
+
+    /// Run unit `s`, implemented by `worker` and reviewed by `review`, through the per-unit
+    /// review path (repo-less, `on_pass: none`): the `adjudicator` approves and every other
+    /// reviewer returns a substantive review; each agent's model is `<id>-model`. The grounder
+    /// gives the unit one file, `src/f.rs`, which routes a `tiers` panel LIGHT under its
+    /// threshold and FULL when one of its `high_risk_paths` names it. Returns one line per
+    /// review spawn in spawn order - its spawn id, its `SpawnOpts.reviews` roster and the
+    /// fnv1a-64 of its task prompt (never the system prompt) - with the spawns of a lens step
+    /// sorted by spawn id, since they start on scoped threads, then one line per status the
+    /// unit was stamped with and the model alias it carries: the round's verdict. The second
+    /// value is every review task prompt in full, for a mismatch's message.
+    fn review_identity(review: crate::config::ReviewPanel) -> (Vec<String>, String) {
+        let mut cfg = Config::default();
+        for a in [
+            "worker",
+            "architecture-reviewer",
+            "sdet",
+            "adversary",
+            "adjudicator",
+        ] {
+            cfg.agents.insert(a.into(), agent_with_its_own_alias(a));
+        }
+        cfg.workflow.stages.insert(
+            "s".into(),
+            Stage {
+                name: "s".into(),
+                agent: "worker".into(),
+                coverage: "s".into(),
+                on_pass: "none".into(),
+                review,
+                ..Default::default()
+            },
+        );
+        let driver = Stub {
+            output_by_agent: HashMap::from(
+                ["architecture-reviewer", "sdet", "adversary", "adjudicator"].map(|a| {
+                    let out = if a == "adjudicator" {
+                        r#"{"verdict":"approve"}"#
+                    } else {
+                        "reviewed: no blocker"
+                    };
+                    (a.to_string(), out.to_string())
+                }),
+            ),
+            ..Stub::new()
+        };
+        let grounder = StubGrounder {
+            by_query: HashMap::from([("s".to_string(), vec!["src/f.rs".to_string()])]),
+        };
+        let store = Store::open(":memory:").unwrap();
+        let deps = Deps {
+            grounder: Some(&grounder),
+            ..stub_deps(&store, &driver, Vec::new())
+        };
+        run_isolated(&cfg, &deps).unwrap();
+        drop(deps);
+        let agents = driver.call_order.lock().unwrap().clone();
+        let mut spawns: Vec<(String, String)> = Vec::new();
+        let mut prompts = String::new();
+        for (agent_id, id) in agents.iter().zip(driver.spawn_ids()) {
+            if agent_id == "worker" {
+                continue;
+            }
+            let prompt = driver.prompts_for(agent_id);
+            assert_eq!(prompt.len(), 1, "{agent_id} reviews the unit once");
+            prompts.push_str(&format!("--- {id}\n{}\n", prompt[0]));
+            let line = format!(
+                "{id} {:?} {:016x}",
+                driver.reviews_for(agent_id).unwrap(),
+                fnv1a_64(prompt[0].as_bytes())
+            );
+            spawns.push((id, line));
+        }
+        let mut lines = Vec::new();
+        for group in spawns.chunk_by(|a, b| a.0.contains("/lens:") && b.0.contains("/lens:")) {
+            let mut group = group.to_vec();
+            group.sort();
+            lines.extend(group.into_iter().map(|(_, line)| line));
+        }
+        for e in store
+            .read_all(0, Direction::Forward, &Filter::default())
+            .unwrap()
+        {
+            let data: Value = serde_json::from_slice(&e.data).unwrap();
+            if e.type_ == ledger::TYPE_UNIT_STATUS && data["id"] == "s" {
+                lines.push(format!(
+                    "{} {} {:?}",
+                    data["status"],
+                    data["evidence"],
+                    e.meta.get(META_MODEL_ALIAS)
+                ));
+            }
+        }
+        (lines, prompts)
+    }
+
+    /// Assert the CANONICAL IDENTITY SURFACE of `review` (spec 120, criterion 6): the review
+    /// spawns and the verdict [`review_identity`] reads equal `golden`, captured on the tree
+    /// before the review panel ran as a sequence of steps.
+    fn assert_review_identity(review: crate::config::ReviewPanel, golden: &[&str]) {
+        let (lines, prompts) = review_identity(review);
+        assert_eq!(lines, golden, "the review task prompts:\n{prompts}");
+    }
+
+    /// A `tiers` panel over [`repo_review_panel`] whose light panel is the `sdet` lens and the
+    /// adjudicator, with a threshold of 5 grounded files and `high_risk_paths`.
+    fn tiered_review_panel(high_risk_paths: &[&str]) -> crate::config::ReviewPanel {
+        let light = crate::config::ReviewPanel {
+            lenses: vec!["sdet".into()],
+            adjudicator: "adjudicator".into(),
+            ..Default::default()
+        };
+        crate::config::ReviewPanel {
+            tiers: depth_tiers(light, 5, high_risk_paths),
+            ..repo_review_panel()
+        }
+    }
+
+    // The golden lines [`review_identity`] read on the tree before the review panel ran as a
+    // sequence of steps (spec 120, criterion 6): each review spawn, then each status stamp.
+    const ARCHITECTURE_LENS_SPAWN: &str = r#"s/lens:architecture-reviewer#0 [] 90da538e7cf34bb5"#;
+    const SDET_LENS_SPAWN: &str = r#"s/lens:sdet#0 [] 7ce018ae5d845d41"#;
+    const ADVERSARY_SPAWN: &str =
+        r#"s/adversary#0 ["lens:architecture-reviewer", "lens:sdet"] 711070660f68834f"#;
+    const ADJUDICATOR_AFTER_LENSES_AND_ADVERSARY_SPAWN: &str = r#"s/adjudicator#0 ["lens:architecture-reviewer", "lens:sdet", "adversary"] eefbf75b395904f6"#;
+    const ADJUDICATOR_AFTER_LENSES_SPAWN: &str =
+        r#"s/adjudicator#0 ["lens:architecture-reviewer", "lens:sdet"] eefbf75b395904f6"#;
+    const ADJUDICATOR_AFTER_SDET_SPAWN: &str = r#"s/adjudicator#0 ["lens:sdet"] eefbf75b395904f6"#;
+    const GREEN_STAMP: &str = r#""green" {"green":"implemented by worker"} Some("worker-model")"#;
+    const VERIFIED_STAMP: &str = r#""verified" {} Some("worker-model")"#;
+    const LIGHT_TIER_STAMP: &str = r#""review-tier" {"blast-radius":"1","empty-radius":"false","flapped":"false","high-risk-path":"","review-tier":"light","threshold":"5"} None"#;
+    const FULL_TIER_STAMP: &str = r#""review-tier" {"blast-radius":"1","empty-radius":"false","flapped":"false","high-risk-path":"src/f.rs","review-tier":"full","threshold":"5"} None"#;
+    const ROUND_START_STAMP: &str = r#""review-round-start" null None"#;
+    const REVIEWED_STAMP: &str =
+        r#""reviewed" {"review":"{\"verdict\":\"approve\"}"} Some("adjudicator-model")"#;
+
+    crate::test_cases! {
+        /// This repository's own panel: two lenses, the adversary, the adjudicator.
+        the_repo_panel_reviews_as_before_the_step_sequence: assert_review_identity(
+            repo_review_panel(),
+            &[
+                ARCHITECTURE_LENS_SPAWN,
+                SDET_LENS_SPAWN,
+                ADVERSARY_SPAWN,
+                ADJUDICATOR_AFTER_LENSES_AND_ADVERSARY_SPAWN,
+                GREEN_STAMP,
+                VERIFIED_STAMP,
+                ROUND_START_STAMP,
+                REVIEWED_STAMP,
+            ],
+        );
+        /// A lenses-only panel: no roster and no `reviewed` stamp.
+        a_lenses_only_panel_reviews_as_before_the_step_sequence: assert_review_identity(
+            crate::config::ReviewPanel {
+                adversary: String::new(),
+                adjudicator: String::new(),
+                ..repo_review_panel()
+            },
+            &[
+                ARCHITECTURE_LENS_SPAWN,
+                SDET_LENS_SPAWN,
+                GREEN_STAMP,
+                VERIFIED_STAMP,
+                ROUND_START_STAMP,
+            ],
+        );
+        /// The DROPPED adversary: the adjudicator's roster names the lenses alone.
+        a_lenses_and_adjudicator_panel_reviews_as_before_the_step_sequence: assert_review_identity(
+            crate::config::ReviewPanel {
+                adversary: String::new(),
+                ..repo_review_panel()
+            },
+            &[
+                ARCHITECTURE_LENS_SPAWN,
+                SDET_LENS_SPAWN,
+                ADJUDICATOR_AFTER_LENSES_SPAWN,
+                GREEN_STAMP,
+                VERIFIED_STAMP,
+                ROUND_START_STAMP,
+                REVIEWED_STAMP,
+            ],
+        );
+        /// A `tiers` panel routed LIGHT: one grounded file under the threshold.
+        a_tiers_panel_routed_light_reviews_as_before_the_step_sequence: assert_review_identity(
+            tiered_review_panel(&[]),
+            &[
+                SDET_LENS_SPAWN,
+                ADJUDICATOR_AFTER_SDET_SPAWN,
+                GREEN_STAMP,
+                VERIFIED_STAMP,
+                LIGHT_TIER_STAMP,
+                ROUND_START_STAMP,
+                REVIEWED_STAMP,
+            ],
+        );
+        /// A `tiers` panel routed FULL: its one grounded file is a high-risk path.
+        a_tiers_panel_routed_full_reviews_as_before_the_step_sequence: assert_review_identity(
+            tiered_review_panel(&["src/f.rs"]),
+            &[
+                ARCHITECTURE_LENS_SPAWN,
+                SDET_LENS_SPAWN,
+                ADVERSARY_SPAWN,
+                ADJUDICATOR_AFTER_LENSES_AND_ADVERSARY_SPAWN,
+                GREEN_STAMP,
+                VERIFIED_STAMP,
+                FULL_TIER_STAMP,
+                ROUND_START_STAMP,
+                REVIEWED_STAMP,
+            ],
         );
     }
 
@@ -36328,6 +36805,7 @@ mod tests {
                     lenses: vec!["lens".into()],
                     adversary: "adversary".into(),
                     adjudicator: "judge".into(),
+                    steps: None,
                     tiers: None,
                 },
                 ..Default::default()
@@ -40031,6 +40509,7 @@ mod tests {
             lenses: vec!["lens".into()],
             adversary: String::new(),
             adjudicator: "adj".into(),
+            steps: None,
             tiers: None,
         };
         cfg.workflow.stages.insert(
@@ -45713,6 +46192,7 @@ mod tests {
             lenses: vec!["lens".into()],
             adversary: "adversary".into(),
             adjudicator: "adj".into(),
+            steps: None,
             tiers: None,
         };
         // `s` passes its inline gate but the adjudicator ALWAYS rejects, so it remediates
@@ -47148,10 +47628,8 @@ mod tests {
         )
     }
 
-    /// A driver whose adjudicator DRAWS its verdict from the conductor's own rule-6
-    /// detection: it REJECTS a DAG whose critique prompt surfaces a shared-blast-radius
-    /// conflict, and APPROVES one that does not - so the reject is a CONSEQUENCE of the
-    /// split, not a blind script. The planner replays a fixed set of UnitProposed emits
+    /// A driver whose adjudicator answers the verdict its `reject_dag` and `reject_always` flags
+    /// model. The planner replays a fixed set of UnitProposed emits
     /// on every spawn (its original wave spawn and each critique-driven re-plan), and
     /// every other reviewer returns a benign non-empty result.
     struct CritiqueDriver {
@@ -47326,7 +47804,7 @@ mod tests {
 
     /// sdet-u67c4-fanout-and-plancritique-roster-untested (round 2 fix): `plan_critique_loop`
     /// is a THIRD, independent call site for the same roster-stamp mechanism - it bypasses
-    /// `run_adversary`/`run_adjudicator` entirely and calls `run_reviewer` directly, with a
+    /// `run_finding_reviewer`/`run_adjudicator` entirely and calls `run_reviewer` directly, with a
     /// hardcoded `&[]` for the adversary (the DAG-level critique names no lens tier of its
     /// own) and `adjudicator_roster(&[], &gate_st.adversary)` for the adjudicator. Neither the
     /// clean mutation accounting nor the `review_unit`/`run_fan_out_review_loop` tests above
@@ -47530,64 +48008,73 @@ mod tests {
         );
     }
 
-    /// Run `critique_cfg` over one proposed unit serving one criterion; returns the driver,
-    /// which recorded the planner's and the adjudicator's prompts.
-    fn one_unit_critique() -> CritiqueDriver {
+    /// Run `critique_cfg` over proposed `units`, each `(id, file, criterion)` grounding to its
+    /// `file`; returns the driver, which recorded the planner's and the adjudicator's prompts.
+    fn critique_over(units: &[(&str, &str, &str)]) -> CritiqueDriver {
         let dir = tempfile::tempdir().unwrap();
-        let criterion = "the widget renderer is implemented";
-        std::fs::write(dir.path().join("feature.rs"), format!("// {criterion}\n")).unwrap();
+        for (_, file, criterion) in units {
+            let path = dir.path().join(file);
+            let text = std::fs::read_to_string(&path).unwrap_or_default();
+            std::fs::write(path, format!("{text}// {criterion}\n")).unwrap();
+        }
         let cfg = critique_cfg();
         let st = Store::open(":memory:").unwrap();
-        let driver = CritiqueDriver::new(vec![(
-            TYPE_UNIT_PROPOSED.to_string(),
-            json!({"id":"u-a","agent":"worker","criterion":criterion,"needs":["plan-critique"],"gates":["ok"]}),
-        )]);
+        let driver = CritiqueDriver::new(
+            units
+                .iter()
+                .map(|(id, _, criterion)| {
+                    (
+                        TYPE_UNIT_PROPOSED.to_string(),
+                        json!({"id":id,"agent":"worker","criterion":criterion,"needs":["plan-critique"],"gates":["ok"]}),
+                    )
+                })
+                .collect(),
+        );
         let grep = crate::grounder::Grep {
             root: dir.path().to_string_lossy().into_owned(),
         };
         let deps = Deps {
             grounder: Some(&grep),
-            ..stub_deps(&st, &driver, vec![criterion.to_string()])
+            ..stub_deps(
+                &st,
+                &driver,
+                units.iter().map(|(_, _, c)| c.to_string()).collect(),
+            )
         };
         let _ = run_isolated(&cfg, &deps).unwrap();
         driver
     }
 
-    #[test]
-    fn the_plan_critique_prompt_names_the_cross_unit_rules() {
-        // The gate prompt must NAME its review targets: mitigation ownership (rule 7) and
-        // open dispositions (rule 8) as REJECT criteria, plus the shared-blast-radius note
-        // (informational - the partitioner serializes overlap; not a reject trigger).
-        let driver = one_unit_critique();
-        let prompts = driver.adj_prompts.lock().unwrap();
-        let prompt = prompts
-            .first()
-            .expect("the adjudicator must have been spawned");
-        for target in ["blast radius", "mitigation", "disposition"] {
-            assert!(
-                prompt.to_lowercase().contains(target),
-                "the plan-critique prompt must name rule targets ({target:?}); got:\n{prompt}"
-            );
-        }
+    /// Run `critique_cfg` over one proposed unit serving one criterion; returns the driver,
+    /// which recorded the planner's and the adjudicator's prompts.
+    fn one_unit_critique() -> CritiqueDriver {
+        critique_over(&[("u-a", "feature.rs", "the widget renderer is implemented")])
     }
 
-    /// Spec 112, criterion 1: the DAG critique reads its rules from the one const the spec
-    /// critique prompt reads ([`rigger_domain::review::PLAN_CRITIQUE_RULES`]), pushed right
-    /// after its DAG opener and right before its unit-size line.
+    /// The critique method is the persona's: over a disjoint DAG and an overlapping one, the DAG
+    /// critique prompt is its opener, the cap framing, the unit and overlap list and its verdict
+    /// and cause paragraph, byte for byte and nothing else.
     #[test]
-    fn the_dag_critique_prompt_pushes_the_shared_plan_critique_rules_between_opener_and_size() {
-        let driver = one_unit_critique();
-        let prompt = driver.adj_prompts.lock().unwrap()[0].clone();
-        let opener = "that per-unit review cannot see:\n";
-        let rules_at = prompt.find(opener).expect("the DAG opener") + opener.len();
-        let size_at = prompt
-            .find("- Unit size (blocking): ")
-            .expect("the unit-size line");
-        assert_eq!(
-            &prompt[rules_at..size_at],
-            rigger_domain::review::PLAN_CRITIQUE_RULES,
-            "the opener, then the shared rules byte for byte, then the unit-size line:\n{prompt}"
-        );
+    fn the_dag_critique_prompt_is_only_its_framing_and_its_verdict_contract() {
+        const WIDGET: &str = "the widget renderer is implemented";
+        const GADGET: &str = "the gadget renderer is implemented";
+        let table = [
+            (
+                [("u-a", "a.rs", WIDGET), ("u-b", "b.rs", GADGET)],
+                DAG_DISJOINT_OVERLAP,
+            ),
+            (
+                [("u-a", "a.rs", WIDGET), ("u-b", "a.rs", GADGET)],
+                "\nBlast-radius overlap (informational - the partitioner serializes these into \
+                 sequential batches):\n- units `u-a` and `u-b` both touch: a.rs\n",
+            ),
+        ];
+        for (units, overlap) in table {
+            let driver = critique_over(&units);
+            let prompt = driver.adj_prompts.lock().unwrap()[0].clone();
+            let rows = units.map(|(id, file, criterion)| [id, criterion, "plan-critique", file]);
+            assert_eq!(prompt, dag_critique_prompt(&rows, overlap));
+        }
     }
 
     /// One unit size cap, measuring review scope and never code shape, reaches both the
@@ -47599,14 +48086,9 @@ mod tests {
         let driver = one_unit_critique();
         let planner = driver.planner_prompts.lock().unwrap()[0].clone();
         let critique = driver.adj_prompts.lock().unwrap()[0].clone();
-        let cap = format!(
-            "A unit is too large when it is expected to add more than {MAX_UNIT_ADDED_LINES} \
-             lines. The cap measures review scope - how much one review round must read - never \
-             code shape."
-        );
         for (who, prompt) in [("planner", &planner), ("plan critique", &critique)] {
             assert!(
-                prompt.contains(&cap),
+                prompt.contains(UNIT_SIZE_CAP_SENTENCE),
                 "the {who} prompt carries the one cap sentence:\n{prompt}"
             );
         }
@@ -47966,9 +48448,6 @@ mod tests {
         );
     }
 
-    /// The criterion the plan-critique resume fixtures plan against.
-    const WIDGET_CRITERION: &str = "the widget renderer is implemented";
-
     /// PLAN_PROTOCOL shape: the split units carry `needs:[]` (only sibling ids ever appear
     /// here, never the gate) - the exact shape that bypassed the pre-gate wave.
     fn widget_split() -> Vec<(String, Value)> {
@@ -48130,9 +48609,7 @@ mod tests {
         );
         let retry_round = &rounds[1];
         assert!(
-            retry_round.starts_with(&format!(
-                "A prior plan-critique REJECTED this decomposition:\n{OWNERSHIP_REJECT}\n\n"
-            )),
+            retry_round.starts_with(&format!("{DAG_PRIOR_REJECT_HEADER}{OWNERSHIP_REJECT}\n\n")),
             "premise: the in-process retry round opens with the reject; got:\n{retry_round}"
         );
 

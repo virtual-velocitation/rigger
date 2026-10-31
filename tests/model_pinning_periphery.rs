@@ -102,6 +102,7 @@ fn model_pinning_takes_effect_through_run_canary_and_the_header_round_trips_and_
         lenses: vec!["lens-a".into()],
         adversary: "adv".into(),
         adjudicator: "adj".into(),
+        steps: None,
         tiers: None,
     };
 
@@ -202,4 +203,57 @@ fn model_pinning_takes_effect_through_run_canary_and_the_header_round_trips_and_
         cfg.agents["lens-a"].model_ladder,
         vec!["haiku".to_string(), "opus".to_string()]
     );
+}
+
+/// A pin through the public entry over a list repeating two kinds: each agent starts on its own
+/// default, and a tier's run-level model is its LAST spawn's, so a pinned tier reporting the pin
+/// proves the agent of its later step was pinned, and a tier left alone reports that agent's
+/// default.
+#[test]
+fn a_tier_pin_reaches_the_later_step_of_its_kind_through_run_canary() {
+    let mut cfg = Config::default();
+    for id in ["lens-a", "lens-b", "adv-a", "adv-b", "adj"] {
+        let default = format!("{id}-default");
+        cfg.agents
+            .insert(id.into(), agent(id, &default, &["haiku"]));
+    }
+    let panel: ReviewPanel = serde_yaml::from_str(
+        "{ steps: [{ lenses: [lens-a] }, { adversary: adv-a }, { lenses: [lens-b] }, \
+         { adversary: adv-b }, { adjudicator: adj }] }",
+    )
+    .expect("a well-formed list");
+    let cases = [
+        (TIER_LENS, "pinned", "adv-b-default", "adj-default"),
+        (TIER_ADVERSARY, "lens-b-default", "pinned", "adj-default"),
+        (
+            ROLE_ADJUDICATOR,
+            "lens-b-default",
+            "adv-b-default",
+            "pinned",
+        ),
+    ];
+    for (tier, lens, adversary, adjudicator) in cases {
+        let pins = ModelPins::from([(tier.to_string(), "pinned".to_string())]);
+        let report = run_canary(
+            &Store::open(":memory:").expect("an in-memory store opens"),
+            &EchoModelDriver,
+            &apply_model_pins(&cfg, &panel, &pins),
+            &panel,
+            &[item("only")],
+            1,
+            &|_, _| {},
+        )
+        .expect("run_canary reads the list's adjudicator step");
+        let expected = [
+            (ROLE_ADJUDICATOR, adjudicator),
+            (TIER_ADVERSARY, adversary),
+            (TIER_LENS, lens),
+        ]
+        .map(|(tier, model)| (tier.to_string(), model.to_string()));
+        assert_eq!(
+            report.resolved_models,
+            std::collections::BTreeMap::from(expected),
+            "{tier}"
+        );
+    }
 }

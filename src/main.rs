@@ -341,10 +341,11 @@ placed root; this is the explicit on-demand form. Reports\n                     
 the number of roots reclaimed; composes with the others\n  \
 rigger critique <spec>      critique the spec before any run: the workflow's critic\n                              \
 (the plan-critique gate's adversary, else\n                              \
-defaults.review.adversary) reads the spec text and its\n                              \
-findings and verdict are recorded keyed on the text's\n                              \
-content hash, so unchanged text is answered from the\n                              \
-record with no spawn; takes --eventstore/--conn as run does\n  \
+an adversary step in defaults.review) reads the spec\n                              \
+text and its findings and verdict are recorded keyed on\n                              \
+the text's content hash, so unchanged text is answered\n                              \
+from the record with no spawn; takes --eventstore/--conn\n                              \
+as run does\n  \
 rigger validate             load and validate the workflow + agents\n  \
 rigger init                 set up a project: scaffold .rigger/ (workflow.yml +\n                              \
 an agents/ folder) and install the Claude Code\n                              \
@@ -360,9 +361,9 @@ rigger prime [<spec>]       print recent decisions (what the hook runs); given a
 path, also names `rigger validate <spec>` (the pre-launch\n                              \
 spec lint) as a next step\n  \
 rigger instructions         print the instructions every spawned agent is held to:\n                              \
-the built-in law and working discipline, then each\n                              \
-operator file in .rigger/instructions/ (filename\n                              \
-order)\n  \
+each built-in with its state (in force, replaced,\n                              \
+switched off), then each unshadowed operator file in\n                              \
+.rigger/instructions/ (filename order)\n  \
 rigger version              print the crate version and the build-provenance id\n                              \
 (a git commit/describe embedded at build time) so an\n                              \
 agent can identify the exact binary. Also `--version`\n\n\

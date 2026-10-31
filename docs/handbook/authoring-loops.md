@@ -1,6 +1,48 @@
 # Authoring loops
 
-A loop is the machine that turns a spec into integrated code. You author one by writing two artifacts - a **spec** (what "done" means) and a **workflow** (who does the work, checked by what) - and then driving them with one of four drivers. This document covers all three parts.
+A loop is the machine that turns a spec into integrated code. You author one by writing two artifacts - a **spec** (what "done" means) and a **workflow** (who does the work, checked by what) - and then driving them with one of four drivers. This document opens with what rigger prescribes, then covers all three parts.
+
+## What rigger prescribes
+
+Rigger is language and process agnostic: the binary provides tools to agents and executes the workflow definition, and it prescribes nothing about how work is done except by enforcing that definition.
+
+Prompts are guidance and logic is execution: the built-in instruction layer is best practice a consumer may replace or switch off, never a procedure standing in for a gate and never specific to a language.
+
+Those two sentences are the rule the binary is held to. The rest of this section says what the binary provides, what is yours to decide, and where it still falls short of the rule.
+
+**The tools.** The binary gives agents isolated git worktrees, a shared event log and the context graph projected from it, structural grounding (`rigger_ground`, `rigger_graph`), recording (`rigger_emit`, `rigger_progress`), the record of their peers (`rigger_peers`) and a scratch directory (`rigger_scratch`). [tools-and-context.md](tools-and-context.md) covers grounding, the graph and progress in their CLI forms.
+
+**What you add.** A consumer may add any number of stages, gates and review steps, and rigger runs them: a stage under `stages:`, a gate under `gates:`, a review step in a panel's `steps:` list.
+
+**Gate template sets.** A gate template set is a starting point, never a prescription. `rigger init` scaffolds the set whose marker file sits at the project root (today the `rust` set, on `Cargo.toml`), a project no set matches gets a workflow that declares no gates, and a `.rigger/workflow.yml` that already exists is left as it is. Every gate in the file is the consumer's to keep, change or remove.
+
+**Language coverage.** Three tools cover some languages and not others; the rule binds them, and the operator carries the gap. A spawn's build and review caches reach it as `CARGO_TARGET_DIR`, which only Cargo reads, so another toolchain gets no per-unit cache. `build.wrapper` and `build.jobs` resolve only to Cargo's build settings, so another toolchain ignores them. The `symbols` grounder extracts symbols from Rust, C#, Go, JavaScript, TypeScript and Python and skips a file in any other language.
+
+**Open exceptions.** These prescriptions still stand in the binary against the rule, each named by its constant or surface, and each is struck from this list as it is removed:
+
+- the cadence clauses in `EMIT_PROTOCOL` and `review_protocol`
+- `DOC_ONLY_ROUND`'s rule sentence
+- `PLAN_PROTOCOL`'s guidance sentences
+- `MAX_UNIT_ADDED_LINES` and the second sentence of `unit_size_cap`
+- the progress cadence in its four host homes: the cli host's framing, the workflow script's and the shim's progress notes, and the `rigger_progress` description
+- the REQUIRED PATTERN audit sentences: the `PATTERN:` lines an implementer and a reviewer read under a REQUIRED list
+- the method sentences of the lookup pointer (`write_lookup_pointer`)
+- the toolchain words in `workflows/rigger.js` and the `rigger_scratch` description
+
+### The review ceremony
+
+A panel is a sequence of review steps, and the official vocabulary names their three kinds: `lenses`, whose reviewers run in parallel; `adversary`, one reviewer who tests the findings so far; and `adjudicator`, one reviewer whose verdict gates integration. The map form (`lenses:`, `adversary:`, `adjudicator:`) declares the canonical sequence: one step for each key it sets, each key optional, in that order. The list form, `steps:`, declares any sequence of those kinds: a kind may repeat, and an adjudicator step comes at most once and last. This panel runs a second lens step and a second adversary step ahead of its one verdict:
+
+```yaml
+defaults:
+  review:
+    steps:
+      - lenses: [a, b]
+      - adversary: x
+      - lenses: [c]
+      - adversary: x
+      - adjudicator: z
+```
 
 ## The spec
 
@@ -51,7 +93,7 @@ defaults:
   grounder: symbols         # symbols | grep | nop
   budget: 60                # spawn-cap circuit breaker (see below)
   max_retries: 6            # remediation depth before escalation
-  review:                   # the three-tier panel every unit inherits
+  review:                   # the review sequence every unit inherits
     lenses: [architecture-reviewer, sdet]
     adversary: adversary
     adjudicator: adjudicator
@@ -97,13 +139,13 @@ Review is per unit, not a downstream stage. Each unit runs its own complete cycl
 
 ```
  ground -> implement (RED -> GREEN, in a worktree) -> gates
-   -> tier 1: lenses (parallel)  -> tier 2: adversary -> tier 3: adjudicator
+   -> each review step in sequence (default: lenses in parallel -> adversary -> adjudicator)
    -> approve + green  =>  integrate (merge to the run branch)
    -> reject or red    =>  remediate (resume each persona's session with the feedback)
                            ... up to max_retries, then escalate to a human
 ```
 
-A re-attempt continues each persona's own session rather than starting a cold one. Every spawn runs as a Claude Code session whose id is recorded in the run log beside it; on the unit's next attempt the implementer and the sdet-author, and after a review round sent the unit back each lens, the adversary and the adjudicator, resume the session their role last ran as on that unit in the same worktree (`claude -p --resume`), sent only what changed: the implementer its prior-failure block (the failing gate evidence, the review reasoning and the REQUIRED list), the sdet-author what sent the unit back (the review round's delta, the gates the last attempt failed, or both), each review tier that round's delta and REQUIRED list with the findings now recorded about the unit's files. The criterion, the grounding slice and the diff they already read stay in the session. Because the id lives in the log, a driver relaunched by adoption resumes the same sessions; a role with no recorded session (a first attempt, a host that runs none), a session that ran in another worktree, a respawn within a round, and a resume whose session transcript is gone all start a fresh session on the full prompt.
+A re-attempt continues each persona's own session rather than starting a cold one. Every spawn runs as a Claude Code session whose id is recorded in the run log beside it; on the unit's next attempt the implementer and the sdet-author, and after a review round sent the unit back the reviewers of each review step, resume the session their role last ran as on that unit in the same worktree (`claude -p --resume`), sent only what changed: the implementer its prior-failure block (the failing gate evidence, the review reasoning and the REQUIRED list), the sdet-author what sent the unit back (the review round's delta, the gates the last attempt failed, or both), each review step that round's delta and REQUIRED list with the findings now recorded about the unit's files. The criterion, the grounding slice and the diff they already read stay in the session. Because the id lives in the log, a driver relaunched by adoption resumes the same sessions; a role with no recorded session (a first attempt, a host that runs none), a session that ran in another worktree, a respawn within a round, and a resume whose session transcript is gone all start a fresh session on the full prompt.
 
 Consequence worth knowing: units run as overlapping pipelines, so an earlier unit's review can complete while a later unit is still building. Progress displays group by per-unit phase labels (`u3:Build`, `u3:Review`) precisely so this does not read as stages running out of order.
 

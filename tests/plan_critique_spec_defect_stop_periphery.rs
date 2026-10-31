@@ -29,13 +29,13 @@
 mod common;
 
 use common::cli::{
-    read_run_events, record_clean_critique, refused_new_run, run_payloads, run_rigger,
-    run_rigger_ok, temp_repoless_project, with_run_store, write_scaffold,
+    plan_the_widget, read_run_events, record_clean_critique, refused_new_run, run_payloads,
+    run_rigger, run_rigger_ok, temp_repoless_project, with_run_store, write_scaffold,
 };
 use common::fixtures::{
     critique_reject, keyed_index, keyed_payload, spec_defect_halt_text, stop_records,
     the_stop_records, DAG_CRITIQUE_VERDICT_PARAGRAPH, STOP_ESCALATED_KEY, STOP_LESSON_KEY,
-    STOP_SPEC_DEFECT_KEY,
+    STOP_SPEC_DEFECT_KEY, WIDGET_CRITERION,
 };
 use rigger::conductor::STREAM;
 use rigger::eventstore::{Event, ExpectedRevision};
@@ -49,15 +49,13 @@ const SPEC: &str = "./specs/widget.md";
 /// The spec an earlier run in the same store was launched with.
 const EARLIER_SPEC: &str = "specs/old.md";
 
-/// The one criterion of [`SPEC`], which the planner's unit ([`plan`]) covers.
-const CRITERION: &str = "the widget renderer is implemented";
-
-/// [`SPEC`]'s text as a run is launched on it: a Design sentence and [`CRITERION`].
+/// [`SPEC`]'s text as a run is launched on it: a Design sentence and its one criterion,
+/// [`WIDGET_CRITERION`], which the planner's unit ([`plan_the_widget`]) covers.
 const ORIGINAL_SPEC: &str = "# Widget\n\n## Design\n\nThe renderer draws widgets.\n\n\
                              ## Done when\n\n- [ ] the widget renderer is implemented\n";
 
 /// [`SPEC`]'s text as the operator amends it after the stop: a Design sentence closing the
-/// defect, and [`CRITERION`].
+/// defect, and [`WIDGET_CRITERION`].
 const AMENDED_SPEC: &str = "# Widget\n\n## Design\n\nThe renderer draws one widget per call.\n\n\
                             ## Done when\n\n- [ ] the widget renderer is implemented\n";
 
@@ -143,21 +141,6 @@ fn parks(root: &Path, spawns: &[&str]) {
     );
 }
 
-/// Answer the parked planner spawn `spawn` as a courier does: its proposal, then its result.
-fn plan(root: &Path, spawn: &str) {
-    let unit = json!({
-        "id": "u-widget",
-        "agent": "worker",
-        "criterion": CRITERION,
-        "needs": [],
-    });
-    run_rigger_ok(
-        root,
-        &["emit", "--spawn", spawn, "UnitProposed", &unit.to_string()],
-    );
-    run_rigger_ok(root, &["result", spawn, "proposed the DAG"]);
-}
-
 /// Answer critique round `k`'s parked adversary.
 fn review(root: &Path, k: u32) {
     run_rigger_ok(
@@ -174,7 +157,7 @@ fn review(root: &Path, k: u32) {
 /// round 0's adversary.
 fn plan_and_review_first(root: &Path) {
     parks(root, &["plan-critique/adversary#0", "plan/implementer#0"]);
-    plan(root, "plan/implementer#0");
+    plan_the_widget(root, "plan/implementer#0", "worker");
     review(root, 0);
 }
 
@@ -183,7 +166,7 @@ fn plan_and_review_first(root: &Path) {
 fn re_plan_and_review(root: &Path, k: u32) {
     let re_plan = format!("plan/replan#{k}");
     parks(root, &[&re_plan]);
-    plan(root, &re_plan);
+    plan_the_widget(root, &re_plan, "worker");
     parks(root, &[&format!("plan-critique/adversary#{k}")]);
     review(root, k);
 }
@@ -548,7 +531,7 @@ fn a_stopped_run_relaunches_once_its_amended_spec_is_critiqued_and_the_new_run_s
         vec![
             (json!(EARLIER_SPEC), json!([])),
             (json!(SPEC), json!([])),
-            (json!(SPEC), json!([CRITERION])),
+            (json!(SPEC), json!([WIDGET_CRITERION])),
         ],
     );
 }
@@ -559,7 +542,7 @@ fn a_stopped_run_relaunches_once_its_amended_spec_is_critiqued_and_the_new_run_s
 /// is critiqued, and then begins a new run that starts clean.
 #[test]
 fn a_run_stopped_on_its_specs_criteria_relaunches_with_no_fresh_after_a_design_amendment() {
-    let criteria = vec![CRITERION.to_string()];
+    let criteria = vec![WIDGET_CRITERION.to_string()];
     let (dir, _) = answered_second_reject_on(
         &criteria,
         &critique_reject("spec-ambiguity", &["adv-2", "adv-3"]),
@@ -575,9 +558,9 @@ fn a_run_stopped_on_its_specs_criteria_relaunches_with_no_fresh_after_a_design_a
         root,
         &[],
         vec![
-            (json!(EARLIER_SPEC), json!([CRITERION])),
-            (json!(SPEC), json!([CRITERION])),
-            (json!(SPEC), json!([CRITERION])),
+            (json!(EARLIER_SPEC), json!([WIDGET_CRITERION])),
+            (json!(SPEC), json!([WIDGET_CRITERION])),
+            (json!(SPEC), json!([WIDGET_CRITERION])),
         ],
     );
 }

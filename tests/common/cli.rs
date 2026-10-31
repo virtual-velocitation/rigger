@@ -1,5 +1,6 @@
 //! Fixtures for suites that drive the compiled `rigger` binary against a throwaway project:
-//! running it, seeding the stores it reads, and reading back what it wrote.
+//! running it, seeding the stores and operator instruction files it reads, and reading back what
+//! it wrote.
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
@@ -102,12 +103,195 @@ pub fn run_rigger(cwd: &Path, args: &[&str]) -> (String, String, bool) {
     run_rigger_envs(cwd, args, &[])
 }
 
+/// Post one `UnitProposed` decision for the currently-parked spawn `spawn`, through the
+/// real `rigger emit --spawn` CLI courier (`cmd_emit`, `src/main.rs`) - the established
+/// native-courier idiom for a scripted (non-MCP) agent to record a decision, threading its
+/// OWN spawn id into `META_SPAWN` exactly as a live MCP-tooled planner's stamped emit does.
+pub fn propose_unit_via_rigger_emit(root: &Path, spawn: &str, body: &serde_json::Value) {
+    let (_out, err, ok) = run_rigger(
+        root,
+        &["emit", "--spawn", spawn, "UnitProposed", &body.to_string()],
+    );
+    assert!(
+        ok,
+        "rigger emit --spawn {spawn} UnitProposed {body} must succeed; stderr:\n{err}"
+    );
+}
+
+/// Answer the parked planner spawn `spawn` as a courier does: its proposal of the one
+/// [`WIDGET_UNIT`](super::fixtures::WIDGET_UNIT), handed to `agent`, then its result.
+pub fn plan_the_widget(root: &Path, spawn: &str, agent: &str) {
+    let unit = serde_json::json!({
+        "id": super::fixtures::WIDGET_UNIT,
+        "agent": agent,
+        "criterion": super::fixtures::WIDGET_CRITERION,
+        "needs": [],
+    });
+    propose_unit_via_rigger_emit(root, spawn, &unit);
+    run_rigger_ok(root, &["result", spawn, "proposed the DAG"]);
+}
+
 /// Run `rigger <args...>` in `cwd`, asserting it exits 0 (naming its stderr when it does not),
 /// and return its stdout.
 pub fn run_rigger_ok(cwd: &Path, args: &[&str]) -> String {
-    let (out, err, ok) = run_rigger(cwd, args);
+    run_rigger_envs_ok(cwd, args, &[])
+}
+
+/// Run `rigger <args...>` in `cwd` with `envs` set ([`run_rigger_envs`]), asserting it exits 0
+/// (naming its stderr when it does not), and return its stdout.
+pub fn run_rigger_envs_ok(cwd: &Path, args: &[&str], envs: &[(&str, &str)]) -> String {
+    let (out, err, ok) = run_rigger_envs(cwd, args, envs);
     assert!(ok, "rigger {} must exit 0; stderr:\n{err}", args.join(" "));
     out
+}
+
+/// Write each file of the operator layer `layer` into `root`'s `.rigger/instructions/` as
+/// `<name>.md` holding its body.
+pub fn write_operator_layer(root: &Path, layer: &[rigger::instructions::Instruction]) {
+    let dir = super::fixtures::instructions_dir(root);
+    for ins in layer {
+        std::fs::write(dir.join(format!("{}.md", ins.name)), &ins.body).unwrap();
+    }
+}
+
+/// Run `rigger validate` in `root` and assert it succeeds and that the lines of its stderr warning
+/// of a built-in instruction an operator file shadows are `advisories`, in order.
+pub fn assert_validate_names_the_shadowed_built_ins(root: &Path, advisories: &[&str]) {
+    let (_out, err, ok) = run_rigger(root, &["validate"]);
+    assert!(
+        ok,
+        "validate succeeds beside its shadow advisories; stderr:\n{err}"
+    );
+    assert_eq!(
+        lines_where(&err, |line| line.contains("built-in instruction")),
+        advisories,
+        "validate warns once per shadowed built-in and of no other; stderr:\n{err}"
+    );
+}
+
+/// Assert that over `root`, whose operator layer replaces the communication built-in, switches the
+/// working-discipline built-in off and adds one file that shadows nothing, `rigger instructions`
+/// prints each built-in with its state, `rigger validate` warns once per shadowed built-in on a
+/// success exit with the same lines on the repeat, and `rigger prime` opens with the built-ins in
+/// force and the unshadowed file count.
+pub fn assert_reporters_name_the_shadowing_layer_states(root: &Path) {
+    use super::fixtures::SHADOWING_LAYER_ADVISORIES;
+    assert_instructions_render_the_shadowing_layer(root, &[]);
+    for _ in 0..2 {
+        assert_validate_names_the_shadowed_built_ins(root, &SHADOWING_LAYER_ADVISORIES);
+    }
+    assert_prime_names_the_shadowing_layer_states(root, &[]);
+}
+
+/// The first line `rigger prime` prints run in `cwd` ([`run_rigger_ok`]): the instructions in
+/// force.
+pub fn prime_first_line(cwd: &Path, envs: &[(&str, &str)]) -> Option<String> {
+    run_rigger_envs_ok(cwd, &["prime"], envs)
+        .lines()
+        .next()
+        .map(str::to_string)
+}
+
+/// A reporter assertion: it runs one instruction reporter (`rigger prime`, `rigger instructions`)
+/// in a directory with the given environment set, and asserts what it printed.
+pub type Reporter = fn(&Path, &[(&str, &str)]);
+
+/// Both instruction reporters' assertions over the named-entry fixture: `rigger instructions`,
+/// then `rigger prime`.
+pub const INSTRUCTION_REPORTERS: [Reporter; 2] = [
+    assert_instructions_render_the_shadowing_layer,
+    assert_prime_names_the_shadowing_layer_states,
+];
+
+/// Run each of [`INSTRUCTION_REPORTERS`] in `cwd` with `envs` set.
+pub fn assert_reporters_in(cwd: &Path, envs: &[(&str, &str)]) {
+    for report in INSTRUCTION_REPORTERS {
+        report(cwd, envs);
+    }
+}
+
+/// Run the placement assertion `placed` - a reporter run from one place in the project - for each
+/// of [`INSTRUCTION_REPORTERS`], in a committed git project with a store and in one before any
+/// store exists.
+pub fn assert_each_reporter_with_and_without_a_store(placed: fn(&Path, Reporter)) {
+    for store in [true, false] {
+        for report in INSTRUCTION_REPORTERS {
+            let proj = super::fixtures::temp_git_project_with_commit();
+            if store {
+                seed_store(proj.path());
+            }
+            placed(proj.path(), report);
+        }
+    }
+}
+
+/// Write the named-entry fixture (`shadowing_operator_layer`) into the project at `root`, then run
+/// the reporter assertion `report` at `root` and in its subdirectory: the reporter reads the
+/// project's instruction layer from either, never the subdirectory's own.
+pub fn assert_reported_from_below(root: &Path, report: Reporter) {
+    write_operator_layer(root, &super::fixtures::shadowing_operator_layer());
+    report(root, &[]);
+    report(&super::fixtures::subdirectory_of(root), &[]);
+}
+
+/// Write the named-entry fixture (`shadowing_operator_layer`) into the committed git project at
+/// `root`, uncommitted, add the linked worktree `worktree` places - nested under the project
+/// ([`super::git::nested_worktree`]) or relocated outside it ([`super::git::relocated_worktree`]) -
+/// which therefore checks none of that layer out, write another layer
+/// (`house_and_team_operator_layer`) into the worktree's own `.rigger/instructions/`, then run the
+/// reporter assertion `report` in the worktree: the reporter reads the main checkout's layer, never
+/// the worktree's own.
+pub fn assert_reported_from_a_worktree(
+    root: &Path,
+    report: Reporter,
+    worktree: fn(&Path, &str) -> PathBuf,
+) {
+    write_operator_layer(root, &super::fixtures::shadowing_operator_layer());
+    let wt = worktree(root, "rigger-wt-reporter-layer");
+    write_operator_layer(&wt, &super::fixtures::house_and_team_operator_layer());
+    report(&wt, &[]);
+}
+
+/// Write the named-entry fixture (`shadowing_operator_layer`) into the project at `root`, then run
+/// the reporter assertion `report` there with the gate store fence
+/// (`rigger::gate::STORE_FENCE_ENV`) pinned to a scratch store outside the project, as a gate's
+/// own process runs a reporter: it reports the project's layer, the same lines as an unfenced run,
+/// since the fence isolates the store and never names the project's root.
+pub fn assert_reported_under_the_store_fence(root: &Path, report: Reporter) {
+    write_operator_layer(root, &super::fixtures::shadowing_operator_layer());
+    let (_scratch, fence) = scratch_store_fence();
+    report(root, &[(rigger::gate::STORE_FENCE_ENV, fence.as_str())]);
+}
+
+/// A scratch directory, and the path inside it a test pins the gate store fence
+/// (`rigger::gate::STORE_FENCE_ENV`) to: a store outside every project, which the binary creates.
+/// The directory must outlive the process it fences.
+pub fn scratch_store_fence() -> (tempfile::TempDir, String) {
+    let scratch = tempfile::tempdir().expect("create the fence's scratch dir");
+    let fence = scratch.path().join("store-fence");
+    let fence = fence.to_str().unwrap().to_string();
+    (scratch, fence)
+}
+
+/// `rigger instructions` run in `cwd` prints the layers of the named-entry fixture
+/// (`shadowing_operator_layer`) its project holds: each built-in with its state, then the
+/// unshadowed file.
+pub fn assert_instructions_render_the_shadowing_layer(cwd: &Path, envs: &[(&str, &str)]) {
+    assert_eq!(
+        run_rigger_envs_ok(cwd, &["instructions"], envs),
+        super::fixtures::rendered_shadowing_layer(),
+        "`rigger instructions` prints each built-in with its state, then the unshadowed file"
+    );
+}
+
+/// `rigger prime` run in `cwd` opens with the in-force line of the named-entry fixture
+/// (`shadowing_operator_layer`) its project holds.
+pub fn assert_prime_names_the_shadowing_layer_states(cwd: &Path, envs: &[(&str, &str)]) {
+    assert_eq!(
+        prime_first_line(cwd, envs).as_deref(),
+        Some(super::fixtures::SHADOWING_LAYER_IN_FORCE_LINE),
+        "`rigger prime` opens with the built-ins in force and the unshadowed file count"
+    );
 }
 
 /// Run `rigger graph --around <seed> --depth <depth>` in `cwd` ([`run_rigger`]) and return
@@ -275,6 +459,28 @@ pub fn run_rigger_in_state_home(cwd: &Path, state_home: &Path, args: &[&str]) ->
     rigger_command(cwd, args, &[], state_home)
         .output()
         .expect("the rigger binary runs")
+}
+
+/// Run `rigger <args>` with extra environment `envs` from the empty directory `dir` with `dir`
+/// deleted: a spawn cannot enter a directory already gone, so a shell enters it, removes it and
+/// execs the binary, with the environment [`rigger_command`] sets, and the process starts with no
+/// working directory to read.
+pub fn run_rigger_from_deleted(dir: &Path, args: &[&str], envs: &[(&str, &str)]) -> Output {
+    let state = tempfile::tempdir().expect("create a temp XDG_STATE_HOME for the rigger run");
+    let rigger = rigger_command(dir, args, envs, state.path());
+    let mut shell = Command::new("sh");
+    shell
+        .args(["-c", r#"cd "$1" && rmdir "$1" && shift && exec "$@""#, "sh"])
+        .arg(dir)
+        .arg(rigger.get_program())
+        .args(rigger.get_args());
+    for (name, value) in rigger.get_envs() {
+        match value {
+            Some(value) => shell.env(name, value),
+            None => shell.env_remove(name),
+        };
+    }
+    shell.output().expect("the shell runs the rigger binary")
 }
 
 /// `rigger emit <typ> <json>` in `root`, asserting it succeeds.

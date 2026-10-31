@@ -7,14 +7,15 @@ use std::path::{Component, Path, PathBuf};
 
 use serde_json::Value;
 
+use crate::config::{ReviewPanel, ReviewStep};
 use crate::contextgraph::query::referenced_id;
 use crate::contextgraph::{TYPE_DECISION_MADE, TYPE_REVIEW_FINDING};
 use crate::eventstore::{Error as StoreError, Event, EventStore, Position, TypeSelection};
 use crate::ledger;
 use crate::playbooks::fnv1a_64;
 use crate::spawn::{
-    attempt_of, lens_role, requests, result_of, spawn_id, Adjudication, SpawnEvent, SpawnResult,
-    ROLE_ADVERSARY, TYPE_SPAWN_REQUESTED, TYPE_SPAWN_RESULT,
+    attempt_of, requests, result_of, review_step_role, spawn_id, Adjudication, ReviewKind,
+    SpawnEvent, SpawnResult, ROLE_ADVERSARY, TYPE_SPAWN_REQUESTED, TYPE_SPAWN_RESULT,
 };
 
 /// The two review-depth tiers a unit routes to: `TIER_LIGHT` runs the reduced roster,
@@ -250,82 +251,80 @@ pub fn verdict_compensates(output: &str) -> Option<String> {
     None
 }
 
-/// The adversary's routed review roster (spec 67, criterion 4): the unit's lens AGENT ids
-/// (`ReviewPanel::lenses` / [`fan_out_lenses`]'s raw values), rendered as the same
-/// review-attribution role tokens ([`lens_role`]) a `ReviewFinding.by` already carries - so
-/// the driver names EXACTLY who the adversary is grounding against, never a guessed set.
-/// Pure over the panel's own lens list, so it stays correct for whichever panel the
-/// conductor actually routed to (light or full) - the caller always passes THAT panel's
-/// lenses, never a static declaration.
-pub fn review_roster(lenses: &[String]) -> Vec<String> {
-    lenses.iter().map(|id| lens_role(id)).collect()
-}
-
-/// The adjudicator's routed review roster (spec 67, criterion 4): [`review_roster`]'s same
-/// lens roster, PLUS [`ROLE_ADVERSARY`] when an adversary tier actually ran for this panel
-/// (`adversary_id` non-empty) - never a fabricated entry for a panel with no adversary
-/// (e.g. a reduced light tier).
-pub fn adjudicator_roster(lenses: &[String], adversary_id: &str) -> Vec<String> {
-    let mut roster = review_roster(lenses);
-    if !adversary_id.is_empty() {
-        roster.push(ROLE_ADVERSARY.to_string());
+/// The routed review roster of the step at `index` in `steps` (spec 67, criterion 4): the role
+/// token `mint` spells for every agent of every step before it, in step order (a lens step's
+/// agents in declared order), each minted with its step's [`ReviewKind`] and that step's 1-based
+/// ordinal among the steps of its kind. A lens step reviews independently of the others, so
+/// its roster is empty. `index` may be `steps.len()`, the roster a step appended after them
+/// would carry. Pure over the steps of the panel the conductor actually routed to (light or
+/// full), so the driver names EXACTLY the spawns a reviewer grounds against, never a guessed
+/// set.
+pub fn step_roster(
+    steps: &[ReviewStep],
+    index: usize,
+    mint: impl Fn(ReviewKind, &str, u32) -> String,
+) -> Vec<String> {
+    if let Some(ReviewStep::Lenses(_)) = steps.get(index) {
+        return Vec::new();
+    }
+    let mut roster = Vec::new();
+    for (earlier, step) in steps.iter().enumerate().take(index) {
+        let (kind, k) = (step.kind(), step_ordinal(steps, earlier));
+        roster.extend(step.agents().iter().map(|agent| mint(kind, agent, k)));
     }
     roster
 }
 
-/// The plan-critique rules both critique prompts read (spec 112): the Rule 7 and Rule 8 bullets
-/// and the note on shared blast radius, exactly as the DAG critique has always pushed them. The
-/// DAG critique pushes them after its opener; the spec critique pushes them after its stance,
-/// which tells the critic a unit reads as a criterion and a reject as a BLOCKING finding.
-pub const PLAN_CRITIQUE_RULES: &str =
-    "- Rule 7 (mitigation ownership): every demanded mitigation must be owned by \
-     exactly one unit, with the exclusion named on its neighbors; an unassigned or \
-     ambiguously-owned mitigation - two units that will fight over the same concern \
-     through the shared context graph - is a reject.\n\
-     - Rule 8 (open dispositions): a unit must not leave a disposition open for a \
-     reviewer to re-litigate; an undecided disposition is a reject.\n\
-     NOTE on shared blast radius: units whose file footprints OVERLAP are NOT a \
-     defect. `partition: by-blast-radius` runs them in SEPARATE sequential batches \
-     (each branches off the prior batch's integrated tree), and per-unit worktree \
-     isolation keeps every reviewer on its own diff - so overlap integrates cleanly \
-     and reviews independently. Do NOT reject merely because two units touch the \
-     same file. Reject a shared-file split ONLY when it is a genuine OWNERSHIP or \
-     COHERENCE defect (rule 7) - two units that cannot own their concern cleanly - \
-     not for mechanical overlap the partitioner already serializes.\n\n";
+/// The agent of the adjudicator step of `steps`, the one a panel gates on, else `None`.
+pub fn step_adjudicator(steps: &[ReviewStep]) -> Option<&str> {
+    steps.iter().find_map(ReviewStep::adjudicator)
+}
 
-/// Section (i) of the spec critique prompt: the stance, and the persona and discipline duties a
-/// spec critique voids.
-const CRITIQUE_STANCE: &str = "This is a critique of a SPEC, not code: the text below is a design \
-     and its Done-when criteria, written before any run builds them. Default to skepticism: \
-     assume the author missed something, and try to prove the spec self-contradictory or \
-     undecided; never soften a finding to converge. Cite the criterion number or Design block \
-     title for every finding. In the rules below a unit reads as a criterion, and a reject as a \
-     BLOCKING finding. Every persona or discipline duty that conflicts with a spec critique is \
-     void for this task: reviewing lenses and a diff, the rule against rendering a verdict, \
-     running gates or any build or test command, editing a file, and recording through \
-     `rigger_emit`, `rigger_progress` or `rigger_scratch`. Read the spec and the repository; the \
-     finding lines and the verdict line of your final message are the only output.\n\nThe rules:\n";
+/// The 1-based ordinal of `steps[index]` among the steps of its kind, the `k` of
+/// [`review_step_role`]: a pure function of the sequence and the index, so a resumed process
+/// counts what the first one counted.
+pub fn step_ordinal(steps: &[ReviewStep], index: usize) -> u32 {
+    let kind = steps[index].kind();
+    let earlier = steps[..index].iter().filter(|step| step.kind() == kind);
+    earlier.count() as u32 + 1
+}
 
-/// Section (iii): the two ownership defects a spec can carry.
-const CRITIQUE_OWNERSHIP: &str = "Ownership defects in a spec: twin criteria (two checkboxes \
-     claiming one concern) and bundling (one checkbox carrying two mitigations) are each a \
-     BLOCKING finding.\n\n";
+/// The adversary's routed review roster: the [`step_roster`] of an adversary step after a lens
+/// step of `lenses`, so each lens agent's [`lens_role`](crate::spawn::lens_role) token, the one
+/// a `ReviewFinding.by` already carries. It is [`adjudicator_roster`] with no adversary.
+pub fn review_roster(lenses: &[String]) -> Vec<String> {
+    adjudicator_roster(lenses, "")
+}
 
-/// Section (iv): the two named hunts.
-const CRITIQUE_HUNTS: &str = "Run two hunts, and name the hunt in each finding it produces:\n\
-     - LANDING ORDER: for every ordered pair of criteria (A, B) sharing a command, a store read, \
-     a file or a counter, ask \"if A lands first on a tree without B, does A's own text hold?\"; \
-     every no is a finding.\n\
-     - UNDECIDED CORNER: for every criterion's mechanism, walk the corners empty, repeated, \
-     reverted, DROPPED (a fact present in an earlier generation and absent in a later one), \
-     concurrent, crash-resume, cold start and existing data; each corner no Design sentence \
-     decides is a finding.\n\n";
+/// The adjudicator's routed review roster: the [`step_roster`], minted by [`review_step_role`],
+/// of an adjudicator step after a lens step of `lenses` and an adversary step when
+/// `adversary_id` is set, so [`review_roster`]'s lens roster plus [`ROLE_ADVERSARY`] only when
+/// an adversary ran - never a fabricated entry for a panel with no adversary (e.g. a reduced
+/// light tier).
+pub fn adjudicator_roster(lenses: &[String], adversary_id: &str) -> Vec<String> {
+    let steps = ReviewPanel {
+        lenses: lenses.to_vec(),
+        adversary: adversary_id.to_string(),
+        ..Default::default()
+    }
+    .steps();
+    step_roster(&steps, steps.len(), review_step_role)
+}
 
-/// Section (v): the ban on criterion edits.
-const CRITIQUE_BAN: &str = "The ban: a fix is a Design or Global-constraint change, never a \
-     criterion edit.\n\n";
+/// The spec critique's task framing and voided-duties clause: what is under critique, how the
+/// critic's persona rules read on a spec, and the duties this task voids. The critique method
+/// itself is the persona's, under its `## When you critique a spec or a plan` section.
+const CRITIQUE_FRAMING: &str =
+    "This is a critique of a SPEC, not code: the text below is a design \
+     and its Done-when criteria, written before any run builds them. In your persona's critique \
+     rules a unit reads as a criterion, and a reject as a BLOCKING finding. Every persona or \
+     discipline duty that conflicts with a spec critique is void for this task: reviewing lenses \
+     and a diff, the rule against rendering a verdict, running gates or any build or test command, \
+     editing a file, and recording through `rigger_emit`, `rigger_progress` or `rigger_scratch`. \
+     Read the spec and the repository; the finding lines and the verdict line of your final \
+     message are the only output.\n\n";
 
-/// Section (vi): the critic's output contract.
+/// The critic's output contract.
 const CRITIQUE_OUTPUT_CONTRACT: &str = "The output contract: one finding per line, then the \
      verdict as the last line:\n\n\
      <critic id> | BLOCKING | <criterion n or Design block title> | <exact reading that breaks> \
@@ -336,13 +335,14 @@ const CRITIQUE_OUTPUT_CONTRACT: &str = "The output contract: one finding per lin
      NON-BLOCKING; any other line is prose. `<critic id>` is your own short label for the \
      finding. The verdict is reject when any line is BLOCKING, else approve.\n\n";
 
-/// The spec critique prompt (spec 112): the stance, [`PLAN_CRITIQUE_RULES`], the ownership
-/// defects, the two hunts, the ban on criterion edits, the output contract, and the spec text
-/// verbatim as its tail - in that order, from the spec path and text alone.
+/// The spec critique prompt (spec 112): the task framing with the voided-duties clause, the
+/// output contract, and the spec text verbatim as its tail - in that order, from the spec path
+/// and text alone. The method stands in the critic's persona; a persona without it still
+/// critiques under the output contract.
 pub fn spec_critique_prompt(spec_path: &str, spec_text: &str) -> String {
     format!(
-        "{CRITIQUE_STANCE}{PLAN_CRITIQUE_RULES}{CRITIQUE_OWNERSHIP}{CRITIQUE_HUNTS}{CRITIQUE_BAN}\
-         {CRITIQUE_OUTPUT_CONTRACT}The spec under critique, `{spec_path}`, verbatim:\n\n{spec_text}"
+        "{CRITIQUE_FRAMING}{CRITIQUE_OUTPUT_CONTRACT}The spec under critique, `{spec_path}`, \
+         verbatim:\n\n{spec_text}"
     )
 }
 
@@ -1108,91 +1108,38 @@ mod tests {
         );
     }
 
+    /// The critique method is the persona's: the prompt is the task framing, the voided-duties
+    /// clause, the output contract and the spec verbatim, byte for byte and nothing else.
     #[test]
-    fn the_plan_critique_rules_are_the_rule_seven_and_eight_bullets_and_the_overlap_note() {
-        assert!(PLAN_CRITIQUE_RULES.starts_with("- Rule 7 (mitigation ownership): "));
-        let rule_8 = PLAN_CRITIQUE_RULES
-            .find("\n- Rule 8 (open dispositions): ")
-            .expect("the Rule 8 bullet");
-        let note = PLAN_CRITIQUE_RULES
-            .find("\nNOTE on shared blast radius: ")
-            .expect("the shared blast radius note");
-        assert!(rule_8 < note, "Rule 8 precedes the note");
-        assert!(PLAN_CRITIQUE_RULES.ends_with("the partitioner already serializes.\n\n"));
-    }
-
-    #[test]
-    fn the_spec_critique_prompt_runs_its_sections_in_order_and_ends_with_the_spec_verbatim() {
+    fn the_spec_critique_prompt_is_only_its_framing_voided_duties_and_output_contract() {
         let text = "# 9 - A spec\n\n## Done when\n\n- [ ] a test proves X\n";
-        let prompt = spec_critique_prompt("specs/9-a.md", text);
-        let at = |needle: &str| {
-            prompt
-                .find(needle)
-                .unwrap_or_else(|| panic!("the prompt carries {needle:?}:\n{prompt}"))
-        };
-        let order = [
-            at(CRITIQUE_STANCE),
-            at(PLAN_CRITIQUE_RULES),
-            at(CRITIQUE_OWNERSHIP),
-            at(CRITIQUE_HUNTS),
-            at(CRITIQUE_BAN),
-            at(CRITIQUE_OUTPUT_CONTRACT),
-            at("The spec under critique, `specs/9-a.md`, verbatim:\n\n"),
-        ];
-        assert_eq!(order[0], 0, "the stance opens the prompt");
-        assert!(
-            order.windows(2).all(|w| w[0] < w[1]),
-            "sections (i) to (vii) appear in that order: {order:?}"
-        );
-        assert!(prompt.ends_with(text), "the spec text is the verbatim tail");
-        assert!(
-            !prompt.contains("Unit size"),
-            "no unit-size line in a spec critique"
+        assert_eq!(
+            spec_critique_prompt("specs/9-a.md", text),
+            format!(
+                "This is a critique of a SPEC, not code: the text below is a design and its \
+                 Done-when criteria, written before any run builds them. In your persona's \
+                 critique rules a unit reads as a criterion, and a reject as a BLOCKING finding. \
+                 Every persona or discipline duty that conflicts with a spec critique is void for \
+                 this task: reviewing lenses and a diff, the rule against rendering a verdict, \
+                 running gates or any build or test command, editing a file, and recording \
+                 through `rigger_emit`, `rigger_progress` or `rigger_scratch`. Read the spec and \
+                 the repository; the finding lines and the verdict line of your final message are \
+                 the only output.\n\nThe output contract: one finding per line, then the verdict \
+                 as the last line:\n\n\
+                 <critic id> | BLOCKING | <criterion n or Design block title> | <exact reading \
+                 that breaks> | <smallest Design change that closes it>\n\
+                 <critic id> | NON-BLOCKING | ...\n\
+                 {{\"verdict\":\"reject\"}}\n\n\
+                 A finding line has five `|`-separated fields whose second is exactly BLOCKING or \
+                 NON-BLOCKING; any other line is prose. `<critic id>` is your own short label for \
+                 the finding. The verdict is reject when any line is BLOCKING, else \
+                 approve.\n\nThe spec under critique, `specs/9-a.md`, verbatim:\n\n{text}"
+            )
         );
     }
 
     #[test]
-    fn the_spec_critique_sections_carry_their_decided_duties() {
-        for duty in [
-            "critique of a SPEC, not code",
-            "skepticism",
-            "assume the author missed something",
-            "self-contradictory or undecided",
-            "never soften",
-            "criterion number or Design block title",
-            "a unit reads as a criterion",
-            "a reject as a BLOCKING finding",
-            "reviewing lenses and a diff",
-            "the rule against rendering a verdict",
-            "running gates or any build or test command",
-            "editing a file",
-            "`rigger_emit`, `rigger_progress` or `rigger_scratch`",
-            "the finding lines and the verdict line of your final message are the only output",
-        ] {
-            assert!(CRITIQUE_STANCE.contains(duty), "the stance names {duty:?}");
-        }
-        for defect in [
-            "twin criteria",
-            "two checkboxes claiming one concern",
-            "bundling",
-        ] {
-            assert!(
-                CRITIQUE_OWNERSHIP.contains(defect),
-                "ownership names {defect:?}"
-            );
-        }
-        for hunt in [
-            "LANDING ORDER",
-            "if A lands first on a tree without B, does A's own text hold?",
-            "UNDECIDED CORNER",
-            "empty, repeated, reverted, DROPPED",
-            "a fact present in an earlier generation and absent in a later one",
-            "concurrent, crash-resume, cold start and existing data",
-        ] {
-            assert!(CRITIQUE_HUNTS.contains(hunt), "the hunts name {hunt:?}");
-        }
-        assert!(CRITIQUE_BAN
-            .contains("a fix is a Design or Global-constraint change, never a criterion edit"));
+    fn the_critique_output_contract_carries_the_finding_lines_and_the_verdict_line() {
         for line in [
             "<critic id> | BLOCKING | <criterion n or Design block title> | <exact reading that \
              breaks> | <smallest Design change that closes it>\n",
@@ -1503,5 +1450,161 @@ mod tests {
             PathBuf::from("/work/repo")
         );
         assert_eq!(spec_root(Path::new("/proj"), ""), PathBuf::from("/proj"));
+    }
+
+    /// A lens step of `agents`.
+    fn lens_step(agents: &[&str]) -> ReviewStep {
+        ReviewStep::Lenses(agents.iter().map(|a| a.to_string()).collect())
+    }
+
+    /// A minter spelling each token's kind, agent and 1-based ordinal among the steps of its
+    /// kind, so a roster shows which step each of its tokens came from.
+    fn ordinal_mint(kind: ReviewKind, agent: &str, k: u32) -> String {
+        format!("{kind:?}:{agent}:{k}")
+    }
+
+    #[test]
+    fn a_step_roster_mints_every_spawn_of_every_earlier_step_and_a_lens_step_none() {
+        let x = || ReviewStep::Adversary("x".into());
+        let z = || ReviewStep::Adjudicator("z".into());
+        let canonical: &[ReviewStep] = &[lens_step(&["a", "b"]), x(), z()];
+        let dropped: &[ReviewStep] = &[lens_step(&["a", "b"]), z()];
+        let no_lenses: &[ReviewStep] = &[x(), z()];
+        let one_step: &[ReviewStep] = &[z()];
+        let five: &[ReviewStep] = &[lens_step(&["a", "b"]), x(), lens_step(&["c"]), x(), z()];
+        let lens_twice: &[ReviewStep] = &[lens_step(&["a"]), lens_step(&["a"]), z()];
+        let token: fn(ReviewKind, &str, u32) -> String = review_step_role;
+        let ordinal: fn(ReviewKind, &str, u32) -> String = ordinal_mint;
+        let rows = [
+            (canonical, 0, token, vec![]),
+            (canonical, 1, token, vec!["lens:a", "lens:b"]),
+            (canonical, 2, token, vec!["lens:a", "lens:b", "adversary"]),
+            // One past the last step: the roster a step appended after them would carry.
+            (
+                canonical,
+                3,
+                token,
+                vec!["lens:a", "lens:b", "adversary", "adjudicator"],
+            ),
+            // The DROPPED adversary: the adjudicator's roster names the lenses alone.
+            (dropped, 1, token, vec!["lens:a", "lens:b"]),
+            (no_lenses, 0, token, vec![]),
+            (no_lenses, 1, token, vec!["adversary"]),
+            (one_step, 0, token, vec![]),
+            (five, 0, ordinal, vec![]),
+            (five, 1, ordinal, vec!["Lens:a:1", "Lens:b:1"]),
+            // A lens step after the adversary still carries no roster.
+            (five, 2, ordinal, vec![]),
+            (
+                five,
+                3,
+                ordinal,
+                vec!["Lens:a:1", "Lens:b:1", "Adversary:x:1", "Lens:c:2"],
+            ),
+            (
+                five,
+                4,
+                ordinal,
+                vec![
+                    "Lens:a:1",
+                    "Lens:b:1",
+                    "Adversary:x:1",
+                    "Lens:c:2",
+                    "Adversary:x:2",
+                ],
+            ),
+            (
+                five,
+                5,
+                ordinal,
+                vec![
+                    "Lens:a:1",
+                    "Lens:b:1",
+                    "Adversary:x:1",
+                    "Lens:c:2",
+                    "Adversary:x:2",
+                    "Adjudicator:z:1",
+                ],
+            ),
+            // A lens agent in two lens steps is rostered once per step, under each step's token.
+            (lens_twice, 2, ordinal, vec!["Lens:a:1", "Lens:a:2"]),
+            (lens_twice, 2, token, vec!["lens:a", "lens:a@2"]),
+            (lens_twice, 1, ordinal, vec![]),
+            // Each token of a repeated kind, the second adversary agent the first's.
+            (
+                five,
+                3,
+                token,
+                vec!["lens:a", "lens:b", "adversary", "lens:c@2"],
+            ),
+            (
+                five,
+                5,
+                token,
+                vec![
+                    "lens:a",
+                    "lens:b",
+                    "adversary",
+                    "lens:c@2",
+                    "adversary@2",
+                    "adjudicator",
+                ],
+            ),
+        ];
+        for (steps, index, mint, roster) in rows {
+            assert_eq!(
+                step_roster(steps, index, mint),
+                roster,
+                "{steps:?} at {index}"
+            );
+        }
+    }
+
+    /// A step's ordinal counts the steps of its own kind up to and including it, a pure function
+    /// of the sequence and the index: the other kinds between two steps of a kind add nothing.
+    #[test]
+    fn a_step_ordinal_counts_the_steps_of_its_kind_up_to_it() {
+        let x = || ReviewStep::Adversary("x".into());
+        let z = || ReviewStep::Adjudicator("z".into());
+        let five = [lens_step(&["a", "b"]), x(), lens_step(&["c"]), x(), z()];
+        for (index, ordinal) in [(0, 1), (1, 1), (2, 2), (3, 2), (4, 1)] {
+            assert_eq!(step_ordinal(&five, index), ordinal, "step {index}");
+        }
+        let three = [lens_step(&["a"]), lens_step(&["a"]), lens_step(&["b"])];
+        for (index, ordinal) in [(0, 1), (1, 2), (2, 3)] {
+            assert_eq!(step_ordinal(&three, index), ordinal, "step {index}");
+        }
+        assert_eq!(step_ordinal(&[z()], 0), 1, "a lone adjudicator step");
+    }
+
+    #[test]
+    fn the_review_and_adjudicator_rosters_are_the_canonical_sequences_step_rosters() {
+        // (lenses, adversary, review_roster, adjudicator_roster): the rows the step-roster
+        // table above pins under the real minter, and the sequence with neither key, which that
+        // table holds no row for.
+        let ab: Vec<String> = vec!["a".into(), "b".into()];
+        for (lenses, adversary, review, adjudicator) in [
+            (
+                &ab[..],
+                "x",
+                vec!["lens:a", "lens:b"],
+                vec!["lens:a", "lens:b", "adversary"],
+            ),
+            (
+                &ab[..],
+                "",
+                vec!["lens:a", "lens:b"],
+                vec!["lens:a", "lens:b"],
+            ),
+            (&[][..], "x", vec![], vec!["adversary"]),
+            (&[][..], "", vec![], vec![]),
+        ] {
+            assert_eq!(review_roster(lenses), review, "review_roster({lenses:?})");
+            assert_eq!(
+                adjudicator_roster(lenses, adversary),
+                adjudicator,
+                "adjudicator_roster({lenses:?}, {adversary:?})"
+            );
+        }
     }
 }

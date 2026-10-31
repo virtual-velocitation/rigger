@@ -97,6 +97,7 @@ mod common;
 
 use std::path::Path;
 
+use common::cli::propose_unit_via_rigger_emit;
 use common::cli::run_rigger;
 use common::cli::seed_run_events;
 use common::cli::temp_repoless_project;
@@ -107,7 +108,7 @@ use rigger::config::{AgentDef, Config, Gate, Stage};
 use rigger::eventstore::sqlite::Store;
 use rigger::gate::ExecRunner;
 use rigger::ledger;
-use serde_json::{json, Value};
+use serde_json::json;
 
 /// Write the `worker` agent file with `isolation` frontmatter lines (each ending in `\n`):
 ///
@@ -592,24 +593,6 @@ stages:
 "#,
     )
     .unwrap();
-}
-
-/// Post one `UnitProposed` decision for the currently-parked spawn `spawn`, through the
-/// real `rigger emit --spawn` CLI courier (`cmd_emit`, `src/main.rs`) - the established
-/// native-courier idiom for a scripted (non-MCP) agent to record a decision, threading its
-/// OWN spawn id into `META_SPAWN` exactly as a live MCP-tooled planner's stamped emit does.
-/// Never the crate's private in-process `AgentDriver::spawn` emit closure gap 5's own test
-/// uses above - this drives the SAME real subprocess boundary `run_rigger` already does for
-/// `rigger step`/`rigger result` in every other test in this file.
-fn propose_unit_via_rigger_emit(root: &Path, spawn: &str, body: &Value) {
-    let (_out, err, ok) = run_rigger(
-        root,
-        &["emit", "--spawn", spawn, "UnitProposed", &body.to_string()],
-    );
-    assert!(
-        ok,
-        "rigger emit --spawn {spawn} UnitProposed {body} must succeed; stderr:\n{err}"
-    );
 }
 
 /// A same-episode REAL SPLIT of `SPLIT_CRITERION`'s deterministic baseline into one live

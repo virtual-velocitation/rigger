@@ -1,10 +1,18 @@
-//! Plan-critique fixtures: the verdict paragraph the DAG critique prompt closes with, the
-//! adjudicator's reject line and the records a spec-defect stop appends (spec 112, criterion 5).
+//! Plan-critique fixtures: the widget unit a scripted planner proposes, the whole DAG critique
+//! prompt, with the unit size cap sentence, the disjoint overlap text, the line a re-plan round
+//! opens with and the verdict paragraph it is spelled from, the adjudicator's reject line and the
+//! records a spec-defect stop appends (spec 112, criterion 5).
 
 use rigger::conductor::{META_REPLAY_KEY, TYPE_SPEC_DEFECT};
 use rigger::contextgraph::TYPE_LESSON_LEARNED;
 use rigger::eventstore::Event;
 use rigger::ledger::TYPE_UNIT_ESCALATED;
+
+/// The one unit a scripted planner proposes.
+pub const WIDGET_UNIT: &str = "u-widget";
+
+/// The criterion [`WIDGET_UNIT`] serves, which the plan-critique fixtures plan against.
+pub const WIDGET_CRITERION: &str = "the widget renderer is implemented";
 
 /// The verdict paragraph every round of the DAG critique prompt closes with: its cause contract
 /// asks for `spec-ambiguity` - the cause the spec-defect stop reads, spelled here as the
@@ -12,16 +20,45 @@ use rigger::ledger::TYPE_UNIT_ESCALATED;
 /// remove, and for `decomposition-conflict` on every defect a re-plan can fix and when unsure.
 pub const DAG_CRITIQUE_VERDICT_PARAGRAPH: &str = "Render your final verdict as a JSON line: \
     {\"verdict\":\"approve\"} to release the fan-out, or {\"verdict\":\"reject\"} to send the \
-    decomposition back to the planner. Reject ONLY for a rule 7 (ownership) or rule 8 (open \
-    disposition) defect, a unit over the size cap, or a defect in a criterion's own text that no \
-    decomposition can remove - never for mechanical blast-radius overlap alone. A reject's cause \
-    follows this gate's contract, which governs it over any generic cause wording in your \
-    persona: \"cause\":\"spec-ambiguity\" only when the upheld defect is in a criterion's own \
+    decomposition back to the planner. A reject's cause follows this gate's contract, which \
+    governs it over any generic cause wording in your persona: \
+    \"cause\":\"spec-ambiguity\" only when the upheld defect is in a criterion's own \
     text and no decomposition can remove it (two criteria that contradict under every landing \
     order, a criterion no plan can satisfy, a demanded mitigation no criterion owns); \
     \"cause\":\"decomposition-conflict\" for every defect a re-plan can fix (twin units, a \
     missing exclusion between units, a unit over the size cap, a unit owning no criterion, a \
     split the planner chose). When unsure, \"cause\":\"decomposition-conflict\".";
+
+/// The unit size cap sentence the plan protocol and every round of the DAG critique prompt state.
+pub const UNIT_SIZE_CAP_SENTENCE: &str = "A unit is too large when it is expected to add more \
+    than 3000 lines. The cap measures review scope - how much one review round must read - never \
+    code shape.";
+
+/// The overlap text of a DAG whose units share no file.
+pub const DAG_DISJOINT_OVERLAP: &str = "\nBlast-radius overlap (informational): every proposed \
+    unit has a DISJOINT blast radius.\n";
+
+/// The line a re-plan round's DAG critique prompt opens with, above the reject it quotes.
+pub const DAG_PRIOR_REJECT_HEADER: &str = "A prior plan-critique REJECTED this decomposition:\n";
+
+/// The whole DAG critique prompt of a round no reject precedes: its opener, the cap framing, one
+/// line per `[id, criterion, needs, blast radius]` of `units`, the `overlap` text and the verdict
+/// paragraph.
+pub fn dag_critique_prompt(units: &[[&str; 4]], overlap: &str) -> String {
+    let list: String = units
+        .iter()
+        .map(|[id, criterion, needs, radius]| {
+            format!("- `{id}`: criterion={criterion:?}; needs=[{needs}]; blast radius=[{radius}]\n")
+        })
+        .collect();
+    format!(
+        "You are the plan-critique gate. Review the PROPOSED unit DAG below - the decomposition \
+         the planner produced - BEFORE any implementer runs, and judge it against the \
+         decomposition rules in your persona: the CROSS-UNIT rules that per-unit review cannot \
+         see.\n\n{UNIT_SIZE_CAP_SENTENCE}\n\nProposed units:\n{list}{overlap}\n\
+         {DAG_CRITIQUE_VERDICT_PARAGRAPH}\n"
+    )
+}
 
 /// The halt a plan-critique spec-defect stop reports, naming the run's spec as `spec` spells it
 /// and the stopping reject's upheld finding ids as `upheld` lists them: the one expected text the

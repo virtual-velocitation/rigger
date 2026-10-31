@@ -58,12 +58,13 @@ use common::cli::SPAWN;
 use common::cli::UNISOLATED_WORKER;
 use common::fixtures::registry_entries;
 use common::fixtures::seed_registry;
+use common::fixtures::subdirectory_of;
 use common::git::git_out;
 use common::git::nested_worktree;
 use common::git::temp_git_project_with_commit;
 use rigger::conductor::normalize_ws;
 use rigger::registry;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 // ---------------------------------------------------------------------------------------
 // Harness
@@ -569,11 +570,6 @@ fn reset_from_with_a_fresh_marker_under(
         &["reset", "--derived"],
         &[("RIGGER_TMPDIR", rigger_tmpdir)],
     )
-}
-
-/// `root`'s subdirectory `sub`, created, for a command run from below the store's owning root.
-fn subdirectory_of(root: &Path) -> PathBuf {
-    common::fixtures::created_dir(root.join("sub"))
 }
 
 /// With no `defaults.workdir` configured, a run stamps its markers under the store owner's

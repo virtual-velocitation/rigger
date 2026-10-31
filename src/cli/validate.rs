@@ -229,6 +229,12 @@ pub(crate) fn cmd_validate(args: &[String]) -> Res {
     if let Some(advisory) = config::unbounded_wall_clock_advisory(&cfg) {
         eprintln!("{advisory}");
     }
+    // Built-in shadow advisories (spec 120): one warning per built-in instruction an operator
+    // file replaces or switches off, read from the operator layer the load above already read
+    // (`cfg.instructions`), so the directory is read no second time. Non-fatal like the others.
+    for advisory in instructions::shadow_advisories(&cfg.instructions) {
+        eprintln!("{advisory}");
+    }
     // Residue surfacing (spec 06, unit 6 / Gap 14d): report leftover scratch worktrees,
     // orphaned build caches, shadow stores, and dead `rigger/u/*` branches - with sizes -
     // so residue is seen before a disk fills. Warnings only; validate NEVER fails or
@@ -1155,11 +1161,13 @@ fn docs_drift_failure(root: &Path) -> Option<String> {
     ))
 }
 
-/// `rigger instructions` - print the composed instruction layers every spawned agent
-/// receives: the built-in law, working discipline and communication discipline, then the
-/// operator files in `.rigger/instructions/`.
+/// `rigger instructions` - print the instruction layers every spawned agent is held to: each
+/// built-in (the law, the working discipline and the communication discipline) with its state -
+/// in force, replaced or switched off by a same-named operator file - then the other operator
+/// files in the governing project's `.rigger/instructions/`, read at that project even from a
+/// subdirectory, a nested worktree or a gate's store fence ([`project_instruction_layer`]).
 pub(crate) fn cmd_instructions(_args: &[String]) -> Res {
-    let ops = config_store::load_instructions(Path::new("."))?;
+    let ops = project_instruction_layer()?;
     print!("{}", instructions::render(&ops));
     Ok(())
 }

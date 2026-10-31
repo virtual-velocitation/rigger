@@ -790,7 +790,7 @@
     "reason": "Assertions over two different audit scanners in two suites (the OS-kill scan and the same-named-helper clustering), each with its own finding type and message."
   },
   {
-    "id": "dup-78c48ff4c88e",
+    "id": "dup-16e1b74fc5bd",
     "disposition": "not-a-duplicate",
     "reason": "Two levels of one rule, not two copies: `ReviewPanel::gating_agent_ids` names one panel's gating agents, and the config-level `gating_agent_ids` unions that method over the default panel and every stage's panel plus each stage's standalone adjudicator. The workspace split put the panel method in the domain crate and the Config-level fold beside `Config`, so the two same-named functions now sit in different files."
   },
@@ -855,9 +855,9 @@
     "reason": "Builder setters for two different declarations of the content-identity policy (how a key names its generation versus how a recording names its fact); the shared token shape is a one-field assignment."
   },
   {
-    "id": "dup-821aa6735505",
+    "id": "dup-f6fda65801a5",
     "disposition": "not-a-duplicate",
-    "reason": "One-line key, path, message and harness builders for different concerns (deferred-gate verdict and failure keys, review protocol text, namespace prefixes, workflow node ids, a critique run's unit name, a path's `gc` identity, retired-grounder error, the not-folded report line, the owed-rebuild refusal, the live-run refusals of `reset --derived` and of a new rebuild in `rigger setup`, a rebuild's shadow and pruned-copy file names, the edge text expression after a target column's first `::`, an id's file half before it, a staged reference row's liveness term, the proof rows' selection by one key column, the driver test's worker-prompts harness completed by its check, the blast-radius eval's code-span wrapper, a planted refusing trigger's text, a built-in instruction entry's checked-in source path, the appender's write-lock-held and short-catch-up cause texts for a ceiling); they share only the `format!` shape."
+    "reason": "One-line key, path, message and harness builders for different concerns (deferred-gate verdict and failure keys, review protocol text, namespace prefixes, workflow node ids, a critique run's unit name, a path's `gc` identity, retired-grounder error, the not-folded report line, the owed-rebuild refusal, the live-run refusals of `reset --derived` and of a new rebuild in `rigger setup`, a rebuild's shadow and pruned-copy file names, the edge text expression after a target column's first `::`, an id's file half before it, a staged reference row's liveness term, the proof rows' selection by one key column, the driver test's worker-prompts harness completed by its check, the blast-radius eval's code-span wrapper, a planted refusing trigger's text, a built-in instruction entry's checked-in source path, an operator instruction file's path as the instruction reports name it, the appender's write-lock-held and short-catch-up cause texts for a ceiling); they share only the `format!` shape."
   },
   {
     "id": "dup-db3e199dd312",
@@ -905,9 +905,9 @@
     "reason": "Two port methods of the counting store double, each recording its own `CountedRead` variant before forwarding its own inner call; the shared work (recording, running the hooks waiting on the call) is already the one `record`/`returned` pair both call."
   },
   {
-    "id": "dup-fe96e15d8fa3",
+    "id": "dup-40a2fbf5983e",
     "disposition": "not-a-duplicate",
-    "reason": "One-line `format!` compositions of different keys and labels (adoption provenance, quarantine record, code-entity id, a KurrentDB group stream name, spawn-store subject, audit join, the closed-unit report line a `reset --runs` periphery case expects, the spec-critique prompt joining its fixed sections to the spec text, the no-critic line a run-start refusal periphery case expects, the halt a spec-defect stop's tests expect, the `<file>::` id-range SQL predicate the graph store's file-range readers embed, the history prune's superseded-edges statement its count and its delete each build over their own verb, the module-declaration predicate the label degree and the relabel debt read, the change-only retarget of a `refs` row both settlements read) over different inputs."
+    "reason": "One-line `format!` compositions of different keys and labels (adoption provenance, quarantine record, code-entity id, a KurrentDB group stream name, spawn-store subject, audit join, the closed-unit report line a `reset --runs` periphery case expects, the spec-critique prompt joining its fixed sections to the spec text, the no-critic line a run-start refusal periphery case expects, the halt a spec-defect stop's tests expect, the `<file>::` id-range SQL predicate the graph store's file-range readers embed, the history prune's superseded-edges statement its count and its delete each build over their own verb, the module-declaration predicate the label degree and the relabel debt read, the change-only retarget of a `refs` row both settlements read, the refusal the panel rule tables expect for an agent id holding `@`) over different inputs."
   },
   {
     "id": "dup-da45cd3da239",
@@ -958,11 +958,6 @@
     "id": "dup-57930b804935",
     "disposition": "not-a-duplicate",
     "reason": "Three one-call `format!` builders of different values: the unit size cap's sentence the plan protocol and the DAG critique share, the test-side requirement refusal expected for the fixture `sweep` gate, and the gate scratch periphery's recording gate command; they share only the single-format-call token shape."
-  },
-  {
-    "id": "dup-64eda8b7ffd5",
-    "disposition": "not-a-duplicate",
-    "reason": "Each is a test-module fixture constructor of a different two-field type (`instructions::Instruction`'s name and body vs `gate::RequirementUnavailable`'s gate and requirement); the shared token shape is one struct literal, and no logic is repeated."
   },
   {
     "id": "dup-8fb3e9b78321",
@@ -1045,9 +1040,14 @@
     "reason": "Two unit tests of two unrelated pure text functions (the derived-count phrase of `rigger reset` vs the audit report's pluralizer), each two exact-value assertions; they share only the assert_eq shape."
   },
   {
-    "id": "dup-b1d15044e7fc",
+    "id": "dup-e4413ba06992",
     "disposition": "not-a-duplicate",
-    "reason": "`is_empty`/`is_any` report emptiness of five different types (a config section, a failure filter, a CLI selection, a run's unended spawns, a criterion's code terms) over their own fields."
+    "reason": "`is_empty`/`is_any` report emptiness of four different types (a failure filter, a CLI selection, a run's unended spawns, a criterion's code terms) over their own fields."
+  },
+  {
+    "id": "dup-34d133ea2afb",
+    "disposition": "not-a-duplicate",
+    "reason": "`ReviewPanel::is_empty` and `driver_dead` each report the emptiness of a list their own type derives - a review panel's steps, a hygiene probe's live-run reasons - through one `is_empty` call; the two share a one-line shape, not a rule."
   },
   {
     "id": "dup-877c7e2e92fb",
@@ -1068,10 +1068,5 @@
     "id": "dup-aa4a3a0dfc34",
     "disposition": "not-a-duplicate",
     "reason": "`alias_json` and `ref_json` build two different on-log payloads, an `AliasDefined` alias and canonical against an `EdgeInferred` file, name and lang, sharing only the one-line `json!` literal shape."
-  },
-  {
-    "id": "dup-7df9b1a39032",
-    "disposition": "not-a-duplicate",
-    "reason": "`unit_diff` reads the `unit.diff` file the gate wrote into a String, while `subdirectory_of` creates the `sub` directory a command runs from through the shared `created_dir`; the two share only one `root.join` call and the signature shape."
   }
 ]

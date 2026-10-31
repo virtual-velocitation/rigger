@@ -152,10 +152,10 @@ fn init_project(
     let agents_dir = rigger_dir.join("agents");
     std::fs::create_dir_all(&agents_dir)?;
     let wrote_workflow = write_if_absent(
-        &rigger_dir.join("workflow.yml"),
+        &rigger_dir.join(WORKFLOW_FILE),
         &scaffold_workflow(matched.map(|(_, spec)| spec)),
     )?;
-    let instructions_dir = rigger_dir.join("instructions");
+    let instructions_dir = rigger_dir.join(INSTRUCTIONS_DIR);
     std::fs::create_dir_all(&instructions_dir)?;
     let wrote_instructions_readme = write_if_absent(
         &instructions_dir.join(config_store::INSTRUCTIONS_README),
@@ -419,7 +419,7 @@ fn get_referenced_agent_ids(
 ) -> Result<std::collections::HashSet<String>, Box<dyn std::error::Error>> {
     use std::collections::HashSet;
 
-    let workflow_path = root.join(RIGGER_DIR).join("workflow.yml");
+    let workflow_path = root.join(RIGGER_DIR).join(WORKFLOW_FILE);
     if !workflow_path.exists() {
         return Ok(HashSet::new());
     }
@@ -1584,18 +1584,34 @@ fn top_level_key(line: &str) -> Option<&str> {
     Some(key.trim_end())
 }
 
-/// The first line `rigger prime` prints: the instruction layers in force for this project,
-/// counting its `operator` files, so a session starts knowing which law its agents are held to.
-fn instructions_in_force_line(operator: usize) -> String {
-    let builtin = instructions::BUILTIN
+/// The first line `rigger prime` prints: the instruction layers in force for this project, read
+/// from `instructions::resolve_layers` over its `operator` files, so a session starts knowing
+/// which law its agents are held to. It lists the built-ins in force in `BUILTIN` order, a
+/// replaced one as `<name> (replaced)` and a switched-off one not at all (`none` when no built-in
+/// is in force), and counts only the operator files that shadow no built-in.
+fn instructions_in_force_line(operator: &[instructions::Instruction]) -> String {
+    let layers = instructions::resolve_layers(operator);
+    let in_force = layers
+        .builtins
         .iter()
-        .map(|(name, _)| *name)
-        .collect::<Vec<_>>()
-        .join(", ");
-    let extra = if operator == 0 {
-        String::new()
+        .filter_map(|layer| {
+            layer
+                .state
+                .in_force()
+                .map(|_| match layer.state.shadow_verb() {
+                    Some(verb) => format!("{} ({verb})", layer.name),
+                    None => layer.name.to_string(),
+                })
+        })
+        .collect::<Vec<_>>();
+    let builtin = if in_force.is_empty() {
+        "none".to_string()
     } else {
-        format!(" (+{operator} operator files)")
+        in_force.join(", ")
+    };
+    let extra = match layers.operator.len() {
+        0 => String::new(),
+        operator => format!(" (+{operator} operator files)"),
     };
     format!(
         "{} in force: {builtin}{extra} - see rigger instructions",
@@ -1611,22 +1627,22 @@ fn instructions_in_force_line(operator: usize) -> String {
 /// exactly as it was - no lint mention.
 pub(crate) fn cmd_prime(args: &[String]) -> Res {
     let spec_path = args.first();
+    // A session started in a subdirectory or a unit worktree of a git repository reads the
+    // instruction layer of the project at or above its place in the main checkout, never a
+    // worktree's own, and outside git the layer at the cwd, with or without a store and inside a
+    // gate's store fence alike ([`project_instruction_layer`]); its store and identity come from
+    // the one store-location authority every courier resolves through.
     println!(
         "{}",
-        instructions_in_force_line(config_store::load_instructions(Path::new("."))?.len())
+        instructions_in_force_line(&project_instruction_layer()?)
     );
-    // The one store-location authority every courier resolves through: a session started in a
-    // subdirectory or a unit worktree reads the project's own store and identity, never the cwd's.
-    let (loc, selection) = match require_store_dir() {
-        Ok(found) => found,
-        Err(e) if e.downcast_ref::<NoStoreFound>().is_some() => {
-            println!("# Rigger: no decisions recorded yet (run `rigger run` to start).");
-            if let Some(spec) = spec_path {
-                println!("{}", spec_lint_next_step(spec));
-            }
-            return Ok(());
+    let found = store_if_any()?;
+    let Some((loc, selection)) = found else {
+        println!("# Rigger: no decisions recorded yet (run `rigger run` to start).");
+        if let Some(spec) = spec_path {
+            println!("{}", spec_lint_next_step(spec));
         }
-        Err(e) => return Err(e),
+        return Ok(());
     };
     let backend = resolve_store(&selection, &store_file(&loc.dir, "events.db"))?;
     // Every run's decisions BY TYPE on this project's run stream (spec 101): a session start
@@ -1962,7 +1978,55 @@ the substantive issues they all missed, and refute lens overreach. You review th
 reviews - not a parallel lens - and you do NOT render the final verdict. Default to\n\
 skepticism; cite file:line. Record findings with rigger_emit.\n\
 Never re-run a gate the GATE EVIDENCE block in your prompt shows green on the tree under review:\n\
-verify a behavioral claim by running that one claim, never the battery.\n",
+verify a behavioral claim by running that one claim, never the battery.\n\
+\n\
+## When you critique a spec or a plan\n\
+\n\
+In a spec or plan critique this section's rules decide which finding blocks; the working\n\
+discipline's review rule decides a unit diff's findings. In a plan critique this\n\
+section's criterion reads as a unit (twin and bundled criteria are twin and bundled\n\
+units), and Rules 7 and 8 and the unit-size rule read as written.\n\
+\n\
+These rules fall in three classes. To a spec only: the two hunts and the ban. To a DAG\n\
+only: the unit-size rule and the overlap rule. To both a spec and a DAG: the stance,\n\
+Rules 7 and 8, the blast-radius note and the ownership defects.\n\
+\n\
+Default to skepticism: assume the author missed something, and try to prove the spec\n\
+self-contradictory or undecided; never soften a finding to converge. Cite the criterion\n\
+number or Design block title for every finding.\n\
+\n\
+- Rule 7 (mitigation ownership): every demanded mitigation must be owned by exactly one\n\
+unit, with the exclusion named on its neighbors; an unassigned or ambiguously-owned\n\
+mitigation - two units that will fight over the same concern through the shared context\n\
+graph - is a reject.\n\
+- Rule 8 (open dispositions): a unit must not leave a disposition open for a reviewer to\n\
+re-litigate; an undecided disposition is a reject.\n\
+\n\
+NOTE on shared blast radius: units whose file footprints OVERLAP are NOT a defect.\n\
+`partition: by-blast-radius` runs them in SEPARATE sequential batches (each branches off\n\
+the prior batch's integrated tree), and per-unit worktree isolation keeps every reviewer\n\
+on its own diff - so overlap integrates cleanly and reviews independently. Do NOT reject\n\
+merely because two units touch the same file. Reject a shared-file split ONLY when it is\n\
+a genuine OWNERSHIP or COHERENCE defect (rule 7) - two units that cannot own their\n\
+concern cleanly - not for mechanical overlap the partitioner already serializes.\n\
+\n\
+Ownership defects: twin criteria (two checkboxes claiming one concern) and bundling (one\n\
+checkbox carrying two mitigations) are each a BLOCKING finding.\n\
+\n\
+- Unit size: a unit over the cap your prompt states is a BLOCKING finding.\n\
+- Overlap: judge ownership/coherence, not the overlap.\n\
+\n\
+Run these hunts, and name the hunt in each finding it produces:\n\
+\n\
+- LANDING ORDER: for every ordered pair of criteria (A, B) sharing a command, a store\n\
+read, a file or a counter, ask \"if A lands first on a tree without B, does A's own text\n\
+hold?\"; every no is a finding.\n\
+- UNDECIDED CORNER: for every criterion's mechanism, walk the corners empty, repeated,\n\
+reverted, DROPPED (a fact present in an earlier generation and absent in a later one),\n\
+concurrent, crash-resume, cold start and existing data; each corner no Design sentence\n\
+decides is a finding.\n\
+\n\
+The ban: a fix is a Design or Global-constraint change, never a criterion edit.\n",
     ),
     (
         "adjudicator.md",
@@ -1981,7 +2045,44 @@ never blocks. When you reject, say exactly what must change and its class.\n\
 A red gate is non-negotiable: never weaken, skip or re-wire a gate to get green.\n\
 End\n\
 with a single JSON line {\"verdict\":\"approve\"} or {\"verdict\":\"reject\"} - reject\n\
-blocks integration no matter what the static gates say.\n",
+blocks integration no matter what the static gates say.\n\
+\n\
+## When you critique a spec or a plan\n\
+\n\
+In a spec or plan critique this section's rules decide which finding blocks; the working\n\
+discipline's review rule decides a unit diff's findings. In a plan critique this\n\
+section's criterion reads as a unit (twin and bundled criteria are twin and bundled\n\
+units), and Rules 7 and 8 and the unit-size rule read as written.\n\
+\n\
+- Rule 7 (mitigation ownership): every demanded mitigation must be owned by exactly one\n\
+unit, with the exclusion named on its neighbors; an unassigned or ambiguously-owned\n\
+mitigation - two units that will fight over the same concern through the shared context\n\
+graph - is a reject.\n\
+- Rule 8 (open dispositions): a unit must not leave a disposition open for a reviewer to\n\
+re-litigate; an undecided disposition is a reject.\n\
+\n\
+NOTE on shared blast radius: units whose file footprints OVERLAP are NOT a defect.\n\
+`partition: by-blast-radius` runs them in SEPARATE sequential batches (each branches off\n\
+the prior batch's integrated tree), and per-unit worktree isolation keeps every reviewer\n\
+on its own diff - so overlap integrates cleanly and reviews independently. Do NOT reject\n\
+merely because two units touch the same file. Reject a shared-file split ONLY when it is\n\
+a genuine OWNERSHIP or COHERENCE defect (rule 7) - two units that cannot own their\n\
+concern cleanly - not for mechanical overlap the partitioner already serializes.\n\
+\n\
+Ownership defects: twin criteria (two checkboxes claiming one concern) and bundling (one\n\
+checkbox carrying two mitigations) are each a BLOCKING finding.\n\
+\n\
+- Unit size: a unit over the cap your prompt states is a BLOCKING finding.\n\
+- Overlap: judge ownership/coherence, not the overlap.\n\
+\n\
+The judging rule: Reject ONLY for a rule 7 (ownership) or rule 8 (open disposition)\n\
+defect, a unit over the size cap, or a defect in a criterion's own text that no\n\
+decomposition can remove - never for mechanical blast-radius overlap alone. A finding\n\
+stands when it names a Rule 7 ownership defect, a Rule 8 open disposition, a bundled or\n\
+twin criterion, a unit over the cap the prompt states, or a defect in a criterion's own\n\
+text that no decomposition can remove; mechanical file overlap alone never does; twin\n\
+and bundled units count as Rule 7 defects. The fix is the cause rule's: a re-plan for\n\
+`decomposition-conflict`, the run stopping for `spec-ambiguity`.\n",
     ),
 ];
 
@@ -1994,7 +2095,9 @@ mod tests {
     use crate::test_support::tool_available;
     use crate::test_support::AUTHORING_AGENTS_HANDBOOK;
     use crate::test_support::{
-        FAN_OUT_HEADING, HAND_OVER_HEADING, WHEN_YOU_REVIEW, WHEN_YOU_REVIEW_HEADING,
+        assert_holds_its_critique_method, critique_method_by_persona, markdown_section,
+        ADJUDICATOR_JUDGING_RULE, ADVERSARY_CRITIQUE_METHOD, CRITIQUE_METHOD, FAN_OUT_HEADING,
+        HAND_OVER_HEADING, WHEN_YOU_REVIEW, WHEN_YOU_REVIEW_HEADING,
     };
 
     /// Spec 101: a graph rebuild reports its progress in tenths of the log positions it covers -
@@ -2336,6 +2439,19 @@ mod tests {
             assert_eq!(review.lenses, ["architecture-reviewer", "sdet"], "{label}");
             assert_eq!(review.adversary, "adversary", "{label}");
             assert_eq!(review.adjudicator, "adjudicator", "{label}");
+            // The rendering keeps the map form, so it reads as the canonical sequence.
+            assert_eq!(
+                review.steps(),
+                [
+                    config::ReviewStep::Lenses(vec![
+                        "architecture-reviewer".to_string(),
+                        "sdet".to_string()
+                    ]),
+                    config::ReviewStep::Adversary("adversary".to_string()),
+                    config::ReviewStep::Adjudicator("adjudicator".to_string()),
+                ],
+                "{label}"
+            );
             // The default grounder, set explicitly.
             assert_eq!(cfg.workflow.defaults.grounder, "symbols", "{label}");
             // A NON-ZERO spawn budget so an unattended `rigger run` cannot spawn unboundedly.
@@ -3981,7 +4097,7 @@ mod tests {
             "the review section appears once, after the hand-over section"
         );
         assert_eq!(
-            persona_section(&body, FAN_OUT_HEADING)
+            markdown_section(&body, FAN_OUT_HEADING)
                 .matches("battery")
                 .count(),
             0,
@@ -3989,19 +4105,76 @@ mod tests {
         );
     }
 
-    /// The section of a persona `text` that opens at `heading`, up to the next `## ` heading or
-    /// the end of the file.
-    fn persona_section<'a>(text: &'a str, heading: &str) -> &'a str {
-        let from = text.find(heading).expect("the persona carries the heading");
-        let rest = &text[from + heading.len()..];
-        let to = rest
-            .find("\n## ")
-            .map_or(text.len(), |at| from + heading.len() + at);
-        &text[from..to]
+    /// The critique method is the persona's: each critiquing persona, committed and scaffold
+    /// template alike, holds its sentences once, all under `## When you critique a spec or a
+    /// plan`, and holds none of the other role's: the stance, the hunts and the ban stay the
+    /// adversary's, the judging rule the adjudicator's.
+    #[test]
+    fn each_critiquing_persona_holds_its_method_under_when_you_critique() {
+        for (persona, holds, leaves) in critique_method_by_persona() {
+            let shipped: Vec<(String, String)> = every_shipped_persona()
+                .into_iter()
+                .filter(|(at, _)| at.rsplit(['/', ' ']).next() == Some(persona))
+                .collect();
+            assert_eq!(
+                shipped
+                    .iter()
+                    .map(|(at, _)| at.as_str())
+                    .collect::<Vec<_>>(),
+                [
+                    format!(".rigger/agents/{persona}"),
+                    format!("SCAFFOLD_AGENTS {persona}")
+                ],
+                "the committed persona and its scaffold template"
+            );
+            for (at, text) in shipped {
+                assert_holds_its_critique_method(&at, &text, &holds, leaves);
+            }
+        }
+    }
+
+    /// Where the method lands in this repository's personas: in the adversary's section after its
+    /// COVERAGE hunt and before its Exhaustion item, both of which stay, and in the adjudicator's
+    /// new section after its verdict-channel paragraph.
+    #[test]
+    fn the_committed_critique_method_keeps_the_persona_passages_around_it() {
+        let adversary = [CRITIQUE_METHOD.as_slice(), &ADVERSARY_CRITIQUE_METHOD].concat();
+        let adjudicator = [CRITIQUE_METHOD.as_slice(), &ADJUDICATOR_JUDGING_RULE].concat();
+        for (file, method, after, before) in [
+            (
+                "adversary.md",
+                adversary,
+                "- COVERAGE, your first hunt:",
+                Some("- Exhaustion: after the hunts,"),
+            ),
+            (
+                "adjudicator.md",
+                adjudicator,
+                "So: END YOUR RESULT OUTPUT with a single JSON line",
+                None,
+            ),
+        ] {
+            let text = rigger::wave::normalize_ws(&committed_persona(file));
+            let at = |needle: &str| {
+                text.find(needle)
+                    .unwrap_or_else(|| panic!("{file} carries {needle:?}"))
+            };
+            let end = before.map_or(text.len(), at);
+            for sentence in method {
+                let from = at(sentence);
+                assert_eq!(
+                    (at(after) < from, from < end),
+                    (true, true),
+                    "{file} holds {sentence:?} after {after:?} and before {before:?}"
+                );
+            }
+        }
     }
 
     /// Every agent text rigger ships: the committed personas and the scaffold seeds, each
-    /// labelled with where it lives.
+    /// labelled with where it lives. The personas of `examples/demo` stay out: the demo is a
+    /// consumer project owning its agents, and a persona with no critique section still critiques
+    /// under the binary's output contract.
     fn every_shipped_persona() -> Vec<(String, String)> {
         let mut all: Vec<(String, String)> = committed_personas()
             .into_iter()
@@ -4154,7 +4327,7 @@ mod tests {
                 "{file}: the test block appears {want} time(s)"
             );
             if want == 1 {
-                let block = rigger::wave::normalize_ws(persona_section(&text, HEADING));
+                let block = rigger::wave::normalize_ws(markdown_section(&text, HEADING));
                 for wanted in [
                     "- Assert exact values, never existence:",
                     "- Pin every boundary from both sides:",
@@ -4204,7 +4377,7 @@ mod tests {
                 "{file}: the hand-over block belongs to the author roles alone"
             );
             if author {
-                blocks.push(persona_section(&text, HEADING).to_string());
+                blocks.push(markdown_section(&text, HEADING).to_string());
             }
         }
         assert_eq!(blocks.len(), 2, "both author roles carry the block");
@@ -4809,6 +4982,41 @@ mod tests {
             hits.is_empty(),
             "size-limit sentences ship:\n{}",
             hits.join("\n")
+        );
+    }
+
+    /// `rigger prime`'s first line lists the built-ins in force over the named-entry fixture, a
+    /// replaced one marked and a switched-off one left out, and counts only the operator files
+    /// that shadow no built-in: one, then none once the unshadowed file is dropped.
+    #[test]
+    fn the_in_force_line_names_each_built_in_s_state_and_counts_only_unshadowed_files() {
+        use crate::test_support::{shadowing_operator_layer, SHADOWING_LAYER_IN_FORCE_LINE};
+        assert_eq!(
+            instructions_in_force_line(&shadowing_operator_layer()),
+            SHADOWING_LAYER_IN_FORCE_LINE,
+            "the replaced built-in is marked, the switched-off one omitted, one file counted"
+        );
+        assert_eq!(
+            instructions_in_force_line(&shadowing_operator_layer()[1..]),
+            "# Rigger instructions in force: engineering-principles, communication (replaced) - \
+             see rigger instructions",
+            "a file that shadows a built-in is never counted as an operator file"
+        );
+    }
+
+    /// With every built-in switched off, `rigger prime`'s first line says none is in force.
+    #[test]
+    fn the_in_force_line_says_none_when_every_built_in_is_switched_off() {
+        use crate::test_support::op;
+        let off = |name| op(name, Default::default());
+        assert_eq!(
+            instructions_in_force_line(&[
+                off("communication"),
+                off("engineering-principles"),
+                off("working-discipline"),
+            ]),
+            "# Rigger instructions in force: none - see rigger instructions",
+            "no built-in is in force and no operator file remains"
         );
     }
 }

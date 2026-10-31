@@ -9,6 +9,10 @@ use rigger::contextgraph::TYPE_REVIEW_FINDING;
 /// adjudicator prompt actually carries findings.
 pub const CRITICAL_SUMMARY: &str = "CRIT defect here";
 
+/// A corpus file for a known-good control.
+pub const CONTROL_ITEM: &str = "---\nid: control\ndefect_class: none\nplanted: false\nanchor: \
+     src/lib.rs\nexpected_verdict: approve\n---\nfn control() {}\n";
+
 /// A canary item `id` of `defect_class`, anchored at `<id>.rs` with a one-line review body.
 pub fn item(id: &str, defect_class: &str, planted: bool, verdict: &str, tier: &str) -> CanaryItem {
     CanaryItem {

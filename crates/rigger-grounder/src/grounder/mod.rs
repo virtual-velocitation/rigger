@@ -27,7 +27,7 @@ pub mod design;
 #[cfg(feature = "symbols")]
 pub mod workflowdef;
 
-use crate::config::RIGGER_DIR;
+use crate::config::{RIGGER_DIR, WORKFLOW_FILE};
 use std::ops::ControlFlow;
 use std::path::Path;
 
@@ -123,7 +123,7 @@ where
 /// workflow-definition pass reads and attributes every entity it extracts to (the `doc` attr on
 /// every folded node), and the one path [`in_walk_scope`] admits for `gw`.
 pub(crate) fn workflow_doc() -> String {
-    format!("{RIGGER_DIR}/workflow.yml")
+    format!("{RIGGER_DIR}/{WORKFLOW_FILE}")
 }
 
 /// Whether an ingest reads `path` (relative to `root`) under the identity prefix `prefix`: the

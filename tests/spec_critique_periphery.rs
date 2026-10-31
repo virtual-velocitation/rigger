@@ -26,7 +26,7 @@ use common::repo::{
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Direction, Event, EventStore, ExpectedRevision, Filter};
-use rigger::review::{critique_hash, critique_spawn_id, spec_critique_prompt, PLAN_CRITIQUE_RULES};
+use rigger::review::{critique_hash, critique_spawn_id, spec_critique_prompt};
 use rigger::spawn::{TYPE_SPAWN_REQUESTED, TYPE_SPAWN_RESULT};
 use rigger::wave::NO_CRITIC_CLAUSE;
 use serde_json::{json, Value};
@@ -35,7 +35,8 @@ use serde_json::{json, Value};
 const CRITIC_WORKFLOW: &str = "defaults:\n  grounder: nop\nstages:\n  plan:\n    agent: planner\n    \
      produces: dag\n  plan-critique:\n    needs: [plan]\n    adversary: critic\n    adjudicator: judge\n";
 
-/// A workflow naming neither the plan-critique gate's adversary nor `defaults.review.adversary`.
+/// A workflow naming neither the plan-critique gate's adversary nor an adversary step in
+/// `defaults.review`.
 const NO_CRITIC_WORKFLOW: &str =
     "defaults:\n  grounder: nop\nstages:\n  a:\n    agent: planner\n    on_pass: none\n";
 
@@ -186,9 +187,10 @@ fn a_spec_is_critiqued_once_per_text_and_answered_from_the_store_after() {
         task.ends_with(SPEC),
         "the critique prompt ends with the spec text verbatim:\n{task}"
     );
-    assert!(
-        task.contains(PLAN_CRITIQUE_RULES),
-        "the prompt carries the shared rules"
+    assert_eq!(
+        task,
+        spec_critique_prompt(SPEC_REL, SPEC),
+        "the task is the critique prompt and nothing else: the method is the persona's"
     );
     assert!(
         task.contains("`specs/9-demo.md`"),
@@ -358,11 +360,11 @@ fn under_a_workflow_with_no_critic_the_verb_refuses_naming_both_keys_and_records
     std::fs::write(root.join(".rigger/workflow.yml"), NO_CRITIC_WORKFLOW).unwrap();
     let (out, err, ok) = critique(root, SPEC_REL, &path, &scratch);
 
-    // ... the verb refuses, naming both keys, answering nothing and recording nothing.
+    // ... the verb refuses, naming both critic sources, answering nothing and recording nothing.
     assert!(!ok, "a workflow with no critic refuses the verb");
     assert!(
         err.contains(NO_CRITIC_CLAUSE),
-        "the refusal names both keys:\n{err}"
+        "the refusal names the gate adversary and the adversary step:\n{err}"
     );
     assert_eq!(out, "", "a refusal prints no finding");
     assert_eq!(critique_stub_spawns(stub.path()), 1, "no spawn");
@@ -589,6 +591,17 @@ const DEFAULT_ADVERSARY_WORKFLOW: &str = "defaults:\n  grounder: nop\n  review:\
 const GATE_AND_DEFAULT_WORKFLOW: &str = "defaults:\n  grounder: nop\n  review:\n    adversary: \
      critic\nstages:\n  plan:\n    agent: planner\n    produces: dag\n  plan-critique:\n    \
      needs: [plan]\n    adversary: judge\n    adjudicator: judge\n";
+
+/// A workflow with no plan-critique gate whose `defaults.review` lists the adversary steps
+/// `critic` then `judge`: the first is the critic.
+const LISTED_CRITIC_WORKFLOW: &str = "defaults:\n  grounder: nop\n  review:\n    steps: \
+     [{ adversary: critic }, { adversary: judge }, { adjudicator: judge }]\nstages:\n  a:\n    \
+     agent: planner\n    on_pass: none\n";
+
+/// [`LISTED_CRITIC_WORKFLOW`] with its two adversary steps swapped.
+const LISTED_JUDGE_WORKFLOW: &str = "defaults:\n  grounder: nop\n  review:\n    steps: \
+     [{ adversary: judge }, { adversary: critic }, { adjudicator: judge }]\nstages:\n  a:\n    \
+     agent: planner\n    on_pass: none\n";
 
 /// The `(type, payload)` of each critique-stream event.
 fn critique_payloads(root: &Path) -> Vec<(String, Value)> {
@@ -943,6 +956,11 @@ fn the_critic_is_the_plan_critique_gates_adversary_else_the_default_review_adver
             "You are the CRITIC-PERSONA adversary.",
         ),
         (GATE_AND_DEFAULT_WORKFLOW, "Judge."),
+        (
+            LISTED_CRITIC_WORKFLOW,
+            "You are the CRITIC-PERSONA adversary.",
+        ),
+        (LISTED_JUDGE_WORKFLOW, "Judge."),
     ] {
         let dir = temp_project();
         let root = dir.path();
@@ -978,9 +996,9 @@ fn a_workflow_with_no_critic_is_refused_first_and_no_store_or_graph_is_created()
     assert!(
         err.contains(&format!(
             "rigger critique: refusing to critique {outside}: the workflow names neither the \
-             plan-critique gate's adversary nor defaults.review.adversary"
+             plan-critique gate's adversary nor an adversary step in defaults.review"
         )),
-        "the no-critic refusal names the spec as given and both keys:\n{err}"
+        "the no-critic refusal names the spec as given and both places a critic is named:\n{err}"
     );
     assert!(
         !err.contains("outside the repository") && !err.contains("loop-ready"),
@@ -993,6 +1011,35 @@ fn a_workflow_with_no_critic_is_refused_first_and_no_store_or_graph_is_created()
             !rigger_file(root, file).exists(),
             "no {file} is opened or created before the critic lookup passes"
         );
+    }
+}
+
+/// A list naming no adversary step has no critic, whichever steps it does name.
+#[test]
+fn a_default_review_listing_no_adversary_step_has_no_critic() {
+    for review in [
+        "{ steps: [{ lenses: [judge] }, { adjudicator: judge }] }",
+        "{ steps: [{ adjudicator: judge }] }",
+    ] {
+        let dir = temp_project();
+        let root = dir.path();
+        let workflow = format!(
+            "defaults:\n  grounder: nop\n  review: {review}\nstages:\n  a:\n    agent: planner\n    \
+             on_pass: none\n"
+        );
+        scaffold(root, &workflow);
+        let (work, path) = stub(REJECT);
+        let (out, err, ok) = critique(root, SPEC_REL, &path, &root.join("scratch"));
+        assert!(!ok, "{review} is refused");
+        assert_eq!(out, "", "{review}");
+        assert_eq!(
+            err,
+            format!(
+                "rigger: rigger critique: refusing to critique {SPEC_REL}: {NO_CRITIC_CLAUSE}\n"
+            ),
+            "{review}"
+        );
+        assert_eq!(critique_stub_spawns(work.path()), 0, "{review}");
     }
 }
 
@@ -1326,6 +1373,34 @@ fn a_store_from_before_the_minted_identity_is_migrated_before_the_verbs_first_ap
             && peers.contains(&critique_finding_id(SPEC, 0, 1)),
         "the migrated decision and the copies both read back about the spec:\n{peers}"
     );
+}
+
+/// The critique block of the usage text, `rigger critique`'s one help surface: no verb answers a
+/// `--help` of its own, so each spelling of help prints this and no key of one panel form.
+#[test]
+fn the_critique_help_names_an_adversary_step_of_either_panel_form() {
+    const CRITIQUE_HELP: &str = "  \
+rigger critique <spec>      critique the spec before any run: the workflow's critic
+                              (the plan-critique gate's adversary, else
+                              an adversary step in defaults.review) reads the spec
+                              text and its findings and verdict are recorded keyed on
+                              the text's content hash, so unchanged text is answered
+                              from the record with no spawn; takes --eventstore/--conn
+                              as run does
+";
+    let dir = temp_project();
+    for spelling in ["help", "--help", "-h"] {
+        let (_out, usage, _ok) = run_rigger(dir.path(), &[spelling]);
+        let start = usage.find("  rigger critique ").expect("the critique line");
+        let end = usage
+            .find("  rigger validate ")
+            .expect("the next verb's line");
+        assert_eq!(&usage[start..end], CRITIQUE_HELP, "rigger {spelling}");
+        assert!(
+            !usage.contains("defaults.review.adversary"),
+            "the usage names no map key as the critic:\n{usage}"
+        );
+    }
 }
 
 #[test]

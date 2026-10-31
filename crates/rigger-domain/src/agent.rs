@@ -129,11 +129,11 @@ pub struct SpawnOpts {
     /// applies every pair to its spawned `Command`; a driver with no subprocess of its
     /// own (a test double) may ignore it.
     pub env: Vec<(String, String)>,
-    /// The routed review roster (spec 67, criterion 4): for the adversary tier, the
-    /// unit's routed lens role tokens (`lens:<agent_id>`, [`review_roster`]); for the
-    /// adjudicator tier, that same roster plus [`ROLE_ADVERSARY`] when an adversary
-    /// ran ([`adjudicator_roster`]). Empty for every other tier (a lens, or a panel with
-    /// no lenses/adversary). The CONDUCTOR is the only honest source - it reads the
+    /// The routed review roster (spec 67, criterion 4): the role tokens of the spawns of
+    /// every review step before this spawn's ([`step_roster`](crate::review::step_roster)),
+    /// so a later adversary step's carries the lens and adversary tokens before it and the
+    /// adjudicator's every token of the panel. Empty for every other spawn (a lens, or a step
+    /// with none before it). The CONDUCTOR is the only honest source - it reads the
     /// panel `review_unit`/`run_fan_out_review_loop` actually routed to (light or full),
     /// never a static declaration a driver guess could get stale against a replayed
     /// lens - so a parking driver copies it verbatim onto

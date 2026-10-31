@@ -5410,7 +5410,7 @@ fn a_setup_rerun_after_its_rebuild_stopped_past_its_prune_reports_the_same_count
 /// mark it must then drop is a directory it cannot remove, and its failure names that mark - then
 /// `meanwhile`, while the rebuild's state stands in `graph.db` with no setup to finish it, and
 /// clear the mark: what the stopped setup printed, and whether it exited successfully.
-fn stop_setup_past_its_prune(root: &Path, meanwhile: fn(&Path)) -> (String, bool) {
+fn stop_setup_past_its_prune(root: &Path, meanwhile: common::DirStep) -> (String, bool) {
     let mark = unremovable_mark_beside(&rigger_file(root, "graph.db"));
     let (stopped, err, stopped_ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
     assert_eq!(
@@ -5449,10 +5449,10 @@ fn stop_setup_in_its_tail(root: &Path) -> (String, bool) {
 /// `shared` is dropped with the retired edge it owns, 5 nodes and no edge left to reclaim.
 #[test]
 fn a_setup_resumed_past_its_prune_keeps_the_active_runs_gains_and_prunes_the_run_that_closed() {
-    let active_run_decides: fn(&Path) = |root| {
+    let active_run_decides: common::DirStep = |root| {
         append_unfolded_decision_named(root, "d-window");
     };
-    let another_writer_starts_a_run: fn(&Path) = |root| {
+    let another_writer_starts_a_run: common::DirStep = |root| {
         common::cli::with_run_store(root, |store| {
             store
                 .append(
@@ -5470,13 +5470,13 @@ fn a_setup_resumed_past_its_prune_keeps_the_active_runs_gains_and_prunes_the_run
                 .unwrap();
         });
     };
-    let active_run_re_records_a_closed_runs_decision: fn(&Path) = |root| {
+    let active_run_re_records_a_closed_runs_decision: common::DirStep = |root| {
         append_unfolded_decision(
             root,
             br#"{"id":"d-dead","summary":"s","governs":["src/h.rs"],"supersedes":""}"#,
         );
     };
-    let a_swap_cut_short_left_its_copy: fn(&Path) = |root| {
+    let a_swap_cut_short_left_its_copy: common::DirStep = |root| {
         std::fs::write(
             rigger_file(root, "graph.db.pruned"),
             b"left by a swap cut short",

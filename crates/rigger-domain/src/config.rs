@@ -7,17 +7,26 @@
 //! [`crate::config_store`] (spec 93, criterion 1) - that module's doc has the split
 //! rationale (mirrors [`crate::spawn`]/[`crate::spawn_store`]).
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::Duration;
 
 use serde::Deserialize;
 
 use crate::failure;
+use crate::spawn::{ReviewKind, STEP_TOKEN_SEPARATOR};
 
 /// The per-project state directory at a project's root (like `.git/`): the declarative
 /// surface (`workflow.yml`, `agents/`, `instructions/`) and every store rigger keeps. The ONE
 /// spelling of that directory name; every path under it is built from this.
 pub const RIGGER_DIR: &str = ".rigger";
+
+/// The workflow definition's file under [`RIGGER_DIR`], whose presence marks a directory as a
+/// project. The ONE spelling of that file name.
+pub const WORKFLOW_FILE: &str = "workflow.yml";
+
+/// The operator instruction layer's directory under [`RIGGER_DIR`]. The ONE spelling of that
+/// directory name.
+pub const INSTRUCTIONS_DIR: &str = "instructions";
 
 #[derive(Debug, thiserror::Error)]
 #[error("config: {0}")]
@@ -344,12 +353,13 @@ impl FailureRuleDef {
     }
 }
 
-/// ReviewPanel is the three-tier review roster a unit reviews ITSELF with: the
-/// expert lenses (tier 1, parallel), the adversary that refutes the lenses (tier
-/// 2), and the neutral adjudicator whose verdict gates integration (tier 3). It is
-/// declared once on `defaults.review` and applied to every implementer unit; a
-/// stage may override it with its own `review` block (§3.2). All three are
-/// optional and compose: lenses alone, lenses + adjudicator, or the full trio.
+/// ReviewPanel is the sequence of review steps a unit reviews ITSELF with ([`Self::steps`]). It is
+/// declared once on `defaults.review` and applied to every implementer unit; a stage may
+/// override it with its own `review` block (section 3.2). The sequence takes one of two forms: the MAP
+/// form sets the keys `lenses` (parallel), `adversary` (refutes the lenses) and `adjudicator`
+/// (the neutral verdict that gates integration), each optional, and runs them in that canonical
+/// order; the LIST form sets `steps` and runs its entries in the order they are declared, at
+/// most one adjudicator step and that one last ([`Self::validate_steps`]).
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReviewPanel {
@@ -359,6 +369,10 @@ pub struct ReviewPanel {
     pub adversary: String,
     #[serde(default)]
     pub adjudicator: String,
+    /// The LIST form: `Some` (an empty list included) takes the place of the three map keys, and
+    /// `steps: null` reads as absent. Read through [`Self::steps`].
+    #[serde(default)]
+    pub steps: Option<Vec<ReviewStepDecl>>,
     /// The OPT-IN risk-tiered review-depth policy (spec 03 "adaptive review depth",
     /// spec 13 unit 4). When set, THIS panel is the FULL panel and `tiers.light` is
     /// the reduced roster a LOW-RISK unit reviews itself with; the conductor routes
@@ -373,13 +387,145 @@ pub struct ReviewPanel {
     pub tiers: Option<Box<ReviewDepth>>,
 }
 
+/// One entry of a panel's `steps` list, which names its step by the key of that step's kind. A
+/// key is set when non-empty; an entry sets exactly one ([`ReviewPanel::validate_steps`]).
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReviewStepDecl {
+    #[serde(default)]
+    pub lenses: Vec<String>,
+    #[serde(default)]
+    pub adversary: String,
+    #[serde(default)]
+    pub adjudicator: String,
+}
+
+impl ReviewStepDecl {
+    /// The steps this entry's set keys name: the one it declares, on a validated workflow.
+    fn steps(&self) -> Vec<ReviewStep> {
+        keyed_steps(&self.lenses, &self.adversary, &self.adjudicator)
+    }
+}
+
+/// The CANONICAL SEQUENCE of the three step keys, of a map-form panel or of a list entry: `Lenses`
+/// when `lenses` is non-empty, then `Adversary` when `adversary` is set, then `Adjudicator` when
+/// `adjudicator` is set.
+fn keyed_steps(lenses: &[String], adversary: &str, adjudicator: &str) -> Vec<ReviewStep> {
+    let mut steps = Vec::new();
+    if !lenses.is_empty() {
+        steps.push(ReviewStep::Lenses(lenses.to_vec()));
+    }
+    if !adversary.is_empty() {
+        steps.push(ReviewStep::Adversary(adversary.to_string()));
+    }
+    if !adjudicator.is_empty() {
+        steps.push(ReviewStep::Adjudicator(adjudicator.to_string()));
+    }
+    steps
+}
+
+/// The position in `steps` of each adjudicator step, in order.
+fn adjudicator_positions(steps: &[ReviewStep]) -> impl Iterator<Item = usize> + '_ {
+    steps
+        .iter()
+        .enumerate()
+        .filter(|(_, step)| step.adjudicator().is_some())
+        .map(|(i, _)| i)
+}
+
+/// Every step key in the CANONICAL SEQUENCE ([`keyed_steps`], with every key set).
+fn step_keys() -> Vec<&'static str> {
+    let steps = keyed_steps(&[String::new()], "set", "set");
+    steps.iter().map(ReviewStep::key).collect()
+}
+
+/// `ids` in order, each id at its first position only.
+pub fn first_seen(ids: impl IntoIterator<Item = String>) -> Vec<String> {
+    let mut seen = HashSet::new();
+    ids.into_iter()
+        .filter(|id| seen.insert(id.clone()))
+        .collect()
+}
+
+/// Refuse an agent id holding [`STEP_TOKEN_SEPARATOR`], with a bare message the caller prefixes
+/// with the place that names the id.
+pub fn check_agent_id(id: &str) -> Result<(), String> {
+    if id.contains(STEP_TOKEN_SEPARATOR) {
+        return Err(format!(
+            "names agent {id:?}: an agent id never contains {STEP_TOKEN_SEPARATOR:?}, the \
+             separator of a step token; rename the agent"
+        ));
+    }
+    Ok(())
+}
+
+/// One step of a panel's review sequence ([`ReviewPanel::steps`]): a lens step of the agents it
+/// runs in parallel, the adversary that refutes the steps before it, or the adjudicator whose
+/// verdict gates integration.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ReviewStep {
+    Lenses(Vec<String>),
+    Adversary(String),
+    Adjudicator(String),
+}
+
+impl ReviewStep {
+    /// The agent ids this step spawns, in declared order: a lens step's lenses, else its one
+    /// agent.
+    pub fn agents(&self) -> &[String] {
+        match self {
+            ReviewStep::Lenses(ids) => ids,
+            ReviewStep::Adversary(id) | ReviewStep::Adjudicator(id) => std::slice::from_ref(id),
+        }
+    }
+
+    /// The agent of an adjudicator step, else `None`.
+    pub fn adjudicator(&self) -> Option<&str> {
+        match self {
+            ReviewStep::Adjudicator(id) => Some(id),
+            ReviewStep::Lenses(_) | ReviewStep::Adversary(_) => None,
+        }
+    }
+
+    /// The kind of this step, what a roster minter and the step ordinal read.
+    pub fn kind(&self) -> ReviewKind {
+        match self {
+            ReviewStep::Lenses(_) => ReviewKind::Lens,
+            ReviewStep::Adversary(_) => ReviewKind::Adversary,
+            ReviewStep::Adjudicator(_) => ReviewKind::Adjudicator,
+        }
+    }
+
+    /// The key that declares a step of this kind.
+    fn key(&self) -> &'static str {
+        match self {
+            ReviewStep::Lenses(_) => "lenses",
+            ReviewStep::Adversary(_) => "adversary",
+            ReviewStep::Adjudicator(_) => "adjudicator",
+        }
+    }
+}
+
 impl ReviewPanel {
-    /// Whether this panel has any review tier configured. An empty panel runs no
+    /// The panel's review sequence, the one authority every reader of its roster goes through:
+    /// the entries of the `steps` list in their declared order when it is `Some`, else the
+    /// CANONICAL SEQUENCE of the map keys ([`keyed_steps`]). Total, since a parse that skips
+    /// `Config::validate` reads it too: an entry names a step per key it set, and the map keys
+    /// beside a list are not read. The `tiers` light panel is a panel of its own and names no
+    /// step here.
+    pub fn steps(&self) -> Vec<ReviewStep> {
+        match &self.steps {
+            Some(entries) => entries.iter().flat_map(ReviewStepDecl::steps).collect(),
+            None => keyed_steps(&self.lenses, &self.adversary, &self.adjudicator),
+        }
+    }
+
+    /// Whether this panel names no review step ([`Self::steps`]). An empty panel runs no
     /// per-unit review (the historical implement-then-integrate behavior). A
     /// `tiers` policy alone (no roster) is meaningless - there is no full panel to
     /// reduce from - so it does not make a panel non-empty.
     pub fn is_empty(&self) -> bool {
-        self.lenses.is_empty() && self.adversary.is_empty() && self.adjudicator.is_empty()
+        self.steps().is_empty()
     }
 
     /// The configured risk-tiered depth policy, if any.
@@ -387,56 +533,134 @@ impl ReviewPanel {
         self.tiers.as_deref()
     }
 
-    /// Every agent id this panel references (the lenses, the adversary, the
-    /// adjudicator, AND the light-tier roster when a depth policy is configured),
-    /// for referential validation. Extending this to the light panel is what makes
-    /// an unknown light-panel lens/adversary/adjudicator fail `config::load` like any
-    /// other unresolved reference (spec 03: the light panel's agent ids are validated
-    /// too). Terminates: the light panel's own `tiers` is `None` in every real config.
+    /// Whether one of this panel's [`Self::steps`] is an adjudicator step.
+    fn has_adjudicator_step(&self) -> bool {
+        adjudicator_positions(&self.steps()).next().is_some()
+    }
+
+    /// Every agent id this panel references, each once: the [`Self::full_roster`] AND, when a
+    /// depth policy is configured, the light-tier ids it does not already list, for referential
+    /// validation. Extending this to the light panel is what makes an unknown light-panel
+    /// lens/adversary/adjudicator fail `config::load` like any other unresolved reference (spec
+    /// 03: the light panel's agent ids are validated too). Terminates: the light panel's own
+    /// `tiers` is `None` in every real config.
     pub fn agent_ids(&self) -> Vec<String> {
         let mut ids = self.full_roster();
         if let Some(depth) = self.depth() {
             ids.extend(depth.light.agent_ids());
         }
-        ids
+        first_seen(ids)
     }
 
-    /// The agent ids on this panel's own top-level roster - the lenses, the adversary and the
-    /// adjudicator - WITHOUT the opt-in light-tier roster [`Self::agent_ids`] adds: the roster a
-    /// unit that stays on the full panel reviews itself with.
+    /// The agent ids on this panel's own top-level roster - the agents of each of its
+    /// [`Self::steps`], each once at the first step naming it - WITHOUT the opt-in light-tier
+    /// roster [`Self::agent_ids`] adds: the roster a unit that stays on the full panel reviews
+    /// itself with.
     pub fn full_roster(&self) -> Vec<String> {
-        let mut ids = self.lenses.clone();
-        push_reviewers(&mut ids, &self.adversary, &self.adjudicator);
-        ids
+        first_seen(
+            self.steps()
+                .iter()
+                .flat_map(|step| step.agents().iter().cloned()),
+        )
     }
 
-    /// The GATING agent ids this panel names: the adjudicator on this tier and,
-    /// recursively, the light tier's adjudicator. A gating agent's result-channel
-    /// verdict gates integration; the lenses and the adversary do NOT render a gating
-    /// verdict (the adversary "does not render the final verdict"), so only adjudicators
+    /// The GATING agent ids this panel names, each once: the agent of its adjudicator step
+    /// ([`Self::steps`]) then, recursively, the light tier's adjudicator. A gating agent's
+    /// result-channel verdict gates integration; the lenses and the adversary do NOT render a
+    /// gating verdict (the adversary "does not render the final verdict"), so only adjudicators
     /// are collected here. This is the roster the verdict-line lint
     /// ([`lint_gating_verdict_lines`]) inspects.
     pub fn gating_agent_ids(&self) -> Vec<String> {
-        let mut ids = Vec::new();
-        if !self.adjudicator.is_empty() {
-            ids.push(self.adjudicator.clone());
-        }
+        let mut ids: Vec<String> = self
+            .steps()
+            .iter()
+            .filter_map(ReviewStep::adjudicator)
+            .map(str::to_string)
+            .collect();
         if let Some(depth) = self.depth() {
             ids.extend(depth.light.gating_agent_ids());
         }
-        ids
+        first_seen(ids)
+    }
+
+    /// Refuse a panel, or its light panel, whose declaration breaks the rules of a step sequence,
+    /// with a bare message opening on the panel's scope (`review`, `review.tiers.light`) that
+    /// the caller prefixes with where the panel sits.
+    pub fn validate_steps(&self) -> Result<(), String> {
+        self.validate_steps_under("review")
+    }
+
+    /// [`Self::validate_steps`] of the panel at `scope`, whose light panel is the next scope down.
+    fn validate_steps_under(&self, scope: &str) -> Result<(), String> {
+        if self.steps.is_some() {
+            let map_form = keyed_steps(&self.lenses, &self.adversary, &self.adjudicator);
+            if !map_form.is_empty() {
+                let keys: Vec<&str> = map_form.iter().map(ReviewStep::key).collect();
+                return Err(format!(
+                    "{scope} sets steps and {}: a panel declares its steps as a list or as a \
+                     map, never both",
+                    keys.join(", ")
+                ));
+            }
+        }
+        for (i, entry) in self.steps.iter().flatten().enumerate() {
+            let keys = entry.steps().len();
+            if keys != 1 {
+                return Err(format!(
+                    "{scope} steps[{i}] sets {keys} keys: an entry sets exactly one of {}",
+                    step_keys().join(", ")
+                ));
+            }
+        }
+        // Every entry names one step from here on, so a step's index is its entry's.
+        let steps = self.steps();
+        for (i, step) in steps.iter().enumerate() {
+            let label = match self.steps {
+                Some(_) => format!("steps[{i}]"),
+                None => step.key().to_string(),
+            };
+            let mut named = HashSet::new();
+            if let Some(id) = step.agents().iter().find(|id| !named.insert(*id)) {
+                return Err(format!(
+                    "{scope} {label} names agent {id:?} twice: a lens step runs each agent once"
+                ));
+            }
+            for id in step.agents() {
+                check_agent_id(id).map_err(|m| format!("{scope} {label} {m}"))?;
+            }
+        }
+        let mut adjudicators = adjudicator_positions(&steps);
+        if let Some(first) = adjudicators.next() {
+            if let Some(second) = adjudicators.next() {
+                return Err(format!(
+                    "{scope} steps[{second}] is a second adjudicator step: a panel has at most one"
+                ));
+            }
+            if first + 1 != steps.len() {
+                return Err(format!(
+                    "{scope} steps[{first}] is an adjudicator step with a step after it: the \
+                     adjudicator step is the last step"
+                ));
+            }
+        }
+        match self.depth() {
+            Some(depth) => depth
+                .light
+                .validate_steps_under(&format!("{scope}.tiers.light")),
+            None => Ok(()),
+        }
     }
 
     /// Validate the depth policy's structural invariant: the gating verdict is mandatory
     /// on EVERY tier - only the adversary (and the extra lenses) flex (spec 03 / spec 13
     /// unit 4) - so BOTH the reduced LIGHT tier AND the enclosing FULL panel this depth
-    /// policy sits on MUST name an adjudicator.
+    /// policy sits on MUST name an adjudicator step, in either form.
     ///
     /// The full-panel check closes the inverted-guarantee hole: a high-risk unit routes
-    /// to THIS (full) panel, and an empty full roster (or one that names no adjudicator)
+    /// to THIS (full) panel, and an empty full roster (or one with no adjudicator step)
     /// would let `review_unit` approve it trivially via `panel.is_empty()` - so the
     /// highest-risk units would get NO adjudicator while low-risk units got the light one.
-    /// A full panel that names an adjudicator is necessarily non-empty, so this one check
+    /// A full panel with an adjudicator step is necessarily non-empty, so this one check
     /// rejects both the empty-full-panel and the adjudicator-less-full-panel cases (and a
     /// per-stage `review:` that declares ONLY a `tiers:` policy with no roster - which
     /// `effective_review_panel` would otherwise silently discard back to defaults - now
@@ -445,23 +669,23 @@ impl ReviewPanel {
     /// message the caller wraps into its `Error` with the offending scope.
     pub fn validate_depth(&self) -> Result<(), String> {
         if let Some(depth) = self.depth() {
-            // The enclosing FULL panel (this one) must name an adjudicator: a high-risk
+            // The enclosing FULL panel (this one) must name an adjudicator step: a high-risk
             // unit routes here, and an empty/adjudicator-less full panel would approve it
-            // trivially. A panel that names an adjudicator is necessarily non-empty, so
-            // this rejects both the empty-full-panel and the adjudicator-less cases.
-            if self.adjudicator.is_empty() {
+            // trivially. A panel with an adjudicator step is necessarily non-empty, so this
+            // rejects both the empty-full-panel and the adjudicator-less cases.
+            if !self.has_adjudicator_step() {
                 return Err(
                     "a review.tiers policy requires its enclosing (full) panel to name an \
-                     adjudicator (the gating verdict is mandatory on every review tier - a \
-                     high-risk unit routes to the full panel, so an empty/adjudicator-less \
+                     adjudicator step (the gating verdict is mandatory on every review tier - \
+                     a high-risk unit routes to the full panel, so an empty/adjudicator-less \
                      full panel would approve it with no verdict)"
                         .to_string(),
                 );
             }
             // ...and the reduced LIGHT tier a low-risk unit routes to must name one too.
-            if depth.light.adjudicator.is_empty() {
+            if !depth.light.has_adjudicator_step() {
                 return Err(
-                    "review.tiers.light must name an adjudicator (the gating verdict is \
+                    "review.tiers.light must name an adjudicator step (the gating verdict is \
                      mandatory on every review tier - only the adversary flexes)"
                         .to_string(),
                 );
@@ -484,7 +708,7 @@ impl ReviewPanel {
 #[serde(deny_unknown_fields)]
 pub struct ReviewDepth {
     /// The reduced roster a LOW-RISK unit reviews itself with (typically fewer lenses
-    /// and no adversary). It must name an adjudicator (`validate_depth`), and its
+    /// and no adversary). It must name an adjudicator step (`validate_depth`), and its
     /// agent ids are validated like the full panel's (`agent_ids`).
     #[serde(default)]
     pub light: ReviewPanel,
@@ -535,7 +759,7 @@ pub struct Defaults {
     /// `grounder::grounder_for` / `main::select_grounder`).
     #[serde(default)]
     pub grounder: String,
-    /// The three-tier review panel applied to every implementer unit (§3.2): each
+    /// The review panel applied to every implementer unit (section 3.2): each
     /// unit runs its own lifecycle and reviews ITSELF with this panel unless its
     /// stage overrides it with a `review` block. Declared once here, inherited by
     /// every planner-proposed unit too.
@@ -634,9 +858,10 @@ pub struct Stage {
     pub adversary: String,
     #[serde(default)]
     pub adjudicator: String,
-    /// An optional per-stage override of `defaults.review` (§3.2): when set, this
-    /// stage's units review themselves with this panel instead of the workflow
-    /// default. Absent (the common case) means the unit uses `defaults.review`.
+    /// An optional per-stage override of `defaults.review` (section 3.2): when it names a
+    /// reviewer, this stage's units review themselves with this panel instead of the workflow
+    /// default. Absent or empty in either form, `steps: []` included, means the unit uses
+    /// `defaults.review`: a stage cannot turn review off.
     #[serde(default)]
     pub review: ReviewPanel,
     #[serde(default)]
@@ -772,26 +997,42 @@ impl Stage {
     /// standalone-review adversary/adjudicator, and any per-stage `review` override
     /// panel).
     pub fn agent_ids(&self) -> Vec<String> {
-        let mut ids = Vec::new();
-        if !self.agent.is_empty() {
-            ids.push(self.agent.clone());
-        }
-        ids.extend(self.agents.iter().cloned());
-        push_reviewers(&mut ids, &self.adversary, &self.adjudicator);
+        let mut ids: Vec<String> = self.own_agents().map(|(_, id)| id.to_string()).collect();
         ids.extend(self.review.agent_ids());
         ids
     }
+
+    /// Each agent id the stage's own agent fields name, labelled with its field: `agent`, the
+    /// `agents` list, `adversary`, `adjudicator`. An unset field defaults to `""`, never an
+    /// agent id, so it names none.
+    fn own_agents(&self) -> impl Iterator<Item = (&'static str, &str)> {
+        fn set<'a>(field: &'static str, id: &'a str) -> Option<(&'static str, &'a str)> {
+            (!id.is_empty()).then_some((field, id))
+        }
+        set("agent", &self.agent)
+            .into_iter()
+            .chain(self.agents.iter().map(|id| ("agents", id.as_str())))
+            .chain(set("adversary", &self.adversary))
+            .chain(set("adjudicator", &self.adjudicator))
+    }
+
+    /// Refuse an agent id holding the step token separator in one of the stage's own agent
+    /// fields, with a bare message opening on the field; its `review` panel answers for itself
+    /// ([`ReviewPanel::validate_steps`]).
+    pub fn validate_agent_ids(&self) -> Result<(), String> {
+        for (field, id) in self.own_agents() {
+            check_agent_id(id).map_err(|m| format!("{field} {m}"))?;
+        }
+        Ok(())
+    }
 }
 
-/// Append a reviewer pair to `ids` - the `adversary` then the `adjudicator`, each only when set
-/// (an unset `adversary:`/`adjudicator:` field defaults to `""`, never an agent id).
+/// Append a reviewer pair to `ids`, the CANONICAL SEQUENCE ([`keyed_steps`]) of a stage's own
+/// `adversary` and `adjudicator` fields: the `adversary` then the `adjudicator`, each only when
+/// set.
 pub fn push_reviewers(ids: &mut Vec<String>, adversary: &str, adjudicator: &str) {
-    ids.extend(
-        [adversary, adjudicator]
-            .into_iter()
-            .filter(|id| !id.is_empty())
-            .map(str::to_string),
-    );
+    let steps = keyed_steps(&[], adversary, adjudicator);
+    ids.extend(steps.iter().flat_map(|step| step.agents().iter().cloned()));
 }
 
 /// The event-store SELECTION a project's committed config pins (§48 rung 4, the project-config
@@ -935,8 +1176,9 @@ pub struct Workflow {
 }
 
 impl Workflow {
-    /// The review panel a unit reviews ITSELF with (§3.2): a stage's own `review` override when it
-    /// sets one, otherwise this workflow's `defaults.review`. Declared once and inherited by every
+    /// The review panel a unit reviews ITSELF with (section 3.2): a stage's own `review` override
+    /// when it names a reviewer, otherwise this workflow's `defaults.review`, so an empty panel in
+    /// either form inherits the default. Declared once and inherited by every
     /// implementer unit, including planner-proposed units.
     ///
     /// Extracted here (spec 92 criterion 2) from `conductor::RunCtx::effective_review_panel`, which
@@ -1504,4 +1746,255 @@ pub fn find_cycle(stages: &BTreeMap<String, Stage>) -> Option<String> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `full` carrying a `tiers` policy whose light panel is `light`.
+    fn tiered(full: ReviewPanel, light: ReviewPanel) -> ReviewPanel {
+        ReviewPanel {
+            tiers: Some(Box::new(ReviewDepth {
+                light,
+                threshold: 5,
+                high_risk_paths: Vec::new(),
+            })),
+            ..full
+        }
+    }
+
+    /// The panel the flow mapping `yaml` declares, through the production parser.
+    fn parsed(yaml: &str) -> ReviewPanel {
+        parse_yaml_naming_unknown_keys(yaml).unwrap_or_else(|e| panic!("parse {yaml}: {e}"))
+    }
+
+    #[test]
+    fn a_map_form_panel_steps_through_its_set_lenses_adversary_and_adjudicator_in_that_order() {
+        let ab = || ReviewStep::Lenses(vec!["a".into(), "b".into()]);
+        let x = || ReviewStep::Adversary("x".into());
+        let z = || ReviewStep::Adjudicator("z".into());
+        for (panel, steps) in [
+            (
+                parsed("{ lenses: [a, b], adversary: x, adjudicator: z }"),
+                vec![ab(), x(), z()],
+            ),
+            (parsed("{ lenses: [a, b], adversary: x }"), vec![ab(), x()]),
+            (
+                parsed("{ lenses: [a, b], adjudicator: z }"),
+                vec![ab(), z()],
+            ),
+            (parsed("{ lenses: [a, b] }"), vec![ab()]),
+            (parsed("{ adversary: x, adjudicator: z }"), vec![x(), z()]),
+            (parsed("{ adversary: x }"), vec![x()]),
+            (parsed("{ adjudicator: z }"), vec![z()]),
+            (parsed("{}"), vec![]),
+            // The light panel is a panel of its own: `steps` is the full panel's sequence.
+            (
+                tiered(
+                    parsed("{ lenses: [a, b], adjudicator: z }"),
+                    parsed("{ lenses: [c], adjudicator: w }"),
+                ),
+                vec![ab(), z()],
+            ),
+        ] {
+            assert_eq!(panel.steps(), steps, "{panel:?}");
+        }
+    }
+
+    #[test]
+    fn a_list_form_panel_steps_through_its_declared_entries_in_their_order() {
+        let ab = || ReviewStep::Lenses(vec!["a".into(), "b".into()]);
+        let x = || ReviewStep::Adversary("x".into());
+        let z = || ReviewStep::Adjudicator("z".into());
+        for (yaml, steps) in [
+            (
+                "{ steps: [{ lenses: [a, b] }, { adversary: x }, { adjudicator: z }] }",
+                vec![ab(), x(), z()],
+            ),
+            // The declared order, never the canonical one.
+            (
+                "{ steps: [{ adversary: x }, { lenses: [a, b] }, { adjudicator: z }] }",
+                vec![x(), ab(), z()],
+            ),
+            ("{ steps: [{ adjudicator: z }] }", vec![z()]),
+            ("{ steps: [] }", vec![]),
+            // A key is set when non-empty, in an entry as in a map.
+            (
+                "{ steps: [{ lenses: [a, b], adversary: \"\" }, { lenses: [], adjudicator: z }] }",
+                vec![ab(), z()],
+            ),
+            // `steps: null` reads as absent, so the map keys answer.
+            (
+                "{ steps: null, lenses: [a, b], adjudicator: z }",
+                vec![ab(), z()],
+            ),
+            ("{ steps: null }", vec![]),
+            // The light panel is a panel of its own.
+            (
+                "{ steps: [{ adjudicator: z }], tiers: { light: { steps: [{ adversary: x }] } } }",
+                vec![z()],
+            ),
+            // `Config::validate` refuses these, but a parse that skips it reads them too, so
+            // `steps` answers: an entry names the steps of the keys it set, and the map keys
+            // beside a list are not read.
+            ("{ steps: [{}] }", vec![]),
+            (
+                "{ steps: [{ lenses: [a, b], adjudicator: z }] }",
+                vec![ab(), z()],
+            ),
+            ("{ steps: [{ adjudicator: z }], adversary: x }", vec![z()]),
+        ] {
+            assert_eq!(parsed(yaml).steps(), steps, "{yaml}");
+        }
+    }
+
+    /// A stage whose panel is empty, in either form, inherits `defaults.review`; a stage whose
+    /// list names a step reviews with its own panel.
+    #[test]
+    fn a_stage_with_an_empty_panel_inherits_the_default_panel() {
+        let defaults = || vec![ReviewStep::Adjudicator("z".into())];
+        for (review, steps) in [
+            ("{ steps: [] }", defaults()),
+            ("{}", defaults()),
+            ("{ lenses: [] }", defaults()),
+            ("{ steps: null }", defaults()),
+            (
+                "{ steps: [{ adversary: x }] }",
+                vec![ReviewStep::Adversary("x".into())],
+            ),
+        ] {
+            let body = format!(
+                "defaults:\n  review: {{ adjudicator: z }}\nstages:\n  s:\n    review: {review}\n"
+            );
+            let workflow: Workflow =
+                parse_yaml_naming_unknown_keys(&body).unwrap_or_else(|e| panic!("{body}: {e}"));
+            assert_eq!(
+                workflow
+                    .effective_review_panel(&workflow.stages["s"])
+                    .steps(),
+                steps,
+                "{review}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_panel_accessors_read_its_steps_then_its_light_panel() {
+        // (panel, is_empty, full_roster, gating_agent_ids, agent_ids)
+        for (panel, empty, full, gating, all) in [
+            (
+                parsed("{ lenses: [a, b], adversary: x, adjudicator: z }"),
+                false,
+                vec!["a", "b", "x", "z"],
+                vec!["z"],
+                vec!["a", "b", "x", "z"],
+            ),
+            (
+                parsed("{ lenses: [a, b] }"),
+                false,
+                vec!["a", "b"],
+                vec![],
+                vec!["a", "b"],
+            ),
+            (
+                parsed("{ adversary: x }"),
+                false,
+                vec!["x"],
+                vec![],
+                vec!["x"],
+            ),
+            (
+                parsed("{ adjudicator: z }"),
+                false,
+                vec!["z"],
+                vec!["z"],
+                vec!["z"],
+            ),
+            (parsed("{}"), true, vec![], vec![], vec![]),
+            (
+                tiered(
+                    parsed("{ lenses: [a, b], adversary: x, adjudicator: z }"),
+                    parsed("{ lenses: [c], adjudicator: w }"),
+                ),
+                false,
+                vec!["a", "b", "x", "z"],
+                vec!["z", "w"],
+                vec!["a", "b", "x", "z", "c", "w"],
+            ),
+            // A `tiers` policy alone names no step, so the panel stays empty.
+            (
+                tiered(parsed("{}"), parsed("{ lenses: [c], adjudicator: w }")),
+                true,
+                vec![],
+                vec!["w"],
+                vec!["c", "w"],
+            ),
+            // One agent as lens and adjudicator, in the map form, is named once.
+            (
+                parsed("{ lenses: [a, b], adjudicator: a }"),
+                false,
+                vec!["a", "b"],
+                vec!["a"],
+                vec!["a", "b"],
+            ),
+            (
+                parsed("{ lenses: [a], adversary: a, adjudicator: a }"),
+                false,
+                vec!["a"],
+                vec!["a"],
+                vec!["a"],
+            ),
+            // One agent in two steps of a list, at its first step.
+            (
+                parsed("{ steps: [{ adversary: b }, { lenses: [a, b] }, { adjudicator: a }] }"),
+                false,
+                vec!["b", "a"],
+                vec!["a"],
+                vec!["b", "a"],
+            ),
+            // Under tiers the full panel's ids come first, then the light ids not yet listed.
+            (
+                tiered(
+                    parsed("{ lenses: [a, b], adversary: x, adjudicator: z }"),
+                    parsed("{ lenses: [c, a], adjudicator: z }"),
+                ),
+                false,
+                vec!["a", "b", "x", "z"],
+                vec!["z"],
+                vec!["a", "b", "x", "z", "c"],
+            ),
+            (
+                tiered(
+                    parsed("{ lenses: [a], adjudicator: z }"),
+                    parsed("{ lenses: [a], adversary: z, adjudicator: y }"),
+                ),
+                false,
+                vec!["a", "z"],
+                vec!["z", "y"],
+                vec!["a", "z", "y"],
+            ),
+            (
+                tiered(
+                    parsed("{ steps: [{ adversary: x }, { lenses: [a] }, { adjudicator: z }] }"),
+                    parsed("{ steps: [{ lenses: [a, c] }, { adjudicator: y }] }"),
+                ),
+                false,
+                vec!["x", "a", "z"],
+                vec!["z", "y"],
+                vec!["x", "a", "z", "c", "y"],
+            ),
+            // The empty list is the empty panel.
+            (parsed("{ steps: [] }"), true, vec![], vec![], vec![]),
+        ] {
+            assert_eq!(panel.is_empty(), empty, "is_empty of {panel:?}");
+            assert_eq!(panel.full_roster(), full, "full_roster of {panel:?}");
+            assert_eq!(
+                panel.gating_agent_ids(),
+                gating,
+                "gating_agent_ids of {panel:?}"
+            );
+            assert_eq!(panel.agent_ids(), all, "agent_ids of {panel:?}");
+        }
+    }
 }

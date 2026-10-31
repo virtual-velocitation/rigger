@@ -3,7 +3,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use crate::config::{Stage, Workflow};
+use crate::config::{ReviewStep, Stage, Workflow};
 use crate::playbooks::fnv1a_64;
 
 /// Normalize a criterion string for the supersede match (the duplication fix): trim,
@@ -205,17 +205,27 @@ pub fn critique_gate_name(stages: &BTreeMap<String, Stage>) -> Option<String> {
 /// What a workflow with no critic names neither of (spec 112): the one clause every message
 /// about a missing critic carries.
 pub const NO_CRITIC_CLAUSE: &str =
-    "the workflow names neither the plan-critique gate's adversary nor defaults.review.adversary";
+    "the workflow names neither the plan-critique gate's adversary nor an adversary step in defaults.review";
 
 /// The workflow's spec critic (spec 112): the adversary persona of the plan-critique gate
-/// ([`critique_gate_name`]), else `defaults.review.adversary`, else `None` - a workflow naming
-/// neither has no critic, and there is no built-in one.
+/// ([`critique_gate_name`]), else the first adversary step of `defaults.review`, read in the
+/// order [`ReviewPanel::steps`](crate::config::ReviewPanel::steps) gives, else `None` - a
+/// workflow naming neither has no critic, and there is no built-in one.
 pub fn critic(workflow: &Workflow) -> Option<String> {
     critique_gate_name(&workflow.stages)
         .map(|gate| workflow.stages[&gate].adversary.clone())
         .filter(|adversary| !adversary.is_empty())
-        .or_else(|| Some(workflow.defaults.review.adversary.clone()))
-        .filter(|adversary| !adversary.is_empty())
+        .or_else(|| {
+            workflow
+                .defaults
+                .review
+                .steps()
+                .into_iter()
+                .find_map(|step| match step {
+                    ReviewStep::Adversary(id) => Some(id),
+                    _ => None,
+                })
+        })
 }
 
 /// A stable, unique, human-legible unit id derived from a criterion's text plus its
@@ -544,11 +554,16 @@ mod tests {
 
     #[test]
     fn the_critic_is_the_plan_critique_gates_adversary_first() {
-        let wf = workflow(&format!(
-            "defaults:\n  review:\n    adversary: fallback\nstages:\n{PLAN}  plan-critique:\n    \
-             needs: [plan]\n    adversary: critic\n    adjudicator: judge\n"
-        ));
-        assert_eq!(critic(&wf).as_deref(), Some("critic"));
+        for review in [
+            "{ adversary: fallback }",
+            "{ steps: [{ adversary: fallback }, { adjudicator: z }] }",
+        ] {
+            let wf = workflow(&format!(
+                "defaults:\n  review: {review}\nstages:\n{PLAN}  plan-critique:\n    \
+                 needs: [plan]\n    adversary: critic\n    adjudicator: judge\n"
+            ));
+            assert_eq!(critic(&wf).as_deref(), Some("critic"), "{review}");
+        }
     }
 
     #[test]
@@ -581,8 +596,50 @@ mod tests {
         );
         assert_eq!(
             NO_CRITIC_CLAUSE,
-            "the workflow names neither the plan-critique gate's adversary nor \
-             defaults.review.adversary"
+            "the workflow names neither the plan-critique gate's adversary nor an adversary step \
+             in defaults.review"
         );
+    }
+
+    /// Under no gate adversary of its own, the critic is the first adversary step of
+    /// `defaults.review`: the list form's rows, each over a workflow with no gate and one whose
+    /// gate names no adversary. A key beside the list is not read, as `steps` does not read it.
+    #[test]
+    fn the_critic_is_the_first_adversary_step_of_a_listed_default_review() {
+        let gate = "  plan-critique:\n    needs: [plan]\n    adjudicator: judge\n";
+        let cases = [
+            (
+                "the one adversary step, after a lens step",
+                "{ steps: [{ lenses: [a] }, { adversary: x }, { adjudicator: z }] }",
+                Some("x"),
+            ),
+            (
+                "the first of two adversary steps",
+                "{ steps: [{ adversary: x }, { lenses: [a] }, { adversary: y }, { adjudicator: z }] }",
+                Some("x"),
+            ),
+            (
+                "the first of two steps with a lens step ahead of them",
+                "{ steps: [{ lenses: [a] }, { adversary: y }, { adversary: x }] }",
+                Some("y"),
+            ),
+            (
+                "no adversary step",
+                "{ steps: [{ lenses: [a] }, { adjudicator: z }] }",
+                None,
+            ),
+            ("an empty list", "{ steps: [] }", None),
+            (
+                "the adversary key beside a list naming no adversary step",
+                "{ adversary: m, steps: [{ lenses: [a] }, { adjudicator: z }] }",
+                None,
+            ),
+        ];
+        for (why, review, want) in cases {
+            for stages in [PLAN.to_string(), format!("{PLAN}{gate}")] {
+                let wf = workflow(&format!("defaults:\n  review: {review}\nstages:\n{stages}"));
+                assert_eq!(critic(&wf).as_deref(), want, "{why}: {stages}");
+            }
+        }
     }
 }

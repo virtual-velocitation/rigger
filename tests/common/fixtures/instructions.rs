@@ -1,11 +1,16 @@
 //! Built-in instruction fixtures, shared by the instruction layer's unit tests, the conductor's
 //! prompt tests, the binary's shipped-text tests and the integration suites: the working-discipline
 //! body's section headings and the review method its `## When you review` section holds; the
+//! critique method the adversary and adjudicator personas hold under their
+//! `## When you critique a spec or a plan` section and each persona's share of it; the
 //! headings a composed system prompt carries, the handbook chapter that lists the built-in entries
 //! and their checked-in sources, each entry's body by name, a near name that shadows no
-//! built-in, the layers `rigger instructions` prints, the persona an agent definition parses to,
+//! built-in, the non-empty bodies that still switch a built-in off, two operator files that shadow
+//! nothing, the layers `rigger instructions` prints, the persona an agent definition parses to,
 //! the system prompt a spawn with no operator layer is composed to, and the composed prompt
-//! spelled section by section.
+//! spelled section by section; an operator instruction file by name and body; and the named-entry
+//! operator layer the instruction reporters are read over, with what `rigger instructions`,
+//! `rigger validate` and `rigger prime` report on it.
 
 /// The working-discipline body's hand-over section heading.
 pub const HAND_OVER_HEADING: &str = "## Hand over a tree the gates only confirm";
@@ -43,6 +48,98 @@ pub const WHEN_YOU_REVIEW: [&str; 7] = [
      whose findings are all notes is an approval, and a rejection requires only its blocking \
      findings.",
 ];
+
+/// The section heading a critiquing persona holds the critique method under.
+pub const WHEN_YOU_CRITIQUE_HEADING: &str = "## When you critique a spec or a plan";
+
+/// The critique sentences both the adversary's and the adjudicator's section hold: the section's
+/// scope, how a plan critique reads the text, Rules 7 and 8, the blast-radius note, the ownership
+/// defects, the numberless unit-size rule and the overlap rule.
+pub const CRITIQUE_METHOD: [&str; 8] = [
+    "In a spec or plan critique this section's rules decide which finding blocks; the working \
+     discipline's review rule decides a unit diff's findings.",
+    "In a plan critique this section's criterion reads as a unit (twin and bundled criteria are \
+     twin and bundled units), and Rules 7 and 8 and the unit-size rule read as written.",
+    "- Rule 7 (mitigation ownership): every demanded mitigation must be owned by exactly one unit, \
+     with the exclusion named on its neighbors; an unassigned or ambiguously-owned mitigation - \
+     two units that will fight over the same concern through the shared context graph - is a \
+     reject.",
+    "- Rule 8 (open dispositions): a unit must not leave a disposition open for a reviewer to \
+     re-litigate; an undecided disposition is a reject.",
+    "NOTE on shared blast radius: units whose file footprints OVERLAP are NOT a defect. \
+     `partition: by-blast-radius` runs them in SEPARATE sequential batches (each branches off the \
+     prior batch's integrated tree), and per-unit worktree isolation keeps every reviewer on its \
+     own diff - so overlap integrates cleanly and reviews independently. Do NOT reject merely \
+     because two units touch the same file. Reject a shared-file split ONLY when it is a genuine \
+     OWNERSHIP or COHERENCE defect (rule 7) - two units that cannot own their concern cleanly - \
+     not for mechanical overlap the partitioner already serializes.",
+    "Ownership defects: twin criteria (two checkboxes claiming one concern) and bundling (one \
+     checkbox carrying two mitigations) are each a BLOCKING finding.",
+    "- Unit size: a unit over the cap your prompt states is a BLOCKING finding.",
+    "- Overlap: judge ownership/coherence, not the overlap.",
+];
+
+/// The critique sentences the adversary's section alone holds: the three classes the rules fall
+/// in, the stance, the two hunts and the ban.
+pub const ADVERSARY_CRITIQUE_METHOD: [&str; 6] = [
+    "These rules fall in three classes. To a spec only: the two hunts and the ban. To a DAG only: \
+     the unit-size rule and the overlap rule. To both a spec and a DAG: the stance, Rules 7 and 8, \
+     the blast-radius note and the ownership defects.",
+    "Default to skepticism: assume the author missed something, and try to prove the spec \
+     self-contradictory or undecided; never soften a finding to converge. Cite the criterion \
+     number or Design block title for every finding.",
+    "Run these hunts, and name the hunt in each finding it produces:",
+    "- LANDING ORDER: for every ordered pair of criteria (A, B) sharing a command, a store read, a \
+     file or a counter, ask \"if A lands first on a tree without B, does A's own text hold?\"; \
+     every no is a finding.",
+    "- UNDECIDED CORNER: for every criterion's mechanism, walk the corners empty, repeated, \
+     reverted, DROPPED (a fact present in an earlier generation and absent in a later one), \
+     concurrent, crash-resume, cold start and existing data; each corner no Design sentence \
+     decides is a finding.",
+    "The ban: a fix is a Design or Global-constraint change, never a criterion edit.",
+];
+
+/// The critique sentences the adjudicator's section alone holds: its judging rule, the one home of
+/// the "Reject ONLY for" scope, what that scope reads as, and the fix a reject's cause selects.
+pub const ADJUDICATOR_JUDGING_RULE: [&str; 3] = [
+    "Reject ONLY for a rule 7 (ownership) or rule 8 (open disposition) defect, a unit over the \
+     size cap, or a defect in a criterion's own text that no decomposition can remove - never for \
+     mechanical blast-radius overlap alone.",
+    "A finding stands when it names a Rule 7 ownership defect, a Rule 8 open disposition, a \
+     bundled or twin criterion, a unit over the cap the prompt states, or a defect in a \
+     criterion's own text that no decomposition can remove; mechanical file overlap alone never \
+     does; twin and bundled units count as Rule 7 defects.",
+    "The fix is the cause rule's: a re-plan for `decomposition-conflict`, the run stopping for \
+     `spec-ambiguity`.",
+];
+
+/// Each critiquing persona's agent file, the critique sentences it holds and those it leaves to
+/// the other role.
+pub fn critique_method_by_persona(
+) -> [(&'static str, Vec<&'static str>, &'static [&'static str]); 2] {
+    [
+        (
+            "adversary.md",
+            [CRITIQUE_METHOD.as_slice(), &ADVERSARY_CRITIQUE_METHOD].concat(),
+            &ADJUDICATOR_JUDGING_RULE,
+        ),
+        (
+            "adjudicator.md",
+            [CRITIQUE_METHOD.as_slice(), &ADJUDICATOR_JUDGING_RULE].concat(),
+            &ADVERSARY_CRITIQUE_METHOD,
+        ),
+    ]
+}
+
+/// The section of `text` that `heading` opens, up to the next `## ` heading or the end of `text`.
+pub fn markdown_section<'a>(text: &'a str, heading: &str) -> &'a str {
+    let from = text.find(heading).expect("the text carries the heading");
+    let rest = &text[from + heading.len()..];
+    let to = rest
+        .find("\n## ")
+        .map_or(text.len(), |at| from + heading.len() + at);
+    &text[from..to]
+}
 
 /// The review `tier`'s task `prompt` carries the reviewer `discipline` exactly once and none of the
 /// review method `## When you review` holds, the method reaching the tier through its system prompt
@@ -111,6 +208,12 @@ pub fn builtin_body(name: &str) -> &'static str {
 /// nothing and appends as an operator file.
 pub const COMMUNICATION_NEAR_NAME: &str = "communication ";
 
+/// Operator file bodies other than the empty one that are blank once one leading U+FEFF is
+/// stripped and Unicode White_Space trimmed, so a same-named file holding one switches its
+/// built-in off: a lone byte order mark, ASCII whitespace, and a byte order mark before an em
+/// space.
+pub const NON_EMPTY_BLANK_BODIES: [&str; 3] = ["\u{feff}", " \t\n", "\u{feff}\u{2003}\n"];
+
 /// The persona the agent definition `agent_file` parses to: the markdown body after its front
 /// matter.
 pub fn persona(agent_file: &str) -> String {
@@ -141,20 +244,166 @@ pub fn expected_composed_prompt(persona: &str, sections: &[(&str, &str)]) -> Str
     out
 }
 
+/// The line that opens the operator layer `rigger instructions` prints, with the blank line before
+/// it.
+pub const RENDERED_OPERATOR_HEADING: &str =
+    "\nOperator (.rigger/instructions/*.md, filename order):\n";
+
+/// The heading `rigger instructions` gives the communication built-in when no operator file
+/// shadows it.
+pub const RENDERED_COMMUNICATION_SECTION: &str = "\n## communication (built-in)\n";
+
+/// The body of the operator file that replaces the communication built-in in
+/// [`shadowing_operator_layer`].
+pub const REPLACING_COMMUNICATION_BODY: &str = "Log each decision in the team channel.";
+
+/// The body of the operator file of [`shadowing_operator_layer`] that shadows no built-in.
+pub const UNSHADOWING_STYLE_BODY: &str = "Keep the house style.";
+
+/// An operator instruction file named `name` with `body`, as the loader reads it.
+pub fn op(name: &str, body: &str) -> rigger::instructions::Instruction {
+    rigger::instructions::Instruction {
+        name: name.into(),
+        body: body.into(),
+    }
+}
+
+/// Two operator files that shadow no built-in, in filename order: `10-house`, then `20-team`.
+pub fn house_and_team_operator_layer() -> Vec<rigger::instructions::Instruction> {
+    vec![op("10-house", "House rule."), op("20-team", "Team rule.")]
+}
+
+/// The named-entry fixture the instruction reporters are read over, in filename order as the
+/// loader returns it: `30-style`, which shadows no built-in; `communication`, replacing that
+/// built-in; and an empty `working-discipline`, switching that built-in off. The
+/// `engineering-principles` built-in stays in force.
+pub fn shadowing_operator_layer() -> Vec<rigger::instructions::Instruction> {
+    [
+        ("30-style", Some(UNSHADOWING_STYLE_BODY)),
+        ("communication", Some(REPLACING_COMMUNICATION_BODY)),
+        ("working-discipline", None),
+    ]
+    .into_iter()
+    .map(|(name, body)| op(name, body.unwrap_or_default()))
+    .collect()
+}
+
+/// What `rigger instructions` prints over [`shadowing_operator_layer`], spelled without calling
+/// `render`: each built-in in `BUILTIN` order with its state, then the one unshadowed file.
+pub fn rendered_shadowing_layer() -> String {
+    rendered_shadowing_layer_replaced_by(REPLACING_COMMUNICATION_BODY)
+}
+
+/// What `rigger instructions` prints over [`shadowing_operator_layer`] without its one unshadowed
+/// file, spelled without calling `render`: the same built-in states over `(none)` under the
+/// operator heading.
+pub fn rendered_every_file_shadowing_layer() -> String {
+    rendered_shadowing_layer().replace(
+        &format!("\n## 30-style\n{UNSHADOWING_STYLE_BODY}\n"),
+        "(none)\n",
+    )
+}
+
+/// What `rigger instructions` prints over [`shadowing_operator_layer`] whose communication file's
+/// body prints as `printed`, spelled without calling `render`: the communication built-in replaced
+/// by that body.
+pub fn rendered_shadowing_layer_replaced_by(printed: &str) -> String {
+    rendered_beside_the_shadowing_entries(
+        &format!(
+            "\n## communication (replaced by .rigger/instructions/communication.md)\n{printed}\n"
+        ),
+        "",
+    )
+}
+
+/// What `rigger instructions` prints over [`shadowing_operator_layer`] whose communication file is
+/// renamed to the near name `near`, spelled without calling `render`: the communication built-in in
+/// force with its shipped body, and the near-named file listed after `30-style` under the operator
+/// heading.
+pub fn rendered_near_named_layer(near: &str) -> String {
+    rendered_beside_the_shadowing_entries(
+        &format!(
+            "{RENDERED_COMMUNICATION_SECTION}{}\n",
+            builtin_body("communication").trim_end()
+        ),
+        &format!("\n## {near}\n{REPLACING_COMMUNICATION_BODY}\n"),
+    )
+}
+
+/// What `rigger instructions` prints over a layer holding [`shadowing_operator_layer`]'s
+/// `30-style` and empty `working-discipline` files: the engineering-principles built-in in force,
+/// the working-discipline one switched off, then `communication` - the communication built-in's
+/// section as printed - then the operator heading, `30-style`, and `tail`, the operator files
+/// printed after it.
+fn rendered_beside_the_shadowing_entries(communication: &str, tail: &str) -> String {
+    format!(
+        "{}\n\nBuilt-in:\n\n## engineering-principles (built-in)\n{}\n\n## working-discipline \
+         (switched off by .rigger/instructions/working-discipline.md)\n{communication}\
+         {RENDERED_OPERATOR_HEADING}\n## 30-style\n{UNSHADOWING_STYLE_BODY}\n{tail}",
+        rigger::instructions::HEADING,
+        builtin_body("engineering-principles").trim_end()
+    )
+}
+
+/// What `rigger instructions` prints when no operator file is read, spelled without calling
+/// `render`: every built-in in force, in `BUILTIN` order, then `(none)` under the operator heading.
+pub fn rendered_built_ins_only_layer() -> String {
+    let sections = [
+        "engineering-principles",
+        "working-discipline",
+        "communication",
+    ]
+    .map(|name| {
+        format!(
+            "\n## {name} (built-in)\n{}\n",
+            builtin_body(name).trim_end()
+        )
+    })
+    .concat();
+    format!(
+        "{}\n\nBuilt-in:\n{sections}{RENDERED_OPERATOR_HEADING}(none)\n",
+        rigger::instructions::HEADING
+    )
+}
+
+/// The advisories `rigger validate` prints over [`shadowing_operator_layer`], in `BUILTIN` order.
+pub const SHADOWING_LAYER_ADVISORIES: [&str; 2] = [
+    "warning: built-in instruction working-discipline is switched off by \
+     .rigger/instructions/working-discipline.md",
+    "warning: built-in instruction communication is replaced by \
+     .rigger/instructions/communication.md",
+];
+
+/// The first line `rigger prime` prints when no operator file is read: every built-in in force
+/// and no operator file count.
+pub const BUILT_INS_ONLY_IN_FORCE_LINE: &str = "# Rigger instructions in force: \
+     engineering-principles, working-discipline, communication - see rigger instructions";
+
+/// The first line `rigger prime` prints over [`shadowing_operator_layer`].
+pub const SHADOWING_LAYER_IN_FORCE_LINE: &str = "# Rigger instructions in force: \
+     engineering-principles, communication (replaced) (+1 operator files) - see rigger \
+     instructions";
+
 /// The built-in layer of `out`, what `rigger instructions` printed: every line before the
 /// operator layer opens.
 pub fn printed_built_in_layer(out: &str) -> &str {
-    out.split_once("\nOperator (")
+    out.split_once(RENDERED_OPERATOR_HEADING)
         .unwrap_or_else(|| panic!("the operator layer must follow the built-in one; got:\n{out}"))
         .0
 }
 
-/// Assert `text` - a composed system prompt, or the layers `rigger instructions` prints - carries
-/// the communication built-in's section exactly once and the heading the conductor once appended
-/// nowhere.
+/// Assert `text`, a composed system prompt, carries the communication built-in's section exactly
+/// once and the heading the conductor once appended nowhere.
 pub fn assert_communication_once(text: &str) {
+    assert_communication_section_once(text, COMMUNICATION_SECTION);
+}
+
+/// Assert `text` - a composed system prompt, or the layers `rigger instructions` prints - carries
+/// the communication built-in's heading line `section` exactly once and the heading the conductor
+/// once appended nowhere.
+pub fn assert_communication_section_once(text: &str, section: &str) {
     assert_eq!(
-        text.matches(COMMUNICATION_SECTION).count(),
+        text.matches(section).count(),
         1,
         "the communication section appears exactly once; got: {text:?}"
     );

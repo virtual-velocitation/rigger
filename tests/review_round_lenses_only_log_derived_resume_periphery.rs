@@ -1,14 +1,14 @@
 //! Periphery (real public API, real git, cross-module) test for spec 103 criterion 6's
 //! ROUND 3 fix (diff base `db13597`, commit `f6d52d0`): `RunCtx::review_round_start_sha`
-//! (`src/conductor.rs`) - the LOG-DERIVED round-start sha that replaced a live
-//! `worktree::head_sha_of` re-read, closing
+//! (`crates/rigger-conductor/src/conductor.rs`) - the LOG-DERIVED round-start sha that replaced
+//! a live `worktree::head_sha_of` re-read, closing
 //! `sdet-u103c6-r3-round-start-sha-live-not-log-derived-across-a-park`.
 //!
 //! WHAT THE IMPLEMENTER'S OWN THREE NEW TESTS ALREADY COVER (not re-proven here). All three
-//! live in `src/conductor.rs`'s own `mod tests`, driving the SAME `run_review_agents_
-//! concurrently` / `review_unit` code this suite drives, through the SAME public `run()`
-//! entry point, across the SAME two-separate-`run()`-calls-sharing-one-store shape this
-//! suite uses:
+//! live in `crates/rigger-conductor/src/conductor.rs`'s own `mod tests`, driving the SAME
+//! `run_review_agents_concurrently` / `review_unit` code this suite drives, through the SAME
+//! public `run()` entry point, across the SAME two-separate-`run()`-calls-sharing-one-store
+//! shape this suite uses:
 //!   - `a_review_rounds_log_derived_start_sha_survives_a_cross_call_resume_after_a_later_tiers_park`
 //!     (single-lane, a LATER tier - the adversary - parks after the lens committed residue)
 //!   - `a_review_rounds_log_derived_start_sha_survives_a_same_chunk_sibling_park_across_a_resume`
@@ -20,11 +20,11 @@
 //! Every one of those three configures a `judge` (adjudicator) agent - even the same-chunk
 //! test, whose own review panel is `lenses: ["a", "b"], adjudicator: "judge"`.
 //!
-//! WHAT THAT LEAVES UNTESTED. `review_unit` (`src/conductor.rs`) has TWO structurally
-//! distinct exits on the success path: the post-adjudicator guard call (line ~4506, what
-//! every implementer test above drives), and the EARLIER `if adjudicator.is_empty()`
-//! early-return (line ~4498) - the round-1 gap `review_round_no_adjudicator_residue_
-//! periphery.rs` (this same directory) exists to close, for the round-1 restore behavior.
+//! WHAT THAT LEAVES UNTESTED. `review_unit` has TWO structurally distinct exits on the success
+//! path, both past the one guard call after its step loop: acting on the adjudicator's verdict
+//! (what every implementer test above drives), and the EARLIER early return of a panel with no
+//! adjudicator step - the round-1 gap `review_round_no_adjudicator_residue_periphery.rs` (this
+//! same directory) exists to close, for the round-1 restore behavior.
 //! No test anywhere - not the implementer's three, not either existing periphery file -
 //! ever reaches THAT early-return branch WITH the round-3 log-derivation fix in play: a
 //! lenses-only panel (no adversary, no adjudicator configured at all) whose lenses park
@@ -32,7 +32,7 @@
 //! triggers` names this exact shape explicitly - "two lenses parking/completing
 //! asynchronously in the SAME chunk is enough - no adversary/adjudicator tier need even be
 //! configured" - but the fix that followed was never driven through it. Since `round_start_
-//! sha` is computed once, before the panel-shape branch, a future change that special-cases
+//! sha` is computed once, before the step loop, a future change that special-cases
 //! it per call site (or an early return that skips the stamp) would show up here first. This
 //! drives that exact combination - the no-adjudicator early return, with a same-chunk
 //! sibling park, across a resumed process - through the real `rigger::conductor::run` entry
@@ -45,7 +45,7 @@
 //! fail (the round-start-start mark is still emitted, but window 2 re-derives the sha live
 //! off the residue-laden tip instead of reading the stamped mark back, so the lesson never
 //! names `a-residue.rs` and the residue file survives into the integrated tree). Restoring
-//! the call verbatim (`git diff` on `src/` clean) returns it to green.
+//! the call verbatim (`git diff` on `crates/` clean) returns it to green.
 
 mod common;
 use common::git::run_git;
@@ -159,7 +159,7 @@ fn a_lenses_only_panels_log_derived_start_sha_survives_a_same_chunk_sibling_park
             review: config::ReviewPanel {
                 lenses: vec!["a".into(), "b".into()],
                 // Deliberately no adversary, no adjudicator: the only reachable exit is
-                // review_unit's `if adjudicator.is_empty()` early return.
+                // review_unit's early return of a panel with no adjudicator step.
                 ..Default::default()
             },
             ..Default::default()

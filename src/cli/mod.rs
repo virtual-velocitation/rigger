@@ -44,7 +44,7 @@ use rigger::spawn::SpawnEvent;
 use rigger::worktree::{RunBranchSetup, Worktree};
 use rigger::{hooks, mcpserver, playbooks, progress, spawn, spawn_store, spec, subprocess, watch};
 
-use rigger::config::RIGGER_DIR;
+use rigger::config::{INSTRUCTIONS_DIR, RIGGER_DIR, WORKFLOW_FILE};
 
 mod critique;
 mod dashboard;
@@ -748,8 +748,7 @@ fn warn_if_conn_file_is_exposed(path: &Path) {
 /// linked worktree, so a cwd-anchored read would miss it and fracture the store selection. Falls
 /// back to the cwd's `.rigger` outside any git context.
 fn config_rigger_dir() -> PathBuf {
-    let cwd = cwd();
-    main_repo_root(&cwd).unwrap_or(cwd).join(RIGGER_DIR)
+    project_root(&cwd()).join(RIGGER_DIR)
 }
 
 /// The process's working directory, or `.` when it cannot be read.
@@ -1143,9 +1142,9 @@ fn definition_hash(dir: &str) -> Result<String, Box<dyn std::error::Error>> {
     let mut buf = String::new();
     // workflow.yml first, tagged so an (impossible-here) empty agents set is still distinct
     // from an empty workflow.
-    let workflow = std::fs::read_to_string(base.join("workflow.yml"))
-        .map_err(|e| format!("definition hash: read {RIGGER_DIR}/workflow.yml: {e}"))?;
-    push_definition_section(&mut buf, "workflow.yml", &workflow);
+    let workflow = std::fs::read_to_string(base.join(WORKFLOW_FILE))
+        .map_err(|e| format!("definition hash: read {RIGGER_DIR}/{WORKFLOW_FILE}: {e}"))?;
+    push_definition_section(&mut buf, WORKFLOW_FILE, &workflow);
     // Every agent definition, folded in sorted-filename order so the hash is independent of
     // directory iteration order.
     let agents_dir = base.join("agents");
@@ -1481,6 +1480,64 @@ fn find_store_dir_from(start: &Path) -> Option<PathBuf> {
     walk_stores_from(start).dir
 }
 
+/// The store [`require_store_dir`] resolves, or `None` when no store exists yet
+/// ([`NoStoreFound`], a project set up before any run); every other resolution failure
+/// propagates.
+fn store_if_any() -> Result<Option<(StoreLocation, StoreSelection)>, Box<dyn std::error::Error>> {
+    match require_store_dir() {
+        Ok(found) => Ok(Some(found)),
+        Err(e) if e.downcast_ref::<NoStoreFound>().is_some() => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
+/// The operator instruction layer the instruction reporters (`rigger prime`, `rigger
+/// instructions`) report, read at the project governing the cwd ([`instruction_layer_root`]). A
+/// cwd that cannot be read ([`cwd`]) holds no layer, so the reporters report the built-ins alone.
+/// The resolved store is never consulted: under the gate store fence it is a scratch store whose
+/// parent is no project.
+fn project_instruction_layer() -> Result<Vec<instructions::Instruction>, Box<dyn std::error::Error>>
+{
+    Ok(config_store::load_instructions(&instruction_layer_root(
+        &cwd(),
+    ))?)
+}
+
+/// The directory whose instruction layer governs `start`: the nearest one holding a workflow
+/// definition ([`WORKFLOW_FILE`]), walking from `start`'s position mapped into the main checkout
+/// ([`worktree_prefix`] under [`project_root`]) up to the project root, else the project root. So
+/// a project set up below the repository root reports the layer `rigger validate` reports there,
+/// from that directory and from below it; a subdirectory holding no workflow definition reports
+/// the project's layer, never its own; and a linked or nested worktree reports the main checkout's
+/// layer, since the walk never reads the worktree's own files. Outside git it is `start`.
+fn instruction_layer_root(start: &Path) -> PathBuf {
+    let root = project_root(start);
+    worktree_prefix(start)
+        .ancestors()
+        .map(|prefix| root.join(prefix))
+        .find(|dir| dir.join(RIGGER_DIR).join(WORKFLOW_FILE).is_file())
+        .unwrap_or(root)
+}
+
+/// `start`'s path relative to the top of its own worktree: empty at the top and outside git.
+fn worktree_prefix(start: &Path) -> PathBuf {
+    match subprocess::git_in(start)
+        .args(["rev-parse", "--show-prefix"])
+        .output()
+    {
+        Ok(out) if out.status.success() => {
+            PathBuf::from(String::from_utf8_lossy(&out.stdout).trim_end())
+        }
+        _ => PathBuf::new(),
+    }
+}
+
+/// The project root governing `start`: the main repo root ([`main_repo_root`]), else, outside any
+/// git repository, `start` itself.
+fn project_root(start: &Path) -> PathBuf {
+    main_repo_root(start).unwrap_or_else(|| start.to_path_buf())
+}
+
 /// The MAIN repo root governing `start`: the parent of `git rev-parse --git-common-dir`
 /// run from `start`. For a linked worktree the common dir is the main repo's `.git`, so
 /// this resolves to the main checkout's root - exactly the outermost directory the
@@ -1670,9 +1727,7 @@ fn scratch_defaults(loc: &StoreLocation) -> (String, u32) {
 /// that READS - so a server-configured project resolves the SAME store from every path (spec 48,
 /// "one resolution authority"), never a second parallel mapping that could drift.
 fn server_store_location(cwd: &Path) -> StoreLocation {
-    let dir = main_repo_root(cwd)
-        .unwrap_or_else(|| cwd.to_path_buf())
-        .join(RIGGER_DIR);
+    let dir = project_root(cwd).join(RIGGER_DIR);
     StoreLocation { dir }
 }
 
@@ -1780,12 +1835,11 @@ fn require_store_dir() -> Result<(StoreLocation, StoreSelection), Box<dyn std::e
 /// store yet (set up before any run) reads its own `.rigger/`, so a lookup there still answers
 /// its not-found note instead of refusing; every other resolution failure propagates.
 fn owning_graph_to_read() -> Result<Projector, Box<dyn std::error::Error>> {
-    let loc = match require_store_dir() {
-        Ok((loc, _selection)) => loc,
-        Err(e) if e.downcast_ref::<NoStoreFound>().is_some() => StoreLocation {
+    let loc = match store_if_any()? {
+        Some((loc, _selection)) => loc,
+        None => StoreLocation {
             dir: std::env::current_dir()?.join(RIGGER_DIR),
         },
-        Err(e) => return Err(e),
     };
     open_graph_to_read(&loc.file("graph.db"), &loc.identity())
 }
@@ -10361,7 +10415,7 @@ mod tests {
              the unit check, ahead of any role-based branch: {body}"
         );
 
-        // The three review-tier roles - lens:* (tier-1), adversary, adjudicator - map to
+        // The three review-tier roles - lens:*, adversary, adjudicator - map to
         // Review, named individually so a mapping that drops one of the three is caught.
         assert!(
             body.contains("adversary") && body.contains("adjudicator") && body.contains("lens"),
@@ -10388,6 +10442,35 @@ mod tests {
             "phaseOf's final, unconditional statement must be `return 'Build'` - the \
              fail-visible default for implementer and any unrecognized role: {body}"
         );
+    }
+
+    /// Spec 120, criterion 9: every table lookup of the driver reads a review step's token
+    /// through `bareRoleOf`, and the persona alone keeps the full token, so a later step takes
+    /// its kind's phrase and still names itself. Behaviour lives in the periphery tests that run
+    /// the extracted functions; this pins the wiring on the shipped text.
+    #[test]
+    fn the_driver_reads_every_step_token_through_its_bare_role() {
+        let code = strip_line_comments(RIGGER_WORKFLOW);
+        let cases = [
+            (
+                "function phaseOf(req) {",
+                "const role = bareRoleOf(roleOf(req))",
+            ),
+            (
+                "function workerLabel(req) {",
+                "const bare = bareRoleOf(role)",
+            ),
+            ("function workerLabel(req) {", "PERSONA_VERB[bare]"),
+            ("function workerLabel(req) {", "ROSTER_VERB[bare]"),
+            ("function workerLabel(req) {", "personaOf(role)"),
+        ];
+        for (declaration, wiring) in cases {
+            let body = js_declaration(&code, declaration);
+            assert!(
+                body.contains(wiring),
+                "{declaration} lacks {wiring}: {body}"
+            );
+        }
     }
 
     /// Spec 67, criterion 5 (THIS unit OWNS meta matching reality). `meta.phases` must

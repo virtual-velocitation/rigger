@@ -16,8 +16,9 @@ use std::path::Path;
 use serde::Deserialize;
 
 use crate::config::{
-    err, find_cycle, index_agents, parse_agent, parse_yaml_naming_unknown_keys,
-    resolve_wall_clocks, AgentDef, Config, Defaults, Error, StoreConfig, Workflow, RIGGER_DIR,
+    check_agent_id, err, find_cycle, index_agents, parse_agent, parse_yaml_naming_unknown_keys,
+    resolve_wall_clocks, AgentDef, Config, Defaults, Error, StoreConfig, Workflow,
+    INSTRUCTIONS_DIR, RIGGER_DIR, WORKFLOW_FILE,
 };
 use crate::gate::GateRequirements;
 use crate::instructions::Instruction;
@@ -29,7 +30,7 @@ use crate::instructions::Instruction;
 #[cfg(test)]
 use crate::config::{
     lint_gating_verdict_lines, literal_is_emit_payload, puts_verdict_on_result_channel,
-    unbounded_wall_clock_advisory, Gate, ReviewDepth, ReviewPanel, Stage,
+    unbounded_wall_clock_advisory, Gate, ReviewDepth, ReviewPanel, ReviewStep, Stage,
 };
 #[cfg(test)]
 use crate::failure;
@@ -70,7 +71,7 @@ pub struct LoadedConfig {
 pub fn load_with_gate_requirements(dir: &str) -> Result<LoadedConfig, Error> {
     let base = Path::new(dir).join(RIGGER_DIR);
     let mut agents = load_agents(&base.join("agents"))?;
-    let workflow = load_workflow(&base.join("workflow.yml"))?;
+    let workflow = load_workflow(&base.join(WORKFLOW_FILE))?;
     resolve_wall_clocks(&mut agents, &workflow.defaults);
     let instructions = load_instructions(Path::new(dir))?;
     let cfg = Config {
@@ -90,7 +91,7 @@ pub fn load_with_gate_requirements(dir: &str) -> Result<LoadedConfig, Error> {
 /// is not part of it. An absent directory is an empty layer; any other read failure is an
 /// error naming the path, never a silently thinner layer.
 pub fn load_instructions(dir: &Path) -> Result<Vec<Instruction>, Error> {
-    let ins_dir = dir.join(RIGGER_DIR).join("instructions");
+    let ins_dir = dir.join(RIGGER_DIR).join(INSTRUCTIONS_DIR);
     let entries = match std::fs::read_dir(&ins_dir) {
         Ok(entries) => entries,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -226,7 +227,7 @@ fn read_workflow_probe<P>(rigger_dir: &Path, label: &str) -> Result<P, Error>
 where
     P: serde::de::DeserializeOwned + Default,
 {
-    let body = match std::fs::read_to_string(rigger_dir.join("workflow.yml")) {
+    let body = match std::fs::read_to_string(rigger_dir.join(WORKFLOW_FILE)) {
         Ok(b) => b,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(P::default()),
         Err(e) => return Err(err(format!("read {label}: {e}"))),
@@ -281,8 +282,9 @@ pub fn read_scratch_defaults(rigger_dir: &Path) -> Result<Defaults, Error> {
 }
 
 impl Config {
-    /// Validate checks that every reference resolves and the stage graph is acyclic, then,
-    /// last, resolves every declared gate's `requires` on `PATH` and answers that resolution.
+    /// Validate checks that every agent id and review step sequence is well formed, every
+    /// reference resolves and the stage graph is acyclic, then, last, resolves every declared
+    /// gate's `requires` on `PATH` and answers that resolution.
     pub fn validate(&self) -> Result<Vec<GateRequirements>, Error> {
         let wf = &self.workflow;
         // Build-environment resolution (spec 65 unit 2, NO SILENT DEGRADE): a CONFIGURED
@@ -301,9 +303,16 @@ impl Config {
         // still sets it fails loudly at the exact line to delete rather than carrying a setting
         // the operator believes does something.
         reject_retired_key(&wf.name, "name", "the `name:` line", "nothing reads it")?;
-        // The default review panel (applied to every unit) must reference real agents,
-        // including its light-tier roster, and its depth policy must be structurally
-        // sound (a configured light tier names an adjudicator).
+        for id in self.agents.keys() {
+            check_agent_id(id).map_err(|m| err(format!("agents {m}")))?;
+        }
+        // The default review panel (applied to every unit) must declare a well-formed step
+        // sequence, reference real agents, including its light-tier roster, and carry a
+        // structurally sound depth policy (a configured light tier names an adjudicator step).
+        wf.defaults
+            .review
+            .validate_steps()
+            .map_err(|m| err(format!("defaults.{m}")))?;
         for aid in wf.defaults.review.agent_ids() {
             if !self.agents.contains_key(&aid) {
                 return Err(err(format!(
@@ -321,6 +330,11 @@ impl Config {
                     return Err(err(format!("stage {name:?} needs unknown stage {need:?}")));
                 }
             }
+            st.validate_agent_ids()
+                .map_err(|m| err(format!("stage {name:?} {m}")))?;
+            st.review
+                .validate_steps()
+                .map_err(|m| err(format!("stage {name:?} {m}")))?;
             for aid in st.agent_ids() {
                 if !self.agents.contains_key(&aid) {
                     return Err(err(format!(
@@ -334,7 +348,7 @@ impl Config {
                 }
             }
             // A per-stage `review` override that declares a depth policy must satisfy the
-            // same light-tier-names-an-adjudicator invariant as the default panel.
+            // same light-tier-names-an-adjudicator-step invariant as the default panel.
             st.review
                 .validate_depth()
                 .map_err(|m| err(format!("stage {name:?} {m}")))?;
@@ -361,6 +375,12 @@ mod tests {
     use crate::test_support::agent as agent_def;
     use crate::test_support::agent_with_prompt;
     use crate::test_support::instructions_dir;
+    use crate::test_support::{
+        adversary_first_steps, cfg_for, declaring, lenses, light_of, panel_rule_refusals,
+        repeated_kind_lists, repo_review_steps, separator_refusal, PanelRead, ADVERSARY_FIRST_LIST,
+        EMIT_ONLY, LIGHT_PANEL_FORMS, NO_FULL_ADJUDICATOR_STEP, NO_LIGHT_ADJUDICATOR_STEP,
+        PANEL_AGENTS, PANEL_SCOPES,
+    };
 
     // ---- instruction injection: the operator layer loader ----
 
@@ -466,13 +486,6 @@ mod tests {
         cfg.workflow.defaults.review.adjudicator = "adj".into();
         cfg
     }
-
-    /// An adjudicator persona whose ONLY verdict path is `rigger_emit`: the guaranteed
-    /// stall this lint targets (the gate reads the result channel and finds no verdict).
-    const EMIT_ONLY: &str = "You are the Adjudicator. Weigh the lenses against the adversary \
-        and decide. Record your verdict the moment you reach it via the rigger_emit tool with \
-        type Verdict and data {\"verdict\":\"approve\"} to approve or {\"verdict\":\"reject\"} \
-        to reject. Do not add anything after you emit.";
 
     /// The compliant twin of [`EMIT_ONLY`]: it still records reasoning via `rigger_emit` but
     /// ENDS ITS OUTPUT with the verdict line the integration gate actually reads.
@@ -1859,8 +1872,8 @@ agent: worker\n";
     }
 
     /// A config declaring agent `a` whose default review is `full` with a tiers policy routing
-    /// risk below 2 to the `light` panel must fail validation (`why`).
-    fn assert_tiered_review_invalid(full: ReviewPanel, light: ReviewPanel, why: &str) {
+    /// risk below 2 to the `light` panel is refused with exactly `refusal`.
+    fn assert_tiered_review_invalid(full: ReviewPanel, light: ReviewPanel, refusal: &str) {
         let mut cfg = Config::default();
         cfg.agents.insert("a".into(), agent_def("a"));
         cfg.workflow.defaults.review = ReviewPanel {
@@ -1871,7 +1884,7 @@ agent: worker\n";
             })),
             ..full
         };
-        assert!(cfg.validate().is_err(), "{why}");
+        assert_eq!(cfg.validate().expect_err(refusal).0, refusal);
     }
 
     crate::test_cases! {
@@ -1880,7 +1893,7 @@ agent: worker\n";
         validate_catches_an_unknown_light_panel_agent: assert_tiered_review_invalid(
             panel(&["a"], "a"),
             panel(&["ghost"], "a"),
-            "an unknown light-panel lens must fail validation",
+            "defaults.review references unknown agent \"ghost\"",
         );
         /// The adjudicator's gating verdict is mandatory on every tier - only the adversary
         /// flexes (spec 03 / spec 13 unit 4). A configured light panel that names no
@@ -1889,7 +1902,7 @@ agent: worker\n";
         validate_rejects_a_light_panel_with_no_adjudicator: assert_tiered_review_invalid(
             panel(&["a"], "a"),
             panel(&["a"], ""),
-            "a light panel with no adjudicator must fail validation",
+            &format!("defaults.{NO_LIGHT_ADJUDICATOR_STEP}"),
         );
         /// The gating verdict is mandatory on EVERY tier, including the FULL one a high-risk
         /// unit routes to (remediation of sdet-u13-empty-full-tiers-skips-adjudicator). A tiers
@@ -1902,7 +1915,7 @@ agent: worker\n";
             assert_tiered_review_invalid(
                 panel(&[], ""),
                 panel(&["a"], "a"),
-                "a tiers policy on a full panel that names no adjudicator must fail validation",
+                &format!("defaults.{NO_FULL_ADJUDICATOR_STEP}"),
             );
     }
 
@@ -1918,6 +1931,7 @@ agent: worker\n";
             lenses: vec!["arch".into(), "tech".into()],
             adversary: "adv".into(),
             adjudicator: "judge".into(),
+            steps: None,
             tiers: Some(Box::new(ReviewDepth {
                 light: ReviewPanel {
                     lenses: vec!["arch".into()],
@@ -1964,10 +1978,171 @@ agent: worker\n";
                 ..Default::default()
             },
         );
-        assert!(
-            cfg.validate().is_err(),
-            "a stage review declaring only a tiers policy (no full adjudicator) must fail validation"
+        assert_eq!(
+            cfg.validate().expect_err("no full adjudicator step").0,
+            format!("stage \"implement\" {NO_FULL_ADJUDICATOR_STEP}")
         );
+    }
+
+    /// A config of [`PANEL_AGENTS`] whose workflow is `body`, parsed and not yet validated.
+    fn config_of(body: &str) -> Config {
+        let mut cfg = cfg_for(&PANEL_AGENTS);
+        cfg.workflow = parse_workflow(body).unwrap_or_else(|e| panic!("parse {body}: {e}"));
+        cfg
+    }
+
+    /// [`config_of`] the workflow `template` declaring the flow mapping `panel`.
+    fn config_declaring(template: &str, panel: &str) -> Config {
+        config_of(&declaring(template, panel))
+    }
+
+    /// Each of `scopes` accepts the flow mapping `panel`, which steps through exactly `steps`.
+    fn assert_accepted_in(scopes: &[(&str, &str, PanelRead)], panel: &str, steps: &[ReviewStep]) {
+        for (scope, template, read) in scopes {
+            let cfg = config_declaring(template, panel);
+            if let Err(e) = cfg.validate() {
+                panic!("{scope} must accept {panel}: {e}");
+            }
+            assert_eq!(read(&cfg.workflow).steps(), steps, "{scope}: {panel}");
+        }
+    }
+
+    /// The three kinds in the canonical order, as the rows below name them.
+    fn lens_a_adversary_x_adjudicator_z() -> [ReviewStep; 3] {
+        [
+            lenses(&["a"]),
+            ReviewStep::Adversary("x".into()),
+            ReviewStep::Adjudicator("z".into()),
+        ]
+    }
+
+    crate::test_cases! {
+        /// A list of the three kinds in the canonical order steps through them in every scope.
+        validate_accepts_a_list_of_the_three_kinds: assert_accepted_in(
+            &PANEL_SCOPES,
+            "{ steps: [{ lenses: [a] }, { adversary: x }, { adjudicator: z }] }",
+            &lens_a_adversary_x_adjudicator_z(),
+        );
+        /// A list declares any sequence: the adversary may run ahead of the lenses.
+        validate_accepts_an_adversary_before_the_lenses: assert_accepted_in(
+            &PANEL_SCOPES,
+            ADVERSARY_FIRST_LIST,
+            &adversary_first_steps(),
+        );
+        /// One agent may serve in several steps: only one `lenses` step refuses a repeat.
+        validate_accepts_one_agent_in_several_steps: assert_accepted_in(
+            &PANEL_SCOPES,
+            "{ steps: [{ lenses: [a, b] }, { adversary: a }, { adjudicator: b }] }",
+            &[
+                lenses(&["a", "b"]),
+                ReviewStep::Adversary("a".into()),
+                ReviewStep::Adjudicator("b".into()),
+            ],
+        );
+        /// The lone adjudicator is both the only step and the last.
+        validate_accepts_a_lone_adjudicator_step: assert_accepted_in(
+            &PANEL_SCOPES,
+            "{ steps: [{ adjudicator: z }] }",
+            &[ReviewStep::Adjudicator("z".into())],
+        );
+        /// A key is set when non-empty, so an entry's empty keys beside its one set key leave
+        /// it an entry of that key.
+        validate_accepts_an_entry_whose_other_keys_are_empty: assert_accepted_in(
+            &PANEL_SCOPES,
+            "{ steps: [{ lenses: [a], adversary: \"\" }, { lenses: [], adjudicator: z }] }",
+            &[lenses(&["a"]), ReviewStep::Adjudicator("z".into())],
+        );
+        /// `steps: null` reads as absent, so the map keys beside it are the map form.
+        validate_reads_a_null_steps_as_the_map_form: assert_accepted_in(
+            &PANEL_SCOPES,
+            "{ steps: null, lenses: [a], adversary: x, adjudicator: z }",
+            &lens_a_adversary_x_adjudicator_z(),
+        );
+        /// A map key is set when non-empty, so empty map keys beside a list refuse nothing.
+        validate_accepts_empty_map_keys_beside_a_list: assert_accepted_in(
+            &PANEL_SCOPES,
+            "{ lenses: [], adversary: \"\", adjudicator: \"\", steps: [{ adjudicator: z }] }",
+            &[ReviewStep::Adjudicator("z".into())],
+        );
+        /// Only a tiers policy owes an adjudicator step: outside one a list may have none.
+        validate_accepts_a_list_with_no_adjudicator_step: assert_accepted_in(
+            &PANEL_SCOPES[..2],
+            "{ steps: [{ lenses: [a] }, { adversary: x }] }",
+            &[lenses(&["a"]), ReviewStep::Adversary("x".into())],
+        );
+        /// The empty list is the panel of no steps.
+        validate_accepts_an_empty_list: assert_accepted_in(&PANEL_SCOPES[..2], "{ steps: [] }", &[]);
+    }
+
+    /// A list may name any kind but the adjudicator more than once, in every scope: each step
+    /// runs under its own token.
+    #[test]
+    fn validate_accepts_a_list_repeating_a_step_kind() {
+        for (panel, steps) in repeated_kind_lists() {
+            assert_accepted_in(&PANEL_SCOPES, panel, &steps);
+        }
+    }
+
+    /// Each panel rule refuses its panels with its exact message in every scope the rule applies
+    /// to: the rows of `panel_rule_refusals`, each of its tables stating its rule.
+    #[test]
+    fn validate_refuses_each_panel_rule_with_its_exact_message_in_every_scope() {
+        for (workflow, refusal) in panel_rule_refusals() {
+            let validated = config_of(&workflow).validate();
+            assert_eq!(validated.expect_err(&refusal).0, refusal, "{workflow}");
+        }
+    }
+
+    /// An agent the `agents` map declares under an id holding `@` is refused, with nothing
+    /// naming it.
+    #[test]
+    fn validate_refuses_an_agents_map_key_holding_the_step_token_separator() {
+        assert_eq!(
+            cfg_for(&["a", "w@k"]).validate().expect_err("w@k").0,
+            separator_refusal("agents", "w@k")
+        );
+    }
+
+    /// `tiers.light` takes either form under a full panel of either form.
+    #[test]
+    fn a_light_panel_takes_either_form_under_a_full_panel_of_either_form() {
+        for panel in LIGHT_PANEL_FORMS {
+            assert_accepted_in(
+                &PANEL_SCOPES[..2],
+                panel,
+                &[ReviewStep::Adjudicator("z".into())],
+            );
+            for (_, template, read) in &PANEL_SCOPES[..2] {
+                let workflow = config_declaring(template, panel).workflow;
+                assert_eq!(
+                    light_of(read(&workflow)).steps(),
+                    [
+                        ReviewStep::Adversary("x".into()),
+                        ReviewStep::Adjudicator("y".into())
+                    ],
+                    "{panel}"
+                );
+            }
+        }
+    }
+
+    /// A key no entry takes fails the parse, naming its path.
+    #[test]
+    fn a_step_entry_with_an_unknown_key_fails_the_parse_naming_its_path() {
+        let refusal = parse_workflow("defaults:\n  review:\n    steps:\n      - lens: [a]\n");
+        assert_eq!(
+            refusal.expect_err("an unknown entry key").0,
+            "parse workflow: defaults.review.steps[0].lens: unknown key"
+        );
+    }
+
+    /// The map form is unchanged: this repository's real workflow loads through the production
+    /// path, which validates it, and steps through the canonical sequence.
+    #[test]
+    fn the_repository_workflow_loads_unchanged() {
+        let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
+        let cfg = load(root).unwrap_or_else(|e| panic!("the repository workflow loads: {e}"));
+        assert_eq!(cfg.workflow.defaults.review.steps(), repo_review_steps());
     }
 
     /// Spec 83 criterion 2, round 2 (the reject's own required fix): [`read_scratch_defaults`]

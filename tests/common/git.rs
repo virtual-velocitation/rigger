@@ -1,7 +1,7 @@
 //! Git fixtures for the integration suites, re-exported from [`super::fixtures`] - the one
 //! definition the crate's own unit tests share - plus the suite-only go-gitsemver fixture.
 //! The other suite-only fixtures beside it: a commit of given files, a linked worktree nested
-//! under a project, and the object database's reads - every object id it holds, the bytes of a
+//! under a project or relocated outside it, and the object database's reads - every object id it holds, the bytes of a
 //! blob - with the premise that it holds none.
 
 #![allow(unused_imports)]
@@ -24,14 +24,28 @@ pub fn commit_files(repo: &Path, files: &[(&str, &str)], message: &str) -> Strin
 }
 
 /// A git-LINKED worktree `name` nested under `root` (which must hold a commit) at
-/// `root/.rigger/tmp/<name>` - the shape a run spawns its unit worktrees in. Its own
-/// `git rev-parse --show-toplevel` is the WORKTREE path, distinct from `root` - the divergence a
-/// cwd-based resolution mistakes for the owning root.
+/// `root/.rigger/tmp/<name>` ([`linked_worktree`]) - the pre-relocation shape a run still spawns
+/// its unit worktrees in when no cache home resolves. Its own `git rev-parse --show-toplevel` is
+/// the WORKTREE path, distinct from `root` - the divergence a cwd-based resolution mistakes for the
+/// owning root.
 pub fn nested_worktree(root: &Path, name: &str) -> PathBuf {
-    let nested = super::cli::rigger_file(root, "tmp").join(name);
-    std::fs::create_dir_all(nested.parent().unwrap()).unwrap();
-    git_ok(root, &["worktree", "add", "-q", nested.to_str().unwrap()]);
-    nested
+    linked_worktree(root, super::cli::rigger_file(root, "tmp").join(name))
+}
+
+/// A git-LINKED worktree `name` of `root` (which must hold a commit) relocated OUTSIDE the project,
+/// under the cache-home scratch root ([`super::default_scratch_root`]) - the shape a run spawns
+/// its unit worktrees in by default ([`linked_worktree`]). No ancestor of it is `root`, so only the
+/// worktree's git common dir leads back to the owning root.
+pub fn relocated_worktree(root: &Path, name: &str) -> PathBuf {
+    linked_worktree(root, super::default_scratch_root(root).join(name))
+}
+
+/// A git-LINKED worktree of `root` (which must hold a commit) added at `at`, its parent created
+/// first: `at`.
+pub fn linked_worktree(root: &Path, at: PathBuf) -> PathBuf {
+    std::fs::create_dir_all(at.parent().unwrap()).unwrap();
+    git_ok(root, &["worktree", "add", "-q", at.to_str().unwrap()]);
+    at
 }
 
 /// The id of every object the object database of the repository at `root` holds, loose or

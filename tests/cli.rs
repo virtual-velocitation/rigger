@@ -15209,7 +15209,7 @@ fn canary_rejects_unknown_arguments_and_a_missing_corpus() {
 #[test]
 fn canary_spawns_its_panel_with_the_composed_system_prompt_and_nothing_appended() {
     use common::cli::run_capturing_system_prompt;
-    use common::fixtures::{assert_communication_once, composed_system_prompt};
+    use common::fixtures::{assert_communication_once, composed_system_prompt, CONTROL_ITEM};
     let dir = temp_project();
     let root = dir.path();
     for id in ["lens", "adv", "judge"] {
@@ -15223,12 +15223,7 @@ fn canary_spawns_its_panel_with_the_composed_system_prompt_and_nothing_appended(
     );
     let corpus = root.join("corpus");
     std::fs::create_dir_all(&corpus).unwrap();
-    std::fs::write(
-        corpus.join("control.md"),
-        "---\nid: control\ndefect_class: none\nplanted: false\nanchor: src/lib.rs\n\
-         expected_verdict: approve\n---\nfn control() {}\n",
-    )
-    .unwrap();
+    std::fs::write(corpus.join("control.md"), CONTROL_ITEM).unwrap();
     let system = run_capturing_system_prompt(root, &["canary", "--corpus", "corpus"]);
     let persona =
         std::fs::read_to_string(common::cli::rigger_file(root, "agents").join("judge.md")).unwrap();
@@ -28423,12 +28418,13 @@ fn instructions_on_a_fresh_project_prints_the_built_in_law_and_no_operator_layer
 #[test]
 fn instructions_prints_an_operator_file_after_the_built_in_law() {
     let proj = temp_project();
-    let dir = common::fixtures::instructions_dir(proj.path());
-    std::fs::write(
-        dir.join("10-house.md"),
-        "House rule: name every error path.\n",
-    )
-    .unwrap();
+    common::cli::write_operator_layer(
+        proj.path(),
+        &[common::fixtures::op(
+            "10-house",
+            "House rule: name every error path.\n",
+        )],
+    );
     let (out, err, ok) = run_rigger(proj.path(), &["instructions"]);
     assert!(ok, "`rigger instructions` must succeed; stderr:\n{err}");
     let builtin = out
@@ -28482,13 +28478,13 @@ fn instructions_prints_a_built_in_layer_that_names_no_language() {
 #[test]
 fn instructions_prints_the_communication_discipline_as_the_last_built_in() {
     use common::fixtures::{
-        assert_communication_once, builtin_instruction_source, printed_built_in_layer,
-        COMMUNICATION_SECTION,
+        assert_communication_section_once, builtin_instruction_source, printed_built_in_layer,
+        RENDERED_COMMUNICATION_SECTION,
     };
     let proj = temp_project();
     let out = run_rigger_ok(proj.path(), &["instructions"]);
     let communication = format!(
-        "{COMMUNICATION_SECTION}{}\n",
+        "{RENDERED_COMMUNICATION_SECTION}{}\n",
         repo_text(&builtin_instruction_source("communication")).trim_end()
     );
     assert!(
@@ -28496,7 +28492,7 @@ fn instructions_prints_the_communication_discipline_as_the_last_built_in() {
         "the built-in layer closes with the communication section and its source's text; \
          got:\n{out}"
     );
-    assert_communication_once(&out);
+    assert_communication_section_once(&out, RENDERED_COMMUNICATION_SECTION);
 }
 
 /// Spec 120, criterion 14: the handbook's built-in entry list is the built-in layer - one
@@ -28568,23 +28564,22 @@ fn run_spawns_the_worker_with_the_composed_system_prompt_and_nothing_appended() 
 #[cfg(unix)]
 #[test]
 fn run_spawns_the_worker_with_a_same_named_operator_file_in_place_of_its_built_in() {
-    use common::cli::run_capturing_system_prompt;
+    use common::cli::{run_capturing_system_prompt, write_operator_layer};
     use common::fixtures::{
-        builtin_section, expected_composed_prompt, instructions_dir, persona,
-        COMMUNICATION_NEAR_NAME,
+        builtin_section, expected_composed_prompt, op, persona, COMMUNICATION_NEAR_NAME,
     };
     let dir = temp_git_project_with_commit();
     let root = dir.path();
     write_workflow_fixture(root, &LIVENESS_WORKFLOW);
     let house = "Post each decision in the team channel.\n\n- One line, never batched.\n";
     let near = "A near name replaces nothing.\n";
-    let instructions = instructions_dir(root);
-    std::fs::write(instructions.join("communication.md"), house).unwrap();
-    std::fs::write(
-        instructions.join(format!("{COMMUNICATION_NEAR_NAME}.md")),
-        near,
-    )
-    .unwrap();
+    write_operator_layer(
+        root,
+        &[
+            op("communication", house),
+            op(COMMUNICATION_NEAR_NAME, near),
+        ],
+    );
     let system = run_capturing_system_prompt(root, &["run"]);
     assert_eq!(
         system,
@@ -28610,12 +28605,12 @@ fn run_spawns_the_worker_with_a_same_named_operator_file_in_place_of_its_built_i
 #[cfg(unix)]
 #[test]
 fn run_spawns_the_worker_with_no_section_for_a_built_in_an_empty_same_named_file_switches_off() {
-    use common::cli::run_capturing_system_prompt;
-    use common::fixtures::{builtin_section, expected_composed_prompt, instructions_dir, persona};
+    use common::cli::{run_capturing_system_prompt, write_operator_layer};
+    use common::fixtures::{builtin_section, expected_composed_prompt, op, persona};
     let dir = temp_git_project_with_commit();
     let root = dir.path();
     write_workflow_fixture(root, &LIVENESS_WORKFLOW);
-    std::fs::File::create(instructions_dir(root).join("working-discipline.md")).unwrap();
+    write_operator_layer(root, &[op("working-discipline", Default::default())]);
     let system = run_capturing_system_prompt(root, &["run"]);
     assert_eq!(
         system,
@@ -28632,31 +28627,25 @@ fn run_spawns_the_worker_with_no_section_for_a_built_in_an_empty_same_named_file
 }
 
 /// `rigger prime` opens with the instructions in force on the absent-db path, counting the
-/// operator files.
+/// operator files that shadow no built-in: here there are none.
 #[test]
 fn prime_first_line_names_the_instructions_in_force_on_the_absent_db_path() {
     let proj = temp_project();
-    let (out, err, ok) = run_rigger(proj.path(), &["prime"]);
-    assert!(ok, "`rigger prime` must succeed; stderr:\n{err}");
     assert_eq!(
-        out.lines().next(),
-        Some(
-            "# Rigger instructions in force: engineering-principles, working-discipline, \
-             communication - see rigger instructions"
-        ),
-        "with no operator files the parenthetical is omitted; got:\n{out}"
+        common::cli::prime_first_line(proj.path(), &[]).as_deref(),
+        Some(common::fixtures::BUILT_INS_ONLY_IN_FORCE_LINE),
+        "with no operator files the parenthetical is omitted"
     );
 }
 
 /// `rigger prime` opens with the instructions in force on the recent-decisions path too,
-/// counting the operator files, and keeps the recent-decisions heading next.
+/// counting the operator files that shadow no built-in (both of them here), and keeps the
+/// recent-decisions heading next.
 #[test]
 fn prime_first_line_names_the_instructions_in_force_on_the_recent_decisions_path() {
     let proj = temp_store_project();
     let root = proj.path();
-    let dir = common::fixtures::instructions_dir(root);
-    std::fs::write(dir.join("10-house.md"), "House rule.").unwrap();
-    std::fs::write(dir.join("20-team.md"), "Team rule.").unwrap();
+    common::cli::write_operator_layer(root, &common::fixtures::house_and_team_operator_layer());
     let (out, err, ok) = run_rigger(root, &["prime"]);
     assert!(ok, "`rigger prime` must succeed; stderr:\n{err}");
     let mut lines = out.lines();
@@ -28673,6 +28662,328 @@ fn prime_first_line_names_the_instructions_in_force_on_the_recent_decisions_path
         Some("# Rigger: recent decisions"),
         "got:\n{out}"
     );
+}
+
+/// Spec 120's EVERY BUILT-IN'S STATE IS REPORTED, operator-facing: given a project whose
+/// `.rigger/instructions/` holds the named-entry fixture - a file replacing the communication
+/// built-in, an empty one switching the working-discipline built-in off and one shadowing no
+/// built-in - when the operator runs `rigger instructions`, `rigger validate` twice and `rigger
+/// prime`, then each names every built-in's state: the layers as rendered, one warning per
+/// shadowed built-in on a success exit with the same lines on the repeat, and the in-force line.
+/// The working-discipline file reads as switching off over every blank body: an empty one, a lone
+/// byte order mark, ASCII whitespace, a byte order mark before an em space.
+#[test]
+fn instructions_validate_and_prime_report_each_built_in_s_state() {
+    use common::cli::{assert_reporters_name_the_shadowing_layer_states, write_operator_layer};
+    use common::fixtures::{shadowing_operator_layer, NON_EMPTY_BLANK_BODIES};
+    let proj = temp_project();
+    let root = proj.path();
+    write_workflow_fixture(root, &LIVENESS_WORKFLOW);
+    for blank in std::iter::once("").chain(NON_EMPTY_BLANK_BODIES) {
+        let mut layer = shadowing_operator_layer();
+        layer[2].body = blank.to_string();
+        write_operator_layer(root, &layer);
+        assert_reporters_name_the_shadowing_layer_states(root);
+    }
+}
+
+/// Spec 120's EVERY BUILT-IN'S STATE IS REPORTED through the loader, the replaced side of the
+/// blank boundary: given the named-entry fixture whose communication file holds a body that is not
+/// blank - one led by a byte order mark, one ending in trailing whitespace as a saved file does, or
+/// two byte order marks, which stripping the one leading mark leaves not blank - when the operator
+/// runs `rigger instructions`, `rigger validate` and `rigger prime`, then each reports that
+/// built-in replaced, `rigger instructions` printing the file's body with only its first leading
+/// mark and its trailing whitespace stripped.
+#[test]
+fn instructions_validate_and_prime_report_a_same_named_file_with_a_leading_mark_or_trailing_whitespace_as_replacing(
+) {
+    use common::cli::{
+        assert_prime_names_the_shadowing_layer_states,
+        assert_validate_names_the_shadowed_built_ins, write_operator_layer,
+    };
+    use common::fixtures::{
+        rendered_shadowing_layer_replaced_by, shadowing_operator_layer,
+        REPLACING_COMMUNICATION_BODY, SHADOWING_LAYER_ADVISORIES,
+    };
+    let proj = temp_project();
+    let root = proj.path();
+    write_workflow_fixture(root, &LIVENESS_WORKFLOW);
+    for (body, printed) in [
+        (
+            format!("\u{feff}{REPLACING_COMMUNICATION_BODY}"),
+            REPLACING_COMMUNICATION_BODY,
+        ),
+        (
+            format!("{REPLACING_COMMUNICATION_BODY}\n \t\n"),
+            REPLACING_COMMUNICATION_BODY,
+        ),
+        ("\u{feff}\u{feff}".to_string(), "\u{feff}"),
+    ] {
+        let mut layer = shadowing_operator_layer();
+        layer[1].body = body;
+        write_operator_layer(root, &layer);
+        assert_eq!(
+            run_rigger_ok(root, &["instructions"]),
+            rendered_shadowing_layer_replaced_by(printed),
+            "the communication built-in is replaced by the file's body, one leading mark and its \
+             trailing whitespace stripped: {:?}",
+            layer[1].body
+        );
+        assert_validate_names_the_shadowed_built_ins(root, &SHADOWING_LAYER_ADVISORIES);
+        assert_prime_names_the_shadowing_layer_states(root, &[]);
+    }
+}
+
+/// Spec 120's EVERY BUILT-IN'S STATE IS REPORTED beside a near name: given the named-entry fixture
+/// whose replacing communication file is named instead by a near name - a case variant, or the
+/// built-in's name with a trailing space - when the operator runs `rigger instructions`, `rigger
+/// validate` and `rigger prime`, then each reports the communication built-in in force: `rigger
+/// instructions` prints its shipped body and lists the near-named file under the operator heading,
+/// `rigger validate` warns only of the switched-off built-in, and `rigger prime` lists the
+/// communication built-in unmarked and counts the near-named file as an operator file.
+#[test]
+fn instructions_validate_and_prime_report_a_built_in_in_force_beside_a_near_named_file() {
+    use common::cli::{assert_validate_names_the_shadowed_built_ins, write_operator_layer};
+    use common::fixtures::{
+        rendered_near_named_layer, shadowing_operator_layer, COMMUNICATION_NEAR_NAME,
+        SHADOWING_LAYER_ADVISORIES,
+    };
+    for near in ["Communication", COMMUNICATION_NEAR_NAME] {
+        let proj = temp_project();
+        let root = proj.path();
+        write_workflow_fixture(root, &LIVENESS_WORKFLOW);
+        let mut layer = shadowing_operator_layer();
+        layer[1].name = near.to_string();
+        write_operator_layer(root, &layer);
+        assert_eq!(
+            run_rigger_ok(root, &["instructions"]),
+            rendered_near_named_layer(near),
+            "the near name {near:?} shadows nothing and is listed as an operator file"
+        );
+        assert_validate_names_the_shadowed_built_ins(root, &SHADOWING_LAYER_ADVISORIES[..1]);
+        assert_eq!(
+            common::cli::prime_first_line(root, &[]).as_deref(),
+            Some(
+                "# Rigger instructions in force: engineering-principles, communication (+2 \
+                 operator files) - see rigger instructions"
+            ),
+            "the near name {near:?} leaves the communication built-in in force and is counted"
+        );
+    }
+}
+
+/// Spec 120's EVERY BUILT-IN'S STATE IS REPORTED, the arm with nothing shadowed: given a project
+/// whose `.rigger/instructions/` holds only a near name of the communication built-in and a file
+/// of another name, when the operator runs `rigger validate`, then it succeeds and warns of no
+/// built-in instruction.
+#[test]
+fn validate_warns_of_no_built_in_for_a_near_named_or_other_operator_file() {
+    use common::cli::{assert_validate_names_the_shadowed_built_ins, write_operator_layer};
+    use common::fixtures::{
+        op, shadowing_operator_layer, COMMUNICATION_NEAR_NAME, REPLACING_COMMUNICATION_BODY,
+    };
+    let proj = temp_project();
+    let root = proj.path();
+    write_workflow_fixture(root, &LIVENESS_WORKFLOW);
+    let mut layer = shadowing_operator_layer();
+    layer[1] = op(COMMUNICATION_NEAR_NAME, REPLACING_COMMUNICATION_BODY);
+    write_operator_layer(root, &layer[..2]);
+    assert_validate_names_the_shadowed_built_ins(root, &[]);
+}
+
+rigger::test_cases! {
+    /// Spec 120's EVERY BUILT-IN'S STATE IS REPORTED, from a unit worktree: given a committed
+    /// project whose `.rigger/instructions/` holds the named-entry fixture, uncommitted, and a
+    /// worktree nested under its `.rigger/` that therefore checks none of that layer out and holds
+    /// another layer of its own, when the operator runs `rigger prime` or `rigger instructions` in
+    /// the worktree, with a store and before any store exists, then each reports the main
+    /// checkout's layer, never the worktree's own.
+    prime_and_instructions_from_a_nested_worktree_report_the_main_checkout_s_instruction_layer: {
+        use common::cli::{
+            assert_each_reporter_with_and_without_a_store, assert_reported_from_a_worktree,
+        };
+        assert_each_reporter_with_and_without_a_store(|root: &Path, report| {
+            assert_reported_from_a_worktree(root, report, common::git::nested_worktree)
+        })
+    };
+    /// Spec 120's EVERY BUILT-IN'S STATE IS REPORTED, from a unit worktree where a run spawns it
+    /// by default: given a committed project whose `.rigger/instructions/` holds the named-entry
+    /// fixture, uncommitted, and a worktree relocated outside the project, under the cache-home
+    /// scratch root, holding another layer of its own, when the operator runs `rigger prime` or
+    /// `rigger instructions` in the worktree, with a store and before any store exists, then each
+    /// reports the main checkout's layer, which no ancestor of the worktree holds.
+    prime_and_instructions_from_a_relocated_worktree_report_the_main_checkout_s_instruction_layer: {
+        use common::cli::{
+            assert_each_reporter_with_and_without_a_store, assert_reported_from_a_worktree,
+        };
+        assert_each_reporter_with_and_without_a_store(|root: &Path, report| {
+            assert_reported_from_a_worktree(root, report, common::git::relocated_worktree)
+        })
+    };
+    /// Spec 120's EVERY BUILT-IN'S STATE IS REPORTED, from below the project root: given a project
+    /// whose `.rigger/instructions/` holds the named-entry fixture - a file replacing the
+    /// communication built-in, an empty one switching the working-discipline built-in off and one
+    /// shadowing no built-in - with a store and in a git project before any store exists, when the
+    /// operator runs `rigger instructions` and `rigger prime` at the root and in a subdirectory,
+    /// then both report the project's layer: the same layers, each built-in with its state, and the
+    /// same in-force line.
+    prime_and_instructions_from_a_subdirectory_report_the_project_s_instruction_layer: {
+        use common::cli::{
+            assert_each_reporter_with_and_without_a_store,
+            assert_reported_from_below,
+        };
+        assert_each_reporter_with_and_without_a_store(assert_reported_from_below)
+    };
+    /// Spec 120's EVERY BUILT-IN'S STATE IS REPORTED, inside a gate: given a project whose
+    /// `.rigger/instructions/` holds the named-entry fixture, with a store and before any store
+    /// exists, when a gate's process runs `rigger instructions` and `rigger prime` at the project
+    /// root with the gate store fence pinned to a scratch store outside the project, then each
+    /// reports the project's layer exactly as an unfenced run does.
+    prime_and_instructions_under_the_gate_store_fence_report_the_project_s_instruction_layer: {
+        use common::cli::{
+            assert_each_reporter_with_and_without_a_store,
+            assert_reported_under_the_store_fence,
+        };
+        assert_each_reporter_with_and_without_a_store(assert_reported_under_the_store_fence)
+    };
+}
+
+/// Spec 120's EVERY BUILT-IN'S STATE IS REPORTED, outside any git repository: given a directory
+/// that is no git repository, with no store, whose `.rigger/instructions/` holds the named-entry
+/// fixture, when the operator runs `rigger prime` and `rigger instructions` there, with git
+/// discovery stopped at the directory's parent, then each reports that layer, read at the cwd.
+#[test]
+fn prime_and_instructions_outside_git_with_no_store_read_the_layer_at_the_cwd() {
+    use common::cli::{assert_reporters_in, write_operator_layer};
+    use common::fixtures::shadowing_operator_layer;
+    let proj = tempfile::tempdir().expect("a directory outside any git repository");
+    let root = proj.path();
+    write_operator_layer(root, &shadowing_operator_layer());
+    let ceiling = [(
+        "GIT_CEILING_DIRECTORIES",
+        root.parent().unwrap().to_str().unwrap(),
+    )];
+    assert_reporters_in(root, &ceiling);
+}
+
+/// Spec 120's EVERY BUILT-IN'S STATE IS REPORTED, beside a `.rigger/` that marks no project: given
+/// a project whose `.rigger/instructions/` holds the named-entry fixture and whose subdirectory
+/// holds a store of its own, or an operator layer of its own, with no `workflow.yml` either way,
+/// when the operator runs `rigger instructions` and `rigger prime` in that subdirectory, then each
+/// reports the project's layer, never the layer beside the directory it finds.
+#[test]
+fn prime_and_instructions_beside_a_store_or_a_layer_in_a_subdirectory_report_the_project_s_layer() {
+    use common::cli::{assert_reporters_in, seed_store, write_operator_layer};
+    use common::fixtures::{
+        house_and_team_operator_layer, shadowing_operator_layer, subdirectory_of,
+    };
+    let own_layer = |sub: &Path| write_operator_layer(sub, &house_and_team_operator_layer());
+    for beside in [&seed_store as &dyn Fn(&Path), &own_layer] {
+        let proj = temp_project();
+        let sub = subdirectory_of(proj.path());
+        beside(&sub);
+        write_operator_layer(proj.path(), &shadowing_operator_layer());
+        assert_reporters_in(&sub, &[]);
+    }
+}
+
+/// Spec 120's THE LAYER ROOT, a project below the repository root: given a git repository whose
+/// root holds one operator layer and whose subdirectory is a project `rigger init` set up, holding
+/// the named-entry fixture, when the operator runs `rigger instructions`, `rigger validate` and
+/// `rigger prime` in that project and the two reporters in a directory below it, then each reports
+/// that project's layer, the one `rigger validate` reports there, never the repository root's.
+#[test]
+fn prime_and_instructions_in_a_project_below_the_repository_root_report_that_project_s_layer() {
+    use common::cli::{
+        assert_reporters_in, assert_reporters_name_the_shadowing_layer_states, write_operator_layer,
+    };
+    use common::fixtures::{
+        house_and_team_operator_layer, shadowing_operator_layer, subdirectory_of,
+        temp_git_project_with_commit,
+    };
+    let repo = temp_git_project_with_commit();
+    write_operator_layer(repo.path(), &house_and_team_operator_layer());
+    let project = subdirectory_of(repo.path());
+    run_rigger_ok(&project, &["init"]);
+    write_operator_layer(&project, &shadowing_operator_layer());
+    assert_reporters_name_the_shadowing_layer_states(&project);
+    assert_reporters_in(&subdirectory_of(&project), &[]);
+}
+
+/// Spec 120's THE LAYER ROOT, from a worktree: given a committed git repository whose subdirectory
+/// is a project holding the named-entry fixture, uncommitted, and a linked worktree, nested or
+/// relocated, whose same subdirectory is a project holding another layer, when the operator runs
+/// `rigger instructions` and `rigger prime` in the worktree's subdirectory, then each reports the
+/// main checkout's project at that position, never the worktree's own.
+#[test]
+fn prime_and_instructions_below_the_root_of_a_worktree_report_the_main_checkout_s_project() {
+    use common::cli::{assert_reporters_in, write_operator_layer};
+    use common::fixtures::{
+        house_and_team_operator_layer, shadowing_operator_layer, subdirectory_of,
+        temp_git_project_with_commit,
+    };
+    use common::git::{nested_worktree, relocated_worktree};
+    for worktree in [nested_worktree, relocated_worktree] {
+        let repo = temp_git_project_with_commit();
+        let wt = worktree(repo.path(), "rigger-wt-below-root-layer");
+        for (root, layer) in [
+            (repo.path(), shadowing_operator_layer()),
+            (wt.as_path(), house_and_team_operator_layer()),
+        ] {
+            let project = subdirectory_of(root);
+            write_workflow_fixture(&project, &LIVENESS_WORKFLOW);
+            write_operator_layer(&project, &layer);
+        }
+        assert_reporters_in(&wt.join("sub"), &[]);
+    }
+}
+
+/// Spec 120's EVERY BUILT-IN'S STATE IS REPORTED, from a deleted directory: given a subdirectory of
+/// a project whose `.rigger/instructions/` holds the named-entry fixture, removed while the operator
+/// stands in it, when the operator runs `rigger instructions` and `rigger prime` there, then
+/// neither can name the project, so each reports every built-in in force and no operator file:
+/// `rigger instructions` exits 0 printing the built-ins and `(none)`, and `rigger prime` prints its
+/// in-force line, then fails at its store lookup with exit 1 - unless the gate store fence names
+/// its store with no working directory to read, when it goes on to that store's empty decisions
+/// and exits 0. A process cannot remove its own working directory on Windows.
+#[cfg(unix)]
+#[test]
+fn instructions_and_prime_from_a_deleted_directory_report_the_built_ins_alone() {
+    use common::cli::{run_rigger_from_deleted, scratch_store_fence, write_operator_layer};
+    use common::fixtures::{
+        rendered_built_ins_only_layer, shadowing_operator_layer, subdirectory_of,
+        BUILT_INS_ONLY_IN_FORCE_LINE,
+    };
+    let (_scratch, fence) = scratch_store_fence();
+    let fenced = [(rigger::gate::STORE_FENCE_ENV, fence.as_str())];
+    for (report, envs, printed, code) in [
+        ("instructions", &[][..], rendered_built_ins_only_layer(), 0),
+        (
+            "prime",
+            &[][..],
+            format!("{BUILT_INS_ONLY_IN_FORCE_LINE}\n"),
+            1,
+        ),
+        (
+            "prime",
+            &fenced[..],
+            format!("{BUILT_INS_ONLY_IN_FORCE_LINE}\n# Rigger: recent decisions\n(none yet)\n"),
+            0,
+        ),
+    ] {
+        let proj = temp_project();
+        write_operator_layer(proj.path(), &shadowing_operator_layer());
+        let out = run_rigger_from_deleted(&subdirectory_of(proj.path()), &[report], envs);
+        assert_eq!(
+            (
+                String::from_utf8_lossy(&out.stdout).as_ref(),
+                out.status.code()
+            ),
+            (printed.as_str(), Some(code)),
+            "`rigger {report}` from a deleted directory with {envs:?}; stderr:\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
 }
 
 /// `rigger init` scaffolds the operator instruction directory with its README, the text of

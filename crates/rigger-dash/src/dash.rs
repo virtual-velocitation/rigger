@@ -2522,6 +2522,7 @@ fn rollup(children: &[TreeNode]) -> String {
 }
 
 /// Which lifecycle stage a review/implement ROLE belongs to.
+#[derive(Debug, PartialEq, Eq)]
 enum LifecycleStage {
     Implement,
     Review,
@@ -2529,26 +2530,25 @@ enum LifecycleStage {
 }
 
 /// Map a spawn's role token to its lifecycle stage. The implementer and the SDET periphery
-/// author write at the build seam (Implement); the lenses, adversary, and adjudicator review
-/// (Review). Anything else is not a spine leaf.
+/// author write at the build seam (Implement); every step of the lenses, adversary, and
+/// adjudicator reviews (Review). Anything else is not a spine leaf.
 fn stage_of_role(role: &str) -> LifecycleStage {
     if role == spawn::ROLE_IMPLEMENTER || role == spawn::ROLE_SDET_AUTHOR {
         LifecycleStage::Implement
-    } else if role == spawn::ROLE_ADVERSARY
-        || role == spawn::ROLE_ADJUDICATOR
-        || role.starts_with("lens:")
-    {
+    } else if spawn::review_step_of(role).is_some() {
         LifecycleStage::Review
     } else {
         LifecycleStage::Other
     }
 }
 
-/// The (role-group label, agent label) for a spawn id. A `lens:X` spawn groups under the
-/// `lens` role with agent `X` (e.g. sdet / arch); every other role keeps its token and labels
-/// the agent by its remediation attempt (`attempt#N`). A Gap-18 reviewer RESPAWN carries a
-/// `~retryN` suffix that shares the original's attempt ordinal, so the agent label appends a
-/// ` retryN` marker - otherwise a respawn and its original would collapse to the IDENTICAL
+/// The (role-group label, agent label) for a spawn id. A review token groups under its kind's
+/// tier, so a `lens:X` spawn sits under the `lens` role with agent `X` (e.g. sdet / arch) and an
+/// `adversary@2` under `adversary`; every other role keeps its token. Anything but a lens labels
+/// the agent by its remediation attempt (`attempt#N`). A later review step appends ` step K` so
+/// two steps of one kind stay apart, a first step adding nothing. A Gap-18 reviewer RESPAWN
+/// carries a `~retryN` suffix that shares the original's attempt ordinal, so the agent label ends
+/// with a ` retryN` marker - otherwise a respawn and its original would collapse to the IDENTICAL
 /// label (an indistinguishable pair precisely on the remediation path an operator inspects).
 fn role_and_agent(id: &str) -> (String, String) {
     let role = spawn::spawn_role(id);
@@ -2556,21 +2556,26 @@ fn role_and_agent(id: &str) -> (String, String) {
     // grammar (it both mints and parses `#{attempt}` / `~retry{n}`), so this view adapter never
     // re-parses the id structure and cannot drift if the separators move with the struct.
     let retry = spawn::retry_of(id);
-    if let Some(agent) = role.strip_prefix("lens:") {
-        let label = if retry > 0 {
-            format!("{agent} retry{retry}")
-        } else {
-            agent.to_string()
-        };
-        ("lens".to_string(), label)
+    let attempt = format!("attempt#{}", spawn::attempt_of(id));
+    let (group, who, k) = match spawn::review_step_of(role) {
+        Some((kind, k)) => (
+            kind.tier(),
+            spawn::lens_agent_of(role).map_or(attempt, str::to_string),
+            k,
+        ),
+        None => (role, attempt, 1),
+    };
+    let step = if spawn::is_later_step(k) {
+        format!(" step {k}")
     } else {
-        let label = if retry > 0 {
-            format!("attempt#{} retry{retry}", spawn::attempt_of(id))
-        } else {
-            format!("attempt#{}", spawn::attempt_of(id))
-        };
-        (role.to_string(), label)
-    }
+        String::new()
+    };
+    let retry = if retry > 0 {
+        format!(" retry{retry}")
+    } else {
+        String::new()
+    };
+    (group.to_string(), format!("{who}{step}{retry}"))
 }
 
 /// The Gates driver line's live outcome for a unit (spec 30 c3), read from the RECORDED gate
@@ -5575,6 +5580,123 @@ mod tests {
             "the run tree ships in the emitted state"
         );
         assert!(body.contains("u30-c1"));
+    }
+
+    /// Every spawn id reads as its review kind: the lifecycle stage, the role group it folds
+    /// under and its agent label. A later step sits under its kind with ` step <k>` before any
+    /// retry marker, a bare token keeps the label it always had, and a spelling `review_step_of`
+    /// refuses is no review token, so it lands in `Other` under its whole role.
+    #[test]
+    fn every_step_token_reads_as_its_kind() {
+        use LifecycleStage::{Implement, Other, Review};
+        let cases: &[(&str, LifecycleStage, &str, &str)] = &[
+            ("u/implementer#1", Implement, "implementer", "attempt#1"),
+            ("u/sdet-author#0", Implement, "sdet-author", "attempt#0"),
+            ("u/lens:c#0", Review, "lens", "c"),
+            ("u/lens:c#0~retry1", Review, "lens", "c retry1"),
+            ("u/adversary#2", Review, "adversary", "attempt#2"),
+            (
+                "u/adversary#2~retry1",
+                Review,
+                "adversary",
+                "attempt#2 retry1",
+            ),
+            ("u/adjudicator#0", Review, "adjudicator", "attempt#0"),
+            (
+                "u/adjudicator#0~retry2",
+                Review,
+                "adjudicator",
+                "attempt#0 retry2",
+            ),
+            ("u/lens:c@2#0", Review, "lens", "c step 2"),
+            ("u/lens:c@2#0~retry1", Review, "lens", "c step 2 retry1"),
+            ("u/lens:c@10#0", Review, "lens", "c step 10"),
+            ("u/adversary@2#1", Review, "adversary", "attempt#1 step 2"),
+            (
+                "u/adversary@2#1~retry3",
+                Review,
+                "adversary",
+                "attempt#1 step 2 retry3",
+            ),
+            (
+                "u/adversary@4294967295#0",
+                Review,
+                "adversary",
+                "attempt#0 step 4294967295",
+            ),
+            (
+                "u/adversary@4294967296#0",
+                Other,
+                "adversary@4294967296",
+                "attempt#0",
+            ),
+            ("u/adversary@1#0", Other, "adversary@1", "attempt#0"),
+            ("u/adversary@01#0", Other, "adversary@01", "attempt#0"),
+            ("u/adversary@x#0", Other, "adversary@x", "attempt#0"),
+            ("u/lens:c@1#0", Other, "lens:c@1", "attempt#0"),
+            ("u/lens:c@x#0", Other, "lens:c@x", "attempt#0"),
+            ("u/adjudicator@2#0", Other, "adjudicator@2", "attempt#0"),
+            ("u/custom#0", Other, "custom", "attempt#0"),
+        ];
+        for (id, stage, role, agent) in cases {
+            assert_eq!(stage_of_role(spawn::spawn_role(id)), *stage, "{id}");
+            assert_eq!(
+                role_and_agent(id),
+                (role.to_string(), agent.to_string()),
+                "{id}"
+            );
+        }
+    }
+
+    /// The run tree folds a panel with a repeated kind into one Review group per kind, each later
+    /// step an agent row under its kind, and a spelling no minter writes stays out of Review.
+    #[test]
+    fn the_run_tree_groups_every_step_under_its_kind() {
+        let mut events = vec![ev(
+            "UnitStarted",
+            r#"{"id":"u30-c1","spec_criterion":"the shell"}"#,
+        )];
+        for role in [
+            "lens:a",
+            "adversary",
+            "lens:a@2",
+            "adversary@2",
+            "adjudicator",
+            "adversary@1",
+        ] {
+            let req = crate::spawn::test_request("u30-c1", "review", role, 0, role);
+            events.push(req.to_event().unwrap());
+        }
+        let state = build_state(
+            &positioned(events),
+            &Graph::default(),
+            false,
+            &[],
+            &HashMap::new(),
+            3,
+            "rigger-run",
+            "origin/main",
+        )
+        .unwrap();
+        let unit = &state.tree[0].children[0];
+        let stages: Vec<&str> = unit.children.iter().map(|s| s.label.as_str()).collect();
+        assert_eq!(stages, vec!["Review"]);
+        let shape: Vec<(&str, Vec<&str>)> = unit.children[0]
+            .children
+            .iter()
+            .map(|role| {
+                let agents = role.children.iter().map(|a| a.label.as_str()).collect();
+                (role.label.as_str(), agents)
+            })
+            .collect();
+        assert_eq!(
+            shape,
+            vec![
+                ("adjudicator", vec!["attempt#0"]),
+                ("adversary", vec!["attempt#0", "attempt#0 step 2"]),
+                ("lens", vec!["a", "a step 2"]),
+            ]
+        );
     }
 
     /// Review verdicts on the wire are exactly `metrics::project`'s classification, never a

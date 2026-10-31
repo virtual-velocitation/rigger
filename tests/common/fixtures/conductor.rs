@@ -41,15 +41,21 @@ pub fn review_or_adjudicate(opts: &SpawnOpts) -> AgentResult {
     }
 }
 
+/// A first round's reject requiring one correctness fix in `feature.rs`, the file the unit under
+/// review wrote.
+pub const REJECT_FEATURE: &str = r#"{"verdict":"reject","required":[{"finding":"close the unscoped read","path":"feature.rs","correctness":true}]}"#;
+
+/// The `UnitStatus` markers in `events` carrying the `status` token, in log order.
+pub fn status_markers<'a>(events: &'a [Event], status: &str) -> impl Iterator<Item = &'a Event> {
+    let marker = format!("\"status\":\"{status}\"");
+    events.iter().filter(move |e| {
+        e.type_ == TYPE_UNIT_STATUS && String::from_utf8_lossy(&e.data).contains(&marker)
+    })
+}
+
 /// How many `UnitStatus` markers in `events` carry the `status` token.
 pub fn count_status_marker(events: &[Event], status: &str) -> usize {
-    events
-        .iter()
-        .filter(|e| {
-            e.type_ == TYPE_UNIT_STATUS
-                && String::from_utf8_lossy(&e.data).contains(&format!("\"status\":\"{status}\""))
-        })
-        .count()
+    status_markers(events, status).count()
 }
 
 /// Whether `events` carries a `UnitStatus` marker whose `status` is `status`.

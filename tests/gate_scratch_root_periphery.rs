@@ -41,13 +41,15 @@ const LOG_ENV: &str = "GATE_SCRATCH_PERIPHERY_LOG";
 
 /// Sets [`OUTER_ROOT`] and [`LOG_ENV`] (naming `log`) in this process for the life of the
 /// returned guards, serialized against every other environment reader in this binary and
-/// restored on drop.
-fn parent_holds_an_outer_root(log: &Path) -> (std::sync::MutexGuard<'static, ()>, RestoreEnvVars) {
+/// restored on drop. A tuple drops its fields in order, so the restore comes first and runs
+/// under the lock: a lock released first hands the next test an environment this restore then
+/// wipes, and that test's recording gate loses [`LOG_ENV`] and fails.
+fn parent_holds_an_outer_root(log: &Path) -> (RestoreEnvVars, std::sync::MutexGuard<'static, ()>) {
     let lock = env_test_lock();
     let restore = RestoreEnvVars::capture(&[GATE_SCRATCH_ENV, LOG_ENV]);
     std::env::set_var(GATE_SCRATCH_ENV, OUTER_ROOT);
     std::env::set_var(LOG_ENV, log);
-    (lock, restore)
+    (restore, lock)
 }
 
 /// A gate command appending `<cwd> <$RIGGER_GATE_SCRATCH or UNSET> <present|absent>` to the

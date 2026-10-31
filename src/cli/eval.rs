@@ -34,7 +34,7 @@ struct CanaryArgs {
     if_model_changed: bool,
     /// `--jobs <n>`: the TOTAL concurrent-spawn budget [`canary_store::run_canary`] divides
     /// between its two concurrency dimensions - independent corpus items sharded across
-    /// workers, and each item's tier-1 lens fan-out (the LENS FAN-OUT criterion's
+    /// workers, and each item's lens fan-out (the LENS FAN-OUT criterion's
     /// already-built inner concurrency) - so neither dimension can push the live review
     /// panel's total concurrent spawns past what the operator asked for. Defaults to
     /// [`canary_store::default_jobs`] (always greater than one).
@@ -91,7 +91,7 @@ fn parse_canary_args(args: &[String]) -> Result<CanaryArgs, Box<dyn std::error::
                 })?;
                 if !matches!(
                     tier,
-                    canary::TIER_LENS | canary::TIER_ADVERSARY | spawn::ROLE_ADJUDICATOR
+                    spawn::TIER_LENS | spawn::TIER_ADVERSARY | spawn::ROLE_ADJUDICATOR
                 ) {
                     return Err(format!(
                         "canary: --model names unknown tier {tier:?} (tiers: lens, adversary, \
@@ -136,7 +136,7 @@ fn parse_canary_args(args: &[String]) -> Result<CanaryArgs, Box<dyn std::error::
 /// silent alias re-points. Without the flag the canary always runs.
 ///
 /// `--jobs <n>` bounds the total number of review-panel spawns in flight at once, across
-/// BOTH independent corpus items and each item's tier-1 lens fan-out together (spec 61,
+/// BOTH independent corpus items and each item's lens fan-out together (spec 61,
 /// ITEM SHARDING AND THE JOBS CAP); it defaults to [`canary_store::default_jobs`].
 pub(crate) fn cmd_canary(args: &[String]) -> Res {
     let args = parse_canary_args(args)?;

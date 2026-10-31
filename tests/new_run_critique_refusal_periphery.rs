@@ -31,8 +31,8 @@ const SKEPTIC_WORKFLOW: &str = "defaults:\n  grounder: nop\nstages:\n  plan:\n  
      adjudicator: arbiter\n  implement:\n    needs: [plan-critique]\n    agent: planner\n    \
      strategy: fan-out\n    on_pass: none\n";
 
-/// [`SKEPTIC_WORKFLOW`] with the gate's adversary dropped and no `defaults.review.adversary`:
-/// no critic.
+/// [`SKEPTIC_WORKFLOW`] with the gate's adversary dropped and no adversary step in
+/// `defaults.review`: no critic.
 const CRITICLESS_WORKFLOW: &str = "defaults:\n  grounder: nop\nstages:\n  plan:\n    agent: \
      planner\n    produces: dag\n  plan-critique:\n    needs: [plan]\n    adjudicator: arbiter\n  \
      implement:\n    needs: [plan-critique]\n    agent: planner\n    strategy: fan-out\n    \
@@ -460,6 +460,13 @@ const DEFAULTS_CRITIC_WORKFLOW: &str = "defaults:\n  grounder: nop\n  review:\n 
      plan-critique:\n    needs: [plan]\n    adjudicator: arbiter\n  implement:\n    needs: \
      [plan-critique]\n    agent: planner\n    strategy: fan-out\n    on_pass: none\n";
 
+/// [`DEFAULTS_CRITIC_WORKFLOW`] with `defaults.review` a list: `doubter` is its adversary step.
+const LISTED_CRITIC_WORKFLOW: &str = "defaults:\n  grounder: nop\n  review:\n    steps: \
+     [{ adversary: doubter }, { adjudicator: arbiter }]\nstages:\n  plan:\n    agent: planner\n    \
+     produces: dag\n  plan-critique:\n    needs: [plan]\n    adjudicator: arbiter\n  \
+     implement:\n    needs: [plan-critique]\n    agent: planner\n    strategy: fan-out\n    \
+     on_pass: none\n";
+
 const DOUBTER: &str =
     "---\nid: doubter\nmodel: sonnet\ntools: [Read]\nisolation: none\n---\nDoubt it again.\n";
 
@@ -624,8 +631,9 @@ fn a_resolution_stands_when_a_later_decision_supersedes_it_without_resolves() {
 
 /// Reverted and DROPPED, the critic: under a workflow that drops its critic a new run proceeds with
 /// the one line whatever the recorded critique holds; naming a critic again - the same persona, or
-/// another named only through `defaults.review.adversary` - judges each new run on the critique
-/// already recorded for the text, which a changed critic leaves standing.
+/// another named only through an adversary step of `defaults.review`, in either form - judges
+/// each new run on the critique already recorded for the text, which a changed critic leaves
+/// standing.
 #[test]
 fn each_new_run_follows_the_workflows_critic_and_any_critic_reads_the_recorded_critique() {
     let dir = temp_git_project_with_commit();
@@ -638,7 +646,11 @@ fn each_new_run_follows_the_workflows_critic_and_any_critic_reads_the_recorded_c
     write_scaffold(root, &personas, CRITICLESS_WORKFLOW);
     assert_step_proceeds(root, (SPEC_REL, &[]), SPEC_REL, (1, 1));
 
-    for workflow in [SKEPTIC_WORKFLOW, DEFAULTS_CRITIC_WORKFLOW] {
+    for workflow in [
+        SKEPTIC_WORKFLOW,
+        DEFAULTS_CRITIC_WORKFLOW,
+        LISTED_CRITIC_WORKFLOW,
+    ] {
         write_scaffold(root, &personas, workflow);
         assert_step_refused(root, (SPEC_REL, &["--fresh"]), SPEC_REL, Some(&open), 1);
     }
