@@ -4,8 +4,8 @@
 run-level event (`crates/rigger-domain/src/run.rs:39`); the failure taxonomy classifies gate
 output only (`crates/rigger-domain/src/failure.rs:23`), so a spawn error of any class takes its
 spawn site's error path, at the implementer an uncharged infra rerun that halts the run past the
-taxonomy's limit (`retry_infra_failure`, `crates/rigger-conductor/src/conductor.rs:5582`, called
-at `:6431`) and at the other sites their own error paths; liveness counts every elapsed second
+taxonomy's limit (`retry_infra_failure`, `crates/rigger-conductor/src/conductor.rs:5586`, called
+at `:6435`) and at the other sites their own error paths; liveness counts every elapsed second
 (`liveness::sweep`, `crates/rigger-driver/src/liveness.rs:506`, and the host's stream-silence
 stop, `crates/rigger-driver/src/driver/claude_code.rs:324`), so after a 17 h credential outage
 the first step read a marker 61,963 s stale, recorded a liveness fault and halted; needs-you
@@ -69,7 +69,7 @@ sink and beat source; a host built without them, as `rigger critique` builds it
 (`src/cli/critique.rs:207`), appends no hold, keeps spec 104's classed errors and counts silence
 from the last line. The host merges spec 104's per-spawn hooks into each launch's `--settings`,
 since every conductor spawn site passes an empty `settings_json`
-(`crates/rigger-conductor/src/conductor.rs:4764`): the `PreToolUse` `rigger guard-write` rooted
+(`crates/rigger-conductor/src/conductor.rs:4768`): the `PreToolUse` `rigger guard-write` rooted
 at the spawn's `dir` and scratch container, an empty `dir` rooted at the session's cwd, and one
 `StopFailure` entry per `AgentFailure::CATEGORIES` running `rigger hook stop-failure`; each
 command of these two hooks runs `rigger_bin`, each path in it shell-quoted, while hooks the host
@@ -78,12 +78,12 @@ already merges keep their commands. The host pre-approves its spawn-bound `rigge
 (`allowed_tools_args`, `crates/rigger-driver/src/driver/mod.rs:45`). The host bridges no printed
 record: a refused `rigger_emit` returns to its session as a tool error (`append_emit`,
 `crates/rigger-dash/src/mcpserver.rs:857`), so on `rigger run` `rerun_once_on_refusal`
-(`crates/rigger-conductor/src/conductor.rs:1512`) sees no refusal, and criterion 1 moves the
+(`crates/rigger-conductor/src/conductor.rs:1516`) sees no refusal, and criterion 1 moves the
 three bridged-record tests (`tests/cli.rs:7083`, `:7202`, `:7215`) to conductor tests over a
 stub driver that calls the emit callback, beside `refusing_at`
-(`crates/rigger-conductor/src/conductor.rs:48544`). The conductor reads the host's recorded
+(`crates/rigger-conductor/src/conductor.rs:48649`). The conductor reads the host's recorded
 results as it reads the replay driver's (`review_spawn_errored`,
-`reviewer_result_is_degenerate`, `crates/rigger-conductor/src/conductor.rs:7947`), so `rigger
+`reviewer_result_is_degenerate`, `crates/rigger-conductor/src/conductor.rs:7951`), so `rigger
 run` gets the step path's review semantics, and the swap corrects the comments that say a live
 driver records no result. When the conductor loop returns with `RunState::done()`
 (`crates/rigger-domain/src/ledger.rs:685`) true, `run_cli` runs `reclaim_run_scratch`
@@ -134,7 +134,7 @@ waits while the run is held, and on an error of a HOLD or WAIT class, or any oth
 the run is held, it waits for the release and launches the same spawn id again, with no infra
 mark, up to the bound of DISPOSITIONS. Two other errors pass to the conductor unchanged: one
 carrying a conductor marker (`is_parked`, or `EMIT_REFUSED_MARKER`, which arises only under a
-driver that calls the emit callback, `crates/rigger-conductor/src/conductor.rs:3409`), and one
+driver that calls the emit callback, `crates/rigger-conductor/src/conductor.rs:3413`), and one
 for a spawn the current run's slice has ended (`spawn::ended_by`, read as RESUME reads it).
 Every relaunch of a spawn id takes the ordinal RESUME decides, never `opts.launch`. `cmd_step`
 reads the hold right after its step lock and `--fresh` (`src/cli/run.rs:584`), before
@@ -220,7 +220,7 @@ as its authorized root; criterion 6 builds this start-up reconciliation. `SpawnL
 `dir`; an open record whose `dir` is absent, empty or outside the scratch root closes
 `interrupted` and reaps nothing. The host owns the relaunch, inside `spawn`, and the conductor
 changes at one site, the conflict resolver's (`spawn_conflict_resolution_implementer`,
-`crates/rigger-conductor/src/conductor.rs:11029`), which reads an unmarked error of its spawn,
+`crates/rigger-conductor/src/conductor.rs:11033`), which reads an unmarked error of its spawn,
 live or answered from the log, as a spent round, moving to the next `~retry` with no attempt
 charged and past `CONFLICT_RESOLVE_BOUND` returning `Integration {blocked}` as an unresolved
 conflict does: `spawn` answers a spawn id the current run's slice (`read_current_run`,
@@ -231,7 +231,7 @@ error write below lands on its id, so a restart relaunches a stopped spawn whose
 reached its spawn site, as the replay driver re-parks one; the host parks a spawn id through
 `park_in_run` (`crates/rigger-store-sqlite/src/spawn_store.rs:38`) before its first launch
 unless its `SpawnRequested` already stands, as `rigger critique` parks before it launches, so
-`reserve_spawn` (`crates/rigger-conductor/src/conductor.rs:4046`) admits an answered spawn free
+`reserve_spawn` (`crates/rigger-conductor/src/conductor.rs:4050`) admits an answered spawn free
 on a restart; the host records a launch's real result through a sibling of
 `record_result_if_absent` (`crates/rigger-store-sqlite/src/spawn_store.rs:114`), the same
 compare-and-append with `spawn::ended_by` as its answered test, while every liveness-fault write
@@ -247,7 +247,7 @@ restart, followed by the interrupted launch's `resume_task` when it carried one.
 of a spawn id, by this path, the decorator of HELD or the fallback, takes the ordinal after the
 highest the progress store records for that id, never `opts.launch`. When `read_stream` sees no
 `system/init` from any `--resume` launch, the conductor's `continue_prior_session`
-(`crates/rigger-conductor/src/conductor.rs:4780`) included, the host closes that launch
+(`crates/rigger-conductor/src/conductor.rs:4784`) included, the host closes that launch
 `interrupted` and launches the spawn fresh at the next ordinal with `resumed_from` empty,
 logging the fallback as a progress line, except that a launch HELD closes `interrupted` for its
 class or a held run takes no fallback and returns its error to the decorator; criterion 1 owns
@@ -267,7 +267,7 @@ gains `RunHeld` and `RunReleased`, so the page's fold sees the hold. Attention g
 ranked first, and `released`, ranked last (`crates/rigger-domain/src/ledger.rs:226`), folded one
 each per hold from the run's `RunHeld` and `RunReleased` events and keyed by the hold's first
 `RunHeld`, not diffed between endpoints in `compute_attention`
-(`crates/rigger-conductor/src/conductor.rs:2775`), which carries neither; spec 106's `rigger
+(`crates/rigger-conductor/src/conductor.rs:2779`), which carries neither; spec 106's `rigger
 attention --follow` delivers them, so neither a step nor `rigger run` prints them. `rigger
 validate` reports the auth method from `claude auth status --json` and warns when `authMethod`
 is the value an interactive subscription login reports, pinned by a fixture recorded from the
@@ -306,15 +306,33 @@ owns the OS process facilities, which gains a normal `rigger-domain` dependency 
   no gate, container or runner verifies them, by decision; a defect there surfaces as an issue
   report on the project. Only the port's lifecycle and the Linux adapter are tested here.
 
+ADDENDUM DEPARTURES, decided: the Design departs from the Goal's addendum in seven places, each
+kept as decided above: a `rate_limit` hold honors no known reset time (section 5.1), since the probe
+backoff already bounds a rate-limit hold's canary spend; a `cloud_credential_error` hold runs no
+`claude auth status` probe (5.1), since that status reports the login, not the cloud provider's
+credentials; a `model_not_found` hold runs no canary (5.1), since a supervisor launches from the
+configuration it read at start; the canary runs on the hold's model, not the cheapest configured
+one (5.4), since that model is the one the held launches need; the page shows the hold in its
+dock entry and statusline word, not its health strip (5.5), since that strip reports the dash's
+and the store's connection; the write guard roots every spawn at its `dir` and scratch
+container, not a reviewer persona at its scratch only (4.4), since personas and review's steps
+are the consumer's to declare; and a probe releases a hold at worst 900 s after a login, not
+within section 9's two minutes, since the probe delay caps at 900 s, and `rigger release` is the
+instant path.
+
 CONSTRAINTS WALK: supervisor crash while held - the fold says held; the new supervisor closes
 the open launches `interrupted`, resumes probing and launches nothing. Flapping - the
 carried-over delay. Clock set backwards - clamped spans. Empty store - not held. A run recorded
 before this spec - no beats; it is adopted as unsupervised up to the adopting supervisor's first
 beat, so no old gap becomes a fault. Operator releases too early - the next launch re-holds
 within a second. The step-driven path writes no beats and holds no keep-awake guard, so its
-sweep subtracts hold intervals only and an idle sleep pauses it. A driver that dies holding the
-keep-awake guard - the OS ends the inhibitor, assertion or request with the process. A sleep the
-guard does not prevent - the beat gap and the resume carry the run.
+sweep subtracts hold intervals only and an idle sleep pauses it. Until spec 106 retires the
+workflow script, an outage on a step-driven run keeps today's behavior, by decision - it raises
+no hold, `liveness::sweep` still faults it and `raceOuterWallClock` (`workflows/rigger.js:591`)
+keeps wall time; `rigger hold` is the operator's cover on that path, and `rigger run` is the
+blessed driver this spec fixes. A driver that dies holding the keep-awake guard - the OS ends
+the inhibitor, assertion or request with the process. A sleep the guard does not prevent - the
+beat gap and the resume carry the run.
 
 ## Global constraints
 
