@@ -300,6 +300,9 @@ pub enum DashProbe {
 pub enum CiProbe {
     /// The checkout has no run branch, so there is no tip to read CI for - nothing has run.
     NoRunTip,
+    /// The remote does not have the run tip, so no CI has run on it: a run never pushes its branch
+    /// mid-run. Not an anomaly, and not an unread CI either, so nothing is printed for it.
+    Unpushed,
     /// `gh` could not read the checks (not installed, not logged in, or the call failed); the
     /// reason is printed beside the anomalies, never raised as one.
     Unknown(String),
@@ -1492,6 +1495,7 @@ mod tests {
             for quiet in [
                 CiProbe::Unknown("gh is not installed".to_string()),
                 CiProbe::NoRunTip,
+                CiProbe::Unpushed,
                 CiProbe::Pending,
                 CiProbe::Green,
             ] {

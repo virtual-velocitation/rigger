@@ -3246,8 +3246,9 @@ fn watch_poll(
 
 /// What CI says about the run branch's tip in `repo`: GitHub's check runs for that commit, read
 /// with `gh api` (which resolves `{owner}/{repo}` from the checkout's remote), so the reading
-/// holds wherever the tip was pushed. No run branch reads as [`watch::CiProbe::NoRunTip`]; `gh`
-/// missing, not logged in or failing reads as [`watch::CiProbe::Unknown`] with its reason.
+/// holds wherever the tip was pushed. No run branch reads as [`watch::CiProbe::NoRunTip`], and a
+/// tip the remote does not have as [`watch::CiProbe::Unpushed`]; `gh` missing, not logged in or
+/// failing otherwise reads as [`watch::CiProbe::Unknown`] with its reason.
 fn run_tip_ci(repo: &str) -> watch::CiProbe {
     let Ok(sha) = rigger::worktree::branch_tip(repo, RUN_BRANCH) else {
         return watch::CiProbe::NoRunTip;
@@ -3261,15 +3262,36 @@ fn run_tip_ci(repo: &str) -> watch::CiProbe {
         .output();
     match read {
         Err(e) => watch::CiProbe::Unknown(format!("gh could not run: {e}")),
-        Ok(out) if !out.status.success() => {
+        Ok(out) => {
+            let stdout = String::from_utf8_lossy(&out.stdout);
             let stderr = String::from_utf8_lossy(&out.stderr);
+            ci_probe_from_gh_read(
+                &sha,
+                if out.status.success() {
+                    Ok(&*stdout)
+                } else {
+                    Err(&*stderr)
+                },
+            )
+        }
+    }
+}
+
+/// The CI reading of what `gh api` answered for commit `sha`: its stdout when the call succeeded,
+/// read by [`ci_probe_from_check_runs`], or its stderr when it failed. A failure that says the
+/// remote has no such commit reads as [`watch::CiProbe::Unpushed`]; any other reads as unknown
+/// with the first non-blank line as its reason.
+fn ci_probe_from_gh_read(sha: &str, read: Result<&str, &str>) -> watch::CiProbe {
+    match read {
+        Ok(body) => ci_probe_from_check_runs(sha, body),
+        Err(stderr) if stderr.contains("No commit found for SHA") => watch::CiProbe::Unpushed,
+        Err(stderr) => {
             let reason = stderr
                 .lines()
                 .find(|l| !l.trim().is_empty())
                 .unwrap_or("no output");
             watch::CiProbe::Unknown(format!("gh api failed: {}", reason.trim()))
         }
-        Ok(out) => ci_probe_from_check_runs(&sha, &String::from_utf8_lossy(&out.stdout)),
     }
 }
 
