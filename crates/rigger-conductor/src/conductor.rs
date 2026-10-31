@@ -234,8 +234,10 @@ const STATUS_ADOPTION_RECORDED: &str = "adoption-recorded";
 /// The `UnitStatus.status` token recording a QUARANTINE durably (spec 88 round 7, closing
 /// `adv-u88c2-r6-quarantine-orphans-the-criterions-own-future-adoption`):
 /// [`RunCtx::adopt_prior_criterion_branch`]'s quarantine path (spec 88 round 6) moves a
-/// FOREIGN occupant of a unit's canonical branch aside rather than destroying it (Operator
-/// rule, spec 88 Goal: "a unit's reviewed history is never discarded by the harness"), but
+/// FOREIGN occupant of a unit's canonical branch that carries commits HEAD lacks aside
+/// rather than destroying it (Operator rule, spec 88 Goal: "a unit's reviewed history is
+/// never discarded by the harness"; an occupant whose tip HEAD already holds discards
+/// nothing, so it is deleted with no ref and no mark), but
 /// round 6 left that move entirely unrecorded - the deleted canonical name then reads as
 /// "never existed" to a LATER, genuine retry of the exact `(unit, criterion_id, spec)`
 /// identity the quarantined content was itself started under, even though
@@ -11881,7 +11883,8 @@ impl RunCtx<'_> {
     /// durable `UnitStarted` provenance every unit already writes; a mismatch means the
     /// literal name is a coincidence, not this unit's own history, so the foreign
     /// occupant is quarantined aside (never destroyed - Operator rule, spec 88 Goal:
-    /// "a unit's reviewed history is never discarded by the harness") so the caller's own
+    /// "a unit's reviewed history is never discarded by the harness"), or deleted when HEAD
+    /// already holds its tip (NOTHING TO MOVE below), so the caller's own
     /// `Worktree::create` recomputes `branch_exists` as false and starts this unit
     /// genuinely fresh, off HEAD.
     ///
@@ -11939,6 +11942,15 @@ impl RunCtx<'_> {
     /// the delete is idempotent) - closing the create-then-delete window above AND the
     /// delete-then-emit window, with the one existing gate and no new durable state.
     ///
+    /// NOTHING TO MOVE: a foreign occupant whose tip HEAD already holds carries no commit HEAD
+    /// lacks, so the unit starting off HEAD discards nothing by its going. It is deleted from
+    /// the canonical name with no quarantine ref and no record - the delete is idempotent and
+    /// is the step that clears the `branch_exists(branch)` re-entry gate, so a crash before it
+    /// leaves a retry to redo it. Only an occupant with commits HEAD lacks is quarantined. A
+    /// quarantine ref already at the occupant's tip means an earlier call crashed partway
+    /// through its quarantine, so the retry finishes that quarantine even if HEAD has since
+    /// gained the tip, and the ref never stands unrecorded.
+    ///
     /// A STAGE THAT SERVES NO CRITERION SHARES ONE NAME ACROSS RUNS: plan, plan-critique and
     /// check-in carry no criterion id, so [`unit_branch`] maps each to the same bare ref under
     /// every run and every spec. Such a stage is never adopted across runs - adoption is keyed
@@ -11993,11 +12005,23 @@ impl RunCtx<'_> {
                 let (owner_criterion, owner_spec) = owner.unwrap_or_default();
                 let tip = worktree::branch_tip(&self.deps.repo, &branch)?;
                 let quarantine = quarantine_branch_name(&st.name, &tip);
+                let quarantine_begun = worktree::branch_exists(&self.deps.repo, &quarantine);
+                // NOTHING TO MOVE: a foreign tip HEAD already holds carries no commit HEAD
+                // lacks, so a quarantine ref would only be a second name for history HEAD
+                // keeps. The canonical name is deleted (idempotent; it clears the
+                // `branch_exists(branch)` re-entry gate) with no ref and no record, and the
+                // unit starts off HEAD. A quarantine ref already at this tip means an earlier
+                // call crashed partway through the quarantine below, which this call finishes
+                // instead, so that ref never stands unrecorded.
+                if !quarantine_begun && worktree::is_ancestor(&self.deps.repo, &tip, "HEAD") {
+                    Worktree::delete_branch(&self.deps.repo, &branch)?;
+                    return Ok(None);
+                }
                 // CRASH-WINDOW GUARD (round 7): a resumed retry recomputes the identical
                 // (unit_id, tip) pair, so a prior incarnation that crashed after this
                 // create but before the record/delete below must never hard-error on
                 // "branch already exists" - it completes whatever's still pending instead.
-                if !worktree::branch_exists(&self.deps.repo, &quarantine) {
+                if !quarantine_begun {
                     Worktree::create_branch_at(&self.deps.repo, &quarantine, &tip)?;
                 }
                 // QUARANTINE IS A RECORD, NOT JUST A RENAME (round 7), WRITTEN BEFORE THE
@@ -14264,7 +14288,8 @@ fn branch_is_foreign(owner: &Option<(String, String)>, criterion_id: &str, spec:
 
 /// The deterministic name a FOREIGN occupant of a unit's canonical branch is preserved
 /// under when [`branch_owner`] proves its content belongs to an unrelated (criterion,
-/// spec) (spec 88 round 6, primary blocker fix): `rigger/orphaned/<sanitized-id>-
+/// spec) and it carries commits HEAD lacks (spec 88 round 6, primary blocker fix; an
+/// occupant whose tip HEAD holds is only deleted): `rigger/orphaned/<sanitized-id>-
 /// <short-tip>`. Never a destructive `Worktree::delete_branch` alone - the branch is
 /// first re-pointed here (via [`Worktree::create_branch_at`], a new ref, exactly the
 /// "never a rename" pattern the legitimate adoption path already uses to keep an old name
