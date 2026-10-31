@@ -544,8 +544,8 @@
       },
       {
         "file": "tests/gate_scratch_root_periphery.rs",
-        "start_line": 56,
-        "end_line": 62
+        "start_line": 58,
+        "end_line": 64
       }
     ]
   },

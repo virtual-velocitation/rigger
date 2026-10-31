@@ -1949,7 +1949,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 - `crates/rigger-conductor/src/conductor.rs:12711-12716` `unit_size_cap`
 - `tests/cli.rs:12591-12596` `sweep_tool_refusal`
-- `tests/gate_scratch_root_periphery.rs:56-62` `recording_gate`
+- `tests/gate_scratch_root_periphery.rs:58-64` `recording_gate`
 
 #### `dup-cde89b281edb` (near, 4 sites)
 
