@@ -448,8 +448,9 @@ pub const TYPE_UNIT_INTEGRATED: &str = "UnitIntegrated";
 pub const TYPE_GATE_PROMOTED: &str = "GatePromoted";
 pub const TYPE_GATE_DEMOTED: &str = "GateDemoted";
 /// The conductor's ScopeCreep event (the conductor re-exports this as
-/// `conductor::TYPE_SCOPE_CREEP`, the single source of the string): a proposed unit with no spec
-/// criterion - refused (anti-fragmentation, §8).
+/// `conductor::TYPE_SCOPE_CREEP`, the single source of the string): a refused proposal
+/// (anti-fragmentation, section 8) - a proposed unit with no spec criterion, or a same-id
+/// refine whose text resolves to a criterion its unit does not serve.
 pub const TYPE_SCOPE_CREEP: &str = "ScopeCreep";
 /// The conductor's SpecDefect event (the conductor re-exports this as
 /// `conductor::TYPE_SPEC_DEFECT`, the single source of the string): an uncovered criterion the
