@@ -15448,19 +15448,29 @@ fn rigger_output(cwd: &Path, args: &[&str]) -> std::process::Output {
         .unwrap_or_else(|e| panic!("run rigger {}: {e}", args.join(" ")))
 }
 
-/// Every entry under `dir`, recursively, with its bytes (`None` for a directory), read level by
-/// level with [`common::fixtures::dir_snapshot`]: a call that writes nothing leaves it equal.
-fn tree_snapshot(dir: &Path) -> Vec<(std::path::PathBuf, Option<Vec<u8>>)> {
+/// One entry of a [`tree_snapshot`]: its path and, for a file, its bytes and modification time.
+type TreeEntry = (std::path::PathBuf, Option<(Vec<u8>, std::time::SystemTime)>);
+
+/// Every entry under `dir`, recursively, with its bytes and modification time (`None` for a
+/// directory), read level by level with [`common::fixtures::dir_snapshot`], leaving out each entry
+/// named in `skipped` and everything below it: a call that writes nothing leaves it equal, even
+/// one that would rewrite a file with the bytes it already holds.
+fn tree_snapshot(dir: &Path, skipped: &[&str]) -> Vec<TreeEntry> {
     common::fixtures::dir_snapshot(dir, "")
         .into_iter()
+        .filter(|(name, _)| !skipped.contains(&name.as_str()))
         .flat_map(|(name, bytes)| {
             let path = dir.join(name);
             let below = if bytes.is_none() {
-                tree_snapshot(&path)
+                tree_snapshot(&path, skipped)
             } else {
                 Vec::new()
             };
-            std::iter::once((path, bytes)).chain(below)
+            let stamped = bytes.map(|bytes| {
+                let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+                (bytes, modified)
+            });
+            std::iter::once((path, stamped)).chain(below)
         })
         .collect()
 }
@@ -15612,7 +15622,7 @@ fn every_command_asked_for_help_prints_its_usage_entry_or_passes_the_flag_throug
             .map(|call| call.to_vec());
         for args in calls.into_iter().chain(further) {
             let call = args.join(" ");
-            let before = tree_snapshot(root);
+            let before = tree_snapshot(root, &[]);
             let out = rigger_output(root, &args);
             let printed = String::from_utf8_lossy(&out.stderr);
             assert!(
@@ -15628,7 +15638,7 @@ fn every_command_asked_for_help_prints_its_usage_entry_or_passes_the_flag_throug
                 out.stdout.is_empty(),
                 "rigger {call} prints nothing on stdout"
             );
-            let after = tree_snapshot(root);
+            let after = tree_snapshot(root, &[]);
             let changed: Vec<String> = after
                 .iter()
                 .filter(|item| !before.contains(item))
@@ -15667,6 +15677,9 @@ fn rigger_help_of_a_command_prints_only_its_usage_entry() {
         concat!(
             "  rigger docs                 render the code-derived docs (every registry skill and\n",
             "                              handbook page) into their committed paths\n",
+            "  rigger docs --check         check every rendered output against a fresh render,\n",
+            "                              writing nothing: prints `fresh <path>` or `drifted <path>`\n",
+            "                              per output on disk; exits 1 when any drifted\n",
         )
     );
     assert!(out.is_empty(), "rigger help docs prints nothing on stdout");
@@ -17977,6 +17990,120 @@ rigger::test_cases! {
         );
 }
 
+/// The path of every output `rigger docs` reports rendering in its `stdout`, in its order.
+fn rendered_outputs(stdout: &str) -> Vec<String> {
+    stdout
+        .lines()
+        .map(|line| {
+            line.strip_prefix("rendered ./")
+                .unwrap_or_else(|| panic!("`rigger docs` prints `rendered ./<path>`; got {line:?}"))
+                .to_string()
+        })
+        .collect()
+}
+
+/// `rigger <args>` over a project whose docs `rigger docs` just rendered, once each output in
+/// `edited` was hand-edited and each in `removed` deleted: it exits `code` and leaves every file's
+/// bytes and modification time as they were. A check (exit 0 or 1) prints one line per output
+/// still on disk, in render order - `drifted <path>` for an edited one and `fresh <path>` for the
+/// rest; a refused argument (exit 2) prints nothing on stdout and names the `--check` form on
+/// stderr.
+fn assert_the_docs_verb(args: &[&str], edited: &[&str], removed: &[&str], code: i32) {
+    let dir = temp_project();
+    let root = dir.path();
+    let outputs = rendered_outputs(&run_rigger_ok(root, &["docs"]));
+    for rel in edited.iter().chain(removed) {
+        assert!(
+            outputs.iter().any(|output| output == rel),
+            "{rel} must be one of the rendered outputs {outputs:?}"
+        );
+    }
+    for rel in edited {
+        append_line(&root.join(rel), "hand-edited line the render never emits");
+    }
+    for rel in removed {
+        std::fs::remove_file(root.join(rel)).unwrap();
+    }
+    let before = tree_snapshot(root, &[]);
+
+    let out = pipe_into_rigger(root, args, b"");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(
+        out.status.code(),
+        Some(code),
+        "rigger {args:?} must exit {code}; stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    let expected: String = if code == 2 {
+        assert!(
+            stderr.contains("rigger docs [--check]"),
+            "a refused argument names the verb's one accepted form; stderr:\n{stderr}"
+        );
+        String::new()
+    } else {
+        outputs
+            .iter()
+            .filter(|rel| !removed.contains(&rel.as_str()))
+            .map(|rel| {
+                let verdict = if edited.contains(&rel.as_str()) {
+                    "drifted"
+                } else {
+                    "fresh"
+                };
+                format!("{verdict} {rel}\n")
+            })
+            .collect()
+    };
+    assert_eq!(
+        stdout, expected,
+        "rigger {args:?} stdout; stderr:\n{stderr}"
+    );
+    assert!(
+        tree_snapshot(root, &[]) == before,
+        "rigger {args:?} must write nothing: every file keeps its bytes and modification time, \
+         and no removed output comes back"
+    );
+}
+
+rigger::test_cases! {
+    /// `rigger docs --check` over a fresh render reports every output `fresh`, exits 0 and
+    /// writes nothing - the check the docs pre-commit hook runs, so a commit never rewrites
+    /// the working tree.
+    docs_check_reports_every_output_fresh_and_writes_nothing:
+        assert_the_docs_verb(&["docs", "--check"], &[], &[], 0);
+    /// `rigger docs --check` reports a hand-edited output `drifted` - here a skill outside the
+    /// `using-rigger` pair - and every other output `fresh`, exits 1, and leaves the edited
+    /// file's bytes as they were.
+    docs_check_reports_an_edited_output_drifted_and_leaves_its_bytes:
+        assert_the_docs_verb(&["docs", "--check"], &["skills/spec-preflight/SKILL.md"], &[], 1);
+    /// `rigger docs --check` skips an output absent from the tree, as the validate drift gate
+    /// does, and never writes it.
+    docs_check_skips_an_absent_output:
+        assert_the_docs_verb(
+            &["docs", "--check"],
+            &[],
+            &["docs/handbook/planning-field-guide.md"],
+            0,
+        );
+    /// `rigger docs` given an argument other than `--check` refuses with exit 2 and renders
+    /// nothing: the edited output keeps its edit and the removed one stays absent.
+    docs_refuses_an_unknown_argument_and_renders_nothing:
+        assert_the_docs_verb(
+            &["docs", "--bogus"],
+            &["skills/spec-preflight/SKILL.md"],
+            &["docs/handbook/planning-field-guide.md"],
+            2,
+        );
+    /// An unknown argument beside `--check` is refused the same way, never read as a check.
+    docs_refuses_an_unknown_argument_beside_check:
+        assert_the_docs_verb(
+            &["docs", "--check", "--bogus"],
+            &["skills/spec-preflight/SKILL.md"],
+            &[],
+            2,
+        );
+}
+
 /// Spec 66, criterion 2 (the render pipeline covers the WHOLE handbook-page list, end to
 /// end): `rigger docs` renders EVERY entry in the binary's handbook-page list - not only the
 /// pre-existing `using-rigger.md` discipline chapter, but the second, generalized entry
@@ -19684,66 +19811,62 @@ fn rigger_exec_shim_on_path(root: &Path, prelude: &str) -> String {
     )
 }
 
-/// Seed genuinely STALE tracked copies of both rendered docs under `root`, committed with
+/// Commit genuinely STALE tracked copies of each rendered output in `rels` under `root`, with
 /// `--no-verify` so a just-installed hook does NOT fire on the seed itself. Shared by the
-/// spec 70 fixtures below that need real, tracked drift for the hook to detect.
-fn seed_stale_tracked_docs(root: &Path) {
+/// fixtures below that need real, tracked drift for the hook to detect.
+fn commit_stale_outputs(root: &Path, rels: &[&str]) {
     const STALE: &str = "STALE DOC - not a real render\n";
-    for rel in [
-        "skills/using-rigger/SKILL.md",
-        "docs/handbook/using-rigger.md",
-    ] {
+    for rel in rels {
         let p = root.join(rel);
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
         std::fs::write(&p, STALE).unwrap();
     }
-    git_ok(
-        root,
-        &[
-            "add",
-            "skills/using-rigger/SKILL.md",
-            "docs/handbook/using-rigger.md",
-        ],
-    );
+    git_ok(root, &[&["add", "--"][..], rels].concat());
     git_ok(
         root,
         &["commit", "-q", "--no-verify", "-m", "seed stale docs"],
     );
     // Guard against a vacuous pass in every caller: HEAD must carry the STALE bytes right after
     // the seed, so a later "the hook detected drift" assertion can only hold for real.
-    let seeded_skill = committed_skill(root);
-    assert!(
-        seeded_skill.contains("STALE DOC"),
-        "the --no-verify seed must commit the STALE docs unchanged so the discrimination is \
-         real, not vacuous; got:\n{seeded_skill}"
+    for rel in rels {
+        let seeded = git_answer(root, &["show", &format!("HEAD:{rel}")]).unwrap_or_default();
+        assert!(
+            seeded.contains("STALE DOC"),
+            "the --no-verify seed must commit a STALE {rel} unchanged so the discrimination is \
+             real, not vacuous; got:\n{seeded}"
+        );
+    }
+}
+
+/// [`commit_stale_outputs`] over the `using-rigger` skill and handbook chapter.
+fn seed_stale_tracked_docs(root: &Path) {
+    commit_stale_outputs(
+        root,
+        &[
+            "skills/using-rigger/SKILL.md",
+            "docs/handbook/using-rigger.md",
+        ],
     );
 }
 
-/// Turn `root` into a rigger SELF-HOSTING repo whose tracked docs are already the TRUE fresh
-/// render: `rigger setup` (npm stubbed) installs the hook, then a real `rigger docs` run seeds
-/// both outputs, committed with `--no-verify` so the just-installed hook does not fire on its
-/// own seed. Because the seed comes from the SAME compiled binary the hook later runs (via
-/// `stage_rigger_shim`), the hook's own re-render at commit time is byte-identical to what is
-/// already staged - the "matching render" fixture spec 70 crit 1 needs.
+/// Turn `root` into a rigger SELF-HOSTING repo that tracks EVERY rendered output as the TRUE
+/// fresh render: `rigger setup` (npm stubbed) installs the hook, then a real `rigger docs` run
+/// seeds every output, all committed with `--no-verify` so the just-installed hook does not
+/// fire on its own seed. Because the seed comes from the SAME compiled binary the hook later
+/// runs (via `stage_rigger_shim`), the hook's check at commit time finds every output fresh -
+/// the "matching render" fixture.
 fn setup_selfhosting_repo_with_fresh_docs(root: &Path) {
     let out = setup_ok(root, &[("RIGGER_NPM", "true")]);
     assert!(
         out.contains("pre-commit hook"),
         "setup must install the pre-commit hook; got:\n{out}"
     );
-    let (_out, err, ok) = run_rigger(root, &["docs"]);
-    assert!(
-        ok,
-        "rigger docs must succeed while seeding a fresh render; stderr:\n{err}"
-    );
-    git_ok(
-        root,
-        &[
-            "add",
-            "skills/using-rigger/SKILL.md",
-            "docs/handbook/using-rigger.md",
-        ],
-    );
+    let outputs = rendered_outputs(&run_rigger_ok(root, &["docs"]));
+    let add: Vec<&str> = ["add", "--"]
+        .into_iter()
+        .chain(outputs.iter().map(String::as_str))
+        .collect();
+    git_ok(root, &add);
     git_ok(
         root,
         &["commit", "-q", "--no-verify", "-m", "seed fresh docs"],
@@ -19752,11 +19875,10 @@ fn setup_selfhosting_repo_with_fresh_docs(root: &Path) {
 
 /// Spec 70, crit 1 (THE HOOK REFUSES INSTEAD OF REWRITING, end to end): OWNS the hook behavior.
 /// In a self-hosting repo whose tracked docs have drifted from a fresh render, the managed
-/// pre-commit hook must REFUSE the commit - naming the drifted files, the rendering binary's
-/// path AND its build provenance, and the two remedies - rather than silently staging its own
-/// re-render over them. This is the exact defect that cost three rejected attempts on one unit
-/// (a binary older than the tree re-rendering committed docs to the OLD text and silently
-/// staging them, stripping a branch's rendered changes from every later commit). Drives the
+/// pre-commit hook must REFUSE the commit - naming the drifted files, the checking binary's
+/// path AND its build provenance, and the two remedies - rather than staging or writing a
+/// render over them. A binary older than the tree that re-renders committed docs to the OLD
+/// text and stages them strips a branch's rendered changes from every later commit. Drives the
 /// REAL `rigger` binary (via a `rigger` shim on PATH, spec 24) and REAL git.
 #[test]
 fn setup_precommit_hook_refuses_when_the_staged_render_has_drifted() {
@@ -19828,20 +19950,26 @@ fn setup_precommit_hook_refuses_when_the_staged_render_has_drifted() {
         committed.contains("STALE DOC"),
         "a refused commit must not land - HEAD must still carry the stale seed; got:\n{committed}"
     );
-    // And nothing was re-staged: the hook never ran `git add`, so the freshly re-rendered
-    // working-tree copy (written by the hook's own `rigger docs`) is only an unstaged edit.
+    // And nothing was staged or written: the hook only checks, so the working tree still
+    // carries the stale seed exactly as the index does.
     let staged = git_answer(root, &["diff", "--cached", "--name-only"]).unwrap_or_default();
     assert!(
         !staged.contains("SKILL.md") && !staged.contains("using-rigger.md"),
-        "the hook must never stage its own re-render; staged files:\n{staged}"
+        "the hook must never stage a render; staged files:\n{staged}"
+    );
+    let working_tree_skill =
+        std::fs::read_to_string(root.join("skills/using-rigger/SKILL.md")).unwrap();
+    assert!(
+        working_tree_skill.contains("STALE DOC"),
+        "the hook must never write a render into the working tree; got:\n{working_tree_skill}"
     );
 }
 
 /// Over a self-hosting repo whose committed docs are a fresh render, `stage` the `rigger`
 /// binaries the hook can reach (returning the commit's `PATH`) and commit `content` with
-/// `message`: the hook's render matches what was staged, so the commit passes without a
-/// refusal, the change rides it, and the already-fresh doc lands byte-identical - the hook
-/// must not touch it.
+/// `message`: the hook's check finds every output fresh, so the commit passes without a
+/// refusal, the change rides it, the already-fresh doc lands byte-identical, and every
+/// working-tree file keeps its bytes and modification time - the hook must not touch them.
 fn assert_the_hook_passes_a_matching_render_untouched(
     stage: fn(&Path) -> String,
     content: &str,
@@ -19853,7 +19981,14 @@ fn assert_the_hook_passes_a_matching_render_untouched(
     let fresh_skill_before = fresh_committed_skill(root);
 
     let commit_path = stage(root);
-    let (ok, stderr) = commit_a_code_change(root, &commit_path, content, message);
+    std::fs::write(root.join("code.txt"), content).unwrap();
+    git_ok(root, &["add", "code.txt"]);
+    let working_tree_before = tree_snapshot(root, &[".git"]);
+    let (ok, stderr) = commit_staged(root, &commit_path, message);
+    assert!(
+        tree_snapshot(root, &[".git"]) == working_tree_before,
+        "the hook must write nothing into the working tree; stderr:\n{stderr}"
+    );
     assert!(
         ok,
         "a matching render must pass the commit through, even when PATH is stale; \
@@ -19892,10 +20027,11 @@ rigger::test_cases! {
     /// template - `precommit_block_resolves_a_tree_built_binary_before_path` proves that
     /// textually). A commit in a worktree whose code adds a rendered fact - here, the tree's own
     /// local target build - PASSES when that build is present and its render matches the staged
-    /// docs, even though `PATH` carries only a STALE `rigger` that would render a MISMATCH. A pass
-    /// can only happen by the hook genuinely PREFERRING the tree-built candidate over PATH: if it
-    /// fell back to PATH instead, the stale shim's render would drift against the staged fresh
-    /// docs and this same commit would be refused (proven by the sibling refusal test below).
+    /// docs, even though `PATH` carries only a STALE `rigger` whose check reports a MISMATCH. A
+    /// pass can only happen by the hook genuinely PREFERRING the tree-built candidate over PATH:
+    /// if it fell back to PATH instead, the stale shim's check would report the staged fresh
+    /// docs drifted and this same commit would be refused (proven by the sibling refusal test
+    /// below).
     setup_precommit_hook_prefers_the_trees_own_built_binary_over_a_stale_path_rigger:
         assert_the_hook_passes_a_matching_render_untouched(
             |root| {
@@ -19907,45 +20043,119 @@ rigger::test_cases! {
         );
 }
 
-/// Spec 68, criterion 1 (the fast pre-commit hook's scope is a DELIBERATE non-generalization,
-/// end to end): the commit-time hook still compares ONLY the `using-rigger` skill and the
-/// handbook chapter - spec 70's pre-existing, hand-enumerated scope - and was NOT widened to
-/// walk the whole registry (`rigger validate` is the gate that covers every registry entry;
-/// see `validate_docs_drift_gate_covers_the_second_registry_entry` above). This matters MORE,
-/// not less, now that `write_docs` was generalized: the hook's own internal `rigger docs` call
-/// (it re-renders before comparing) now rewrites EVERY registry file on disk as a side effect,
-/// including `planning-a-spec` - so this test also re-pins spec 70's "never stages anything
-/// itself" invariant across that wider write: an untracked, hand-edited `planning-a-spec`
-/// working-tree copy must survive the hook's internal re-render UNABSORBED by git (never
-/// silently added to an unrelated commit), and the commit must never be blocked or slowed by
-/// it, exactly as if the hook had never touched it at all.
-#[test]
-fn setup_precommit_hook_never_drift_checks_or_stages_a_registry_entry_outside_its_scope() {
+/// Over a self-hosting repo that tracks every rendered output as a fresh render, `prepare` the
+/// index and working tree, then commit an unrelated change through the hook with the tree's own
+/// binary on `PATH`: the hook refuses, its stderr carries every phrase in `named` and none in
+/// `unnamed`, HEAD does not move, and every working-tree file keeps the bytes and modification
+/// time `prepare` left it with - the hook checks, it never writes.
+fn assert_the_hook_refuses(prepare: fn(&Path), named: &[&str], unnamed: &[&str]) {
     let proj = temp_git_project_with_commit();
     let root = proj.path();
     setup_selfhosting_repo_with_fresh_docs(root);
+    prepare(root);
+    let head_before = git_answer(root, &["rev-parse", "HEAD"]);
 
-    // `setup_selfhosting_repo_with_fresh_docs` only tracks the two spec-70 files; the second
-    // registry entry that `rigger docs` also wrote during the fixture is left UNTRACKED - the
-    // exact state an operator mid-edit on a new skill would be in.
-    let planning_path = root.join("skills/planning-a-spec/SKILL.md");
-    assert!(
-        planning_path.exists(),
-        "the fixture's `rigger docs` call must have written the second registry entry too"
+    let commit_path = stage_rigger_shim(root);
+    std::fs::write(root.join("code.txt"), "an unrelated change\n").unwrap();
+    git_ok(root, &["add", "code.txt"]);
+    let working_tree_before = tree_snapshot(root, &[".git"]);
+    let (ok, stderr) = commit_staged(root, &commit_path, "unrelated change");
+
+    assert!(!ok, "the hook must refuse the commit; stderr:\n{stderr}");
+    for phrase in named {
+        assert!(
+            stderr.contains(phrase),
+            "the refusal must name {phrase:?}; stderr:\n{stderr}"
+        );
+    }
+    for phrase in unnamed {
+        assert!(
+            !stderr.contains(phrase),
+            "the refusal must not name {phrase:?}; stderr:\n{stderr}"
+        );
+    }
+    assert_eq!(
+        git_answer(root, &["rev-parse", "HEAD"]),
+        head_before,
+        "a refused commit must not land"
     );
-    let status_before = git_answer(
+    assert!(
+        tree_snapshot(root, &[".git"]) == working_tree_before,
+        "the hook must write nothing into the working tree; stderr:\n{stderr}"
+    );
+}
+
+/// The committed `spec-preflight` skill made stale, a rendered output outside the
+/// `using-rigger` pair.
+fn commit_a_stale_spec_preflight_skill(root: &Path) {
+    commit_stale_outputs(root, &["skills/spec-preflight/SKILL.md"]);
+}
+
+rigger::test_cases! {
+    /// A stale tracked output that is NOT one of the `using-rigger` pair - the
+    /// `spec-preflight` skill - refuses the commit, and the refusal names it alone as differing
+    /// from a fresh render: the hook checks every rendered output, not two.
+    setup_precommit_hook_refuses_and_names_a_stale_output_outside_the_using_rigger_pair:
+        assert_the_hook_refuses(
+            commit_a_stale_spec_preflight_skill,
+            &["skills/spec-preflight/SKILL.md", "differ from a fresh render"],
+            &[
+                "skills/using-rigger/SKILL.md",
+                "docs/handbook/using-rigger.md",
+                "unstaged",
+            ],
+        );
+    /// Spec 70, crit 1 (a refusal names ONLY the file that actually drifted, end to end): with
+    /// only the handbook chapter stale, the refusal names the handbook and not the still-fresh
+    /// `using-rigger` skill.
+    setup_precommit_hook_refusal_names_only_the_drifted_file:
+        assert_the_hook_refuses(
+            |root| commit_stale_outputs(root, &["docs/handbook/using-rigger.md"]),
+            &["docs/handbook/using-rigger.md", "differ from a fresh render"],
+            &["skills/using-rigger/SKILL.md"],
+        );
+    /// A fresh render left UNSTAGED - the index carries a stale `spec-preflight` skill while
+    /// the working tree carries its fresh render - refuses the commit as unstaged and tells the
+    /// operator to stage it: the commit would carry content the check never saw.
+    setup_precommit_hook_refuses_a_fresh_render_left_unstaged:
+        assert_the_hook_refuses(
+            |root| {
+                commit_a_stale_spec_preflight_skill(root);
+                run_rigger_ok(root, &["docs"]);
+            },
+            &["skills/spec-preflight/SKILL.md", "unstaged", "git add"],
+            &["differ from a fresh render", "skills/using-rigger/SKILL.md"],
+        );
+}
+
+/// A rendered output the repo does NOT track is outside the hook's check: an untracked,
+/// hand-edited `planning-a-spec` skill - an operator mid-edit on a skill - neither blocks the
+/// commit nor rides it, and the hook leaves its bytes exactly as the operator left them.
+#[test]
+fn setup_precommit_hook_ignores_an_untracked_output_and_leaves_its_bytes() {
+    const PLANNING_REL: &str = "skills/planning-a-spec/SKILL.md";
+    const WIP: &str = "WIP hand-edit, not a render\n";
+    let proj = temp_git_project_with_commit();
+    let root = proj.path();
+    setup_selfhosting_repo_with_fresh_docs(root);
+    git_ok(root, &["rm", "-q", "--cached", "--", PLANNING_REL]);
+    git_ok(
         root,
-        &["status", "--porcelain", "skills/planning-a-spec/SKILL.md"],
-    )
-    .unwrap_or_default();
+        &[
+            "commit",
+            "-q",
+            "--no-verify",
+            "-m",
+            "untrack planning-a-spec",
+        ],
+    );
+    std::fs::write(root.join(PLANNING_REL), WIP).unwrap();
+    let status_before =
+        git_answer(root, &["status", "--porcelain", PLANNING_REL]).unwrap_or_default();
     assert!(
         status_before.starts_with("??"),
-        "the second registry entry must start UNTRACKED (never staged by the fixture); \
-         got:\n{status_before}"
+        "the planning-a-spec skill must start UNTRACKED; got:\n{status_before}"
     );
-
-    // Simulate an operator's in-progress, unstaged hand-edit to it.
-    std::fs::write(&planning_path, "WIP hand-edit, not a render\n").unwrap();
 
     let commit_path = stage_rigger_shim(root);
     let (ok, stderr) = commit_a_code_change(
@@ -19957,43 +20167,160 @@ fn setup_precommit_hook_never_drift_checks_or_stages_a_registry_entry_outside_it
 
     assert!(
         ok,
-        "the commit must succeed - the hook must never drift-check or block on a registry \
-         entry outside its fixed scope; stderr:\n{stderr}"
+        "an untracked output must never block the commit; stderr:\n{stderr}"
     );
-    assert!(
-        !stderr.to_lowercase().contains("refusing"),
-        "the hook must never refuse over a registry entry it does not scope; stderr:\n{stderr}"
-    );
-
     let tree = git_answer(root, &["ls-tree", "-r", "--name-only", "HEAD"]).unwrap_or_default();
     assert!(
-        tree.contains("code.txt"),
-        "the unrelated change must ride the commit; tree:\n{tree}"
+        tree.contains("code.txt") && !tree.contains(PLANNING_REL),
+        "the change rides the commit and the untracked output does not; tree:\n{tree}"
     );
-    assert!(
-        !tree.contains("planning-a-spec"),
-        "the out-of-scope registry entry must NEVER be staged/committed by the hook's internal \
-         re-render, even though that render rewrote its bytes on disk; tree:\n{tree}"
-    );
-    // It stays exactly as untracked as before - the hook's internal `rigger docs` call may
-    // have rewritten its BYTES, but git's view of it (untracked) is unchanged.
-    let status_after = git_answer(
-        root,
-        &["status", "--porcelain", "skills/planning-a-spec/SKILL.md"],
-    )
-    .unwrap_or_default();
-    assert!(
-        status_after.starts_with("??"),
-        "the out-of-scope entry must still be untracked after the commit, unabsorbed by it; \
-         got:\n{status_after}"
+    assert_eq!(
+        std::fs::read_to_string(root.join(PLANNING_REL)).unwrap(),
+        WIP,
+        "the hook must leave the untracked output's hand-edit exactly as it was"
     );
 }
 
+/// A `rigger` shim script for [`rigger_shim_on_path`] that predates `docs --check`: its `help`
+/// lists `rigger docs` with no `--check`, and like such a build its `docs` ignores the flag
+/// and renders, creating the two `using-rigger` outputs with fixed OLD text and printing a
+/// `rendered ./<path>` line for each, so a hook that ever gives it `docs` leaves files behind.
+/// Its `version` names it.
+const PRE_CHECK_RIGGER_SHIM: &str = "#!/bin/sh\n\
+case \"$1\" in\n\
+  help)\n\
+echo 'usage:' 1>&2\n\
+echo '  rigger docs                 render the code-derived docs' 1>&2\n\
+exit 0\n\
+;;\n\
+  docs)\n\
+mkdir -p skills/using-rigger docs/handbook\n\
+printf 'STALE DOC - not a real render\\n' > skills/using-rigger/SKILL.md\n\
+echo 'rendered ./skills/using-rigger/SKILL.md'\n\
+printf 'STALE DOC - not a real render\\n' > docs/handbook/using-rigger.md\n\
+echo 'rendered ./docs/handbook/using-rigger.md'\n\
+exit 0\n\
+;;\n\
+  version)\n\
+echo 'rigger 0.0.0-pre-check-test-shim'\n\
+exit 0\n\
+;;\n\
+esac\n\
+exit 1\n";
+
+/// A `rigger` shim script for [`rigger_shim_on_path`] older still, with no `help` verb: like
+/// such a build it answers `help` as an unknown command, printing the usage text (which lists
+/// `rigger docs` with no `--check`) and exiting 2. Its `docs` writes the `using-rigger` skill
+/// with fixed OLD text, so a hook that ever gives it `docs` leaves a changed file behind. Its
+/// `version` names it.
+const PRE_HELP_RIGGER_SHIM: &str = "#!/bin/sh\n\
+case \"$1\" in\n\
+  docs)\n\
+mkdir -p skills/using-rigger\n\
+printf 'STALE DOC - not a real render\\n' > skills/using-rigger/SKILL.md\n\
+exit 0\n\
+;;\n\
+  version)\n\
+echo 'rigger 0.0.0-pre-check-test-shim'\n\
+exit 0\n\
+;;\n\
+esac\n\
+echo \"rigger: unknown command $1\" 1>&2\n\
+echo 'usage:' 1>&2\n\
+echo '  rigger docs                 render the code-derived docs' 1>&2\n\
+exit 2\n";
+
+/// Over a project `prepare` sets up with the hook installed, commit an unrelated change with
+/// only `shim`, a `rigger` that predates `docs --check`, on `PATH`: the hook refuses, naming
+/// that binary, its `version` and the remedy, HEAD does not move, and the index and every
+/// working-tree file are exactly as they were - the binary is never given `docs`, so no output
+/// is created or rewritten.
+fn assert_the_hook_refuses_a_binary_too_old_to_check(prepare: fn(&Path), shim: &str) {
+    let proj = temp_git_project_with_commit();
+    let root = proj.path();
+    prepare(root);
+    let commit_path = rigger_shim_on_path(root, shim);
+    std::fs::write(root.join("code.txt"), "an unrelated change\n").unwrap();
+    git_ok(root, &["add", "code.txt"]);
+    let head_before = git_answer(root, &["rev-parse", "HEAD"]);
+    let status_before = git_answer(root, &["status", "--porcelain"]);
+    let working_tree_before = tree_snapshot(root, &[".git"]);
+
+    let (ok, stderr) = commit_staged(root, &commit_path, "unrelated change");
+
+    assert!(
+        !ok,
+        "a binary too old to check must refuse the commit; stderr:\n{stderr}"
+    );
+    let shim = root.join("shim-bin").join("rigger");
+    for phrase in [
+        "too old to check",
+        shim.to_str().unwrap(),
+        "rigger 0.0.0-pre-check-test-shim",
+        "Rebuild rigger from this tree or reinstall it",
+    ] {
+        assert!(
+            stderr.contains(phrase),
+            "the refusal must name {phrase:?}; stderr:\n{stderr}"
+        );
+    }
+    assert_eq!(
+        git_answer(root, &["rev-parse", "HEAD"]),
+        head_before,
+        "a refused commit must not land"
+    );
+    assert_eq!(
+        git_answer(root, &["status", "--porcelain"]),
+        status_before,
+        "the hook must leave the index and the working tree's status as it found them"
+    );
+    assert!(
+        tree_snapshot(root, &[".git"]) == working_tree_before,
+        "a binary too old to check is never given `docs`, so no output is created or \
+         rewritten; stderr:\n{stderr}"
+    );
+}
+
+/// An operator project: `rigger setup` (npm stubbed) installs the hook, and the repo tracks
+/// none of the rendered outputs.
+fn setup_operator_repo_with_the_hook(root: &Path) {
+    setup_ok(root, &[("RIGGER_NPM", "true")]);
+    assert!(
+        root.join(".git/hooks/pre-commit").exists(),
+        "setup must install the pre-commit hook in an operator repo too"
+    );
+}
+
+rigger::test_cases! {
+    /// In a self-hosting repo that tracks every rendered output, a binary too old to check is
+    /// refused by name and never rewrites a tracked output.
+    setup_precommit_hook_refuses_a_binary_too_old_to_check_in_a_tracking_repo:
+        assert_the_hook_refuses_a_binary_too_old_to_check(
+            setup_selfhosting_repo_with_fresh_docs,
+            PRE_CHECK_RIGGER_SHIM,
+        );
+    /// In an operator project that tracks none of the rendered outputs, a binary too old to
+    /// check is refused the same way and creates no output the operator did not ask for.
+    setup_precommit_hook_refuses_a_binary_too_old_to_check_in_an_operator_repo:
+        assert_the_hook_refuses_a_binary_too_old_to_check(
+            setup_operator_repo_with_the_hook,
+            PRE_CHECK_RIGGER_SHIM,
+        );
+    /// A binary whose `help` fails - one older than the `help` verb answers it as an unknown
+    /// command - is refused the same way: a failed `help` never lets the commit proceed
+    /// unchecked, and the binary is never given `docs`.
+    setup_precommit_hook_refuses_a_binary_too_old_to_check_whose_help_fails:
+        assert_the_hook_refuses_a_binary_too_old_to_check(
+            setup_selfhosting_repo_with_fresh_docs,
+            PRE_HELP_RIGGER_SHIM,
+        );
+}
+
 /// Spec 24, crit 1 (operator repo is NOT polluted, end to end): the docs pre-commit hook is
-/// installed the SAME way everywhere, but it regenerates+stages ONLY where the repo already
-/// TRACKS rigger's rendered docs. In an OPERATOR project - one driving the operator's own code
-/// that never carries these committed docs (spec 20's drift check treats their absence as
-/// "nothing to drift") - the hook stays INERT even with `rigger` on PATH: an ordinary operator
+/// installed the SAME way everywhere, but it checks ONLY the rendered outputs the repo already
+/// TRACKS. In an OPERATOR project - one driving the operator's own code that tracks none of
+/// these committed docs (spec 20's drift check treats their absence as "nothing to drift") -
+/// the hook stays INERT even with `rigger` on PATH: an ordinary operator
 /// commit carries none of rigger's internal discipline docs and the operator's worktree is not
 /// polluted with them. Guards the operator-scoping (adj-u24-1 / d24-10) against regression.
 #[test]
@@ -20046,8 +20373,8 @@ fn setup_precommit_hook_stays_inert_in_an_operator_repo() {
          tree:\n{tree}"
     );
 
-    // And the worktree is not polluted with them either: the inert hook never ran `rigger
-    // docs`, so it created no files the operator did not ask for.
+    // And the worktree is not polluted with them either: the hook's check writes nothing, so
+    // it created no files the operator did not ask for.
     assert!(
         !root.join("skills/using-rigger/SKILL.md").exists()
             && !root.join("docs/handbook/using-rigger.md").exists(),
@@ -20105,24 +20432,30 @@ fn stage_tree_built_binary(root: &Path) {
 }
 
 /// Stage a `rigger` on `PATH` that is a STALE binary standing in for an old build from before
-/// this worktree's own code changed a rendered fact: `command -v rigger` succeeds, but its
-/// `docs` subcommand writes fixed OLD text (never the real renderer) and its `version`
-/// subcommand names itself as a stale build - never delegating to the real compiled binary, so
-/// it genuinely cannot produce the tree's current render no matter what invokes it. Pairs with
-/// [`stage_tree_built_binary`] to prove candidate PREFERENCE (spec 75): present alongside a
-/// tree-built candidate it must lose to; present ALONE it is the only binary reachable at all,
-/// so a fresh-vs-staged mismatch is unavoidable. Returns a `PATH` with the shim dir prepended.
+/// this worktree's own code changed a rendered fact: `command -v rigger` succeeds, its `help`
+/// lists `rigger docs --check` as a build that has the check does, but its `docs --check`
+/// reports both `using-rigger` outputs `drifted` (a render older than the tree differs from
+/// it), exits 1 and writes nothing, and its `version` subcommand names itself as a stale build -
+/// never delegating to the real compiled binary, so it genuinely cannot match the tree's current
+/// render no matter what invokes it. Pairs with [`stage_tree_built_binary`] to prove candidate
+/// PREFERENCE (spec 75): present alongside a tree-built candidate it must lose to; present ALONE
+/// it is the only binary reachable at all, so a reported drift is unavoidable. Returns a `PATH`
+/// with the shim dir prepended.
 fn stage_stale_rigger_shim(root: &Path) -> String {
     rigger_shim_on_path(
         root,
         "#!/bin/sh\n\
-case \"$1\" in\n\
-  docs)\n\
-printf 'STALE DOC - not a real render\\n' > skills/using-rigger/SKILL.md\n\
-printf 'STALE DOC - not a real render\\n' > docs/handbook/using-rigger.md\n\
+case \"$1 $2\" in\n\
+  'help ')\n\
+echo '  rigger docs --check         check every rendered output against a fresh render,' 1>&2\n\
 exit 0\n\
 ;;\n\
-  version)\n\
+  'docs --check')\n\
+echo 'drifted skills/using-rigger/SKILL.md'\n\
+echo 'drifted docs/handbook/using-rigger.md'\n\
+exit 1\n\
+;;\n\
+  'version ')\n\
 echo 'rigger 0.0.0-stale-test-shim'\n\
 exit 0\n\
 ;;\n\
@@ -20135,9 +20468,9 @@ exit 1\n",
 /// the flip side of the preference test above, proving the safe-closed direction. With no
 /// tree-built candidate anywhere (no local target build this time) and PATH carrying only the
 /// same stale shim, the hook has nothing to invoke but a binary that cannot reproduce the
-/// tree's current render - so the fresh docs already staged now drift against ITS render, and
-/// the commit is refused exactly as an ordinary drift would be, never silently let through for
-/// lack of a better binary.
+/// tree's current render - so its check reports the fresh docs already committed as drifted
+/// against ITS render, and the commit is refused exactly as an ordinary drift would be, never
+/// silently let through for lack of a better binary.
 #[test]
 fn setup_precommit_hook_refuses_the_same_commit_shape_with_only_a_stale_path_rigger() {
     let proj = temp_git_project_with_commit();
@@ -20329,6 +20662,56 @@ fn setup_precommit_hook_is_idempotent_no_duplicate_block_on_rerun() {
     );
 }
 
+/// The upgrade path, end to end: `rigger setup` over an installed hook whose managed block an
+/// older build wrote - one that rendered into the working tree and compared only the
+/// `using-rigger` pair - replaces that block in place with the current one, which runs
+/// `docs --check`, keeps the hook's own lines on both sides of the block, and leaves exactly
+/// one managed block.
+#[test]
+fn setup_precommit_hook_replaces_an_older_builds_block_in_place() {
+    const BEGIN: &str = "# >>> BEGIN rigger docs pre-commit (managed - do not edit) >>>";
+    const END: &str = "# <<< END rigger docs pre-commit (managed) <<<";
+    const OLD_LOOP: &str =
+        "for doc in \"skills/using-rigger/SKILL.md\" \"docs/handbook/using-rigger.md\"; do";
+    const OLD_RENDER: &str = "\"$rigger_bin\" docs >/dev/null 2>&1";
+    let proj = temp_git_project_with_commit();
+    let root = proj.path();
+    let hooks = root.join(".git/hooks");
+    std::fs::create_dir_all(&hooks).unwrap();
+    let hook_path = hooks.join("pre-commit");
+    std::fs::write(
+        &hook_path,
+        format!(
+            "#!/bin/sh\necho before-block\n{BEGIN}\n{OLD_LOOP}\n    :\ndone\n{OLD_RENDER}\n\
+             {END}\necho after-block\n"
+        ),
+    )
+    .unwrap();
+    make_executable(&hook_path);
+
+    let out = setup_ok(root, &[("RIGGER_NPM", "true")]);
+    let hook = std::fs::read_to_string(&hook_path).unwrap();
+    assert!(
+        out.contains("refreshed the docs pre-commit hook"),
+        "setup must report refreshing the older block; got:\n{out}"
+    );
+    assert!(
+        hook.contains("\"$rigger_bin\" docs --check")
+            && !hook.contains(OLD_LOOP)
+            && !hook.contains(OLD_RENDER),
+        "the older block's two-path loop and render are gone and the check is in; got:\n{hook}"
+    );
+    assert!(
+        hook.contains("echo before-block\n") && hook.ends_with("echo after-block\n"),
+        "the hook's own lines on both sides of the block are kept; got:\n{hook}"
+    );
+    assert_eq!(
+        (hook.matches(BEGIN).count(), hook.matches(END).count()),
+        (1, 1),
+        "exactly one managed block; got:\n{hook}"
+    );
+}
+
 /// Spec 24, crit 2 (non-clobbering chaining defeats a TERMINAL existing hook, end to end): the
 /// modal hand-written / sample pre-commit hook ends in a terminal `exit 0`. rigger chains its
 /// block onto it WITHOUT clobbering it, and - crucially - rigger's block still RUNS: it is
@@ -20391,9 +20774,9 @@ fn setup_precommit_hook_chains_after_a_terminal_exit_hook_and_still_runs() {
     );
 }
 
-/// Spec 70, crit 1 (comparison scope, end to end): the hook reads and compares ONLY the two
-/// rendered doc outputs; it never touches any other working-tree file. Since the hook no longer
-/// stages anything at all (it only ever refuses or falls through), an UNTRACKED junk file and an
+/// Spec 70, crit 1 (comparison scope, end to end): the hook checks ONLY the tracked rendered
+/// outputs and writes nothing; it never touches any other working-tree file. Since the hook
+/// stages nothing at all (it only ever refuses or falls through), an UNTRACKED junk file and an
 /// UNSTAGED edit to an unrelated tracked file both stay exactly as the operator left them across
 /// a commit whose docs are already the fresh render.
 #[test]
@@ -20450,7 +20833,7 @@ fn setup_precommit_hook_never_touches_unrelated_files() {
 }
 
 /// Over a self-hosting repo whose committed docs are STALE, commit a change with `PATH` set
-/// to `path(root)`, a `rigger` the hook cannot render with: the hook never blocks the commit,
+/// to `path(root)`, a `rigger` the hook cannot check with: the hook never blocks the commit,
 /// prints `warning`, and regenerates nothing.
 fn assert_the_hook_warns_and_proceeds(path: fn(&Path) -> String, message: &str, warning: &str) {
     let proj = temp_git_project_with_commit();
@@ -20487,81 +20870,58 @@ rigger::test_cases! {
             "change with rigger off PATH",
             "no rigger binary found",
         );
-    /// Spec 24, crit 2 (graceful degrade when `rigger docs` ERRORS, end to end): `rigger` is on
-    /// `PATH` (so `command -v rigger` succeeds) but `rigger docs` fails. The hook WARNS and lets the
-    /// commit PROCEED - a transient generator failure degrades to "caught later" by the drift check,
-    /// never "cannot commit". HEAD keeps the stale seed.
+    /// Spec 24, crit 2 (graceful degrade when `rigger docs --check` ERRORS, end to end): `rigger`
+    /// is on `PATH` (so `command -v rigger` succeeds) but its docs check fails without reporting
+    /// any output. The hook WARNS and lets the commit PROCEED - a transient generator failure
+    /// degrades to "caught later" by the drift check, never "cannot commit". HEAD keeps the stale
+    /// seed.
     setup_precommit_hook_warns_and_proceeds_when_rigger_docs_errors:
         assert_the_hook_warns_and_proceeds(
             stage_failing_docs_rigger_shim,
             "change while rigger docs errors",
-            "rigger docs failed",
+            "rigger docs --check failed",
         );
 }
 
-/// Spec 24, crit 2 (staging scope, the all-tracked gate, end to end): a repo in the degenerate
-/// PARTIAL-tracking state - it tracks ONE rendered doc but not the other - must stay INERT, not
-/// half-run. The hook gates `rigger docs` on EVERY rendered output already being tracked, so it
-/// never runs here: it neither regenerates the one tracked doc NOR writes the untracked one as a
-/// stray working-tree file the operator did not ask for (d24-2-all-tracked-gate-no-stray /
-/// sdet-u24-1r-any-tracked-gate-vs-regenerate-both). This DISCRIMINATES the all-tracked gate: a
-/// regression to an any-tracked gate would run `rigger docs`, regenerate the tracked skill AND
-/// create the stray untracked handbook - both asserted against here.
+/// Spec 24, crit 2 (a PARTLY tracked repo, end to end): a repo that tracks ONE rendered
+/// output, a stale `using-rigger` skill, but not the handbook chapter has the tracked one
+/// checked: the hook refuses naming the skill, and since its check writes nothing it creates
+/// no stray handbook file the operator did not ask for.
 #[test]
-fn setup_precommit_hook_stays_inert_when_only_one_doc_is_tracked() {
-    const STALE: &str = "STALE DOC - not a real render\n";
+fn setup_precommit_hook_checks_the_one_tracked_output_of_a_partly_tracked_repo() {
     const SKILL_REL: &str = "skills/using-rigger/SKILL.md";
     const HANDBOOK_REL: &str = "docs/handbook/using-rigger.md";
     let proj = temp_git_project_with_commit();
     let root = proj.path();
 
     // Install the hook the SAME way everywhere (it cannot know at install time what the repo
-    // will track).
+    // will track), then track ONLY a stale copy of the skill.
     setup_ok(root, &[("RIGGER_NPM", "true")]);
+    commit_stale_outputs(root, &[SKILL_REL]);
 
-    // Track ONLY the skill (a stale committed copy), NOT the handbook - the degenerate
-    // partial-tracking state. Committed with `--no-verify` so the just-installed hook does not
-    // fire and the seed stays genuinely STALE.
-    let skill = root.join(SKILL_REL);
-    std::fs::create_dir_all(skill.parent().unwrap()).unwrap();
-    std::fs::write(&skill, STALE).unwrap();
-    git_ok(root, &["add", SKILL_REL]);
-    git_ok(
-        root,
-        &["commit", "-q", "--no-verify", "-m", "seed only the skill"],
-    );
-
-    // `rigger` IS on PATH at commit time, so the ONLY thing keeping the hook inert is the
-    // all-tracked gate (the handbook is untracked).
     let commit_path = stage_rigger_shim(root);
-    let (commit_ok, _) = commit_a_code_change(
+    let (commit_ok, stderr) = commit_a_code_change(
         root,
         &commit_path,
         "a documented fact changed\n",
         "change with only the skill tracked",
     );
     assert!(
-        commit_ok,
-        "the commit must succeed - the hook must never block it"
+        !commit_ok,
+        "the one tracked output is checked and its drift refuses the commit; stderr:\n{stderr}"
     );
-
-    // The hook stayed INERT: the tracked skill was NOT regenerated (HEAD keeps the stale seed).
+    assert!(
+        stderr.contains(SKILL_REL) && !stderr.contains(HANDBOOK_REL),
+        "the refusal names the tracked skill and not the untracked handbook; stderr:\n{stderr}"
+    );
     let committed = git_answer(root, &["show", &format!("HEAD:{SKILL_REL}")]).unwrap_or_default();
     assert!(
-        committed.contains("STALE DOC") && !committed.contains("name: using-rigger"),
-        "with only one doc tracked the hook must NOT regenerate the tracked doc; got:\n{committed}"
+        committed.contains("STALE DOC"),
+        "a refused commit must not land; got:\n{committed}"
     );
-    // And it did NOT write the untracked handbook as a stray working-tree file the operator did
-    // not ask for.
     assert!(
         !root.join(HANDBOOK_REL).exists(),
         "the hook must not create the untracked handbook as a stray file in the worktree"
-    );
-    // Nor does the untracked handbook ride the commit.
-    let tree = git_answer(root, &["ls-tree", "-r", "--name-only", "HEAD"]).unwrap_or_default();
-    assert!(
-        !tree.contains(HANDBOOK_REL),
-        "the untracked handbook must never ride the commit; tree:\n{tree}"
     );
 }
 
@@ -20618,110 +20978,6 @@ fn setup_precommit_hook_refusal_aborts_a_chained_hook_body() {
         !root.join("USER_HOOK_RAN").exists(),
         "a refusal must abort the WHOLE hook script before reaching the chained body that \
          follows rigger's block - the pre-existing hook's side effect must never appear"
-    );
-}
-
-/// Spec 70, crit 1 (a refusal names ONLY the file that actually drifted, end to end): the hook
-/// judges each tracked doc independently (`git diff --quiet -- "$doc"` runs per file), and only a
-/// file that differs is added to the refusal's file list. Every existing refusal fixture drifts
-/// BOTH docs at once, so none can discriminate "names every tracked file" from "names only the
-/// drifted ones". This fixture drifts ONLY the handbook, leaving the skill genuinely fresh, and
-/// proves the refusal names the handbook alone.
-#[test]
-fn setup_precommit_hook_refusal_names_only_the_drifted_file() {
-    const HANDBOOK_REL: &str = "docs/handbook/using-rigger.md";
-    let proj = temp_git_project_with_commit();
-    let root = proj.path();
-    setup_selfhosting_repo_with_fresh_docs(root);
-    let fresh_skill = committed_skill(root);
-
-    // Drift ONLY the handbook back to a stale committed copy; the skill stays the true fresh
-    // render committed by `setup_selfhosting_repo_with_fresh_docs`.
-    std::fs::write(root.join(HANDBOOK_REL), "STALE DOC - not a real render\n").unwrap();
-    git_ok(root, &["add", HANDBOOK_REL]);
-    git_ok(
-        root,
-        &[
-            "commit",
-            "-q",
-            "--no-verify",
-            "-m",
-            "drift only the handbook",
-        ],
-    );
-    let seeded_handbook =
-        git_answer(root, &["show", &format!("HEAD:{HANDBOOK_REL}")]).unwrap_or_default();
-    assert!(
-        seeded_handbook.contains("STALE DOC") && !fresh_skill.contains("STALE DOC"),
-        "the fixture must leave exactly one doc stale and the other genuinely fresh"
-    );
-
-    let commit_path = stage_rigger_shim(root);
-    let (ok, stderr) = commit_a_code_change(
-        root,
-        &commit_path,
-        "a documented fact changed\n",
-        "change a documented fact",
-    );
-
-    assert!(
-        !ok,
-        "a single drifted doc must still refuse the commit; stderr:\n{stderr}"
-    );
-    assert!(
-        stderr.contains(HANDBOOK_REL),
-        "the refusal must name the drifted handbook; stderr:\n{stderr}"
-    );
-    assert!(
-        !stderr.contains("skills/using-rigger/SKILL.md"),
-        "the refusal must NOT name the still-fresh skill - only the actually drifted file; \
-         stderr:\n{stderr}"
-    );
-}
-
-/// Spec 70, crit 1 (the refused working tree already carries the fresh render, end to end): the
-/// hook runs `rigger docs` BEFORE it compares, so by the time it refuses, the fresh render is
-/// already sitting in the working tree as an unstaged edit - the printed remedy ("re-render with
-/// the tree-built binary ... then git add the result") only makes sense if that render is
-/// already there. No existing test reads the raw working-tree file after a refusal (only HEAD
-/// and the index are checked); this proves the operator does not need to re-run `rigger docs`
-/// themselves to recover.
-#[test]
-fn setup_precommit_hook_refusal_leaves_the_fresh_render_in_the_working_tree() {
-    let proj = temp_git_project_with_commit();
-    let root = proj.path();
-    let out = setup_ok(root, &[("RIGGER_NPM", "true")]);
-    assert!(
-        out.contains("pre-commit hook"),
-        "setup must install the pre-commit hook; got:\n{out}"
-    );
-    seed_stale_tracked_docs(root);
-
-    let commit_path = stage_rigger_shim(root);
-    let (committed, _) = commit_a_code_change(
-        root,
-        &commit_path,
-        "a documented fact changed\n",
-        "change a documented fact",
-    );
-    assert!(!committed, "the drifted render must refuse the commit");
-
-    // The raw working-tree file (NOT `git show HEAD:...`, NOT the index) must already hold the
-    // fresh render the hook's own `rigger docs` call wrote before comparing - not the stale seed.
-    let working_tree_skill =
-        std::fs::read_to_string(root.join("skills/using-rigger/SKILL.md")).unwrap();
-    assert!(
-        working_tree_skill.contains("name: using-rigger")
-            && !working_tree_skill.contains("STALE DOC"),
-        "the working tree must already carry the fresh render after a refusal, so the printed \
-         remedy's `git add` step has real fresh content to stage; got:\n{working_tree_skill}"
-    );
-    // And it is genuinely UNSTAGED - the hook never ran `git add` on its own re-render.
-    let unstaged = git_answer(root, &["diff", "--name-only"]).unwrap_or_default();
-    assert!(
-        unstaged.contains("skills/using-rigger/SKILL.md"),
-        "the fresh render in the working tree must be an unstaged edit, not already staged; \
-         diff --name-only:\n{unstaged}"
     );
 }
 

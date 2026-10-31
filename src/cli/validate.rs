@@ -1089,51 +1089,96 @@ pub(super) fn measure_footprint(
     Ok((categories, liveness_unknown))
 }
 
+/// How `rigger docs` answers an argument it does not take: the one accepted form, printed
+/// on stderr before the exit [`DOCS_USAGE_EXIT_CODE`] refuses with.
+const DOCS_USAGE: &str = "usage: rigger docs [--check]";
+
+/// The exit code `rigger docs` refuses an unknown argument with, before rendering anything:
+/// a usage error, apart from the 1 a `--check` that found drift exits with.
+const DOCS_USAGE_EXIT_CODE: i32 = 2;
+
 /// `rigger docs` renders the operating discipline from the code the binary runs on into
 /// its committed outputs - every registry skill plus every handbook page in
 /// [`HANDBOOK_PAGES`] - so the discipline stays in lock-step with behavior instead of
 /// drifting from it. Re-run it after changing a source fact or a template and commit the
 /// result; `rigger validate` (spec 20, unit 2; spec 68, criterion 1; spec 66, criterion 2)
 /// fails loudly if a committed copy drifts from a fresh render.
-pub(crate) fn cmd_docs(_args: &[String]) -> Res {
-    for path in write_docs(Path::new("."))? {
-        println!("rendered {}", path.display());
+///
+/// `rigger docs --check` renders the same outputs in memory and writes nothing: it prints
+/// `fresh <path>` or `drifted <path>` for each output on disk ([`docs_freshness`]) and exits
+/// 1 when any drifted - the check the docs pre-commit hook runs. Any other argument is
+/// refused with [`DOCS_USAGE_EXIT_CODE`] before anything is rendered.
+pub(crate) fn cmd_docs(args: &[String]) -> Res {
+    match args {
+        [] => {
+            for path in write_docs(Path::new("."))? {
+                println!("rendered {}", path.display());
+            }
+            Ok(())
+        }
+        [flag] if flag == "--check" => check_docs(Path::new(".")),
+        _ => {
+            eprintln!(
+                "rigger: docs does not take {}; {DOCS_USAGE}",
+                args.join(" ")
+            );
+            std::process::exit(DOCS_USAGE_EXIT_CODE);
+        }
+    }
+}
+
+/// `rigger docs --check` under `root`: print `fresh <path>` or `drifted <path>` for each
+/// output [`docs_freshness`] reports, and fail naming the drifted count and the fix when any
+/// drifted.
+fn check_docs(root: &Path) -> Res {
+    let report = docs_freshness(root);
+    for (rel, drifted) in &report {
+        let verdict = if *drifted { "drifted" } else { "fresh" };
+        println!("{verdict} {rel}");
+    }
+    let drifted = report.iter().filter(|(_, drifted)| *drifted).count();
+    if drifted > 0 {
+        return Err(format!(
+            "{drifted} rendered docs output(s) differ from a fresh render; run `rigger docs` \
+             and commit the result"
+        )
+        .into());
     }
     Ok(())
+}
+
+/// Every rendered output that EXISTS under `root`, as its root-relative path and whether its
+/// bytes DRIFTED from a fresh render (`true`) or match it byte for byte (`false`), in
+/// [`rendered_docs`] order (registry order, then
+/// [`HANDBOOK_PAGES`] order). An ABSENT (or unreadable) output is skipped - these are
+/// rigger's OWN committed docs, and an operator project never carries them, so their
+/// absence is not drift (the same "nothing installed, nothing to drift" rule
+/// [`installed_workflow_drifted`] applies to the workflow). Byte comparison (not
+/// `read_to_string`): a committed file corrupted to non-UTF-8 is genuinely drifted, and
+/// comparing bytes catches it rather than silently skipping it. Renders through the ONE
+/// list [`write_docs`] writes, so the check and the write can never disagree on what "the
+/// docs" are. Rooted at `root` so the seam is testable against a temp dir without touching
+/// the cwd.
+fn docs_freshness(root: &Path) -> Vec<(String, bool)> {
+    rendered_docs()
+        .into_iter()
+        .filter_map(|(rel, fresh)| {
+            let bytes = std::fs::read(root.join(&rel)).ok()?;
+            Some((rel, bytes != fresh.as_bytes()))
+        })
+        .collect()
 }
 
 /// The committed discipline outputs under `root` that have DRIFTED from a fresh render of
 /// the current code-derived context (spec 20, unit 2; spec 68, criterion 1: the docs-drift
 /// gate covers EVERY registry entry; spec 66, criterion 2: AND every [`HANDBOOK_PAGES`]
-/// entry), in report order (registry order, then [`HANDBOOK_PAGES`] order). A path is
-/// reported only when the committed file EXISTS and its BYTES differ from a fresh render;
-/// an ABSENT (or unreadable) file is skipped - these are rigger's OWN committed docs, and
-/// an operator project never carries them, so their absence is not drift (the same
-/// "nothing installed, nothing to drift" rule [`installed_workflow_drifted`] applies to
-/// the workflow). Reuses the SINGLE render authority ([`docs_context`] +
-/// `rigger::docs::skill_registry`/[`HANDBOOK_PAGES`]) and the same [`skill_source_rel`] /
-/// `HANDBOOK_PAGES` paths [`write_docs`] writes, so the drift check and the write can
-/// never disagree on what "the docs" are. Rooted at `root` so the seam is testable against
-/// a temp dir without touching the cwd.
+/// entry): the [`docs_freshness`] verdicts that drifted, joined to `root`, in its order.
 fn docs_drift(root: &Path) -> Vec<std::path::PathBuf> {
-    let ctx = docs_context();
-    let mut checks: Vec<(std::path::PathBuf, String)> = rigger::docs::skill_registry()
+    docs_freshness(root)
         .into_iter()
-        .map(|entry| (root.join(skill_source_rel(entry.name)), entry.render(&ctx)))
-        .collect();
-    for (rel, body) in HANDBOOK_PAGES {
-        checks.push((root.join(rel), body.render(&ctx)));
-    }
-    let mut drifted = Vec::new();
-    for (path, fresh) in checks {
-        // Byte comparison (not `read_to_string`): a committed file corrupted to non-UTF-8 is
-        // genuinely drifted, and comparing bytes catches it rather than silently skipping it.
-        match std::fs::read(&path) {
-            Ok(bytes) if bytes != fresh.as_bytes() => drifted.push(path),
-            _ => {} // absent/unreadable (not our committed docs here), or byte-identical
-        }
-    }
-    drifted
+        .filter(|(_, drifted)| *drifted)
+        .map(|(rel, _)| root.join(rel))
+        .collect()
 }
 
 /// The `rigger validate` docs-drift FAILURE (spec 20, unit 2; spec 68, criterion 1): when a
