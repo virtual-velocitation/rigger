@@ -7,7 +7,7 @@
 
 use common::git::git_ok;
 use common::repo::repo_text;
-use rigger::spawn::SpawnEvent;
+use rigger::spawn::{SpawnEvent, SpawnResult};
 use std::path::Path;
 use std::process::Command;
 
@@ -18,6 +18,7 @@ mod common;
 use common::git::run_git;
 
 use common::cli::graph_build_line;
+use common::cli::graph_node_ids;
 use common::cli::pin_identity;
 use common::cli::plant_stale_marker;
 use common::cli::read_run_events;
@@ -472,6 +473,13 @@ fn record_liveness_fault(root: &Path, spawn_id: &str, why: &str) {
     );
 }
 
+/// Record the finding `id`, raised by `by` about `file`, through `rigger emit` in `root`.
+fn emit_finding(root: &Path, id: &str, by: &str, file: &str) {
+    let payload = format!(r#"{{"id":"{id}","by":"{by}","summary":"x","about":["{file}"]}}"#);
+    let (_o, err, ok) = run_rigger(root, &["emit", "ReviewFinding", &payload]);
+    assert!(ok, "emit ReviewFinding {id} must succeed; stderr: {err}");
+}
+
 /// Spec 25, criterion 1 - the DISCARD trigger, PROVEN through the REAL production result
 /// path (`rigger result` -> `cmd_result` -> `spawn_store::record_result`), not a direct
 /// `Projector::apply` on a hand-built event.
@@ -492,26 +500,8 @@ fn rigger_result_folds_an_adjudicator_discard_into_the_persisted_graph() {
     let root = dir.path();
 
     let file = "combat.rs";
-    let emit_finding = |id: &str, by: &str| {
-        let payload = format!(r#"{{"id":"{id}","by":"{by}","summary":"x","about":["{file}"]}}"#);
-        let (_o, err, ok) = run_rigger(root, &["emit", "ReviewFinding", &payload]);
-        assert!(ok, "emit ReviewFinding {id} must succeed; stderr: {err}");
-    };
-    emit_finding("f-discard", "lens:tech");
-    emit_finding("f-open", "lens:sdet");
-
-    // Parse the `node <id> <kind>` lines of `rigger graph --around <file>` into the id set,
-    // so the assertions are exact (never a substring match against an edge line).
-    let graph_node_ids = |out: &str| -> Vec<String> {
-        out.lines()
-            .filter_map(|l| {
-                l.trim_start()
-                    .strip_prefix("node ")
-                    .and_then(|rest| rest.split_whitespace().next())
-                    .map(str::to_string)
-            })
-            .collect()
-    };
+    emit_finding(root, "f-discard", "lens:tech", file);
+    emit_finding(root, "f-open", "lens:sdet", file);
 
     // Before any verdict, both findings are reachable from the file they are ABOUT.
     let (before, err, ok) = run_around(root, file, 2);
@@ -642,18 +632,6 @@ fn reset_runs_prunes_dead_runs_from_the_graph_keeping_lessons_active_run_and_reu
         "DecisionMade",
         &format!(r#"{{"id":"shared-d","summary":"shared (active copy)","governs":["{file}"]}}"#),
     );
-
-    // Parse the `node <id> <kind>` lines of `rigger graph --around <file>` into the id set.
-    let graph_node_ids = |out: &str| -> Vec<String> {
-        out.lines()
-            .filter_map(|l| {
-                l.trim_start()
-                    .strip_prefix("node ")
-                    .and_then(|rest| rest.split_whitespace().next())
-                    .map(str::to_string)
-            })
-            .collect()
-    };
 
     // Before the reset every provenance node is reachable from the shared file.
     let (before, err, ok) = run_around(root, file, 2);
@@ -6757,14 +6735,26 @@ const RECORDING_WORKER_ARM: &str = r#"  *"Do the unit."*)
 "#;
 
 /// `rigger <args>` in `cwd` under the scratch root `scratch`, with [`RECORDING_WORKER_ARM`]'s fake
-/// `claude` first on PATH: its stdout, stderr and success, then the directory holding what the
-/// arm recorded, which keeps the fake alive.
+/// `claude` first on PATH: [`run_on_arms`]'s four values, the directory holding what the arm
+/// recorded last.
 fn run_recording(
     cwd: &Path,
     args: &[&str],
     scratch: &Path,
 ) -> (String, String, bool, tempfile::TempDir) {
-    let (fakebin, path_env) = install_fake_claude(RECORDING_WORKER_ARM);
+    run_on_arms(cwd, args, scratch, RECORDING_WORKER_ARM)
+}
+
+/// `rigger <args>` in `cwd` under the scratch root `scratch`, with a fake `claude` answering from
+/// `arms` ([`install_fake_claude`]) first on PATH: its stdout, stderr and success, then the
+/// directory holding the fake, which keeps it alive.
+fn run_on_arms(
+    cwd: &Path,
+    args: &[&str],
+    scratch: &Path,
+    arms: &str,
+) -> (String, String, bool, tempfile::TempDir) {
+    let (fakebin, path_env) = install_fake_claude(arms);
     let (out, err, ok) = run_rigger_envs(
         cwd,
         args,
@@ -6818,6 +6808,13 @@ fn run_hosts_its_agents_granting_each_launch_its_bound_tools() {
     );
 }
 
+/// The live-progress instruction closing a launch's first user message.
+const LIVE_PROGRESS_FRAME: &str =
+    "\n\n--- rigger driver ---\nLIVE PROGRESS: after each significant \
+     step (a search, a build, a commit, a decision) report ONE short line of what you just did by \
+     calling the mcp__rigger__rigger_progress tool with that line as its activity. Keep it \
+     flowing while you work.";
+
 /// Spec 105's live-progress frame, end to end: given a project, when the operator runs `rigger
 /// run`, then the launch's first user message closes with the instruction naming the
 /// `rigger_progress` tool the launch pre-approves.
@@ -6831,11 +6828,10 @@ fn run_frames_a_launchs_first_message_with_the_live_progress_instruction() {
     let (out, err, ok, fake) = run_recording(root, &["run"], scratch.path());
     assert!(ok, "the run succeeds; stderr: {err}\nstdout: {out}");
     let task = recorded_task(&fake.path().join("bin/first-message"));
-    let frame = "\n\n--- rigger driver ---\nLIVE PROGRESS: after each significant step (a search, \
-                 a build, a commit, a decision) report ONE short line of what you just did by \
-                 calling the mcp__rigger__rigger_progress tool with that line as its activity. \
-                 Keep it flowing while you work.";
-    assert!(task.ends_with(frame), "the frame closes the task: {task:?}");
+    assert!(
+        task.ends_with(LIVE_PROGRESS_FRAME),
+        "the frame closes the task: {task:?}"
+    );
     assert_eq!(
         task.matches("--- rigger driver ---").count(),
         1,
@@ -6874,6 +6870,7 @@ fn a_done_runs_agent_streams_are_reclaimed_and_an_unfinished_runs_are_kept() {
         let root = dir.path();
         write_workflow_fixture(root, case.workflow);
         let scratch = tempfile::tempdir().unwrap();
+        plant_run_level_scratch(scratch.path());
         let (out, err, ok, fake) = run_recording(root, &["run"], scratch.path());
         assert!(
             ok,
@@ -6898,6 +6895,11 @@ fn a_done_runs_agent_streams_are_reclaimed_and_an_unfinished_runs_are_kept() {
             "{}: the agent streams after the run",
             case.name
         );
+        if case.reclaimed {
+            assert_run_level_scratch_reclaimed(scratch.path(), case.name);
+        } else {
+            assert_run_level_scratch_spared(scratch.path(), case.name);
+        }
     }
 }
 
@@ -7025,6 +7027,158 @@ fn every_launch_carries_the_store_selections_handed_environment() {
         let args = ["run", "--eventstore", "kurrentdb", "--conn", conn];
         assert_eq!(handed(&args), conn, "a server hands its connection string");
     });
+}
+
+/// Spec 105's run store, end to end: given a project, when `rigger run` hosts a spawn to its end,
+/// then the session's result stands on the run stream, once, carrying the session's final message
+/// and the accounting its stream reported. The host records it: the log `rigger run` opened is the
+/// one the launch's `run_store` writes.
+#[cfg(unix)]
+#[test]
+fn a_hosted_spawns_result_lands_on_the_run_stream_once() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_workflow_fixture(root, &LIVENESS_WORKFLOW);
+    let scratch = tempfile::tempdir().unwrap();
+    let arms = "  *\"Do the unit.\"*)\n    echo 'the unit is built'\n    ;;\n";
+    let (out, err, ok, _fake) = run_on_arms(root, &["run"], scratch.path(), arms);
+    assert!(ok, "the run succeeds; stderr: {err}\nstdout: {out}");
+    let results: Vec<SpawnResult> = read_run_events(root)
+        .iter()
+        .filter(|e| e.type_ == rigger::spawn::TYPE_SPAWN_RESULT)
+        .map(|e| SpawnResult::from_event(e).unwrap())
+        .collect();
+    assert_eq!(
+        results,
+        vec![SpawnResult {
+            id: "a/implementer#0".to_string(),
+            output: "the unit is built".to_string(),
+            error: String::new(),
+            meta: serde_json::json!({
+                "resolved_model": "",
+                "session_id": "arms",
+                "usage": {"input": 0, "output": 0, "cache_creation": 0, "cache_read": 0},
+                "turns": 1,
+                "cost_usd": 0.0,
+                "permission_denials": 0,
+            }),
+        }]
+    );
+}
+
+/// Spec 105's folding run store, end to end: given two findings about one file and a hosted
+/// adjudicator that discards one, when `rigger run` ends, then the result the host recorded has
+/// folded into the persisted graph with nothing left to catch up: the discarded finding drops from
+/// the file's live subgraph and the one the verdict names in neither list stays.
+#[cfg(unix)]
+#[test]
+fn a_hosted_adjudicators_discard_folds_into_the_persisted_graph() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_workflow_fixture(root, &REVIEW_GATED_GIT_ESCALATING_UNIT_WORKFLOW);
+    write_agent(root, "judge", "Read", "Adjudicate it.");
+    seed_store(root);
+    let file = "combat.rs";
+    emit_finding(root, "f-discard", "lens:tech", file);
+    emit_finding(root, "f-open", "lens:sdet", file);
+    let live_ids = || {
+        let (around, err, ok) = run_around(root, file, 2);
+        assert!(ok, "graph must succeed; stderr: {err}");
+        let mut ids = graph_node_ids(&around);
+        ids.sort();
+        ids
+    };
+    assert_eq!(live_ids(), ["combat.rs", "f-discard", "f-open"]);
+    let scratch = tempfile::tempdir().unwrap();
+    let arms = format!(
+        r#"{RECORDING_WORKER_ARM}  *"Adjudicate it."*)
+    echo '{{"verdict":"approve","upheld":[],"discarded":["f-discard"]}}'
+    ;;
+"#
+    );
+    let (out, err, ok, _fake) = run_on_arms(root, &["run"], scratch.path(), &arms);
+    assert!(ok, "the run succeeds; stderr: {err}\nstdout: {out}");
+    assert_eq!(
+        out.lines().nth(2).unwrap(),
+        "done: every unit integrated",
+        "the verdict approved the unit: {out}"
+    );
+    assert_eq!(live_ids(), ["combat.rs", "f-open"]);
+}
+
+/// A unit whose one gate is always red, with `max_retries: 2` giving it a second attempt before
+/// it escalates: one first launch and one re-attempt.
+const TWO_ATTEMPT_RED_UNIT_WORKFLOW: WorkflowFixture = WorkflowFixture {
+    worker: ISOLATED_WORKER,
+    body: r#"defaults:
+  grounder: nop
+  budget: 60
+  max_retries: 2
+gates:
+  red: { run: "false", kind: core }
+stages:
+  solo:
+    agent: worker
+    gates: [red]
+    on_pass: merge
+"#,
+};
+
+/// Spec 105's progress store and the frame on a resumed launch, end to end: given a unit whose
+/// first attempt fails its gate, when `rigger run` re-attempts it, then the second launch resumes
+/// the session the first minted, its first message is the retry task closed by the frame once, and
+/// the run's progress log holds each launch in order, naming that session and what it resumed.
+#[cfg(unix)]
+#[test]
+fn a_re_attempt_resumes_the_recorded_session_framed_and_the_progress_log_holds_each_launch() {
+    use rigger::eventstore::namespace::Namespaced;
+    use rigger::eventstore::sqlite::Store as SqliteStore;
+    use rigger::progress::{read_run, SpawnLaunched, TYPE_SPAWN_LAUNCHED};
+
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_workflow_fixture(root, &TWO_ATTEMPT_RED_UNIT_WORKFLOW);
+    let scratch = tempfile::tempdir().unwrap();
+    let (out, err, ok, fake) = run_recording(root, &["run"], scratch.path());
+    assert!(ok, "the run exits 0; stderr: {err}\nstdout: {out}");
+
+    let progress_db = common::cli::rigger_file(root, "progress.db");
+    let backend = SqliteStore::open(progress_db.to_str().unwrap()).unwrap();
+    let progress = Namespaced::new(&backend, &run_stream_identity(root));
+    let run_id = common::cli::current_run_id_of(root).unwrap();
+    let launches: Vec<SpawnLaunched> = read_run(&progress, &run_id)
+        .unwrap()
+        .iter()
+        .filter(|e| e.type_ == TYPE_SPAWN_LAUNCHED)
+        .map(|e| serde_json::from_slice(&e.data).unwrap())
+        .collect();
+    let session = launches.first().map_or("", |l| l.session_id.as_str());
+    assert_eq!(
+        launches
+            .iter()
+            .map(|l| (
+                l.spawn.as_str(),
+                l.launch,
+                l.session_id.as_str(),
+                l.resumed_from.as_deref()
+            ))
+            .collect::<Vec<_>>(),
+        vec![
+            ("solo/implementer#0", 0, session, None),
+            ("solo/implementer#1", 0, session, Some(session)),
+        ],
+        "each launch in order, the second resuming the first's session"
+    );
+
+    let argv = recorded_argv(&fake.path().join("bin/argv"));
+    assert_eq!(flag_value(&argv, "--resume"), session);
+    let retry_task = "Your previous attempt failed the checks below. Fix exactly these - do not \
+                      start over:\nYour previous attempt failed these gates: red: FAIL\n\n";
+    assert_eq!(
+        recorded_task(&fake.path().join("bin/first-message")),
+        format!("{retry_task}{LIVE_PROGRESS_FRAME}"),
+        "the resumed launch's first message is the retry task, framed once"
+    );
 }
 
 /// Spec 64, criterion 3, adjudication round 3 finding
@@ -9463,12 +9617,13 @@ fn plant_run_level_scratch(scratch: &Path) {
 }
 
 /// Assert the run-level shared scratch planted by [`plant_run_level_scratch`] is ALL still
-/// present (the never-delete-live rail: while a spawn is live the teardown must not fire).
+/// present (the never-delete-live rail: while a spawn is live, or a run ended with work left, the
+/// teardown must not fire).
 fn assert_run_level_scratch_spared(scratch: &Path, ctx: &str) {
     for area in ["cargo-target", "target", "agent-scratch", "agent-live"] {
         assert!(
             scratch.join(area).exists(),
-            "{ctx}: a live-spawn step must SPARE the run-level {area}; it was wrongly reclaimed"
+            "{ctx}: the teardown must SPARE the run-level {area}; it was wrongly reclaimed"
         );
     }
 }
