@@ -79,6 +79,25 @@ const SUBCOMMANDS: &[&str] = &[
     "help",
 ];
 
+/// The subcommands whose arguments are not their own flags, so a `-h` or `--help` among them is
+/// one of those arguments, handed over like any other, never a request for help:
+/// - `emit`, `result` and `progress` take a payload recorded as given: an event's type and JSON
+///   body, an agent's output or failure text and its JSON meta, an activity line.
+/// - `ground` takes a free-text query, and `--help` is a fair thing to look up.
+/// - `mcp`, `grep-guard`, `guard-write` and `hook` are launched by the host, from the argv its
+///   server or hook registration composes, and the host reads their answer. `guard-write` fails
+///   closed, so an argument it does not know must deny with its blocking exit code, never exit 0.
+const HELP_PASSES_THROUGH: &[&str] = &[
+    "emit",
+    "result",
+    "progress",
+    "ground",
+    "mcp",
+    "grep-guard",
+    "guard-write",
+    "hook",
+];
+
 /// A reader that goes away early (`rigger prime | head -1`) closes stdout under the command
 /// still writing to it, and `println!` panics on the broken pipe. That is not a failure of the
 /// command: the reader has everything it asked for. So, for every command at once, a panic that
@@ -115,6 +134,9 @@ fn main() {
     if args.len() < 2 {
         usage();
         std::process::exit(2);
+    }
+    if let Some(code) = answer_help(&args[1], &args[2..]) {
+        std::process::exit(code);
     }
     let result = match args[1].as_str() {
         "run" => cmd_run(&args[2..]),
@@ -154,7 +176,7 @@ fn main() {
         "hook" => cmd_hook(&args[2..]),
         "version" | "--version" | "-V" => cmd_version(),
         "help" | "-h" | "--help" => {
-            usage();
+            help(&args[2..]);
             Ok(())
         }
         other => {
@@ -193,6 +215,11 @@ HEAD. An existing run branch is reused, never reset.\n                          
 matches (pass on the first step to restart a wedged run);\n                              \
 --rebase-definition accepts a drifted definition and\n                              \
 continues, else a live-run step HALTS on definition drift\n  \
+rigger resume-unit <unit>   give an escalated unit of the current run more attempts\n            \
+[--attempts <n>]  (default 1) on its same branch: the next `rigger step`\n                              \
+re-parks its implementer there. Refuses, recording\n                              \
+nothing, when the unit is not escalated or its branch\n                              \
+is gone\n  \
 rigger reported <id>        exit 0 iff spawn <id> already has a recorded result in\n                              \
 this project's run stream (else non-zero). A read-only check\n                              \
 of whether a spawn reported yet; the death courier records\n                              \
@@ -366,7 +393,10 @@ switched off), then each unshadowed operator file in\n                          
 .rigger/instructions/ (filename order)\n  \
 rigger version              print the crate version and the build-provenance id\n                              \
 (a git commit/describe embedded at build time) so an\n                              \
-agent can identify the exact binary. Also `--version`\n\n\
+agent can identify the exact binary. Also `--version`\n  \
+rigger help [<command>]     print this text, or given a command, only its entry: the\n                              \
+one `rigger <command> --help` prints for each command\n                              \
+whose arguments are its own flags\n\n\
 run/serve options:\n  \
 --driver <cli|workflow>          cli (default): standalone claude subprocess;\n                                   \
 workflow: in-Claude-Code MCP server\n  \
@@ -388,4 +418,70 @@ project identity so one backend can hold many projects without their data mixing
 
 fn usage() {
     eprint!("{USAGE_TEXT}");
+}
+
+/// The block, or blocks, of [`USAGE_TEXT`] that document `name`: each line `  rigger <name>` with
+/// the lines indented under it, up to the next entry, then each [`usage_options`] section naming
+/// it. Empty when nothing documents it.
+fn usage_entry(name: &str) -> String {
+    let mut inside = false;
+    let mut entry = String::new();
+    for line in USAGE_TEXT.split_inclusive('\n') {
+        if let Some(rest) = line.strip_prefix("  rigger ") {
+            inside = rest.split_whitespace().next() == Some(name);
+        } else if !line.starts_with("   ") {
+            inside = false;
+        }
+        if inside {
+            entry.push_str(line);
+        }
+    }
+    entry + &usage_options(name)
+}
+
+/// The sections of [`USAGE_TEXT`] headed `<command>/<command> options:` that name `name`, each
+/// from the blank line before its heading to its last option line: the options an entry that
+/// says "opts below" points at.
+fn usage_options(name: &str) -> String {
+    USAGE_TEXT
+        .split("\n\n")
+        .filter(|section| {
+            section
+                .lines()
+                .next()
+                .and_then(|heading| heading.strip_suffix(" options:"))
+                .is_some_and(|commands| commands.split('/').any(|command| command == name))
+        })
+        .map(|section| format!("\n{section}\n"))
+        .collect()
+}
+
+/// Answer a subcommand asked for its help before it runs. When `sub` is a subcommand outside
+/// [`HELP_PASSES_THROUGH`] and an argument after it, before any `--` separator, is exactly `-h` or
+/// `--help`, print its [`usage_entry`] and give the exit code, having run nothing. A subcommand
+/// with no entry is refused rather than run. `None` when the call does not ask for help.
+fn answer_help(sub: &str, rest: &[String]) -> Option<i32> {
+    let covered = SUBCOMMANDS.contains(&sub) && !HELP_PASSES_THROUGH.contains(&sub);
+    let asks = rest
+        .iter()
+        .take_while(|arg| *arg != "--")
+        .any(|arg| arg == "-h" || arg == "--help");
+    if !(covered && asks) {
+        return None;
+    }
+    let entry = usage_entry(sub);
+    if entry.is_empty() {
+        eprintln!("rigger: the usage text has no entry for {sub:?}");
+        return Some(1);
+    }
+    eprint!("{entry}");
+    Some(0)
+}
+
+/// `rigger help [<command>]`: the usage text, or given a command with an entry, that entry alone.
+fn help(rest: &[String]) {
+    match rest.first().map(|name| usage_entry(name)) {
+        Some(entry) if !entry.is_empty() => eprint!("{entry}"),
+        _ => usage(),
+    }
 }
