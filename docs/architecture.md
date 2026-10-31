@@ -234,12 +234,12 @@ defaults:
   autonomy: manual                          # manual | auto_notify | silent
   grounder: symbols                         # symbols (default) | grep | nop (explicit opt-out)
 
-  # The three-tier review panel, declared ONCE and applied to every implementer
+  # The review panel, declared ONCE and applied to every implementer
   # unit. Each unit reviews ITSELF with this panel inside its own lifecycle (section 4.1).
   review:
-    lenses: [reviewer.architecture, reviewer.technical]   # tier 1: the expert lenses (parallel)
-    adversary: devils-advocate              # tier 2: refutes the lenses (higher bar; not a lens)
-    adjudicator: chief-judge                # tier 3: neutral judge; verdict gates the unit
+    lenses: [reviewer.architecture, reviewer.technical]   # step 1: the expert lenses (parallel)
+    adversary: devils-advocate              # step 2: refutes the lenses (higher bar; not a lens)
+    adjudicator: chief-judge                # step 3: neutral judge; verdict gates the unit
 
 gates:                                      # reusable gate library (commands)
   build:   { run: "cargo build",                    kind: core }
@@ -254,7 +254,7 @@ stages:
     coverage: required                      # block if a spec criterion has no unit
 
   # Each unit runs its WHOLE lifecycle here: implement (red -> green in a worktree) ->
-  # the unit's gates -> three-tier review OF THIS UNIT -> integrate. A reject or a gate
+  # the unit's gates -> review OF THIS UNIT -> integrate. A reject or a gate
   # failure feeds back into this same unit's remediation loop; it integrates only on
   # approve + green gates (on_pass: merge).
   implement:
@@ -271,14 +271,15 @@ run DAG; `needs` are the edges; `strategy: fan-out` + `partition` triggers the p
 the AgentDriver per unit; `gates` are looked up in the `gates:` library and run via the
 gate engine; `autonomy` seeds that gate/stage's ratchet. A stage with `produces: dag`
 runs an agent whose output *extends* the run DAG (the living-DAG / `spawnUnit` mechanic).
-`defaults.review` is the three-tier panel every implementer unit reviews itself with; a
+`defaults.review` is the panel every implementer unit reviews itself with; a
 stage's own `review:` block overrides it.
 
-**The three-tier review is PER UNIT, not a downstream stage.** Review and integration
+**Review is PER UNIT, not a downstream stage.** Review and integration
 happen *inside each implementer unit's lifecycle* (section 4.1) - there is no separate
 `review` or `integrate` stage. Once a unit's own gates are green, it reviews ITSELF
-through the effective `review` panel (the stage's override, else `defaults.review`), in
-three tiers, in order:
+through the effective `review` panel (the stage's override, else `defaults.review`), a
+sequence of steps run in order. The map form declares the canonical sequence of the three
+kinds:
 
 1. **Lenses** (`review.lenses: [...]`) - the expert reviewers (architecture,
    technical/sdet, ...) review *this unit's diff* in parallel and emit their findings to
@@ -294,9 +295,12 @@ three tiers, in order:
    explicit reject blocks the merge no matter what the static gates say, and feeds the
    unit back into its own remediation loop.
 
-So per unit the conductor runs: **implement -> the unit's gates -> lenses (parallel) ->
-adversary (if present) -> adjudicator (if present, verdict gates) -> integrate**. All
-three tiers are optional and compose; an empty panel runs no per-unit review. Every
+The list form, `review.steps`, declares any sequence of those kinds: a kind may repeat, and
+an adjudicator step comes at most once and last.
+
+So per unit, over the canonical sequence, the conductor runs: **implement -> the unit's gates -> lenses (parallel) ->
+adversary (if present) -> adjudicator (if present, verdict gates) -> integrate**. Every
+step is optional and they compose; an empty panel runs no per-unit review. Every
 planner-proposed unit inherits `defaults.review` automatically.
 
 **Risk-tiered review depth (opt-in).** A `review` block may carry an optional `tiers:`
@@ -331,7 +335,7 @@ each wave, and projects the final `RunState`. The canonical pipeline above is si
 
 **Review and integration are per UNIT, inside each unit's lifecycle.** Every implementer
 unit runs its OWN complete lifecycle in `run_single_stage`: ground -> implement (red ->
-green TDD in a worktree) -> the unit's gates -> the three-tier review OF THIS UNIT'S DIFF
+green TDD in a worktree) -> the unit's gates -> the review panel OF THIS UNIT'S DIFF
 (lenses -> adversary -> adjudicator) -> integrate. A reject or a gate failure feeds back
 into that same unit's remediation loop and escalates after the retry bound; it does NOT
 integrate. A re-attempt continues each persona's session rather than starting a cold one: every
@@ -355,7 +359,7 @@ flowchart LR
   PAR --> FAN["fan-out: AgentDriver per unit"]
   subgraph UNIT["each unit's lifecycle (run_single_stage)"]
     IMPL["implement<br/>(red -> green)"] --> GATES["the unit's gates"]
-    GATES -->|green| REV["three-tier review of THIS unit<br/>(lenses -> adversary -> adjudicator)"]
+    GATES -->|green| REV["review panel of THIS unit<br/>(its steps in order)"]
     GATES -->|red| REMED
     REV -->|approve| INT["integrate<br/>commit . land . emit events . reindex"]
     REV -->|reject| REMED["remediate<br/>(resume each session with the feedback;<br/>escalate after N)"]
@@ -413,7 +417,7 @@ continues mid-stream:
 | Recorded status + branch          | Resume behavior                                         |
 | --------------------------------- | ------------------------------------------------------- |
 | `reviewed` (approved) + has work  | skip implement AND review; integrate directly           |
-| `green` / `verified` + has work   | skip the implementer spawn; re-run gates + three-tier review on the committed code |
+| `green` / `verified` + has work   | skip the implementer spawn; re-run gates + the review panel on the committed code |
 | below `green`, or branch empty/missing | the full lifecycle (implement -> gates -> review -> integrate), unchanged |
 
 A unit's branch is deleted **only after a successful integrate**. An **interrupted** unit

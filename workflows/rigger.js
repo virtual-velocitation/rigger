@@ -1,7 +1,7 @@
 // The native `/rigger` Claude Code workflow - a THIN client over the Rust conductor.
 //
 // All of the dev-loop's intelligence (decomposing the spec into a unit DAG, ordering
-// the units, the per-unit implement -> cargo gates -> three-tier adversarial review ->
+// the units, the per-unit implement -> cargo gates -> adversarial review panel ->
 // integrate lifecycle, and bounded remediation) lives in the Rust conductor and is
 // delivered one frontier at a time by `rigger step`. This script does NOT re-implement
 // any of it. It only:
@@ -53,7 +53,7 @@ export const meta = {
   phases: [
     { title: 'Plan', detail: 'the conductor sets up the run branch and decomposes the spec into a unit DAG on the first `rigger step` (one global pass)' },
     { title: 'Build', detail: 'per-unit implement + cargo gates; the driver spawns the implementer under opts.phase "Build" (phaseOf maps its role to this lifecycle phase)' },
-    { title: 'Review', detail: 'per-unit three-tier adversarial review (lenses, adversary, adjudicator); the driver spawns each reviewer under opts.phase "Review". An approved unit then integrates onto the run branch automatically - conductor work that spawns no agent of its own' },
+    { title: 'Review', detail: 'per-unit review panel (its lens, adversary and adjudicator steps, in order); the driver spawns each reviewer under opts.phase "Review". An approved unit then integrates onto the run branch automatically - conductor work that spawns no agent of its own' },
     { title: 'Drive', detail: 'orchestration: the step courier that advances the run each frontier (labeled step#N); sidecar couriers (liveness probes, fault recorders) ride the phase of the worker they accompany instead' },
   ],
 }

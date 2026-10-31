@@ -35,7 +35,7 @@ Every persona runs on `opus`, reviewers included: planning, implementing, review
 
 | Tier | Use for | Rigger examples |
 |---|---|---|
-| `opus` | Every persona: planning, implementation, each review tier, adjudication | `planner`, `rust-engineer`, `architecture-reviewer`, `sdet`, `adversary`, `adjudicator` |
+| `opus` | Every persona: planning, implementation, each review step, adjudication | `planner`, `rust-engineer`, `architecture-reviewer`, `sdet`, `adversary`, `adjudicator` |
 | `sonnet` | One mechanical run at a time: a build, the gate battery, a test run, a reproduction | the `verify` helper |
 | `haiku` | One knowledge-graph question per node, many in parallel | the `lookup` helper |
 
@@ -58,7 +58,7 @@ The prompts that work share a shape. Study `.rigger/agents/adversary.md` for the
 
 **Define success in terms that resist gaming.** The adversary's prompt says success is *catching real problems, not converging*. A reviewer told to "approve when it looks good" converges early; a reviewer told its wins are the issues everyone else missed keeps digging.
 
-**Demand evidence, not opinion.** "Cite file:line for every finding. Verify behavioral claims by running them, not by reading." Findings without citations get refuted in tier 2; make the evidence rule explicit in tier 1 and the panel converges faster.
+**Demand evidence, not opinion.** "Cite file:line for every finding. Verify behavioral claims by running them, not by reading." Findings without citations get refuted by the adversary; make the evidence rule explicit in the lenses and the panel converges faster.
 
 **Enumerate the specific defect classes to hunt.** Generic "find bugs" produces generic findings. The adversary's prompt names its quarry: concurrency races, lock-upgrade deadlocks, optimistic-concurrency edges, absent-value-sentinel inversions, the live-emit boundary, resource leaks. Every defect class your project has actually been bitten by belongs in a reviewer prompt - that is how a lesson becomes prevention.
 

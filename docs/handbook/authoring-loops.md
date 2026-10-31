@@ -10,13 +10,13 @@ Prompts are guidance and logic is execution: the built-in instruction layer is b
 
 Those two sentences are the rule the binary is held to. The rest of this section says what the binary provides, what is yours to decide, and where it still falls short of the rule.
 
-**The tools.** The binary gives agents isolated git worktrees, a shared event log and the context graph projected from it, structural grounding (`rigger_ground`, `rigger_graph`), recording (`rigger_emit`, `rigger_progress`), the record of their peers (`rigger_peers`) and a scratch directory (`rigger_scratch`). [tools-and-context.md](tools-and-context.md) covers them.
+**The tools.** The binary gives agents isolated git worktrees, a shared event log and the context graph projected from it, structural grounding (`rigger_ground`, `rigger_graph`), recording (`rigger_emit`, `rigger_progress`), the record of their peers (`rigger_peers`) and a scratch directory (`rigger_scratch`). [tools-and-context.md](tools-and-context.md) covers grounding, the graph and progress in their CLI forms.
 
 **What you add.** A consumer may add any number of stages, gates and review steps, and rigger runs them: a stage under `stages:`, a gate under `gates:`, a review step in a panel's `steps:` list.
 
 **Gate template sets.** A gate template set is a starting point, never a prescription. `rigger init` scaffolds the set whose marker file sits at the project root (today the `rust` set, on `Cargo.toml`), a project no set matches gets a workflow that declares no gates, and a `.rigger/workflow.yml` that already exists is left as it is. Every gate in the file is the consumer's to keep, change or remove.
 
-**Language coverage.** Two tools cover some languages and not others; the rule binds them, and the operator carries the gap. A spawn's build and review caches reach it as `CARGO_TARGET_DIR`, which only Cargo reads, so another toolchain gets no per-unit cache. The `symbols` grounder extracts symbols from Rust, C#, Go, JavaScript, TypeScript and Python and skips a file in any other language.
+**Language coverage.** Three tools cover some languages and not others; the rule binds them, and the operator carries the gap. A spawn's build and review caches reach it as `CARGO_TARGET_DIR`, which only Cargo reads, so another toolchain gets no per-unit cache. `build.wrapper` and `build.jobs` resolve only to Cargo's build settings, so another toolchain ignores them. The `symbols` grounder extracts symbols from Rust, C#, Go, JavaScript, TypeScript and Python and skips a file in any other language.
 
 **Open exceptions.** These prescriptions still stand in the binary against the rule, each named by its constant or surface, and each is struck from this list as it is removed:
 
@@ -31,7 +31,7 @@ Those two sentences are the rule the binary is held to. The rest of this section
 
 ### The review ceremony
 
-A panel is a sequence of review steps, and the official vocabulary names their three kinds: `lenses`, whose reviewers run in parallel; `adversary`, one reviewer who tests the findings so far; and `adjudicator`, one reviewer whose verdict gates integration. The map form (`lenses:`, `adversary:`, `adjudicator:`) declares the canonical sequence, one step of each kind in that order. The list form, `steps:`, declares any sequence of those kinds: a kind may repeat, and an adjudicator step comes at most once and last. This panel runs a second lens step and a second adversary step ahead of its one verdict:
+A panel is a sequence of review steps, and the official vocabulary names their three kinds: `lenses`, whose reviewers run in parallel; `adversary`, one reviewer who tests the findings so far; and `adjudicator`, one reviewer whose verdict gates integration. The map form (`lenses:`, `adversary:`, `adjudicator:`) declares the canonical sequence: one step for each key it sets, each key optional, in that order. The list form, `steps:`, declares any sequence of those kinds: a kind may repeat, and an adjudicator step comes at most once and last. This panel runs a second lens step and a second adversary step ahead of its one verdict:
 
 ```yaml
 defaults:
