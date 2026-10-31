@@ -4340,26 +4340,45 @@ mod tests {
 
         // A worktree's object database is the MAIN repo's (git worktree add shares one
         // `.git/objects`) - strip write permission from it so the finalizing commit cannot
-        // write its new tree/commit objects: a genuine, unrelated, OS-level failure.
+        // write its new tree/commit objects: a genuine, unrelated, OS-level failure. Every
+        // directory UNDER it is stripped too, not `objects` alone: git writes a loose object
+        // as a temp file inside its two-hex-digit fan-out directory (`objects/xx/`) and
+        // renames it there, so a read-only `objects` only stops git creating a NEW fan-out
+        // directory. Whether the new tree's and commit's fan-out directories already exist
+        // from earlier objects turns on the commit's timestamp-dependent hash, so stripping
+        // `objects` alone made the commit fail only at random.
         let objects_dir = repo.path().join(".git").join("objects");
         #[cfg(unix)]
-        {
+        let stripped = {
             use std::os::unix::fs::PermissionsExt;
-            let mut perms = std::fs::metadata(&objects_dir).unwrap().permissions();
-            perms.set_mode(0o555);
-            std::fs::set_permissions(&objects_dir, perms).unwrap();
-        }
+            let mut dirs = vec![objects_dir.clone()];
+            let mut next = 0;
+            while next < dirs.len() {
+                for entry in std::fs::read_dir(&dirs[next]).unwrap() {
+                    let entry = entry.unwrap();
+                    if entry.file_type().unwrap().is_dir() {
+                        dirs.push(entry.path());
+                    }
+                }
+                next += 1;
+            }
+            for dir in &dirs {
+                std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+            }
+            dirs
+        };
 
         let result = b.integrate("rigger: integrate b (finalize)");
 
-        // Restore write permission before any assertion can panic and before `repo` drops -
-        // otherwise the read-only directory would make its own teardown fail.
+        // Restore write permission on every stripped directory before any assertion can panic
+        // and before `repo` drops - otherwise the read-only directories would make its own
+        // teardown fail.
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mut perms = std::fs::metadata(&objects_dir).unwrap().permissions();
-            perms.set_mode(0o755);
-            std::fs::set_permissions(&objects_dir, perms).unwrap();
+            for dir in &stripped {
+                std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
         }
 
         let err = match result {
