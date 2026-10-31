@@ -1865,7 +1865,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:6661-6669` `declaration_sql`
 - `crates/rigger-store-sqlite/src/eventstore/kurrentdb.rs:329-331` `group_stream`
 - `crates/rigger-store-sqlite/src/spawn_store.rs:73-75` `what`
-- `tests/common/fixtures/config.rs:405-407` `separator_refusal`
+- `tests/common/fixtures/config.rs:406-408` `separator_refusal`
 - `tests/common/fixtures/plan_critique.rs:66-71` `spec_defect_halt_text`
 - `tests/compaction_generations_periphery.rs:5103-5108` `closed_unit_line`
 - `tests/new_run_critique_refusal_periphery.rs:138-140` `no_critic_line`
@@ -2971,7 +2971,7 @@ project identity so one backend can hold many projects without their data mixing
 - `tests/common/cli.rs:1784-1784` `"create .rigger/agents"`
 - `tests/common/cli.rs:1897-1897` `"{why}: a server selection must NOT fabricate a local .rigger/events.db"`
 - `tests/common/cli.rs:1994-1994` `".rigger"`
-- `tests/common/fixtures/config.rs:495-495` `"{repo_path}/.rigger-test-scratch"`
+- `tests/common/fixtures/config.rs:496-496` `"{repo_path}/.rigger-test-scratch"`
 - `tests/common/fixtures/extraction_tree.rs:76-76` `".rigger/workflow.yml"`
 - `tests/common/fixtures/instructions.rs:277-277` `"\nOperator (.rigger/instructions/*.md, filename order):\n"`
 - `tests/common/fixtures/instructions.rs:330-330` `"\n## communication (replaced by .rigger/instructions/communication.md)\n{printed}\n"`
@@ -3033,12 +3033,12 @@ project identity so one backend can hold many projects without their data mixing
 - `tests/graph_around_governance_boundaries.rs:210-210` `".rigger"`
 - `tests/graph_show_surface.rs:79-79` `".rigger"`
 - `tests/halted_spawn_wip_recovery_periphery.rs:602-602` `".rigger"`
-- `tests/handbook_grounder_accuracy.rs:128-128` `".rigger"`
-- `tests/handbook_grounder_accuracy.rs:137-137` `".rigger/workflow.yml must carry a `grounder:` default (spec 57, criterion 4)"`
-- `tests/handbook_grounder_accuracy.rs:142-142` `"the repo's own .rigger/workflow.yml must default to the structural `symbols` grounder \
+- `tests/handbook_grounder_accuracy.rs:141-141` `".rigger"`
+- `tests/handbook_grounder_accuracy.rs:150-150` `".rigger/workflow.yml must carry a `grounder:` default (spec 57, criterion 4)"`
+- `tests/handbook_grounder_accuracy.rs:155-155` `"the repo's own .rigger/workflow.yml must default to the structural `symbols` grounder \
          (spec 57): the vector engine `turbovec` and its `hybrid` composite were retired. Found: \
          grounder: {workflow_value:?}"`
-- `tests/handbook_grounder_accuracy.rs:148-148` `"docs/handbook/authoring-loops.md claims its example reproduces the repo's own \
+- `tests/handbook_grounder_accuracy.rs:161-161` `"docs/handbook/authoring-loops.md claims its example reproduces the repo's own \
          .rigger/workflow.yml, so its `grounder:` value ({handbook_value:?}) must equal the \
          committed workflow's ({workflow_value:?}). An operator copies this block verbatim - a \
          stale `grounder: turbovec` here pastes the retired engine and hits the loud \
@@ -4077,7 +4077,7 @@ Proposed home: `a new shared module (sites span 3 files: crates/rigger-driver/sr
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `crates/rigger-driver/src/driver/replay.rs:281-288` `sonnet_agent`
-- `tests/common/fixtures/config.rs:566-576` `fan_out_stage`
+- `tests/common/fixtures/config.rs:567-577` `fan_out_stage`
 - `tests/model_pinning_periphery.rs:62-69` `agent`
 
 #### `dup-7ce260b96af1` (near, 3 sites)
@@ -5414,7 +5414,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 ### Adversarial sample
 
-Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 10529 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
+Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 10534 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
 
 - `crates/rigger-conductor/src/conductor.rs:5146-5187` `split_reject` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-conductor/src/conductor.rs:15507-15529` `branch_is_foreign_when_only_one_axis_differs` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`

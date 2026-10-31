@@ -116,16 +116,17 @@ pub fn light_of(panel: &ReviewPanel) -> &ReviewPanel {
 }
 
 /// A list repeating the lens kind and the adversary kind, one agent in both adversary steps,
-/// declaring [`repeated_kind_steps`].
+/// declaring [`repeated_kind_steps`] of the lens `y`.
 pub const REPEATED_KIND_LIST: &str = "{ steps: [{ lenses: [a, b] }, { adversary: x }, \
      { lenses: [y] }, { adversary: x }, { adjudicator: z }] }";
 
-/// The steps of [`REPEATED_KIND_LIST`], in its order.
-pub fn repeated_kind_steps() -> Vec<ReviewStep> {
+/// The steps of a list in [`REPEATED_KIND_LIST`]'s order, `lens` the one reviewer of its second
+/// lens step.
+pub fn repeated_kind_steps(lens: &str) -> Vec<ReviewStep> {
     vec![
         lenses(&["a", "b"]),
         ReviewStep::Adversary("x".into()),
-        lenses(&["y"]),
+        lenses(&[lens]),
         ReviewStep::Adversary("x".into()),
         ReviewStep::Adjudicator("z".into()),
     ]
@@ -153,7 +154,7 @@ pub fn repeated_kind_lists() -> [(&'static str, Vec<ReviewStep>); 4] {
                 adjudicator(),
             ],
         ),
-        (REPEATED_KIND_LIST, repeated_kind_steps()),
+        (REPEATED_KIND_LIST, repeated_kind_steps("y")),
     ]
 }
 

@@ -344,8 +344,8 @@
       },
       {
         "file": "tests/common/fixtures/config.rs",
-        "start_line": 405,
-        "end_line": 407
+        "start_line": 406,
+        "end_line": 408
       },
       {
         "file": "tests/common/fixtures/plan_critique.rs",
@@ -3209,8 +3209,8 @@
       },
       {
         "file": "tests/common/fixtures/config.rs",
-        "start_line": 495,
-        "end_line": 495
+        "start_line": 496,
+        "end_line": 496
       },
       {
         "file": "tests/common/fixtures/extraction_tree.rs",
@@ -3489,23 +3489,23 @@
       },
       {
         "file": "tests/handbook_grounder_accuracy.rs",
-        "start_line": 128,
-        "end_line": 128
+        "start_line": 141,
+        "end_line": 141
       },
       {
         "file": "tests/handbook_grounder_accuracy.rs",
-        "start_line": 137,
-        "end_line": 137
+        "start_line": 150,
+        "end_line": 150
       },
       {
         "file": "tests/handbook_grounder_accuracy.rs",
-        "start_line": 142,
-        "end_line": 142
+        "start_line": 155,
+        "end_line": 155
       },
       {
         "file": "tests/handbook_grounder_accuracy.rs",
-        "start_line": 148,
-        "end_line": 148
+        "start_line": 161,
+        "end_line": 161
       },
       {
         "file": "tests/heartbeat_write_read_agree_periphery.rs",
@@ -5724,8 +5724,8 @@
       },
       {
         "file": "tests/common/fixtures/config.rs",
-        "start_line": 566,
-        "end_line": 576
+        "start_line": 567,
+        "end_line": 577
       },
       {
         "file": "tests/model_pinning_periphery.rs",

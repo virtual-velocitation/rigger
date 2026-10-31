@@ -134,7 +134,7 @@ pub fn critique_method_by_persona(
 
 /// The section of `text` that `heading` opens, up to the next `## ` heading or the end of `text`.
 pub fn persona_section<'a>(text: &'a str, heading: &str) -> &'a str {
-    let from = text.find(heading).expect("the persona carries the heading");
+    let from = text.find(heading).expect("the text carries the heading");
     let rest = &text[from + heading.len()..];
     let to = rest
         .find("\n## ")
