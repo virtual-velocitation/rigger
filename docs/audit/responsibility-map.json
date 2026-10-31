@@ -9853,7 +9853,7 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "06acc2732049ac5f"
+    "content_hash": "07bdd882574e05d8"
   },
   {
     "file": "src/cli/mod.rs",
@@ -9897,11 +9897,19 @@
   },
   {
     "file": "src/cli/mod.rs",
+    "name": "rendered_docs",
+    "is_test": false,
+    "proposed_module": "main::render",
+    "reason": "name contains \"render\" (human-readable output); grouped under `main::render`.",
+    "content_hash": "b355556780ab6233"
+  },
+  {
+    "file": "src/cli/mod.rs",
     "name": "write_docs",
     "is_test": false,
     "proposed_module": "main::support",
     "reason": "name contains \"write_\" (generic write helper); grouped under `main::support`.",
-    "content_hash": "4b2527eda62d4a6e"
+    "content_hash": "89d8c4ae7e49c980"
   },
   {
     "file": "src/cli/mod.rs",
@@ -10021,7 +10029,7 @@
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "de73b9ec9480078c"
+    "content_hash": "cda7e1dc9757606c"
   },
   {
     "file": "src/cli/mod.rs",
@@ -10029,7 +10037,7 @@
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "5a41b3f4d076967d"
+    "content_hash": "c1ad6b898c4fbc03"
   },
   {
     "file": "src/cli/mod.rs",
@@ -10053,7 +10061,7 @@
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "c81b129664638084"
+    "content_hash": "56be1db1a25ca451"
   },
   {
     "file": "src/cli/mod.rs",
@@ -10085,7 +10093,7 @@
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "84c98fa1ee3cd4c9"
+    "content_hash": "e72f5e293ef26ba8"
   },
   {
     "file": "src/cli/mod.rs",
@@ -10125,7 +10133,7 @@
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "d53c64c8a919fcf2"
+    "content_hash": "93b867d69f438ce3"
   },
   {
     "file": "src/cli/mod.rs",
@@ -10157,7 +10165,7 @@
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "5ee88f5c9d8f0014"
+    "content_hash": "63cd8997715798a3"
   },
   {
     "file": "src/cli/mod.rs",
