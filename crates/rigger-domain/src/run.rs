@@ -902,4 +902,38 @@ mod tests {
             "live before any run, historical once one is active"
         );
     }
+
+    /// `body` is written as exactly `json`, every field by its decided name and in the decided
+    /// order, reads back from it unchanged, and a body naming no field reads as the empty one.
+    fn assert_wire<T>(body: T, json: &str)
+    where
+        T: Serialize + serde::de::DeserializeOwned + PartialEq + Default + std::fmt::Debug,
+    {
+        assert_eq!(serde_json::to_string(&body).unwrap(), json);
+        assert_eq!(serde_json::from_str::<T>(json).unwrap(), body);
+        assert_eq!(serde_json::from_str::<T>("{}").unwrap(), T::default());
+    }
+
+    /// THE EVENTS decides each hold event's fields, and a sparse body degrades to the empty one.
+    #[test]
+    fn each_hold_event_keeps_the_body_the_spec_decides() {
+        assert_wire(
+            RunHeld {
+                cause: "api-unstable".to_string(),
+                detail: "overloaded".to_string(),
+                action: "wait for the canary".to_string(),
+                needs_person: true,
+                by: "host".to_string(),
+                model: "m1".to_string(),
+            },
+            r#"{"cause":"api-unstable","detail":"overloaded","action":"wait for the canary","needs_person":true,"by":"host","model":"m1"}"#,
+        );
+        assert_wire(
+            RunReleased {
+                by: "probe".to_string(),
+                held_for_s: 90,
+            },
+            r#"{"by":"probe","held_for_s":90}"#,
+        );
+    }
 }
