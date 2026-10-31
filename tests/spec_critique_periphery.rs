@@ -1375,8 +1375,9 @@ fn a_store_from_before_the_minted_identity_is_migrated_before_the_verbs_first_ap
     );
 }
 
-/// The critique block of the usage text, `rigger critique`'s one help surface: no verb answers a
-/// `--help` of its own, so each spelling of help prints this and no key of one panel form.
+/// The critique block of the usage text, `rigger critique`'s one help source, which
+/// `rigger critique --help` prints alone: each spelling of the bare help prints it whole, and no
+/// key of one panel form.
 #[test]
 fn the_critique_help_names_an_adversary_step_of_either_panel_form() {
     const CRITIQUE_HELP: &str = "  \

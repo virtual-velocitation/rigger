@@ -15408,6 +15408,270 @@ fn rigger_help_gives_the_model_flag_its_own_description_line_through_the_real_bi
     );
 }
 
+/// The block, or blocks, of the printed usage `help` that document `command`: each entry from its
+/// `  rigger <command>` line up to the next entry, the last one up to the blank line that closes
+/// the list. Empty when no entry documents it.
+fn usage_entries_of(help: &str, command: &str) -> String {
+    help.split("\n  rigger ")
+        .skip(1)
+        .filter(|entry| entry.split([' ', '\n']).next() == Some(command))
+        .map(|entry| format!("  rigger {}\n", entry.split("\n\n").next().unwrap_or(entry)))
+        .collect()
+}
+
+/// The commands whose entry says "opts below": their help adds, after the entry, the
+/// `run/serve options:` section of the printed usage, from the blank line before it to the blank
+/// line that ends it.
+const OPTIONS_BELOW: &[&str] = &["run", "serve"];
+
+/// The `run/serve options:` section of the printed usage `help` with the blank line before it, as
+/// the help of each command of [`OPTIONS_BELOW`] ends.
+fn run_serve_options_of(help: &str) -> String {
+    let section = help
+        .split("\n\n")
+        .find(|section| section.starts_with("run/serve options:\n"))
+        .unwrap_or_else(|| panic!("the usage text has a run/serve options section:\n{help}"));
+    assert!(
+        section.contains("\n  --driver ") && section.contains("\n  --fresh "),
+        "the run/serve options section lists the options:\n{section}"
+    );
+    format!("\n{section}\n")
+}
+
+/// `rigger <args>` run in `cwd` as [`run_rigger`] runs it, nothing on stdin, kept whole so a row
+/// can read its exit code.
+fn rigger_output(cwd: &Path, args: &[&str]) -> std::process::Output {
+    let state = tempfile::tempdir().expect("a temp XDG_STATE_HOME");
+    common::cli::rigger_command(cwd, args, &[], state.path())
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap_or_else(|e| panic!("run rigger {}: {e}", args.join(" ")))
+}
+
+/// Every entry under `dir`, recursively, with its bytes (`None` for a directory), read level by
+/// level with [`common::fixtures::dir_snapshot`]: a call that writes nothing leaves it equal.
+fn tree_snapshot(dir: &Path) -> Vec<(std::path::PathBuf, Option<Vec<u8>>)> {
+    common::fixtures::dir_snapshot(dir, "")
+        .into_iter()
+        .flat_map(|(name, bytes)| {
+            let path = dir.join(name);
+            let below = if bytes.is_none() {
+                tree_snapshot(&path)
+            } else {
+                Vec::new()
+            };
+            std::iter::once((path, bytes)).chain(below)
+        })
+        .collect()
+}
+
+/// A project as [`temp_project`] makes it, for a row whose answer needs nothing more.
+fn as_made(_root: &Path) {}
+
+/// A project grounding through the literal grep grounder, which every lane's build carries, over
+/// a file holding `--help`, so `rigger ground --help` answers with the line its query found.
+fn grounding_by_grep_over_a_help_line(root: &Path) {
+    write_grounder_workflow(root, "grep");
+    std::fs::write(root.join("notes.txt"), "--help\n").expect("write notes.txt");
+}
+
+/// A command whose arguments are not its own flags, called with `--help` among them.
+struct PassesHelpThrough {
+    /// Readies the fresh project the call runs in.
+    project: fn(&Path),
+    /// The call, its command first.
+    call: &'static [&'static str],
+    /// The exit code the call has always had.
+    code: i32,
+    /// A line of the command's own answer.
+    answer: &'static str,
+}
+
+/// The commands whose arguments are not their own flags: a payload (`emit`, `result`,
+/// `progress`), a free-text query (`ground`), or an argv the host composes and reads the answer
+/// of (`mcp`, `grep-guard`, `guard-write`, `hook`).
+const HELP_PASSES_THROUGH: &[PassesHelpThrough] = &[
+    PassesHelpThrough {
+        project: as_made,
+        call: &["emit", "--help"],
+        code: 1,
+        answer: "emit: expected a JSON object",
+    },
+    PassesHelpThrough {
+        project: as_made,
+        call: &["result", "a-spawn", "--help"],
+        code: 1,
+        answer: "result: unknown flag \"--help\"",
+    },
+    PassesHelpThrough {
+        project: as_made,
+        call: &["progress", "--help"],
+        code: 1,
+        answer: "progress: expected an activity",
+    },
+    PassesHelpThrough {
+        project: grounding_by_grep_over_a_help_line,
+        call: &["ground", "--help"],
+        code: 0,
+        answer: "notes.txt:1: --help",
+    },
+    PassesHelpThrough {
+        project: as_made,
+        call: &["mcp", "--help"],
+        code: 1,
+        answer: "mcp: unexpected arguments [\"--help\"]",
+    },
+    PassesHelpThrough {
+        project: as_made,
+        call: &["grep-guard", "--help"],
+        code: 0,
+        answer: "{}",
+    },
+    PassesHelpThrough {
+        project: as_made,
+        call: &["guard-write", "--help"],
+        code: 2,
+        answer: "guard-write: unknown argument \"--help\"",
+    },
+    PassesHelpThrough {
+        project: as_made,
+        call: &["hook", "--help"],
+        code: 1,
+        answer: "hook: unknown subcommand \"--help\"",
+    },
+];
+
+/// The calls past `<command> --help` and `<command> -h` that ask a command for its help: after a
+/// subverb that builds the graph, and after a flag of a verb that rewrites the event log.
+const HELP_AFTER_AN_ARGUMENT: &[&[&str]] =
+    &[&["graph", "build", "--help"], &["reset", "--derived", "-h"]];
+
+/// Asking a command for its help never runs it: `rigger docs --help` once rewrote the committed
+/// docs and `rigger graph build --help` began a full build. Every command the binary knows is a
+/// row. One whose arguments are its own flags answers `--help`, `-h` and each call of
+/// [`HELP_AFTER_AN_ARGUMENT`] with its own entry of the usage text, exactly as `rigger help`
+/// prints it, exits 0 and leaves the project byte-identical: no file written, no store created.
+/// One of [`HELP_PASSES_THROUGH`] still takes its `--help` as an argument and answers it itself.
+#[test]
+fn every_command_asked_for_help_prints_its_usage_entry_or_passes_the_flag_through() {
+    let help = rigger_help();
+    let dir = temp_project();
+    let root = dir.path();
+    let (_out, err, _ok) = run_rigger(root, &["no-such-command"]);
+    let known: Vec<&str> = err
+        .lines()
+        .find_map(|line| line.strip_prefix("known commands: "))
+        .unwrap_or_else(|| panic!("an unknown command lists the known ones:\n{err}"))
+        .split(", ")
+        .collect();
+    for row in HELP_PASSES_THROUGH {
+        assert!(
+            known.contains(&row.call[0]),
+            "{} is a known command: {known:?}",
+            row.call[0]
+        );
+    }
+    for command in known {
+        if let Some(row) = HELP_PASSES_THROUGH
+            .iter()
+            .find(|row| row.call[0] == command)
+        {
+            let fresh = temp_project();
+            (row.project)(fresh.path());
+            let out = rigger_output(fresh.path(), row.call);
+            let call = row.call.join(" ");
+            let answer = row.answer;
+            let said = format!(
+                "{}{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+            assert_eq!(
+                out.status.code(),
+                Some(row.code),
+                "rigger {call} keeps its own exit code; output:\n{said}"
+            );
+            assert!(
+                said.contains(answer) && !said.contains("  rigger "),
+                "rigger {call} answers {answer:?} itself, never with help; output:\n{said}"
+            );
+            continue;
+        }
+        let mut entry = usage_entries_of(&help, command);
+        assert!(
+            !entry.is_empty(),
+            "the usage text has an entry for {command}:\n{help}"
+        );
+        if OPTIONS_BELOW.contains(&command) {
+            entry.push_str(&run_serve_options_of(&help));
+        }
+        let calls = [vec![command, "--help"], vec![command, "-h"]];
+        let further = HELP_AFTER_AN_ARGUMENT
+            .iter()
+            .filter(|call| call[0] == command)
+            .map(|call| call.to_vec());
+        for args in calls.into_iter().chain(further) {
+            let call = args.join(" ");
+            let before = tree_snapshot(root);
+            let out = rigger_output(root, &args);
+            let printed = String::from_utf8_lossy(&out.stderr);
+            assert!(
+                out.status.success(),
+                "rigger {call} exits 0; stderr:\n{printed}"
+            );
+            assert_eq!(
+                printed,
+                entry.as_str(),
+                "rigger {call} prints the usage entry of {command}"
+            );
+            assert!(
+                out.stdout.is_empty(),
+                "rigger {call} prints nothing on stdout"
+            );
+            let after = tree_snapshot(root);
+            let changed: Vec<String> = after
+                .iter()
+                .filter(|item| !before.contains(item))
+                .chain(before.iter().filter(|item| !after.contains(item)))
+                .map(|(path, _)| path.display().to_string())
+                .collect();
+            assert!(
+                changed.is_empty(),
+                "rigger {call} leaves the project byte-identical; changed: {changed:?}"
+            );
+        }
+    }
+}
+
+/// A `--help` after a `--` separator is not a flag: the command receives the separator and the
+/// `--help` as its arguments and answers them itself.
+#[test]
+fn a_help_flag_after_a_separator_passes_through_to_the_command() {
+    let dir = temp_project();
+    let out = rigger_output(dir.path(), &["stats", "--", "--help"]);
+    assert_eq!(out.status.code(), Some(1), "stats refuses its arguments");
+    assert_eq!(
+        String::from_utf8_lossy(&out.stderr),
+        "rigger: stats: expected no arguments, --all, or --canary, got -- --help\n"
+    );
+}
+
+/// `rigger help <command>` prints that command's entry of the usage text and nothing else.
+#[test]
+fn rigger_help_of_a_command_prints_only_its_usage_entry() {
+    let dir = temp_project();
+    let (out, err, ok) = run_rigger(dir.path(), &["help", "docs"]);
+    assert!(ok, "rigger help docs succeeds; stderr:\n{err}");
+    assert_eq!(
+        err,
+        concat!(
+            "  rigger docs                 render the code-derived docs (every registry skill and\n",
+            "                              handbook page) into their committed paths\n",
+        )
+    );
+    assert!(out.is_empty(), "rigger help docs prints nothing on stdout");
+}
+
 /// MODEL PINNING criterion (spec 61 c7): `--model <tier>=<id>` argument validation is CLI
 /// glue exercised through the real binary, mirroring
 /// `canary_rejects_unknown_arguments_and_a_missing_corpus` - the happy-path pin resolution
