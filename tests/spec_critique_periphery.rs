@@ -360,11 +360,11 @@ fn under_a_workflow_with_no_critic_the_verb_refuses_naming_both_keys_and_records
     std::fs::write(root.join(".rigger/workflow.yml"), NO_CRITIC_WORKFLOW).unwrap();
     let (out, err, ok) = critique(root, SPEC_REL, &path, &scratch);
 
-    // ... the verb refuses, naming both keys, answering nothing and recording nothing.
+    // ... the verb refuses, naming both critic sources, answering nothing and recording nothing.
     assert!(!ok, "a workflow with no critic refuses the verb");
     assert!(
         err.contains(NO_CRITIC_CLAUSE),
-        "the refusal names both keys:\n{err}"
+        "the refusal names the gate adversary and the adversary step:\n{err}"
     );
     assert_eq!(out, "", "a refusal prints no finding");
     assert_eq!(critique_stub_spawns(stub.path()), 1, "no spawn");
