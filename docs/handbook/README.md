@@ -16,7 +16,7 @@ Read in order if you are new. Jump to the file you need if you are not.
 
 ## The one-paragraph model
 
-Rigger turns a spec into integrated code by running a team of agents over shared, structured memory. A **spec** enumerates machine-checkable acceptance criteria. A **loop** decomposes it into a DAG of small units, and each unit runs its own lifecycle: ground -> implement (red/green TDD in an isolated worktree) -> gates -> three-tier adversarial review -> integrate on approval. Every meaningful act - a decision, a file touched, a lesson learned - is appended to a shared event log, projected into a bi-temporal context graph, and fed to the next agent as *the slice it needs*. Agents are Markdown files; loops are YAML; gates are shell commands. You reconfigure the fleet by editing text, not code.
+Rigger turns a spec into integrated code by running a team of agents over shared, structured memory. A **spec** enumerates machine-checkable acceptance criteria. A **loop** decomposes it into a DAG of small units, and each unit runs its own lifecycle: ground -> implement (red/green TDD in an isolated worktree) -> gates -> a sequence of adversarial review steps -> integrate on approval. Every meaningful act - a decision, a file touched, a lesson learned - is appended to a shared event log, projected into a bi-temporal context graph, and fed to the next agent as *the slice it needs*. Agents are Markdown files; loops are YAML; gates are shell commands. You reconfigure the fleet by editing text, not code.
 
 ## Vocabulary
 
@@ -24,7 +24,7 @@ Rigger turns a spec into integrated code by running a team of agents over shared
 - **Unit** - the smallest independently implementable, testable, reviewable piece of work. One unit maps to one acceptance criterion (or a planner-refined slice of one).
 - **Stage** - a node in the workflow DAG (`plan`, `implement`, ...). A `fan-out` stage spawns one agent per ready unit.
 - **Gate** - a named shell command whose exit code is the verdict (`npm test`, `go vet ./...`, `cargo test` - whatever your CI runs). Gates are config, not code.
-- **Review panel** - the three-tier check on every unit: expert lenses in parallel, then an adversary who reviews *the lenses*, then an adjudicator whose verdict gates integration.
+- **Review panel** - the sequence of review steps on every unit. By default it is three: expert lenses in parallel, then an adversary who reviews *the lenses*, then an adjudicator whose verdict gates integration. A workflow may extend it.
 - **Ledger** - the run's durable state, itself a projection of the event log. A resumed run re-reads it; state never lives in a conversation.
 - **Context graph** - the bi-temporal projection of the event log: decisions, files, lessons, and their relationships, queryable by "what governs the files I am about to touch."
 - **Grounding** - the pre-work retrieval step: structural symbol search over the code (`rigger ground`, the deterministic `symbols` index) plus the graph slice around the target files (`rigger graph --around`).
