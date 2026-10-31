@@ -47388,10 +47388,20 @@ mod tests {
     /// A run's own result and its whole log.
     type RunAndLog = (Result<RunState, Error>, Vec<Event>);
 
+    /// Run `cfg` under `driver` in a real repo: the run's own result and the whole log.
+    fn run_in_repo(cfg: &Config, driver: &Stub) -> RunAndLog {
+        let repo = temp_git_project_with_commit();
+        let st = Store::open(":memory:").unwrap();
+        let deps = Deps {
+            repo: repo.path().to_str().unwrap().to_string(),
+            ..stub_deps(&st, driver, Vec::new())
+        };
+        (run_isolated(cfg, &deps), run_log(&st))
+    }
+
     /// Run one merging, gated unit `s` under `driver` in a real repo, with an `sdet-author` agent
     /// configured when `with_sdet`: the run's own result and the whole log.
     fn run_sdet_lane(with_sdet: bool, driver: &Stub) -> RunAndLog {
-        let repo = temp_git_project_with_commit();
         let mut cfg = Config::default();
         cfg.agents.insert("worker".into(), agent("worker"));
         if with_sdet {
@@ -47409,12 +47419,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        let st = Store::open(":memory:").unwrap();
-        let deps = Deps {
-            repo: repo.path().to_str().unwrap().to_string(),
-            ..stub_deps(&st, driver, Vec::new())
-        };
-        (run_isolated(&cfg, &deps), run_log(&st))
+        run_in_repo(&cfg, driver)
     }
 
     /// Run a [`run_sdet_lane`] whose sdet-author (configured when `with_sdet`) authors NOTHING,
@@ -48645,27 +48650,42 @@ mod tests {
         )]
     }
 
-    /// `driver` with the spawns `ids` each emitting [`refused_decision`].
-    fn refusing_at(driver: Stub, ids: &[String]) -> Stub {
-        Stub {
-            emits_by_spawn_id: ids
-                .iter()
-                .map(|id| (id.clone(), refused_decision()))
-                .collect(),
-            ..driver
-        }
+    /// `driver` with the spawns `ids` each emitting `record`, beside what it already emits.
+    fn refusing_at(mut driver: Stub, ids: &[String], record: &[(String, Value)]) -> Stub {
+        driver
+            .emits_by_spawn_id
+            .extend(ids.iter().map(|id| (id.clone(), record.to_vec())));
+        driver
+    }
+
+    /// The `{unit}/{role}` seat stamped on each logged `DecisionMade` whose id is `id`, in log
+    /// order.
+    fn decision_seats(events: &[Event], id: &str) -> Vec<String> {
+        events
+            .iter()
+            .filter(|e| e.type_ == contextgraph::TYPE_DECISION_MADE)
+            .filter(|e| serde_json::from_slice::<Value>(&e.data).unwrap()["id"] == id)
+            .map(|e| {
+                let spawn = e.meta.get(META_SPAWN);
+                crate::spawn::unit_role_of(spawn.map_or("", String::as_str)).to_string()
+            })
+            .collect()
     }
 
     /// An author other than the implementer whose emitted record the guard refuses: the driver
     /// its run starts from, the run (its result and its log), the `(unit, role, attempt)` its
-    /// refused spawn runs under, the agent whose prompts it reads, and whether, past its re-run,
-    /// the role's failure is its wave's lesson.
+    /// refused spawn runs under, the agent whose prompts it reads, whether, past its re-run, the
+    /// role's failure is its wave's lesson, the record its refused spawns emit, what the guard
+    /// says of that record, and the seats holding the record's id once the run is over.
     struct RefusedAuthor {
         driver: fn() -> Stub,
         run: fn(&Stub) -> RunAndLog,
         seat: (&'static str, &'static str, u32),
         agent: &'static str,
         wave_lesson: bool,
+        record: fn() -> Vec<(String, Value)>,
+        refusal: &'static str,
+        holders: &'static [&'static str],
     }
 
     /// The sdet author of a single-lane unit: past its re-run, its stage fails in its wave.
@@ -48676,6 +48696,9 @@ mod tests {
             seat: ("s", ROLE_SDET_AUTHOR, 0),
             agent: ROLE_SDET_AUTHOR,
             wave_lesson: true,
+            record: refused_decision,
+            refusal: REFUSAL,
+            holders: &[],
         }
     }
 
@@ -48692,24 +48715,72 @@ mod tests {
             seat: ("plan", ROLE_REPLAN, 1),
             agent: "planner",
             wave_lesson: false,
+            record: refused_decision,
+            refusal: REFUSAL,
+            holders: &[],
+        }
+    }
+
+    /// A `DecisionMade` under the id `d-x`, the id [`adjudicator_refused`]'s implementer holds.
+    fn decision_d_x(summary: &str) -> Vec<(String, Value)> {
+        vec![(
+            contextgraph::TYPE_DECISION_MADE.to_string(),
+            json!({"id": "d-x", "summary": summary}),
+        )]
+    }
+
+    /// The adjudicator of a reviewed unit whose record takes the id its implementer's holds, so
+    /// the guard refuses it before the append, naming the holder - the agent emit stamps each
+    /// record with its spawn, whose `{unit}/{role}` seat is the author the guard compares - and
+    /// the implementer's record stays the one the graph keeps. The verdict rides the same spawn,
+    /// so the refusal costs it the verdict: past its re-run, its stage fails in its wave.
+    fn adjudicator_refused() -> RefusedAuthor {
+        RefusedAuthor {
+            driver: || Stub {
+                write_file: Some("feature.rs".into()),
+                output: r#"{"verdict":"approve"}"#.into(),
+                emits_by_spawn_id: HashMap::from([(
+                    spawn_id("s", ROLE_IMPLEMENTER, 0),
+                    decision_d_x("the worker's"),
+                )]),
+                ..Stub::new()
+            },
+            run: |driver| run_in_repo(&spec_cfg(1), driver),
+            seat: ("s", ROLE_ADJUDICATOR, 0),
+            agent: "adj",
+            wave_lesson: true,
+            record: || decision_d_x("the judge's"),
+            refusal: r#"refusing to emit DecisionMade "d-x""#,
+            holders: &["s/implementer"],
         }
     }
 
     /// `author`'s spawns refuse a record on their first `refused` runs: the refused spawn re-runs
-    /// once, under its next `~retry` id, with a prompt naming the refusal, and never again. One
-    /// refusal is cleared by that re-run, so the run carries on; a second reaches the role's own
-    /// failure handling with the refusal text, unmarked. The refused record never lands.
+    /// once, under its next `~retry` id, with a prompt naming the refusal and the seats holding
+    /// its id, and never again. One refusal is cleared by that re-run, so the run carries on; a
+    /// second reaches the role's own failure handling with the refusal text, unmarked. The
+    /// refused record never lands.
     fn assert_a_refused_record_reruns_its_spawn_once(author: RefusedAuthor, refused: usize) {
         let (unit, role, attempt) = author.seat;
         let ids: Vec<String> = (0..=2)
             .map(|retry| spawn_retry_id(unit, role, attempt, retry))
             .collect();
-        let driver = refusing_at((author.driver)(), &ids[..refused]);
+        let record = (author.record)();
+        let driver = refusing_at((author.driver)(), &ids[..refused], &record);
         let (rs, events) = (author.run)(&driver);
         let spawned = driver.spawn_ids();
+        let refusal = author.refusal;
         assert!(
             spawned.contains(&ids[1]) && !spawned.contains(&ids[2]),
             "the refused spawn re-runs once, under its next retry id: {spawned:?}"
+        );
+        assert_eq!(
+            spawned
+                .iter()
+                .filter(|id| crate::spawn::unit_role_of(id) == format!("{unit}/{role}"))
+                .count(),
+            2,
+            "the seat spawns twice in the whole run, never again: {spawned:?}"
         );
         let rerun = driver
             .prompts_for(author.agent)
@@ -48718,31 +48789,45 @@ mod tests {
             .unwrap_or_default();
         assert!(
             rerun.contains(&format!(
-                "Your previous run's record was refused: {REFUSAL}"
+                "Your previous run's record was refused: {refusal}"
             )) && !rerun.contains('\u{1}'),
             "the re-run's prompt names the refusal, unmarked: {rerun}"
         );
-        assert!(
-            !payloads_of_type(&events, contextgraph::TYPE_DECISION_MADE)
-                .iter()
-                .any(|d| d["id"] == "d-bad"),
-            "the refused record lands nothing"
+        for holder in author.holders {
+            assert!(
+                rerun.contains(&format!("recorded by {holder}")),
+                "the re-run's prompt names the seat holding the id, {holder}: {rerun}"
+            );
+        }
+        assert_eq!(
+            decision_seats(&events, record[0].1["id"].as_str().unwrap()),
+            author.holders,
+            "the refused record lands nothing, so only the holders keep its id"
         );
         let lessons = wave_lessons(&events);
         match rs {
-            Ok(_) => assert!(
-                refused == 1 && lessons.is_empty(),
-                "only a refusal its re-run cleared carries the run on: {lessons:?}"
-            ),
+            Ok(rs) => {
+                assert!(
+                    refused == 1 && lessons.is_empty(),
+                    "only a refusal its re-run cleared carries the run on: {lessons:?}"
+                );
+                assert_eq!(
+                    rs.units[unit].status,
+                    ledger::Status::Integrated,
+                    "the re-run carries {unit:?} on"
+                );
+            }
             Err(e) => {
                 assert!(
-                    refused == 2 && e.0.contains(REFUSAL) && !e.0.contains('\u{1}'),
+                    refused == 2 && e.0.contains(refusal) && !e.0.contains('\u{1}'),
                     "past its re-run, the refusal reaches the role's failure, unmarked: {e:?}"
                 );
                 assert_eq!(
-                    lessons.iter().any(|l| l.contains(REFUSAL)),
+                    lessons
+                        .iter()
+                        .any(|l| l.contains(refusal) && !l.contains('\u{1}')),
                     author.wave_lesson,
-                    "the stage's wave lesson carries the refusal: {lessons:?}"
+                    "the stage's wave lesson carries the refusal, unmarked: {lessons:?}"
                 );
             }
         }
@@ -48757,6 +48842,98 @@ mod tests {
             assert_a_refused_record_reruns_its_spawn_once(re_planner_refused(), 1);
         a_re_planner_refused_again_halts_the_gate_with_the_refusal:
             assert_a_refused_record_reruns_its_spawn_once(re_planner_refused(), 2);
+        an_adjudicator_whose_record_another_seat_holds_re_runs_once_told_why:
+            assert_a_refused_record_reruns_its_spawn_once(adjudicator_refused(), 1);
+        an_adjudicator_refused_again_fails_its_stage_with_the_refusal:
+            assert_a_refused_record_reruns_its_spawn_once(adjudicator_refused(), 2);
+    }
+
+    /// A record an implementer's spawn emits that the fold cannot apply - `governs` given as a
+    /// string, not an array - is refused by the same guard `rigger emit` runs, before the append,
+    /// so the log holds no record the fold would pass over. The refusal is a defect in what the
+    /// attempt emitted, not an outage: it is charged to that attempt like a review reject, never
+    /// rerun uncharged as infra, and the next attempt's prompt names it, so the agent learns why
+    /// and the unit converges. The attempt's edits are committed as its checkpoint, as a gate
+    /// failure's are, so its `UnitFailed` carries that sha and an escalation's teardown never
+    /// discards them.
+    #[test]
+    fn an_implementer_s_refused_record_is_charged_to_the_attempt_that_emitted_it() {
+        let repo = temp_git_project_with_commit();
+        let mut cfg = spec_cfg(1);
+        cfg.workflow.defaults.max_retries = 2;
+        cfg.workflow.stages.get_mut("s").unwrap().on_pass = "none".into();
+        let driver = refusing_at(
+            Stub {
+                write_file: Some("feature.rs".into()),
+                output: r#"{"verdict":"approve"}"#.into(),
+                ..Stub::new()
+            },
+            &[spawn_id("s", ROLE_IMPLEMENTER, 0)],
+            &refused_decision(),
+        );
+        let st = Store::open(":memory:").unwrap();
+        let deps = Deps {
+            repo: repo.path().to_str().unwrap().to_string(),
+            ..stub_deps(&st, &driver, Vec::new())
+        };
+        run_isolated(&cfg, &deps).unwrap();
+        let events = run_log(&st);
+        assert_eq!(
+            decision_seats(&events, "d-bad"),
+            Vec::<String>::new(),
+            "the refused record landed nothing"
+        );
+        let failed = payloads_of_type(&events, ledger::TYPE_UNIT_FAILED);
+        assert_eq!(
+            failed
+                .iter()
+                .map(|f| (f["attempts"].as_u64(), f["cause"].as_str()))
+                .collect::<Vec<_>>(),
+            [(Some(1), Some("reject"))],
+            "the refusal is charged one attempt, as a reject: {failed:?}"
+        );
+        let reason = failed[0]["review_reason"].as_str().unwrap_or_default();
+        assert!(
+            reason.contains(REFUSAL) && !reason.contains('\u{1}'),
+            "the charged failure carries the refusal, unmarked: {reason:?}"
+        );
+        let failed_sha = events
+            .iter()
+            .find(|e| e.type_ == ledger::TYPE_UNIT_FAILED)
+            .and_then(|e| e.meta.get(META_WORKTREE_SHA))
+            .cloned()
+            .unwrap_or_default();
+        let commits = trimmed_stdout(&run_git(
+            repo.path().to_str().unwrap(),
+            &["log", "--all", "--format=%H %s"],
+        ));
+        assert!(
+            commits
+                .lines()
+                .any(|line| line == format!("{failed_sha} rigger: s attempt 1")),
+            "the refused attempt's edits are committed as its checkpoint, the sha its UnitFailed \
+             carries, as a gate failure's are: {failed_sha:?} in {commits}"
+        );
+        assert!(
+            !events.iter().any(|e| {
+                e.type_ == ledger::TYPE_UNIT_STATUS
+                    && String::from_utf8_lossy(&e.data).contains(r#""status":"infra-retry""#)
+            }),
+            "a refusal is never rerun uncharged as infra"
+        );
+        let prompts = driver.prompts_for("worker");
+        assert_eq!(prompts.len(), 2, "the worker spawned once per attempt");
+        assert!(
+            !prompts[0].contains(REFUSAL) && prompts[1].contains(REFUSAL),
+            "the next attempt's prompt names the refusal: {:?}",
+            prompts[1]
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|e| e.type_ == ledger::TYPE_UNIT_ESCALATED),
+            "the next attempt, emitting nothing refused, carries the unit on"
+        );
     }
 
     /// A speculation candidate's sdet author refused on its run and on its re-run loses the
@@ -48776,6 +48953,7 @@ mod tests {
                 ..Stub::new()
             },
             &[0, 1].map(|retry| spawn_retry_id("s", ROLE_SDET_AUTHOR, 0, retry)),
+            &refused_decision(),
         );
         let deps = Deps {
             repo: repo.path().to_str().unwrap().to_string(),
