@@ -1725,7 +1725,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "e310ddb13b72a0f5"
+    "content_hash": "3cbf32792338618b"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -2125,7 +2125,7 @@
     "is_test": false,
     "proposed_module": "conductor::support",
     "reason": "name contains \"is_\" (predicate helper); grouped under `conductor::support`.",
-    "content_hash": "fb4001df8ad33653"
+    "content_hash": "041b521071bfc0b4"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -2670,6 +2670,14 @@
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
     "content_hash": "3796a662bde828ca"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "assert_criterion_less_branch_is_foreign",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "2c22a40891102f43"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -6477,7 +6485,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "14ee064881123514"
+    "content_hash": "58a1d8e1775aeb42"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
