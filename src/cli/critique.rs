@@ -19,10 +19,6 @@ const COMMAND: &str = "rigger critique";
 /// The stage a critique spawn is recorded under.
 const CRITIQUE_STAGE: &str = "critique";
 
-/// THE STOP's grace for the critic's session: how long the host waits for a silent session to
-/// exit on its own before ending it (the host's production value).
-const CRITIC_STOP_GRACE: std::time::Duration = std::time::Duration::from_secs(30);
-
 /// The critique's own store: the project's namespace plus `-critique`, so a critique's spawn
 /// request and result land on a stream of their own and never on the run stream a `rigger step`
 /// folds into its wave. Every critique read and write goes through it - the one place that
@@ -189,7 +185,6 @@ impl CriticHost<'_> {
             dir: self.root.to_string_lossy().into_owned(),
             run_id: unit,
             title: spec.to_string(),
-            env: self.store_env.clone(),
             settings_json: serde_json::json!({
                 "permissions": { "deny": review::CRITIC_DENIED_TOOLS }
             })
@@ -202,7 +197,7 @@ impl CriticHost<'_> {
             &opts.run_id,
             self.scratch_root,
         )?;
-        let progress_backend = Store::open(&db_path("progress.db"))?;
+        let progress_backend = open_progress_backend()?;
         let progress = Namespaced::new(&progress_backend, self.identity);
         let host = claude_code::Driver {
             bin: String::new(),
@@ -210,7 +205,8 @@ impl CriticHost<'_> {
             progress_store: &progress,
             run_store: self.critiques,
             scratch_root: self.scratch_root.to_string(),
-            stop_grace: CRITIC_STOP_GRACE,
+            stop_grace: claude_code::STOP_GRACE,
+            handed_env: self.store_env.clone(),
         };
         eprintln!(
             "{COMMAND}: {spec} (hash {hash}): critiquing with {} at attempt {attempt}",

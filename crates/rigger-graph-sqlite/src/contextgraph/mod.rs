@@ -142,7 +142,7 @@ pub fn check_fold_payload(type_: &str, data: &[u8]) -> Result<(), String> {
 
 /// THE EMIT GUARD: what every emit surface runs on an event, built with its stamps, before
 /// appending it to `stream` - `rigger emit` and the `rigger_emit` tool, the conductor's
-/// in-process emit that a cli host replays an agent's printed lines through, and the findings
+/// in-process emit callback, and the findings
 /// `rigger critique` copies - so no surface lands what another refuses. It refuses a payload the
 /// fold cannot apply ([`check_fold_payload`]), which would sit in the log passed over by every
 /// fold, then a record whose id another author's kept record holds

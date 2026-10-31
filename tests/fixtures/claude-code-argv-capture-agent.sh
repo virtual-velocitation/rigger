@@ -11,4 +11,5 @@ for arg in "$@"; do
     printf '%s\0' "$arg"
 done > "$RIGGER_ARGV_CAPTURE"
 IFS= read -r line
-echo "STDIN=$line"
+# printf, since a POSIX echo expands the JSON line's \n escapes into real newlines.
+printf 'STDIN=%s\n' "$line"

@@ -13,6 +13,18 @@ use crate::spawn::SpawnRequest;
 /// runtime (the living-DAG / spawnUnit mechanic).
 pub const TYPE_UNIT_PROPOSED: &str = "UnitProposed";
 
+/// The name a headless session sees its live-progress tool under: the spawn-bound `rigger`
+/// server's `rigger_progress`.
+pub const SPAWN_PROGRESS_TOOL: &str = "mcp__rigger__rigger_progress";
+
+/// The recording tools of a spawn's own bound `rigger` server, as a headless session names them:
+/// the tools it records its decisions, its progress and its scratch through.
+pub const SPAWN_BOUND_TOOLS: [&str; 3] = [
+    "mcp__rigger__rigger_emit",
+    SPAWN_PROGRESS_TOOL,
+    "mcp__rigger__rigger_scratch",
+];
+
 #[derive(Debug, thiserror::Error)]
 #[error("conductor: {0}")]
 pub struct Error(pub String);
@@ -43,11 +55,12 @@ pub struct AgentResult {
     /// unknown. The replay driver surfaces it from the worker's `rigger result --meta`
     /// report ([`SpawnResult::meta_str`](crate::spawn::SpawnResult::meta_str));
     /// the conductor copies it onto the spawn's unit events via [`META_MODEL_RESOLVED`].
-    /// The blocking drivers (cli/workflow) do not learn it and leave it empty.
+    /// The headless host reads it off the session's stream; the cli and workflow drivers do not
+    /// learn it and leave it empty.
     pub resolved_model: String,
     /// The Claude Code session this spawn ran as - the id a later attempt or review round of
     /// the same role on the same unit continues with `--resume` ([`SpawnOpts::resumed_from`]).
-    /// The cli host mints it for a fresh launch and keeps the continued one on a resume; the
+    /// A process host mints it for a fresh launch and keeps the continued one on a resume; the
     /// conductor records it in the run log beside the spawn. Empty from a driver that runs no
     /// resumable session (the workflow and replay drivers, a test double), which then leaves
     /// every later spawn of that role a fresh one.
@@ -64,9 +77,8 @@ pub struct AgentResult {
 pub struct SpawnOpts {
     /// The spawn's DETERMINISTIC id (`{unit}/{role}#{attempt}`, see
     /// [`spawn_id`](crate::spawn::spawn_id)). A stepwise/replay driver keys on it to
-    /// answer an already-recorded spawn from the log or to park an unrecorded one; the
-    /// blocking drivers (cli/workflow) ignore it. Empty for a caller that does not use
-    /// stepwise replay.
+    /// answer an already-recorded spawn from the log or to park an unrecorded one; every other
+    /// driver names the spawn by it. Empty for a caller that does not use stepwise replay.
     pub id: String,
     /// The unit this spawn belongs to - the parked request's `unit` (and the display
     /// label's unit half). Empty when the caller does not park.
@@ -207,8 +219,9 @@ pub fn spawn_request(agent: &AgentDef, prompt: &str, opts: &SpawnOpts) -> SpawnR
 }
 
 /// AgentDriver spawns an agent to completion. The agent records events it emits
-/// during its run by calling `emit`, so its decisions reach the log live (the
-/// workflow driver wires emit to an in-process tool the agent calls).
+/// during its run, so its decisions reach the log live: the workflow driver wires
+/// `emit` to an in-process tool the agent calls, and a headless session records
+/// through its spawn-bound `rigger` server, so the headless host leaves `emit` unused.
 pub trait AgentDriver: Send + Sync {
     fn spawn(
         &self,

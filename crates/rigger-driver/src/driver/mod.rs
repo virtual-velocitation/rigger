@@ -1,7 +1,7 @@
-//! Agent drivers: adapters implementing the conductor's AgentDriver port. `cli`
-//! is the default (shell out to the `claude` CLI, so Rigger depends on no
-//! particular runtime); `workflow` is the in-Claude-Code alternative.
-//! `claude_code` is the native headless-session host (spec 104) landing alongside them.
+//! Agent drivers: adapters implementing the conductor's AgentDriver port. `claude_code` is the
+//! headless-session host `rigger run` and `rigger critique` launch their agents through;
+//! `workflow` is the in-Claude-Code alternative; `cli` is the blocking one-shot host `rigger
+//! canary` probes with; `replay` is the stepwise path `rigger step` drives.
 //!
 //! Both process hosts launch a headless `claude` session, so what such a session needs
 //! beyond its protocol (permissions, MCP server, settings, helpers) is composed here once,
@@ -37,21 +37,34 @@ pub(crate) fn bin_or_path_default<'s>(configured: &'s str, default: &'s str) -> 
 /// The `--allowed-tools` pair every headless spawn passes: the tools `agent` is granted
 /// ([`AgentDef::allowed_tools`]: `recurse: false` strips any fan-out tool, runaway-proof by
 /// construction, §3.1, §6), then the helpers' rigger MCP tools ([`hooks::helper_mcp_tools`]),
-/// each name once. The helpers' tools are pre-approved because under `--permission-prompts
-/// none` nothing answers a prompt, so a `lookup` would otherwise be denied every graph call it
-/// makes; the critic's host (`rigger critique`, on the headless host) is the first production
-/// beneficiary, `rigger run`'s cli-host workers the second. Always present, since the helpers
-/// declare their tools.
-pub(crate) fn allowed_tools_args(agent: &AgentDef) -> Result<Vec<String>, Error> {
+/// then the `bound` tools the launching host's own server serves, each name once. The helpers'
+/// tools are pre-approved because under `--permission-prompts none` nothing answers a prompt, so
+/// a `lookup` would otherwise be denied every graph call it makes, and a host's `bound` tools for
+/// the same reason. Always present, since the helpers declare their tools.
+pub(crate) fn allowed_tools_args(agent: &AgentDef, bound: &[&str]) -> Result<Vec<String>, Error> {
+    let helpers = hooks::helper_mcp_tools()
+        .map_err(|e| Error(format!("driver: compose the spawn's allowed tools: {e}")))?;
     let mut tools = agent.allowed_tools();
-    for tool in hooks::helper_mcp_tools()
-        .map_err(|e| Error(format!("driver: compose the spawn's allowed tools: {e}")))?
+    for tool in helpers
+        .into_iter()
+        .chain(bound.iter().map(|tool| tool.to_string()))
     {
         if !tools.contains(&tool) {
             tools.push(tool);
         }
     }
     Ok(vec!["--allowed-tools".to_string(), tools.join(",")])
+}
+
+/// `task` framed with the live-progress instruction (spec 14) every process host gives, so a
+/// worker reports what it is doing between milestones. `report` is how the worker reports on this
+/// host, completing the sentence "report ONE short line of what you just did ...".
+pub(crate) fn progress_framed(task: &str, report: &str) -> String {
+    format!(
+        "{task}\n\n--- rigger driver ---\nLIVE PROGRESS: after each significant step (a search, a \
+         build, a commit, a decision) report ONE short line of what you just did {report}. Keep \
+         it flowing while you work."
+    )
 }
 
 /// One composed configuration as the inline JSON argument its flag takes, or the error naming
@@ -322,4 +335,73 @@ pub(crate) fn spawn_config_args(
         "--agents".to_string(),
         helpers.to_string(),
     ])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `allowed_tools_args` over every order and repeat a grant can arrive in: the agent's own
+    /// tools, then the helpers', then the host's bound ones, each name once where it first came.
+    #[test]
+    fn allowed_tools_chain_the_agent_the_helpers_and_the_bound_tools_each_name_once() {
+        let helpers = hooks::helper_mcp_tools().unwrap();
+        struct Case<'a> {
+            name: &'a str,
+            tools: Vec<&'a str>,
+            bound: Vec<&'a str>,
+            after_the_helpers: Vec<&'a str>,
+        }
+        let cases = [
+            Case {
+                name: "no bound tools adds nothing after the helpers",
+                tools: vec!["Read"],
+                bound: vec![],
+                after_the_helpers: vec![],
+            },
+            Case {
+                name: "bound tools follow the helpers in their own order",
+                tools: vec!["Read"],
+                bound: vec!["bound-a", "bound-b"],
+                after_the_helpers: vec!["bound-a", "bound-b"],
+            },
+            Case {
+                name: "an agent that lists a bound tool keeps it at its own place",
+                tools: vec!["bound-a", "Read"],
+                bound: vec!["bound-a", "bound-b"],
+                after_the_helpers: vec!["bound-b"],
+            },
+            Case {
+                name: "a bound tool a helper declares is not repeated",
+                tools: vec![],
+                bound: vec![helpers[0].as_str(), "bound-a"],
+                after_the_helpers: vec!["bound-a"],
+            },
+            Case {
+                name: "a repeated bound tool lands once",
+                tools: vec![],
+                bound: vec!["bound-a", "bound-a"],
+                after_the_helpers: vec!["bound-a"],
+            },
+        ];
+        for case in cases {
+            let agent = AgentDef {
+                tools: case.tools.iter().map(|t| t.to_string()).collect(),
+                ..AgentDef::default()
+            };
+            let expected: Vec<&str> = case
+                .tools
+                .iter()
+                .copied()
+                .chain(helpers.iter().map(String::as_str))
+                .chain(case.after_the_helpers.iter().copied())
+                .collect();
+            assert_eq!(
+                allowed_tools_args(&agent, &case.bound).unwrap(),
+                ["--allowed-tools".to_string(), expected.join(",")],
+                "{}",
+                case.name
+            );
+        }
+    }
 }

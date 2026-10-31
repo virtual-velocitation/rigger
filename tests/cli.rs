@@ -25412,7 +25412,7 @@ fn prime_given_a_spec_path_names_the_spec_lint_after_real_decision_content() {
 /// unreachable `--base origin/does-not-exist`.
 #[derive(Clone, Copy)]
 enum SpecLaunch {
-    /// `rigger run <spec>` (the cli driver), which prints the spec-lint reminder on stdout.
+    /// `rigger run <spec>` (the standalone path), which prints the spec-lint reminder on stdout.
     Run,
     /// `rigger step --spec <spec>`, which prints it on stderr: its stdout carries exactly one
     /// line of `{wave,done}` JSON a driver parses.

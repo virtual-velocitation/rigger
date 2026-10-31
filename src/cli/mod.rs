@@ -2468,7 +2468,7 @@ fn append_review_quality(lines: &mut Vec<String>, m: &Metrics) {
     // disclose the UNFED case so a reader never misreads "0 upheld" as proven reviewer
     // failure. Two unfed shapes leave the folded upheld total at 0 while findings/spawns
     // exist:
-    //   - NO verdict recorded on this run's driver (the in-process cli path records none), or
+    //   - NO verdict recorded on this run's driver (the workflow driver records none), or
     //   - a verdict WAS recorded but the findings it upheld carry no attribution to fold onto
     //     (`upheld_unattributed > 0` - the empty-actor sentinel dropped them). This is the
     //     dominant case on a real aggregate store, which the adjudications==0 guard missed.
@@ -2481,7 +2481,7 @@ fn append_review_quality(lines: &mut Vec<String>, m: &Metrics) {
         && (rq.adjudications == 0 || rq.upheld_unattributed > 0)
     {
         let why = if rq.adjudications == 0 {
-            "no adjudicator verdict recorded on this run's driver - the upheld set rides the courier SpawnResult the in-process cli path never writes".to_string()
+            "no adjudicator verdict recorded on this run's driver - the upheld set rides the recorded SpawnResult the workflow driver never writes".to_string()
         } else {
             format!(
                 "a verdict WAS recorded, but {} upheld finding(s) carry no attribution to fold onto (unattributed on this log)",
@@ -2531,8 +2531,8 @@ fn append_review_quality(lines: &mut Vec<String>, m: &Metrics) {
             lines.push(format!("      {cause:<24} {n}"));
         }
     }
-    // A rejection's cause rides a RECORDED adjudicator reject verdict; the in-process cli
-    // path records none, so on that path - and on any aggregate store mixing the two - the
+    // A rejection's cause rides a RECORDED adjudicator reject verdict; the workflow driver
+    // records none, so on that path - and on any aggregate store mixing the two - the
     // folded causes account for FEWER rejects than review_reject. Disclose the unfed
     // remainder so the cause panel is never misread as the full reject breakdown (the count
     // never underflows: each cause fold is paired with a review_reject in the same arm).
@@ -11527,7 +11527,7 @@ mod tests {
         format_stats(m).join("\n")
     }
 
-    /// spec 11 remediation: an in-process (cli) run has findings but records NO adjudicator
+    /// spec 11 remediation: a workflow-driver run has findings but records NO adjudicator
     /// verdict (no SpawnResult), so the upheld-based folds are unfed. The render must
     /// DISCLOSE that honestly rather than let a reader misread the 0% survival as the
     /// adjudicator having discarded every finding.

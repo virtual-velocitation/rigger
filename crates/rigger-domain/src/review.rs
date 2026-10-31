@@ -7,6 +7,7 @@ use std::path::{Component, Path, PathBuf};
 
 use serde_json::Value;
 
+use crate::agent::SPAWN_BOUND_TOOLS;
 use crate::config::{ReviewPanel, ReviewStep};
 use crate::contextgraph::query::referenced_id;
 use crate::contextgraph::{TYPE_DECISION_MADE, TYPE_REVIEW_FINDING};
@@ -369,9 +370,9 @@ pub const CRITIC_DENIED_TOOLS: [&str; 11] = [
     "MultiEdit",
     "Write",
     "NotebookEdit",
-    "mcp__rigger__rigger_emit",
-    "mcp__rigger__rigger_progress",
-    "mcp__rigger__rigger_scratch",
+    SPAWN_BOUND_TOOLS[0],
+    SPAWN_BOUND_TOOLS[1],
+    SPAWN_BOUND_TOOLS[2],
 ];
 
 /// The `by` a critique finding's graph copy carries.

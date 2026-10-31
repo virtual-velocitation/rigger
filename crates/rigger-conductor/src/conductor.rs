@@ -139,8 +139,8 @@ pub use crate::metrics::META_MODEL_RESOLVED;
 /// distinct from the shared ROLE token [`contextgraph::META_ACTOR`] stamps (two concurrent
 /// sibling adjudicators carry the SAME actor, so the actor cannot tell their emits apart).
 /// The per-spawn `emit` callback in [`run_reviewer`](RunCtx::run_reviewer) stamps it, so an
-/// approve-shaped verdict a GATING spawn records via `rigger_emit` on the in-process (cli)
-/// path is attributable to THAT spawn EXACTLY - the correlation the store-sourced
+/// approve-shaped verdict a GATING spawn hands through that callback is attributable to
+/// THAT spawn EXACTLY - the correlation the store-sourced
 /// verdict-channel-mismatch backstop needs to exclude a CONCURRENT sibling's approve under
 /// the `run_wave` fan-out. Audit metadata on events that already exist, never a new event
 /// type (spec 18's Global constraints); folds and projections ignore it, exactly like
@@ -3394,8 +3394,7 @@ impl RunCtx<'_> {
     }
 
     /// THE AGENT EMIT: an event an agent's spawn emits through the driver's in-process emit
-    /// callback - on a cli host, each record line the agent printed, which the driver's bridge
-    /// replays through it - built like [`emit_meta`](RunCtx::emit_meta) with the spawn's `stamps`,
+    /// callback - built like [`emit_meta`](RunCtx::emit_meta) with the spawn's `stamps`,
     /// then judged by the one emit guard every emit surface runs ([`Deps::check_emit`]) before it
     /// is appended. A payload the fold cannot apply, or a record whose id another seat holds,
     /// lands nothing, and the refusal is the callback's error, so it is the spawn's, marked
@@ -4657,7 +4656,7 @@ impl RunCtx<'_> {
 
     /// The cwd-isolation invariant for EVERY spawned agent (the worktree-isolation
     /// fix): an agent NEVER runs in the live main-repo checkout. A spawn's `dir`
-    /// becomes the agent's working directory (the cli driver's `current_dir`, the
+    /// becomes the agent's working directory (a process host's `current_dir`, the
     /// Agent SDK's `cwd`); an EMPTY `dir` makes the agent inherit the driver's own
     /// cwd, which - for `rigger workflow`, run from the repo root - IS the main
     /// checkout. With `bypassPermissions` on, the agent can then edit the live repo,
@@ -4763,8 +4762,7 @@ impl RunCtx<'_> {
             // the cache the unit's gates use.
             env: Self::spawn_env(&build_env, dir, cache),
             reviews: reviews.to_vec(),
-            // The existing blocking drivers (cli/workflow) ignore these two; spec 104's host
-            // is not wired in here yet.
+            // The headless host reads these two; the other drivers ignore them.
             settings_json: String::new(),
             launch: 0,
             // A fresh session; `continue_prior_session` points a later round's spawn at the
@@ -5971,10 +5969,9 @@ impl RunCtx<'_> {
                 // its supersede order from (see the matching comment there). The live
                 // MCP/workflow driver path already gets this for free (`stamp_current_spawn`
                 // stamps every emit while a spawn is being served); this `emit` callback is
-                // the ONLY channel the cli subprocess driver (`crates/rigger-driver/src/driver/cli.rs`, wired at
-                // main.rs:2770/4323) has to bridge a bridged UnitProposed's attribution, so
-                // it must stamp it itself here. Harmless (and consistent with
-                // `run_reviewer`'s identical pattern) for a plain implementer's own
+                // the ONLY channel a driver that hands a record through it has for a
+                // UnitProposed's attribution, so it must stamp it itself here. Harmless (and
+                // consistent with `run_reviewer`'s identical pattern) for a plain implementer's own
                 // DecisionMade emits, which carry no episode significance.
                 let emit = |t: &str, v: Value| {
                     self.emit_agent(
@@ -6034,8 +6031,7 @@ impl RunCtx<'_> {
                         // An implementer is never a review tier: no roster to render
                         // (spec 67, criterion 4).
                         reviews: Vec::new(),
-                        // The existing blocking drivers (cli/workflow) ignore these two;
-                        // spec 104's host is not wired in here yet.
+                        // The headless host reads these two; the other drivers ignore them.
                         settings_json: String::new(),
                         launch: 0,
                         // Set by `continue_prior_session` below when there is a session
@@ -6664,8 +6660,7 @@ impl RunCtx<'_> {
                             // A speculation candidate is an implementer lane, never a review
                             // tier: no roster to render (spec 67, criterion 4).
                             reviews: Vec::new(),
-                            // The existing blocking drivers (cli/workflow) ignore these;
-                            // spec 104's host is not wired in here yet.
+                            // The headless host reads these; the other drivers ignore them.
                             settings_json: String::new(),
                             launch: 0,
                             resumed_from: String::new(),
@@ -7725,8 +7720,8 @@ impl RunCtx<'_> {
                 // driver paths, which is what lets the review-quality folds key an upheld
                 // finding to its tier regardless of which driver recorded it. ALSO stamp
                 // this spawn's deterministic id ([`META_SPAWN`]) so an approve-shaped verdict
-                // a GATING adjudicator records via `rigger_emit` on the in-process (cli) path
-                // is attributable to THAT spawn EXACTLY - not just its shared role token,
+                // a GATING adjudicator hands through this callback is attributable to
+                // THAT spawn EXACTLY - not just its shared role token,
                 // which a concurrent sibling adjudicator (`run_wave` fan-out) carries too -
                 // the per-spawn correlation the mismatch backstop (`gating_spawn_emitted_approve`)
                 // keys on to exclude a sibling's approve.
@@ -7760,10 +7755,12 @@ impl RunCtx<'_> {
                         //
                         // A driver PARK (the replay frontier) or a BUDGET refusal unwinds the unit
                         // cleanly and PROPAGATES unchanged (its marker survives the `format!` wrapping,
-                        // so `is_parked`/`carries_marker(.., BUDGET_MARKER)` still recognize it upstream). And the LIVE
-                        // drivers (cli / workflow) never RECORD a spawn result, so `review_spawn_errored`
-                        // is false there and a genuine in-process review failure still propagates as
-                        // the stage's error exactly as before - only a REPLAYED recorded error re-parks.
+                        // so `is_parked`/`carries_marker(.., BUDGET_MARKER)` still recognize it upstream).
+                        // The headless host RECORDS its result as the replay path does, so a failed
+                        // hosted review re-drives through this same bound. Only the workflow driver
+                        // records none, so `review_spawn_errored` is false there and a genuine
+                        // in-process review failure still propagates as the stage's error exactly as
+                        // before.
                         if !is_parked_or_budget_refused(&e) && self.review_spawn_errored(&id)? {
                             continue;
                         }
@@ -7851,8 +7848,8 @@ impl RunCtx<'_> {
 
     /// Whether the GATING spawn `id` emitted an approve-shaped verdict via `rigger_emit`
     /// DURING its run (spec 18, unit 3), read from the STORE so the backstop fires on
-    /// EVERY driver - the in-process cli callback, the out-of-process workflow MCP server,
-    /// AND the replay driver (rigger step) - not only the cli stdout bridge. The emitted
+    /// EVERY driver - the emit callback, the headless host's spawn-bound `rigger` server,
+    /// the out-of-process workflow MCP server AND the replay driver (rigger step). The emitted
     /// approve is the DIAGNOSTIC signal of a persona that recorded its verdict as an event
     /// instead of on the result channel the gate reads; the result channel still DECIDES
     /// (the caller pairs this with `!has_verdict_line`), honoring addendum 2.2.
@@ -7913,10 +7910,11 @@ impl RunCtx<'_> {
     /// excluded - it is a real verdict that folds normally.
     ///
     /// Scoped to the CURRENT run (like every execution-replay lookup, spec 06 unit 1), so a
-    /// prior run's recorded review error never re-parks a fresh run's same-id review spawn. On
-    /// the LIVE drivers (cli / workflow) no spawn result is ever recorded, so this is always
-    /// `false` there and a genuine in-process review failure still propagates to remediation
-    /// unchanged - only a REPLAYED recorded error re-parks.
+    /// prior run's recorded review error never re-parks a fresh run's same-id review spawn. The
+    /// headless host records its result as the replay path does, so this reads a failed hosted
+    /// review as it reads a replayed one. The workflow driver records no spawn result, so this
+    /// is always `false` there and a genuine in-process review failure still propagates to
+    /// remediation unchanged.
     fn review_spawn_errored(&self, id: &str) -> Result<bool, Error> {
         let events = self.read_current_run()?;
         Ok(spawn::result_of(&events, id)
@@ -7940,10 +7938,10 @@ impl RunCtx<'_> {
     ///   an empty stdout is the NORMAL outcome, never degeneracy by itself. It is
     ///   degenerate only when the conductor OBSERVED it produce nothing at all: zero
     ///   ReviewFindings from this spawn's emit callback AND an empty stdout. That
-    ///   observation is possible only while the agent runs IN-PROCESS (the live drivers);
-    ///   on the stepwise path the agent ran out-of-process and its findings, if any, are
-    ///   already in the graph, so a REPLAYED result (one whose outcome is already recorded
-    ///   in the log) is a VALID outcome, never degeneracy. This is why a healthy
+    ///   observation is possible only while the agent runs IN-PROCESS (the workflow driver);
+    ///   on the stepwise and the hosted path the agent ran out-of-process and its findings,
+    ///   if any, are already in the graph, so a result whose outcome is already recorded
+    ///   in the log is a VALID outcome, never degeneracy. This is why a healthy
     ///   lens/adversary that correctly emitted its findings and self-reported an empty
     ///   success is NOT misread as degenerate on the production replay driver
     ///   (adv-u2gap18-empty-success-is-a-valid-outcome-misread-as-degenerate), with no
@@ -7973,10 +7971,11 @@ impl RunCtx<'_> {
             return Ok(false);
         }
         // Empty stdout, zero observed findings: degenerate only if the agent actually ran
-        // in-process (live). A spawn whose result is ALREADY recorded was REPLAYED - the
-        // agent ran out-of-process and its findings went to the graph, so its empty stdout
-        // is a valid outcome, not degeneracy. The live drivers never record a spawn
-        // result, so this read is `None` there and the in-process observation stands.
+        // in-process. A spawn whose result is ALREADY recorded ran out-of-process - replayed,
+        // or hosted as a headless session, whose host records the result - and its findings
+        // went to the graph, so its empty stdout is a valid outcome, not degeneracy. The
+        // workflow driver records no spawn result, so this read is `None` there and the
+        // in-process observation stands.
         let events = self.read_current_run()?;
         let replayed = spawn::result_of(&events, id)
             .map_err(|e| Error(e.to_string()))?
@@ -8295,8 +8294,7 @@ impl RunCtx<'_> {
                         // The planner/re-planner is never a review tier: no roster to render
                         // (spec 67, criterion 4).
                         reviews: Vec::new(),
-                        // The existing blocking drivers (cli/workflow) ignore these; spec
-                        // 104's host is not wired in here yet.
+                        // The headless host reads these; the other drivers ignore them.
                         settings_json: String::new(),
                         launch: 0,
                         resumed_from: String::new(),
@@ -12879,10 +12877,11 @@ const PLAN_PROTOCOL: &str = "You are the planner. The conductor has ALREADY crea
 /// `actor` is the reviewer's ROLE token, its step's [`review_step_role`] (`lens:<agent>` or
 /// `adversary`, with `@<k>` from a kind's second step on), that the finding's `by` field carries.
 /// This is what makes finding attribution reach the SAME log the adjudicator's `SpawnResult` lands
-/// on: the in-process (cli) driver stamps [`contextgraph::META_ACTOR`] on the finding for us, but
-/// an OUT-OF-PROCESS reviewer (the courier / workflow path) emits its finding through
-/// `rigger emit`, which stamps no actor - so on THAT path, where the adjudicator's upheld/cause
-/// `SpawnResult` is the only place the verdict is recorded, the `by` field is the sole attribution
+/// on: the emit callback stamps [`contextgraph::META_ACTOR`] on the finding for us, but
+/// an OUT-OF-PROCESS reviewer (a hosted session, the courier / workflow path) emits its finding
+/// through `rigger_emit` or `rigger emit`, which stamp no actor - so on THAT path, where the
+/// adjudicator's upheld/cause `SpawnResult` is the only place the verdict is recorded, the `by`
+/// field is the sole attribution
 /// the review-quality folds (finding survival, adversary precision, per-tier cost) can key an
 /// upheld finding on. Carrying the role token (not the raw agent id) keeps it consistent with the
 /// [`spawn_id`] role the per-tier `SpawnResult` cost fold reads, so both driver paths attribute a
@@ -16596,7 +16595,7 @@ mod tests {
         /// Absent when the agent never ran, its file was never landed, or `opts.dir`
         /// was empty.
         read_results: Mutex<HashMap<String, String>>,
-        /// Whether every spawn runs as a resumable session, the way the cli host's do: its
+        /// Whether every spawn runs as a resumable session, the way a process host's do: its
         /// result names the session it ran as - the one [`SpawnOpts::resumed_from`] asked it
         /// to continue, or `sess-<spawn id>` for a fresh one - so the conductor records it and
         /// a later attempt continues it. Off, a spawn reports no session (the workflow and
@@ -39844,7 +39843,7 @@ mod tests {
             assert_eq!(
                 driver.targets_for(agent_id),
                 vec![(want.clone(), want.clone())],
-                "{agent_id} builds into {want} under both the cli driver's environment and the \
+                "{agent_id} builds into {want} under both a process host's environment and the \
                  workflow driver's wave"
             );
         }

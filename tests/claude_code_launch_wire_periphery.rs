@@ -136,6 +136,7 @@ fn spawn_launched_survives_a_cold_start_a_second_store_instance_reads_the_first_
         run_store: &run_store,
         scratch_root: String::new(),
         stop_grace: std::time::Duration::from_secs(30),
+        handed_env: Vec::new(),
     };
 
     // First "process": open the store, perform one launch, then DROP the store - the
@@ -284,6 +285,7 @@ fn launch_resolves_an_empty_rigger_bin_to_the_literal_rigger_on_path() {
         run_store: &run_store,
         scratch_root: String::new(),
         stop_grace: std::time::Duration::from_secs(30),
+        handed_env: Vec::new(),
     };
     let store = Store::open(":memory:").expect("in-memory store for a pure-argv assertion");
     let mut launch = driver
@@ -356,6 +358,7 @@ fn launch_resolves_an_empty_bin_to_the_literal_claude_found_on_path() {
         run_store: &run_store,
         scratch_root: String::new(),
         stop_grace: std::time::Duration::from_secs(30),
+        handed_env: Vec::new(),
     };
     let store = Store::open(":memory:").expect("in-memory store");
     let result = driver.launch(
@@ -398,6 +401,7 @@ fn launch_reaps_the_child_when_the_stdin_write_fails() {
         run_store: &run_store,
         scratch_root: String::new(),
         stop_grace: std::time::Duration::from_secs(30),
+        handed_env: Vec::new(),
     };
     let store = Store::open(":memory:").expect("in-memory store");
     let pid_dir = tempfile::tempdir().expect("throwaway dir for the fixture's pid file");
