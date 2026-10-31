@@ -5647,11 +5647,12 @@ mod tests {
 
     /// spec 24/70, crit 1: `compose_precommit` is the PURE, filesystem-free composer for the
     /// docs pre-commit hook. A FRESH install (no existing hook) yields a runnable `/bin/sh`
-    /// script carrying rigger's sentinel-marked managed block: it checks the docs (`rigger
-    /// docs`) against ONLY the two rendered outputs by path (never a blanket `git add` - it
-    /// never stages anything at all, spec 70), acts ONLY where those docs are already tracked
-    /// (inert in an operator repo), guards `rigger` presence for graceful degrade, and ends
-    /// with `true` on the no-drift path so a matching render can never block a commit.
+    /// script carrying rigger's sentinel-marked managed block: it checks the docs with `rigger
+    /// docs --check`, which reports every rendered output and writes nothing - so the hook
+    /// carries no list of outputs of its own and never runs a render - never stages anything
+    /// at all (spec 70), acts ONLY on the outputs the repo already tracks (inert in an
+    /// operator repo), guards `rigger` presence for graceful degrade, and ends with `true` on
+    /// the no-drift path so a matching render can never block a commit.
     #[test]
     fn compose_precommit_fresh_install_carries_the_managed_block() {
         let hook = compose_precommit(None);
@@ -5668,10 +5669,15 @@ mod tests {
             hook.contains("command -v rigger"),
             "guards rigger presence (graceful degrade)"
         );
+        let invocations: Vec<&str> = hook.split("\"$rigger_bin\" docs").skip(1).collect();
         assert!(
-            hook.contains(skill_source_rel("using-rigger").as_str())
-                && hook.contains(HANDBOOK_DISCIPLINE_REL),
-            "compares exactly the two rendered outputs by path; got:\n{hook}"
+            !invocations.is_empty() && invocations.iter().all(|rest| rest.starts_with(" --check")),
+            "every docs invocation is the writing-nothing check, never a render; got:\n{hook}"
+        );
+        assert!(
+            !hook.contains(skill_source_rel("using-rigger").as_str())
+                && !hook.contains(HANDBOOK_DISCIPLINE_REL),
+            "the hook names no output path - the check's own report is its list; got:\n{hook}"
         );
         assert!(
             !hook.contains("add -A") && !hook.contains("add .") && !hook.contains("git add --"),
@@ -5690,11 +5696,14 @@ mod tests {
 
     /// spec 70, crit 1 (the hook REFUSES instead of REWRITING, pure/structural): the managed
     /// block must never silently launder a stale re-render into the commit by staging it. It
-    /// compares the fresh render against what is already staged (`git diff`, not `git add`) and
-    /// hard-fails (`exit 1`) naming the drifted files, the rendering binary's path AND its build
-    /// provenance (`rigger version`), and the two remedies - so a stale binary on PATH can never
-    /// silently overwrite correctly staged docs (the bug that cost three rejected attempts on
-    /// one unit). A matching render still ends in a bare `true` and never touches the index.
+    /// takes the check's verdict on every tracked output and compares each one's working-tree
+    /// file against the index (`git diff`, not `git add`), and hard-fails (`exit 1`) naming the
+    /// drifted or unstaged files, the checking binary's path AND its build provenance (`rigger
+    /// version`), and the remedies - so a stale binary on PATH can never silently overwrite
+    /// correctly staged docs (the bug that cost three rejected attempts on one unit). A binary
+    /// too old to check is found by asking its `help` for the usage line [`USAGE_TEXT`] pins,
+    /// before it is ever given `docs`, and is refused by name, so it never renders. A matching
+    /// render still ends in a bare `true` and never touches the index.
     #[test]
     fn precommit_block_refuses_on_drift_instead_of_staging() {
         let hook = compose_precommit(None);
@@ -5722,6 +5731,29 @@ mod tests {
                 && (hook.contains("tree-built") || hook.contains("tree built")),
             "the refusal names the two remedies - re-render with the tree-built binary, or \
              reinstall; got:\n{hook}"
+        );
+        assert!(
+            hook.contains("git diff --quiet --") && hook.contains("git add"),
+            "a tracked output whose working-tree file differs from the index refuses and tells \
+             the operator to stage it; got:\n{hook}"
+        );
+        let probe = hook
+            .find("\"$rigger_bin\" help")
+            .expect("the block asks the resolved binary for its help");
+        let check = hook
+            .find("\"$rigger_bin\" docs --check")
+            .expect("the block runs the resolved binary's check");
+        assert!(
+            probe < check
+                && hook.contains("*\"rigger docs --check\"*")
+                && USAGE_TEXT.contains("rigger docs --check"),
+            "the block asks `help` for the usage line `rigger docs --check` before it ever \
+             runs `docs`; got:\n{hook}"
+        );
+        assert!(
+            hook.contains("too old to check") && !hook.contains("'rendered '"),
+            "a binary whose help lacks the check is refused as too old to check, and the block \
+             never reads a render's output; got:\n{hook}"
         );
     }
 
@@ -5910,12 +5942,12 @@ mod tests {
              only); got:\n{hook}"
         );
 
-        // Both the render call and the provenance line invoke the RESOLVED binary, never a
+        // Both the docs check and the provenance line invoke the RESOLVED binary, never a
         // bare unqualified `rigger` (spec 75 done-when 1: "invokes the resolved binary for
         // both the render and the provenance line").
         assert!(
-            hook.contains("\"$rigger_bin\" docs"),
-            "the docs render must invoke the resolved candidate binary; got:\n{hook}"
+            hook.contains("\"$rigger_bin\" docs --check"),
+            "the docs check must invoke the resolved candidate binary; got:\n{hook}"
         );
         assert!(
             hook.contains("\"$rigger_bin\" version"),
@@ -5930,9 +5962,9 @@ mod tests {
             "the old bare-unqualified provenance invocation must be gone; got:\n{hook}"
         );
 
-        // The top-level availability gate now covers EVERY candidate (including PATH), not
-        // PATH alone - a wrong/stale candidate can only ever convert a false refusal into a
-        // pass when the render genuinely matches (safe-closed), never the reverse.
+        // The top-level availability gate covers EVERY candidate (including PATH), not PATH
+        // alone. The check is only as current as the binary that runs it, which is why the
+        // tree-built candidates are tried first.
         assert!(
             hook.contains("[ -n \"$rigger_bin\" ]"),
             "the block gates on a RESOLVED binary (any candidate), not PATH alone; got:\n{hook}"
@@ -6038,8 +6070,8 @@ mod tests {
             "the stale block body is gone; got:\n{refreshed}"
         );
         assert!(
-            refreshed.contains("rigger docs"),
-            "the current block body is present"
+            refreshed.contains("\"$rigger_bin\" docs --check"),
+            "the current block body is present; got:\n{refreshed}"
         );
         assert!(
             refreshed.contains("echo keep-me") && refreshed.contains("echo trailing-keep"),
@@ -6205,7 +6237,8 @@ mod tests {
     }
 
     /// `rigger --help` lists `rigger docs`, the verb that renders the committed discipline, on
-    /// its own line beside the setup verbs, so an operator can find it without the source.
+    /// its own line beside the setup verbs, and `rigger docs --check`, its writing-nothing
+    /// check, on the line after, so an operator can find both without the source.
     #[test]
     fn usage_text_lists_the_docs_verb_on_its_own_line() {
         assert!(
@@ -6214,12 +6247,19 @@ mod tests {
             ),
             "the usage text must list `rigger docs` with its description; got:\n{USAGE_TEXT}"
         );
+        assert!(
+            USAGE_TEXT.contains(
+                "\n  rigger docs --check         check every rendered output against a fresh render,\n"
+            ),
+            "the usage text must list `rigger docs --check` with its description; got:\n{USAGE_TEXT}"
+        );
         let docs = USAGE_TEXT.find("\n  rigger docs ").unwrap();
+        let check = USAGE_TEXT.find("\n  rigger docs --check ").unwrap();
         let setup = USAGE_TEXT.find("\n  rigger setup ").unwrap();
         let prime = USAGE_TEXT.find("\n  rigger prime ").unwrap();
         assert!(
-            setup < docs && docs < prime,
-            "`rigger docs` sits between setup and prime, as in the registry"
+            setup < docs && docs < check && check < prime,
+            "`rigger docs` and then its check sit between setup and prime, as in the registry"
         );
     }
 
