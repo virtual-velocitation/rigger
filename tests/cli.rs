@@ -50,6 +50,7 @@ use common::fixtures::pgid_of;
 use common::git::git_answer;
 use common::git::temp_git_project_with_commit;
 use common::mcp::McpSession;
+use common::repo::{flag_value, recorded_argv, recorded_task, stub_path};
 use common::rigger_bin;
 use common::workflow_probe::write_workflow;
 
@@ -6716,32 +6717,20 @@ stages:
     );
 }
 
-/// Install a fake `claude` on a fresh bin dir: a shell script that answers each spawn by
-/// matching its system prompt (the content of the file its `--system-prompt-file` names) against
-/// the shell `case` `arms` (each `*MARKER*) ... ;;`),
-/// failing loudly on any prompt no arm names. Returns the bin dir (keep it alive for the run)
-/// and a `PATH` value that resolves it first.
+/// Install a fake `claude` on a fresh directory: the checked-in stream-json stand-in
+/// `claude-code-arms-agent.sh`, answering each spawn from the shell `case` `arms` over its system
+/// prompt (the content of the file its `--system-prompt-file` names; each arm is
+/// `*MARKER*) ... ;;`, and what it prints is the session's `result`), failing loudly on any
+/// prompt no arm names. Only the arms are written here, beside the stand-in's symlink in the
+/// directory's `bin`. Returns the directory (keep it alive for the run) and a `PATH` value that
+/// resolves the stand-in first.
 fn install_fake_claude(arms: &str) -> (tempfile::TempDir, String) {
-    use std::os::unix::fs::PermissionsExt;
-
     let fakebin = tempfile::tempdir().unwrap();
-    let claude_path = fakebin.path().join("claude");
+    let path_env = stub_path(fakebin.path(), "claude", Some("claude-code-arms-agent.sh"));
     std::fs::write(
-        &claude_path,
+        fakebin.path().join("bin/claude-arms"),
         format!(
-            r#"#!/bin/sh
-sp=""
-next=0
-for a in "$@"; do
-  if [ "$next" = "1" ]; then
-    sp=$(cat "$a")
-    next=0
-  fi
-  if [ "$a" = "--system-prompt-file" ]; then
-    next=1
-  fi
-done
-case "$sp" in
+            r#"case "$sp" in
 {arms}  *)
     echo "fake-claude: unrecognized system prompt: $sp" 1>&2
     exit 1
@@ -6751,15 +6740,291 @@ esac
         ),
     )
     .unwrap();
-    let mut perms = std::fs::metadata(&claude_path).unwrap().permissions();
-    perms.set_mode(0o755);
-    std::fs::set_permissions(&claude_path, perms).unwrap();
-    let path_env = format!(
-        "{}:{}",
-        fakebin.path().display(),
-        std::env::var("PATH").unwrap_or_default()
-    );
     (fakebin, path_env)
+}
+
+/// An arm of [`install_fake_claude`] for the `Do the unit.` workers: the launch records, in the
+/// directory of the fake, its argv, its first user message, the `KURRENTDB_CONN` it was started
+/// with (`unset` when none) and the agent streams its scratch root holds while it runs, then
+/// writes the change a merging stage lands.
+const RECORDING_WORKER_ARM: &str = r#"  *"Do the unit."*)
+    printf '%s\0' "$@" > "$here/argv"
+    printf '%s\n' "$first" > "$here/first-message"
+    printf '%s' "${KURRENTDB_CONN-unset}" > "$here/conn"
+    ls "$RIGGER_TMPDIR"/agent-stream/* > "$here/streams" || true
+    echo "pub fn work() {}" > work.rs
+    ;;
+"#;
+
+/// `rigger <args>` in `cwd` under the scratch root `scratch`, with [`RECORDING_WORKER_ARM`]'s fake
+/// `claude` first on PATH: its stdout, stderr and success, then the directory holding what the
+/// arm recorded, which keeps the fake alive.
+fn run_recording(
+    cwd: &Path,
+    args: &[&str],
+    scratch: &Path,
+) -> (String, String, bool, tempfile::TempDir) {
+    let (fakebin, path_env) = install_fake_claude(RECORDING_WORKER_ARM);
+    let (out, err, ok) = run_rigger_envs(
+        cwd,
+        args,
+        &[
+            ("PATH", &path_env),
+            ("RIGGER_TMPDIR", scratch.to_str().unwrap()),
+        ],
+    );
+    (out, err, ok, fakebin)
+}
+
+/// Plant a stale agent stream under `scratch`, for a run that must leave it: its path.
+fn plant_stale_stream(scratch: &Path) -> std::path::PathBuf {
+    let stale = scratch.join("agent-stream/old-run/old-spawn.0.jsonl");
+    std::fs::create_dir_all(stale.parent().unwrap()).unwrap();
+    std::fs::write(&stale, "stale").unwrap();
+    stale
+}
+
+/// Spec 105's THE COMPOSITION ROOT, end to end: given a project, when the operator runs `rigger
+/// run`, then the agent is hosted on a stream-json session, its `--allowed-tools` pre-approves
+/// the bound server's record, progress and scratch tools after the agent's own and the helpers',
+/// and that bound server runs the running executable for the spawn.
+#[cfg(unix)]
+#[test]
+fn run_hosts_its_agents_granting_each_launch_its_bound_tools() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_workflow_fixture(root, &LIVENESS_WORKFLOW);
+    let scratch = tempfile::tempdir().unwrap();
+    let (out, err, ok, fake) = run_recording(root, &["run"], scratch.path());
+    assert!(ok, "the run succeeds; stderr: {err}\nstdout: {out}");
+    let argv = recorded_argv(&fake.path().join("bin/argv"));
+    assert_eq!(flag_value(&argv, "--input-format"), "stream-json");
+    assert_eq!(flag_value(&argv, "--output-format"), "stream-json");
+    assert_eq!(
+        flag_value(&argv, "--allowed-tools"),
+        "Read,Edit,mcp__rigger__rigger_graph,mcp__rigger__rigger_ground,\
+         mcp__rigger__rigger_peers,mcp__rigger__rigger_emit,mcp__rigger__rigger_progress,\
+         mcp__rigger__rigger_scratch"
+    );
+    let mcp: serde_json::Value =
+        serde_json::from_str(flag_value(&argv, "--mcp-config")).expect("the server config is JSON");
+    assert_eq!(
+        mcp["mcpServers"]["rigger"],
+        serde_json::json!({
+            "command": std::fs::canonicalize(rigger_bin()).unwrap(),
+            "args": ["mcp", "--spawn", "a/implementer#0"],
+        }),
+        "the spawn's bound server runs the running executable"
+    );
+}
+
+/// Spec 105's live-progress frame, end to end: given a project, when the operator runs `rigger
+/// run`, then the launch's first user message closes with the instruction naming the
+/// `rigger_progress` tool the launch pre-approves.
+#[cfg(unix)]
+#[test]
+fn run_frames_a_launchs_first_message_with_the_live_progress_instruction() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_workflow_fixture(root, &LIVENESS_WORKFLOW);
+    let scratch = tempfile::tempdir().unwrap();
+    let (out, err, ok, fake) = run_recording(root, &["run"], scratch.path());
+    assert!(ok, "the run succeeds; stderr: {err}\nstdout: {out}");
+    let task = recorded_task(&fake.path().join("bin/first-message"));
+    let frame = "\n\n--- rigger driver ---\nLIVE PROGRESS: after each significant step (a search, \
+                 a build, a commit, a decision) report ONE short line of what you just did by \
+                 calling the mcp__rigger__rigger_progress tool with that line as its activity. \
+                 Keep it flowing while you work.";
+    assert!(task.ends_with(frame), "the frame closes the task: {task:?}");
+    assert_eq!(
+        task.matches("--- rigger driver ---").count(),
+        1,
+        "the task is framed once: {task:?}"
+    );
+}
+
+/// Spec 105's run teardown, end to end: given a project whose run ends, when the run ended done
+/// the agent streams its launches wrote are reclaimed with the rest of its scratch, and when it
+/// ended with work left (here an escalated unit) they stand for whoever resumes or reads them.
+#[cfg(unix)]
+#[test]
+fn a_done_runs_agent_streams_are_reclaimed_and_an_unfinished_runs_are_kept() {
+    struct Case {
+        name: &'static str,
+        workflow: &'static WorkflowFixture,
+        ending: &'static str,
+        reclaimed: bool,
+    }
+    let cases = [
+        Case {
+            name: "done",
+            workflow: &REVIEWLESS_GIT_UNIT_WORKFLOW,
+            ending: "done: every unit integrated",
+            reclaimed: true,
+        },
+        Case {
+            name: "escalated",
+            workflow: &REVIEWLESS_GIT_ESCALATING_UNIT_WORKFLOW,
+            ending: "incomplete: not every unit integrated",
+            reclaimed: false,
+        },
+    ];
+    for case in cases {
+        let dir = temp_git_project_with_commit();
+        let root = dir.path();
+        write_workflow_fixture(root, case.workflow);
+        let scratch = tempfile::tempdir().unwrap();
+        let (out, err, ok, fake) = run_recording(root, &["run"], scratch.path());
+        assert!(
+            ok,
+            "{}: the run exits 0; stderr: {err}\nstdout: {out}",
+            case.name
+        );
+        assert_eq!(
+            out.lines().nth(2).unwrap(),
+            case.ending,
+            "{}: how the run ended",
+            case.name
+        );
+        assert_eq!(
+            std::fs::read_to_string(fake.path().join("bin/streams")).unwrap(),
+            "solo_2fimplementer_230.0.jsonl\n",
+            "{}: the launch's stream was on disk under the scratch root while it ran",
+            case.name
+        );
+        assert_eq!(
+            !scratch.path().join("agent-stream").exists(),
+            case.reclaimed,
+            "{}: the agent streams after the run",
+            case.name
+        );
+    }
+}
+
+/// Spec 105's root check on the run entry: given a run whose directory and repository disagree,
+/// or whose scratch root belongs to another repository, when the operator runs `rigger run`,
+/// then it refuses naming the verb, before any launch and before it reclaims or reaps, and leaves
+/// no store where it stood.
+#[cfg(unix)]
+#[test]
+fn a_run_whose_roots_disagree_refuses_before_it_reclaims() {
+    struct Case {
+        name: &'static str,
+        nested_cwd: bool,
+        scratch_in_another_repo: bool,
+        refusal: &'static str,
+    }
+    let cases = [
+        Case {
+            name: "a directory under the repository",
+            nested_cwd: true,
+            scratch_in_another_repo: false,
+            refusal: "rigger run: refusing - the store this command would open and the repository \
+                      git resolved for this directory disagree on their root",
+        },
+        Case {
+            name: "a scratch root in another repository",
+            nested_cwd: false,
+            scratch_in_another_repo: true,
+            refusal: "rigger run: refusing - the scratch root this command would use belongs to \
+                      a DIFFERENT repository than the one this command resolved",
+        },
+    ];
+    for case in cases {
+        let dir = temp_git_project_with_commit();
+        let cwd = if case.nested_cwd {
+            dir.path().join("nested")
+        } else {
+            dir.path().to_path_buf()
+        };
+        std::fs::create_dir_all(&cwd).unwrap();
+        write_workflow_fixture(&cwd, &LIVENESS_WORKFLOW);
+        let other = temp_git_project_with_commit();
+        let outside = tempfile::tempdir().unwrap();
+        let scratch = if case.scratch_in_another_repo {
+            other.path().join("scratch-elsewhere")
+        } else {
+            outside.path().join("scratch")
+        };
+        let stale = plant_stale_stream(&scratch);
+        let (out, err, ok, fake) = run_recording(&cwd, &["run"], &scratch);
+        assert!(!ok, "{}: the run refuses; stdout: {out}", case.name);
+        assert!(
+            err.starts_with(&format!("rigger: {}", case.refusal)),
+            "{}: the refusal leads with the verb: {err}",
+            case.name
+        );
+        assert_eq!(
+            std::fs::read_to_string(&stale).unwrap(),
+            "stale",
+            "{}: nothing is reclaimed",
+            case.name
+        );
+        assert!(
+            !fake.path().join("bin/argv").exists(),
+            "{}: no agent is launched",
+            case.name
+        );
+        assert!(
+            !common::cli::rigger_file(&cwd, "events.db").exists(),
+            "{}: no store is opened",
+            case.name
+        );
+    }
+}
+
+/// Spec 105's run teardown in a project with no repository: given a done run where nothing keys
+/// a scratch root, when it ends, then whatever stands in the directory `RIGGER_TMPDIR` names is
+/// not this run's and is left, and the host wrote no stream there.
+#[cfg(unix)]
+#[test]
+fn a_done_run_in_a_project_with_no_repository_reclaims_nothing() {
+    const MERGING_WORKFLOW: WorkflowFixture = WorkflowFixture {
+        worker: UNISOLATED_WORKER,
+        body: "defaults:\n  grounder: nop\n  budget: 60\nstages:\n  a:\n    agent: worker\n    \
+               on_pass: merge\n",
+    };
+    let dir = temp_repoless_project();
+    let root = dir.path();
+    write_workflow_fixture(root, &MERGING_WORKFLOW);
+    let scratch = tempfile::tempdir().unwrap();
+    let stale = plant_stale_stream(scratch.path());
+    let (out, err, ok, fake) = run_recording(root, &["run"], scratch.path());
+    assert!(ok, "the run succeeds; stderr: {err}\nstdout: {out}");
+    assert!(
+        out.starts_with(
+            "run state:\n  a                    integrated\ndone: every unit integrated\n"
+        ),
+        "the run is done: {out}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(fake.path().join("bin/streams")).unwrap(),
+        "old-spawn.0.jsonl\n",
+        "the launch wrote no stream of its own"
+    );
+    assert_eq!(std::fs::read_to_string(&stale).unwrap(), "stale");
+}
+
+/// Spec 105's store hand-off: given a run, when the operator selects a store, then every launch
+/// carries the selection's handed environment: nothing for the local store, the connection
+/// string for a server selected by flag alone.
+#[cfg(unix)]
+#[test]
+fn every_launch_carries_the_store_selections_handed_environment() {
+    fn handed(args: &[&str]) -> String {
+        let dir = temp_git_project_with_commit();
+        let root = dir.path();
+        write_workflow_fixture(root, &LIVENESS_WORKFLOW);
+        let scratch = tempfile::tempdir().unwrap();
+        let (out, err, ok, fake) = run_recording(root, args, scratch.path());
+        assert!(ok, "the run succeeds; stderr: {err}\nstdout: {out}");
+        std::fs::read_to_string(fake.path().join("bin/conn")).unwrap()
+    }
+    assert_eq!(handed(&["run"]), "unset", "the local store hands nothing");
+    common::fixtures::with_kurrentdb(|conn| {
+        let args = ["run", "--eventstore", "kurrentdb", "--conn", conn];
+        assert_eq!(handed(&args), conn, "a server hands its connection string");
+    });
 }
 
 /// Spec 64, criterion 3, adjudication round 3 finding
@@ -6781,11 +7046,10 @@ esac
 /// tests above document that they went GREEN under a mutation that disabled round 4's
 /// per-tier re-assert, before this test was written to close the actual gap.
 ///
-/// This drives the REAL `cli::Driver` instead - the synchronous, subprocess-per-spawn path
-/// `rigger run` uses - with a fake `claude` executable substituted onto `PATH` (the same
-/// shimming technique `crates/rigger-driver/src/driver/cli.rs`'s own `spawn_shells_out_and_bridges_the_agents_
-/// emits` unit test uses for the driver alone, extended here through the whole compiled
-/// binary and a real git-backed unit worktree). The fake agent plays four roles, selected
+/// This drives the REAL `claude_code::Driver` instead - the synchronous, process-per-spawn host
+/// `rigger run` builds at its composition root - with a fake `claude` executable substituted onto
+/// `PATH`, through the whole compiled binary and a real git-backed unit worktree. The fake agent
+/// plays four roles, selected
 /// by a marker embedded in each agent's own persona (which `build_system_prompt` forwards
 /// verbatim into the file `--system-prompt-file` names): the worker writes a file; the LENS - the review
 /// panel's own FIRST tier, standing in for the "review agents doing unprompted forensic
@@ -28757,7 +29021,7 @@ fn the_handbook_lists_every_built_in_entry_in_order_with_its_source() {
 }
 
 /// Spec 120's THE COMMUNICATION DISCIPLINE IS A SHADOWABLE BUILT-IN, end to end: given a project
-/// whose one stage spawns its worker through the real subprocess driver, when the operator runs
+/// whose one stage spawns its worker through the real headless host, when the operator runs
 /// `rigger run`, then the file the agent's `--system-prompt-file` names holds exactly `compose`'s
 /// output over the worker's persona - the communication section once, the retired heading
 /// nowhere, nothing appended after the composed layers.
