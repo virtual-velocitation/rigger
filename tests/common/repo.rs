@@ -40,6 +40,10 @@ pub fn stub_path(work: &Path, tool: &str, stub: Option<&str>) -> String {
     )
 }
 
+/// The checked-in session silent 7 s, past the host's unbounded wake-up interval, then ending in a
+/// result.
+pub const SILENT_PAST_THE_POLL: &str = "claude-code-silent-past-the-poll-then-result-agent.sh";
+
 /// The checked-in stand-in for the critic's `claude`, which [`write_critique_stub`] puts first on
 /// PATH.
 const CRITIQUE_STUB: &str = "claude-code-critique-agent.sh";

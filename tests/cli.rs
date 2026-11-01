@@ -53,6 +53,7 @@ use common::git::temp_git_project_with_commit;
 use common::mcp::McpSession;
 use common::repo::{
     assert_carries_spawn_hooks, flag_value, hook_words, recorded_argv, recorded_task, stub_path,
+    SILENT_PAST_THE_POLL,
 };
 use common::rigger_bin;
 use common::workflow_probe::write_workflow;
@@ -7487,10 +7488,7 @@ fn run_stops_a_session_silent_past_its_bound_with_the_supervisor_beating() {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
     write_liveness_workflow_bounded_at(root, 2);
-    let (out, err, ok) = run_with_the_agent(
-        root,
-        "claude-code-silent-past-the-poll-then-result-agent.sh",
-    );
+    let (out, err, ok) = run_with_the_agent(root, SILENT_PAST_THE_POLL);
     assert!(!ok, "the halted run fails; stderr: {err}\nstdout: {out}");
     assert_eq!(
         launches_and_stops(root),

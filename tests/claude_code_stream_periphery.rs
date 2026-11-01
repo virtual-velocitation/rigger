@@ -49,6 +49,7 @@ use common::fixtures::{
     FailAppendContaining,
 };
 use common::is_running;
+use common::repo::SILENT_PAST_THE_POLL;
 use rigger::conductor::{AgentDriver, AgentFailure, AgentResult, Error, SpawnOpts};
 use rigger::config::AgentDef;
 use rigger::driver::claude_code::{framed, Driver};
@@ -1350,10 +1351,6 @@ fn spawn_returns_a_real_result_promptly_even_when_a_descendant_still_holds_the_s
 }
 
 // ---- THE STOP's bound: `max_wall_clock` 0 is unbounded, never a 5 s stop ----
-
-/// The silent-past-the-poll fixture (silent 7 s, then a result), launched with no wall
-/// clock bound.
-const SILENT_PAST_THE_POLL: &str = "claude-code-silent-past-the-poll-then-result-agent.sh";
 
 #[test]
 fn an_unbounded_launch_silent_past_the_poll_still_records_its_result() {
