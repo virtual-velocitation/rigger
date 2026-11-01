@@ -7745,19 +7745,27 @@ fn a_mint_releases_the_hold_it_finds() {
 fn a_served_run_reaching_done_stays_held() {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
-    write_workflow_fixture(root, &LIVENESS_WORKFLOW);
+    write_workflow_fixture(root, &REVIEWLESS_GIT_UNIT_WORKFLOW);
     seed_a_run_held_by(root, Some("operator"));
     let mut mcp = McpSession::start_with(root, &["serve", "--base", "HEAD"]);
     let answered = answer_every_spawn(&mut mcp);
     let out = mcp.finish();
     assert_eq!(
         answered,
-        ["a/implementer#0"],
+        ["solo/implementer#0"],
         "the run drives; stderr: {}",
         String::from_utf8_lossy(&out.stderr)
     );
     assert_eq!(run_releases(root), Vec::<String>::new());
     assert_eq!(run_holds(root).len(), 1);
+    // Read by presence: a release wired into the serve path lands after this event, and the two
+    // assertions above are the ones that must name it.
+    let integrated = common::cli::run_payloads(root, rigger::ledger::TYPE_UNIT_INTEGRATED);
+    assert_eq!(
+        integrated.iter().map(|e| &e["id"]).collect::<Vec<_>>(),
+        ["solo"],
+        "the run's one unit integrated, so the run reached done"
+    );
 }
 
 /// A unit under every review tier, with `max_retries: 2` giving a rejected first round a second.
