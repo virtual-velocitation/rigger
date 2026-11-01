@@ -2687,10 +2687,14 @@ impl Fixture {
         ]
     }
 
-    /// [`RESUMED_SPAWN`], fresh, ending as `fresh_ending`.
+    /// [`RESUMED_SPAWN`], fresh, ending as `fresh_ending`, in this fixture's own directory: the
+    /// failure proofs pin a stderr tail exactly, and a launch with no directory runs in the
+    /// process's, which one test of this binary moves into a directory it then deletes, leaving
+    /// the shell a line of its own on that tail.
     fn fresh_opts(&self, fresh_ending: &str) -> SpawnOpts {
         SpawnOpts {
             env: self.ending_env("answer", fresh_ending),
+            dir: self.scratch_root.path().to_string_lossy().into_owned(),
             ..opts(RESUMED_SPAWN)
         }
     }
@@ -2701,7 +2705,7 @@ impl Fixture {
             resumed_from: PRIOR_SESSION.to_string(),
             resume_task: RESUME_TASK.to_string(),
             env: self.ending_env(resume_ending, fresh_ending),
-            ..opts(RESUMED_SPAWN)
+            ..self.fresh_opts(fresh_ending)
         }
     }
 
