@@ -49,7 +49,7 @@ pub fn read_run(store: &dyn EventStore, run_id: &str) -> Result<Vec<Event>, Erro
 
 /// A progress-store record that appends as one event of its own [`EVENT_TYPE`](Self::EVENT_TYPE),
 /// stamped with the run it belongs to - the ONE shape every record this store holds is built
-/// with ([`AgentProgress`], [`SpawnLaunched`], [`StopFailure`]).
+/// with ([`AgentProgress`], [`SpawnLaunched`], [`StopFailure`], [`ApiRetry`]).
 pub trait RunStamped: Serialize {
     /// The event type this record serializes as.
     const EVENT_TYPE: &'static str;
@@ -247,6 +247,29 @@ pub fn latest_stop_failure_class(progress_events: &[Event], spawn_id: &str) -> O
         }
     }
     found
+}
+
+/// The event type an [`ApiRetry`] record serializes as (spec 105 LIVENESS). Recorded to the
+/// progress store - never the run stream, same file boundary as [`TYPE_SPAWN_LAUNCHED`] - by
+/// the Claude Code host, once per `system/api_retry` line of a session's stream.
+pub const TYPE_API_RETRY: &str = "ApiRetry";
+
+/// One retry a session announced on its stream: which spawn, how long it said it would wait
+/// and why. Spec 105's LIVENESS names this record so an announced wait is never read as
+/// silence.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ApiRetry {
+    /// The deterministic spawn id this retry belongs to (e.g. `u/implementer#0`).
+    pub spawn: String,
+    /// The delay the line announced before the retry, in milliseconds; `0` when it named none.
+    pub delay_ms: u64,
+    /// Claude Code's own error-category string (e.g. `rate_limit`), exactly as the line
+    /// carried it; `unknown` when it named none.
+    pub category: String,
+}
+
+impl RunStamped for ApiRetry {
+    const EVENT_TYPE: &'static str = TYPE_API_RETRY;
 }
 
 /// A live per-agent view (spec 14, unit 2): for one in-flight spawn, what stage it is at,

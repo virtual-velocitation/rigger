@@ -264,8 +264,8 @@
       },
       {
         "file": "crates/rigger-driver/src/driver/claude_code.rs",
-        "start_line": 1120,
-        "end_line": 1128
+        "start_line": 1148,
+        "end_line": 1156
       },
       {
         "file": "tests/common/fixtures/fold.rs",
@@ -4464,8 +4464,8 @@
       },
       {
         "file": "crates/rigger-domain/src/progress.rs",
-        "start_line": 361,
-        "end_line": 364
+        "start_line": 384,
+        "end_line": 387
       },
       {
         "file": "tests/simplification_audit.rs",
@@ -5664,13 +5664,13 @@
     "sites": [
       {
         "file": "crates/rigger-driver/src/driver/claude_code.rs",
-        "start_line": 1360,
-        "end_line": 1367
+        "start_line": 1388,
+        "end_line": 1395
       },
       {
         "file": "crates/rigger-driver/src/driver/claude_code.rs",
-        "start_line": 1414,
-        "end_line": 1421
+        "start_line": 1442,
+        "end_line": 1449
       }
     ]
   },
@@ -5679,13 +5679,13 @@
     "sites": [
       {
         "file": "crates/rigger-driver/src/driver/claude_code.rs",
-        "start_line": 1407,
-        "end_line": 1413
+        "start_line": 1435,
+        "end_line": 1441
       },
       {
         "file": "crates/rigger-driver/src/driver/claude_code.rs",
-        "start_line": 1441,
-        "end_line": 1447
+        "start_line": 1469,
+        "end_line": 1475
       }
     ]
   },
@@ -5694,13 +5694,13 @@
     "sites": [
       {
         "file": "crates/rigger-driver/src/driver/claude_code.rs",
-        "start_line": 1539,
-        "end_line": 1559
+        "start_line": 1567,
+        "end_line": 1587
       },
       {
         "file": "crates/rigger-driver/src/driver/claude_code.rs",
-        "start_line": 1562,
-        "end_line": 1579
+        "start_line": 1590,
+        "end_line": 1607
       }
     ]
   },
@@ -6809,13 +6809,13 @@
     "sites": [
       {
         "file": "crates/rigger-store-sqlite/src/progress_store.rs",
-        "start_line": 39,
-        "end_line": 53
+        "start_line": 40,
+        "end_line": 54
       },
       {
         "file": "crates/rigger-store-sqlite/src/progress_store.rs",
-        "start_line": 59,
-        "end_line": 70
+        "start_line": 60,
+        "end_line": 71
       }
     ]
   },

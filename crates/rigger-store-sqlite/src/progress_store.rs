@@ -2,9 +2,10 @@
 //! recording one live progress report to a LIVE progress store. [`crate::progress`] keeps
 //! the model (`AgentProgress`, `AgentActivity`) and the pure fold (`consolidate`) -
 //! everything computable from already-read `&[Event]` slices, with no store at all. This
-//! module is the other half: `record`, the one function that appends to a
-//! `&dyn EventStore`, split into its own file (never a function-by-function `#[cfg]`
-//! inside `progress.rs`) so the pure half can compile for `wasm32-unknown-unknown`.
+//! module is the other half: `record`, the typed writers beside it and the [`append_stamped`]
+//! they share, the functions that append to a `&dyn EventStore`, split into their own file
+//! (never a function-by-function `#[cfg]` inside `progress.rs`) so the pure half can compile
+//! for `wasm32-unknown-unknown`.
 
 use crate::eventstore::{Error, EventStore, ExpectedRevision, Position};
 use crate::progress::{stream_of, AgentProgress, RunStamped, SpawnLaunched, StopFailure};
@@ -71,9 +72,10 @@ pub fn record_stop_failure(
 
 /// Append `report`, stamped with `run_id`, as the one event of its run's progress stream
 /// ([`stream_of`]):
-/// the append contract every record above shares. `what` names the record if the store wrote
-/// nothing ([`crate::eventstore::Appended::one`]).
-fn append_stamped<R: RunStamped>(
+/// the append contract every record above shares, and the writer a record with no wrapper of its
+/// own calls directly, as the Claude Code host does for [`crate::progress::ApiRetry`]. `what`
+/// names the record if the store wrote nothing ([`crate::eventstore::Appended::one`]).
+pub fn append_stamped<R: RunStamped>(
     store: &dyn EventStore,
     run_id: &str,
     report: &R,
