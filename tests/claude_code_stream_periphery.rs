@@ -45,7 +45,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
 use common::fixtures::{
-    fixture_script, no_emit, payloads_of_type, types_of, wait_until_for, CwdGuard,
+    drop_the_log, fixture_script, no_emit, payloads_of_type, types_of, wait_until_for, CwdGuard,
     FailAppendContaining,
 };
 use common::is_running;
@@ -1431,6 +1431,8 @@ enum Beats {
     /// A beat source with one fresh beat on it, so only the hold or the delay can excuse the
     /// silence.
     Fresh,
+    /// A beat source whose log is gone, so every read of it fails.
+    Unreadable,
 }
 
 /// A session silent past its one-second bound, under a run set up as each row says: `Some` is the
@@ -1467,6 +1469,13 @@ fn the_stream_silence_stop_fires_on_silent_time() {
             Some("done: thought past the poll"),
         ),
         (
+            "a wake whose records cannot be read counts no silence",
+            SILENT_PAST_THE_POLL,
+            false,
+            Beats::Unreadable,
+            Some("done: thought past the poll"),
+        ),
+        (
             "a host with no beat source counts from the last line, whatever the hold",
             SILENT_PAST_THE_POLL,
             true,
@@ -1486,6 +1495,9 @@ fn the_stream_silence_stop_fires_on_silent_time() {
             fx.hold_the_run();
         }
         let grace = Duration::from_millis(300);
+        let broken_db = fx.scratch_root.path().join("broken-progress.db");
+        let broken = Store::open(broken_db.to_str().unwrap()).unwrap();
+        drop_the_log(&broken_db);
         let driver = match beats {
             Beats::NoSource => fx.stopping_driver(script, grace),
             Beats::None => fx.supervised_driver(script, grace),
@@ -1493,6 +1505,10 @@ fn the_stream_silence_stop_fires_on_silent_time() {
                 fx.beat();
                 fx.supervised_driver(script, grace)
             }
+            Beats::Unreadable => Driver {
+                beat_source: Some(&broken),
+                ..fx.stopping_driver(script, grace)
+            },
         };
         let o = opts("u105-silent/implementer#0");
 
