@@ -7338,7 +7338,7 @@ fn an_is_error_result_reruns_uncharged_and_holds_as_its_class_says() {
         holds: Vec<rigger::run::RunHeld>,
         releases: Vec<&'static str>,
     }
-    let retries = "none, the run retries by itself";
+    let retries = common::fixtures::RETRIES_BY_ITSELF;
     let cases = [
         Case {
             category: "invalid_request",
@@ -7498,7 +7498,7 @@ fn a_launch_past_the_infra_limit_halts_naming_its_cause_and_leaves_the_hold() {
             [worker_hold(
                 "api-unstable",
                 "",
-                "none, the run retries by itself",
+                common::fixtures::RETRIES_BY_ITSELF,
                 false
             )],
             "{name}: the third close holds the run once"
@@ -7586,7 +7586,7 @@ fn sessions_of_one_wave_racing_append_one_hold_between_them() {
         closes: Vec<(&'static str, &'static str, Option<&'static str>)>,
     }
     let login = "authentication_failed";
-    let retries = "none, the run retries by itself";
+    let retries = common::fixtures::RETRIES_BY_ITSELF;
     let faulted_then_reran = |class| {
         vec![
             ("#0", "fault", Some(class)),

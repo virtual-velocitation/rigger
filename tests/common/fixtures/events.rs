@@ -17,6 +17,9 @@ pub fn ev_at(pos: u64, type_: &str, payload: serde_json::Value) -> Event {
     e
 }
 
+/// A live `RunHeld`'s action on a category the session retries by itself.
+pub const RETRIES_BY_ITSELF: &str = "none, the run retries by itself";
+
 /// THE REFUSAL ORACLE, its reading half: the type a refused append names and the text the
 /// store says of it, or a panic naming what the append answered in its place.
 pub fn refused<T: std::fmt::Debug>(answer: Result<T, Error>) -> (String, String) {

@@ -465,7 +465,7 @@
     ]
   },
   {
-    "id": "dup-679203434bc5",
+    "id": "dup-5a1a4676a4b9",
     "sites": [
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
@@ -714,8 +714,8 @@
       },
       {
         "file": "tests/common/fixtures/events.rs",
-        "start_line": 851,
-        "end_line": 853
+        "start_line": 854,
+        "end_line": 856
       },
       {
         "file": "tests/common/real_driver_spy.rs",
@@ -5409,8 +5409,8 @@
       },
       {
         "file": "tests/common/fixtures/events.rs",
-        "start_line": 1076,
-        "end_line": 1078
+        "start_line": 1079,
+        "end_line": 1081
       }
     ]
   },
@@ -7804,13 +7804,13 @@
     "sites": [
       {
         "file": "tests/common/fixtures/events.rs",
-        "start_line": 249,
-        "end_line": 256
+        "start_line": 252,
+        "end_line": 259
       },
       {
         "file": "tests/common/fixtures/events.rs",
-        "start_line": 289,
-        "end_line": 296
+        "start_line": 292,
+        "end_line": 299
       }
     ]
   },
@@ -7819,13 +7819,13 @@
     "sites": [
       {
         "file": "tests/common/fixtures/events.rs",
-        "start_line": 286,
-        "end_line": 288
+        "start_line": 289,
+        "end_line": 291
       },
       {
         "file": "tests/common/fixtures/events.rs",
-        "start_line": 314,
-        "end_line": 316
+        "start_line": 317,
+        "end_line": 319
       }
     ]
   },
@@ -7834,8 +7834,8 @@
     "sites": [
       {
         "file": "tests/common/fixtures/events.rs",
-        "start_line": 297,
-        "end_line": 304
+        "start_line": 300,
+        "end_line": 307
       },
       {
         "file": "tests/store_content_identity_periphery.rs",
@@ -7849,13 +7849,13 @@
     "sites": [
       {
         "file": "tests/common/fixtures/events.rs",
-        "start_line": 972,
-        "end_line": 980
+        "start_line": 975,
+        "end_line": 983
       },
       {
         "file": "tests/common/fixtures/events.rs",
-        "start_line": 1039,
-        "end_line": 1047
+        "start_line": 1042,
+        "end_line": 1050
       }
     ]
   },

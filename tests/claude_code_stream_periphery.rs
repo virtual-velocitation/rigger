@@ -42,7 +42,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use common::fixtures::{
     fixture_script, no_emit, payloads_of_type, types_of, wait_until_for, CwdGuard,
-    FailAppendContaining, LandsBehind,
+    FailAppendContaining, LandsBehind, RETRIES_BY_ITSELF,
 };
 use common::is_running;
 use rigger::conductor::{AgentDriver, AgentFailure, SpawnOpts};
@@ -1610,9 +1610,6 @@ const SCRIPTED_AGENT: &str = "claude-code-scripted-stream-agent.sh";
 /// The spawn every single-launch row of the hold tests drives.
 const HELD_SPAWN: &str = "u105-table/implementer#0";
 
-/// A live `RunHeld`'s action on a category the session retries by itself.
-const RETRIES: &str = "none, the run retries by itself";
-
 /// `system/init` reporting the spawn's server connected, on a resolved model no hold may name.
 fn init_line() -> String {
     json!({
@@ -1683,7 +1680,7 @@ fn login_hold() -> RunHeld {
 
 /// The third-consecutive hold: no line sighted it and nobody needs to act.
 fn unstable_hold() -> RunHeld {
-    hold("api-unstable", "", RETRIES, false, "")
+    hold("api-unstable", "", RETRIES_BY_ITSELF, false, "")
 }
 
 /// A `RunHeld` event by the operator.
@@ -1789,7 +1786,7 @@ fn hold_cases() -> Vec<HoldCase> {
         "fix the agent's configured model, restart rigger run with --rebase-definition, then run \
          rigger release";
     let model_ending = hold("model_not_found", "", model_action, true, "");
-    let wait_ending = hold("rate_limit", "", RETRIES, false, "");
+    let wait_ending = hold("rate_limit", "", RETRIES_BY_ITSELF, false, "");
     vec![
         HoldCase {
             name: "a hold-class retry the session recovers from",
