@@ -4,11 +4,12 @@
 //! The run's hold is a fold of its log ([`ledger::project`]), read here before every launch, so a
 //! session already running is left alone and a gate already running finishes: only the next
 //! launch waits. A wait ends on the run's `RunReleased` or, on `rigger serve`, on the session's
-//! close, with a park. An error of a hold or wait class, or any error while the run is held, waits
-//! the same way and launches the same spawn id again, its next ordinal coming from the host's own
-//! read of the spawn stream, so the conductor sees no failure and writes no infra mark. The hold
-//! is read after the host returns, because the host appends a third-fault hold before it returns
-//! its error.
+//! close, with a park, and a close beats a release landing with it, since nothing would serve the
+//! launch. An error of a hold or wait class, or any error while the run is held, waits the same
+//! way and launches the same spawn id again, its next ordinal coming from the host's own read of
+//! the spawn stream, so the conductor sees no failure and writes no infra mark. The hold is read
+//! after the host returns, because the host appends a third-fault hold before it returns its
+//! error.
 //!
 //! Three errors reach the conductor unchanged, held or not: one carrying a conductor marker, one
 //! for a spawn the current run's slice has ended, and the next error of a spawn id that has
@@ -76,19 +77,27 @@ impl<'a> HeldDriver<'a> {
         Ok(slice)
     }
 
-    /// Return once the run is not held; a closed session ends the wait with `id`'s park, and a
-    /// failed read of the run with its error, since a run not proved unheld launches nothing.
+    /// Return once the run is not held. A closed session ends a held read, or a wait that paused
+    /// whatever its last read found, with `id`'s park: the flag is read after the hold, so a close
+    /// beats a release landing with it and a launch that did not wait reads no close. A failed
+    /// read of the run ends the wait with its error, since a run not proved unheld launches
+    /// nothing.
     fn wait_out_the_hold(&self, id: &str) -> Result<(), Error> {
-        while ledger::project(&self.run_slice()?)?.hold.is_some() {
-            if self
+        let mut paused = false;
+        loop {
+            let held = ledger::project(&self.run_slice()?)?.hold.is_some();
+            let closed = self
                 .session_closed
-                .is_some_and(|closed| closed.load(Ordering::SeqCst))
-            {
+                .is_some_and(|closed| closed.load(Ordering::SeqCst));
+            if (held || paused) && closed {
                 return Err(parked_spawn(id));
             }
+            if !held {
+                return Ok(());
+            }
             (self.pause)();
+            paused = true;
         }
-        Ok(())
     }
 
     /// Whether `e`, the error of spawn `id`, is one this decorator carries across instead of its

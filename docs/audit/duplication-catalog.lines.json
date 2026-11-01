@@ -479,8 +479,8 @@
       },
       {
         "file": "crates/rigger-conductor/src/held.rs",
-        "start_line": 575,
-        "end_line": 659
+        "start_line": 584,
+        "end_line": 668
       },
       {
         "file": "crates/rigger-domain/src/agent.rs",
