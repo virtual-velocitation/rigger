@@ -7695,14 +7695,14 @@ fn a_resume_with_no_session_lands_a_fresh_launch_in_the_same_attempt(ending: &st
         )]
     );
     assert_eq!(
-        out.lines()
+        err.lines()
             .filter(|l| l.contains("to resume is gone"))
             .collect::<Vec<_>>(),
         vec![format!(
             "spawn solo/implementer#1: session {session} to resume is gone; it ran as a fresh \
              session {fresh}"
         )],
-        "the conductor told the fallback on the operator's log; stdout: {out}"
+        "the conductor told the fallback on the operator's log; stderr: {err}"
     );
 }
 
