@@ -6995,6 +6995,13 @@ fn fire_stop_failure_hook(category: &str) -> String {
     )
 }
 
+/// The shell asking the server [`READ_LAUNCH_CONFIG`] read from `--mcp-config` for the spawn's
+/// scratch, its reply in `$here/scratch-response`.
+const ASK_THE_SERVER_ITS_SCRATCH: &str = r#"    server=$(printf '%s\n' "$config" | sed -n 's/.*"command": "\([^"]*\)".*/\1/p')
+    printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"rigger_scratch","arguments":{}}}' |
+        "$server" mcp --spawn "$RIGGER_SPAWN" > "$here/scratch-response"
+"#;
+
 /// An arm of [`install_fake_claude`] standing in for the real host ending the first `Do the unit.`
 /// turn on an API error, from the session's own working directory and environment: the launch
 /// records its argv and working directory, asks the server its `--mcp-config` names for the
@@ -7011,10 +7018,7 @@ fn api_error_worker_arm() -> String {
     fi
     printf '%s\0' "$@" > "$here/argv"
     pwd -P > "$here/cwd"
-{READ_LAUNCH_CONFIG}    server=$(printf '%s\n' "$config" | sed -n 's/.*"command": "\([^"]*\)".*/\1/p')
-    printf '%s\n' '{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"rigger_scratch","arguments":{{}}}}}}' |
-        "$server" mcp --spawn "$RIGGER_SPAWN" > "$here/scratch-response"
-{hook}    exit 1
+{READ_LAUNCH_CONFIG}{ASK_THE_SERVER_ITS_SCRATCH}{hook}    exit 1
     ;;
 "#
     )
@@ -7459,8 +7463,9 @@ fn a_sighting_holds_the_run_and_a_done_run_releases_the_hold() {
 /// Spec 105's class at a session's ending, through `rigger run`: given a fake `claude` that exits
 /// only on its input's close, when its session ends on an `is_error` result, then the launch takes
 /// its class after the child exits and the run holds as the class's row says: a FAULT class at the
-/// implementer reruns uncharged under the infra limit, and a hold or wait class waits for the
-/// release and launches the same id again at the next ordinal with no infra mark, charged nothing
+/// implementer closes `fault`, loses the scratch the session left and reruns uncharged under the
+/// infra limit, and a hold or wait class closes `interrupted`, keeps that scratch for the launch
+/// the release brings, the same id again at the next ordinal with no infra mark, charged nothing
 /// either, each second launch closing `completed`.
 #[cfg(unix)]
 #[test]
@@ -7468,30 +7473,39 @@ fn an_is_error_result_reruns_uncharged_and_holds_as_its_class_says() {
     struct Case {
         category: &'static str,
         session: fn(&str) -> String,
+        /// How the first launch closes.
+        ended: &'static str,
         holds: Vec<rigger::run::RunHeld>,
         /// The second launch: its spawn and ordinal.
         again: (&'static str, u32),
         releases: Vec<&'static str>,
+        /// Whether the file the first launch left in its scratch stands at the second.
+        kept: bool,
     }
     let retries = common::fixtures::RETRIES_BY_ITSELF;
     let cases = [
         Case {
             category: "invalid_request",
             session: classed_session,
+            ended: "fault",
             holds: vec![],
             again: ("solo/implementer#0~retry4", 0),
             releases: vec![],
+            kept: false,
         },
         Case {
             category: "rate_limit",
             session: classed_session,
+            ended: "interrupted",
             holds: vec![worker_hold("rate_limit", "", retries, false)],
             again: ("solo/implementer#0", 1),
             releases: vec!["operator"],
+            kept: true,
         },
         Case {
             category: "billing_error",
             session: classed_behind_the_close_session,
+            ended: "interrupted",
             holds: vec![worker_hold(
                 "billing_error",
                 "",
@@ -7500,6 +7514,7 @@ fn an_is_error_result_reruns_uncharged_and_holds_as_its_class_says() {
             )],
             again: ("solo/implementer#0", 1),
             releases: vec!["operator"],
+            kept: true,
         },
     ];
     for case in cases {
@@ -7512,15 +7527,19 @@ fn an_is_error_result_reruns_uncharged_and_holds_as_its_class_says() {
         let arm = format!(
             r#"  *"Do the unit."*)
     if [ -e "$here/faulted" ]; then
+        ls "$(cat "$here/left-scratch")" > "$here/scratch-at-the-second-launch"
         echo "pub fn work() {{}}" > work.rs
         exit 0
     fi
     : > "$here/faulted"
+{READ_LAUNCH_CONFIG}{ASK_THE_SERVER_ITS_SCRATCH}    sed -n 's/.*"path":"\([^"]*\)".*/\1/p' "$here/scratch-response" > "$here/left-scratch"
+    mkdir -p "$(cat "$here/left-scratch")"
+    : > "$(cat "$here/left-scratch")/left-by-the-first-launch"
 {session}    ;;
 "#
         );
         let release = releasing_holds(root, 1, |_| true);
-        let (out, err, ok, _fake) =
+        let (out, err, ok, fake) =
             run_on_arms_beside(root, &["run"], scratch.path(), &arm, release);
         assert!(
             ok,
@@ -7537,7 +7556,7 @@ fn an_is_error_result_reruns_uncharged_and_holds_as_its_class_says() {
                 (
                     "solo/implementer#0".to_string(),
                     0,
-                    "fault".to_string(),
+                    case.ended.to_string(),
                     Some(category.to_string())
                 ),
                 (
@@ -7548,6 +7567,16 @@ fn an_is_error_result_reruns_uncharged_and_holds_as_its_class_says() {
                 ),
             ],
             "{category}: the closes; stderr: {err}"
+        );
+        let at_the_second_launch =
+            std::fs::read_to_string(fake.path().join("bin/scratch-at-the-second-launch"))
+                .unwrap_or_else(|e| panic!("{category}: the second launch listed it: {e}"));
+        assert_eq!(
+            at_the_second_launch
+                .lines()
+                .any(|f| f == "left-by-the-first-launch"),
+            case.kept,
+            "{category}: the first launch's scratch: {at_the_second_launch:?}"
         );
         assert_eq!(
             common::cli::run_payloads(root, "UnitFailed"),
@@ -7649,7 +7678,7 @@ fn a_launch_past_the_infra_limit_halts_naming_its_cause_and_leaves_the_hold() {
             name: "a hold class past the relaunch bound",
             workflow: &NO_INFRA_RULE_WORKFLOW,
             session: classed_session("billing_error"),
-            close: ("fault", Some("billing_error")),
+            close: ("interrupted", Some("billing_error")),
             cause: "class billing_error",
             launches: vec![(first, 0), (first, 1), (first, 2)],
             holds: vec![billing.clone(), billing.clone(), billing],
@@ -7743,8 +7772,8 @@ fn rendezvous(gate: &str) -> String {
 
 /// An arm of [`install_fake_claude`] ending all three first launches on a `category` error at
 /// once. Each unit's second launch, a relaunch or an infra rerun, meets the others too, so no
-/// `completed` close lands until all three faults stand: a unit launches again only behind its own
-/// close.
+/// `completed` close lands until all three first closes stand: a unit launches again only behind
+/// its own close.
 fn faulting_at_once_arm(category: &str) -> String {
     let session = classed_session(category);
     let (faulted, reran) = (rendezvous("faulted"), rendezvous("reran"));
@@ -7784,12 +7813,8 @@ fn sessions_of_one_wave_racing_append_one_hold_between_them() {
     }
     let login = "authentication_failed";
     let retries = common::fixtures::RETRIES_BY_ITSELF;
-    let faulted_then_launched = |class| {
-        vec![
-            ("#0", 0, "fault", Some(class)),
-            ("#0", 1, "completed", None),
-        ]
-    };
+    let closed_then_launched =
+        |ended, class| vec![("#0", 0, ended, Some(class)), ("#0", 1, "completed", None)];
     let cases = [
         Case {
             name: "one hold class sighted at once",
@@ -7803,7 +7828,7 @@ fn sessions_of_one_wave_racing_append_one_hold_between_them() {
             name: "one wait class ending the sessions at once",
             arm: faulting_at_once_arm("rate_limit"),
             hold: worker_hold("rate_limit", "", retries, false),
-            closes: faulted_then_launched("rate_limit"),
+            closes: closed_then_launched("interrupted", "rate_limit"),
             reruns_race_relaunches: false,
             releases: vec!["operator"],
         },
@@ -7811,7 +7836,7 @@ fn sessions_of_one_wave_racing_append_one_hold_between_them() {
             name: "the third consecutive fault among closes at once",
             arm: faulting_at_once_arm("invalid_request"),
             hold: worker_hold("api-unstable", "", retries, false),
-            closes: faulted_then_launched("invalid_request"),
+            closes: closed_then_launched("fault", "invalid_request"),
             reruns_race_relaunches: true,
             releases: vec!["operator"],
         },

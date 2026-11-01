@@ -8,7 +8,9 @@
 # `refused-result` is the literal stdout of Claude Code 2.1.314 asked to `--resume` a session it
 # holds no transcript of, probed 2026-11-01: one `result` line, no `system/init`, the tell on
 # stderr too, exit 1. `refused-eof` is the same refusal with nothing on stdout, the shape of
-# Claude Code 2.1.290. A checked-in executable fixture (never written at test time), for the same
+# Claude Code 2.1.290. Each `retried-*` ending prints one `api_retry` line of
+# `$RIGGER_TEST_RETRY_CATEGORY` and no `system/init`, then ends as `refused-eof`, `silent` or
+# `unreadable` does. A checked-in executable fixture (never written at test time), for the same
 # reason as every sibling fixture here: no concurrent test's fork+exec can inherit a write fd to
 # it.
 case " $* " in
@@ -26,6 +28,10 @@ wait_for_input_to_close() {
 
 init() {
     printf '%s\n' "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"99999999-9999-4999-8999-999999999999\",\"model\":\"claude-haiku-4-5\",\"mcp_servers\":[$1]}"
+}
+
+retried() {
+    printf '%s\n' "{\"type\":\"system\",\"subtype\":\"api_retry\",\"attempt\":1,\"max_retries\":10,\"retry_delay_ms\":1,\"error_status\":500,\"error\":\"$RIGGER_TEST_RETRY_CATEGORY\"}"
 }
 
 refused_result() {
@@ -73,6 +79,20 @@ silent)
     exit 1
     ;;
 unreadable)
+    printf '\377\376\n'
+    exec sleep 30
+    ;;
+retried-eof)
+    retried
+    exit 1
+    ;;
+retried-silent)
+    retried
+    wait_for_input_to_close
+    exit 1
+    ;;
+retried-unreadable)
+    retried
     printf '\377\376\n'
     exec sleep 30
     ;;

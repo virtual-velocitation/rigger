@@ -1959,6 +1959,21 @@ impl Fixture {
         }
     }
 
+    /// Plant a build log in `o`'s scratch leaf, the work a launch leaves there: the file's path.
+    fn plant_scratch(&self, o: &SpawnOpts) -> PathBuf {
+        let root = self.scratch_root.path().to_string_lossy();
+        let leaf = spawn_scratch_path(&root, &o.run_id, &o.id).unwrap();
+        let planted = leaf.join("target/build.log");
+        std::fs::create_dir_all(planted.parent().unwrap()).unwrap();
+        std::fs::write(&planted, "built").unwrap();
+        planted
+    }
+
+    /// How many closes of the run the progress log counts toward `api-unstable`.
+    fn failed_closes(&self) -> usize {
+        rigger::progress::failed_closes_since(&self.progress_stream(), None)
+    }
+
     /// [`opts`] for `spawn` whose environment hands the scripted agent `lines`.
     fn scripted(&self, spawn: &str, lines: &[String]) -> SpawnOpts {
         let file = self.scratch_file(&format!("{}.jsonl", spawn.replace(['/', '#'], "-")));
@@ -2106,7 +2121,7 @@ fn hold_cases() -> Vec<HoldCase> {
             name: "a session ending of a wait class",
             lines: vec![init_line(), retry_line("rate_limit")],
             holds: vec![wait_ending.clone()],
-            close: ("fault", Some("rate_limit")),
+            close: ("interrupted", Some("rate_limit")),
             stamp: Some(0),
             ..HoldCase::default()
         },
@@ -2114,7 +2129,7 @@ fn hold_cases() -> Vec<HoldCase> {
             name: "a session ending of the hold class it sighted",
             lines: vec![init_line(), retry_line(login)],
             holds: vec![login_hold()],
-            close: ("fault", Some(login)),
+            close: ("interrupted", Some(login)),
             stamp: Some(1),
             ..HoldCase::default()
         },
@@ -2122,7 +2137,7 @@ fn hold_cases() -> Vec<HoldCase> {
             name: "a session ending of a wait class on a hold",
             lines: vec![init_line(), retry_line(login), retry_line("rate_limit")],
             holds: vec![login_hold()],
-            close: ("fault", Some("rate_limit")),
+            close: ("interrupted", Some("rate_limit")),
             stamp: Some(1),
             ..HoldCase::default()
         },
@@ -2148,7 +2163,7 @@ fn hold_cases() -> Vec<HoldCase> {
                 result_line(true),
             ],
             holds: vec![model_ending.clone()],
-            close: ("fault", Some("model_not_found")),
+            close: ("interrupted", Some("model_not_found")),
             stamp: Some(0),
             ..HoldCase::default()
         },
@@ -2161,7 +2176,7 @@ fn hold_cases() -> Vec<HoldCase> {
                 result_line(false),
             ],
             holds: vec![wait_ending],
-            close: ("fault", Some("rate_limit")),
+            close: ("interrupted", Some("rate_limit")),
             stamp: Some(0),
             ..HoldCase::default()
         },
@@ -2189,7 +2204,7 @@ fn hold_cases() -> Vec<HoldCase> {
             lines: vec![init_line(), retry_line(login)],
             stop_failure: Some("billing_error"),
             holds: vec![login_hold(), hold("billing_error", "", billing, true, "")],
-            close: ("fault", Some("billing_error")),
+            close: ("interrupted", Some("billing_error")),
             stamp: Some(1),
             ..HoldCase::default()
         },
@@ -2202,7 +2217,7 @@ fn hold_cases() -> Vec<HoldCase> {
             ],
             stop_failure: Some("billing_error"),
             holds: vec![model_ending],
-            close: ("fault", Some("model_not_found")),
+            close: ("interrupted", Some("model_not_found")),
             stamp: Some(0),
             ..HoldCase::default()
         },
@@ -2219,8 +2234,43 @@ fn hold_cases() -> Vec<HoldCase> {
             name: "a wait-class ending on an operator hold",
             lines: vec![init_line(), retry_line("rate_limit")],
             seeded: vec![operator_hold()],
-            close: ("fault", Some("rate_limit")),
+            close: ("interrupted", Some("rate_limit")),
             stamp: Some(1),
+            ..HoldCase::default()
+        },
+        HoldCase {
+            name: "a fault-class ending on an operator hold",
+            lines: vec![init_line(), retry_line("invalid_request")],
+            seeded: vec![operator_hold()],
+            close: ("interrupted", Some("invalid_request")),
+            stamp: Some(1),
+            ..HoldCase::default()
+        },
+        HoldCase {
+            name: "an unclassed ending on an operator hold",
+            lines: vec![init_line(), result_line(true)],
+            seeded: vec![operator_hold()],
+            close: ("interrupted", Some("unknown")),
+            stamp: Some(1),
+            ..HoldCase::default()
+        },
+        HoldCase {
+            name: "a fault-class ending on a hold released ahead of it",
+            lines: vec![init_line(), retry_line("invalid_request")],
+            seeded: vec![
+                operator_hold(),
+                common::fixtures::released_event("operator"),
+            ],
+            close: ("fault", Some("invalid_request")),
+            stamp: Some(2),
+            ..HoldCase::default()
+        },
+        HoldCase {
+            name: "a fault-class ending on a host with no hold sink",
+            lines: vec![init_line(), retry_line("invalid_request")],
+            seeded: vec![operator_hold()],
+            no_sink: true,
+            close: ("fault", Some("invalid_request")),
             ..HoldCase::default()
         },
         HoldCase {
@@ -2276,7 +2326,9 @@ fn hold_cases() -> Vec<HoldCase> {
 
 /// THE DISPOSITION TABLE through a real child: each row's launch appends exactly its holds, ends
 /// its spawn as its close says, records its results and stamps the revision it read on its close
-/// alone, never on its open record.
+/// alone, never on its open record. A launch closing `interrupted` keeps its scratch and enters no
+/// failed-close count; a `fault` close counts once and reclaims it, and a `completed` close counts
+/// nothing and reclaims it.
 #[cfg(unix)]
 #[test]
 fn a_launch_appends_the_holds_the_table_decides_and_closes_where_it_read() {
@@ -2310,13 +2362,14 @@ fn a_launch_appends_the_holds_the_table_decides_and_closes_where_it_read() {
             attempt: case.attempt,
             ..fx.scripted(HELD_SPAWN, &case.lines)
         };
+        let planted = fx.plant_scratch(&o);
 
         let outcome = driver.spawn(&case.agent, "do the thing", &o, &no_emit);
 
         let (ended, class) = case.close;
         match (ended, &outcome) {
             ("completed", Ok(result)) => assert_eq!(result.output, "the answer", "{name}"),
-            ("fault", Err(e)) => assert!(
+            ("fault" | "interrupted", Err(e)) => assert!(
                 rigger::conductor::strip_failure_marker(e)
                     .contains(&format!("class {};", class.unwrap())),
                 "{name}: {}",
@@ -2346,6 +2399,16 @@ fn a_launch_appends_the_holds_the_table_decides_and_closes_where_it_read() {
             (opening.ended.as_deref(), opening.revision),
             (None, None),
             "{name}: the open record, which no stamp reaches"
+        );
+        assert_eq!(
+            planted.exists(),
+            ended == "interrupted",
+            "{name}: the scratch"
+        );
+        assert_eq!(
+            fx.failed_closes(),
+            usize::from(ended == "fault"),
+            "{name}: the failed closes"
         );
     }
 }
@@ -2424,6 +2487,38 @@ fn a_third_consecutive_failed_close_holds_the_run() {
         }
         assert_eq!(fx.holds(), vec![unstable_hold(); expected], "{name}");
     }
+}
+
+/// A fault on a run an operator holds closes `interrupted` ahead of the count: the two failed closes
+/// before it stand at two, and no `api-unstable` hold joins the operator's.
+#[cfg(unix)]
+#[test]
+fn a_close_on_a_held_run_enters_no_unstable_count() {
+    let fx = Fixture::started(&[]);
+    fx.take(Step::Fault, 0);
+    fx.take(Step::Fault, 1);
+    let before = fx.run_log().len();
+    fx.run_store
+        .append(
+            rigger::conductor::STREAM,
+            ExpectedRevision::Any,
+            &[operator_hold()],
+        )
+        .unwrap();
+
+    fx.take(Step::Fault, 2);
+
+    assert_eq!(fx.failed_closes(), 2);
+    assert_eq!(
+        fx.run_log().len(),
+        before + 1,
+        "nothing lands past the hold"
+    );
+    let closing = fx.launch_records().pop().unwrap();
+    assert_eq!(
+        (closing.ended.as_deref(), closing.class.as_deref()),
+        (Some("interrupted"), Some("unknown"))
+    );
 }
 
 /// Closes racing past the third append one hold between them: each writes its close, re-reads the
@@ -2765,6 +2860,374 @@ fn a_resume_refused_before_it_reads_its_task_falls_back() {
         .expect("the fresh launch answers");
 
     assert_fell_back(&fx, &result, &[framed(FULL_PROMPT)], &[], 0);
+}
+
+/// What a launch leaves, read by [`a_launch_ends_as_the_hold_and_its_class_decide`].
+#[derive(Default)]
+enum Ending {
+    /// It closes `interrupted` under the class and returns the failure, its scratch kept.
+    Interrupted(&'static str, String),
+    /// It closes `fault` under the class and returns the failure, its scratch reclaimed.
+    Faulted(&'static str, String),
+    /// It takes the fallback: its classless `interrupted` close, then the fresh answer.
+    #[default]
+    FellBack,
+    /// It is stopped silent past [`SILENCE_BOUND`], keeping its `stopped` close.
+    Stopped,
+    /// It fails on an unreadable line, which closes nothing.
+    Unreadable,
+}
+
+/// One launch of the fixture agent as [`RESUMED_SPAWN`]: how it ends and the world it ends in, then
+/// what it leaves.
+#[derive(Default)]
+struct HeldEnding {
+    name: &'static str,
+    /// Whether the launch carries no `--resume`.
+    fresh: bool,
+    /// The fixture agent's ending of the launch.
+    ending: &'static str,
+    /// The category a `retried-*` ending prints.
+    category: &'static str,
+    /// What stands on the run stream behind its `RunStarted` before the launch.
+    seeded: Vec<Event>,
+    /// Whether the host is built with no hold sink.
+    no_sink: bool,
+    agent: AgentDef,
+    /// The `RunHeld`s the spawn appends, in order.
+    holds: Vec<RunHeld>,
+    left: Ending,
+}
+
+/// [`NO_RESULT_FAILURE`] under `class`.
+fn classed_failure(class: &str) -> String {
+    NO_RESULT_FAILURE.replace("class unknown", &format!("class {class}"))
+}
+
+/// Every ending the host weighs against the hold, on a resume that never showed its session unless
+/// the row says otherwise.
+fn held_ending_cases() -> Vec<HeldEnding> {
+    let login = "authentication_failed";
+    let held = || vec![operator_hold()];
+    let released = || {
+        vec![
+            operator_hold(),
+            common::fixtures::released_event("operator"),
+        ]
+    };
+    let bounded = || wall_clock_bounded(SILENCE_BOUND);
+    vec![
+        HeldEnding {
+            name: "a wait class on an unheld run",
+            ending: "retried-eof",
+            category: "rate_limit",
+            holds: vec![hold("rate_limit", "", RETRIES_BY_ITSELF, false, "")],
+            left: Ending::Interrupted("rate_limit", classed_failure("rate_limit")),
+            ..HeldEnding::default()
+        },
+        HeldEnding {
+            name: "a hold class on an unheld run",
+            ending: "retried-eof",
+            category: login,
+            holds: vec![login_hold()],
+            left: Ending::Interrupted(login, classed_failure(login)),
+            ..HeldEnding::default()
+        },
+        HeldEnding {
+            name: "a fault class on a held run",
+            ending: "retried-eof",
+            category: "invalid_request",
+            seeded: held(),
+            left: Ending::Interrupted("invalid_request", classed_failure("invalid_request")),
+            ..HeldEnding::default()
+        },
+        HeldEnding {
+            name: "a refusal at the end of the stream on a held run",
+            ending: "refused-eof",
+            seeded: held(),
+            left: Ending::Interrupted("unknown", REFUSED_FAILURE.to_string()),
+            ..HeldEnding::default()
+        },
+        HeldEnding {
+            name: "a refusal with a result line on a held run",
+            ending: "refused-result",
+            seeded: held(),
+            left: Ending::Interrupted("unknown", REFUSED_FAILURE.to_string()),
+            ..HeldEnding::default()
+        },
+        HeldEnding {
+            name: "a resume that showed its session, on a held run",
+            ending: "init-eof",
+            seeded: held(),
+            left: Ending::Interrupted("unknown", NO_RESULT_FAILURE.to_string()),
+            ..HeldEnding::default()
+        },
+        HeldEnding {
+            name: "silence on a held run",
+            ending: "silent",
+            seeded: held(),
+            agent: bounded(),
+            left: Ending::Stopped,
+            ..HeldEnding::default()
+        },
+        HeldEnding {
+            name: "silence on the hold the launch's own retry sighted",
+            ending: "retried-silent",
+            category: login,
+            agent: bounded(),
+            holds: vec![login_hold()],
+            left: Ending::Stopped,
+            ..HeldEnding::default()
+        },
+        HeldEnding {
+            name: "an unreadable line on a held run",
+            ending: "unreadable",
+            seeded: held(),
+            left: Ending::Unreadable,
+            ..HeldEnding::default()
+        },
+        HeldEnding {
+            name: "an unreadable line on the hold the launch's own retry sighted",
+            ending: "retried-unreadable",
+            category: login,
+            holds: vec![login_hold()],
+            left: Ending::Unreadable,
+            ..HeldEnding::default()
+        },
+        HeldEnding {
+            name: "a fault class on an unheld run",
+            ending: "retried-eof",
+            category: "invalid_request",
+            ..HeldEnding::default()
+        },
+        HeldEnding {
+            name: "a refusal on an unheld run",
+            ending: "refused-eof",
+            ..HeldEnding::default()
+        },
+        HeldEnding {
+            name: "a refusal on a released hold",
+            ending: "refused-eof",
+            seeded: released(),
+            ..HeldEnding::default()
+        },
+        HeldEnding {
+            name: "a wait class on a host with no sink",
+            ending: "retried-eof",
+            category: "rate_limit",
+            no_sink: true,
+            ..HeldEnding::default()
+        },
+        HeldEnding {
+            name: "a held run on a host with no sink",
+            ending: "refused-eof",
+            seeded: held(),
+            no_sink: true,
+            ..HeldEnding::default()
+        },
+        HeldEnding {
+            name: "a wait class silent on an unheld run",
+            ending: "retried-silent",
+            category: "rate_limit",
+            agent: bounded(),
+            ..HeldEnding::default()
+        },
+        HeldEnding {
+            name: "a wait class unreadable on an unheld run",
+            ending: "retried-unreadable",
+            category: "rate_limit",
+            ..HeldEnding::default()
+        },
+        HeldEnding {
+            name: "a launch fault on a held run",
+            fresh: true,
+            ending: "init-server-failed",
+            seeded: held(),
+            left: Ending::Interrupted("unknown", SERVER_FAILURE.to_string()),
+            ..HeldEnding::default()
+        },
+        HeldEnding {
+            name: "a launch fault on an unheld run",
+            fresh: true,
+            ending: "init-server-failed",
+            left: Ending::Faulted("unknown", SERVER_FAILURE.to_string()),
+            ..HeldEnding::default()
+        },
+        HeldEnding {
+            name: "a launch fault on a held run, on a host with no sink",
+            fresh: true,
+            ending: "init-server-failed",
+            seeded: held(),
+            no_sink: true,
+            left: Ending::Faulted("unknown", SERVER_FAILURE.to_string()),
+            ..HeldEnding::default()
+        },
+    ]
+}
+
+/// HELD MEANS NO LAUNCH AND NO CHARGE at the host: an ending of a class that holds or waits, or any
+/// `fault` ending on a held run, closes `interrupted`, records no result and keeps its scratch, a
+/// `--resume` launch with no `system/init` among them launching nothing fresh. On a held run the
+/// stop and the read error keep their endings and launch nothing fresh, and on an unheld run they
+/// and a fault class take the fallback. A host with no sink reads no hold and keeps `fault` and
+/// the fallback.
+#[cfg(unix)]
+#[test]
+fn a_launch_ends_as_the_hold_and_its_class_decide() {
+    for case in held_ending_cases() {
+        let name = case.name;
+        let fx = Fixture::started(&case.seeded);
+        let before = fx.holds().len();
+        let driver = Driver {
+            hold_sink: (!case.no_sink).then_some(&fx.run_store as &dyn EventStore),
+            ..fx.stopping_driver(RESUME_ENDING_AGENT, WIND_DOWN_GRACE)
+        };
+        let mut o = if case.fresh {
+            fx.fresh_opts(case.ending)
+        } else {
+            fx.resumed_opts(case.ending, "answer")
+        };
+        o.env.push((
+            "RIGGER_TEST_RETRY_CATEGORY".to_string(),
+            case.category.to_string(),
+        ));
+        let planted = fx.plant_scratch(&o);
+        let (closes, failure, launches, results, kept) = match case.left {
+            Ending::Interrupted(class, failure) => (
+                vec![(0, "interrupted", Some(class))],
+                failure,
+                1,
+                Vec::new(),
+                true,
+            ),
+            Ending::Faulted(class, failure) => (
+                vec![(0, "fault", Some(class))],
+                failure,
+                1,
+                Vec::new(),
+                false,
+            ),
+            Ending::FellBack => (
+                vec![(0, "interrupted", None), (1, "completed", None)],
+                String::new(),
+                2,
+                fresh_answer_on_record(),
+                false,
+            ),
+            Ending::Stopped => (
+                vec![(0, "stopped", None)],
+                SILENCE_FAILURE.to_string(),
+                1,
+                liveness_fault_on_record(),
+                false,
+            ),
+            Ending::Unreadable => (
+                Vec::new(),
+                UNREADABLE_FAILURE.to_string(),
+                1,
+                Vec::new(),
+                false,
+            ),
+        };
+
+        let outcome = driver.spawn(&case.agent, FULL_PROMPT, &o, &no_emit);
+
+        let spawned = match outcome {
+            Ok(result) => {
+                assert_eq!(result.output, FIXTURE_ANSWER, "{name}: the answer");
+                String::new()
+            }
+            Err(e) => rigger::conductor::strip_failure_marker(&e).to_string(),
+        };
+        assert_eq!(spawned, failure, "{name}: the failure");
+        let records = fx.launch_records();
+        let closed: Vec<_> = records
+            .iter()
+            .filter_map(|r| Some((r.launch, r.ended.as_deref()?, r.class.as_deref())))
+            .collect();
+        assert_eq!(closed, closes, "{name}: the closes");
+        assert_eq!(fx.tasks_read().len(), launches, "{name}: the launches");
+        assert_eq!(fx.holds()[before..], case.holds, "{name}: the holds");
+        assert_eq!(fx.recorded_results(), results, "{name}: the results");
+        assert_eq!(planted.exists(), kept, "{name}: the scratch");
+    }
+}
+
+/// A hold the host cannot read proves nothing: the launch takes the ending of an unheld run, a
+/// fault's close going unstamped and uncounted, with a line on its progress saying so.
+#[cfg(unix)]
+#[test]
+fn a_hold_read_that_fails_leaves_the_ending_of_an_unheld_run() {
+    struct Row {
+        name: &'static str,
+        resumed: bool,
+        ending: &'static str,
+        closes: Vec<(u32, &'static str, Option<&'static str>)>,
+        failure: &'static str,
+        activities: Vec<&'static str>,
+    }
+    let unread = "hold not read: event store: the run read failed";
+    let rows = [
+        Row {
+            name: "a fault ending",
+            resumed: false,
+            ending: "init-eof",
+            closes: vec![(0, "fault", Some("unknown"))],
+            failure: NO_RESULT_FAILURE,
+            activities: vec![
+                FRESH_INIT_LINE,
+                unread,
+                "failed closes not counted: event store: the run read failed",
+            ],
+        },
+        Row {
+            name: "a resume with no session",
+            resumed: true,
+            ending: "refused-eof",
+            closes: vec![(0, "interrupted", None), (1, "completed", None)],
+            failure: "",
+            activities: vec![unread, FALLBACK_LINE, FRESH_INIT_LINE],
+        },
+    ];
+    for row in rows {
+        let name = row.name;
+        let fx = Fixture::started(&[operator_hold()]);
+        let armed = std::sync::atomic::AtomicBool::new(true);
+        let sink = common::fixtures::ReadsFailWhenArmed {
+            inner: &fx.run_store,
+            armed: &armed,
+        };
+        let driver = Driver {
+            hold_sink: Some(&sink),
+            ..fx.stopping_driver(RESUME_ENDING_AGENT, WIND_DOWN_GRACE)
+        };
+        let o = if row.resumed {
+            fx.resumed_opts(row.ending, "answer")
+        } else {
+            fx.fresh_opts(row.ending)
+        };
+        let planted = fx.plant_scratch(&o);
+
+        let outcome = driver.spawn(&AgentDef::default(), FULL_PROMPT, &o, &no_emit);
+
+        let failure = outcome.map_or_else(
+            |e| rigger::conductor::strip_failure_marker(&e).to_string(),
+            |_| String::new(),
+        );
+        assert_eq!(failure, row.failure, "{name}: the failure");
+        let records = fx.launch_records();
+        let closes: Vec<_> = records
+            .iter()
+            .filter_map(|r| Some((r.launch, r.ended.as_deref()?, r.class.as_deref())))
+            .collect();
+        assert_eq!(closes, row.closes, "{name}: the closes");
+        assert_eq!(fx.activities(), row.activities, "{name}: the progress");
+        assert!(
+            records.iter().all(|r| r.revision.is_none()),
+            "{name}: no close is stamped: {records:?}"
+        );
+        assert!(!planted.exists(), "{name}: the scratch is reclaimed");
+    }
 }
 
 /// The one launch of `o`, its outcome `outcome`, stands: no fallback ran. It opened naming
