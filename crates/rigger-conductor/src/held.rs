@@ -315,6 +315,10 @@ mod tests {
         Release,
         /// The session closes.
         CloseSession,
+        /// The session closes, then the hold is released, both inside this one pause.
+        CloseThenRelease,
+        /// The hold is released, then the session closes, both inside this one pause.
+        ReleaseThenClose,
         /// The store's reads start failing.
         BreakReads,
     }
@@ -389,22 +393,32 @@ mod tests {
                 Session::Absent => None,
                 Session::Open | Session::Closed => Some(&closed),
             };
+            let release = || {
+                store
+                    .append(
+                        STREAM,
+                        ExpectedRevision::Any,
+                        &[released_event(HOLD_BY_OPERATOR)],
+                    )
+                    .unwrap();
+            };
+            let close = || closed.store(true, Ordering::SeqCst);
             let paused_at = Mutex::new(Vec::new());
             let pause = || {
                 let mut paused = paused_at.lock().unwrap();
                 paused.push(host.launched.lock().unwrap().len());
                 match row.at_pause {
-                    AtPause::Release if paused.len() % row.polls == 0 => {
-                        store
-                            .append(
-                                STREAM,
-                                ExpectedRevision::Any,
-                                &[released_event(HOLD_BY_OPERATOR)],
-                            )
-                            .unwrap();
-                    }
+                    AtPause::Release if paused.len() % row.polls == 0 => release(),
                     AtPause::Release => {}
-                    AtPause::CloseSession => closed.store(true, Ordering::SeqCst),
+                    AtPause::CloseSession => close(),
+                    AtPause::CloseThenRelease => {
+                        close();
+                        release();
+                    }
+                    AtPause::ReleaseThenClose => {
+                        release();
+                        close();
+                    }
                     AtPause::BreakReads => armed.store(true, Ordering::SeqCst),
                 }
             };
@@ -772,7 +786,8 @@ mod tests {
     }
 
     /// THE SESSION: a closed `rigger serve` session ends a wait with the park of the spawn that
-    /// waited, at either wait, and reads as nothing while the run is unheld.
+    /// waited, at either wait, whichever way round a release landed with the close in one pause,
+    /// and reads as nothing on a launch that did not wait.
     #[test]
     fn a_closed_session_ends_a_wait_with_a_park() {
         check(vec![
@@ -790,6 +805,44 @@ mod tests {
                 name: "a session closing during the wait after an error parks that spawn",
                 session: Session::Open,
                 at_pause: AtPause::CloseSession,
+                script: vec![held_then_fails(classed(FAULT))],
+                calls: one_call(Err(parked_spawn(ID))),
+                launched: vec![ID],
+                paused_at: vec![1],
+                ..Row::default()
+            },
+            Row {
+                name: "a close then a release in one pause before a launch parks unlaunched",
+                seeded: vec![third_fault_hold()],
+                session: Session::Open,
+                at_pause: AtPause::CloseThenRelease,
+                calls: one_call(Err(parked_spawn(ID))),
+                paused_at: vec![0],
+                ..Row::default()
+            },
+            Row {
+                name: "a release then a close in one pause before a launch parks unlaunched",
+                seeded: vec![third_fault_hold()],
+                session: Session::Open,
+                at_pause: AtPause::ReleaseThenClose,
+                calls: one_call(Err(parked_spawn(ID))),
+                paused_at: vec![0],
+                ..Row::default()
+            },
+            Row {
+                name: "a close then a release in one pause after an error parks that spawn",
+                session: Session::Open,
+                at_pause: AtPause::CloseThenRelease,
+                script: vec![held_then_fails(classed(FAULT))],
+                calls: one_call(Err(parked_spawn(ID))),
+                launched: vec![ID],
+                paused_at: vec![1],
+                ..Row::default()
+            },
+            Row {
+                name: "a release then a close in one pause after an error parks that spawn",
+                session: Session::Open,
+                at_pause: AtPause::ReleaseThenClose,
                 script: vec![held_then_fails(classed(FAULT))],
                 calls: one_call(Err(parked_spawn(ID))),
                 launched: vec![ID],
