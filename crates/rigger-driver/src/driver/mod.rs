@@ -131,9 +131,10 @@ pub(crate) fn harness_env(spawn: &str) -> [(&'static str, &str); 2] {
 /// 2026-10-07 probe (`claude -p --resume <unknown uuid> < /dev/null` printed `No conversation
 /// found with session ID: <id>`, empty stdout, exit 1), whose literal output the cli host's
 /// `a_missing_session_is_read_from_claude_codes_own_refusal` test replays. A later Claude Code
-/// that rewords it turns the fallback off - the resume then fails as an agent error - so
-/// re-probe on an upgrade. A session host that asked for a resume and reads this falls back to
-/// a fresh launch with the full task.
+/// that rewords it turns the cli host's fallback off - the resume then fails as an agent error -
+/// so re-probe on an upgrade. The cli host, which asked for a resume and reads this, falls back
+/// to a fresh launch with the full task. The stream-json host reads no text: a resume that
+/// yields no `system/init` falls back whatever it printed.
 pub(crate) const MISSING_SESSION: &str = "No conversation found with session ID";
 
 /// The Claude Code session one launch runs as - the ONE session authority both process hosts

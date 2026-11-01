@@ -130,8 +130,9 @@ pub struct SpawnLaunched {
     /// The deterministic spawn id this launch belongs to (e.g. `u/implementer#0`).
     pub spawn: String,
     /// The 0-based ordinal of this launch within the spawn's current attempt: 0 for the
-    /// first launch, N for the Nth relaunch after an API-side fault. Distinct from the
-    /// spawn id's own `#<attempt>` remediation counter.
+    /// first launch, and the ordinal after the highest recorded for the spawn for every later
+    /// one, whatever brought it: a relaunch after an API-side fault, the resume fallback or a
+    /// restart. Distinct from the spawn id's own `#<attempt>` remediation counter.
     pub launch: u32,
     /// The session id the host minted for this launch (`--session-id`/`--resume`).
     pub session_id: String,
@@ -147,7 +148,8 @@ pub struct SpawnLaunched {
     /// architecture addendum §4.1's own "at exit it closes the record with `ended:
     /// completed | interrupted | fault | stopped` and the class"): one of `"completed"`
     /// (a real result landed), `"interrupted"` (the supervisor found this record still
-    /// open at start-up), `"fault"`
+    /// open at start-up, or the host ended a `--resume` launch that yielded no `system/init`
+    /// and fell back to a fresh one), `"fault"`
     /// (criterion 5's own no-result API-side ending), or `"stopped"` (criterion 6's
     /// wall-clock expiry). Deliberately a plain string, not an enum: THE STREAM,
     /// FAILURE CLASS and STOP each write their own literal, so none of the three has to
@@ -169,9 +171,9 @@ impl SpawnLaunched {
     /// Build the CLOSING record for an already-open launch (spec 104 criteria 5/6): the
     /// progress store is append-only (spec 93), so closing is a SEPARATE event, never a
     /// mutation of the open record - this is the one place that shape is assembled, so
-    /// FAILURE CLASS, STOP and the supervisor reconciliation share it rather than each
-    /// building a divergent literal. `session_id` identifies WHICH launch is closing;
-    /// `started`/`resumed_from` are left at their defaults because only the LATEST
+    /// FAILURE CLASS, STOP, THE RESUME FALLBACK and the supervisor reconciliation share it
+    /// rather than each building a divergent literal. `session_id` identifies WHICH launch is
+    /// closing; `started`/`resumed_from` are left at their defaults because only the LATEST
     /// record's `ended` decides open-vs-closed - the
     /// original open record (already durable) is what carries those. An empty `class`
     /// stores as `None` (the `completed`/`interrupted` endings carry no failure class).

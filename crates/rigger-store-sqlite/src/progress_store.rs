@@ -1,14 +1,16 @@
-//! The write half of [`crate::progress`] (spec 93, criterion 1: THE CORE LANE IS PURE):
+//! The store half of [`crate::progress`] (spec 93, criterion 1: THE CORE LANE IS PURE):
 //! recording one live progress report to a LIVE progress store. [`crate::progress`] keeps
 //! the model (`AgentProgress`, `AgentActivity`) and the pure fold (`consolidate`) -
 //! everything computable from already-read `&[Event]` slices, with no store at all. This
 //! module is the other half: `record`, the typed writers beside it and the [`append_stamped`]
-//! they share, the functions that append to a `&dyn EventStore`, split into their own file
-//! (never a function-by-function `#[cfg]` inside `progress.rs`) so the pure half can compile
-//! for `wasm32-unknown-unknown`.
+//! they share, the functions that append to a `&dyn EventStore`, with [`next_launch`], the read
+//! a launch append decides on, split into their own file (never a function-by-function `#[cfg]`
+//! inside `progress.rs`) so the pure half can compile for `wasm32-unknown-unknown`.
 
-use crate::eventstore::{Error, EventStore, ExpectedRevision, Position};
-use crate::progress::{stream_of, AgentProgress, RunStamped, SpawnLaunched, StopFailure};
+use crate::eventstore::{Error, EventStore, ExpectedRevision, Position, TypeSelection};
+use crate::progress::{
+    stream_of, AgentProgress, RunStamped, SpawnLaunched, StopFailure, TYPE_SPAWN_LAUNCHED,
+};
 
 /// Record one progress report to the progress `store`, stamped with `run_id`. Append-only
 /// and side-effect-free beyond the one event: a pure write, cheap to call after every
@@ -51,6 +53,32 @@ pub fn record_launch(
             launch.spawn, launch.launch
         ),
     )
+}
+
+/// The ordinal the next launch of `spawn` takes (spec 105 criterion 1): the highest the run's
+/// [`SpawnLaunched`] records hold for that id plus one, or `first`, the ordinal the caller names,
+/// when they hold none. Opening and closing records both count, so a launch whose open record
+/// was lost still moves the next one past it. A record that does not decode names no ordinal
+/// and moves nothing; a failed read is the caller's to surface, since a launch that cannot name
+/// its ordinal could overwrite a prior launch's transcript.
+pub fn next_launch(
+    store: &dyn EventStore,
+    run_id: &str,
+    spawn: &str,
+    first: u32,
+) -> Result<u32, Error> {
+    let recorded = store.read_stream_typed(
+        &stream_of(run_id),
+        0,
+        TypeSelection::Only(&[TYPE_SPAWN_LAUNCHED]),
+    )?;
+    Ok(recorded
+        .iter()
+        .filter_map(|event| serde_json::from_slice::<SpawnLaunched>(&event.data).ok())
+        .filter(|record| record.spawn == spawn)
+        .map(|record| record.launch)
+        .max()
+        .map_or(first, |highest| highest + 1))
 }
 
 /// Record one [`StopFailure`] hook firing to the progress `store`, stamped with `run_id`
