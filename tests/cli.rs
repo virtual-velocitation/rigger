@@ -7586,6 +7586,139 @@ fn a_re_attempt_resumes_the_recorded_session_framed_and_the_progress_log_holds_e
     );
 }
 
+/// Spec 105's resume fallback, end to end: given a unit whose re-attempt asks to resume a session
+/// the agent host no longer holds, ending `ending` with no `system/init`, when `rigger run` drives
+/// it, then that launch closes `interrupted` with no liveness fault, one fresh launch lands at the
+/// next ordinal with no resume, its result is the re-attempt's and the gate judges it: the lost
+/// session cost the re-attempt nothing.
+#[cfg(unix)]
+fn a_resume_with_no_session_lands_a_fresh_launch_in_the_same_attempt(ending: &str) {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_workflow_fixture(root, &TWO_ATTEMPT_RED_UNIT_WORKFLOW);
+    let workflow = root.join(".rigger/workflow.yml");
+    let bounded = std::fs::read_to_string(&workflow)
+        .unwrap()
+        .replace("budget: 60", "budget: 60\n  max_wall_clock: 3");
+    assert!(bounded.contains("max_wall_clock: 3"), "{bounded}");
+    std::fs::write(&workflow, bounded).unwrap();
+    let scratch = tempfile::tempdir().unwrap();
+    let arms = format!(
+        r#"  *"Do the unit."*)
+    case " $* " in
+    *" --resume "*)
+        {ending}
+        ;;
+    esac
+    printf '%s\0' "$@" > "$here/argv"
+    echo "pub fn work() {{}}" > work.rs
+    echo 'the unit is built'
+    ;;
+"#
+    );
+    let (out, err, ok, fake) = run_on_arms(root, &["run"], scratch.path(), &arms);
+    assert!(ok, "the run exits 0; stderr: {err}\nstdout: {out}");
+
+    let launches = common::cli::recorded_progress::<rigger::progress::SpawnLaunched>(root);
+    let session = launches.first().map_or("", |l| l.session_id.as_str());
+    let fresh = launches.last().map_or("", |l| l.session_id.as_str());
+    assert_ne!(
+        fresh, session,
+        "the fresh launch runs as a session of its own"
+    );
+    assert_eq!(
+        launches
+            .iter()
+            .map(|l| (
+                l.spawn.as_str(),
+                l.launch,
+                l.session_id.as_str(),
+                l.resumed_from.as_deref(),
+                l.ended.as_deref(),
+            ))
+            .collect::<Vec<_>>(),
+        vec![
+            ("solo/implementer#0", 0, session, None, None),
+            ("solo/implementer#1", 0, session, Some(session), None),
+            ("solo/implementer#1", 0, session, None, Some("interrupted")),
+            ("solo/implementer#1", 1, fresh, None, None),
+        ],
+        "one close, one next launch, no third attempt"
+    );
+
+    let argv = recorded_argv(&fake.path().join("bin/argv"));
+    assert_eq!(flag_value(&argv, "--session-id"), fresh);
+    assert_eq!(
+        argv.iter().filter(|a| *a == "--resume").count(),
+        0,
+        "the fresh launch resumes nothing: {argv:?}"
+    );
+    let events = read_run_events(root);
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| e.type_ == rigger::spawn::TYPE_SPAWN_RESULT)
+            .map(|e| {
+                let result = SpawnResult::from_event(e).unwrap();
+                let fault = result.is_liveness_fault();
+                (result.id, result.output, result.error, fault)
+            })
+            .collect::<Vec<_>>(),
+        ["solo/implementer#0", "solo/implementer#1"].map(|id| (
+            id.to_string(),
+            "the unit is built".to_string(),
+            String::new(),
+            false,
+        )),
+        "the re-attempt's one result is the fresh launch's, and no fault stands beside it"
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| e.type_ == rigger::contextgraph::TYPE_GATE_VERDICT)
+            .count(),
+        2,
+        "the gate judged both attempts, the fresh launch's work included"
+    );
+    assert_eq!(
+        common::cli::recorded_progress::<rigger::progress::AgentProgress>(root)
+            .iter()
+            .filter(|p| p.activity.contains("falling back"))
+            .map(|p| (p.id.clone(), p.activity.clone()))
+            .collect::<Vec<_>>(),
+        vec![(
+            "solo/implementer#1".to_string(),
+            format!(
+                "stream: session {session} to resume yielded no system/init, falling back to a \
+                 fresh launch"
+            ),
+        )]
+    );
+    assert_eq!(
+        out.lines()
+            .filter(|l| l.contains("to resume is gone"))
+            .collect::<Vec<_>>(),
+        vec![format!(
+            "spawn solo/implementer#1: session {session} to resume is gone; it ran as a fresh \
+             session {fresh}"
+        )],
+        "the conductor told the fallback on the operator's log; stdout: {out}"
+    );
+}
+
+rigger::test_cases! {
+    #[cfg(unix)]
+    a_resume_refused_at_a_clean_end_of_stream_lands_a_fresh_launch:
+        a_resume_with_no_session_lands_a_fresh_launch_in_the_same_attempt(
+            "echo 'No conversation found with session ID' 1>&2; exit 1",
+        );
+    #[cfg(unix)]
+    a_resume_silent_to_the_stop_lands_a_fresh_launch:
+        a_resume_with_no_session_lands_a_fresh_launch_in_the_same_attempt(
+            "while IFS= read -r _unused; do :; done; exit 1",
+        );
+}
+
 /// Spec 64, criterion 3, adjudication round 3 finding
 /// `adv-u3c3r3-ensure-present-covers-only-the-first-tier` (UPHELD, closed by round 4's
 /// `impl-u3c3-r4-reassert-centralized-in-run-reviewer`): the TRUE periphery of round 4's

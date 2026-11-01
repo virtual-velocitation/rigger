@@ -14,9 +14,8 @@
 //! the real wire shape, not a shape this unit invented for itself.
 //!
 //! NOT OWNED HERE: argv/cwd/env/the open launch record (criterion 1, already proven by
-//! `claude_code_launch_wire_periphery.rs`); relaunch and the composition-root swap's
-//! BEHAVIOR under an actual failing session (spec 105 - the class exists here, but nothing
-//! acts on it yet); the spawn-bound MCP server, the write guard and the StopFailure hooks'
+//! `claude_code_launch_wire_periphery.rs`); the composition-root swap's BEHAVIOR under an
+//! actual failing session (spec 105); the spawn-bound MCP server, the write guard and the StopFailure hooks'
 //! own injection/command shape (criteria 3 and 4, separate units, already landed
 //! independently - their tests, and `driver::claude_code`'s own in-file `mod tests` for
 //! `classify_failure`, cover those). This
@@ -28,6 +27,12 @@
 //! `ApiRetry` record: it lands in the run's progress stream beside its waiting line, it is on
 //! record while the session still waits the delay out, a refused append costs the session
 //! nothing, and a session ending with no result keeps it.
+//!
+//! THE RESUME FALLBACK tests at the end (spec 105) add what only a real child can prove of a
+//! `--resume` launch: the ways it can yield no `system/init`, grounded on the literal refusal of
+//! Claude Code 2.1.314, each close it `interrupted` and land one fresh launch at the next ordinal
+//! inside the same `spawn` call; a launch that saw `system/init`, and a launch that was fresh,
+//! stand alone; and every launch takes the ordinal after the highest the progress store records.
 
 mod common;
 
@@ -40,15 +45,16 @@ use common::fixtures::{
     FailAppendContaining,
 };
 use common::is_running;
-use rigger::conductor::{AgentDriver, AgentFailure, SpawnOpts};
+use rigger::conductor::{AgentDriver, AgentFailure, AgentResult, Error, SpawnOpts};
 use rigger::config::AgentDef;
-use rigger::driver::claude_code::Driver;
+use rigger::driver::claude_code::{framed, Driver};
 use rigger::driver::replay::spawn_scratch_path;
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Direction, Event, EventStore};
 use rigger::liveness;
 use rigger::progress::{
-    AgentProgress, ApiRetry, TYPE_AGENT_PROGRESS, TYPE_API_RETRY, TYPE_SPAWN_LAUNCHED,
+    AgentProgress, ApiRetry, SpawnLaunched, TYPE_AGENT_PROGRESS, TYPE_API_RETRY,
+    TYPE_SPAWN_LAUNCHED,
 };
 use rigger::spawn::{self, TYPE_SPAWN_RESULT};
 use serde_json::{json, Value};
@@ -1555,4 +1561,688 @@ rigger::test_cases! {
     an_api_retry_body_decodes_past_a_key_a_later_writer_added: a_retry_body_decodes(
         r#"{"spawn":"u9/implementer#0","delay_ms":618,"category":"rate_limit","attempt":3}"#,
     );
+}
+
+/// The fixture agent ending a `--resume` launch as `RIGGER_TEST_RESUME_ENDING` and any other
+/// launch as `RIGGER_TEST_FRESH_ENDING`.
+const RESUME_ENDING_AGENT: &str = "claude-code-resume-ending-agent.sh";
+
+/// The spawn the fallback tests launch, a re-attempt.
+const RESUMED_SPAWN: &str = "u105-resume/implementer#1";
+
+/// What the host's failure text for [`RESUMED_SPAWN`] opens with.
+const PORT_PREFIX: &str = "claude_code driver: \"u105-resume/implementer#1\": ";
+
+/// The port's failure for [`RESUMED_SPAWN`] when a session ended with no result and nothing on
+/// stderr.
+const NO_RESULT_FAILURE: &str = "claude_code driver: \"u105-resume/implementer#1\": the agent \
+    stream ended with no result (class unknown; stderr tail: )";
+
+/// The port's failure for [`RESUMED_SPAWN`] when a session ended with no result and the refusal's
+/// tell on stderr.
+const REFUSED_FAILURE: &str = "claude_code driver: \"u105-resume/implementer#1\": the agent \
+    stream ended with no result (class unknown; stderr tail: No conversation found with session \
+    ID: sess-prior)";
+
+/// The port's failure for [`RESUMED_SPAWN`] when its `rigger` server reported `failed`.
+const SERVER_FAILURE: &str = "claude_code driver: \"u105-resume/implementer#1\": its rigger MCP \
+    server reported status \"failed\" at init, not connected - the session was stopped so its \
+    task never runs without the rigger tools (class unknown)";
+
+/// The port's failure for [`RESUMED_SPAWN`] when it stayed silent past [`SILENCE_BOUND`].
+const SILENCE_FAILURE: &str = "claude_code driver: \"u105-resume/implementer#1\": spawn \
+    \"u105-resume/implementer#1\" stopped: its agent stream stayed silent for 3s (its \
+    max_wall_clock bound) with no result - no remediation attempt is charged (the unit's code is \
+    not at fault). Re-drive it once the agent/driver is healthy: record a real result with \
+    `rigger result u105-resume/implementer#1` (last-write-wins supersedes this liveness fault).";
+
+/// The port's failure for [`RESUMED_SPAWN`] when the host could not read a line.
+const UNREADABLE_FAILURE: &str = "claude_code driver: \"u105-resume/implementer#1\": read agent \
+    stream: stream did not contain valid UTF-8";
+
+/// [`RESUMED_SPAWN`] as the stem of its transcript files.
+const RESUMED_STEM: &str = "u105-resume_2fimplementer_231";
+
+/// The session [`RESUMED_SPAWN`] asks to continue.
+const PRIOR_SESSION: &str = "sess-prior";
+
+/// The first message of a `--resume` launch, before its frame.
+const RESUME_TASK: &str = "fix exactly these";
+
+/// The first message of a fresh launch, before its frame.
+const FULL_PROMPT: &str = "do the whole unit";
+
+/// What the fixture agent answers when its environment names no other answer.
+const FIXTURE_ANSWER: &str = "the answer";
+
+/// THE STOP's grace in these tests: every silent ending winds down on the end of its input.
+const WIND_DOWN_GRACE: Duration = Duration::from_secs(10);
+
+/// The silence bound of a row that goes silent, long enough for a loaded machine to start the
+/// fresh launch behind it.
+const SILENCE_BOUND: u64 = 3;
+
+/// The progress line of a fallback from [`PRIOR_SESSION`].
+const FALLBACK_LINE: &str =
+    "stream: session sess-prior to resume yielded no system/init, falling back to a fresh launch";
+
+/// The progress line of the first healthy `system/init` of the fixture agent.
+const FRESH_INIT_LINE: &str = "mcp servers: []";
+
+/// An agent whose silent session is STOPped after [`SILENCE_BOUND`] seconds.
+fn silence_bounded() -> AgentDef {
+    AgentDef {
+        max_wall_clock: Some(SILENCE_BOUND),
+        ..Default::default()
+    }
+}
+
+impl Fixture {
+    /// The file the fixture agent appends each launch's first message to.
+    fn launch_log(&self) -> PathBuf {
+        self.scratch_file("launches")
+    }
+
+    /// The task of each first message the fixture agent read, oldest first.
+    fn tasks_read(&self) -> Vec<String> {
+        std::fs::read_to_string(self.launch_log())
+            .unwrap_or_default()
+            .lines()
+            .map(|line| {
+                let message: Value = serde_json::from_str(line).unwrap();
+                message["message"]["content"].as_str().unwrap().to_string()
+            })
+            .collect()
+    }
+
+    /// Every launch record of the run, `started` zeroed so a record compares whole.
+    fn unstamped_records(&self) -> Vec<SpawnLaunched> {
+        self.launch_records()
+            .into_iter()
+            .map(|record| SpawnLaunched {
+                started: 0,
+                ..record
+            })
+            .collect()
+    }
+
+    /// The session of the latest launch record.
+    fn latest_session(&self) -> String {
+        self.launch_records()
+            .last()
+            .expect("a launch record")
+            .session_id
+            .clone()
+    }
+
+    /// The run's transcript files as `(name, lines)`, in name order.
+    fn transcripts(&self) -> Vec<(String, usize)> {
+        let dir = self.scratch_file("agent-stream").join("run-1");
+        let mut transcripts: Vec<(String, usize)> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| {
+                let path = entry.unwrap().path();
+                let name = path.file_name().unwrap().to_string_lossy().into_owned();
+                (name, std::fs::read_to_string(path).unwrap().lines().count())
+            })
+            .collect();
+        transcripts.sort();
+        transcripts
+    }
+
+    /// `(output, error, is a liveness fault)` of every `SpawnResult` the run store holds.
+    fn recorded_results(&self) -> Vec<(String, String, bool)> {
+        self.spawn_results()
+            .iter()
+            .map(|event| {
+                let result = spawn::SpawnResult::from_event(event).unwrap();
+                let fault = result.is_liveness_fault();
+                (result.output, result.error, fault)
+            })
+            .collect()
+    }
+
+    /// The environment choosing the fixture agent's two endings and its launch log.
+    fn ending_env(&self, resume_ending: &str, fresh_ending: &str) -> Vec<(String, String)> {
+        vec![
+            (
+                "RIGGER_TEST_RESUME_ENDING".to_string(),
+                resume_ending.to_string(),
+            ),
+            (
+                "RIGGER_TEST_FRESH_ENDING".to_string(),
+                fresh_ending.to_string(),
+            ),
+            (
+                "RIGGER_TEST_LAUNCH_LOG".to_string(),
+                self.launch_log().to_string_lossy().into_owned(),
+            ),
+        ]
+    }
+
+    /// [`RESUMED_SPAWN`], fresh, ending as `fresh_ending`.
+    fn fresh_opts(&self, fresh_ending: &str) -> SpawnOpts {
+        SpawnOpts {
+            env: self.ending_env("answer", fresh_ending),
+            ..opts(RESUMED_SPAWN)
+        }
+    }
+
+    /// [`RESUMED_SPAWN`] resuming [`PRIOR_SESSION`] with the two endings named.
+    fn resumed_opts(&self, resume_ending: &str, fresh_ending: &str) -> SpawnOpts {
+        SpawnOpts {
+            resumed_from: PRIOR_SESSION.to_string(),
+            resume_task: RESUME_TASK.to_string(),
+            env: self.ending_env(resume_ending, fresh_ending),
+            ..opts(RESUMED_SPAWN)
+        }
+    }
+
+    /// Spawn the fixture agent as `o` under `agent`.
+    fn host(&self, agent: &AgentDef, o: &SpawnOpts) -> Result<AgentResult, Error> {
+        self.stopping_driver(RESUME_ENDING_AGENT, WIND_DOWN_GRACE)
+            .spawn(agent, FULL_PROMPT, o, &no_emit)
+    }
+
+    /// Record a launch of `spawn` at `launch` on `run`, closed `ended` unless that is empty.
+    fn seed_launch(&self, run: &str, spawn: &str, launch: u32, ended: &str) {
+        let record = if ended.is_empty() {
+            SpawnLaunched {
+                spawn: spawn.to_string(),
+                launch,
+                session_id: "sess-seeded".to_string(),
+                ..Default::default()
+            }
+        } else {
+            SpawnLaunched::closed(spawn, launch, "sess-seeded", ended, "")
+        };
+        rigger::progress_store::record_launch(&self.progress_store, run, &record).unwrap();
+    }
+}
+
+/// The open record of [`RESUMED_SPAWN`]'s launch `launch` as `session`.
+fn opened(launch: u32, session: &str, resumed_from: Option<&str>) -> SpawnLaunched {
+    SpawnLaunched {
+        spawn: RESUMED_SPAWN.to_string(),
+        launch,
+        session_id: session.to_string(),
+        resumed_from: resumed_from.map(str::to_string),
+        ..Default::default()
+    }
+}
+
+/// The closing record of [`RESUMED_SPAWN`]'s launch `launch` as `session`.
+fn closed(launch: u32, session: &str, ended: &str, class: &str) -> SpawnLaunched {
+    SpawnLaunched::closed(RESUMED_SPAWN, launch, session, ended, class)
+}
+
+/// The one result-line a fallback leaves on the run log: the fresh launch's answer.
+fn fresh_answer_on_record() -> Vec<(String, String, bool)> {
+    vec![(FIXTURE_ANSWER.to_string(), String::new(), false)]
+}
+
+/// The liveness fault THE STOP leaves on the run log for a launch silent past [`SILENCE_BOUND`].
+fn liveness_fault_on_record() -> Vec<(String, String, bool)> {
+    let message = SILENCE_FAILURE.strip_prefix(PORT_PREFIX).unwrap();
+    vec![(String::new(), message.to_string(), true)]
+}
+
+/// The whole of one fallback: `result` is the fresh launch's, the `--resume` launch closed
+/// `interrupted` and the fresh one opened at the next ordinal, the tasks in `tasks` were read,
+/// the only result on the run log is the fresh answer, so no attempt was charged, the progress
+/// log holds `noted` then the fallback's line, and the refused launch's transcript holds
+/// `refused_lines` lines beside the fresh launch's two.
+fn assert_fell_back(
+    fx: &Fixture,
+    result: &AgentResult,
+    tasks: &[String],
+    noted: &[&str],
+    refused_lines: usize,
+) {
+    let fresh = fx.latest_session();
+    assert_ne!(fresh, PRIOR_SESSION);
+    assert_eq!(
+        fx.unstamped_records(),
+        vec![
+            opened(0, PRIOR_SESSION, Some(PRIOR_SESSION)),
+            closed(0, PRIOR_SESSION, "interrupted", ""),
+            opened(1, &fresh, None),
+        ]
+    );
+    assert_eq!(result.output, FIXTURE_ANSWER);
+    assert_eq!(result.session_id, fresh);
+    assert_eq!(result.resumed_from, "");
+    assert_eq!(fx.tasks_read(), tasks);
+    assert_eq!(fx.recorded_results(), fresh_answer_on_record());
+    let lines: Vec<&str> = noted
+        .iter()
+        .copied()
+        .chain([FALLBACK_LINE, FRESH_INIT_LINE])
+        .collect();
+    assert_eq!(fx.activities(), lines);
+    assert_eq!(
+        fx.transcripts(),
+        vec![
+            (format!("{RESUMED_STEM}.0.jsonl"), refused_lines),
+            (format!("{RESUMED_STEM}.1.jsonl"), 2),
+        ]
+    );
+}
+
+/// THE RESUME FALLBACK: a `--resume` launch of Claude Code ending `ending` under `agent` yields
+/// no `system/init`, so one spawn call lands the fresh launch behind it ([`assert_fell_back`]).
+fn a_resume_ending_with_no_session_falls_back(
+    ending: &str,
+    agent: AgentDef,
+    noted: &[&str],
+    refused_lines: usize,
+) {
+    let fx = Fixture::new();
+    let o = fx.resumed_opts(ending, "answer");
+
+    let result = fx.host(&agent, &o).expect("the fresh launch answers");
+
+    assert_fell_back(
+        &fx,
+        &result,
+        &[framed(RESUME_TASK), framed(FULL_PROMPT)],
+        noted,
+        refused_lines,
+    );
+}
+
+rigger::test_cases! {
+    a_resume_refused_at_a_clean_end_of_stream_falls_back:
+        a_resume_ending_with_no_session_falls_back("refused-eof", AgentDef::default(), &[], 0);
+    // Claude Code 2.1.314 refuses with a `result` line and no `system/init`; recording it would
+    // stand in the fresh launch's place on the run log.
+    a_resume_refused_with_a_result_line_falls_back:
+        a_resume_ending_with_no_session_falls_back("refused-result", AgentDef::default(), &[], 1);
+    // The refusal's result closes the input, so a session waiting on it can end.
+    a_resume_refused_with_a_result_line_and_its_input_held_open_falls_back:
+        a_resume_ending_with_no_session_falls_back(
+            "refused-result-held-open",
+            AgentDef::default(),
+            &[],
+            1,
+        );
+    a_resume_silent_to_the_stop_falls_back:
+        a_resume_ending_with_no_session_falls_back("silent", silence_bounded(), &[], 0);
+    a_resume_ending_on_an_unreadable_line_falls_back:
+        a_resume_ending_with_no_session_falls_back(
+            "unreadable",
+            AgentDef::default(),
+            &["stream (read error before system/init): stream did not contain valid UTF-8"],
+            0,
+        );
+}
+
+/// A session gone before it reads a task too big for the pipe breaks the host's write, and it
+/// has yielded no `system/init` all the same.
+#[test]
+fn a_resume_refused_before_it_reads_its_task_falls_back() {
+    let fx = Fixture::new();
+    let o = SpawnOpts {
+        resume_task: "x".repeat(1024 * 1024),
+        ..fx.resumed_opts("refused-unread", "answer")
+    };
+
+    let result = fx
+        .host(&AgentDef::default(), &o)
+        .expect("the fresh launch answers");
+
+    assert_fell_back(&fx, &result, &[framed(FULL_PROMPT)], &[], 0);
+}
+
+/// The one launch of `o`, its outcome `outcome`, stands: no fallback ran. It opened naming
+/// `resumed_from`, closed `ended` when that names a closing, and failed with `failure` unless
+/// that is empty, leaving `results` on the run log.
+fn assert_one_launch_stands(
+    fx: &Fixture,
+    outcome: Result<AgentResult, Error>,
+    resumed_from: Option<&str>,
+    ended: Option<(&str, &str)>,
+    failure: &str,
+    results: Vec<(String, String, bool)>,
+) {
+    let session = fx.latest_session();
+    let mut records = vec![opened(0, &session, resumed_from)];
+    records.extend(ended.map(|(ended, class)| closed(0, &session, ended, class)));
+    assert_eq!(fx.unstamped_records(), records);
+    assert_eq!(
+        outcome
+            .map(|result| (result.session_id, result.resumed_from))
+            .map_err(|e| rigger::conductor::strip_failure_marker(&e).to_string()),
+        if failure.is_empty() {
+            Ok((session, resumed_from.unwrap_or_default().to_string()))
+        } else {
+            Err(failure.to_string())
+        }
+    );
+    assert_eq!(fx.recorded_results(), results);
+    assert_eq!(
+        fx.transcripts()
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect::<Vec<_>>(),
+        vec![format!("{RESUMED_STEM}.0.jsonl")]
+    );
+}
+
+/// A launch that saw `system/init` takes no fallback, whatever its ending.
+fn a_resume_that_saw_its_session_stands(
+    ending: &str,
+    agent: AgentDef,
+    ended: Option<(&str, &str)>,
+    failure: &str,
+    results: Vec<(String, String, bool)>,
+) {
+    let fx = Fixture::new();
+    let o = fx.resumed_opts(ending, "answer");
+    let outcome = fx.host(&agent, &o);
+    assert_one_launch_stands(&fx, outcome, Some(PRIOR_SESSION), ended, failure, results);
+}
+
+/// A fresh launch names no session to lose, so nothing it does takes the fallback.
+fn a_fresh_launch_stands(
+    ending: &str,
+    agent: AgentDef,
+    ended: Option<(&str, &str)>,
+    failure: &str,
+    results: Vec<(String, String, bool)>,
+) {
+    let fx = Fixture::new();
+    let o = fx.fresh_opts(ending);
+    let outcome = fx.host(&agent, &o);
+    assert_one_launch_stands(&fx, outcome, None, ended, failure, results);
+}
+
+rigger::test_cases! {
+    a_resume_answering_stands: a_resume_that_saw_its_session_stands(
+        "answer",
+        AgentDef::default(),
+        None,
+        "",
+        fresh_answer_on_record(),
+    );
+    a_resume_ending_after_init_stands_as_a_fault: a_resume_that_saw_its_session_stands(
+        "init-eof",
+        AgentDef::default(),
+        Some(("fault", "unknown")),
+        NO_RESULT_FAILURE,
+        Vec::new(),
+    );
+    a_resume_silent_after_init_stands_stopped: a_resume_that_saw_its_session_stands(
+        "init-silent",
+        silence_bounded(),
+        Some(("stopped", "")),
+        SILENCE_FAILURE,
+        liveness_fault_on_record(),
+    );
+    a_resume_unreadable_after_init_stands: a_resume_that_saw_its_session_stands(
+        "init-unreadable",
+        AgentDef::default(),
+        None,
+        UNREADABLE_FAILURE,
+        Vec::new(),
+    );
+    a_resume_whose_server_failed_at_init_stands: a_resume_that_saw_its_session_stands(
+        "init-server-failed",
+        AgentDef::default(),
+        Some(("fault", "unknown")),
+        SERVER_FAILURE,
+        Vec::new(),
+    );
+    a_fresh_launch_ending_with_nothing_stands_as_a_fault: a_fresh_launch_stands(
+        "refused-eof",
+        AgentDef::default(),
+        Some(("fault", "unknown")),
+        REFUSED_FAILURE,
+        Vec::new(),
+    );
+    a_fresh_launch_silent_stands_stopped: a_fresh_launch_stands(
+        "silent",
+        silence_bounded(),
+        Some(("stopped", "")),
+        SILENCE_FAILURE,
+        liveness_fault_on_record(),
+    );
+    a_fresh_launch_unreadable_stands: a_fresh_launch_stands(
+        "unreadable",
+        AgentDef::default(),
+        None,
+        UNREADABLE_FAILURE,
+        Vec::new(),
+    );
+    // Only a launch that asked to resume reads a missing init as a session gone.
+    a_fresh_launch_answering_with_no_init_stands: a_fresh_launch_stands(
+        "answer-no-init",
+        AgentDef::default(),
+        None,
+        "",
+        fresh_answer_on_record(),
+    );
+}
+
+/// The fresh launch a fallback lands is the last of the spawn call: ending `fresh_ending`, it
+/// closes `ended` at its own ordinal, fails with `failure` and no third launch follows.
+fn a_fallback_launch_ends_at_its_own_ordinal(
+    resume_ending: &str,
+    fresh_ending: &str,
+    agent: AgentDef,
+    ended: Option<(&str, &str)>,
+    failure: &str,
+    results: Vec<(String, String, bool)>,
+) {
+    let fx = Fixture::new();
+    let o = fx.resumed_opts(resume_ending, fresh_ending);
+
+    let err = fx
+        .host(&agent, &o)
+        .expect_err("the fresh launch's ending stands");
+
+    let fresh = fx.latest_session();
+    let mut records = vec![
+        opened(0, PRIOR_SESSION, Some(PRIOR_SESSION)),
+        closed(0, PRIOR_SESSION, "interrupted", ""),
+        opened(1, &fresh, None),
+    ];
+    records.extend(ended.map(|(ended, class)| closed(1, &fresh, ended, class)));
+    assert_eq!(fx.unstamped_records(), records);
+    assert_eq!(rigger::conductor::strip_failure_marker(&err), failure);
+    assert_eq!(fx.recorded_results(), results);
+    assert_eq!(fx.tasks_read().len(), 2);
+}
+
+rigger::test_cases! {
+    a_fallback_launch_ending_with_nothing_is_a_fault: a_fallback_launch_ends_at_its_own_ordinal(
+        "refused-eof",
+        "refused-eof",
+        AgentDef::default(),
+        Some(("fault", "unknown")),
+        REFUSED_FAILURE,
+        Vec::new(),
+    );
+    a_fallback_launch_silent_is_stopped: a_fallback_launch_ends_at_its_own_ordinal(
+        "refused-eof",
+        "silent",
+        silence_bounded(),
+        Some(("stopped", "")),
+        SILENCE_FAILURE,
+        liveness_fault_on_record(),
+    );
+    a_fallback_launch_whose_server_failed_is_a_fault: a_fallback_launch_ends_at_its_own_ordinal(
+        "refused-eof",
+        "init-server-failed",
+        AgentDef::default(),
+        Some(("fault", "unknown")),
+        SERVER_FAILURE,
+        Vec::new(),
+    );
+    a_fallback_launch_unreadable_fails_open: a_fallback_launch_ends_at_its_own_ordinal(
+        "unreadable",
+        "unreadable",
+        AgentDef::default(),
+        None,
+        UNREADABLE_FAILURE,
+        Vec::new(),
+    );
+}
+
+/// A launch asked to take `launch` takes the ordinal after the highest the progress store records
+/// for its spawn on its run, a closing counting as much as an opening, and `launch` when none
+/// does: `seeded` rows are `(run, spawn, ordinal, ended)`.
+fn the_ordinal_follows_the_record(seeded: &[(&str, &str, u32, &str)], launch: u32, ordinal: u32) {
+    let fx = Fixture::new();
+    for (run, spawn, recorded, ended) in seeded {
+        fx.seed_launch(run, spawn, *recorded, ended);
+    }
+    let o = SpawnOpts {
+        launch,
+        ..fx.fresh_opts("answer")
+    };
+
+    fx.host(&AgentDef::default(), &o)
+        .expect("the launch answers");
+
+    assert_eq!(
+        fx.unstamped_records().last(),
+        Some(&opened(ordinal, &fx.latest_session(), None))
+    );
+    assert_eq!(
+        fx.transcripts(),
+        vec![(format!("{RESUMED_STEM}.{ordinal}.jsonl"), 2)]
+    );
+}
+
+rigger::test_cases! {
+    a_first_launch_takes_ordinal_zero: the_ordinal_follows_the_record(&[], 0, 0);
+    a_first_launch_keeps_the_ordinal_its_spawn_names: the_ordinal_follows_the_record(&[], 2, 2);
+    a_recorded_launch_moves_the_next_to_one:
+        the_ordinal_follows_the_record(&[("run-1", RESUMED_SPAWN, 0, "")], 0, 1);
+    a_recorded_launch_outranks_the_ordinal_a_spawn_names:
+        the_ordinal_follows_the_record(&[("run-1", RESUMED_SPAWN, 0, "")], 9, 1);
+    a_closing_record_counts_once_with_its_opening: the_ordinal_follows_the_record(
+        &[
+            ("run-1", RESUMED_SPAWN, 0, ""),
+            ("run-1", RESUMED_SPAWN, 0, "fault"),
+        ],
+        0,
+        1,
+    );
+    a_closing_record_alone_counts:
+        the_ordinal_follows_the_record(&[("run-1", RESUMED_SPAWN, 4, "stopped")], 0, 5);
+    the_highest_recorded_ordinal_decides_not_the_latest: the_ordinal_follows_the_record(
+        &[
+            ("run-1", RESUMED_SPAWN, 0, ""),
+            ("run-1", RESUMED_SPAWN, 3, ""),
+            ("run-1", RESUMED_SPAWN, 1, ""),
+        ],
+        0,
+        4,
+    );
+    another_spawns_launches_move_no_ordinal:
+        the_ordinal_follows_the_record(&[("run-1", "u105-resume/implementer#0", 7, "")], 0, 0);
+    another_runs_launches_move_no_ordinal:
+        the_ordinal_follows_the_record(&[("run-2", RESUMED_SPAWN, 7, "")], 0, 0);
+}
+
+/// Every close carries the ordinal its launch took, past `opts.launch`: ending `ending`, the
+/// launch after a recorded launch 4 closes `ended` at 5.
+fn a_close_carries_the_ordinal_its_launch_took(ending: &str, agent: AgentDef, ended: (&str, &str)) {
+    let fx = Fixture::new();
+    fx.seed_launch("run-1", RESUMED_SPAWN, 4, "");
+
+    fx.host(&agent, &fx.fresh_opts(ending))
+        .expect_err("the launch fails");
+
+    assert_eq!(
+        fx.unstamped_records().last(),
+        Some(&closed(5, &fx.latest_session(), ended.0, ended.1))
+    );
+}
+
+rigger::test_cases! {
+    a_fault_closes_at_the_launchs_ordinal:
+        a_close_carries_the_ordinal_its_launch_took(
+            "init-eof",
+            AgentDef::default(),
+            ("fault", "unknown"),
+        );
+    a_launch_fault_closes_at_the_launchs_ordinal:
+        a_close_carries_the_ordinal_its_launch_took(
+            "init-server-failed",
+            AgentDef::default(),
+            ("fault", "unknown"),
+        );
+    a_stop_closes_at_the_launchs_ordinal:
+        a_close_carries_the_ordinal_its_launch_took(
+            "silent",
+            silence_bounded(),
+            ("stopped", ""),
+        );
+}
+
+/// The fallback's two launches take the two ordinals after the record, past `opts.launch`, and
+/// neither touches a transcript of the prior launches'.
+#[test]
+fn a_fallback_past_recorded_launches_takes_the_next_two_ordinals() {
+    let fx = Fixture::new();
+    fx.seed_launch("run-1", RESUMED_SPAWN, 4, "");
+    let o = fx.resumed_opts("refused-result", "answer");
+
+    fx.host(&AgentDef::default(), &o)
+        .expect("the fresh launch answers");
+
+    let fresh = fx.latest_session();
+    assert_eq!(
+        fx.unstamped_records()[1..].to_vec(),
+        vec![
+            opened(5, PRIOR_SESSION, Some(PRIOR_SESSION)),
+            closed(5, PRIOR_SESSION, "interrupted", ""),
+            opened(6, &fresh, None),
+        ]
+    );
+    assert_eq!(
+        fx.transcripts(),
+        vec![
+            (format!("{RESUMED_STEM}.5.jsonl"), 1),
+            (format!("{RESUMED_STEM}.6.jsonl"), 2),
+        ]
+    );
+}
+
+/// A restart spawns an id it already launched with the spawn's own `launch` at 0: the transcript
+/// of the first launch survives it.
+#[test]
+fn a_restarts_first_spawn_keeps_the_prior_transcript() {
+    let fx = Fixture::new();
+    let answering = |answer: &str| SpawnOpts {
+        env: [
+            fx.ending_env("answer", "answer"),
+            vec![("RIGGER_TEST_ANSWER".to_string(), answer.to_string())],
+        ]
+        .concat(),
+        ..opts(RESUMED_SPAWN)
+    };
+
+    for answer in ["before the restart", "after the restart"] {
+        fx.host(&AgentDef::default(), &answering(answer))
+            .expect("the launch answers");
+    }
+
+    let transcript = |ordinal: u32| {
+        std::fs::read_to_string(
+            fx.scratch_file("agent-stream")
+                .join("run-1")
+                .join(format!("{RESUMED_STEM}.{ordinal}.jsonl")),
+        )
+        .unwrap()
+    };
+    let answer_in = |raw: String| {
+        let result: Value = serde_json::from_str(raw.lines().last().unwrap()).unwrap();
+        result["result"].as_str().unwrap().to_string()
+    };
+    assert_eq!(answer_in(transcript(0)), "before the restart");
+    assert_eq!(answer_in(transcript(1)), "after the restart");
 }

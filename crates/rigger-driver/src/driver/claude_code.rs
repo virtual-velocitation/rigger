@@ -2110,6 +2110,33 @@ mod tests {
         assert_eq!(v["message"]["content"], framed("fix exactly these"));
     }
 
+    /// The ordinal comes from the record, so a launch that cannot read the record cannot name
+    /// its own: it fails with the store's error and starts nothing, never a launch that might
+    /// truncate a prior transcript.
+    #[test]
+    fn a_launch_that_cannot_read_the_record_starts_nothing() {
+        let driver = Driver {
+            bin: fixture_bin(),
+            rigger_bin: "rigger".to_string(),
+            ..Driver::default()
+        };
+
+        let err = match driver.launch(
+            &AgentDef::default(),
+            "task",
+            &opts("u/implementer#0"),
+            &FailingReadStore,
+        ) {
+            Ok(mut launch) => {
+                launch.child.wait().unwrap();
+                panic!("an unread record must not reach a launch");
+            }
+            Err(e) => e,
+        };
+
+        assert_eq!(err.0, FailingReadStore::read_failure().to_string());
+    }
+
     #[test]
     fn a_launch_relaunches_at_a_new_ordinal_with_no_resumed_from_this_spec() {
         // CONSTRAINTS WALK: "Relaunch - a new session id and the next launch ordinal."
