@@ -11,6 +11,7 @@ use rigger::contextgraph::sqlite::Projector;
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Direction, Event, EventStore, ExpectedRevision};
+use rigger::run::{RunHeld, RunReleased, TYPE_RUN_HELD, TYPE_RUN_RELEASED};
 
 pub use super::fixtures::keyed;
 
@@ -693,6 +694,27 @@ pub fn append_run_events<B: AsRef<str>>(store: &dyn EventStore, events: &[(&str,
             )
             .unwrap();
     }
+}
+
+/// Seed one released hold into `root`'s namespaced run stream, raised `held_ago` seconds ago and
+/// released `released_ago` seconds ago, dated by `valid_from` as a run's hold intervals read it.
+pub fn seed_released_hold(root: &Path, held_ago: u64, released_ago: u64) {
+    fn dated(type_: &str, body: impl serde::Serialize, ago: u64) -> Event {
+        Event::new(type_, serde_json::to_vec(&body).unwrap())
+            .with_valid_from(SystemTime::now() - Duration::from_secs(ago))
+    }
+    with_run_store(root, |store| {
+        store
+            .append(
+                rigger::conductor::STREAM,
+                ExpectedRevision::Any,
+                &[
+                    dated(TYPE_RUN_HELD, RunHeld::default(), held_ago),
+                    dated(TYPE_RUN_RELEASED, RunReleased::default(), released_ago),
+                ],
+            )
+            .unwrap();
+    });
 }
 
 /// The spawn [`one_unanswered_spawn`] requests and never answers.

@@ -516,8 +516,8 @@ function workerLabel(req) {
 // runWorker and its liveness helpers are defined below (the helpers first, so runWorker can
 // reference them).
 
-// livenessAgeSeconds asks RIGGER for a spawn's liveness age - the whole seconds since it last
-// touched its marker - by COURIERING `rigger status --json` (spec 14) and reading this spawn's
+// livenessAgeSeconds asks RIGGER for a spawn's liveness age - the whole seconds its marker sat
+// untouched outside any hold - by COURIERING `rigger status --json` (spec 14) and reading its
 // `liveness_age_s` from the presented view. rigger stats the marker in Rust and PRESENTS the
 // age, so the driver consumes rigger's consolidated view instead of reconstructing one file's
 // mtime with a raw `stat` (the RETIRED haiku probe). Returns the integer age, or null when the

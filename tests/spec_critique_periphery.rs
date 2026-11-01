@@ -4,7 +4,9 @@
 //! critiques a spec, then the plan-critique adversary runs once on the spec text through the
 //! headless host, its findings and verdict are recorded keyed on the spec's content hash and
 //! copied into the graph, and a second call on unchanged text answers from the store with zero
-//! spawns; an edited text is critiqued afresh and inherits none of the earlier findings.
+//! spawns; an edited text is critiqued afresh and inherits none of the earlier findings. A session
+//! silent past its bound is stopped, since this verb's host is the one wired with no beat source
+//! (spec 105 LIVENESS).
 //!
 //! NOT OWNED HERE: the refusal a new run meets without a clean critique (criterion 2), and the
 //! plan-critique stop on a spec defect (criterion 5).
@@ -22,8 +24,8 @@ use common::cli::{
 use common::fixtures::{composed_system_prompt, git_ok, temp_git_project_with_commit};
 use common::repo::{
     assert_carries_spawn_hooks, critique_stub_argv, critique_stub_record, critique_stub_spawns,
-    critique_stub_task, flag_value, hook_words, write_critique_stub, write_critique_stub_reporting,
-    CRITIQUE_CONN, CRITIQUE_SYSTEM_PROMPT,
+    critique_stub_task, flag_value, hook_words, stub_path, write_critique_stub,
+    write_critique_stub_reporting, CRITIQUE_CONN, CRITIQUE_SYSTEM_PROMPT, SILENT_PAST_THE_POLL,
 };
 use rigger::driver::claude_code::framed;
 use rigger::driver::replay::spawn_scratch_path;
@@ -34,7 +36,7 @@ use rigger::progress::StopFailure;
 use rigger::review::{
     critique_hash, critique_spawn_id, critique_unit, spec_critique_prompt, CRITIC_DENIED_TOOLS,
 };
-use rigger::spawn::{TYPE_SPAWN_REQUESTED, TYPE_SPAWN_RESULT};
+use rigger::spawn::{SpawnEvent, SpawnResult, TYPE_SPAWN_REQUESTED, TYPE_SPAWN_RESULT};
 use rigger::wave::NO_CRITIC_CLAUSE;
 use serde_json::{json, Value};
 
@@ -504,6 +506,55 @@ fn a_project_with_no_git_repository_critiques_its_spec_against_the_project_root(
         !root.join("scratch").exists(),
         "a project with no git repository has no scratch root: the session writes no liveness \
          marker or transcript, even with RIGGER_TMPDIR set"
+    );
+}
+
+/// Given a critic bounded to one second, when its session goes silent past the bound, then the
+/// host stops it: no beat ever lands on a critique, so this verb wires no beat source and counts
+/// from the session's last line, and a source here would read the whole silence as unsupervised
+/// and let a hung critic run on. The verb fails on the stop, never on the answer the session would
+/// have gone on to give.
+#[test]
+fn a_critique_session_silent_past_its_bound_is_stopped_since_no_beat_source_is_wired() {
+    let dir = temp_project();
+    let root = dir.path();
+    let bounded = BOUNDED_CRITIC_WORKFLOW.replace("max_wall_clock: 900", "max_wall_clock: 1");
+    scaffold(root, &bounded);
+    let work = tempfile::tempdir().unwrap();
+    let path = stub_path(work.path(), "claude", Some(SILENT_PAST_THE_POLL));
+
+    let (out, err, ok) = critique(root, SPEC_REL, &path, &root.join("scratch"));
+
+    assert!(!ok, "a stopped critique exits non-zero");
+    assert_eq!(out, "", "no finding or verdict is printed");
+    let id = critique_spawn_id(SPEC_HASH, 0);
+    let stopped = format!(
+        "rigger: rigger critique: {SPEC_REL} (hash {SPEC_HASH}): no critique was recorded - the \
+         critic's spawn failed: spawn {id:?} stopped: its agent stream stayed silent for 1s (its \
+         max_wall_clock bound) with no result"
+    );
+    assert_eq!(
+        err.lines()
+            .last()
+            .and_then(|line| line.split_once(" - no remediation"))
+            .map(|(head, _)| head),
+        Some(stopped.as_str()),
+        "stderr:\n{err}"
+    );
+    let events = critique_events(root);
+    assert_eq!(
+        spawn_events(&events),
+        [
+            (TYPE_SPAWN_REQUESTED.to_string(), id.clone()),
+            (TYPE_SPAWN_RESULT.to_string(), id),
+        ]
+    );
+    assert!(
+        SpawnResult::from_event(&events[1])
+            .unwrap()
+            .is_liveness_fault(),
+        "the session's one result is the stop's liveness fault: {:?}",
+        events[1]
     );
 }
 

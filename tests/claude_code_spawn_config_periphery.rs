@@ -68,6 +68,7 @@ fn launch_handing(
         scratch_root: String::new(),
         stop_grace: std::time::Duration::from_secs(30),
         handed_env,
+        beat_source: None,
         hold_sink: None,
     };
     let mut opts = implementer_opts(SPAWN_ID);

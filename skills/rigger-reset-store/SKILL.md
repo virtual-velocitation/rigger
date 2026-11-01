@@ -9,7 +9,7 @@ rigger keeps three stores under `.rigger/`, and only one of them holds anything 
 
 - `events.db` - the event log. This IS the truth: every decision, finding, gate verdict, and run milestone rigger has ever recorded, in the order it happened. Nothing else derives it; it derives everything else.
 - `graph.db` - the context graph. A REBUILDABLE projection of the event log and the tree: rigger-build-graph regenerates it from `events.db` and the project's files, so losing it loses time, never truth.
-- `progress.db` - live per-agent progress telemetry. Never replayed into a run's state; it is a side channel `rigger status` and the dashboard read to show what an agent is doing right now, not a record anything else depends on.
+- `progress.db` - live per-agent progress telemetry. Never replayed into a run's state; it is a side channel `rigger status` and the dashboard read to show what an agent is doing right now, and a live session's host reads to class a failed session and time its silence.
 
 ## Procedure
 

@@ -126,6 +126,7 @@ fn spawn_launched_survives_a_cold_start_a_second_store_instance_reads_the_first_
         scratch_root: String::new(),
         stop_grace: std::time::Duration::from_secs(30),
         handed_env: Vec::new(),
+        beat_source: None,
         hold_sink: None,
     };
 
@@ -276,6 +277,7 @@ fn launch_resolves_an_empty_rigger_bin_to_the_literal_rigger_on_path() {
         scratch_root: String::new(),
         stop_grace: std::time::Duration::from_secs(30),
         handed_env: Vec::new(),
+        beat_source: None,
         hold_sink: None,
     };
     let store = Store::open(":memory:").expect("in-memory store for a pure-argv assertion");
@@ -350,6 +352,7 @@ fn launch_resolves_an_empty_bin_to_the_literal_claude_found_on_path() {
         scratch_root: String::new(),
         stop_grace: std::time::Duration::from_secs(30),
         handed_env: Vec::new(),
+        beat_source: None,
         hold_sink: None,
     };
     let store = Store::open(":memory:").expect("in-memory store");
@@ -394,6 +397,7 @@ fn launch_reaps_the_child_when_the_stdin_write_fails() {
         scratch_root: String::new(),
         stop_grace: std::time::Duration::from_secs(30),
         handed_env: Vec::new(),
+        beat_source: None,
         hold_sink: None,
     };
     let store = Store::open(":memory:").expect("in-memory store");

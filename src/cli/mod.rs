@@ -3124,10 +3124,12 @@ fn recorded_dash_url(loc: &StoreLocation) -> Option<String> {
     (!url.is_empty()).then_some(url)
 }
 
-/// Every currently in-flight spawn's liveness-marker age (spec 14; spec 83 criterion 2): the
-/// ONE authority `cmd_status` and `watch_poll` both call, so the two surfaces can never
-/// disagree about who is still alive - no second, independently re-derived copy of this loop
-/// to drift out of step with the first.
+/// Every currently in-flight spawn's liveness-marker age (spec 14; spec 83 criterion 2), read
+/// through `holds`: the ONE age-map builder `cmd_status` and `watch_poll` both call - no second,
+/// independently re-derived copy of this loop to drift out of step with the first. The two do
+/// not share one reading: `cmd_status` passes its run's hold intervals, so a step after a
+/// released hold reads the time outside it, and `watch_poll` passes an empty slice, which reads
+/// wall-clock age, so an open hold cannot hide a dead supervisor from it.
 ///
 /// `repo` MUST be the store's resolved OWNING root ([`StoreLocation::repo_root`]), never a raw
 /// `git_repo()` cwd read: a courier invoked from a nested unit worktree (the documented,
@@ -3150,8 +3152,16 @@ fn liveness_ages_for_wave(
     run_id: &str,
     wave: &[spawn::WaveItem],
     now: std::time::SystemTime,
+    holds: &[rigger::liveness::Span],
 ) -> std::collections::BTreeMap<String, u64> {
-    rigger::liveness::marker_ages(events, &marker_root(repo, workdir), run_id, wave, now)
+    rigger::liveness::marker_ages(
+        events,
+        &marker_root(repo, workdir),
+        run_id,
+        wave,
+        now,
+        holds,
+    )
 }
 
 /// The scratch root a store's runs stamp their spawns' liveness markers under, for `repo` - the
@@ -3364,15 +3374,23 @@ fn watch_poll_over(
     // free. Dropped immediately either way, so this probe never holds the lock.
     let step_lock_free = acquire_step_lock(&loc.dir).is_ok();
 
-    // Each currently-parked spawn's heartbeat-marker age, exactly as `cmd_status`
-    // computes `liveness_ages` (spec 19a) - the SAME "live agent processes" reading both
-    // surfaces show, so they can never disagree on who is still working. `watch_poll` never
-    // reads `max_retries` (only `cmd_status`'s blocker-line rendering needs it), so the
+    // Each currently-parked spawn's heartbeat-marker age (spec 19a), through the builder
+    // `cmd_status` calls but on wall clock, with no hold subtracted: `DeadDriver` needs every
+    // age past `DEAD_DRIVER_HEARTBEAT_BOUND`, and an age with an open hold subtracted never
+    // gets there, so reading the run's holds here would lose a dead supervisor. `watch_poll`
+    // never reads `max_retries` (only `cmd_status`'s blocker-line rendering needs it), so the
     // second half of the shared `scratch_defaults` pair is deliberately discarded here.
     let (workdir, _max_retries) = scratch_defaults(loc);
     let wave = spawn::step_result(&run_events)?.wave;
-    let wave_liveness_ages =
-        liveness_ages_for_wave(&run_events, &loc.repo_root(), &workdir, &run_id, &wave, now);
+    let wave_liveness_ages = liveness_ages_for_wave(
+        &run_events,
+        &loc.repo_root(),
+        &workdir,
+        &run_id,
+        &wave,
+        now,
+        &[],
+    );
 
     // Dash liveness: prefer the per-project MARKER (port + pid) when one exists,
     // verified with the same real serve probe `dash_serving_on` uses - a marker naming
@@ -12216,6 +12234,94 @@ mod tests {
         (dir, loc, identity)
     }
 
+    /// Spec 105's LIVENESS closing clause, at `rigger watch`: given an open hold standing since
+    /// before the wave's marker was last touched, a quiet store and a free step lock, the marker
+    /// past the heartbeat bound raises `DeadDriver`, one short of it does not. `watch` reads the
+    /// marker on wall clock: an age with the open hold subtracted stops growing at the hold's
+    /// start, never reaches the bound, and `rigger watch` would lose a dead supervisor.
+    #[test]
+    fn watch_reads_a_marker_on_wall_clock_so_a_dead_supervisor_behind_an_open_hold_is_seen() {
+        let (dir, loc, _identity) = watch_test_store();
+        let db = loc.file("events.db");
+        Store::open(&db).unwrap();
+        std::fs::write(
+            loc.file("workflow.yml"),
+            format!("defaults:\n  workdir: \"{}\"\n", dir.path().display()),
+        )
+        .unwrap();
+        let run_id = "r-held";
+        let spawn_id = "u-held/implementer#0";
+        let stamped_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as i64
+            - (watch::DEAD_DRIVER_QUIET_BOUND + watch::DEAD_DRIVER_HEARTBEAT_BOUND).as_nanos()
+                as i64;
+        let scoped_run_stream = loc.run_stream();
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        for (revision, (ty, body)) in [
+            (
+                runscope::TYPE_RUN_STARTED,
+                format!(r#"{{"run":"{run_id}","criteria":["held"]}}"#),
+            ),
+            (
+                spawn::TYPE_SPAWN_REQUESTED,
+                format!(
+                    r#"{{"id":"{spawn_id}","unit":"u-held","stage":"implementer","prompt":"do it"}}"#
+                ),
+            ),
+            (
+                runscope::TYPE_RUN_HELD,
+                serde_json::to_string(&runscope::RunHeld::default()).unwrap(),
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            conn.execute(
+                "INSERT INTO events (stream, type, id, data, meta, valid_from, recorded_at, \
+                 revision) VALUES (?1, ?2, ?3, ?4, '{}', ?5, ?5, ?6)",
+                rusqlite::params![
+                    scoped_run_stream,
+                    ty,
+                    format!("e{revision}"),
+                    body.as_bytes(),
+                    stamped_at,
+                    revision as i64
+                ],
+            )
+            .unwrap();
+        }
+        let marker = rigger::liveness::marker_path(
+            &marker_root(&loc.repo_root(), &scratch_defaults(&loc).0),
+            run_id,
+            spawn_id,
+        )
+        .unwrap();
+        std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
+        std::fs::write(&marker, b"heartbeat").unwrap();
+
+        let a_minute = std::time::Duration::from_secs(60);
+        for (marker_age, expected) in [
+            (watch::DEAD_DRIVER_HEARTBEAT_BOUND - a_minute, vec![]),
+            (
+                watch::DEAD_DRIVER_HEARTBEAT_BOUND + a_minute,
+                vec![watch::Signal::DeadDriver],
+            ),
+        ] {
+            std::fs::File::options()
+                .write(true)
+                .open(&marker)
+                .unwrap()
+                .set_modified(std::time::SystemTime::now() - marker_age)
+                .unwrap();
+            let anomalies =
+                watch_poll(&loc, &StoreSelection::Sqlite, watch::CiProbe::NoRunTip).unwrap();
+            let signals: Vec<watch::Signal> = anomalies.iter().map(|a| a.signal).collect();
+            assert_eq!(signals, expected, "at {marker_age:?}: {anomalies:?}");
+        }
+    }
+
     // --- Spec 101, criterion 2: ONE-SHOT COMMANDS READ FROM THE BOUNDARY ---
 
     /// `rigger status`, `rigger progress` and the dash snapshot (its local and attached arms
@@ -12417,7 +12523,7 @@ mod tests {
             ..Default::default()
         }];
         let now = touched_at + std::time::Duration::from_secs(5);
-        let ages = liveness_ages_for_wave(&[], &loc.repo_root(), "", run_id, &wave, now);
+        let ages = liveness_ages_for_wave(&[], &loc.repo_root(), "", run_id, &wave, now, &[]);
 
         assert_eq!(
             ages.get(spawn_id).copied(),

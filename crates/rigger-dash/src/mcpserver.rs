@@ -753,10 +753,16 @@ impl<'a> Server<'a> {
         let frontier = crate::spawn::step_result(run_events)
             .map_err(|e| ToolError::new(INTERNAL_ERROR, e.to_string()))?
             .wave;
-        let liveness_ages: std::collections::HashMap<String, u64> =
-            crate::liveness::marker_ages(run_events, &self.scratch_root, &run_id, &frontier, now)
-                .into_iter()
-                .collect();
+        let liveness_ages: std::collections::HashMap<String, u64> = crate::liveness::marker_ages(
+            run_events,
+            &self.scratch_root,
+            &run_id,
+            &frontier,
+            now,
+            &[],
+        )
+        .into_iter()
+        .collect();
 
         let view = crate::progress::consolidate(run_events, &prog_events, &liveness_ages, now)
             .map_err(|e| ToolError::new(INTERNAL_ERROR, e.to_string()))?;

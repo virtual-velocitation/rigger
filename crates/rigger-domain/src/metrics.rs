@@ -1497,6 +1497,7 @@ pub fn model_drift(events: &[Event]) -> ModelDrift {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::at;
     use crate::test_support::ev;
 
     fn started(id: &str, agent: &str) -> Event {
@@ -2105,13 +2106,6 @@ mod tests {
     }
 
     // ---- spec-61 SPAWN TIMING helpers ----
-
-    /// An arbitrary but fixed instant `secs` after `SystemTime::UNIX_EPOCH`, for building
-    /// spawn events with a CONTROLLED `recorded_at` (the field the store stamps on ingest;
-    /// these pure-fold tests set it directly, never touching a real store).
-    fn at(secs: u64) -> SystemTime {
-        SystemTime::UNIX_EPOCH + Duration::from_secs(secs)
-    }
 
     /// A well-formed `SpawnRequested` event for `id`, recorded at `secs`. Rebuilds `id`'s
     /// unit/role/attempt coordinates via `crate::spawn::test_request` (the same deterministic
