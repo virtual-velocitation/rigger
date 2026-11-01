@@ -349,6 +349,38 @@ mod tests {
         );
     }
 
+    /// A record that does not decode names no ordinal, so it moves nothing and stops nothing:
+    /// a store holding one would otherwise refuse every later launch of its run.
+    fn an_undecodable_launch_record_is_skipped(seeded: &[u32], next: u32) {
+        let progress = Store::open(":memory:").unwrap();
+        for launch in seeded {
+            let record = SpawnLaunched::closed("u/implementer#0", *launch, "s", "fault", "");
+            record_launch(&progress, "run-1", &record).unwrap();
+        }
+        progress
+            .append(
+                &stream_of("run-1"),
+                ExpectedRevision::Any,
+                &[Event::new(
+                    crate::progress::TYPE_SPAWN_LAUNCHED,
+                    b"not a record".to_vec(),
+                )],
+            )
+            .unwrap();
+
+        assert_eq!(
+            next_launch(&progress, "run-1", "u/implementer#0", 6).unwrap(),
+            next
+        );
+    }
+
+    crate::test_cases! {
+        an_undecodable_record_alone_leaves_the_first_ordinal:
+            an_undecodable_launch_record_is_skipped(&[], 6);
+        an_undecodable_record_leaves_the_decoded_ones_deciding:
+            an_undecodable_launch_record_is_skipped(&[2], 3);
+    }
+
     #[test]
     fn append_stamped_a_report_the_store_did_not_write_is_reported_as_lost() {
         let err = append_stamped(
