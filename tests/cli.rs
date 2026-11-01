@@ -8073,9 +8073,9 @@ fn classed_served_error(class: rigger::conductor::AgentFailure) -> String {
 /// on a session that errors or on one that answers, when the hold stands, then `rigger_next` hands
 /// out nothing while the live session is left to finish, and on the release the launch runs, the
 /// errored spawn id with no infra mark. Given a wait class, the same id relaunches with no hold at
-/// all. Past two relaunches of an id the next error passes, held or not, to the conductor's infra
-/// rerun, whose own id waits on the hold in turn. The unit is charged nothing and a served run
-/// leaves each hold to its release.
+/// all. Past two relaunches of an id the next error passes, whatever the errors' classes and held
+/// or not, to the conductor's infra rerun, whose own id waits on the hold in turn. The unit is
+/// charged nothing and a served run leaves each hold to its release.
 #[test]
 fn a_served_wait_ends_by_its_release_and_relaunches_the_same_spawn_up_to_the_bound() {
     struct Case {
