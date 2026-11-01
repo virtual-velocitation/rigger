@@ -13,8 +13,10 @@
 //! ([`SpawnLaunched`], [`StopFailure`], [`ApiRetry`], [`SupervisorBeat`]). rigger READS it live -
 //! unit 2's consolidator folds it into the per-agent view, [`crate::metrics::grep_fallbacks`]
 //! counts this store's `grep-fallback:` lines for the dash, and the host classes a failed session
-//! from its [`StopFailure`] records - never in a run-stream fold, so the isolation that keeps
-//! replay byte-identical is preserved.
+//! from its [`StopFailure`] records and counts a run's failed launches from its closes
+//! ([`failed_closes_since`]) - never in a run-stream fold, so the isolation that keeps replay
+//! byte-identical is preserved. A close carries the run stream's revision its writer last read,
+//! the one order a progress record takes against a run-stream event.
 
 use std::collections::HashMap;
 use std::time::{Duration, SystemTime};
@@ -148,13 +150,11 @@ pub struct SpawnLaunched {
     pub started: u64,
     /// How this launch ENDED, or `None` while still open (spec 104 criteria 5/6; the
     /// architecture addendum §4.1's own "at exit it closes the record with `ended:
-    /// completed | interrupted | fault | stopped` and the class"): one of `"completed"`
-    /// (a real result landed), `"interrupted"` (the supervisor found this record still
-    /// open at start-up), `"fault"`
-    /// (criterion 5's own no-result API-side ending), or `"stopped"` (criterion 6's
-    /// wall-clock expiry). Deliberately a plain string, not an enum: THE STREAM,
-    /// FAILURE CLASS and STOP each write their own literal, so none of the three has to
-    /// land before another can close a record.
+    /// completed | interrupted | fault | stopped` and the class"): one of
+    /// [`ENDED_COMPLETED`] (a first non-error `result` landed), `"interrupted"` (the
+    /// supervisor found this record still open at start-up), [`ENDED_FAULT`] (a session that
+    /// left no usable `result`), or [`ENDED_STOPPED`] (THE STOP's wall-clock expiry). A plain
+    /// string so the record reads whatever a later writer's ending says.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ended: Option<String>,
     /// The failure class this launch ended under (criterion 5's `AgentFailure` category,
@@ -162,7 +162,9 @@ pub struct SpawnLaunched {
     /// and `interrupted`, which carry no failure to classify.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub class: Option<String>,
-    /// The run stream's revision the close's writer last read.
+    /// The run stream's revision the host last read when it wrote this close, `None` on an
+    /// open record, on a close written before spec 105 and when the host holds no sink to read
+    /// it from. [`failed_closes_since`] orders a close against a `RunReleased` by it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub revision: Option<Revision>,
 }
@@ -180,7 +182,9 @@ impl SpawnLaunched {
     /// `started`/`resumed_from` are left at their defaults because only the LATEST
     /// record's `ended` decides open-vs-closed - the
     /// original open record (already durable) is what carries those. An empty `class`
-    /// stores as `None` (the `completed`/`interrupted` endings carry no failure class).
+    /// stores as `None` (the `completed`/`interrupted` endings carry no failure class). The
+    /// [`revision`](Self::revision) stays `None`: the host stamps its own closes, and a
+    /// supervisor's reconciliation close orders against nothing.
     pub fn closed(
         spawn: impl Into<String>,
         launch: u32,
@@ -208,7 +212,7 @@ impl SpawnLaunched {
 /// The `ended` of a launch whose first `result` was not an error.
 pub const ENDED_COMPLETED: &str = "completed";
 
-/// The `ended` of a launch that ended with no usable `result`.
+/// The `ended` of a launch that left no usable `result`.
 pub const ENDED_FAULT: &str = "fault";
 
 /// The `ended` of a launch THE STOP ended.
@@ -217,9 +221,31 @@ pub const ENDED_STOPPED: &str = "stopped";
 /// How many consecutive failed closes hold a run `api-unstable`.
 pub const API_UNSTABLE_CLOSES: usize = 3;
 
-/// The count of failed closes standing in `progress_events`.
-pub fn failed_closes_since(_progress_events: &[Event], _released: Option<Revision>) -> usize {
-    0
+/// The count of [`ENDED_FAULT`] and [`ENDED_STOPPED`] closes across the run's `progress_events`
+/// (one run's progress stream, in stream order) since the later of the last
+/// [`ENDED_COMPLETED`] close and the last `RunReleased`, whose revision is `released`. PURE.
+///
+/// Closes order by [`SpawnLaunched::revision`]: no run-stream event lands during an outage, so
+/// closes share a stamp, and a tie falls to progress-stream order. A close stamped equal to
+/// `released` is after the release, since its writer read it. An unstamped close orders before
+/// every stamped one, so a close written before spec 105 counts as it stands. An `interrupted`
+/// close neither counts nor resets: the supervisor wrote it, and no launch failed.
+pub fn failed_closes_since(progress_events: &[Event], released: Option<Revision>) -> usize {
+    let mut closes: Vec<SpawnLaunched> = progress_events
+        .iter()
+        .filter(|e| e.type_ == TYPE_SPAWN_LAUNCHED)
+        .filter_map(|e| serde_json::from_slice::<SpawnLaunched>(&e.data).ok())
+        .filter(|launch| launch.ended.is_some())
+        .collect();
+    closes.sort_by_key(|close| close.revision);
+    closes
+        .iter()
+        .rev()
+        .take_while(|close| {
+            close.ended.as_deref() != Some(ENDED_COMPLETED) && close.revision >= released
+        })
+        .filter(|close| matches!(close.ended.as_deref(), Some(ENDED_FAULT | ENDED_STOPPED)))
+        .count()
 }
 
 /// The event type a [`StopFailure`] record serializes as (spec 104 criterion 5: A FAILURE
@@ -234,9 +260,7 @@ pub const TYPE_STOP_FAILURE: &str = "StopFailure";
 /// One `StopFailure` hook firing: the spawn it ended and the error category Claude Code
 /// reported for it. Keyed by [`spawn`](Self::spawn) ALONE - the hook command's own argv
 /// (`--spawn <id> --class <category>`) carries no launch ordinal - so
-/// [`latest_stop_failure_class`] folds "latest wins" exactly like [`AgentProgress`]'s own
-/// per-id fold does, never a second per-launch scoping scheme the command has no argument
-/// to carry.
+/// [`latest_stop_failure_class`] scopes it to its launch by where it sits in the stream.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StopFailure {
     /// The deterministic spawn id this firing belongs to (e.g. `u/implementer#0`).
@@ -252,21 +276,27 @@ impl RunStamped for StopFailure {
     const EVENT_TYPE: &'static str = TYPE_STOP_FAILURE;
 }
 
-/// The latest `StopFailure` class recorded for `spawn_id` - "latest wins", the store's own
-/// append order breaking any tie, exactly like [`AgentProgress`]'s per-id fold in
-/// [`consolidate`]. PURE (no IO): `progress_events` is already-read progress-store events.
-/// This is FAILURE CLASS's first-priority source (spec 104 criterion 5, Design: "the class
-/// from, in order: the record written by the `StopFailure` hook ... else `unknown`"). `None`
-/// when no `StopFailure` event names this spawn.
+/// The latest `StopFailure` class recorded for `spawn_id` since that spawn's last launch opened -
+/// "latest wins", the store's own append order breaking any tie, exactly like
+/// [`AgentProgress`]'s per-id fold in [`consolidate`]. An open [`SpawnLaunched`] of the spawn
+/// starts the count over, so a record of an earlier launch never classes a later one (spec 105),
+/// by stream order and never by a comparison of seconds. PURE (no IO): `progress_events` is
+/// already-read progress-store events, the host reading it after its own launch's open record.
+/// `None` when no `StopFailure` event follows that open record.
 pub fn latest_stop_failure_class(progress_events: &[Event], spawn_id: &str) -> Option<String> {
     let mut found = None;
     for e in progress_events {
-        if e.type_ != TYPE_STOP_FAILURE {
-            continue;
-        }
-        if let Ok(sf) = serde_json::from_slice::<StopFailure>(&e.data) {
-            if sf.spawn == spawn_id {
-                found = Some(sf.class);
+        if e.type_ == TYPE_SPAWN_LAUNCHED {
+            if let Ok(launch) = serde_json::from_slice::<SpawnLaunched>(&e.data) {
+                if launch.spawn == spawn_id && launch.ended.is_none() {
+                    found = None;
+                }
+            }
+        } else if e.type_ == TYPE_STOP_FAILURE {
+            if let Ok(sf) = serde_json::from_slice::<StopFailure>(&e.data) {
+                if sf.spawn == spawn_id {
+                    found = Some(sf.class);
+                }
             }
         }
     }

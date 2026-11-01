@@ -5212,24 +5212,6 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-5411bdb7c258",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "crates/rigger-domain/src/agent.rs",
-        "name": "cause_row",
-        "content_hash": "908e702a08880ee2"
-      },
-      {
-        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
-        "name": "locked",
-        "content_hash": "b98aeee67269cd4c"
-      }
-    ],
-    "proposed_home": "a new shared module (sites span 2 files: crates/rigger-domain/src/agent.rs, crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
-  },
-  {
     "id": "dup-74b161ef523c",
     "classification": "near",
     "sites": [

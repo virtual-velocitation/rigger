@@ -1,5 +1,5 @@
 //! The process half of [`crate::run`] (spec 93, criterion 1: THE CORE LANE IS PURE):
-//! starting, adopting and re-pinning a LIVE run against a real event store.
+//! starting, adopting, re-pinning and holding a LIVE run against a real event store.
 //! [`crate::run`] keeps the model (`RunStarted`, `RunOf`, `RunStart`) and the pure folds
 //! (`current_run`, `current_run_id`, `current_run_base`, `current_run_base_tip`,
 //! `run_attribution`, `effective_definition`) - everything computable from an
@@ -13,12 +13,16 @@
 
 use std::time::SystemTime;
 
+use rigger_domain::agent::cause_row;
+use rigger_domain::ledger::{Hold, RunState};
+
 use crate::contextgraph::TYPE_DECISION_MADE;
-use crate::eventstore::{Error, Event, EventStore, ExpectedRevision, Revision};
+use crate::eventstore::{Error, Event, EventStore, ExpectedRevision, Revision, TypeSelection};
 use crate::run::read::read_run;
 use crate::run::{
-    adopted_run, current_run, effective_definition, RunStart, RunStarted, META_DEFINITION,
-    META_DEFINITION_PRIOR, META_RUN_ID, STREAM, TYPE_RUN_STARTED,
+    adopted_run, current_run, effective_definition, RunHeld, RunReleased, RunStart, RunStarted,
+    HOLD_BY_HOST, META_DEFINITION, META_DEFINITION_PRIOR, META_RUN_ID, STREAM, TYPE_RUN_HELD,
+    TYPE_RUN_RELEASED, TYPE_RUN_STARTED,
 };
 
 /// Record a `--rebase-definition` supersession on the current run (spec 13, unit 1): the
@@ -198,6 +202,11 @@ pub fn ensure_started_pinned(
 /// argv - can derive this run's per-run-unique PR head name. Pass `""` from a path with no
 /// spec (an offline replay, a no-spec workflow run); the head-name derivation then degrades to
 /// the run-short-id alone.
+///
+/// A hold open on the run it ends, an operator hold included, is released first (spec 105):
+/// every mint path comes through here, and the release and the `RunStarted` stay two appends, so
+/// a `rigger hold` landing between them stands in the slice it landed in, never swept by the
+/// release and never refused.
 pub fn start_fresh(
     store: &dyn EventStore,
     criteria: &[String],
@@ -206,6 +215,7 @@ pub fn start_fresh(
     base_tip: &str,
     spec_path: &str,
 ) -> Result<String, Error> {
+    release_hold(store)?;
     let started = RunStarted {
         run: uuid::Uuid::new_v4().to_string(),
         criteria: criteria.to_vec(),
@@ -223,34 +233,132 @@ pub fn start_fresh(
     Ok(started.run)
 }
 
-/// One sighting of a hold-class cause, as the host saw it.
+/// One sighting of a hold-class cause by a live launch (spec 105).
 pub struct HoldSighting<'a> {
+    /// The category sighted, or `api-unstable`.
     pub cause: &'a str,
+    /// The sighting line's error text, empty when no line sighted it.
     pub detail: &'a str,
+    /// The model the launch ran on, empty for the default model.
     pub model: &'a str,
 }
 
-/// Record `sighting` on the run stream.
-pub fn record_hold_sighting(
-    _store: &dyn EventStore,
-    _sighting: &HoldSighting,
+/// Record `sighting` as a `RunHeld {by: host}`, its action and need for a person read from the
+/// cause's row, when the hold it reads leaves it something to say: with no hold open, it holds
+/// the run; on an operator hold, it appends nothing; on a hold of the same cause, or on a
+/// sighting whose category needs no person, it appends nothing; otherwise the run's cause moves
+/// to the new person-needing category.
+pub fn record_hold_sighting(store: &dyn EventStore, sighting: &HoldSighting) -> Result<(), Error> {
+    let row = cause_row(sighting.cause);
+    let body = RunHeld {
+        cause: sighting.cause.to_string(),
+        detail: sighting.detail.to_string(),
+        action: row.action.to_string(),
+        needs_person: row.needs_person,
+        by: HOLD_BY_HOST.to_string(),
+        model: sighting.model.to_string(),
+    };
+    let held = hold_event(TYPE_RUN_HELD, &body)?;
+    append_on_hold(store, TYPE_RUN_HELD, |hold| {
+        let appends = match hold {
+            None => true,
+            Some(hold) if hold.operator => false,
+            Some(hold) => row.needs_person && hold.latest.cause != sighting.cause,
+        };
+        Ok(appends.then(|| held.clone()))
+    })
+}
+
+/// Release the current run's open hold, an operator hold included, as `RunReleased {by: host}`:
+/// the done run's and the mint's release (spec 105). With no hold open it appends nothing.
+pub fn release_hold(store: &dyn EventStore) -> Result<(), Error> {
+    append_on_hold(store, TYPE_RUN_RELEASED, |hold| {
+        hold.map(|hold| {
+            let body = RunReleased {
+                by: HOLD_BY_HOST.to_string(),
+                held_for_s: held_for_s(hold.since, SystemTime::now()),
+            };
+            hold_event(TYPE_RUN_RELEASED, &body)
+        })
+        .transpose()
+    })
+}
+
+/// The revision a launch close stamps: the newest of the current run's slice, the head a hold
+/// writer pins to, `None` on an empty stream. Perception events stay out of the read, so it can
+/// lag the stream's true head, and a close orders against `RunHeld` and `RunReleased` alone.
+pub fn run_stream_head(store: &dyn EventStore) -> Result<Option<Revision>, Error> {
+    Ok(read_run_at_head(store)?.1)
+}
+
+/// The current run's slice and the newest revision in it, the head a compare-and-append over that
+/// read pins to.
+pub(crate) fn read_run_at_head(
+    store: &dyn EventStore,
+) -> Result<(Vec<Event>, Option<Revision>), Error> {
+    let run = read_run(store, STREAM)?;
+    let head = run.iter().map(|e| e.revision).max();
+    Ok((run, head))
+}
+
+/// Append what `decide` makes of the current run's hold, at the revision that hold was read at:
+/// every `RunHeld` and `RunReleased` goes through here (spec 105). A conflict sends `decide` back
+/// over the hold folded forward through what landed, by type from the pinned revision, re-pinned
+/// to the conflict's actual revision, so a concurrent writer's hold or release is never missed
+/// and a perception event landing behind the read costs one retry. `what` names the event type
+/// for the store's report of an append it did not write.
+fn append_on_hold(
+    store: &dyn EventStore,
+    what: &str,
+    decide: impl Fn(Option<&Hold>) -> Result<Option<Event>, Error>,
 ) -> Result<(), Error> {
-    Ok(())
+    let (run, mut head) = read_run_at_head(store)?;
+    let mut state = RunState::new();
+    fold_holds(&mut state, &run)?;
+    loop {
+        let Some(ev) = decide(state.hold.as_ref())? else {
+            return Ok(());
+        };
+        let expected = match head {
+            Some(revision) => ExpectedRevision::Exact(revision),
+            None => ExpectedRevision::NoStream,
+        };
+        match store.append(STREAM, expected, std::slice::from_ref(&ev)) {
+            Ok(appended) => return appended.one(what).map(|_| ()),
+            Err(Error::Conflict { actual, .. }) => {
+                let landed = store.read_stream_typed(
+                    STREAM,
+                    head.unwrap_or(0),
+                    TypeSelection::Only(&[TYPE_RUN_HELD, TYPE_RUN_RELEASED]),
+                )?;
+                fold_holds(&mut state, &landed)?;
+                head = Some(actual);
+            }
+            Err(e) => return Err(e),
+        }
+    }
 }
 
-/// Release the open hold.
-pub fn release_hold(_store: &dyn EventStore) -> Result<(), Error> {
-    Ok(())
+/// Fold the hold events among `events` into `state`, part 1's fold applied to them alone, since a
+/// hold reads nothing else.
+fn fold_holds(state: &mut RunState, events: &[Event]) -> Result<(), Error> {
+    events
+        .iter()
+        .filter(|e| e.type_ == TYPE_RUN_HELD || e.type_ == TYPE_RUN_RELEASED)
+        .try_for_each(|e| state.apply(e))
+        .map_err(|e| Error::Backend(format!("fold the run's hold: {e}")))
 }
 
-/// The run stream's head revision.
-pub fn run_stream_head(_store: &dyn EventStore) -> Result<Option<Revision>, Error> {
-    Ok(None)
+/// A hold event of `type_` carrying `body`.
+fn hold_event(type_: &str, body: &impl serde::Serialize) -> Result<Event, Error> {
+    let data =
+        serde_json::to_vec(body).map_err(|e| Error::Backend(format!("serialize {type_}: {e}")))?;
+    Ok(Event::new(type_, data))
 }
 
-/// The whole seconds from `since` to `now`.
-fn held_for_s(_since: SystemTime, _now: SystemTime) -> u64 {
-    1
+/// The whole seconds from `since` to `now`, `0` for a clock that went backwards.
+fn held_for_s(since: SystemTime, now: SystemTime) -> u64 {
+    now.duration_since(since).map_or(0, |held| held.as_secs())
 }
 
 #[cfg(test)]

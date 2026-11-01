@@ -297,27 +297,68 @@ pub enum AgentFailure {
     Unknown,
 }
 
-/// What a category does to the run (spec 105's Design table).
+/// What a failure category does to the run: spec 105's disposition table, the verbs its rows
+/// read. [`AgentFailure::row`] is the one table; the host reads it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Disposition {
+    /// The run holds on the first `api_retry` or `StopFailure` carrying the category.
     Hold,
+    /// The session retries by itself; the run holds only when a session ends of the category.
     Wait,
+    /// The category never holds: the error takes its spawn site's existing path.
     Fault,
 }
 
-/// One row of the disposition table.
+/// One row of the disposition table: what a category does to the run, the action a hold of it
+/// names and whether that action needs a person.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DispositionRow {
     pub disposition: Disposition,
+    /// The `RunHeld.action` of a hold of this cause, empty for a category that never holds.
     pub action: &'static str,
+    /// The `RunHeld.needs_person` of a hold of this cause.
     pub needs_person: bool,
 }
 
-/// The cause of a hold no category names.
+/// The cause of the hold three consecutive failed launches set: the API is failing with no
+/// category that names a person's action.
 pub const API_UNSTABLE: &str = "api-unstable";
 
-/// The disposition table's row for a hold's `cause`.
+/// The action of a hold that clears without anyone: a wait-class category's and `api-unstable`'s.
+const RETRIES_BY_ITSELF: &str = "none, the run retries by itself";
+
+const WAITS: DispositionRow = DispositionRow {
+    disposition: Disposition::Wait,
+    action: RETRIES_BY_ITSELF,
+    needs_person: false,
+};
+
+const FAULTS: DispositionRow = DispositionRow {
+    disposition: Disposition::Fault,
+    action: "",
+    needs_person: false,
+};
+
+/// The row a hold of `action` reads, every category that holds on sight needing a person.
+const fn holds(action: &'static str) -> DispositionRow {
+    DispositionRow {
+        disposition: Disposition::Hold,
+        action,
+        needs_person: true,
+    }
+}
+
+/// The disposition table's row for a host hold's `cause`: `api-unstable`'s, or the category's.
+/// The `operator` cause has no row yet: a host never writes it, and `rigger hold`'s append
+/// carries its own reason as its action.
 pub fn cause_row(cause: &str) -> DispositionRow {
+    if cause == API_UNSTABLE {
+        return DispositionRow {
+            disposition: Disposition::Hold,
+            action: RETRIES_BY_ITSELF,
+            needs_person: false,
+        };
+    }
     AgentFailure::from_category(cause).row()
 }
 
@@ -375,12 +416,25 @@ impl AgentFailure {
             .unwrap_or(AgentFailure::Unknown)
     }
 
-    /// This category's row of the disposition table.
+    /// This category's row of the disposition table (spec 105): THE one table, beside the enum
+    /// so a new category cannot compile without one.
     pub fn row(self) -> DispositionRow {
-        DispositionRow {
-            disposition: Disposition::Fault,
-            action: "",
-            needs_person: false,
+        match self {
+            AgentFailure::AuthenticationFailed | AgentFailure::OauthOrgNotAllowed => {
+                holds("run claude auth login")
+            }
+            AgentFailure::CloudCredentialError => holds("refresh the cloud provider's credentials"),
+            AgentFailure::BillingError => holds("fix the account's billing"),
+            AgentFailure::AccountOnHold => holds("resolve the account's hold"),
+            AgentFailure::VerificationRequired => holds("complete the account's verification"),
+            AgentFailure::ModelNotFound => holds(
+                "fix the agent's configured model, restart rigger run with --rebase-definition, \
+                 then run rigger release",
+            ),
+            AgentFailure::RateLimit | AgentFailure::Overloaded | AgentFailure::ServerError => WAITS,
+            AgentFailure::InvalidRequest
+            | AgentFailure::MaxOutputTokens
+            | AgentFailure::Unknown => FAULTS,
         }
     }
 }
@@ -394,15 +448,16 @@ impl std::fmt::Display for AgentFailure {
 /// A FAILURE HAS A CLASS (spec 104 criterion 5, Design): "a session that ends without a
 /// `result` takes its class from, in order: the record written by the `StopFailure` hook,
 /// ... the last `api_retry.error`, else `unknown`." PURE: both sources are already-resolved
-/// strings - the `StopFailure` record's class (`None` when no hook fired for this spawn,
-/// [`crate::progress::latest_stop_failure_class`]) and the last `system/api_retry` line's
-/// `error` THIS launch's own reader saw (`None` when none arrived) - so the priority order
-/// itself is testable with no store, no stream, no process.
+/// strings - the class the session itself reported (the `error` of the last assistant line,
+/// else the launch's `StopFailure` record, [`crate::progress::latest_stop_failure_class`];
+/// `None` when neither did) and the last `system/api_retry` line's `error` THIS launch's own
+/// reader saw (`None` when none arrived) - so the priority order itself is testable with no
+/// store, no stream, no process.
 pub fn classify_failure(
-    stop_failure_class: Option<&str>,
+    reported_class: Option<&str>,
     last_api_retry_category: Option<&str>,
 ) -> AgentFailure {
-    stop_failure_class
+    reported_class
         .or(last_api_retry_category)
         .map(AgentFailure::from_category)
         .unwrap_or(AgentFailure::Unknown)

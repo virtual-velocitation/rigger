@@ -1555,7 +1555,7 @@ fn run_cli(parsed: &RunArgs) -> Res {
         scratch_root: scratch.clone().unwrap_or_default(),
         stop_grace: claude_code::STOP_GRACE,
         handed_env: selection.handed_env(),
-        hold_sink: None,
+        hold_sink: Some(&folding),
     };
     let grounder = select_grounder(&cfg.workflow.defaults.grounder)?;
     let root = repo.clone();
@@ -1582,6 +1582,16 @@ fn run_cli(parsed: &RunArgs) -> Res {
         rigger::progress::SUPERVISOR_BEAT_INTERVAL,
         || conductor::run(&cfg, &deps),
     )?;
+    // A done run releases its open hold, an operator hold included (spec 105); any other exit
+    // leaves it to the next supervisor's probes. A failed release never fails a run that already
+    // succeeded: the hold stays open for `rigger release` or the next mint.
+    if rs.done() {
+        if let Err(e) = runscope_store::release_hold(&folding) {
+            stderr_line(&format!(
+                "rigger run: the done run's hold was not released: {e}"
+            ));
+        }
+    }
     // The conductor returned, so no spawn of this run is live: a done run's scratch is residue. A
     // run that stopped short of done keeps it for the resume, and a project with no scratch root
     // has none to reclaim.

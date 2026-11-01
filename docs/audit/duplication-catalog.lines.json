@@ -264,8 +264,8 @@
       },
       {
         "file": "crates/rigger-driver/src/driver/claude_code.rs",
-        "start_line": 1176,
-        "end_line": 1184
+        "start_line": 1265,
+        "end_line": 1273
       },
       {
         "file": "tests/common/fixtures/fold.rs",
@@ -464,8 +464,8 @@
       },
       {
         "file": "crates/rigger-domain/src/agent.rs",
-        "start_line": 422,
-        "end_line": 424
+        "start_line": 477,
+        "end_line": 479
       },
       {
         "file": "crates/rigger-domain/src/ingest.rs",
@@ -814,23 +814,23 @@
       },
       {
         "file": "src/cli/run.rs",
-        "start_line": 3359,
-        "end_line": 3359
+        "start_line": 3369,
+        "end_line": 3369
       },
       {
         "file": "src/cli/run.rs",
-        "start_line": 3392,
-        "end_line": 3392
+        "start_line": 3402,
+        "end_line": 3402
       },
       {
         "file": "src/cli/run.rs",
-        "start_line": 3436,
-        "end_line": 3436
+        "start_line": 3446,
+        "end_line": 3446
       },
       {
         "file": "src/cli/run.rs",
-        "start_line": 3505,
-        "end_line": 3505
+        "start_line": 3515,
+        "end_line": 3515
       },
       {
         "file": "src/cli/setup.rs",
@@ -2084,8 +2084,8 @@
       },
       {
         "file": "tests/boundary_audit.rs",
-        "start_line": 1299,
-        "end_line": 1299
+        "start_line": 1300,
+        "end_line": 1300
       },
       {
         "file": "tests/canary_model_drift_periphery.rs",
@@ -4469,8 +4469,8 @@
       },
       {
         "file": "crates/rigger-domain/src/progress.rs",
-        "start_line": 426,
-        "end_line": 429
+        "start_line": 456,
+        "end_line": 459
       },
       {
         "file": "tests/simplification_audit.rs",
@@ -4654,13 +4654,13 @@
       },
       {
         "file": "src/cli/run.rs",
-        "start_line": 3497,
-        "end_line": 3497
+        "start_line": 3507,
+        "end_line": 3507
       },
       {
         "file": "src/cli/run.rs",
-        "start_line": 3601,
-        "end_line": 3601
+        "start_line": 3611,
+        "end_line": 3611
       },
       {
         "file": "tests/cli.rs",
@@ -5020,27 +5020,12 @@
     ]
   },
   {
-    "id": "dup-5411bdb7c258",
-    "sites": [
-      {
-        "file": "crates/rigger-domain/src/agent.rs",
-        "start_line": 320,
-        "end_line": 322
-      },
-      {
-        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
-        "start_line": 7140,
-        "end_line": 7142
-      }
-    ]
-  },
-  {
     "id": "dup-74b161ef523c",
     "sites": [
       {
         "file": "crates/rigger-domain/src/agent.rs",
-        "start_line": 346,
-        "end_line": 362
+        "start_line": 387,
+        "end_line": 403
       },
       {
         "file": "crates/rigger-domain/src/spec.rs",
@@ -5684,13 +5669,13 @@
     "sites": [
       {
         "file": "crates/rigger-driver/src/driver/claude_code.rs",
-        "start_line": 1470,
-        "end_line": 1477
+        "start_line": 1559,
+        "end_line": 1566
       },
       {
         "file": "crates/rigger-driver/src/driver/claude_code.rs",
-        "start_line": 1524,
-        "end_line": 1531
+        "start_line": 1613,
+        "end_line": 1620
       }
     ]
   },
@@ -5699,13 +5684,13 @@
     "sites": [
       {
         "file": "crates/rigger-driver/src/driver/claude_code.rs",
-        "start_line": 1517,
-        "end_line": 1523
+        "start_line": 1606,
+        "end_line": 1612
       },
       {
         "file": "crates/rigger-driver/src/driver/claude_code.rs",
-        "start_line": 1551,
-        "end_line": 1557
+        "start_line": 1640,
+        "end_line": 1646
       }
     ]
   },
@@ -5714,13 +5699,13 @@
     "sites": [
       {
         "file": "crates/rigger-driver/src/driver/claude_code.rs",
-        "start_line": 1716,
-        "end_line": 1737
+        "start_line": 1805,
+        "end_line": 1826
       },
       {
         "file": "crates/rigger-driver/src/driver/claude_code.rs",
-        "start_line": 1740,
-        "end_line": 1758
+        "start_line": 1829,
+        "end_line": 1847
       }
     ]
   },
@@ -5939,8 +5924,8 @@
       },
       {
         "file": "crates/rigger-store-sqlite/src/run_store.rs",
-        "start_line": 895,
-        "end_line": 895
+        "start_line": 1003,
+        "end_line": 1003
       },
       {
         "file": "crates/rigger-store-sqlite/src/sqlite.rs",
@@ -5959,8 +5944,8 @@
       },
       {
         "file": "src/cli/run.rs",
-        "start_line": 4558,
-        "end_line": 4558
+        "start_line": 4568,
+        "end_line": 4568
       },
       {
         "file": "tests/cli.rs",
@@ -6849,13 +6834,13 @@
     "sites": [
       {
         "file": "crates/rigger-store-sqlite/src/run_store.rs",
-        "start_line": 1106,
-        "end_line": 1120
+        "start_line": 1214,
+        "end_line": 1228
       },
       {
         "file": "crates/rigger-store-sqlite/src/run_store.rs",
-        "start_line": 1175,
-        "end_line": 1190
+        "start_line": 1283,
+        "end_line": 1298
       }
     ]
   },

@@ -123,12 +123,11 @@ pub fn record_result_if_absent(
             .map_err(|e| Error::Backend(format!("decode results for {}: {e}", res.id)))?
             .is_some())
     };
-    let run = crate::run::read::read_run(store, STREAM)?;
+    let (run, mut head) = crate::run_store::read_run_at_head(store)?;
     if answered(&run)? {
         // A result already exists - leave it untouched (the no-op the courier wants).
         return Ok(None);
     }
-    let mut head = run.iter().map(|e| e.revision).max();
     loop {
         let expected = match head {
             Some(revision) => ExpectedRevision::Exact(revision),
