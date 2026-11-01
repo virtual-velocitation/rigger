@@ -298,13 +298,23 @@ pub(crate) fn cmd_status(args: &[String]) -> Res {
     // the JS driver's haiku probe was reconstructing by proxy - unit 3 retires it). The
     // configured remediation bound is read from the SAME config (via the shared
     // `scratch_defaults`, spec 83 criterion 2 round 2) so the current-blocker classifier's
-    // `#n/max` line matches the depth the run actually escalates at.
+    // `#n/max` line matches the depth the run actually escalates at. An age reads through the
+    // run's hold intervals, so a step after a released hold reads the time outside it; the
+    // workflow's marker race reads `liveness_age_s` and would otherwise take a held step for a
+    // dead one (spec 105 LIVENESS).
     let (workdir, max_retries) = scratch_defaults(&loc);
     let wave = spawn::step_result(run_events)?.wave;
-    let liveness_ages: std::collections::HashMap<String, u64> =
-        liveness_ages_for_wave(run_events, &loc.repo_root(), &workdir, &run_id, &wave, now)
-            .into_iter()
-            .collect();
+    let liveness_ages: std::collections::HashMap<String, u64> = liveness_ages_for_wave(
+        run_events,
+        &loc.repo_root(),
+        &workdir,
+        &run_id,
+        &wave,
+        now,
+        &rigger::liveness::hold_intervals(run_events, now),
+    )
+    .into_iter()
+    .collect();
 
     let view = progress::consolidate(run_events, &prog_events, &liveness_ages, now)?;
 

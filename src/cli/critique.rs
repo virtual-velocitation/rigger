@@ -207,6 +207,7 @@ impl CriticHost<'_> {
             scratch_root: self.scratch_root.to_string(),
             stop_grace: claude_code::STOP_GRACE,
             handed_env: self.store_env.clone(),
+            beat_source: None,
         };
         eprintln!(
             "{COMMAND}: {spec} (hash {hash}): critiquing with {} at attempt {attempt}",

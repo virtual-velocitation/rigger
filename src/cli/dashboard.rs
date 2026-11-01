@@ -607,6 +607,7 @@ fn dash_read_liveness(
         run_id,
         &step.wave,
         std::time::SystemTime::now(),
+        &[],
     )
     .into_iter()
     .collect()

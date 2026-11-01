@@ -1555,6 +1555,7 @@ fn run_cli(parsed: &RunArgs) -> Res {
         scratch_root: scratch.clone().unwrap_or_default(),
         stop_grace: claude_code::STOP_GRACE,
         handed_env: selection.handed_env(),
+        beat_source: Some(&progress),
     };
     let grounder = select_grounder(&cfg.workflow.defaults.grounder)?;
     let root = repo.clone();

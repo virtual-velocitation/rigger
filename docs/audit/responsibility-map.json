@@ -9533,7 +9533,7 @@
     "is_test": false,
     "proposed_module": "main::liveness",
     "reason": "name contains \"live\" (liveness/heartbeat reporting); grouped under `main::liveness`.",
-    "content_hash": "17d34a42f96a1760"
+    "content_hash": "c0cc641d6dc43289"
   },
   {
     "file": "src/cli/mod.rs",
@@ -9589,7 +9589,7 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "ad2e72f48e8e30e1"
+    "content_hash": "24e1371247203be2"
   },
   {
     "file": "src/cli/mod.rs",

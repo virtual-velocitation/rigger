@@ -3124,10 +3124,12 @@ fn recorded_dash_url(loc: &StoreLocation) -> Option<String> {
     (!url.is_empty()).then_some(url)
 }
 
-/// Every currently in-flight spawn's liveness-marker age (spec 14; spec 83 criterion 2): the
-/// ONE authority `cmd_status` and `watch_poll` both call, so the two surfaces can never
-/// disagree about who is still alive - no second, independently re-derived copy of this loop
-/// to drift out of step with the first.
+/// Every currently in-flight spawn's liveness-marker age (spec 14; spec 83 criterion 2), read
+/// through `holds`: the ONE age-map builder `cmd_status` and `watch_poll` both call - no second,
+/// independently re-derived copy of this loop to drift out of step with the first. The two do
+/// not share one reading: `cmd_status` passes its run's hold intervals, so a step after a
+/// released hold reads the time outside it, and `watch_poll` passes an empty slice, which reads
+/// wall-clock age, so an open hold cannot hide a dead supervisor from it.
 ///
 /// `repo` MUST be the store's resolved OWNING root ([`StoreLocation::repo_root`]), never a raw
 /// `git_repo()` cwd read: a courier invoked from a nested unit worktree (the documented,
@@ -3150,8 +3152,16 @@ fn liveness_ages_for_wave(
     run_id: &str,
     wave: &[spawn::WaveItem],
     now: std::time::SystemTime,
+    holds: &[rigger::liveness::Span],
 ) -> std::collections::BTreeMap<String, u64> {
-    rigger::liveness::marker_ages(events, &marker_root(repo, workdir), run_id, wave, now)
+    rigger::liveness::marker_ages(
+        events,
+        &marker_root(repo, workdir),
+        run_id,
+        wave,
+        now,
+        holds,
+    )
 }
 
 /// The scratch root a store's runs stamp their spawns' liveness markers under, for `repo` - the
@@ -3364,15 +3374,23 @@ fn watch_poll_over(
     // free. Dropped immediately either way, so this probe never holds the lock.
     let step_lock_free = acquire_step_lock(&loc.dir).is_ok();
 
-    // Each currently-parked spawn's heartbeat-marker age, exactly as `cmd_status`
-    // computes `liveness_ages` (spec 19a) - the SAME "live agent processes" reading both
-    // surfaces show, so they can never disagree on who is still working. `watch_poll` never
-    // reads `max_retries` (only `cmd_status`'s blocker-line rendering needs it), so the
+    // Each currently-parked spawn's heartbeat-marker age (spec 19a), through the builder
+    // `cmd_status` calls but on wall clock, with no hold subtracted: `DeadDriver` needs every
+    // age past `DEAD_DRIVER_HEARTBEAT_BOUND`, and an age with an open hold subtracted never
+    // gets there, so reading the run's holds here would lose a dead supervisor. `watch_poll`
+    // never reads `max_retries` (only `cmd_status`'s blocker-line rendering needs it), so the
     // second half of the shared `scratch_defaults` pair is deliberately discarded here.
     let (workdir, _max_retries) = scratch_defaults(loc);
     let wave = spawn::step_result(&run_events)?.wave;
-    let wave_liveness_ages =
-        liveness_ages_for_wave(&run_events, &loc.repo_root(), &workdir, &run_id, &wave, now);
+    let wave_liveness_ages = liveness_ages_for_wave(
+        &run_events,
+        &loc.repo_root(),
+        &workdir,
+        &run_id,
+        &wave,
+        now,
+        &[],
+    );
 
     // Dash liveness: prefer the per-project MARKER (port + pid) when one exists,
     // verified with the same real serve probe `dash_serving_on` uses - a marker naming

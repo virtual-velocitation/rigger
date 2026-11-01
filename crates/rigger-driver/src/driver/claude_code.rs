@@ -32,13 +32,17 @@ use crate::hooks;
 use crate::liveness;
 use crate::progress::{self, ApiRetry, SpawnLaunched};
 use crate::progress_store;
+use crate::run::read::read_current_run;
+use crate::run::STREAM;
 use crate::spawn::SpawnResult;
 use crate::spawn_store;
 
 /// How often [`Driver::read_stream`]'s loop wakes when `max_wall_clock` is 0 (unbounded): a
 /// "wake up occasionally" budget, never itself a wall-clock bound - the wake-up never stops
 /// the session, it only re-checks whether the child has exited behind a pipe a descendant
-/// still holds open (which would otherwise never deliver EOF).
+/// still holds open (which would otherwise never deliver EOF). Also the shortest a bounded
+/// launch waits between two reads of its silence, so a silence frozen just under the bound by
+/// a hold or a dead beat cannot spin on the store.
 const UNBOUNDED_POLL: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Bounds [`Driver::read_stream`]'s ORDINARY (non-STOP) exit joins - the stderr-drain and
@@ -103,6 +107,12 @@ pub struct Driver<'a> {
     /// `rigger` server opens the run's store with, empty on the local store. Set after
     /// [`SpawnOpts::env`], so the selection wins under the same key.
     pub handed_env: Vec<(String, String)>,
+    /// Where THE STOP reads what a session's silence leaves out (spec 105 LIVENESS): the
+    /// progress store holding the supervisor's `SupervisorBeat`s and this host's `ApiRetry`
+    /// records, with the holds read from [`Driver::run_store`]. `rigger run` hands it in. A
+    /// host built without one, as `rigger critique` builds it, has no supervisor to weigh, so
+    /// it reads no record and counts silence from the last line.
+    pub beat_source: Option<&'a dyn EventStore>,
 }
 
 // `Default` is a TEST convenience only: production always constructs `Driver` with real
@@ -126,6 +136,7 @@ impl Default for Driver<'static> {
             scratch_root: String::new(),
             stop_grace: STOP_GRACE,
             handed_env: Vec::new(),
+            beat_source: None,
         }
     }
 }
@@ -368,10 +379,14 @@ impl Driver<'_> {
     /// blocked in `BufReader::lines()` with no way to notice silence), forwarding each
     /// line (or `None` on a clean EOF) over a channel this function drains with
     /// `recv_timeout`, so `max_wall_clock` (0 = unbounded, [`crate::config::AgentDef`]'s
-    /// own resolved bound) can be enforced against STREAM SILENCE - the wall time since
-    /// the last line, not total run time, mirroring `liveness::is_stale`'s own semantics
-    /// for the external stepwise driver, but enforced HERE because this host has no
-    /// external stepper polling a marker file. A genuine expiry before any result exists
+    /// own resolved bound) can be enforced against STREAM SILENCE - the session's silent time
+    /// ([`Driver::silence`]), not total run time and not the bare wall time since the last
+    /// line, mirroring `liveness::sweep`'s own reading for the external stepwise driver, but
+    /// enforced HERE because this host has no external stepper polling a marker file. Silent
+    /// time can pass the bound no sooner than the wall time since the last line does, so a
+    /// line costs no read: the records are read only on a wake at that point, and a wake under
+    /// the bound waits out the rest of it, at least [`UNBOUNDED_POLL`], and re-checks the
+    /// child. A genuine expiry before any result exists
     /// runs THE STOP sequence (close the session's input, wait [`Driver::stop_grace`], end
     /// the child via [`crate::reap::end_child`] - the handle-bound production helper, never a
     /// computed pid) and, past THE RESUME FALLBACK below, records the EXISTING
@@ -447,23 +462,25 @@ impl Driver<'_> {
         // to real exhaustion (a clean EOF: the child closed its stdout pipe on its own,
         // with no read error) - see the `wait()` this flag gates, just past the loop.
         let mut ended_via_break = false;
-        let mut last_activity = std::time::Instant::now();
+        let bound = std::time::Duration::from_secs(max_wall_clock);
+        // What the silent time counts from, stamped before `armed_at` so the wake a bound
+        // away from a line never reads a hair under it.
+        let mut last_line = SystemTime::now();
+        // The wait in hand: when it was armed and for how long, a span rather than a deadline
+        // since a bound is the operator's number and an `Instant` sum of it could overflow.
+        let mut armed_at = std::time::Instant::now();
+        let mut armed_for = bound;
 
         loop {
             let recv_timeout = if max_wall_clock == 0 {
                 // Unbounded: still wake periodically rather than an infinite wait, so the
-                // loop can re-check the child (the unbounded wake-up arm below) - purely a
+                // loop can re-check the child (the wake-up arm below) - purely a
                 // "wake up occasionally" budget, never itself a wall-clock bound.
                 UNBOUNDED_POLL
             } else {
-                let elapsed = last_activity.elapsed();
-                let bound = std::time::Duration::from_secs(max_wall_clock);
-                // `Some(0)` (elapsed lands exactly on the bound) and `None` (already past
-                // it) both mean "expire without blocking" - `unwrap_or_default` folds them
-                // into the same `Duration::ZERO` a guarded match once spelled out, with no
-                // redundant guard clause no test could tell from its absence (the guarded
-                // arm's `_` fallback already returned this same zero value).
-                bound.checked_sub(elapsed).unwrap_or_default()
+                // Landing exactly on the wait and running past it both mean "expire
+                // without blocking".
+                armed_for.saturating_sub(armed_at.elapsed())
             };
 
             let received = if recv_timeout.is_zero() {
@@ -475,47 +492,54 @@ impl Driver<'_> {
             let line = match received {
                 Ok(None) => break, // clean EOF; ended_via_break stays false
                 Ok(Some(line)) => {
-                    last_activity = std::time::Instant::now();
+                    last_line = SystemTime::now();
+                    armed_at = std::time::Instant::now();
+                    armed_for = bound;
                     line
                 }
                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break, // reader thread gone; treat as EOF
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout)
-                    if result.is_none() && max_wall_clock != 0 =>
-                {
-                    // THE STOP (spec 104 criterion 6): genuine wall-clock SILENCE with no
-                    // result yet, on a BOUNDED launch only. Runs the whole sequence inline (mirrors the pre-result
-                    // read-error arm below, which also returns directly) so the caller
-                    // sees exactly one outcome for "this launch never produced a result".
-                    // A resume silent to here never showed its session: the same sequence
-                    // ends the child and the fallback answers, with no fault of its own.
-                    if awaiting_session {
-                        self.stop_session(
-                            reaper,
-                            stderr_drain,
-                            stdout_reader,
-                            opts,
-                            self.stop_grace,
-                        );
-                        return Ok(self.session_gone(opts, id));
-                    }
-                    return self.stop_for_wall_clock_silence(
-                        reaper,
-                        stderr_drain,
-                        stdout_reader,
-                        opts,
-                        id,
-                        max_wall_clock,
-                    );
-                }
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) if result.is_none() => {
-                    // The UNBOUNDED wake-up (`max_wall_clock` 0): never a stop. 2026-09-28:
-                    // this wake-up took the STOP arm above, so every unbounded session that
-                    // thought in silence for [`UNBOUNDED_POLL`] was stopped as a liveness
-                    // fault reading "silent for 0s" - a poll interval read as a wall-clock
-                    // bound. The tell: a stop message naming a 0 s bound. The wake-up only
-                    // re-checks the child: one that has exited while a descendant still holds
-                    // the stdout pipe will never send EOF, so its exit ends the read here as a
-                    // session with no result (classified below); a live child keeps its turn.
+                    if max_wall_clock != 0 {
+                        let silent = self.silence(opts, last_line);
+                        if liveness::past_bound(silent, bound) {
+                            // THE STOP (spec 104 criterion 6): genuine SILENCE with no result
+                            // yet, on a BOUNDED launch only. Runs the whole sequence inline so
+                            // the caller sees exactly one outcome for "this launch never
+                            // produced a result". A resume silent to here never showed its
+                            // session: the same sequence ends the child and the fallback
+                            // answers, with no fault of its own.
+                            if awaiting_session {
+                                self.stop_session(
+                                    reaper,
+                                    stderr_drain,
+                                    stdout_reader,
+                                    opts,
+                                    self.stop_grace,
+                                );
+                                return Ok(self.session_gone(opts, id));
+                            }
+                            return self.stop_for_wall_clock_silence(
+                                reaper,
+                                stderr_drain,
+                                stdout_reader,
+                                opts,
+                                id,
+                                max_wall_clock,
+                            );
+                        }
+                        armed_at = std::time::Instant::now();
+                        armed_for = bound.saturating_sub(silent).max(UNBOUNDED_POLL);
+                    }
+                    // Past that a wake-up is never a stop, and on an unbounded launch it never
+                    // reads as one. 2026-09-28: the `max_wall_clock` 0 wake-up took THE STOP,
+                    // so every unbounded session that thought in silence for
+                    // [`UNBOUNDED_POLL`] was stopped as a liveness fault reading "silent for
+                    // 0s" - a poll interval read as a wall-clock bound. The tell: a stop
+                    // message naming a 0 s bound. The wake-up only re-checks the child, on a
+                    // bounded launch too, whose silence a hold can keep under the bound: one
+                    // that has exited while a descendant still holds the stdout pipe will
+                    // never send EOF, so its exit ends the read here as a session with no
+                    // result (classified below); a live child keeps its turn.
                     if matches!(reaper.child_mut().try_wait(), Ok(Some(_))) {
                         break;
                     }
@@ -868,7 +892,34 @@ impl Driver<'_> {
         self.fault(opts, id, class, message)
     }
 
-    /// THE STOP at wall-clock expiry (spec 104 criterion 6), factored out of
+    /// How long this session has really been silent since `last_line`, the reading THE STOP
+    /// weighs against `max_wall_clock` (spec 105 LIVENESS): [`liveness::silent_time`] over the
+    /// run's holds and, from [`Driver::beat_source`], this spawn's announced retry delays and
+    /// the supervisor's beats. With no beat source it reads no record and counts from the last
+    /// line. A record read that fails reads no silence at all: that wake proves nothing and the
+    /// next wake reads again, so a store hiccup never stops a healthy session.
+    fn silence(&self, opts: &SpawnOpts, last_line: SystemTime) -> std::time::Duration {
+        let now = SystemTime::now();
+        let Some(beat_source) = self.beat_source else {
+            return liveness::silent_time(last_line, now, &[], &[], None);
+        };
+        match (
+            read_current_run(self.run_store, STREAM),
+            progress::read_run(beat_source, &opts.run_id),
+        ) {
+            (Ok((run_events, _)), Ok(progress_events)) => liveness::silent_time(
+                last_line,
+                now,
+                &liveness::hold_intervals(&run_events, now),
+                &liveness::retry_delays(&progress_events, &opts.id),
+                Some(&liveness::beat_times(&progress_events)),
+            ),
+            _ => std::time::Duration::ZERO,
+        }
+    }
+
+    /// THE STOP when a session's silent time passes `max_wall_clock` (spec 104 criterion 6),
+    /// factored out of
     /// [`Driver::read_stream`]'s loop so its one call site there reads as a single named step:
     /// runs THE STOP sequence ([`Driver::stop_session`], with the full [`Driver::stop_grace`]),
     /// then records the EXISTING liveness-fault shape and closes the launch record `stopped`.
@@ -925,7 +976,7 @@ impl Driver<'_> {
     /// THE STOP sequence itself (spec 104 STOP: "closes the session's input, waits 30 s, then
     /// ends the child through the sanctioned lifecycle helper on the child's own handle"),
     /// the ONE stop mechanism every ending that must stop a live session goes through - a
-    /// wall-clock expiry ([`Driver::stop_for_wall_clock_silence`], the full
+    /// silence expiry ([`Driver::stop_for_wall_clock_silence`], the full
     /// [`Driver::stop_grace`]), a resume silent with no session ([`Driver::read_stream`]'s
     /// fallback, the full grace too) and a launch fault ([`Driver::stop_for_launch_fault`], no
     /// grace) - so none ever signals a session any other way. `grace` bounds only the
@@ -955,7 +1006,7 @@ impl Driver<'_> {
         // orphaning whatever it forked before reap::end_child ever gets a chance to look.
         let descendants = crate::reap::snapshot_descendants(reaper.child_mut().id());
 
-        // "waits a grace period" (`grace`: self.stop_grace at a wall-clock expiry - 30s in
+        // "waits a grace period" (`grace`: self.stop_grace at a silence expiry - 30s in
         // production, an injected shorter one in a test proving the full sequence): poll
         // for the child exiting on its own, without blocking the full grace when it
         // already has. Bounded by

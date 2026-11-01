@@ -598,8 +598,9 @@ pub struct SpawnRequest {
     pub blast_radius: Vec<String>,
     /// The per-spawn wall-clock bound in SECONDS (spec 10, unit 3), resolved from the
     /// agent's `max_wall_clock` (its own, or the inherited `defaults.max_wall_clock`).
-    /// `rigger step` treats this spawn as a hung/infra fault once its liveness marker is
-    /// stale longer than this, and the driver frames the worker's heartbeat around it.
+    /// `rigger step` treats this spawn as a hung/infra fault once its liveness marker has
+    /// stayed silent longer than this outside any hold of the run, and the driver frames
+    /// the worker's heartbeat around it.
     /// `None` (the common back-compatible case) means unbounded - never timed out - and
     /// is omitted from the wire.
     #[serde(default, skip_serializing_if = "Option::is_none")]

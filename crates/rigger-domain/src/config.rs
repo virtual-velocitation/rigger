@@ -200,8 +200,9 @@ pub struct AgentDef {
     #[serde(default)]
     pub recurse: bool,
     /// The per-spawn wall-clock bound in SECONDS (spec 10, unit 3): a spawn of this
-    /// agent whose liveness marker goes stale for longer than this is treated by
-    /// `rigger step` as a hung/infra fault. `None` (unset in the agent's frontmatter)
+    /// agent whose liveness marker stays silent, outside any hold of the run, for longer
+    /// than this is treated by `rigger step` as a hung/infra fault, and its host stops a
+    /// session silent past it the same way. `None` (unset in the agent's frontmatter)
     /// inherits `defaults.max_wall_clock`, folded in at [`load`] time; a resolved `0`
     /// (or absent default) means unbounded - the agent is never timed out. Per-role by
     /// construction: each agent's own value overrides the workflow default.

@@ -13,8 +13,9 @@
 //! ([`SpawnLaunched`], [`StopFailure`], [`ApiRetry`], [`SupervisorBeat`]). rigger READS it live -
 //! unit 2's consolidator folds it into the per-agent view, [`crate::metrics::grep_fallbacks`]
 //! counts this store's `grep-fallback:` lines for the dash, and the host classes a failed session
-//! from its [`StopFailure`] records - never in a run-stream fold, so the isolation that keeps
-//! replay byte-identical is preserved.
+//! from its [`StopFailure`] records and times a session's silence from its [`ApiRetry`] and
+//! [`SupervisorBeat`] records - never in a run-stream fold, so the isolation that keeps replay
+//! byte-identical is preserved.
 
 use std::collections::HashMap;
 use std::time::{Duration, SystemTime};
@@ -314,8 +315,9 @@ pub struct AgentActivity {
     /// Whole seconds since that latest activity was reported.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub activity_age_s: Option<u64>,
-    /// Whole seconds since the spawn last touched its spec-10 liveness marker (rigger reads
-    /// the marker in Rust and PRESENTS this, so no consumer stats the file).
+    /// Whole seconds the spawn's spec-10 liveness marker has stayed untouched (rigger reads
+    /// the marker in Rust and PRESENTS this, so no consumer stats the file): outside the
+    /// run's holds on `rigger status`, wall clock on every other view.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub liveness_age_s: Option<u64>,
     /// The type of the most recent run-stream milestone for this spawn's unit.
@@ -328,8 +330,8 @@ pub struct AgentActivity {
 
 /// Consolidate rigger's signals into a live per-agent view for the current run's in-flight
 /// frontier. PURE (no IO): `run_events` is the current run's slice, `progress_events` the
-/// progress store's events for this run, `liveness_ages` the seconds-since-touch per spawn id
-/// the caller read from the markers, and `now` fixes the clock for the age arithmetic
+/// progress store's events for this run, `liveness_ages` the marker age per spawn id the
+/// caller read from the markers, and `now` fixes the clock for the age arithmetic
 /// (deterministic in tests). One entry per in-flight spawn - a parked spawn with no recorded
 /// result, the [`spawn::step_result`] frontier - ordered as that frontier is.
 pub fn consolidate(

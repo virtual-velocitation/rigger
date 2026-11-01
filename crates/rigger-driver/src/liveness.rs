@@ -33,12 +33,26 @@
 //! that wants a hung agent to CHARGE the unit would be asking the liveness mechanism to
 //! do the dead-worker-exit driver's job, which is out of this unit's scope.) Recovery is
 //! uniform too: an operator records a real result (last-write-wins) and re-drives.
+//!
+//! ## Silent time (spec 105 LIVENESS)
+//!
+//! A machine that sleeps, a run an operator holds and a provider's announced retry delay all
+//! leave a spawn quiet with nothing wrong with it. [`silent_time`] is the one pure reading of
+//! how long a spawn has really been silent: the wall time since its last sign of life outside
+//! those spans, computed from records alone. [`hold_intervals`], [`retry_delays`] and
+//! [`beat_times`] read those records. The host's stream-silence stop weighs all three;
+//! [`sweep`] and `rigger status --json`'s `liveness_age_s` weigh the holds alone, since the
+//! step-driven path writes no beats. Every other marker-age reader stays on wall-clock age: an
+//! age with an open hold subtracted never reaches the bound `rigger watch` needs to see a dead
+//! supervisor.
 
 use std::collections::BTreeSet;
 use std::time::{Duration, SystemTime};
 
 use crate::eventstore::{Error, Event, EventStore};
 use crate::failure::{FailureClass, Signal, Taxonomy};
+use crate::progress::{ApiRetry, TYPE_API_RETRY, TYPE_SUPERVISOR_BEAT};
+use crate::run::{TYPE_RUN_HELD, TYPE_RUN_RELEASED};
 use crate::spawn::{self, SpawnResult};
 use crate::spawn_store;
 
@@ -234,19 +248,22 @@ impl<'a> MarkerRoots<'a> {
     }
 }
 
-/// Each `wave` spawn's liveness-marker age in whole seconds since its last touch at `now`, keyed
-/// by spawn id - the ONE marker-age read every surface that presents agent liveness (`rigger
-/// status`, `rigger watch`, the dash, the `rigger_activity` MCP tool) calls. Each marker is read
-/// where [`MarkerRoots`] says it lives: under the root its request in `events` (the run's slice)
-/// recorded, else under `scratch_root`. A spawn with no marker (absent, or a degenerate id
-/// [`marker_path`] refuses) is simply missing, and so is every spawn when `events` holds a request
-/// whose id cannot be read - a display read degrades, it never fails.
+/// Each `wave` spawn's liveness-marker age in whole seconds at `now`, keyed by spawn id: its
+/// [`silent_time`] since its last touch, outside `holds` - the ONE marker read behind every surface
+/// that presents agent liveness (`rigger status`, `rigger watch`, the dash, the `rigger_activity`
+/// MCP tool). The surfaces do not share one reading: `rigger status` alone passes its run's
+/// [`hold_intervals`], and every other surface passes an empty slice, which reads wall-clock age.
+/// Each marker is read where [`MarkerRoots`] says it lives: under the root its request in `events`
+/// (the run's slice) recorded, else under `scratch_root`. A spawn with no marker (absent, or a
+/// degenerate id [`marker_path`] refuses) is simply missing, and so is every spawn when `events`
+/// holds a request whose id cannot be read - a display read degrades, it never fails.
 pub fn marker_ages(
     events: &[Event],
     scratch_root: &str,
     run_id: &str,
     wave: &[spawn::WaveItem],
     now: SystemTime,
+    holds: &[Span],
 ) -> std::collections::BTreeMap<String, u64> {
     let Ok(roots) = MarkerRoots::of(events, scratch_root) else {
         return std::collections::BTreeMap::new();
@@ -254,7 +271,7 @@ pub fn marker_ages(
     wave.iter()
         .filter_map(|w| {
             let mtime = roots.touched_at(run_id, &w.id)?;
-            let age = now.duration_since(mtime).map(|d| d.as_secs()).unwrap_or(0);
+            let age = silent_time(mtime, now, holds, &[], None).as_secs();
             Some((w.id.clone(), age))
         })
         .collect()
@@ -382,16 +399,146 @@ fn any_fresh_file_under(dir: &std::path::Path, now: SystemTime, max_age: Duratio
 }
 
 /// Whether a spawn last seen alive at `last_seen` is STALE at `now` given its wall-clock
-/// bound: `now - last_seen > max_wall_clock`. A `last_seen` in the future (clock skew) is
-/// never stale. A zero `max_wall_clock` means "no bound" and is never stale.
+/// bound: `now - last_seen > max_wall_clock`, on wall clock with nothing subtracted. A
+/// `last_seen` in the future (clock skew) is never stale. A zero `max_wall_clock` means "no
+/// bound" and is never stale.
 pub fn is_stale(now: SystemTime, last_seen: SystemTime, max_wall_clock: Duration) -> bool {
-    if max_wall_clock.is_zero() {
-        return false;
+    past_bound(
+        now.duration_since(last_seen).unwrap_or_default(),
+        max_wall_clock,
+    )
+}
+
+/// Whether a silence is past a spawn's `max_wall_clock`: strictly above it, and never above a
+/// zero bound, which means "no bound". The one spelling of that rule, for the wall-clock
+/// [`is_stale`] and for every reading of [`silent_time`].
+pub fn past_bound(silent: Duration, bound: Duration) -> bool {
+    !bound.is_zero() && silent > bound
+}
+
+/// The longest gap between two consecutive `SupervisorBeat`s that still counts as supervised
+/// (spec 105 LIVENESS), the one home of the 90 s: a beat lands every 30 s, so a longer gap, or a
+/// longer open span since the latest beat, is a stretch no supervisor watched and [`silent_time`]
+/// never counts it.
+pub const SUPERVISED_BEAT_GAP: Duration = Duration::from_secs(90);
+
+/// A span of wall time [`silent_time`] may leave out: a hold or an announced retry delay. A span
+/// whose `end` is not after its `start`, as a clock set backwards can record, leaves out nothing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Span {
+    pub start: SystemTime,
+    pub end: SystemTime,
+}
+
+/// A run's holds as spans, in log order, from one run's slice of the run stream (THE EVENTS): a
+/// hold starts at its earliest `RunHeld` since the last `RunReleased` and ends at the next
+/// `RunReleased`, and a hold still open at `now` ends there. Each is dated by `valid_from`, as
+/// [`rigger_domain::ledger::project`] dates a hold, so the two can never disagree on when one
+/// started.
+pub fn hold_intervals(run_events: &[Event], now: SystemTime) -> Vec<Span> {
+    let mut spans = Vec::new();
+    let mut open: Option<SystemTime> = None;
+    for event in run_events {
+        match event.type_.as_str() {
+            TYPE_RUN_HELD => open = open.or(Some(event.valid_from)),
+            TYPE_RUN_RELEASED => {
+                if let Some(start) = open.take() {
+                    spans.push(Span {
+                        start,
+                        end: event.valid_from,
+                    });
+                }
+            }
+            _ => {}
+        }
     }
-    match now.duration_since(last_seen) {
-        Ok(elapsed) => elapsed > max_wall_clock,
-        Err(_) => false,
+    spans.extend(open.map(|start| Span { start, end: now }));
+    spans
+}
+
+/// The retry delays `spawn` announced, as spans from each `ApiRetry`'s record for the delay it
+/// carried, in log order, from a run's progress stream. Another spawn's delay is none of them:
+/// one session announcing a wait says nothing about this one. A record that cannot be read, or
+/// whose delay runs past what a time can hold, announces nothing.
+pub fn retry_delays(progress_events: &[Event], spawn: &str) -> Vec<Span> {
+    records_of(progress_events, TYPE_API_RETRY)
+        .filter_map(|event| {
+            let retry: ApiRetry = serde_json::from_slice(&event.data).ok()?;
+            let start = event.recorded_at;
+            let end = start.checked_add(Duration::from_millis(retry.delay_ms))?;
+            (retry.spawn == spawn).then_some(Span { start, end })
+        })
+        .collect()
+}
+
+/// When each `SupervisorBeat` of a run's progress stream landed, in log order: a beat carries
+/// nothing but its record's stamp.
+pub fn beat_times(progress_events: &[Event]) -> Vec<SystemTime> {
+    records_of(progress_events, TYPE_SUPERVISOR_BEAT)
+        .map(|event| event.recorded_at)
+        .collect()
+}
+
+/// The records of `type_` in a stream's `events`, in log order.
+fn records_of<'a>(events: &'a [Event], type_: &'a str) -> impl Iterator<Item = &'a Event> {
+    events.iter().filter(move |event| event.type_ == type_)
+}
+
+/// A spawn's SILENT TIME (spec 105 LIVENESS), the one pure reading of it, from records alone: the
+/// wall time from `last_line` to `now` outside the union of `holds`, `retries` and, when `beats`
+/// is given, every span no supervisor watched ([`unsupervised`]). Overlapping spans come off once
+/// and a negative span clamps to zero, so a clock set backwards can neither add silence nor
+/// underflow, and a `now` before `last_line` reads zero.
+///
+/// `beats` of `None` is a reader with no beat source, which leaves the supervisor out of it:
+/// nothing but `holds` and `retries` comes off, and with both empty this is the wall-clock age.
+/// `beats` of `Some` with no beats in it is a run no supervisor has adopted yet, which is
+/// unsupervised for the whole window and reads zero.
+pub fn silent_time(
+    last_line: SystemTime,
+    now: SystemTime,
+    holds: &[Span],
+    retries: &[Span],
+    beats: Option<&[SystemTime]>,
+) -> Duration {
+    let mut excused: Vec<Span> = holds.iter().chain(retries).copied().collect();
+    excused.extend(beats.map_or_else(Vec::new, |beats| unsupervised(last_line, now, beats)));
+    excused.retain(|span| span.start < span.end);
+    excused.sort_by_key(|span| span.start);
+    let mut silent = Duration::ZERO;
+    let mut cursor = last_line;
+    for span in excused {
+        silent += span
+            .start
+            .min(now)
+            .duration_since(cursor)
+            .unwrap_or_default();
+        cursor = cursor.max(span.end);
     }
+    silent + now.duration_since(cursor).unwrap_or_default()
+}
+
+/// The stretches from `last_line` to `now` no supervisor watched: the span before the first beat
+/// of `beats`, every gap between consecutive beats past [`SUPERVISED_BEAT_GAP`], and the open span
+/// since the latest beat when it is past the same bound. With no beats that is the whole window,
+/// so a run recorded before beats existed turns no old gap into a fault. A pair of beats a clock
+/// set backwards reordered is no gap.
+fn unsupervised(last_line: SystemTime, now: SystemTime, beats: &[SystemTime]) -> Vec<Span> {
+    let marks: Vec<SystemTime> = beats.iter().copied().chain([now]).collect();
+    let gaps = marks.windows(2).filter(|pair| {
+        pair[1]
+            .duration_since(pair[0])
+            .is_ok_and(|gap| gap > SUPERVISED_BEAT_GAP)
+    });
+    std::iter::once(Span {
+        start: last_line,
+        end: marks[0],
+    })
+    .chain(gaps.map(|pair| Span {
+        start: pair[0],
+        end: pair[1],
+    }))
+    .collect()
 }
 
 /// The failure SIGNAL a hung spawn presents to the taxonomy: a distinctive,
@@ -431,8 +578,8 @@ pub struct InFlightSpawn {
 }
 
 /// A hung spawn the sweep found stale, with the class the taxonomy assigned it and how
-/// long past its last heartbeat it has been silent - the descriptor `rigger step`
-/// surfaces and records.
+/// long past its last heartbeat it has been silent, holds left out ([`silent_time`]) - the
+/// descriptor `rigger step` surfaces and records.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StaleSpawn {
     pub id: String,
@@ -442,22 +589,26 @@ pub struct StaleSpawn {
 }
 
 /// The pure staleness core: given the in-flight spawns (each with the time it was last
-/// seen alive and its wall-clock bound), the taxonomy, and `now`, return the ones that
-/// are stale, classified. No IO - the caller reads marker mtimes and records outcomes.
+/// seen alive and its wall-clock bound), the taxonomy, `now` and the run's `holds`, return
+/// the ones whose [`silent_time`] outside those holds is past their bound, classified. No
+/// IO - the caller reads marker mtimes and records outcomes.
 pub fn classify_stale(
     in_flight: &[InFlightSpawn],
     taxonomy: &Taxonomy,
     now: SystemTime,
+    holds: &[Span],
 ) -> Vec<StaleSpawn> {
     let class = classify_hung(taxonomy);
     in_flight
         .iter()
-        .filter(|s| is_stale(now, s.last_seen, s.max_wall_clock))
-        .map(|s| StaleSpawn {
-            id: s.id.clone(),
-            unit: s.unit.clone(),
-            class,
-            silent_for: now.duration_since(s.last_seen).unwrap_or(Duration::ZERO),
+        .filter_map(|s| {
+            let silent_for = silent_time(s.last_seen, now, holds, &[], None);
+            past_bound(silent_for, s.max_wall_clock).then(|| StaleSpawn {
+                id: s.id.clone(),
+                unit: s.unit.clone(),
+                class,
+                silent_for,
+            })
         })
         .collect()
 }
@@ -467,10 +618,11 @@ pub fn classify_stale(
 /// operator reading the halt knows exactly what happened and that the unit was not blamed.
 pub fn stale_result_message(s: &StaleSpawn) -> String {
     format!(
-        "spawn {:?} (unit {:?}) hung: its liveness marker went stale for {}s beyond its \
-         max_wall_clock, classified {} - no remediation attempt is charged (the unit's code \
-         is not at fault). Re-drive it once the agent/driver is healthy: record a real result \
-         with `rigger result {}` (last-write-wins supersedes this liveness fault).",
+        "spawn {:?} (unit {:?}) hung: its liveness marker stayed silent for {}s outside any \
+         hold, past its max_wall_clock, classified {} - no remediation attempt is charged \
+         (the unit's code is not at fault). Re-drive it once the agent/driver is healthy: \
+         record a real result with `rigger result {}` (last-write-wins supersedes this \
+         liveness fault).",
         s.id,
         s.unit,
         s.silent_for.as_secs(),
@@ -497,6 +649,10 @@ pub struct HungSpawn {
 /// the `taxonomy`, and record a no-attempt-charged liveness fault on its id (the existing
 /// [`SpawnResult`], recorded `--if-absent`, NEVER a new event type). Returns the spawns it
 /// freshly recorded a fault for.
+///
+/// A marker's silence is its [`silent_time`] over the [`hold_intervals`] of `events` (the run's
+/// slice) alone: the step-driven path writes no beats and holds no keep-awake guard, so a hold
+/// is all it has to leave out, and a step after a released 17 h hold reads minutes.
 ///
 /// A spawn with NO marker is left alone (conservative: a not-yet-started or dead-on-arrival
 /// worker is dead-worker-exit territory, unchanged here - only a marker that WAS being
@@ -544,7 +700,7 @@ pub fn sweep(
             max_wall_clock: bound,
         });
     }
-    let stale = classify_stale(&in_flight, taxonomy, now);
+    let stale = classify_stale(&in_flight, taxonomy, now, &hold_intervals(events, now));
     for s in &stale {
         let fault = SpawnResult::liveness_fault(&s.id, stale_result_message(s), s.class.as_str());
         spawn_store::record_result_if_absent(store, &fault)?;
