@@ -20,14 +20,18 @@ use common::cli::{
 };
 use common::fixtures::{composed_system_prompt, git_ok, temp_git_project_with_commit};
 use common::repo::{
-    critique_stub_argv, critique_stub_record, critique_stub_spawns, critique_stub_task, flag_value,
-    write_critique_stub, write_critique_stub_reporting, CRITIQUE_CONN, CRITIQUE_SYSTEM_PROMPT,
+    assert_carries_spawn_hooks, critique_stub_argv, critique_stub_record, critique_stub_spawns,
+    critique_stub_task, flag_value, write_critique_stub, write_critique_stub_reporting,
+    CRITIQUE_CONN, CRITIQUE_SYSTEM_PROMPT,
 };
 use rigger::driver::claude_code::framed;
+use rigger::driver::replay::spawn_scratch_path;
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Direction, Event, EventStore, ExpectedRevision, Filter};
-use rigger::review::{critique_hash, critique_spawn_id, spec_critique_prompt};
+use rigger::review::{
+    critique_hash, critique_spawn_id, critique_unit, spec_critique_prompt, CRITIC_DENIED_TOOLS,
+};
 use rigger::spawn::{TYPE_SPAWN_REQUESTED, TYPE_SPAWN_RESULT};
 use rigger::wave::NO_CRITIC_CLAUSE;
 use serde_json::{json, Value};
@@ -149,6 +153,35 @@ fn stub(critique: &str) -> (tempfile::TempDir, String) {
     let work = tempfile::tempdir().unwrap();
     let path = write_critique_stub(work.path(), critique);
     (work, path)
+}
+
+/// Given a critique, when its critic launches, then the launch carries the write guard rooted at
+/// the critic's working directory and its spawn scratch container, and one `StopFailure` entry per
+/// category for its own spawn id, all on the `rigger` the host resolves on PATH, beside the deny
+/// the spawn's own settings hold.
+#[test]
+fn a_critique_launch_carries_the_spawn_hooks_on_its_own_settings() {
+    let dir = temp_project();
+    let root = std::fs::canonicalize(dir.path()).unwrap();
+    scaffold(&root, CRITIC_WORKFLOW);
+    let scratch = root.join("scratch");
+    let (work, path) = stub(REJECT);
+    let (_, err, ok) = critique(&root, SPEC_REL, &path, &scratch);
+    assert!(ok, "the critique is recorded; stderr:\n{err}");
+
+    let hash = critique_hash(SPEC);
+    let spawn = critique_spawn_id(&hash, 0);
+    let container =
+        spawn_scratch_path(scratch.to_str().unwrap(), &critique_unit(&hash), &spawn).unwrap();
+    let roots = [root, container].map(|root| root.to_str().unwrap().to_string());
+    let argv = critique_stub_argv(work.path());
+    let settings: Value = serde_json::from_str(flag_value(&argv, "--settings")).unwrap();
+    assert_carries_spawn_hooks(&settings, "rigger", &spawn, &roots);
+    assert_eq!(
+        settings["permissions"]["deny"].as_array().map(Vec::len),
+        Some(CRITIC_DENIED_TOOLS.len()),
+        "the spawn's own settings survive the merge: {settings}"
+    );
 }
 
 #[test]

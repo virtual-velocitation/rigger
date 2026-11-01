@@ -1294,7 +1294,7 @@ mod tests {
         let scratch = tempfile::tempdir().unwrap();
         let persona =
             system_prompt_file(&o.system_prompt, Some(scratch.path().to_path_buf())).unwrap();
-        let args = build_args(&a, &persona, &o, &fresh_session("sess-123"), "rigger").unwrap();
+        let args = build_args(&a, &persona, &o, &fresh_session("sess-123"), "rigger", &[]).unwrap();
 
         assert_eq!(args[0], "-p");
         // No positional prompt: the task is the first stream-json message on stdin.
@@ -1551,6 +1551,71 @@ mod tests {
         assert_eq!(tail, b"short");
     }
 
+    /// The roots of a launch's write guard: the session's working directory, an empty `dir`
+    /// being the host's own, then the spawn's scratch container when it has one, each absolute.
+    #[test]
+    fn write_roots_are_the_sessions_cwd_then_the_container_each_absolute() {
+        let cwd = std::env::current_dir().unwrap();
+        let cwd = cwd.to_string_lossy().into_owned();
+        let under = |rel: &str| format!("{cwd}/{rel}");
+        let rows = [
+            ("/wt/u", Some("/scratch/s"), vec!["/wt/u", "/scratch/s"]),
+            ("/wt/u", None, vec!["/wt/u"]),
+            ("", Some("/scratch/s"), vec![cwd.as_str(), "/scratch/s"]),
+            ("", None, vec![cwd.as_str()]),
+            ("rel/wt", None, vec![under("rel/wt").leak()]),
+            ("/wt/u", Some("rel/s"), vec!["/wt/u", under("rel/s").leak()]),
+        ];
+        for (dir, container, expected) in rows {
+            assert_eq!(
+                write_roots(dir, container.map(std::path::Path::new)).unwrap(),
+                expected,
+                "dir {dir:?}, container {container:?}"
+            );
+        }
+    }
+
+    /// A launch's settings carry its own hooks ahead of the session's, on its own settings.
+    #[test]
+    fn build_args_settings_carry_the_spawn_hooks_ahead_of_the_session_ones() {
+        let mut o = opts("u/implementer#0");
+        o.settings_json = "{\"model\":\"opus\"}".to_string();
+        let args = build_args(
+            &AgentDef::default(),
+            &SystemPromptFile::default(),
+            &o,
+            &fresh_session("sess"),
+            "/custom/rigger",
+            &["/wt".to_string(), "/scratch/s".to_string()],
+        )
+        .unwrap();
+        let i = args.iter().position(|x| x == "--settings").unwrap();
+        let settings: serde_json::Value = serde_json::from_str(&args[i + 1]).unwrap();
+        assert_eq!(settings["model"], "opus");
+        let commands = |event: &str| -> Vec<&str> {
+            settings["hooks"][event]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|entry| entry["hooks"][0]["command"].as_str().unwrap())
+                .collect()
+        };
+        assert_eq!(
+            commands("PreToolUse"),
+            [
+                "'/custom/rigger' guard-write --root '/wt' --root '/scratch/s'",
+                hooks::GREP_GUARD_COMMAND,
+            ]
+        );
+        assert_eq!(commands("SessionStart"), [hooks::PRIME_COMMAND]);
+        let stop_failures = commands("StopFailure");
+        assert_eq!(stop_failures.len(), AgentFailure::CATEGORIES.len());
+        assert_eq!(
+            stop_failures[0],
+            "'/custom/rigger' hook stop-failure --spawn 'u/implementer#0' --class rate_limit"
+        );
+    }
+
     #[test]
     fn build_args_mcp_config_names_the_spawn_bound_server() {
         let a = AgentDef::default();
@@ -1561,6 +1626,7 @@ mod tests {
             &o,
             &fresh_session("sess"),
             "rigger",
+            &[],
         )
         .unwrap();
         let i = args.iter().position(|x| x == "--mcp-config").unwrap();
@@ -1584,6 +1650,7 @@ mod tests {
             &o,
             &fresh_session("sess"),
             "/custom/path/rigger",
+            &[],
         )
         .unwrap();
         let i = args.iter().position(|x| x == "--mcp-config").unwrap();
@@ -1601,7 +1668,7 @@ mod tests {
         let mut bare = o;
         bare.system_prompt = String::new();
         let persona = system_prompt_file(&bare.system_prompt, None).unwrap();
-        let args = build_args(&a, &persona, &bare, &fresh_session("sess"), "rigger").unwrap();
+        let args = build_args(&a, &persona, &bare, &fresh_session("sess"), "rigger", &[]).unwrap();
         assert!(!args.iter().any(|x| x == "--system-prompt-file"));
         assert!(!args.iter().any(|x| x == "--model"));
         assert!(!args.iter().any(|x| x == "--fallback-model"));

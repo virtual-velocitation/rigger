@@ -778,7 +778,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-ba56ce03350b",
+    "id": "dup-509bbab83e7f",
     "classification": "semantic",
     "sites": [
       {
@@ -1059,6 +1059,11 @@
       {
         "file": "tests/common/repo.rs",
         "name": "Command::new",
+        "content_hash": "7bc9b4eef80706b2"
+      },
+      {
+        "file": "tests/common/repo.rs",
+        "name": "Command::new",
         "content_hash": "9cef4bcdc9a4db7d"
       },
       {
@@ -1243,7 +1248,7 @@
       }
     ],
     "proposed_home": "a single injected process-spawn port every Command::new site routes through instead of constructing its own Command",
-    "note": "mandatory sweep: Command::new call sites - 92 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: Command::new call sites - 93 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {
@@ -6022,18 +6027,18 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-d082d63b45dc",
+    "id": "dup-117928e59e0c",
     "classification": "near",
     "sites": [
       {
         "file": "crates/rigger-driver/src/driver/claude_code.rs",
         "name": "build_args_mcp_config_names_the_spawn_bound_server",
-        "content_hash": "4857044a0c9a679a"
+        "content_hash": "481bdac64944c026"
       },
       {
         "file": "crates/rigger-driver/src/driver/claude_code.rs",
         "name": "build_args_mcp_config_uses_the_configured_rigger_bin",
-        "content_hash": "41ee7147d8c1cab8"
+        "content_hash": "1a1f8696595204c4"
       }
     ],
     "proposed_home": "claude_code::support (consolidate these 2 sites into one function in this file)",

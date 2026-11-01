@@ -306,6 +306,83 @@ mod tests {
             &["PreToolUse", "rigger grep-guard", "\"matcher\": \"Grep|Bash\""],
             "rigger grep-guard",
         );
+        spawn_hooks_install_and_are_idempotent: assert_installs_idempotently(
+            |existing| install_spawn_hooks(existing, "rigger", "u/i#0", &["/wt".to_string()]),
+            &["PreToolUse", "StopFailure", "'rigger' guard-write --root '/wt'"],
+            "guard-write",
+        );
+    }
+
+    /// An argument of a hook command stays one word whatever it holds.
+    #[test]
+    fn shell_quote_keeps_an_argument_one_word() {
+        let rows = [
+            ("rigger", "'rigger'"),
+            ("/a b/rigger", "'/a b/rigger'"),
+            ("it's", r"'it'\''s'"),
+            ("a'b'c", r"'a'\''b'\''c'"),
+            ("u/implementer#0", "'u/implementer#0'"),
+            ("$HOME;`ls`", "'$HOME;`ls`'"),
+            ("", "''"),
+        ];
+        assert_eq!(
+            rows.map(|(arg, _)| shell_quote(arg)),
+            rows.map(|(_, quoted)| quoted)
+        );
+    }
+
+    /// A spawn's hooks over a bare and a hostile `rigger_bin`, one and two roots: the whole
+    /// `PreToolUse` and `StopFailure` arrays, every category in order, on the settings kept.
+    #[test]
+    fn spawn_hooks_are_the_write_guard_and_one_stop_failure_entry_per_category() {
+        let rows = [
+            (
+                "rigger",
+                "u/implementer#0",
+                vec!["/wt"],
+                "'rigger' guard-write --root '/wt'",
+                "'rigger' hook stop-failure --spawn 'u/implementer#0' --class",
+            ),
+            (
+                "/opt/it's here/rigger",
+                "u/reviewer#1",
+                vec!["/wt tree", "/scratch/s"],
+                r"'/opt/it'\''s here/rigger' guard-write --root '/wt tree' --root '/scratch/s'",
+                r"'/opt/it'\''s here/rigger' hook stop-failure --spawn 'u/reviewer#1' --class",
+            ),
+        ];
+        for (bin, spawn, roots, guard, stop_failure) in rows {
+            let roots: Vec<String> = roots.into_iter().map(str::to_string).collect();
+            let entry = |matcher: &str, command: &str| json!({"matcher": matcher, "hooks": [{"type": "command", "command": command}]});
+            let stop_failures: Vec<Value> = crate::agent::AgentFailure::CATEGORIES
+                .iter()
+                .map(|category| {
+                    let class = category.as_str();
+                    entry(class, &format!("{stop_failure} {class}"))
+                })
+                .collect();
+            assert_settings(
+                install_spawn_hooks(br#"{"model":"opus"}"#, bin, spawn, &roots).unwrap(),
+                &[
+                    ("/model", Value::from("opus")),
+                    (
+                        "/hooks/PreToolUse",
+                        json!([entry("Edit|Write|NotebookEdit", guard)]),
+                    ),
+                    ("/hooks/StopFailure", Value::Array(stop_failures)),
+                ],
+            );
+        }
+    }
+
+    /// Spawn settings that are not a JSON object refuse the merge.
+    #[test]
+    fn spawn_hooks_refuse_settings_that_are_not_an_object() {
+        let refused = install_spawn_hooks(b"[]", "rigger", "u/implementer#0", &[]).unwrap_err();
+        assert_eq!(
+            refused.to_string(),
+            "hooks: settings.json is not a JSON object"
+        );
     }
 
     /// The installed settings JSON `out` holds each `(pointer, value)` of `expected`.

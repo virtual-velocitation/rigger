@@ -130,6 +130,82 @@ pub fn recorded_argv(path: &Path) -> Vec<String> {
         .collect()
 }
 
+/// The words the shell a hook runs under reads out of the hook `command`: the argv the command
+/// starts, whatever quoting spells it.
+pub fn shell_words(command: &str) -> Vec<String> {
+    let dir = tempfile::tempdir().unwrap();
+    let recorded = dir.path().join("words");
+    let out = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(format!("printf '%s\\0' {command} > \"$0\""))
+        .arg(&recorded)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "the shell reads {command:?}: {out:?}");
+    recorded_argv(&recorded)
+}
+
+/// Each hook `settings` carries under `event`, in order: its matcher and the [`shell_words`] of
+/// its one command.
+pub fn hook_words(settings: &serde_json::Value, event: &str) -> Vec<(String, Vec<String>)> {
+    settings["hooks"][event]
+        .as_array()
+        .unwrap_or_else(|| panic!("no {event} hooks in {settings}"))
+        .iter()
+        .map(|entry| {
+            (
+                entry["matcher"].as_str().unwrap().to_string(),
+                shell_words(entry["hooks"][0]["command"].as_str().unwrap()),
+            )
+        })
+        .collect()
+}
+
+/// A launch's `settings` carry its per-spawn hooks: under `PreToolUse` the write guard running
+/// `bin` with `roots` in order, then the session's grep guard, and under `StopFailure` one entry
+/// per category running `bin` for `spawn`, in category order.
+pub fn assert_carries_spawn_hooks(
+    settings: &serde_json::Value,
+    bin: &str,
+    spawn: &str,
+    roots: &[String],
+) {
+    let words = |text: &[&str]| -> Vec<String> { text.iter().map(|w| w.to_string()).collect() };
+    let mut guard = words(&[bin, "guard-write"]);
+    for root in roots {
+        guard.extend(words(&["--root", root]));
+    }
+    assert_eq!(
+        hook_words(settings, "PreToolUse"),
+        [
+            ("Edit|Write|NotebookEdit".to_string(), guard),
+            ("Grep|Bash".to_string(), words(&["rigger", "grep-guard"])),
+        ],
+        "the write guard, then the session's grep guard: {settings}"
+    );
+    let stop_failures: Vec<(String, Vec<String>)> = rigger::conductor::AgentFailure::CATEGORIES
+        .iter()
+        .map(|category| {
+            let class = category.as_str();
+            let command = [
+                bin,
+                "hook",
+                "stop-failure",
+                "--spawn",
+                spawn,
+                "--class",
+                class,
+            ];
+            (class.to_string(), words(&command))
+        })
+        .collect();
+    assert_eq!(
+        hook_words(settings, "StopFailure"),
+        stop_failures,
+        "one entry per category: {settings}"
+    );
+}
+
 /// The value `argv` carries right after `flag`.
 pub fn flag_value<'a>(argv: &'a [String], flag: &str) -> &'a str {
     let at = argv

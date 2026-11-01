@@ -8,7 +8,7 @@
 use common::git::git_ok;
 use common::repo::repo_text;
 use rigger::spawn::{SpawnEvent, SpawnResult};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 // The compiled `rigger` binary under test is located at RUNTIME by the shared authority in
@@ -51,7 +51,9 @@ use common::fixtures::pgid_of;
 use common::git::git_answer;
 use common::git::temp_git_project_with_commit;
 use common::mcp::McpSession;
-use common::repo::{flag_value, recorded_argv, recorded_task, stub_path};
+use common::repo::{
+    assert_carries_spawn_hooks, flag_value, hook_words, recorded_argv, recorded_task, stub_path,
+};
 use common::rigger_bin;
 use common::workflow_probe::write_workflow;
 
@@ -6722,11 +6724,12 @@ esac
 }
 
 /// An arm of [`install_fake_claude`] for the `Do the unit.` workers: the launch records, in the
-/// directory of the fake, its argv, its first user message, the `KURRENTDB_CONN` it was started
-/// with (`unset` when none) and the agent streams its scratch root holds while it runs, then
-/// writes the change a merging stage lands.
+/// directory of the fake, its argv, its working directory, its first user message, the
+/// `KURRENTDB_CONN` it was started with (`unset` when none) and the agent streams its scratch root
+/// holds while it runs, then writes the change a merging stage lands.
 const RECORDING_WORKER_ARM: &str = r#"  *"Do the unit."*)
     printf '%s\0' "$@" > "$here/argv"
+    pwd -P > "$here/cwd"
     printf '%s\n' "$first" > "$here/first-message"
     printf '%s' "${KURRENTDB_CONN-unset}" > "$here/conn"
     ls "$RIGGER_TMPDIR"/agent-stream/* > "$here/streams" || true
@@ -6806,6 +6809,134 @@ fn run_hosts_its_agents_granting_each_launch_its_bound_tools() {
         }),
         "the spawn's bound server runs the running executable"
     );
+}
+
+/// Spec 105's hook injection, end to end: given a project, when the operator runs `rigger run`,
+/// then the launch's `--settings` carries the write guard rooted at the session's working
+/// directory and the spawn's scratch container, an empty `dir` resolving to the session's cwd and
+/// a project with no repository carrying no container, and one `StopFailure` entry per category.
+/// Both run the executable with every path quoted for the shell, and what the shell reads out of
+/// them is what the real verbs take: the guard admits its roots alone, for each tool its matcher
+/// names, and each `StopFailure` command records its class for the spawn. The scratch root holds
+/// a space and a quote throughout.
+#[cfg(unix)]
+#[test]
+fn run_carries_each_launchs_write_guard_and_stop_failure_hooks() {
+    struct Row {
+        name: &'static str,
+        project: fn() -> tempfile::TempDir,
+        workflow: &'static WorkflowFixture,
+        spawn: &'static str,
+        /// The worktree the launch runs in, under the scratch root; `None` runs it in the
+        /// project root, on an empty `dir`.
+        worktree: Option<&'static str>,
+        /// Whether the project has a repository, which keys a scratch root.
+        repository: bool,
+    }
+    let rows = [
+        Row {
+            name: "an empty dir",
+            project: temp_git_project_with_commit,
+            workflow: &LIVENESS_WORKFLOW,
+            spawn: "a/implementer#0",
+            worktree: None,
+            repository: true,
+        },
+        Row {
+            name: "a unit worktree",
+            project: temp_git_project_with_commit,
+            workflow: &REVIEWLESS_GIT_UNIT_WORKFLOW,
+            spawn: "solo/implementer#0",
+            worktree: Some("rigger-wt-solo"),
+            repository: true,
+        },
+        Row {
+            name: "no repository",
+            project: temp_repoless_project,
+            workflow: &LIVENESS_WORKFLOW,
+            spawn: "a/implementer#0",
+            worktree: None,
+            repository: false,
+        },
+    ];
+    for row in rows {
+        let name = row.name;
+        let dir = (row.project)();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        write_workflow_fixture(&root, row.workflow);
+        let held = tempfile::Builder::new()
+            .prefix("it's a scratch ")
+            .tempdir()
+            .unwrap();
+        let scratch = std::fs::canonicalize(held.path()).unwrap();
+        let (out, err, ok, fake) = run_recording(&root, &["run"], &scratch);
+        assert!(ok, "{name}: the run succeeds; stderr: {err}\nstdout: {out}");
+
+        let cwd = std::fs::read_to_string(fake.path().join("bin/cwd")).unwrap();
+        let session_cwd = PathBuf::from(cwd.trim_end());
+        assert_eq!(
+            session_cwd,
+            row.worktree.map_or(root.clone(), |wt| scratch.join(wt)),
+            "{name}: the session's working directory"
+        );
+        let container = row.repository.then(|| {
+            let run = common::cli::current_run_id_of(&root).expect("the run has an id");
+            let scratch_root = scratch.to_str().unwrap();
+            rigger::driver::replay::spawn_scratch_path(scratch_root, &run, row.spawn).unwrap()
+        });
+        let roots: Vec<String> = std::iter::once(&session_cwd)
+            .chain(&container)
+            .map(|root| root.to_str().unwrap().to_string())
+            .collect();
+        let argv = recorded_argv(&fake.path().join("bin/argv"));
+        let settings: serde_json::Value =
+            serde_json::from_str(flag_value(&argv, "--settings")).unwrap();
+        let bin = std::fs::canonicalize(rigger_bin()).unwrap();
+        assert_carries_spawn_hooks(&settings, bin.to_str().unwrap(), row.spawn, &roots);
+
+        let mut targets = vec![
+            (session_cwd.join("new.rs"), true),
+            (scratch.join("rigger-wt-sibling/new.rs"), false),
+            (PathBuf::from("/etc/new.rs"), false),
+        ];
+        if let Some(container) = &container {
+            targets.push((container.join("new.txt"), true));
+            targets.push((container.with_file_name("sibling/new.txt"), false));
+        }
+        let (matcher, guard) = &hook_words(&settings, "PreToolUse")[0];
+        let guard: Vec<&str> = guard[1..].iter().map(String::as_str).collect();
+        for tool in matcher.split('|') {
+            let key = if tool == "NotebookEdit" {
+                "notebook_path"
+            } else {
+                "file_path"
+            };
+            for (target, allowed) in &targets {
+                let payload = serde_json::json!({
+                    "tool_name": tool,
+                    "cwd": session_cwd,
+                    "tool_input": {key: target},
+                });
+                let verdict = run_hook_verb(&root, &guard, &payload.to_string());
+                assert_eq!(
+                    verdict["hookSpecificOutput"]["permissionDecision"].as_str(),
+                    (!allowed).then_some("deny"),
+                    "{name}: {tool} on {}: {verdict}",
+                    target.display()
+                );
+            }
+        }
+        for (class, words) in hook_words(&settings, "StopFailure") {
+            let command: Vec<&str> = words[1..].iter().map(String::as_str).collect();
+            let (out, err, ok) = run_rigger(&root, &command);
+            assert!(ok, "{name}: {class} records; stderr: {err}");
+            assert_eq!(
+                out.split(", position").next(),
+                Some(format!("stop-failure recorded for {} (class {class}", row.spawn).as_str()),
+                "{name}: the hook records its class for the spawn"
+            );
+        }
+    }
 }
 
 /// The live-progress instruction closing a launch's first user message.

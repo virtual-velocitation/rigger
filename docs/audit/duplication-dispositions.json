@@ -985,7 +985,7 @@
     "reason": "Two `spawn` doubles scripting different review-round scenarios (log-derived resume versus non-ancestor residue)."
   },
   {
-    "id": "dup-d082d63b45dc",
+    "id": "dup-117928e59e0c",
     "disposition": "not-a-duplicate",
     "reason": "Two argv tests of different facts about the spawn-bound MCP server (the server is bound to the spawn's id versus it runs the configured rigger binary); they share only the build-and-parse preamble."
   },
