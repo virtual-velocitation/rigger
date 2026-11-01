@@ -15,6 +15,31 @@ pub fn no_emit(_: &str, _: serde_json::Value) -> Result<(), Error> {
     Ok(())
 }
 
+/// A `RunHeld` event of `cause` by `by`, every other field at its default.
+pub fn held_event(cause: &str, by: &str) -> Event {
+    let body = rigger::run::RunHeld {
+        cause: cause.to_string(),
+        by: by.to_string(),
+        ..Default::default()
+    };
+    Event::new(
+        rigger::run::TYPE_RUN_HELD,
+        serde_json::to_vec(&body).unwrap(),
+    )
+}
+
+/// A `RunReleased` event by `by`, the hold having stood no time.
+pub fn released_event(by: &str) -> Event {
+    let body = rigger::run::RunReleased {
+        by: by.to_string(),
+        held_for_s: 0,
+    };
+    Event::new(
+        rigger::run::TYPE_RUN_RELEASED,
+        serde_json::to_vec(&body).unwrap(),
+    )
+}
+
 /// The spawn options of an attempt-0 implementer spawn `id` carrying a fixed persona prompt.
 pub fn implementer_opts(id: &str) -> SpawnOpts {
     SpawnOpts {

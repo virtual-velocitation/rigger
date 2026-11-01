@@ -1691,7 +1691,7 @@ fn unstable_hold() -> RunHeld {
 
 /// A `RunHeld` event by the operator.
 fn operator_hold() -> Event {
-    common::cli::held_event("operator", "operator")
+    common::fixtures::held_event("operator", "operator")
 }
 
 impl Fixture {

@@ -452,6 +452,53 @@ impl EventStore for GroupLookupOnly {
     }
 }
 
+/// A store whose run read fails from the moment `armed` is set, for a reader tested on the read
+/// it could not make. The run read's two calls reach `inner` until then; every other method
+/// panics.
+pub struct ReadsFailWhenArmed<'a> {
+    pub inner: &'a dyn EventStore,
+    pub armed: &'a std::sync::atomic::AtomicBool,
+}
+
+impl ReadsFailWhenArmed<'_> {
+    /// What a read answers: the failure once `armed` is set.
+    fn read_allowed(&self) -> Result<(), Error> {
+        match self.armed.load(std::sync::atomic::Ordering::SeqCst) {
+            true => Err(Error::Backend("the run read failed".into())),
+            false => Ok(()),
+        }
+    }
+}
+
+impl EventStore for ReadsFailWhenArmed<'_> {
+    refuse_event_store_calls!(
+        "only the run read is reachable":
+        append,
+        read_stream,
+        read_all,
+        read_all_page,
+        log_head,
+        subscribe_all,
+        subscribe_stream,
+        read_stream_positions,
+        read_stream_batched,
+        latest_in_group,
+    );
+    fn last_position(&self, stream: &str, event_type: &str) -> Result<Option<Revision>, Error> {
+        self.read_allowed()?;
+        self.inner.last_position(stream, event_type)
+    }
+    fn read_stream_typed(
+        &self,
+        stream: &str,
+        from: Revision,
+        selection: TypeSelection,
+    ) -> Result<Vec<Event>, Error> {
+        self.read_allowed()?;
+        self.inner.read_stream_typed(stream, from, selection)
+    }
+}
+
 /// A read-only store over ONE hand-built stream, for a use case tested where no backend is in
 /// reach: its events are stamped in the order given as the sqlite store stamps an append to an
 /// empty log, per-stream revisions from 0 and log positions from 1, and only the boundary lookup

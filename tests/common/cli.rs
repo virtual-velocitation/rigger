@@ -908,19 +908,6 @@ pub fn run_log(root: &Path) -> Vec<(u64, String)> {
         .collect()
 }
 
-/// A `RunHeld` event of `cause` by `by`, every other field at its default.
-pub fn held_event(cause: &str, by: &str) -> Event {
-    let body = rigger::run::RunHeld {
-        cause: cause.to_string(),
-        by: by.to_string(),
-        ..Default::default()
-    };
-    Event::new(
-        rigger::run::TYPE_RUN_HELD,
-        serde_json::to_vec(&body).unwrap(),
-    )
-}
-
 /// The decoded payloads of the events of type `type_` in `root`'s namespaced run stream, oldest
 /// first.
 pub fn run_payloads(root: &Path, type_: &str) -> Vec<serde_json::Value> {

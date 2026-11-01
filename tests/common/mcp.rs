@@ -179,6 +179,23 @@ impl McpSession {
             .expect("the rigger stdio session must exit")
     }
 
+    /// [`finish`](Self::finish) the session within `bound`: a session still running past it is
+    /// ended by [`fail`](Self::fail), so a wait that never ends fails its test instead of hanging
+    /// it.
+    pub fn finish_within(mut self, bound: Duration) -> std::process::Output {
+        drop(self.stdin.take());
+        let deadline = Instant::now() + bound;
+        while matches!(self.child.try_wait(), Ok(None)) {
+            if Instant::now() >= deadline {
+                self.fail("the rigger stdio session outlived its close");
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        self.child
+            .wait_with_output()
+            .expect("the rigger stdio session must exit")
+    }
+
     /// [`finish`](Self::finish) the session and insist it exited cleanly.
     pub fn finish_cleanly(self) {
         let out = self.finish();

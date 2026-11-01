@@ -501,7 +501,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-5a1a4676a4b9",
+    "id": "dup-0141db656d7c",
     "classification": "semantic",
     "sites": [
       {
@@ -515,9 +515,19 @@
         "content_hash": "f3ef6a1fc794314b"
       },
       {
+        "file": "crates/rigger-conductor/src/held.rs",
+        "name": "a_marked_error_or_an_ended_spawn_passes_held_or_not",
+        "content_hash": "5afade9ada4bfb32"
+      },
+      {
         "file": "crates/rigger-domain/src/agent.rs",
         "name": "no_result_error",
         "content_hash": "4a002dd947bf783c"
+      },
+      {
+        "file": "crates/rigger-domain/src/agent.rs",
+        "name": "an_error_answers_the_class_it_carries",
+        "content_hash": "66f0ca9cae7d3391"
       },
       {
         "file": "crates/rigger-domain/src/ingest.rs",
@@ -567,7 +577,7 @@
       {
         "file": "tests/cli.rs",
         "name": "an_is_error_result_reruns_uncharged_and_holds_as_its_class_says",
-        "content_hash": "b34bc30b812e9dcb"
+        "content_hash": "ef6471bc9f2caa76"
       },
       {
         "file": "tests/cli.rs",
@@ -586,7 +596,7 @@
       }
     ],
     "proposed_home": "one error-shaping helper module",
-    "note": "mandatory sweep: error-shaping helper functions - 16 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: error-shaping helper functions - 18 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {

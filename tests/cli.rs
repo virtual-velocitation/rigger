@@ -10,6 +10,7 @@ use common::repo::repo_text;
 use rigger::spawn::{SpawnEvent, SpawnResult};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::{Duration, Instant};
 
 // The compiled `rigger` binary under test is located at RUNTIME by the shared authority in
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves,
@@ -6758,14 +6759,41 @@ fn run_on_arms(
     arms: &str,
 ) -> (String, String, bool, tempfile::TempDir) {
     let (fakebin, path_env) = install_fake_claude(arms);
-    let (out, err, ok) = run_rigger_envs(
+    let (out, err, ok) = run_rigger_envs(cwd, args, &fake_claude_env(&path_env, scratch));
+    (out, err, ok, fakebin)
+}
+
+/// The environment a run of [`install_fake_claude`]'s fake takes: `path_env` and the scratch root
+/// `scratch`.
+fn fake_claude_env<'a>(path_env: &'a str, scratch: &'a Path) -> [(&'a str, &'a str); 2] {
+    [
+        ("PATH", path_env),
+        ("RIGGER_TMPDIR", scratch.to_str().unwrap()),
+    ]
+}
+
+/// How many 25 ms polls [`run_on_arms_beside`] gives a run: two minutes.
+const POLLS_BESIDE_A_RUN: u32 = 4800;
+
+/// [`run_on_arms`] with `beside` called over the fake's directory at each poll of the running
+/// `rigger`, so a test acts on a live run from no thread of its own: a run still waiting past
+/// [`POLLS_BESIDE_A_RUN`] is ended through its handle and panics here, never hanging the suite.
+fn run_on_arms_beside(
+    cwd: &Path,
+    args: &[&str],
+    scratch: &Path,
+    arms: &str,
+    mut beside: impl FnMut(&Path),
+) -> (String, String, bool, tempfile::TempDir) {
+    let (fakebin, path_env) = install_fake_claude(arms);
+    let (out, err, ok) = common::cli::run_rigger_within(
         cwd,
         args,
-        &[
-            ("PATH", &path_env),
-            ("RIGGER_TMPDIR", scratch.to_str().unwrap()),
-        ],
-    );
+        &fake_claude_env(&path_env, scratch),
+        POLLS_BESIDE_A_RUN,
+        |_| beside(fakebin.path()),
+    )
+    .expect("the run ends once its holds are released");
     (out, err, ok, fakebin)
 }
 
@@ -7143,16 +7171,67 @@ fn seed_a_run_held_by(root: &Path, by: Option<&str>) {
 /// [`seed_a_run_held_by`] on a run of `criteria`: any but the workflow's own make the next launch
 /// a new campaign, which mints.
 fn seed_a_campaign_held_by(root: &Path, criteria: &[String], by: Option<&str>) {
-    use rigger::eventstore::ExpectedRevision;
     common::cli::with_run_store(root, |store| {
         rigger::run_store::ensure_started(store, criteria).unwrap();
-        if let Some(by) = by {
-            let held = common::cli::held_event("rate_limit", by);
-            store
-                .append(rigger::conductor::STREAM, ExpectedRevision::Any, &[held])
-                .unwrap();
-        }
     });
+    if let Some(by) = by {
+        seed_a_hold_by(root, by);
+    }
+}
+
+/// Append `event` to `root`'s run stream through a bare store, a hand beside the run.
+fn seed_on_the_run(root: &Path, event: rigger::eventstore::Event) {
+    common::cli::with_run_store(root, |store| {
+        store
+            .append(
+                rigger::conductor::STREAM,
+                rigger::eventstore::ExpectedRevision::Any,
+                &[event],
+            )
+            .unwrap();
+    });
+}
+
+/// Hold `root`'s current run, by the writer `by`.
+fn seed_a_hold_by(root: &Path, by: &str) {
+    seed_on_the_run(root, common::fixtures::held_event("rate_limit", by));
+}
+
+/// Whether `root`'s current run stands held, as the ledger folds it.
+fn hold_is_open(root: &Path) -> bool {
+    common::cli::with_run_store(root, |store| {
+        let (events, _) =
+            rigger::run::read::read_current_run(store, rigger::conductor::STREAM).unwrap();
+        rigger::ledger::project(&events).unwrap().hold.is_some()
+    })
+}
+
+/// How long a hold stands before [`releasing_holds`] releases it. The host appends a hold before
+/// it returns its error and the decorator reads the run after that return, and no event marks
+/// that read, so a release sooner could land in the gap and leave the error passing on a run read
+/// as unheld.
+const A_HOLD_STANDS_FOR: Duration = Duration::from_secs(1);
+
+/// A `beside` for [`run_on_arms_beside`] standing in for `rigger release`: up to `budget` times, it
+/// releases as the operator a hold of `root`'s run once the hold has stood
+/// [`A_HOLD_STANDS_FOR`] with `due` true throughout. Past the budget a hold stays open.
+fn releasing_holds<'a>(
+    root: &'a Path,
+    budget: usize,
+    due: impl Fn(&Path) -> bool + 'a,
+) -> impl FnMut(&Path) + 'a {
+    let mut released = 0;
+    let mut standing_since = None;
+    move |_| {
+        if released == budget || !hold_is_open(root) || !due(root) {
+            standing_since = None;
+        } else if standing_since.get_or_insert_with(Instant::now).elapsed() >= A_HOLD_STANDS_FOR {
+            let release = common::fixtures::released_event(rigger::run::HOLD_BY_OPERATOR);
+            seed_on_the_run(root, release);
+            released += 1;
+            standing_since = None;
+        }
+    }
 }
 
 /// Each event of `root`'s run log past `head` that the graph has not folded: a seed's events stand
@@ -7179,12 +7258,23 @@ fn run_releases(root: &Path) -> Vec<String> {
         .collect()
 }
 
-/// Every launch that closed on `root`'s run: its spawn, how it ended and its class.
-fn closed_launches(root: &Path) -> Vec<(String, String, Option<String>)> {
+/// One launch that closed: its spawn, its ordinal, how it ended and its class.
+type ClosedLaunch = (String, u32, String, Option<String>);
+
+/// Every launch that closed on `root`'s run.
+fn closed_launches(root: &Path) -> Vec<ClosedLaunch> {
     common::cli::recorded_progress::<rigger::progress::SpawnLaunched>(root)
         .into_iter()
-        .filter_map(|l| l.ended.map(|ended| (l.spawn, ended, l.class)))
+        .filter_map(|l| l.ended.map(|ended| (l.spawn, l.launch, ended, l.class)))
         .collect()
+}
+
+/// `close` with an infra rerun's mark read as the next launch of the spawn the rerun came from.
+fn as_a_relaunch((spawn, launch, ended, class): ClosedLaunch) -> ClosedLaunch {
+    match spawn.strip_suffix("~retry4") {
+        Some(id) => (id.to_string(), launch + 1, ended, class),
+        None => (spawn, launch, ended, class),
+    }
 }
 
 /// A hold of `cause` the host appended for a launch of [`REVIEWLESS_GIT_UNIT_WORKFLOW`]'s worker.
@@ -7251,17 +7341,29 @@ fn classed_behind_the_close_session(category: &str) -> String {
     api_error_session(READ_LAUNCH_CONFIG, &fire_stop_failure_hook(category))
 }
 
+/// The shell holding a session until `$here/operator-held` stands, marking `$here/session-live` as
+/// it starts, so a hold lands on a live session.
+const SESSION_WAITS_FOR_A_HOLD: &str = r#"    : > "$here/session-live"
+    tries=0
+    while [ ! -e "$here/operator-held" ] && [ $tries -lt 1000 ]; do
+        sleep 0.02
+        tries=$((tries + 1))
+    done
+"#;
+
 /// Spec 105's THE DISPOSITION TABLE through `rigger run`: given a run, when a session sights a
 /// category, then the first hold-class sighting holds the run, naming its cause, action and
 /// model, a repeat appends nothing, a differing person-needing category appends one, a wait-class
-/// retry appends none and neither does any sighting on an operator hold; and a done run releases
-/// whatever hold it ends with, an operator hold included, once.
+/// retry appends none and neither does any sighting on an operator hold landing on the live
+/// session, which is left to finish; and a done run releases whatever hold it ends with, an
+/// operator hold included, once.
 #[cfg(unix)]
 #[test]
 fn a_sighting_holds_the_run_and_a_done_run_releases_the_hold() {
     struct Case {
         name: &'static str,
-        seeded: Option<&'static str>,
+        /// Whether an operator hold lands on the live session.
+        operator_holds: bool,
         sighted: Vec<&'static str>,
         holds: Vec<rigger::run::RunHeld>,
         releases: Vec<&'static str>,
@@ -7270,7 +7372,7 @@ fn a_sighting_holds_the_run_and_a_done_run_releases_the_hold() {
     let cases = [
         Case {
             name: "a first sighting, a repeat and a differing person-needing category",
-            seeded: None,
+            operator_holds: false,
             sighted: vec![login, login, "billing_error"],
             holds: vec![
                 worker_hold(login, login, "run claude auth login", true),
@@ -7285,14 +7387,14 @@ fn a_sighting_holds_the_run_and_a_done_run_releases_the_hold() {
         },
         Case {
             name: "a wait-class retry",
-            seeded: None,
+            operator_holds: false,
             sighted: vec!["rate_limit"],
             holds: vec![],
             releases: vec![],
         },
         Case {
             name: "a sighting on an operator hold",
-            seeded: Some("operator"),
+            operator_holds: true,
             sighted: vec![login],
             holds: vec![],
             releases: vec!["host"],
@@ -7303,18 +7405,31 @@ fn a_sighting_holds_the_run_and_a_done_run_releases_the_hold() {
         let dir = temp_git_project_with_commit();
         let root = dir.path();
         write_workflow_fixture(root, &REVIEWLESS_GIT_UNIT_WORKFLOW);
-        seed_a_run_held_by(root, case.seeded);
-        let seed = common::cli::run_log_head(root);
-        let before = run_holds(root).len();
+        seed_a_run_held_by(root, None);
+        let mut seed = common::cli::run_log_head(root);
         let scratch = tempfile::tempdir().unwrap();
-        let arm = sighting_worker_arm("", &case.sighted);
-        let (out, err, ok, _fake) = run_on_arms(root, &["run"], scratch.path(), &arm);
+        let opening = if case.operator_holds {
+            SESSION_WAITS_FOR_A_HOLD
+        } else {
+            ""
+        };
+        let arm = sighting_worker_arm(opening, &case.sighted);
+        let (out, err, ok, _fake) =
+            run_on_arms_beside(root, &["run"], scratch.path(), &arm, |fake| {
+                let held = fake.join("bin/operator-held");
+                if fake.join("bin/session-live").exists() && !held.exists() {
+                    seed_a_hold_by(root, "operator");
+                    seed = common::cli::run_log_head(root);
+                    std::fs::write(&held, "").unwrap();
+                }
+            });
         assert!(ok, "{name}: the run exits 0; stderr: {err}\nstdout: {out}");
         assert_eq!(
             out.lines().nth(2).unwrap(),
             "done: every unit integrated",
             "{name}: how the run ended; stderr: {err}"
         );
+        let before = usize::from(case.operator_holds);
         assert_eq!(run_holds(root)[before..], case.holds, "{name}: the holds");
         assert_eq!(run_releases(root), case.releases, "{name}: the releases");
         assert_eq!(
@@ -7327,8 +7442,10 @@ fn a_sighting_holds_the_run_and_a_done_run_releases_the_hold() {
 
 /// Spec 105's class at a session's ending, through `rigger run`: given a fake `claude` that exits
 /// only on its input's close, when its session ends on an `is_error` result, then the launch takes
-/// its class after the child exits, a classed fault at the implementer reruns uncharged under the
-/// infra limit, the rerun closes `completed`, and the run holds as the class's row says.
+/// its class after the child exits and the run holds as the class's row says: a FAULT class at the
+/// implementer reruns uncharged under the infra limit, and a hold or wait class waits for the
+/// release and launches the same id again at the next ordinal with no infra mark, charged nothing
+/// either, each second launch closing `completed`.
 #[cfg(unix)]
 #[test]
 fn an_is_error_result_reruns_uncharged_and_holds_as_its_class_says() {
@@ -7336,6 +7453,8 @@ fn an_is_error_result_reruns_uncharged_and_holds_as_its_class_says() {
         category: &'static str,
         session: fn(&str) -> String,
         holds: Vec<rigger::run::RunHeld>,
+        /// The second launch: its spawn and ordinal.
+        again: (&'static str, u32),
         releases: Vec<&'static str>,
     }
     let retries = common::fixtures::RETRIES_BY_ITSELF;
@@ -7344,13 +7463,15 @@ fn an_is_error_result_reruns_uncharged_and_holds_as_its_class_says() {
             category: "invalid_request",
             session: classed_session,
             holds: vec![],
+            again: ("solo/implementer#0~retry4", 0),
             releases: vec![],
         },
         Case {
             category: "rate_limit",
             session: classed_session,
             holds: vec![worker_hold("rate_limit", "", retries, false)],
-            releases: vec!["host"],
+            again: ("solo/implementer#0", 1),
+            releases: vec!["operator"],
         },
         Case {
             category: "billing_error",
@@ -7361,7 +7482,8 @@ fn an_is_error_result_reruns_uncharged_and_holds_as_its_class_says() {
                 "fix the account's billing",
                 true,
             )],
-            releases: vec!["host"],
+            again: ("solo/implementer#0", 1),
+            releases: vec!["operator"],
         },
     ];
     for case in cases {
@@ -7381,7 +7503,9 @@ fn an_is_error_result_reruns_uncharged_and_holds_as_its_class_says() {
 {session}    ;;
 "#
         );
-        let (out, err, ok, _fake) = run_on_arms(root, &["run"], scratch.path(), &arm);
+        let release = releasing_holds(root, 1, |_| true);
+        let (out, err, ok, _fake) =
+            run_on_arms_beside(root, &["run"], scratch.path(), &arm, release);
         assert!(
             ok,
             "{category}: the run exits 0; stderr: {err}\nstdout: {out}"
@@ -7396,11 +7520,13 @@ fn an_is_error_result_reruns_uncharged_and_holds_as_its_class_says() {
             [
                 (
                     "solo/implementer#0".to_string(),
+                    0,
                     "fault".to_string(),
                     Some(category.to_string())
                 ),
                 (
-                    "solo/implementer#0~retry4".to_string(),
+                    case.again.0.to_string(),
+                    case.again.1,
                     "completed".to_string(),
                     None
                 ),
@@ -7427,10 +7553,32 @@ const SILENCE_BOUNDED_WORKFLOW: WorkflowFixture = WorkflowFixture {
     body: REVIEWLESS_GIT_UNIT_WORKFLOW.body,
 };
 
+/// [`REVIEWLESS_GIT_UNIT_WORKFLOW`] with no infra rule, so the infra limit is 0 and the first error
+/// the decorator passes halts the run.
+const NO_INFRA_RULE_WORKFLOW: WorkflowFixture = WorkflowFixture {
+    worker: REVIEWLESS_GIT_UNIT_WORKFLOW.worker,
+    body: r#"defaults:
+  grounder: nop
+  budget: 60
+  failure_rules:
+    - class: product
+gates:
+  ok: { run: "true", kind: core }
+stages:
+  solo:
+    agent: worker
+    gates: [ok]
+    on_pass: merge
+"#,
+};
+
 /// Spec 105: given a session that faults or goes silent on every launch, when `rigger run` reruns
 /// it, then the third consecutive fault or stream-silence stop holds the run `api-unstable` before
-/// the host returns, the launch past the infra limit halts the run naming its cause, and a run that
-/// is not done leaves the hold.
+/// the host returns, its error waits for the release and launches the same id again at the next
+/// ordinal with no infra mark, and that launch's error, on a run the release left unheld, halts
+/// the run past the infra limit naming its cause. Given a session failing a hold class on every
+/// launch, the id relaunches twice and the third error passes though the run holds, the bound
+/// spent, and a run that is not done leaves that hold.
 #[cfg(unix)]
 #[test]
 fn a_launch_past_the_infra_limit_halts_naming_its_cause_and_leaves_the_hold() {
@@ -7442,7 +7590,24 @@ fn a_launch_past_the_infra_limit_halts_naming_its_cause_and_leaves_the_hold() {
         close: (&'static str, Option<&'static str>),
         /// What the halt says of the cause.
         cause: &'static str,
+        /// Each launch: its spawn and ordinal.
+        launches: Vec<(&'static str, u32)>,
+        holds: Vec<rigger::run::RunHeld>,
+        releases: Vec<&'static str>,
     }
+    let unstable = worker_hold(
+        "api-unstable",
+        "",
+        common::fixtures::RETRIES_BY_ITSELF,
+        false,
+    );
+    let billing = worker_hold("billing_error", "", "fix the account's billing", true);
+    let (first, rerun, last) = (
+        "solo/implementer#0",
+        "solo/implementer#0~retry4",
+        "solo/implementer#0~retry8",
+    );
+    let reran_then_relaunched = vec![(first, 0), (rerun, 0), (last, 0), (last, 1)];
     let cases = [
         Case {
             name: "a classed fault",
@@ -7450,6 +7615,9 @@ fn a_launch_past_the_infra_limit_halts_naming_its_cause_and_leaves_the_hold() {
             session: classed_session("invalid_request"),
             close: ("fault", Some("invalid_request")),
             cause: "class invalid_request",
+            launches: reran_then_relaunched.clone(),
+            holds: vec![unstable.clone()],
+            releases: vec!["operator"],
         },
         Case {
             name: "a stream-silence stop",
@@ -7457,6 +7625,19 @@ fn a_launch_past_the_infra_limit_halts_naming_its_cause_and_leaves_the_hold() {
             session: "    while IFS= read -r _line; do :; done\n    exit 1\n".to_string(),
             close: ("stopped", None),
             cause: "its agent stream stayed silent for 1s",
+            launches: reran_then_relaunched,
+            holds: vec![unstable],
+            releases: vec!["operator"],
+        },
+        Case {
+            name: "a hold class past the relaunch bound",
+            workflow: &NO_INFRA_RULE_WORKFLOW,
+            session: classed_session("billing_error"),
+            close: ("fault", Some("billing_error")),
+            cause: "class billing_error",
+            launches: vec![(first, 0), (first, 1), (first, 2)],
+            holds: vec![billing.clone(), billing.clone(), billing],
+            releases: vec!["operator", "operator"],
         },
     ];
     for case in cases {
@@ -7467,7 +7648,9 @@ fn a_launch_past_the_infra_limit_halts_naming_its_cause_and_leaves_the_hold() {
         let scratch = tempfile::tempdir().unwrap();
         let session = case.session;
         let arm = format!("  *\"Do the unit.\"*)\n{session}    ;;\n");
-        let (out, err, ok, _fake) = run_on_arms(root, &["run"], scratch.path(), &arm);
+        let release = releasing_holds(root, case.releases.len(), |_| true);
+        let (out, err, ok, _fake) =
+            run_on_arms_beside(root, &["run"], scratch.path(), &arm, release);
         assert!(
             !ok,
             "{name}: the halted run fails; stdout: {out}\nstderr: {err}"
@@ -7477,37 +7660,25 @@ fn a_launch_past_the_infra_limit_halts_naming_its_cause_and_leaves_the_hold() {
             "{name}: the halt names its cause; stderr: {err}"
         );
         let (ended, class) = case.close;
-        let closed = |spawn: &str| {
-            (
-                spawn.to_string(),
-                ended.to_string(),
-                class.map(str::to_string),
-            )
-        };
+        let expected: Vec<ClosedLaunch> = case
+            .launches
+            .iter()
+            .map(|(spawn, launch)| {
+                (
+                    spawn.to_string(),
+                    *launch,
+                    ended.to_string(),
+                    class.map(str::to_string),
+                )
+            })
+            .collect();
         assert_eq!(
             closed_launches(root),
-            [
-                closed("solo/implementer#0"),
-                closed("solo/implementer#0~retry4"),
-                closed("solo/implementer#0~retry8"),
-            ],
+            expected,
             "{name}: the closes; stderr: {err}"
         );
-        assert_eq!(
-            run_holds(root),
-            [worker_hold(
-                "api-unstable",
-                "",
-                common::fixtures::RETRIES_BY_ITSELF,
-                false
-            )],
-            "{name}: the third close holds the run once"
-        );
-        assert_eq!(
-            run_releases(root),
-            Vec::<String>::new(),
-            "{name}: the hold stands"
-        );
+        assert_eq!(run_holds(root), case.holds, "{name}: the holds");
+        assert_eq!(run_releases(root), case.releases, "{name}: the releases");
     }
 }
 
@@ -7555,26 +7726,32 @@ fn rendezvous(gate: &str) -> String {
 }
 
 /// An arm of [`install_fake_claude`] ending all three first launches on a `category` error at
-/// once. The reruns meet too, so no `completed` close lands until all three faults stand: a unit
-/// reruns only behind its own close.
+/// once. Each unit's second launch, a relaunch or an infra rerun, meets the others too, so no
+/// `completed` close lands until all three faults stand: a unit launches again only behind its own
+/// close.
 fn faulting_at_once_arm(category: &str) -> String {
     let session = classed_session(category);
     let (faulted, reran) = (rendezvous("faulted"), rendezvous("reran"));
     format!(
         r#"  *"Do the unit."*)
-    case "$RIGGER_SPAWN" in
-    *~retry*)
+    unit="${{RIGGER_SPAWN%%/*}}"
+    if [ -e "$here/ran-$unit" ]; then
 {reran}        echo "pub fn work() {{}}" > work.rs
         exit 0
-        ;;
-    esac
+    fi
+    : > "$here/ran-$unit"
 {faulted}{session}    ;;
 "#
     )
 }
 
 /// Spec 105's compare-and-append through `rigger run`: given three sessions of one wave, when they
-/// sight one category or end at the same moment, then the run holds once between them.
+/// sight one category or end at the same moment, then the run holds once between them, and given
+/// the sessions ended, each unit launches again only behind the release of that one hold.
+///
+/// [`faulting_at_once_arm`]'s closes land just ahead of each session's sighting, and no event marks
+/// the last sighting: the release waits for all three closes and then [`A_HOLD_STANDS_FOR`], since
+/// a sighting landing after it would hold the run a second time.
 #[cfg(unix)]
 #[test]
 fn sessions_of_one_wave_racing_append_one_hold_between_them() {
@@ -7582,15 +7759,19 @@ fn sessions_of_one_wave_racing_append_one_hold_between_them() {
         name: &'static str,
         arm: String,
         hold: rigger::run::RunHeld,
-        /// Each stage's closes, by the spawn's suffix: how it ended and its class.
-        closes: Vec<(&'static str, &'static str, Option<&'static str>)>,
+        /// Each stage's closes, by the spawn's suffix: its ordinal, how it ended and its class.
+        closes: Vec<(&'static str, u32, &'static str, Option<&'static str>)>,
+        /// Which sibling reads the third close decides whether a unit relaunches or, read unheld,
+        /// reruns: a rerun then reads [`as_a_relaunch`].
+        reruns_race_relaunches: bool,
+        releases: Vec<&'static str>,
     }
     let login = "authentication_failed";
     let retries = common::fixtures::RETRIES_BY_ITSELF;
-    let faulted_then_reran = |class| {
+    let faulted_then_launched = |class| {
         vec![
-            ("#0", "fault", Some(class)),
-            ("#0~retry4", "completed", None),
+            ("#0", 0, "fault", Some(class)),
+            ("#0", 1, "completed", None),
         ]
     };
     let cases = [
@@ -7598,19 +7779,25 @@ fn sessions_of_one_wave_racing_append_one_hold_between_them() {
             name: "one hold class sighted at once",
             arm: sighting_worker_arm(&rendezvous("sighted"), &[login]),
             hold: worker_hold(login, login, "run claude auth login", true),
-            closes: vec![("#0", "completed", None)],
+            closes: vec![("#0", 0, "completed", None)],
+            reruns_race_relaunches: false,
+            releases: vec!["host"],
         },
         Case {
             name: "one wait class ending the sessions at once",
             arm: faulting_at_once_arm("rate_limit"),
             hold: worker_hold("rate_limit", "", retries, false),
-            closes: faulted_then_reran("rate_limit"),
+            closes: faulted_then_launched("rate_limit"),
+            reruns_race_relaunches: false,
+            releases: vec!["operator"],
         },
         Case {
             name: "the third consecutive fault among closes at once",
             arm: faulting_at_once_arm("invalid_request"),
             hold: worker_hold("api-unstable", "", retries, false),
-            closes: faulted_then_reran("invalid_request"),
+            closes: faulted_then_launched("invalid_request"),
+            reruns_race_relaunches: true,
+            releases: vec!["operator"],
         },
     ];
     for case in cases {
@@ -7619,33 +7806,38 @@ fn sessions_of_one_wave_racing_append_one_hold_between_them() {
         let root = dir.path();
         write_workflow_fixture(root, &THREE_UNIT_WORKFLOW);
         let scratch = tempfile::tempdir().unwrap();
-        let (out, err, ok, fake) = run_on_arms(root, &["run"], scratch.path(), &case.arm);
+        let budget = case.releases.iter().filter(|by| **by == "operator").count();
+        let release = releasing_holds(root, budget, |root| closed_launches(root).len() >= 3);
+        let (out, err, ok, fake) =
+            run_on_arms_beside(root, &["run"], scratch.path(), &case.arm, release);
         assert!(ok, "{name}: the run exits 0; stderr: {err}\nstdout: {out}");
         assert!(
             !fake.path().join("bin/alone").exists(),
             "{name}: the three sessions met; stderr: {err}"
         );
-        let mut closes = closed_launches(root);
+        let mut closes: Vec<ClosedLaunch> = closed_launches(root);
+        if case.reruns_race_relaunches {
+            closes = closes.into_iter().map(as_a_relaunch).collect();
+        }
         closes.sort();
-        let expected: Vec<(String, String, Option<String>)> = ["a", "b", "c"]
+        let expected: Vec<ClosedLaunch> = ["a", "b", "c"]
             .iter()
             .flat_map(|stage| {
-                case.closes.iter().map(move |(suffix, ended, class)| {
-                    (
-                        format!("{stage}/implementer{suffix}"),
-                        ended.to_string(),
-                        class.map(str::to_string),
-                    )
-                })
+                case.closes
+                    .iter()
+                    .map(move |(suffix, launch, ended, class)| {
+                        (
+                            format!("{stage}/implementer{suffix}"),
+                            *launch,
+                            ended.to_string(),
+                            class.map(str::to_string),
+                        )
+                    })
             })
             .collect();
         assert_eq!(closes, expected, "{name}: the closes; stderr: {err}");
         assert_eq!(run_holds(root), [case.hold], "{name}: the holds");
-        assert_eq!(
-            run_releases(root),
-            ["host"],
-            "{name}: the done run's release"
-        );
+        assert_eq!(run_releases(root), case.releases, "{name}: the releases");
     }
 }
 
@@ -7731,16 +7923,16 @@ fn a_mint_releases_the_hold_it_finds() {
     }
 }
 
-/// Spec 105: given a run held by the operator, when `rigger serve` drives it to done, then it stays
-/// held: the done run's release is the supervisor's alone.
+/// Spec 105: given a run the operator holds behind its last launch, when `rigger serve` drives it
+/// to done, then it stays held: the done run's release is the supervisor's alone.
 #[test]
 fn a_served_run_reaching_done_stays_held() {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
     write_workflow_fixture(root, &REVIEWLESS_GIT_UNIT_WORKFLOW);
-    seed_a_run_held_by(root, Some("operator"));
+    seed_a_run_held_by(root, None);
     let mut mcp = McpSession::start_with(root, &["serve", "--base", "HEAD"]);
-    let answered = answer_every_spawn(&mut mcp);
+    let answered = answer_every_spawn_after(&mut mcp, || seed_a_hold_by(root, "operator"));
     let out = mcp.finish();
     assert_eq!(
         answered,
@@ -7758,6 +7950,157 @@ fn a_served_run_reaching_done_stays_held() {
         ["solo"],
         "the run's one unit integrated, so the run reached done"
     );
+}
+
+/// Spec 105: given a held run, when `rigger serve` waits on the hold, then `rigger_next` hands out
+/// no spawn and never answers done, and the session's close ends the wait with a park: the session
+/// exits 0 with no error, the unit is charged nothing and the hold stands for the next supervisor.
+#[test]
+fn a_served_wait_on_a_hold_ends_with_a_park_when_its_session_closes() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_workflow_fixture(root, &REVIEWLESS_GIT_UNIT_WORKFLOW);
+    seed_a_run_held_by(root, Some("operator"));
+    let mut mcp = McpSession::start_with(root, &["serve", "--base", "HEAD"]);
+    mcp.initialize();
+    assert!(
+        common::fixtures::wait_until(|| unit_started(root)),
+        "the served run reaches its unit"
+    );
+    let idle = serde_json::json!({"id": "", "done": false});
+    for poll in 0..20 {
+        let next = mcp.tool_call("rigger_next", serde_json::json!({}));
+        if next["result"]["structuredContent"] != idle {
+            mcp.fail(&format!("poll {poll} of a held run answered {next}"));
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let out = mcp.finish_within(Duration::from_secs(30));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "the session exits 0; stderr: {err}");
+    assert_eq!(
+        lines_starting_with(&err, "rigger: conductor: "),
+        Vec::<&str>::new(),
+        "a park is no error"
+    );
+    assert_eq!(run_releases(root), Vec::<String>::new(), "the hold stands");
+    assert_eq!(run_holds(root).len(), 1, "the hold stands alone");
+    assert_eq!(
+        common::cli::run_payloads(root, "UnitFailed"),
+        Vec::<serde_json::Value>::new(),
+        "the park charges the unit nothing"
+    );
+}
+
+/// Whether `root`'s run has started a unit, the launch's own first step.
+fn unit_started(root: &Path) -> bool {
+    !common::cli::run_payloads(root, rigger::ledger::TYPE_UNIT_STARTED).is_empty()
+}
+
+/// Spec 105's HELD MEANS NO LAUNCH through `rigger run`: given a held run, when its unit starts,
+/// then nothing launches until the release, the launch then runs at its first ordinal with no
+/// infra mark, and the unit is charged nothing.
+#[cfg(unix)]
+#[test]
+fn a_held_run_launches_nothing_until_its_release() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_workflow_fixture(root, &REVIEWLESS_GIT_UNIT_WORKFLOW);
+    seed_a_run_held_by(root, Some("operator"));
+    let scratch = tempfile::tempdir().unwrap();
+    let mut release = releasing_holds(root, 1, unit_started);
+    let mut launched_while_held = 0;
+    let (out, err, ok, _fake) = run_on_arms_beside(
+        root,
+        &["run"],
+        scratch.path(),
+        RECORDING_WORKER_ARM,
+        |fake| {
+            if hold_is_open(root) {
+                let launched =
+                    common::cli::recorded_progress::<rigger::progress::SpawnLaunched>(root);
+                launched_while_held = launched_while_held.max(launched.len());
+            }
+            release(fake);
+        },
+    );
+    assert!(ok, "the run exits 0; stderr: {err}\nstdout: {out}");
+    assert_eq!(
+        out.lines().nth(2).unwrap(),
+        "done: every unit integrated",
+        "how the run ended; stderr: {err}"
+    );
+    assert_eq!(launched_while_held, 0, "the launches a hold let through");
+    assert_eq!(
+        closed_launches(root),
+        [(
+            "solo/implementer#0".to_string(),
+            0,
+            "completed".to_string(),
+            None
+        )],
+        "the closes; stderr: {err}"
+    );
+    assert_eq!(run_releases(root), ["operator"], "the releases");
+    assert_eq!(
+        common::cli::run_payloads(root, "UnitFailed"),
+        Vec::<serde_json::Value>::new(),
+        "the wait charges the unit nothing"
+    );
+}
+
+/// [`REVIEWLESS_GIT_UNIT_WORKFLOW`] whose gate marks `gate-running` under the scratch root and
+/// passes only once `gate-go` stands there, bounded at 20 s.
+const GATE_AWAITING_A_HOLD_WORKFLOW: WorkflowFixture = WorkflowFixture {
+    worker: REVIEWLESS_GIT_UNIT_WORKFLOW.worker,
+    body: r#"defaults:
+  grounder: nop
+  budget: 60
+gates:
+  ok:
+    kind: core
+    run: |
+      : > "$RIGGER_TMPDIR/gate-running"
+      tries=0
+      while [ ! -e "$RIGGER_TMPDIR/gate-go" ] && [ $tries -lt 1000 ]; do
+          sleep 0.02
+          tries=$((tries + 1))
+      done
+      [ -e "$RIGGER_TMPDIR/gate-go" ]
+stages:
+  solo:
+    agent: worker
+    gates: [ok]
+    on_pass: merge
+"#,
+};
+
+/// Spec 105: given a gate running, when a hold lands on the run, then the gate finishes and the
+/// unit integrates: a hold stops launches, never the work already running.
+#[cfg(unix)]
+#[test]
+fn a_gate_running_when_the_run_is_held_finishes() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_workflow_fixture(root, &GATE_AWAITING_A_HOLD_WORKFLOW);
+    seed_a_run_held_by(root, None);
+    let scratch = tempfile::tempdir().unwrap();
+    let go = scratch.path().join("gate-go");
+    let (out, err, ok, _fake) =
+        run_on_arms_beside(root, &["run"], scratch.path(), RECORDING_WORKER_ARM, |_| {
+            if scratch.path().join("gate-running").exists() && !go.exists() {
+                seed_a_hold_by(root, "operator");
+                std::fs::write(&go, "").unwrap();
+            }
+        });
+    assert!(ok, "the run exits 0; stderr: {err}\nstdout: {out}");
+    assert_eq!(
+        out.lines().nth(2).unwrap(),
+        "done: every unit integrated",
+        "how the run ended; stderr: {err}"
+    );
+    assert_eq!(run_holds(root).len(), 1, "the hold landed on the gate");
+    assert_eq!(run_releases(root), ["host"], "the done run's release");
 }
 
 /// A unit under every review tier, with `max_retries: 2` giving a rejected first round a second.
@@ -10244,10 +10587,19 @@ fn rigger_serve_prints_the_budget_halt_reason_on_stderr_when_its_conductor_retur
 /// (a failed answer or a missed 15 s deadline [`McpSession::fail`]s the session); returns the
 /// answered spawn ids, sorted.
 fn answer_every_spawn(mcp: &mut McpSession) -> Vec<String> {
+    answer_every_spawn_after(mcp, || {})
+}
+
+/// [`answer_every_spawn`] with `before_answering` run between a spawn's handing out and its answer.
+fn answer_every_spawn_after(
+    mcp: &mut McpSession,
+    mut before_answering: impl FnMut(),
+) -> Vec<String> {
     mcp.initialize();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
     let mut answered = Vec::new();
     while let Some(spawn) = mcp.next_spawn(deadline) {
+        before_answering();
         let answer = mcp.tool_call(
             "rigger_result",
             serde_json::json!({"id": spawn, "output": "did the unit"}),

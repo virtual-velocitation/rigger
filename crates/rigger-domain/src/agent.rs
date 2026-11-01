@@ -519,6 +519,50 @@ mod tests {
     const MODEL: &str = "fix the agent's configured model, restart rigger run with \
                          --rebase-definition, then run rigger release";
 
+    /// THE CLASS AN ERROR CARRIES: the class [`no_result_error`] bracketed at the head of the
+    /// error, a name no binary knows reading as `unknown` as [`AgentFailure::from_category`] has
+    /// it, and none for an error with no whole bracket at its head.
+    #[test]
+    fn an_error_answers_the_class_it_carries() {
+        let bracketed = no_result_error(AgentFailure::RateLimit, "class rate_limit".into());
+        let rows: [(&str, Error, Option<AgentFailure>); 7] = [
+            (
+                "a class at the head",
+                Error(bracketed.0.clone()),
+                Some(AgentFailure::RateLimit),
+            ),
+            (
+                "the unknown class",
+                no_result_error(AgentFailure::Unknown, "no class".into()),
+                Some(AgentFailure::Unknown),
+            ),
+            (
+                "a name no binary knows",
+                Error(format!("{FAILURE_MARKER}new_category{FAILURE_MARKER}text")),
+                Some(AgentFailure::Unknown),
+            ),
+            ("no marker", Error("the session stopped".into()), None),
+            (
+                "a bracket never closed",
+                Error(format!("{FAILURE_MARKER}rate_limit")),
+                None,
+            ),
+            (
+                "a bracket behind wrapping context",
+                Error(format!("stage: {}", bracketed.0)),
+                None,
+            ),
+            (
+                "an emit refusal",
+                Error(format!("{EMIT_REFUSED_MARKER}refused")),
+                None,
+            ),
+        ];
+        for (name, error, want) in rows {
+            assert_eq!(failure_class(&error), want, "{name}");
+        }
+    }
+
     /// THE DISPOSITION TABLE (spec 105): every category, by its wire name, maps to the disposition,
     /// the action and the need for a person decided for it, and a name no binary knows faults as
     /// `unknown` does.
