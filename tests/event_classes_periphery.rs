@@ -183,10 +183,10 @@ fn folding_every_episodic_type_leaves_the_served_graph_as_it_stood_and_a_decisio
             "folding {type_} changes nothing the projection serves"
         );
     }
-    assert_eq!(pos, 39, "nineteen episodic types were folded");
+    assert_eq!(pos, 40, "twenty episodic types were folded");
 
     // And a decision folded after them lands at its own position, beside everything seeded.
-    apply_governs_at(&p, 40, "d2", "src/net/link.rs", 500);
+    apply_governs_at(&p, 41, "d2", "src/net/link.rs", 500);
     let after = served(&p);
     let after_rows = rows(&after);
     assert_eq!(
@@ -201,11 +201,11 @@ fn folding_every_episodic_type_leaves_the_served_graph_as_it_stood_and_a_decisio
             (
                 "d2".to_string(),
                 "src/net/link.rs".to_string(),
-                40,
+                41,
                 nanos(500)
             ),
         ],
-        "the decision after the episodic events folds its edge at position 40"
+        "the decision after the episodic events folds its edge at position 41"
     );
     assert_eq!(
         live_node_ids(&after, KIND_DECISION),

@@ -9,13 +9,15 @@
 //! the ledger, the spawn frontier, [`crate::metrics::project`], the conductor, the context
 //! graph - can ever read it, and the run stream, its projections, and replay are
 //! byte-identical whether or not any progress was ever emitted. Agents WRITE it via `rigger
-//! progress <id> "<activity>"`; rigger READS it for PRESENTATION ONLY - unit 2's consolidator
-//! folds it into the live per-agent view, and [`crate::metrics::grep_fallbacks`] counts this
-//! store's `grep-fallback:` lines for the dash - never in a run-stream fold, so the isolation
-//! that keeps replay byte-identical is preserved.
+//! progress <id> "<activity>"`, and the host and the supervisor record what they see on it
+//! ([`SpawnLaunched`], [`StopFailure`], [`ApiRetry`], [`SupervisorBeat`]). rigger READS it live -
+//! unit 2's consolidator folds it into the per-agent view, [`crate::metrics::grep_fallbacks`]
+//! counts this store's `grep-fallback:` lines for the dash, and the host classes a failed session
+//! from its [`StopFailure`] records - never in a run-stream fold, so the isolation that keeps
+//! replay byte-identical is preserved.
 
 use std::collections::HashMap;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use serde::{Deserialize, Serialize};
 
@@ -49,7 +51,8 @@ pub fn read_run(store: &dyn EventStore, run_id: &str) -> Result<Vec<Event>, Erro
 
 /// A progress-store record that appends as one event of its own [`EVENT_TYPE`](Self::EVENT_TYPE),
 /// stamped with the run it belongs to - the ONE shape every record this store holds is built
-/// with ([`AgentProgress`], [`SpawnLaunched`], [`StopFailure`], [`ApiRetry`]).
+/// with ([`AgentProgress`], [`SpawnLaunched`], [`StopFailure`], [`ApiRetry`],
+/// [`SupervisorBeat`]).
 pub trait RunStamped: Serialize {
     /// The event type this record serializes as.
     const EVENT_TYPE: &'static str;
@@ -272,6 +275,24 @@ pub struct ApiRetry {
 
 impl RunStamped for ApiRetry {
     const EVENT_TYPE: &'static str = TYPE_API_RETRY;
+}
+
+/// The event type a [`SupervisorBeat`] record serializes as (spec 105 LIVENESS). Recorded to the
+/// progress store - never the run stream, same file boundary as [`TYPE_SPAWN_LAUNCHED`] - by
+/// `rigger run`, once per [`SUPERVISOR_BEAT_INTERVAL`].
+pub const TYPE_SUPERVISOR_BEAT: &str = "SupervisorBeat";
+
+/// How long a supervisor waits between two beats (spec 105 LIVENESS).
+pub const SUPERVISOR_BEAT_INTERVAL: Duration = Duration::from_secs(30);
+
+/// One beat of the supervisor, on the stream of the run current at that beat: the store's
+/// `recorded_at` says when a supervisor was there, which is all spec 105's LIVENESS asks of it, so
+/// the record itself carries nothing.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SupervisorBeat {}
+
+impl RunStamped for SupervisorBeat {
+    const EVENT_TYPE: &'static str = TYPE_SUPERVISOR_BEAT;
 }
 
 /// A live per-agent view (spec 14, unit 2): for one in-flight spawn, what stage it is at,
@@ -616,6 +637,25 @@ mod tests {
         );
         let back: ApiRetry = serde_json::from_slice(&ev.data).unwrap();
         assert_eq!(back, retry);
+    }
+
+    // ---- SupervisorBeat (spec 105 LIVENESS) ----
+
+    #[test]
+    fn supervisor_beat_to_event_carries_the_type_the_run_stamp_and_an_empty_body() {
+        let ev = SupervisorBeat::default().to_stamped_event("run-9").unwrap();
+        assert_eq!(ev.type_, "SupervisorBeat");
+        assert_eq!(ev.meta.get(META_RUN_ID).map(String::as_str), Some("run-9"));
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&ev.data).unwrap(),
+            serde_json::json!({}),
+            "a beat says nothing but its type and the time the store stamps"
+        );
+    }
+
+    #[test]
+    fn the_supervisor_beats_every_thirty_seconds() {
+        assert_eq!(SUPERVISOR_BEAT_INTERVAL, Duration::from_secs(30));
     }
 
     #[test]

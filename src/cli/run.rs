@@ -1393,10 +1393,59 @@ fn anchor_run_branch(repo: &str, cmd: &str, base: &str, base_explicit: bool) -> 
     Ok(())
 }
 
+/// One beat of the supervisor (spec 105 LIVENESS): a [`SupervisorBeat`] on the progress stream of
+/// the run current at this beat, re-read here so the beat follows whichever run is current. Only
+/// the run's boundaries are read, since a beat wants one id every interval for as long as the run
+/// lives. A run log that cannot be read, or that names no run, beats nothing, and a write the
+/// progress store refuses is ignored: the next tick is the retry either way.
+///
+/// [`SupervisorBeat`]: rigger::progress::SupervisorBeat
+fn beat(run_store: &dyn EventStore, progress: &dyn EventStore) {
+    let boundaries = run_store.read_stream_typed(
+        conductor::STREAM,
+        0,
+        TypeSelection::Only(&[runscope::TYPE_RUN_STARTED]),
+    );
+    let run = boundaries.map(|events| runscope::current_run_id(&events));
+    if let Ok(Some(run)) = run {
+        let _ = rigger::progress_store::append_stamped(
+            progress,
+            &run,
+            &rigger::progress::SupervisorBeat::default(),
+            "the supervisor beat",
+        );
+    }
+}
+
+/// Hand back what `drive` returns, with the supervisor beating beside it on a thread of its own:
+/// a [`beat`] as `drive` starts, so an adopting supervisor is on record at once, then one each
+/// `interval`. The thread sleeps on a channel whose one sender lives only as long as `drive`, so
+/// `drive`'s return wakes it at once, it writes no further beat, and the scope joins it. A dead
+/// beat freezes silent time and nothing more: no exit and no host state hangs on it.
+fn beating<T>(
+    run_store: &dyn EventStore,
+    progress: &dyn EventStore,
+    interval: std::time::Duration,
+    drive: impl FnOnce() -> T,
+) -> T {
+    use std::sync::mpsc::{channel, RecvTimeoutError};
+
+    std::thread::scope(|scope| {
+        let (_driving, driven) = channel::<()>();
+        scope.spawn(move || {
+            beat(run_store, progress);
+            while let Err(RecvTimeoutError::Timeout) = driven.recv_timeout(interval) {
+                beat(run_store, progress);
+            }
+        });
+        drive()
+    })
+}
+
 /// The standalone CLI path: ground, host the agents as headless `claude` sessions
-/// ([`claude_code::Driver`]), drive the DAG to integration, and reclaim a done run's scratch.
-/// The store is selected by flag and wrapped in the per-project namespace decorator before it is
-/// injected (§5.1.1, R9).
+/// ([`claude_code::Driver`]), drive the DAG to integration with the supervisor [`beating`] beside
+/// it, and reclaim a done run's scratch. The store is selected by flag and wrapped in the
+/// per-project namespace decorator before it is injected (§5.1.1, R9).
 fn run_cli(parsed: &RunArgs) -> Res {
     // DISCOVERABILITY (spec 66, criterion 5): `rigger run <spec>` is a REAL pre-launch
     // surface that genuinely holds the spec path in production (unlike the SessionStart-only
@@ -1526,7 +1575,12 @@ fn run_cli(parsed: &RunArgs) -> Res {
     // the loop begins, so an active harness is never invisible. Held for the whole run - the
     // guard reaps the dash when this scope ends (unit 3's reaping mechanism).
     let _dash = start_run_dashboard(cfg.workflow.dash_enabled(), &store);
-    let rs = conductor::run(&cfg, &deps)?;
+    let rs = beating(
+        &store,
+        &progress,
+        rigger::progress::SUPERVISOR_BEAT_INTERVAL,
+        || conductor::run(&cfg, &deps),
+    )?;
     // The conductor returned, so no spawn of this run is live: a done run's scratch is residue. A
     // run that stopped short of done keeps it for the resume, and a project with no scratch root
     // has none to reclaim.
@@ -4441,5 +4495,96 @@ mod tests {
         // Deliberately un-reaped: `Child`'s Drop neither waits nor kills, matching production -
         // being un-reaped across steps is the whole point of "detached".
         drop(child);
+    }
+
+    // --- Spec 105, LIVENESS: the supervisor beat ---
+
+    /// Mint `run` on `run_log`'s run stream.
+    fn mint_run(run_log: &Store, run: &str) {
+        run_log
+            .append(
+                conductor::STREAM,
+                rigger::eventstore::ExpectedRevision::Any,
+                &[crate::test_support::run_started(run, &[])],
+            )
+            .unwrap();
+    }
+
+    /// The stream of every supervisor beat `progress` holds, oldest first.
+    fn beat_streams(progress: &Store) -> Vec<String> {
+        let everything = rigger::eventstore::Filter {
+            stream_prefix: None,
+        };
+        progress
+            .read_all(0, Direction::Forward, &everything)
+            .unwrap()
+            .into_iter()
+            .filter(|event| event.type_ == rigger::progress::TYPE_SUPERVISOR_BEAT)
+            .map(|event| event.stream)
+            .collect()
+    }
+
+    /// Each beat re-reads the current run: it lands on the run current at that beat, again on a
+    /// run that stands, and nowhere when no run has started. A row mints its run, then beats once;
+    /// its list is every beat on record after that.
+    #[test]
+    fn a_beat_lands_on_the_run_current_at_that_beat() {
+        let run_log = Store::open(":memory:").unwrap();
+        let progress = Store::open(":memory:").unwrap();
+        let (first, newer) = ("progress/run-a", "progress/run-b");
+        for (case, minted, streams) in [
+            ("no run yet", None, vec![]),
+            ("a first run", Some("run-a"), vec![first]),
+            ("the same run again", None, vec![first, first]),
+            ("a newer run", Some("run-b"), vec![first, first, newer]),
+        ] {
+            if let Some(run) = minted {
+                mint_run(&run_log, run);
+            }
+            beat(&run_log, &progress);
+            assert_eq!(beat_streams(&progress), streams, "{case}");
+        }
+    }
+
+    /// A run log that cannot be read names no run to beat on: the beat writes nothing and the
+    /// supervisor stands.
+    #[test]
+    fn a_failed_read_of_the_current_run_writes_no_beat() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("events.db");
+        let run_log = Store::open(db.to_str().unwrap()).unwrap();
+        mint_run(&run_log, "run-a");
+        rusqlite::Connection::open(&db)
+            .unwrap()
+            .execute_batch("DROP TABLE events")
+            .unwrap();
+        let progress = Store::open(":memory:").unwrap();
+        beat(&run_log, &progress);
+        assert_eq!(beat_streams(&progress), Vec::<String>::new());
+    }
+
+    /// A beat whose write the progress store refuses is ignored: the first tick meets another
+    /// writer's lock past its busy timeout and fails, the thread stands, and the next tick lands
+    /// the one beat on record. The interval outlasts what remains of the lock, and the driven work
+    /// returns on that beat, so no third tick comes.
+    #[test]
+    fn a_failed_beat_write_is_ignored_and_the_next_tick_lands_its_beat() {
+        use crate::test_support::{wait_until_for, with_graph_locked_for};
+
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("progress.db");
+        let progress = Store::open(db.to_str().unwrap()).unwrap();
+        let run_log = Store::open(":memory:").unwrap();
+        mint_run(&run_log, "run-a");
+        let landed = with_graph_locked_for(&db, || {
+            beating(
+                &run_log,
+                &progress,
+                std::time::Duration::from_secs(3),
+                || wait_until_for(800, || !beat_streams(&progress).is_empty()),
+            )
+        });
+        assert!(landed, "the tick after the refused one lands its beat");
+        assert_eq!(beat_streams(&progress), vec!["progress/run-a"]);
     }
 }
