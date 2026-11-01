@@ -157,11 +157,13 @@ pub struct SpawnOpts {
     /// host the session ones alone, and each passes the result as `--settings`. Empty means no
     /// settings of the spawn's own; the workflow driver ignores this field.
     pub settings_json: String,
-    /// The 0-based ordinal of this launch within the spawn's current attempt (spec 104
-    /// criterion 1): 0 for the first launch, N for the Nth relaunch after an API-side
-    /// fault (spec 104's own FAULT class) or a hold-release resume (spec 105). Distinct
-    /// from `attempt`, the remediation counter the deterministic id encodes. 0 for the
-    /// cli/workflow drivers, which never relaunch a live session.
+    /// The 0-based ordinal the first launch of this spawn id takes (spec 104 criterion 1): 0
+    /// unless a caller names another. The stream-json host reads it only for an id with no
+    /// recorded launch; every later launch, a relaunch after an API-side fault (spec 104's own
+    /// FAULT class), a hold-release resume or the resume fallback (spec 105), takes the ordinal
+    /// after the highest recorded. Distinct from `attempt`, the remediation counter the
+    /// deterministic id encodes. 0 for the cli/workflow drivers, which never relaunch a live
+    /// session.
     pub launch: u32,
     /// The session id this launch CONTINUES (`claude -p --resume <session_id>`), empty
     /// for a fresh launch. The conductor sets it on a later attempt or review round of a

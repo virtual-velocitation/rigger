@@ -1,14 +1,16 @@
-//! The write half of [`crate::progress`] (spec 93, criterion 1: THE CORE LANE IS PURE):
+//! The store half of [`crate::progress`] (spec 93, criterion 1: THE CORE LANE IS PURE):
 //! recording one live progress report to a LIVE progress store. [`crate::progress`] keeps
 //! the model (`AgentProgress`, `AgentActivity`) and the pure fold (`consolidate`) -
 //! everything computable from already-read `&[Event]` slices, with no store at all. This
 //! module is the other half: `record`, the typed writers beside it and the [`append_stamped`]
-//! they share, the functions that append to a `&dyn EventStore`, split into their own file
-//! (never a function-by-function `#[cfg]` inside `progress.rs`) so the pure half can compile
-//! for `wasm32-unknown-unknown`.
+//! they share, the functions that append to a `&dyn EventStore`, with [`next_launch`], the read
+//! a launch append decides on, split into their own file (never a function-by-function `#[cfg]`
+//! inside `progress.rs`) so the pure half can compile for `wasm32-unknown-unknown`.
 
-use crate::eventstore::{Error, EventStore, ExpectedRevision, Position};
-use crate::progress::{stream_of, AgentProgress, RunStamped, SpawnLaunched, StopFailure};
+use crate::eventstore::{Error, EventStore, ExpectedRevision, Position, TypeSelection};
+use crate::progress::{
+    stream_of, AgentProgress, RunStamped, SpawnLaunched, StopFailure, TYPE_SPAWN_LAUNCHED,
+};
 
 /// Record one progress report to the progress `store`, stamped with `run_id`. Append-only
 /// and side-effect-free beyond the one event: a pure write, cheap to call after every
@@ -51,6 +53,32 @@ pub fn record_launch(
             launch.spawn, launch.launch
         ),
     )
+}
+
+/// The ordinal the next launch of `spawn` takes (spec 105 criterion 1): the highest the run's
+/// [`SpawnLaunched`] records hold for that id plus one, or `first`, the ordinal the caller names,
+/// when they hold none. Opening and closing records both count, so a launch whose open record
+/// was lost still moves the next one past it. A record that does not decode names no ordinal
+/// and moves nothing; a failed read is the caller's to surface, since a launch that cannot name
+/// its ordinal could overwrite a prior launch's transcript.
+pub fn next_launch(
+    store: &dyn EventStore,
+    run_id: &str,
+    spawn: &str,
+    first: u32,
+) -> Result<u32, Error> {
+    let recorded = store.read_stream_typed(
+        &stream_of(run_id),
+        0,
+        TypeSelection::Only(&[TYPE_SPAWN_LAUNCHED]),
+    )?;
+    Ok(recorded
+        .iter()
+        .filter_map(|event| serde_json::from_slice::<SpawnLaunched>(&event.data).ok())
+        .filter(|record| record.spawn == spawn)
+        .map(|record| record.launch)
+        .max()
+        .map_or(first, |highest| highest + 1))
 }
 
 /// Record one [`StopFailure`] hook firing to the progress `store`, stamped with `run_id`
@@ -349,6 +377,38 @@ mod tests {
             serde_json::from_slice::<crate::progress::ApiRetry>(&p[0].data).unwrap(),
             retry
         );
+    }
+
+    /// A record that does not decode names no ordinal, so it moves nothing and stops nothing:
+    /// a store holding one would otherwise refuse every later launch of its run.
+    fn an_undecodable_launch_record_is_skipped(seeded: &[u32], next: u32) {
+        let progress = Store::open(":memory:").unwrap();
+        for launch in seeded {
+            let record = SpawnLaunched::closed("u/implementer#0", *launch, "s", "fault", "");
+            record_launch(&progress, "run-1", &record).unwrap();
+        }
+        progress
+            .append(
+                &stream_of("run-1"),
+                ExpectedRevision::Any,
+                &[Event::new(
+                    crate::progress::TYPE_SPAWN_LAUNCHED,
+                    b"not a record".to_vec(),
+                )],
+            )
+            .unwrap();
+
+        assert_eq!(
+            next_launch(&progress, "run-1", "u/implementer#0", 6).unwrap(),
+            next
+        );
+    }
+
+    crate::test_cases! {
+        an_undecodable_record_alone_leaves_the_first_ordinal:
+            an_undecodable_launch_record_is_skipped(&[], 6);
+        an_undecodable_record_leaves_the_decoded_ones_deciding:
+            an_undecodable_launch_record_is_skipped(&[2], 3);
     }
 
     #[test]
