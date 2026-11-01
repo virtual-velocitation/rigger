@@ -291,6 +291,7 @@ pub enum AgentFailure {
     CloudCredentialError,
     BillingError,
     AccountOnHold,
+    VerificationRequired,
     ModelNotFound,
     InvalidRequest,
     MaxOutputTokens,
@@ -298,10 +299,75 @@ pub enum AgentFailure {
     Unknown,
 }
 
+/// What a failure category does to the run: spec 105's disposition table, the verbs its rows
+/// read. [`AgentFailure::row`] is the one table; the host reads it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Disposition {
+    /// The run holds on the first `api_retry` or `StopFailure` carrying the category.
+    Hold,
+    /// The session retries by itself; the run holds only when a session ends of the category.
+    Wait,
+    /// The category never holds: the error takes its spawn site's existing path.
+    Fault,
+}
+
+/// One row of the disposition table: what a category does to the run, the action a hold of it
+/// names and whether that action needs a person.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DispositionRow {
+    pub disposition: Disposition,
+    /// The `RunHeld.action` of a hold of this cause, empty for a category that never holds.
+    pub action: &'static str,
+    /// The `RunHeld.needs_person` of a hold of this cause.
+    pub needs_person: bool,
+}
+
+/// The cause of the hold three consecutive failed launches set: the API is failing with no
+/// category that names a person's action.
+pub const API_UNSTABLE: &str = "api-unstable";
+
+/// The action of a hold that clears without anyone: a wait-class category's and `api-unstable`'s.
+const RETRIES_BY_ITSELF: &str = "none, the run retries by itself";
+
+const WAITS: DispositionRow = DispositionRow {
+    disposition: Disposition::Wait,
+    action: RETRIES_BY_ITSELF,
+    needs_person: false,
+};
+
+const FAULTS: DispositionRow = DispositionRow {
+    disposition: Disposition::Fault,
+    action: "",
+    needs_person: false,
+};
+
+/// The row a hold of `action` reads, every category that holds on sight needing a person.
+const fn holds(action: &'static str) -> DispositionRow {
+    DispositionRow {
+        disposition: Disposition::Hold,
+        action,
+        needs_person: true,
+    }
+}
+
+/// The disposition table's row for a host hold's `cause`: `api-unstable`'s, or the category's.
+/// The `operator` cause has no row yet: a host never writes it, and `rigger hold`'s append
+/// carries its own reason as its action.
+pub fn cause_row(cause: &str) -> DispositionRow {
+    if cause == API_UNSTABLE {
+        return DispositionRow {
+            disposition: Disposition::Hold,
+            action: RETRIES_BY_ITSELF,
+            needs_person: false,
+        };
+    }
+    AgentFailure::from_category(cause).row()
+}
+
 impl AgentFailure {
     /// Every error category, in a fixed order: the exhaustive set [`from_category`] and the
     /// CLI's own `--class` validation both check membership against.
-    pub const CATEGORIES: [AgentFailure; 12] = [
+    pub const CATEGORIES: [AgentFailure; 13] = [
         AgentFailure::RateLimit,
         AgentFailure::Overloaded,
         AgentFailure::ServerError,
@@ -310,6 +376,7 @@ impl AgentFailure {
         AgentFailure::CloudCredentialError,
         AgentFailure::BillingError,
         AgentFailure::AccountOnHold,
+        AgentFailure::VerificationRequired,
         AgentFailure::ModelNotFound,
         AgentFailure::InvalidRequest,
         AgentFailure::MaxOutputTokens,
@@ -329,6 +396,7 @@ impl AgentFailure {
             AgentFailure::CloudCredentialError => "cloud_credential_error",
             AgentFailure::BillingError => "billing_error",
             AgentFailure::AccountOnHold => "account_on_hold",
+            AgentFailure::VerificationRequired => "verification_required",
             AgentFailure::ModelNotFound => "model_not_found",
             AgentFailure::InvalidRequest => "invalid_request",
             AgentFailure::MaxOutputTokens => "max_output_tokens",
@@ -349,6 +417,28 @@ impl AgentFailure {
             .find(|c| c.as_str() == category)
             .unwrap_or(AgentFailure::Unknown)
     }
+
+    /// This category's row of the disposition table (spec 105): THE one table, beside the enum
+    /// so a new category cannot compile without one.
+    pub fn row(self) -> DispositionRow {
+        match self {
+            AgentFailure::AuthenticationFailed | AgentFailure::OauthOrgNotAllowed => {
+                holds("run claude auth login")
+            }
+            AgentFailure::CloudCredentialError => holds("refresh the cloud provider's credentials"),
+            AgentFailure::BillingError => holds("fix the account's billing"),
+            AgentFailure::AccountOnHold => holds("resolve the account's hold"),
+            AgentFailure::VerificationRequired => holds("complete the account's verification"),
+            AgentFailure::ModelNotFound => holds(
+                "fix the agent's configured model, restart rigger run with --rebase-definition, \
+                 then run rigger release",
+            ),
+            AgentFailure::RateLimit | AgentFailure::Overloaded | AgentFailure::ServerError => WAITS,
+            AgentFailure::InvalidRequest
+            | AgentFailure::MaxOutputTokens
+            | AgentFailure::Unknown => FAULTS,
+        }
+    }
 }
 
 impl std::fmt::Display for AgentFailure {
@@ -360,15 +450,16 @@ impl std::fmt::Display for AgentFailure {
 /// A FAILURE HAS A CLASS (spec 104 criterion 5, Design): "a session that ends without a
 /// `result` takes its class from, in order: the record written by the `StopFailure` hook,
 /// ... the last `api_retry.error`, else `unknown`." PURE: both sources are already-resolved
-/// strings - the `StopFailure` record's class (`None` when no hook fired for this spawn,
-/// [`crate::progress::latest_stop_failure_class`]) and the last `system/api_retry` line's
-/// `error` THIS launch's own reader saw (`None` when none arrived) - so the priority order
-/// itself is testable with no store, no stream, no process.
+/// strings - the class the session itself reported (the `error` of the last assistant line,
+/// else the launch's `StopFailure` record, [`crate::progress::latest_stop_failure_class`];
+/// `None` when neither did) and the last `system/api_retry` line's `error` THIS launch's own
+/// reader saw (`None` when none arrived) - so the priority order itself is testable with no
+/// store, no stream, no process.
 pub fn classify_failure(
-    stop_failure_class: Option<&str>,
+    reported_class: Option<&str>,
     last_api_retry_category: Option<&str>,
 ) -> AgentFailure {
-    stop_failure_class
+    reported_class
         .or(last_api_retry_category)
         .map(AgentFailure::from_category)
         .unwrap_or(AgentFailure::Unknown)
@@ -422,6 +513,86 @@ pub fn strip_failure_marker(e: &Error) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const RETRIES: &str = "none, the run retries by itself";
+    const LOGIN: &str = "run claude auth login";
+    const MODEL: &str = "fix the agent's configured model, restart rigger run with \
+                         --rebase-definition, then run rigger release";
+
+    /// THE DISPOSITION TABLE (spec 105): every category, by its wire name, maps to the disposition,
+    /// the action and the need for a person decided for it, and a name no binary knows faults as
+    /// `unknown` does.
+    #[test]
+    fn every_category_maps_to_its_decided_disposition_action_and_person() {
+        use Disposition::{Fault, Hold, Wait};
+        let rows: [(&str, Disposition, &str, bool); 14] = [
+            ("rate_limit", Wait, RETRIES, false),
+            ("overloaded", Wait, RETRIES, false),
+            ("server_error", Wait, RETRIES, false),
+            ("authentication_failed", Hold, LOGIN, true),
+            ("oauth_org_not_allowed", Hold, LOGIN, true),
+            (
+                "cloud_credential_error",
+                Hold,
+                "refresh the cloud provider's credentials",
+                true,
+            ),
+            ("billing_error", Hold, "fix the account's billing", true),
+            ("account_on_hold", Hold, "resolve the account's hold", true),
+            (
+                "verification_required",
+                Hold,
+                "complete the account's verification",
+                true,
+            ),
+            ("model_not_found", Hold, MODEL, true),
+            ("invalid_request", Fault, "", false),
+            ("max_output_tokens", Fault, "", false),
+            ("unknown", Fault, "", false),
+            ("a_category_no_binary_knows", Fault, "", false),
+        ];
+        for (category, disposition, action, needs_person) in rows {
+            let row = DispositionRow {
+                disposition,
+                action,
+                needs_person,
+            };
+            assert_eq!(
+                AgentFailure::from_category(category).row(),
+                row,
+                "{category}"
+            );
+        }
+        for category in AgentFailure::CATEGORIES {
+            let named = rows.iter().filter(|row| row.0 == category.as_str());
+            assert_eq!(named.count(), 1, "{category} has one row here");
+        }
+    }
+
+    /// A hold's `cause` reads its row from the one table, `api-unstable`, which no category names,
+    /// included: it needs no person and the run retries by itself.
+    #[test]
+    fn a_holds_cause_reads_the_table_api_unstable_included() {
+        let rows = [
+            (
+                API_UNSTABLE,
+                DispositionRow {
+                    disposition: Disposition::Hold,
+                    action: RETRIES,
+                    needs_person: false,
+                },
+            ),
+            (
+                "authentication_failed",
+                AgentFailure::AuthenticationFailed.row(),
+            ),
+            ("rate_limit", AgentFailure::RateLimit.row()),
+        ];
+        for (cause, row) in rows {
+            assert_eq!(cause_row(cause), row, "{cause}");
+        }
+        assert_eq!(API_UNSTABLE, "api-unstable");
+    }
 
     /// The request a spawn parks is derived from its options and its agent alone: every field the
     /// options carry, the agent's model rung for the attempt, its fan-out-stripped tools and its

@@ -208,6 +208,7 @@ impl CriticHost<'_> {
             stop_grace: claude_code::STOP_GRACE,
             handed_env: self.store_env.clone(),
             beat_source: None,
+            hold_sink: None,
         };
         eprintln!(
             "{COMMAND}: {spec} (hash {hash}): critiquing with {} at attempt {attempt}",

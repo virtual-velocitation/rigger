@@ -5,9 +5,10 @@
 # of `$0`, the test left `claude-arms`: a shell `case` over `$sp`, the system prompt its
 # `--system-prompt-file` names. The arm runs in a subshell with the launch's arguments, its
 # first user message in `$first` and the directory in `$here`, so it may record any of them
-# there; what it prints is the session's answer. The stand-in reports the spawn's `rigger` server
-# connected, then a `result` carrying that answer as a JSON string. An arm that exits non-zero
-# ends the session with its status and no `result`. A checked-in executable fixture (never
+# there; what it prints is the session's answer, and what it prints to fd 3 reaches the host as raw
+# stream lines ahead of the rest. The stand-in reports the spawn's `rigger` server connected, then
+# a `result` carrying that answer as a JSON string. An arm that exits non-zero ends the session
+# with its status and no `result`. A checked-in executable fixture (never
 # written at test time), for the same reason as every sibling fixture here: no concurrent test's
 # fork+exec can inherit a write fd to it.
 here=$(dirname "$0")
@@ -23,6 +24,7 @@ for a in "$@"; do
     fi
 done
 IFS= read -r first
+exec 3>&1
 answer=$(. "$here/claude-arms")
 status=$?
 [ "$status" = 0 ] || exit "$status"

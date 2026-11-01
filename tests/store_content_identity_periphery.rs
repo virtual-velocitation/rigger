@@ -42,6 +42,7 @@ use rigger::eventstore::{
     ExpectedRevision, Filter, Position, Revision, Subscription,
 };
 use rigger::ingest::folding_into;
+use rigger::run_store::HoldSighting;
 
 // ---------------------------------------------------------------------------
 // Doubles and fixtures
@@ -105,10 +106,12 @@ impl Projection for CapturingProjection {
 ///
 /// It answers appends only. Its reads return an error rather than an empty success,
 /// because a silent empty read would let a test pass by folding nothing for the wrong
-/// reason; nothing on the paths under test reads through it. The one seam that MUST read
-/// before it appends (`record_result_if_absent` reads the stream to decide whether a
-/// result already exists) is served by [`PortDouble::over_an_empty_stream`], which
-/// answers that one read with an empty stream and nothing else.
+/// reason; a path that reads through it stops on that error, which is how the mint's failed
+/// read is pinned. The seams that MUST read before they append to reach the write under test
+/// (`record_result_if_absent` reads the stream to decide whether a result already exists,
+/// `start_fresh` to find the hold the run it ends leaves open) are served by
+/// [`PortDouble::over_an_empty_stream`], which answers those reads with an empty stream and
+/// nothing else.
 struct PortDouble {
     report: Vec<Option<Position>>,
     handed: AtomicUsize,
@@ -607,7 +610,7 @@ fn the_park_and_compare_and_append_seams_refuse_a_store_that_wrote_nothing() {
 fn no_public_run_entry_reports_a_boundary_the_store_never_wrote() {
     let criteria = ["build the thing".to_string()];
 
-    let silent = PortDouble::new(vec![None]);
+    let silent = PortDouble::over_an_empty_stream(vec![None]);
     let message = rigger::run_store::start_fresh(&silent, &criteria, "hash-A", "base-sha", "", "")
         .expect_err("a run whose boundary was never written has not started")
         .to_string();
@@ -615,6 +618,20 @@ fn no_public_run_entry_reports_a_boundary_the_store_never_wrote() {
         message.contains("nothing"),
         "the mint reports the lost write rather than handing back a run id for a boundary \
          the log does not hold: {message}"
+    );
+
+    // A mint reads the run first, for the hold it ends: one that cannot read stops on that
+    // error and writes nothing, since a boundary minted over an unread hold leaves it open.
+    let unreadable = PortDouble::new(vec![None]);
+    let message =
+        rigger::run_store::start_fresh(&unreadable, &criteria, "hash-A", "base-sha", "", "")
+            .expect_err("a mint that cannot see a hold has not ended it")
+            .to_string();
+    assert_eq!(message, "event store: the port double answers appends only");
+    assert_eq!(
+        unreadable.handed.load(Ordering::SeqCst),
+        0,
+        "the read's failure stops the mint before its append"
     );
 
     // The same answer through the entry the CLI actually calls, which mints over an empty
@@ -654,6 +671,76 @@ fn no_public_run_entry_reports_a_boundary_the_store_never_wrote() {
         "the re-pin reports the lost write rather than announcing a rebase the log does not \
          record: {message}"
     );
+}
+
+/// THE HOLD WRITERS, on a store that loses the write. Each decides from the hold it reads, so
+/// the port replays a run the module itself minted and held, then writes nothing.
+///
+/// The compare-and-append behind them already answers `Ok` for a write it decided against, the
+/// same absence a lost write would collapse into, so a lost hold must surface as a failure
+/// naming the event. The mint's release is the sharper case: it stands ahead of the boundary, so
+/// a lost one stops the mint and the store is handed no `RunStarted`.
+#[test]
+fn no_hold_writer_reports_a_hold_or_a_release_the_store_never_wrote() {
+    const SIGHTED: HoldSighting = HoldSighting {
+        cause: "billing_error",
+        detail: "",
+        model: "",
+    };
+    struct Case {
+        name: &'static str,
+        replayed: Vec<Event>,
+        write: fn(&PortDouble) -> Result<(), StoreError>,
+        lost: &'static str,
+    }
+
+    let live = Store::open(":memory:").expect("an in-memory store opens");
+    let replay = || {
+        live.read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
+            .expect("the run reads back")
+    };
+    rigger::run_store::start_fresh(&live, &[], "hash-A", "base-sha", "", "")
+        .expect("a real run mints");
+    let unheld = replay();
+    rigger::run_store::record_hold_sighting(&live, &SIGHTED).expect("a real hold lands");
+    let held = replay();
+
+    let cases = [
+        Case {
+            name: "a sighting with no hold open",
+            replayed: unheld,
+            write: |store| rigger::run_store::record_hold_sighting(store, &SIGHTED),
+            lost: "event store: reported writing nothing for RunHeld",
+        },
+        Case {
+            name: "a done run's release",
+            replayed: held.clone(),
+            write: |store| rigger::run_store::release_hold(store),
+            lost: "event store: reported writing nothing for RunReleased",
+        },
+        Case {
+            name: "a mint's release",
+            replayed: held,
+            write: |store| {
+                rigger::run_store::start_fresh(store, &[], "hash-B", "base-sha", "", "").map(drop)
+            },
+            lost: "event store: reported writing nothing for RunReleased",
+        },
+    ];
+    for case in cases {
+        let name = case.name;
+        let lossy = PortDouble::over_a_stream(case.replayed, vec![None]);
+        let message = (case.write)(&lossy).expect_err(name).to_string();
+        assert_eq!(
+            message, case.lost,
+            "{name}: the writer reports the lost write"
+        );
+        assert_eq!(
+            lossy.handed.load(Ordering::SeqCst),
+            1,
+            "{name}: nothing follows the lost write"
+        );
+    }
 }
 
 /// A driver that must never be reached. The canary opens its batch with a MARKER before it

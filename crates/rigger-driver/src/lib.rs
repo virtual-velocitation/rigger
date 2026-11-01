@@ -28,7 +28,7 @@ use rigger_domain::{agent, failure, progress, run};
 #[cfg(any(feature = "store", not(feature = "core")))]
 use rigger_process::{reap, subprocess};
 #[cfg(any(feature = "store", not(feature = "core")))]
-use rigger_store_sqlite::{progress_store, spawn_store};
+use rigger_store_sqlite::{progress_store, run_store, spawn_store};
 #[cfg(any(feature = "store", not(feature = "core")))]
 mod eventstore {
     /// The append-only double the seam tests share, defined once with the fixtures.
@@ -49,8 +49,6 @@ use rigger_domain::{ledger, test_cases};
 // `rigger-root` dev-dependency).
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 use rigger_root::{conductor, config, contextgraph, gate};
-#[cfg(all(test, any(feature = "store", not(feature = "core"))))]
-use rigger_store_sqlite::run_store;
 
 /// The fixtures an inline `#[cfg(test)]` module shares with the root crate's tests, compiled
 /// here from the same files. They name the crate as `rigger::...`, which

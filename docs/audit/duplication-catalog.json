@@ -19,7 +19,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-16bee89f0032",
+    "id": "dup-12daf46450fd",
     "classification": "near",
     "sites": [
       {
@@ -168,6 +168,16 @@
         "content_hash": "6fd90a8c2eed6379"
       },
       {
+        "file": "tests/cli.rs",
+        "name": "fire_stop_failure_hook",
+        "content_hash": "6fd90a8c2eed6379"
+      },
+      {
+        "file": "tests/cli.rs",
+        "name": "rendezvous",
+        "content_hash": "6fd90a8c2eed6379"
+      },
+      {
         "file": "tests/common/cli.rs",
         "name": "emit_refused",
         "content_hash": "b0b4170272f04fb7"
@@ -203,7 +213,7 @@
         "content_hash": "6fd90a8c2eed6379"
       }
     ],
-    "proposed_home": "a new shared module (sites span 22 files: crates/rigger-conductor/src/blast_radius_eval.rs, crates/rigger-conductor/src/conductor.rs, crates/rigger-domain/src/contextgraph.rs, crates/rigger-domain/src/instructions.rs, crates/rigger-domain/src/review.rs, crates/rigger-domain/src/spawn.rs, crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs, crates/rigger-grounder/src/grounder/mod.rs, crates/rigger-grounder/src/grounder/workflowdef.rs, crates/rigger-grounder/src/ingest.rs, crates/rigger-store-sqlite/src/eventstore/namespace.rs, crates/rigger-worktree-git/src/worktree.rs, src/cli/hygiene.rs, src/cli/mod.rs, src/cli/setup.rs, tests/canary_model_drift_periphery.rs, tests/common/cli.rs, tests/common/fixtures/fold.rs, tests/common/fixtures/instructions.rs, tests/halted_spawn_wip_recovery_periphery.rs, tests/native_driver_pipelining_behavior.rs, tests/regate_landed_on_resume_periphery.rs)",
+    "proposed_home": "a new shared module (sites span 23 files: crates/rigger-conductor/src/blast_radius_eval.rs, crates/rigger-conductor/src/conductor.rs, crates/rigger-domain/src/contextgraph.rs, crates/rigger-domain/src/instructions.rs, crates/rigger-domain/src/review.rs, crates/rigger-domain/src/spawn.rs, crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs, crates/rigger-grounder/src/grounder/mod.rs, crates/rigger-grounder/src/grounder/workflowdef.rs, crates/rigger-grounder/src/ingest.rs, crates/rigger-store-sqlite/src/eventstore/namespace.rs, crates/rigger-worktree-git/src/worktree.rs, src/cli/hygiene.rs, src/cli/mod.rs, src/cli/setup.rs, tests/canary_model_drift_periphery.rs, tests/cli.rs, tests/common/cli.rs, tests/common/fixtures/fold.rs, tests/common/fixtures/instructions.rs, tests/halted_spawn_wip_recovery_periphery.rs, tests/native_driver_pipelining_behavior.rs, tests/regate_landed_on_resume_periphery.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
@@ -311,7 +321,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-7de99e9fe7d9",
+    "id": "dup-b7331f15dec2",
     "classification": "near",
     "sites": [
       {
@@ -370,6 +380,11 @@
         "content_hash": "5d23ae9ae3e76aee"
       },
       {
+        "file": "tests/cli.rs",
+        "name": "api_error_session",
+        "content_hash": "5d23ae9ae3e76aee"
+      },
+      {
         "file": "tests/common/fixtures/config.rs",
         "name": "separator_refusal",
         "content_hash": "7963312db697b9f4"
@@ -395,7 +410,7 @@
         "content_hash": "5d23ae9ae3e76aee"
       }
     ],
-    "proposed_home": "a new shared module (sites span 12 files: crates/rigger-conductor/src/conductor.rs, crates/rigger-domain/src/contextgraph/query.rs, crates/rigger-domain/src/review.rs, crates/rigger-driver/src/driver/mod.rs, crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs, crates/rigger-store-sqlite/src/eventstore/kurrentdb.rs, crates/rigger-store-sqlite/src/spawn_store.rs, tests/common/fixtures/config.rs, tests/common/fixtures/plan_critique.rs, tests/compaction_generations_periphery.rs, tests/new_run_critique_refusal_periphery.rs, tests/no_os_kill_audit.rs)",
+    "proposed_home": "a new shared module (sites span 13 files: crates/rigger-conductor/src/conductor.rs, crates/rigger-domain/src/contextgraph/query.rs, crates/rigger-domain/src/review.rs, crates/rigger-driver/src/driver/mod.rs, crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs, crates/rigger-store-sqlite/src/eventstore/kurrentdb.rs, crates/rigger-store-sqlite/src/spawn_store.rs, tests/cli.rs, tests/common/fixtures/config.rs, tests/common/fixtures/plan_critique.rs, tests/compaction_generations_periphery.rs, tests/new_run_critique_refusal_periphery.rs, tests/no_os_kill_audit.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
@@ -486,7 +501,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-f66d1a9d9447",
+    "id": "dup-5a1a4676a4b9",
     "classification": "semantic",
     "sites": [
       {
@@ -541,6 +556,21 @@
       },
       {
         "file": "tests/cli.rs",
+        "name": "api_error_worker_arm",
+        "content_hash": "de027a6ad562c5b4"
+      },
+      {
+        "file": "tests/cli.rs",
+        "name": "api_error_session",
+        "content_hash": "5d23ae9ae3e76aee"
+      },
+      {
+        "file": "tests/cli.rs",
+        "name": "an_is_error_result_reruns_uncharged_and_holds_as_its_class_says",
+        "content_hash": "b34bc30b812e9dcb"
+      },
+      {
+        "file": "tests/cli.rs",
         "name": "run_workflow_prints_the_budget_halt_reason_on_stderr_when_its_conductor_returns",
         "content_hash": "c0f6e3d647f2a511"
       },
@@ -556,7 +586,7 @@
       }
     ],
     "proposed_home": "one error-shaping helper module",
-    "note": "mandatory sweep: error-shaping helper functions - 13 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: error-shaping helper functions - 16 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {
@@ -5217,13 +5247,13 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-2a5626cb9627",
+    "id": "dup-74b161ef523c",
     "classification": "near",
     "sites": [
       {
         "file": "crates/rigger-domain/src/agent.rs",
         "name": "as_str",
-        "content_hash": "3824b17d87c85522"
+        "content_hash": "49ddc3a61801dabc"
       },
       {
         "file": "crates/rigger-domain/src/spec.rs",

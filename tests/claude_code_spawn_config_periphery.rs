@@ -69,6 +69,7 @@ fn launch_handing(
         stop_grace: std::time::Duration::from_secs(30),
         handed_env,
         beat_source: None,
+        hold_sink: None,
     };
     let mut opts = implementer_opts(SPAWN_ID);
     opts.dir = dir.to_string_lossy().into_owned();

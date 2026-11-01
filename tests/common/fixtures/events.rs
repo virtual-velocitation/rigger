@@ -24,6 +24,9 @@ pub fn ev_at(pos: u64, type_: &str, payload: serde_json::Value) -> Event {
     e
 }
 
+/// A live `RunHeld`'s action on a category the session retries by itself.
+pub const RETRIES_BY_ITSELF: &str = "none, the run retries by itself";
+
 /// THE REFUSAL ORACLE, its reading half: the type a refused append names and the text the
 /// store says of it, or a panic naming what the append answered in its place.
 pub fn refused<T: std::fmt::Debug>(answer: Result<T, Error>) -> (String, String) {
@@ -592,6 +595,49 @@ impl EventStore for FailAppendContaining<'_> {
             )));
         }
         self.inner.append(stream, expected, events)
+    }
+    crate::delegate_event_store_reads!();
+}
+
+/// A store that runs `land` once, against `inner`, right behind the first append of a batch
+/// holding an event of type `after` - the seam a test needs for a write landing between two
+/// appends of one call, where [`ReadCountingStore::after_call`] sees reads alone.
+pub struct LandsBehind<'a> {
+    pub inner: &'a dyn EventStore,
+    pub after: &'static str,
+    land: std::sync::Mutex<Option<AfterCall<'a>>>,
+}
+
+impl<'a> LandsBehind<'a> {
+    /// [`LandsBehind`] over `inner`, running `land` behind the first `after` append.
+    pub fn new(
+        inner: &'a dyn EventStore,
+        after: &'static str,
+        land: impl FnOnce(&dyn EventStore) + Send + 'a,
+    ) -> Self {
+        LandsBehind {
+            inner,
+            after,
+            land: std::sync::Mutex::new(Some(Box::new(land))),
+        }
+    }
+}
+
+impl EventStore for LandsBehind<'_> {
+    fn append(
+        &self,
+        stream: &str,
+        expected: ExpectedRevision,
+        events: &[Event],
+    ) -> Result<Appended, Error> {
+        let appended = self.inner.append(stream, expected, events)?;
+        if events.iter().any(|e| e.type_ == self.after) {
+            let land = self.land.lock().unwrap().take();
+            if let Some(land) = land {
+                land(self.inner);
+            }
+        }
+        Ok(appended)
     }
     crate::delegate_event_store_reads!();
 }

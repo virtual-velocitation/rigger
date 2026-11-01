@@ -450,7 +450,7 @@
     "reason": "Five predicates that each test membership in a different fixed vocabulary (intent-doc kinds, label-doc kinds, derived-index event types, Rust standard-library roots, Rust keywords); only the `matches!`/slice-contains shape is shared."
   },
   {
-    "id": "dup-2a5626cb9627",
+    "id": "dup-74b161ef523c",
     "disposition": "not-a-duplicate",
     "reason": "`as_str` and `name` map two different enums to their own wire strings; only the exhaustive `match` shape is shared."
   },
@@ -855,9 +855,9 @@
     "reason": "Builder setters for two different declarations of the content-identity policy (how a key names its generation versus how a recording names its fact); the shared token shape is a one-field assignment."
   },
   {
-    "id": "dup-16bee89f0032",
+    "id": "dup-12daf46450fd",
     "disposition": "not-a-duplicate",
-    "reason": "One-line key, path, message and harness builders for different concerns (deferred-gate verdict and failure keys, review protocol text, namespace prefixes, workflow node ids, a critique run's unit name, a path's `gc` identity, retired-grounder error, the not-folded report line, the owed-rebuild refusal, the live-run refusals of `reset --derived` and of a new rebuild in `rigger setup`, a rebuild's shadow and pruned-copy file names, the edge text expression after a target column's first `::`, an id's file half before it, a staged reference row's liveness term, the proof rows' selection by one key column, the driver test's worker-prompts harness completed by its check, the blast-radius eval's code-span wrapper, a planted refusing trigger's text, a built-in instruction entry's checked-in source path, an operator instruction file's path as the instruction reports name it, the appender's write-lock-held and short-catch-up cause texts for a ceiling, the emit surface's refusal sentence as the periphery expects it); they share only the `format!` shape."
+    "reason": "One-line key, path, message and harness builders for different concerns (deferred-gate verdict and failure keys, review protocol text, namespace prefixes, workflow node ids, a critique run's unit name, a path's `gc` identity, retired-grounder error, the not-folded report line, the owed-rebuild refusal, the live-run refusals of `reset --derived` and of a new rebuild in `rigger setup`, a rebuild's shadow and pruned-copy file names, the edge text expression after a target column's first `::`, an id's file half before it, a staged reference row's liveness term, the proof rows' selection by one key column, the driver test's worker-prompts harness completed by its check, the blast-radius eval's code-span wrapper, a planted refusing trigger's text, a built-in instruction entry's checked-in source path, an operator instruction file's path as the instruction reports name it, the appender's write-lock-held and short-catch-up cause texts for a ceiling, the emit surface's refusal sentence as the periphery expects it, the fake host's shell fragments that fire a launch's `StopFailure` hook and that meet a wave's sessions at one gate); they share only the `format!` shape."
   },
   {
     "id": "dup-db3e199dd312",
@@ -905,9 +905,9 @@
     "reason": "Two port methods of the counting store double, each recording its own `CountedRead` variant before forwarding its own inner call; the shared work (recording, running the hooks waiting on the call) is already the one `record`/`returned` pair both call."
   },
   {
-    "id": "dup-7de99e9fe7d9",
+    "id": "dup-b7331f15dec2",
     "disposition": "not-a-duplicate",
-    "reason": "One-line `format!` compositions of different keys and labels (adoption provenance, quarantine record, code-entity id, a KurrentDB group stream name, spawn-store subject, audit join, the closed-unit report line a `reset --runs` periphery case expects, the spec-critique prompt joining its fixed sections to the spec text, the no-critic line a run-start refusal periphery case expects, the halt a spec-defect stop's tests expect, the `<file>::` id-range SQL predicate the graph store's file-range readers embed, the history prune's superseded-edges statement its count and its delete each build over their own verb, the module-declaration predicate the label degree and the relabel debt read, the change-only retarget of a `refs` row both settlements read, the refusal the panel rule tables expect for an agent id holding `@`, the live-progress frame both process hosts close a task with) over different inputs."
+    "reason": "One-line `format!` compositions of different keys and labels (adoption provenance, quarantine record, code-entity id, a KurrentDB group stream name, spawn-store subject, audit join, the closed-unit report line a `reset --runs` periphery case expects, the spec-critique prompt joining its fixed sections to the spec text, the no-critic line a run-start refusal periphery case expects, the halt a spec-defect stop's tests expect, the `<file>::` id-range SQL predicate the graph store's file-range readers embed, the history prune's superseded-edges statement its count and its delete each build over their own verb, the module-declaration predicate the label degree and the relabel debt read, the change-only retarget of a `refs` row both settlements read, the refusal the panel rule tables expect for an agent id holding `@`, the live-progress frame both process hosts close a task with, the fake host's session that reports a failed result and ends only on its input's close) over different inputs."
   },
   {
     "id": "dup-da45cd3da239",

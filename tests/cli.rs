@@ -6944,36 +6944,53 @@ fn run_carries_each_launchs_write_guard_and_stop_failure_hooks() {
     }
 }
 
-/// An arm of [`install_fake_claude`] standing in for the real host ending the first `Do the unit.`
-/// turn on an API error, from the session's own working directory and environment: the launch
-/// records its argv and working directory, asks the server its `--mcp-config` names for the
-/// spawn's scratch, runs through a shell the `StopFailure` command its `--settings` names for
-/// `max_output_tokens`, the hook's payload on stdin, and ends the session with no `result`. A
-/// later launch completes.
-const API_ERROR_WORKER_ARM: &str = r#"  *"Do the unit."*)
-    if [ -e "$here/hook-status" ]; then
-        echo "pub fn work() {}" > work.rs
-        exit 0
-    fi
-    printf '%s\0' "$@" > "$here/argv"
-    pwd -P > "$here/cwd"
-    for word in "$@"; do
+/// The shell reading the launch's `--mcp-config` and `--settings` off its arguments, into `$config`
+/// and `$settings`.
+const READ_LAUNCH_CONFIG: &str = r#"    for word in "$@"; do
         case "$flag" in
             --mcp-config) config=$word ;;
             --settings) settings=$word ;;
         esac
         flag=$word
     done
-    server=$(printf '%s\n' "$config" | sed -n 's/.*"command": "\([^"]*\)".*/\1/p')
-    printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"rigger_scratch","arguments":{}}}' |
-        "$server" mcp --spawn "$RIGGER_SPAWN" > "$here/scratch-response"
-    hook=$(printf '%s\n' "$settings" | sed -n 's/.*"command": "\([^"]*max_output_tokens[^"]*\)".*/\1/p')
-    printf '%s' '{"hook_event_name":"StopFailure","error":"max_output_tokens"}' |
+"#;
+
+/// The shell running, through a shell, the `StopFailure` command `$settings` names for `category`,
+/// the hook's payload on stdin, leaving what it printed and its status in the fake's directory.
+fn fire_stop_failure_hook(category: &str) -> String {
+    format!(
+        r#"    hook=$(printf '%s\n' "$settings" | sed -n 's/.*"command": "\([^"]*{category}[^"]*\)".*/\1/p')
+    printf '%s' '{{"hook_event_name":"StopFailure","error":"{category}"}}' |
         sh -c "$hook" > "$here/hook-out" 2> "$here/hook-err"
     echo $? > "$here/hook-status"
-    exit 1
+"#
+    )
+}
+
+/// An arm of [`install_fake_claude`] standing in for the real host ending the first `Do the unit.`
+/// turn on an API error, from the session's own working directory and environment: the launch
+/// records its argv and working directory, asks the server its `--mcp-config` names for the
+/// spawn's scratch, runs through a shell the `StopFailure` command its `--settings` names for
+/// `max_output_tokens`, the hook's payload on stdin, and ends the session with no `result`. A
+/// later launch completes.
+fn api_error_worker_arm() -> String {
+    let hook = fire_stop_failure_hook("max_output_tokens");
+    format!(
+        r#"  *"Do the unit."*)
+    if [ -e "$here/hook-status" ]; then
+        echo "pub fn work() {{}}" > work.rs
+        exit 0
+    fi
+    printf '%s\0' "$@" > "$here/argv"
+    pwd -P > "$here/cwd"
+{READ_LAUNCH_CONFIG}    server=$(printf '%s\n' "$config" | sed -n 's/.*"command": "\([^"]*\)".*/\1/p')
+    printf '%s\n' '{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"rigger_scratch","arguments":{{}}}}}}' |
+        "$server" mcp --spawn "$RIGGER_SPAWN" > "$here/scratch-response"
+{hook}    exit 1
     ;;
-"#;
+"#
+    )
+}
 
 /// Spec 105's hook injection from inside the session: given a launch, when its session runs the
 /// `StopFailure` command the launch's `--settings` handed it, through a shell from its own working
@@ -7028,7 +7045,7 @@ fn a_session_fires_its_injected_stop_failure_hook_and_the_launch_closes_under_th
             );
             (default.expect("a repository keys a root"), PathBuf::new())
         };
-        let (fake, path_env) = install_fake_claude(API_ERROR_WORKER_ARM);
+        let (fake, path_env) = install_fake_claude(&api_error_worker_arm());
         let (out, err, _) = run_rigger_envs(
             &root,
             &["run"],
@@ -7116,6 +7133,632 @@ fn a_session_fires_its_injected_stop_failure_hook_and_the_launch_closes_under_th
             "{name}: the launch's guard admits the scratch its server names"
         );
     }
+}
+
+/// Seed `root`'s run stream with a run the workflow's own launch adopts and, when `by` names one, a
+/// hold by that writer, the state a run adopts or a mint finds.
+fn seed_a_run_held_by(root: &Path, by: Option<&str>) {
+    seed_a_campaign_held_by(root, &[], by);
+}
+
+/// [`seed_a_run_held_by`] on a run of `criteria`: any but the workflow's own make the next launch
+/// a new campaign, which mints.
+fn seed_a_campaign_held_by(root: &Path, criteria: &[String], by: Option<&str>) {
+    use rigger::eventstore::ExpectedRevision;
+    common::cli::with_run_store(root, |store| {
+        rigger::run_store::ensure_started(store, criteria).unwrap();
+        if let Some(by) = by {
+            let held = common::cli::held_event("rate_limit", by);
+            store
+                .append(rigger::conductor::STREAM, ExpectedRevision::Any, &[held])
+                .unwrap();
+        }
+    });
+}
+
+/// Each event of `root`'s run log past `head` that the graph has not folded: a seed's events stand
+/// behind `head`, written through a bare store.
+fn unfolded_past(root: &Path, head: u64) -> Vec<(u64, String)> {
+    let mut unfolded = common::cli::unfolded_run_events(root);
+    unfolded.retain(|(position, _)| *position > head);
+    unfolded
+}
+
+/// Every `RunHeld` on `root`'s run stream, oldest first.
+fn run_holds(root: &Path) -> Vec<rigger::run::RunHeld> {
+    common::cli::run_payloads(root, rigger::run::TYPE_RUN_HELD)
+        .into_iter()
+        .map(|body| serde_json::from_value(body).unwrap())
+        .collect()
+}
+
+/// The `by` of every `RunReleased` on `root`'s run stream, oldest first.
+fn run_releases(root: &Path) -> Vec<String> {
+    common::cli::run_payloads(root, rigger::run::TYPE_RUN_RELEASED)
+        .into_iter()
+        .map(|body| body["by"].as_str().unwrap().to_string())
+        .collect()
+}
+
+/// Every launch that closed on `root`'s run: its spawn, how it ended and its class.
+fn closed_launches(root: &Path) -> Vec<(String, String, Option<String>)> {
+    common::cli::recorded_progress::<rigger::progress::SpawnLaunched>(root)
+        .into_iter()
+        .filter_map(|l| l.ended.map(|ended| (l.spawn, ended, l.class)))
+        .collect()
+}
+
+/// A hold of `cause` the host appended for a launch of [`REVIEWLESS_GIT_UNIT_WORKFLOW`]'s worker.
+fn worker_hold(
+    cause: &str,
+    detail: &str,
+    action: &str,
+    needs_person: bool,
+) -> rigger::run::RunHeld {
+    rigger::run::RunHeld {
+        cause: cause.to_string(),
+        detail: detail.to_string(),
+        action: action.to_string(),
+        needs_person,
+        by: rigger::run::HOLD_BY_HOST.to_string(),
+        model: "sonnet".to_string(),
+    }
+}
+
+/// An arm of [`install_fake_claude`] for the `Do the unit.` workers: the session runs `opening`,
+/// sights each of `categories` on its own `api_retry` line, then answers with the change a merging
+/// stage lands.
+fn sighting_worker_arm(opening: &str, categories: &[&str]) -> String {
+    let sightings: String = categories
+        .iter()
+        .map(|category| {
+            format!(
+                "    printf '%s\\n' '{{\"type\":\"system\",\"subtype\":\"api_retry\",\"attempt\":1,\
+                 \"max_retries\":10,\"retry_delay_ms\":1,\"error_status\":500,\
+                 \"error\":\"{category}\"}}' >&3\n"
+            )
+        })
+        .collect();
+    format!(
+        "  *\"Do the unit.\"*)\n{opening}{sightings}    echo \"pub fn work() {{}}\" > work.rs\n    ;;\n"
+    )
+}
+
+/// The shell of a session that ends on an API error as the real host does: it runs `reporting`,
+/// prints an `is_error` result, exits only when the host closes its input, running `at_close`
+/// then, and leaves no result of its own.
+fn api_error_session(reporting: &str, at_close: &str) -> String {
+    format!(
+        r#"{reporting}    printf '%s\n' '{{"type":"result","subtype":"success","is_error":true,"num_turns":1,"session_id":"arms","result":"the API failed"}}' >&3
+    while IFS= read -r _line; do :; done
+{at_close}    exit 1
+"#
+    )
+}
+
+/// [`api_error_session`] printing `category` on its `assistant` line.
+fn classed_session(category: &str) -> String {
+    let assistant = format!(
+        r#"    printf '%s\n' '{{"type":"assistant","message":{{"content":[]}},"error":"{category}"}}' >&3
+"#
+    );
+    api_error_session(&assistant, "")
+}
+
+/// [`api_error_session`] with no line to class it: `category` lands only as the record of the
+/// `StopFailure` hook the session fires behind its input's close, so only a host classing once the
+/// child has exited reads it.
+fn classed_behind_the_close_session(category: &str) -> String {
+    api_error_session(READ_LAUNCH_CONFIG, &fire_stop_failure_hook(category))
+}
+
+/// Spec 105's THE DISPOSITION TABLE through `rigger run`: given a run, when a session sights a
+/// category, then the first hold-class sighting holds the run, naming its cause, action and
+/// model, a repeat appends nothing, a differing person-needing category appends one, a wait-class
+/// retry appends none and neither does any sighting on an operator hold; and a done run releases
+/// whatever hold it ends with, an operator hold included, once.
+#[cfg(unix)]
+#[test]
+fn a_sighting_holds_the_run_and_a_done_run_releases_the_hold() {
+    struct Case {
+        name: &'static str,
+        seeded: Option<&'static str>,
+        sighted: Vec<&'static str>,
+        holds: Vec<rigger::run::RunHeld>,
+        releases: Vec<&'static str>,
+    }
+    let login = "authentication_failed";
+    let cases = [
+        Case {
+            name: "a first sighting, a repeat and a differing person-needing category",
+            seeded: None,
+            sighted: vec![login, login, "billing_error"],
+            holds: vec![
+                worker_hold(login, login, "run claude auth login", true),
+                worker_hold(
+                    "billing_error",
+                    "billing_error",
+                    "fix the account's billing",
+                    true,
+                ),
+            ],
+            releases: vec!["host"],
+        },
+        Case {
+            name: "a wait-class retry",
+            seeded: None,
+            sighted: vec!["rate_limit"],
+            holds: vec![],
+            releases: vec![],
+        },
+        Case {
+            name: "a sighting on an operator hold",
+            seeded: Some("operator"),
+            sighted: vec![login],
+            holds: vec![],
+            releases: vec!["host"],
+        },
+    ];
+    for case in cases {
+        let name = case.name;
+        let dir = temp_git_project_with_commit();
+        let root = dir.path();
+        write_workflow_fixture(root, &REVIEWLESS_GIT_UNIT_WORKFLOW);
+        seed_a_run_held_by(root, case.seeded);
+        let seed = common::cli::run_log_head(root);
+        let before = run_holds(root).len();
+        let scratch = tempfile::tempdir().unwrap();
+        let arm = sighting_worker_arm("", &case.sighted);
+        let (out, err, ok, _fake) = run_on_arms(root, &["run"], scratch.path(), &arm);
+        assert!(ok, "{name}: the run exits 0; stderr: {err}\nstdout: {out}");
+        assert_eq!(
+            out.lines().nth(2).unwrap(),
+            "done: every unit integrated",
+            "{name}: how the run ended; stderr: {err}"
+        );
+        assert_eq!(run_holds(root)[before..], case.holds, "{name}: the holds");
+        assert_eq!(run_releases(root), case.releases, "{name}: the releases");
+        assert_eq!(
+            unfolded_past(root, seed),
+            Vec::new(),
+            "{name}: every hold writer folds what it appends"
+        );
+    }
+}
+
+/// Spec 105's class at a session's ending, through `rigger run`: given a fake `claude` that exits
+/// only on its input's close, when its session ends on an `is_error` result, then the launch takes
+/// its class after the child exits, a classed fault at the implementer reruns uncharged under the
+/// infra limit, the rerun closes `completed`, and the run holds as the class's row says.
+#[cfg(unix)]
+#[test]
+fn an_is_error_result_reruns_uncharged_and_holds_as_its_class_says() {
+    struct Case {
+        category: &'static str,
+        session: fn(&str) -> String,
+        holds: Vec<rigger::run::RunHeld>,
+        releases: Vec<&'static str>,
+    }
+    let retries = common::fixtures::RETRIES_BY_ITSELF;
+    let cases = [
+        Case {
+            category: "invalid_request",
+            session: classed_session,
+            holds: vec![],
+            releases: vec![],
+        },
+        Case {
+            category: "rate_limit",
+            session: classed_session,
+            holds: vec![worker_hold("rate_limit", "", retries, false)],
+            releases: vec!["host"],
+        },
+        Case {
+            category: "billing_error",
+            session: classed_behind_the_close_session,
+            holds: vec![worker_hold(
+                "billing_error",
+                "",
+                "fix the account's billing",
+                true,
+            )],
+            releases: vec!["host"],
+        },
+    ];
+    for case in cases {
+        let category = case.category;
+        let dir = temp_git_project_with_commit();
+        let root = dir.path();
+        write_workflow_fixture(root, &REVIEWLESS_GIT_UNIT_WORKFLOW);
+        let scratch = tempfile::tempdir().unwrap();
+        let session = (case.session)(category);
+        let arm = format!(
+            r#"  *"Do the unit."*)
+    if [ -e "$here/faulted" ]; then
+        echo "pub fn work() {{}}" > work.rs
+        exit 0
+    fi
+    : > "$here/faulted"
+{session}    ;;
+"#
+        );
+        let (out, err, ok, _fake) = run_on_arms(root, &["run"], scratch.path(), &arm);
+        assert!(
+            ok,
+            "{category}: the run exits 0; stderr: {err}\nstdout: {out}"
+        );
+        assert_eq!(
+            out.lines().nth(2).unwrap(),
+            "done: every unit integrated",
+            "{category}: how the run ended; stderr: {err}"
+        );
+        assert_eq!(
+            closed_launches(root),
+            [
+                (
+                    "solo/implementer#0".to_string(),
+                    "fault".to_string(),
+                    Some(category.to_string())
+                ),
+                (
+                    "solo/implementer#0~retry4".to_string(),
+                    "completed".to_string(),
+                    None
+                ),
+            ],
+            "{category}: the closes; stderr: {err}"
+        );
+        assert_eq!(
+            common::cli::run_payloads(root, "UnitFailed"),
+            Vec::<serde_json::Value>::new(),
+            "{category}: the unit is charged nothing"
+        );
+        assert_eq!(run_holds(root), case.holds, "{category}: the holds");
+        assert_eq!(
+            run_releases(root),
+            case.releases,
+            "{category}: the releases"
+        );
+    }
+}
+
+/// [`REVIEWLESS_GIT_UNIT_WORKFLOW`] whose worker is stopped after a second of stream silence.
+const SILENCE_BOUNDED_WORKFLOW: WorkflowFixture = WorkflowFixture {
+    worker: "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\nmax_wall_clock: 1\n---\nDo the unit.\n",
+    body: REVIEWLESS_GIT_UNIT_WORKFLOW.body,
+};
+
+/// Spec 105: given a session that faults or goes silent on every launch, when `rigger run` reruns
+/// it, then the third consecutive fault or stream-silence stop holds the run `api-unstable` before
+/// the host returns, the launch past the infra limit halts the run naming its cause, and a run that
+/// is not done leaves the hold.
+#[cfg(unix)]
+#[test]
+fn a_launch_past_the_infra_limit_halts_naming_its_cause_and_leaves_the_hold() {
+    struct Case {
+        name: &'static str,
+        workflow: &'static WorkflowFixture,
+        session: String,
+        /// Each close: how it ended and its class.
+        close: (&'static str, Option<&'static str>),
+        /// What the halt says of the cause.
+        cause: &'static str,
+    }
+    let cases = [
+        Case {
+            name: "a classed fault",
+            workflow: &REVIEWLESS_GIT_UNIT_WORKFLOW,
+            session: classed_session("invalid_request"),
+            close: ("fault", Some("invalid_request")),
+            cause: "class invalid_request",
+        },
+        Case {
+            name: "a stream-silence stop",
+            workflow: &SILENCE_BOUNDED_WORKFLOW,
+            session: "    while IFS= read -r _line; do :; done\n    exit 1\n".to_string(),
+            close: ("stopped", None),
+            cause: "its agent stream stayed silent for 1s",
+        },
+    ];
+    for case in cases {
+        let name = case.name;
+        let dir = temp_git_project_with_commit();
+        let root = dir.path();
+        write_workflow_fixture(root, case.workflow);
+        let scratch = tempfile::tempdir().unwrap();
+        let session = case.session;
+        let arm = format!("  *\"Do the unit.\"*)\n{session}    ;;\n");
+        let (out, err, ok, _fake) = run_on_arms(root, &["run"], scratch.path(), &arm);
+        assert!(
+            !ok,
+            "{name}: the halted run fails; stdout: {out}\nstderr: {err}"
+        );
+        assert!(
+            err.contains(case.cause) && err.contains("past the failure taxonomy's infra limit"),
+            "{name}: the halt names its cause; stderr: {err}"
+        );
+        let (ended, class) = case.close;
+        let closed = |spawn: &str| {
+            (
+                spawn.to_string(),
+                ended.to_string(),
+                class.map(str::to_string),
+            )
+        };
+        assert_eq!(
+            closed_launches(root),
+            [
+                closed("solo/implementer#0"),
+                closed("solo/implementer#0~retry4"),
+                closed("solo/implementer#0~retry8"),
+            ],
+            "{name}: the closes; stderr: {err}"
+        );
+        assert_eq!(
+            run_holds(root),
+            [worker_hold(
+                "api-unstable",
+                "",
+                common::fixtures::RETRIES_BY_ITSELF,
+                false
+            )],
+            "{name}: the third close holds the run once"
+        );
+        assert_eq!(
+            run_releases(root),
+            Vec::<String>::new(),
+            "{name}: the hold stands"
+        );
+    }
+}
+
+/// [`REVIEWLESS_GIT_UNIT_WORKFLOW`] over three independent units: three sessions in one wave, in
+/// worktrees of their own, on a run that reaches done.
+const THREE_UNIT_WORKFLOW: WorkflowFixture = WorkflowFixture {
+    worker: ISOLATED_WORKER,
+    body: r#"defaults:
+  grounder: nop
+  budget: 60
+gates:
+  ok: { run: "true", kind: core }
+stages:
+  a:
+    agent: worker
+    gates: [ok]
+    on_pass: merge
+  b:
+    agent: worker
+    gates: [ok]
+    on_pass: merge
+  c:
+    agent: worker
+    gates: [ok]
+    on_pass: merge
+"#,
+};
+
+/// The shell holding a session of [`THREE_UNIT_WORKFLOW`] at `gate` until all three stand there,
+/// spinning with no process of its own so they leave within a few reads of one another. One left
+/// waiting past the bound marks `alone`, the row then proving nothing about concurrency.
+fn rendezvous(gate: &str) -> String {
+    format!(
+        r#"    mkdir -p "$here/{gate}"
+    : > "$here/{gate}/$$"
+    set -- "$here/{gate}"/*
+    spins=0
+    while [ $# -lt 3 ] && [ $spins -lt 20000000 ]; do
+        set -- "$here/{gate}"/*
+        spins=$((spins + 1))
+    done
+    [ $# -ge 3 ] || : > "$here/alone"
+"#
+    )
+}
+
+/// An arm of [`install_fake_claude`] ending all three first launches on a `category` error at
+/// once. The reruns meet too, so no `completed` close lands until all three faults stand: a unit
+/// reruns only behind its own close.
+fn faulting_at_once_arm(category: &str) -> String {
+    let session = classed_session(category);
+    let (faulted, reran) = (rendezvous("faulted"), rendezvous("reran"));
+    format!(
+        r#"  *"Do the unit."*)
+    case "$RIGGER_SPAWN" in
+    *~retry*)
+{reran}        echo "pub fn work() {{}}" > work.rs
+        exit 0
+        ;;
+    esac
+{faulted}{session}    ;;
+"#
+    )
+}
+
+/// Spec 105's compare-and-append through `rigger run`: given three sessions of one wave, when they
+/// sight one category or end at the same moment, then the run holds once between them.
+#[cfg(unix)]
+#[test]
+fn sessions_of_one_wave_racing_append_one_hold_between_them() {
+    struct Case {
+        name: &'static str,
+        arm: String,
+        hold: rigger::run::RunHeld,
+        /// Each stage's closes, by the spawn's suffix: how it ended and its class.
+        closes: Vec<(&'static str, &'static str, Option<&'static str>)>,
+    }
+    let login = "authentication_failed";
+    let retries = common::fixtures::RETRIES_BY_ITSELF;
+    let faulted_then_reran = |class| {
+        vec![
+            ("#0", "fault", Some(class)),
+            ("#0~retry4", "completed", None),
+        ]
+    };
+    let cases = [
+        Case {
+            name: "one hold class sighted at once",
+            arm: sighting_worker_arm(&rendezvous("sighted"), &[login]),
+            hold: worker_hold(login, login, "run claude auth login", true),
+            closes: vec![("#0", "completed", None)],
+        },
+        Case {
+            name: "one wait class ending the sessions at once",
+            arm: faulting_at_once_arm("rate_limit"),
+            hold: worker_hold("rate_limit", "", retries, false),
+            closes: faulted_then_reran("rate_limit"),
+        },
+        Case {
+            name: "the third consecutive fault among closes at once",
+            arm: faulting_at_once_arm("invalid_request"),
+            hold: worker_hold("api-unstable", "", retries, false),
+            closes: faulted_then_reran("invalid_request"),
+        },
+    ];
+    for case in cases {
+        let name = case.name;
+        let dir = temp_git_project_with_commit();
+        let root = dir.path();
+        write_workflow_fixture(root, &THREE_UNIT_WORKFLOW);
+        let scratch = tempfile::tempdir().unwrap();
+        let (out, err, ok, fake) = run_on_arms(root, &["run"], scratch.path(), &case.arm);
+        assert!(ok, "{name}: the run exits 0; stderr: {err}\nstdout: {out}");
+        assert!(
+            !fake.path().join("bin/alone").exists(),
+            "{name}: the three sessions met; stderr: {err}"
+        );
+        let mut closes = closed_launches(root);
+        closes.sort();
+        let expected: Vec<(String, String, Option<String>)> = ["a", "b", "c"]
+            .iter()
+            .flat_map(|stage| {
+                case.closes.iter().map(move |(suffix, ended, class)| {
+                    (
+                        format!("{stage}/implementer{suffix}"),
+                        ended.to_string(),
+                        class.map(str::to_string),
+                    )
+                })
+            })
+            .collect();
+        assert_eq!(closes, expected, "{name}: the closes; stderr: {err}");
+        assert_eq!(run_holds(root), [case.hold], "{name}: the holds");
+        assert_eq!(
+            run_releases(root),
+            ["host"],
+            "{name}: the done run's release"
+        );
+    }
+}
+
+/// Spec 105: given a run with or without a hold open, when any path mints a run, then the mint
+/// releases the hold it finds, an operator hold included, ahead of its `RunStarted`, folds both, and
+/// the new run starts unheld.
+#[cfg(unix)]
+#[test]
+fn a_mint_releases_the_hold_it_finds() {
+    struct Case {
+        name: &'static str,
+        args: &'static [&'static str],
+        /// The criteria of the seeded run: a launch finding others is a new campaign.
+        criteria: Vec<String>,
+        seeded: Option<&'static str>,
+        order: Vec<&'static str>,
+    }
+    let unheld = vec!["RunStarted", "RunStarted"];
+    let released = vec!["RunStarted", "RunHeld", "RunReleased", "RunStarted"];
+    let run_fresh: &[&str] = &["run", "--fresh"];
+    let cases = [
+        Case {
+            name: "no hold",
+            args: run_fresh,
+            criteria: vec![],
+            seeded: None,
+            order: unheld,
+        },
+        Case {
+            name: "a host hold",
+            args: run_fresh,
+            criteria: vec![],
+            seeded: Some("host"),
+            order: released.clone(),
+        },
+        Case {
+            name: "an operator hold",
+            args: run_fresh,
+            criteria: vec![],
+            seeded: Some("operator"),
+            order: released.clone(),
+        },
+        Case {
+            name: "a step's mint of an operator hold",
+            args: &["step", "--fresh"],
+            criteria: vec![],
+            seeded: Some("operator"),
+            order: released.clone(),
+        },
+        Case {
+            name: "a new campaign's mint of an operator hold",
+            args: &["run"],
+            criteria: vec!["an earlier campaign's criterion".to_string()],
+            seeded: Some("operator"),
+            order: released,
+        },
+    ];
+    for case in cases {
+        let name = case.name;
+        let dir = temp_git_project_with_commit();
+        let root = dir.path();
+        write_workflow_fixture(root, &REVIEWLESS_GIT_UNIT_WORKFLOW);
+        seed_a_campaign_held_by(root, &case.criteria, case.seeded);
+        let seed = common::cli::run_log_head(root);
+        let scratch = tempfile::tempdir().unwrap();
+        let (out, err, ok, _fake) = run_recording(root, case.args, scratch.path());
+        assert!(ok, "{name}: the run exits 0; stderr: {err}\nstdout: {out}");
+        let events = common::cli::read_run_events(root);
+        let order: Vec<&str> = events
+            .iter()
+            .map(|e| e.type_.as_str())
+            .filter(|t| ["RunStarted", "RunHeld", "RunReleased"].contains(t))
+            .collect();
+        assert_eq!(order, case.order, "{name}");
+        for by in run_releases(root) {
+            assert_eq!(by, "host", "{name}");
+        }
+        assert_eq!(
+            unfolded_past(root, seed),
+            Vec::new(),
+            "{name}: the mint folds what it appends"
+        );
+    }
+}
+
+/// Spec 105: given a run held by the operator, when `rigger serve` drives it to done, then it stays
+/// held: the done run's release is the supervisor's alone.
+#[test]
+fn a_served_run_reaching_done_stays_held() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_workflow_fixture(root, &REVIEWLESS_GIT_UNIT_WORKFLOW);
+    seed_a_run_held_by(root, Some("operator"));
+    let mut mcp = McpSession::start_with(root, &["serve", "--base", "HEAD"]);
+    let answered = answer_every_spawn(&mut mcp);
+    let out = mcp.finish();
+    assert_eq!(
+        answered,
+        ["solo/implementer#0"],
+        "the run drives; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(run_releases(root), Vec::<String>::new());
+    assert_eq!(run_holds(root).len(), 1);
+    // Read by presence: a release wired into the serve path lands after this event, and the two
+    // assertions above are the ones that must name it.
+    let integrated = common::cli::run_payloads(root, rigger::ledger::TYPE_UNIT_INTEGRATED);
+    assert_eq!(
+        integrated.iter().map(|e| &e["id"]).collect::<Vec<_>>(),
+        ["solo"],
+        "the run's one unit integrated, so the run reached done"
+    );
 }
 
 /// A unit under every review tier, with `max_retries: 2` giving a rejected first round a second.
@@ -7841,7 +8484,7 @@ const RED_GATE_RETRY_TASK: &str = "Your previous attempt failed the checks below
 /// Spec 105's progress store and the frame on a resumed launch, end to end: given a unit whose
 /// first attempt fails its gate, when `rigger run` re-attempts it, then the second launch resumes
 /// the session the first minted, its first message is the retry task closed by the frame once, and
-/// the run's progress log holds each launch in order, naming that session and what it resumed.
+/// the run's progress log opens each launch in order, naming that session and what it resumed.
 #[cfg(unix)]
 #[test]
 fn a_re_attempt_resumes_the_recorded_session_framed_and_the_progress_log_holds_each_launch() {
@@ -7852,7 +8495,8 @@ fn a_re_attempt_resumes_the_recorded_session_framed_and_the_progress_log_holds_e
     let (out, err, ok, fake) = run_recording(root, &["run"], scratch.path());
     assert!(ok, "the run exits 0; stderr: {err}\nstdout: {out}");
 
-    let launches = common::cli::recorded_progress::<rigger::progress::SpawnLaunched>(root);
+    let mut launches = common::cli::recorded_progress::<rigger::progress::SpawnLaunched>(root);
+    launches.retain(|l| l.ended.is_none());
     let session = launches.first().map_or("", |l| l.session_id.as_str());
     assert_eq!(
         launches
@@ -7933,11 +8577,13 @@ fn a_resume_with_no_session_lands_a_fresh_launch_in_the_same_attempt(ending: &st
             .collect::<Vec<_>>(),
         vec![
             ("solo/implementer#0", 0, session, None, None),
+            ("solo/implementer#0", 0, session, None, Some("completed")),
             ("solo/implementer#1", 0, session, Some(session), None),
             ("solo/implementer#1", 0, session, None, Some("interrupted")),
             ("solo/implementer#1", 1, fresh, None, None),
+            ("solo/implementer#1", 1, fresh, None, Some("completed")),
         ],
-        "one close, one next launch, no third attempt"
+        "one interrupted close, one next launch, no third attempt"
     );
 
     let argv = recorded_argv(&fake.path().join("bin/argv"));
@@ -8067,10 +8713,13 @@ fn the_attempt_after_a_fallback_resumes_the_fresh_session() {
             .collect::<Vec<_>>(),
         vec![
             ("solo/implementer#0", 0, lost, None, None),
+            ("solo/implementer#0", 0, lost, None, Some("completed")),
             ("solo/implementer#1", 0, lost, Some(lost), None),
             ("solo/implementer#1", 0, lost, None, Some("interrupted")),
             ("solo/implementer#1", 1, fresh, None, None),
+            ("solo/implementer#1", 1, fresh, None, Some("completed")),
             ("solo/implementer#2", 0, fresh, Some(fresh), None),
+            ("solo/implementer#2", 0, fresh, None, Some("completed")),
         ],
         "the third attempt continues the session the second ended on"
     );
@@ -8179,7 +8828,10 @@ fn every_resuming_role_falls_back_and_the_fresh_launch_answers_for_its_spawn() {
         );
         assert_eq!(
             opened,
-            [(0, session.clone(), None, None)],
+            [
+                (0, session.clone(), None, None),
+                (0, session.clone(), None, Some("completed".to_string())),
+            ],
             "{role}: one launch in the first round"
         );
         assert_eq!(
@@ -8188,8 +8840,9 @@ fn every_resuming_role_falls_back_and_the_fresh_launch_answers_for_its_spawn() {
                 (0, session.clone(), Some(session.clone()), None),
                 (0, session.clone(), None, Some("interrupted".to_string())),
                 (1, fresh.clone(), None, None),
+                (1, fresh.clone(), None, Some("completed".to_string())),
             ],
-            "{role}: one close, one next launch"
+            "{role}: one interrupted close, one next launch"
         );
         for spawn in [&first, &second] {
             assert_eq!(
