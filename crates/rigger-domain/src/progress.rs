@@ -616,6 +616,25 @@ mod tests {
         assert_eq!(back, retry);
     }
 
+    // ---- SupervisorBeat (spec 105 LIVENESS) ----
+
+    #[test]
+    fn supervisor_beat_to_event_carries_the_type_the_run_stamp_and_an_empty_body() {
+        let ev = SupervisorBeat::default().to_stamped_event("run-9").unwrap();
+        assert_eq!(ev.type_, "SupervisorBeat");
+        assert_eq!(ev.meta.get(META_RUN_ID).map(String::as_str), Some("run-9"));
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&ev.data).unwrap(),
+            serde_json::json!({}),
+            "a beat says nothing but its type and the time the store stamps"
+        );
+    }
+
+    #[test]
+    fn the_supervisor_beats_every_thirty_seconds() {
+        assert_eq!(SUPERVISOR_BEAT_INTERVAL, Duration::from_secs(30));
+    }
+
     #[test]
     fn latest_stop_failure_class_returns_none_when_no_record_names_the_spawn() {
         let events = vec![StopFailure {

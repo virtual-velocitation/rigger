@@ -4442,4 +4442,95 @@ mod tests {
         // being un-reaped across steps is the whole point of "detached".
         drop(child);
     }
+
+    // --- Spec 105, LIVENESS: the supervisor beat ---
+
+    /// Mint `run` on `run_log`'s run stream.
+    fn mint_run(run_log: &Store, run: &str) {
+        run_log
+            .append(
+                conductor::STREAM,
+                rigger::eventstore::ExpectedRevision::Any,
+                &[crate::test_support::run_started(run, &[])],
+            )
+            .unwrap();
+    }
+
+    /// The stream of every supervisor beat `progress` holds, oldest first.
+    fn beat_streams(progress: &Store) -> Vec<String> {
+        let everything = rigger::eventstore::Filter {
+            stream_prefix: None,
+        };
+        progress
+            .read_all(0, Direction::Forward, &everything)
+            .unwrap()
+            .into_iter()
+            .filter(|event| event.type_ == rigger::progress::TYPE_SUPERVISOR_BEAT)
+            .map(|event| event.stream)
+            .collect()
+    }
+
+    /// Each beat re-reads the current run: it lands on the run current at that beat, again on a
+    /// run that stands, and nowhere when no run has started. A row mints its run, then beats once;
+    /// its list is every beat on record after that.
+    #[test]
+    fn a_beat_lands_on_the_run_current_at_that_beat() {
+        let run_log = Store::open(":memory:").unwrap();
+        let progress = Store::open(":memory:").unwrap();
+        let (first, newer) = ("progress/run-a", "progress/run-b");
+        for (case, minted, streams) in [
+            ("no run yet", None, vec![]),
+            ("a first run", Some("run-a"), vec![first]),
+            ("the same run again", None, vec![first, first]),
+            ("a newer run", Some("run-b"), vec![first, first, newer]),
+        ] {
+            if let Some(run) = minted {
+                mint_run(&run_log, run);
+            }
+            beat(&run_log, &progress);
+            assert_eq!(beat_streams(&progress), streams, "{case}");
+        }
+    }
+
+    /// A run log that cannot be read names no run to beat on: the beat writes nothing and the
+    /// supervisor stands.
+    #[test]
+    fn a_failed_read_of_the_current_run_writes_no_beat() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("events.db");
+        let run_log = Store::open(db.to_str().unwrap()).unwrap();
+        mint_run(&run_log, "run-a");
+        rusqlite::Connection::open(&db)
+            .unwrap()
+            .execute_batch("DROP TABLE events")
+            .unwrap();
+        let progress = Store::open(":memory:").unwrap();
+        beat(&run_log, &progress);
+        assert_eq!(beat_streams(&progress), Vec::<String>::new());
+    }
+
+    /// A beat whose write the progress store refuses is ignored: the first tick meets another
+    /// writer's lock past its busy timeout and fails, the thread stands, and the next tick lands
+    /// the one beat on record. The interval outlasts what remains of the lock, and the driven work
+    /// returns on that beat, so no third tick comes.
+    #[test]
+    fn a_failed_beat_write_is_ignored_and_the_next_tick_lands_its_beat() {
+        use crate::test_support::{wait_until_for, with_graph_locked_for};
+
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("progress.db");
+        let progress = Store::open(db.to_str().unwrap()).unwrap();
+        let run_log = Store::open(":memory:").unwrap();
+        mint_run(&run_log, "run-a");
+        let landed = with_graph_locked_for(&db, || {
+            beating(
+                &run_log,
+                &progress,
+                std::time::Duration::from_secs(3),
+                || wait_until_for(800, || !beat_streams(&progress).is_empty()),
+            )
+        });
+        assert!(landed, "the tick after the refused one lands its beat");
+        assert_eq!(beat_streams(&progress), vec!["progress/run-a"]);
+    }
 }

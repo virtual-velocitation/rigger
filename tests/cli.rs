@@ -6839,6 +6839,54 @@ fn run_frames_a_launchs_first_message_with_the_live_progress_instruction() {
     );
 }
 
+/// How far past the interval a beat of `rigger run` may land: the gap between two beats is the
+/// interval plus what the second took to read the run and append.
+const BEAT_SLACK: std::time::Duration = std::time::Duration::from_secs(8);
+
+/// Spec 105's supervisor beat, end to end: given a project, when the operator runs `rigger run`,
+/// then the supervisor beats on the run's own progress stream as the run starts and once per
+/// interval after it, and the command leaves as soon as its work is done, with no interval left to
+/// wait out and no beat after it.
+#[cfg(unix)]
+#[test]
+fn run_beats_on_its_runs_progress_stream_from_its_start_until_it_returns() {
+    use rigger::progress::{SupervisorBeat, SUPERVISOR_BEAT_INTERVAL, TYPE_SUPERVISOR_BEAT};
+
+    let interval = SUPERVISOR_BEAT_INTERVAL;
+    for (case, worker, beats, returns_within) in [
+        ("a run shorter than the interval", ":", 1, interval),
+        ("a run past one interval", "sleep 38", 2, 2 * interval),
+    ] {
+        let dir = temp_git_project_with_commit();
+        let root = dir.path();
+        write_workflow_fixture(root, &LIVENESS_WORKFLOW);
+        let scratch = tempfile::tempdir().unwrap();
+        let arms = format!("  *\"Do the unit.\"*)\n    {worker}\n    ;;\n");
+        let started = std::time::Instant::now();
+        let (out, err, ok, _fake) = run_on_arms(root, &["run"], scratch.path(), &arms);
+        let took = started.elapsed();
+        assert!(ok, "{case}: the run succeeds; stderr: {err}\nstdout: {out}");
+        assert_eq!(
+            common::cli::recorded_progress::<SupervisorBeat>(root),
+            vec![SupervisorBeat::default(); beats],
+            "{case}: the beats on the run's own stream"
+        );
+        let beaten_at: Vec<std::time::SystemTime> =
+            common::cli::current_run_progress_events(root, TYPE_SUPERVISOR_BEAT)
+                .iter()
+                .map(|beat| beat.recorded_at)
+                .collect();
+        for pair in beaten_at.windows(2) {
+            let gap = pair[1].duration_since(pair[0]).unwrap();
+            assert!(
+                gap >= interval && gap < interval + BEAT_SLACK,
+                "{case}: beats {gap:?} apart"
+            );
+        }
+        assert!(took < returns_within, "{case}: returned after {took:?}");
+    }
+}
+
 /// Spec 105's run teardown, end to end: given a project whose run ends, when the run ended done
 /// the agent streams its launches wrote are reclaimed with the rest of its scratch, and when it
 /// ended with work left (here an escalated unit) they stand for whoever resumes or reads them.
@@ -7131,10 +7179,6 @@ stages:
 #[cfg(unix)]
 #[test]
 fn a_re_attempt_resumes_the_recorded_session_framed_and_the_progress_log_holds_each_launch() {
-    use rigger::eventstore::namespace::Namespaced;
-    use rigger::eventstore::sqlite::Store as SqliteStore;
-    use rigger::progress::{read_run, SpawnLaunched, TYPE_SPAWN_LAUNCHED};
-
     let dir = temp_git_project_with_commit();
     let root = dir.path();
     write_workflow_fixture(root, &TWO_ATTEMPT_RED_UNIT_WORKFLOW);
@@ -7142,16 +7186,7 @@ fn a_re_attempt_resumes_the_recorded_session_framed_and_the_progress_log_holds_e
     let (out, err, ok, fake) = run_recording(root, &["run"], scratch.path());
     assert!(ok, "the run exits 0; stderr: {err}\nstdout: {out}");
 
-    let progress_db = common::cli::rigger_file(root, "progress.db");
-    let backend = SqliteStore::open(progress_db.to_str().unwrap()).unwrap();
-    let progress = Namespaced::new(&backend, &run_stream_identity(root));
-    let run_id = common::cli::current_run_id_of(root).unwrap();
-    let launches: Vec<SpawnLaunched> = read_run(&progress, &run_id)
-        .unwrap()
-        .iter()
-        .filter(|e| e.type_ == TYPE_SPAWN_LAUNCHED)
-        .map(|e| serde_json::from_slice(&e.data).unwrap())
-        .collect();
+    let launches = common::cli::recorded_progress::<rigger::progress::SpawnLaunched>(root);
     let session = launches.first().map_or("", |l| l.session_id.as_str());
     assert_eq!(
         launches
