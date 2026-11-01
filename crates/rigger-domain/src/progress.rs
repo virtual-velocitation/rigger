@@ -153,16 +153,18 @@ pub struct SpawnLaunched {
     /// How this launch ENDED, or `None` while still open (spec 104 criteria 5/6; the
     /// architecture addendum §4.1's own "at exit it closes the record with `ended:
     /// completed | interrupted | fault | stopped` and the class"): one of
-    /// [`ENDED_COMPLETED`] (a first non-error `result` landed), `"interrupted"` (the
-    /// supervisor found this record still open at start-up, or the host ended a `--resume`
-    /// launch that yielded no `system/init` and fell back to a fresh one), [`ENDED_FAULT`] (a
-    /// session that left no usable `result`), or [`ENDED_STOPPED`] (THE STOP's silence
-    /// expiry). A plain string so the record reads whatever a later writer's ending says.
+    /// [`ENDED_COMPLETED`] (a first non-error `result` landed), [`ENDED_INTERRUPTED`] (the
+    /// host ended a `--resume` launch that yielded no `system/init` and fell back to a fresh
+    /// one, or a host with a hold sink closed in place of a `fault` an ending whose class holds
+    /// or waits, or any ending on a held run), [`ENDED_FAULT`] (any other session that left no
+    /// usable `result`), or [`ENDED_STOPPED`] (THE STOP's silence expiry). A plain string so
+    /// the record reads whatever a later writer's ending says.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ended: Option<String>,
-    /// The failure class this launch ended under (criterion 5's `AgentFailure` category,
-    /// or this driver's own infra class for a wall-clock STOP) - `None` for `completed`
-    /// and `interrupted`, which carry no failure to classify.
+    /// The failure class this launch ended under, criterion 5's `AgentFailure` category: a
+    /// `fault` close's and that of an `interrupted` close written in a `fault`'s place, which keeps
+    /// why the launch ended. `None` for `completed`, `stopped` and the resume fallback's
+    /// `interrupted`, which carry no class.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub class: Option<String>,
     /// The run stream's revision the host last read when it wrote this close, `None` on an
@@ -185,7 +187,7 @@ impl SpawnLaunched {
     /// closing; `started`/`resumed_from` are left at their defaults because only the LATEST
     /// record's `ended` decides open-vs-closed - the
     /// original open record (already durable) is what carries those. An empty `class`
-    /// stores as `None` (the `completed`/`interrupted` endings carry no failure class). The
+    /// stores as `None` (see [`class`](Self::class) for the closes that carry none). The
     /// [`revision`](Self::revision) stays `None`: the host stamps its own closes, and a
     /// supervisor's reconciliation close orders against nothing.
     pub fn closed(
@@ -215,6 +217,9 @@ impl SpawnLaunched {
 /// The `ended` of a launch whose first `result` was not an error.
 pub const ENDED_COMPLETED: &str = "completed";
 
+/// The `ended` of a resume that fell back, and of an ending a hold answers: no launch failed.
+pub const ENDED_INTERRUPTED: &str = "interrupted";
+
 /// The `ended` of a launch that left no usable `result`.
 pub const ENDED_FAULT: &str = "fault";
 
@@ -231,9 +236,9 @@ pub const API_UNSTABLE_CLOSES: usize = 3;
 /// Closes order by [`SpawnLaunched::revision`]: no run-stream event lands during an outage, so
 /// closes share a stamp, and a tie falls to progress-stream order. A close stamped equal to
 /// `released` is after the release, since its writer read it. An unstamped close orders before
-/// every stamped one, so a close written before spec 105 counts as it stands. An `interrupted`
-/// close neither counts nor resets: the supervisor or the resume fallback wrote it, and no launch
-/// failed.
+/// every stamped one, so a close written before spec 105 counts as it stands. An
+/// [`ENDED_INTERRUPTED`] close neither counts nor resets: the resume fallback or a hold answered
+/// it, and no launch failed.
 pub fn failed_closes_since(progress_events: &[Event], released: Option<Revision>) -> usize {
     let mut closes: Vec<SpawnLaunched> = progress_events
         .iter()
@@ -817,7 +822,7 @@ mod tests {
         const F: &str = ENDED_FAULT;
         const S: &str = ENDED_STOPPED;
         const C: &str = ENDED_COMPLETED;
-        const I: &str = "interrupted";
+        const I: &str = ENDED_INTERRUPTED;
         type Close = (&'static str, Option<Revision>);
         let rows: [(&str, Vec<Close>, Option<Revision>, usize); 19] = [
             ("no closes", vec![], None, 0),
