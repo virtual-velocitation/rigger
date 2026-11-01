@@ -88,7 +88,7 @@ pub const PERCEPTION_TYPES: [&str; 5] = [
 
 /// EPISODIC: a run's mechanics. No cross-run fold reads these types, and folding one changes
 /// neither the live projection nor the fold state: it writes only its `applied` row.
-pub const EPISODIC_TYPES: [&str; 16] = [
+pub const EPISODIC_TYPES: [&str; 18] = [
     crate::spawn::TYPE_SPAWN_REQUESTED,
     crate::contextgraph::TYPE_GATE_VERDICT,
     crate::ledger::TYPE_GATE_PROMOTED,
@@ -105,6 +105,8 @@ pub const EPISODIC_TYPES: [&str; 16] = [
     crate::progress::TYPE_AGENT_PROGRESS,
     crate::progress::TYPE_SPAWN_LAUNCHED,
     crate::progress::TYPE_STOP_FAILURE,
+    crate::run::TYPE_RUN_HELD,
+    crate::run::TYPE_RUN_RELEASED,
 ];
 
 /// What the log does with an event of a type, as far as any caller branches on it.

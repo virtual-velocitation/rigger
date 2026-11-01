@@ -4,11 +4,12 @@
 //! this projection and the context graph.
 
 use std::collections::BTreeMap;
+use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
 
 use crate::eventstore::Event;
-use crate::run::TYPE_RUN_STARTED;
+use crate::run::{RunHeld, HOLD_BY_OPERATOR, TYPE_RUN_HELD, TYPE_RUN_RELEASED, TYPE_RUN_STARTED};
 
 /// Status of a unit of work, over its lifecycle
 /// pending -> grounding -> red -> green -> verified -> reviewed -> integrated.
@@ -216,6 +217,20 @@ pub struct RunState {
     /// same `RunStarted` body. Empty on a legacy run (predates this field) or a no-spec
     /// workflow run; the head-name derivation then degrades to the run-short-id alone.
     pub spec_path: String,
+    /// The run's open hold: `Some` while a [`TYPE_RUN_HELD`] has no later
+    /// [`TYPE_RUN_RELEASED`] in the slice [`project`] was handed.
+    pub hold: Option<Hold>,
+}
+
+/// A run's open hold, folded from the `RunHeld` events since its last `RunReleased`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Hold {
+    /// When the hold started: the valid time of its first `RunHeld` in log order.
+    pub since: SystemTime,
+    /// Whether this is an operator hold: any of its `RunHeld` events is by the operator.
+    pub operator: bool,
+    /// Its latest `RunHeld`, whose cause is the hold's cause.
+    pub latest: RunHeld,
 }
 
 /// One of the watching-discipline signals `AttentionEntry::kind` carries: spec 69's five, and
@@ -603,6 +618,17 @@ impl RunState {
                 self.run_id = p.run;
                 self.spec_path = p.spec;
             }
+            TYPE_RUN_HELD => {
+                let latest: RunHeld = serde_json::from_slice(&e.data)?;
+                let open = self.hold.take();
+                self.hold = Some(Hold {
+                    since: open.as_ref().map_or(e.valid_from, |hold| hold.since),
+                    operator: open.is_some_and(|hold| hold.operator)
+                        || latest.by == HOLD_BY_OPERATOR,
+                    latest,
+                });
+            }
+            TYPE_RUN_RELEASED => self.hold = None,
             TYPE_UNIT_STARTED => {
                 let p: UnitStarted = serde_json::from_slice(&e.data)?;
                 let u = self.unit(&p.id);
@@ -821,7 +847,10 @@ pub fn project(events: &[Event]) -> Result<RunState, serde_json::Error> {
 
 #[cfg(test)]
 mod tests {
+    use std::time::{Duration, UNIX_EPOCH};
+
     use super::*;
+    use crate::run::current_run;
     use crate::test_support::ev;
 
     #[test]
@@ -1252,5 +1281,155 @@ mod tests {
         ])
         .unwrap();
         assert!(r.manual_review.is_empty());
+    }
+
+    /// THE EVENTS: a run is held while a `RunHeld` has no later `RunReleased`, over the current
+    /// run's slice. The hold starts at its earliest `RunHeld` since the last `RunReleased`, its
+    /// cause is its latest, and it is an operator hold when any of its `RunHeld` events is by
+    /// the operator. Each row folds as every production reader does, `project` over the slice.
+    #[test]
+    fn the_open_hold_folds_from_the_current_run_by_the_rules_of_the_events() {
+        let host = RunHeld {
+            cause: "api-unstable".to_string(),
+            detail: "overloaded".to_string(),
+            action: "wait for the canary".to_string(),
+            needs_person: false,
+            by: "host".to_string(),
+            model: "m1".to_string(),
+        };
+        let probe = RunHeld {
+            detail: "still overloaded".to_string(),
+            needs_person: true,
+            by: "probe".to_string(),
+            model: "m2".to_string(),
+            ..host.clone()
+        };
+        let operator = RunHeld {
+            cause: "operator".to_string(),
+            detail: "paused by hand".to_string(),
+            action: "rigger release".to_string(),
+            needs_person: true,
+            by: "operator".to_string(),
+            model: String::new(),
+        };
+        let held =
+            |body: &RunHeld, secs: u64| (TYPE_RUN_HELD, serde_json::to_string(body).unwrap(), secs);
+        let released = |secs: u64| {
+            let body = r#"{"by":"probe","held_for_s":60}"#.to_string();
+            (TYPE_RUN_RELEASED, body, secs)
+        };
+        let started = |secs: u64| (TYPE_RUN_STARTED, r#"{"run":"r2"}"#.to_string(), secs);
+        let open = |secs: u64, operator: bool, latest: &RunHeld| {
+            Some(Hold {
+                since: UNIX_EPOCH + Duration::from_secs(secs),
+                operator,
+                latest: latest.clone(),
+            })
+        };
+
+        let cases = vec![
+            ("no event leaves the run unheld", vec![], None),
+            ("a release alone holds nothing", vec![released(1)], None),
+            (
+                "the first RunHeld opens the hold at its own time",
+                vec![held(&host, 5)],
+                open(5, false, &host),
+            ),
+            (
+                "a later RunHeld keeps the start and takes the cause",
+                vec![held(&host, 5), held(&probe, 9)],
+                open(5, false, &probe),
+            ),
+            (
+                "an unrelated event leaves the hold as it stood",
+                vec![
+                    held(&host, 5),
+                    (TYPE_UNIT_STARTED, r#"{"id":"u"}"#.to_string(), 7),
+                ],
+                open(5, false, &host),
+            ),
+            (
+                "a sparse body is still a hold",
+                vec![(TYPE_RUN_HELD, "{}".to_string(), 5)],
+                open(5, false, &RunHeld::default()),
+            ),
+            (
+                "an operator RunHeld alone is an operator hold",
+                vec![held(&operator, 5)],
+                open(5, true, &operator),
+            ),
+            (
+                "an operator RunHeld upgrades a host hold, keeping its start",
+                vec![held(&host, 5), held(&operator, 9)],
+                open(5, true, &operator),
+            ),
+            (
+                "a host RunHeld after an operator one stays an operator hold",
+                vec![held(&operator, 5), held(&host, 9)],
+                open(5, true, &host),
+            ),
+            (
+                "two operator RunHeld events stay an operator hold",
+                vec![held(&operator, 5), held(&operator, 9)],
+                open(5, true, &operator),
+            ),
+            (
+                "a release ends the hold",
+                vec![held(&host, 5), released(9)],
+                None,
+            ),
+            (
+                "a release ends every RunHeld of the hold, an operator's too",
+                vec![held(&operator, 5), held(&host, 7), released(9)],
+                None,
+            ),
+            (
+                "a RunHeld after a release starts a new hold at its own time",
+                vec![held(&host, 5), released(7), held(&probe, 9)],
+                open(9, false, &probe),
+            ),
+            (
+                "an operator hold does not outlive its release",
+                vec![held(&operator, 5), released(7), held(&host, 9)],
+                open(9, false, &host),
+            ),
+            (
+                "the mint's release leaves the new run unheld",
+                vec![held(&host, 3), released(5), started(6)],
+                None,
+            ),
+            (
+                "a RunHeld ahead of the mint's RunStarted stays in the old slice",
+                vec![held(&host, 3), released(5), held(&probe, 6), started(7)],
+                None,
+            ),
+            (
+                "the new run's own RunHeld holds it, carrying nothing from the old slice",
+                vec![held(&operator, 3), started(5), held(&host, 7)],
+                open(7, false, &host),
+            ),
+        ];
+        for (name, log, want) in cases {
+            let log: Vec<Event> = log
+                .into_iter()
+                .map(|(type_, body, secs): (&str, String, u64)| {
+                    ev(type_, &body).with_valid_from(UNIX_EPOCH + Duration::from_secs(secs))
+                })
+                .collect();
+            assert_eq!(project(current_run(&log)).unwrap().hold, want, "{name}");
+        }
+    }
+
+    /// A `RunHeld` whose body is the wrong shape fails the fold as every other lifecycle event's
+    /// does, never a silently dropped hold.
+    #[test]
+    fn a_run_held_of_the_wrong_shape_fails_the_fold() {
+        let said = project(&[ev(TYPE_RUN_HELD, r#"{"by":1}"#)])
+            .err()
+            .map(|e| e.to_string());
+        assert_eq!(
+            said.as_deref(),
+            Some("invalid type: integer `1`, expected a string at line 1 column 7")
+        );
     }
 }

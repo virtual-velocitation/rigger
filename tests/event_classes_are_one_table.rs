@@ -239,8 +239,10 @@ fn the_episodic_and_perception_lists_are_exactly_the_decided_ones() {
             "AgentProgress",
             "SpawnLaunched",
             "StopFailure",
+            "RunHeld",
+            "RunReleased",
         ],
-        "the episodic list is the decided sixteen, in order"
+        "the episodic list is the decided eighteen, in order"
     );
     assert_eq!(
         PERCEPTION_TYPES,
