@@ -7146,6 +7146,14 @@ const RECORD_EACH_LAUNCH: &str = r#"    mkdir -p "$here/launches/$$"
     printf '%s' "$RIGGER_SPAWN" > "$here/launches/$$/spawn"
 "#;
 
+/// Scaffold `root` with [`FULLY_REVIEWED_UNIT_WORKFLOW`] and the three reviewers it names.
+fn write_reviewed_unit(root: &Path) {
+    write_workflow_fixture(root, &FULLY_REVIEWED_UNIT_WORKFLOW);
+    write_agent(root, "lens", "Read", "Review it.");
+    write_agent(root, "adv", "Read", "Break it.");
+    write_agent(root, "judge", "Read", "Adjudicate it.");
+}
+
 /// Spec 105's hook injection on every launch: given a unit reviewed by a lens, an adversary and an
 /// adjudicator that rejects its first round, when `rigger run` drives it, then each launch of the
 /// two rounds, fresh or resumed, the implementer's and each reviewer's, carries the write guard
@@ -7156,10 +7164,7 @@ const RECORD_EACH_LAUNCH: &str = r#"    mkdir -p "$here/launches/$$"
 fn every_launch_of_a_reviewed_unit_carries_the_hooks_for_its_own_spawn() {
     let dir = temp_git_project_with_commit();
     let root = std::fs::canonicalize(dir.path()).unwrap();
-    write_workflow_fixture(&root, &FULLY_REVIEWED_UNIT_WORKFLOW);
-    write_agent(&root, "lens", "Read", "Review it.");
-    write_agent(&root, "adv", "Read", "Break it.");
-    write_agent(&root, "judge", "Read", "Adjudicate it.");
+    write_reviewed_unit(&root);
     let held = tempfile::tempdir().unwrap();
     let scratch = std::fs::canonicalize(held.path()).unwrap();
     let arms = format!(
@@ -7542,6 +7547,11 @@ stages:
 "#,
 };
 
+/// What an attempt after [`TWO_ATTEMPT_RED_UNIT_WORKFLOW`]'s red gate is told to fix.
+const RED_GATE_RETRY_TASK: &str = "Your previous attempt failed the checks below. Fix exactly \
+                                   these - do not start over:\nYour previous attempt failed \
+                                   these gates: red: FAIL\n\n";
+
 /// Spec 105's progress store and the frame on a resumed launch, end to end: given a unit whose
 /// first attempt fails its gate, when `rigger run` re-attempts it, then the second launch resumes
 /// the session the first minted, its first message is the retry task closed by the frame once, and
@@ -7577,11 +7587,9 @@ fn a_re_attempt_resumes_the_recorded_session_framed_and_the_progress_log_holds_e
 
     let argv = recorded_argv(&fake.path().join("bin/argv"));
     assert_eq!(flag_value(&argv, "--resume"), session);
-    let retry_task = "Your previous attempt failed the checks below. Fix exactly these - do not \
-                      start over:\nYour previous attempt failed these gates: red: FAIL\n\n";
     assert_eq!(
         recorded_task(&fake.path().join("bin/first-message")),
-        format!("{retry_task}{LIVE_PROGRESS_FRAME}"),
+        format!("{RED_GATE_RETRY_TASK}{LIVE_PROGRESS_FRAME}"),
         "the resumed launch's first message is the retry task, framed once"
     );
 }
@@ -7717,6 +7725,210 @@ rigger::test_cases! {
         a_resume_with_no_session_lands_a_fresh_launch_in_the_same_attempt(
             "while IFS= read -r _unused; do :; done; exit 1",
         );
+}
+
+/// Spec 105's resume fallback as its consumer reads it: given a re-attempt that fell back because
+/// the agent host no longer held its session, when `rigger run` drives the attempt after it, then
+/// that attempt resumes the fresh session the fallback's result rode back with, never the lost one,
+/// and the fallback's own launch was handed the whole task, a fresh session having nothing to
+/// continue.
+#[cfg(unix)]
+#[test]
+fn the_attempt_after_a_fallback_resumes_the_fresh_session() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    let three_attempts = TWO_ATTEMPT_RED_UNIT_WORKFLOW
+        .body
+        .replace("max_retries: 2", "max_retries: 3");
+    common::cli::write_scaffold(root, &[("worker", ISOLATED_WORKER)], &three_attempts);
+    let scratch = tempfile::tempdir().unwrap();
+    let arms = r#"  *"Do the unit."*)
+    case " $* " in
+    *" --resume "*)
+        if [ ! -e "$here/refused" ]; then
+            : > "$here/refused"
+            exit 1
+        fi
+        ;;
+    *)
+        printf '%s\n' "$first" > "$here/first-message"
+        ;;
+    esac
+    printf '%s\0' "$@" > "$here/argv"
+    echo "pub fn work() {}" > work.rs
+    ;;
+"#;
+    let (out, err, ok, fake) = run_on_arms(root, &["run"], scratch.path(), arms);
+    assert!(ok, "the run exits 0; stderr: {err}\nstdout: {out}");
+
+    let launches = common::cli::recorded_progress::<rigger::progress::SpawnLaunched>(root);
+    let lost = launches.first().map_or("", |l| l.session_id.as_str());
+    let fresh = launches
+        .iter()
+        .find(|l| l.launch == 1)
+        .map_or("", |l| l.session_id.as_str());
+    assert_ne!(fresh, lost, "the fallback ran as a session of its own");
+    assert_eq!(
+        launches
+            .iter()
+            .map(|l| (
+                l.spawn.as_str(),
+                l.launch,
+                l.session_id.as_str(),
+                l.resumed_from.as_deref(),
+                l.ended.as_deref(),
+            ))
+            .collect::<Vec<_>>(),
+        vec![
+            ("solo/implementer#0", 0, lost, None, None),
+            ("solo/implementer#1", 0, lost, Some(lost), None),
+            ("solo/implementer#1", 0, lost, None, Some("interrupted")),
+            ("solo/implementer#1", 1, fresh, None, None),
+            ("solo/implementer#2", 0, fresh, Some(fresh), None),
+        ],
+        "the third attempt continues the session the second ended on"
+    );
+    let argv = recorded_argv(&fake.path().join("bin/argv"));
+    assert_eq!(flag_value(&argv, "--resume"), fresh);
+    assert_eq!(
+        recorded_task(&fake.path().join("bin/first-message")),
+        format!(
+            "{RED_GATE_RETRY_TASK}Record each decision you make by calling the rigger_emit tool \
+             the moment you make it, with type \"DecisionMade\" and data:\n\
+             {{\"id\":\"<short-id>\",\"summary\":\"<one line>\",\"governs\":[\"<file>\"],\
+             \"supersedes\":\"<prior-id-or-empty>\"}}\n\
+             This writes it to the shared event log live, so other agents see it immediately.\
+             {LIVE_PROGRESS_FRAME}"
+        ),
+        "the fallback's launch carries the whole prompt, not the resumed session's short task"
+    );
+}
+
+/// Spec 105's resume fallback at every caller of the conductor's `continue_prior_session`: given a
+/// reviewed unit with an sdet-author, rejected once, whose second round asks each role to resume a
+/// session the agent host no longer holds, when `rigger run` drives it, then each role's second
+/// spawn closes `interrupted` and lands one fresh launch at the next ordinal, the conductor takes
+/// that launch's answer as the spawn's own and tells the fallback on the operator's log, and the
+/// adjudicator's approve lands the unit with no spawn run a further time. The fake `claude` answers
+/// every prompt from one arm keyed on the spawn id, so each result names the spawn that gave it.
+#[cfg(unix)]
+#[test]
+fn every_resuming_role_falls_back_and_the_fresh_launch_answers_for_its_spawn() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_reviewed_unit(root);
+    write_agent(root, "sdet-author", "Read", "Write the boundary tests.");
+    let scratch = tempfile::tempdir().unwrap();
+    let arms = format!(
+        r#"  *)
+    case " $* " in
+    *" --resume "*) exit 1 ;;
+    esac
+    case "$RIGGER_SPAWN" in
+    solo/implementer*)
+        echo "pub fn work() {{}}" >> work.rs
+        echo "$RIGGER_SPAWN answered"
+        ;;
+    solo/adjudicator#0) echo '{REQUIRED_REJECT}' ;;
+    solo/adjudicator#1) echo '{{"verdict":"approve"}}' ;;
+    *) echo "$RIGGER_SPAWN answered" ;;
+    esac
+    ;;
+"#
+    );
+    let (out, err, ok, _fake) = run_on_arms(root, &["run"], scratch.path(), &arms);
+    assert!(ok, "the run exits 0; stderr: {err}\nstdout: {out}");
+    assert_eq!(
+        out.lines().nth(2),
+        Some("done: every unit integrated"),
+        "the fresh approve landed the unit: {out}"
+    );
+
+    let launches = common::cli::recorded_progress::<rigger::progress::SpawnLaunched>(root);
+    let of = |spawn: &str| {
+        launches
+            .iter()
+            .filter(|l| l.spawn == spawn)
+            .map(|l| {
+                (
+                    l.launch,
+                    l.session_id.clone(),
+                    l.resumed_from.clone(),
+                    l.ended.clone(),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let results: Vec<(String, String, String)> = read_run_events(root)
+        .iter()
+        .filter(|e| e.type_ == rigger::spawn::TYPE_SPAWN_RESULT)
+        .map(|e| {
+            let result = SpawnResult::from_event(e).unwrap();
+            (result.id, result.output, result.error)
+        })
+        .collect();
+    let answer_of = |spawn: &str| match spawn {
+        "solo/adjudicator#0" => REQUIRED_REJECT.to_string(),
+        "solo/adjudicator#1" => r#"{"verdict":"approve"}"#.to_string(),
+        other => format!("{other} answered"),
+    };
+    let mut spawns = Vec::new();
+    let mut told = Vec::new();
+    for role in [
+        "adjudicator",
+        "adversary",
+        "implementer",
+        "lens:lens",
+        "sdet-author",
+    ] {
+        let first = format!("solo/{role}#0");
+        let second = format!("solo/{role}#1");
+        let opened = of(&first);
+        let session = opened.first().map_or(String::new(), |l| l.1.clone());
+        let fallback = of(&second);
+        let fresh = fallback.last().map_or(String::new(), |l| l.1.clone());
+        assert_ne!(
+            fresh, session,
+            "{role}: the fresh launch has its own session"
+        );
+        assert_eq!(
+            opened,
+            [(0, session.clone(), None, None)],
+            "{role}: one launch in the first round"
+        );
+        assert_eq!(
+            fallback,
+            [
+                (0, session.clone(), Some(session.clone()), None),
+                (0, session.clone(), None, Some("interrupted".to_string())),
+                (1, fresh.clone(), None, None),
+            ],
+            "{role}: one close, one next launch"
+        );
+        for spawn in [&first, &second] {
+            assert_eq!(
+                results.iter().filter(|r| r.0 == *spawn).collect::<Vec<_>>(),
+                [&(spawn.clone(), answer_of(spawn), String::new())],
+                "{spawn}: one result, its last launch's answer"
+            );
+        }
+        told.push(format!(
+            "spawn {second}: session {session} to resume is gone; it ran as a fresh session {fresh}"
+        ));
+        spawns.extend([first, second]);
+    }
+    let mut launched: Vec<String> = launches.iter().map(|l| l.spawn.clone()).collect();
+    launched.sort();
+    launched.dedup();
+    assert_eq!(launched, spawns, "two spawns of each role, none re-run");
+    let mut logged: Vec<String> = err
+        .lines()
+        .filter(|l| l.contains("to resume is gone"))
+        .map(str::to_string)
+        .collect();
+    logged.sort();
+    told.sort();
+    assert_eq!(logged, told, "each fallback on the operator's log; {err}");
 }
 
 /// Spec 64, criterion 3, adjudication round 3 finding
