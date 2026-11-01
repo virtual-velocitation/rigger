@@ -809,23 +809,23 @@
       },
       {
         "file": "src/cli/run.rs",
-        "start_line": 3304,
-        "end_line": 3304
+        "start_line": 3358,
+        "end_line": 3358
       },
       {
         "file": "src/cli/run.rs",
-        "start_line": 3337,
-        "end_line": 3337
+        "start_line": 3391,
+        "end_line": 3391
       },
       {
         "file": "src/cli/run.rs",
-        "start_line": 3381,
-        "end_line": 3381
+        "start_line": 3435,
+        "end_line": 3435
       },
       {
         "file": "src/cli/run.rs",
-        "start_line": 3450,
-        "end_line": 3450
+        "start_line": 3504,
+        "end_line": 3504
       },
       {
         "file": "src/cli/setup.rs",
@@ -4464,8 +4464,8 @@
       },
       {
         "file": "crates/rigger-domain/src/progress.rs",
-        "start_line": 384,
-        "end_line": 387
+        "start_line": 405,
+        "end_line": 408
       },
       {
         "file": "tests/simplification_audit.rs",
@@ -4649,13 +4649,13 @@
       },
       {
         "file": "src/cli/run.rs",
-        "start_line": 3442,
-        "end_line": 3442
+        "start_line": 3496,
+        "end_line": 3496
       },
       {
         "file": "src/cli/run.rs",
-        "start_line": 3546,
-        "end_line": 3546
+        "start_line": 3600,
+        "end_line": 3600
       },
       {
         "file": "tests/cli.rs",
@@ -5939,8 +5939,8 @@
       },
       {
         "file": "src/cli/run.rs",
-        "start_line": 4503,
-        "end_line": 4503
+        "start_line": 4557,
+        "end_line": 4557
       },
       {
         "file": "tests/cli.rs",

@@ -1393,10 +1393,59 @@ fn anchor_run_branch(repo: &str, cmd: &str, base: &str, base_explicit: bool) -> 
     Ok(())
 }
 
+/// One beat of the supervisor (spec 105 LIVENESS): a [`SupervisorBeat`] on the progress stream of
+/// the run current at this beat, re-read here so the beat follows whichever run is current. Only
+/// the run's boundaries are read, since a beat wants one id every interval for as long as the run
+/// lives. A run log that cannot be read, or that names no run, beats nothing, and a write the
+/// progress store refuses is ignored: the next tick is the retry either way.
+///
+/// [`SupervisorBeat`]: rigger::progress::SupervisorBeat
+fn beat(run_store: &dyn EventStore, progress: &dyn EventStore) {
+    let boundaries = run_store.read_stream_typed(
+        conductor::STREAM,
+        0,
+        TypeSelection::Only(&[runscope::TYPE_RUN_STARTED]),
+    );
+    let run = boundaries.map(|events| runscope::current_run_id(&events));
+    if let Ok(Some(run)) = run {
+        let _ = rigger::progress_store::append_stamped(
+            progress,
+            &run,
+            &rigger::progress::SupervisorBeat::default(),
+            "the supervisor beat",
+        );
+    }
+}
+
+/// Hand back what `drive` returns, with the supervisor beating beside it on a thread of its own:
+/// a [`beat`] as `drive` starts, so an adopting supervisor is on record at once, then one each
+/// `interval`. The thread sleeps on a channel whose one sender lives only as long as `drive`, so
+/// `drive`'s return wakes it at once, it writes no further beat, and the scope joins it. A dead
+/// beat freezes silent time and nothing more: no exit and no host state hangs on it.
+fn beating<T>(
+    run_store: &dyn EventStore,
+    progress: &dyn EventStore,
+    interval: std::time::Duration,
+    drive: impl FnOnce() -> T,
+) -> T {
+    use std::sync::mpsc::{channel, RecvTimeoutError};
+
+    std::thread::scope(|scope| {
+        let (_driving, driven) = channel::<()>();
+        scope.spawn(move || {
+            beat(run_store, progress);
+            while let Err(RecvTimeoutError::Timeout) = driven.recv_timeout(interval) {
+                beat(run_store, progress);
+            }
+        });
+        drive()
+    })
+}
+
 /// The standalone CLI path: ground, host the agents as headless `claude` sessions
-/// ([`claude_code::Driver`]), drive the DAG to integration, and reclaim a done run's scratch.
-/// The store is selected by flag and wrapped in the per-project namespace decorator before it is
-/// injected (§5.1.1, R9).
+/// ([`claude_code::Driver`]), drive the DAG to integration with the supervisor [`beating`] beside
+/// it, and reclaim a done run's scratch. The store is selected by flag and wrapped in the
+/// per-project namespace decorator before it is injected (§5.1.1, R9).
 fn run_cli(parsed: &RunArgs) -> Res {
     // DISCOVERABILITY (spec 66, criterion 5): `rigger run <spec>` is a REAL pre-launch
     // surface that genuinely holds the spec path in production (unlike the SessionStart-only
@@ -1526,7 +1575,12 @@ fn run_cli(parsed: &RunArgs) -> Res {
     // the loop begins, so an active harness is never invisible. Held for the whole run - the
     // guard reaps the dash when this scope ends (unit 3's reaping mechanism).
     let _dash = start_run_dashboard(cfg.workflow.dash_enabled(), &store);
-    let rs = conductor::run(&cfg, &deps)?;
+    let rs = beating(
+        &store,
+        &progress,
+        rigger::progress::SUPERVISOR_BEAT_INTERVAL,
+        || conductor::run(&cfg, &deps),
+    )?;
     // The conductor returned, so no spawn of this run is live: a done run's scratch is residue. A
     // run that stopped short of done keeps it for the resume, and a project with no scratch root
     // has none to reclaim.
