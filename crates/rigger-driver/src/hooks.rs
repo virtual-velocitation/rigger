@@ -6,9 +6,13 @@
 //! commands, the MCP server name and the fan-out helper agents. `rigger setup` writes them into
 //! the operator's checkout; the headless host hands the same values to every spawn on its
 //! command line (a fresh unit worktree carries no `.claude/` of its own), so the two cannot
-//! drift.
+//! drift. The hooks bound to one spawn are composed here too, by [`install_spawn_hooks`]: only
+//! the headless host hands those over, and `rigger setup` never writes them.
 
+use rigger_domain::quoting::single_quoted;
 use serde_json::{json, Map, Value};
+
+use crate::agent::AgentFailure;
 
 #[derive(Debug, thiserror::Error)]
 #[error("hooks: {0}")]
@@ -25,6 +29,9 @@ pub const PRIME_COMMAND: &str = "rigger prime";
 pub const GREP_GUARD_MATCHER: &str = "Grep|Bash";
 /// See [`GREP_GUARD_MATCHER`].
 pub const GREP_GUARD_COMMAND: &str = "rigger grep-guard";
+
+/// The tools the write guard judges, as the matcher it installs under `PreToolUse`.
+const WRITE_GUARD_MATCHER: &str = "Edit|Write|NotebookEdit";
 
 /// The editor's status line command (spec 94, criterion 5): the same one-line summary
 /// `rigger status` prints first.
@@ -55,6 +62,38 @@ pub fn install_session_settings(existing: &[u8]) -> Result<Vec<u8>, Error> {
     let primed = install_session_start(existing, PRIME_COMMAND)?;
     let guarded = install_pretooluse_hook(&primed, GREP_GUARD_MATCHER, GREP_GUARD_COMMAND)?;
     install_status_line(&guarded, STATUS_LINE_COMMAND)
+}
+
+/// Merge the hooks bound to one spawn into `existing` settings JSON, preserving every other
+/// setting: under `PreToolUse` the write guard, `guard-write` rooted at `roots` in order, and
+/// under `StopFailure` one entry per [`AgentFailure::CATEGORIES`], `hook stop-failure` recording
+/// that category for `spawn`. Both run `rigger_bin`, and the shell a hook command runs under reads
+/// `rigger_bin`, `spawn` and each root as one word whatever they hold ([`shell_quote`]). `existing`
+/// may be empty.
+pub fn install_spawn_hooks(
+    existing: &[u8],
+    rigger_bin: &str,
+    spawn: &str,
+    roots: &[String],
+) -> Result<Vec<u8>, Error> {
+    let bin = shell_quote(rigger_bin);
+    let spawn = shell_quote(spawn);
+    let mut guard = format!("{bin} guard-write");
+    for root in roots {
+        guard.push_str(&format!(" --root {}", shell_quote(root)));
+    }
+    let mut merged = install_pretooluse_hook(existing, WRITE_GUARD_MATCHER, &guard)?;
+    for category in AgentFailure::CATEGORIES {
+        let class = category.as_str();
+        let command = format!("{bin} hook stop-failure --spawn {spawn} --class {class}");
+        merged = merge_hook_block(&merged, "StopFailure", class, &command)?;
+    }
+    Ok(merged)
+}
+
+/// `arg` as one POSIX shell word: each `'` it holds closes the quote, is escaped and reopens it.
+fn shell_quote(arg: &str) -> String {
+    single_quoted(arg, r"'\''")
 }
 
 /// Whether the settings JSON `existing` already carries every session setting

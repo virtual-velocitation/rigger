@@ -1,6 +1,6 @@
 //! Rigger's domain: the entities and use-case rules, ring 1 of the workspace. Nothing here
 //! touches a file, a process, the network, the clock, a store or the agent host; the root
-//! `rigger` crate re-exports every module under its historical path.
+//! `rigger` crate re-exports the modules it names under their historical path.
 
 /// The agent-host port: the `AgentDriver` trait, its options, result and error, and the park and
 /// failure-class sentinels that cross it.
@@ -40,6 +40,7 @@ pub mod metrics;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod playbooks;
 pub mod progress;
+pub mod quoting;
 /// The classes of event (spec 107): the perception and episodic type lists and the ledger entry
 /// of perception. Under `ingest`'s gate, whose derived index it cites.
 #[cfg(any(feature = "store", not(feature = "core")))]

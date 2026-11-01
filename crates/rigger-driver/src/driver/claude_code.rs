@@ -24,8 +24,8 @@ use crate::agent::{
 use crate::config::AgentDef;
 use crate::driver::replay::{reclaim_spawn_registered_scratch, spawn_scratch_path};
 use crate::driver::{
-    allowed_tools_args, bin_or_path_default, harness_env, progress_framed, spawn_config_args,
-    system_prompt_file, LaunchSession, SystemPromptFile,
+    allowed_tools_args, bin_or_path_default, harness_env, json_arg, progress_framed,
+    spawn_config_args, system_prompt_file, LaunchSession, SystemPromptFile,
 };
 use crate::eventstore::EventStore;
 use crate::hooks;
@@ -174,18 +174,18 @@ impl Driver<'_> {
         // the ONE session authority the cli host shares ([`LaunchSession`]).
         let session = LaunchSession::of(opts);
         let session_id = session.id.clone();
+        let container = spawn_scratch_path(&self.scratch_root, &opts.run_id, &opts.id);
+        let roots = write_roots(&opts.dir, container.as_deref())?;
         // The persona travels as a file in the spawn's scratch, never as an argv string (see
         // [`SystemPromptFile`]); the spawn's terminus reclaims that scratch.
-        let persona = system_prompt_file(
-            &opts.system_prompt,
-            spawn_scratch_path(&self.scratch_root, &opts.run_id, &opts.id),
-        )?;
+        let persona = system_prompt_file(&opts.system_prompt, container)?;
         let args = build_args(
             agent,
             &persona,
             opts,
             &session,
             bin_or_path_default(&self.rigger_bin, "rigger"),
+            &roots,
         )?;
 
         let started = SystemTime::now()
@@ -1217,6 +1217,28 @@ fn first_user_message(task: &str) -> String {
     .to_string()
 }
 
+/// The roots a launch's write guard admits: the session's working directory, the host's own for
+/// an empty `dir` as [`crate::subprocess::command_in`] leaves it, then the spawn's scratch
+/// `container` when it has one. Each is made absolute here, since the guard resolves a root
+/// lexically and never against the session's cwd: an empty root refuses every write and a `.`
+/// admits every target.
+fn write_roots(dir: &str, container: Option<&Path>) -> Result<Vec<String>, Error> {
+    let session_cwd = if dir.is_empty() { "." } else { dir };
+    std::iter::once(Path::new(session_cwd))
+        .chain(container)
+        .map(|root| {
+            std::path::absolute(root)
+                .map(|root| root.to_string_lossy().into_owned())
+                .map_err(|e| {
+                    Error(format!(
+                        "claude_code driver: resolve the write root {}: {e}",
+                        root.display()
+                    ))
+                })
+        })
+        .collect()
+}
+
 /// Build the typed `claude` headless invocation (architecture addendum §4.1 table): the
 /// ONE argv authority for this driver, exactly as `cli::build_args` is for the cli driver
 /// - every field below is a fact, never inferred at read time.
@@ -1227,18 +1249,23 @@ fn first_user_message(task: &str) -> String {
 /// persona. The launch runs as `session`: `--session-id` for a fresh one, `--resume` to
 /// continue the one the spawn names ([`LaunchSession`], shared with the cli host).
 ///
+/// `--settings` carries the hooks bound to this spawn ([`hooks::install_spawn_hooks`]) ahead of
+/// the session's own: the write guard rooted at `write_roots` and the `StopFailure` entries, both
+/// running `rigger_bin`.
+///
 /// `--json-schema` (verdict personas, §4.5) is deliberately out of this criterion's scope
 /// (the Done-when text names session id, stream-json, persona, model, tools, permission
 /// flags, MCP config and settings only) and is not built here; a later criterion adds it
 /// alongside whichever caller knows a persona is a verdict role, through this same
 /// function rather than a second argv authority. Fails only when the spawn's own
-/// `settings_json` is not a JSON object the session settings can merge into.
+/// `settings_json` is not a JSON object the spawn's hooks and the session settings can merge into.
 pub fn build_args(
     agent: &AgentDef,
     persona: &SystemPromptFile,
     opts: &SpawnOpts,
     session: &LaunchSession,
     rigger_bin: &str,
+    write_roots: &[String],
 ) -> Result<Vec<String>, Error> {
     let mut args = vec![
         "-p".to_string(),
@@ -1260,10 +1287,19 @@ pub fn build_args(
         args.push(agent.fallback_model.clone());
     }
     args.extend(allowed_tools_args(agent, &SPAWN_BOUND_TOOLS)?);
+    let settings = json_arg(
+        hooks::install_spawn_hooks(
+            opts.settings_json.as_bytes(),
+            rigger_bin,
+            &opts.id,
+            write_roots,
+        ),
+        "settings",
+    )?;
     args.extend(spawn_config_args(
         rigger_bin,
         &["mcp", "--spawn", &opts.id],
-        &opts.settings_json,
+        &settings,
     )?);
     Ok(args)
 }
