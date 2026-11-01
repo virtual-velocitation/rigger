@@ -38,6 +38,23 @@ const RIGGER_BIN: &str = "/fixture/bin/rigger";
 fn launch_capturing(dir: &Path, settings_json: &str) -> Vec<String> {
     let capture_dir = tempfile::tempdir().expect("a throwaway dir for the argv capture");
     let capture = capture_dir.path().join("argv");
+    launch_handing(dir, settings_json, &capture, Vec::new());
+    let raw = std::fs::read(&capture).expect("the fixture recorded its argv");
+    raw.split(|b| *b == 0)
+        .filter(|field| !field.is_empty())
+        .map(|field| String::from_utf8(field.to_vec()).expect("a utf-8 argument"))
+        .collect()
+}
+
+/// Launch one headless spawn in `dir` through the argv-capture fixture, the spawn's own
+/// environment naming `capture` as the capture file and the host handing `handed_env`, and wait
+/// for it to end.
+fn launch_handing(
+    dir: &Path,
+    settings_json: &str,
+    capture: &Path,
+    handed_env: Vec<(String, String)>,
+) {
     let progress = Store::open(":memory:").expect("in-memory progress store");
     let run = Store::open(":memory:").expect("in-memory run store");
     let driver = Driver {
@@ -50,6 +67,7 @@ fn launch_capturing(dir: &Path, settings_json: &str) -> Vec<String> {
         run_store: &run,
         scratch_root: String::new(),
         stop_grace: std::time::Duration::from_secs(30),
+        handed_env,
     };
     let mut opts = implementer_opts(SPAWN_ID);
     opts.dir = dir.to_string_lossy().into_owned();
@@ -69,11 +87,31 @@ fn launch_capturing(dir: &Path, settings_json: &str) -> Vec<String> {
         status.success(),
         "the argv-capture fixture failed: {status}"
     );
-    let raw = std::fs::read(&capture).expect("the fixture recorded its argv");
-    raw.split(|b| *b == 0)
-        .filter(|field| !field.is_empty())
-        .map(|field| String::from_utf8(field.to_vec()).expect("a utf-8 argument"))
-        .collect()
+}
+
+/// The store selection's handed environment is set after the spawn's own: where both name a
+/// variable the launch carries the handed value, so the fixture writes the handed capture file
+/// and never the one the spawn's own environment named.
+#[test]
+fn the_host_sets_its_handed_environment_after_the_spawns_own() {
+    let dir = tempfile::tempdir().expect("a throwaway working directory");
+    let captures = tempfile::tempdir().expect("a throwaway dir for the argv captures");
+    let own = captures.path().join("own");
+    let handed = captures.path().join("handed");
+    launch_handing(
+        dir.path(),
+        "",
+        &own,
+        vec![(
+            "RIGGER_ARGV_CAPTURE".to_string(),
+            handed.to_string_lossy().into_owned(),
+        )],
+    );
+    assert_eq!(
+        (handed.exists(), own.exists()),
+        (true, false),
+        "the handed value wins over the spawn's own"
+    );
 }
 
 /// The JSON value that follows `flag` in `argv`, failing loudly (naming the argv) when the flag

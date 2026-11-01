@@ -12,4 +12,5 @@ echo "RIGGER_TEST_VAR=$RIGGER_TEST_VAR"
 echo "CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=$CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS"
 echo "RIGGER_SPAWN=$RIGGER_SPAWN"
 IFS= read -r line
-echo "STDIN=$line"
+# printf, since a POSIX echo expands the JSON line's \n escapes into real newlines.
+printf 'STDIN=%s\n' "$line"

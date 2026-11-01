@@ -20,9 +20,10 @@ use common::cli::{
 };
 use common::fixtures::{composed_system_prompt, git_ok, temp_git_project_with_commit};
 use common::repo::{
-    critique_stub_argv, critique_stub_record, critique_stub_spawns, critique_stub_task,
+    critique_stub_argv, critique_stub_record, critique_stub_spawns, critique_stub_task, flag_value,
     write_critique_stub, write_critique_stub_reporting, CRITIQUE_CONN, CRITIQUE_SYSTEM_PROMPT,
 };
+use rigger::driver::claude_code::framed;
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Direction, Event, EventStore, ExpectedRevision, Filter};
@@ -142,15 +143,6 @@ fn every_event(root: &Path) -> usize {
         .len()
 }
 
-/// The value the argv carries right after `flag`.
-fn flag_value<'a>(argv: &'a [String], flag: &str) -> &'a str {
-    let at = argv
-        .iter()
-        .position(|a| a == flag)
-        .unwrap_or_else(|| panic!("the critic's argv carries {flag}: {argv:?}"));
-    &argv[at + 1]
-}
-
 /// A fresh critique stub answering `critique`: its work directory, which keeps it alive, and the
 /// PATH that runs it.
 fn stub(critique: &str) -> (tempfile::TempDir, String) {
@@ -183,14 +175,16 @@ fn a_spec_is_critiqued_once_per_text_and_answered_from_the_store_after() {
     // ... the plan-critique adversary ran once, on the spec text, through the headless host.
     assert_eq!(critique_stub_spawns(first.path()), 1, "one critic spawn");
     let task = critique_stub_task(first.path());
+    let prompt = spec_critique_prompt(SPEC_REL, SPEC);
     assert!(
-        task.ends_with(SPEC),
-        "the critique prompt ends with the spec text verbatim:\n{task}"
+        prompt.ends_with(SPEC),
+        "the critique prompt ends with the spec text verbatim:\n{prompt}"
     );
     assert_eq!(
         task,
-        spec_critique_prompt(SPEC_REL, SPEC),
-        "the task is the critique prompt and nothing else: the method is the persona's"
+        framed(&prompt),
+        "the task is the critique prompt under the host's frame and nothing else: the method is \
+         the persona's"
     );
     assert!(
         task.contains("`specs/9-demo.md`"),
@@ -199,8 +193,10 @@ fn a_spec_is_critiqued_once_per_text_and_answered_from_the_store_after() {
     let argv = critique_stub_argv(first.path());
     assert_eq!(
         flag_value(&argv, "--allowed-tools"),
-        "Read,Glob,mcp__rigger__rigger_graph,mcp__rigger__rigger_ground,mcp__rigger__rigger_peers",
-        "the critic's tools are replaced: no Bash, Agent, Grep or emit"
+        "Read,Glob,mcp__rigger__rigger_graph,mcp__rigger__rigger_ground,mcp__rigger__rigger_peers,\
+         mcp__rigger__rigger_emit,mcp__rigger__rigger_progress,mcp__rigger__rigger_scratch",
+        "the critic's tools are replaced: no Bash, Agent or Grep, and the host's own grant, which \
+         the deny below wins over"
     );
     let settings: Value = serde_json::from_str(flag_value(&argv, "--settings")).unwrap();
     assert_eq!(
@@ -326,8 +322,9 @@ fn a_spec_is_critiqued_once_per_text_and_answered_from_the_store_after() {
     // ... and inherits none of the earlier findings.
     assert_eq!(fresh, "{\"verdict\":\"approve\"}\n");
     assert!(!fresh.contains(&hash), "no earlier finding is printed");
-    assert!(
-        critique_stub_task(second.path()).ends_with(&edited),
+    assert_eq!(
+        critique_stub_task(second.path()),
+        framed(&spec_critique_prompt(SPEC_REL, &edited)),
         "the critic read the edited text"
     );
     let edited_spawn = critique_spawn_id(&critique_hash(&edited), 0);
@@ -654,9 +651,9 @@ fn the_critique_record_persists_under_the_literal_content_hash_with_the_critics_
     let prompt = spec_critique_prompt(SPEC_REL, SPEC);
     assert_eq!(
         critique_stub_task(work.path()),
-        prompt,
+        framed(&prompt),
         "the critic's task is the critique prompt of the repo-relative path and the raw text, \
-         byte for byte"
+         byte for byte, under the host's frame"
     );
 
     // The request and the result are persisted on the critique's own stream in their wire form.

@@ -303,6 +303,19 @@ pub fn run_around(cwd: &Path, seed: &str, depth: i64) -> (String, String, bool) 
     )
 }
 
+/// Every printed `node <id> <kind>` line of a `rigger graph --around` transcript, parsed into its
+/// id, so an assertion is exact (never a substring match against an edge line).
+pub fn graph_node_ids(out: &str) -> Vec<String> {
+    out.lines()
+        .filter_map(|l| {
+            l.trim_start()
+                .strip_prefix("node ")
+                .and_then(|rest| rest.split_whitespace().next())
+                .map(str::to_string)
+        })
+        .collect()
+}
+
 /// Every printed `edge <from> -<rel>-> <to>` line of a `rigger graph --around` transcript, parsed
 /// into its (from, rel, to) triple - never substring-matched, so an assertion about which edges
 /// printed is a claim about the parsed fields, not a text search a coincidental substring could

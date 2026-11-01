@@ -1,5 +1,5 @@
-//! The default AgentDriver: spawn agents by shelling out to the `claude` CLI, so
-//! Rigger depends on no particular editor or runtime. A subprocess agent cannot
+//! The blocking AgentDriver `rigger canary` probes with: spawn agents by shelling out to the
+//! `claude` CLI, so Rigger depends on no particular editor or runtime. A subprocess agent cannot
 //! call the in-process emit callback WHILE it runs (it has no live MCP channel),
 //! so this driver bridges emission AFTER the run: it parses the agent's stdout for
 //! the emit-protocol lines (DecisionMade / ReviewFinding / UnitProposed JSON, the
@@ -18,8 +18,8 @@ use crate::config::AgentDef;
 use crate::contextgraph::{TYPE_DECISION_MADE, TYPE_REVIEW_FINDING};
 use crate::driver::replay::{blocking_spawn_scratch_dir, reclaim_finished_spawn_scratch};
 use crate::driver::{
-    allowed_tools_args, bin_or_path_default, harness_env, spawn_config_args, system_prompt_file,
-    LaunchSession, SystemPromptFile, MISSING_SESSION,
+    allowed_tools_args, bin_or_path_default, harness_env, progress_framed, spawn_config_args,
+    system_prompt_file, LaunchSession, SystemPromptFile, MISSING_SESSION,
 };
 
 /// Driver spawns agents via the `claude` CLI.
@@ -139,15 +139,16 @@ fn session_missing(out: &Output) -> bool {
     !out.status.success() && String::from_utf8_lossy(&out.stderr).contains(MISSING_SESSION)
 }
 
-/// `task` framed with the live-progress instruction (spec 14) the workflow drivers give too, so
-/// a worker on this path also reports what it is doing between milestones. (This synchronous,
-/// non-parking path has no parked frontier entry, so the current consolidator does not surface
-/// it - the emit is recorded and future-proof.)
+/// `task` framed with the live-progress instruction ([`progress_framed`]), reported through
+/// Bash since this host's spawn runs no bound server. (This synchronous, non-parking path has no
+/// parked frontier entry, so the current consolidator does not surface it - the emit is recorded
+/// and future-proof.)
 fn framed(task: &str, opts: &SpawnOpts) -> String {
-    format!(
-        "{task}\n\n--- rigger driver ---\nLIVE PROGRESS: after each significant step (a search, a build, a commit, a decision) report ONE short line of what you just did by running (Bash): rigger progress '{}' '<one line: what you just did>'. Keep it flowing while you work.",
+    let report = format!(
+        "by running (Bash): rigger progress '{}' '<one line: what you just did>'",
         opts.id
-    )
+    );
+    progress_framed(task, &report)
 }
 
 impl AgentDriver for Driver {
@@ -286,7 +287,7 @@ pub fn build_args(
         args.push("--model".to_string());
         args.push(model);
     }
-    args.extend(allowed_tools_args(agent)?);
+    args.extend(allowed_tools_args(agent, &[])?);
     args.extend(spawn_config_args(
         rigger_bin,
         &["mcp"],
@@ -298,6 +299,23 @@ pub fn build_args(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// This host's frame reports through Bash, naming the spawn, since its spawn runs no bound
+    /// server, and closes the task.
+    #[test]
+    fn framed_closes_the_task_with_the_bash_progress_line() {
+        let opts = SpawnOpts {
+            id: "u/implementer#0".to_string(),
+            ..SpawnOpts::default()
+        };
+        assert_eq!(
+            framed("the task", &opts),
+            "the task\n\n--- rigger driver ---\nLIVE PROGRESS: after each significant step (a \
+             search, a build, a commit, a decision) report ONE short line of what you just did by \
+             running (Bash): rigger progress 'u/implementer#0' '<one line: what you just did>'. \
+             Keep it flowing while you work."
+        );
+    }
     #[cfg(unix)]
     use crate::test_support::{captured_system_prompt, PROMPT_CAPTURE_DIR};
     use std::cell::RefCell;

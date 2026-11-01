@@ -32,24 +32,12 @@ use rigger::contextgraph::Projection;
 mod common;
 
 use common::cli::edge_lines;
+use common::cli::graph_node_ids;
 use common::cli::run_around;
 use common::cli::run_rigger;
 use common::cli::run_stream_identity;
 use common::cli::temp_store_project;
 use common::fixtures::apply_code_entity;
-
-/// The bare ids from every `node <id> <kind>` line of a `rigger graph --around` transcript,
-/// parsed exactly (never substring-matched).
-fn node_ids(out: &str) -> Vec<String> {
-    out.lines()
-        .filter_map(|l| {
-            l.trim_start()
-                .strip_prefix("node ")
-                .and_then(|rest| rest.split_whitespace().next())
-                .map(str::to_string)
-        })
-        .collect()
-}
 
 #[test]
 fn around_omits_the_governing_section_entirely_when_the_file_has_no_decisions_or_findings() {
@@ -68,7 +56,7 @@ fn around_omits_the_governing_section_entirely_when_the_file_has_no_decisions_or
     assert!(ok, "graph --around must succeed; stderr: {err}");
 
     assert!(
-        node_ids(&out).contains(&"lonely.rs::solo".to_string()),
+        graph_node_ids(&out).contains(&"lonely.rs::solo".to_string()),
         "the code definition must still print with no governing items present; got:\n{out}"
     );
     assert!(
@@ -107,7 +95,7 @@ fn around_shows_exactly_ten_with_no_trailing_count_at_the_cap_boundary() {
     let (out, err, ok) = run_around(root, file, 2);
     assert!(ok, "graph --around must succeed; stderr: {err}");
 
-    let ids = node_ids(&out);
+    let ids = graph_node_ids(&out);
     for i in 0..10 {
         let nid = format!("n{i}");
         assert!(
@@ -191,7 +179,8 @@ fn around_never_prints_a_governs_or_about_edge_even_though_subgraph_returns_it()
         );
     }
     assert!(
-        node_ids(&out).contains(&"d1".to_string()) && node_ids(&out).contains(&"f1".to_string()),
+        graph_node_ids(&out).contains(&"d1".to_string())
+            && graph_node_ids(&out).contains(&"f1".to_string()),
         "the decision and finding must still print as NODES in the governing section - only \
          their edges are filtered; got:\n{out}"
     );
@@ -244,7 +233,7 @@ fn around_never_lets_a_superseded_decision_inherit_its_superseders_recency_and_c
     let (out, err, ok) = run_around(root, file, 2);
     assert!(ok, "graph --around must succeed; stderr: {err}");
 
-    let ids = node_ids(&out);
+    let ids = graph_node_ids(&out);
 
     // d1 is stale (superseded) and must be capped out - never shown as if current.
     assert!(

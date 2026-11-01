@@ -7,7 +7,7 @@
 
 use common::git::git_ok;
 use common::repo::repo_text;
-use rigger::spawn::SpawnEvent;
+use rigger::spawn::{SpawnEvent, SpawnResult};
 use std::path::Path;
 use std::process::Command;
 
@@ -18,6 +18,7 @@ mod common;
 use common::git::run_git;
 
 use common::cli::graph_build_line;
+use common::cli::graph_node_ids;
 use common::cli::pin_identity;
 use common::cli::plant_stale_marker;
 use common::cli::read_run_events;
@@ -47,10 +48,10 @@ use common::cli::{
 use common::fixtures::assert_driver_guards_a_null_step;
 use common::fixtures::file_len;
 use common::fixtures::pgid_of;
-use common::fixtures::wave_lessons;
 use common::git::git_answer;
 use common::git::temp_git_project_with_commit;
 use common::mcp::McpSession;
+use common::repo::{flag_value, recorded_argv, recorded_task, stub_path};
 use common::rigger_bin;
 use common::workflow_probe::write_workflow;
 
@@ -472,6 +473,13 @@ fn record_liveness_fault(root: &Path, spawn_id: &str, why: &str) {
     );
 }
 
+/// Record the finding `id`, raised by `by` about `file`, through `rigger emit` in `root`.
+fn emit_finding(root: &Path, id: &str, by: &str, file: &str) {
+    let payload = format!(r#"{{"id":"{id}","by":"{by}","summary":"x","about":["{file}"]}}"#);
+    let (_o, err, ok) = run_rigger(root, &["emit", "ReviewFinding", &payload]);
+    assert!(ok, "emit ReviewFinding {id} must succeed; stderr: {err}");
+}
+
 /// Spec 25, criterion 1 - the DISCARD trigger, PROVEN through the REAL production result
 /// path (`rigger result` -> `cmd_result` -> `spawn_store::record_result`), not a direct
 /// `Projector::apply` on a hand-built event.
@@ -492,26 +500,8 @@ fn rigger_result_folds_an_adjudicator_discard_into_the_persisted_graph() {
     let root = dir.path();
 
     let file = "combat.rs";
-    let emit_finding = |id: &str, by: &str| {
-        let payload = format!(r#"{{"id":"{id}","by":"{by}","summary":"x","about":["{file}"]}}"#);
-        let (_o, err, ok) = run_rigger(root, &["emit", "ReviewFinding", &payload]);
-        assert!(ok, "emit ReviewFinding {id} must succeed; stderr: {err}");
-    };
-    emit_finding("f-discard", "lens:tech");
-    emit_finding("f-open", "lens:sdet");
-
-    // Parse the `node <id> <kind>` lines of `rigger graph --around <file>` into the id set,
-    // so the assertions are exact (never a substring match against an edge line).
-    let graph_node_ids = |out: &str| -> Vec<String> {
-        out.lines()
-            .filter_map(|l| {
-                l.trim_start()
-                    .strip_prefix("node ")
-                    .and_then(|rest| rest.split_whitespace().next())
-                    .map(str::to_string)
-            })
-            .collect()
-    };
+    emit_finding(root, "f-discard", "lens:tech", file);
+    emit_finding(root, "f-open", "lens:sdet", file);
 
     // Before any verdict, both findings are reachable from the file they are ABOUT.
     let (before, err, ok) = run_around(root, file, 2);
@@ -642,18 +632,6 @@ fn reset_runs_prunes_dead_runs_from_the_graph_keeping_lessons_active_run_and_reu
         "DecisionMade",
         &format!(r#"{{"id":"shared-d","summary":"shared (active copy)","governs":["{file}"]}}"#),
     );
-
-    // Parse the `node <id> <kind>` lines of `rigger graph --around <file>` into the id set.
-    let graph_node_ids = |out: &str| -> Vec<String> {
-        out.lines()
-            .filter_map(|l| {
-                l.trim_start()
-                    .strip_prefix("node ")
-                    .and_then(|rest| rest.split_whitespace().next())
-                    .map(str::to_string)
-            })
-            .collect()
-    };
 
     // Before the reset every provenance node is reachable from the shared file.
     let (before, err, ok) = run_around(root, file, 2);
@@ -6717,32 +6695,20 @@ stages:
     );
 }
 
-/// Install a fake `claude` on a fresh bin dir: a shell script that answers each spawn by
-/// matching its system prompt (the content of the file its `--system-prompt-file` names) against
-/// the shell `case` `arms` (each `*MARKER*) ... ;;`),
-/// failing loudly on any prompt no arm names. Returns the bin dir (keep it alive for the run)
-/// and a `PATH` value that resolves it first.
+/// Install a fake `claude` on a fresh directory: the checked-in stream-json stand-in
+/// `claude-code-arms-agent.sh`, answering each spawn from the shell `case` `arms` over its system
+/// prompt (the content of the file its `--system-prompt-file` names; each arm is
+/// `*MARKER*) ... ;;`, and what it prints is the session's `result`), failing loudly on any
+/// prompt no arm names. Only the arms are written here, beside the stand-in's symlink in the
+/// directory's `bin`. Returns the directory (keep it alive for the run) and a `PATH` value that
+/// resolves the stand-in first.
 fn install_fake_claude(arms: &str) -> (tempfile::TempDir, String) {
-    use std::os::unix::fs::PermissionsExt;
-
     let fakebin = tempfile::tempdir().unwrap();
-    let claude_path = fakebin.path().join("claude");
+    let path_env = stub_path(fakebin.path(), "claude", Some("claude-code-arms-agent.sh"));
     std::fs::write(
-        &claude_path,
+        fakebin.path().join("bin/claude-arms"),
         format!(
-            r#"#!/bin/sh
-sp=""
-next=0
-for a in "$@"; do
-  if [ "$next" = "1" ]; then
-    sp=$(cat "$a")
-    next=0
-  fi
-  if [ "$a" = "--system-prompt-file" ]; then
-    next=1
-  fi
-done
-case "$sp" in
+            r#"case "$sp" in
 {arms}  *)
     echo "fake-claude: unrecognized system prompt: $sp" 1>&2
     exit 1
@@ -6752,15 +6718,467 @@ esac
         ),
     )
     .unwrap();
-    let mut perms = std::fs::metadata(&claude_path).unwrap().permissions();
-    perms.set_mode(0o755);
-    std::fs::set_permissions(&claude_path, perms).unwrap();
-    let path_env = format!(
-        "{}:{}",
-        fakebin.path().display(),
-        std::env::var("PATH").unwrap_or_default()
-    );
     (fakebin, path_env)
+}
+
+/// An arm of [`install_fake_claude`] for the `Do the unit.` workers: the launch records, in the
+/// directory of the fake, its argv, its first user message, the `KURRENTDB_CONN` it was started
+/// with (`unset` when none) and the agent streams its scratch root holds while it runs, then
+/// writes the change a merging stage lands.
+const RECORDING_WORKER_ARM: &str = r#"  *"Do the unit."*)
+    printf '%s\0' "$@" > "$here/argv"
+    printf '%s\n' "$first" > "$here/first-message"
+    printf '%s' "${KURRENTDB_CONN-unset}" > "$here/conn"
+    ls "$RIGGER_TMPDIR"/agent-stream/* > "$here/streams" || true
+    echo "pub fn work() {}" > work.rs
+    ;;
+"#;
+
+/// `rigger <args>` in `cwd` under the scratch root `scratch`, with [`RECORDING_WORKER_ARM`]'s fake
+/// `claude` first on PATH: [`run_on_arms`]'s four values, the directory holding what the arm
+/// recorded last.
+fn run_recording(
+    cwd: &Path,
+    args: &[&str],
+    scratch: &Path,
+) -> (String, String, bool, tempfile::TempDir) {
+    run_on_arms(cwd, args, scratch, RECORDING_WORKER_ARM)
+}
+
+/// `rigger <args>` in `cwd` under the scratch root `scratch`, with a fake `claude` answering from
+/// `arms` ([`install_fake_claude`]) first on PATH: its stdout, stderr and success, then the
+/// directory holding the fake, which keeps it alive.
+fn run_on_arms(
+    cwd: &Path,
+    args: &[&str],
+    scratch: &Path,
+    arms: &str,
+) -> (String, String, bool, tempfile::TempDir) {
+    let (fakebin, path_env) = install_fake_claude(arms);
+    let (out, err, ok) = run_rigger_envs(
+        cwd,
+        args,
+        &[
+            ("PATH", &path_env),
+            ("RIGGER_TMPDIR", scratch.to_str().unwrap()),
+        ],
+    );
+    (out, err, ok, fakebin)
+}
+
+/// Plant a stale agent stream under `scratch`, for a run that must leave it: its path.
+fn plant_stale_stream(scratch: &Path) -> std::path::PathBuf {
+    let stale = scratch.join("agent-stream/old-run/old-spawn.0.jsonl");
+    std::fs::create_dir_all(stale.parent().unwrap()).unwrap();
+    std::fs::write(&stale, "stale").unwrap();
+    stale
+}
+
+/// Spec 105's THE COMPOSITION ROOT, end to end: given a project, when the operator runs `rigger
+/// run`, then the agent is hosted on a stream-json session, its `--allowed-tools` pre-approves
+/// the bound server's record, progress and scratch tools after the agent's own and the helpers',
+/// and that bound server runs the running executable for the spawn.
+#[cfg(unix)]
+#[test]
+fn run_hosts_its_agents_granting_each_launch_its_bound_tools() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_workflow_fixture(root, &LIVENESS_WORKFLOW);
+    let scratch = tempfile::tempdir().unwrap();
+    let (out, err, ok, fake) = run_recording(root, &["run"], scratch.path());
+    assert!(ok, "the run succeeds; stderr: {err}\nstdout: {out}");
+    let argv = recorded_argv(&fake.path().join("bin/argv"));
+    assert_eq!(flag_value(&argv, "--input-format"), "stream-json");
+    assert_eq!(flag_value(&argv, "--output-format"), "stream-json");
+    assert_eq!(
+        flag_value(&argv, "--allowed-tools"),
+        "Read,Edit,mcp__rigger__rigger_graph,mcp__rigger__rigger_ground,\
+         mcp__rigger__rigger_peers,mcp__rigger__rigger_emit,mcp__rigger__rigger_progress,\
+         mcp__rigger__rigger_scratch"
+    );
+    let mcp: serde_json::Value =
+        serde_json::from_str(flag_value(&argv, "--mcp-config")).expect("the server config is JSON");
+    assert_eq!(
+        mcp["mcpServers"]["rigger"],
+        serde_json::json!({
+            "command": std::fs::canonicalize(rigger_bin()).unwrap(),
+            "args": ["mcp", "--spawn", "a/implementer#0"],
+        }),
+        "the spawn's bound server runs the running executable"
+    );
+}
+
+/// The live-progress instruction closing a launch's first user message.
+const LIVE_PROGRESS_FRAME: &str =
+    "\n\n--- rigger driver ---\nLIVE PROGRESS: after each significant \
+     step (a search, a build, a commit, a decision) report ONE short line of what you just did by \
+     calling the mcp__rigger__rigger_progress tool with that line as its activity. Keep it \
+     flowing while you work.";
+
+/// Spec 105's live-progress frame, end to end: given a project, when the operator runs `rigger
+/// run`, then the launch's first user message closes with the instruction naming the
+/// `rigger_progress` tool the launch pre-approves.
+#[cfg(unix)]
+#[test]
+fn run_frames_a_launchs_first_message_with_the_live_progress_instruction() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_workflow_fixture(root, &LIVENESS_WORKFLOW);
+    let scratch = tempfile::tempdir().unwrap();
+    let (out, err, ok, fake) = run_recording(root, &["run"], scratch.path());
+    assert!(ok, "the run succeeds; stderr: {err}\nstdout: {out}");
+    let task = recorded_task(&fake.path().join("bin/first-message"));
+    assert!(
+        task.ends_with(LIVE_PROGRESS_FRAME),
+        "the frame closes the task: {task:?}"
+    );
+    assert_eq!(
+        task.matches("--- rigger driver ---").count(),
+        1,
+        "the task is framed once: {task:?}"
+    );
+}
+
+/// Spec 105's run teardown, end to end: given a project whose run ends, when the run ended done
+/// the agent streams its launches wrote are reclaimed with the rest of its scratch, and when it
+/// ended with work left (here an escalated unit) they stand for whoever resumes or reads them.
+#[cfg(unix)]
+#[test]
+fn a_done_runs_agent_streams_are_reclaimed_and_an_unfinished_runs_are_kept() {
+    struct Case {
+        name: &'static str,
+        workflow: &'static WorkflowFixture,
+        ending: &'static str,
+        reclaimed: bool,
+    }
+    let cases = [
+        Case {
+            name: "done",
+            workflow: &REVIEWLESS_GIT_UNIT_WORKFLOW,
+            ending: "done: every unit integrated",
+            reclaimed: true,
+        },
+        Case {
+            name: "escalated",
+            workflow: &REVIEWLESS_GIT_ESCALATING_UNIT_WORKFLOW,
+            ending: "incomplete: not every unit integrated",
+            reclaimed: false,
+        },
+    ];
+    for case in cases {
+        let dir = temp_git_project_with_commit();
+        let root = dir.path();
+        write_workflow_fixture(root, case.workflow);
+        let scratch = tempfile::tempdir().unwrap();
+        plant_run_level_scratch(scratch.path());
+        let (out, err, ok, fake) = run_recording(root, &["run"], scratch.path());
+        assert!(
+            ok,
+            "{}: the run exits 0; stderr: {err}\nstdout: {out}",
+            case.name
+        );
+        assert_eq!(
+            out.lines().nth(2).unwrap(),
+            case.ending,
+            "{}: how the run ended",
+            case.name
+        );
+        assert_eq!(
+            std::fs::read_to_string(fake.path().join("bin/streams")).unwrap(),
+            "solo_2fimplementer_230.0.jsonl\n",
+            "{}: the launch's stream was on disk under the scratch root while it ran",
+            case.name
+        );
+        assert_eq!(
+            !scratch.path().join("agent-stream").exists(),
+            case.reclaimed,
+            "{}: the agent streams after the run",
+            case.name
+        );
+        if case.reclaimed {
+            assert_run_level_scratch_reclaimed(scratch.path(), case.name);
+        } else {
+            assert_run_level_scratch_spared(scratch.path(), case.name);
+        }
+    }
+}
+
+/// Spec 105's root check on the run entry: given a run whose directory and repository disagree,
+/// or whose scratch root belongs to another repository, when the operator runs `rigger run`,
+/// then it refuses naming the verb, before any launch and before it reclaims or reaps, and leaves
+/// no store where it stood.
+#[cfg(unix)]
+#[test]
+fn a_run_whose_roots_disagree_refuses_before_it_reclaims() {
+    struct Case {
+        name: &'static str,
+        nested_cwd: bool,
+        scratch_in_another_repo: bool,
+        refusal: &'static str,
+    }
+    let cases = [
+        Case {
+            name: "a directory under the repository",
+            nested_cwd: true,
+            scratch_in_another_repo: false,
+            refusal: "rigger run: refusing - the store this command would open and the repository \
+                      git resolved for this directory disagree on their root",
+        },
+        Case {
+            name: "a scratch root in another repository",
+            nested_cwd: false,
+            scratch_in_another_repo: true,
+            refusal: "rigger run: refusing - the scratch root this command would use belongs to \
+                      a DIFFERENT repository than the one this command resolved",
+        },
+    ];
+    for case in cases {
+        let dir = temp_git_project_with_commit();
+        let cwd = if case.nested_cwd {
+            dir.path().join("nested")
+        } else {
+            dir.path().to_path_buf()
+        };
+        std::fs::create_dir_all(&cwd).unwrap();
+        write_workflow_fixture(&cwd, &LIVENESS_WORKFLOW);
+        let other = temp_git_project_with_commit();
+        let outside = tempfile::tempdir().unwrap();
+        let scratch = if case.scratch_in_another_repo {
+            other.path().join("scratch-elsewhere")
+        } else {
+            outside.path().join("scratch")
+        };
+        let stale = plant_stale_stream(&scratch);
+        let (out, err, ok, fake) = run_recording(&cwd, &["run"], &scratch);
+        assert!(!ok, "{}: the run refuses; stdout: {out}", case.name);
+        assert!(
+            err.starts_with(&format!("rigger: {}", case.refusal)),
+            "{}: the refusal leads with the verb: {err}",
+            case.name
+        );
+        assert_eq!(
+            std::fs::read_to_string(&stale).unwrap(),
+            "stale",
+            "{}: nothing is reclaimed",
+            case.name
+        );
+        assert!(
+            !fake.path().join("bin/argv").exists(),
+            "{}: no agent is launched",
+            case.name
+        );
+        assert!(
+            !common::cli::rigger_file(&cwd, "events.db").exists(),
+            "{}: no store is opened",
+            case.name
+        );
+    }
+}
+
+/// Spec 105's run teardown in a project with no repository: given a done run where nothing keys
+/// a scratch root, when it ends, then whatever stands in the directory `RIGGER_TMPDIR` names is
+/// not this run's and is left, and the host wrote no stream there.
+#[cfg(unix)]
+#[test]
+fn a_done_run_in_a_project_with_no_repository_reclaims_nothing() {
+    const MERGING_WORKFLOW: WorkflowFixture = WorkflowFixture {
+        worker: UNISOLATED_WORKER,
+        body: "defaults:\n  grounder: nop\n  budget: 60\nstages:\n  a:\n    agent: worker\n    \
+               on_pass: merge\n",
+    };
+    let dir = temp_repoless_project();
+    let root = dir.path();
+    write_workflow_fixture(root, &MERGING_WORKFLOW);
+    let scratch = tempfile::tempdir().unwrap();
+    let stale = plant_stale_stream(scratch.path());
+    let (out, err, ok, fake) = run_recording(root, &["run"], scratch.path());
+    assert!(ok, "the run succeeds; stderr: {err}\nstdout: {out}");
+    assert!(
+        out.starts_with(
+            "run state:\n  a                    integrated\ndone: every unit integrated\n"
+        ),
+        "the run is done: {out}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(fake.path().join("bin/streams")).unwrap(),
+        "old-spawn.0.jsonl\n",
+        "the launch wrote no stream of its own"
+    );
+    assert_eq!(std::fs::read_to_string(&stale).unwrap(), "stale");
+}
+
+/// Spec 105's store hand-off: given a run, when the operator selects a store, then every launch
+/// carries the selection's handed environment: nothing for the local store, the connection
+/// string for a server selected by flag alone.
+#[cfg(unix)]
+#[test]
+fn every_launch_carries_the_store_selections_handed_environment() {
+    fn handed(args: &[&str]) -> String {
+        let dir = temp_git_project_with_commit();
+        let root = dir.path();
+        write_workflow_fixture(root, &LIVENESS_WORKFLOW);
+        let scratch = tempfile::tempdir().unwrap();
+        let (out, err, ok, fake) = run_recording(root, args, scratch.path());
+        assert!(ok, "the run succeeds; stderr: {err}\nstdout: {out}");
+        std::fs::read_to_string(fake.path().join("bin/conn")).unwrap()
+    }
+    assert_eq!(handed(&["run"]), "unset", "the local store hands nothing");
+    common::fixtures::with_kurrentdb(|conn| {
+        let args = ["run", "--eventstore", "kurrentdb", "--conn", conn];
+        assert_eq!(handed(&args), conn, "a server hands its connection string");
+    });
+}
+
+/// Spec 105's run store, end to end: given a project, when `rigger run` hosts a spawn to its end,
+/// then the session's result stands on the run stream, once, carrying the session's final message
+/// and the accounting its stream reported. The host records it: the log `rigger run` opened is the
+/// one the launch's `run_store` writes.
+#[cfg(unix)]
+#[test]
+fn a_hosted_spawns_result_lands_on_the_run_stream_once() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_workflow_fixture(root, &LIVENESS_WORKFLOW);
+    let scratch = tempfile::tempdir().unwrap();
+    let arms = "  *\"Do the unit.\"*)\n    echo 'the unit is built'\n    ;;\n";
+    let (out, err, ok, _fake) = run_on_arms(root, &["run"], scratch.path(), arms);
+    assert!(ok, "the run succeeds; stderr: {err}\nstdout: {out}");
+    let results: Vec<SpawnResult> = read_run_events(root)
+        .iter()
+        .filter(|e| e.type_ == rigger::spawn::TYPE_SPAWN_RESULT)
+        .map(|e| SpawnResult::from_event(e).unwrap())
+        .collect();
+    assert_eq!(
+        results,
+        vec![SpawnResult {
+            id: "a/implementer#0".to_string(),
+            output: "the unit is built".to_string(),
+            error: String::new(),
+            meta: serde_json::json!({
+                "resolved_model": "",
+                "session_id": "arms",
+                "usage": {"input": 0, "output": 0, "cache_creation": 0, "cache_read": 0},
+                "turns": 1,
+                "cost_usd": 0.0,
+                "permission_denials": 0,
+            }),
+        }]
+    );
+}
+
+/// Spec 105's folding run store, end to end: given two findings about one file and a hosted
+/// adjudicator that discards one, when `rigger run` ends, then the result the host recorded has
+/// folded into the persisted graph with nothing left to catch up: the discarded finding drops from
+/// the file's live subgraph and the one the verdict names in neither list stays.
+#[cfg(unix)]
+#[test]
+fn a_hosted_adjudicators_discard_folds_into_the_persisted_graph() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_workflow_fixture(root, &REVIEW_GATED_GIT_ESCALATING_UNIT_WORKFLOW);
+    write_agent(root, "judge", "Read", "Adjudicate it.");
+    seed_store(root);
+    let file = "combat.rs";
+    emit_finding(root, "f-discard", "lens:tech", file);
+    emit_finding(root, "f-open", "lens:sdet", file);
+    let live_ids = || {
+        let (around, err, ok) = run_around(root, file, 2);
+        assert!(ok, "graph must succeed; stderr: {err}");
+        let mut ids = graph_node_ids(&around);
+        ids.sort();
+        ids
+    };
+    assert_eq!(live_ids(), ["combat.rs", "f-discard", "f-open"]);
+    let scratch = tempfile::tempdir().unwrap();
+    let arms = format!(
+        r#"{RECORDING_WORKER_ARM}  *"Adjudicate it."*)
+    echo '{{"verdict":"approve","upheld":[],"discarded":["f-discard"]}}'
+    ;;
+"#
+    );
+    let (out, err, ok, _fake) = run_on_arms(root, &["run"], scratch.path(), &arms);
+    assert!(ok, "the run succeeds; stderr: {err}\nstdout: {out}");
+    assert_eq!(
+        out.lines().nth(2).unwrap(),
+        "done: every unit integrated",
+        "the verdict approved the unit: {out}"
+    );
+    assert_eq!(live_ids(), ["combat.rs", "f-open"]);
+}
+
+/// A unit whose one gate is always red, with `max_retries: 2` giving it a second attempt before
+/// it escalates: one first launch and one re-attempt.
+const TWO_ATTEMPT_RED_UNIT_WORKFLOW: WorkflowFixture = WorkflowFixture {
+    worker: ISOLATED_WORKER,
+    body: r#"defaults:
+  grounder: nop
+  budget: 60
+  max_retries: 2
+gates:
+  red: { run: "false", kind: core }
+stages:
+  solo:
+    agent: worker
+    gates: [red]
+    on_pass: merge
+"#,
+};
+
+/// Spec 105's progress store and the frame on a resumed launch, end to end: given a unit whose
+/// first attempt fails its gate, when `rigger run` re-attempts it, then the second launch resumes
+/// the session the first minted, its first message is the retry task closed by the frame once, and
+/// the run's progress log holds each launch in order, naming that session and what it resumed.
+#[cfg(unix)]
+#[test]
+fn a_re_attempt_resumes_the_recorded_session_framed_and_the_progress_log_holds_each_launch() {
+    use rigger::eventstore::namespace::Namespaced;
+    use rigger::eventstore::sqlite::Store as SqliteStore;
+    use rigger::progress::{read_run, SpawnLaunched, TYPE_SPAWN_LAUNCHED};
+
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_workflow_fixture(root, &TWO_ATTEMPT_RED_UNIT_WORKFLOW);
+    let scratch = tempfile::tempdir().unwrap();
+    let (out, err, ok, fake) = run_recording(root, &["run"], scratch.path());
+    assert!(ok, "the run exits 0; stderr: {err}\nstdout: {out}");
+
+    let progress_db = common::cli::rigger_file(root, "progress.db");
+    let backend = SqliteStore::open(progress_db.to_str().unwrap()).unwrap();
+    let progress = Namespaced::new(&backend, &run_stream_identity(root));
+    let run_id = common::cli::current_run_id_of(root).unwrap();
+    let launches: Vec<SpawnLaunched> = read_run(&progress, &run_id)
+        .unwrap()
+        .iter()
+        .filter(|e| e.type_ == TYPE_SPAWN_LAUNCHED)
+        .map(|e| serde_json::from_slice(&e.data).unwrap())
+        .collect();
+    let session = launches.first().map_or("", |l| l.session_id.as_str());
+    assert_eq!(
+        launches
+            .iter()
+            .map(|l| (
+                l.spawn.as_str(),
+                l.launch,
+                l.session_id.as_str(),
+                l.resumed_from.as_deref()
+            ))
+            .collect::<Vec<_>>(),
+        vec![
+            ("solo/implementer#0", 0, session, None),
+            ("solo/implementer#1", 0, session, Some(session)),
+        ],
+        "each launch in order, the second resuming the first's session"
+    );
+
+    let argv = recorded_argv(&fake.path().join("bin/argv"));
+    assert_eq!(flag_value(&argv, "--resume"), session);
+    let retry_task = "Your previous attempt failed the checks below. Fix exactly these - do not \
+                      start over:\nYour previous attempt failed these gates: red: FAIL\n\n";
+    assert_eq!(
+        recorded_task(&fake.path().join("bin/first-message")),
+        format!("{retry_task}{LIVE_PROGRESS_FRAME}"),
+        "the resumed launch's first message is the retry task, framed once"
+    );
 }
 
 /// Spec 64, criterion 3, adjudication round 3 finding
@@ -6782,11 +7200,10 @@ esac
 /// tests above document that they went GREEN under a mutation that disabled round 4's
 /// per-tier re-assert, before this test was written to close the actual gap.
 ///
-/// This drives the REAL `cli::Driver` instead - the synchronous, subprocess-per-spawn path
-/// `rigger run` uses - with a fake `claude` executable substituted onto `PATH` (the same
-/// shimming technique `crates/rigger-driver/src/driver/cli.rs`'s own `spawn_shells_out_and_bridges_the_agents_
-/// emits` unit test uses for the driver alone, extended here through the whole compiled
-/// binary and a real git-backed unit worktree). The fake agent plays four roles, selected
+/// This drives the REAL `claude_code::Driver` instead - the synchronous, process-per-spawn host
+/// `rigger run` builds at its composition root - with a fake `claude` executable substituted onto
+/// `PATH`, through the whole compiled binary and a real git-backed unit worktree. The fake agent
+/// plays four roles, selected
 /// by a marker embedded in each agent's own persona (which `build_system_prompt` forwards
 /// verbatim into the file `--system-prompt-file` names): the worker writes a file; the LENS - the review
 /// panel's own FIRST tier, standing in for the "review agents doing unprompted forensic
@@ -6923,303 +7340,6 @@ stages:
             .any(|e| e.type_ == rigger::ledger::TYPE_UNIT_FAILED
                 || e.type_ == rigger::ledger::TYPE_UNIT_ESCALATED),
         "the self-heal must land cleanly - no failed or escalated unit"
-    );
-}
-
-/// What one [`run_with_bridged_lines`] left behind.
-#[cfg(unix)]
-struct Bridged {
-    /// Everything the run said: stdout, stderr and every event's payload, one haystack.
-    said: String,
-    /// The run's events.
-    events: Vec<rigger::eventstore::Event>,
-    /// The task each worker spawn read on its stdin, in spawn order.
-    worker_tasks: Vec<String>,
-    /// The task each adjudicator spawn read on its stdin, in spawn order.
-    judge_tasks: Vec<String>,
-    /// Every commit the repository holds afterwards, one `{sha} {subject}` line each.
-    commits: Vec<String>,
-}
-
-/// The tasks the spawns of one fake agent saved in `dir`, one file per spawn named by its
-/// ordinal, in spawn order.
-#[cfg(unix)]
-fn saved_tasks(dir: &Path) -> Vec<String> {
-    let spawned = std::fs::read_dir(dir).unwrap().count();
-    (0..spawned)
-        .map(|n| std::fs::read_to_string(dir.join(n.to_string())).unwrap())
-        .collect()
-}
-
-/// One `rigger run` of a reviewed one-stage unit through the REAL cli host, whose fake `claude`
-/// worker prints `worker_lines` on its first spawn only and whose adjudicator prints
-/// `judge_lines` on its first `judge_prints` spawns, each before approving: the host bridges
-/// every emit line on an agent's stdout into the conductor's in-process emit. Two attempts, so a
-/// line refused on the worker's first spawn can be charged to that attempt and the second,
-/// printing nothing, carries the unit on.
-#[cfg(unix)]
-fn run_with_bridged_lines(worker_lines: &str, judge_lines: &str, judge_prints: usize) -> Bridged {
-    let dir = temp_git_project_with_commit();
-    let root = dir.path();
-    let tasks = tempfile::tempdir().unwrap();
-    let task_dir = tasks.path().display();
-    let judged = tempfile::tempdir().unwrap();
-    let judge_dir = judged.path().display();
-    write_agent(
-        root,
-        "worker",
-        "Read, Edit",
-        "RIGGERTEST_WORKER: do the unit.",
-    );
-    write_agent(root, "a", "Read", "RIGGERTEST_LENS: review it.");
-    write_agent(
-        root,
-        "adv",
-        "Read",
-        "RIGGERTEST_ADVERSARY: try to break it.",
-    );
-    write_agent(
-        root,
-        "judge",
-        "Read",
-        "RIGGERTEST_ADJUDICATOR: adjudicate it.",
-    );
-    std::fs::write(
-        root.join(".rigger").join("workflow.yml"),
-        r#"defaults:
-  grounder: nop
-  budget: 60
-  max_retries: 2
-gates:
-  ok: { run: "true", kind: core }
-stages:
-  solo:
-    agent: worker
-    gates: [ok]
-    on_pass: none
-    review:
-      lenses: [a]
-      adversary: adv
-      adjudicator: judge
-"#,
-    )
-    .unwrap();
-    let (_fakebin, path_env) = install_fake_claude(&format!(
-        r#"  *RIGGERTEST_LENS*)
-    echo "reviewed: no blocker"
-    ;;
-  *RIGGERTEST_ADVERSARY*)
-    echo "tried and failed"
-    ;;
-  *RIGGERTEST_ADJUDICATOR*)
-    n=$(ls "{judge_dir}" | wc -l | tr -d ' ')
-    cat > "{judge_dir}/$n"
-    if [ "$n" -lt {judge_prints} ]; then
-      cat <<'LINES'
-{judge_lines}
-LINES
-    fi
-    echo '{{"verdict":"approve"}}'
-    ;;
-  *RIGGERTEST_WORKER*)
-    n=$(ls "{task_dir}" | wc -l | tr -d ' ')
-    cat > "{task_dir}/$n"
-    echo "pub fn work() {{}}" > work.rs
-    if [ "$n" = 0 ]; then
-      cat <<'LINES'
-{worker_lines}
-LINES
-    fi
-    ;;
-"#
-    ));
-    let (out, err, _ok) = run_rigger_envs(root, &["run"], &[("PATH", &path_env)]);
-    let events = read_run_events(root);
-    let said = [out, err]
-        .into_iter()
-        .chain(
-            events
-                .iter()
-                .map(|e| String::from_utf8_lossy(&e.data).into_owned()),
-        )
-        .collect::<Vec<_>>()
-        .join("\n");
-    let commits = git_answer(root, &["log", "--all", "--format=%H %s"])
-        .map(|log| log.lines().map(str::to_string).collect())
-        .unwrap_or_default();
-    Bridged {
-        said,
-        events,
-        worker_tasks: saved_tasks(tasks.path()),
-        judge_tasks: saved_tasks(judged.path()),
-        commits,
-    }
-}
-
-/// The `{unit}/{role}` seat stamped on each recorded `DecisionMade` whose id is `id`, in log order.
-#[cfg(unix)]
-fn decision_seats(events: &[rigger::eventstore::Event], id: &str) -> Vec<String> {
-    events
-        .iter()
-        .filter(|e| e.type_ == rigger::contextgraph::TYPE_DECISION_MADE)
-        .filter(|e| serde_json::from_slice::<serde_json::Value>(&e.data).unwrap()["id"] == id)
-        .map(|e| {
-            let spawn = e.meta.get(rigger::conductor::META_SPAWN);
-            rigger::spawn::unit_role_of(spawn.map_or("", String::as_str)).to_string()
-        })
-        .collect()
-}
-
-/// A record a cli-host agent prints on stdout reaches the log through the conductor's in-process
-/// emit, so it is judged by the same guard `rigger emit` runs: a payload the fold cannot apply -
-/// `governs` given as a string, not an array - is refused before the append, so the log holds no
-/// record the fold would pass over. The refusal is a defect in what the implementer printed, not
-/// an outage: it is charged to that attempt like a review reject, never rerun uncharged as
-/// infra, and the next attempt's prompt names it, so the agent learns why and the unit converges.
-/// The attempt's edits are committed as its checkpoint, as a gate failure's are, so its
-/// `UnitFailed` carries that sha and an escalation's teardown never discards them.
-#[cfg(unix)]
-#[test]
-fn a_cli_host_bridged_record_the_fold_cannot_apply_is_refused_and_charged_to_the_attempt_that_printed_it(
-) {
-    let refusal = "refusing to emit: DecisionMade payload field `governs`";
-    let Bridged {
-        said,
-        events,
-        worker_tasks: tasks,
-        commits,
-        ..
-    } = run_with_bridged_lines(
-        r#"{"type":"DecisionMade","data":{"id":"d-bad","summary":"s","governs":"src/work.rs"}}"#,
-        "",
-        0,
-    );
-    assert_eq!(
-        decision_seats(&events, "d-bad"),
-        Vec::<String>::new(),
-        "the refused record landed nothing"
-    );
-    assert!(
-        said.contains(refusal),
-        "the refusal reaches the spawn's error: {said}"
-    );
-    let failed: Vec<serde_json::Value> = events
-        .iter()
-        .filter(|e| e.type_ == rigger::ledger::TYPE_UNIT_FAILED)
-        .map(|e| serde_json::from_slice(&e.data).unwrap())
-        .collect();
-    assert_eq!(
-        failed
-            .iter()
-            .map(|f| (f["attempts"].as_u64(), f["cause"].as_str()))
-            .collect::<Vec<_>>(),
-        [(Some(1), Some("reject"))],
-        "the refusal is charged one attempt, as a reject: {failed:?}"
-    );
-    let reason = failed[0]["review_reason"].as_str().unwrap_or_default();
-    assert!(
-        reason.contains(refusal) && !reason.contains('\u{1}'),
-        "the charged failure carries the refusal, unmarked: {reason:?}"
-    );
-    let failed_sha = events
-        .iter()
-        .find(|e| e.type_ == rigger::ledger::TYPE_UNIT_FAILED)
-        .and_then(|e| e.meta.get(rigger::conductor::META_WORKTREE_SHA))
-        .cloned()
-        .unwrap_or_default();
-    assert!(
-        commits.contains(&format!("{failed_sha} rigger: solo attempt 1")),
-        "the refused attempt's edits are committed as its checkpoint, the sha its UnitFailed \
-         carries, as a gate failure's are: {failed_sha:?} in {commits:?}"
-    );
-    assert!(
-        !events.iter().any(|e| {
-            e.type_ == rigger::ledger::TYPE_UNIT_STATUS
-                && String::from_utf8_lossy(&e.data).contains(r#""status":"infra-retry""#)
-        }),
-        "a refusal is never rerun uncharged as infra"
-    );
-    assert_eq!(tasks.len(), 2, "the worker spawned once per attempt");
-    assert!(
-        !tasks[0].contains(refusal) && tasks[1].contains(refusal),
-        "the next attempt's prompt names the refusal: {:?}",
-        tasks[1]
-    );
-    assert!(
-        !events
-            .iter()
-            .any(|e| e.type_ == rigger::ledger::TYPE_UNIT_ESCALATED),
-        "the next attempt, printing nothing refused, carries the unit on"
-    );
-}
-
-/// The run of [`run_with_bridged_lines`] whose worker prints a record under the id `d-x` and
-/// whose adjudicator prints one under the same id on its first `judge_prints` spawns: the
-/// reviewer's is refused before the append, naming the holder, so the implementer's record stays
-/// the one the graph keeps - the in-process emit stamps each bridged line with its spawn, whose
-/// `{unit}/{role}` seat is the author the guard compares. The adjudicator's verdict rides the
-/// same stdout, so a refused line costs its spawn the verdict: the spawn re-runs once, under its
-/// next retry id, told why, and never again. Returns the run.
-#[cfg(unix)]
-fn assert_a_reviewer_s_refused_record_re_runs_its_spawn_once(judge_prints: usize) -> Bridged {
-    let run = run_with_bridged_lines(
-        r#"{"type":"DecisionMade","data":{"id":"d-x","summary":"the worker's"}}"#,
-        r#"{"type":"DecisionMade","data":{"id":"d-x","summary":"the judge's"}}"#,
-        judge_prints,
-    );
-    let seats = decision_seats(&run.events, "d-x");
-    assert!(
-        !seats.is_empty() && seats.iter().all(|seat| seat == "solo/implementer"),
-        "only the implementer's record holds the id: {seats:?}"
-    );
-    assert_eq!(
-        run.judge_tasks.len(),
-        2,
-        "the refused adjudicator re-runs once, never again"
-    );
-    for named in [
-        r#"Your previous run's record was refused: refusing to emit DecisionMade "d-x""#,
-        "recorded by solo/implementer",
-    ] {
-        assert!(
-            run.judge_tasks[1].contains(named),
-            "the re-run's task names {named:?}: {}",
-            run.judge_tasks[1]
-        );
-    }
-    assert!(
-        !run.said.contains('\u{1}'),
-        "no control-character marker reaches what the run said: {}",
-        run.said
-    );
-    run
-}
-
-/// A cli-host reviewer whose record is refused once re-runs, told why, and its re-run's verdict
-/// carries the unit on.
-#[cfg(unix)]
-#[test]
-fn a_cli_host_reviewer_whose_bridged_record_another_seat_holds_re_runs_once_told_why() {
-    let run = assert_a_reviewer_s_refused_record_re_runs_its_spawn_once(1);
-    assert!(
-        run.said.contains(r#""status":"reviewed""#) && wave_lessons(&run.events).is_empty(),
-        "the re-run's approve carries the unit on: {}",
-        run.said
-    );
-}
-
-/// A cli-host reviewer refused again on its re-run fails its stage with the refusal: the
-/// review's own failure handling, its wave lesson naming the refusal.
-#[cfg(unix)]
-#[test]
-fn a_cli_host_reviewer_refused_again_fails_its_stage_with_the_refusal() {
-    let run = assert_a_reviewer_s_refused_record_re_runs_its_spawn_once(2);
-    let lessons = wave_lessons(&run.events);
-    assert!(
-        lessons
-            .iter()
-            .any(|l| l.contains(r#"refusing to emit DecisionMade "d-x""#)),
-        "the stage's wave lesson carries the refusal: {lessons:?}"
     );
 }
 
@@ -9497,12 +9617,13 @@ fn plant_run_level_scratch(scratch: &Path) {
 }
 
 /// Assert the run-level shared scratch planted by [`plant_run_level_scratch`] is ALL still
-/// present (the never-delete-live rail: while a spawn is live the teardown must not fire).
+/// present (the never-delete-live rail: while a spawn is live, or a run ended with work left, the
+/// teardown must not fire).
 fn assert_run_level_scratch_spared(scratch: &Path, ctx: &str) {
     for area in ["cargo-target", "target", "agent-scratch", "agent-live"] {
         assert!(
             scratch.join(area).exists(),
-            "{ctx}: a live-spawn step must SPARE the run-level {area}; it was wrongly reclaimed"
+            "{ctx}: the teardown must SPARE the run-level {area}; it was wrongly reclaimed"
         );
     }
 }
@@ -25446,7 +25567,7 @@ fn prime_given_a_spec_path_names_the_spec_lint_after_real_decision_content() {
 /// unreachable `--base origin/does-not-exist`.
 #[derive(Clone, Copy)]
 enum SpecLaunch {
-    /// `rigger run <spec>` (the cli driver), which prints the spec-lint reminder on stdout.
+    /// `rigger run <spec>` (the standalone path), which prints the spec-lint reminder on stdout.
     Run,
     /// `rigger step --spec <spec>`, which prints it on stderr: its stdout carries exactly one
     /// line of `{wave,done}` JSON a driver parses.
@@ -29055,7 +29176,7 @@ fn the_handbook_lists_every_built_in_entry_in_order_with_its_source() {
 }
 
 /// Spec 120's THE COMMUNICATION DISCIPLINE IS A SHADOWABLE BUILT-IN, end to end: given a project
-/// whose one stage spawns its worker through the real subprocess driver, when the operator runs
+/// whose one stage spawns its worker through the real headless host, when the operator runs
 /// `rigger run`, then the file the agent's `--system-prompt-file` names holds exactly `compose`'s
 /// output over the worker's persona - the communication section once, the retired heading
 /// nowhere, nothing appended after the composed layers.

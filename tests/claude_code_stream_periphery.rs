@@ -82,6 +82,7 @@ impl Fixture {
             run_store: &self.run_store,
             scratch_root: self.scratch_root.path().to_string_lossy().into_owned(),
             stop_grace: std::time::Duration::from_secs(30),
+            handed_env: Vec::new(),
         }
     }
 

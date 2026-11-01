@@ -5,16 +5,10 @@
 //! its session, its model, its tools, its permissions, travels as an explicit argv or
 //! stream field, never inferred from a prompt sentence or parsed stdout.
 //!
-//! This file lands incrementally, criterion by criterion (spec 104's own "one host, ship
-//! it whole" intent still holds - the criteria are a delivery split, not a design split):
-//! criterion 1 (THE LAUNCH IS TYPED) owns argv, cwd, environment and the open half of the
-//! launch record. THE STREAM (criterion 2, this module's addition below `Launch`) reads
-//! what criterion 1 starts: one reader per child, line by line, closing
-//! `impl AgentDriver for Driver`. The composition-root swap - `rigger run` (`src/cli/run.rs`)
-//! launching its agents through this host instead of `cli::Driver` - is DEFERRED to spec
-//! 105 (`d-u104-stream-defer-composition-swap`): `tests/cli.rs`'s existing fixtures assume
-//! `cli::Driver`'s argv/stdio contract, and this host has no failure-class relaunch or hold
-//! yet (criterion 5) to run unattended against a real `api_retry`.
+//! THE LAUNCH owns argv, cwd, environment and the open half of the launch record. THE STREAM
+//! reads what the launch starts: one reader per child, line by line, closing
+//! `impl AgentDriver for Driver`. `rigger run` and `rigger critique` launch their agents through
+//! this host, each building [`Driver`] at its own composition root.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
@@ -25,12 +19,13 @@ use serde_json::Value;
 
 use crate::agent::{
     classify_failure, no_result_error, AgentDriver, AgentFailure, AgentResult, Error, SpawnOpts,
+    SPAWN_BOUND_TOOLS, SPAWN_PROGRESS_TOOL,
 };
 use crate::config::AgentDef;
 use crate::driver::replay::{reclaim_spawn_registered_scratch, spawn_scratch_path};
 use crate::driver::{
-    allowed_tools_args, bin_or_path_default, harness_env, spawn_config_args, system_prompt_file,
-    LaunchSession, SystemPromptFile,
+    allowed_tools_args, bin_or_path_default, harness_env, progress_framed, spawn_config_args,
+    system_prompt_file, LaunchSession, SystemPromptFile,
 };
 use crate::eventstore::EventStore;
 use crate::hooks;
@@ -65,6 +60,10 @@ const UNBOUNDED_POLL: std::time::Duration = std::time::Duration::from_secs(5);
 /// outside this module has a reason to tune.
 const ORDINARY_DRAIN_JOIN_BOUND: std::time::Duration = std::time::Duration::from_secs(2);
 
+/// THE STOP's production grace: how long a host waits, once it has closed a silent session's
+/// input, for the session to exit on its own before ending it ([`Driver::stop_grace`]).
+pub const STOP_GRACE: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// Spawns agents as headless Claude Code sessions.
 pub struct Driver<'a> {
     /// The `claude` binary to run. Empty resolves to `"claude"` on `$PATH`, same
@@ -93,19 +92,23 @@ pub struct Driver<'a> {
     /// THE STOP's own grace period (spec 104 criterion 6, architecture addendum §4.6):
     /// how long [`Driver::stop_for_wall_clock_silence`] waits, after closing the
     /// session's input, for the child to exit on its own before forcing it via
-    /// [`crate::reap::end_child`] - the literal 30 seconds the Design section names in
-    /// production. An INJECTED field, never a bare module constant - the same "the real
-    /// duration is a value a test overrides on the instance" seam this codebase already
-    /// uses for a waited duration elsewhere (`d-clock-seam`), so a test proving the FULL
-    /// stop sequence never has to sit out a real 30 seconds. `Driver::default()`
-    /// (test-only) resolves it to 30s; production sets it explicitly (the composition
-    /// root, spec 105).
+    /// [`crate::reap::end_child`] - [`STOP_GRACE`] in production. An INJECTED field, never a
+    /// read of that constant here - the same "the real duration is a value a test overrides on
+    /// the instance" seam this codebase already uses for a waited duration elsewhere
+    /// (`d-clock-seam`), so a test proving the FULL stop sequence never has to sit out a real
+    /// 30 seconds. `Driver::default()` (test-only) resolves it to [`STOP_GRACE`]; each
+    /// composition root sets it explicitly.
     pub stop_grace: std::time::Duration,
+    /// The environment the store selection hands every launch: the connection a spawn's bound
+    /// `rigger` server opens the run's store with, empty on the local store. Set after
+    /// [`SpawnOpts::env`], so the selection wins under the same key.
+    pub handed_env: Vec<(String, String)>,
 }
 
 // `Default` is a TEST convenience only: production always constructs `Driver` with real
-// injected stores at the composition root (`src/main.rs`), so a value that reads through
-// `self.progress_store`/`self.run_store` without one is a test bug, never a real launch -
+// injected stores at a composition root (`src/cli/run.rs`, `src/cli/critique.rs`), so a value
+// that reads through `self.progress_store`/`self.run_store` without one is a test bug, never a
+// real launch -
 // the same contract `crate::eventstore::SilentStore` (also `#[cfg(test)]`) documents.
 #[cfg(test)]
 impl Default for Driver<'static> {
@@ -121,7 +124,8 @@ impl Default for Driver<'static> {
             progress_store: &crate::eventstore::SilentStore,
             run_store: &crate::eventstore::SilentStore,
             scratch_root: String::new(),
-            stop_grace: std::time::Duration::from_secs(30),
+            stop_grace: STOP_GRACE,
+            handed_env: Vec::new(),
         }
     }
 }
@@ -214,7 +218,7 @@ impl Driver<'_> {
         for (k, v) in harness_env(&opts.id) {
             cmd.env(k, v);
         }
-        for (k, v) in &opts.env {
+        for (k, v) in opts.env.iter().chain(&self.handed_env) {
             cmd.env(k, v);
         }
         cmd.stdin(Stdio::piped());
@@ -224,13 +228,15 @@ impl Driver<'_> {
             .spawn()
             .map_err(|e| Error(format!("claude_code driver: launch {:?}: {e}", opts.id)))?;
 
-        // The task is the first user message on the input stream (§4.1); stdin stays
-        // open afterward (§4.2's "the host closes the input after the first `result`" is
-        // the reader's call, not this one's).
+        // The task, framed with the live-progress instruction, is the first user message on
+        // the input stream (§4.1); stdin stays open afterward (§4.2's "the host closes the
+        // input after the first `result`" is the reader's call, not this one's). Every launch
+        // passes through here, so a resume and a relaunch are framed too.
+        let message = first_user_message(&framed(session.task(task, opts)));
         let write_result = child
             .stdin
             .as_mut()
-            .map(|stdin| writeln!(stdin, "{}", first_user_message(session.task(task, opts))));
+            .map(|stdin| writeln!(stdin, "{message}"));
         if let Some(Err(e)) = write_result {
             // The durable `SpawnLaunched` record above already claims this launch
             // happened - a write failure here must not also leak the OS process behind
@@ -1221,6 +1227,14 @@ fn rigger_server_fault(init: &Value) -> Option<String> {
     (status != "connected").then(|| status.to_string())
 }
 
+/// `task` framed with the live-progress instruction ([`progress_framed`]), reported through
+/// the tool every launch of this host pre-approves ([`SPAWN_BOUND_TOOLS`]).
+pub fn framed(task: &str) -> String {
+    let report =
+        format!("by calling the {SPAWN_PROGRESS_TOOL} tool with that line as its activity");
+    progress_framed(task, &report)
+}
+
 /// The typed stream-json first input message: `{"type":"user","message":{"role":"user",
 /// "content":task}}`, one compact line (stream-json is line-delimited).
 fn first_user_message(task: &str) -> String {
@@ -1273,7 +1287,7 @@ pub fn build_args(
         args.push("--fallback-model".to_string());
         args.push(agent.fallback_model.clone());
     }
-    args.extend(allowed_tools_args(agent)?);
+    args.extend(allowed_tools_args(agent, &SPAWN_BOUND_TOOLS)?);
     args.extend(spawn_config_args(
         rigger_bin,
         &["mcp", "--spawn", &opts.id],
@@ -1336,7 +1350,11 @@ mod tests {
         assert_eq!(get_val("--fallback-model"), "haiku");
         assert_eq!(
             get_val("--allowed-tools"),
-            format!("Read,Bash,{}", hooks::helper_mcp_tools().unwrap().join(","))
+            format!(
+                "Read,Bash,{},{}",
+                hooks::helper_mcp_tools().unwrap().join(","),
+                SPAWN_BOUND_TOOLS.join(",")
+            )
         );
         assert_eq!(get_val("--permission-mode"), "default");
         assert_eq!(get_val("--permission-prompts"), "none");
@@ -1617,9 +1635,17 @@ mod tests {
         assert!(!args.iter().any(|x| x == "--system-prompt-file"));
         assert!(!args.iter().any(|x| x == "--model"));
         assert!(!args.iter().any(|x| x == "--fallback-model"));
-        // The helpers' MCP tools are pre-approved even for an agent declaring no tools.
+        // The helpers' MCP tools and this host's bound tools are pre-approved even for an agent
+        // declaring no tools.
         let ti = args.iter().position(|x| x == "--allowed-tools").unwrap();
-        assert_eq!(args[ti + 1], hooks::helper_mcp_tools().unwrap().join(","));
+        assert_eq!(
+            args[ti + 1],
+            format!(
+                "{},{}",
+                hooks::helper_mcp_tools().unwrap().join(","),
+                SPAWN_BOUND_TOOLS.join(",")
+            )
+        );
         // The always-on flags are still present, the session configuration included.
         assert!(args.iter().any(|x| x == "--settings"));
         assert!(args.iter().any(|x| x == "--agents"));
@@ -1868,7 +1894,7 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(json_text).unwrap();
         assert_eq!(v["type"], "user");
         assert_eq!(v["message"]["role"], "user");
-        assert_eq!(v["message"]["content"], "implement the thing");
+        assert_eq!(v["message"]["content"], framed("implement the thing"));
     }
 
     #[test]
@@ -1978,7 +2004,7 @@ mod tests {
             .expect("fixture echoed the first stdin line");
         let v: serde_json::Value =
             serde_json::from_str(stdin_line.trim_start_matches("STDIN=")).unwrap();
-        assert_eq!(v["message"]["content"], "fix exactly these");
+        assert_eq!(v["message"]["content"], framed("fix exactly these"));
     }
 
     #[test]

@@ -139,8 +139,8 @@ pub use crate::metrics::META_MODEL_RESOLVED;
 /// distinct from the shared ROLE token [`contextgraph::META_ACTOR`] stamps (two concurrent
 /// sibling adjudicators carry the SAME actor, so the actor cannot tell their emits apart).
 /// The per-spawn `emit` callback in [`run_reviewer`](RunCtx::run_reviewer) stamps it, so an
-/// approve-shaped verdict a GATING spawn records via `rigger_emit` on the in-process (cli)
-/// path is attributable to THAT spawn EXACTLY - the correlation the store-sourced
+/// approve-shaped verdict a GATING spawn hands through that callback is attributable to
+/// THAT spawn EXACTLY - the correlation the store-sourced
 /// verdict-channel-mismatch backstop needs to exclude a CONCURRENT sibling's approve under
 /// the `run_wave` fan-out. Audit metadata on events that already exist, never a new event
 /// type (spec 18's Global constraints); folds and projections ignore it, exactly like
@@ -3394,8 +3394,7 @@ impl RunCtx<'_> {
     }
 
     /// THE AGENT EMIT: an event an agent's spawn emits through the driver's in-process emit
-    /// callback - on a cli host, each record line the agent printed, which the driver's bridge
-    /// replays through it - built like [`emit_meta`](RunCtx::emit_meta) with the spawn's `stamps`,
+    /// callback - built like [`emit_meta`](RunCtx::emit_meta) with the spawn's `stamps`,
     /// then judged by the one emit guard every emit surface runs ([`Deps::check_emit`]) before it
     /// is appended. A payload the fold cannot apply, or a record whose id another seat holds,
     /// lands nothing, and the refusal is the callback's error, so it is the spawn's, marked
@@ -4657,7 +4656,7 @@ impl RunCtx<'_> {
 
     /// The cwd-isolation invariant for EVERY spawned agent (the worktree-isolation
     /// fix): an agent NEVER runs in the live main-repo checkout. A spawn's `dir`
-    /// becomes the agent's working directory (the cli driver's `current_dir`, the
+    /// becomes the agent's working directory (a process host's `current_dir`, the
     /// Agent SDK's `cwd`); an EMPTY `dir` makes the agent inherit the driver's own
     /// cwd, which - for `rigger workflow`, run from the repo root - IS the main
     /// checkout. With `bypassPermissions` on, the agent can then edit the live repo,
@@ -4763,8 +4762,7 @@ impl RunCtx<'_> {
             // the cache the unit's gates use.
             env: Self::spawn_env(&build_env, dir, cache),
             reviews: reviews.to_vec(),
-            // The existing blocking drivers (cli/workflow) ignore these two; spec 104's host
-            // is not wired in here yet.
+            // The headless host reads these two; the other drivers ignore them.
             settings_json: String::new(),
             launch: 0,
             // A fresh session; `continue_prior_session` points a later round's spawn at the
@@ -5971,10 +5969,9 @@ impl RunCtx<'_> {
                 // its supersede order from (see the matching comment there). The live
                 // MCP/workflow driver path already gets this for free (`stamp_current_spawn`
                 // stamps every emit while a spawn is being served); this `emit` callback is
-                // the ONLY channel the cli subprocess driver (`crates/rigger-driver/src/driver/cli.rs`, wired at
-                // main.rs:2770/4323) has to bridge a bridged UnitProposed's attribution, so
-                // it must stamp it itself here. Harmless (and consistent with
-                // `run_reviewer`'s identical pattern) for a plain implementer's own
+                // the ONLY channel a driver that hands a record through it has for a
+                // UnitProposed's attribution, so it must stamp it itself here. Harmless (and
+                // consistent with `run_reviewer`'s identical pattern) for a plain implementer's own
                 // DecisionMade emits, which carry no episode significance.
                 let emit = |t: &str, v: Value| {
                     self.emit_agent(
@@ -6034,8 +6031,7 @@ impl RunCtx<'_> {
                         // An implementer is never a review tier: no roster to render
                         // (spec 67, criterion 4).
                         reviews: Vec::new(),
-                        // The existing blocking drivers (cli/workflow) ignore these two;
-                        // spec 104's host is not wired in here yet.
+                        // The headless host reads these two; the other drivers ignore them.
                         settings_json: String::new(),
                         launch: 0,
                         // Set by `continue_prior_session` below when there is a session
@@ -6664,8 +6660,7 @@ impl RunCtx<'_> {
                             // A speculation candidate is an implementer lane, never a review
                             // tier: no roster to render (spec 67, criterion 4).
                             reviews: Vec::new(),
-                            // The existing blocking drivers (cli/workflow) ignore these;
-                            // spec 104's host is not wired in here yet.
+                            // The headless host reads these; the other drivers ignore them.
                             settings_json: String::new(),
                             launch: 0,
                             resumed_from: String::new(),
@@ -7725,8 +7720,8 @@ impl RunCtx<'_> {
                 // driver paths, which is what lets the review-quality folds key an upheld
                 // finding to its tier regardless of which driver recorded it. ALSO stamp
                 // this spawn's deterministic id ([`META_SPAWN`]) so an approve-shaped verdict
-                // a GATING adjudicator records via `rigger_emit` on the in-process (cli) path
-                // is attributable to THAT spawn EXACTLY - not just its shared role token,
+                // a GATING adjudicator hands through this callback is attributable to
+                // THAT spawn EXACTLY - not just its shared role token,
                 // which a concurrent sibling adjudicator (`run_wave` fan-out) carries too -
                 // the per-spawn correlation the mismatch backstop (`gating_spawn_emitted_approve`)
                 // keys on to exclude a sibling's approve.
@@ -7760,10 +7755,12 @@ impl RunCtx<'_> {
                         //
                         // A driver PARK (the replay frontier) or a BUDGET refusal unwinds the unit
                         // cleanly and PROPAGATES unchanged (its marker survives the `format!` wrapping,
-                        // so `is_parked`/`carries_marker(.., BUDGET_MARKER)` still recognize it upstream). And the LIVE
-                        // drivers (cli / workflow) never RECORD a spawn result, so `review_spawn_errored`
-                        // is false there and a genuine in-process review failure still propagates as
-                        // the stage's error exactly as before - only a REPLAYED recorded error re-parks.
+                        // so `is_parked`/`carries_marker(.., BUDGET_MARKER)` still recognize it upstream).
+                        // The headless host RECORDS its result as the replay path does, so a failed
+                        // hosted review re-drives through this same bound. Only the workflow driver
+                        // records none, so `review_spawn_errored` is false there and a genuine
+                        // in-process review failure still propagates as the stage's error exactly as
+                        // before.
                         if !is_parked_or_budget_refused(&e) && self.review_spawn_errored(&id)? {
                             continue;
                         }
@@ -7851,8 +7848,8 @@ impl RunCtx<'_> {
 
     /// Whether the GATING spawn `id` emitted an approve-shaped verdict via `rigger_emit`
     /// DURING its run (spec 18, unit 3), read from the STORE so the backstop fires on
-    /// EVERY driver - the in-process cli callback, the out-of-process workflow MCP server,
-    /// AND the replay driver (rigger step) - not only the cli stdout bridge. The emitted
+    /// EVERY driver - the emit callback, the headless host's spawn-bound `rigger` server,
+    /// the out-of-process workflow MCP server AND the replay driver (rigger step). The emitted
     /// approve is the DIAGNOSTIC signal of a persona that recorded its verdict as an event
     /// instead of on the result channel the gate reads; the result channel still DECIDES
     /// (the caller pairs this with `!has_verdict_line`), honoring addendum 2.2.
@@ -7913,10 +7910,11 @@ impl RunCtx<'_> {
     /// excluded - it is a real verdict that folds normally.
     ///
     /// Scoped to the CURRENT run (like every execution-replay lookup, spec 06 unit 1), so a
-    /// prior run's recorded review error never re-parks a fresh run's same-id review spawn. On
-    /// the LIVE drivers (cli / workflow) no spawn result is ever recorded, so this is always
-    /// `false` there and a genuine in-process review failure still propagates to remediation
-    /// unchanged - only a REPLAYED recorded error re-parks.
+    /// prior run's recorded review error never re-parks a fresh run's same-id review spawn. The
+    /// headless host records its result as the replay path does, so this reads a failed hosted
+    /// review as it reads a replayed one. The workflow driver records no spawn result, so this
+    /// is always `false` there and a genuine in-process review failure still propagates to
+    /// remediation unchanged.
     fn review_spawn_errored(&self, id: &str) -> Result<bool, Error> {
         let events = self.read_current_run()?;
         Ok(spawn::result_of(&events, id)
@@ -7940,10 +7938,10 @@ impl RunCtx<'_> {
     ///   an empty stdout is the NORMAL outcome, never degeneracy by itself. It is
     ///   degenerate only when the conductor OBSERVED it produce nothing at all: zero
     ///   ReviewFindings from this spawn's emit callback AND an empty stdout. That
-    ///   observation is possible only while the agent runs IN-PROCESS (the live drivers);
-    ///   on the stepwise path the agent ran out-of-process and its findings, if any, are
-    ///   already in the graph, so a REPLAYED result (one whose outcome is already recorded
-    ///   in the log) is a VALID outcome, never degeneracy. This is why a healthy
+    ///   observation is possible only while the agent runs IN-PROCESS (the workflow driver);
+    ///   on the stepwise and the hosted path the agent ran out-of-process and its findings,
+    ///   if any, are already in the graph, so a result whose outcome is already recorded
+    ///   in the log is a VALID outcome, never degeneracy. This is why a healthy
     ///   lens/adversary that correctly emitted its findings and self-reported an empty
     ///   success is NOT misread as degenerate on the production replay driver
     ///   (adv-u2gap18-empty-success-is-a-valid-outcome-misread-as-degenerate), with no
@@ -7973,10 +7971,11 @@ impl RunCtx<'_> {
             return Ok(false);
         }
         // Empty stdout, zero observed findings: degenerate only if the agent actually ran
-        // in-process (live). A spawn whose result is ALREADY recorded was REPLAYED - the
-        // agent ran out-of-process and its findings went to the graph, so its empty stdout
-        // is a valid outcome, not degeneracy. The live drivers never record a spawn
-        // result, so this read is `None` there and the in-process observation stands.
+        // in-process. A spawn whose result is ALREADY recorded ran out-of-process - replayed,
+        // or hosted as a headless session, whose host records the result - and its findings
+        // went to the graph, so its empty stdout is a valid outcome, not degeneracy. The
+        // workflow driver records no spawn result, so this read is `None` there and the
+        // in-process observation stands.
         let events = self.read_current_run()?;
         let replayed = spawn::result_of(&events, id)
             .map_err(|e| Error(e.to_string()))?
@@ -8295,8 +8294,7 @@ impl RunCtx<'_> {
                         // The planner/re-planner is never a review tier: no roster to render
                         // (spec 67, criterion 4).
                         reviews: Vec::new(),
-                        // The existing blocking drivers (cli/workflow) ignore these; spec
-                        // 104's host is not wired in here yet.
+                        // The headless host reads these; the other drivers ignore them.
                         settings_json: String::new(),
                         launch: 0,
                         resumed_from: String::new(),
@@ -12879,10 +12877,11 @@ const PLAN_PROTOCOL: &str = "You are the planner. The conductor has ALREADY crea
 /// `actor` is the reviewer's ROLE token, its step's [`review_step_role`] (`lens:<agent>` or
 /// `adversary`, with `@<k>` from a kind's second step on), that the finding's `by` field carries.
 /// This is what makes finding attribution reach the SAME log the adjudicator's `SpawnResult` lands
-/// on: the in-process (cli) driver stamps [`contextgraph::META_ACTOR`] on the finding for us, but
-/// an OUT-OF-PROCESS reviewer (the courier / workflow path) emits its finding through
-/// `rigger emit`, which stamps no actor - so on THAT path, where the adjudicator's upheld/cause
-/// `SpawnResult` is the only place the verdict is recorded, the `by` field is the sole attribution
+/// on: the emit callback stamps [`contextgraph::META_ACTOR`] on the finding for us, but
+/// an OUT-OF-PROCESS reviewer (a hosted session, the courier / workflow path) emits its finding
+/// through `rigger_emit` or `rigger emit`, which stamp no actor - so on THAT path, where the
+/// adjudicator's upheld/cause `SpawnResult` is the only place the verdict is recorded, the `by`
+/// field is the sole attribution
 /// the review-quality folds (finding survival, adversary precision, per-tier cost) can key an
 /// upheld finding on. Carrying the role token (not the raw agent id) keeps it consistent with the
 /// [`spawn_id`] role the per-tier `SpawnResult` cost fold reads, so both driver paths attribute a
@@ -16596,7 +16595,7 @@ mod tests {
         /// Absent when the agent never ran, its file was never landed, or `opts.dir`
         /// was empty.
         read_results: Mutex<HashMap<String, String>>,
-        /// Whether every spawn runs as a resumable session, the way the cli host's do: its
+        /// Whether every spawn runs as a resumable session, the way a process host's do: its
         /// result names the session it ran as - the one [`SpawnOpts::resumed_from`] asked it
         /// to continue, or `sess-<spawn id>` for a fresh one - so the conductor records it and
         /// a later attempt continues it. Off, a spawn reports no session (the workflow and
@@ -39844,7 +39843,7 @@ mod tests {
             assert_eq!(
                 driver.targets_for(agent_id),
                 vec![(want.clone(), want.clone())],
-                "{agent_id} builds into {want} under both the cli driver's environment and the \
+                "{agent_id} builds into {want} under both a process host's environment and the \
                  workflow driver's wave"
             );
         }
@@ -47388,10 +47387,20 @@ mod tests {
     /// A run's own result and its whole log.
     type RunAndLog = (Result<RunState, Error>, Vec<Event>);
 
+    /// Run `cfg` under `driver` in a real repo: the run's own result and the whole log.
+    fn run_in_repo(cfg: &Config, driver: &Stub) -> RunAndLog {
+        let repo = temp_git_project_with_commit();
+        let st = Store::open(":memory:").unwrap();
+        let deps = Deps {
+            repo: repo.path().to_str().unwrap().to_string(),
+            ..stub_deps(&st, driver, Vec::new())
+        };
+        (run_isolated(cfg, &deps), run_log(&st))
+    }
+
     /// Run one merging, gated unit `s` under `driver` in a real repo, with an `sdet-author` agent
     /// configured when `with_sdet`: the run's own result and the whole log.
     fn run_sdet_lane(with_sdet: bool, driver: &Stub) -> RunAndLog {
-        let repo = temp_git_project_with_commit();
         let mut cfg = Config::default();
         cfg.agents.insert("worker".into(), agent("worker"));
         if with_sdet {
@@ -47409,12 +47418,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        let st = Store::open(":memory:").unwrap();
-        let deps = Deps {
-            repo: repo.path().to_str().unwrap().to_string(),
-            ..stub_deps(&st, driver, Vec::new())
-        };
-        (run_isolated(&cfg, &deps), run_log(&st))
+        run_in_repo(&cfg, driver)
     }
 
     /// Run a [`run_sdet_lane`] whose sdet-author (configured when `with_sdet`) authors NOTHING,
@@ -48645,27 +48649,42 @@ mod tests {
         )]
     }
 
-    /// `driver` with the spawns `ids` each emitting [`refused_decision`].
-    fn refusing_at(driver: Stub, ids: &[String]) -> Stub {
-        Stub {
-            emits_by_spawn_id: ids
-                .iter()
-                .map(|id| (id.clone(), refused_decision()))
-                .collect(),
-            ..driver
-        }
+    /// `driver` with the spawns `ids` each emitting `record`, beside what it already emits.
+    fn refusing_at(mut driver: Stub, ids: &[String], record: &[(String, Value)]) -> Stub {
+        driver
+            .emits_by_spawn_id
+            .extend(ids.iter().map(|id| (id.clone(), record.to_vec())));
+        driver
+    }
+
+    /// The `{unit}/{role}` seat stamped on each logged `DecisionMade` whose id is `id`, in log
+    /// order.
+    fn decision_seats(events: &[Event], id: &str) -> Vec<String> {
+        events
+            .iter()
+            .filter(|e| e.type_ == contextgraph::TYPE_DECISION_MADE)
+            .filter(|e| serde_json::from_slice::<Value>(&e.data).unwrap()["id"] == id)
+            .map(|e| {
+                let spawn = e.meta.get(META_SPAWN);
+                crate::spawn::unit_role_of(spawn.map_or("", String::as_str)).to_string()
+            })
+            .collect()
     }
 
     /// An author other than the implementer whose emitted record the guard refuses: the driver
     /// its run starts from, the run (its result and its log), the `(unit, role, attempt)` its
-    /// refused spawn runs under, the agent whose prompts it reads, and whether, past its re-run,
-    /// the role's failure is its wave's lesson.
+    /// refused spawn runs under, the agent whose prompts it reads, whether, past its re-run, the
+    /// role's failure is its wave's lesson, the record its refused spawns emit, what the guard
+    /// says of that record, and the seats holding the record's id once the run is over.
     struct RefusedAuthor {
         driver: fn() -> Stub,
         run: fn(&Stub) -> RunAndLog,
         seat: (&'static str, &'static str, u32),
         agent: &'static str,
         wave_lesson: bool,
+        record: fn() -> Vec<(String, Value)>,
+        refusal: &'static str,
+        holders: &'static [&'static str],
     }
 
     /// The sdet author of a single-lane unit: past its re-run, its stage fails in its wave.
@@ -48676,6 +48695,9 @@ mod tests {
             seat: ("s", ROLE_SDET_AUTHOR, 0),
             agent: ROLE_SDET_AUTHOR,
             wave_lesson: true,
+            record: refused_decision,
+            refusal: REFUSAL,
+            holders: &[],
         }
     }
 
@@ -48692,24 +48714,72 @@ mod tests {
             seat: ("plan", ROLE_REPLAN, 1),
             agent: "planner",
             wave_lesson: false,
+            record: refused_decision,
+            refusal: REFUSAL,
+            holders: &[],
+        }
+    }
+
+    /// A `DecisionMade` under the id `d-x`, the id [`adjudicator_refused`]'s implementer holds.
+    fn decision_d_x(summary: &str) -> Vec<(String, Value)> {
+        vec![(
+            contextgraph::TYPE_DECISION_MADE.to_string(),
+            json!({"id": "d-x", "summary": summary}),
+        )]
+    }
+
+    /// The adjudicator of a reviewed unit whose record takes the id its implementer's holds, so
+    /// the guard refuses it before the append, naming the holder - the agent emit stamps each
+    /// record with its spawn, whose `{unit}/{role}` seat is the author the guard compares - and
+    /// the implementer's record stays the one the graph keeps. The verdict rides the same spawn,
+    /// so the refusal costs it the verdict: past its re-run, its stage fails in its wave.
+    fn adjudicator_refused() -> RefusedAuthor {
+        RefusedAuthor {
+            driver: || Stub {
+                write_file: Some("feature.rs".into()),
+                output: r#"{"verdict":"approve"}"#.into(),
+                emits_by_spawn_id: HashMap::from([(
+                    spawn_id("s", ROLE_IMPLEMENTER, 0),
+                    decision_d_x("the worker's"),
+                )]),
+                ..Stub::new()
+            },
+            run: |driver| run_in_repo(&spec_cfg(1), driver),
+            seat: ("s", ROLE_ADJUDICATOR, 0),
+            agent: "adj",
+            wave_lesson: true,
+            record: || decision_d_x("the judge's"),
+            refusal: r#"refusing to emit DecisionMade "d-x""#,
+            holders: &["s/implementer"],
         }
     }
 
     /// `author`'s spawns refuse a record on their first `refused` runs: the refused spawn re-runs
-    /// once, under its next `~retry` id, with a prompt naming the refusal, and never again. One
-    /// refusal is cleared by that re-run, so the run carries on; a second reaches the role's own
-    /// failure handling with the refusal text, unmarked. The refused record never lands.
+    /// once, under its next `~retry` id, with a prompt naming the refusal and the seats holding
+    /// its id, and never again. One refusal is cleared by that re-run, so the run carries on; a
+    /// second reaches the role's own failure handling with the refusal text, unmarked. The
+    /// refused record never lands.
     fn assert_a_refused_record_reruns_its_spawn_once(author: RefusedAuthor, refused: usize) {
         let (unit, role, attempt) = author.seat;
         let ids: Vec<String> = (0..=2)
             .map(|retry| spawn_retry_id(unit, role, attempt, retry))
             .collect();
-        let driver = refusing_at((author.driver)(), &ids[..refused]);
+        let record = (author.record)();
+        let driver = refusing_at((author.driver)(), &ids[..refused], &record);
         let (rs, events) = (author.run)(&driver);
         let spawned = driver.spawn_ids();
+        let refusal = author.refusal;
         assert!(
             spawned.contains(&ids[1]) && !spawned.contains(&ids[2]),
             "the refused spawn re-runs once, under its next retry id: {spawned:?}"
+        );
+        assert_eq!(
+            spawned
+                .iter()
+                .filter(|id| crate::spawn::unit_role_of(id) == format!("{unit}/{role}"))
+                .count(),
+            2,
+            "the seat spawns twice in the whole run, never again: {spawned:?}"
         );
         let rerun = driver
             .prompts_for(author.agent)
@@ -48718,31 +48788,45 @@ mod tests {
             .unwrap_or_default();
         assert!(
             rerun.contains(&format!(
-                "Your previous run's record was refused: {REFUSAL}"
+                "Your previous run's record was refused: {refusal}"
             )) && !rerun.contains('\u{1}'),
             "the re-run's prompt names the refusal, unmarked: {rerun}"
         );
-        assert!(
-            !payloads_of_type(&events, contextgraph::TYPE_DECISION_MADE)
-                .iter()
-                .any(|d| d["id"] == "d-bad"),
-            "the refused record lands nothing"
+        for holder in author.holders {
+            assert!(
+                rerun.contains(&format!("recorded by {holder}")),
+                "the re-run's prompt names the seat holding the id, {holder}: {rerun}"
+            );
+        }
+        assert_eq!(
+            decision_seats(&events, record[0].1["id"].as_str().unwrap()),
+            author.holders,
+            "the refused record lands nothing, so only the holders keep its id"
         );
         let lessons = wave_lessons(&events);
         match rs {
-            Ok(_) => assert!(
-                refused == 1 && lessons.is_empty(),
-                "only a refusal its re-run cleared carries the run on: {lessons:?}"
-            ),
+            Ok(rs) => {
+                assert!(
+                    refused == 1 && lessons.is_empty(),
+                    "only a refusal its re-run cleared carries the run on: {lessons:?}"
+                );
+                assert_eq!(
+                    rs.units[unit].status,
+                    ledger::Status::Integrated,
+                    "the re-run carries {unit:?} on"
+                );
+            }
             Err(e) => {
                 assert!(
-                    refused == 2 && e.0.contains(REFUSAL) && !e.0.contains('\u{1}'),
+                    refused == 2 && e.0.contains(refusal) && !e.0.contains('\u{1}'),
                     "past its re-run, the refusal reaches the role's failure, unmarked: {e:?}"
                 );
                 assert_eq!(
-                    lessons.iter().any(|l| l.contains(REFUSAL)),
+                    lessons
+                        .iter()
+                        .any(|l| l.contains(refusal) && !l.contains('\u{1}')),
                     author.wave_lesson,
-                    "the stage's wave lesson carries the refusal: {lessons:?}"
+                    "the stage's wave lesson carries the refusal, unmarked: {lessons:?}"
                 );
             }
         }
@@ -48757,6 +48841,98 @@ mod tests {
             assert_a_refused_record_reruns_its_spawn_once(re_planner_refused(), 1);
         a_re_planner_refused_again_halts_the_gate_with_the_refusal:
             assert_a_refused_record_reruns_its_spawn_once(re_planner_refused(), 2);
+        an_adjudicator_whose_record_another_seat_holds_re_runs_once_told_why:
+            assert_a_refused_record_reruns_its_spawn_once(adjudicator_refused(), 1);
+        an_adjudicator_refused_again_fails_its_stage_with_the_refusal:
+            assert_a_refused_record_reruns_its_spawn_once(adjudicator_refused(), 2);
+    }
+
+    /// A record an implementer's spawn emits that the fold cannot apply - `governs` given as a
+    /// string, not an array - is refused by the same guard `rigger emit` runs, before the append,
+    /// so the log holds no record the fold would pass over. The refusal is a defect in what the
+    /// attempt emitted, not an outage: it is charged to that attempt like a review reject, never
+    /// rerun uncharged as infra, and the next attempt's prompt names it, so the agent learns why
+    /// and the unit converges. The attempt's edits are committed as its checkpoint, as a gate
+    /// failure's are, so its `UnitFailed` carries that sha and an escalation's teardown never
+    /// discards them.
+    #[test]
+    fn an_implementer_s_refused_record_is_charged_to_the_attempt_that_emitted_it() {
+        let repo = temp_git_project_with_commit();
+        let mut cfg = spec_cfg(1);
+        cfg.workflow.defaults.max_retries = 2;
+        cfg.workflow.stages.get_mut("s").unwrap().on_pass = "none".into();
+        let driver = refusing_at(
+            Stub {
+                write_file: Some("feature.rs".into()),
+                output: r#"{"verdict":"approve"}"#.into(),
+                ..Stub::new()
+            },
+            &[spawn_id("s", ROLE_IMPLEMENTER, 0)],
+            &refused_decision(),
+        );
+        let st = Store::open(":memory:").unwrap();
+        let deps = Deps {
+            repo: repo.path().to_str().unwrap().to_string(),
+            ..stub_deps(&st, &driver, Vec::new())
+        };
+        run_isolated(&cfg, &deps).unwrap();
+        let events = run_log(&st);
+        assert_eq!(
+            decision_seats(&events, "d-bad"),
+            Vec::<String>::new(),
+            "the refused record landed nothing"
+        );
+        let failed = payloads_of_type(&events, ledger::TYPE_UNIT_FAILED);
+        assert_eq!(
+            failed
+                .iter()
+                .map(|f| (f["attempts"].as_u64(), f["cause"].as_str()))
+                .collect::<Vec<_>>(),
+            [(Some(1), Some("reject"))],
+            "the refusal is charged one attempt, as a reject: {failed:?}"
+        );
+        let reason = failed[0]["review_reason"].as_str().unwrap_or_default();
+        assert!(
+            reason.contains(REFUSAL) && !reason.contains('\u{1}'),
+            "the charged failure carries the refusal, unmarked: {reason:?}"
+        );
+        let failed_sha = events
+            .iter()
+            .find(|e| e.type_ == ledger::TYPE_UNIT_FAILED)
+            .and_then(|e| e.meta.get(META_WORKTREE_SHA))
+            .cloned()
+            .unwrap_or_default();
+        let commits = trimmed_stdout(&run_git(
+            repo.path().to_str().unwrap(),
+            &["log", "--all", "--format=%H %s"],
+        ));
+        assert!(
+            commits
+                .lines()
+                .any(|line| line == format!("{failed_sha} rigger: s attempt 1")),
+            "the refused attempt's edits are committed as its checkpoint, the sha its UnitFailed \
+             carries, as a gate failure's are: {failed_sha:?} in {commits}"
+        );
+        assert!(
+            !events.iter().any(|e| {
+                e.type_ == ledger::TYPE_UNIT_STATUS
+                    && String::from_utf8_lossy(&e.data).contains(r#""status":"infra-retry""#)
+            }),
+            "a refusal is never rerun uncharged as infra"
+        );
+        let prompts = driver.prompts_for("worker");
+        assert_eq!(prompts.len(), 2, "the worker spawned once per attempt");
+        assert!(
+            !prompts[0].contains(REFUSAL) && prompts[1].contains(REFUSAL),
+            "the next attempt's prompt names the refusal: {:?}",
+            prompts[1]
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|e| e.type_ == ledger::TYPE_UNIT_ESCALATED),
+            "the next attempt, emitting nothing refused, carries the unit on"
+        );
     }
 
     /// A speculation candidate's sdet author refused on its run and on its re-run loses the
@@ -48776,6 +48952,7 @@ mod tests {
                 ..Stub::new()
             },
             &[0, 1].map(|retry| spawn_retry_id("s", ROLE_SDET_AUTHOR, 0, retry)),
+            &refused_decision(),
         );
         let deps = Deps {
             repo: repo.path().to_str().unwrap().to_string(),

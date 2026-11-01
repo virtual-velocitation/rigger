@@ -110,15 +110,39 @@ pub fn critique_stub_spawns(work: &Path) -> usize {
         .map_or(0, |count| count.lines().count())
 }
 
-/// The task the critique stub under `work` was last handed: the `content` of the host's first
-/// stream-json user message.
-pub fn critique_stub_task(work: &Path) -> String {
-    let line = std::fs::read_to_string(work.join("bin").join(CRITIQUE_TASK)).unwrap();
+/// The task a stand-in `claude` saved at `path`: the `content` of the host's first stream-json
+/// user message.
+pub fn recorded_task(path: &Path) -> String {
+    let line = std::fs::read_to_string(path).unwrap();
     let message: serde_json::Value = serde_json::from_str(line.trim_end()).unwrap();
     message["message"]["content"]
         .as_str()
         .expect("the first user message carries its task as text")
         .to_string()
+}
+
+/// The argv a stand-in `claude` saved at `path`, one NUL-terminated field per argument.
+pub fn recorded_argv(path: &Path) -> Vec<String> {
+    std::fs::read_to_string(path)
+        .unwrap()
+        .split_terminator('\0')
+        .map(str::to_string)
+        .collect()
+}
+
+/// The value `argv` carries right after `flag`.
+pub fn flag_value<'a>(argv: &'a [String], flag: &str) -> &'a str {
+    let at = argv
+        .iter()
+        .position(|a| a == flag)
+        .unwrap_or_else(|| panic!("the argv carries {flag}: {argv:?}"));
+    &argv[at + 1]
+}
+
+/// The task the critique stub under `work` was last handed: the `content` of the host's first
+/// stream-json user message.
+pub fn critique_stub_task(work: &Path) -> String {
+    recorded_task(&work.join("bin").join(CRITIQUE_TASK))
 }
 
 /// What the critique stub under `work` recorded of its last start under `record`
@@ -129,11 +153,7 @@ pub fn critique_stub_record(work: &Path, record: &str) -> String {
 
 /// The argv the critique stub under `work` was last started with.
 pub fn critique_stub_argv(work: &Path) -> Vec<String> {
-    std::fs::read_to_string(work.join("bin").join(CRITIQUE_ARGV))
-        .unwrap()
-        .split_terminator('\0')
-        .map(str::to_string)
-        .collect()
+    recorded_argv(&work.join("bin").join(CRITIQUE_ARGV))
 }
 
 /// The committed JSON file at `rel`, decoded as the documented `contract` a downstream

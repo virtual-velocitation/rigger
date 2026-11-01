@@ -1,5 +1,6 @@
 use super::*;
 
+use rigger::driver::claude_code;
 use rigger::eventstore::TypeSelection;
 use rigger::review;
 
@@ -201,10 +202,10 @@ fn enforce_definition_pin(
 /// EXACTLY ONE ROOT (spec 89, criterion 4): refuses BEFORE any terminal sweep or scratch write
 /// when the store the invoking `command` is about to open, the repository `git` resolved for the
 /// same `cwd`, and the scratch root it is about to use disagree on their owning root - a
-/// three-way check, not two. `rigger step` (which sweeps the scratch root) and `rigger critique`
+/// three-way check, not two. `rigger step` (which sweeps the scratch root), `rigger critique`
 /// (which writes a critique's transcript and liveness marker into it and removes them, spec 112)
-/// call it; `command` names the invoking command in the refusal, as
-/// [`resolve_main_worktree_or_refuse`] takes it.
+/// and `rigger run` (whose teardown reclaims it) call it; `command` names the invoking command in
+/// the refusal, as [`resolve_main_worktree_or_refuse`] takes it.
 ///
 /// LEG ONE (`cwd` vs `repo`): `RIGGER_DIR` is opened cwd-relative (never walked up), while
 /// `repo` can walk PAST a `.git`-less `cwd` to an ENCLOSING repository - the two diverge
@@ -284,15 +285,29 @@ pub(crate) fn refuse_unless_one_root(
     Ok(())
 }
 
-/// The project scratch root a run entry (`rigger step`, `rigger serve`) and `rigger critique`
-/// work under: `None` in a project with no git repository, where nothing keys a scratch root and
+/// The project scratch root a run entry (`rigger step`, `rigger run`, `rigger serve`) and
+/// `rigger critique` work under: `None` in a project with no git repository, where nothing keys a scratch root and
 /// no liveness marker or transcript is written; else the root `scratch_root_from_env` resolves
 /// for the repository and `defaults.workdir`. The one home of that rule, so the roots a step
-/// sweeps, a served run hands its MCP server and a critique writes under, and that
-/// [`refuse_unless_one_root`] checks, can never disagree.
+/// sweeps, a hosted run writes under, a served run hands its MCP server and a critique writes
+/// under, and that [`refuse_unless_one_root`] checks, can never disagree.
 pub(crate) fn project_scratch_root(repo: &str, cfg: &config::Config) -> Option<String> {
     (!repo.is_empty())
         .then(|| rigger::worktree::scratch_root_from_env(repo, &cfg.workflow.defaults.workdir))
+}
+
+/// This project's progress store (`.rigger/progress.db`), the separate log a headless host
+/// records a spawn's launch and live activity to, never the run stream.
+pub(crate) fn open_progress_backend() -> Result<Store, Box<dyn std::error::Error>> {
+    Ok(Store::open(&db_path("progress.db"))?)
+}
+
+/// This binary's own path, so a child rigger process is always the same build as its parent (no
+/// PATH ambiguity); `rigger` on `$PATH` when the path cannot be read.
+fn running_executable() -> String {
+    std::env::current_exe()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| "rigger".to_string())
 }
 
 /// Load the config a RUN will drive, refusing to start when a gating persona guarantees an
@@ -317,7 +332,7 @@ fn load_run_config(dir: &str) -> Result<config::Config, Box<dyn std::error::Erro
 pub(crate) fn cmd_run(args: &[String]) -> Res {
     let parsed = parse_run_args(args)?;
     // `--driver workflow` is the equivalent of `rigger serve`: the in-Claude-Code
-    // MCP-server path. `cli` (the default) keeps the standalone subprocess path.
+    // MCP-server path. `cli` (the default) is the standalone path, hosting its agents itself.
     match parsed.driver {
         DriverKind::Workflow => run_workflow(&parsed, "rigger run --driver workflow"),
         DriverKind::Cli => run_cli(&parsed),
@@ -1034,10 +1049,12 @@ fn merge_hung_attention(
     attention
 }
 
-/// Reclaim the run's run-level shared scratch at a terminal run state (spec 34, criterion 3):
+/// Reclaim the run's run-level shared scratch at a terminal run state (spec 34, criterion 3), at
+/// `rigger step`'s terminal sites and once `rigger run`'s conductor loop returns done:
 /// `agent-scratch` (probe repos + verify builds a worker parks there), `agent-live` (per-spawn
-/// liveness markers), and the SHARED build cache - `cargo-target` and `target` directly under
-/// the scratch root, the driver's `CARGO_TARGET_DIR`, the unbounded multi-GB leak. These are the
+/// liveness markers), `agent-stream` (a headless host's raw transcripts), and the SHARED build
+/// cache - `cargo-target` and `target` directly under the scratch root, the driver's
+/// `CARGO_TARGET_DIR`, the unbounded multi-GB leak. These are the
 /// run-level areas the orphan-sweep backstop deliberately spares while the run is stepping (a
 /// live spawn may still be building into them); once the run is terminal and no spawn is live
 /// they are pure residue, so this teardown - and only this teardown - reclaims them. The two
@@ -1082,6 +1099,7 @@ fn reclaim_run_scratch(root: &str) {
     let base = std::path::Path::new(root);
     reap_then_remove_dir(&base.join("agent-scratch"), base);
     reap_then_remove_dir(&base.join(rigger::liveness::MARKER_SUBDIR), base);
+    reap_then_remove_dir(&base.join(claude_code::AGENT_STREAM_SUBDIR), base);
     let _ = reclaim_shared_build_cache(&base.join(rigger::worktree::SHARED_BUILD_CACHE_NAME), base);
     reap_then_remove_dir(&base.join("target"), base);
 }
@@ -1375,9 +1393,10 @@ fn anchor_run_branch(repo: &str, cmd: &str, base: &str, base_explicit: bool) -> 
     Ok(())
 }
 
-/// The standalone CLI path: ground, spawn agents as `claude` subprocesses, drive
-/// the DAG to integration. The store is selected by flag and wrapped in the
-/// per-project namespace decorator before it is injected (§5.1.1, R9).
+/// The standalone CLI path: ground, host the agents as headless `claude` sessions
+/// ([`claude_code::Driver`]), drive the DAG to integration, and reclaim a done run's scratch.
+/// The store is selected by flag and wrapped in the per-project namespace decorator before it is
+/// injected (§5.1.1, R9).
 fn run_cli(parsed: &RunArgs) -> Res {
     // DISCOVERABILITY (spec 66, criterion 5): `rigger run <spec>` is a REAL pre-launch
     // surface that genuinely holds the spec path in production (unlike the SessionStart-only
@@ -1400,6 +1419,10 @@ fn run_cli(parsed: &RunArgs) -> Res {
     // Refuse before starting if a gating persona would stall the integration gate (spec 18,
     // unit 2); `load_run_config` reuses unit 1's lint at this run's config-load seam.
     let cfg = load_run_config(".")?;
+    // EXACTLY ONE ROOT: this run's teardown reclaims the scratch root and its hosted agents write
+    // into it, so it is refused here, before anything is reclaimed, reaped or anchored.
+    let scratch = project_scratch_root(&repo, &cfg);
+    refuse_unless_one_root(&cwd, &repo, scratch.as_deref(), "rigger run")?;
     let (criteria, text) = load_criteria(parsed.spec.as_deref())?;
     std::fs::create_dir_all(RIGGER_DIR)?;
     // Anchor + check out the run branch off `--base` (spec 18, criterion 6) BEFORE the
@@ -1450,6 +1473,9 @@ fn run_cli(parsed: &RunArgs) -> Res {
     let backend = resolve_store(&selection, &db_path("events.db"))?;
     let store = Namespaced::new(backend.as_ref(), &project_identity());
     let graph = open_graph(&db_path("graph.db"), &project_identity(), &selection, "run")?;
+    // Every appended event is folded into the graph as it lands, on `--fresh`'s mint and on the
+    // results the host records alike.
+    let folding = rigger::ingest::folding_into(&store, Some(&graph), &stderr_line);
     // `--fresh`: begin a NEW run before driving, so the conductor's own `ensure_started`
     // adopts this just-minted boundary instead of the (possibly wedged) latest run. See
     // `runscope_store::start_fresh` - the evented restart for a terminal escalation on an
@@ -1457,7 +1483,7 @@ fn run_cli(parsed: &RunArgs) -> Res {
     // human-facing channel and the `--fresh` notice belongs there, unchanged.
     fresh_run_if_requested(
         parsed,
-        &rigger::ingest::folding_into(&store, Some(&graph), &stderr_line),
+        &folding,
         &criteria,
         false,
         &base_tip,
@@ -1470,18 +1496,17 @@ fn run_cli(parsed: &RunArgs) -> Res {
             text: &text,
         },
     )?;
-    // NOT YET the agent host (spec 104 criterion 2 decision d-u104-stream-defer-composition-
-    // swap): `driver::claude_code::Driver` now conforms to `AgentDriver` (this criterion),
-    // but flipping THIS composition root breaks the argv/stdio CONTRACT `tests/cli.rs`'s own
-    // fake-`claude`-on-PATH fixtures assume (`cli::Driver`'s task on stdin plus plain-text
-    // stdout) across dozens of existing, real-subprocess, end-to-end tests - empirically
-    // confirmed by running them against this swap. Migrating every such fixture to the
-    // stream-json protocol is a real body of work of its own, out of this criterion's blast
-    // radius ("OWNS the reader and the result mapping", nothing in `tests/cli.rs`), and this
-    // host cannot usefully run unattended yet regardless (no failure-class relaunch or hold -
-    // criterion 5 / spec 105 - so a bare `api_retry` would end the run instead of riding it
-    // out). The swap stays `cli::Driver::default()` until that migration + spec 105 land.
-    let driver = cli::Driver::default();
+    let progress_backend = open_progress_backend()?;
+    let progress = Namespaced::new(&progress_backend, &project_identity());
+    let driver = claude_code::Driver {
+        bin: String::new(),
+        rigger_bin: running_executable(),
+        progress_store: &progress,
+        run_store: &folding,
+        scratch_root: scratch.clone().unwrap_or_default(),
+        stop_grace: claude_code::STOP_GRACE,
+        handed_env: selection.handed_env(),
+    };
     let grounder = select_grounder(&cfg.workflow.defaults.grounder)?;
     let root = repo.clone();
     let hash_blob = hash_blob_in(&root);
@@ -1502,6 +1527,12 @@ fn run_cli(parsed: &RunArgs) -> Res {
     // guard reaps the dash when this scope ends (unit 3's reaping mechanism).
     let _dash = start_run_dashboard(cfg.workflow.dash_enabled(), &store);
     let rs = conductor::run(&cfg, &deps)?;
+    // The conductor returned, so no spawn of this run is live: a done run's scratch is residue. A
+    // run that stopped short of done keeps it for the resume, and a project with no scratch root
+    // has none to reclaim.
+    if let Some(root) = scratch.as_deref().filter(|_| rs.done()) {
+        reclaim_run_scratch(root);
+    }
     // The release-target base the ready-to-release handoff names (spec 38, criterion 3): read
     // the base PERSISTED on this run's RunStarted, so the end-of-run summary, `rigger status`,
     // and `rigger dash` all name the ONE base the run anchored on. A run started before base
@@ -1974,9 +2005,7 @@ pub(crate) fn cmd_workflow(args: &[String]) -> Res {
     let shim = locate_shim(&shim_root)?;
     // The shim spawns `rigger serve` itself; point it at THIS binary so the driver
     // and the served conductor are always the same build (no PATH ambiguity).
-    let rigger_bin = std::env::current_exe()
-        .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_else(|_| "rigger".to_string());
+    let rigger_bin = running_executable();
 
     let node = std::env::var("RIGGER_NODE").unwrap_or_else(|_| "node".to_string());
     let mut cmd = subprocess::command(&node);
@@ -3824,17 +3853,24 @@ mod tests {
     #[test]
     fn reclaim_run_scratch_removes_the_run_level_areas_and_spares_per_unit_scratch() {
         // spec 34, criterion 3: the terminal-state run teardown reclaims EXACTLY the run-level
-        // shared areas - `agent-scratch`, `agent-live`, and the SHARED build cache
+        // shared areas - `agent-scratch`, `agent-live`, `agent-stream`, and the SHARED build cache
         // (`cargo-target` + `target` directly under the root, the driver's `CARGO_TARGET_DIR`) -
         // and NOTHING else. Per-unit worktrees (`rigger-wt-<slug>`) and per-unit build caches
         // (`cargo-target-<slug>`) are owned by their unit's own terminal reclamation (Worktree::
         // remove / sweep_terminal / the orphan-sweep), never this run-level teardown, so they are
         // SPARED here even though `cargo-target-<slug>` shares the build-cache prefix.
+        const AREAS: [&str; 5] = [
+            "agent-scratch",
+            "agent-live",
+            "agent-stream",
+            "cargo-target",
+            "target",
+        ];
         let root = tempfile::tempdir().unwrap();
         let base = root.path();
 
-        // The four run-level areas the teardown OWNS.
-        for area in ["agent-scratch", "agent-live", "cargo-target", "target"] {
+        // The run-level areas the teardown OWNS.
+        for area in AREAS {
             let dir = base.join(area);
             std::fs::create_dir_all(&dir).unwrap();
             std::fs::write(dir.join("residue.bin"), [0u8; 32]).unwrap();
@@ -3852,7 +3888,7 @@ mod tests {
 
         reclaim_run_scratch(base.to_str().unwrap());
 
-        for area in ["agent-scratch", "agent-live", "cargo-target", "target"] {
+        for area in AREAS {
             assert!(
                 !base.join(area).exists(),
                 "the run teardown must reclaim the run-level {area}"
