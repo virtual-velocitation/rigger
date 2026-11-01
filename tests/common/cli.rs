@@ -845,6 +845,25 @@ pub fn current_run_id_of(root: &Path) -> Option<String> {
     rigger::run::current_run_id(&read_run_events(root))
 }
 
+/// Seeds a REAL run in `root`'s own `.rigger/events.db`, through the SAME production
+/// authority `RunCtx` itself calls before threading the result onto every spawn's
+/// `opts.run_id` (`conductor.rs`'s `crate::run_store::ensure_started`) - returns the id it
+/// mints. Namespaced identically to [`current_run_progress_events`]'s own
+/// [`run_stream_identity`], so this writes into the exact stream `rigger hook stop-failure`'s own
+/// cold `runscope::current_run_id` read (`cli/guard.rs::cmd_hook_stop_failure`) will independently
+/// see.
+pub fn seed_a_run(root: &Path) -> String {
+    let backend = Store::open(
+        root.join(".rigger/events.db")
+            .to_str()
+            .expect("a utf-8 store path"),
+    )
+    .expect("the event log opens");
+    let store = Namespaced::new(&backend, &run_stream_identity(root));
+    rigger::run_store::ensure_started(&store, &["a criterion".to_string()])
+        .expect("a fresh run mints")
+}
+
 /// Every event of `type_` of the current run in `root`'s own `.rigger/progress.db`, read directly
 /// (never through a command under test) so an assertion is independent of it: the run's id
 /// cold-read from `events.db` (empty before any run), then that run's progress stream, under the

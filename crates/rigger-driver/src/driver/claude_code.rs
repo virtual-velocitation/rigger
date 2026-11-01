@@ -24,8 +24,8 @@ use crate::agent::{
 use crate::config::AgentDef;
 use crate::driver::replay::{reclaim_spawn_registered_scratch, spawn_scratch_path};
 use crate::driver::{
-    allowed_tools_args, bin_or_path_default, harness_env, progress_framed, spawn_config_args,
-    system_prompt_file, LaunchSession, SystemPromptFile,
+    allowed_tools_args, bin_or_path_default, harness_env, json_arg, progress_framed,
+    spawn_config_args, system_prompt_file, LaunchSession, SystemPromptFile,
 };
 use crate::eventstore::EventStore;
 use crate::hooks;
@@ -174,18 +174,18 @@ impl Driver<'_> {
         // the ONE session authority the cli host shares ([`LaunchSession`]).
         let session = LaunchSession::of(opts);
         let session_id = session.id.clone();
+        let container = spawn_scratch_path(&self.scratch_root, &opts.run_id, &opts.id);
+        let roots = write_roots(&opts.dir, container.as_deref())?;
         // The persona travels as a file in the spawn's scratch, never as an argv string (see
         // [`SystemPromptFile`]); the spawn's terminus reclaims that scratch.
-        let persona = system_prompt_file(
-            &opts.system_prompt,
-            spawn_scratch_path(&self.scratch_root, &opts.run_id, &opts.id),
-        )?;
+        let persona = system_prompt_file(&opts.system_prompt, container)?;
         let args = build_args(
             agent,
             &persona,
             opts,
             &session,
             bin_or_path_default(&self.rigger_bin, "rigger"),
+            &roots,
         )?;
 
         let started = SystemTime::now()
@@ -1245,6 +1245,28 @@ fn first_user_message(task: &str) -> String {
     .to_string()
 }
 
+/// The roots a launch's write guard admits: the session's working directory, the host's own for
+/// an empty `dir` as [`crate::subprocess::command_in`] leaves it, then the spawn's scratch
+/// `container` when it has one. Each is made absolute here, since the guard resolves a root
+/// lexically and never against the session's cwd: an empty root refuses every write and a `.`
+/// admits every target.
+fn write_roots(dir: &str, container: Option<&Path>) -> Result<Vec<String>, Error> {
+    let session_cwd = if dir.is_empty() { "." } else { dir };
+    std::iter::once(Path::new(session_cwd))
+        .chain(container)
+        .map(|root| {
+            std::path::absolute(root)
+                .map(|root| root.to_string_lossy().into_owned())
+                .map_err(|e| {
+                    Error(format!(
+                        "claude_code driver: resolve the write root {}: {e}",
+                        root.display()
+                    ))
+                })
+        })
+        .collect()
+}
+
 /// Build the typed `claude` headless invocation (architecture addendum §4.1 table): the
 /// ONE argv authority for this driver, exactly as `cli::build_args` is for the cli driver
 /// - every field below is a fact, never inferred at read time.
@@ -1255,18 +1277,23 @@ fn first_user_message(task: &str) -> String {
 /// persona. The launch runs as `session`: `--session-id` for a fresh one, `--resume` to
 /// continue the one the spawn names ([`LaunchSession`], shared with the cli host).
 ///
+/// `--settings` carries the hooks bound to this spawn ([`hooks::install_spawn_hooks`]) ahead of
+/// the session's own: the write guard rooted at `write_roots` and the `StopFailure` entries, both
+/// running `rigger_bin`.
+///
 /// `--json-schema` (verdict personas, §4.5) is deliberately out of this criterion's scope
 /// (the Done-when text names session id, stream-json, persona, model, tools, permission
 /// flags, MCP config and settings only) and is not built here; a later criterion adds it
 /// alongside whichever caller knows a persona is a verdict role, through this same
 /// function rather than a second argv authority. Fails only when the spawn's own
-/// `settings_json` is not a JSON object the session settings can merge into.
+/// `settings_json` is not a JSON object the spawn's hooks and the session settings can merge into.
 pub fn build_args(
     agent: &AgentDef,
     persona: &SystemPromptFile,
     opts: &SpawnOpts,
     session: &LaunchSession,
     rigger_bin: &str,
+    write_roots: &[String],
 ) -> Result<Vec<String>, Error> {
     let mut args = vec![
         "-p".to_string(),
@@ -1288,10 +1315,19 @@ pub fn build_args(
         args.push(agent.fallback_model.clone());
     }
     args.extend(allowed_tools_args(agent, &SPAWN_BOUND_TOOLS)?);
+    let settings = json_arg(
+        hooks::install_spawn_hooks(
+            opts.settings_json.as_bytes(),
+            rigger_bin,
+            &opts.id,
+            write_roots,
+        ),
+        "settings",
+    )?;
     args.extend(spawn_config_args(
         rigger_bin,
         &["mcp", "--spawn", &opts.id],
-        &opts.settings_json,
+        &settings,
     )?);
     Ok(args)
 }
@@ -1324,7 +1360,7 @@ mod tests {
         let scratch = tempfile::tempdir().unwrap();
         let persona =
             system_prompt_file(&o.system_prompt, Some(scratch.path().to_path_buf())).unwrap();
-        let args = build_args(&a, &persona, &o, &fresh_session("sess-123"), "rigger").unwrap();
+        let args = build_args(&a, &persona, &o, &fresh_session("sess-123"), "rigger", &[]).unwrap();
 
         assert_eq!(args[0], "-p");
         // No positional prompt: the task is the first stream-json message on stdin.
@@ -1581,6 +1617,71 @@ mod tests {
         assert_eq!(tail, b"short");
     }
 
+    /// The roots of a launch's write guard: the session's working directory, an empty `dir`
+    /// being the host's own, then the spawn's scratch container when it has one, each absolute.
+    #[test]
+    fn write_roots_are_the_sessions_cwd_then_the_container_each_absolute() {
+        let cwd = std::env::current_dir().unwrap();
+        let cwd = cwd.to_string_lossy().into_owned();
+        let under = |rel: &str| format!("{cwd}/{rel}");
+        let rows = [
+            ("/wt/u", Some("/scratch/s"), vec!["/wt/u", "/scratch/s"]),
+            ("/wt/u", None, vec!["/wt/u"]),
+            ("", Some("/scratch/s"), vec![cwd.as_str(), "/scratch/s"]),
+            ("", None, vec![cwd.as_str()]),
+            ("rel/wt", None, vec![under("rel/wt").leak()]),
+            ("/wt/u", Some("rel/s"), vec!["/wt/u", under("rel/s").leak()]),
+        ];
+        for (dir, container, expected) in rows {
+            assert_eq!(
+                write_roots(dir, container.map(std::path::Path::new)).unwrap(),
+                expected,
+                "dir {dir:?}, container {container:?}"
+            );
+        }
+    }
+
+    /// A launch's settings carry its own hooks ahead of the session's, on its own settings.
+    #[test]
+    fn build_args_settings_carry_the_spawn_hooks_ahead_of_the_session_ones() {
+        let mut o = opts("u/implementer#0");
+        o.settings_json = "{\"model\":\"opus\"}".to_string();
+        let args = build_args(
+            &AgentDef::default(),
+            &SystemPromptFile::default(),
+            &o,
+            &fresh_session("sess"),
+            "/custom/rigger",
+            &["/wt".to_string(), "/scratch/s".to_string()],
+        )
+        .unwrap();
+        let i = args.iter().position(|x| x == "--settings").unwrap();
+        let settings: serde_json::Value = serde_json::from_str(&args[i + 1]).unwrap();
+        assert_eq!(settings["model"], "opus");
+        let commands = |event: &str| -> Vec<&str> {
+            settings["hooks"][event]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|entry| entry["hooks"][0]["command"].as_str().unwrap())
+                .collect()
+        };
+        assert_eq!(
+            commands("PreToolUse"),
+            [
+                "'/custom/rigger' guard-write --root '/wt' --root '/scratch/s'",
+                hooks::GREP_GUARD_COMMAND,
+            ]
+        );
+        assert_eq!(commands("SessionStart"), [hooks::PRIME_COMMAND]);
+        let stop_failures = commands("StopFailure");
+        assert_eq!(stop_failures.len(), AgentFailure::CATEGORIES.len());
+        assert_eq!(
+            stop_failures[0],
+            "'/custom/rigger' hook stop-failure --spawn 'u/implementer#0' --class rate_limit"
+        );
+    }
+
     #[test]
     fn build_args_mcp_config_names_the_spawn_bound_server() {
         let a = AgentDef::default();
@@ -1591,6 +1692,7 @@ mod tests {
             &o,
             &fresh_session("sess"),
             "rigger",
+            &[],
         )
         .unwrap();
         let i = args.iter().position(|x| x == "--mcp-config").unwrap();
@@ -1614,6 +1716,7 @@ mod tests {
             &o,
             &fresh_session("sess"),
             "/custom/path/rigger",
+            &[],
         )
         .unwrap();
         let i = args.iter().position(|x| x == "--mcp-config").unwrap();
@@ -1631,7 +1734,7 @@ mod tests {
         let mut bare = o;
         bare.system_prompt = String::new();
         let persona = system_prompt_file(&bare.system_prompt, None).unwrap();
-        let args = build_args(&a, &persona, &bare, &fresh_session("sess"), "rigger").unwrap();
+        let args = build_args(&a, &persona, &bare, &fresh_session("sess"), "rigger", &[]).unwrap();
         assert!(!args.iter().any(|x| x == "--system-prompt-file"));
         assert!(!args.iter().any(|x| x == "--model"));
         assert!(!args.iter().any(|x| x == "--fallback-model"));

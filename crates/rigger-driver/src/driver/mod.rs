@@ -304,8 +304,10 @@ pub(crate) fn system_prompt_file(
 ///   out. The host picks the server: the stream-json host binds each spawn its own
 ///   (`mcp --spawn <id>`, §4.3), the cli host the operator's read-only one (`mcp`, the entry
 ///   `rigger setup` writes into `.mcp.json`);
-/// - `--settings` is the spawn's own `settings_json` (may be empty) with the SessionStart prime
-///   hook, the PreToolUse grep-guard and the status line merged in;
+/// - `--settings` is `settings_json` (may be empty) with the SessionStart prime hook, the
+///   PreToolUse grep-guard and the status line merged in. The host hands in what its spawn runs
+///   on: the stream-json host the spawn's own settings with the hooks bound to it already merged
+///   ([`hooks::install_spawn_hooks`]), the cli host the spawn's own settings alone;
 /// - `--agents` defines the `lookup` and `verify` fan-out helpers.
 ///
 /// Fails only when `settings_json` is not a JSON object the session settings can merge into.

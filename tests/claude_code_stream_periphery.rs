@@ -413,28 +413,31 @@ fn spawn_errors_loudly_when_the_stream_ends_with_no_result() {
 
 // ---- FAILURE CLASS (spec 104 criterion 5): real-subprocess classification ----
 
+/// The spawn [`spawn_fails_classified`] launches.
+const CLASSIFIED_SPAWN: &str = "u104-fail-class/implementer#0";
+
 /// The failure a spawn of `script` ends in, after a StopFailure record of `billing_error` is
-/// pre-seeded on run `seeded_run` (when given), asserting its class is `class` (`why` says
-/// why it must be); returns the error text.
+/// pre-seeded on the `(run, spawn)` of `seeded` (when given), asserting its class is `class`
+/// (`why` says why it must be); returns the error text.
 fn spawn_fails_classified(
     script: &str,
-    seeded_run: Option<&str>,
+    seeded: Option<(&str, &str)>,
     class: AgentFailure,
     why: &str,
 ) -> String {
     let fx = Fixture::new();
-    if let Some(run) = seeded_run {
+    if let Some((run, spawn)) = seeded {
         rigger::progress_store::record_stop_failure(
             &fx.progress_store,
             run,
             &rigger::progress::StopFailure {
-                spawn: "u104-fail-class/implementer#0".to_string(),
+                spawn: spawn.to_string(),
                 class: "billing_error".to_string(),
             },
         )
         .unwrap();
     }
-    let o = opts("u104-fail-class/implementer#0"); // run_id: "run-1"
+    let o = opts(CLASSIFIED_SPAWN); // run_id: "run-1"
 
     let err = fx
         .driver_running(script)
@@ -494,7 +497,7 @@ rigger::test_cases! {
     // have written it, and prove the record wins.
     a_stopfailure_record_outranks_the_last_api_retry_category: spawn_fails_classified(
         "claude-code-api-retry-then-no-result-agent.sh",
-        Some("run-1"),
+        Some(("run-1", CLASSIFIED_SPAWN)),
         AgentFailure::BillingError,
         "the StopFailure record must outrank the api_retry category",
     );
@@ -506,10 +509,20 @@ rigger::test_cases! {
     a_stopfailure_record_from_a_different_run_does_not_outrank_the_live_sessions_api_retry:
         spawn_fails_classified(
             "claude-code-api-retry-then-no-result-agent.sh",
-            Some("some-other-run"),
+            Some(("some-other-run", CLASSIFIED_SPAWN)),
             AgentFailure::AuthenticationFailed,
             "the OTHER run's StopFailure record must not outrank this run's own api_retry \
              category",
+        );
+    // Spec 105's stray record: every launch carries the hook, a critic's included, and a critic
+    // stamps the project's current run, so its record sits on this very run. It carries its own
+    // spawn id, so this launch's class stays its own.
+    a_stopfailure_record_of_another_spawn_on_this_run_does_not_class_this_launch:
+        spawn_fails_classified(
+            "claude-code-api-retry-then-no-result-agent.sh",
+            Some(("run-1", &rigger::review::critique_spawn_id("spec-hash", 0))),
+            AgentFailure::AuthenticationFailed,
+            "a critic's StopFailure record on this run must not class another spawn's launch",
         );
 }
 

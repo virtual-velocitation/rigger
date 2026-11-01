@@ -45,6 +45,7 @@ fn fallback_model_parses_from_real_frontmatter_and_reaches_build_args() {
         &opts("u1/implementer#0"),
         &LaunchSession::fresh(),
         "rigger",
+        &[],
     )
     .unwrap();
     let i = args.iter().position(|x| x == "--fallback-model").expect(
@@ -74,6 +75,7 @@ fn fallback_model_absent_from_frontmatter_parses_empty_and_build_args_omits_the_
         &opts("u1/implementer#0"),
         &LaunchSession::fresh(),
         "rigger",
+        &[],
     )
     .unwrap();
     assert!(

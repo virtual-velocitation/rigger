@@ -140,9 +140,9 @@ result.
 
 Per-spawn, through `--settings`:
 
-- `PreToolUse` on `Edit|Write|NotebookEdit` runs `rigger guard-write --spawn <id>`. A
-  target outside the spawn's worktree and scratch is denied with a reason naming the
-  right root. A reviewer persona's roots are its scratch only.
+- `PreToolUse` on `Edit|Write|NotebookEdit` runs `rigger guard-write --root <dir>...`,
+  rooted at the spawn's `dir` (the session's cwd when `dir` is empty) and its scratch
+  container. A target outside every root is denied with a reason naming the first root.
 - `StopFailure`, one entry per error category, runs `rigger hook stop-failure --spawn <id>
   --class <category>`: the category that ended a turn is recorded even when the stream's
   last line is lost.

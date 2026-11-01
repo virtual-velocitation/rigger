@@ -27,13 +27,12 @@
 
 mod common;
 use common::cli::courier_project;
-use common::cli::run_stream_identity;
+use common::cli::recorded_progress;
+use common::cli::seed_a_run;
 
 use std::path::Path;
 use std::process::Output;
 
-use rigger::eventstore::namespace::Namespaced;
-use rigger::eventstore::sqlite::Store;
 use rigger::progress::{self, StopFailure};
 use rigger::run::META_RUN_ID;
 
@@ -46,38 +45,10 @@ fn run_rigger(root: &Path, args: &[&str]) -> Output {
         .expect("the rigger binary runs")
 }
 
-/// Every `StopFailure` event of the current run in `root`'s own `.rigger/progress.db`, read
-/// directly (never through the command under test) so the assertion is independent of it:
-/// the run's id cold-read from `events.db` (empty before any run), then that run's progress
-/// stream. Wrapped in the SAME [`Namespaced`] scoping the binary itself writes through - see
-/// [`run_stream_identity`].
+/// Every `StopFailure` event of the current run in `root`'s own `.rigger/progress.db`
+/// ([`common::cli::current_run_progress_events`]).
 fn recorded_stop_failure_events(root: &Path) -> Vec<rigger::eventstore::Event> {
-    let open = |file: &str| {
-        Store::open(
-            root.join(".rigger")
-                .join(file)
-                .to_str()
-                .expect("a utf-8 store path"),
-        )
-        .expect("the store opens")
-    };
-    let identity = run_stream_identity(root);
-    let run_id = common::cli::current_run_id_of(root).unwrap_or_default();
-    let backend = open("progress.db");
-    progress::read_run(&Namespaced::new(&backend, &identity), &run_id)
-        .expect("the progress stream reads")
-        .into_iter()
-        .filter(|e| e.type_ == progress::TYPE_STOP_FAILURE)
-        .collect()
-}
-
-/// Every `StopFailure` record of the current run in `root`'s own `.rigger/progress.db`
-/// ([`recorded_stop_failure_events`]).
-fn recorded_stop_failures(root: &Path) -> Vec<StopFailure> {
-    recorded_stop_failure_events(root)
-        .iter()
-        .map(|e| serde_json::from_slice(&e.data).expect("a well-formed StopFailure"))
-        .collect()
+    common::cli::current_run_progress_events(root, progress::TYPE_STOP_FAILURE)
 }
 
 #[test]
@@ -101,7 +72,7 @@ fn hook_stop_failure_records_the_spawn_and_class() {
         String::from_utf8_lossy(&out.stdout)
     );
 
-    let recorded = recorded_stop_failures(project.path());
+    let recorded = recorded_progress::<StopFailure>(project.path());
     assert_eq!(recorded.len(), 1);
     assert_eq!(recorded[0].spawn, "u104-fail-class/implementer#0");
     assert_eq!(recorded[0].class, "rate_limit");
@@ -129,7 +100,7 @@ fn hook_stop_failure_a_second_call_for_the_same_spawn_overwrites_which_class_rea
         );
     }
 
-    let recorded = recorded_stop_failures(project.path());
+    let recorded = recorded_progress::<StopFailure>(project.path());
     assert_eq!(recorded.len(), 2, "both calls recorded their own event");
     let events: Vec<_> = recorded
         .iter()
@@ -178,7 +149,7 @@ fn hook_stop_failure_requires_spawn_and_class() {
     );
     assert!(!missing_spawn.status.success());
 
-    assert!(recorded_stop_failures(project.path()).is_empty());
+    assert!(recorded_progress::<StopFailure>(project.path()).is_empty());
 }
 
 // ---- `rigger hook`'s own dispatch (the shared namespace, not `stop-failure` itself) ----
@@ -205,7 +176,7 @@ fn hook_refuses_naming(args: &[&str], named: &str) {
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(
-        recorded_stop_failures(project.path()).is_empty(),
+        recorded_progress::<StopFailure>(project.path()).is_empty(),
         "a refused hook records nothing"
     );
 }
@@ -227,27 +198,9 @@ rigger::test_cases! {
 // (both sides of that test hand-inject the SAME literal string, never exercising either real
 // resolution path) exercise.
 
-/// Seeds a REAL run in `root`'s own `.rigger/events.db`, through the SAME production
-/// authority `RunCtx` itself calls before threading the result onto every spawn's
-/// `opts.run_id` (`conductor.rs`'s `crate::run_store::ensure_started`) - returns the id it
-/// mints. Namespaced identically to `recorded_stop_failures`'s own `run_stream_identity`, so
-/// this writes into the exact stream `rigger hook stop-failure`'s own cold
-/// `runscope::current_run_id` read (`main.rs::cmd_hook_stop_failure`) will independently see.
-fn seed_a_run(root: &Path) -> String {
-    let backend = Store::open(
-        root.join(".rigger/events.db")
-            .to_str()
-            .expect("a utf-8 store path"),
-    )
-    .expect("the event log opens");
-    let store = Namespaced::new(&backend, &run_stream_identity(root));
-    rigger::run_store::ensure_started(&store, &["a criterion".to_string()])
-        .expect("a fresh run mints")
-}
-
 /// The `META_RUN_ID` metadata stamped on every recorded `StopFailure` in `root`'s own
 /// progress store, in append order - the id `record_stop_failure` actually persisted, read
-/// back independently of the command under test exactly like `recorded_stop_failures` does.
+/// back independently of the command under test exactly like `recorded_progress` does.
 fn recorded_stop_failure_run_ids(root: &Path) -> Vec<Option<String>> {
     recorded_stop_failure_events(root)
         .iter()

@@ -8,7 +8,7 @@
 use common::git::git_ok;
 use common::repo::repo_text;
 use rigger::spawn::{SpawnEvent, SpawnResult};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 // The compiled `rigger` binary under test is located at RUNTIME by the shared authority in
@@ -51,7 +51,9 @@ use common::fixtures::pgid_of;
 use common::git::git_answer;
 use common::git::temp_git_project_with_commit;
 use common::mcp::McpSession;
-use common::repo::{flag_value, recorded_argv, recorded_task, stub_path};
+use common::repo::{
+    assert_carries_spawn_hooks, flag_value, hook_words, recorded_argv, recorded_task, stub_path,
+};
 use common::rigger_bin;
 use common::workflow_probe::write_workflow;
 
@@ -6722,11 +6724,12 @@ esac
 }
 
 /// An arm of [`install_fake_claude`] for the `Do the unit.` workers: the launch records, in the
-/// directory of the fake, its argv, its first user message, the `KURRENTDB_CONN` it was started
-/// with (`unset` when none) and the agent streams its scratch root holds while it runs, then
-/// writes the change a merging stage lands.
+/// directory of the fake, its argv, its working directory, its first user message, the
+/// `KURRENTDB_CONN` it was started with (`unset` when none) and the agent streams its scratch root
+/// holds while it runs, then writes the change a merging stage lands.
 const RECORDING_WORKER_ARM: &str = r#"  *"Do the unit."*)
     printf '%s\0' "$@" > "$here/argv"
+    pwd -P > "$here/cwd"
     printf '%s\n' "$first" > "$here/first-message"
     printf '%s' "${KURRENTDB_CONN-unset}" > "$here/conn"
     ls "$RIGGER_TMPDIR"/agent-stream/* > "$here/streams" || true
@@ -6805,6 +6808,421 @@ fn run_hosts_its_agents_granting_each_launch_its_bound_tools() {
             "args": ["mcp", "--spawn", "a/implementer#0"],
         }),
         "the spawn's bound server runs the running executable"
+    );
+}
+
+/// Spec 105's hook injection, end to end: given a project, when the operator runs `rigger run`,
+/// then the launch's `--settings` carries the write guard rooted at the session's working
+/// directory and the spawn's scratch container, an empty `dir` resolving to the session's cwd and
+/// a project with no repository carrying no container, and one `StopFailure` entry per category.
+/// Both run the executable with every path quoted for the shell, and what the shell reads out of
+/// them is what the real verbs take: the guard admits its roots alone, for each tool its matcher
+/// names, and each `StopFailure` command records its class for the spawn. The scratch root holds
+/// a space and a quote throughout.
+#[cfg(unix)]
+#[test]
+fn run_carries_each_launchs_write_guard_and_stop_failure_hooks() {
+    struct Row {
+        name: &'static str,
+        project: fn() -> tempfile::TempDir,
+        workflow: &'static WorkflowFixture,
+        spawn: &'static str,
+        /// The worktree the launch runs in, under the scratch root; `None` runs it in the
+        /// project root, on an empty `dir`.
+        worktree: Option<&'static str>,
+        /// Whether the project has a repository, which keys a scratch root.
+        repository: bool,
+    }
+    let rows = [
+        Row {
+            name: "an empty dir",
+            project: temp_git_project_with_commit,
+            workflow: &LIVENESS_WORKFLOW,
+            spawn: "a/implementer#0",
+            worktree: None,
+            repository: true,
+        },
+        Row {
+            name: "a unit worktree",
+            project: temp_git_project_with_commit,
+            workflow: &REVIEWLESS_GIT_UNIT_WORKFLOW,
+            spawn: "solo/implementer#0",
+            worktree: Some("rigger-wt-solo"),
+            repository: true,
+        },
+        Row {
+            name: "no repository",
+            project: temp_repoless_project,
+            workflow: &LIVENESS_WORKFLOW,
+            spawn: "a/implementer#0",
+            worktree: None,
+            repository: false,
+        },
+    ];
+    for row in rows {
+        let name = row.name;
+        let dir = (row.project)();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        write_workflow_fixture(&root, row.workflow);
+        let held = tempfile::Builder::new()
+            .prefix("it's a scratch ")
+            .tempdir()
+            .unwrap();
+        let scratch = std::fs::canonicalize(held.path()).unwrap();
+        let (out, err, ok, fake) = run_recording(&root, &["run"], &scratch);
+        assert!(ok, "{name}: the run succeeds; stderr: {err}\nstdout: {out}");
+
+        let cwd = std::fs::read_to_string(fake.path().join("bin/cwd")).unwrap();
+        let session_cwd = PathBuf::from(cwd.trim_end());
+        assert_eq!(
+            session_cwd,
+            row.worktree.map_or(root.clone(), |wt| scratch.join(wt)),
+            "{name}: the session's working directory"
+        );
+        let container = row.repository.then(|| {
+            let run = common::cli::current_run_id_of(&root).expect("the run has an id");
+            let scratch_root = scratch.to_str().unwrap();
+            rigger::driver::replay::spawn_scratch_path(scratch_root, &run, row.spawn).unwrap()
+        });
+        let roots: Vec<String> = std::iter::once(&session_cwd)
+            .chain(&container)
+            .map(|root| root.to_str().unwrap().to_string())
+            .collect();
+        let argv = recorded_argv(&fake.path().join("bin/argv"));
+        let settings: serde_json::Value =
+            serde_json::from_str(flag_value(&argv, "--settings")).unwrap();
+        let bin = std::fs::canonicalize(rigger_bin()).unwrap();
+        assert_carries_spawn_hooks(&settings, bin.to_str().unwrap(), row.spawn, &roots);
+
+        let mut targets = vec![
+            (session_cwd.join("new.rs"), true),
+            (scratch.join("new.rs"), false),
+            (scratch.join("rigger-wt-sibling/new.rs"), false),
+            (PathBuf::from("/etc/new.rs"), false),
+        ];
+        if let Some(container) = &container {
+            targets.push((container.join("new.txt"), true));
+            targets.push((container.with_file_name("sibling/new.txt"), false));
+            let mut shared_prefix = container.clone().into_os_string();
+            shared_prefix.push("-sibling/new.txt");
+            targets.push((PathBuf::from(shared_prefix), false));
+        }
+        let (matcher, guard) = &hook_words(&settings, "PreToolUse")[0];
+        let guard: Vec<&str> = guard[1..].iter().map(String::as_str).collect();
+        for tool in matcher.split('|') {
+            let key = if tool == "NotebookEdit" {
+                "notebook_path"
+            } else {
+                "file_path"
+            };
+            for (target, allowed) in &targets {
+                let payload = serde_json::json!({
+                    "tool_name": tool,
+                    "cwd": session_cwd,
+                    "tool_input": {key: target},
+                });
+                let verdict = run_hook_verb(&root, &guard, &payload.to_string());
+                assert_eq!(
+                    verdict["hookSpecificOutput"]["permissionDecision"].as_str(),
+                    (!allowed).then_some("deny"),
+                    "{name}: {tool} on {}: {verdict}",
+                    target.display()
+                );
+            }
+        }
+        for (class, words) in hook_words(&settings, "StopFailure") {
+            let command: Vec<&str> = words[1..].iter().map(String::as_str).collect();
+            let (out, err, ok) = run_rigger(&root, &command);
+            assert!(ok, "{name}: {class} records; stderr: {err}");
+            assert_eq!(
+                out.split(", position").next(),
+                Some(format!("stop-failure recorded for {} (class {class}", row.spawn).as_str()),
+                "{name}: the hook records its class for the spawn"
+            );
+        }
+    }
+}
+
+/// An arm of [`install_fake_claude`] standing in for the real host ending the first `Do the unit.`
+/// turn on an API error, from the session's own working directory and environment: the launch
+/// records its argv and working directory, asks the server its `--mcp-config` names for the
+/// spawn's scratch, runs through a shell the `StopFailure` command its `--settings` names for
+/// `max_output_tokens`, the hook's payload on stdin, and ends the session with no `result`. A
+/// later launch completes.
+const API_ERROR_WORKER_ARM: &str = r#"  *"Do the unit."*)
+    if [ -e "$here/hook-status" ]; then
+        echo "pub fn work() {}" > work.rs
+        exit 0
+    fi
+    printf '%s\0' "$@" > "$here/argv"
+    pwd -P > "$here/cwd"
+    for word in "$@"; do
+        case "$flag" in
+            --mcp-config) config=$word ;;
+            --settings) settings=$word ;;
+        esac
+        flag=$word
+    done
+    server=$(printf '%s\n' "$config" | sed -n 's/.*"command": "\([^"]*\)".*/\1/p')
+    printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"rigger_scratch","arguments":{}}}' |
+        "$server" mcp --spawn "$RIGGER_SPAWN" > "$here/scratch-response"
+    hook=$(printf '%s\n' "$settings" | sed -n 's/.*"command": "\([^"]*max_output_tokens[^"]*\)".*/\1/p')
+    printf '%s' '{"hook_event_name":"StopFailure","error":"max_output_tokens"}' |
+        sh -c "$hook" > "$here/hook-out" 2> "$here/hook-err"
+    echo $? > "$here/hook-status"
+    exit 1
+    ;;
+"#;
+
+/// Spec 105's hook injection from inside the session: given a launch, when its session runs the
+/// `StopFailure` command the launch's `--settings` handed it, through a shell from its own working
+/// directory, then the record lands in the project's progress store under the live run, so the
+/// launch closes as a fault of that class; and the path the session's bound server names for its
+/// scratch is one the launch's own write guard admits. The unit worktree row is the one a hook run
+/// from the project root cannot stand for, since the session's cwd is outside the project; each
+/// row reaches the scratch root one way, the two processes resolving it apart.
+#[cfg(unix)]
+#[test]
+fn a_session_fires_its_injected_stop_failure_hook_and_the_launch_closes_under_that_class() {
+    struct Row {
+        name: &'static str,
+        workflow: &'static WorkflowFixture,
+        spawn: &'static str,
+        /// The worktree the launch runs in, under the scratch root; `None` runs it in the project
+        /// root, on an empty `dir`.
+        worktree: Option<&'static str>,
+        /// Whether the operator names the scratch root; else it is the cache-home default.
+        operator_scratch: bool,
+    }
+    let rows = [
+        Row {
+            name: "a unit worktree under the default scratch root",
+            workflow: &REVIEWLESS_GIT_UNIT_WORKFLOW,
+            spawn: "solo/implementer#0",
+            worktree: Some("rigger-wt-solo"),
+            operator_scratch: false,
+        },
+        Row {
+            name: "the project root under the operator's scratch root",
+            workflow: &LIVENESS_WORKFLOW,
+            spawn: "a/implementer#0",
+            worktree: None,
+            operator_scratch: true,
+        },
+    ];
+    for row in rows {
+        let name = row.name;
+        let dir = temp_git_project_with_commit();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        write_workflow_fixture(&root, row.workflow);
+        let held = tempfile::tempdir().unwrap();
+        let cache = std::fs::canonicalize(held.path()).unwrap();
+        let (scratch_root, tmpdir) = if row.operator_scratch {
+            (cache.join("operator"), cache.join("operator"))
+        } else {
+            let default = rigger::worktree::cache_scratch_root_from(
+                root.to_str().unwrap(),
+                Some(cache.clone().into_os_string()),
+                None,
+            );
+            (default.expect("a repository keys a root"), PathBuf::new())
+        };
+        let (fake, path_env) = install_fake_claude(API_ERROR_WORKER_ARM);
+        let (out, err, _) = run_rigger_envs(
+            &root,
+            &["run"],
+            &[
+                ("PATH", &path_env),
+                ("RIGGER_TMPDIR", tmpdir.to_str().unwrap()),
+                ("XDG_CACHE_HOME", cache.to_str().unwrap()),
+            ],
+        );
+        let bin = fake.path().join("bin");
+        let read = |file: &str| {
+            std::fs::read_to_string(bin.join(file)).unwrap_or_else(|e| {
+                panic!("{name}: the session left {file}: {e}\nstderr: {err}\nstdout: {out}")
+            })
+        };
+
+        let cwd = read("cwd");
+        let session_cwd = PathBuf::from(cwd.trim_end());
+        assert_eq!(
+            session_cwd,
+            row.worktree
+                .map_or(root.clone(), |wt| scratch_root.join(wt)),
+            "{name}: the session's working directory"
+        );
+        assert_eq!(
+            (read("hook-status").as_str(), read("hook-err").as_str()),
+            ("0\n", ""),
+            "{name}: the hook the session ran succeeds"
+        );
+        assert_eq!(
+            read("hook-out").split(", position").next(),
+            Some(
+                format!(
+                    "stop-failure recorded for {} (class max_output_tokens",
+                    row.spawn
+                )
+                .as_str()
+            ),
+            "{name}: the hook the session ran records its class for the spawn"
+        );
+        assert_eq!(
+            common::cli::recorded_progress::<rigger::progress::StopFailure>(&root),
+            vec![rigger::progress::StopFailure {
+                spawn: row.spawn.to_string(),
+                class: "max_output_tokens".to_string(),
+            }],
+            "{name}: the record is in the project's store, stamped with the live run"
+        );
+        let launches = common::cli::recorded_progress::<rigger::progress::SpawnLaunched>(&root);
+        let closed = launches.iter().find(|launch| launch.ended.is_some());
+        assert_eq!(
+            closed.map(|l| (l.spawn.as_str(), l.ended.as_deref(), l.class.as_deref())),
+            Some((row.spawn, Some("fault"), Some("max_output_tokens"))),
+            "{name}: the host classes the launch by the record its session's hook left"
+        );
+
+        let served: serde_json::Value = serde_json::from_str(&read("scratch-response")).unwrap();
+        let path = served["result"]["structuredContent"]["path"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{name}: the bound server names a scratch: {served}"));
+        let run = common::cli::current_run_id_of(&root).expect("the run has an id");
+        let container = rigger::driver::replay::spawn_scratch_path(
+            scratch_root.to_str().unwrap(),
+            &run,
+            row.spawn,
+        );
+        assert_eq!(
+            container.as_deref(),
+            Some(Path::new(path)),
+            "{name}: the served scratch is the spawn's container"
+        );
+        let argv = recorded_argv(&bin.join("argv"));
+        let settings: serde_json::Value =
+            serde_json::from_str(flag_value(&argv, "--settings")).unwrap();
+        let (_, guard) = &hook_words(&settings, "PreToolUse")[0];
+        let guard: Vec<&str> = guard[1..].iter().map(String::as_str).collect();
+        let payload = serde_json::json!({
+            "tool_name": "Write",
+            "cwd": session_cwd,
+            "tool_input": {"file_path": format!("{path}/new.txt")},
+        });
+        assert_eq!(
+            run_hook_verb(&root, &guard, &payload.to_string()),
+            serde_json::json!({}),
+            "{name}: the launch's guard admits the scratch its server names"
+        );
+    }
+}
+
+/// A unit under every review tier, with `max_retries: 2` giving a rejected first round a second.
+const FULLY_REVIEWED_UNIT_WORKFLOW: WorkflowFixture = WorkflowFixture {
+    worker: ISOLATED_WORKER,
+    body: r#"defaults:
+  grounder: nop
+  budget: 60
+  max_retries: 2
+gates:
+  ok: { run: "true", kind: core }
+stages:
+  solo:
+    agent: worker
+    gates: [ok]
+    on_pass: merge
+    review:
+      lenses: [lens]
+      adversary: adv
+      adjudicator: judge
+"#,
+};
+
+/// The opening of an [`install_fake_claude`] arm whose launches all stay on record: the launch
+/// leaves its argv, working directory and spawn in a directory of its own under `launches`.
+const RECORD_EACH_LAUNCH: &str = r#"    mkdir -p "$here/launches/$$"
+    printf '%s\0' "$@" > "$here/launches/$$/argv"
+    pwd -P > "$here/launches/$$/cwd"
+    printf '%s' "$RIGGER_SPAWN" > "$here/launches/$$/spawn"
+"#;
+
+/// Spec 105's hook injection on every launch: given a unit reviewed by a lens, an adversary and an
+/// adjudicator that rejects its first round, when `rigger run` drives it, then each launch of the
+/// two rounds, fresh or resumed, the implementer's and each reviewer's, carries the write guard
+/// rooted at that launch's own working directory and spawn scratch container, and the `StopFailure`
+/// entries for its own spawn.
+#[cfg(unix)]
+#[test]
+fn every_launch_of_a_reviewed_unit_carries_the_hooks_for_its_own_spawn() {
+    let dir = temp_git_project_with_commit();
+    let root = std::fs::canonicalize(dir.path()).unwrap();
+    write_workflow_fixture(&root, &FULLY_REVIEWED_UNIT_WORKFLOW);
+    write_agent(&root, "lens", "Read", "Review it.");
+    write_agent(&root, "adv", "Read", "Break it.");
+    write_agent(&root, "judge", "Read", "Adjudicate it.");
+    let held = tempfile::tempdir().unwrap();
+    let scratch = std::fs::canonicalize(held.path()).unwrap();
+    let arms = format!(
+        r#"  *"Do the unit."*)
+{RECORD_EACH_LAUNCH}    echo "pub fn work() {{}}" >> work.rs
+    ;;
+  *"Review it."*)
+{RECORD_EACH_LAUNCH}    echo "reviewed: no blocker"
+    ;;
+  *"Break it."*)
+{RECORD_EACH_LAUNCH}    echo "tried and failed"
+    ;;
+  *"Adjudicate it."*)
+{RECORD_EACH_LAUNCH}    if [ -e "$here/rejected" ]; then
+        echo '{{"verdict":"approve"}}'
+    else
+        : > "$here/rejected"
+        echo '{REQUIRED_REJECT}'
+    fi
+    ;;
+"#
+    );
+    let (out, err, ok, fake) = run_on_arms(&root, &["run"], &scratch, &arms);
+    assert!(ok, "the run succeeds; stderr: {err}\nstdout: {out}");
+
+    let run = common::cli::current_run_id_of(&root).expect("the run has an id");
+    let bin = std::fs::canonicalize(rigger_bin()).unwrap();
+    let mut launches: Vec<(String, bool)> = Vec::new();
+    for launch in std::fs::read_dir(fake.path().join("bin/launches")).unwrap() {
+        let launch = launch.unwrap().path();
+        let spawn = std::fs::read_to_string(launch.join("spawn")).unwrap();
+        let cwd = std::fs::read_to_string(launch.join("cwd")).unwrap();
+        let session_cwd = cwd.trim_end();
+        assert_eq!(
+            session_cwd,
+            scratch.join("rigger-wt-solo").to_str().unwrap(),
+            "{spawn}: each launch of the unit runs in its worktree"
+        );
+        let container =
+            rigger::driver::replay::spawn_scratch_path(scratch.to_str().unwrap(), &run, &spawn)
+                .unwrap();
+        let roots = [session_cwd, container.to_str().unwrap()].map(str::to_string);
+        let argv = recorded_argv(&launch.join("argv"));
+        let settings: serde_json::Value =
+            serde_json::from_str(flag_value(&argv, "--settings")).unwrap();
+        assert_carries_spawn_hooks(&settings, bin.to_str().unwrap(), &spawn, &roots);
+        launches.push((spawn, argv.iter().any(|word| word == "--resume")));
+    }
+    launches.sort();
+    let expected = [
+        ("solo/adjudicator#0", false),
+        ("solo/adjudicator#1", true),
+        ("solo/adversary#0", false),
+        ("solo/adversary#1", true),
+        ("solo/implementer#0", false),
+        ("solo/implementer#1", true),
+        ("solo/lens:lens#0", false),
+        ("solo/lens:lens#1", true),
+    ]
+    .map(|(spawn, resumed)| (spawn.to_string(), resumed));
+    assert_eq!(
+        launches, expected,
+        "the two rounds' launches, each on record"
     );
 }
 

@@ -9,6 +9,7 @@ use std::sync::mpsc::channel;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
+use rigger_domain::quoting::single_quoted;
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 
 use crate::sqlite::open_connection;
@@ -1099,12 +1100,10 @@ fn be<E: std::fmt::Display>(e: E) -> Error {
     Error::Backend(e.to_string())
 }
 
-/// A single-quoted SQL string literal for `s` (doubling any embedded quote). Used only
-/// for policy values rendered into maintenance SQL - never for per-append data, which is
-/// always bound.
-fn sql_literal(s: &str) -> String {
-    format!("'{}'", s.replace('\'', "''"))
-}
+/// How a single-quoted SQL string literal spells an embedded quote: doubled. Such a literal is
+/// used only for policy values rendered into maintenance SQL - never for per-append data, which
+/// is always bound.
+const SQL_ESCAPED_QUOTE: &str = "''";
 
 /// The SQL expression that reads an event's content key out of its metadata, rendered
 /// from one function so every maintenance statement reads the key identically.
@@ -1112,7 +1111,7 @@ fn sql_literal(s: &str) -> String {
 /// TWO nested quotings, and both are the caller's string: the metadata key is a JSON
 /// member name inside a path, and that whole path is then a SQL string literal. So the
 /// key is escaped for JSON (a backslash or a quote inside a member name is spelled with a
-/// backslash) and the finished path goes through [`sql_literal`] like any other literal,
+/// backslash) and the finished path goes through [`single_quoted`] like any other literal,
 /// rather than being pasted between hand-written quotes - a single apostrophe in a
 /// consumer's key would otherwise end the literal early and leave the rest of the path as
 /// stray SQL.
@@ -1133,7 +1132,7 @@ fn key_path(meta_key: &str) -> String {
         "$.\"{}\"",
         meta_key.replace('\\', "\\\\").replace('"', "\\\"")
     );
-    sql_literal(&path)
+    single_quoted(&path, SQL_ESCAPED_QUOTE)
 }
 
 /// The `IN (...)` list of the covered event types.
@@ -1147,7 +1146,7 @@ fn type_list(types: &[String]) -> String {
     }
     types
         .iter()
-        .map(|t| sql_literal(t))
+        .map(|t| single_quoted(t, SQL_ESCAPED_QUOTE))
         .collect::<Vec<_>>()
         .join(", ")
 }
@@ -2261,6 +2260,16 @@ mod tests {
             )
             .expect("the store appends at the revision the rows left the stream on");
         assert_eq!(next.last(), Some(6));
+    }
+
+    /// A value rendered into maintenance SQL stays one string literal, an embedded quote doubled.
+    #[test]
+    fn a_rendered_value_stays_one_sql_literal() {
+        let types = ["it's".to_string(), "plain".to_string()];
+        assert_eq!(
+            [key_path("it's"), type_list(&types)],
+            [r#"'$."it''s"'"#, "'it''s', 'plain'"]
+        );
     }
 
     /// The number of rows the log holds for the seeded replay key, read through a connection of

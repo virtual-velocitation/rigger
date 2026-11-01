@@ -138,26 +138,37 @@ fn installed_session_settings(base: &[u8]) -> Value {
     serde_json::from_slice(&with_line).unwrap()
 }
 
-/// `argv` carries the session settings, the spawn-bound MCP server alone, and both helper agents.
-fn assert_spawn_is_configured(argv: &[String]) {
-    assert_settings_are_the_installed_ones(argv);
-    assert_mcp_config_is_the_installed_server(argv);
-    assert_helper_agents_reach_the_spawn(argv);
+/// What a spawn launched in `dir` carries as `--settings`: its per-spawn hooks merged onto `base`
+/// by the same `hooks` installer, under [`installed_session_settings`].
+fn installed_spawn_settings(base: &[u8], dir: &Path) -> Value {
+    let roots = [dir.to_str().expect("a utf-8 path").to_string()];
+    let hooked = hooks::install_spawn_hooks(base, RIGGER_BIN, SPAWN_ID, &roots).unwrap();
+    installed_session_settings(&hooked)
 }
 
-/// `argv`'s `--settings` is exactly what the hooks installers build: the SessionStart prime
-/// hook, the PreToolUse grep-guard and the status line.
-fn assert_settings_are_the_installed_ones(argv: &[String]) {
+/// `argv`, launched in `dir`, carries the spawn's settings, the spawn-bound MCP server alone, and
+/// both helper agents.
+fn assert_spawn_is_configured(argv: &[String], dir: &Path) {
+    assert_settings_are_the_installed_ones(argv, dir);
+    assert_mcp_config_is_the_installed_server(argv, dir);
+    assert_helper_agents_reach_the_spawn(argv, dir);
+}
+
+/// `argv`'s `--settings`, launched in `dir`, is exactly what the hooks installers build: the
+/// spawn's write guard and `StopFailure` hooks, the SessionStart prime hook, the PreToolUse
+/// grep-guard and the status line.
+fn assert_settings_are_the_installed_ones(argv: &[String], dir: &Path) {
     assert_eq!(
         flag_json(argv, "--settings"),
-        installed_session_settings(b""),
-        "the spawn's settings are exactly the hooks and status line `rigger setup` installs"
+        installed_spawn_settings(b"", dir),
+        "the spawn's settings are exactly its own hooks and the hooks and status line `rigger \
+         setup` installs"
     );
 }
 
 /// `argv`'s `--mcp-config` is the one `rigger` server the MCP installer builds for this spawn,
 /// and `--strict-mcp-config` keeps any other configuration out.
-fn assert_mcp_config_is_the_installed_server(argv: &[String]) {
+fn assert_mcp_config_is_the_installed_server(argv: &[String], _dir: &Path) {
     let installed =
         hooks::install_mcp_server(b"", "rigger", RIGGER_BIN, &["mcp", "--spawn", SPAWN_ID])
             .unwrap();
@@ -175,7 +186,7 @@ fn assert_mcp_config_is_the_installed_server(argv: &[String]) {
 /// `argv`'s `--agents` defines `lookup` and `verify` carrying every byte of the committed
 /// `.claude/agents/{name}.md`: each frontmatter field (the name as the key, `tools` as the list
 /// its comma-separated value spells) and the body as the prompt, verbatim, with nothing else.
-fn assert_helper_agents_reach_the_spawn(argv: &[String]) {
+fn assert_helper_agents_reach_the_spawn(argv: &[String], _dir: &Path) {
     let agents = flag_json(argv, "--agents");
     for name in ["lookup", "verify"] {
         let text = std::fs::read_to_string(repo_root().join(format!(".claude/agents/{name}.md")))
@@ -244,9 +255,9 @@ fn porcelain(dir: &Path) -> String {
 }
 
 /// Launch one spawn in a fresh committed worktree and hand the argv it received to `check`.
-fn spawn_in_a_fresh_worktree(check: fn(&[String])) {
+fn spawn_in_a_fresh_worktree(check: fn(&[String], &Path)) {
     let dir = committed_worktree();
-    check(&launch_capturing(dir.path(), ""));
+    check(&launch_capturing(dir.path(), ""), dir.path());
 }
 
 rigger::test_cases! {
@@ -265,7 +276,7 @@ fn a_headless_spawn_merges_the_hooks_onto_its_own_settings() {
     let argv = launch_capturing(dir.path(), own);
     assert_eq!(
         flag_json(&argv, "--settings"),
-        installed_session_settings(own.as_bytes()),
+        installed_spawn_settings(own.as_bytes(), dir.path()),
         "the spawn's own settings survive and the hooks are merged onto them"
     );
 }
@@ -275,7 +286,7 @@ fn a_headless_spawn_writes_nothing_into_its_worktree() {
     let dir = committed_worktree();
     let before = porcelain(dir.path());
     let argv = launch_capturing(dir.path(), "");
-    assert_spawn_is_configured(&argv);
+    assert_spawn_is_configured(&argv, dir.path());
     assert_eq!(
         porcelain(dir.path()),
         before,
@@ -293,7 +304,7 @@ fn a_worktree_that_ignores_dot_claude_still_gets_the_full_configuration() {
     std::fs::write(dir.path().join(".gitignore"), ".claude/\n").unwrap();
     git_commit_all(dir.path(), "ignore the machine-local installs");
     let argv = launch_capturing(dir.path(), "");
-    assert_spawn_is_configured(&argv);
+    assert_spawn_is_configured(&argv, dir.path());
 }
 
 #[test]
