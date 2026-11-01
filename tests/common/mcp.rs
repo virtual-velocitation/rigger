@@ -170,10 +170,15 @@ impl McpSession {
         panic!("{why}; stderr:\n{err}");
     }
 
-    /// Close stdin - the EOF that lets `mcpserver::Server::run`'s read loop finish and the
-    /// process exit, exactly like the shim closing its side of the pipe - and collect the exit.
-    pub fn finish(mut self) -> std::process::Output {
+    /// Close stdin: the EOF that lets `mcpserver::Server::run`'s read loop finish and the process
+    /// exit, exactly like the shim closing its side of the pipe.
+    pub fn close(&mut self) {
         drop(self.stdin.take());
+    }
+
+    /// [`close`](Self::close) the session and collect the exit.
+    pub fn finish(mut self) -> std::process::Output {
+        self.close();
         self.child
             .wait_with_output()
             .expect("the rigger stdio session must exit")
@@ -183,7 +188,7 @@ impl McpSession {
     /// ended by [`fail`](Self::fail), so a wait that never ends fails its test instead of hanging
     /// it.
     pub fn finish_within(mut self, bound: Duration) -> std::process::Output {
-        drop(self.stdin.take());
+        self.close();
         let deadline = Instant::now() + bound;
         while matches!(self.child.try_wait(), Ok(None)) {
             if Instant::now() >= deadline {

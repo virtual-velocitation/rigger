@@ -7197,6 +7197,14 @@ fn seed_a_hold_by(root: &Path, by: &str) {
     seed_on_the_run(root, common::fixtures::held_event("rate_limit", by));
 }
 
+/// Release `root`'s current run as an operator does.
+fn seed_an_operator_release(root: &Path) {
+    seed_on_the_run(
+        root,
+        common::fixtures::released_event(rigger::run::HOLD_BY_OPERATOR),
+    );
+}
+
 /// Whether `root`'s current run stands held, as the ledger folds it.
 fn hold_is_open(root: &Path) -> bool {
     common::cli::with_run_store(root, |store| {
@@ -7226,8 +7234,7 @@ fn releasing_holds<'a>(
         if released == budget || !hold_is_open(root) || !due(root) {
             standing_since = None;
         } else if standing_since.get_or_insert_with(Instant::now).elapsed() >= A_HOLD_STANDS_FOR {
-            let release = common::fixtures::released_event(rigger::run::HOLD_BY_OPERATOR);
-            seed_on_the_run(root, release);
+            seed_an_operator_release(root);
             released += 1;
             standing_since = None;
         }
@@ -7960,15 +7967,35 @@ fn a_served_run_reaching_done_stays_held() {
     );
 }
 
+/// How far past [`A_HOLD_STANDS_FOR`] a close lands, so it and the release behind it fall between
+/// two of the served wait's reads, a second apart.
+const TO_THE_MIDDLE_OF_A_POLL: Duration = Duration::from_millis(400);
+
+/// How far a release trails a session's close. `rigger serve` marks the close once its read loop
+/// sees the EOF, which no event shows, so a release sooner could land ahead of that mark and be
+/// read alone, which launches into a session nothing serves.
+const A_RELEASE_TRAILS_A_CLOSE_BY: Duration = Duration::from_millis(200);
+
 /// Spec 105: given a held run, when `rigger serve` waits on the hold ahead of a launch or behind a
 /// session's error, then `rigger_next` hands out no spawn and never answers done, and the session's
-/// close ends the wait with a park: the session exits 0 with no error, the unit is charged nothing
-/// and the hold stands for the next supervisor.
+/// close ends the wait with a park, a release landing with the close included, since nothing would
+/// serve the launch: the session exits 0 with no error, the unit is charged nothing and a hold no
+/// release met stands for the next supervisor.
 #[test]
 fn a_served_wait_on_a_hold_ends_with_a_park_when_its_session_closes() {
-    for (name, held_at_launch) in [
-        ("a wait ahead of the launch", true),
-        ("a wait behind a session's error", false),
+    for (name, held_at_launch, released_with_the_close) in [
+        ("a wait ahead of the launch", true, false),
+        ("a wait behind a session's error", false, false),
+        (
+            "a release with the close of a wait ahead of the launch",
+            true,
+            true,
+        ),
+        (
+            "a release with the close of a wait behind an error",
+            false,
+            true,
+        ),
     ] {
         let dir = temp_git_project_with_commit();
         let root = dir.path();
@@ -7986,6 +8013,12 @@ fn a_served_wait_on_a_hold_ends_with_a_park_when_its_session_closes() {
             answer_spawn(&mut mcp, &spawn, "error", SERVED_ERROR);
         }
         rigger_next_stays_idle_while_a_hold_stands(&mut mcp);
+        if released_with_the_close {
+            std::thread::sleep(TO_THE_MIDDLE_OF_A_POLL);
+            mcp.close();
+            std::thread::sleep(A_RELEASE_TRAILS_A_CLOSE_BY);
+            seed_an_operator_release(root);
+        }
         let out = mcp.finish_within(Duration::from_secs(30));
         let err = String::from_utf8_lossy(&out.stderr);
         assert!(
@@ -7999,10 +8032,10 @@ fn a_served_wait_on_a_hold_ends_with_a_park_when_its_session_closes() {
         );
         assert_eq!(
             run_releases(root),
-            Vec::<String>::new(),
-            "{name}: the hold stands"
+            vec!["operator"; usize::from(released_with_the_close)],
+            "{name}: the releases"
         );
-        assert_eq!(run_holds(root).len(), 1, "{name}: the hold stands alone");
+        assert_eq!(run_holds(root).len(), 1, "{name}: the one hold");
         assert_eq!(
             common::cli::run_payloads(root, "UnitFailed"),
             Vec::<serde_json::Value>::new(),
@@ -8178,8 +8211,7 @@ fn a_served_wait_ends_by_its_release_and_relaunches_the_same_spawn_up_to_the_bou
         mcp.initialize();
         let release = |mcp: &mut McpSession| {
             rigger_next_stays_idle_while_a_hold_stands(mcp);
-            let release = common::fixtures::released_event(rigger::run::HOLD_BY_OPERATOR);
-            seed_on_the_run(root, release);
+            seed_an_operator_release(root);
         };
         if case.held_at_launch {
             assert!(
@@ -8263,7 +8295,8 @@ stages:
 /// served spawn's error carrying a conductor marker or naming a spawn the run has ended, held or
 /// not, or an unclassed or fault-class error on an unheld run, when it reaches the decorator, then
 /// nothing relaunches and it takes its spawn site's path: the refusal charges the attempt, the
-/// park charges nothing, the rest halt past the infra limit, and a hold stands unreleased.
+/// park charges nothing, the rest halt past the infra limit, the session exits 0 and a hold stands
+/// unreleased.
 #[test]
 fn a_served_error_the_decorator_passes_takes_its_spawn_site_path() {
     struct Case {
@@ -8274,8 +8307,14 @@ fn a_served_error_the_decorator_passes_takes_its_spawn_site_path() {
         error: String,
         /// Each `UnitFailed`: its attempts and cause.
         failed: Vec<(u64, &'static str)>,
+        /// The conductor's lines on the session's stderr.
+        conductor_says: &'static [&'static str],
     }
     const SPAWN: &str = "solo/implementer#0";
+    const PAST_THE_INFRA_LIMIT: &[&str] = &[concat!(
+        r#"rigger: conductor: conductor: infra: agent "worker": "#,
+        "the session ended with no result"
+    )];
     let refused = format!(
         "{}the emit guard refused the record",
         rigger_domain::agent::EMIT_REFUSED_MARKER
@@ -8290,6 +8329,7 @@ fn a_served_error_the_decorator_passes_takes_its_spawn_site_path() {
             ended: false,
             error: refused,
             failed: vec![(1, "reject")],
+            conductor_says: &[],
         },
         Case {
             name: "a parked spawn on a held run",
@@ -8297,6 +8337,7 @@ fn a_served_error_the_decorator_passes_takes_its_spawn_site_path() {
             ended: false,
             error: parked,
             failed: vec![],
+            conductor_says: &[],
         },
         Case {
             name: "an unclassed error for an ended spawn on a held run",
@@ -8304,6 +8345,7 @@ fn a_served_error_the_decorator_passes_takes_its_spawn_site_path() {
             ended: true,
             error: SERVED_ERROR.to_string(),
             failed: vec![],
+            conductor_says: PAST_THE_INFRA_LIMIT,
         },
         Case {
             name: "a wait class for an ended spawn on an unheld run",
@@ -8311,6 +8353,7 @@ fn a_served_error_the_decorator_passes_takes_its_spawn_site_path() {
             ended: true,
             error: wait,
             failed: vec![],
+            conductor_says: PAST_THE_INFRA_LIMIT,
         },
         Case {
             name: "an unclassed error on an unheld run",
@@ -8318,6 +8361,7 @@ fn a_served_error_the_decorator_passes_takes_its_spawn_site_path() {
             ended: false,
             error: SERVED_ERROR.to_string(),
             failed: vec![],
+            conductor_says: PAST_THE_INFRA_LIMIT,
         },
         Case {
             name: "a fault class on an unheld run",
@@ -8325,6 +8369,7 @@ fn a_served_error_the_decorator_passes_takes_its_spawn_site_path() {
             ended: false,
             error: fault,
             failed: vec![],
+            conductor_says: PAST_THE_INFRA_LIMIT,
         },
     ];
     for case in cases {
@@ -8351,6 +8396,12 @@ fn a_served_error_the_decorator_passes_takes_its_spawn_site_path() {
         let out = mcp.finish_within(Duration::from_secs(30));
         let err = String::from_utf8_lossy(&out.stderr);
         assert_eq!(handed_out, SPAWN, "{name}: stderr: {err}");
+        assert!(out.status.success(), "{name}: exits 0; stderr: {err}");
+        assert_eq!(
+            lines_starting_with(&err, "rigger: conductor: "),
+            case.conductor_says,
+            "{name}: the conductor's lines"
+        );
         let failed: Vec<_> = common::cli::run_payloads(root, "UnitFailed")
             .iter()
             .map(|e| (e["attempts"].as_u64().unwrap(), e["cause"].clone()))
