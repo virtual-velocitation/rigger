@@ -1,8 +1,8 @@
 #!/bin/sh
 # A fixture "agent" for LIVENESS (spec 105): a session that announces two retries, each with
 # its own delay and category, then ends in a `result`. Proves the host appends one `ApiRetry`
-# per `api_retry` line in stream order: every other stream carries at most one such line, so
-# none can tell one record per line from one record per session.
+# per `api_retry` line in stream order: two lines with their own values tell one record per
+# line from one record per session.
 # Reads and discards the host's first stdin message like every sibling fixture.
 IFS= read -r line
 echo '{"type":"system","subtype":"init","session_id":"66666666-6666-4666-8666-666666666666","model":"claude-haiku-4-5","mcp_servers":[]}'

@@ -679,8 +679,8 @@
       },
       {
         "file": "tests/common/fixtures/events.rs",
-        "start_line": 775,
-        "end_line": 777
+        "start_line": 808,
+        "end_line": 810
       },
       {
         "file": "tests/common/real_driver_spy.rs",
@@ -874,8 +874,8 @@
       },
       {
         "file": "tests/claude_code_stream_periphery.rs",
-        "start_line": 1032,
-        "end_line": 1032
+        "start_line": 1053,
+        "end_line": 1053
       },
       {
         "file": "tests/cli.rs",
@@ -1044,23 +1044,23 @@
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 339,
-        "end_line": 339
+        "start_line": 340,
+        "end_line": 340
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 1712,
-        "end_line": 1712
+        "start_line": 1713,
+        "end_line": 1713
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 1803,
-        "end_line": 1803
+        "start_line": 1804,
+        "end_line": 1804
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 2048,
-        "end_line": 2048
+        "start_line": 2016,
+        "end_line": 2016
       },
       {
         "file": "tests/meta_phases_declaration_periphery.rs",
@@ -3624,8 +3624,8 @@
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 461,
-        "end_line": 461
+        "start_line": 462,
+        "end_line": 462
       },
       {
         "file": "tests/ledger_rebuild.rs",
@@ -5379,8 +5379,8 @@
       },
       {
         "file": "tests/common/fixtures/events.rs",
-        "start_line": 1000,
-        "end_line": 1002
+        "start_line": 1033,
+        "end_line": 1035
       }
     ]
   },
@@ -5749,8 +5749,8 @@
       },
       {
         "file": "tests/claude_code_stream_periphery.rs",
-        "start_line": 134,
-        "end_line": 140
+        "start_line": 155,
+        "end_line": 161
       },
       {
         "file": "tests/common/fixtures/conductor.rs",
@@ -7814,13 +7814,13 @@
     "sites": [
       {
         "file": "tests/common/fixtures/events.rs",
-        "start_line": 896,
-        "end_line": 904
+        "start_line": 929,
+        "end_line": 937
       },
       {
         "file": "tests/common/fixtures/events.rs",
-        "start_line": 963,
-        "end_line": 971
+        "start_line": 996,
+        "end_line": 1004
       }
     ]
   },
@@ -8179,13 +8179,13 @@
     "sites": [
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 504,
-        "end_line": 569
+        "start_line": 505,
+        "end_line": 570
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 1457,
-        "end_line": 1502
+        "start_line": 1458,
+        "end_line": 1503
       }
     ]
   },
@@ -8194,13 +8194,13 @@
     "sites": [
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 2064,
-        "end_line": 2128
+        "start_line": 2032,
+        "end_line": 2096
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 2132,
-        "end_line": 2196
+        "start_line": 2100,
+        "end_line": 2164
       }
     ]
   },

@@ -23,6 +23,11 @@
 //! file's own FAILURE CLASS tests below (criterion 5) add only what only a real subprocess
 //! can prove: the class a REAL child process's exit actually classifies as, stderr tail
 //! included.
+//!
+//! The LIVENESS tests at the end (spec 105) add what only a real child can prove of the
+//! `ApiRetry` record: it lands in the run's progress stream beside its waiting line, it is on
+//! record while the session still waits the delay out, a refused append costs the session
+//! nothing, and a session ending with no result keeps it.
 
 mod common;
 
@@ -30,7 +35,10 @@ use rigger::spawn::SpawnEvent;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
-use common::fixtures::{fixture_script, no_emit, CwdGuard};
+use common::fixtures::{
+    fixture_script, no_emit, payloads_of_type, types_of, wait_until_for, CwdGuard,
+    FailAppendContaining,
+};
 use common::is_running;
 use rigger::conductor::{AgentDriver, AgentFailure, SpawnOpts};
 use rigger::config::AgentDef;
@@ -39,8 +47,11 @@ use rigger::driver::replay::spawn_scratch_path;
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Direction, Event, EventStore};
 use rigger::liveness;
-use rigger::progress::{AgentProgress, TYPE_AGENT_PROGRESS};
+use rigger::progress::{
+    AgentProgress, ApiRetry, TYPE_AGENT_PROGRESS, TYPE_API_RETRY, TYPE_SPAWN_LAUNCHED,
+};
 use rigger::spawn::{self, TYPE_SPAWN_RESULT};
+use serde_json::{json, Value};
 
 /// The fixture agent replaying the recorded success stream.
 const STREAM_AGENT: &str = "claude-code-stream-agent.sh";
@@ -128,6 +139,16 @@ impl Fixture {
                     .activity
             })
             .collect()
+    }
+
+    /// Every record the progress store holds for the run [`opts`] names, in append order.
+    fn progress_stream(&self) -> Vec<Event> {
+        rigger::progress::read_run(&self.progress_store, &opts("").run_id).unwrap()
+    }
+
+    /// The body of every `ApiRetry` the progress store holds for the run [`opts`] names.
+    fn retry_bodies(&self) -> Vec<Value> {
+        payloads_of_type(&self.progress_stream(), TYPE_API_RETRY)
     }
 }
 
@@ -1333,5 +1354,191 @@ fn an_unbounded_launch_whose_child_exited_behind_a_held_pipe_ends_with_no_result
         started.elapsed() < Duration::from_secs(20),
         "the read ends at the wake-up after the child exits: {:?}",
         started.elapsed()
+    );
+}
+
+// ---- LIVENESS (spec 105): the `ApiRetry` record a real session's `api_retry` lines leave ----
+
+/// The exact bodies the retries `announced` leave on record for spawn `spawn`, in order.
+fn expected_retries(spawn: &str, announced: &[(u64, &str)]) -> Vec<Value> {
+    announced
+        .iter()
+        .map(|(delay_ms, category)| {
+            json!({"spawn": spawn, "delay_ms": delay_ms, "category": category})
+        })
+        .collect()
+}
+
+/// A session announcing two retries, over a progress store refusing every append whose body
+/// holds `refused`: the session ends in its result with its waiting lines on record either way,
+/// its run's progress stream reads exactly `types`, and exactly `retries` are on record.
+fn a_session_announcing_two_retries(
+    refused: &'static str,
+    types: &[&str],
+    retries: &[(u64, &str)],
+) {
+    let fx = Fixture::new();
+    let o = opts("u105-retry/implementer#0");
+    let refusing = FailAppendContaining {
+        inner: &fx.progress_store,
+        needle: refused,
+    };
+    let driver = Driver {
+        progress_store: &refusing,
+        ..fx.driver_running("claude-code-two-api-retries-agent.sh")
+    };
+
+    let result = driver
+        .spawn(&AgentDef::default(), "do the thing", &o, &no_emit)
+        .expect("a session ending in a result succeeds");
+
+    assert_eq!(result.output, "done after two retries");
+    assert_eq!(fx.spawn_results().len(), 1);
+    assert_eq!(types_of(&fx.progress_stream()), types);
+    assert_eq!(fx.retry_bodies(), expected_retries(&o.id, retries));
+    assert_eq!(
+        fx.activities(),
+        [
+            "mcp servers: []",
+            "waiting: rate_limit (attempt 1, retrying in 618ms)",
+            "waiting: overloaded (attempt 2, retrying in 30000ms)",
+        ]
+    );
+}
+
+rigger::test_cases! {
+    each_announced_retry_lands_beside_its_waiting_line_in_the_runs_progress_stream:
+        a_session_announcing_two_retries(
+            "a body no record holds",
+            &[
+                TYPE_SPAWN_LAUNCHED,
+                TYPE_AGENT_PROGRESS,
+                TYPE_AGENT_PROGRESS,
+                TYPE_API_RETRY,
+                TYPE_AGENT_PROGRESS,
+                TYPE_API_RETRY,
+            ],
+            &[(618, "rate_limit"), (30_000, "overloaded")],
+        );
+    // Only an `ApiRetry` body spells `delay_ms`, so this store loses those two records and
+    // nothing else: a lost record only leaves the silence it would have explained counted,
+    // where failing the session would throw its work away.
+    a_refused_retry_record_costs_the_session_neither_its_result_nor_its_waiting_lines:
+        a_session_announcing_two_retries(
+            "delay_ms",
+            &[
+                TYPE_SPAWN_LAUNCHED,
+                TYPE_AGENT_PROGRESS,
+                TYPE_AGENT_PROGRESS,
+                TYPE_AGENT_PROGRESS,
+            ],
+            &[],
+        );
+}
+
+#[test]
+fn a_retry_is_on_record_while_its_session_still_waits_it_out() {
+    // Liveness reads the record during the silence the delay explains, so one reaching the
+    // store only as the session ends would explain nothing. The fixture cannot end before this
+    // test has read the record: it stays silent until the release file exists.
+    let fx = Fixture::new();
+    let release = fx.scratch_file("record-read");
+    let o = opts_with_env(
+        "u105-retry/implementer#0",
+        "RIGGER_TEST_RETRY_RELEASE_FILE",
+        &release,
+    );
+    let driver = fx.driver_running("claude-code-waits-out-an-api-retry-agent.sh");
+    let announced = expected_retries(&o.id, &[(30_000, "overloaded")]);
+
+    let (on_record_inside_the_wait, session) = std::thread::scope(|scope| {
+        let session =
+            scope.spawn(|| driver.spawn(&AgentDef::default(), "do the thing", &o, &no_emit));
+        let on_record = wait_until_for(800, || fx.retry_bodies() == announced);
+        std::fs::write(&release, "").unwrap();
+        (on_record, session.join().unwrap())
+    });
+
+    assert_eq!(fx.retry_bodies(), announced);
+    assert!(
+        on_record_inside_the_wait,
+        "the record must reach the store while the session is silent inside the delay"
+    );
+    assert_eq!(
+        session
+            .expect("the released session ends in its result")
+            .output,
+        "done after the wait"
+    );
+}
+
+/// A session of `script` ending with no result keeps the exact `retries` its lines announced on
+/// record, and fails with the exact no-result error naming `class`.
+fn a_session_with_no_result_keeps_its_retries(
+    script: &str,
+    retries: &[(u64, &str)],
+    class: AgentFailure,
+) {
+    let fx = Fixture::new();
+    let o = opts("u105-retry/implementer#0");
+
+    let err = fx
+        .driver_running(script)
+        .spawn(&AgentDef::default(), "do the thing", &o, &no_emit)
+        .expect_err("a session ending with no result must not succeed");
+
+    assert_eq!(fx.retry_bodies(), expected_retries(&o.id, retries));
+    assert_eq!(
+        rigger::conductor::strip_failure_marker(&err),
+        format!(
+            "claude_code driver: {:?}: the agent stream ended with no result \
+             (class {class}; stderr tail: )",
+            o.id
+        )
+    );
+}
+
+rigger::test_cases! {
+    a_session_ending_on_a_retry_keeps_it_on_record:
+        a_session_with_no_result_keeps_its_retries(
+            "claude-code-api-retry-then-no-result-agent.sh",
+            &[(500, "authentication_failed")],
+            AgentFailure::AuthenticationFailed,
+        );
+    // A delay that is no count reads 0 and a missing category reads `unknown` on the record,
+    // and that floor never reaches the class: the session's last line names no category, so
+    // its class stays the last one a line did name.
+    a_sparse_retry_line_records_its_floors_and_leaves_the_class_on_the_last_named_category:
+        a_session_with_no_result_keeps_its_retries(
+            "claude-code-sparse-api-retries-then-no-result-agent.sh",
+            &[
+                (1500, "a_category_no_binary_knows"),
+                (0, "overloaded"),
+                (618, "rate_limit"),
+                (0, "unknown"),
+            ],
+            AgentFailure::RateLimit,
+        );
+}
+
+/// The on-disk `body` decodes to the three-field record of the retry it announced.
+fn a_retry_body_decodes(body: &str) {
+    assert_eq!(
+        serde_json::from_str::<ApiRetry>(body).unwrap(),
+        ApiRetry {
+            spawn: "u9/implementer#0".to_string(),
+            delay_ms: 618,
+            category: "rate_limit".to_string(),
+        }
+    );
+}
+
+rigger::test_cases! {
+    an_api_retry_body_decodes_as_a_writer_leaves_it: a_retry_body_decodes(
+        r#"{"spawn":"u9/implementer#0","delay_ms":618,"category":"rate_limit"}"#,
+    );
+    // A later binary adding a key must not cost an earlier one the rest of the record.
+    an_api_retry_body_decodes_past_a_key_a_later_writer_added: a_retry_body_decodes(
+        r#"{"spawn":"u9/implementer#0","delay_ms":618,"category":"rate_limit","attempt":3}"#,
     );
 }
