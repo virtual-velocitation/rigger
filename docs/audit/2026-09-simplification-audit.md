@@ -1859,7 +1859,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `crates/rigger-conductor/src/conductor.rs:1097-1099` `conflict_regenerate_key`
 - `crates/rigger-conductor/src/conductor.rs:13043-13045` `audit_id`
 - `crates/rigger-domain/src/spawn.rs:276-278` `spawn_id`
-- `crates/rigger-driver/src/driver/claude_code.rs:1126-1134` `stop_message`
+- `crates/rigger-driver/src/driver/claude_code.rs:1154-1162` `stop_message`
 - `tests/common/fixtures/fold.rs:757-759` `code_batch_key`
 - `tests/common/fixtures/graph.rs:204-206` `spoke_id`
 - `tests/postmerge_gate_error_cleanup_periphery.rs:56-58` `expected_postmerge_dir`
@@ -2015,7 +2015,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `crates/rigger-domain/src/eventstore.rs:604-606` `recv`
 - `crates/rigger-domain/src/eventstore.rs:614-616` `try_recv`
 - `crates/rigger-domain/src/eventstore.rs:619-621` `err`
-- `tests/common/fixtures/events.rs:775-777` `reads`
+- `tests/common/fixtures/events.rs:808-810` `reads`
 - `tests/common/real_driver_spy.rs:36-38` `outputs`
 
 #### `dup-60da41568392` (near, 2 sites)
@@ -2066,7 +2066,7 @@ mandatory sweep: Command::new call sites - 93 site(s), collected mechanically re
 - `tests/checkin_mutation_diff_base_periphery.rs:182-182` `Command::new`
 - `tests/ci_lanes.rs:383-383` `Command::new`
 - `tests/ci_lanes.rs:406-406` `Command::new`
-- `tests/claude_code_stream_periphery.rs:1055-1055` `Command::new`
+- `tests/claude_code_stream_periphery.rs:1067-1067` `Command::new`
 - `tests/cli.rs:1657-1657` `Command::new`
 - `tests/cli.rs:5791-5791` `Command::new`
 - `tests/cli.rs:14163-14163` `Command::new`
@@ -2101,10 +2101,10 @@ mandatory sweep: Command::new call sites - 93 site(s), collected mechanically re
 - `tests/hermetic_test_git_audit.rs:203-203` `Command::new`
 - `tests/hermetic_test_git_audit.rs:235-235` `Command::new`
 - `tests/hermetic_test_git_audit.rs:307-307` `Command::new`
-- `tests/integrate_conflict_merge_periphery.rs:339-339` `Command::new`
-- `tests/integrate_conflict_merge_periphery.rs:1712-1712` `Command::new`
-- `tests/integrate_conflict_merge_periphery.rs:1803-1803` `Command::new`
-- `tests/integrate_conflict_merge_periphery.rs:2048-2048` `Command::new`
+- `tests/integrate_conflict_merge_periphery.rs:340-340` `Command::new`
+- `tests/integrate_conflict_merge_periphery.rs:1713-1713` `Command::new`
+- `tests/integrate_conflict_merge_periphery.rs:1804-1804` `Command::new`
+- `tests/integrate_conflict_merge_periphery.rs:2016-2016` `Command::new`
 - `tests/meta_phases_declaration_periphery.rs:83-83` `Command::new`
 - `tests/mutation_runner_pdeathsig_periphery.rs:107-107` `Command::new`
 - `tests/mutation_runner_pdeathsig_periphery.rs:167-167` `Command::new`
@@ -3123,7 +3123,7 @@ project identity so one backend can hold many projects without their data mixing
 - `tests/init_template_sets_periphery.rs:182-182` `"scaffolded .rigger/gates/mutation.sh\n"`
 - `tests/init_template_sets_periphery.rs:205-205` `".rigger"`
 - `tests/init_template_sets_periphery.rs:284-284` `".rigger/workflow.yml"`
-- `tests/integrate_conflict_merge_periphery.rs:461-461` `"the project's own .rigger/workflow.yml must load through the real loader"`
+- `tests/integrate_conflict_merge_periphery.rs:462-462` `"the project's own .rigger/workflow.yml must load through the real loader"`
 - `tests/ledger_rebuild.rs:457-457` `"gw/.rigger/workflow.yml"`
 - `tests/ledger_rebuild.rs:650-650` `"gw/.rigger/workflow.yml"`
 - `tests/ledger_rebuild.rs:1238-1238` `"gw/.rigger/workflow.yml"`
@@ -3448,7 +3448,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `crates/rigger-console/src/console/map.rs:1285-1289` `district_purpose_uses_the_curated_table_when_present`
 - `crates/rigger-domain/src/ledger.rs:1079-1086` `short_run_id_truncates_to_twelve_chars_and_passes_shorter_ids_through`
 - `crates/rigger-domain/src/ledger.rs:1089-1104` `spec_stem_extracts_and_sanitizes_the_file_stem`
-- `crates/rigger-domain/src/progress.rs:361-364` `each_run_reports_on_its_own_stream_and_a_run_less_report_on_the_bare_one`
+- `crates/rigger-domain/src/progress.rs:384-387` `each_run_reports_on_its_own_stream_and_a_run_less_report_on_the_bare_one`
 - `tests/simplification_audit.rs:7286-7297` `impl_self_type_strips_a_trailing_where_clause_on_a_non_generic_self_type`
 - `tests/simplification_audit.rs:7317-7328` `impl_self_type_strips_a_leading_dyn_token_on_the_self_type`
 - `tests/simplification_audit.rs:7340-7346` `strip_trailing_where_clause_is_a_word_boundary_match_not_a_substring_match`
@@ -3947,7 +3947,7 @@ Proposed home: `a new shared module (sites span 2 files: crates/rigger-domain/sr
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `crates/rigger-domain/src/metrics.rs:268-270` `total`
-- `tests/common/fixtures/events.rs:1000-1002` `cost`
+- `tests/common/fixtures/events.rs:1033-1035` `cost`
 
 #### `dup-6ffa6e5d1f83` (exact, 7 sites)
 
@@ -4094,8 +4094,8 @@ Proposed home: `claude_code::failing_read_store`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-driver/src/driver/claude_code.rs:1412-1419` `read_stream`
-- `crates/rigger-driver/src/driver/claude_code.rs:1466-1473` `read_stream_typed`
+- `crates/rigger-driver/src/driver/claude_code.rs:1442-1449` `read_stream`
+- `crates/rigger-driver/src/driver/claude_code.rs:1496-1503` `read_stream_typed`
 
 #### `dup-4979c76ee36f` (near, 2 sites)
 
@@ -4103,8 +4103,8 @@ Proposed home: `claude_code::failing_read_store`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-driver/src/driver/claude_code.rs:1459-1465` `last_position`
-- `crates/rigger-driver/src/driver/claude_code.rs:1493-1499` `latest_in_group`
+- `crates/rigger-driver/src/driver/claude_code.rs:1489-1495` `last_position`
+- `crates/rigger-driver/src/driver/claude_code.rs:1523-1529` `latest_in_group`
 
 #### `dup-117928e59e0c` (near, 2 sites)
 
@@ -4112,8 +4112,8 @@ Proposed home: `claude_code::support (consolidate these 2 sites into one functio
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-driver/src/driver/claude_code.rs:1656-1677` `build_args_mcp_config_names_the_spawn_bound_server`
-- `crates/rigger-driver/src/driver/claude_code.rs:1680-1698` `build_args_mcp_config_uses_the_configured_rigger_bin`
+- `crates/rigger-driver/src/driver/claude_code.rs:1686-1707` `build_args_mcp_config_names_the_spawn_bound_server`
+- `crates/rigger-driver/src/driver/claude_code.rs:1710-1728` `build_args_mcp_config_uses_the_configured_rigger_bin`
 
 #### `dup-bada7e276fc1` (semantic, 2 sites)
 
@@ -4141,7 +4141,7 @@ Proposed home: `a new shared module (sites span 3 files: crates/rigger-driver/sr
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `crates/rigger-driver/src/driver/replay.rs:294-301` `opts_for`
-- `tests/claude_code_stream_periphery.rs:144-150` `opts`
+- `tests/claude_code_stream_periphery.rs:156-162` `opts`
 - `tests/common/fixtures/conductor.rs:19-26` `implementer_opts`
 
 #### `dup-b43ee3b4b5bb` (exact, 2 sites)
@@ -4611,8 +4611,8 @@ Proposed home: `progress_store::support (consolidate these 2 sites into one func
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-store-sqlite/src/progress_store.rs:39-53` `record_launch`
-- `crates/rigger-store-sqlite/src/progress_store.rs:59-70` `record_stop_failure`
+- `crates/rigger-store-sqlite/src/progress_store.rs:40-54` `record_launch`
+- `crates/rigger-store-sqlite/src/progress_store.rs:60-71` `record_stop_failure`
 
 #### `dup-10504155864a` (near, 2 sites)
 
@@ -5112,8 +5112,8 @@ Proposed home: `events::read_counting_store`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/common/fixtures/events.rs:896-904` `last_position`
-- `tests/common/fixtures/events.rs:963-971` `latest_in_group`
+- `tests/common/fixtures/events.rs:929-937` `last_position`
+- `tests/common/fixtures/events.rs:996-1004` `latest_in_group`
 
 #### `dup-aa4a3a0dfc34` (near, 2 sites)
 
@@ -5299,8 +5299,8 @@ Proposed home: `integrate_conflict_merge_periphery::support (consolidate these 2
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/integrate_conflict_merge_periphery.rs:504-569` `spawn`
-- `tests/integrate_conflict_merge_periphery.rs:1457-1502` `spawn`
+- `tests/integrate_conflict_merge_periphery.rs:505-570` `spawn`
+- `tests/integrate_conflict_merge_periphery.rs:1458-1503` `spawn`
 
 #### `dup-333ec555460f` (near, 2 sites)
 
@@ -5308,8 +5308,8 @@ Proposed home: `integrate_conflict_merge_periphery::support (consolidate these 2
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/integrate_conflict_merge_periphery.rs:2064-2128` `a_crash_right_after_the_merge_attempt_record_resumes_and_completes_row_1`
-- `tests/integrate_conflict_merge_periphery.rs:2132-2196` `a_crash_right_after_the_landing_intent_record_resumes_and_completes_row_4`
+- `tests/integrate_conflict_merge_periphery.rs:2032-2096` `a_crash_right_after_the_merge_attempt_record_resumes_and_completes_row_1`
+- `tests/integrate_conflict_merge_periphery.rs:2100-2164` `a_crash_right_after_the_landing_intent_record_resumes_and_completes_row_4`
 
 #### `dup-8fb3e9b78321` (near, 2 sites)
 
@@ -5446,7 +5446,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 ### Adversarial sample
 
-Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 10633 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
+Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 10646 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
 
 - `crates/rigger-conductor/src/conductor.rs:5202-5243` `split_reject` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-conductor/src/conductor.rs:15697-15719` `branch_is_foreign_when_only_one_axis_differs` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
@@ -5470,11 +5470,11 @@ Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85
 - `src/cli/run.rs:2123-2147` `start_run_dashboard` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `tests/change_path_revert_periphery.rs:213-323` `a_revert_through_the_shipped_build_records_the_earlier_generations_entry_again` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `tests/code_entity_test_exclusion_periphery.rs:1810-1822` `edges_where` - duplicate found by reading and closed: the design-doc assertion, the dev-only path test and the test-region test each re-rolled its `(from, rel, to)` edge projection inline; all now call `edges_where`
-- `tests/common/fixtures/events.rs:758-760` `after_call` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
-- `tests/common/fixtures/events.rs:775-777` `reads` - caught: `dup-ebee743f02de`
-- `tests/common/fixtures/events.rs:1033-1035` `reads` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
+- `tests/common/fixtures/events.rs:791-793` `after_call` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
+- `tests/common/fixtures/events.rs:808-810` `reads` - caught: `dup-ebee743f02de`
+- `tests/common/fixtures/events.rs:1066-1068` `reads` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `tests/concepts_labels_membership.rs:240-267` `label_of_the_documentless_hub` - no duplicate found by reading
-- `tests/event_classes_are_one_table.rs:388-402` `a_right_side_that_is_neither_a_literal_nor_a_type_alias_fails_the_scan_naming_it` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
+- `tests/event_classes_are_one_table.rs:389-403` `a_right_side_that_is_neither_a_literal_nor_a_type_alias_fails_the_scan_naming_it` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `tests/one_shot_reads_periphery.rs:87-140` `a_project_namespace_over_a_shared_events_file_reads_its_run_as_one_typed_read_per_selection` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `tests/spec_critique_periphery.rs:1086-1111` `a_default_review_listing_no_adversary_step_has_no_critic` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `tests/worker_persona_label_periphery.rs:246-267` `the_subject_is_the_titles_first_sentence_passed_whole_with_no_truncation` - duplicate found by reading and closed: it re-rolled `assert_worker_label` inline; it now calls it

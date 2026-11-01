@@ -241,8 +241,9 @@ fn the_episodic_and_perception_lists_are_exactly_the_decided_ones() {
             "StopFailure",
             "RunHeld",
             "RunReleased",
+            "ApiRetry",
         ],
-        "the episodic list is the decided eighteen, in order"
+        "the episodic list is the decided nineteen, in order"
     );
     assert_eq!(
         PERCEPTION_TYPES,

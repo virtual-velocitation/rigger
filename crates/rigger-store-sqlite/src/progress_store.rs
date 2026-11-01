@@ -2,9 +2,10 @@
 //! recording one live progress report to a LIVE progress store. [`crate::progress`] keeps
 //! the model (`AgentProgress`, `AgentActivity`) and the pure fold (`consolidate`) -
 //! everything computable from already-read `&[Event]` slices, with no store at all. This
-//! module is the other half: `record`, the one function that appends to a
-//! `&dyn EventStore`, split into its own file (never a function-by-function `#[cfg]`
-//! inside `progress.rs`) so the pure half can compile for `wasm32-unknown-unknown`.
+//! module is the other half: `record`, the typed writers beside it and the [`append_stamped`]
+//! they share, the functions that append to a `&dyn EventStore`, split into their own file
+//! (never a function-by-function `#[cfg]` inside `progress.rs`) so the pure half can compile
+//! for `wasm32-unknown-unknown`.
 
 use crate::eventstore::{Error, EventStore, ExpectedRevision, Position};
 use crate::progress::{stream_of, AgentProgress, RunStamped, SpawnLaunched, StopFailure};
@@ -71,9 +72,10 @@ pub fn record_stop_failure(
 
 /// Append `report`, stamped with `run_id`, as the one event of its run's progress stream
 /// ([`stream_of`]):
-/// the append contract every record above shares. `what` names the record if the store wrote
-/// nothing ([`crate::eventstore::Appended::one`]).
-fn append_stamped<R: RunStamped>(
+/// the append contract every record above shares, and the writer a record with no wrapper of its
+/// own calls directly, as the Claude Code host does for [`crate::progress::ApiRetry`]. `what`
+/// names the record if the store wrote nothing ([`crate::eventstore::Appended::one`]).
+pub fn append_stamped<R: RunStamped>(
     store: &dyn EventStore,
     run_id: &str,
     report: &R,
@@ -319,5 +321,46 @@ mod tests {
         .expect_err("a stop-failure record nobody can find was not recorded");
         let message = err.to_string();
         assert!(message.contains("u1/implementer#0"), "message: {message}");
+    }
+
+    #[test]
+    fn append_stamped_appends_the_one_stamped_record_of_its_run() {
+        // spec 105 LIVENESS: ApiRetry is a progress-store record with no writer of its own,
+        // the one event this append adds to the run's own progress stream.
+        let progress = Store::open(":memory:").unwrap();
+        let retry = crate::progress::ApiRetry {
+            spawn: "u105/implementer#0".into(),
+            delay_ms: 618,
+            category: "rate_limit".into(),
+        };
+
+        append_stamped(&progress, "run-1", &retry, "the api-retry record").unwrap();
+
+        let p = crate::progress::read_run(&progress, "run-1").unwrap();
+        assert_eq!(p.len(), 1);
+        assert_eq!(p[0].type_, crate::progress::TYPE_API_RETRY);
+        assert_eq!(
+            p[0].meta.get(META_RUN_ID).map(String::as_str),
+            Some("run-1")
+        );
+        assert_eq!(
+            serde_json::from_slice::<crate::progress::ApiRetry>(&p[0].data).unwrap(),
+            retry
+        );
+    }
+
+    #[test]
+    fn append_stamped_a_report_the_store_did_not_write_is_reported_as_lost() {
+        let err = append_stamped(
+            &crate::eventstore::SilentStore,
+            "run-1",
+            &crate::progress::ApiRetry::default(),
+            "the api-retry record",
+        )
+        .expect_err("a retry record nobody can find was not recorded");
+        assert_eq!(
+            err.to_string(),
+            "event store: reported writing nothing for the api-retry record"
+        );
     }
 }

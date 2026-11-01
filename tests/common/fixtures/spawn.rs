@@ -21,6 +21,20 @@ pub fn test_request(
     }
 }
 
+/// The absolute path of the checked-in fixture agent `script` under the workspace's
+/// `tests/fixtures`, walking up from the manifest of the test crate compiling this file: the
+/// root package, or a member crate below it.
+pub fn fixture_script(script: &str) -> String {
+    let relative = std::path::Path::new("tests/fixtures").join(script);
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .map(|dir| dir.join(&relative))
+        .find(|path| path.exists())
+        .unwrap_or_else(|| panic!("no checked-in fixture {script}"))
+        .to_string_lossy()
+        .into_owned()
+}
+
 /// The environment variable naming the directory the checked-in
 /// `tests/fixtures/prompt-capture-agent.sh` copies what it was handed into.
 pub const PROMPT_CAPTURE_DIR: &str = "PROMPT_CAPTURE_DIR";

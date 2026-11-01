@@ -286,6 +286,7 @@ use common::fixtures::mk_stage;
 use common::fixtures::payloads_of_type;
 use common::fixtures::review_or_adjudicate;
 use common::fixtures::scratch_cfg;
+use common::fixtures::FailAppendContaining;
 use common::fixtures::FifoAtLandingDriver;
 use common::fixtures::A_WORK_DRIVER;
 use common::git::git_commit_all;
@@ -1984,39 +1985,6 @@ fn a_resumed_run_after_accept_incoming_fails_never_double_records_the_regenerate
 // Gap 9 (round 4, `op-u88c1-round-4-definition-of-done`): the record -> mutate -> record TABLE.
 // See the file header for the full boundary-to-fixture mapping.
 // ============================================================================================
-
-/// An `EventStore` decorator (spec 88, criterion 1 round 4): forwards every call to `inner`
-/// UNCHANGED except `append`, which refuses (a real `Backend` error, indistinguishable from a
-/// genuine disk/backend fault) if any event in the batch's `data` contains `needle` - simulating
-/// a process crash between a mutation that already ran for real (on disk, or a real subprocess)
-/// and the SINGLE store append that would durably record it. Never a production hook: `EventStore`
-/// is the crate's own injected port ([`Deps::store`]), the SAME seam a genuine backend failure
-/// would surface through.
-struct FailAppendContaining<'a> {
-    inner: &'a dyn EventStore,
-    needle: &'static str,
-}
-
-impl EventStore for FailAppendContaining<'_> {
-    fn append(
-        &self,
-        stream: &str,
-        expected: ExpectedRevision,
-        events: &[rigger::eventstore::Event],
-    ) -> Result<Appended, EsError> {
-        if events
-            .iter()
-            .any(|e| String::from_utf8_lossy(&e.data).contains(self.needle))
-        {
-            return Err(EsError::Backend(format!(
-                "simulated crash: append containing {:?} refused",
-                self.needle
-            )));
-        }
-        self.inner.append(stream, expected, events)
-    }
-    crate::delegate_event_store_reads!();
-}
 
 /// Call 1's driver for the row-1 fixture: plants a NEW path directly on the bare run branch
 /// (mirrors `PermanentModifyDeleteConflictDriver`'s "mutate the bare repo directly" technique

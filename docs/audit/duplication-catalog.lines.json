@@ -264,8 +264,8 @@
       },
       {
         "file": "crates/rigger-driver/src/driver/claude_code.rs",
-        "start_line": 1126,
-        "end_line": 1134
+        "start_line": 1154,
+        "end_line": 1162
       },
       {
         "file": "tests/common/fixtures/fold.rs",
@@ -684,8 +684,8 @@
       },
       {
         "file": "tests/common/fixtures/events.rs",
-        "start_line": 775,
-        "end_line": 777
+        "start_line": 808,
+        "end_line": 810
       },
       {
         "file": "tests/common/real_driver_spy.rs",
@@ -879,8 +879,8 @@
       },
       {
         "file": "tests/claude_code_stream_periphery.rs",
-        "start_line": 1055,
-        "end_line": 1055
+        "start_line": 1067,
+        "end_line": 1067
       },
       {
         "file": "tests/cli.rs",
@@ -1054,23 +1054,23 @@
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 339,
-        "end_line": 339
+        "start_line": 340,
+        "end_line": 340
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 1712,
-        "end_line": 1712
+        "start_line": 1713,
+        "end_line": 1713
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 1803,
-        "end_line": 1803
+        "start_line": 1804,
+        "end_line": 1804
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 2048,
-        "end_line": 2048
+        "start_line": 2016,
+        "end_line": 2016
       },
       {
         "file": "tests/meta_phases_declaration_periphery.rs",
@@ -3634,8 +3634,8 @@
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 461,
-        "end_line": 461
+        "start_line": 462,
+        "end_line": 462
       },
       {
         "file": "tests/ledger_rebuild.rs",
@@ -4464,8 +4464,8 @@
       },
       {
         "file": "crates/rigger-domain/src/progress.rs",
-        "start_line": 361,
-        "end_line": 364
+        "start_line": 384,
+        "end_line": 387
       },
       {
         "file": "tests/simplification_audit.rs",
@@ -5379,8 +5379,8 @@
       },
       {
         "file": "tests/common/fixtures/events.rs",
-        "start_line": 1000,
-        "end_line": 1002
+        "start_line": 1033,
+        "end_line": 1035
       }
     ]
   },
@@ -5664,13 +5664,13 @@
     "sites": [
       {
         "file": "crates/rigger-driver/src/driver/claude_code.rs",
-        "start_line": 1412,
-        "end_line": 1419
+        "start_line": 1442,
+        "end_line": 1449
       },
       {
         "file": "crates/rigger-driver/src/driver/claude_code.rs",
-        "start_line": 1466,
-        "end_line": 1473
+        "start_line": 1496,
+        "end_line": 1503
       }
     ]
   },
@@ -5679,13 +5679,13 @@
     "sites": [
       {
         "file": "crates/rigger-driver/src/driver/claude_code.rs",
-        "start_line": 1459,
-        "end_line": 1465
+        "start_line": 1489,
+        "end_line": 1495
       },
       {
         "file": "crates/rigger-driver/src/driver/claude_code.rs",
-        "start_line": 1493,
-        "end_line": 1499
+        "start_line": 1523,
+        "end_line": 1529
       }
     ]
   },
@@ -5694,13 +5694,13 @@
     "sites": [
       {
         "file": "crates/rigger-driver/src/driver/claude_code.rs",
-        "start_line": 1656,
-        "end_line": 1677
+        "start_line": 1686,
+        "end_line": 1707
       },
       {
         "file": "crates/rigger-driver/src/driver/claude_code.rs",
-        "start_line": 1680,
-        "end_line": 1698
+        "start_line": 1710,
+        "end_line": 1728
       }
     ]
   },
@@ -5749,8 +5749,8 @@
       },
       {
         "file": "tests/claude_code_stream_periphery.rs",
-        "start_line": 144,
-        "end_line": 150
+        "start_line": 156,
+        "end_line": 162
       },
       {
         "file": "tests/common/fixtures/conductor.rs",
@@ -6809,13 +6809,13 @@
     "sites": [
       {
         "file": "crates/rigger-store-sqlite/src/progress_store.rs",
-        "start_line": 39,
-        "end_line": 53
+        "start_line": 40,
+        "end_line": 54
       },
       {
         "file": "crates/rigger-store-sqlite/src/progress_store.rs",
-        "start_line": 59,
-        "end_line": 70
+        "start_line": 60,
+        "end_line": 71
       }
     ]
   },
@@ -7814,13 +7814,13 @@
     "sites": [
       {
         "file": "tests/common/fixtures/events.rs",
-        "start_line": 896,
-        "end_line": 904
+        "start_line": 929,
+        "end_line": 937
       },
       {
         "file": "tests/common/fixtures/events.rs",
-        "start_line": 963,
-        "end_line": 971
+        "start_line": 996,
+        "end_line": 1004
       }
     ]
   },
@@ -8179,13 +8179,13 @@
     "sites": [
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 504,
-        "end_line": 569
+        "start_line": 505,
+        "end_line": 570
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 1457,
-        "end_line": 1502
+        "start_line": 1458,
+        "end_line": 1503
       }
     ]
   },
@@ -8194,13 +8194,13 @@
     "sites": [
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 2064,
-        "end_line": 2128
+        "start_line": 2032,
+        "end_line": 2096
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 2132,
-        "end_line": 2196
+        "start_line": 2100,
+        "end_line": 2164
       }
     ]
   },

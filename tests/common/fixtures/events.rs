@@ -556,6 +556,39 @@ impl EventStore for FailAppendMetaContaining<'_> {
     crate::delegate_event_store_reads!();
 }
 
+/// An `EventStore` decorator that forwards every call to `inner` unchanged except `append`, which
+/// refuses (a real `Backend` error, indistinguishable from a genuine disk or backend fault) any
+/// batch holding an event whose `data` contains `needle`: a process crash between a mutation that
+/// already ran for real and the single append that would durably record it, or a record lost
+/// while the work around it carries on. It matches the payload, where
+/// [`FailAppendMetaContaining`] matches metadata. Never a production hook: `EventStore` is the
+/// injected port, the same seam a genuine backend failure surfaces through.
+pub struct FailAppendContaining<'a> {
+    pub inner: &'a dyn EventStore,
+    pub needle: &'static str,
+}
+
+impl EventStore for FailAppendContaining<'_> {
+    fn append(
+        &self,
+        stream: &str,
+        expected: ExpectedRevision,
+        events: &[Event],
+    ) -> Result<Appended, Error> {
+        if events
+            .iter()
+            .any(|e| String::from_utf8_lossy(&e.data).contains(self.needle))
+        {
+            return Err(Error::Backend(format!(
+                "simulated crash: append containing {:?} refused",
+                self.needle
+            )));
+        }
+        self.inner.append(stream, expected, events)
+    }
+    crate::delegate_event_store_reads!();
+}
+
 /// One call a [`ReadCountingStore`] forwarded, with how many events it handed back - the unit a
 /// one-shot command's read cost is asserted in (spec 101). A call is recorded before it is
 /// forwarded, so one that fails stays recorded, having handed back nothing; a subscription counts
