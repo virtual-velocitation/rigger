@@ -155,7 +155,7 @@ pub struct SpawnLaunched {
     /// open at start-up, or the host ended a `--resume` launch that yielded no `system/init`
     /// and fell back to a fresh one), `"fault"`
     /// (criterion 5's own no-result API-side ending), or `"stopped"` (criterion 6's
-    /// wall-clock expiry). Deliberately a plain string, not an enum: THE STREAM,
+    /// silence expiry). Deliberately a plain string, not an enum: THE STREAM,
     /// FAILURE CLASS and STOP each write their own literal, so none of the three has to
     /// land before another can close a record.
     #[serde(default, skip_serializing_if = "Option::is_none")]
