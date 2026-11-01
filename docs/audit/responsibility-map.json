@@ -401,11 +401,11 @@
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
-    "name": "is_parked_or_budget_refused",
+    "name": "is_parked_or_refused",
     "is_test": false,
     "proposed_module": "conductor::spawn",
     "reason": "name contains \"parked\" (spawn lifecycle); grouped under `conductor::spawn`.",
-    "content_hash": "5fd4b65783bb9715"
+    "content_hash": "3766221ee85ef5f5"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -885,7 +885,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "2c41e57340a0cf4f"
+    "content_hash": "c48f3346da51472b"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -997,7 +997,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "792f07afcc65ea7d"
+    "content_hash": "a2536f4c01ec1a38"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -1093,7 +1093,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "c97c7f5c78a57a55"
+    "content_hash": "f1f5005cc59e7749"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -1109,7 +1109,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "2d42a2e023bb83be"
+    "content_hash": "cb69d1809f7d47c2"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -1125,7 +1125,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "40493e5d1677cec5"
+    "content_hash": "cf923962e2006741"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -1189,7 +1189,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "b7cc4c862419b4b9"
+    "content_hash": "dba3fc0d037e80f9"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",

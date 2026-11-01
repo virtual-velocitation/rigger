@@ -8399,21 +8399,22 @@ fn a_beat_lands_in_the_progress_store_and_never_in_the_run_log() {
     assert_eq!(beats_on_the_run_log, Vec::<String>::new());
 }
 
-/// Spec 105's supervisor beat on a failed drive: given a project whose every launch fails, when the
-/// conductor gives the run up, then `rigger run` leaves with that error at once: the beat stops
-/// with the drive, with no interval left to wait out.
+/// Spec 105's supervisor beat on a failed drive: given a project with no infra rule, whose first
+/// failed launch gives the run up before a third failed close could hold it, when the conductor
+/// gives the run up, then `rigger run` leaves with that error at once: the beat stops with the
+/// drive, with no interval left to wait out.
 #[cfg(unix)]
 #[test]
 fn a_run_that_fails_leaves_with_its_error_and_no_interval_to_wait_out() {
     use rigger::progress::{SupervisorBeat, SUPERVISOR_BEAT_INTERVAL};
-    const HALT: &str = "(unit \"a\" failed on infrastructure (infra:spawn) at attempt 0 past the \
-                        failure taxonomy's infra limit, so the step halts and the unit is charged \
-                        no attempt; fix the outage and re-run - the unit resumes at the same \
-                        attempt with a fresh bound)";
+    const HALT: &str = "(unit \"solo\" failed on infrastructure (infra:spawn) at attempt 0 past \
+                        the failure taxonomy's infra limit, so the step halts and the unit is \
+                        charged no attempt; fix the outage and re-run - the unit resumes at the \
+                        same attempt with a fresh bound)";
 
     let dir = temp_git_project_with_commit();
     let root = dir.path();
-    write_workflow_fixture(root, &LIVENESS_WORKFLOW);
+    write_workflow_fixture(root, &NO_INFRA_RULE_WORKFLOW);
     let scratch = tempfile::tempdir().unwrap();
     let started = std::time::Instant::now();
     let (out, err, ok, _fake) = run_on_arms(root, &["run"], scratch.path(), "");

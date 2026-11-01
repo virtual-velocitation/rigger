@@ -2,6 +2,7 @@ use super::*;
 
 use rigger::driver::claude_code;
 use rigger::eventstore::TypeSelection;
+use rigger::held::HeldDriver;
 use rigger::review;
 
 /// Record that THIS run's own step path just attempted a dash ensure (spec 69, round-8 fix; see
@@ -1442,10 +1443,19 @@ fn beating<T>(
     })
 }
 
+/// How often a launch waiting on a held run reads the run again (spec 105).
+const HOLD_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// The pause between two reads of a standing hold, each run path's [`HeldDriver`] sleeping it.
+fn pause_a_hold_poll() {
+    std::thread::sleep(HOLD_POLL_INTERVAL);
+}
+
 /// The standalone CLI path: ground, host the agents as headless `claude` sessions
-/// ([`claude_code::Driver`]), drive the DAG to integration with the supervisor [`beating`] beside
-/// it, and reclaim a done run's scratch. The store is selected by flag and wrapped in the
-/// per-project namespace decorator before it is injected (§5.1.1, R9).
+/// ([`claude_code::Driver`]) behind the [`HeldDriver`] that launches nothing while the run is
+/// held, drive the DAG to integration with the supervisor [`beating`] beside it, and reclaim a
+/// done run's scratch. The store is selected by flag and wrapped in the per-project namespace
+/// decorator before it is injected (§5.1.1, R9).
 fn run_cli(parsed: &RunArgs) -> Res {
     // DISCOVERABILITY (spec 66, criterion 5): `rigger run <spec>` is a REAL pre-launch
     // surface that genuinely holds the spec path in production (unlike the SessionStart-only
@@ -1557,12 +1567,13 @@ fn run_cli(parsed: &RunArgs) -> Res {
         handed_env: selection.handed_env(),
         hold_sink: Some(&folding),
     };
+    let held = HeldDriver::new(&driver, &store, None, &pause_a_hold_poll);
     let grounder = select_grounder(&cfg.workflow.defaults.grounder)?;
     let root = repo.clone();
     let hash_blob = hash_blob_in(&root);
     let deps = Deps {
         store: &store,
-        driver: &driver,
+        driver: &held,
         gates: &ExecRunner,
         repo,
         grounder: Some(grounder.as_ref()),
@@ -1822,10 +1833,11 @@ fn new_run_refusal(command: &str, spec: &str, open: Option<&[String]>) -> String
 }
 
 /// The in-Claude-Code MCP-server path (`rigger serve` / `rigger run --driver
-/// workflow`): the conductor orchestrates on a background thread and this thread
-/// serves the MCP bridge over stdio. The store is selected by flag and wrapped in
-/// the per-project namespace decorator before it is injected into BOTH the
-/// conductor and the side-car (§5.1.1, R9).
+/// workflow`): the conductor orchestrates on a background thread, behind the
+/// [`HeldDriver`] that launches nothing while the run is held and ends its wait
+/// when the session closes, and this thread serves the MCP bridge over stdio. The
+/// store is selected by flag and wrapped in the per-project namespace decorator
+/// before it is injected into BOTH the conductor and the side-car (§5.1.1, R9).
 ///
 /// `command` is the ACTUALLY-INVOKED command line (`"rigger serve"` from [`cmd_serve`],
 /// `"rigger run --driver workflow"` from [`cmd_run`]) - threaded through rather than a
@@ -1952,14 +1964,18 @@ fn run_workflow(parsed: &RunArgs, command: &str) -> Res {
     let _dash = start_run_dashboard(cfg.workflow.dash_enabled(), &store);
 
     let hash_blob = hash_blob_in(&repo);
+    // Set once the session closes, so a launch waiting on a hold ends with a park: nothing would
+    // serve its spawn after the close, and the scope below joins the conductor.
+    let session_closed = std::sync::atomic::AtomicBool::new(false);
     // The conductor orchestrates in the background; this thread serves the MCP
     // bridge over stdio. The shim drains spawns via rigger_next/result; closing
     // stdin ends the session.
     std::thread::scope(|s| {
         s.spawn(|| {
+            let held = HeldDriver::new(&driver, &store, Some(&session_closed), &pause_a_hold_poll);
             let deps = Deps {
                 store: &store,
-                driver: &driver,
+                driver: &held,
                 gates: &ExecRunner,
                 // Reuses the `repo` this function resolved once at entry via
                 // `resolve_main_worktree_or_refuse`, rather than a second `git_repo()` re-read.
@@ -1994,6 +2010,7 @@ fn run_workflow(parsed: &RunArgs, command: &str) -> Res {
             .with_graph(&graph)
             .with_progress(&prog_store, &scratch_root);
         let _ = server.run(std::io::stdin().lock(), std::io::stdout().lock());
+        session_closed.store(true, std::sync::atomic::Ordering::SeqCst);
     });
     Ok(())
 }

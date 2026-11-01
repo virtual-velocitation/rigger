@@ -501,13 +501,23 @@ pub fn strip_failure_marker(e: &Error) -> String {
     if let Some(refusal) = e.0.strip_prefix(EMIT_REFUSED_MARKER) {
         return refusal.to_string();
     }
-    let Some(rest) = e.0.strip_prefix(FAILURE_MARKER) else {
-        return e.0.clone();
-    };
-    match rest.find(FAILURE_MARKER) {
-        Some(end) => rest[end + FAILURE_MARKER.len_utf8()..].to_string(),
+    match failure_parts(e) {
+        Some((_, message)) => message.to_string(),
         None => e.0.clone(),
     }
+}
+
+/// The class `e` carries in a whole [`FAILURE_MARKER`] bracket at its head, a name no binary
+/// knows reading as [`AgentFailure::from_category`] reads it; `None` for an error with no such
+/// bracket, wrapped errors included, since only a driver's own return carries one there.
+pub fn failure_class(e: &Error) -> Option<AgentFailure> {
+    failure_parts(e).map(|(class, _)| AgentFailure::from_category(class))
+}
+
+/// The class and the message of an error [`no_result_error`] built, the one reading of its
+/// bracket; `None` for any error with no whole bracket at its head.
+fn failure_parts(e: &Error) -> Option<(&str, &str)> {
+    e.0.strip_prefix(FAILURE_MARKER)?.split_once(FAILURE_MARKER)
 }
 
 #[cfg(test)]

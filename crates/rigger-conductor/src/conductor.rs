@@ -1593,20 +1593,24 @@ fn spawn_halt(kind: SpawnHalt, stage: &str, tier: &str, agent: &str) -> Error {
     }
 }
 
-/// Whether `e` is a NON-TERMINAL unwind - a park (the stepwise/replay frontier) OR a
-/// review-tier budget refusal - as opposed to a genuine terminal failure (spec 64
-/// criterion 1). Both dispositions get the SAME treatment everywhere a worktree-keep
-/// decision reads them: a park hands work to an out-of-process agent that resumes in
-/// this exact tree, and a budget refusal is symmetric with the implementer's `Ok(false)`
-/// refusal (also worktree-preserving) - neither is a crash a caller should tear a
-/// worktree down over. One predicate for both, so every site that answers "should this
-/// unwind KEEP the worktree" (or, negated, "is this the genuine error to prioritize over
-/// a co-chunked park/refusal") reads it from ONE place instead of hand-spelling the
-/// `is_parked(e) || carries_marker(e, BUDGET_MARKER)` disjunct (or its De Morgan negation) at each
-/// call site - the exact duplication that let round 2 and round 3's masking defects hide
+/// Whether `e` is a NON-TERMINAL unwind - a park (the stepwise/replay frontier) OR the refusal
+/// `refusal` marks - as opposed to a genuine terminal failure (spec 64 criterion 1).
+///
+/// With [`BUDGET_MARKER`], a review-tier budget refusal, both dispositions get the SAME treatment
+/// everywhere a worktree-keep decision reads them: a park hands work to an out-of-process agent
+/// that resumes in this exact tree, and a budget refusal is symmetric with the implementer's
+/// `Ok(false)` refusal (also worktree-preserving) - neither is a crash a caller should tear a
+/// worktree down over. With [`EMIT_REFUSED_MARKER`], the emit guard's refusal of a record the
+/// spawn emitted, both are what the implementer's spawn site surfaces and the held-run decorator
+/// hands to the conductor unchanged.
+///
+/// One predicate, so every site that answers "should this unwind KEEP the worktree" (or, negated,
+/// "is this the genuine error to prioritize over a co-chunked park/refusal") reads it from ONE
+/// place instead of hand-spelling the disjunct (or its De Morgan negation) at each call site - the
+/// exact duplication that let round 2 and round 3's masking defects hide
 /// (arch-u1c1-r3-predicate-now-also-negated).
-fn is_parked_or_budget_refused(e: &Error) -> bool {
-    is_parked(e) || carries_marker(e, BUDGET_MARKER)
+pub(crate) fn is_parked_or_refused(e: &Error, refusal: &str) -> bool {
+    is_parked(e) || carries_marker(e, refusal)
 }
 
 /// The number of times a reviewer whose result is DEGENERATE (empty or whitespace-only)
@@ -4555,7 +4559,7 @@ impl RunCtx<'_> {
         // `run_single_stage` propagates - a chunk with a genuine error AND a park answers
         // this independently of which one the swap prioritized (see the comment above).
         let parked_unwind = any_parked.load(Ordering::SeqCst)
-            || matches!(&result, Err(e) if is_parked_or_budget_refused(e));
+            || matches!(&result, Err(e) if is_parked_or_refused(e, BUDGET_MARKER));
         if let Some(w) = &wt {
             if !parked_unwind {
                 let _ = w.remove();
@@ -5522,7 +5526,7 @@ impl RunCtx<'_> {
                 // surface the park so the caller unwinds cleanly - no UnitFailed, no
                 // remediation - and a later step replays the result. A refused record surfaces
                 // too: the first re-runs above, a second fails the stage below.
-                Err(e) if is_parked(&e) || carries_marker(&e, EMIT_REFUSED_MARKER) => Err(e),
+                Err(e) if is_parked_or_refused(&e, EMIT_REFUSED_MARKER) => Err(e),
                 // The crash disposition (a non-parked spawn/opts-guard error) is the next
                 // unit's to decide; this unit places the spawn and its parked arm, so a crash
                 // proceeds to the commit rather than propagating past the unit.
@@ -7172,7 +7176,7 @@ impl RunCtx<'_> {
         // chunk to mask), so a park/budget-refusal from either of THEM still shows up
         // directly on `result` - the `matches!` disjunct below still catches those.
         let parked_unwind = any_lens_parked.load(Ordering::SeqCst)
-            || matches!(&result, Err(e) if is_parked_or_budget_refused(e));
+            || matches!(&result, Err(e) if is_parked_or_refused(e, BUDGET_MARKER));
         if let Some(w) = &review_wt {
             // A read-only review worktree carries no work to checkpoint, so a TERMINAL
             // return removes the transient dir AND its throwaway branch unconditionally,
@@ -7483,7 +7487,7 @@ impl RunCtx<'_> {
             // being the one propagated (see the doc comment above).
             if chunk_results
                 .iter()
-                .any(|r| matches!(r, Err(e) if is_parked_or_budget_refused(e)))
+                .any(|r| matches!(r, Err(e) if is_parked_or_refused(e, BUDGET_MARKER)))
             {
                 any_parked.store(true, Ordering::SeqCst);
             }
@@ -7501,7 +7505,7 @@ impl RunCtx<'_> {
             // unaffected.
             if let Some(pos) = chunk_results
                 .iter()
-                .position(|r| matches!(r, Err(e) if !is_parked_or_budget_refused(e)))
+                .position(|r| matches!(r, Err(e) if !is_parked_or_refused(e, BUDGET_MARKER)))
             {
                 chunk_results.swap(0, pos);
             }
@@ -7761,7 +7765,9 @@ impl RunCtx<'_> {
                         // records none, so `review_spawn_errored` is false there and a genuine
                         // in-process review failure still propagates as the stage's error exactly as
                         // before.
-                        if !is_parked_or_budget_refused(&e) && self.review_spawn_errored(&id)? {
+                        if !is_parked_or_refused(&e, BUDGET_MARKER)
+                            && self.review_spawn_errored(&id)?
+                        {
                             continue;
                         }
                         // adj-u104c5 REQUIRED FIX 2: `strip_failure_marker` drops only its own
@@ -8353,7 +8359,7 @@ impl RunCtx<'_> {
         // stepwise/replay frontier) and resumes in a LATER conductor process, in this
         // exact throwaway worktree - the identical defect class `run_fan_out_stage` and
         // `run_stage` both fix with the same `parked_unwind` guard, mirrored here.
-        let parked_unwind = matches!(&result, Err(e) if is_parked_or_budget_refused(e));
+        let parked_unwind = matches!(&result, Err(e) if is_parked_or_refused(e, BUDGET_MARKER));
         if let Some(w) = &review_wt {
             if !parked_unwind {
                 let _ = w.remove();

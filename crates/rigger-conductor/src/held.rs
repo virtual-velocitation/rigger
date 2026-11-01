@@ -1,3 +1,152 @@
+//! THE HELD RUN'S DRIVER (spec 105): the [`AgentDriver`] decorator that launches nothing while the
+//! run is held and carries a session the run cannot use across the hold.
+//!
+//! The run's hold is a fold of its log ([`ledger::project`]), read here before every launch, so a
+//! session already running is left alone and a gate already running finishes: only the next
+//! launch waits. A wait ends on the run's `RunReleased` or, on `rigger serve`, on the session's
+//! close, with a park. An error of a hold or wait class, or any error while the run is held, waits
+//! the same way and launches the same spawn id again, its next ordinal coming from the host's own
+//! read of the spawn stream, so the conductor sees no failure and writes no infra mark. The hold
+//! is read after the host returns, because the host appends a third-fault hold before it returns
+//! its error.
+//!
+//! Three errors reach the conductor unchanged, held or not: one carrying a conductor marker, one
+//! for a spawn the current run's slice has ended, and the next error of a spawn id that has
+//! relaunched [`RELAUNCH_BOUND`] times with no non-error outcome between. An unclassed or
+//! fault-class error on an unheld run reaches it too, its spawn site deciding what follows.
+//!
+//! The decorator writes no event: a hold, a release and a spawn's close each have their author.
+//! Its count of relaunches lives in memory over one supervisor's life, so a restarted supervisor
+//! starts it again.
+
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
+
+use rigger_domain::agent::{
+    failure_class, parked_spawn, AgentDriver, AgentResult, Disposition, Error, SpawnOpts,
+    EMIT_REFUSED_MARKER,
+};
+use serde_json::Value;
+
+use crate::conductor::is_parked_or_refused;
+use crate::config::AgentDef;
+use crate::eventstore::{Event, EventStore};
+use crate::ledger;
+use crate::run::{read::read_current_run, STREAM};
+use crate::spawn;
+
+/// How many times one spawn id relaunches with no non-error outcome of that id between: its next
+/// error passes through, whatever the error's class and whether or not the run is held.
+const RELAUNCH_BOUND: u32 = 2;
+
+/// An [`AgentDriver`] that holds `inner`'s launches back while the run is held and relaunches a
+/// session a hold or a wait class ended, up to [`RELAUNCH_BOUND`].
+pub struct HeldDriver<'a> {
+    inner: &'a dyn AgentDriver,
+    store: &'a dyn EventStore,
+    session_closed: Option<&'a AtomicBool>,
+    pause: &'a (dyn Fn() + Sync),
+    /// Each spawn id's relaunches since its last non-error outcome.
+    relaunches: Mutex<HashMap<String, u32>>,
+}
+
+impl<'a> HeldDriver<'a> {
+    /// A decorator over `inner`, reading the run from `store`. `session_closed` is `rigger
+    /// serve`'s flag, `None` on `rigger run`, which has no session to end a wait. `pause` runs
+    /// between two reads of a standing hold.
+    pub fn new(
+        inner: &'a dyn AgentDriver,
+        store: &'a dyn EventStore,
+        session_closed: Option<&'a AtomicBool>,
+        pause: &'a (dyn Fn() + Sync),
+    ) -> Self {
+        HeldDriver {
+            inner,
+            store,
+            session_closed,
+            pause,
+            relaunches: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// The current run's slice of the log.
+    fn run_slice(&self) -> Result<Vec<Event>, Error> {
+        let (slice, _) = read_current_run(self.store, STREAM)?;
+        Ok(slice)
+    }
+
+    /// Return once the run is not held; a closed session ends the wait with `id`'s park, and a
+    /// failed read of the run with its error, since a run not proved unheld launches nothing.
+    fn wait_out_the_hold(&self, id: &str) -> Result<(), Error> {
+        while ledger::project(&self.run_slice()?)?.hold.is_some() {
+            if self
+                .session_closed
+                .is_some_and(|closed| closed.load(Ordering::SeqCst))
+            {
+                return Err(parked_spawn(id));
+            }
+            (self.pause)();
+        }
+        Ok(())
+    }
+
+    /// Whether `e`, the error of spawn `id`, is one this decorator carries across instead of its
+    /// spawn site. A run it cannot read leaves `e` to the conductor, the spawn's own failure
+    /// never masked by the read's. Counts the relaunch it answers true for.
+    fn relaunches(&self, e: &Error, id: &str) -> bool {
+        if is_parked_or_refused(e, EMIT_REFUSED_MARKER) {
+            return false;
+        }
+        let Ok(slice) = self.run_slice() else {
+            return false;
+        };
+        if !matches!(spawn::ended_by(&slice, id), Ok(None)) {
+            return false;
+        }
+        let Ok(run) = ledger::project(&slice) else {
+            return false;
+        };
+        let class_waits =
+            failure_class(e).is_some_and(|class| class.row().disposition != Disposition::Fault);
+        if run.hold.is_none() && !class_waits {
+            return false;
+        }
+        let mut relaunches = self.relaunches.lock().expect("relaunch count lock");
+        let count = relaunches.entry(id.to_string()).or_insert(0);
+        if *count >= RELAUNCH_BOUND {
+            return false;
+        }
+        *count += 1;
+        true
+    }
+}
+
+impl AgentDriver for HeldDriver<'_> {
+    fn spawn(
+        &self,
+        agent: &AgentDef,
+        prompt: &str,
+        opts: &SpawnOpts,
+        emit: &dyn Fn(&str, Value) -> Result<(), Error>,
+    ) -> Result<AgentResult, Error> {
+        loop {
+            self.wait_out_the_hold(&opts.id)?;
+            match self.inner.spawn(agent, prompt, opts, emit) {
+                Ok(result) => {
+                    self.relaunches
+                        .lock()
+                        .expect("relaunch count lock")
+                        .remove(&opts.id);
+                    return Ok(result);
+                }
+                Err(e) if self.relaunches(&e, &opts.id) => continue,
+                Err(e) => return Err(e),
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::VecDeque;
