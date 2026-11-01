@@ -7184,27 +7184,17 @@ fn seed_a_campaign_held_by(root: &Path, criteria: &[String], by: Option<&str>) {
     }
 }
 
-/// Append `event` to `root`'s run stream through a bare store, a hand beside the run.
-fn seed_on_the_run(root: &Path, event: rigger::eventstore::Event) {
-    common::cli::with_run_store(root, |store| {
-        store
-            .append(
-                rigger::conductor::STREAM,
-                rigger::eventstore::ExpectedRevision::Any,
-                &[event],
-            )
-            .unwrap();
-    });
-}
+/// The cause every hold [`seed_a_hold_by`] seeds carries.
+const SEEDED_HOLD_CAUSE: &str = "rate_limit";
 
 /// Hold `root`'s current run, by the writer `by`.
 fn seed_a_hold_by(root: &Path, by: &str) {
-    seed_on_the_run(root, common::fixtures::held_event("rate_limit", by));
+    common::cli::seed_on_the_run(root, common::fixtures::held_event(SEEDED_HOLD_CAUSE, by));
 }
 
 /// Release `root`'s current run as an operator does.
 fn seed_an_operator_release(root: &Path) {
-    seed_on_the_run(
+    common::cli::seed_on_the_run(
         root,
         common::fixtures::released_event(rigger::run::HOLD_BY_OPERATOR),
     );
@@ -7318,19 +7308,25 @@ fn worker_hold(
 /// sights each of `categories` on its own `api_retry` line, then answers with the change a merging
 /// stage lands.
 fn sighting_worker_arm(opening: &str, categories: &[&str]) -> String {
-    let sightings: String = categories
+    let sightings = api_retry_lines(categories, 1);
+    format!(
+        "  *\"Do the unit.\"*)\n{opening}{sightings}    echo \"pub fn work() {{}}\" > work.rs\n    ;;\n"
+    )
+}
+
+/// The shell printing one `api_retry` line of each of `categories`, each announcing a wait of
+/// `delay_ms`.
+fn api_retry_lines(categories: &[&str], delay_ms: u32) -> String {
+    categories
         .iter()
         .map(|category| {
             format!(
                 "    printf '%s\\n' '{{\"type\":\"system\",\"subtype\":\"api_retry\",\"attempt\":1,\
-                 \"max_retries\":10,\"retry_delay_ms\":1,\"error_status\":500,\
+                 \"max_retries\":10,\"retry_delay_ms\":{delay_ms},\"error_status\":500,\
                  \"error\":\"{category}\"}}' >&3\n"
             )
         })
-        .collect();
-    format!(
-        "  *\"Do the unit.\"*)\n{opening}{sightings}    echo \"pub fn work() {{}}\" > work.rs\n    ;;\n"
-    )
+        .collect()
 }
 
 /// The shell of a session that ends on an API error as the real host does: it runs `reporting`,
@@ -7370,6 +7366,28 @@ const SESSION_WAITS_FOR_A_HOLD: &str = r#"    : > "$here/session-live"
         tries=$((tries + 1))
     done
 "#;
+
+/// A `beside` for [`run_on_arms_beside`] landing an operator hold on the session that marked
+/// `$here/session-live`, `after` that mark was first seen, then marking `$here/operator-held`.
+fn holding_the_live_session<'a>(root: &'a Path, after: Duration) -> impl FnMut(&Path) + 'a {
+    let mut live_since = None;
+    move |fake| {
+        let landed = fake.join("bin/operator-held");
+        if fake.join("bin/session-live").exists()
+            && !landed.exists()
+            && live_since.get_or_insert_with(Instant::now).elapsed() >= after
+        {
+            seed_a_hold_by(root, rigger::run::HOLD_BY_OPERATOR);
+            std::fs::write(&landed, "").unwrap();
+        }
+    }
+}
+
+/// The hold [`holding_the_live_session`] seeds, as [`run_holds`] reads it back.
+fn seeded_operator_hold() -> rigger::run::RunHeld {
+    let held = common::fixtures::held_event(SEEDED_HOLD_CAUSE, rigger::run::HOLD_BY_OPERATOR);
+    serde_json::from_slice(&held.data).unwrap()
+}
 
 /// Spec 105's THE DISPOSITION TABLE through `rigger run`: given a run, when a session sights a
 /// category, then the first hold-class sighting holds the run, naming its cause, action and
@@ -7462,17 +7480,24 @@ fn a_sighting_holds_the_run_and_a_done_run_releases_the_hold() {
 
 /// Spec 105's class at a session's ending, through `rigger run`: given a fake `claude` that exits
 /// only on its input's close, when its session ends on an `is_error` result, then the launch takes
-/// its class after the child exits and the run holds as the class's row says: a FAULT class at the
-/// implementer closes `fault`, loses the scratch the session left and reruns uncharged under the
-/// infra limit, and a hold or wait class closes `interrupted`, keeps that scratch for the launch
-/// the release brings, the same id again at the next ordinal with no infra mark, charged nothing
-/// either, each second launch closing `completed`.
+/// its class after the child exits and the run holds as the class's row says. On an unheld run a
+/// FAULT class at the implementer, an unclassed ending included, closes `fault`, loses the scratch
+/// the session left and reruns uncharged under the infra limit. A hold or wait class closes
+/// `interrupted`, and so does any class, FAULT and unclassed included, on a run an operator held
+/// under the live session: the close keeps its class and the scratch for the launch the release
+/// brings, the same id again at the next ordinal with no infra mark, charged nothing either, each
+/// second launch closing `completed`. Whichever way, the first launch records no `SpawnResult`, so
+/// the spawn's one result is the second launch's.
 #[cfg(unix)]
 #[test]
 fn an_is_error_result_reruns_uncharged_and_holds_as_its_class_says() {
     struct Case {
+        name: &'static str,
+        /// The close's class: the session reports it, or it is what an unclassed session reads as.
         category: &'static str,
         session: fn(&str) -> String,
+        /// Whether an operator hold lands on the live session.
+        operator_holds: bool,
         /// How the first launch closes.
         ended: &'static str,
         holds: Vec<rigger::run::RunHeld>,
@@ -7483,10 +7508,13 @@ fn an_is_error_result_reruns_uncharged_and_holds_as_its_class_says() {
         kept: bool,
     }
     let retries = common::fixtures::RETRIES_BY_ITSELF;
+    let unclassed = |_: &str| api_error_session("", "");
     let cases = [
         Case {
+            name: "a FAULT class on an unheld run",
             category: "invalid_request",
             session: classed_session,
+            operator_holds: false,
             ended: "fault",
             holds: vec![],
             again: ("solo/implementer#0~retry4", 0),
@@ -7494,8 +7522,21 @@ fn an_is_error_result_reruns_uncharged_and_holds_as_its_class_says() {
             kept: false,
         },
         Case {
+            name: "an unclassed ending on an unheld run",
+            category: "unknown",
+            session: unclassed,
+            operator_holds: false,
+            ended: "fault",
+            holds: vec![],
+            again: ("solo/implementer#0~retry4", 0),
+            releases: vec![],
+            kept: false,
+        },
+        Case {
+            name: "a wait class",
             category: "rate_limit",
             session: classed_session,
+            operator_holds: false,
             ended: "interrupted",
             holds: vec![worker_hold("rate_limit", "", retries, false)],
             again: ("solo/implementer#0", 1),
@@ -7503,8 +7544,10 @@ fn an_is_error_result_reruns_uncharged_and_holds_as_its_class_says() {
             kept: true,
         },
         Case {
+            name: "a hold class",
             category: "billing_error",
             session: classed_behind_the_close_session,
+            operator_holds: false,
             ended: "interrupted",
             holds: vec![worker_hold(
                 "billing_error",
@@ -7516,14 +7559,41 @@ fn an_is_error_result_reruns_uncharged_and_holds_as_its_class_says() {
             releases: vec!["operator"],
             kept: true,
         },
+        Case {
+            name: "a FAULT class on a held run",
+            category: "invalid_request",
+            session: classed_session,
+            operator_holds: true,
+            ended: "interrupted",
+            holds: vec![seeded_operator_hold()],
+            again: ("solo/implementer#0", 1),
+            releases: vec!["operator"],
+            kept: true,
+        },
+        Case {
+            name: "an unclassed ending on a held run",
+            category: "unknown",
+            session: unclassed,
+            operator_holds: true,
+            ended: "interrupted",
+            holds: vec![seeded_operator_hold()],
+            again: ("solo/implementer#0", 1),
+            releases: vec!["operator"],
+            kept: true,
+        },
     ];
     for case in cases {
-        let category = case.category;
+        let name = case.name;
         let dir = temp_git_project_with_commit();
         let root = dir.path();
         write_workflow_fixture(root, &REVIEWLESS_GIT_UNIT_WORKFLOW);
         let scratch = tempfile::tempdir().unwrap();
-        let session = (case.session)(category);
+        let opening = if case.operator_holds {
+            SESSION_WAITS_FOR_A_HOLD
+        } else {
+            ""
+        };
+        let session = (case.session)(case.category);
         let arm = format!(
             r#"  *"Do the unit."*)
     if [ -e "$here/faulted" ]; then
@@ -7535,20 +7605,21 @@ fn an_is_error_result_reruns_uncharged_and_holds_as_its_class_says() {
 {READ_LAUNCH_CONFIG}{ASK_THE_SERVER_ITS_SCRATCH}    sed -n 's/.*"path":"\([^"]*\)".*/\1/p' "$here/scratch-response" > "$here/left-scratch"
     mkdir -p "$(cat "$here/left-scratch")"
     : > "$(cat "$here/left-scratch")/left-by-the-first-launch"
-{session}    ;;
+{opening}{session}    ;;
 "#
         );
-        let release = releasing_holds(root, 1, |_| true);
+        let mut hold = holding_the_live_session(root, Duration::ZERO);
+        let mut release = releasing_holds(root, 1, |_| true);
         let (out, err, ok, fake) =
-            run_on_arms_beside(root, &["run"], scratch.path(), &arm, release);
-        assert!(
-            ok,
-            "{category}: the run exits 0; stderr: {err}\nstdout: {out}"
-        );
+            run_on_arms_beside(root, &["run"], scratch.path(), &arm, |fake| {
+                hold(fake);
+                release(fake);
+            });
+        assert!(ok, "{name}: the run exits 0; stderr: {err}\nstdout: {out}");
         assert_eq!(
             out.lines().nth(2).unwrap(),
             "done: every unit integrated",
-            "{category}: how the run ended; stderr: {err}"
+            "{name}: how the run ended; stderr: {err}"
         );
         assert_eq!(
             closed_launches(root),
@@ -7557,7 +7628,7 @@ fn an_is_error_result_reruns_uncharged_and_holds_as_its_class_says() {
                     "solo/implementer#0".to_string(),
                     0,
                     case.ended.to_string(),
-                    Some(category.to_string())
+                    Some(case.category.to_string())
                 ),
                 (
                     case.again.0.to_string(),
@@ -7566,29 +7637,35 @@ fn an_is_error_result_reruns_uncharged_and_holds_as_its_class_says() {
                     None
                 ),
             ],
-            "{category}: the closes; stderr: {err}"
+            "{name}: the closes; stderr: {err}"
+        );
+        assert_eq!(
+            common::fixtures::spawn_result_rows(&read_run_events(root)),
+            [(
+                case.again.0.to_string(),
+                String::new(),
+                String::new(),
+                false
+            )],
+            "{name}: the one result is the second launch's"
         );
         let at_the_second_launch =
             std::fs::read_to_string(fake.path().join("bin/scratch-at-the-second-launch"))
-                .unwrap_or_else(|e| panic!("{category}: the second launch listed it: {e}"));
+                .unwrap_or_else(|e| panic!("{name}: the second launch listed it: {e}"));
         assert_eq!(
             at_the_second_launch
                 .lines()
                 .any(|f| f == "left-by-the-first-launch"),
             case.kept,
-            "{category}: the first launch's scratch: {at_the_second_launch:?}"
+            "{name}: the first launch's scratch: {at_the_second_launch:?}"
         );
         assert_eq!(
             common::cli::run_payloads(root, "UnitFailed"),
             Vec::<serde_json::Value>::new(),
-            "{category}: the unit is charged nothing"
+            "{name}: the unit is charged nothing"
         );
-        assert_eq!(run_holds(root), case.holds, "{category}: the holds");
-        assert_eq!(
-            run_releases(root),
-            case.releases,
-            "{category}: the releases"
-        );
+        assert_eq!(run_holds(root), case.holds, "{name}: the holds");
+        assert_eq!(run_releases(root), case.releases, "{name}: the releases");
     }
 }
 
@@ -8512,19 +8589,21 @@ const FIRST_SESSION_DIES: &str = r#"    if [ ! -e "$here/first-session-died" ]; 
 "#;
 
 /// Spec 105 through the `run_cli` wire: given a session dying with no result, when an operator hold
-/// landed on it, then its error waits for the release and the same spawn id launches at its next
-/// ordinal with no infra mark, the hold being read after the host returned; when none landed, the
-/// error keeps its spawn site's path, the conductor's infra rerun. The unit is charged nothing.
+/// landed on it, then the launch closes `interrupted` under its `unknown` class, its error waits
+/// for the release and the same spawn id launches at its next ordinal with no infra mark, the hold
+/// being read after the host returned; when none landed, the launch closes `fault` and the error
+/// keeps its spawn site's path, the conductor's infra rerun. The first launch records no result and
+/// the unit is charged nothing.
 #[cfg(unix)]
 #[test]
 fn a_session_dying_with_no_result_relaunches_only_on_a_held_run() {
     const SPAWN: &str = "solo/implementer#0";
     const RERUN: &str = "solo/implementer#0~retry4";
     let cases = [
-        ("a hold landed on it", true, [(SPAWN, 0), (SPAWN, 1)]),
-        ("no hold landed on it", false, [(SPAWN, 0), (RERUN, 0)]),
+        ("a hold landed on it", true, "interrupted", SPAWN, 1),
+        ("no hold landed on it", false, "fault", RERUN, 0),
     ];
-    for (name, held, launches) in cases {
+    for (name, held, ended, again, ordinal) in cases {
         let dir = temp_git_project_with_commit();
         let root = dir.path();
         write_workflow_fixture(root, &REVIEWLESS_GIT_UNIT_WORKFLOW);
@@ -8550,7 +8629,24 @@ fn a_session_dying_with_no_result_relaunches_only_on_a_held_run() {
             "done: every unit integrated",
             "{name}: how the run ended; stderr: {err}"
         );
-        assert_closed_spawns(root, &launches, &format!("{name}; stderr: {err}"));
+        assert_eq!(
+            closed_launches(root),
+            [
+                (
+                    SPAWN.to_string(),
+                    0,
+                    ended.to_string(),
+                    Some("unknown".to_string())
+                ),
+                (again.to_string(), ordinal, "completed".to_string(), None),
+            ],
+            "{name}: the closes; stderr: {err}"
+        );
+        assert_eq!(
+            common::fixtures::spawn_result_rows(&read_run_events(root)),
+            [(again.to_string(), String::new(), String::new(), false)],
+            "{name}: the one result is the second launch's"
+        );
         assert_eq!(
             run_holds(root).len(),
             usize::from(held),
@@ -9516,17 +9612,8 @@ fn a_resume_with_no_session_lands_a_fresh_launch_in_the_same_attempt(ending: &st
         0,
         "the fresh launch resumes nothing: {argv:?}"
     );
-    let events = read_run_events(root);
     assert_eq!(
-        events
-            .iter()
-            .filter(|e| e.type_ == rigger::spawn::TYPE_SPAWN_RESULT)
-            .map(|e| {
-                let result = SpawnResult::from_event(e).unwrap();
-                let fault = result.is_liveness_fault();
-                (result.id, result.output, result.error, fault)
-            })
-            .collect::<Vec<_>>(),
+        common::fixtures::spawn_result_rows(&read_run_events(root)),
         ["solo/implementer#0", "solo/implementer#1"].map(|id| (
             id.to_string(),
             "the unit is built".to_string(),
@@ -9536,10 +9623,7 @@ fn a_resume_with_no_session_lands_a_fresh_launch_in_the_same_attempt(ending: &st
         "the re-attempt's one result is the fresh launch's, and no fault stands beside it"
     );
     assert_eq!(
-        events
-            .iter()
-            .filter(|e| e.type_ == rigger::contextgraph::TYPE_GATE_VERDICT)
-            .count(),
+        common::cli::run_payloads(root, rigger::contextgraph::TYPE_GATE_VERDICT).len(),
         2,
         "the gate judged both attempts, the fresh launch's work included"
     );
@@ -9580,6 +9664,269 @@ rigger::test_cases! {
         a_resume_with_no_session_lands_a_fresh_launch_in_the_same_attempt(
             "while IFS= read -r _unused; do :; done; exit 1",
         );
+}
+
+/// [`TWO_ATTEMPT_RED_UNIT_WORKFLOW`] with its worker stopped past one second of silence.
+const SILENCE_BOUNDED_TWO_ATTEMPT_WORKFLOW: WorkflowFixture = WorkflowFixture {
+    worker: "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\nmax_wall_clock: 1\n---\nDo the unit.\n",
+    body: TWO_ATTEMPT_RED_UNIT_WORKFLOW.body,
+};
+
+/// Spec 105's exception to the resume fallback, through `rigger run`: given a re-attempt asked to
+/// resume its session, when each of its `--resume` launches ends with no `system/init` as its row
+/// says, then a launch closing `interrupted` for its class, or ending any way at all on a run an
+/// operator held under it, launches nothing fresh: its error reaches the decorator, which waits for
+/// the release and launches the same id again at the next ordinal, resuming the same session. A
+/// read error on a held run closes nothing and a stop on a held run keeps its `stopped` close and
+/// its fault. Only a launch of an unheld run ending with no such class takes the fresh launch, and
+/// a lost session behind an outage takes it once the outage has passed. The gate judges two
+/// attempts whichever way: none of it costs the unit one.
+#[cfg(unix)]
+#[test]
+fn a_resume_ending_api_side_or_on_a_held_run_launches_nothing_fresh() {
+    const FIRST: &str = "solo/implementer#0";
+    const RESUMED: &str = "solo/implementer#1";
+    const BUILT: &str = "the unit is built";
+    const STOP: &str = "spawn \"solo/implementer#1\" stopped: its agent stream stayed silent for \
+                        1s (its max_wall_clock bound) with no result - no remediation attempt is \
+                        charged (the unit's code is not at fault). Re-drive it once the \
+                        agent/driver is healthy: record a real result with `rigger result \
+                        solo/implementer#1` (last-write-wins supersedes this liveness fault).";
+    const ENDS: &str = "    exit 1\n";
+    const UNREADABLE: &str = "    printf '\\377\\376\\n' >&3\n";
+    const STAYS_SILENT: &str = "    while IFS= read -r _unused; do :; done\n    exit 1\n";
+
+    /// One launch of the re-attempt, at the ordinal its place says: whether it resumed the first
+    /// attempt's session, how it closed, if it did, and the class of that close.
+    type Launch = (bool, Option<&'static str>, Option<&'static str>);
+    struct Case {
+        name: &'static str,
+        workflow: &'static WorkflowFixture,
+        /// The shell of each `--resume` launch in turn; the one past them answers.
+        endings: Vec<String>,
+        /// How long past `$here/session-live` an operator hold lands, when a session marks it.
+        hold_lands: Duration,
+        launches: Vec<Launch>,
+        holds: Vec<rigger::run::RunHeld>,
+        /// The fault a stop records, which stands as the re-attempt's one result: the store reads a
+        /// liveness fault as answered, so the relaunch's answer reaches the conductor unrecorded.
+        fault: Option<&'static str>,
+    }
+    let completed: Launch = (true, Some("completed"), None);
+    let completed_fresh: Launch = (false, Some("completed"), None);
+    let fallen_back: Launch = (true, Some("interrupted"), None);
+    let retried = |category| format!("{}{ENDS}", api_retry_lines(&[category], 1));
+    let under_a_hold = |shell: String| format!("{SESSION_WAITS_FOR_A_HOLD}{shell}{ENDS}");
+    let cases = [
+        Case {
+            name: "a wait class",
+            workflow: &TWO_ATTEMPT_RED_UNIT_WORKFLOW,
+            endings: vec![retried("rate_limit")],
+            hold_lands: Duration::ZERO,
+            launches: vec![(true, Some("interrupted"), Some("rate_limit")), completed],
+            holds: vec![worker_hold(
+                "rate_limit",
+                "",
+                common::fixtures::RETRIES_BY_ITSELF,
+                false,
+            )],
+            fault: None,
+        },
+        Case {
+            name: "a hold class",
+            workflow: &TWO_ATTEMPT_RED_UNIT_WORKFLOW,
+            endings: vec![retried("billing_error")],
+            hold_lands: Duration::ZERO,
+            launches: vec![
+                (true, Some("interrupted"), Some("billing_error")),
+                completed,
+            ],
+            holds: vec![worker_hold(
+                "billing_error",
+                "billing_error",
+                "fix the account's billing",
+                true,
+            )],
+            fault: None,
+        },
+        Case {
+            name: "a FAULT class on a held run",
+            workflow: &TWO_ATTEMPT_RED_UNIT_WORKFLOW,
+            endings: vec![under_a_hold(api_retry_lines(&["invalid_request"], 1))],
+            hold_lands: Duration::ZERO,
+            launches: vec![
+                (true, Some("interrupted"), Some("invalid_request")),
+                completed,
+            ],
+            holds: vec![seeded_operator_hold()],
+            fault: None,
+        },
+        Case {
+            name: "an unclassed refusal on a held run",
+            workflow: &TWO_ATTEMPT_RED_UNIT_WORKFLOW,
+            endings: vec![under_a_hold(String::new())],
+            hold_lands: Duration::ZERO,
+            launches: vec![(true, Some("interrupted"), Some("unknown")), completed],
+            holds: vec![seeded_operator_hold()],
+            fault: None,
+        },
+        Case {
+            name: "a read error on a held run",
+            workflow: &TWO_ATTEMPT_RED_UNIT_WORKFLOW,
+            endings: vec![under_a_hold(UNREADABLE.to_string())],
+            hold_lands: Duration::ZERO,
+            launches: vec![(true, None, None), completed],
+            holds: vec![seeded_operator_hold()],
+            fault: None,
+        },
+        // The announced wait excuses the first wake of the bound, so the silence this launch runs
+        // up before the hold lands stands past the bound at the wake after, the hold still open.
+        Case {
+            name: "a stop on a held run",
+            workflow: &SILENCE_BOUNDED_TWO_ATTEMPT_WORKFLOW,
+            endings: vec![format!(
+                "    : > \"$here/session-live\"\n{}{STAYS_SILENT}",
+                api_retry_lines(&["rate_limit"], 1000)
+            )],
+            hold_lands: Duration::from_secs(3),
+            launches: vec![(true, Some("stopped"), None), completed],
+            holds: vec![seeded_operator_hold()],
+            fault: Some(STOP),
+        },
+        Case {
+            name: "a FAULT class on an unheld run",
+            workflow: &TWO_ATTEMPT_RED_UNIT_WORKFLOW,
+            endings: vec![retried("invalid_request")],
+            hold_lands: Duration::ZERO,
+            launches: vec![fallen_back, completed_fresh],
+            holds: vec![],
+            fault: None,
+        },
+        Case {
+            name: "a read error on an unheld run",
+            workflow: &TWO_ATTEMPT_RED_UNIT_WORKFLOW,
+            endings: vec![format!("{UNREADABLE}{ENDS}")],
+            hold_lands: Duration::ZERO,
+            launches: vec![fallen_back, completed_fresh],
+            holds: vec![],
+            fault: None,
+        },
+        Case {
+            name: "a lost session behind an outage",
+            workflow: &TWO_ATTEMPT_RED_UNIT_WORKFLOW,
+            endings: vec![retried("rate_limit"), ENDS.to_string()],
+            hold_lands: Duration::ZERO,
+            launches: vec![
+                (true, Some("interrupted"), Some("rate_limit")),
+                fallen_back,
+                completed_fresh,
+            ],
+            holds: vec![worker_hold(
+                "rate_limit",
+                "",
+                common::fixtures::RETRIES_BY_ITSELF,
+                false,
+            )],
+            fault: None,
+        },
+    ];
+    for case in cases {
+        let name = case.name;
+        let dir = temp_git_project_with_commit();
+        let root = dir.path();
+        write_workflow_fixture(root, case.workflow);
+        let scratch = tempfile::tempdir().unwrap();
+        let endings: String = case
+            .endings
+            .iter()
+            .zip(1..)
+            .map(|(shell, nth)| format!("        {nth})\n{shell}        ;;\n"))
+            .collect();
+        let arm = format!(
+            r#"  *"Do the unit."*)
+    case " $* " in
+    *" --resume "*)
+        echo resume >> "$here/launches"
+        case "$(grep -c resume "$here/launches")" in
+{endings}        esac
+        ;;
+    *)
+        echo fresh >> "$here/launches"
+        ;;
+    esac
+    echo "pub fn work() {{}}" > work.rs
+    echo '{BUILT}'
+    ;;
+"#
+        );
+        let closes = case.launches[0].1.is_some();
+        let mut hold = holding_the_live_session(root, case.hold_lands);
+        let mut release = releasing_holds(root, 1, |root| {
+            !closes || closed_launches(root).iter().any(|close| close.0 == RESUMED)
+        });
+        let (out, err, ok, fake) =
+            run_on_arms_beside(root, &["run"], scratch.path(), &arm, |fake| {
+                hold(fake);
+                release(fake);
+            });
+        assert!(ok, "{name}: the run exits 0; stderr: {err}\nstdout: {out}");
+
+        let launched = std::fs::read_to_string(fake.path().join("bin/launches")).unwrap();
+        let resumes = case.launches.iter().map(|launch| match launch.0 {
+            true => "resume",
+            false => "fresh",
+        });
+        assert_eq!(
+            launched.lines().collect::<Vec<_>>(),
+            std::iter::once("fresh").chain(resumes).collect::<Vec<_>>(),
+            "{name}: every launch the host made, in order; stderr: {err}"
+        );
+
+        let records = common::cli::recorded_progress::<rigger::progress::SpawnLaunched>(root);
+        let session = records.first().map_or("", |l| l.session_id.as_str());
+        assert_eq!(
+            records
+                .iter()
+                .filter(|l| l.spawn == RESUMED)
+                .map(|l| (
+                    l.launch,
+                    l.resumed_from.as_deref() == Some(session),
+                    l.ended.as_deref(),
+                    l.class.as_deref(),
+                ))
+                .collect::<Vec<_>>(),
+            case.launches
+                .iter()
+                .zip(0..)
+                .flat_map(|(&(resumes, ended, class), ordinal)| {
+                    let close = ended.map(|ended| (ordinal, false, Some(ended), class));
+                    std::iter::once((ordinal, resumes, None, None)).chain(close)
+                })
+                .collect::<Vec<_>>(),
+            "{name}: the re-attempt's records; stderr: {err}"
+        );
+        let built = |id: &str| (id.to_string(), BUILT.to_string(), String::new(), false);
+        let re_attempt = case.fault.map_or_else(
+            || built(RESUMED),
+            |error| (RESUMED.to_string(), String::new(), error.to_string(), true),
+        );
+        assert_eq!(
+            common::fixtures::spawn_result_rows(&read_run_events(root)),
+            [built(FIRST), re_attempt],
+            "{name}: the results"
+        );
+        assert_eq!(
+            common::cli::run_payloads(root, rigger::contextgraph::TYPE_GATE_VERDICT).len(),
+            2,
+            "{name}: the attempts the gate judged"
+        );
+        assert_eq!(run_holds(root), case.holds, "{name}: the holds");
+        assert_eq!(
+            run_releases(root),
+            vec!["operator"; case.holds.len()],
+            "{name}: the releases"
+        );
+    }
 }
 
 /// Spec 105's resume fallback as its consumer reads it: given a re-attempt that fell back because

@@ -6,7 +6,8 @@
 //! copied into the graph, and a second call on unchanged text answers from the store with zero
 //! spawns; an edited text is critiqued afresh and inherits none of the earlier findings. A session
 //! silent past its bound is stopped, since this verb's host is the one wired with no beat source
-//! (spec 105 LIVENESS).
+//! (spec 105 LIVENESS), and a session ending API-side closes `fault` whatever its class, since it
+//! is the one wired with no hold sink (spec 105 HELD).
 //!
 //! NOT OWNED HERE: the refusal a new run meets without a clean critique (criterion 2), and the
 //! plan-critique stop on a spec defect (criterion 5).
@@ -18,10 +19,10 @@ use std::path::Path;
 use common::cli::{
     assert_selected_server, critique_finding_id, emit, pin_identity, read_run_events,
     recorded_progress, rigger_file, run_payloads, run_rigger, run_rigger_envs, run_rigger_ok,
-    run_stream_identity, seed_a_run, seed_run_events, seed_store, temp_project,
+    run_stream_identity, seed_a_run, seed_on_the_run, seed_run_events, seed_store, temp_project,
     temp_repoless_project, write_spec_project,
 };
-use common::fixtures::{composed_system_prompt, git_ok, temp_git_project_with_commit};
+use common::fixtures::{composed_system_prompt, git_ok, held_event, temp_git_project_with_commit};
 use common::repo::{
     assert_carries_spawn_hooks, critique_stub_argv, critique_stub_record, critique_stub_spawns,
     critique_stub_task, flag_value, hook_words, stub_path, write_critique_stub,
@@ -32,7 +33,7 @@ use rigger::driver::replay::spawn_scratch_path;
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Direction, Event, EventStore, ExpectedRevision, Filter};
-use rigger::progress::StopFailure;
+use rigger::progress::{RunStamped, SpawnLaunched, StopFailure};
 use rigger::review::{
     critique_hash, critique_spawn_id, critique_unit, spec_critique_prompt, CRITIC_DENIED_TOOLS,
 };
@@ -556,6 +557,136 @@ fn a_critique_session_silent_past_its_bound_is_stopped_since_no_beat_source_is_w
         "the session's one result is the stop's liveness fault: {:?}",
         events[1]
     );
+}
+
+/// How each launch of the critique of `hash` closed, in log order: its ordinal, ending and class.
+fn critique_closes(root: &Path, hash: &str) -> Vec<(u32, String, Option<String>)> {
+    let backend = Store::open(rigger_file(root, "progress.db").to_str().unwrap()).unwrap();
+    let store = Namespaced::new(&backend, &run_stream_identity(root));
+    rigger::progress::read_run(&store, &critique_unit(hash))
+        .unwrap()
+        .iter()
+        .filter(|e| e.type_ == SpawnLaunched::EVENT_TYPE)
+        .filter_map(|e| {
+            let launch: SpawnLaunched = serde_json::from_slice(&e.data).unwrap();
+            let ended = launch.ended?;
+            Some((launch.launch, ended, launch.class))
+        })
+        .collect()
+}
+
+/// Spec 105, the host's `interrupted` close behind its hold sink: given a critic session that ends
+/// API-side, when `rigger critique` hosts it, then the launch closes `fault` under its class, a
+/// hold or wait class and a run standing held on the project included, the session's error is the
+/// verb's and no hold lands: this verb's host is wired with no hold sink, since nothing decorates
+/// it to wait out a hold or to launch again.
+#[test]
+fn a_critique_session_ending_api_side_closes_fault_since_no_hold_sink_is_wired() {
+    struct Case {
+        name: &'static str,
+        ending: &'static str,
+        retried: &'static str,
+        class: &'static str,
+        /// What the session left on its stderr, the tail of the verb's error.
+        tail: &'static str,
+        run_held: bool,
+    }
+    let cases = [
+        Case {
+            name: "a wait class",
+            ending: "retried-eof",
+            retried: "rate_limit",
+            class: "rate_limit",
+            tail: "",
+            run_held: false,
+        },
+        Case {
+            name: "a hold class",
+            ending: "retried-eof",
+            retried: "billing_error",
+            class: "billing_error",
+            tail: "",
+            run_held: false,
+        },
+        Case {
+            name: "an unclassed ending",
+            ending: "refused-eof",
+            retried: "",
+            class: "unknown",
+            tail: "No conversation found with session ID: sess-prior",
+            run_held: false,
+        },
+        Case {
+            name: "a FAULT class on a held run",
+            ending: "retried-eof",
+            retried: "invalid_request",
+            class: "invalid_request",
+            tail: "",
+            run_held: true,
+        },
+    ];
+    for case in cases {
+        let Case { name, class, .. } = case;
+        let dir = temp_project();
+        let root = dir.path();
+        scaffold(root, CRITIC_WORKFLOW);
+        if case.run_held {
+            seed_store(root);
+            seed_a_run(root);
+            seed_on_the_run(
+                root,
+                held_event("rate_limit", rigger::run::HOLD_BY_OPERATOR),
+            );
+        }
+        let work = tempfile::tempdir().unwrap();
+        let path = stub_path(
+            work.path(),
+            "claude",
+            Some("claude-code-resume-ending-agent.sh"),
+        );
+        let scratch = root.join("scratch");
+
+        let (out, err, ok) = run_rigger_envs(
+            root,
+            &["critique", SPEC_REL],
+            &[
+                ("PATH", path.as_str()),
+                ("RIGGER_TMPDIR", scratch.to_str().unwrap()),
+                ("RIGGER_TEST_FRESH_ENDING", case.ending),
+                ("RIGGER_TEST_RETRY_CATEGORY", case.retried),
+            ],
+        );
+
+        assert!(!ok, "{name}: the verb fails on the session's error");
+        assert_eq!(out, "", "{name}: no finding or verdict is printed");
+        assert_eq!(
+            critique_closes(root, SPEC_HASH),
+            [(0, "fault".to_string(), Some(class.to_string()))],
+            "{name}: the one close; stderr:\n{err}"
+        );
+        let id = critique_spawn_id(SPEC_HASH, 0);
+        let failed = format!(
+            "rigger: rigger critique: {SPEC_REL} (hash {SPEC_HASH}): no critique was recorded - \
+             conductor: \u{2}{class}\u{2}claude_code driver: {id:?}: the agent stream ended with \
+             no result (class {class}; stderr tail: {})",
+            case.tail
+        );
+        assert_eq!(
+            err.lines().last(),
+            Some(failed.as_str()),
+            "{name}: the error the verb leaves with"
+        );
+        assert_eq!(
+            spawn_events(&critique_events(root)),
+            [(TYPE_SPAWN_REQUESTED.to_string(), id)],
+            "{name}: the close records no result"
+        );
+        assert_eq!(
+            run_payloads(root, rigger::run::TYPE_RUN_HELD).len(),
+            usize::from(case.run_held),
+            "{name}: no hold lands on the project's run"
+        );
+    }
 }
 
 #[test]

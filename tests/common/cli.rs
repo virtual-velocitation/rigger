@@ -823,6 +823,19 @@ pub fn with_run_store<R>(root: &Path, f: impl FnOnce(&dyn EventStore) -> R) -> R
     f(&store)
 }
 
+/// Append `event` to `root`'s run stream through a bare store, a hand beside the run.
+pub fn seed_on_the_run(root: &Path, event: Event) {
+    with_run_store(root, |store| {
+        store
+            .append(
+                rigger::conductor::STREAM,
+                rigger::eventstore::ExpectedRevision::Any,
+                &[event],
+            )
+            .unwrap();
+    });
+}
+
 /// `f` over `root`'s own project namespace of its `.rigger/events.db` as a binary before the
 /// ledger wrote it: every append `f` makes lands as pre-ledger rows
 /// ([`super::fixtures::PreLedgerStore`]), so `f` seeds the derived events a store now refuses.

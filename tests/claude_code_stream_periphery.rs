@@ -2659,13 +2659,9 @@ impl Fixture {
 
     /// `(output, error, is a liveness fault)` of every `SpawnResult` the run store holds.
     fn recorded_results(&self) -> Vec<(String, String, bool)> {
-        self.spawn_results()
-            .iter()
-            .map(|event| {
-                let result = spawn::SpawnResult::from_event(event).unwrap();
-                let fault = result.is_liveness_fault();
-                (result.output, result.error, fault)
-            })
+        common::fixtures::spawn_result_rows(&self.spawn_results())
+            .into_iter()
+            .map(|(_, output, error, fault)| (output, error, fault))
             .collect()
     }
 
