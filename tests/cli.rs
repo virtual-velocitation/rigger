@@ -7413,6 +7413,48 @@ fn a_beat_lands_in_the_progress_store_and_never_in_the_run_log() {
     assert_eq!(beats_on_the_run_log, Vec::<String>::new());
 }
 
+/// Lay [`LIVENESS_WORKFLOW`] down in `root` with its `max_wall_clock` at `secs`.
+fn write_liveness_workflow_bounded_at(root: &Path, secs: u64) {
+    write_workflow_fixture(root, &LIVENESS_WORKFLOW);
+    let workflow = root.join(".rigger/workflow.yml");
+    let bound = format!("max_wall_clock: {secs}\n");
+    let bounded = std::fs::read_to_string(&workflow)
+        .unwrap()
+        .replace("max_wall_clock: 60\n", &bound);
+    assert!(bounded.contains(&bound), "{bounded}");
+    std::fs::write(&workflow, bounded).unwrap();
+}
+
+/// `rigger run` in `root` with the fixture agent `script` standing in for the agent host and a
+/// scratch root of its own: its stdout, its stderr and whether it exited 0.
+#[cfg(unix)]
+fn run_with_the_agent(root: &Path, script: &str) -> (String, String, bool) {
+    let scratch = tempfile::tempdir().unwrap();
+    let fakebin = tempfile::tempdir().unwrap();
+    let path_env = stub_path(fakebin.path(), "claude", Some(script));
+    run_rigger_envs(
+        root,
+        &["run"],
+        &[
+            ("PATH", &path_env),
+            ("RIGGER_TMPDIR", scratch.path().to_str().unwrap()),
+        ],
+    )
+}
+
+/// How many launches `root`'s run recorded, and how many of them closed stopped.
+#[cfg(unix)]
+fn launches_and_stops(root: &Path) -> (usize, usize) {
+    let launches = common::cli::recorded_progress::<rigger::progress::SpawnLaunched>(root);
+    let count = |ended: Option<&str>| {
+        launches
+            .iter()
+            .filter(|launch| launch.ended.as_deref() == ended)
+            .count()
+    };
+    (count(None), count(Some("stopped")))
+}
+
 /// Spec 105's LIVENESS beat-source wire: given a session that announces a 30 s retry delay and
 /// stays silent past `max_wall_clock` inside it, when `rigger run` drives it, then its launch
 /// completes unstopped: the composition root hands the host the progress store, so the stop counts
@@ -7420,44 +7462,40 @@ fn a_beat_lands_in_the_progress_store_and_never_in_the_run_log() {
 #[cfg(unix)]
 #[test]
 fn run_hands_the_host_its_beat_source_so_an_announced_delay_is_not_silence() {
-    use rigger::progress::SpawnLaunched;
-
     let dir = temp_git_project_with_commit();
     let root = dir.path();
-    write_workflow_fixture(root, &LIVENESS_WORKFLOW);
-    let workflow = root.join(".rigger/workflow.yml");
-    let bounded = std::fs::read_to_string(&workflow)
-        .unwrap()
-        .replace("max_wall_clock: 60", "max_wall_clock: 2");
-    assert!(bounded.contains("max_wall_clock: 2\n"), "{bounded}");
-    std::fs::write(&workflow, bounded).unwrap();
-    let scratch = tempfile::tempdir().unwrap();
-    let fakebin = tempfile::tempdir().unwrap();
-    let path_env = stub_path(
-        fakebin.path(),
-        "claude",
-        Some("claude-code-retries-silent-past-the-bound-agent.sh"),
-    );
-    let (out, err, ok) = run_rigger_envs(
-        root,
-        &["run"],
-        &[
-            ("PATH", &path_env),
-            ("RIGGER_TMPDIR", scratch.path().to_str().unwrap()),
-        ],
-    );
+    write_liveness_workflow_bounded_at(root, 2);
+    let (out, err, ok) =
+        run_with_the_agent(root, "claude-code-retries-silent-past-the-bound-agent.sh");
     assert!(ok, "the run succeeds; stderr: {err}\nstdout: {out}");
-    let launches = common::cli::recorded_progress::<SpawnLaunched>(root);
-    let count = |ended: Option<&str>| {
-        launches
-            .iter()
-            .filter(|launch| launch.ended.as_deref() == ended)
-            .count()
-    };
     assert_eq!(
-        (count(None), count(Some("stopped"))),
+        launches_and_stops(root),
         (1, 0),
         "one launch, never stopped"
+    );
+}
+
+/// Spec 105's LIVENESS stop under the supervisor's own beats: given a session silent past its
+/// `max_wall_clock` with no hold and no delay, when `rigger run` drives it, then each launch is
+/// stopped at the bound and the run halts at the infra limit. The beats the supervisor writes are
+/// read back on the spawn's own run: a beat filed under any other run reads as a run nobody
+/// supervised, whose silence counts for nothing, so the session would see its silence out and
+/// answer.
+#[cfg(unix)]
+#[test]
+fn run_stops_a_session_silent_past_its_bound_with_the_supervisor_beating() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_liveness_workflow_bounded_at(root, 2);
+    let (out, err, ok) = run_with_the_agent(
+        root,
+        "claude-code-silent-past-the-poll-then-result-agent.sh",
+    );
+    assert!(!ok, "the halted run fails; stderr: {err}\nstdout: {out}");
+    assert_eq!(
+        launches_and_stops(root),
+        (3, 3),
+        "each launch up to the infra limit is stopped; stderr: {err}"
     );
 }
 
@@ -9957,6 +9995,79 @@ const LIVENESS_WORKFLOW: WorkflowFixture = WorkflowFixture {
     worker: UNISOLATED_WORKER,
     body: "defaults:\n  grounder: nop\n  budget: 60\n  max_wall_clock: 60\nstages:\n  a:\n    agent: worker\n    on_pass: none\n",
 };
+
+/// Spec 105's LIVENESS through `rigger step`, from the run log the sweep reads its hold intervals
+/// from: given an in-flight spawn whose marker went quiet, when the operator steps, then the spawn
+/// is hung only if its silence outside the released hold is past `max_wall_clock`: a marker silent
+/// across a 17 h hold reads minutes. `hung_for` is the silence the halt must state, `None` a step
+/// that leaves the spawn in flight.
+#[test]
+fn step_weighs_a_markers_silence_outside_a_released_hold() {
+    const MINUTE: u64 = 60;
+    const HELD_FOR: u64 = 17 * 3600;
+    const BOUND: u64 = 15 * MINUTE;
+
+    for (case, quiet_before, quiet_after, held, hung_for) in [
+        (
+            "ten minutes outside a 17 h hold are inside the bound",
+            5 * MINUTE,
+            5 * MINUTE,
+            true,
+            None,
+        ),
+        (
+            "the same marker under no hold reads its wall clock",
+            5 * MINUTE,
+            5 * MINUTE,
+            false,
+            Some(HELD_FOR + 10 * MINUTE),
+        ),
+        (
+            "twenty minutes outside a 17 h hold are past the bound",
+            10 * MINUTE,
+            10 * MINUTE,
+            true,
+            Some(20 * MINUTE),
+        ),
+    ] {
+        let dir = temp_git_project_with_commit();
+        let root = dir.path();
+        write_liveness_workflow_bounded_at(root, BOUND);
+        let line = step_line(root, "the first step parks the implementer");
+        let marker = json_string_field(&line, "marker_path")
+            .expect("the wave carries the resolved marker path");
+        common::cli::plant_marker(Path::new(&marker), quiet_before + HELD_FOR + quiet_after);
+        if held {
+            common::cli::seed_released_hold(root, HELD_FOR + quiet_after, quiet_after);
+        }
+
+        let line = step_line(root, "the sweeping step prints its result and exits 0");
+
+        let stated: Vec<u64> = common::cli::read_run_events(root)
+            .iter()
+            .filter(|event| event.type_ == rigger::spawn::TYPE_SPAWN_RESULT)
+            .filter_map(|event| {
+                let body = String::from_utf8_lossy(&event.data);
+                let (_, silence) = body.split_once("stayed silent for ")?;
+                silence.split('s').next()?.parse().ok()
+            })
+            .collect();
+        // Only this test's own wall-clock overhead sits above the planted silence.
+        assert!(
+            match hung_for {
+                Some(silence) =>
+                    matches!(stated[..], [secs] if (silence..silence + 120).contains(&secs)),
+                None => stated.is_empty(),
+            },
+            "{case}: the silence the recorded fault states: {stated:?}; step: {line:?}"
+        );
+        assert_eq!(
+            line.contains(r#""halted":"#),
+            hung_for.is_some(),
+            "{case}: {line:?}"
+        );
+    }
+}
 
 /// Agent liveness end-to-end (spec 10, unit 3): a spawn carries a `max_wall_clock` bound;
 /// when its per-spawn heartbeat marker goes STALE beyond that bound, `rigger step`

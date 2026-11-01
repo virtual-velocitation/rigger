@@ -37,11 +37,13 @@
 //! names.
 //!
 //! Spec 105's LIVENESS reads through the same seam: `rigger status --json`'s `liveness_age_s`, the
-//! age the workflow's marker race reads, leaves the run's hold intervals out of a marker's age.
+//! age the workflow's marker race reads, leaves the run's hold intervals out of a marker's age,
+//! while `rigger dash --export` and `rigger_activity` read the same marker on wall clock.
 
 mod common;
 use common::git::run_git;
 
+use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::process::Output;
 
@@ -49,11 +51,13 @@ use common::cli::now_nanos;
 use common::cli::run_stream_identity;
 use common::cli::seed_run_events;
 use common::cli::seed_store;
+use common::cli::with_run_store;
 use common::git::git_out;
 use common::git::nested_worktree;
+use rigger::driver::workflow::Driver;
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::Store;
-use rigger::run::{RunHeld, RunReleased, TYPE_RUN_HELD, TYPE_RUN_RELEASED};
+use rigger::mcpserver::Server;
 
 const RUN_ID: &str = "r-heartbeat-seam";
 const SPAWN_ID: &str = "seam-unit/implementer#0";
@@ -428,38 +432,31 @@ fn status_resolves_a_configured_workdir_from_the_owning_root_with_no_agents_flee
     );
 }
 
+/// How long ago the marker of [`seed_a_marker_silent_across_a_released_17_h_hold`] was last touched.
+const MARKER_AGE: i64 = 17 * 3600 + 10 * 60;
+
+/// Seed `root` with one in-flight spawn whose real marker was last touched [`MARKER_AGE`] ago, 5
+/// min before a 17 h hold that released 5 min ago.
+fn seed_a_marker_silent_across_a_released_17_h_hold(root: &Path) {
+    const HOLD_STARTED_AGO: u64 = 17 * 3600 + 5 * 60;
+    const HOLD_RELEASED_AGO: u64 = 5 * 60;
+
+    seed_stale_in_flight_spawn(root, MARKER_AGE);
+    common::cli::seed_released_hold(root, HOLD_STARTED_AGO, HOLD_RELEASED_AGO);
+    let marker = write_real_marker(root, "");
+    common::cli::plant_marker(&marker, MARKER_AGE as u64);
+}
+
 /// Spec 105's LIVENESS at the read the workflow's marker race makes: a marker last touched 17 h 10
 /// min ago, 5 min before a 17 h hold that released 5 min ago, reads the 10 min outside the hold,
 /// never the 17 h 10 min of wall clock.
 #[test]
 fn status_reads_a_marker_silent_across_a_released_17_h_hold_as_minutes() {
-    const MARKER_AGE: i64 = 17 * 3600 + 10 * 60;
-    const HOLD_STARTED_AGO: i64 = 17 * 3600 + 5 * 60;
-    const HOLD_RELEASED_AGO: i64 = 5 * 60;
     const OUTSIDE_THE_HOLD: u64 = 10 * 60;
 
     let project = main_repo_with_commit();
     let root = project.path();
-    seed_stale_in_flight_spawn(root, MARKER_AGE);
-    insert_aged_rows(
-        root,
-        &[
-            (
-                3,
-                TYPE_RUN_HELD,
-                serde_json::to_string(&RunHeld::default()).unwrap(),
-                HOLD_STARTED_AGO,
-            ),
-            (
-                4,
-                TYPE_RUN_RELEASED,
-                serde_json::to_string(&RunReleased::default()).unwrap(),
-                HOLD_RELEASED_AGO,
-            ),
-        ],
-    );
-    let marker = write_real_marker(root, "");
-    common::cli::plant_marker(&marker, MARKER_AGE as u64);
+    seed_a_marker_silent_across_a_released_17_h_hold(root);
 
     let out = run_rigger(root, &["status", "--json"]);
     assert!(
@@ -481,6 +478,64 @@ fn status_reads_a_marker_silent_across_a_released_17_h_hold_as_minutes() {
         matches!(ages[..], [Some(age)] if (OUTSIDE_THE_HOLD..OUTSIDE_THE_HOLD + 120).contains(&age)),
         "the marker's age outside the hold: {ages:?}"
     );
+}
+
+/// Spec 105's LIVENESS keeps every marker-age reader but `rigger status` on wall clock: the marker
+/// `rigger status --json` reads as the 10 min outside a 17 h hold reads its whole age through
+/// `rigger dash --export` and through `rigger_activity`, with that hold in the log they read.
+#[test]
+fn the_dash_and_rigger_activity_read_a_marker_silent_across_a_released_hold_on_wall_clock() {
+    let project = main_repo_with_commit();
+    let root = project.path();
+    seed_a_marker_silent_across_a_released_17_h_hold(root);
+
+    for (surface, age) in [
+        ("rigger dash --export", exported_liveness_age(root)),
+        ("rigger_activity", activity_liveness_age(root)),
+    ] {
+        // Only this test's own wall-clock overhead sits above the marker's age.
+        let wall_clock = MARKER_AGE as u64..MARKER_AGE as u64 + 120;
+        assert!(
+            age.is_some_and(|age| wall_clock.contains(&age)),
+            "{surface} reads the marker's whole age: {age:?}"
+        );
+    }
+}
+
+/// The `liveness_age_s` of [`SPAWN_ID`], the one in-flight spawn, in `root`'s `rigger dash --export`
+/// snapshot.
+fn exported_liveness_age(root: &Path) -> Option<u64> {
+    let export_path = root.join("dash-snapshot.html");
+    let out = run_rigger(root, &["dash", "--export", export_path.to_str().unwrap()]);
+    assert!(
+        out.status.success(),
+        "rigger dash --export must succeed; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let html = std::fs::read_to_string(&export_path).unwrap();
+    let (_, age) = html.split_once("\"liveness_age_s\":")?;
+    let digits = age.find(|c: char| !c.is_ascii_digit())?;
+    age[..digits].parse().ok()
+}
+
+/// The `liveness_age_s` of [`SPAWN_ID`] in the `rigger_activity` view of `root`'s run, over its real
+/// run log and scratch root.
+fn activity_liveness_age(root: &Path) -> Option<u64> {
+    let progress = Store::open(":memory:").unwrap();
+    let driver = Driver::new();
+    let scratch_root = real_scratch_root(root, "");
+    let input = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"rigger_activity","arguments":{}}}"#;
+    let mut output = Vec::new();
+    with_run_store(root, |store| {
+        Server::new(&driver, store, "run")
+            .with_progress(&progress, &scratch_root)
+            .run(Cursor::new(input), &mut output)
+            .unwrap();
+    });
+    let response: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    let view = &response["result"]["structuredContent"];
+    assert_eq!(view[0]["id"], SPAWN_ID, "the in-flight spawn: {view}");
+    view[0]["liveness_age_s"].as_u64()
 }
 
 /// The SAME round-2 seam as `status_resolves_a_configured_workdir_from_the_owning_root_with_
