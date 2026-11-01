@@ -1688,12 +1688,7 @@ fn unstable_hold() -> RunHeld {
 
 /// A `RunHeld` event by the operator.
 fn operator_hold() -> Event {
-    let body = RunHeld {
-        cause: "operator".to_string(),
-        by: "operator".to_string(),
-        ..RunHeld::default()
-    };
-    Event::new(TYPE_RUN_HELD, serde_json::to_vec(&body).unwrap())
+    common::cli::held_event("operator", "operator")
 }
 
 impl Fixture {
@@ -2050,7 +2045,8 @@ fn hold_cases() -> Vec<HoldCase> {
 }
 
 /// THE DISPOSITION TABLE through a real child: each row's launch appends exactly its holds, ends
-/// its spawn as its close says, records its results and stamps the revision it read.
+/// its spawn as its close says, records its results and stamps the revision it read on its close
+/// alone, never on its open record.
 #[cfg(unix)]
 #[test]
 fn a_launch_appends_the_holds_the_table_decides_and_closes_where_it_read() {
@@ -2114,6 +2110,12 @@ fn a_launch_appends_the_holds_the_table_decides_and_closes_where_it_read() {
             closing.revision,
             case.stamp.map(|at| fx.run_log()[at].revision),
             "{name}: the close's stamp"
+        );
+        let opening = fx.launch_records().into_iter().rev().nth(1).unwrap();
+        assert_eq!(
+            (opening.ended.as_deref(), opening.revision),
+            (None, None),
+            "{name}: the open record, which no stamp reaches"
         );
     }
 }

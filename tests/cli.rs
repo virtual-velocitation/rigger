@@ -7143,19 +7143,11 @@ fn seed_a_run_held_by(root: &Path, by: Option<&str>) {
 /// [`seed_a_run_held_by`] on a run of `criteria`: any but the workflow's own make the next launch
 /// a new campaign, which mints.
 fn seed_a_campaign_held_by(root: &Path, criteria: &[String], by: Option<&str>) {
-    use rigger::eventstore::{Event, ExpectedRevision};
+    use rigger::eventstore::ExpectedRevision;
     common::cli::with_run_store(root, |store| {
         rigger::run_store::ensure_started(store, criteria).unwrap();
         if let Some(by) = by {
-            let body = rigger::run::RunHeld {
-                cause: "rate_limit".to_string(),
-                by: by.to_string(),
-                ..Default::default()
-            };
-            let held = Event::new(
-                rigger::run::TYPE_RUN_HELD,
-                serde_json::to_vec(&body).unwrap(),
-            );
+            let held = common::cli::held_event("rate_limit", by);
             store
                 .append(rigger::conductor::STREAM, ExpectedRevision::Any, &[held])
                 .unwrap();
