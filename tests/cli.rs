@@ -7269,6 +7269,14 @@ fn closed_launches(root: &Path) -> Vec<ClosedLaunch> {
         .collect()
 }
 
+/// Assert the launches that closed on `root`'s run are exactly `expected`, each its spawn and
+/// ordinal; `why` carries into the failure.
+fn assert_closed_spawns(root: &Path, expected: &[(&str, u32)], why: &str) {
+    let closes = closed_launches(root);
+    let closes: Vec<_> = closes.iter().map(|c| (c.0.as_str(), c.1)).collect();
+    assert_eq!(closes, expected, "the closes: {why}");
+}
+
 /// `close` with an infra rerun's mark read as the next launch of the spawn the rerun came from.
 fn as_a_relaunch((spawn, launch, ended, class): ClosedLaunch) -> ClosedLaunch {
     match spawn.strip_suffix("~retry4") {
@@ -7973,9 +7981,7 @@ fn a_served_wait_on_a_hold_ends_with_a_park_when_its_session_closes() {
             "{name}: the served run reaches its unit"
         );
         if !held_at_launch {
-            let Some(spawn) = mcp.next_spawn(Instant::now() + Duration::from_secs(30)) else {
-                mcp.fail(&format!("{name}: the run ended with no launch"));
-            };
+            let spawn = next_handout(&mut mcp, name);
             seed_a_hold_by(root, "operator");
             answer_spawn(&mut mcp, &spawn, "error", SERVED_ERROR);
         }
@@ -8008,6 +8014,15 @@ fn a_served_wait_on_a_hold_ends_with_a_park_when_its_session_closes() {
 /// Whether `root`'s run has started a unit, the launch's own first step.
 fn unit_started(root: &Path) -> bool {
     !common::cli::run_payloads(root, rigger::ledger::TYPE_UNIT_STARTED).is_empty()
+}
+
+/// The next spawn `mcp` hands out, within 30 s: a run ending first [`McpSession::fail`]s the
+/// session, naming the table row `name`.
+fn next_handout(mcp: &mut McpSession, name: &str) -> String {
+    match mcp.next_spawn(Instant::now() + Duration::from_secs(30)) {
+        Some(spawn) => spawn,
+        None => mcp.fail(&format!("{name}: the run ended with no launch")),
+    }
 }
 
 /// Poll `rigger_next` for [`A_HOLD_STANDS_FOR`]: any answer but idle [`McpSession::fail`]s the
@@ -8080,11 +8095,11 @@ fn a_served_wait_ends_by_its_release_and_relaunches_the_same_spawn_up_to_the_bou
     }
     const FIRST: &str = "solo/implementer#0";
     const RERUN: &str = "solo/implementer#0~retry4";
+    let classed = |class| ("error", classed_served_error(class));
     let plain = ("error", SERVED_ERROR.to_string());
-    let wait_class = (
-        "error",
-        classed_served_error(rigger::conductor::AgentFailure::RateLimit),
-    );
+    let wait_class = classed(rigger::conductor::AgentFailure::RateLimit);
+    let hold_class = classed(rigger::conductor::AgentFailure::BillingError);
+    let fault_class = classed(rigger::conductor::AgentFailure::InvalidRequest);
     let cases = [
         Case {
             name: "a hold standing at the launch",
@@ -8120,11 +8135,11 @@ fn a_served_wait_ends_by_its_release_and_relaunches_the_same_spawn_up_to_the_bou
             integrated: vec!["first", "second"],
         },
         Case {
-            name: "three errors on a held run, the rerun waiting in turn",
+            name: "three errors of differing classes on a held run, the rerun waiting in turn",
             workflow: &REVIEWLESS_GIT_UNIT_WORKFLOW,
             held_at_launch: false,
             held_on_session: true,
-            sessions: vec![plain.clone(), plain.clone(), plain],
+            sessions: vec![plain, wait_class.clone(), fault_class],
             handouts: vec![FIRST, FIRST, FIRST, RERUN],
             releases: 3,
             reruns: 1,
@@ -8142,11 +8157,11 @@ fn a_served_wait_ends_by_its_release_and_relaunches_the_same_spawn_up_to_the_bou
             integrated: vec!["solo"],
         },
         Case {
-            name: "three wait-class errors on an unheld run",
+            name: "three wait- and hold-class errors on an unheld run",
             workflow: &REVIEWLESS_GIT_UNIT_WORKFLOW,
             held_at_launch: false,
             held_on_session: false,
-            sessions: vec![wait_class.clone(), wait_class.clone(), wait_class],
+            sessions: vec![wait_class.clone(), hold_class, wait_class],
             handouts: vec![FIRST, FIRST, FIRST, RERUN],
             releases: 0,
             reruns: 1,
@@ -8173,12 +8188,9 @@ fn a_served_wait_ends_by_its_release_and_relaunches_the_same_spawn_up_to_the_bou
             );
             release(&mut mcp);
         }
-        let deadline = Instant::now() + Duration::from_secs(60);
         let mut handed_out = Vec::new();
         for (field, text) in &case.sessions {
-            let Some(spawn) = mcp.next_spawn(deadline) else {
-                mcp.fail(&format!("{name}: the run ended ahead of its sessions"));
-            };
+            let spawn = next_handout(&mut mcp, name);
             if case.held_on_session {
                 seed_a_hold_by(root, "operator");
             }
@@ -8323,8 +8335,7 @@ fn a_served_error_the_decorator_passes_takes_its_spawn_site_path() {
         seed_a_run_held_by(root, None);
         let mut mcp = McpSession::start_with(root, &["serve", "--base", "HEAD"]);
         mcp.initialize();
-        let deadline = Instant::now() + Duration::from_secs(30);
-        let handed_out = mcp.next_spawn(deadline);
+        let handed_out = next_handout(&mut mcp, name);
         if case.held {
             seed_a_hold_by(root, "operator");
         }
@@ -8333,12 +8344,13 @@ fn a_served_error_the_decorator_passes_takes_its_spawn_site_path() {
             assert!(ok, "{name}: rigger result; stdout: {out}\nstderr: {err}");
         }
         answer_spawn(&mut mcp, SPAWN, "error", &case.error);
+        let deadline = Instant::now() + Duration::from_secs(30);
         if let Some(relaunched) = mcp.next_spawn(deadline) {
             mcp.fail(&format!("{name}: {relaunched} launched behind the error"));
         }
         let out = mcp.finish_within(Duration::from_secs(30));
         let err = String::from_utf8_lossy(&out.stderr);
-        assert_eq!(handed_out.as_deref(), Some(SPAWN), "{name}: stderr: {err}");
+        assert_eq!(handed_out, SPAWN, "{name}: stderr: {err}");
         let failed: Vec<_> = common::cli::run_payloads(root, "UnitFailed")
             .iter()
             .map(|e| (e["attempts"].as_u64().unwrap(), e["cause"].clone()))
@@ -8461,15 +8473,7 @@ fn a_session_dying_with_no_result_relaunches_only_on_a_held_run() {
             "done: every unit integrated",
             "{name}: how the run ended; stderr: {err}"
         );
-        let closes: Vec<(String, u32)> = closed_launches(root)
-            .into_iter()
-            .map(|(spawn, launch, ..)| (spawn, launch))
-            .collect();
-        assert_eq!(
-            closes,
-            launches.map(|(spawn, launch)| (spawn.to_string(), launch)),
-            "{name}: the closes; stderr: {err}"
-        );
+        assert_closed_spawns(root, &launches, &format!("{name}; stderr: {err}"));
         assert_eq!(
             run_holds(root).len(),
             usize::from(held),
@@ -8527,22 +8531,17 @@ fn a_restarted_supervisor_launches_nothing_until_the_hold_it_finds_is_released()
         launched_while_held, 0,
         "the launches the found hold let through"
     );
-    let closes: Vec<(String, u32)> = closed_launches(root)
-        .into_iter()
-        .map(|(spawn, launch, ..)| (spawn, launch))
-        .collect();
-    let expected = [
-        (SPAWN, 0),
-        (SPAWN, 1),
-        (SPAWN, 2),
-        (RERUN, 0),
-        (RERUN, 1),
-        (RERUN, 2),
-    ];
-    assert_eq!(
-        closes,
-        expected.map(|(spawn, launch)| (spawn.to_string(), launch)),
-        "the closes; stderr: {err}"
+    assert_closed_spawns(
+        root,
+        &[
+            (SPAWN, 0),
+            (SPAWN, 1),
+            (SPAWN, 2),
+            (RERUN, 0),
+            (RERUN, 1),
+            (RERUN, 2),
+        ],
+        &format!("stderr: {err}"),
     );
     assert_eq!(run_holds(root).len(), 6, "each launch's hold");
     assert_eq!(run_releases(root), ["operator"; 5], "the releases");
