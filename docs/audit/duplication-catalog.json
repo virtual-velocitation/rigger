@@ -501,7 +501,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-0141db656d7c",
+    "id": "dup-39a3e82010f3",
     "classification": "semantic",
     "sites": [
       {
@@ -581,6 +581,11 @@
       },
       {
         "file": "tests/cli.rs",
+        "name": "a_served_error_the_decorator_passes_takes_its_spawn_site_path",
+        "content_hash": "613a1c247978548e"
+      },
+      {
+        "file": "tests/cli.rs",
         "name": "run_workflow_prints_the_budget_halt_reason_on_stderr_when_its_conductor_returns",
         "content_hash": "c0f6e3d647f2a511"
       },
@@ -596,7 +601,7 @@
       }
     ],
     "proposed_home": "one error-shaping helper module",
-    "note": "mandatory sweep: error-shaping helper functions - 18 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: error-shaping helper functions - 19 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {
