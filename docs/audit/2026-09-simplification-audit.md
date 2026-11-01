@@ -3270,9 +3270,9 @@ project identity so one backend can hold many projects without their data mixing
 - `tests/step_sheds_the_freshen.rs:217-217` `"the surviving persisted index is the SYMBOL index under .rigger/symbols/; got {}"`
 - `tests/step_sheds_the_freshen.rs:282-282` `"constructing the default grounder builds and persists the SYMBOL index under \
          .rigger/symbols/ - the freshen's real target"`
-- `tests/store_content_identity_periphery.rs:733-733` `".rigger"`
-- `tests/store_content_identity_periphery.rs:734-734` `"create .rigger"`
-- `tests/store_content_identity_periphery.rs:780-780` `".rigger"`
+- `tests/store_content_identity_periphery.rs:749-749` `".rigger"`
+- `tests/store_content_identity_periphery.rs:750-750` `"create .rigger"`
+- `tests/store_content_identity_periphery.rs:796-796` `".rigger"`
 - `tests/store_precedence.rs:48-48` `".rigger"`
 - `tests/store_precedence.rs:56-56` `".rigger"`
 - `tests/store_precedence.rs:102-102` `".rigger"`
@@ -5111,7 +5111,7 @@ Proposed home: `a new shared module (sites span 2 files: tests/common/fixtures/e
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `tests/common/fixtures/events.rs:297-304` `read_stream_positions`
-- `tests/store_content_identity_periphery.rs:259-266` `read_stream_positions`
+- `tests/store_content_identity_periphery.rs:261-268` `read_stream_positions`
 
 #### `dup-6ef712aab260` (exact, 2 sites)
 

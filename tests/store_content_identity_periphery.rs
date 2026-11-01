@@ -105,10 +105,12 @@ impl Projection for CapturingProjection {
 ///
 /// It answers appends only. Its reads return an error rather than an empty success,
 /// because a silent empty read would let a test pass by folding nothing for the wrong
-/// reason; nothing on the paths under test reads through it. The one seam that MUST read
-/// before it appends (`record_result_if_absent` reads the stream to decide whether a
-/// result already exists) is served by [`PortDouble::over_an_empty_stream`], which
-/// answers that one read with an empty stream and nothing else.
+/// reason; a path that reads through it stops on that error, which is how the mint's failed
+/// read is pinned. The seams that MUST read before they append to reach the write under test
+/// (`record_result_if_absent` reads the stream to decide whether a result already exists,
+/// `start_fresh` to find the hold the run it ends leaves open) are served by
+/// [`PortDouble::over_an_empty_stream`], which answers those reads with an empty stream and
+/// nothing else.
 struct PortDouble {
     report: Vec<Option<Position>>,
     handed: AtomicUsize,
@@ -607,7 +609,7 @@ fn the_park_and_compare_and_append_seams_refuse_a_store_that_wrote_nothing() {
 fn no_public_run_entry_reports_a_boundary_the_store_never_wrote() {
     let criteria = ["build the thing".to_string()];
 
-    let silent = PortDouble::new(vec![None]);
+    let silent = PortDouble::over_an_empty_stream(vec![None]);
     let message = rigger::run_store::start_fresh(&silent, &criteria, "hash-A", "base-sha", "", "")
         .expect_err("a run whose boundary was never written has not started")
         .to_string();
@@ -615,6 +617,20 @@ fn no_public_run_entry_reports_a_boundary_the_store_never_wrote() {
         message.contains("nothing"),
         "the mint reports the lost write rather than handing back a run id for a boundary \
          the log does not hold: {message}"
+    );
+
+    // A mint reads the run first, for the hold it ends: one that cannot read stops on that
+    // error and writes nothing, since a boundary minted over an unread hold leaves it open.
+    let unreadable = PortDouble::new(vec![None]);
+    let message =
+        rigger::run_store::start_fresh(&unreadable, &criteria, "hash-A", "base-sha", "", "")
+            .expect_err("a mint that cannot see a hold has not ended it")
+            .to_string();
+    assert_eq!(message, "event store: the port double answers appends only");
+    assert_eq!(
+        unreadable.handed.load(Ordering::SeqCst),
+        0,
+        "the read's failure stops the mint before its append"
     );
 
     // The same answer through the entry the CLI actually calls, which mints over an empty
