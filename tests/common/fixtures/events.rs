@@ -5,6 +5,13 @@ use rigger::eventstore::{
     GroupHead, Position, Revision, Subscription, TypeSelection,
 };
 
+/// An arbitrary but fixed instant `secs` after `SystemTime::UNIX_EPOCH`, for building events with
+/// a CONTROLLED `recorded_at` or `valid_from` (fields a store stamps on ingest; a pure fold's test
+/// sets them directly, never touching a real store).
+pub fn at(secs: u64) -> std::time::SystemTime {
+    std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(secs)
+}
+
 /// An event of type `type_` whose payload is the UTF-8 bytes of `json`.
 pub fn ev(type_: &str, json: &str) -> Event {
     Event::new(type_, json.as_bytes().to_vec())

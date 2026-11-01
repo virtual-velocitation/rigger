@@ -11505,6 +11505,14 @@
   },
   {
     "file": "src/cli/mod.rs",
+    "name": "watch_reads_a_marker_on_wall_clock_so_a_dead_supervisor_behind_an_open_hold_is_seen",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "565ec64aba3594d2"
+  },
+  {
+    "file": "src/cli/mod.rs",
     "name": "status_progress_and_the_dash_snapshot_read_the_run_from_its_boundary",
     "is_test": true,
     "proposed_module": "main::tests",
@@ -11549,7 +11557,7 @@
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "10a9d4d66c650253"
+    "content_hash": "b4f483a4c1708d1f"
   },
   {
     "file": "src/cli/mod.rs",

@@ -8629,93 +8629,99 @@
   },
   {
     "file": "src/cli/mod.rs",
+    "name": "watch_reads_a_marker_on_wall_clock_so_a_dead_supervisor_behind_an_open_hold_is_seen",
+    "start_line": 12225,
+    "end_line": 12305
+  },
+  {
+    "file": "src/cli/mod.rs",
     "name": "status_progress_and_the_dash_snapshot_read_the_run_from_its_boundary",
-    "start_line": 12227,
-    "end_line": 12249
+    "start_line": 12315,
+    "end_line": 12337
   },
   {
     "file": "src/cli/mod.rs",
     "name": "status_and_the_dash_read_the_runs_progress_from_its_own_stream",
-    "start_line": 12256,
-    "end_line": 12281
+    "start_line": 12344,
+    "end_line": 12369
   },
   {
     "file": "src/cli/mod.rs",
     "name": "check_runs_parse_into_a_ci_probe_by_conclusion",
-    "start_line": 12289,
-    "end_line": 12339
+    "start_line": 12377,
+    "end_line": 12427
   },
   {
     "file": "src/cli/mod.rs",
     "name": "the_run_tip_ci_needs_a_run_branch_and_reads_unknown_when_gh_cannot_read_it",
-    "start_line": 12345,
-    "end_line": 12354
+    "start_line": 12433,
+    "end_line": 12442
   },
   {
     "file": "src/cli/mod.rs",
     "name": "a_watch_poll_reads_the_run_from_its_boundary_and_nothing_else",
-    "start_line": 12360,
-    "end_line": 12372
+    "start_line": 12448,
+    "end_line": 12460
   },
   {
     "file": "src/cli/mod.rs",
     "name": "store_location_repo_root_resolves_the_owning_root_not_the_process_cwd_so_a_real_marker_is_found",
-    "start_line": 12395,
-    "end_line": 12428
+    "start_line": 12483,
+    "end_line": 12516
   },
   {
     "file": "src/cli/mod.rs",
     "name": "scratch_defaults_reads_the_owning_roots_config_with_no_agents_fleet_present",
-    "start_line": 12442,
-    "end_line": 12473
+    "start_line": 12530,
+    "end_line": 12561
   },
   {
     "file": "src/cli/mod.rs",
     "name": "watch_once_on_a_clean_store_reports_no_anomalies",
-    "start_line": 12476,
-    "end_line": 12502
+    "start_line": 12564,
+    "end_line": 12590
   },
   {
     "file": "src/cli/mod.rs",
     "name": "parse_watch_args_defaults_to_streaming_with_the_default_interval",
-    "start_line": 12505,
-    "end_line": 12509
+    "start_line": 12593,
+    "end_line": 12597
   },
   {
     "file": "src/cli/mod.rs",
     "name": "parse_watch_args_accepts_once_and_interval_together_in_either_order",
-    "start_line": 12516,
-    "end_line": 12538
+    "start_line": 12604,
+    "end_line": 12626
   },
   {
     "file": "src/cli/mod.rs",
     "name": "watch_once_on_the_seeded_store_reports_one_line_per_anomaly",
-    "start_line": 12554,
-    "end_line": 12687
+    "start_line": 12642,
+    "end_line": 12775
   },
   {
     "file": "src/cli/mod.rs",
     "name": "the_watchdog_command_signal_set_covers_every_signal_the_watch_skill_names",
-    "start_line": 12694,
-    "end_line": 12713
+    "start_line": 12782,
+    "end_line": 12801
   },
   {
     "file": "src/cli/mod.rs",
     "name": "watch_once_reports_dash_not_serving_when_the_marker_names_a_dead_holder",
-    "start_line": 12721,
-    "end_line": 12750
+    "start_line": 12809,
+    "end_line": 12838
   },
   {
     "file": "src/cli/mod.rs",
     "name": "watch_once_reports_no_anomaly_when_the_dash_marker_names_a_real_serving_holder",
-    "start_line": 12757,
-    "end_line": 12788
+    "start_line": 12845,
+    "end_line": 12876
   },
   {
     "file": "src/cli/mod.rs",
     "name": "tree_root_is_the_top_level_of_the_directory_holding_the_store_else_that_directory",
-    "start_line": 12794,
-    "end_line": 12815
+    "start_line": 12882,
+    "end_line": 12903
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",

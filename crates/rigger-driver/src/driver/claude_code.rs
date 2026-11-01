@@ -1464,6 +1464,7 @@ mod tests {
         captured_system_prompt, fixture_script, no_emit, PROMPT_CAPTURE_DIR,
     };
     use std::io::Read;
+    use std::time::Duration;
 
     // ---- build_args: pure, no process ----
 
@@ -1672,6 +1673,41 @@ mod tests {
              category, never fail the whole classification: {}",
             e.0
         );
+    }
+
+    /// The silence THE STOP weighs at a wake: with no beat source the wall time since the last
+    /// line, read from no store; with one, a record that does not read, from either store, leaves
+    /// the wake uncounted rather than reading as a stop.
+    #[test]
+    fn the_stop_counts_from_the_line_with_no_source_and_not_at_all_on_a_failed_read() {
+        let readable = Store::open(":memory:").unwrap();
+        let o = opts("u/implementer#0");
+        let quiet = Duration::from_secs(40);
+        let last_line = SystemTime::now() - quiet;
+
+        let no_source = Driver {
+            run_store: &FailingReadStore,
+            progress_store: &FailingReadStore,
+            ..Driver::default()
+        };
+        let counted = no_source.silence(&o, last_line);
+        assert!(
+            counted >= quiet && counted < quiet + Duration::from_secs(60),
+            "wall time since the line: {counted:?}"
+        );
+
+        let failed_reads: [(&str, &dyn EventStore, &dyn EventStore); 2] = [
+            ("the beat source", &FailingReadStore, &readable),
+            ("the run store", &readable, &FailingReadStore),
+        ];
+        for (case, beat_source, run_store) in failed_reads {
+            let driver = Driver {
+                beat_source: Some(beat_source),
+                run_store,
+                ..Driver::default()
+            };
+            assert_eq!(driver.silence(&o, last_line), Duration::ZERO, "{case}");
+        }
     }
 
     /// Records a `billing_error` StopFailure for the spawn under `record_run`, classifies a

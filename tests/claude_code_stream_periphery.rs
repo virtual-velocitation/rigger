@@ -28,6 +28,10 @@
 //! record while the session still waits the delay out, a refused append costs the session
 //! nothing, and a session ending with no result keeps it.
 //!
+//! THE SILENT-TIME tests after them (spec 105) add what only a real child can prove of the
+//! stream-silence stop: it fires on silent time, not on the time since the last line, over the
+//! real records the host reads; a host with no beat source counts from the last line.
+//!
 //! THE RESUME FALLBACK tests at the end (spec 105) add what only a real child can prove of a
 //! `--resume` launch: the ways it can yield no `system/init`, grounded on the literal refusal of
 //! Claude Code 2.1.314, each close it `interrupted` and land one fresh launch at the next ordinal
@@ -50,12 +54,13 @@ use rigger::config::AgentDef;
 use rigger::driver::claude_code::{framed, Driver};
 use rigger::driver::replay::spawn_scratch_path;
 use rigger::eventstore::sqlite::Store;
-use rigger::eventstore::{Direction, Event, EventStore};
+use rigger::eventstore::{Direction, Event, EventStore, ExpectedRevision};
 use rigger::liveness;
 use rigger::progress::{
-    AgentProgress, ApiRetry, SpawnLaunched, TYPE_AGENT_PROGRESS, TYPE_API_RETRY,
+    AgentProgress, ApiRetry, SpawnLaunched, SupervisorBeat, TYPE_AGENT_PROGRESS, TYPE_API_RETRY,
     TYPE_SPAWN_LAUNCHED,
 };
+use rigger::run::{RunHeld, TYPE_RUN_HELD};
 use rigger::spawn::{self, TYPE_SPAWN_RESULT};
 use serde_json::{json, Value};
 
@@ -89,6 +94,7 @@ impl Fixture {
             scratch_root: self.scratch_root.path().to_string_lossy().into_owned(),
             stop_grace: std::time::Duration::from_secs(30),
             handed_env: Vec::new(),
+            beat_source: None,
         }
     }
 
@@ -106,6 +112,38 @@ impl Fixture {
             stop_grace,
             ..self.driver_running(script)
         }
+    }
+
+    /// [`Fixture::stopping_driver`] with this fixture's progress store as its beat source, as
+    /// `run_cli` wires the host.
+    fn supervised_driver(&self, script: &str, stop_grace: Duration) -> Driver<'_> {
+        Driver {
+            beat_source: Some(&self.progress_store),
+            ..self.stopping_driver(script, stop_grace)
+        }
+    }
+
+    /// Open a hold on the run this fixture's run store carries.
+    fn hold_the_run(&self) {
+        let held = serde_json::to_vec(&RunHeld::default()).unwrap();
+        self.run_store
+            .append(
+                rigger::conductor::STREAM,
+                ExpectedRevision::Any,
+                &[Event::new(TYPE_RUN_HELD, held)],
+            )
+            .unwrap();
+    }
+
+    /// Land one supervisor beat, now, on the run [`opts`] names.
+    fn beat(&self) {
+        rigger::progress_store::append_stamped(
+            &self.progress_store,
+            &opts("").run_id,
+            &SupervisorBeat::default(),
+            "the test's beat",
+        )
+        .unwrap();
     }
 
     /// The file `name` directly under this fixture's scratch root.
@@ -1370,6 +1408,142 @@ fn an_unbounded_launch_whose_child_exited_behind_a_held_pipe_ends_with_no_result
         "a session that exited with no result classifies unknown",
     );
     assert!(err.contains("ended with no result"), "{err}");
+    assert!(
+        started.elapsed() < Duration::from_secs(20),
+        "the read ends at the wake-up after the child exits: {:?}",
+        started.elapsed()
+    );
+}
+
+// ---- LIVENESS (spec 105): the stream-silence stop fires on silent time ----
+
+/// The fixture announcing a 30 s retry and silent past a one-second bound inside it, then ending
+/// in a result.
+const RETRIES_PAST_THE_BOUND: &str = "claude-code-retries-silent-past-the-bound-agent.sh";
+
+/// How the stop's table sets a host and its run up.
+#[derive(Clone, Copy, Debug)]
+enum Beats {
+    /// No beat source wired: the host reads no record at all.
+    NoSource,
+    /// A beat source with no beat on it: a run nobody supervised.
+    None,
+    /// A beat source with one fresh beat on it, so only the hold or the delay can excuse the
+    /// silence.
+    Fresh,
+}
+
+/// A session silent past its one-second bound, under a run set up as each row says: `Some` is the
+/// result the session must end in, `None` is a stop at the bound.
+#[test]
+fn the_stream_silence_stop_fires_on_silent_time() {
+    for (case, script, held, beats, ended) in [
+        (
+            "a session silent across a hold reads through it",
+            SILENT_PAST_THE_POLL,
+            true,
+            Beats::Fresh,
+            Some("done: thought past the poll"),
+        ),
+        (
+            "the same session with no hold is stopped",
+            SILENT_PAST_THE_POLL,
+            false,
+            Beats::Fresh,
+            None,
+        ),
+        (
+            "a session inside the delay it announced reads through it",
+            RETRIES_PAST_THE_BOUND,
+            false,
+            Beats::Fresh,
+            Some("done: waited the delay out"),
+        ),
+        (
+            "a run with no beats is unsupervised",
+            SILENT_PAST_THE_POLL,
+            false,
+            Beats::None,
+            Some("done: thought past the poll"),
+        ),
+        (
+            "a host with no beat source counts from the last line, whatever the hold",
+            SILENT_PAST_THE_POLL,
+            true,
+            Beats::NoSource,
+            None,
+        ),
+        (
+            "a host with no beat source counts from the last line, whatever the delay",
+            RETRIES_PAST_THE_BOUND,
+            false,
+            Beats::NoSource,
+            None,
+        ),
+    ] {
+        let fx = Fixture::new();
+        if held {
+            fx.hold_the_run();
+        }
+        let grace = Duration::from_millis(300);
+        let driver = match beats {
+            Beats::NoSource => fx.stopping_driver(script, grace),
+            Beats::None => fx.supervised_driver(script, grace),
+            Beats::Fresh => {
+                fx.beat();
+                fx.supervised_driver(script, grace)
+            }
+        };
+        let o = opts("u105-silent/implementer#0");
+
+        let spawned = driver.spawn(&wall_clock_bounded(), "do the thing", &o, &no_emit);
+
+        assert_eq!(
+            spawned.as_ref().ok().map(|r| r.output.as_str()),
+            ended,
+            "{case}: {:?}",
+            spawned.as_ref().map(|r| &r.output)
+        );
+        let stops = fx
+            .launch_records()
+            .iter()
+            .filter(|l| l.ended.as_deref() == Some("stopped"))
+            .count();
+        assert_eq!(stops, usize::from(ended.is_none()), "{case}");
+        let results = fx.spawn_results();
+        assert_eq!(results.len(), 1, "{case}: one result landed");
+        assert_eq!(
+            spawn::SpawnResult::from_event(&results[0])
+                .unwrap()
+                .is_liveness_fault(),
+            ended.is_none(),
+            "{case}"
+        );
+    }
+}
+
+#[test]
+fn a_bounded_launch_held_past_its_bound_still_sees_its_child_exit_behind_a_held_pipe() {
+    // Silent time frozen by a hold never reaches the bound, so with no EOF (a descendant still
+    // holds the stdout pipe) the wake-up re-checking the child is the only thing that sees the
+    // session end, as on an unbounded launch.
+    let fx = Fixture::new();
+    fx.hold_the_run();
+    fx.beat();
+    let started = Instant::now();
+    let err = fx
+        .supervised_driver(
+            "claude-code-exits-leaving-a-descendant-on-the-pipe-agent.sh",
+            Duration::from_millis(300),
+        )
+        .spawn(
+            &wall_clock_bounded(),
+            "do the thing",
+            &opts("u105-exited/implementer#0"),
+            &no_emit,
+        )
+        .expect_err("a session that exited with no result is no success");
+    assert!(err.0.contains("ended with no result"), "{}", err.0);
     assert!(
         started.elapsed() < Duration::from_secs(20),
         "the read ends at the wake-up after the child exits: {:?}",

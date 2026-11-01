@@ -1252,7 +1252,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-a22c3c991ef4",
+    "id": "dup-8174f771276c",
     "classification": "semantic",
     "sites": [
       {
@@ -2413,6 +2413,11 @@
       {
         "file": "tests/cli.rs",
         "name": "\".rigger\"",
+        "content_hash": "b4f6780144fa9e9f"
+      },
+      {
+        "file": "tests/cli.rs",
+        "name": "\".rigger/workflow.yml\"",
         "content_hash": "b4f6780144fa9e9f"
       },
       {
@@ -4272,7 +4277,7 @@
       }
     ],
     "proposed_home": "one .rigger-relative path-composition helper",
-    "note": "mandatory sweep: .rigger-path string literals - 603 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: .rigger-path string literals - 604 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {
@@ -6208,7 +6213,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-33b656ffd34b",
+    "id": "dup-d89a88dac133",
     "classification": "semantic",
     "sites": [
       {
@@ -6305,6 +6310,11 @@
         "file": "src/cli/mod.rs",
         "name": "Connection::open",
         "content_hash": "a26e651ef0fda2a7"
+      },
+      {
+        "file": "src/cli/mod.rs",
+        "name": "Connection::open",
+        "content_hash": "6ad0a4b6d2a9cca4"
       },
       {
         "file": "src/cli/mod.rs",
@@ -6548,7 +6558,7 @@
       }
     ],
     "proposed_home": "one sqlite-connection-opening adapter function every caller is injected with",
-    "note": "mandatory sweep: sqlite Connection::open call sites - 67 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: sqlite Connection::open call sites - 68 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {

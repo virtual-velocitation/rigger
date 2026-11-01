@@ -7413,6 +7413,54 @@ fn a_beat_lands_in_the_progress_store_and_never_in_the_run_log() {
     assert_eq!(beats_on_the_run_log, Vec::<String>::new());
 }
 
+/// Spec 105's LIVENESS beat-source wire: given a session that announces a 30 s retry delay and
+/// stays silent past `max_wall_clock` inside it, when `rigger run` drives it, then its launch
+/// completes unstopped: the composition root hands the host the progress store, so the stop counts
+/// the delay out rather than the time since the last line.
+#[cfg(unix)]
+#[test]
+fn run_hands_the_host_its_beat_source_so_an_announced_delay_is_not_silence() {
+    use rigger::progress::SpawnLaunched;
+
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_workflow_fixture(root, &LIVENESS_WORKFLOW);
+    let workflow = root.join(".rigger/workflow.yml");
+    let bounded = std::fs::read_to_string(&workflow)
+        .unwrap()
+        .replace("max_wall_clock: 60", "max_wall_clock: 2");
+    assert!(bounded.contains("max_wall_clock: 2\n"), "{bounded}");
+    std::fs::write(&workflow, bounded).unwrap();
+    let scratch = tempfile::tempdir().unwrap();
+    let fakebin = tempfile::tempdir().unwrap();
+    let path_env = stub_path(
+        fakebin.path(),
+        "claude",
+        Some("claude-code-retries-silent-past-the-bound-agent.sh"),
+    );
+    let (out, err, ok) = run_rigger_envs(
+        root,
+        &["run"],
+        &[
+            ("PATH", &path_env),
+            ("RIGGER_TMPDIR", scratch.path().to_str().unwrap()),
+        ],
+    );
+    assert!(ok, "the run succeeds; stderr: {err}\nstdout: {out}");
+    let launches = common::cli::recorded_progress::<SpawnLaunched>(root);
+    let count = |ended: Option<&str>| {
+        launches
+            .iter()
+            .filter(|launch| launch.ended.as_deref() == ended)
+            .count()
+    };
+    assert_eq!(
+        (count(None), count(Some("stopped"))),
+        (1, 0),
+        "one launch, never stopped"
+    );
+}
+
 /// Spec 105's supervisor beat on a failed drive: given a project whose every launch fails, when the
 /// conductor gives the run up, then `rigger run` leaves with that error at once: the beat stops
 /// with the drive, with no interval left to wait out.

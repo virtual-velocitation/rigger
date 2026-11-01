@@ -12216,6 +12216,94 @@ mod tests {
         (dir, loc, identity)
     }
 
+    /// Spec 105's LIVENESS closing clause, at `rigger watch`: given an open hold standing since
+    /// before the wave's marker was last touched, a quiet store and a free step lock, the marker
+    /// past the heartbeat bound raises `DeadDriver`, one short of it does not. `watch` reads the
+    /// marker on wall clock: an age with the open hold subtracted stops growing at the hold's
+    /// start, never reaches the bound, and `rigger watch` would lose a dead supervisor.
+    #[test]
+    fn watch_reads_a_marker_on_wall_clock_so_a_dead_supervisor_behind_an_open_hold_is_seen() {
+        let (dir, loc, _identity) = watch_test_store();
+        let db = loc.file("events.db");
+        Store::open(&db).unwrap();
+        std::fs::write(
+            loc.file("workflow.yml"),
+            format!("defaults:\n  workdir: \"{}\"\n", dir.path().display()),
+        )
+        .unwrap();
+        let run_id = "r-held";
+        let spawn_id = "u-held/implementer#0";
+        let stamped_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as i64
+            - (watch::DEAD_DRIVER_QUIET_BOUND + watch::DEAD_DRIVER_HEARTBEAT_BOUND).as_nanos()
+                as i64;
+        let scoped_run_stream = loc.run_stream();
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        for (revision, (ty, body)) in [
+            (
+                runscope::TYPE_RUN_STARTED,
+                format!(r#"{{"run":"{run_id}","criteria":["held"]}}"#),
+            ),
+            (
+                spawn::TYPE_SPAWN_REQUESTED,
+                format!(
+                    r#"{{"id":"{spawn_id}","unit":"u-held","stage":"implementer","prompt":"do it"}}"#
+                ),
+            ),
+            (
+                runscope::TYPE_RUN_HELD,
+                serde_json::to_string(&runscope::RunHeld::default()).unwrap(),
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            conn.execute(
+                "INSERT INTO events (stream, type, id, data, meta, valid_from, recorded_at, \
+                 revision) VALUES (?1, ?2, ?3, ?4, '{}', ?5, ?5, ?6)",
+                rusqlite::params![
+                    scoped_run_stream,
+                    ty,
+                    format!("e{revision}"),
+                    body.as_bytes(),
+                    stamped_at,
+                    revision as i64
+                ],
+            )
+            .unwrap();
+        }
+        let marker = rigger::liveness::marker_path(
+            &marker_root(&loc.repo_root(), &scratch_defaults(&loc).0),
+            run_id,
+            spawn_id,
+        )
+        .unwrap();
+        std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
+        std::fs::write(&marker, b"heartbeat").unwrap();
+
+        let a_minute = std::time::Duration::from_secs(60);
+        for (marker_age, expected) in [
+            (watch::DEAD_DRIVER_HEARTBEAT_BOUND - a_minute, vec![]),
+            (
+                watch::DEAD_DRIVER_HEARTBEAT_BOUND + a_minute,
+                vec![watch::Signal::DeadDriver],
+            ),
+        ] {
+            std::fs::File::options()
+                .write(true)
+                .open(&marker)
+                .unwrap()
+                .set_modified(std::time::SystemTime::now() - marker_age)
+                .unwrap();
+            let anomalies =
+                watch_poll(&loc, &StoreSelection::Sqlite, watch::CiProbe::NoRunTip).unwrap();
+            let signals: Vec<watch::Signal> = anomalies.iter().map(|a| a.signal).collect();
+            assert_eq!(signals, expected, "at {marker_age:?}: {anomalies:?}");
+        }
+    }
+
     // --- Spec 101, criterion 2: ONE-SHOT COMMANDS READ FROM THE BOUNDARY ---
 
     /// `rigger status`, `rigger progress` and the dash snapshot (its local and attached arms
@@ -12417,7 +12505,7 @@ mod tests {
             ..Default::default()
         }];
         let now = touched_at + std::time::Duration::from_secs(5);
-        let ages = liveness_ages_for_wave(&[], &loc.repo_root(), "", run_id, &wave, now);
+        let ages = liveness_ages_for_wave(&[], &loc.repo_root(), "", run_id, &wave, now, &[]);
 
         assert_eq!(
             ages.get(spawn_id).copied(),

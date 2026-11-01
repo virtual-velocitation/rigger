@@ -811,6 +811,9 @@ pub fn write_hung_cursor(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::progress::{SupervisorBeat, TYPE_SUPERVISOR_BEAT};
+    use crate::run::{RunHeld, RunReleased};
+    use crate::test_support::at;
     use crate::test_support::run_log;
 
     #[test]
@@ -1322,7 +1325,7 @@ mod tests {
                 max_wall_clock: bound,
             },
         ];
-        let stale = classify_stale(&in_flight, &Taxonomy::default(), now);
+        let stale = classify_stale(&in_flight, &Taxonomy::default(), now, &[]);
         assert_eq!(stale.len(), 1, "only the hung spawn is returned");
         assert_eq!(stale[0].id, "u/implementer#0");
         assert_eq!(stale[0].class, FailureClass::Infra);
@@ -1920,7 +1923,7 @@ mod tests {
         );
         let wave = spawn::step_result(&events).unwrap().wave;
         assert_eq!(
-            marker_ages(&events, readers_root, TEST_RUN, &wave, at).get(&a),
+            marker_ages(&events, readers_root, TEST_RUN, &wave, at, &[]).get(&a),
             Some(&0),
             "the marker-age surfaces"
         );
@@ -1972,5 +1975,620 @@ mod tests {
             MarkerRoots::of(&events, "/readers"),
             Err(Error::Backend(_))
         ));
+    }
+
+    // ---- spec 105 LIVENESS: a spawn's silent time, read from records alone ----
+
+    /// The spawn the silent-time tables read.
+    const THE_SPAWN: &str = "u/implementer#0";
+
+    /// A record of type `type_` with body `body`, valid and recorded at `when`.
+    fn record_at(type_: &str, body: impl serde::Serialize, when: SystemTime) -> Event {
+        Event {
+            valid_from: when,
+            recorded_at: when,
+            ..Event::new(type_, serde_json::to_vec(&body).unwrap())
+        }
+    }
+
+    /// The run records of a hold sighted at `held` and released at `released`, if it was.
+    fn hold_records(held: SystemTime, released: Option<SystemTime>) -> Vec<Event> {
+        std::iter::once(record_at(TYPE_RUN_HELD, RunHeld::default(), held))
+            .chain(released.map(|when| record_at(TYPE_RUN_RELEASED, RunReleased::default(), when)))
+            .collect()
+    }
+
+    /// The `ApiRetry` of `spawn` announcing `delay_ms`.
+    fn api_retry(spawn: &str, delay_ms: u64) -> ApiRetry {
+        ApiRetry {
+            spawn: spawn.to_string(),
+            delay_ms,
+            category: "overloaded".to_string(),
+        }
+    }
+
+    /// The closed span from `start` to `end`, seconds into a table's window.
+    fn span(start: u64, end: u64) -> Span {
+        Span {
+            start: at(start),
+            end: at(end),
+        }
+    }
+
+    /// Spec 105 LIVENESS: a spawn's silent time is the wall time since its last line outside the
+    /// union of every hold, every announced retry delay, every beat gap over 90 s and the open
+    /// span since the latest beat when that is over 90 s, read from the records alone. Each row
+    /// goes through the real records and their readers. `beats` of `None` is a reader with no
+    /// beat source, which sees the holds alone.
+    #[test]
+    fn a_spawns_silent_time_is_read_from_its_records_alone() {
+        const HOUR: u64 = 3600;
+        let every_30s = |from: u64, to: u64| Some((from..=to).step_by(30).collect::<Vec<u64>>());
+        for (case, last_line, now, holds, retries, beats, silent) in [
+            (
+                "a spawn silent across a 17 h hold reads minutes",
+                0,
+                17 * HOUR + 600,
+                vec![(300, Some(17 * HOUR + 300))],
+                vec![],
+                every_30s(0, 17 * HOUR + 600),
+                600,
+            ),
+            (
+                "an open hold stops the count where it started",
+                0,
+                3000,
+                vec![(300, None)],
+                vec![],
+                every_30s(0, 3000),
+                300,
+            ),
+            (
+                "a hold that ended before the last line is no part of the silence",
+                100,
+                200,
+                vec![(0, Some(50))],
+                vec![],
+                every_30s(0, 200),
+                100,
+            ),
+            (
+                "a hold straddling the last line counts from the line",
+                100,
+                200,
+                vec![(50, Some(150))],
+                vec![],
+                every_30s(0, 200),
+                50,
+            ),
+            (
+                "a hold that starts after now is no part of the silence",
+                0,
+                200,
+                vec![(300, Some(400))],
+                vec![],
+                every_30s(0, 200),
+                200,
+            ),
+            (
+                "two holds both come off",
+                0,
+                1000,
+                vec![(100, Some(200)), (300, Some(500))],
+                vec![],
+                every_30s(0, 1000),
+                700,
+            ),
+            (
+                "a beat gap over 90 s comes off whole",
+                0,
+                1120,
+                vec![],
+                vec![],
+                Some(vec![0, 30, 60, 1060, 1090, 1120]),
+                120,
+            ),
+            (
+                "a beat gap of 89 s stays on",
+                0,
+                120,
+                vec![],
+                vec![],
+                Some(vec![0, 89, 120]),
+                120,
+            ),
+            (
+                "a beat gap of exactly 90 s stays on",
+                0,
+                120,
+                vec![],
+                vec![],
+                Some(vec![0, 90, 120]),
+                120,
+            ),
+            (
+                "a beat gap of 91 s comes off",
+                0,
+                120,
+                vec![],
+                vec![],
+                Some(vec![0, 91, 120]),
+                29,
+            ),
+            (
+                "an open span of 89 s stays on",
+                0,
+                119,
+                vec![],
+                vec![],
+                Some(vec![0, 30]),
+                119,
+            ),
+            (
+                "an open span of exactly 90 s stays on",
+                0,
+                120,
+                vec![],
+                vec![],
+                Some(vec![0, 30]),
+                120,
+            ),
+            (
+                "an open span of 91 s comes off whole",
+                0,
+                121,
+                vec![],
+                vec![],
+                Some(vec![0, 30]),
+                30,
+            ),
+            (
+                "an announced retry delay comes off",
+                0,
+                400,
+                vec![],
+                vec![(THE_SPAWN, 10, 300)],
+                every_30s(0, 400),
+                100,
+            ),
+            (
+                "a delay running past now comes off up to now",
+                0,
+                400,
+                vec![],
+                vec![(THE_SPAWN, 10, 1000)],
+                every_30s(0, 400),
+                10,
+            ),
+            (
+                "a delay over before the last line is no part of the silence",
+                100,
+                200,
+                vec![],
+                vec![(THE_SPAWN, 0, 50)],
+                every_30s(0, 200),
+                100,
+            ),
+            (
+                "a delay of zero takes nothing off",
+                0,
+                300,
+                vec![],
+                vec![(THE_SPAWN, 10, 0)],
+                every_30s(0, 300),
+                300,
+            ),
+            (
+                "another spawn's delay takes nothing off",
+                0,
+                400,
+                vec![],
+                vec![("v/implementer#0", 10, 300)],
+                every_30s(0, 400),
+                400,
+            ),
+            (
+                "a hold and a delay overlapping come off once",
+                0,
+                500,
+                vec![(100, Some(300))],
+                vec![(THE_SPAWN, 200, 200)],
+                every_30s(0, 500),
+                200,
+            ),
+            (
+                "a delay inside a hold comes off once",
+                0,
+                500,
+                vec![(100, Some(400))],
+                vec![(THE_SPAWN, 200, 100)],
+                every_30s(0, 500),
+                200,
+            ),
+            (
+                "a hold released before it was sighted clamps to nothing",
+                0,
+                500,
+                vec![(300, Some(100))],
+                vec![],
+                every_30s(0, 500),
+                500,
+            ),
+            (
+                "beats whose clock was set back clamp to no gap",
+                0,
+                70,
+                vec![],
+                vec![],
+                Some(vec![0, 30, 10, 40]),
+                70,
+            ),
+            (
+                "a now before the last line reads zero",
+                500,
+                100,
+                vec![],
+                vec![],
+                Some(vec![0, 30]),
+                0,
+            ),
+            (
+                "a run with no beats is unsupervised",
+                0,
+                1000,
+                vec![],
+                vec![],
+                Some(vec![]),
+                0,
+            ),
+            (
+                "a run with no beats counts from the adopting supervisor's first beat",
+                0,
+                1060,
+                vec![],
+                vec![],
+                Some(vec![1000, 1030, 1060]),
+                60,
+            ),
+            (
+                "a line after the first beat is supervised from the line",
+                1010,
+                1060,
+                vec![],
+                vec![],
+                Some(vec![1000, 1030, 1060]),
+                50,
+            ),
+            (
+                "no beat source reads wall clock with no records",
+                0,
+                1000,
+                vec![],
+                vec![],
+                None,
+                1000,
+            ),
+            (
+                "no beat source reads the holds alone",
+                0,
+                1000,
+                vec![(100, Some(300))],
+                vec![],
+                None,
+                800,
+            ),
+            (
+                "no beat source reads a now before the last line as zero",
+                500,
+                100,
+                vec![],
+                vec![],
+                None,
+                0,
+            ),
+        ] {
+            let now = at(now);
+            let run_events: Vec<Event> = holds
+                .iter()
+                .flat_map(|&(held, released)| hold_records(at(held), released.map(at)))
+                .collect();
+            let progress_events: Vec<Event> = retries
+                .iter()
+                .map(|&(spawn, when, delay)| {
+                    record_at(TYPE_API_RETRY, api_retry(spawn, delay * 1000), at(when))
+                })
+                .chain(beats.iter().flatten().map(|&beat| {
+                    record_at(TYPE_SUPERVISOR_BEAT, SupervisorBeat::default(), at(beat))
+                }))
+                .collect();
+            let beat_times = beats.as_ref().map(|_| beat_times(&progress_events));
+
+            let read = silent_time(
+                at(last_line),
+                now,
+                &hold_intervals(&run_events, now),
+                &retry_delays(&progress_events, THE_SPAWN),
+                beat_times.as_deref(),
+            );
+
+            assert_eq!(read, Duration::from_secs(silent), "{case}");
+        }
+    }
+
+    /// THE EVENTS: a hold starts at its earliest `RunHeld` since the last `RunReleased`, and an
+    /// open hold runs up to `now`. Each row also reads the ledger's open hold, so the reader and
+    /// the fold agree on when an open hold started.
+    #[test]
+    fn a_runs_hold_intervals_run_from_the_earliest_sighting_to_the_release_or_now() {
+        const HELD: &str = TYPE_RUN_HELD;
+        const RELEASED: &str = TYPE_RUN_RELEASED;
+        let now = at(1000);
+        for (case, log, spans) in [
+            ("no record", vec![], vec![]),
+            ("a record of another type", vec![("E", 5)], vec![]),
+            (
+                "a released hold",
+                vec![(HELD, 10), ("E", 15), (RELEASED, 20)],
+                vec![span(10, 20)],
+            ),
+            ("an open hold", vec![(HELD, 10)], vec![span(10, 1000)]),
+            (
+                "a repeated sighting keeps the earliest",
+                vec![(HELD, 10), (HELD, 15), (RELEASED, 20)],
+                vec![span(10, 20)],
+            ),
+            (
+                "a repeated sighting of an open hold keeps the earliest",
+                vec![(HELD, 10), (HELD, 15)],
+                vec![span(10, 1000)],
+            ),
+            (
+                "a release of no hold",
+                vec![(RELEASED, 5), (HELD, 10), (RELEASED, 20)],
+                vec![span(10, 20)],
+            ),
+            (
+                "a repeated release",
+                vec![(HELD, 10), (RELEASED, 20), (RELEASED, 30)],
+                vec![span(10, 20)],
+            ),
+            (
+                "two holds",
+                vec![(HELD, 10), (RELEASED, 20), (HELD, 30), (RELEASED, 40)],
+                vec![span(10, 20), span(30, 40)],
+            ),
+            (
+                "a released hold then an open one",
+                vec![(HELD, 10), (RELEASED, 20), (HELD, 30)],
+                vec![span(10, 20), span(30, 1000)],
+            ),
+        ] {
+            // A hold is dated by its valid time, as the ledger dates it: the store's own stamp
+            // differs on every record here.
+            let log: Vec<Event> = log
+                .iter()
+                .map(|&(type_, secs)| Event {
+                    recorded_at: at(999),
+                    ..record_at(type_, RunHeld::default(), at(secs))
+                })
+                .collect();
+
+            let read = hold_intervals(&log, now);
+
+            assert_eq!(read, spans, "{case}");
+            assert_eq!(
+                read.iter()
+                    .find(|span| span.end == now)
+                    .map(|span| span.start),
+                crate::ledger::project(&log)
+                    .unwrap()
+                    .hold
+                    .map(|hold| hold.since),
+                "{case}: the ledger's open hold"
+            );
+        }
+    }
+
+    /// A retry's delay runs from when the store recorded it for what it announced, for the spawn
+    /// that announced it; a record that does not read is no delay.
+    #[test]
+    fn a_spawns_retry_delays_run_from_the_record_for_the_delay_it_announced() {
+        let mine = |delay_ms, when| Event {
+            valid_from: at(999),
+            ..record_at(TYPE_API_RETRY, api_retry(THE_SPAWN, delay_ms), when)
+        };
+        let log = [
+            mine(1500, at(10)),
+            record_at(TYPE_API_RETRY, api_retry("v/implementer#0", 1500), at(20)),
+            record_at(TYPE_SUPERVISOR_BEAT, SupervisorBeat::default(), at(30)),
+            Event::new(TYPE_API_RETRY, b"not a retry".to_vec()),
+            mine(0, at(40)),
+        ];
+        assert_eq!(
+            retry_delays(&log, THE_SPAWN),
+            vec![
+                Span {
+                    start: at(10),
+                    end: at(10) + Duration::from_millis(1500)
+                },
+                span(40, 40)
+            ]
+        );
+        assert_eq!(retry_delays(&[], THE_SPAWN), Vec::<Span>::new());
+    }
+
+    /// A beat is dated by the store's stamp, which is all it carries.
+    #[test]
+    fn a_runs_beats_read_as_their_recorded_times_in_order() {
+        let beat = |when| Event {
+            valid_from: at(999),
+            ..record_at(TYPE_SUPERVISOR_BEAT, SupervisorBeat::default(), when)
+        };
+        let log = [
+            beat(at(10)),
+            record_at(TYPE_API_RETRY, api_retry(THE_SPAWN, 0), at(20)),
+            beat(at(30)),
+        ];
+        assert_eq!(beat_times(&log), vec![at(10), at(30)]);
+        assert_eq!(beat_times(&[]), Vec::<SystemTime>::new());
+    }
+
+    /// A silence is past its bound strictly above it, and a zero bound is no bound.
+    #[test]
+    fn past_bound_is_strictly_above_a_bound_and_never_above_no_bound() {
+        for (case, silent, bound, past) in [
+            ("one under", 59, 60, false),
+            ("at the bound", 60, 60, false),
+            ("one over", 61, 60, true),
+            ("no bound, however long the silence", 99_999, 0, false),
+            ("no bound and no silence", 0, 0, false),
+        ] {
+            assert_eq!(
+                past_bound(Duration::from_secs(silent), Duration::from_secs(bound)),
+                past,
+                "{case}"
+            );
+        }
+    }
+
+    /// The staleness core weighs a spawn's silence outside the holds against its bound, and
+    /// reports that silence.
+    #[test]
+    fn classify_stale_weighs_the_silence_outside_the_hold_intervals() {
+        let in_flight = [InFlightSpawn {
+            id: THE_SPAWN.into(),
+            unit: "u".into(),
+            last_seen: at(9_000),
+            max_wall_clock: Duration::from_secs(300),
+        }];
+        for (case, holds, silent_for) in [
+            ("no hold", vec![], vec![1_000]),
+            ("a hold leaving the bound", vec![span(9_100, 9_800)], vec![]),
+            (
+                "a hold leaving a second past the bound",
+                vec![span(9_100, 9_799)],
+                vec![301],
+            ),
+        ] {
+            let stale = classify_stale(&in_flight, &Taxonomy::default(), at(10_000), &holds);
+            assert_eq!(
+                stale
+                    .iter()
+                    .map(|s| s.silent_for.as_secs())
+                    .collect::<Vec<u64>>(),
+                silent_for,
+                "{case}"
+            );
+        }
+    }
+
+    /// Spec 105 LIVENESS: the step-driven sweep reads a marker's silence over the run's hold
+    /// intervals alone, so a marker silent across a released 17 h hold reads minutes and its spawn
+    /// stands, while one past its bound outside the hold is still hung.
+    #[test]
+    fn the_sweep_reads_a_marker_silent_across_a_hold_as_the_time_outside_it() {
+        const BOUND: u64 = 1800;
+        const WALL: u64 = 17 * 3600 + 600;
+        for (case, hold, faulted_at) in [
+            (
+                "a released 17 h hold leaves ten minutes",
+                Some((300, Some(300 + 17 * 3600))),
+                None,
+            ),
+            ("an open hold leaves five minutes", Some((300, None)), None),
+            ("no hold", None, Some(WALL)),
+            (
+                "a hold leaving the bound",
+                Some((300, Some(300 + WALL - BOUND))),
+                None,
+            ),
+            (
+                "a hold leaving a second past the bound",
+                Some((300, Some(300 + WALL - BOUND - 1))),
+                Some(BOUND + 1),
+            ),
+        ] {
+            let scratch = tempfile::tempdir().unwrap();
+            let root = scratch.path().to_str().unwrap();
+            let store = Store::open(":memory:").unwrap();
+            let parked = park_bounded(&store, "held-unit", BOUND);
+            let touched_at = touched(root, &parked.id);
+            let after = |secs: u64| touched_at + Duration::from_secs(secs);
+            let mut events = run_log(&store);
+            events.extend(
+                hold.into_iter()
+                    .flat_map(|(held, released): (u64, Option<u64>)| {
+                        hold_records(after(held), released.map(after))
+                    }),
+            );
+
+            let stale = sweep(
+                &store,
+                &events,
+                root,
+                TEST_RUN,
+                &Taxonomy::default(),
+                after(WALL),
+            )
+            .unwrap();
+
+            assert_eq!(
+                stale
+                    .iter()
+                    .map(|s| (s.id.as_str(), s.silent_for))
+                    .collect::<Vec<_>>(),
+                faulted_at
+                    .iter()
+                    .map(|&secs| (parked.id.as_str(), Duration::from_secs(secs)))
+                    .collect::<Vec<_>>(),
+                "{case}"
+            );
+            assert_eq!(
+                spawn::result_of(&run_log(&store), &parked.id)
+                    .unwrap()
+                    .map(|res| res.is_liveness_fault()),
+                faulted_at.map(|_| true),
+                "{case}: the recorded fault"
+            );
+        }
+    }
+
+    /// A marker's age reads through the hold intervals it is handed, and an empty slice reads
+    /// wall clock: only `rigger status` hands it any.
+    #[test]
+    fn marker_ages_read_through_the_hold_intervals_and_an_empty_slice_reads_wall_clock() {
+        let scratch = tempfile::tempdir().unwrap();
+        let root = scratch.path().to_str().unwrap();
+        let store = Store::open(":memory:").unwrap();
+        let parked = park_bounded(&store, "aged-unit", 300);
+        let touched_at = touched(root, &parked.id);
+        let after = |secs: u64| touched_at + Duration::from_secs(secs);
+        let events = run_log(&store);
+        let wave = spawn::step_result(&events).unwrap().wave;
+        for (case, holds, age) in [
+            ("no intervals", vec![], 17 * 3600 + 600),
+            (
+                "a released 17 h hold",
+                vec![Span {
+                    start: after(300),
+                    end: after(300 + 17 * 3600),
+                }],
+                600,
+            ),
+        ] {
+            let ages = marker_ages(
+                &events,
+                root,
+                TEST_RUN,
+                &wave,
+                after(17 * 3600 + 600),
+                &holds,
+            );
+            assert_eq!(
+                ages.into_iter().collect::<Vec<_>>(),
+                vec![(parked.id.clone(), age)],
+                "{case}"
+            );
+        }
     }
 }

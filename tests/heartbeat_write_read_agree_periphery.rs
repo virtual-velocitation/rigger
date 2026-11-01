@@ -35,6 +35,9 @@
 //! already-tested pieces would compute actually gets READ from where the REAL write landed,
 //! through the real binary, from the real nested-worktree cwd the bug's own doc comment
 //! names.
+//!
+//! Spec 105's LIVENESS reads through the same seam: `rigger status --json`'s `liveness_age_s`, the
+//! age the workflow's marker race reads, leaves the run's hold intervals out of a marker's age.
 
 mod common;
 use common::git::run_git;
@@ -50,6 +53,7 @@ use common::git::git_out;
 use common::git::nested_worktree;
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::Store;
+use rigger::run::{RunHeld, RunReleased, TYPE_RUN_HELD, TYPE_RUN_RELEASED};
 
 const RUN_ID: &str = "r-heartbeat-seam";
 const SPAWN_ID: &str = "seam-unit/implementer#0";
@@ -114,6 +118,23 @@ fn seed_in_flight_spawn(root: &Path) {
 /// wait, so the marker-heartbeat axis can be isolated and varied independently.
 fn seed_stale_in_flight_spawn(root: &Path, age_secs: i64) {
     seed_store(root);
+    let run_started = format!(r#"{{"run":"{RUN_ID}","criteria":["seam"]}}"#);
+    let spawn_requested = format!(
+        r#"{{"id":"{SPAWN_ID}","unit":"seam-unit","stage":"implementer","prompt":"do the seam work"}}"#
+    );
+    insert_aged_rows(
+        root,
+        &[
+            (1, "RunStarted", run_started, age_secs),
+            (2, "SpawnRequested", spawn_requested, age_secs),
+        ],
+    );
+}
+
+/// Insert `(revision, type, body, age in seconds)` rows on `root`'s run stream, each stamped that
+/// far in the past, past the store's own current-time stamping (see
+/// [`seed_stale_in_flight_spawn`]).
+fn insert_aged_rows(root: &Path, rows: &[(i64, &str, String, i64)]) {
     let db = root.join(".rigger").join("events.db");
     // Opened through the real store first, so the schema is laid down exactly as the binary
     // itself would lay it down (mirrors `seed_order_signature`'s own precondition).
@@ -124,19 +145,20 @@ fn seed_stale_in_flight_spawn(root: &Path, age_secs: i64) {
         rigger::conductor::STREAM
     );
     let conn = rusqlite::Connection::open(&db).unwrap();
-    let ts = now_nanos() - age_secs * 1_000_000_000;
-    let run_started = format!(r#"{{"run":"{RUN_ID}","criteria":["seam"]}}"#);
-    let spawn_requested = format!(
-        r#"{{"id":"{SPAWN_ID}","unit":"seam-unit","stage":"implementer","prompt":"do the seam work"}}"#
-    );
-    for (revision, ty, row_id, body) in [
-        (1i64, "RunStarted", "e1", run_started),
-        (2i64, "SpawnRequested", "e2", spawn_requested),
-    ] {
+    let now = now_nanos();
+    for (revision, ty, body, age_secs) in rows {
+        let ts = now - age_secs * 1_000_000_000;
         conn.execute(
             "INSERT INTO events (stream, type, id, data, meta, valid_from, recorded_at, revision)
              VALUES (?1, ?2, ?3, ?4, '{}', ?5, ?5, ?6)",
-            rusqlite::params![stream, ty, row_id, body.as_bytes(), ts, revision],
+            rusqlite::params![
+                stream,
+                ty,
+                format!("e{revision}"),
+                body.as_bytes(),
+                ts,
+                revision
+            ],
         )
         .unwrap();
     }
@@ -403,6 +425,61 @@ fn status_resolves_a_configured_workdir_from_the_owning_root_with_no_agents_flee
         age.unwrap() < 120,
         "the reported heartbeat age must reflect the marker just touched under the \
          CONFIGURED workdir, not a mis-scoped read: got {age:?}"
+    );
+}
+
+/// Spec 105's LIVENESS at the read the workflow's marker race makes: a marker last touched 17 h 10
+/// min ago, 5 min before a 17 h hold that released 5 min ago, reads the 10 min outside the hold,
+/// never the 17 h 10 min of wall clock.
+#[test]
+fn status_reads_a_marker_silent_across_a_released_17_h_hold_as_minutes() {
+    const MARKER_AGE: i64 = 17 * 3600 + 10 * 60;
+    const HOLD_STARTED_AGO: i64 = 17 * 3600 + 5 * 60;
+    const HOLD_RELEASED_AGO: i64 = 5 * 60;
+    const OUTSIDE_THE_HOLD: u64 = 10 * 60;
+
+    let project = main_repo_with_commit();
+    let root = project.path();
+    seed_stale_in_flight_spawn(root, MARKER_AGE);
+    insert_aged_rows(
+        root,
+        &[
+            (
+                3,
+                TYPE_RUN_HELD,
+                serde_json::to_string(&RunHeld::default()).unwrap(),
+                HOLD_STARTED_AGO,
+            ),
+            (
+                4,
+                TYPE_RUN_RELEASED,
+                serde_json::to_string(&RunReleased::default()).unwrap(),
+                HOLD_RELEASED_AGO,
+            ),
+        ],
+    );
+    let marker = write_real_marker(root, "");
+    common::cli::plant_marker(&marker, MARKER_AGE as u64);
+
+    let out = run_rigger(root, &["status", "--json"]);
+    assert!(
+        out.status.success(),
+        "rigger status --json must succeed; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let agents: Vec<serde_json::Value> =
+        serde_json::from_str(stdout.lines().next().unwrap_or_default()).unwrap();
+    let ages: Vec<Option<u64>> = agents
+        .iter()
+        .filter(|agent| agent["id"] == SPAWN_ID)
+        .map(|agent| agent["liveness_age_s"].as_u64())
+        .collect();
+    // Only this test's own wall-clock overhead sits above the 10 min, as the heartbeat bound of
+    // the first test here.
+    assert!(
+        matches!(ages[..], [Some(age)] if (OUTSIDE_THE_HOLD..OUTSIDE_THE_HOLD + 120).contains(&age)),
+        "the marker's age outside the hold: {ages:?}"
     );
 }
 
