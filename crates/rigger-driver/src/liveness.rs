@@ -2308,6 +2308,26 @@ mod tests {
                 100,
             ),
             (
+                "a delay announced before a hold comes off with it",
+                0,
+                400,
+                vec![(200, Some(300))],
+                vec![(THE_SPAWN, 10, 90)],
+                every_30s(0, 400),
+                210,
+            ),
+            (
+                "a beat gap before a hold comes off with it",
+                0,
+                1300,
+                vec![(1100, Some(1200))],
+                vec![],
+                Some(vec![
+                    0, 30, 1030, 1060, 1090, 1120, 1150, 1180, 1210, 1240, 1270, 1300,
+                ]),
+                200,
+            ),
+            (
                 "a delay running past now comes off up to now",
                 0,
                 400,
