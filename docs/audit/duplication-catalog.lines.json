@@ -4034,18 +4034,18 @@
       },
       {
         "file": "tests/store_content_identity_periphery.rs",
-        "start_line": 749,
-        "end_line": 749
+        "start_line": 820,
+        "end_line": 820
       },
       {
         "file": "tests/store_content_identity_periphery.rs",
-        "start_line": 750,
-        "end_line": 750
+        "start_line": 821,
+        "end_line": 821
       },
       {
         "file": "tests/store_content_identity_periphery.rs",
-        "start_line": 796,
-        "end_line": 796
+        "start_line": 867,
+        "end_line": 867
       },
       {
         "file": "tests/store_precedence.rs",
@@ -7839,8 +7839,8 @@
       },
       {
         "file": "tests/store_content_identity_periphery.rs",
-        "start_line": 261,
-        "end_line": 268
+        "start_line": 262,
+        "end_line": 269
       }
     ]
   },

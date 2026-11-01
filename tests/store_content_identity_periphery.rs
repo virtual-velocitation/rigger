@@ -42,6 +42,7 @@ use rigger::eventstore::{
     ExpectedRevision, Filter, Position, Revision, Subscription,
 };
 use rigger::ingest::folding_into;
+use rigger::run_store::HoldSighting;
 
 // ---------------------------------------------------------------------------
 // Doubles and fixtures
@@ -670,6 +671,76 @@ fn no_public_run_entry_reports_a_boundary_the_store_never_wrote() {
         "the re-pin reports the lost write rather than announcing a rebase the log does not \
          record: {message}"
     );
+}
+
+/// THE HOLD WRITERS, on a store that loses the write. Each decides from the hold it reads, so
+/// the port replays a run the module itself minted and held, then writes nothing.
+///
+/// The compare-and-append behind them already answers `Ok` for a write it decided against, the
+/// same absence a lost write would collapse into, so a lost hold must surface as a failure
+/// naming the event. The mint's release is the sharper case: it stands ahead of the boundary, so
+/// a lost one stops the mint and the store is handed no `RunStarted`.
+#[test]
+fn no_hold_writer_reports_a_hold_or_a_release_the_store_never_wrote() {
+    const SIGHTED: HoldSighting = HoldSighting {
+        cause: "billing_error",
+        detail: "",
+        model: "",
+    };
+    struct Case {
+        name: &'static str,
+        replayed: Vec<Event>,
+        write: fn(&PortDouble) -> Result<(), StoreError>,
+        lost: &'static str,
+    }
+
+    let live = Store::open(":memory:").expect("an in-memory store opens");
+    let replay = || {
+        live.read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
+            .expect("the run reads back")
+    };
+    rigger::run_store::start_fresh(&live, &[], "hash-A", "base-sha", "", "")
+        .expect("a real run mints");
+    let unheld = replay();
+    rigger::run_store::record_hold_sighting(&live, &SIGHTED).expect("a real hold lands");
+    let held = replay();
+
+    let cases = [
+        Case {
+            name: "a sighting with no hold open",
+            replayed: unheld,
+            write: |store| rigger::run_store::record_hold_sighting(store, &SIGHTED),
+            lost: "event store: reported writing nothing for RunHeld",
+        },
+        Case {
+            name: "a done run's release",
+            replayed: held.clone(),
+            write: |store| rigger::run_store::release_hold(store),
+            lost: "event store: reported writing nothing for RunReleased",
+        },
+        Case {
+            name: "a mint's release",
+            replayed: held,
+            write: |store| {
+                rigger::run_store::start_fresh(store, &[], "hash-B", "base-sha", "", "").map(drop)
+            },
+            lost: "event store: reported writing nothing for RunReleased",
+        },
+    ];
+    for case in cases {
+        let name = case.name;
+        let lossy = PortDouble::over_a_stream(case.replayed, vec![None]);
+        let message = (case.write)(&lossy).expect_err(name).to_string();
+        assert_eq!(
+            message, case.lost,
+            "{name}: the writer reports the lost write"
+        );
+        assert_eq!(
+            lossy.handed.load(Ordering::SeqCst),
+            1,
+            "{name}: nothing follows the lost write"
+        );
+    }
 }
 
 /// A driver that must never be reached. The canary opens its batch with a MARKER before it
