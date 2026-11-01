@@ -6887,6 +6887,160 @@ fn run_beats_on_its_runs_progress_stream_from_its_start_until_it_returns() {
     }
 }
 
+/// Spec 105's LIVENESS at adoption: given a run an earlier driver left, when the operator runs
+/// `rigger run`, then the supervisor's first beat lands at once on the run this invocation drives:
+/// the adopted run's own stream, after the beats standing there, or the run `--fresh` just began.
+/// `rigger step` supervises nothing, so a step-driven run holds no beat before the adopting one.
+#[cfg(unix)]
+#[test]
+fn the_first_beat_lands_on_the_run_the_supervisor_drives() {
+    use rigger::progress::SupervisorBeat;
+
+    let beats = |n| vec![SupervisorBeat::default(); n];
+    let escalating = &REVIEWLESS_GIT_ESCALATING_UNIT_WORKFLOW;
+    for (case, workflow, earlier, later, adopted, before, after) in [
+        (
+            "a step-driven run",
+            &LIVENESS_WORKFLOW,
+            "step",
+            &["run"][..],
+            true,
+            0,
+            1,
+        ),
+        (
+            "a run an earlier supervisor left",
+            escalating,
+            "run",
+            &["run"][..],
+            true,
+            1,
+            2,
+        ),
+        (
+            "a fresh run over a stopped one",
+            escalating,
+            "run",
+            &["run", "--fresh"][..],
+            false,
+            1,
+            1,
+        ),
+    ] {
+        let dir = temp_git_project_with_commit();
+        let root = dir.path();
+        write_workflow_fixture(root, workflow);
+        let scratch = tempfile::tempdir().unwrap();
+        let (out, err, ok, _fake) = run_recording(root, &[earlier], scratch.path());
+        assert!(
+            ok,
+            "{case}: the earlier driver; stderr: {err}\nstdout: {out}"
+        );
+        let left = common::cli::current_run_id_of(root).expect("the earlier driver began a run");
+        assert_eq!(
+            common::cli::recorded_progress::<SupervisorBeat>(root),
+            beats(before),
+            "{case}: the beats the earlier driver left"
+        );
+        let (out, err, ok, _fake) = run_recording(root, later, scratch.path());
+        assert!(ok, "{case}: the supervisor; stderr: {err}\nstdout: {out}");
+        let current = common::cli::current_run_id_of(root).expect("the supervisor drove a run");
+        assert_eq!(
+            current == left,
+            adopted,
+            "{case}: whether it adopted {left}"
+        );
+        assert_eq!(
+            common::cli::recorded_progress::<SupervisorBeat>(root),
+            beats(after),
+            "{case}: the beats on the stream of the run it drove"
+        );
+    }
+}
+
+/// Spec 105's run-stream constraint: given a run that beat, the whole run log holds no beat on any
+/// stream, so a beat is a progress-store record and replay never meets one.
+#[cfg(unix)]
+#[test]
+fn a_beat_lands_in_the_progress_store_and_never_in_the_run_log() {
+    use rigger::eventstore::sqlite::Store;
+    use rigger::eventstore::{Direction, EventStore, Filter};
+    use rigger::progress::{SupervisorBeat, TYPE_SUPERVISOR_BEAT};
+
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_workflow_fixture(root, &LIVENESS_WORKFLOW);
+    let scratch = tempfile::tempdir().unwrap();
+    let (out, err, ok, _fake) = run_recording(root, &["run"], scratch.path());
+    assert!(ok, "the run succeeds; stderr: {err}\nstdout: {out}");
+    assert_eq!(
+        common::cli::recorded_progress::<SupervisorBeat>(root),
+        vec![SupervisorBeat::default()],
+        "the beat on the run's progress stream"
+    );
+    let run_log = common::cli::rigger_file(root, "events.db");
+    let beats_on_the_run_log: Vec<String> = Store::open(run_log.to_str().unwrap())
+        .unwrap()
+        .read_all(0, Direction::Forward, &Filter::default())
+        .unwrap()
+        .into_iter()
+        .filter(|event| event.type_ == TYPE_SUPERVISOR_BEAT)
+        .map(|event| event.stream)
+        .collect();
+    assert_eq!(beats_on_the_run_log, Vec::<String>::new());
+}
+
+/// Spec 105's supervisor beat on a failed drive: given a project whose every launch fails, when the
+/// conductor gives the run up, then `rigger run` leaves with that error at once: the beat stops
+/// with the drive, with no interval left to wait out.
+#[cfg(unix)]
+#[test]
+fn a_run_that_fails_leaves_with_its_error_and_no_interval_to_wait_out() {
+    use rigger::progress::{SupervisorBeat, SUPERVISOR_BEAT_INTERVAL};
+    const HALT: &str = "(unit \"a\" failed on infrastructure (infra:spawn) at attempt 0 past the \
+                        failure taxonomy's infra limit, so the step halts and the unit is charged \
+                        no attempt; fix the outage and re-run - the unit resumes at the same \
+                        attempt with a fresh bound)";
+
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_workflow_fixture(root, &LIVENESS_WORKFLOW);
+    let scratch = tempfile::tempdir().unwrap();
+    let started = std::time::Instant::now();
+    let (out, err, ok, _fake) = run_on_arms(root, &["run"], scratch.path(), "");
+    let took = started.elapsed();
+    assert!(!ok, "the run fails; stderr: {err}\nstdout: {out}");
+    assert_eq!(out, "", "the error leaves before any summary of the run");
+    assert_eq!(
+        err.lines().last(),
+        Some(HALT),
+        "the conductor's error is the one the run leaves with"
+    );
+    assert_eq!(
+        common::cli::recorded_progress::<SupervisorBeat>(root),
+        vec![SupervisorBeat::default()],
+        "the one beat of a drive shorter than the interval"
+    );
+    assert!(took < SUPERVISOR_BEAT_INTERVAL, "returned after {took:?}");
+}
+
+/// The on-disk `body` decodes to the one [`SupervisorBeat`](rigger::progress::SupervisorBeat) a
+/// beat is.
+fn a_beat_body_decodes(body: &str) {
+    assert_eq!(
+        serde_json::from_str::<rigger::progress::SupervisorBeat>(body).unwrap(),
+        rigger::progress::SupervisorBeat::default()
+    );
+}
+
+rigger::test_cases! {
+    a_supervisor_beat_body_decodes_as_a_writer_leaves_it: a_beat_body_decodes("{}");
+    // A later binary adding a key must not cost an earlier one the beat.
+    a_supervisor_beat_body_decodes_past_a_key_a_later_writer_added: a_beat_body_decodes(
+        r#"{"host":"workstation"}"#,
+    );
+}
+
 /// Spec 105's run teardown, end to end: given a project whose run ends, when the run ended done
 /// the agent streams its launches wrote are reclaimed with the rest of its scratch, and when it
 /// ended with work left (here an escalated unit) they stand for whoever resumes or reads them.
