@@ -3153,6 +3153,53 @@ fn a_launch_ends_as_the_hold_and_its_class_decide() {
     }
 }
 
+/// A wait-class ending is answered by its class alone: on a sink that reads nothing it reads no
+/// hold and counts no close, closing `interrupted` with its scratch kept and its lost sighting on
+/// its progress.
+#[cfg(unix)]
+#[test]
+fn a_wait_class_ending_reads_no_hold_and_counts_no_close() {
+    let fx = Fixture::started(&[]);
+    let armed = std::sync::atomic::AtomicBool::new(true);
+    let sink = common::fixtures::ReadsFailWhenArmed {
+        inner: &fx.run_store,
+        armed: &armed,
+    };
+    let driver = Driver {
+        hold_sink: Some(&sink),
+        ..fx.stopping_driver(RESUME_ENDING_AGENT, WIND_DOWN_GRACE)
+    };
+    let mut o = fx.fresh_opts("retried-eof");
+    o.env.push((
+        "RIGGER_TEST_RETRY_CATEGORY".to_string(),
+        "rate_limit".to_string(),
+    ));
+    let planted = fx.plant_scratch(&o);
+
+    let failure = driver
+        .spawn(&AgentDef::default(), FULL_PROMPT, &o, &no_emit)
+        .map(|_| ())
+        .unwrap_err();
+
+    assert_eq!(
+        rigger::conductor::strip_failure_marker(&failure),
+        classed_failure("rate_limit")
+    );
+    let closing = fx.launch_records().pop().unwrap();
+    assert_eq!(
+        (closing.ended.as_deref(), closing.class.as_deref()),
+        (Some("interrupted"), Some("rate_limit"))
+    );
+    assert_eq!(
+        fx.activities(),
+        vec![
+            "waiting: rate_limit (attempt 1, retrying in 1ms)",
+            "hold sighting rate_limit not recorded: event store: the run read failed",
+        ]
+    );
+    assert!(planted.exists(), "the scratch is kept");
+}
+
 /// A hold the host cannot read proves nothing: the launch takes the ending of an unheld run, a
 /// fault's close going unstamped and uncounted, with a line on its progress saying so.
 #[cfg(unix)]
