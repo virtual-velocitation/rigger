@@ -213,10 +213,10 @@ fn opts_with_env(id: &str, var: &str, path: &Path) -> SpawnOpts {
     }
 }
 
-/// An agent bounded to one second of wall clock, so a silent session is STOPped.
-fn wall_clock_bounded() -> AgentDef {
+/// An agent bounded to `secs` seconds of wall clock, so a session silent past them is STOPped.
+fn wall_clock_bounded(secs: u64) -> AgentDef {
     AgentDef {
-        max_wall_clock: Some(1),
+        max_wall_clock: Some(secs),
         ..Default::default()
     }
 }
@@ -235,7 +235,7 @@ fn recorded_pid(pid_file: &Path, recorded: &str) -> u32 {
 fn stop(driver: &Driver, o: &SpawnOpts) -> (String, Duration) {
     let started = Instant::now();
     let err = driver
-        .spawn(&wall_clock_bounded(), "do the thing", o, &no_emit)
+        .spawn(&wall_clock_bounded(1), "do the thing", o, &no_emit)
         .expect_err("a stream that never produces a result must not read as a success");
     let elapsed = started.elapsed();
     assert!(err.0.contains("stopped"), "{}", err.0);
@@ -1309,7 +1309,7 @@ fn spawn_returns_a_real_result_promptly_even_when_a_descendant_still_holds_the_s
 
     let started = Instant::now();
     let result = driver
-        .spawn(&wall_clock_bounded(), "do the thing", &o, &no_emit)
+        .spawn(&wall_clock_bounded(1), "do the thing", &o, &no_emit)
         .expect(
             "a real result line must still be read back even though a descendant \
              outlives the driven child and keeps the stdout pipe's write end open",
@@ -1421,6 +1421,16 @@ fn an_unbounded_launch_whose_child_exited_behind_a_held_pipe_ends_with_no_result
 /// in a result.
 const RETRIES_PAST_THE_BOUND: &str = "claude-code-retries-silent-past-the-bound-agent.sh";
 
+/// The fixture speaking a line each second for 5 s, then ending in a result.
+const SPEAKS_PAST_THE_BOUND: &str = "claude-code-speaks-past-the-bound-agent.sh";
+
+/// The fixture speaking a line each second for 4 s, then announcing a 30 s retry and silent for
+/// 4 s inside it, then ending in a result.
+const RETRIES_OLDER_THAN_THE_BOUND: &str = "claude-code-retries-older-than-the-bound-agent.sh";
+
+/// The fixture announcing a 2 s retry and silent for 20 s, then ending in a result.
+const HUNG_PAST_ITS_DELAY: &str = "claude-code-hung-past-its-delay-then-result-agent.sh";
+
 /// How the stop's table sets a host and its run up.
 #[derive(Clone, Copy, Debug)]
 enum Beats {
@@ -1435,14 +1445,15 @@ enum Beats {
     Unreadable,
 }
 
-/// A session silent past its one-second bound, under a run set up as each row says: `Some` is the
-/// result the session must end in, `None` is a stop at the bound.
+/// A session under the bound of its row, in seconds, and a run set up as the row says: `Some` is
+/// the result the session must end in, `None` is a stop.
 #[test]
 fn the_stream_silence_stop_fires_on_silent_time() {
-    for (case, script, held, beats, ended) in [
+    for (case, script, bound, held, beats, ended) in [
         (
             "a session silent across a hold reads through it",
             SILENT_PAST_THE_POLL,
+            1,
             true,
             Beats::Fresh,
             Some("done: thought past the poll"),
@@ -1450,6 +1461,7 @@ fn the_stream_silence_stop_fires_on_silent_time() {
         (
             "the same session with no hold is stopped",
             SILENT_PAST_THE_POLL,
+            1,
             false,
             Beats::Fresh,
             None,
@@ -1457,6 +1469,7 @@ fn the_stream_silence_stop_fires_on_silent_time() {
         (
             "a session inside the delay it announced reads through it",
             RETRIES_PAST_THE_BOUND,
+            1,
             false,
             Beats::Fresh,
             Some("done: waited the delay out"),
@@ -1464,6 +1477,7 @@ fn the_stream_silence_stop_fires_on_silent_time() {
         (
             "a run with no beats is unsupervised",
             SILENT_PAST_THE_POLL,
+            1,
             false,
             Beats::None,
             Some("done: thought past the poll"),
@@ -1471,6 +1485,7 @@ fn the_stream_silence_stop_fires_on_silent_time() {
         (
             "a wake whose records cannot be read counts no silence",
             SILENT_PAST_THE_POLL,
+            1,
             false,
             Beats::Unreadable,
             Some("done: thought past the poll"),
@@ -1478,6 +1493,7 @@ fn the_stream_silence_stop_fires_on_silent_time() {
         (
             "a host with no beat source counts from the last line, whatever the hold",
             SILENT_PAST_THE_POLL,
+            1,
             true,
             Beats::NoSource,
             None,
@@ -1485,8 +1501,33 @@ fn the_stream_silence_stop_fires_on_silent_time() {
         (
             "a host with no beat source counts from the last line, whatever the delay",
             RETRIES_PAST_THE_BOUND,
+            1,
             false,
             Beats::NoSource,
+            None,
+        ),
+        (
+            "a host with no beat source reads a speaking session through",
+            SPEAKS_PAST_THE_BOUND,
+            3,
+            false,
+            Beats::NoSource,
+            Some("done: spoke past the bound"),
+        ),
+        (
+            "a session older than its bound counts from its last line, never its launch",
+            RETRIES_OLDER_THAN_THE_BOUND,
+            3,
+            false,
+            Beats::Fresh,
+            Some("done: waited the delay out at its age"),
+        ),
+        (
+            "a session silent past the delay it announced is stopped on a later wake",
+            HUNG_PAST_ITS_DELAY,
+            1,
+            false,
+            Beats::Fresh,
             None,
         ),
     ] {
@@ -1512,7 +1553,7 @@ fn the_stream_silence_stop_fires_on_silent_time() {
         };
         let o = opts("u105-silent/implementer#0");
 
-        let spawned = driver.spawn(&wall_clock_bounded(), "do the thing", &o, &no_emit);
+        let spawned = driver.spawn(&wall_clock_bounded(bound), "do the thing", &o, &no_emit);
 
         assert_eq!(
             spawned.as_ref().ok().map(|r| r.output.as_str()),
@@ -1553,7 +1594,7 @@ fn a_bounded_launch_held_past_its_bound_still_sees_its_child_exit_behind_a_held_
             Duration::from_millis(300),
         )
         .spawn(
-            &wall_clock_bounded(),
+            &wall_clock_bounded(1),
             "do the thing",
             &opts("u105-exited/implementer#0"),
             &no_emit,
@@ -1819,14 +1860,6 @@ const FALLBACK_LINE: &str =
 /// The progress line of the first healthy `system/init` of the fixture agent.
 const FRESH_INIT_LINE: &str = "mcp servers: []";
 
-/// An agent whose silent session is STOPped after [`SILENCE_BOUND`] seconds.
-fn silence_bounded() -> AgentDef {
-    AgentDef {
-        max_wall_clock: Some(SILENCE_BOUND),
-        ..Default::default()
-    }
-}
-
 impl Fixture {
     /// The file the fixture agent appends each launch's first message to.
     fn launch_log(&self) -> PathBuf {
@@ -2057,7 +2090,7 @@ rigger::test_cases! {
             1,
         );
     a_resume_silent_to_the_stop_falls_back:
-        a_resume_ending_with_no_session_falls_back("silent", silence_bounded(), &[], 0);
+        a_resume_ending_with_no_session_falls_back("silent", wall_clock_bounded(SILENCE_BOUND), &[], 0);
     a_resume_ending_on_an_unreadable_line_falls_back:
         a_resume_ending_with_no_session_falls_back(
             "unreadable",
@@ -2164,7 +2197,7 @@ rigger::test_cases! {
     );
     a_resume_silent_after_init_stands_stopped: a_resume_that_saw_its_session_stands(
         "init-silent",
-        silence_bounded(),
+        wall_clock_bounded(SILENCE_BOUND),
         Some(("stopped", "")),
         SILENCE_FAILURE,
         liveness_fault_on_record(),
@@ -2192,7 +2225,7 @@ rigger::test_cases! {
     );
     a_fresh_launch_silent_stands_stopped: a_fresh_launch_stands(
         "silent",
-        silence_bounded(),
+        wall_clock_bounded(SILENCE_BOUND),
         Some(("stopped", "")),
         SILENCE_FAILURE,
         liveness_fault_on_record(),
@@ -2256,7 +2289,7 @@ rigger::test_cases! {
     a_fallback_launch_silent_is_stopped: a_fallback_launch_ends_at_its_own_ordinal(
         "refused-eof",
         "silent",
-        silence_bounded(),
+        wall_clock_bounded(SILENCE_BOUND),
         Some(("stopped", "")),
         SILENCE_FAILURE,
         liveness_fault_on_record(),
@@ -2368,7 +2401,7 @@ rigger::test_cases! {
     a_stop_closes_at_the_launchs_ordinal:
         a_close_carries_the_ordinal_its_launch_took(
             "silent",
-            silence_bounded(),
+            wall_clock_bounded(SILENCE_BOUND),
             ("stopped", ""),
         );
 }
