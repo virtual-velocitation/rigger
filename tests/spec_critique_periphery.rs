@@ -5,8 +5,8 @@
 //! headless host, its findings and verdict are recorded keyed on the spec's content hash and
 //! copied into the graph, and a second call on unchanged text answers from the store with zero
 //! spawns; an edited text is critiqued afresh and inherits none of the earlier findings. A session
-//! silent past its bound is stopped, counting from its last line (spec 105 LIVENESS): this verb's
-//! host is the one with no beat source.
+//! silent past its bound is stopped, since this verb's host is the one wired with no beat source
+//! (spec 105 LIVENESS).
 //!
 //! NOT OWNED HERE: the refusal a new run meets without a clean critique (criterion 2), and the
 //! plan-critique stop on a spec defect (criterion 5).
@@ -515,7 +515,7 @@ fn a_project_with_no_git_repository_critiques_its_spec_against_the_project_root(
 /// and let a hung critic run on. The verb fails on the stop, never on the answer the session would
 /// have gone on to give.
 #[test]
-fn a_critique_session_silent_past_its_bound_is_stopped_counting_from_its_last_line() {
+fn a_critique_session_silent_past_its_bound_is_stopped_since_no_beat_source_is_wired() {
     let dir = temp_project();
     let root = dir.path();
     let bounded = BOUNDED_CRITIC_WORKFLOW.replace("max_wall_clock: 900", "max_wall_clock: 1");
