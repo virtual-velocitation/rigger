@@ -1252,7 +1252,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-25fa6e845853",
+    "id": "dup-9482d6cfdc31",
     "classification": "semantic",
     "sites": [
       {
@@ -3262,6 +3262,11 @@
       },
       {
         "file": "tests/common/cli.rs",
+        "name": "\".rigger/events.db\"",
+        "content_hash": "0ab805b5101d6502"
+      },
+      {
+        "file": "tests/common/cli.rs",
         "name": "\"reset --derived: the migration rewrites and deletes rows of the event log and vacuums the \\\n         file, which is a mechanic of the embedded .rigger/events.db store; this project is \\\n         configured for the server-backed store, where the migration does not run. Re-run it \\\n         against a project on the sqlite backend. Refusing rather than reporting a migration that \\\n         did not happen.\"",
         "content_hash": "25597419b8dbb616"
       },
@@ -4071,16 +4076,6 @@
         "content_hash": "25597419b8dbb616"
       },
       {
-        "file": "tests/stop_failure_hook_periphery.rs",
-        "name": "\".rigger\"",
-        "content_hash": "0ab805b5101d6502"
-      },
-      {
-        "file": "tests/stop_failure_hook_periphery.rs",
-        "name": "\".rigger/events.db\"",
-        "content_hash": "0ab805b5101d6502"
-      },
-      {
         "file": "tests/store_content_identity_periphery.rs",
         "name": "\".rigger\"",
         "content_hash": "edbddea214457e40"
@@ -4272,7 +4267,7 @@
       }
     ],
     "proposed_home": "one .rigger-relative path-composition helper",
-    "note": "mandatory sweep: .rigger-path string literals - 603 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: .rigger-path string literals - 602 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {

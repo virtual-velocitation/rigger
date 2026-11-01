@@ -14,14 +14,15 @@ mod common;
 use std::path::Path;
 
 use common::cli::{
-    assert_selected_server, critique_finding_id, emit, pin_identity, read_run_events, rigger_file,
-    run_payloads, run_rigger, run_rigger_envs, run_rigger_ok, run_stream_identity, seed_run_events,
-    seed_store, temp_project, temp_repoless_project, write_spec_project,
+    assert_selected_server, critique_finding_id, emit, pin_identity, read_run_events,
+    recorded_progress, rigger_file, run_payloads, run_rigger, run_rigger_envs, run_rigger_ok,
+    run_stream_identity, seed_a_run, seed_run_events, seed_store, temp_project,
+    temp_repoless_project, write_spec_project,
 };
 use common::fixtures::{composed_system_prompt, git_ok, temp_git_project_with_commit};
 use common::repo::{
     assert_carries_spawn_hooks, critique_stub_argv, critique_stub_record, critique_stub_spawns,
-    critique_stub_task, flag_value, write_critique_stub, write_critique_stub_reporting,
+    critique_stub_task, flag_value, hook_words, write_critique_stub, write_critique_stub_reporting,
     CRITIQUE_CONN, CRITIQUE_SYSTEM_PROMPT,
 };
 use rigger::driver::claude_code::framed;
@@ -29,6 +30,7 @@ use rigger::driver::replay::spawn_scratch_path;
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Direction, Event, EventStore, ExpectedRevision, Filter};
+use rigger::progress::StopFailure;
 use rigger::review::{
     critique_hash, critique_spawn_id, critique_unit, spec_critique_prompt, CRITIC_DENIED_TOOLS,
 };
@@ -181,6 +183,41 @@ fn a_critique_launch_carries_the_spawn_hooks_on_its_own_settings() {
         settings["permissions"]["deny"].as_array().map(Vec::len),
         Some(CRITIC_DENIED_TOOLS.len()),
         "the spawn's own settings survive the merge: {settings}"
+    );
+}
+
+/// Spec 105's stray record: given a project with a run, when a critic's session ends on an API
+/// error and fires the `StopFailure` command its launch's settings carry, then the record stands
+/// on the project's run under the critic's own spawn id, which is what leaves every other launch's
+/// class alone.
+#[test]
+fn a_critics_stop_failure_hook_leaves_its_record_on_the_run_under_its_own_spawn() {
+    let dir = temp_project();
+    let root = std::fs::canonicalize(dir.path()).unwrap();
+    scaffold(&root, CRITIC_WORKFLOW);
+    seed_store(&root);
+    seed_a_run(&root);
+    let scratch = root.join("scratch");
+    let (work, path) = stub(REJECT);
+    let (_, err, ok) = critique(&root, SPEC_REL, &path, &scratch);
+    assert!(ok, "the critique is recorded; stderr:\n{err}");
+
+    let argv = critique_stub_argv(work.path());
+    let settings: Value = serde_json::from_str(flag_value(&argv, "--settings")).unwrap();
+    let (class, words) = hook_words(&settings, "StopFailure")
+        .into_iter()
+        .find(|(class, _)| class == "rate_limit")
+        .expect("the launch carries an entry per category");
+    let command: Vec<&str> = words[1..].iter().map(String::as_str).collect();
+    run_rigger_ok(&root, &command);
+
+    assert_eq!(
+        recorded_progress::<StopFailure>(&root),
+        vec![StopFailure {
+            spawn: critique_spawn_id(&critique_hash(SPEC), 0),
+            class,
+        }],
+        "the one record, on the project's run, naming the critic"
     );
 }
 

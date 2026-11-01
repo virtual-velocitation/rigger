@@ -845,6 +845,52 @@ pub fn current_run_id_of(root: &Path) -> Option<String> {
     rigger::run::current_run_id(&read_run_events(root))
 }
 
+/// Seeds a REAL run in `root`'s own `.rigger/events.db`, through the SAME production
+/// authority `RunCtx` itself calls before threading the result onto every spawn's
+/// `opts.run_id` (`conductor.rs`'s `crate::run_store::ensure_started`) - returns the id it
+/// mints. Namespaced identically to [`current_run_progress_events`]'s own
+/// [`run_stream_identity`], so this writes into the exact stream `rigger hook stop-failure`'s own
+/// cold `runscope::current_run_id` read (`main.rs::cmd_hook_stop_failure`) will independently see.
+pub fn seed_a_run(root: &Path) -> String {
+    let backend = Store::open(
+        root.join(".rigger/events.db")
+            .to_str()
+            .expect("a utf-8 store path"),
+    )
+    .expect("the event log opens");
+    let store = Namespaced::new(&backend, &run_stream_identity(root));
+    rigger::run_store::ensure_started(&store, &["a criterion".to_string()])
+        .expect("a fresh run mints")
+}
+
+/// Every event of `type_` of the current run in `root`'s own `.rigger/progress.db`, read directly
+/// (never through a command under test) so an assertion is independent of it: the run's id
+/// cold-read from `events.db` (empty before any run), then that run's progress stream, under the
+/// same [`Namespaced`] scoping the binary writes through ([`run_stream_identity`]).
+pub fn current_run_progress_events(root: &Path, type_: &str) -> Vec<Event> {
+    let db = rigger_file(root, "progress.db");
+    let backend = Store::open(db.to_str().expect("a utf-8 store path")).expect("the store opens");
+    let identity = run_stream_identity(root);
+    let run_id = current_run_id_of(root).unwrap_or_default();
+    rigger::progress::read_run(&Namespaced::new(&backend, &identity), &run_id)
+        .expect("the progress stream reads")
+        .into_iter()
+        .filter(|e| e.type_ == type_)
+        .collect()
+}
+
+/// Every record of type `T` of the current run in `root`'s own `.rigger/progress.db`
+/// ([`current_run_progress_events`]), in append order.
+pub fn recorded_progress<T>(root: &Path) -> Vec<T>
+where
+    T: rigger::progress::RunStamped + serde::de::DeserializeOwned,
+{
+    current_run_progress_events(root, T::EVENT_TYPE)
+        .iter()
+        .map(|e| serde_json::from_slice(&e.data).expect("a well-formed progress record"))
+        .collect()
+}
+
 /// `root`'s run stream as `(position, revision, type)`, oldest first.
 pub fn stream_shape(root: &Path) -> Vec<(u64, i64, String)> {
     read_run_events(root)
