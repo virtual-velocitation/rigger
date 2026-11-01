@@ -1,1 +1,91 @@
-[]
+[
+  {
+    "name": "cause_row",
+    "file": "crates/rigger-domain/src/agent.rs",
+    "content_hash": "908e702a08880ee2",
+    "visibility": "pub",
+    "ambiguous": false,
+    "test_only_references": [
+      {
+        "file": "crates/rigger-domain/src/agent.rs",
+        "content_hash": "861ff64775d4d586"
+      }
+    ]
+  },
+  {
+    "name": "failed_closes_since",
+    "file": "crates/rigger-domain/src/progress.rs",
+    "content_hash": "58632fb7bddb22be",
+    "visibility": "pub",
+    "ambiguous": false,
+    "test_only_references": [
+      {
+        "file": "crates/rigger-domain/src/progress.rs",
+        "content_hash": "5e2af9eb30571daf"
+      }
+    ]
+  },
+  {
+    "name": "record_hold_sighting",
+    "file": "crates/rigger-store-sqlite/src/run_store.rs",
+    "content_hash": "83805a4a2c4ee187",
+    "visibility": "pub",
+    "ambiguous": false,
+    "test_only_references": [
+      {
+        "file": "crates/rigger-store-sqlite/src/run_store.rs",
+        "content_hash": "a4b54f6199f4d020"
+      },
+      {
+        "file": "crates/rigger-store-sqlite/src/run_store.rs",
+        "content_hash": "ac83cc91893b3573"
+      },
+      {
+        "file": "crates/rigger-store-sqlite/src/run_store.rs",
+        "content_hash": "ac83cc91893b3573"
+      },
+      {
+        "file": "crates/rigger-store-sqlite/src/run_store.rs",
+        "content_hash": "08d6cb57d08fc235"
+      }
+    ]
+  },
+  {
+    "name": "release_hold",
+    "file": "crates/rigger-store-sqlite/src/run_store.rs",
+    "content_hash": "d61e1c461f50de21",
+    "visibility": "pub",
+    "ambiguous": false,
+    "test_only_references": [
+      {
+        "file": "crates/rigger-store-sqlite/src/run_store.rs",
+        "content_hash": "433976e8054e7abd"
+      },
+      {
+        "file": "crates/rigger-store-sqlite/src/run_store.rs",
+        "content_hash": "433976e8054e7abd"
+      },
+      {
+        "file": "tests/claude_code_stream_periphery.rs",
+        "content_hash": "1763a92afd5d95c5"
+      }
+    ]
+  },
+  {
+    "name": "run_stream_head",
+    "file": "crates/rigger-store-sqlite/src/run_store.rs",
+    "content_hash": "bf45ce8cd7a8c65e",
+    "visibility": "pub",
+    "ambiguous": false,
+    "test_only_references": [
+      {
+        "file": "crates/rigger-store-sqlite/src/run_store.rs",
+        "content_hash": "0d5b2030eff42b59"
+      },
+      {
+        "file": "crates/rigger-store-sqlite/src/run_store.rs",
+        "content_hash": "e5837916be426733"
+      }
+    ]
+  }
+]

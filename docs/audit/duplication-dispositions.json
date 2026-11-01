@@ -450,7 +450,7 @@
     "reason": "Five predicates that each test membership in a different fixed vocabulary (intent-doc kinds, label-doc kinds, derived-index event types, Rust standard-library roots, Rust keywords); only the `matches!`/slice-contains shape is shared."
   },
   {
-    "id": "dup-2a5626cb9627",
+    "id": "dup-74b161ef523c",
     "disposition": "not-a-duplicate",
     "reason": "`as_str` and `name` map two different enums to their own wire strings; only the exhaustive `match` shape is shared."
   },

@@ -28,6 +28,11 @@
 //! `ApiRetry` record: it lands in the run's progress stream beside its waiting line, it is on
 //! record while the session still waits the delay out, a refused append costs the session
 //! nothing, and a session ending with no result keeps it.
+//!
+//! The HOLD tests at the end (spec 105) drive the disposition table's transitions through a real
+//! child whose whole wire a table row states: one `RunHeld` per transition and none on a repeat or
+//! an operator hold, a launch's close and the revision it read, an `is_error` result classed after
+//! the child exits, an earlier launch's `StopFailure`, and a third consecutive failed close.
 
 mod common;
 
@@ -37,7 +42,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use common::fixtures::{
     fixture_script, no_emit, payloads_of_type, types_of, wait_until_for, CwdGuard,
-    FailAppendContaining,
+    FailAppendContaining, LandsBehind,
 };
 use common::is_running;
 use rigger::conductor::{AgentDriver, AgentFailure, SpawnOpts};
@@ -45,11 +50,12 @@ use rigger::config::AgentDef;
 use rigger::driver::claude_code::Driver;
 use rigger::driver::replay::spawn_scratch_path;
 use rigger::eventstore::sqlite::Store;
-use rigger::eventstore::{Direction, Event, EventStore};
+use rigger::eventstore::{Direction, Event, EventStore, ExpectedRevision};
 use rigger::liveness;
 use rigger::progress::{
     AgentProgress, ApiRetry, TYPE_AGENT_PROGRESS, TYPE_API_RETRY, TYPE_SPAWN_LAUNCHED,
 };
+use rigger::run::{RunHeld, HOLD_BY_HOST, TYPE_RUN_HELD};
 use rigger::spawn::{self, TYPE_SPAWN_RESULT};
 use serde_json::{json, Value};
 
@@ -83,6 +89,7 @@ impl Fixture {
             scratch_root: self.scratch_root.path().to_string_lossy().into_owned(),
             stop_grace: std::time::Duration::from_secs(30),
             handed_env: Vec::new(),
+            hold_sink: None,
         }
     }
 
@@ -169,10 +176,10 @@ fn opts_with_env(id: &str, var: &str, path: &Path) -> SpawnOpts {
     }
 }
 
-/// An agent bounded to one second of wall clock, so a silent session is STOPped.
-fn wall_clock_bounded() -> AgentDef {
+/// An agent bounded to `seconds` of wall clock, so a silent session is STOPped.
+fn wall_clock_bounded(seconds: u64) -> AgentDef {
     AgentDef {
-        max_wall_clock: Some(1),
+        max_wall_clock: Some(seconds),
         ..Default::default()
     }
 }
@@ -191,7 +198,7 @@ fn recorded_pid(pid_file: &Path, recorded: &str) -> u32 {
 fn stop(driver: &Driver, o: &SpawnOpts) -> (String, Duration) {
     let started = Instant::now();
     let err = driver
-        .spawn(&wall_clock_bounded(), "do the thing", o, &no_emit)
+        .spawn(&wall_clock_bounded(1), "do the thing", o, &no_emit)
         .expect_err("a stream that never produces a result must not read as a success");
     let elapsed = started.elapsed();
     assert!(err.0.contains("stopped"), "{}", err.0);
@@ -416,19 +423,28 @@ fn spawn_errors_loudly_when_the_stream_ends_with_no_result() {
 /// The spawn [`spawn_fails_classified`] launches.
 const CLASSIFIED_SPAWN: &str = "u104-fail-class/implementer#0";
 
-/// The failure a spawn of `script` ends in, after a StopFailure record of `billing_error` is
-/// pre-seeded on the `(run, spawn)` of `seeded` (when given), asserting its class is `class`
+/// Where a seeded `StopFailure` record lands against the launch under test.
+#[derive(Clone, Copy)]
+enum Landing {
+    /// Ahead of the launch's open record, so an earlier launch's.
+    BeforeTheLaunch,
+    /// Right behind the launch's open record, so the launch's own when run and spawn match.
+    DuringTheLaunch,
+}
+
+/// The failure a spawn of `script` ends in, with a StopFailure record of `billing_error` landing on
+/// the `(run, spawn)` of `seeded`, where it says (when given), asserting its class is `class`
 /// (`why` says why it must be); returns the error text.
 fn spawn_fails_classified(
     script: &str,
-    seeded: Option<(&str, &str)>,
+    seeded: Option<(&str, &str, Landing)>,
     class: AgentFailure,
     why: &str,
 ) -> String {
     let fx = Fixture::new();
-    if let Some((run, spawn)) = seeded {
+    let record = |store: &dyn EventStore, run: &str, spawn: &str| {
         rigger::progress_store::record_stop_failure(
-            &fx.progress_store,
+            store,
             run,
             &rigger::progress::StopFailure {
                 spawn: spawn.to_string(),
@@ -436,13 +452,27 @@ fn spawn_fails_classified(
             },
         )
         .unwrap();
+    };
+    if let Some((run, spawn, Landing::BeforeTheLaunch)) = seeded {
+        record(&fx.progress_store, run, spawn);
     }
+    let landing = LandsBehind::new(
+        &fx.progress_store,
+        TYPE_SPAWN_LAUNCHED,
+        move |store: &dyn EventStore| {
+            if let Some((run, spawn, Landing::DuringTheLaunch)) = seeded {
+                record(store, run, spawn);
+            }
+        },
+    );
     let o = opts(CLASSIFIED_SPAWN); // run_id: "run-1"
 
-    let err = fx
-        .driver_running(script)
-        .spawn(&AgentDef::default(), "do the thing", &o, &no_emit)
-        .expect_err("a session ending with no result must not succeed");
+    let err = Driver {
+        progress_store: &landing,
+        ..fx.driver_running(script)
+    }
+    .spawn(&AgentDef::default(), "do the thing", &o, &no_emit)
+    .expect_err("a session ending with no result must not succeed");
 
     assert!(
         rigger::conductor::strip_failure_marker(&err).contains(&format!("class {class}")),
@@ -492,14 +522,22 @@ rigger::test_cases! {
             "a session ending on an api_retry with no result classifies from that category",
         );
     // Design's FAILURE CLASS ordering: "the record written by the `StopFailure` hook ...
-    // else the last `api_retry.error`". Pre-seed a StopFailure record for a DIFFERENT
+    // else the last `api_retry.error`". Land a StopFailure record for a DIFFERENT
     // category than the fixture's own api_retry line, as `rigger hook stop-failure` would
-    // have written it, and prove the record wins.
+    // have written it during the launch, and prove the record wins.
     a_stopfailure_record_outranks_the_last_api_retry_category: spawn_fails_classified(
         "claude-code-api-retry-then-no-result-agent.sh",
-        Some(("run-1", CLASSIFIED_SPAWN)),
+        Some(("run-1", CLASSIFIED_SPAWN, Landing::DuringTheLaunch)),
         AgentFailure::BillingError,
         "the StopFailure record must outrank the api_retry category",
+    );
+    // Spec 105: the record reads only behind its launch's open record, so an earlier launch's
+    // never classes this one, whatever its spawn and run.
+    a_stopfailure_record_of_an_earlier_launch_never_classes_a_later_one: spawn_fails_classified(
+        "claude-code-api-retry-then-no-result-agent.sh",
+        Some(("run-1", CLASSIFIED_SPAWN, Landing::BeforeTheLaunch)),
+        AgentFailure::AuthenticationFailed,
+        "a StopFailure record ahead of this launch's open record must not class it",
     );
     // adv-u104c5-stopfailure-crosses-run-boundary: a StopFailure record left over from an
     // OLD or UNRELATED run must never outrank the LIVE session's own api_retry category -
@@ -509,7 +547,7 @@ rigger::test_cases! {
     a_stopfailure_record_from_a_different_run_does_not_outrank_the_live_sessions_api_retry:
         spawn_fails_classified(
             "claude-code-api-retry-then-no-result-agent.sh",
-            Some(("some-other-run", CLASSIFIED_SPAWN)),
+            Some(("some-other-run", CLASSIFIED_SPAWN, Landing::DuringTheLaunch)),
             AgentFailure::AuthenticationFailed,
             "the OTHER run's StopFailure record must not outrank this run's own api_retry \
              category",
@@ -520,7 +558,11 @@ rigger::test_cases! {
     a_stopfailure_record_of_another_spawn_on_this_run_does_not_class_this_launch:
         spawn_fails_classified(
             "claude-code-api-retry-then-no-result-agent.sh",
-            Some(("run-1", &rigger::review::critique_spawn_id("spec-hash", 0))),
+            Some((
+                "run-1",
+                &rigger::review::critique_spawn_id("spec-hash", 0),
+                Landing::DuringTheLaunch,
+            )),
             AgentFailure::AuthenticationFailed,
             "a critic's StopFailure record on this run must not class another spawn's launch",
         );
@@ -1265,7 +1307,7 @@ fn spawn_returns_a_real_result_promptly_even_when_a_descendant_still_holds_the_s
 
     let started = Instant::now();
     let result = driver
-        .spawn(&wall_clock_bounded(), "do the thing", &o, &no_emit)
+        .spawn(&wall_clock_bounded(1), "do the thing", &o, &no_emit)
         .expect(
             "a real result line must still be read back even though a descendant \
              outlives the driven child and keeps the stdout pipe's write end open",
@@ -1385,7 +1427,8 @@ fn expected_retries(spawn: &str, announced: &[(u64, &str)]) -> Vec<Value> {
 
 /// A session announcing two retries, over a progress store refusing every append whose body
 /// holds `refused`: the session ends in its result with its waiting lines on record either way,
-/// its run's progress stream reads exactly `types`, and exactly `retries` are on record.
+/// its run's progress stream reads exactly `types`, its launch's open and `completed` records
+/// around its lines, and exactly `retries` are on record.
 fn a_session_announcing_two_retries(
     refused: &'static str,
     types: &[&str],
@@ -1431,6 +1474,7 @@ rigger::test_cases! {
                 TYPE_API_RETRY,
                 TYPE_AGENT_PROGRESS,
                 TYPE_API_RETRY,
+                TYPE_SPAWN_LAUNCHED,
             ],
             &[(618, "rate_limit"), (30_000, "overloaded")],
         );
@@ -1445,6 +1489,7 @@ rigger::test_cases! {
                 TYPE_AGENT_PROGRESS,
                 TYPE_AGENT_PROGRESS,
                 TYPE_AGENT_PROGRESS,
+                TYPE_SPAWN_LAUNCHED,
             ],
             &[],
         );
@@ -1555,4 +1600,613 @@ rigger::test_cases! {
     an_api_retry_body_decodes_past_a_key_a_later_writer_added: a_retry_body_decodes(
         r#"{"spawn":"u9/implementer#0","delay_ms":618,"category":"rate_limit","attempt":3}"#,
     );
+}
+
+// ---- THE HOLD (spec 105): the table's transitions, through a real child ----
+
+/// The fixture agent printing the stream lines a test scripted, then ending as the real host does.
+const SCRIPTED_AGENT: &str = "claude-code-scripted-stream-agent.sh";
+
+/// The spawn every single-launch row of the hold tests drives.
+const HELD_SPAWN: &str = "u105-table/implementer#0";
+
+/// A live `RunHeld`'s action on a category the session retries by itself.
+const RETRIES: &str = "none, the run retries by itself";
+
+/// `system/init` reporting the spawn's server connected, on a resolved model no hold may name.
+fn init_line() -> String {
+    json!({
+        "type": "system",
+        "subtype": "init",
+        "session_id": "scripted",
+        "model": "the-resolved-model",
+        "mcp_servers": [{"name": "rigger", "status": "connected"}],
+    })
+    .to_string()
+}
+
+/// A `system/api_retry` line carrying `category`.
+fn retry_line(category: &str) -> String {
+    json!({
+        "type": "system",
+        "subtype": "api_retry",
+        "attempt": 1,
+        "max_retries": 10,
+        "retry_delay_ms": 1,
+        "error_status": 500,
+        "error": category,
+    })
+    .to_string()
+}
+
+/// The `assistant` line an API error prints, its `error` carrying `category`.
+fn assistant_error_line(category: &str) -> String {
+    json!({
+        "type": "assistant",
+        "message": {"model": "<synthetic>", "content": []},
+        "error": category,
+        "is_api_error_message": true,
+    })
+    .to_string()
+}
+
+/// A `result` line, whose `is_error` is `is_error`.
+fn result_line(is_error: bool) -> String {
+    json!({
+        "type": "result",
+        "subtype": "success",
+        "is_error": is_error,
+        "num_turns": 1,
+        "session_id": "scripted",
+        "result": "the answer",
+    })
+    .to_string()
+}
+
+/// A hold of `cause` by the host, on the launch's `model`.
+fn hold(cause: &str, detail: &str, action: &str, needs_person: bool, model: &str) -> RunHeld {
+    RunHeld {
+        cause: cause.to_string(),
+        detail: detail.to_string(),
+        action: action.to_string(),
+        needs_person,
+        by: HOLD_BY_HOST.to_string(),
+        model: model.to_string(),
+    }
+}
+
+/// A hold of `authentication_failed`, sighted on an `api_retry` of the default model.
+fn login_hold() -> RunHeld {
+    let cause = "authentication_failed";
+    hold(cause, cause, "run claude auth login", true, "")
+}
+
+/// The third-consecutive hold: no line sighted it and nobody needs to act.
+fn unstable_hold() -> RunHeld {
+    hold("api-unstable", "", RETRIES, false, "")
+}
+
+/// A `RunHeld` event by the operator.
+fn operator_hold() -> Event {
+    let body = RunHeld {
+        cause: "operator".to_string(),
+        by: "operator".to_string(),
+        ..RunHeld::default()
+    };
+    Event::new(TYPE_RUN_HELD, serde_json::to_vec(&body).unwrap())
+}
+
+impl Fixture {
+    /// This fixture with a started run on its run stream, and `log` behind the `RunStarted`.
+    fn started(log: &[Event]) -> Self {
+        let fx = Fixture::new();
+        rigger::run_store::ensure_started(&fx.run_store, &[]).unwrap();
+        if !log.is_empty() {
+            fx.run_store
+                .append(rigger::conductor::STREAM, ExpectedRevision::Any, log)
+                .unwrap();
+        }
+        fx
+    }
+
+    /// Everything on the run stream, oldest first.
+    fn run_log(&self) -> Vec<Event> {
+        self.run_store
+            .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
+            .unwrap()
+    }
+
+    /// Every `RunHeld` on the run stream, oldest first.
+    fn holds(&self) -> Vec<RunHeld> {
+        payloads_of_type(&self.run_log(), TYPE_RUN_HELD)
+            .into_iter()
+            .map(|body| serde_json::from_value(body).unwrap())
+            .collect()
+    }
+
+    /// [`Fixture::driver_running`] of `script` with this fixture's run store as its hold sink and
+    /// a grace a fixture that winds down on input close never waits out.
+    fn held_driver(&self, script: &str) -> Driver<'_> {
+        Driver {
+            hold_sink: Some(&self.run_store),
+            stop_grace: Duration::from_secs(5),
+            ..self.driver_running(script)
+        }
+    }
+
+    /// [`opts`] for `spawn` whose environment hands the scripted agent `lines`.
+    fn scripted(&self, spawn: &str, lines: &[String]) -> SpawnOpts {
+        let file = self.scratch_file(&format!("{}.jsonl", spawn.replace(['/', '#'], "-")));
+        std::fs::write(&file, lines.join("\n") + "\n").unwrap();
+        opts_with_env(spawn, "RIGGER_TEST_SCRIPTED_STREAM", &file)
+    }
+}
+
+/// The wall clock a scripted session is bounded to, far past its life, so a regression that leaves
+/// a session's input open reads as a stopped launch, never a hung test.
+const SCRIPTED_WALL_CLOCK_S: u64 = 5;
+
+/// One launch of a [`hold_cases`] row: its wire and its world, then what it leaves.
+struct HoldCase {
+    name: &'static str,
+    lines: Vec<String>,
+    /// What stands on the run stream behind its `RunStarted` before the launch.
+    seeded: Vec<Event>,
+    agent: AgentDef,
+    attempt: u32,
+    /// Whether the host is built with no hold sink.
+    no_sink: bool,
+    /// The class of a `StopFailure` record landing right behind the launch's open record.
+    stop_failure: Option<&'static str>,
+    /// The `RunHeld`s the launch appends, in order.
+    holds: Vec<RunHeld>,
+    /// How many `SpawnResult`s the launch records.
+    results: usize,
+    /// The launch's close: its `ended`, then its class.
+    close: (&'static str, Option<&'static str>),
+    /// The index in the run log of the event whose revision the close carries.
+    stamp: Option<usize>,
+}
+
+impl Default for HoldCase {
+    fn default() -> Self {
+        HoldCase {
+            name: "",
+            lines: Vec::new(),
+            seeded: Vec::new(),
+            agent: wall_clock_bounded(SCRIPTED_WALL_CLOCK_S),
+            attempt: 0,
+            no_sink: false,
+            stop_failure: None,
+            holds: Vec::new(),
+            results: 0,
+            close: ("", None),
+            stamp: None,
+        }
+    }
+}
+
+/// Every launch the table decides. The run log every `stamp` indexes starts at the `RunStarted`.
+fn hold_cases() -> Vec<HoldCase> {
+    let login = "authentication_failed";
+    let billing = "fix the account's billing";
+    let model_action =
+        "fix the agent's configured model, restart rigger run with --rebase-definition, then run \
+         rigger release";
+    let model_ending = hold("model_not_found", "", model_action, true, "");
+    let wait_ending = hold("rate_limit", "", RETRIES, false, "");
+    vec![
+        HoldCase {
+            name: "a hold-class retry the session recovers from",
+            lines: vec![init_line(), retry_line(login), result_line(false)],
+            holds: vec![login_hold()],
+            results: 1,
+            close: ("completed", None),
+            stamp: Some(2),
+            ..HoldCase::default()
+        },
+        HoldCase {
+            name: "a repeated sighting",
+            lines: vec![
+                init_line(),
+                retry_line(login),
+                retry_line(login),
+                result_line(false),
+            ],
+            holds: vec![login_hold()],
+            results: 1,
+            close: ("completed", None),
+            stamp: Some(2),
+            ..HoldCase::default()
+        },
+        HoldCase {
+            name: "a differing person-needing category",
+            lines: vec![
+                init_line(),
+                retry_line(login),
+                retry_line("billing_error"),
+                result_line(false),
+            ],
+            holds: vec![
+                login_hold(),
+                hold("billing_error", "billing_error", billing, true, ""),
+            ],
+            results: 1,
+            close: ("completed", None),
+            stamp: Some(3),
+            ..HoldCase::default()
+        },
+        HoldCase {
+            name: "a verification category holds on its row",
+            lines: vec![
+                init_line(),
+                retry_line("verification_required"),
+                result_line(false),
+            ],
+            holds: vec![hold(
+                "verification_required",
+                "verification_required",
+                "complete the account's verification",
+                true,
+                "",
+            )],
+            results: 1,
+            close: ("completed", None),
+            stamp: Some(2),
+            ..HoldCase::default()
+        },
+        HoldCase {
+            name: "a differing wait-class retry on a hold",
+            lines: vec![
+                init_line(),
+                retry_line(login),
+                retry_line("rate_limit"),
+                result_line(false),
+            ],
+            holds: vec![login_hold()],
+            results: 1,
+            close: ("completed", None),
+            stamp: Some(2),
+            ..HoldCase::default()
+        },
+        HoldCase {
+            name: "a wait-class retry the session recovers from",
+            lines: vec![init_line(), retry_line("rate_limit"), result_line(false)],
+            results: 1,
+            close: ("completed", None),
+            stamp: Some(1),
+            ..HoldCase::default()
+        },
+        HoldCase {
+            name: "a session ending of a wait class",
+            lines: vec![init_line(), retry_line("rate_limit")],
+            holds: vec![wait_ending.clone()],
+            close: ("fault", Some("rate_limit")),
+            stamp: Some(0),
+            ..HoldCase::default()
+        },
+        HoldCase {
+            name: "a session ending of the hold class it sighted",
+            lines: vec![init_line(), retry_line(login)],
+            holds: vec![login_hold()],
+            close: ("fault", Some(login)),
+            stamp: Some(1),
+            ..HoldCase::default()
+        },
+        HoldCase {
+            name: "a session ending of a wait class on a hold",
+            lines: vec![init_line(), retry_line(login), retry_line("rate_limit")],
+            holds: vec![login_hold()],
+            close: ("fault", Some("rate_limit")),
+            stamp: Some(1),
+            ..HoldCase::default()
+        },
+        HoldCase {
+            name: "a session ending of a fault class",
+            lines: vec![init_line(), retry_line("invalid_request")],
+            close: ("fault", Some("invalid_request")),
+            stamp: Some(0),
+            ..HoldCase::default()
+        },
+        HoldCase {
+            name: "a category no binary knows",
+            lines: vec![init_line(), retry_line("a_category_no_binary_knows")],
+            close: ("fault", Some("unknown")),
+            stamp: Some(0),
+            ..HoldCase::default()
+        },
+        HoldCase {
+            name: "an is_error result, classed after the exit from the assistant line",
+            lines: vec![
+                init_line(),
+                assistant_error_line("model_not_found"),
+                result_line(true),
+            ],
+            holds: vec![model_ending.clone()],
+            close: ("fault", Some("model_not_found")),
+            stamp: Some(0),
+            ..HoldCase::default()
+        },
+        HoldCase {
+            name: "an is_error result a later result never answers",
+            lines: vec![
+                init_line(),
+                assistant_error_line("rate_limit"),
+                result_line(true),
+                result_line(false),
+            ],
+            holds: vec![wait_ending],
+            close: ("fault", Some("rate_limit")),
+            stamp: Some(0),
+            ..HoldCase::default()
+        },
+        HoldCase {
+            name: "an is_error result nothing classes",
+            lines: vec![init_line(), result_line(true)],
+            close: ("fault", Some("unknown")),
+            stamp: Some(0),
+            ..HoldCase::default()
+        },
+        HoldCase {
+            name: "a clean assistant turn clears the error ahead of it",
+            lines: vec![
+                init_line(),
+                assistant_error_line("model_not_found"),
+                r#"{"type":"assistant","message":{"role":"assistant","content":[]}}"#.to_string(),
+                result_line(true),
+            ],
+            close: ("fault", Some("unknown")),
+            stamp: Some(0),
+            ..HoldCase::default()
+        },
+        HoldCase {
+            name: "a StopFailure record outranks the retry it follows",
+            lines: vec![init_line(), retry_line(login)],
+            stop_failure: Some("billing_error"),
+            holds: vec![login_hold(), hold("billing_error", "", billing, true, "")],
+            close: ("fault", Some("billing_error")),
+            stamp: Some(1),
+            ..HoldCase::default()
+        },
+        HoldCase {
+            name: "the assistant line outranks a StopFailure record",
+            lines: vec![
+                init_line(),
+                assistant_error_line("model_not_found"),
+                result_line(true),
+            ],
+            stop_failure: Some("billing_error"),
+            holds: vec![model_ending],
+            close: ("fault", Some("model_not_found")),
+            stamp: Some(0),
+            ..HoldCase::default()
+        },
+        HoldCase {
+            name: "a sighting on an operator hold",
+            lines: vec![init_line(), retry_line(login), result_line(false)],
+            seeded: vec![operator_hold()],
+            results: 1,
+            close: ("completed", None),
+            stamp: Some(2),
+            ..HoldCase::default()
+        },
+        HoldCase {
+            name: "a wait-class ending on an operator hold",
+            lines: vec![init_line(), retry_line("rate_limit")],
+            seeded: vec![operator_hold()],
+            close: ("fault", Some("rate_limit")),
+            stamp: Some(1),
+            ..HoldCase::default()
+        },
+        HoldCase {
+            name: "a hold-class retry on a host with no hold sink",
+            lines: vec![init_line(), retry_line(login), result_line(false)],
+            no_sink: true,
+            results: 1,
+            close: ("completed", None),
+            ..HoldCase::default()
+        },
+        HoldCase {
+            name: "a wait-class ending on a host with no hold sink",
+            lines: vec![init_line(), retry_line("rate_limit")],
+            no_sink: true,
+            close: ("fault", Some("rate_limit")),
+            ..HoldCase::default()
+        },
+        HoldCase {
+            name: "a hold names the agent's configured model",
+            lines: vec![init_line(), retry_line(login), result_line(false)],
+            agent: AgentDef {
+                model: "sonnet".to_string(),
+                ..wall_clock_bounded(SCRIPTED_WALL_CLOCK_S)
+            },
+            holds: vec![RunHeld {
+                model: "sonnet".to_string(),
+                ..login_hold()
+            }],
+            results: 1,
+            close: ("completed", None),
+            stamp: Some(2),
+            ..HoldCase::default()
+        },
+        HoldCase {
+            name: "a hold names the rung its launch ran on",
+            lines: vec![init_line(), retry_line(login), result_line(false)],
+            agent: AgentDef {
+                model_ladder: vec!["sonnet".to_string(), "opus".to_string()],
+                ..wall_clock_bounded(SCRIPTED_WALL_CLOCK_S)
+            },
+            attempt: 1,
+            holds: vec![RunHeld {
+                model: "opus".to_string(),
+                ..login_hold()
+            }],
+            results: 1,
+            close: ("completed", None),
+            stamp: Some(2),
+            ..HoldCase::default()
+        },
+    ]
+}
+
+/// THE DISPOSITION TABLE through a real child: each row's launch appends exactly its holds, ends
+/// its spawn as its close says, records its results and stamps the revision it read.
+#[cfg(unix)]
+#[test]
+fn a_launch_appends_the_holds_the_table_decides_and_closes_where_it_read() {
+    for case in hold_cases() {
+        let name = case.name;
+        let fx = Fixture::started(&case.seeded);
+        let before = fx.holds().len();
+        let landing = LandsBehind::new(
+            &fx.progress_store,
+            TYPE_SPAWN_LAUNCHED,
+            move |store: &dyn EventStore| {
+                if let Some(class) = case.stop_failure {
+                    rigger::progress_store::record_stop_failure(
+                        store,
+                        "run-1",
+                        &rigger::progress::StopFailure {
+                            spawn: HELD_SPAWN.to_string(),
+                            class: class.to_string(),
+                        },
+                    )
+                    .unwrap();
+                }
+            },
+        );
+        let driver = Driver {
+            progress_store: &landing,
+            hold_sink: (!case.no_sink).then_some(&fx.run_store as &dyn EventStore),
+            ..fx.held_driver(SCRIPTED_AGENT)
+        };
+        let o = SpawnOpts {
+            attempt: case.attempt,
+            ..fx.scripted(HELD_SPAWN, &case.lines)
+        };
+
+        let outcome = driver.spawn(&case.agent, "do the thing", &o, &no_emit);
+
+        let (ended, class) = case.close;
+        match (ended, &outcome) {
+            ("completed", Ok(result)) => assert_eq!(result.output, "the answer", "{name}"),
+            ("fault", Err(e)) => assert!(
+                rigger::conductor::strip_failure_marker(e)
+                    .contains(&format!("class {};", class.unwrap())),
+                "{name}: {}",
+                e.0
+            ),
+            (_, other) => panic!("{name}: ended {other:?}"),
+        }
+        assert_eq!(fx.holds()[before..], case.holds, "{name}: the holds");
+        assert_eq!(
+            fx.spawn_results().len(),
+            case.results,
+            "{name}: the results"
+        );
+        let closing = fx.launch_records().pop().unwrap();
+        assert_eq!(
+            (closing.ended.as_deref(), closing.class.as_deref()),
+            (Some(ended), class),
+            "{name}: the close"
+        );
+        assert_eq!(
+            closing.revision,
+            case.stamp.map(|at| fx.run_log()[at].revision),
+            "{name}: the close's stamp"
+        );
+    }
+}
+
+/// One launch of a [`a_third_consecutive_failed_close_holds_the_run`] sequence.
+#[derive(Clone, Copy, Debug)]
+enum Step {
+    /// A launch ending with no result: a `fault` close of no class.
+    Fault,
+    /// A silent launch the wall clock stops: a `stopped` close.
+    Stop,
+    /// A launch answering: a `completed` close.
+    Completed,
+    /// A release of the open hold, with no launch.
+    Release,
+}
+
+impl Fixture {
+    /// Take `step`, the `at`th of its sequence, each launch a spawn of its own.
+    fn take(&self, step: Step, at: usize) {
+        let spawn = format!("u105-seq/implementer#{at}");
+        let scripted = || self.held_driver(SCRIPTED_AGENT);
+        match step {
+            Step::Fault => {
+                let o = self.scripted(&spawn, &[init_line()]);
+                let spawned = scripted().spawn(
+                    &wall_clock_bounded(SCRIPTED_WALL_CLOCK_S),
+                    "do the thing",
+                    &o,
+                    &no_emit,
+                );
+                spawned.expect_err("a session with no result fails its spawn");
+            }
+            Step::Stop => {
+                let driver = self.held_driver("claude-code-silent-winds-down-on-eof-agent.sh");
+                stop(&driver, &opts(&spawn));
+            }
+            Step::Completed => {
+                let o = self.scripted(&spawn, &[init_line(), result_line(false)]);
+                let spawned = scripted().spawn(
+                    &wall_clock_bounded(SCRIPTED_WALL_CLOCK_S),
+                    "do the thing",
+                    &o,
+                    &no_emit,
+                );
+                spawned.expect("a session with a result answers its spawn");
+            }
+            Step::Release => rigger::run_store::release_hold(&self.run_store).unwrap(),
+        }
+    }
+}
+
+/// The third consecutive fault or stream-silence stop holds the run `api-unstable`, before the
+/// host returns its error, once per hold: a `completed` close or a `RunReleased` restarts the
+/// count, and a hold released is held again by three more.
+#[cfg(unix)]
+#[test]
+fn a_third_consecutive_failed_close_holds_the_run() {
+    use Step::{Completed as C, Fault as F, Release as R, Stop as S};
+    let rows: [(&str, Vec<Step>, usize); 10] = [
+        ("two faults", vec![F, F], 0),
+        ("three faults", vec![F, F, F], 1),
+        ("a stop between faults", vec![F, S, F], 1),
+        ("three stops", vec![S, S, S], 1),
+        ("four faults", vec![F, F, F, F], 1),
+        ("a completed close restarts it", vec![F, F, C, F, F], 0),
+        ("a completed close behind two", vec![C, F, F, F], 1),
+        ("a release restarts it", vec![F, F, F, R, F, F], 1),
+        ("three more after a release", vec![F, F, F, R, F, F, F], 2),
+        ("a completed close alone", vec![C], 0),
+    ];
+    for (name, steps, expected) in rows {
+        let fx = Fixture::started(&[]);
+        for (at, step) in steps.into_iter().enumerate() {
+            fx.take(step, at);
+        }
+        assert_eq!(fx.holds(), vec![unstable_hold(); expected], "{name}");
+    }
+}
+
+/// Closes racing past the third append one hold between them: each writes its close, re-reads the
+/// count and compares its append against the stream.
+#[cfg(unix)]
+#[test]
+fn concurrent_closes_past_the_third_hold_the_run_once() {
+    let fx = Fixture::started(&[]);
+    fx.take(Step::Fault, 0);
+    fx.take(Step::Fault, 1);
+    std::thread::scope(|scope| {
+        for at in 2..6 {
+            let fx = &fx;
+            scope.spawn(move || fx.take(Step::Fault, at));
+        }
+    });
+    assert_eq!(fx.holds(), vec![unstable_hold()]);
 }

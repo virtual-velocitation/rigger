@@ -486,7 +486,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-f66d1a9d9447",
+    "id": "dup-a4ed600b64ee",
     "classification": "semantic",
     "sites": [
       {
@@ -541,6 +541,11 @@
       },
       {
         "file": "tests/cli.rs",
+        "name": "an_is_error_result_reruns_uncharged_and_holds_only_on_a_wait_class",
+        "content_hash": "fd73ea455c3d75d5"
+      },
+      {
+        "file": "tests/cli.rs",
         "name": "run_workflow_prints_the_budget_halt_reason_on_stderr_when_its_conductor_returns",
         "content_hash": "c0f6e3d647f2a511"
       },
@@ -556,7 +561,7 @@
       }
     ],
     "proposed_home": "one error-shaping helper module",
-    "note": "mandatory sweep: error-shaping helper functions - 13 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: error-shaping helper functions - 14 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {
@@ -5207,13 +5212,31 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-2a5626cb9627",
+    "id": "dup-5411bdb7c258",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "crates/rigger-domain/src/agent.rs",
+        "name": "cause_row",
+        "content_hash": "908e702a08880ee2"
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "locked",
+        "content_hash": "b98aeee67269cd4c"
+      }
+    ],
+    "proposed_home": "a new shared module (sites span 2 files: crates/rigger-domain/src/agent.rs, crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
+  },
+  {
+    "id": "dup-74b161ef523c",
     "classification": "near",
     "sites": [
       {
         "file": "crates/rigger-domain/src/agent.rs",
         "name": "as_str",
-        "content_hash": "3824b17d87c85522"
+        "content_hash": "49ddc3a61801dabc"
       },
       {
         "file": "crates/rigger-domain/src/spec.rs",

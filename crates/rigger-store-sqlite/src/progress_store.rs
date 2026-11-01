@@ -227,6 +227,7 @@ mod tests {
                 started: 1_700_000_000,
                 ended: None,
                 class: None,
+                revision: None,
             },
         )
         .unwrap();
@@ -264,6 +265,7 @@ mod tests {
                 started: 1,
                 ended: None,
                 class: None,
+                revision: None,
             },
         )
         .expect_err("a launch record nobody can find was not recorded");

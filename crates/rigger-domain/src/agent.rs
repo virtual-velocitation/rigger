@@ -289,6 +289,7 @@ pub enum AgentFailure {
     CloudCredentialError,
     BillingError,
     AccountOnHold,
+    VerificationRequired,
     ModelNotFound,
     InvalidRequest,
     MaxOutputTokens,
@@ -296,10 +297,34 @@ pub enum AgentFailure {
     Unknown,
 }
 
+/// What a category does to the run (spec 105's Design table).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Disposition {
+    Hold,
+    Wait,
+    Fault,
+}
+
+/// One row of the disposition table.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DispositionRow {
+    pub disposition: Disposition,
+    pub action: &'static str,
+    pub needs_person: bool,
+}
+
+/// The cause of a hold no category names.
+pub const API_UNSTABLE: &str = "api-unstable";
+
+/// The disposition table's row for a hold's `cause`.
+pub fn cause_row(cause: &str) -> DispositionRow {
+    AgentFailure::from_category(cause).row()
+}
+
 impl AgentFailure {
     /// Every error category, in a fixed order: the exhaustive set [`from_category`] and the
     /// CLI's own `--class` validation both check membership against.
-    pub const CATEGORIES: [AgentFailure; 12] = [
+    pub const CATEGORIES: [AgentFailure; 13] = [
         AgentFailure::RateLimit,
         AgentFailure::Overloaded,
         AgentFailure::ServerError,
@@ -308,6 +333,7 @@ impl AgentFailure {
         AgentFailure::CloudCredentialError,
         AgentFailure::BillingError,
         AgentFailure::AccountOnHold,
+        AgentFailure::VerificationRequired,
         AgentFailure::ModelNotFound,
         AgentFailure::InvalidRequest,
         AgentFailure::MaxOutputTokens,
@@ -327,6 +353,7 @@ impl AgentFailure {
             AgentFailure::CloudCredentialError => "cloud_credential_error",
             AgentFailure::BillingError => "billing_error",
             AgentFailure::AccountOnHold => "account_on_hold",
+            AgentFailure::VerificationRequired => "verification_required",
             AgentFailure::ModelNotFound => "model_not_found",
             AgentFailure::InvalidRequest => "invalid_request",
             AgentFailure::MaxOutputTokens => "max_output_tokens",
@@ -346,6 +373,15 @@ impl AgentFailure {
             .into_iter()
             .find(|c| c.as_str() == category)
             .unwrap_or(AgentFailure::Unknown)
+    }
+
+    /// This category's row of the disposition table.
+    pub fn row(self) -> DispositionRow {
+        DispositionRow {
+            disposition: Disposition::Fault,
+            action: "",
+            needs_person: false,
+        }
     }
 }
 
@@ -420,6 +456,86 @@ pub fn strip_failure_marker(e: &Error) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const RETRIES: &str = "none, the run retries by itself";
+    const LOGIN: &str = "run claude auth login";
+    const MODEL: &str = "fix the agent's configured model, restart rigger run with \
+                         --rebase-definition, then run rigger release";
+
+    /// THE DISPOSITION TABLE (spec 105): every category, by its wire name, maps to the disposition,
+    /// the action and the need for a person decided for it, and a name no binary knows faults as
+    /// `unknown` does.
+    #[test]
+    fn every_category_maps_to_its_decided_disposition_action_and_person() {
+        use Disposition::{Fault, Hold, Wait};
+        let rows: [(&str, Disposition, &str, bool); 14] = [
+            ("rate_limit", Wait, RETRIES, false),
+            ("overloaded", Wait, RETRIES, false),
+            ("server_error", Wait, RETRIES, false),
+            ("authentication_failed", Hold, LOGIN, true),
+            ("oauth_org_not_allowed", Hold, LOGIN, true),
+            (
+                "cloud_credential_error",
+                Hold,
+                "refresh the cloud provider's credentials",
+                true,
+            ),
+            ("billing_error", Hold, "fix the account's billing", true),
+            ("account_on_hold", Hold, "resolve the account's hold", true),
+            (
+                "verification_required",
+                Hold,
+                "complete the account's verification",
+                true,
+            ),
+            ("model_not_found", Hold, MODEL, true),
+            ("invalid_request", Fault, "", false),
+            ("max_output_tokens", Fault, "", false),
+            ("unknown", Fault, "", false),
+            ("a_category_no_binary_knows", Fault, "", false),
+        ];
+        for (category, disposition, action, needs_person) in rows {
+            let row = DispositionRow {
+                disposition,
+                action,
+                needs_person,
+            };
+            assert_eq!(
+                AgentFailure::from_category(category).row(),
+                row,
+                "{category}"
+            );
+        }
+        for category in AgentFailure::CATEGORIES {
+            let named = rows.iter().filter(|row| row.0 == category.as_str());
+            assert_eq!(named.count(), 1, "{category} has one row here");
+        }
+    }
+
+    /// A hold's `cause` reads its row from the one table, `api-unstable`, which no category names,
+    /// included: it needs no person and the run retries by itself.
+    #[test]
+    fn a_holds_cause_reads_the_table_api_unstable_included() {
+        let rows = [
+            (
+                API_UNSTABLE,
+                DispositionRow {
+                    disposition: Disposition::Hold,
+                    action: RETRIES,
+                    needs_person: false,
+                },
+            ),
+            (
+                "authentication_failed",
+                AgentFailure::AuthenticationFailed.row(),
+            ),
+            ("rate_limit", AgentFailure::RateLimit.row()),
+        ];
+        for (cause, row) in rows {
+            assert_eq!(cause_row(cause), row, "{cause}");
+        }
+        assert_eq!(API_UNSTABLE, "api-unstable");
+    }
 
     /// The request a spawn parks is derived from its options and its agent alone: every field the
     /// options carry, the agent's model rung for the attempt, its fan-out-stripped tools and its

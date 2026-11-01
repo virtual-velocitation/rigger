@@ -21,7 +21,7 @@ use std::time::{Duration, SystemTime};
 
 use serde::{Deserialize, Serialize};
 
-use crate::eventstore::{Direction, Error, Event, EventStore};
+use crate::eventstore::{Direction, Error, Event, EventStore, Revision};
 use crate::run::META_RUN_ID;
 use crate::spawn::{self, WaveItem};
 
@@ -162,6 +162,9 @@ pub struct SpawnLaunched {
     /// and `interrupted`, which carry no failure to classify.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub class: Option<String>,
+    /// The run stream's revision the close's writer last read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revision: Option<Revision>,
 }
 
 impl RunStamped for SpawnLaunched {
@@ -197,8 +200,26 @@ impl SpawnLaunched {
             } else {
                 Some(class.to_string())
             },
+            revision: None,
         }
     }
+}
+
+/// The `ended` of a launch whose first `result` was not an error.
+pub const ENDED_COMPLETED: &str = "completed";
+
+/// The `ended` of a launch that ended with no usable `result`.
+pub const ENDED_FAULT: &str = "fault";
+
+/// The `ended` of a launch THE STOP ended.
+pub const ENDED_STOPPED: &str = "stopped";
+
+/// How many consecutive failed closes hold a run `api-unstable`.
+pub const API_UNSTABLE_CLOSES: usize = 3;
+
+/// The count of failed closes standing in `progress_events`.
+pub fn failed_closes_since(_progress_events: &[Event], _released: Option<Revision>) -> usize {
+    0
 }
 
 /// The event type a [`StopFailure`] record serializes as (spec 104 criterion 5: A FAILURE
@@ -494,6 +515,7 @@ mod tests {
             started: 1_700_000_000,
             ended: None,
             class: None,
+            revision: None,
         };
         let ev = launched.to_stamped_event("run-9").unwrap();
         assert_eq!(ev.type_, TYPE_SPAWN_LAUNCHED);
@@ -516,6 +538,7 @@ mod tests {
             started: 1,
             ended: None,
             class: None,
+            revision: None,
         };
         let ev = launched.to_stamped_event("").unwrap();
         let v: serde_json::Value = serde_json::from_slice(&ev.data).unwrap();
@@ -547,6 +570,7 @@ mod tests {
             started: 2,
             ended: None,
             class: None,
+            revision: None,
         };
         let ev = launched.to_stamped_event("run-1").unwrap();
         let back: SpawnLaunched = serde_json::from_slice(&ev.data).unwrap();
@@ -654,6 +678,255 @@ mod tests {
     #[test]
     fn the_supervisor_beats_every_thirty_seconds() {
         assert_eq!(SUPERVISOR_BEAT_INTERVAL, Duration::from_secs(30));
+    }
+
+    /// The record opening launch `launch` of `spawn`, as a stamped event.
+    fn opened(spawn: &str, launch: u32) -> Event {
+        let mut record = SpawnLaunched::closed(spawn, launch, "s", ENDED_FAULT, "");
+        record.ended = None;
+        record.to_stamped_event("run-1").unwrap()
+    }
+
+    /// A launch close `ended` at `revision`, as a stamped event.
+    fn closing(ended: &str, revision: Option<Revision>) -> Event {
+        SpawnLaunched {
+            revision,
+            ..SpawnLaunched::closed("u/implementer#0", 0, "s", ended, "")
+        }
+        .to_stamped_event("run-1")
+        .unwrap()
+    }
+
+    /// A `StopFailure` of `class` on `spawn`, as a stamped event.
+    fn stop_failure(spawn: &str, class: &str) -> Event {
+        StopFailure {
+            spawn: spawn.into(),
+            class: class.into(),
+        }
+        .to_stamped_event("run-1")
+        .unwrap()
+    }
+
+    /// A `StopFailure` classes only the launch it follows in stream order: one written before the
+    /// launch opened is an earlier launch's, however it reads; a close, and another spawn's
+    /// launch, open nothing of this spawn's.
+    #[test]
+    fn a_stop_failure_classes_only_the_launch_it_follows() {
+        const SPAWN: &str = "u/implementer#0";
+        const OTHER: &str = "other/implementer#0";
+        let rows: [(&str, Vec<Event>, Option<&str>); 6] = [
+            (
+                "a record ahead of the launch",
+                vec![stop_failure(SPAWN, "billing_error"), opened(SPAWN, 0)],
+                None,
+            ),
+            (
+                "a record behind the launch",
+                vec![opened(SPAWN, 0), stop_failure(SPAWN, "billing_error")],
+                Some("billing_error"),
+            ),
+            (
+                "an earlier launch's record, its launch closed",
+                vec![
+                    opened(SPAWN, 0),
+                    stop_failure(SPAWN, "billing_error"),
+                    closing(ENDED_FAULT, None),
+                    opened(SPAWN, 1),
+                ],
+                None,
+            ),
+            (
+                "the later launch's own record over the earlier one's",
+                vec![
+                    opened(SPAWN, 0),
+                    stop_failure(SPAWN, "billing_error"),
+                    opened(SPAWN, 1),
+                    stop_failure(SPAWN, "rate_limit"),
+                ],
+                Some("rate_limit"),
+            ),
+            (
+                "another spawn's launch opening behind the record",
+                vec![
+                    opened(SPAWN, 0),
+                    stop_failure(SPAWN, "billing_error"),
+                    opened(OTHER, 0),
+                ],
+                Some("billing_error"),
+            ),
+            (
+                "the launch's own close behind the record",
+                vec![
+                    opened(SPAWN, 0),
+                    stop_failure(SPAWN, "billing_error"),
+                    closing(ENDED_FAULT, None),
+                ],
+                Some("billing_error"),
+            ),
+        ];
+        for (name, events, expected) in rows {
+            assert_eq!(
+                latest_stop_failure_class(&events, SPAWN).as_deref(),
+                expected,
+                "{name}"
+            );
+        }
+    }
+
+    /// The count `api-unstable` reads (spec 105): failed closes newest first, ordered by revision,
+    /// back to the later of the last `completed` close and the last `RunReleased`. A close
+    /// stamped equal to the release is behind it, a tie of closes falls to stream order, and an
+    /// unstamped close takes no special rule.
+    #[test]
+    fn the_count_of_failed_closes_runs_since_the_later_of_the_last_completed_and_release() {
+        const F: &str = ENDED_FAULT;
+        const S: &str = ENDED_STOPPED;
+        const C: &str = ENDED_COMPLETED;
+        const I: &str = "interrupted";
+        type Close = (&'static str, Option<Revision>);
+        let rows: [(&str, Vec<Close>, Option<Revision>, usize); 19] = [
+            ("no closes", vec![], None, 0),
+            ("two faults", vec![(F, Some(1)), (F, Some(1))], None, 2),
+            (
+                "three faults",
+                vec![(F, Some(1)), (F, Some(1)), (F, Some(1))],
+                None,
+                3,
+            ),
+            (
+                "four faults",
+                vec![(F, Some(1)), (F, Some(1)), (F, Some(1)), (F, Some(1))],
+                None,
+                4,
+            ),
+            (
+                "a stopped close counts beside a fault",
+                vec![(F, Some(1)), (S, Some(2)), (F, Some(2))],
+                None,
+                3,
+            ),
+            (
+                "a completed close resets the count",
+                vec![(F, Some(1)), (F, Some(1)), (C, Some(2)), (F, Some(3))],
+                None,
+                1,
+            ),
+            (
+                "a completed close at the head leaves nothing",
+                vec![(F, Some(1)), (F, Some(1)), (C, Some(1))],
+                None,
+                0,
+            ),
+            (
+                "an interrupted close neither counts nor resets",
+                vec![(F, Some(1)), (I, Some(1)), (F, Some(1))],
+                None,
+                2,
+            ),
+            (
+                "a close stamped below the release",
+                vec![(F, Some(4))],
+                Some(5),
+                0,
+            ),
+            (
+                "a close stamped at the release",
+                vec![(F, Some(5))],
+                Some(5),
+                1,
+            ),
+            (
+                "a close stamped above the release",
+                vec![(F, Some(6))],
+                Some(5),
+                1,
+            ),
+            (
+                "the release later than the last completed close",
+                vec![(C, Some(3)), (F, Some(4)), (F, Some(6))],
+                Some(5),
+                1,
+            ),
+            (
+                "the last completed close later than the release",
+                vec![(F, Some(6)), (C, Some(7)), (F, Some(8))],
+                Some(5),
+                1,
+            ),
+            (
+                "unstamped closes count as they stand with no release",
+                vec![(F, None), (F, None), (F, Some(3))],
+                None,
+                3,
+            ),
+            (
+                "unstamped closes stand ahead of a release",
+                vec![(F, None)],
+                Some(0),
+                0,
+            ),
+            (
+                "a fault tied behind a completed close counts",
+                vec![(C, Some(3)), (F, Some(3))],
+                None,
+                1,
+            ),
+            (
+                "a completed close tied behind a fault resets it",
+                vec![(F, Some(3)), (C, Some(3))],
+                None,
+                0,
+            ),
+            (
+                "the order is the revision, never the stream",
+                vec![(C, Some(5)), (F, Some(4))],
+                None,
+                0,
+            ),
+            (
+                "a later revision stands behind an earlier write",
+                vec![(F, Some(5)), (C, Some(4))],
+                None,
+                1,
+            ),
+        ];
+        for (name, closes, released, expected) in rows {
+            let mut events: Vec<Event> = closes
+                .iter()
+                .map(|(ended, revision)| closing(ended, *revision))
+                .collect();
+            events.push(opened("u/implementer#9", 0));
+            events.push(stop_failure("u/implementer#9", "rate_limit"));
+            assert_eq!(failed_closes_since(&events, released), expected, "{name}");
+        }
+    }
+
+    /// The stamp rides a close and stays off every record that has none, so a sparse body - an
+    /// open record, or a close written before the stamp existed - folds as `None`.
+    #[test]
+    fn a_closes_revision_stamp_round_trips_and_stays_off_an_unstamped_record() {
+        let stamped = closing(ENDED_FAULT, Some(7));
+        assert_eq!(
+            serde_json::from_slice::<SpawnLaunched>(&stamped.data)
+                .unwrap()
+                .revision,
+            Some(7)
+        );
+        let body: serde_json::Value = serde_json::from_slice(&stamped.data).unwrap();
+        assert_eq!(body["revision"], 7);
+        for unstamped in [
+            SpawnLaunched::closed("u", 0, "s", ENDED_FAULT, ""),
+            SpawnLaunched::default(),
+        ] {
+            let body = serde_json::to_value(&unstamped).unwrap();
+            assert_eq!(body.get("revision"), None, "{unstamped:?}");
+            assert_eq!(
+                serde_json::from_value::<SpawnLaunched>(body)
+                    .unwrap()
+                    .revision,
+                None
+            );
+        }
     }
 
     #[test]

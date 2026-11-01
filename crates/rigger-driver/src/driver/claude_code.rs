@@ -103,6 +103,8 @@ pub struct Driver<'a> {
     /// `rigger` server opens the run's store with, empty on the local store. Set after
     /// [`SpawnOpts::env`], so the selection wins under the same key.
     pub handed_env: Vec<(String, String)>,
+    /// The store the host's hold writers append through.
+    pub hold_sink: Option<&'a dyn EventStore>,
 }
 
 // `Default` is a TEST convenience only: production always constructs `Driver` with real
@@ -126,6 +128,7 @@ impl Default for Driver<'static> {
             scratch_root: String::new(),
             stop_grace: STOP_GRACE,
             handed_env: Vec::new(),
+            hold_sink: None,
         }
     }
 }
@@ -141,6 +144,13 @@ pub struct Launch {
     /// The file the session reads its system prompt from (`--system-prompt-file`), held for
     /// as long as the launch is, so the session can read it whenever it starts.
     pub persona: SystemPromptFile,
+}
+
+/// What names one launch to its closes.
+#[derive(Clone, Copy)]
+struct LaunchId<'a> {
+    session_id: &'a str,
+    model: &'a str,
 }
 
 impl Driver<'_> {
@@ -203,6 +213,7 @@ impl Driver<'_> {
                 started,
                 ended: None,
                 class: None,
+                revision: None,
             },
         )?;
 
@@ -633,7 +644,16 @@ impl Driver<'_> {
         self.join_within(opts, "stdout", stdout_reader, ORDINARY_DRAIN_JOIN_BOUND);
 
         result.ok_or_else(|| {
-            self.classify_no_result(opts, &session_id, &last_api_retry_category, &stderr_tail)
+            self.classify_no_result(
+                opts,
+                LaunchId {
+                    session_id: &session_id,
+                    model: "",
+                },
+                None,
+                &last_api_retry_category,
+                &stderr_tail,
+            )
         })
     }
 
@@ -659,10 +679,12 @@ impl Driver<'_> {
     fn classify_no_result(
         &self,
         opts: &SpawnOpts,
-        session_id: &str,
+        id: LaunchId,
+        _assistant_error: Option<&str>,
         last_api_retry_category: &Option<String>,
         stderr_tail: &[u8],
     ) -> Error {
+        let _ = id.model;
         // THIS spawn's run's progress alone - its own stream, the one read `rigger status`
         // folds too (spec 101).
         let stop_failure_class = progress::read_run(self.progress_store, &opts.run_id)
@@ -675,7 +697,7 @@ impl Driver<'_> {
         let tail = String::from_utf8_lossy(stderr_tail);
         self.fault(
             opts,
-            session_id,
+            id.session_id,
             class,
             format!(
                 "claude_code driver: {:?}: the agent stream ended with no result (class \
@@ -1344,6 +1366,12 @@ mod tests {
     };
     use std::io::Read;
 
+    /// A launch the classification tests end, its model unread by a host with no hold sink.
+    const LAUNCH: LaunchId = LaunchId {
+        session_id: "sess-1",
+        model: "",
+    };
+
     // ---- build_args: pure, no process ----
 
     #[test]
@@ -1542,7 +1570,8 @@ mod tests {
         let o = opts("u/implementer#0");
         let e = driver.classify_no_result(
             &o,
-            "sess-1",
+            LAUNCH,
+            None,
             &Some("overloaded".to_string()),
             b"stderr tail",
         );
@@ -1574,7 +1603,8 @@ mod tests {
         };
         let mut o = opts("u/implementer#0");
         o.run_id = "run-1".to_string();
-        let e = driver.classify_no_result(&o, "sess-1", &Some("overloaded".to_string()), b"tail");
+        let e =
+            driver.classify_no_result(&o, LAUNCH, None, &Some("overloaded".to_string()), b"tail");
         assert!(
             strip_failure_marker(&e).contains(&format!("class {expected}")),
             "a StopFailure recorded under run {record_run:?} must classify run-1's no-result \

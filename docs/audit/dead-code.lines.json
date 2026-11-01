@@ -1,1 +1,81 @@
-[]
+[
+  {
+    "file": "crates/rigger-domain/src/agent.rs",
+    "name": "cause_row",
+    "line": 320,
+    "test_only_references": [
+      {
+        "file": "crates/rigger-domain/src/agent.rs",
+        "line": 535
+      }
+    ]
+  },
+  {
+    "file": "crates/rigger-domain/src/progress.rs",
+    "name": "failed_closes_since",
+    "line": 221,
+    "test_only_references": [
+      {
+        "file": "crates/rigger-domain/src/progress.rs",
+        "line": 900
+      }
+    ]
+  },
+  {
+    "file": "crates/rigger-store-sqlite/src/run_store.rs",
+    "name": "record_hold_sighting",
+    "line": 234,
+    "test_only_references": [
+      {
+        "file": "crates/rigger-store-sqlite/src/run_store.rs",
+        "line": 426
+      },
+      {
+        "file": "crates/rigger-store-sqlite/src/run_store.rs",
+        "line": 446
+      },
+      {
+        "file": "crates/rigger-store-sqlite/src/run_store.rs",
+        "line": 494
+      },
+      {
+        "file": "crates/rigger-store-sqlite/src/run_store.rs",
+        "line": 503
+      }
+    ]
+  },
+  {
+    "file": "crates/rigger-store-sqlite/src/run_store.rs",
+    "name": "release_hold",
+    "line": 242,
+    "test_only_references": [
+      {
+        "file": "crates/rigger-store-sqlite/src/run_store.rs",
+        "line": 549
+      },
+      {
+        "file": "crates/rigger-store-sqlite/src/run_store.rs",
+        "line": 619
+      },
+      {
+        "file": "tests/claude_code_stream_periphery.rs",
+        "line": 2164
+      }
+    ]
+  },
+  {
+    "file": "crates/rigger-store-sqlite/src/run_store.rs",
+    "name": "run_stream_head",
+    "line": 247,
+    "test_only_references": [
+      {
+        "file": "crates/rigger-store-sqlite/src/run_store.rs",
+        "line": 629
+      },
+      {
+        "file": "crates/rigger-store-sqlite/src/run_store.rs",
+        "line": 634
+      }
+    ]
+  }
+]

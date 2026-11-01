@@ -171,7 +171,7 @@ itself.
 | Category | Disposition | Released when |
 |---|---|---|
 | `authentication_failed`, `oauth_org_not_allowed`, `cloud_credential_error` | HOLD on first sight | `claude auth status` reports logged in, then a canary turn succeeds |
-| `billing_error`, `account_on_hold` | HOLD on first sight | a canary turn succeeds |
+| `billing_error`, `account_on_hold`, `verification_required` | HOLD on first sight | a canary turn succeeds |
 | `model_not_found` | HOLD on first sight, naming the model | a canary turn on that model succeeds |
 | `rate_limit`, `overloaded`, `server_error` | WAIT while Claude Code retries; HOLD when a session dies of it | a canary turn succeeds; a known reset time is honored |
 | `invalid_request`, `max_output_tokens`, `unknown` | FAULT: the spawn is relaunched, at most twice, no attempt charged; then the unit fails as infra | - |
