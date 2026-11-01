@@ -30,7 +30,7 @@ use rigger::spawn::SpawnEvent;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
-use common::fixtures::{no_emit, CwdGuard};
+use common::fixtures::{fixture_script, no_emit, CwdGuard};
 use common::is_running;
 use rigger::conductor::{AgentDriver, AgentFailure, SpawnOpts};
 use rigger::config::AgentDef;
@@ -44,15 +44,6 @@ use rigger::spawn::{self, TYPE_SPAWN_RESULT};
 
 /// The fixture agent replaying the recorded success stream.
 const STREAM_AGENT: &str = "claude-code-stream-agent.sh";
-
-/// The absolute path of the fixture agent script `name` under `tests/fixtures`.
-fn fixture_script(name: &str) -> String {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures")
-        .join(name)
-        .to_string_lossy()
-        .into_owned()
-}
 
 /// A fresh `Driver` wired to two independent in-memory stores and a scratch root under
 /// the test's own tempdir - so every test gets its own isolated scratch tree and stores,

@@ -1261,7 +1261,9 @@ mod tests {
     use crate::eventstore::sqlite::Store;
     use crate::eventstore::{Direction, EventStore, SilentStore};
     use crate::test_support::implementer_opts as opts;
-    use crate::test_support::{captured_system_prompt, PROMPT_CAPTURE_DIR};
+    use crate::test_support::{
+        captured_system_prompt, fixture_script, no_emit, PROMPT_CAPTURE_DIR,
+    };
     use std::io::Read;
 
     // ---- build_args: pure, no process ----
@@ -2034,6 +2036,74 @@ mod tests {
         let v: Value = serde_json::from_str(r#"{"type":"system","subtype":"api_retry"}"#).unwrap();
         let line = api_retry_line(&v);
         assert!(line.contains("unknown"), "{line}");
+    }
+
+    /// `line`'s announced delay and category are `expected`.
+    fn assert_api_retry_fields(line: &str, expected: (u64, &str)) {
+        let v: Value = serde_json::from_str(line).unwrap();
+        assert_eq!(api_retry_fields(&v), expected);
+    }
+
+    crate::test_cases! {
+        // The exact shape a probe of the real CLI showed (spec 104 Problem section).
+        api_retry_fields_reads_the_delay_and_the_category_of_the_real_line:
+            assert_api_retry_fields(
+                r#"{"type":"system","subtype":"api_retry","attempt":1,"max_retries":10,
+                    "retry_delay_ms":618,"error_status":401,"error":"authentication_failed"}"#,
+                (618, "authentication_failed"),
+            );
+        api_retry_fields_floors_a_missing_delay_alone:
+            assert_api_retry_fields(r#"{"error":"overloaded"}"#, (0, "overloaded"));
+        api_retry_fields_floors_a_missing_category_alone:
+            assert_api_retry_fields(r#"{"retry_delay_ms":618}"#, (618, "unknown"));
+        api_retry_fields_floors_a_field_of_the_wrong_type:
+            assert_api_retry_fields(r#"{"retry_delay_ms":"soon","error":429}"#, (0, "unknown"));
+    }
+
+    /// A clean spawn of the checked-in `script` leaves exactly one [`progress::ApiRetry`] per
+    /// `(delay_ms, category)` of `announced`, in stream order, on the run's progress stream.
+    fn assert_spawn_records_api_retries(script: &str, announced: &[(u64, &str)]) {
+        let progress_store = Store::open(":memory:").unwrap();
+        let run_store = Store::open(":memory:").unwrap();
+        let driver = Driver {
+            bin: fixture_script(script),
+            progress_store: &progress_store,
+            run_store: &run_store,
+            ..Driver::default()
+        };
+        let mut o = opts("u105/implementer#0");
+        o.run_id = "run-1".to_string();
+
+        driver
+            .spawn(&AgentDef::default(), "do the thing", &o, &no_emit)
+            .unwrap();
+
+        let recorded: Vec<progress::ApiRetry> = progress::read_run(&progress_store, &o.run_id)
+            .unwrap()
+            .iter()
+            .filter(|e| e.type_ == progress::TYPE_API_RETRY)
+            .map(|e| serde_json::from_slice(&e.data).unwrap())
+            .collect();
+        let expected: Vec<progress::ApiRetry> = announced
+            .iter()
+            .map(|&(delay_ms, category)| progress::ApiRetry {
+                spawn: o.id.clone(),
+                delay_ms,
+                category: category.to_string(),
+            })
+            .collect();
+        assert_eq!(recorded, expected);
+    }
+
+    crate::test_cases! {
+        spawn_appends_one_api_retry_per_line_in_stream_order: assert_spawn_records_api_retries(
+            "claude-code-two-api-retries-agent.sh",
+            &[(618, "rate_limit"), (30_000, "overloaded")],
+        );
+        spawn_appends_no_api_retry_for_a_stream_without_one: assert_spawn_records_api_retries(
+            "claude-code-mcp-server-connected-agent.sh",
+            &[],
+        );
     }
 
     #[test]

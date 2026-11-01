@@ -568,6 +568,31 @@ mod tests {
         );
     }
 
+    // ---- ApiRetry (spec 105 LIVENESS) ----
+
+    #[test]
+    fn api_retry_to_event_carries_the_type_the_run_stamp_and_its_three_fields() {
+        let retry = ApiRetry {
+            spawn: "u105/implementer#0".into(),
+            delay_ms: 618,
+            category: "rate_limit".into(),
+        };
+        let ev = retry.to_stamped_event("run-9").unwrap();
+        assert_eq!(ev.type_, "ApiRetry");
+        assert_eq!(ev.meta.get(META_RUN_ID).map(String::as_str), Some("run-9"));
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&ev.data).unwrap(),
+            serde_json::json!({
+                "spawn": "u105/implementer#0",
+                "delay_ms": 618,
+                "category": "rate_limit",
+            }),
+            "the record's wire names are the three spec 105 LIVENESS names"
+        );
+        let back: ApiRetry = serde_json::from_slice(&ev.data).unwrap();
+        assert_eq!(back, retry);
+    }
+
     #[test]
     fn latest_stop_failure_class_returns_none_when_no_record_names_the_spawn() {
         let events = vec![StopFailure {

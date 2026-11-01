@@ -53,6 +53,7 @@
 //! the write guard and the StopFailure hooks - criteria 3, 4 and 5, separate units.
 
 mod common;
+use common::fixtures::fixture_script;
 use common::fixtures::implementer_opts as opts;
 
 use std::io::Read;
@@ -64,28 +65,16 @@ use rigger::driver::claude_code::Driver;
 use rigger::eventstore::sqlite::Store;
 use rigger::progress::{SpawnLaunched, TYPE_SPAWN_LAUNCHED};
 
-/// Resolve a checked-in fixture under `tests/fixtures/` by its file name - shared by both
-/// fixture accessors below so resolving a second, distinct fixture never re-duplicates the
-/// first one's path-joining body (the exact shape the project's own duplication audit
-/// exists to catch).
-fn fixture_path(name: &str) -> String {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures")
-        .join(name)
-        .to_string_lossy()
-        .into_owned()
-}
-
 /// The checked-in fixture `crates/rigger-driver/src/driver/claude_code.rs`'s own tests already point `bin` at -
 /// see its header comment (`tests/fixtures/claude-code-echo-agent.sh`) for why it is
 /// checked in rather than written at test time.
 fn fixture_bin() -> String {
-    fixture_path("claude-code-echo-agent.sh")
+    fixture_script("claude-code-echo-agent.sh")
 }
 
 // The checked-in fixture that never reads its stdin (`tests/fixtures/claude-code-never-
 // reads-stdin-agent.sh`, see its own header comment) has exactly one call site below, in
-// `launch_reaps_the_child_when_the_stdin_write_fails` - resolved there with `fixture_path`
+// `launch_reaps_the_child_when_the_stdin_write_fails` - resolved there with `fixture_script`
 // directly rather than through a second single-line wrapper, which would only restate
 // `fixture_bin`'s own shape under a different name (the exact duplicate the project's own
 // audit flags a trivial one-argument forwarding function pair as, regardless of which
@@ -392,7 +381,7 @@ fn launch_reaps_the_child_when_the_stdin_write_fails() {
     // that might close stdin fast - there is no flake window here.
     let (progress_store, run_store) = no_stream_extras();
     let driver = Driver {
-        bin: fixture_path("claude-code-never-reads-stdin-agent.sh"),
+        bin: fixture_script("claude-code-never-reads-stdin-agent.sh"),
         rigger_bin: "rigger".to_string(),
         progress_store: &progress_store,
         run_store: &run_store,
