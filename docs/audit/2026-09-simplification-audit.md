@@ -3016,17 +3016,17 @@ project identity so one backend can hold many projects without their data mixing
 - `tests/common/cli.rs:602-602` `".rigger"`
 - `tests/common/cli.rs:636-636` `".rigger"`
 - `tests/common/cli.rs:680-680` `".rigger"`
-- `tests/common/cli.rs:856-856` `".rigger/events.db"`
-- `tests/common/cli.rs:1538-1538` `"reset --derived: the migration rewrites and deletes rows of the event log and vacuums the \
+- `tests/common/cli.rs:857-857` `".rigger/events.db"`
+- `tests/common/cli.rs:1539-1539` `"reset --derived: the migration rewrites and deletes rows of the event log and vacuums the \
          file, which is a mechanic of the embedded .rigger/events.db store; this project is \
          configured for the server-backed store, where the migration does not run. Re-run it \
          against a project on the sqlite backend. Refusing rather than reporting a migration that \
          did not happen."`
-- `tests/common/cli.rs:1629-1629` `"graph build: ingested {events} code-ingest event(s) into .rigger/graph.db{lost}\n"`
-- `tests/common/cli.rs:1851-1851` `".rigger"`
-- `tests/common/cli.rs:1852-1852` `"create .rigger/agents"`
-- `tests/common/cli.rs:1965-1965` `"{why}: a server selection must NOT fabricate a local .rigger/events.db"`
-- `tests/common/cli.rs:2062-2062` `".rigger"`
+- `tests/common/cli.rs:1630-1630` `"graph build: ingested {events} code-ingest event(s) into .rigger/graph.db{lost}\n"`
+- `tests/common/cli.rs:1852-1852` `".rigger"`
+- `tests/common/cli.rs:1853-1853` `"create .rigger/agents"`
+- `tests/common/cli.rs:1966-1966` `"{why}: a server selection must NOT fabricate a local .rigger/events.db"`
+- `tests/common/cli.rs:2063-2063` `".rigger"`
 - `tests/common/fixtures/config.rs:516-516` `"{repo_path}/.rigger-test-scratch"`
 - `tests/common/fixtures/extraction_tree.rs:76-76` `".rigger/workflow.yml"`
 - `tests/common/fixtures/instructions.rs:250-250` `"\nOperator (.rigger/instructions/*.md, filename order):\n"`
@@ -4076,7 +4076,7 @@ Proposed home: `a new shared module (sites span 3 files: crates/rigger-domain/sr
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `crates/rigger-domain/src/spec.rs:2643-2645` `f11`
-- `tests/common/cli.rs:1628-1630` `graph_build_line`
+- `tests/common/cli.rs:1629-1631` `graph_build_line`
 - `tests/common/fixtures/cursor.rs:197-199` `catch_up_stopped`
 
 #### `dup-d340e212490f` (exact, 2 sites)
@@ -4221,10 +4221,10 @@ mandatory sweep: sqlite Connection::open call sites - 66 site(s), collected mech
 - `tests/cli.rs:1086-1086` `Connection::open`
 - `tests/cli.rs:10461-10461` `Connection::open`
 - `tests/common/cli.rs:98-98` `Connection::open`
-- `tests/common/cli.rs:1070-1070` `Connection::open`
-- `tests/common/cli.rs:1286-1286` `Connection::open`
-- `tests/common/cli.rs:1296-1296` `Connection::open`
-- `tests/common/cli.rs:2073-2073` `Connection::open`
+- `tests/common/cli.rs:1071-1071` `Connection::open`
+- `tests/common/cli.rs:1287-1287` `Connection::open`
+- `tests/common/cli.rs:1297-1297` `Connection::open`
+- `tests/common/cli.rs:2074-2074` `Connection::open`
 - `tests/common/fixtures/cursor.rs:123-123` `Connection::open`
 - `tests/common/fixtures/cursor.rs:135-135` `Connection::open`
 - `tests/common/fixtures/cursor.rs:150-150` `Connection::open`
@@ -4684,11 +4684,11 @@ Proposed home: `a new shared module (sites span 3 files: src/cli/hygiene.rs, tes
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `src/cli/hygiene.rs:257-259` `derived_count_phrase`
-- `tests/common/cli.rs:1171-1173` `rebuilt_through_the_head`
-- `tests/common/cli.rs:1177-1182` `pruned_from_the_rebuilt_graph`
-- `tests/common/cli.rs:1448-1455` `migrated_lines`
-- `tests/common/cli.rs:1462-1467` `derived_menu_line_naming`
-- `tests/common/cli.rs:2126-2131` `bloat_advisory_naming`
+- `tests/common/cli.rs:1172-1174` `rebuilt_through_the_head`
+- `tests/common/cli.rs:1178-1183` `pruned_from_the_rebuilt_graph`
+- `tests/common/cli.rs:1449-1456` `migrated_lines`
+- `tests/common/cli.rs:1463-1468` `derived_menu_line_naming`
+- `tests/common/cli.rs:2127-2132` `bloat_advisory_naming`
 - `tests/compaction_generations_periphery.rs:6561-6566` `runs_prunable`
 
 #### `dup-4a813209194e` (near, 2 sites)
@@ -5035,8 +5035,8 @@ Proposed home: `a new shared module (sites span 2 files: tests/common/cli.rs, te
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/common/cli.rs:1189-1191` `emit_folded_line`
-- `tests/common/cli.rs:1488-1490` `reclaimed_line`
+- `tests/common/cli.rs:1190-1192` `emit_folded_line`
+- `tests/common/cli.rs:1489-1491` `reclaimed_line`
 - `tests/common/fixtures/cursor.rs:173-175` `caught_up_line`
 
 #### `dup-90e32eb50d95` (exact, 4 sites)
@@ -5045,10 +5045,10 @@ Proposed home: `cli::support (consolidate these 4 sites into one function in thi
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/common/cli.rs:1473-1475` `derived_menu_lines`
-- `tests/common/cli.rs:1478-1480` `decision_lines`
-- `tests/common/cli.rs:2120-2122` `index_lag_lines`
-- `tests/common/cli.rs:2135-2137` `bloat_lines`
+- `tests/common/cli.rs:1474-1476` `derived_menu_lines`
+- `tests/common/cli.rs:1479-1481` `decision_lines`
+- `tests/common/cli.rs:2121-2123` `index_lag_lines`
+- `tests/common/cli.rs:2136-2138` `bloat_lines`
 
 #### `dup-be2d1a3f8f8b` (exact, 3 sites)
 
@@ -5056,7 +5056,7 @@ Proposed home: `a new shared module (sites span 2 files: tests/common/cli.rs, te
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/common/cli.rs:1666-1668` `plant_stale_marker`
+- `tests/common/cli.rs:1667-1669` `plant_stale_marker`
 - `tests/common/fixtures/cursor.rs:143-145` `drop_the_cursor`
 - `tests/common/fixtures/cursor.rs:159-161` `drop_the_cursor_s_log`
 
@@ -5066,7 +5066,7 @@ Proposed home: `one shared `write_workflow` helper (e.g. relocated into `tests/c
 
 mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
 
-- `tests/common/cli.rs:1911-1918` `write_workflow`
+- `tests/common/cli.rs:1912-1919` `write_workflow`
 - `tests/common/workflow_probe.rs:21-23` `write_workflow`
 
 #### `dup-b58b0ff72b22` (near, 3 sites)
@@ -5075,8 +5075,8 @@ Proposed home: `a new shared module (sites span 2 files: tests/common/cli.rs, te
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/common/cli.rs:1947-1967` `assert_selected_server`
-- `tests/common/cli.rs:1971-1987` `assert_selected_sqlite`
+- `tests/common/cli.rs:1948-1968` `assert_selected_server`
+- `tests/common/cli.rs:1972-1988` `assert_selected_sqlite`
 - `tests/store_secrets.rs:69-107` `assert_server_reached_and_credentials_redacted`
 
 #### `dup-c82a46fd1fec` (exact, 2 sites)

@@ -850,7 +850,8 @@ pub fn current_run_id_of(root: &Path) -> Option<String> {
 /// `opts.run_id` (`conductor.rs`'s `crate::run_store::ensure_started`) - returns the id it
 /// mints. Namespaced identically to [`current_run_progress_events`]'s own
 /// [`run_stream_identity`], so this writes into the exact stream `rigger hook stop-failure`'s own
-/// cold `runscope::current_run_id` read (`main.rs::cmd_hook_stop_failure`) will independently see.
+/// cold `runscope::current_run_id` read (`cli/guard.rs::cmd_hook_stop_failure`) will independently
+/// see.
 pub fn seed_a_run(root: &Path) -> String {
     let backend = Store::open(
         root.join(".rigger/events.db")
