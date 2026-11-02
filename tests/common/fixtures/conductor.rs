@@ -17,14 +17,18 @@ pub fn no_emit(_: &str, _: serde_json::Value) -> Result<(), Error> {
 
 /// A `RunHeld` event of `cause` by `by`, every other field at its default.
 pub fn held_event(cause: &str, by: &str) -> Event {
-    let body = rigger::run::RunHeld {
+    run_held_event(&rigger::run::RunHeld {
         cause: cause.to_string(),
         by: by.to_string(),
         ..Default::default()
-    };
+    })
+}
+
+/// A `RunHeld` event carrying `body`.
+pub fn run_held_event(body: &rigger::run::RunHeld) -> Event {
     Event::new(
         rigger::run::TYPE_RUN_HELD,
-        serde_json::to_vec(&body).unwrap(),
+        serde_json::to_vec(body).unwrap(),
     )
 }
 

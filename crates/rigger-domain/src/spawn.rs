@@ -2344,6 +2344,26 @@ mod tests {
         assert_eq!(step_result(&events).unwrap().halted, None);
     }
 
+    /// Spec 105: a held run's step launches nothing, and its `halted` names the hold by the cause
+    /// and action of its latest `RunHeld`.
+    #[test]
+    fn a_held_step_has_an_empty_wave_and_names_the_holds_cause_and_action() {
+        let hold = Hold {
+            since: std::time::UNIX_EPOCH,
+            operator: false,
+            latest: RunHeld {
+                cause: "rate_limit".to_string(),
+                action: "waits for the limit to reset".to_string(),
+                detail: "the detail stays off the step line".to_string(),
+                ..Default::default()
+            },
+        };
+        assert_eq!(
+            serde_json::to_string(&step_of_hold(&hold)).unwrap(),
+            r#"{"wave":[],"done":false,"halted":"run held - rate_limit - waits for the limit to reset"}"#
+        );
+    }
+
     #[test]
     fn a_halted_step_serializes_the_reason_and_a_converged_one_omits_it() {
         // Gap 13: the `done`/`halted` split. A halted step carries the reason on the wire

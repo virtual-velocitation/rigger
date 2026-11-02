@@ -86,10 +86,12 @@ mod tests {
     use super::*;
     use crate::ingest::DERIVED_INDEX_TYPES;
     use crate::retention::{GenerationIngested, TYPE_GENERATION_INGESTED};
+    use crate::run::{TYPE_RUN_HELD, TYPE_RUN_RELEASED};
     use crate::test_support::{
         ev, positions_of, types_of, CountedRead, HandBuiltLog, ReadCountingStore,
-        ONE_SHOT_PERCEPTION_TYPES,
+        ReadsFailWhenArmed, ONE_SHOT_PERCEPTION_TYPES,
     };
+    use std::sync::atomic::AtomicBool;
 
     const STREAM: &str = "run";
 
@@ -194,6 +196,79 @@ mod tests {
                 },
             ]
         );
+    }
+
+    /// The hold [`read_current_hold`] answers is the one the current run's slice leaves open:
+    /// none on an empty log or an unheld run, the open hold's latest cause, none once it is
+    /// released and none for an earlier run's.
+    #[test]
+    fn the_current_hold_is_the_one_the_current_runs_slice_leaves_open() {
+        let started = || ev("RunStarted", r#"{"run":"r1"}"#);
+        let held = |cause: &str| ev(TYPE_RUN_HELD, &format!(r#"{{"cause":"{cause}"}}"#));
+        let released = || ev(TYPE_RUN_RELEASED, "{}");
+        for (name, events, cause) in [
+            ("an empty log", vec![], None),
+            ("an unheld run", vec![started()], None),
+            (
+                "a hold",
+                vec![started(), held("rate_limit")],
+                Some("rate_limit"),
+            ),
+            (
+                "a hold whose cause moved",
+                vec![started(), held("rate_limit"), held("billing_error")],
+                Some("billing_error"),
+            ),
+            (
+                "a released hold",
+                vec![started(), held("rate_limit"), released()],
+                None,
+            ),
+            (
+                "a hold of an earlier run",
+                vec![started(), held("rate_limit"), started()],
+                None,
+            ),
+        ] {
+            let log = HandBuiltLog::new(STREAM, events);
+            let hold = read_current_hold(&log, STREAM).unwrap();
+            assert_eq!(
+                hold.as_ref().map(|hold| hold.latest.cause.as_str()),
+                cause,
+                "{name}"
+            );
+        }
+    }
+
+    /// A run [`read_current_hold`] cannot prove unheld answers an error, never `None`: a failed
+    /// read and a hold event no fold can apply each name their own failure.
+    #[test]
+    fn a_hold_read_that_fails_answers_its_error() {
+        let armed = AtomicBool::new(true);
+        let log = HandBuiltLog::new(STREAM, vec![]);
+        let unreadable = ReadsFailWhenArmed {
+            inner: &log,
+            armed: &armed,
+        };
+        let unfoldable = HandBuiltLog::new(STREAM, vec![ev(TYPE_RUN_HELD, "not a hold")]);
+        for (name, store, error) in [
+            (
+                "a failed read",
+                &unreadable as &dyn EventStore,
+                "event store: the run read failed",
+            ),
+            (
+                "a hold no fold applies",
+                &unfoldable as &dyn EventStore,
+                "expected ident at line 1 column 2",
+            ),
+        ] {
+            assert_eq!(
+                read_current_hold(store, STREAM).unwrap_err().0,
+                error,
+                "{name}"
+            );
+        }
     }
 
     /// The fixture's spelled-out list is the perception list, name for name and in order.

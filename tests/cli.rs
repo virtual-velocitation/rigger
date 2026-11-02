@@ -3876,6 +3876,24 @@ fn worktree_sweep_completes_before_any_add_within_one_step() {
     );
 }
 
+/// A worktree under `scratch` on a branch at the run branch's tip, belonging to no unit of `root`'s
+/// run: the leftover a step's terminal sweep reclaims.
+fn plant_a_leftover_worktree(root: &Path, scratch: &Path) -> std::path::PathBuf {
+    let leftover = scratch.join("rigger-wt-leftover-orphan");
+    git_ok(
+        root,
+        &[
+            "worktree",
+            "add",
+            leftover.to_str().unwrap(),
+            "-b",
+            "rigger/u/leftover-orphan",
+            "rigger-run",
+        ],
+    );
+    leftover
+}
+
 /// Spec 64, criterion 4 (`src/worktree.rs::sweep_terminal` learns liveness; its caller
 /// `cmd_step` in `src/main.rs` now folds `current_run_units(events).live_branches` and
 /// hands it in): the step-start terminal-worktree sweep must SPARE a unit that is still
@@ -3933,18 +3951,7 @@ fn step_start_sweep_spares_a_live_units_empty_diff_worktree_but_reclaims_a_dead_
     // for the one thing this criterion adds: it is absent from the current run's
     // `live_branches`. Stands in for a crashed process's leftover registration without
     // needing to actually kill a subprocess mid-flight to construct one.
-    let dead_wt = scratch.join("rigger-wt-leftover-orphan");
-    git_ok(
-        root,
-        &[
-            "worktree",
-            "add",
-            dead_wt.to_str().unwrap(),
-            "-b",
-            "rigger/u/leftover-orphan",
-            "rigger-run",
-        ],
-    );
+    let dead_wt = plant_a_leftover_worktree(root, &scratch);
     let dead_canary = dead_wt.join("canary-dead.txt");
     std::fs::write(&dead_canary, "reclaimed\n").unwrap();
 
@@ -12040,6 +12047,174 @@ fn step_weighs_a_markers_silence_outside_a_released_hold() {
             hung_for.is_some(),
             "{case}: {line:?}"
         );
+    }
+}
+
+/// The type of every event on `root`'s run stream, oldest first.
+fn run_event_types(root: &Path) -> Vec<String> {
+    common::cli::read_run_events(root)
+        .into_iter()
+        .map(|event| event.type_)
+        .collect()
+}
+
+/// A hold by `by` of `cause` carrying `action`, the fields a held step's line names.
+fn hold_naming(cause: &str, action: &str, by: &str) -> rigger::run::RunHeld {
+    rigger::run::RunHeld {
+        cause: cause.to_string(),
+        action: action.to_string(),
+        by: by.to_string(),
+        ..Default::default()
+    }
+}
+
+/// Spec 105's step exit: given a held run with a leftover worktree on its scratch root, a definition
+/// drifted from its pin and a spawn whose marker went stale, when the operator steps, then the step
+/// prints the hold with an empty wave, exits 0 and records nothing, with its sweep, definition pin
+/// and liveness sweep unrun; on the release each of the three acts on that same run, so the held
+/// step left each something to do.
+#[test]
+fn a_held_step_names_the_hold_ahead_of_its_sweep_pin_and_liveness_sweep() {
+    for (name, held, printed) in [
+        (
+            "a host hold",
+            hold_naming(
+                "rate_limit",
+                "waits for the limit to reset",
+                rigger::run::HOLD_BY_HOST,
+            ),
+            r#"{"wave":[],"done":false,"halted":"run held - rate_limit - waits for the limit to reset"}"#,
+        ),
+        (
+            "an operator hold",
+            hold_naming(
+                "operator",
+                "the quota is being moved",
+                rigger::run::HOLD_BY_OPERATOR,
+            ),
+            r#"{"wave":[],"done":false,"halted":"run held - operator - the quota is being moved"}"#,
+        ),
+    ] {
+        let dir = temp_git_project_with_commit();
+        let root = dir.path();
+        write_workflow_fixture(root, &LIVENESS_WORKFLOW);
+        let scratch = scratch_root_under(root);
+        let (line, err, ok) = step_with_scratch_root(root, &scratch);
+        assert!(ok, "{name}: the first step parks the worker; stderr: {err}");
+        let marker = json_string_field(&line, "marker_path")
+            .expect("the wave carries the resolved marker path");
+        let leftover = plant_a_leftover_worktree(root, &scratch);
+        common::cli::plant_stale_marker(Path::new(&marker));
+        edit_worker_prompt(root, "Do the unit, but differently now.");
+        common::cli::seed_on_the_run(root, common::fixtures::run_held_event(&held));
+        let recorded = run_event_types(root);
+
+        let (out, err, ok) = step_with_scratch_root(root, &scratch);
+        assert!(ok, "{name}: a held step exits 0; stderr: {err}");
+        assert_eq!(out, format!("{printed}\n"), "{name}: the step's one line");
+        assert_eq!(
+            lines_starting_with(&err, "rigger step: "),
+            Vec::<&str>::new(),
+            "{name}: the sweeps report nothing"
+        );
+        assert_eq!(
+            run_event_types(root),
+            recorded,
+            "{name}: a held step records nothing"
+        );
+        assert!(leftover.exists(), "{name}: a held step sweeps nothing");
+
+        seed_an_operator_release(root);
+        let (out, err, ok) = step_with_scratch_root(root, &scratch);
+        assert!(
+            !ok,
+            "{name}: the drift halts the released run; stdout: {out}"
+        );
+        assert!(
+            err.contains("definition drift"),
+            "{name}: the pin ran; stderr: {err}"
+        );
+        assert_eq!(
+            lines_starting_with(&err, "rigger step: swept"),
+            [format!(
+                "rigger step: swept 1 terminal worktree(s) from {}",
+                scratch.display()
+            )],
+            "{name}: the sweep ran; stderr: {err}"
+        );
+        assert!(!leftover.exists(), "{name}: the sweep took the leftover");
+
+        let (_, err, ok) = run_rigger_envs(
+            root,
+            &["step", "--rebase-definition"],
+            &[("RIGGER_TMPDIR", scratch.to_str().unwrap())],
+        );
+        assert!(ok, "{name}: the rebased step exits 0; stderr: {err}");
+        assert_eq!(
+            lines_starting_with(&err, "rigger step: liveness swept"),
+            ["rigger step: liveness swept 1 hung spawn(s) (classified infra, no attempt charged): a/implementer#0"],
+            "{name}: the liveness sweep ran; stderr: {err}"
+        );
+    }
+}
+
+/// Spec 105's order of the hold read: given a held run, when a plain step finds other criteria it
+/// stays on the held run and mints nothing, since the hold is read ahead of the mint, and when a
+/// `--fresh` step runs, the hold is read behind its mint, which released the hold it ended, so the
+/// step launches on the new run.
+#[test]
+fn a_step_of_a_held_run_launches_only_on_its_fresh_mint() {
+    const HELD: &str = "run held - rate_limit - waits for the limit to reset";
+    for (name, args, wave, halted, starts, releases) in [
+        (
+            "a plain step over other criteria",
+            &["step"][..],
+            Vec::<&str>::new(),
+            Some(HELD),
+            1,
+            Vec::<&str>::new(),
+        ),
+        (
+            "a fresh step",
+            &["step", "--fresh"][..],
+            vec!["a/implementer#0"],
+            None,
+            2,
+            vec![rigger::run::HOLD_BY_HOST],
+        ),
+    ] {
+        let dir = temp_git_project_with_commit();
+        let root = dir.path();
+        write_workflow_fixture(root, &LIVENESS_WORKFLOW);
+        seed_a_campaign_held_by(root, &["another campaign's criterion".to_string()], None);
+        common::cli::seed_on_the_run(
+            root,
+            common::fixtures::run_held_event(&hold_naming(
+                "rate_limit",
+                "waits for the limit to reset",
+                rigger::run::HOLD_BY_HOST,
+            )),
+        );
+
+        let (out, err, ok) = run_rigger(root, args);
+        assert!(ok, "{name}: the step exits 0; stderr: {err}");
+        let step: serde_json::Value = serde_json::from_str(&out).unwrap();
+        let ids: Vec<&str> = step["wave"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, wave, "{name}: the wave; stdout: {out}");
+        assert_eq!(step["halted"].as_str(), halted, "{name}: stdout: {out}");
+        assert_eq!(step["done"], false, "{name}: stdout: {out}");
+        assert_eq!(
+            common::cli::run_payloads(root, rigger::run::TYPE_RUN_STARTED).len(),
+            starts,
+            "{name}: the runs started"
+        );
+        assert_eq!(run_releases(root), releases, "{name}: the releases");
+        assert_eq!(hold_is_open(root), halted.is_some(), "{name}: the hold");
     }
 }
 
