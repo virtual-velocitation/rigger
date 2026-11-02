@@ -8182,6 +8182,35 @@ fn a_served_hold_hands_out_no_queued_spawn_until_its_release() {
     assert_eq!(run_releases(root), ["operator"], "the one release");
 }
 
+/// Spec 105's HELD BEFORE EACH LAUNCH on a read that fails, wired where the launch is the handout:
+/// given a spawn queued and a `RunHeld` no fold applies, when the shim polls, then `rigger_next`
+/// hands out nothing, since a run not proved unheld launches nothing, and when the session closes
+/// `rigger serve` ends on that read's error with no unit charged.
+#[test]
+fn a_served_run_not_proved_unheld_hands_out_no_queued_spawn() {
+    const NAME: &str = "a spawn queued behind a failed read";
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_workflow_fixture(root, &TWO_STAGE_WORKFLOW);
+    let mut mcp = McpSession::start_with(root, &["serve", "--base", "HEAD"]);
+    mcp.initialize();
+    next_handout(&mut mcp, NAME);
+    let_the_started_units_queue(root, 2, NAME);
+    seed_a_hold_no_fold_applies(root);
+    rigger_next_stays_idle_while_a_hold_stands(&mut mcp);
+    let out = mcp.finish_within(Duration::from_secs(30));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stderr),
+        "rigger: conductor: conductor: expected ident at line 1 column 2\n",
+        "{NAME}: the failed read"
+    );
+    assert_eq!(
+        common::cli::run_payloads(root, "UnitFailed"),
+        Vec::<serde_json::Value>::new(),
+        "{NAME}: the failed read charges no unit"
+    );
+}
+
 /// Spec 105: given spawns pending when a session closes, handed out or queued behind a hold, then
 /// each returns a park to its caller, since nothing serves them, and `rigger serve` exits.
 #[test]
@@ -12385,6 +12414,40 @@ fn a_step_of_a_held_run_launches_only_on_its_fresh_mint() {
         assert_eq!(run_releases(root), releases, "{name}: the releases");
         assert_eq!(hold_is_open(root), halted.is_some(), "{name}: the hold");
     }
+}
+
+/// Append a `RunHeld` to `root`'s run that no fold applies, so no read proves the run unheld.
+fn seed_a_hold_no_fold_applies(root: &Path) {
+    common::cli::seed_on_the_run(
+        root,
+        rigger::eventstore::Event::new(rigger::run::TYPE_RUN_HELD, b"not a hold".to_vec()),
+    );
+}
+
+/// Spec 105: a run not proved unheld launches nothing. Given a `RunHeld` no fold applies, when the
+/// operator steps, then the step fails on that read with nothing on stdout, so a courier reports
+/// an error and never a wave, and it records nothing and sweeps nothing.
+#[test]
+fn a_step_of_a_run_not_proved_unheld_fails_on_its_read_ahead_of_its_sweep() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_workflow_fixture(root, &LIVENESS_WORKFLOW);
+    let scratch = scratch_root_under(root);
+    let (_, err, ok) = step_with_scratch_root(root, &scratch);
+    assert!(ok, "the first step parks the worker; stderr: {err}");
+    let leftover = plant_a_leftover_worktree(root, &scratch);
+    seed_a_hold_no_fold_applies(root);
+    let recorded = run_event_types(root);
+
+    let (out, err, ok) = step_with_scratch_root(root, &scratch);
+    assert!(!ok, "a run not proved unheld fails the step; stdout: {out}");
+    assert_eq!(out, "", "no step line for a courier to read");
+    assert_eq!(
+        err, "rigger: conductor: expected ident at line 1 column 2\n",
+        "the failed read"
+    );
+    assert_eq!(run_event_types(root), recorded, "the step records nothing");
+    assert!(leftover.exists(), "the step sweeps nothing");
 }
 
 /// Agent liveness end-to-end (spec 10, unit 3): a spawn carries a `max_wall_clock` bound;
