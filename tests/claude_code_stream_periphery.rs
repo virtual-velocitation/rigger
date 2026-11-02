@@ -2894,7 +2894,10 @@ struct HeldEnding {
     /// Whether the host is built with no hold sink.
     no_sink: bool,
     agent: AgentDef,
-    /// The `RunHeld`s the spawn appends, in order.
+    /// Whether a hold lands while the launch ends, past the point the fixture agent's `stuck` or
+    /// `unreadable-pipes-held` ending announces, with the launch not yet over.
+    lands: bool,
+    /// The `RunHeld`s the spawn's time appends, in order, a hold that lands among them.
     holds: Vec<RunHeld>,
     left: Ending,
 }
@@ -2995,6 +2998,23 @@ fn held_ending_cases() -> Vec<HeldEnding> {
             ..HeldEnding::default()
         },
         HeldEnding {
+            name: "a hold landing inside the stop grace",
+            ending: "stuck",
+            agent: bounded(),
+            lands: true,
+            holds: vec![RunHeld::default()],
+            left: Ending::Stopped,
+            ..HeldEnding::default()
+        },
+        HeldEnding {
+            name: "a hold landing between a read error and the end of the drain joins",
+            ending: "unreadable-pipes-held",
+            lands: true,
+            holds: vec![RunHeld::default()],
+            left: Ending::Unreadable,
+            ..HeldEnding::default()
+        },
+        HeldEnding {
             name: "a fault class on an unheld run",
             ending: "retried-eof",
             category: "invalid_request",
@@ -3067,10 +3087,10 @@ fn held_ending_cases() -> Vec<HeldEnding> {
 
 /// HELD MEANS NO LAUNCH AND NO CHARGE at the host: an ending of a class that holds or waits, or any
 /// `fault` ending on a held run, closes `interrupted`, records no result and keeps its scratch, a
-/// `--resume` launch with no `system/init` among them launching nothing fresh. On a held run the
-/// stop and the read error keep their endings and launch nothing fresh, and on an unheld run they
-/// and a fault class take the fallback. A host with no sink reads no hold and keeps `fault` and
-/// the fallback.
+/// `--resume` launch with no `system/init` among them launching nothing fresh. On a run held at the
+/// launch's end the stop and the read error keep their endings and launch nothing fresh, a hold
+/// that lands while the launch ends among them, and on an unheld run they and a fault class take
+/// the fallback. A host with no sink reads no hold and keeps `fault` and the fallback.
 #[cfg(unix)]
 #[test]
 fn a_launch_ends_as_the_hold_and_its_class_decide() {
@@ -3091,6 +3111,18 @@ fn a_launch_ends_as_the_hold_and_its_class_decide() {
             "RIGGER_TEST_RETRY_CATEGORY".to_string(),
             case.category.to_string(),
         ));
+        let seen = fx.scratch_file("ending-seen");
+        let release = fx.scratch_file("ending-release");
+        o.env.extend([
+            (
+                "RIGGER_TEST_ENDING_SEEN_FILE".to_string(),
+                seen.to_string_lossy().into_owned(),
+            ),
+            (
+                "RIGGER_TEST_ENDING_RELEASE_FILE".to_string(),
+                release.to_string_lossy().into_owned(),
+            ),
+        ]);
         let planted = fx.plant_scratch(&o);
         let (closes, failure, launches, results, kept) = match case.left {
             Ending::Interrupted(class, failure) => (
@@ -3130,7 +3162,22 @@ fn a_launch_ends_as_the_hold_and_its_class_decide() {
             ),
         };
 
-        let outcome = driver.spawn(&case.agent, FULL_PROMPT, &o, &no_emit);
+        let outcome = if case.lands {
+            let (ending_seen, outcome) = std::thread::scope(|scope| {
+                let session = scope.spawn(|| driver.spawn(&case.agent, FULL_PROMPT, &o, &no_emit));
+                let ending_seen = wait_until_for(800, || seen.exists());
+                fx.hold_the_run();
+                std::fs::write(&release, "").unwrap();
+                (ending_seen, session.join().unwrap())
+            });
+            assert!(
+                ending_seen,
+                "{name}: the ending is under way when the hold lands"
+            );
+            outcome
+        } else {
+            driver.spawn(&case.agent, FULL_PROMPT, &o, &no_emit)
+        };
 
         let spawned = match outcome {
             Ok(result) => {
@@ -3200,40 +3247,72 @@ fn a_wait_class_ending_reads_no_hold_and_counts_no_close() {
     assert!(planted.exists(), "the scratch is kept");
 }
 
-/// A hold the host cannot read proves nothing: the launch takes the ending of an unheld run, a
-/// fault's close going unstamped and uncounted, with a line on its progress saying so.
+/// A hold the host cannot read proves the run neither held nor unheld. A run not proved unheld
+/// launches nothing and a failed read masks no failure, so with a line on its progress each ending
+/// stands as the launch's own: no fallback, no `interrupted` close it did not prove, every close
+/// unstamped and uncounted.
 #[cfg(unix)]
 #[test]
-fn a_hold_read_that_fails_leaves_the_ending_of_an_unheld_run() {
-    struct Row {
+fn a_hold_read_that_fails_launches_nothing_fresh_and_masks_no_failure() {
+    struct Row<'a> {
         name: &'static str,
         resumed: bool,
         ending: &'static str,
+        agent: AgentDef,
         closes: Vec<(u32, &'static str, Option<&'static str>)>,
         failure: &'static str,
-        activities: Vec<&'static str>,
+        results: Vec<(String, String, bool)>,
+        activities: Vec<&'a str>,
     }
     let unread = "hold not read: event store: the run read failed";
+    let uncounted = "failed closes not counted: event store: the run read failed";
+    let stopping = format!(
+        "stream: {}",
+        SILENCE_FAILURE.strip_prefix(PORT_PREFIX).unwrap()
+    );
     let rows = [
         Row {
             name: "a fault ending",
             resumed: false,
             ending: "init-eof",
+            agent: AgentDef::default(),
             closes: vec![(0, "fault", Some("unknown"))],
             failure: NO_RESULT_FAILURE,
-            activities: vec![
-                FRESH_INIT_LINE,
-                unread,
-                "failed closes not counted: event store: the run read failed",
-            ],
+            results: Vec::new(),
+            activities: vec![FRESH_INIT_LINE, unread, uncounted],
         },
         Row {
             name: "a resume with no session",
             resumed: true,
             ending: "refused-eof",
-            closes: vec![(0, "interrupted", None), (1, "completed", None)],
-            failure: "",
-            activities: vec![unread, FALLBACK_LINE, FRESH_INIT_LINE],
+            agent: AgentDef::default(),
+            closes: vec![(0, "fault", Some("unknown"))],
+            failure: REFUSED_FAILURE,
+            results: Vec::new(),
+            activities: vec![unread, uncounted],
+        },
+        Row {
+            name: "a resume with no session, silent to the stop",
+            resumed: true,
+            ending: "silent",
+            agent: wall_clock_bounded(SILENCE_BOUND),
+            closes: vec![(0, "stopped", None)],
+            failure: SILENCE_FAILURE,
+            results: liveness_fault_on_record(),
+            activities: vec![unread, &stopping, uncounted],
+        },
+        Row {
+            name: "a resume with no session, on a read error",
+            resumed: true,
+            ending: "unreadable",
+            agent: AgentDef::default(),
+            closes: Vec::new(),
+            failure: UNREADABLE_FAILURE,
+            results: Vec::new(),
+            activities: vec![
+                "stream (read error before system/init): stream did not contain valid UTF-8",
+                unread,
+            ],
         },
     ];
     for row in rows {
@@ -3255,7 +3334,7 @@ fn a_hold_read_that_fails_leaves_the_ending_of_an_unheld_run() {
         };
         let planted = fx.plant_scratch(&o);
 
-        let outcome = driver.spawn(&AgentDef::default(), FULL_PROMPT, &o, &no_emit);
+        let outcome = driver.spawn(&row.agent, FULL_PROMPT, &o, &no_emit);
 
         let failure = outcome.map_or_else(
             |e| rigger::conductor::strip_failure_marker(&e).to_string(),
@@ -3268,6 +3347,8 @@ fn a_hold_read_that_fails_leaves_the_ending_of_an_unheld_run() {
             .filter_map(|r| Some((r.launch, r.ended.as_deref()?, r.class.as_deref())))
             .collect();
         assert_eq!(closes, row.closes, "{name}: the closes");
+        assert_eq!(fx.tasks_read().len(), 1, "{name}: the one launch");
+        assert_eq!(fx.recorded_results(), row.results, "{name}: the results");
         assert_eq!(fx.activities(), row.activities, "{name}: the progress");
         assert!(
             records.iter().all(|r| r.revision.is_none()),

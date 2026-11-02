@@ -10,9 +10,13 @@
 # stderr too, exit 1. `refused-eof` is the same refusal with nothing on stdout, the shape of
 # Claude Code 2.1.290. Each `retried-*` ending prints one `api_retry` line of
 # `$RIGGER_TEST_RETRY_CATEGORY` and no `system/init`, then ends as `refused-eof`, `silent` or
-# `unreadable` does. A checked-in executable fixture (never written at test time), for the same
-# reason as every sibling fixture here: no concurrent test's fork+exec can inherit a write fd to
-# it.
+# `unreadable` does. `stuck` is `silent` outliving the close of its input, the session THE STOP's
+# grace waits on. `unreadable-pipes-held` is `unreadable` with a descendant holding the output
+# pipes past the reap, which keeps the host's drain joins open; the end of its input is how the
+# descendant sees the reap, since the host's handle on that input drops with the child. Each stays
+# past that point until the test lands what it lands there ([`stay_until_released`]). A checked-in
+# executable fixture (never written at test time), for the same reason as every sibling fixture
+# here: no concurrent test's fork+exec can inherit a write fd to it.
 case " $* " in
 *" --resume "*) ending=${RIGGER_TEST_RESUME_ENDING:-answer} ;;
 *) ending=${RIGGER_TEST_FRESH_ENDING:-answer} ;;
@@ -24,6 +28,18 @@ refusal_tell() {
 
 wait_for_input_to_close() {
     while IFS= read -r _unused; do :; done
+}
+
+# Say the ending is under way in `$RIGGER_TEST_ENDING_SEEN_FILE`, then stay until the file
+# `$RIGGER_TEST_ENDING_RELEASE_FILE` exists. The bound only keeps a test that panicked from
+# waiting forever.
+stay_until_released() {
+    : >"$RIGGER_TEST_ENDING_SEEN_FILE"
+    waited=0
+    while [ ! -e "$RIGGER_TEST_ENDING_RELEASE_FILE" ] && [ "$waited" -lt 600 ]; do
+        sleep 0.1
+        waited=$((waited + 1))
+    done
 }
 
 init() {
@@ -79,6 +95,20 @@ silent)
     exit 1
     ;;
 unreadable)
+    printf '\377\376\n'
+    exec sleep 30
+    ;;
+stuck)
+    wait_for_input_to_close
+    stay_until_released
+    exit 1
+    ;;
+unreadable-pipes-held)
+    exec 3<&0
+    {
+        wait_for_input_to_close <&3
+        stay_until_released
+    } &
     printf '\377\376\n'
     exec sleep 30
     ;;
