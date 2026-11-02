@@ -208,6 +208,9 @@ impl AgentDriver for Driver {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::parked_spawn;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::mpsc::Receiver;
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
@@ -358,6 +361,171 @@ mod tests {
             driver.is_finished(),
             "once the last spawn drains, the finished run reports done"
         );
+    }
+
+    /// The spawn id the served-hold and close rows launch.
+    const ID: &str = "a/implementer#0";
+
+    /// One spawn of [`ID`], the conductor's side of the bridge.
+    fn launch(driver: &Driver) -> Result<AgentResult, Error> {
+        let emit = |_: &str, _: Value| Ok(());
+        driver.spawn(
+            &AgentDef::default(),
+            "do it",
+            &SpawnOpts {
+                id: ID.to_string(),
+                ..Default::default()
+            },
+            &emit,
+        )
+    }
+
+    /// Wait until [`ID`] stands pending on `driver`.
+    fn await_pending(driver: &Driver) {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !driver.inner.lock().unwrap().pending.contains_key(ID) {
+            assert!(Instant::now() < deadline, "spawn never queued");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    /// What the spawn a row launched returned, the bound keeping a row from blocking on a spawn
+    /// nothing answers.
+    fn returned(outcome: &Receiver<Result<AgentResult, Error>>) -> Result<AgentResult, Error> {
+        outcome
+            .recv_timeout(Duration::from_secs(2))
+            .expect("the spawn returns")
+    }
+
+    /// Answers [`ID`] when dropped, so a row that fails with its spawn still blocked leaves the
+    /// scope a thread to join and reports the failure instead of hanging.
+    struct AnswerOnDrop<'a, 'b>(&'a Driver<'b>);
+
+    impl Drop for AnswerOnDrop<'_, '_> {
+        fn drop(&mut self) {
+            let _ = self
+                .0
+                .result(ID, String::new(), String::new(), String::new());
+        }
+    }
+
+    /// Run `row` with a spawn of [`ID`] standing pending on `driver` and its outcome on the
+    /// channel `row` is handed.
+    fn with_a_pending_spawn(
+        driver: &Driver,
+        row: impl FnOnce(&Receiver<Result<AgentResult, Error>>),
+    ) {
+        std::thread::scope(|s| {
+            let (tx, outcome) = channel();
+            s.spawn(move || tx.send(launch(driver)));
+            let _answer = AnswerOnDrop(driver);
+            await_pending(driver);
+            row(&outcome);
+        });
+    }
+
+    /// The id `next` hands out, what these rows tell a handout by.
+    fn next_id(driver: &Driver) -> Option<String> {
+        driver.next().map(|req| req.id)
+    }
+
+    /// Spec 105: on `rigger serve` the launch is the handout, so `next` hands out a queued spawn
+    /// only on a read proving the run unheld. A hold or a failed read hands out nothing and pops
+    /// nothing, so the same spawn goes out once a read proves the run unheld.
+    #[test]
+    fn next_hands_out_a_queued_spawn_only_on_a_read_proving_the_run_unheld() {
+        for (name, answer, handed_out) in [
+            ("a run proved unheld", Some(false), Some(ID.to_string())),
+            ("a held run", Some(true), None),
+            ("a read that failed", None, None),
+        ] {
+            let held = Mutex::new(answer);
+            let read = || {
+                held.lock()
+                    .unwrap()
+                    .ok_or_else(|| Error("the run read failed".to_string()))
+            };
+            let driver = Driver::new().with_hold_read(&read);
+            with_a_pending_spawn(&driver, |outcome| {
+                assert_eq!(next_id(&driver), handed_out, "{name}");
+                *held.lock().unwrap() = Some(false);
+                if handed_out.is_none() {
+                    assert_eq!(next_id(&driver), Some(ID.to_string()), "{name}: unpopped");
+                }
+                assert_eq!(next_id(&driver), None, "{name}: handed out once");
+                assert!(driver.result(ID, "done".into(), String::new(), String::new()));
+                assert_eq!(returned(outcome).unwrap().output, "done", "{name}");
+            });
+        }
+    }
+
+    /// `next` reads the hold only with a spawn queued, since the shim polls it at 20 Hz while idle.
+    #[test]
+    fn next_reads_the_hold_only_with_a_spawn_queued() {
+        let reads = AtomicUsize::new(0);
+        let read = || {
+            reads.fetch_add(1, Ordering::SeqCst);
+            Ok(true)
+        };
+        let driver = Driver::new().with_hold_read(&read);
+        assert_eq!(next_id(&driver), None);
+        assert_eq!(reads.load(Ordering::SeqCst), 0, "nothing queued");
+        with_a_pending_spawn(&driver, |_| {
+            assert_eq!(next_id(&driver), None);
+            assert_eq!(reads.load(Ordering::SeqCst), 1, "one spawn queued");
+        });
+    }
+
+    /// Spec 105: a close returns a park to every pending spawn, queued or handed out, since nothing
+    /// serves it, and a result that landed first stands.
+    #[test]
+    fn a_close_parks_every_pending_spawn_no_result_answered() {
+        let park = parked_spawn(ID).0;
+        for (name, handed_out, answered, ended) in [
+            ("a queued spawn", false, false, Err(park.clone())),
+            ("a spawn handed out", true, false, Err(park.clone())),
+            (
+                "a spawn whose result landed first",
+                true,
+                true,
+                Ok("done".to_string()),
+            ),
+        ] {
+            let driver = Driver::new();
+            with_a_pending_spawn(&driver, |outcome| {
+                if handed_out {
+                    assert_eq!(next_id(&driver), Some(ID.to_string()), "{name}");
+                }
+                if answered {
+                    assert!(driver.result(ID, "done".into(), String::new(), String::new()));
+                }
+                driver.close_session();
+                assert_eq!(
+                    returned(outcome)
+                        .map(|result| result.output)
+                        .map_err(|e| e.0),
+                    ended,
+                    "{name}"
+                );
+            });
+        }
+    }
+
+    /// Spec 105: a spawn behind a close parks at once and queues nothing, however long the run
+    /// goes on, and the flag the hold's wait reads is up.
+    #[test]
+    fn a_spawn_behind_a_close_parks_at_once_and_queues_nothing() {
+        let driver = Arc::new(Driver::new());
+        assert!(!driver.session_closed.load(Ordering::SeqCst));
+        driver.close_session();
+        assert!(driver.session_closed.load(Ordering::SeqCst));
+        let d2 = driver.clone();
+        let (tx, rx) = channel();
+        std::thread::spawn(move || tx.send(launch(&d2)));
+        let ended = returned(&rx);
+        assert_eq!(ended.map_err(|e| e.0).unwrap_err(), parked_spawn(ID).0);
+        assert_eq!(next_id(&driver), None);
+        assert!(driver.inner.lock().unwrap().pending.is_empty());
     }
 
     #[test]

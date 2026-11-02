@@ -8081,9 +8081,10 @@ fn a_served_run_reaching_done_stays_held() {
 /// two of the served wait's reads, a second apart.
 const TO_THE_MIDDLE_OF_A_POLL: Duration = Duration::from_millis(400);
 
-/// How far a release trails a session's close. `rigger serve` marks the close once its read loop
-/// sees the EOF, which no event shows, so a release sooner could land ahead of that mark and be
-/// read alone, which launches into a session nothing serves.
+/// How far a release, or the gate in front of a later launch, trails a session's close. `rigger
+/// serve` marks the close once its read loop sees the EOF, which no event shows, so the trail puts
+/// the step behind that mark: a launch sooner would queue and be parked by the close itself, and
+/// the row would never reach the read of the mark it pins.
 const A_RELEASE_TRAILS_A_CLOSE_BY: Duration = Duration::from_millis(200);
 
 /// Spec 105: given a held run, when `rigger serve` waits on the hold ahead of a launch or behind a
@@ -8130,28 +8131,194 @@ fn a_served_wait_on_a_hold_ends_with_a_park_when_its_session_closes() {
             seed_an_operator_release(root);
         }
         let out = mcp.finish_within(Duration::from_secs(30));
-        let err = String::from_utf8_lossy(&out.stderr);
-        assert!(
-            out.status.success(),
-            "{name}: the session exits 0; stderr: {err}"
-        );
-        assert_eq!(
-            lines_starting_with(&err, "rigger: conductor: "),
-            Vec::<&str>::new(),
-            "{name}: a park is no error"
-        );
+        assert_the_close_parked(root, &out, name);
         assert_eq!(
             run_releases(root),
             vec!["operator"; usize::from(released_with_the_close)],
             "{name}: the releases"
         );
         assert_eq!(run_holds(root).len(), 1, "{name}: the one hold");
+    }
+}
+
+/// Spec 105's HELD BEFORE EACH LAUNCH on `rigger serve`, where the launch is the handout: given two
+/// spawns queued and a hold landing while the first session runs, when the shim polls, then
+/// `rigger_next` hands out nothing, that session finishing included, and on the release it hands
+/// out the spawn it held back.
+#[test]
+fn a_served_hold_hands_out_no_queued_spawn_until_its_release() {
+    const NAME: &str = "two queued spawns";
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_workflow_fixture(root, &TWO_STAGE_WORKFLOW);
+    let mut mcp = McpSession::start_with(root, &["serve", "--base", "HEAD"]);
+    mcp.initialize();
+    let first = next_handout(&mut mcp, NAME);
+    let_the_started_units_queue(root, 2, NAME);
+    seed_a_hold_by(root, "operator");
+    rigger_next_stays_idle_while_a_hold_stands(&mut mcp);
+    answer_spawn(&mut mcp, &first, "output", "did the unit");
+    rigger_next_stays_idle_while_a_hold_stands(&mut mcp);
+    seed_an_operator_release(root);
+    let second = next_handout(&mut mcp, NAME);
+    answer_spawn(&mut mcp, &second, "output", "did the unit");
+    assert_eq!(
+        mcp.next_spawn(Instant::now() + Duration::from_secs(30)),
+        None,
+        "the run is done"
+    );
+    let mut answered = [first, second];
+    answered.sort();
+    let out = mcp.finish();
+    assert_eq!(
+        answered,
+        ["a/implementer#0", "b/implementer#0"],
+        "the one spawn of each unit; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(run_holds(root).len(), 1, "the one hold");
+    assert_eq!(run_releases(root), ["operator"], "the one release");
+}
+
+/// Spec 105: given spawns pending when a session closes, handed out or queued behind a hold, then
+/// each returns a park to its caller, since nothing serves them, and `rigger serve` exits.
+#[test]
+fn a_session_closing_on_pending_spawns_parks_them_and_serve_exits() {
+    for (name, workflow, units, held) in [
+        (
+            "a spawn handed out",
+            &REVIEWLESS_GIT_UNIT_WORKFLOW,
+            1,
+            false,
+        ),
+        ("a spawn queued behind a hold", &TWO_STAGE_WORKFLOW, 2, true),
+    ] {
+        let dir = temp_git_project_with_commit();
+        let root = dir.path();
+        write_workflow_fixture(root, workflow);
+        let mut mcp = McpSession::start_with(root, &["serve", "--base", "HEAD"]);
+        mcp.initialize();
+        next_handout(&mut mcp, name);
+        let_the_started_units_queue(root, units, name);
+        if held {
+            seed_a_hold_by(root, "operator");
+        }
+        let out = mcp.finish_within(Duration::from_secs(30));
+        assert_the_close_parked(root, &out, name);
         assert_eq!(
-            common::cli::run_payloads(root, "UnitFailed"),
-            Vec::<serde_json::Value>::new(),
-            "{name}: the park charges the unit nothing"
+            run_holds(root).len(),
+            usize::from(held),
+            "{name}: the holds"
+        );
+        assert_eq!(run_releases(root), Vec::<String>::new(), "{name}");
+    }
+}
+
+/// [`GATE_AWAITING_A_HOLD_WORKFLOW`] with a second stage needing its unit, so a session can close
+/// with that gate standing in front of a later launch.
+fn gate_ahead_of_a_later_launch_workflow() -> String {
+    format!(
+        "{}  second:\n    agent: worker\n    on_pass: none\n    needs: [solo]\n",
+        GATE_AWAITING_A_HOLD_WORKFLOW.body
+    )
+}
+
+/// Spec 105: given a session closed while a gate runs, when that gate's unit frees a later stage,
+/// then its spawn parks at once and `rigger serve` exits: with no hold, and with a release standing
+/// behind the close, where the wait on the hold reads no hold and no pause and launches, so only
+/// the close itself stands between that spawn and a session nothing serves.
+#[cfg(unix)]
+#[test]
+fn a_spawn_behind_a_sessions_close_parks_at_once_and_serve_exits() {
+    for (name, held) in [("no hold", false), ("a release behind the close", true)] {
+        let dir = temp_git_project_with_commit();
+        let root = dir.path();
+        common::cli::write_scaffold(
+            root,
+            &[("worker", GATE_AWAITING_A_HOLD_WORKFLOW.worker)],
+            &gate_ahead_of_a_later_launch_workflow(),
+        );
+        let scratch = tempfile::tempdir().unwrap();
+        let mut mcp = McpSession::from_command(common::cli::rigger_command(
+            root,
+            &["serve", "--base", "HEAD"],
+            &[("RIGGER_TMPDIR", scratch.path().to_str().unwrap())],
+            root,
+        ));
+        mcp.initialize();
+        let first = next_handout(&mut mcp, name);
+        answer_spawn(&mut mcp, &first, "output", "did the unit");
+        assert!(
+            common::fixtures::wait_until(|| scratch.path().join("gate-running").exists()),
+            "{name}: the gate runs"
+        );
+        if held {
+            seed_a_hold_by(root, "operator");
+        }
+        mcp.close();
+        std::thread::sleep(A_RELEASE_TRAILS_A_CLOSE_BY);
+        if held {
+            seed_an_operator_release(root);
+        }
+        std::fs::write(scratch.path().join("gate-go"), "").unwrap();
+        let out = mcp.finish_within(Duration::from_secs(30));
+        assert_the_close_parked(root, &out, name);
+        assert_eq!(
+            unit_ids(root, rigger::ledger::TYPE_UNIT_STARTED),
+            ["solo", "second"],
+            "{name}: the later stage reached its launch"
+        );
+        assert_eq!(
+            unit_ids(root, rigger::ledger::TYPE_UNIT_INTEGRATED),
+            ["solo"],
+            "{name}: the gate's unit integrated and the parked one did not"
         );
     }
+}
+
+/// How long a started unit's spawn takes to reach the driver's queue, which no event or tool shows.
+/// A launch still short of it on a loaded machine meets the hold at the decorator, so a row stays
+/// green with less to prove; the driver's own `mod tests` hold a queued spawn with no margin.
+const A_STARTED_UNIT_QUEUES_WITHIN: Duration = Duration::from_millis(300);
+
+/// Wait for `units` units to start on `root`'s run, then [`A_STARTED_UNIT_QUEUES_WITHIN`], so their
+/// spawns stand queued; `name` names the table row.
+fn let_the_started_units_queue(root: &Path, units: usize, name: &str) {
+    assert!(
+        common::fixtures::wait_until(
+            || unit_ids(root, rigger::ledger::TYPE_UNIT_STARTED).len() == units
+        ),
+        "{name}: the run reaches its {units} unit(s)"
+    );
+    std::thread::sleep(A_STARTED_UNIT_QUEUES_WITHIN);
+}
+
+/// The unit `id` of each `event_type` event on `root`'s run, oldest first.
+fn unit_ids(root: &Path, event_type: &str) -> Vec<String> {
+    common::cli::run_payloads(root, event_type)
+        .into_iter()
+        .map(|body| body["id"].as_str().unwrap().to_string())
+        .collect()
+}
+
+/// Assert `out` is the exit of a `rigger serve` whose session's close parked what was left: exit 0,
+/// no error from the conductor and no unit of `root`'s run charged; `name` names the table row.
+fn assert_the_close_parked(root: &Path, out: &std::process::Output, name: &str) {
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "{name}: the session exits 0; stderr: {err}"
+    );
+    assert_eq!(
+        lines_starting_with(&err, "rigger: conductor: "),
+        Vec::<&str>::new(),
+        "{name}: a park is no error"
+    );
+    assert_eq!(
+        common::cli::run_payloads(root, "UnitFailed"),
+        Vec::<serde_json::Value>::new(),
+        "{name}: the park charges the unit nothing"
+    );
 }
 
 /// Whether `root`'s run has started a unit, the launch's own first step.
