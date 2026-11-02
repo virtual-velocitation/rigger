@@ -593,6 +593,11 @@ const ADAPTERS: &[Adapter] = &[
         constructor: r"\b(ReplayDriver::new|Driver::new|Driver::default)\(|\bDriver \{",
         home: &["crates/rigger-driver/"],
     },
+    Adapter {
+        family: "keep-awake",
+        constructor: r"\bOsSleepHold\b",
+        home: &["crates/rigger-process/"],
+    },
 ];
 
 /// Production adapter construction outside the composition root, `file:item` (`item` is the

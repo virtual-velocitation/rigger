@@ -6793,17 +6793,28 @@ fn run_on_arms_beside(
     args: &[&str],
     scratch: &Path,
     arms: &str,
+    beside: impl FnMut(&Path),
+) -> (String, String, bool, tempfile::TempDir) {
+    run_on_arms_beside_with(cwd, args, &[], scratch, arms, beside)
+}
+
+/// [`run_on_arms_beside`] with the extra environment `envs` set after the fake's own.
+fn run_on_arms_beside_with(
+    cwd: &Path,
+    args: &[&str],
+    envs: &[(&str, &str)],
+    scratch: &Path,
+    arms: &str,
     mut beside: impl FnMut(&Path),
 ) -> (String, String, bool, tempfile::TempDir) {
     let (fakebin, path_env) = install_fake_claude(arms);
-    let (out, err, ok) = common::cli::run_rigger_within(
-        cwd,
-        args,
-        &fake_claude_env(&path_env, scratch),
-        POLLS_BESIDE_A_RUN,
-        |_| beside(fakebin.path()),
-    )
-    .expect("the run ends once its holds are released");
+    let mut all = fake_claude_env(&path_env, scratch).to_vec();
+    all.extend_from_slice(envs);
+    let (out, err, ok) =
+        common::cli::run_rigger_within(cwd, args, &all, POLLS_BESIDE_A_RUN, |_| {
+            beside(fakebin.path())
+        })
+        .expect("the run ends once its holds are released");
     (out, err, ok, fakebin)
 }
 
@@ -8783,6 +8794,264 @@ fn a_held_run_launches_nothing_until_its_release() {
         Vec::<serde_json::Value>::new(),
         "the wait charges the unit nothing"
     );
+}
+
+/// One checkpoint of a drive and the keep-awake record standing at it.
+type Checkpoint = (&'static str, String);
+
+/// A drive of a run held at its launch: given its project, its keep-awake knob and the path a
+/// recording knob writes, the record at each checkpoint the drive takes, and the driver's stderr.
+type HeldDrive = fn(&Path, &str, &Path) -> (Vec<Checkpoint>, String);
+
+/// What the recording keep-awake fake writing `record` has appended, empty when it wrote nothing.
+fn keep_awake_record(record: &Path) -> String {
+    std::fs::read_to_string(record).unwrap_or_default()
+}
+
+/// The line the recording keep-awake fake appends when `command` acquires its hold.
+fn acquired_by(command: &str) -> String {
+    format!("acquire {command} is driving a run\n")
+}
+
+/// The one line a run's driver prints when the keep-awake facility is unavailable for `why`.
+fn keep_awake_unavailable(why: &str) -> String {
+    format!(
+        "rigger: keep-awake unavailable: {why}; a sleep pauses the run and it resumes by itself"
+    )
+}
+
+/// `rigger run` driving `root`'s held run under the keep-awake knob `knob`: the record at `record`
+/// at each poll while the hold stands with the unit started, each distinct record once, then once
+/// the run has exited; and its stderr. The hold is released once it has stood with the unit
+/// started, and the run must reach done.
+fn drive_a_held_run(root: &Path, knob: &str, record: &Path) -> (Vec<Checkpoint>, String) {
+    let scratch = tempfile::tempdir().unwrap();
+    let mut release = releasing_holds(root, 1, unit_started);
+    let mut checkpoints: Vec<Checkpoint> = Vec::new();
+    let (out, err, ok, _fake) = run_on_arms_beside_with(
+        root,
+        &["run"],
+        &[(common::KEEP_AWAKE_ENV, knob)],
+        scratch.path(),
+        RECORDING_WORKER_ARM,
+        |fake| {
+            if hold_is_open(root) && unit_started(root) {
+                let held = ("held", keep_awake_record(record));
+                if checkpoints.last() != Some(&held) {
+                    checkpoints.push(held);
+                }
+            }
+            release(fake);
+        },
+    );
+    assert!(ok, "the run exits 0; stderr: {err}\nstdout: {out}");
+    assert_eq!(
+        out.lines().nth(2),
+        Some("done: every unit integrated"),
+        "how the run ended; stderr: {err}"
+    );
+    checkpoints.push(("exited", keep_awake_record(record)));
+    (checkpoints, err)
+}
+
+/// `rigger serve` driving `root`'s held run under the keep-awake knob `knob`: the record at `record`
+/// once the hold has stood with the unit started, once the run is done with its session still
+/// open, and once the session has closed and serve exited; and its stderr.
+fn drive_a_held_serve(root: &Path, knob: &str, record: &Path) -> (Vec<Checkpoint>, String) {
+    let mut mcp = McpSession::from_command(common::cli::rigger_command(
+        root,
+        &["serve", "--base", "HEAD"],
+        &[(common::KEEP_AWAKE_ENV, knob)],
+        root,
+    ));
+    mcp.initialize();
+    assert!(
+        common::fixtures::wait_until(|| unit_started(root)),
+        "the served run reaches its unit"
+    );
+    rigger_next_stays_idle_while_a_hold_stands(&mut mcp);
+    let mut checkpoints = vec![("held", keep_awake_record(record))];
+    seed_an_operator_release(root);
+    assert_eq!(
+        answer_spawns_until_done(&mut mcp, || {}),
+        ["solo/implementer#0"],
+        "the spawns the run served"
+    );
+    checkpoints.push(("done, its session open", keep_awake_record(record)));
+    let out = mcp.finish_within(Duration::from_secs(30));
+    let err = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(out.status.success(), "serve exits 0; stderr: {err}");
+    checkpoints.push(("exited", keep_awake_record(record)));
+    (checkpoints, err)
+}
+
+/// Spec 105's THE MACHINE STAYS AWAKE WHILE A RUN DRIVES, through the fake adapters: given a run
+/// held at its launch, when `rigger run` or `rigger serve` drives it, then the driver acquires the
+/// hold once as it starts driving, keeps it while the run stands held, `rigger serve` also past
+/// the run's end while its session stays open, and releases it once as it exits; and on an
+/// unavailable facility, a knob naming no adapter or a record the fake cannot append to, the
+/// driver prints the one keep-awake line and the run still reaches done.
+#[cfg(unix)]
+#[test]
+fn a_run_driver_holds_the_machine_awake_while_it_drives_and_releases_it_as_it_exits() {
+    struct Case {
+        name: &'static str,
+        drive: HeldDrive,
+        /// Where the recording fake writes, under a fresh directory.
+        record: &'static str,
+        /// The keep-awake knob, given the path the drive reads the record from.
+        knob: fn(&Path) -> String,
+        /// The record at each checkpoint of the drive, the exit's last.
+        records: Vec<Checkpoint>,
+        /// The keep-awake lines on the driver's stderr, given the record's path.
+        lines: fn(&Path) -> Vec<String>,
+    }
+    const NO_LOGIND: &str = "no logind on the system bus";
+    let run = acquired_by("rigger run");
+    let serve = acquired_by("rigger serve");
+    let cases = [
+        Case {
+            name: "rigger run on the recording fake",
+            drive: drive_a_held_run,
+            record: "keep-awake",
+            knob: |record: &Path| format!("record:{}", record.display()),
+            records: vec![("held", run.clone()), ("exited", format!("{run}release\n"))],
+            lines: |_: &Path| vec![],
+        },
+        Case {
+            name: "rigger serve on the recording fake",
+            drive: drive_a_held_serve,
+            record: "keep-awake",
+            knob: |record: &Path| format!("record:{}", record.display()),
+            records: vec![
+                ("held", serve.clone()),
+                ("done, its session open", serve.clone()),
+                ("exited", format!("{serve}release\n")),
+            ],
+            lines: |_: &Path| vec![],
+        },
+        Case {
+            name: "rigger run on an unavailable facility",
+            drive: drive_a_held_run,
+            record: "keep-awake",
+            knob: |_: &Path| format!("unavailable:{NO_LOGIND}"),
+            records: vec![("held", String::new()), ("exited", String::new())],
+            lines: |_: &Path| vec![keep_awake_unavailable(NO_LOGIND)],
+        },
+        Case {
+            name: "rigger serve on an unavailable facility",
+            drive: drive_a_held_serve,
+            record: "keep-awake",
+            knob: |_: &Path| format!("unavailable:{NO_LOGIND}"),
+            records: vec![
+                ("held", String::new()),
+                ("done, its session open", String::new()),
+                ("exited", String::new()),
+            ],
+            lines: |_: &Path| vec![keep_awake_unavailable(NO_LOGIND)],
+        },
+        Case {
+            name: "rigger run on a knob naming no adapter",
+            drive: drive_a_held_run,
+            record: "keep-awake",
+            knob: |_: &Path| "awake".to_string(),
+            records: vec![("held", String::new()), ("exited", String::new())],
+            lines: |_: &Path| {
+                vec![keep_awake_unavailable(&format!(
+                    "{}=awake names no keep-awake adapter",
+                    common::KEEP_AWAKE_ENV
+                ))]
+            },
+        },
+        Case {
+            name: "rigger run on a record the fake cannot append to",
+            drive: drive_a_held_run,
+            record: "absent/keep-awake",
+            knob: |record: &Path| format!("record:{}", record.display()),
+            records: vec![("held", String::new()), ("exited", String::new())],
+            lines: |record: &Path| {
+                vec![keep_awake_unavailable(&format!(
+                    "cannot record to {}: No such file or directory (os error 2)",
+                    record.display()
+                ))]
+            },
+        },
+    ];
+    for case in cases {
+        let name = case.name;
+        let dir = temp_git_project_with_commit();
+        let root = dir.path();
+        write_workflow_fixture(root, &REVIEWLESS_GIT_UNIT_WORKFLOW);
+        seed_a_run_held_by(root, Some("operator"));
+        let here = tempfile::tempdir().unwrap();
+        let record = here.path().join(case.record);
+        let (records, err) = (case.drive)(root, &(case.knob)(&record), &record);
+        assert_eq!(
+            records, case.records,
+            "{name}: the keep-awake record at each checkpoint; stderr: {err}"
+        );
+        assert_eq!(
+            lines_starting_with(&err, "rigger: keep-awake"),
+            (case.lines)(&record),
+            "{name}: the keep-awake lines"
+        );
+        let integrated = common::cli::run_payloads(root, rigger::ledger::TYPE_UNIT_INTEGRATED);
+        assert_eq!(
+            integrated.iter().map(|e| &e["id"]).collect::<Vec<_>>(),
+            vec!["solo"],
+            "{name}: the run reaches done"
+        );
+    }
+}
+
+/// [`REVIEWLESS_GIT_UNIT_WORKFLOW`]'s worker beside a workflow body no load parses.
+const UNLOADABLE_WORKFLOW: WorkflowFixture = WorkflowFixture {
+    worker: REVIEWLESS_GIT_UNIT_WORKFLOW.worker,
+    body: "stages: [\n",
+};
+
+/// Spec 105's KEEP-AWAKE holders: given the recording keep-awake fake, when `rigger step` parks a
+/// launch, since it is one-shot, or `rigger run` or `rigger serve` refuses on a workflow it cannot
+/// load, before it drives any run, then nothing acquires the hold.
+#[test]
+fn a_command_driving_no_run_takes_no_keep_awake_hold() {
+    for (name, args, workflow, exits_0) in [
+        (
+            "rigger step",
+            &["step"][..],
+            &REVIEWLESS_GIT_UNIT_WORKFLOW,
+            true,
+        ),
+        (
+            "a refused rigger run",
+            &["run"][..],
+            &UNLOADABLE_WORKFLOW,
+            false,
+        ),
+        (
+            "a refused rigger serve",
+            &["serve", "--base", "HEAD"][..],
+            &UNLOADABLE_WORKFLOW,
+            false,
+        ),
+    ] {
+        let dir = temp_git_project_with_commit();
+        let root = dir.path();
+        write_workflow_fixture(root, workflow);
+        let here = tempfile::tempdir().unwrap();
+        let record = here.path().join("keep-awake");
+        let knob = format!("record:{}", record.display());
+        let (out, err, ok) = run_rigger_envs(root, args, &[(common::KEEP_AWAKE_ENV, &knob)]);
+        assert_eq!(
+            ok, exits_0,
+            "{name}: how it exits; stderr: {err}\nstdout: {out}"
+        );
+        assert_eq!(
+            keep_awake_record(&record),
+            "",
+            "{name}: the keep-awake record"
+        );
+    }
 }
 
 /// The shell of a session that dies with no result on its first launch: each later launch goes on

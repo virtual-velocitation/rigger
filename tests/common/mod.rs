@@ -163,6 +163,12 @@ pub fn rigger_bin() -> PathBuf {
 /// session inherits that session's spawn id, which would stamp every fixture `rigger emit` as
 /// that spawn's and subject it to the emit core's id-ownership check. A test that drives the
 /// stamp re-sets it with `.env(...)` on the returned `Command`, which wins.
+///
+/// Also pins [`KEEP_AWAKE_ENV`] to a recording fake writing under [`test_cache_home`] (spec
+/// 105, KEEP-AWAKE): a `rigger run` or `rigger serve` left on the OS adapter would hold the
+/// operator's real machine awake, or print the keep-awake unavailable line on a host lacking the
+/// facility, so no test outside the adapter's own rows depends on the host's power facility. A
+/// test that drives the knob re-sets it with `.env(...)`, which wins.
 pub fn rigger_courier() -> Command {
     let mut cmd = Command::new(rigger_bin());
     unfenced(&mut cmd);
@@ -170,8 +176,8 @@ pub fn rigger_courier() -> Command {
 }
 
 /// Applies [`rigger_courier`]'s own env hygiene (the `STORE_FENCE_ENV`/`KURRENTDB_CONN`/
-/// `SPAWN_ENV` strip and the `XDG_CACHE_HOME` pin - see that function's doc comment for the
-/// full WHY)
+/// `SPAWN_ENV` strip and the `XDG_CACHE_HOME` and keep-awake pins - see that function's doc
+/// comment for the full WHY)
 /// to an ALREADY-CONSTRUCTED `Command`, for the one class of call site `rigger_courier`
 /// itself cannot cover: a suite that drives the product binary through an intermediate
 /// shell (`sh -c "<installed hook command>"`) rather than invoking it directly. That
@@ -195,8 +201,15 @@ pub fn unfenced(cmd: &mut Command) -> &mut Command {
     cmd.env_remove("KURRENTDB_CONN");
     cmd.env_remove(rigger::driver::SPAWN_ENV);
     cmd.env("XDG_CACHE_HOME", test_cache_home());
+    let record = test_cache_home().join("keep-awake");
+    cmd.env(KEEP_AWAKE_ENV, format!("record:{}", record.display()));
     cmd
 }
+
+/// The knob selecting the keep-awake adapter a `rigger run` or `rigger serve` holds the machine
+/// awake through (spec 105): `record:<path>` selects the recording fake and `unavailable:<reason>`
+/// the fake whose acquire fails with `<reason>`.
+pub const KEEP_AWAKE_ENV: &str = "RIGGER_KEEP_AWAKE";
 
 /// Clears this test process's own ambient `STORE_FENCE_ENV` (the fence a gate pins on its
 /// whole subprocess tree) when created AND again when dropped, so a test that sets the fence
