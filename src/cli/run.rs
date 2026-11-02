@@ -580,16 +580,20 @@ pub(crate) fn cmd_step(args: &[String]) -> Res {
     let definition = definition_hash(".")?;
 
     // A NEW RUN NEEDS A CLEAN CRITIQUE (spec 112): decided before this step appends anything, so
-    // a refused step mints no run and prints no JSON line.
-    RunStartCritique {
-        command: "rigger step",
-        backend: backend.as_ref(),
-        identity: &project_identity(),
-        workflow: &cfg.workflow,
-        root: &review::spec_root(&cwd, &repo),
-        text: &text,
-    }
-    .refuse_unless_clean(args.spec.as_deref(), &criteria, args.fresh)?;
+    // a refused step mints no run and prints no JSON line. A `--fresh` step decides it ahead of
+    // its mint and a plain step behind the hold read, since a held step begins no run for it to
+    // guard.
+    let refuse_a_new_run = || {
+        RunStartCritique {
+            command: "rigger step",
+            backend: backend.as_ref(),
+            identity: &project_identity(),
+            workflow: &cfg.workflow,
+            root: &review::spec_root(&cwd, &repo),
+            text: &text,
+        }
+        .refuse_unless_clean(args.spec.as_deref(), &criteria, args.fresh)
+    };
 
     // `--fresh`: begin a NEW run BEFORE this step (and before the liveness sweep reads the
     // current run), so the conductor's own `ensure_started` adopts this just-minted
@@ -598,6 +602,7 @@ pub(crate) fn cmd_step(args: &[String]) -> Res {
     // began. The notice goes to STDERR - stdout carries only the `{wave,done}` JSON the
     // driver parses. See `runscope_store::start_fresh`.
     if args.fresh {
+        refuse_a_new_run()?;
         // Persist the resolved run-branch base, and the launching spec path (spec 82,
         // criterion 1), on the fresh boundary (spec 38, criterion 3): `args.base` is the base
         // this step anchored the run branch on, so `rigger status`/dash name the same base
@@ -614,12 +619,16 @@ pub(crate) fn cmd_step(args: &[String]) -> Res {
     }
 
     // A HELD RUN LAUNCHES NOTHING (spec 105): the hold is read behind `--fresh`, whose mint
-    // released the hold it ended, and ahead of the scratch sweep, the definition pin and the
-    // liveness sweep, so a held step leaves all three to the release. A read that fails ends the
-    // step, since a run not proved unheld launches nothing.
+    // released the hold it ended, and on a plain step ahead of the critique refusal, so a held
+    // plain step prints the hold whatever the critique. It is read ahead of the scratch sweep, the
+    // definition pin and the liveness sweep, so a held step leaves all three to the release. A
+    // read that fails ends the step, since a run not proved unheld launches nothing.
     if let Some(hold) = runscope::read::read_current_hold(&store, conductor::STREAM)? {
         println!("{}", serde_json::to_string(&spawn::step_of_hold(&hold))?);
         return Ok(());
+    }
+    if !args.fresh {
+        refuse_a_new_run()?;
     }
 
     // The currently loaded workflow's own declared unit branches (spec 89, criterion 1, round
@@ -1752,7 +1761,8 @@ struct RunStartCritique<'a> {
 
 impl RunStartCritique<'_> {
     /// Refuse a command that would begin a new run on `spec` unless the critique of its text is
-    /// clean - the one decision every CLI run start makes before it appends anything. A command
+    /// clean - the one decision every CLI run start makes before it appends anything. A held plain
+    /// `rigger step` never asks it, since a held step begins no run (spec 105). A command
     /// with no spec, and one that adopts the latest run ([`runscope::adopted_run`] over the run
     /// stream's [`runscope::MINT_DECISION_TYPES`] events, `criteria` and `fresh`, as a command
     /// naming its spec), proceeds. Under a workflow naming no
