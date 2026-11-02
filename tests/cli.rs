@@ -12256,16 +12256,6 @@ fn run_event_types(root: &Path) -> Vec<String> {
         .collect()
 }
 
-/// A hold by `by` of `cause` carrying `action`, the fields a held step's line names.
-fn hold_naming(cause: &str, action: &str, by: &str) -> rigger::run::RunHeld {
-    rigger::run::RunHeld {
-        cause: cause.to_string(),
-        action: action.to_string(),
-        by: by.to_string(),
-        ..Default::default()
-    }
-}
-
 /// Spec 105's step exit: given a held run with a leftover worktree on its scratch root, a definition
 /// drifted from its pin and a spawn whose marker went stale, when the operator steps, then the step
 /// prints the hold with an empty wave, exits 0 and records nothing, with its sweep, definition pin
@@ -12276,7 +12266,7 @@ fn a_held_step_names_the_hold_ahead_of_its_sweep_pin_and_liveness_sweep() {
     for (name, held, printed) in [
         (
             "a host hold",
-            hold_naming(
+            common::fixtures::hold_naming(
                 "rate_limit",
                 "waits for the limit to reset",
                 rigger::run::HOLD_BY_HOST,
@@ -12285,7 +12275,7 @@ fn a_held_step_names_the_hold_ahead_of_its_sweep_pin_and_liveness_sweep() {
         ),
         (
             "an operator hold",
-            hold_naming(
+            common::fixtures::hold_naming(
                 "operator",
                 "the quota is being moved",
                 rigger::run::HOLD_BY_OPERATOR,
@@ -12387,7 +12377,7 @@ fn a_step_of_a_held_run_launches_only_on_its_fresh_mint() {
         seed_a_campaign_held_by(root, &["another campaign's criterion".to_string()], None);
         common::cli::seed_on_the_run(
             root,
-            common::fixtures::run_held_event(&hold_naming(
+            common::fixtures::run_held_event(&common::fixtures::hold_naming(
                 "rate_limit",
                 "waits for the limit to reset",
                 rigger::run::HOLD_BY_HOST,

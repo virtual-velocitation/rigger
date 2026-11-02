@@ -15,13 +15,19 @@ pub fn no_emit(_: &str, _: serde_json::Value) -> Result<(), Error> {
     Ok(())
 }
 
-/// A `RunHeld` event of `cause` by `by`, every other field at its default.
-pub fn held_event(cause: &str, by: &str) -> Event {
-    run_held_event(&rigger::run::RunHeld {
+/// A hold by `by` of `cause` carrying `action`, the fields a held step's line names.
+pub fn hold_naming(cause: &str, action: &str, by: &str) -> rigger::run::RunHeld {
+    rigger::run::RunHeld {
         cause: cause.to_string(),
+        action: action.to_string(),
         by: by.to_string(),
         ..Default::default()
-    })
+    }
+}
+
+/// A `RunHeld` event of `cause` by `by`, every other field at its default.
+pub fn held_event(cause: &str, by: &str) -> Event {
+    run_held_event(&hold_naming(cause, "", by))
 }
 
 /// A `RunHeld` event carrying `body`.
