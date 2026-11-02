@@ -7,6 +7,13 @@
 //! deterministic `opts.id`, so the server can stamp those live emits with the id of
 //! the spawn it is serving (the per-spawn correlation the verdict-channel-mismatch
 //! backstop keys on; the serial shim makes "the spawn being served" unambiguous).
+//!
+//! On `rigger serve` the launch is the handout (spec 105): [`Driver::next`] hands out no queued
+//! spawn while the run is held, reading the hold through the read the composition root injects
+//! ([`Driver::with_hold_read`]), so the shim keeps polling and the request stays pending. Once the
+//! session closes ([`Driver::close_session`]) nothing serves a spawn, so every pending spawn
+//! returns a park to its caller and every later spawn returns one at once, and no spawn blocks on
+//! a session that is gone.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -16,7 +23,7 @@ use std::sync::Mutex;
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::agent::{AgentDriver, AgentResult, Error, SpawnOpts};
+use crate::agent::{parked_spawn, AgentDriver, AgentResult, Error, SpawnOpts};
 use crate::config::AgentDef;
 
 /// What the shim picks up via rigger_next.
@@ -56,7 +63,7 @@ struct Inner {
 }
 
 /// Driver bridges the conductor to a polling MCP server.
-pub struct Driver {
+pub struct Driver<'a> {
     inner: Mutex<Inner>,
     /// Set once the conductor's `run` has returned. It is the ONLY signal that an
     /// empty `next()` means "the run is over" rather than "nothing is queued yet":
@@ -65,9 +72,16 @@ pub struct Driver {
     /// not-yet-grounded conductor from a finished one and exits prematurely (the
     /// pga race the shim's poll loop hit on the first real e2e run).
     finished: AtomicBool,
+    /// Set only by [`close_session`](Driver::close_session), under `inner`'s lock, so a spawn
+    /// reading it there either parks or stands pending for the close to park; public for a wait on
+    /// a hold to read.
+    pub session_closed: AtomicBool,
+    /// Whether the run stands held, read ahead of each handout; `None` on a driver no hold
+    /// governs.
+    hold_read: Option<&'a (dyn Fn() -> Result<bool, Error> + Sync)>,
 }
 
-impl Default for Driver {
+impl Default for Driver<'_> {
     fn default() -> Self {
         Driver {
             inner: Mutex::new(Inner {
@@ -76,17 +90,49 @@ impl Default for Driver {
                 next_id: 0,
             }),
             finished: AtomicBool::new(false),
+            session_closed: AtomicBool::new(false),
+            hold_read: None,
         }
     }
 }
 
-impl Driver {
+impl<'a> Driver<'a> {
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Return the next queued spawn request for the shim, or None if none waits.
+    /// This driver with `read` answering whether the run stands held, the read each handout
+    /// decides on.
+    pub fn with_hold_read(mut self, read: &'a (dyn Fn() -> Result<bool, Error> + Sync)) -> Self {
+        self.hold_read = Some(read);
+        self
+    }
+
+    /// The session has closed, so nothing will serve a spawn: every pending spawn, queued or
+    /// handed out, returns a park to its caller and every later one returns it at once, and the
+    /// conductor unwinds uncharged. A result already delivered stays ahead of the park.
+    pub fn close_session(&self) {
+        let inner = self.inner.lock().unwrap();
+        self.session_closed.store(true, Ordering::SeqCst);
+        for (id, call) in &inner.pending {
+            let _ = call.tx.send(Err(parked_spawn(id)));
+        }
+    }
+
+    /// Return the next queued spawn request for the shim, or None if none waits or the run is not
+    /// proved unheld: a held run or a read that fails hands out nothing and pops nothing, so the
+    /// request stays pending for a later poll. The hold is read only with a spawn queued, since
+    /// the shim polls at 20 Hz while idle, and outside the lock, which a spawn queues under.
     pub fn next(&self) -> Option<SpawnRequest> {
+        if self.inner.lock().unwrap().queue.is_empty() {
+            return None;
+        }
+        if self
+            .hold_read
+            .is_some_and(|read| !matches!(read(), Ok(false)))
+        {
+            return None;
+        }
         let mut inner = self.inner.lock().unwrap();
         while let Some(id) = inner.queue.pop_front() {
             if let Some(call) = inner.pending.get(&id) {
@@ -151,7 +197,7 @@ impl Driver {
     }
 }
 
-impl AgentDriver for Driver {
+impl AgentDriver for Driver<'_> {
     fn spawn(
         &self,
         agent: &AgentDef,
@@ -175,6 +221,9 @@ impl AgentDriver for Driver {
             } else {
                 opts.id.clone()
             };
+            if self.session_closed.load(Ordering::SeqCst) {
+                return Err(parked_spawn(&id));
+            }
             let req = SpawnRequest {
                 id: id.clone(),
                 prompt: prompt.to_string(),
@@ -208,7 +257,6 @@ impl AgentDriver for Driver {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::parked_spawn;
     use std::sync::atomic::AtomicUsize;
     use std::sync::mpsc::Receiver;
     use std::sync::Arc;

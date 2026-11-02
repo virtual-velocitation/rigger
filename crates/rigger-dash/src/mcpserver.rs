@@ -57,7 +57,7 @@ impl From<&str> for ToolError {
 /// The MCP bridge over the workflow driver, event store, side-car, and (optionally)
 /// the context-graph projector.
 pub struct Server<'a> {
-    driver: &'a Driver,
+    driver: &'a Driver<'a>,
     store: &'a dyn EventStore,
     stream: String,
     /// The live context-graph projector. When set, an emitted event is folded into
@@ -142,7 +142,7 @@ enum Surface {
 }
 
 impl<'a> Server<'a> {
-    pub fn new(driver: &'a Driver, store: &'a dyn EventStore, stream: &str) -> Self {
+    pub fn new(driver: &'a Driver<'a>, store: &'a dyn EventStore, stream: &str) -> Self {
         Server {
             driver,
             store,
@@ -378,10 +378,10 @@ impl<'a> Server<'a> {
             // An empty id means "no spawn right now". `done` disambiguates the two
             // cases the shim cannot otherwise tell apart: `done:true` means the
             // conductor has finished and the shim should exit; `done:false` means the
-            // conductor is still running (grounding, or between waves) and the shim
-            // must poll again rather than exit. Without `done`, an early empty `next`
-            // looks identical to a finished run and the shim exits before the first
-            // spawn is even enqueued.
+            // conductor is still running (grounding, between waves, or with a queued spawn a
+            // hold keeps back) and the shim must poll again rather than exit. Without `done`,
+            // an early empty `next` looks identical to a finished run and the shim exits
+            // before the first spawn is even enqueued.
             None => Ok(json!({"id": "", "done": self.driver.is_finished()})),
         }
     }

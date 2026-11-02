@@ -4138,7 +4138,9 @@ fn serve_from_a_linked_worktree_refuses_naming_both_trees() {
 /// from the correct path, which is still healthy and running well past this test's own short
 /// (2s) observation window. This is the discriminator: NOT "does it eventually succeed"
 /// (correct code never exits within any short bound here - it moves on to serving the run), but
-/// "does it exit at all, this fast" (only the guard-flip regression does).
+/// "does it exit at all, this fast" (only the guard-flip regression does). The child's stdin is a
+/// pipe this test holds open, since a session that closes ends `rigger serve` by itself (spec
+/// 105): with a closed stdin correct code would exit inside the window too.
 #[test]
 fn repo_less_serve_never_attempts_to_anchor_a_run_branch() {
     use std::io::Read;
@@ -4154,7 +4156,7 @@ fn repo_less_serve_never_attempts_to_anchor_a_run_branch() {
         .args(["serve"])
         .current_dir(root)
         .env("XDG_STATE_HOME", state.path())
-        .stdin(Stdio::null())
+        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()

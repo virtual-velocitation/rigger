@@ -1953,7 +1953,10 @@ fn run_workflow(parsed: &RunArgs, command: &str) -> Res {
             text: &text,
         },
     )?;
-    let driver = rigger::driver::workflow::Driver::new();
+    // On this surface the launch is the handout, so the driver reads the hold the decorator reads.
+    let hold_stands =
+        || runscope::read::read_current_hold(&store, conductor::STREAM).map(|hold| hold.is_some());
+    let driver = rigger::driver::workflow::Driver::new().with_hold_read(&hold_stands);
     let grounder = select_grounder(&cfg.workflow.defaults.grounder)?;
 
     // Spec 14: the SEPARATE progress store + scratch root, so the MCP `rigger_activity` tool
@@ -1974,15 +1977,17 @@ fn run_workflow(parsed: &RunArgs, command: &str) -> Res {
     let _dash = start_run_dashboard(cfg.workflow.dash_enabled(), &store);
 
     let hash_blob = hash_blob_in(&repo);
-    // Set once the session closes, so a launch waiting on a hold ends with a park: nothing would
-    // serve its spawn after the close, and the scope below joins the conductor.
-    let session_closed = std::sync::atomic::AtomicBool::new(false);
     // The conductor orchestrates in the background; this thread serves the MCP
     // bridge over stdio. The shim drains spawns via rigger_next/result; closing
     // stdin ends the session.
     std::thread::scope(|s| {
         s.spawn(|| {
-            let held = HeldDriver::new(&driver, &store, Some(&session_closed), &pause_a_hold_poll);
+            let held = HeldDriver::new(
+                &driver,
+                &store,
+                Some(&driver.session_closed),
+                &pause_a_hold_poll,
+            );
             let deps = Deps {
                 store: &store,
                 driver: &held,
@@ -2020,7 +2025,9 @@ fn run_workflow(parsed: &RunArgs, command: &str) -> Res {
             .with_graph(&graph)
             .with_progress(&prog_store, &scratch_root);
         let _ = server.run(std::io::stdin().lock(), std::io::stdout().lock());
-        session_closed.store(true, std::sync::atomic::Ordering::SeqCst);
+        // Nothing serves a spawn past the close, so each one parks and the scope joins the
+        // conductor.
+        driver.close_session();
     });
     Ok(())
 }
