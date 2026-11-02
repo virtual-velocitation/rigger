@@ -457,9 +457,9 @@ mod tests {
         }
     }
 
-    /// Run `row` with a spawn of [`ID`] standing pending on `driver` and its outcome on the
-    /// channel `row` is handed.
-    fn with_a_pending_spawn(
+    /// Run `row` with a spawn of [`ID`] launched on `driver` and its outcome on the channel `row`
+    /// is handed.
+    fn with_a_launched_spawn(
         driver: &Driver,
         row: impl FnOnce(&Receiver<Result<AgentResult, Error>>),
     ) {
@@ -467,8 +467,19 @@ mod tests {
             let (tx, outcome) = channel();
             s.spawn(move || tx.send(launch(driver)));
             let _answer = AnswerOnDrop(driver);
-            await_pending(driver);
             row(&outcome);
+        });
+    }
+
+    /// Run `row` with a spawn of [`ID`] standing pending on `driver` and its outcome on the
+    /// channel `row` is handed.
+    fn with_a_pending_spawn(
+        driver: &Driver,
+        row: impl FnOnce(&Receiver<Result<AgentResult, Error>>),
+    ) {
+        with_a_launched_spawn(driver, |outcome| {
+            await_pending(driver);
+            row(outcome);
         });
     }
 
@@ -574,6 +585,23 @@ mod tests {
         assert_eq!(ended.map_err(|e| e.0).unwrap_err(), parked_spawn(ID).0);
         assert_eq!(next_id(&driver), None);
         assert!(driver.inner.lock().unwrap().pending.is_empty());
+    }
+
+    /// Spec 105: a spawn standing at the lock as the close lands parks, since it reads the close
+    /// under that lock and so can never queue behind the close's drain, on a session nothing
+    /// serves. The row holds the lock [`Driver::close_session`] takes, so it raises the flag
+    /// itself, the close's first act under the lock.
+    #[test]
+    fn a_close_racing_a_spawn_leaves_no_spawn_blocked() {
+        let driver = Driver::new();
+        let guard = driver.inner.lock().unwrap();
+        with_a_launched_spawn(&driver, |outcome| {
+            std::thread::sleep(Duration::from_millis(50));
+            driver.session_closed.store(true, Ordering::SeqCst);
+            drop(guard);
+            let ended = returned(outcome);
+            assert_eq!(ended.map_err(|e| e.0).unwrap_err(), parked_spawn(ID).0);
+        });
     }
 
     #[test]
