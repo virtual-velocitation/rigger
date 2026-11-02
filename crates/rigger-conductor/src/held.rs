@@ -34,7 +34,10 @@ use crate::conductor::is_parked_or_refused;
 use crate::config::AgentDef;
 use crate::eventstore::{Event, EventStore};
 use crate::ledger;
-use crate::run::{read::read_current_run, STREAM};
+use crate::run::{
+    read::{read_current_hold, read_current_run},
+    STREAM,
+};
 use crate::spawn;
 
 /// How many times one spawn id relaunches with no non-error outcome of that id between: its next
@@ -85,7 +88,7 @@ impl<'a> HeldDriver<'a> {
     fn wait_out_the_hold(&self, id: &str) -> Result<(), Error> {
         let mut paused = false;
         loop {
-            let held = ledger::project(&self.run_slice()?)?.hold.is_some();
+            let held = read_current_hold(self.store, STREAM)?.is_some();
             let closed = self
                 .session_closed
                 .is_some_and(|closed| closed.load(Ordering::SeqCst));

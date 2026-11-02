@@ -33,7 +33,7 @@ use crate::liveness;
 use crate::progress::{self, ApiRetry, SpawnLaunched};
 use crate::progress_store;
 use crate::run;
-use crate::run::read::read_current_run;
+use crate::run::read::{read_current_hold, read_current_run};
 use crate::run::STREAM;
 use crate::run_store;
 use crate::spawn::SpawnResult;
@@ -1394,8 +1394,7 @@ fn drain_child_stderr_tail(mut stderr: ChildStderr) -> Vec<u8> {
 
 /// Whether the run on `sink` stands held: the hold its current events project to.
 fn hold_stands(sink: &dyn EventStore) -> Result<bool, Error> {
-    let (events, _) = read_current_run(sink, STREAM)?;
-    Ok(rigger_domain::ledger::project(&events)?.hold.is_some())
+    Ok(read_current_hold(sink, STREAM)?.is_some())
 }
 
 /// Append `chunk` to `tail`, then trim from the FRONT down to at most [`STDERR_TAIL_CAP`]

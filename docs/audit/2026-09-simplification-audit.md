@@ -1862,7 +1862,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `crates/rigger-conductor/src/conductor.rs:1097-1099` `conflict_regenerate_key`
 - `crates/rigger-conductor/src/conductor.rs:13049-13051` `audit_id`
 - `crates/rigger-domain/src/spawn.rs:276-278` `spawn_id`
-- `crates/rigger-driver/src/driver/claude_code.rs:1549-1557` `stop_message`
+- `crates/rigger-driver/src/driver/claude_code.rs:1548-1556` `stop_message`
 - `tests/common/fixtures/fold.rs:757-759` `code_batch_key`
 - `tests/common/fixtures/graph.rs:204-206` `spoke_id`
 - `tests/postmerge_gate_error_cleanup_periphery.rs:56-58` `expected_postmerge_dir`
@@ -1920,7 +1920,7 @@ mandatory sweep: same-named helper function defined independently in 2+ files - 
 
 - `crates/rigger-conductor/src/conductor.rs:3778-3780` `read_current_run`
 - `crates/rigger-dash/src/mcpserver.rs:553-556` `read_current_run`
-- `crates/rigger-domain/src/run/read.rs:75-82` `read_current_run`
+- `crates/rigger-domain/src/run/read.rs:77-84` `read_current_run`
 
 #### `dup-f13596146362` (near, 2 sites)
 
@@ -1939,11 +1939,11 @@ mandatory sweep: error-shaping helper functions - 20 site(s), collected mechanic
 
 - `crates/rigger-conductor/src/conductor.rs:5362-5380` `guard_review_round_tree_on_tier_err`
 - `crates/rigger-conductor/src/conductor.rs:31248-31309` `integrate_plan_commits_wraps_any_hard_error_with_the_plan_landing_marker`
-- `crates/rigger-conductor/src/held.rs:584-668` `a_marked_error_or_an_ended_spawn_passes_held_or_not`
+- `crates/rigger-conductor/src/held.rs:587-671` `a_marked_error_or_an_ended_spawn_passes_held_or_not`
 - `crates/rigger-domain/src/agent.rs:479-481` `no_result_error`
 - `crates/rigger-domain/src/agent.rs:536-574` `an_error_answers_the_class_it_carries`
 - `crates/rigger-domain/src/ingest.rs:604-649` `a_walk_reaches_every_batch_past_a_failed_one_and_answers_the_first_error`
-- `crates/rigger-driver/src/driver/claude_code.rs:1562-1567` `read_agent_stream_error`
+- `crates/rigger-driver/src/driver/claude_code.rs:1561-1566` `read_agent_stream_error`
 - `crates/rigger-grounder/src/grounder/mod.rs:207-213` `retired_grounder_error`
 - `crates/rigger-worktree-git/src/worktree.rs:3964-3991` `land_reports_a_generic_error_for_a_refusal_that_is_neither_tip_moved_nor_blocked`
 - `crates/rigger-worktree-git/src/worktree.rs:5322-5376` `revert_on_base_aborts_and_errors_on_a_conflicting_revert`
@@ -2063,10 +2063,10 @@ mandatory sweep: Command::new call sites - 93 site(s), collected mechanically re
 - `src/cli/mod.rs:10426-10426` `Command::new`
 - `src/cli/mod.rs:12166-12166` `Command::new`
 - `src/cli/mod.rs:12200-12200` `Command::new`
-- `src/cli/run.rs:3387-3387` `Command::new`
-- `src/cli/run.rs:3420-3420` `Command::new`
-- `src/cli/run.rs:3464-3464` `Command::new`
-- `src/cli/run.rs:3533-3533` `Command::new`
+- `src/cli/run.rs:3397-3397` `Command::new`
+- `src/cli/run.rs:3430-3430` `Command::new`
+- `src/cli/run.rs:3474-3474` `Command::new`
+- `src/cli/run.rs:3543-3543` `Command::new`
 - `src/cli/setup.rs:3874-3874` `Command::new`
 - `src/cli/setup.rs:3903-3903` `Command::new`
 - `src/cli/validate.rs:1509-1509` `Command::new`
@@ -3528,8 +3528,8 @@ mandatory sweep: /proc-path string literals - 57 site(s), collected mechanically
 - `crates/rigger-worktree-git/src/worktree.rs:3061-3061` `"/proc"`
 - `crates/rigger-worktree-git/src/worktree.rs:3065-3065` `"/proc/{pid}/cmdline"`
 - `crates/rigger-worktree-git/src/worktree.rs:3089-3089` `"/proc/{}"`
-- `src/cli/run.rs:3525-3525` `"/proc"`
-- `src/cli/run.rs:3629-3629` `"/proc"`
+- `src/cli/run.rs:3535-3535` `"/proc"`
+- `src/cli/run.rs:3639-3639` `"/proc"`
 - `tests/cli.rs:25157-25157` `"/proc"`
 - `tests/cli.rs:29372-29372` `"/proc"`
 - `tests/cli.rs:29480-29480` `"the holder pid {holder_pid} never reached the STOPPED (T) state in /proc"`
@@ -4107,8 +4107,8 @@ Proposed home: `claude_code::failing_read_store`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-driver/src/driver/claude_code.rs:1855-1862` `read_stream`
-- `crates/rigger-driver/src/driver/claude_code.rs:1909-1916` `read_stream_typed`
+- `crates/rigger-driver/src/driver/claude_code.rs:1854-1861` `read_stream`
+- `crates/rigger-driver/src/driver/claude_code.rs:1908-1915` `read_stream_typed`
 
 #### `dup-4979c76ee36f` (near, 2 sites)
 
@@ -4116,8 +4116,8 @@ Proposed home: `claude_code::failing_read_store`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-driver/src/driver/claude_code.rs:1902-1908` `last_position`
-- `crates/rigger-driver/src/driver/claude_code.rs:1936-1942` `latest_in_group`
+- `crates/rigger-driver/src/driver/claude_code.rs:1901-1907` `last_position`
+- `crates/rigger-driver/src/driver/claude_code.rs:1935-1941` `latest_in_group`
 
 #### `dup-117928e59e0c` (near, 2 sites)
 
@@ -4125,8 +4125,8 @@ Proposed home: `claude_code::support (consolidate these 2 sites into one functio
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-driver/src/driver/claude_code.rs:2147-2168` `build_args_mcp_config_names_the_spawn_bound_server`
-- `crates/rigger-driver/src/driver/claude_code.rs:2171-2189` `build_args_mcp_config_uses_the_configured_rigger_bin`
+- `crates/rigger-driver/src/driver/claude_code.rs:2146-2167` `build_args_mcp_config_names_the_spawn_bound_server`
+- `crates/rigger-driver/src/driver/claude_code.rs:2170-2188` `build_args_mcp_config_uses_the_configured_rigger_bin`
 
 #### `dup-bada7e276fc1` (semantic, 2 sites)
 
@@ -4229,7 +4229,7 @@ mandatory sweep: sqlite Connection::open call sites - 68 site(s), collected mech
 - `src/cli/mod.rs:5612-5612` `Connection::open`
 - `src/cli/mod.rs:12261-12261` `Connection::open`
 - `src/cli/mod.rs:12741-12741` `Connection::open`
-- `src/cli/run.rs:4586-4586` `Connection::open`
+- `src/cli/run.rs:4596-4596` `Connection::open`
 - `tests/cli.rs:839-839` `Connection::open`
 - `tests/cli.rs:942-942` `Connection::open`
 - `tests/cli.rs:1045-1045` `Connection::open`
@@ -5461,7 +5461,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 ### Adversarial sample
 
-Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 10908 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
+Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 10910 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
 
 - `crates/rigger-conductor/src/conductor.rs:15703-15725` `branch_is_foreign_when_only_one_axis_differs` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-conductor/src/conductor.rs:16664-16671` `resume_of` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
@@ -5481,8 +5481,8 @@ Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85
 - `crates/rigger-worktree-git/src/worktree.rs:1956-1978` `reclaim_cache_sibling` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `src/cli/mod.rs:4711-4737` `footprint_reclaim_lines` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `src/cli/mod.rs:8881-8891` `parse_run_args_reads_rebase_definition` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
-- `src/cli/run.rs:1450-1452` `pause_a_hold_poll` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
-- `src/cli/run.rs:2206-2230` `start_run_dashboard` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
+- `src/cli/run.rs:1459-1461` `pause_a_hold_poll` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
+- `src/cli/run.rs:2215-2239` `start_run_dashboard` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `tests/change_path_revert_periphery.rs:213-323` `a_revert_through_the_shipped_build_records_the_earlier_generations_entry_again` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `tests/code_entity_test_exclusion_periphery.rs:1810-1822` `edges_where` - duplicate found by reading and closed: the design-doc assertion, the dev-only path test and the test-region test each re-rolled its `(from, rel, to)` edge projection inline; all now call `edges_where`
 - `tests/common/fixtures/events.rs:891-893` `after_call` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`

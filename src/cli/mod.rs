@@ -10359,11 +10359,11 @@ mod tests {
             "anomalous exits must stop loudly via a throwing `stop()`, never a silent success return"
         );
 
-        // 6d. A HALT (the spawn-budget breaker's, Gap 13; a plan-critique spec-defect stop's; or
-        //     hung liveness) is a LOUD stop, never a clean completion: `rigger step` reports a
-        //     `halted` reason distinct from `done` convergence, and the driver routes a halted
-        //     step through the throwing `stop()` (so a starved run surfaces as a workflow failure
-        //     instead of the `done` fixpoint reading it as success). The STEP
+        // 6d. A HALT (a hold's; the spawn-budget breaker's, Gap 13; a plan-critique spec-defect
+        //     stop's; or hung liveness) is a LOUD stop, never a clean completion: `rigger step`
+        //     reports a `halted` reason distinct from `done` convergence, and the driver routes a
+        //     halted step through the throwing `stop()` (so a starved run surfaces as a workflow
+        //     failure instead of the `done` fixpoint reading it as success). The STEP
         //     schema must also ADMIT the optional `halted` field - the top level rejects unknown
         //     properties, so a halted step's JSON would otherwise fail validation and be lost.
         assert!(

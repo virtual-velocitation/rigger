@@ -613,6 +613,15 @@ pub(crate) fn cmd_step(args: &[String]) -> Res {
         eprintln!("rigger step: --fresh: began a new run {run} (the prior run stays in the log)");
     }
 
+    // A HELD RUN LAUNCHES NOTHING (spec 105): the hold is read behind `--fresh`, whose mint
+    // released the hold it ended, and ahead of the scratch sweep, the definition pin and the
+    // liveness sweep, so a held step leaves all three to the release. A read that fails ends the
+    // step, since a run not proved unheld launches nothing.
+    if let Some(hold) = runscope::read::read_current_hold(&store, conductor::STREAM)? {
+        println!("{}", serde_json::to_string(&spawn::step_of_hold(&hold))?);
+        return Ok(());
+    }
+
     // The currently loaded workflow's own declared unit branches (spec 89, criterion 1, round
     // 2 fix): config, never the event log, so it stays populated even at this project's very
     // first step, before a single event has ever been recorded. Both step-start worktree
@@ -3134,7 +3143,8 @@ fn print_run_state(rs: &RunState, base: &str) {
 
 /// The halt line a run entry prints after its run state (spec 115): `halted: <reason>` when the
 /// conductor returned a halt reason (the budget breaker's, else a plan-critique spec-defect
-/// stop's), `None` on any other stop. The text form of `rigger step`'s `halted` key.
+/// stop's), `None` on any other stop. The text form of the `halted` key a `rigger step` pass
+/// stamps; a held step runs no pass.
 fn halted_line(rs: &RunState) -> Option<String> {
     rs.budget_halt
         .as_ref()

@@ -6,7 +6,9 @@
 
 use crate::contextgraph::{TYPE_DECISION_MADE, TYPE_LESSON_LEARNED, TYPE_REVIEW_FINDING};
 use crate::eventstore::{Error, Event, EventStore, TypeSelection};
-use crate::ledger::{TYPE_UNIT_FAILED, TYPE_UNIT_INTEGRATED, TYPE_UNIT_STARTED, TYPE_UNIT_STATUS};
+use crate::ledger::{
+    self, Hold, TYPE_UNIT_FAILED, TYPE_UNIT_INTEGRATED, TYPE_UNIT_STARTED, TYPE_UNIT_STATUS,
+};
 use crate::retention::PERCEPTION_TYPES;
 
 use super::TYPE_RUN_STARTED;
@@ -79,6 +81,17 @@ pub fn read_current_run(
     let read = read_run(store, stream)?;
     let run_id = super::current_run_id(&read).unwrap_or_default();
     Ok((super::current_run(&read).to_vec(), run_id))
+}
+
+/// THE RUN'S HOLD, READ ONCE (spec 105): the hold [`read_current_run`]'s slice leaves open, the one
+/// read every launch path decides on. `None` proves the run unheld; a read or a fold that fails
+/// answers its error, since a run not proved unheld launches nothing.
+pub fn read_current_hold(
+    store: &dyn EventStore,
+    stream: &str,
+) -> Result<Option<Hold>, crate::agent::Error> {
+    let (events, _) = read_current_run(store, stream)?;
+    Ok(ledger::project(&events)?.hold)
 }
 
 #[cfg(test)]
