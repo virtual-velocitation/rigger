@@ -9004,6 +9004,46 @@ fn a_run_driver_holds_the_machine_awake_while_it_drives_and_releases_it_as_it_ex
     }
 }
 
+/// Spec 105's KEEP-AWAKE default at the composition root: given no keep-awake knob, when `rigger
+/// run` drives a run, then it takes the host's adapter, which answers unavailable naming the OS
+/// until the native adapters land, so the driver prints the one keep-awake line and the run still
+/// reaches done.
+#[cfg(unix)]
+#[test]
+fn a_run_with_no_keep_awake_knob_takes_the_hosts_adapter() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_workflow_fixture(root, &REVIEWLESS_GIT_UNIT_WORKFLOW);
+    let (scratch, state) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let (_fakebin, path_env) = install_fake_claude(RECORDING_WORKER_ARM);
+    let out = common::cli::rigger_command(
+        root,
+        &["run"],
+        &fake_claude_env(&path_env, scratch.path()),
+        state.path(),
+    )
+    .env_remove(common::KEEP_AWAKE_ENV)
+    .stdin(std::process::Stdio::null())
+    .output()
+    .expect("run rigger with no keep-awake knob");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "the run exits 0; stderr: {err}");
+    assert_eq!(
+        lines_starting_with(&err, "rigger: keep-awake"),
+        [keep_awake_unavailable(&format!(
+            "no keep-awake adapter for {}",
+            std::env::consts::OS
+        ))],
+        "the keep-awake lines"
+    );
+    let integrated = common::cli::run_payloads(root, rigger::ledger::TYPE_UNIT_INTEGRATED);
+    assert_eq!(
+        integrated.iter().map(|e| &e["id"]).collect::<Vec<_>>(),
+        vec!["solo"],
+        "the run reaches done"
+    );
+}
+
 /// [`REVIEWLESS_GIT_UNIT_WORKFLOW`]'s worker beside a workflow body no load parses.
 const UNLOADABLE_WORKFLOW: WorkflowFixture = WorkflowFixture {
     worker: REVIEWLESS_GIT_UNIT_WORKFLOW.worker,
