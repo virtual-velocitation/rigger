@@ -168,7 +168,8 @@ pub fn rigger_bin() -> PathBuf {
 /// 105, KEEP-AWAKE): a `rigger run` or `rigger serve` left on the OS adapter would hold the
 /// operator's real machine awake, or print the keep-awake unavailable line on a host lacking the
 /// facility, so no test outside the adapter's own rows depends on the host's power facility. A
-/// test that drives the knob re-sets it with `.env(...)`, which wins.
+/// test that drives the knob re-sets it with `.env(...)` or clears it with `.env_remove(...)`,
+/// either of which wins.
 pub fn rigger_courier() -> Command {
     let mut cmd = Command::new(rigger_bin());
     unfenced(&mut cmd);

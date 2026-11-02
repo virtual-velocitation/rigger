@@ -73,6 +73,7 @@ pub use rigger_domain::retention;
 pub use rigger_domain::review;
 pub use rigger_domain::run;
 pub use rigger_domain::safety;
+pub use rigger_domain::sleep_hold;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use rigger_driver::hooks;
 #[cfg(any(feature = "store", not(feature = "core")))]
@@ -83,6 +84,8 @@ pub use rigger_driver::sidecar;
 pub use rigger_grounder::ingest;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use rigger_process::holders;
+#[cfg(any(feature = "store", not(feature = "core")))]
+pub use rigger_process::keep_awake;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use rigger_process::parallel;
 #[cfg(any(feature = "store", not(feature = "core")))]

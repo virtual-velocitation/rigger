@@ -3,7 +3,9 @@ use super::*;
 use rigger::driver::claude_code;
 use rigger::eventstore::TypeSelection;
 use rigger::held::HeldDriver;
+use rigger::keep_awake::OsSleepHold;
 use rigger::review;
+use rigger::sleep_hold::{SleepGuard, SleepHold, Unavailable};
 
 /// Record that THIS run's own step path just attempted a dash ensure (spec 69, round-8 fix; see
 /// [`DASH_ATTEMPT_FILE`]'s doc for the full rationale). Best-effort like every other dash
@@ -332,11 +334,12 @@ fn load_run_config(dir: &str) -> Result<config::Config, Box<dyn std::error::Erro
 
 pub(crate) fn cmd_run(args: &[String]) -> Res {
     let parsed = parse_run_args(args)?;
+    let sleep = sleep_hold();
     // `--driver workflow` is the equivalent of `rigger serve`: the in-Claude-Code
     // MCP-server path. `cli` (the default) is the standalone path, hosting its agents itself.
     match parsed.driver {
-        DriverKind::Workflow => run_workflow(&parsed, "rigger run --driver workflow"),
-        DriverKind::Cli => run_cli(&parsed),
+        DriverKind::Workflow => run_workflow(&parsed, "rigger run --driver workflow", &*sleep),
+        DriverKind::Cli => run_cli(&parsed, &*sleep),
     }
 }
 
@@ -1461,6 +1464,83 @@ fn beating<T>(
     })
 }
 
+/// The knob selecting the keep-awake adapter a run's driver takes its hold from (spec 105), read by
+/// [`sleep_hold`] alone: production leaves it unset, so the driver holds the host awake; the crate's
+/// tests set it to a fake, so no proof outside the native adapters' own depends on the host.
+const KEEP_AWAKE_ENV: &str = "RIGGER_KEEP_AWAKE";
+
+/// The keep-awake adapter [`KEEP_AWAKE_ENV`] selects: unset, the host's [`OsSleepHold`];
+/// `record:<path>`, a [`RecordingSleepHold`] appending to `<path>`; `unavailable:<reason>`, an
+/// adapter answering `<reason>`; any other value, an adapter answering that the value names no
+/// adapter, so a mistyped knob never takes the host's hold unasked.
+fn sleep_hold() -> Box<dyn SleepHold> {
+    let Some(knob) = std::env::var_os(KEEP_AWAKE_ENV) else {
+        return Box::new(OsSleepHold);
+    };
+    let knob = knob.to_string_lossy();
+    if let Some(path) = knob.strip_prefix("record:") {
+        return Box::new(RecordingSleepHold(PathBuf::from(path)));
+    }
+    Box::new(UnavailableSleepHold(
+        match knob.strip_prefix("unavailable:") {
+            Some(why) => why.to_string(),
+            None => format!("{KEEP_AWAKE_ENV}={knob} names no keep-awake adapter"),
+        },
+    ))
+}
+
+/// The keep-awake fake [`KEEP_AWAKE_ENV`]'s `record:<path>` selects: an acquire appends the line
+/// `acquire <reason>` to the file at `<path>` and its guard's drop appends `release`, so a test
+/// reads when a driver held the machine awake. An acquire it cannot record answers unavailable.
+struct RecordingSleepHold(PathBuf);
+
+impl SleepHold for RecordingSleepHold {
+    fn acquire(&self, reason: &str) -> Result<SleepGuard, Unavailable> {
+        append_line(&self.0, &format!("acquire {reason}"))
+            .map_err(|e| Unavailable(format!("cannot record to {}: {e}", self.0.display())))?;
+        let record = self.0.clone();
+        // A release the record cannot take leaves its acquire standing alone, which a test reads
+        // as a hold never released.
+        Ok(SleepGuard::new(move || {
+            let _ = append_line(&record, "release");
+        }))
+    }
+}
+
+/// Append `line` and a newline to the file at `path`, creating the file when absent.
+fn append_line(path: &Path, line: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?
+        .write_all(format!("{line}\n").as_bytes())
+}
+
+/// The keep-awake fake whose every acquire answers unavailable with its reason: what
+/// [`KEEP_AWAKE_ENV`]'s `unavailable:<reason>` selects, and what a value naming no adapter gets.
+struct UnavailableSleepHold(String);
+
+impl SleepHold for UnavailableSleepHold {
+    fn acquire(&self, _reason: &str) -> Result<SleepGuard, Unavailable> {
+        Err(Unavailable(self.0.clone()))
+    }
+}
+
+/// The keep-awake hold `command` takes from `sleep` as it starts driving a run (spec 105), held
+/// until the caller drops it as it stops driving; or, when the facility is unavailable, none, after
+/// the one line on stderr saying so, since an unavailable facility never fails the run.
+fn keep_awake(sleep: &dyn SleepHold, command: &str) -> Option<SleepGuard> {
+    sleep
+        .acquire(&format!("{command} is driving a run"))
+        .map_err(|Unavailable(why)| {
+            stderr_line(&format!(
+                "rigger: keep-awake unavailable: {why}; a sleep pauses the run and it resumes by itself"
+            ))
+        })
+        .ok()
+}
+
 /// How often a launch waiting on a held run reads the run again (spec 105).
 const HOLD_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 
@@ -1473,8 +1553,9 @@ fn pause_a_hold_poll() {
 /// ([`claude_code::Driver`]) behind the [`HeldDriver`] that launches nothing while the run is
 /// held, drive the DAG to integration with the supervisor [`beating`] beside it, and reclaim a
 /// done run's scratch. The store is selected by flag and wrapped in the per-project namespace
-/// decorator before it is injected (§5.1.1, R9).
-fn run_cli(parsed: &RunArgs) -> Res {
+/// decorator before it is injected (§5.1.1, R9). The machine stays awake through `sleep` from the
+/// moment the loop starts driving until this returns ([`keep_awake`]).
+fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
     // DISCOVERABILITY (spec 66, criterion 5): `rigger run <spec>` is a REAL pre-launch
     // surface that genuinely holds the spec path in production (unlike the SessionStart-only
     // `rigger prime` hook, which the installed hook always invokes with zero args - see
@@ -1606,6 +1687,7 @@ fn run_cli(parsed: &RunArgs) -> Res {
     // the loop begins, so an active harness is never invisible. Held for the whole run - the
     // guard reaps the dash when this scope ends (unit 3's reaping mechanism).
     let _dash = start_run_dashboard(cfg.workflow.dash_enabled(), &store);
+    let _awake = keep_awake(sleep, "rigger run");
     let rs = beating(
         &store,
         &progress,
@@ -1865,7 +1947,10 @@ fn new_run_refusal(command: &str, spec: &str, open: Option<&[String]>) -> String
 /// the command the operator actually typed instead of always naming `rigger serve` even
 /// when reached via `rigger run --driver workflow` (spec 89 criterion 4, round 2
 /// adjudication `adv-u89c4-r2-serve-command-name-hardcoded-for-both-entry-points`).
-fn run_workflow(parsed: &RunArgs, command: &str) -> Res {
+///
+/// The machine stays awake through `sleep` from the moment the conductor starts until the MCP
+/// session ends, past a run already done while its session stays open ([`keep_awake`]).
+fn run_workflow(parsed: &RunArgs, command: &str, sleep: &dyn SleepHold) -> Res {
     // DISCOVERABILITY (spec 66, criterion 5): `rigger serve <spec>` / the shim-driven
     // workflow path is a REAL pre-launch surface holding the spec path - the one the
     // /rigger workflow itself runs through, and the omission this unit was rejected for
@@ -1987,6 +2072,7 @@ fn run_workflow(parsed: &RunArgs, command: &str) -> Res {
     let _dash = start_run_dashboard(cfg.workflow.dash_enabled(), &store);
 
     let hash_blob = hash_blob_in(&repo);
+    let awake = keep_awake(sleep, command);
     // The conductor orchestrates in the background; this thread serves the MCP
     // bridge over stdio. The shim drains spawns via rigger_next/result; closing
     // stdin ends the session.
@@ -2035,6 +2121,8 @@ fn run_workflow(parsed: &RunArgs, command: &str) -> Res {
             .with_graph(&graph)
             .with_progress(&prog_store, &scratch_root);
         let _ = server.run(std::io::stdin().lock(), std::io::stdout().lock());
+        // The session is over, so this process drives the run no further.
+        drop(awake);
         // Nothing serves a spawn past the close, so each one parks and the scope joins the
         // conductor.
         driver.close_session();
@@ -2048,7 +2136,7 @@ pub(crate) fn cmd_serve(args: &[String]) -> Res {
     // the same composition path - it just forces the workflow driver.
     let mut parsed = parse_run_args(args)?;
     parsed.driver = DriverKind::Workflow;
-    run_workflow(&parsed, "rigger serve")
+    run_workflow(&parsed, "rigger serve", &*sleep_hold())
 }
 
 /// Parse `rigger workflow`'s arguments: an optional positional spec path and an optional

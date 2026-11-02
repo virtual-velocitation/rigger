@@ -869,23 +869,23 @@
       },
       {
         "file": "src/cli/run.rs",
-        "start_line": 3414,
-        "end_line": 3414
+        "start_line": 3502,
+        "end_line": 3502
       },
       {
         "file": "src/cli/run.rs",
-        "start_line": 3447,
-        "end_line": 3447
+        "start_line": 3535,
+        "end_line": 3535
       },
       {
         "file": "src/cli/run.rs",
-        "start_line": 3491,
-        "end_line": 3491
+        "start_line": 3579,
+        "end_line": 3579
       },
       {
         "file": "src/cli/run.rs",
-        "start_line": 3560,
-        "end_line": 3560
+        "start_line": 3648,
+        "end_line": 3648
       },
       {
         "file": "src/cli/setup.rs",
@@ -1044,8 +1044,8 @@
       },
       {
         "file": "tests/common/mod.rs",
-        "start_line": 173,
-        "end_line": 173
+        "start_line": 174,
+        "end_line": 174
       },
       {
         "file": "tests/common/repo.rs",
@@ -3344,8 +3344,8 @@
       },
       {
         "file": "tests/common/mod.rs",
-        "start_line": 331,
-        "end_line": 331
+        "start_line": 332,
+        "end_line": 332
       },
       {
         "file": "tests/common/workflow_probe.rs",
@@ -4719,13 +4719,13 @@
       },
       {
         "file": "src/cli/run.rs",
-        "start_line": 3552,
-        "end_line": 3552
+        "start_line": 3640,
+        "end_line": 3640
       },
       {
         "file": "src/cli/run.rs",
-        "start_line": 3656,
-        "end_line": 3656
+        "start_line": 3744,
+        "end_line": 3744
       },
       {
         "file": "tests/cli.rs",
@@ -5079,8 +5079,8 @@
       },
       {
         "file": "tests/common/mod.rs",
-        "start_line": 543,
-        "end_line": 557
+        "start_line": 544,
+        "end_line": 558
       }
     ]
   },
@@ -6014,8 +6014,8 @@
       },
       {
         "file": "src/cli/run.rs",
-        "start_line": 4613,
-        "end_line": 4613
+        "start_line": 4701,
+        "end_line": 4701
       },
       {
         "file": "tests/cli.rs",
@@ -6689,8 +6689,8 @@
       },
       {
         "file": "tests/common/mod.rs",
-        "start_line": 494,
-        "end_line": 499
+        "start_line": 495,
+        "end_line": 500
       }
     ]
   },
