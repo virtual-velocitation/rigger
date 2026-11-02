@@ -836,6 +836,11 @@ pub fn seed_on_the_run(root: &Path, event: Event) {
     });
 }
 
+/// Append a `RunHeld` to `root`'s run that no fold applies, so no read proves the run unheld.
+pub fn seed_a_hold_no_fold_applies(root: &Path) {
+    seed_on_the_run(root, Event::new(TYPE_RUN_HELD, b"not a hold".to_vec()));
+}
+
 /// `f` over `root`'s own project namespace of its `.rigger/events.db` as a binary before the
 /// ledger wrote it: every append `f` makes lands as pre-ledger rows
 /// ([`super::fixtures::PreLedgerStore`]), so `f` seeds the derived events a store now refuses.

@@ -8196,7 +8196,7 @@ fn a_served_run_not_proved_unheld_hands_out_no_queued_spawn() {
     mcp.initialize();
     next_handout(&mut mcp, NAME);
     let_the_started_units_queue(root, 2, NAME);
-    seed_a_hold_no_fold_applies(root);
+    common::cli::seed_a_hold_no_fold_applies(root);
     rigger_next_stays_idle_while_a_hold_stands(&mut mcp);
     let out = mcp.finish_within(Duration::from_secs(30));
     assert_eq!(
@@ -12406,14 +12406,6 @@ fn a_step_of_a_held_run_launches_only_on_its_fresh_mint() {
     }
 }
 
-/// Append a `RunHeld` to `root`'s run that no fold applies, so no read proves the run unheld.
-fn seed_a_hold_no_fold_applies(root: &Path) {
-    common::cli::seed_on_the_run(
-        root,
-        rigger::eventstore::Event::new(rigger::run::TYPE_RUN_HELD, b"not a hold".to_vec()),
-    );
-}
-
 /// Spec 105: a run not proved unheld launches nothing. Given a `RunHeld` no fold applies, when the
 /// operator steps, then the step fails on that read with nothing on stdout, so a courier reports
 /// an error and never a wave, and it records nothing and sweeps nothing.
@@ -12426,7 +12418,7 @@ fn a_step_of_a_run_not_proved_unheld_fails_on_its_read_ahead_of_its_sweep() {
     let (_, err, ok) = step_with_scratch_root(root, &scratch);
     assert!(ok, "the first step parks the worker; stderr: {err}");
     let leftover = plant_a_leftover_worktree(root, &scratch);
-    seed_a_hold_no_fold_applies(root);
+    common::cli::seed_a_hold_no_fold_applies(root);
     let recorded = run_event_types(root);
 
     let (out, err, ok) = step_with_scratch_root(root, &scratch);

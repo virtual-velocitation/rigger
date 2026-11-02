@@ -5,8 +5,9 @@
 //! BLOCKING finding id and the two commands that clear it - and appends nothing; a step that
 //! adopts the spec's existing run proceeds whatever the critique; and under a workflow naming no
 //! critic a new run proceeds with one line saying so. Spec 105 stands ahead of the refusal: a
-//! plain step of a held run begins no run, so it prints the hold whatever the critique, while a
-//! `--fresh` step keeps the refusal ahead of its mint.
+//! plain step of a held run begins no run, so it prints the hold whatever the critique, and a
+//! plain step of a run not proved unheld fails on that read, while a `--fresh` step keeps the
+//! refusal ahead of its mint.
 //!
 //! NOT OWNED HERE: the critique verb and its record (criterion 1), and the plan-critique stop on
 //! a spec defect (criterion 5).
@@ -18,8 +19,9 @@ use std::path::Path;
 use common::cli::{
     assert_stopped_at_the_grounder, critique_finding_id, emit, printed_decision, read_run_events,
     record_clean_critique, record_critique, refused_new_run, run_payloads, run_rigger,
-    run_rigger_envs, seed_on_the_run, seed_run_events, stopping_at_the_grounder,
-    temp_repoless_project, write_scaffold, write_spec_project, CRITIQUE_ROUTE, RESOLUTION_ROUTE,
+    run_rigger_envs, seed_a_hold_no_fold_applies, seed_on_the_run, seed_run_events,
+    stopping_at_the_grounder, temp_repoless_project, write_scaffold, write_spec_project,
+    CRITIQUE_ROUTE, RESOLUTION_ROUTE,
 };
 use common::fixtures::{
     git_ok, git_out, hold_naming, run_held_event, temp_git_project_with_commit,
@@ -415,6 +417,64 @@ fn a_plain_step_of_a_held_run_prints_the_hold_whatever_the_critique_and_fresh_ke
             Refused => assert_step_refused(root, (SPEC_REL, extra), SPEC_REL, None, 1),
             BeginsANewRun => assert_step_proceeds(root, (SPEC_REL, extra), SPEC_REL, (0, 2)),
         }
+    }
+}
+
+/// Spec 105, a run not proved unheld launches nothing, on the shape a courier steps with: given a
+/// `RunHeld` no fold applies on a spec amended since its run began, when a plain step names the
+/// spec it fails on that read ahead of the refusal, whose routes would clear nothing the step
+/// stopped on; when a `--fresh` step names it the refusal still stands ahead of its mint; and a
+/// text critiqued clean lets that step reach its mint, which fails on the hold it cannot release.
+/// Each leaves stdout empty, so a courier reports an error and never a wave, and appends nothing.
+#[test]
+fn a_step_of_a_run_not_proved_unheld_fails_ahead_of_any_mint_and_a_plain_one_ahead_of_its_refusal()
+{
+    let refused = refused_new_run("rigger step", SPEC_REL, None);
+    let rows: [(&str, bool, &[&str], &str); 3] = [
+        (
+            "a plain step, the text not critiqued",
+            false,
+            &[],
+            "rigger: conductor: expected ident at line 1 column 2\n",
+        ),
+        (
+            "--fresh, the text not critiqued",
+            false,
+            &["--fresh"],
+            &refused,
+        ),
+        (
+            "--fresh, the text critiqued clean",
+            true,
+            &["--fresh"],
+            "rigger: event store: fold the run's hold: expected ident at line 1 column 2\n",
+        ),
+    ];
+    for (name, critiqued_clean, extra, failed_on) in rows {
+        let dir = temp_git_project_with_commit();
+        let root = dir.path();
+        write_spec_project(root, &PERSONAS, SKEPTIC_WORKFLOW, SPEC_REL, SPEC);
+        seed_the_specs_run(root);
+        seed_a_hold_no_fold_applies(root);
+        std::fs::write(root.join(SPEC_REL), SPEC_DROPPED).unwrap();
+        if critiqued_clean {
+            record_clean_critique(root, SPEC_REL);
+        }
+        let events_before = read_run_events(root).len();
+
+        let (out, err, ok) = step(root, SPEC_REL, extra);
+
+        assert_eq!((out.as_str(), ok), ("", false), "{name}; stderr:\n{err}");
+        assert_eq!(
+            err.split_once('\n').map(|(_, past_the_hint)| past_the_hint),
+            Some(failed_on),
+            "{name}: what the step failed on"
+        );
+        assert_eq!(
+            read_run_events(root).len(),
+            events_before,
+            "{name}: the step appends nothing"
+        );
     }
 }
 
