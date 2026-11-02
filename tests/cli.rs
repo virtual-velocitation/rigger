@@ -9678,9 +9678,11 @@ const SILENCE_BOUNDED_TWO_ATTEMPT_WORKFLOW: WorkflowFixture = WorkflowFixture {
 /// operator held under it, launches nothing fresh: its error reaches the decorator, which waits for
 /// the release and launches the same id again at the next ordinal, resuming the same session. A
 /// read error on a held run closes nothing and a stop on a held run keeps its `stopped` close and
-/// its fault. Only a launch of an unheld run ending with no such class takes the fresh launch, and
-/// a lost session behind an outage takes it once the outage has passed. The gate judges two
-/// attempts whichever way: none of it costs the unit one.
+/// its fault, and the hold that decides either is the one standing once the launch has ended, so a
+/// hold landing inside the stop's grace or past a read error's reap, in the drain joins, launches
+/// nothing fresh either. Only a launch of an unheld run ending with no such class takes the fresh
+/// launch, and a lost session behind an outage takes it once the outage has passed. The gate judges
+/// two attempts whichever way: none of it costs the unit one.
 #[cfg(unix)]
 #[test]
 fn a_resume_ending_api_side_or_on_a_held_run_launches_nothing_fresh() {
@@ -9694,7 +9696,9 @@ fn a_resume_ending_api_side_or_on_a_held_run_launches_nothing_fresh() {
                         solo/implementer#1` (last-write-wins supersedes this liveness fault).";
     const ENDS: &str = "    exit 1\n";
     const UNREADABLE: &str = "    printf '\\377\\376\\n' >&3\n";
-    const STAYS_SILENT: &str = "    while IFS= read -r _unused; do :; done\n    exit 1\n";
+    /// Reads the session's input to its close: the start of a stop, or the reap past a read error,
+    /// which the arm outlives, a subshell of the child the host reaps holding its output pipes.
+    const READS_TO_ITS_CLOSE: &str = "    while IFS= read -r _unused; do :; done\n";
 
     /// One launch of the re-attempt, at the ordinal its place says: whether it resumed the first
     /// attempt's session, how it closed, if it did, and the class of that close.
@@ -9717,6 +9721,7 @@ fn a_resume_ending_api_side_or_on_a_held_run_launches_nothing_fresh() {
     let fallen_back: Launch = (true, Some("interrupted"), None);
     let retried = |category| format!("{}{ENDS}", api_retry_lines(&[category], 1));
     let under_a_hold = |shell: String| format!("{SESSION_WAITS_FOR_A_HOLD}{shell}{ENDS}");
+    let held_as_its_input_closes = format!("{READS_TO_ITS_CLOSE}{}", under_a_hold(String::new()));
     let cases = [
         Case {
             name: "a wait class",
@@ -9779,16 +9784,34 @@ fn a_resume_ending_api_side_or_on_a_held_run_launches_nothing_fresh() {
             holds: vec![seeded_operator_hold()],
             fault: None,
         },
+        Case {
+            name: "a hold landing between a read error and the end of the drain joins",
+            workflow: &TWO_ATTEMPT_RED_UNIT_WORKFLOW,
+            endings: vec![format!("{UNREADABLE}{held_as_its_input_closes}")],
+            hold_lands: Duration::ZERO,
+            launches: vec![(true, None, None), completed],
+            holds: vec![seeded_operator_hold()],
+            fault: None,
+        },
         // The announced wait excuses the first wake of the bound, so the silence this launch runs
         // up before the hold lands stands past the bound at the wake after, the hold still open.
         Case {
             name: "a stop on a held run",
             workflow: &SILENCE_BOUNDED_TWO_ATTEMPT_WORKFLOW,
             endings: vec![format!(
-                "    : > \"$here/session-live\"\n{}{STAYS_SILENT}",
+                "    : > \"$here/session-live\"\n{}{READS_TO_ITS_CLOSE}{ENDS}",
                 api_retry_lines(&["rate_limit"], 1000)
             )],
             hold_lands: Duration::from_secs(3),
+            launches: vec![(true, Some("stopped"), None), completed],
+            holds: vec![seeded_operator_hold()],
+            fault: Some(STOP),
+        },
+        Case {
+            name: "a hold landing inside the stop grace",
+            workflow: &SILENCE_BOUNDED_TWO_ATTEMPT_WORKFLOW,
+            endings: vec![held_as_its_input_closes.clone()],
+            hold_lands: Duration::ZERO,
             launches: vec![(true, Some("stopped"), None), completed],
             holds: vec![seeded_operator_hold()],
             fault: Some(STOP),
@@ -9860,9 +9883,17 @@ fn a_resume_ending_api_side_or_on_a_held_run_launches_nothing_fresh() {
 "#
         );
         let closes = case.launches[0].1.is_some();
+        let scratch_root = scratch.path().to_str().unwrap();
         let mut hold = holding_the_live_session(root, case.hold_lands);
+        // The host reads the hold once the launch has ended, so the release waits for what follows
+        // that read: the launch's close, or the reclaim of its scratch when it closes nothing.
         let mut release = releasing_holds(root, 1, |root| {
-            !closes || closed_launches(root).iter().any(|close| close.0 == RESUMED)
+            if closes {
+                return closed_launches(root).iter().any(|close| close.0 == RESUMED);
+            }
+            let run = common::cli::current_run_id_of(root).expect("a held run has an id");
+            let leaf = rigger::driver::replay::spawn_scratch_path(scratch_root, &run, RESUMED);
+            !leaf.expect("the re-attempt has a scratch").exists()
         });
         let (out, err, ok, fake) =
             run_on_arms_beside(root, &["run"], scratch.path(), &arm, |fake| {
