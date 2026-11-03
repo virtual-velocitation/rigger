@@ -7362,14 +7362,15 @@ const SESSION_WAITS_FOR_A_HOLD: &str = concat!(
     waiting_for!("operator-held")
 );
 
-/// A `beside` for [`run_on_arms_beside`] landing the `RunHeld` event `held` on the session that
-/// marked `$here/session-live`, `after` that mark was first seen, then marking
-/// `$here/operator-held`.
-fn holding_the_live_session(
-    root: &Path,
+/// A `beside` for [`run_on_arms_beside`] landing the `RunHeld` event `held` builds on the session
+/// that marked `$here/session-live`, `after` that mark was first seen, then marking
+/// `$here/operator-held`. The event is built as it lands, so it is dated then unless `held` dates
+/// it otherwise.
+fn holding_the_live_session<'a>(
+    root: &'a Path,
     after: Duration,
-    held: rigger::eventstore::Event,
-) -> impl FnMut(&Path) + '_ {
+    held: impl Fn() -> rigger::eventstore::Event + 'a,
+) -> impl FnMut(&Path) + 'a {
     let mut live_since = None;
     move |fake| {
         let landed = fake.join("bin/operator-held");
@@ -7377,7 +7378,7 @@ fn holding_the_live_session(
             && !landed.exists()
             && live_since.get_or_insert_with(Instant::now).elapsed() >= after
         {
-            common::cli::seed_on_the_run(root, held.clone());
+            common::cli::seed_on_the_run(root, held());
             std::fs::write(&landed, "").unwrap();
         }
     }
@@ -7609,11 +7610,9 @@ fn an_is_error_result_reruns_uncharged_and_holds_as_its_class_says() {
 {opening}{session}    ;;
 "#
         );
-        let mut hold = holding_the_live_session(
-            root,
-            Duration::ZERO,
-            common::fixtures::run_held_event(&seeded_operator_hold()),
-        );
+        let mut hold = holding_the_live_session(root, Duration::ZERO, || {
+            common::fixtures::run_held_event(&seeded_operator_hold())
+        });
         let mut release = releasing_holds(root, 1, |_| true);
         let (out, err, ok, fake) =
             run_on_arms_beside(root, &["run"], scratch.path(), &arm, |fake| {
@@ -8973,11 +8972,9 @@ fn assert_probe_cases(cases: &[ProbeCase]) {
             common::fixtures::probe_arms(&case.auth, &case.canary)
         );
         let redeclared = probed_hold(SEEDED_HOLD_CAUSE, rigger::run::HOLD_BY_HOST);
-        let mut redeclare = holding_the_live_session(
-            root,
-            Duration::ZERO,
-            common::fixtures::run_held_event(&redeclared),
-        );
+        let mut redeclare = holding_the_live_session(root, Duration::ZERO, move || {
+            common::fixtures::run_held_event(&redeclared)
+        });
         let mut release = releasing_holds(root, 1, unit_started);
         let last_mark = if case.runs_canary {
             "bin/canary-ran"
@@ -9327,8 +9324,9 @@ fn a_hold_landing_mid_run_is_probed_and_its_canary_outlasting_the_drive_is_waite
         )
     );
     let hold = probed_hold(SEEDED_HOLD_CAUSE, rigger::run::HOLD_BY_HOST);
-    let held = common::fixtures::dated_ago(common::fixtures::run_held_event(&hold), 120);
-    let mut land = holding_the_live_session(root, Duration::ZERO, held);
+    let mut land = holding_the_live_session(root, Duration::ZERO, || {
+        common::fixtures::dated_ago(common::fixtures::run_held_event(&hold), 120)
+    });
     let (out, err, ok, fake) = run_on_arms_beside(root, &["run"], scratch.path(), &arms, |fake| {
         land(fake);
         let done = fake.join("bin/run-done");
@@ -9360,7 +9358,7 @@ fn a_hold_landing_mid_run_is_probed_and_its_canary_outlasting_the_drive_is_waite
         common::fixtures::canary_argv(PROBED_MODEL),
         "the canary runs on the hold's model"
     );
-    assert_eq!(run_holds(root), [hold], "the holds");
+    assert_eq!(run_holds(root), std::slice::from_ref(&hold), "the holds");
     assert_eq!(
         run_releases(root),
         [rigger::run::HOLD_BY_PROBE],
@@ -10677,11 +10675,9 @@ fn a_resume_ending_api_side_or_on_a_held_run_launches_nothing_fresh() {
         );
         let closes = case.launches[0].1.is_some();
         let scratch_root = scratch.path().to_str().unwrap();
-        let mut hold = holding_the_live_session(
-            root,
-            case.hold_lands,
-            common::fixtures::run_held_event(&seeded_operator_hold()),
-        );
+        let mut hold = holding_the_live_session(root, case.hold_lands, || {
+            common::fixtures::run_held_event(&seeded_operator_hold())
+        });
         // The host reads the hold once the launch has ended, so the release waits for what follows
         // that read: the launch's close, or the reclaim of its scratch when it closes nothing.
         let mut release = releasing_holds(root, 1, |root| {

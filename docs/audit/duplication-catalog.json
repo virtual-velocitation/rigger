@@ -511,7 +511,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-452d7298c160",
+    "id": "dup-b840281b3dd6",
     "classification": "semantic",
     "sites": [
       {
@@ -592,7 +592,7 @@
       {
         "file": "tests/cli.rs",
         "name": "an_is_error_result_reruns_uncharged_and_holds_as_its_class_says",
-        "content_hash": "ead5fc4681f8a05f"
+        "content_hash": "cc9fb33b5930cf66"
       },
       {
         "file": "tests/cli.rs",
