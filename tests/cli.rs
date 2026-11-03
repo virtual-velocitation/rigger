@@ -8926,9 +8926,10 @@ fn status_opens_with_the_held_line_naming_what_ends_the_hold() {
 /// One checkpoint of a drive and the keep-awake record standing at it.
 type Checkpoint = (&'static str, String);
 
-/// A drive of a run held at its launch: given its project, its keep-awake knob and the path a
-/// recording knob writes, the record at each checkpoint the drive takes, and the driver's stderr.
-type HeldDrive = fn(&Path, &str, &Path) -> (Vec<Checkpoint>, String);
+/// A drive of a run held at its launch: given its project, the arguments of the command driving
+/// it, its keep-awake knob and the path a recording knob writes, the record at each checkpoint the
+/// drive takes, and the driver's stderr.
+type HeldDrive = fn(&Path, &[&str], &str, &Path) -> (Vec<Checkpoint>, String);
 
 /// What the recording keep-awake fake writing `record` has appended, empty when it wrote nothing.
 fn keep_awake_record(record: &Path) -> String {
@@ -8947,17 +8948,22 @@ fn keep_awake_unavailable(why: &str) -> String {
     )
 }
 
-/// `rigger run` driving `root`'s held run under the keep-awake knob `knob`: the record at `record`
-/// at each poll while the hold stands with the unit started, each distinct record once, then once
-/// the run has exited; and its stderr. The hold is released once it has stood with the unit
-/// started, and the run must reach done.
-fn drive_a_held_run(root: &Path, knob: &str, record: &Path) -> (Vec<Checkpoint>, String) {
+/// `rigger <args>` hosting its own agents (`rigger run`) and driving `root`'s held run under the
+/// keep-awake knob `knob`: the record at `record` at each poll while the hold stands with the unit
+/// started, each distinct record once, then once the run has exited; and its stderr. The hold is
+/// released once it has stood with the unit started, and the run must reach done.
+fn drive_a_held_run(
+    root: &Path,
+    args: &[&str],
+    knob: &str,
+    record: &Path,
+) -> (Vec<Checkpoint>, String) {
     let scratch = tempfile::tempdir().unwrap();
     let mut release = releasing_holds(root, 1, unit_started);
     let mut checkpoints: Vec<Checkpoint> = Vec::new();
     let (out, err, ok, _fake) = run_on_arms_beside_with(
         root,
-        &["run"],
+        args,
         &[(common::KEEP_AWAKE_ENV, knob)],
         scratch.path(),
         RECORDING_WORKER_ARM,
@@ -8981,13 +8987,19 @@ fn drive_a_held_run(root: &Path, knob: &str, record: &Path) -> (Vec<Checkpoint>,
     (checkpoints, err)
 }
 
-/// `rigger serve` driving `root`'s held run under the keep-awake knob `knob`: the record at `record`
-/// once the hold has stood with the unit started, once the run is done with its session still
-/// open, and once the session has closed and serve exited; and its stderr.
-fn drive_a_held_serve(root: &Path, knob: &str, record: &Path) -> (Vec<Checkpoint>, String) {
+/// A stdio session over `rigger <args>` (`rigger serve`, or `rigger run --driver workflow`)
+/// serving `root`'s held run under the keep-awake knob `knob`: the record at `record` once the
+/// hold has stood with the unit started, once the run is done with its session still open, and
+/// once the session has closed and the command exited; and its stderr.
+fn drive_a_held_session(
+    root: &Path,
+    args: &[&str],
+    knob: &str,
+    record: &Path,
+) -> (Vec<Checkpoint>, String) {
     let mut mcp = McpSession::from_command(common::cli::rigger_command(
         root,
-        &["serve", "--base", "HEAD"],
+        args,
         &[(common::KEEP_AWAKE_ENV, knob)],
         root,
     ));
@@ -9007,23 +9019,25 @@ fn drive_a_held_serve(root: &Path, knob: &str, record: &Path) -> (Vec<Checkpoint
     checkpoints.push(("done, its session open", keep_awake_record(record)));
     let out = mcp.finish_within(Duration::from_secs(30));
     let err = String::from_utf8_lossy(&out.stderr).into_owned();
-    assert!(out.status.success(), "serve exits 0; stderr: {err}");
+    assert!(out.status.success(), "the session exits 0; stderr: {err}");
     checkpoints.push(("exited", keep_awake_record(record)));
     (checkpoints, err)
 }
 
 /// Spec 105's THE MACHINE STAYS AWAKE WHILE A RUN DRIVES, through the fake adapters: given a run
-/// held at its launch, when `rigger run` or `rigger serve` drives it, then the driver acquires the
-/// hold once as it starts driving, keeps it while the run stands held, `rigger serve` also past
-/// the run's end while its session stays open, and releases it once as it exits; and on an
-/// unavailable facility, a knob naming no adapter or a record the fake cannot append to, the
-/// driver prints the one keep-awake line and the run still reaches done.
+/// held at its launch, when `rigger run`, `rigger serve` or `rigger run --driver workflow` drives
+/// it, then the driver acquires the hold once as it starts driving, keeps it while the run stands
+/// held, a served session also past the run's end while it stays open, and releases it once as it
+/// exits; and on an unavailable facility, a knob naming no adapter or a record the fake cannot
+/// append to, the driver prints the one keep-awake line and the run still reaches done.
 #[cfg(unix)]
 #[test]
 fn a_run_driver_holds_the_machine_awake_while_it_drives_and_releases_it_as_it_exits() {
     struct Case {
         name: &'static str,
         drive: HeldDrive,
+        /// The arguments of the command driving the run.
+        args: &'static [&'static str],
         /// Where the recording fake writes, under a fresh directory.
         record: &'static str,
         /// The keep-awake knob, given the path the drive reads the record from.
@@ -9034,12 +9048,16 @@ fn a_run_driver_holds_the_machine_awake_while_it_drives_and_releases_it_as_it_ex
         lines: fn(&Path) -> Vec<String>,
     }
     const NO_LOGIND: &str = "logind was not reached on the system bus";
+    const RUN_ARGS: &[&str] = &["run"];
+    const SERVE_ARGS: &[&str] = &["serve", "--base", "HEAD"];
     let run = acquired_by("rigger run");
     let serve = acquired_by("rigger serve");
+    let workflow_run = acquired_by("rigger run --driver workflow");
     let cases = [
         Case {
             name: "rigger run on the recording fake",
             drive: drive_a_held_run,
+            args: RUN_ARGS,
             record: "keep-awake",
             knob: |record: &Path| format!("record:{}", record.display()),
             records: vec![("held", run.clone()), ("exited", format!("{run}release\n"))],
@@ -9047,7 +9065,8 @@ fn a_run_driver_holds_the_machine_awake_while_it_drives_and_releases_it_as_it_ex
         },
         Case {
             name: "rigger serve on the recording fake",
-            drive: drive_a_held_serve,
+            drive: drive_a_held_session,
+            args: SERVE_ARGS,
             record: "keep-awake",
             knob: |record: &Path| format!("record:{}", record.display()),
             records: vec![
@@ -9058,8 +9077,22 @@ fn a_run_driver_holds_the_machine_awake_while_it_drives_and_releases_it_as_it_ex
             lines: |_: &Path| vec![],
         },
         Case {
+            name: "rigger run --driver workflow on the recording fake",
+            drive: drive_a_held_session,
+            args: &["run", "--driver", "workflow", "--base", "HEAD"],
+            record: "keep-awake",
+            knob: |record: &Path| format!("record:{}", record.display()),
+            records: vec![
+                ("held", workflow_run.clone()),
+                ("done, its session open", workflow_run.clone()),
+                ("exited", format!("{workflow_run}release\n")),
+            ],
+            lines: |_: &Path| vec![],
+        },
+        Case {
             name: "rigger run on an unavailable facility",
             drive: drive_a_held_run,
+            args: RUN_ARGS,
             record: "keep-awake",
             knob: |_: &Path| format!("unavailable:{NO_LOGIND}"),
             records: vec![("held", String::new()), ("exited", String::new())],
@@ -9067,7 +9100,8 @@ fn a_run_driver_holds_the_machine_awake_while_it_drives_and_releases_it_as_it_ex
         },
         Case {
             name: "rigger serve on an unavailable facility",
-            drive: drive_a_held_serve,
+            drive: drive_a_held_session,
+            args: SERVE_ARGS,
             record: "keep-awake",
             knob: |_: &Path| format!("unavailable:{NO_LOGIND}"),
             records: vec![
@@ -9080,6 +9114,7 @@ fn a_run_driver_holds_the_machine_awake_while_it_drives_and_releases_it_as_it_ex
         Case {
             name: "rigger run on a knob naming no adapter",
             drive: drive_a_held_run,
+            args: RUN_ARGS,
             record: "keep-awake",
             knob: |_: &Path| "awake".to_string(),
             records: vec![("held", String::new()), ("exited", String::new())],
@@ -9093,6 +9128,7 @@ fn a_run_driver_holds_the_machine_awake_while_it_drives_and_releases_it_as_it_ex
         Case {
             name: "rigger run on a record the fake cannot append to",
             drive: drive_a_held_run,
+            args: RUN_ARGS,
             record: "absent/keep-awake",
             knob: |record: &Path| format!("record:{}", record.display()),
             records: vec![("held", String::new()), ("exited", String::new())],
@@ -9112,7 +9148,7 @@ fn a_run_driver_holds_the_machine_awake_while_it_drives_and_releases_it_as_it_ex
         seed_a_run_held_by(root, Some("operator"));
         let here = tempfile::tempdir().unwrap();
         let record = here.path().join(case.record);
-        let (records, err) = (case.drive)(root, &(case.knob)(&record), &record);
+        let (records, err) = (case.drive)(root, case.args, &(case.knob)(&record), &record);
         assert_eq!(
             records, case.records,
             "{name}: the keep-awake record at each checkpoint; stderr: {err}"
@@ -9220,14 +9256,16 @@ const UNLOADABLE_WORKFLOW: WorkflowFixture = WorkflowFixture {
 
 /// Spec 105's KEEP-AWAKE holders: given the recording keep-awake fake, when `rigger step` parks a
 /// launch, since it is one-shot, or `rigger run` or `rigger serve` refuses on a workflow it cannot
-/// load, before it drives any run, then nothing acquires the hold.
+/// load, or stops at the grounder, selected past every refusal and short of the acquire, then
+/// nothing acquires the hold.
 #[test]
 fn a_command_driving_no_run_takes_no_keep_awake_hold() {
-    for (name, args, workflow, exits_0) in [
+    for (name, args, workflow, at_the_grounder, exits_0) in [
         (
             "rigger step",
             &["step"][..],
             &REVIEWLESS_GIT_UNIT_WORKFLOW,
+            false,
             true,
         ),
         (
@@ -9235,21 +9273,46 @@ fn a_command_driving_no_run_takes_no_keep_awake_hold() {
             &["run"][..],
             &UNLOADABLE_WORKFLOW,
             false,
+            false,
         ),
         (
             "a refused rigger serve",
             &["serve", "--base", "HEAD"][..],
             &UNLOADABLE_WORKFLOW,
             false,
+            false,
+        ),
+        (
+            "a rigger run stopped at its grounder",
+            &["run"][..],
+            &REVIEWLESS_GIT_UNIT_WORKFLOW,
+            true,
+            false,
+        ),
+        (
+            "a rigger serve stopped at its grounder",
+            &["serve", "--base", "HEAD"][..],
+            &REVIEWLESS_GIT_UNIT_WORKFLOW,
+            true,
+            false,
         ),
     ] {
         let dir = temp_git_project_with_commit();
         let root = dir.path();
-        write_workflow_fixture(root, workflow);
+        let body = if at_the_grounder {
+            stopping_at_the_grounder(workflow.body)
+        } else {
+            workflow.body.to_string()
+        };
+        write_scaffold(root, &[("worker", workflow.worker)], &body);
         let here = tempfile::tempdir().unwrap();
         let record = here.path().join("keep-awake");
         let knob = format!("record:{}", record.display());
-        let (out, err, ok) = run_rigger_envs(root, args, &[(common::KEEP_AWAKE_ENV, &knob)]);
+        let output = run_rigger_envs(root, args, &[(common::KEEP_AWAKE_ENV, &knob)]);
+        if at_the_grounder {
+            assert_stopped_at_the_grounder(&output, name);
+        }
+        let (out, err, ok) = output;
         assert_eq!(
             ok, exits_0,
             "{name}: how it exits; stderr: {err}\nstdout: {out}"
