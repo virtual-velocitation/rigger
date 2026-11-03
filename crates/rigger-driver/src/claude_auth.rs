@@ -1,8 +1,7 @@
 //! THE LOGIN READ (spec 105 RELEASE): the one reader of `claude auth status --json`, which the
-//! hold probe runs ahead of its canary on a hold whose cause a login fixes, and which
-//! `rigger validate` reports from. The JSON alone answers: the session is logged in only when the
-//! report's `loggedIn` is `true`, and a report that does not come by the deadline, does not parse
-//! or names no such key answers not logged in.
+//! hold probe runs ahead of its canary on a hold whose cause a login fixes. The JSON alone
+//! answers: the session is logged in only when the report's `loggedIn` is `true`, and a report
+//! that does not come by the deadline, does not parse or names no such key answers not logged in.
 
 use std::ops::ControlFlow;
 use std::process::Stdio;
