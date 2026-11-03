@@ -9419,12 +9419,13 @@ const NO_RUN_STARTED: &str = "rigger: hold: no run is live: no run has started\n
 const NOTHING_TO_RELEASE: &str = "nothing to release: no hold is open\n";
 
 /// Spec 105's operator verbs: given a project's run, when the operator runs `rigger hold --reason
-/// <text>`, then a live run - a started run not done - takes one `RunHeld` by the operator, cause
-/// `operator`, the text its action even when empty, carrying the open hold's latest model and none
-/// when no hold is open, on a held run too; an empty store, a log no run started and a done run are
-/// refused and take nothing, as a malformed argv is. When the operator runs `rigger release`, any
-/// open hold takes one `RunReleased` by the operator, and a run with no hold open takes nothing and
-/// is told so. Every write a verb makes folds into the graph.
+/// <text>`, then a live run - a started run not done, one whose units all integrated behind a
+/// failed deferred gate or with a unit left to integrate included - takes one `RunHeld` by the
+/// operator, cause `operator`, the text its action even when empty, carrying the open hold's latest
+/// model and none when no hold is open, on a held run too; an empty store, a log no run started and
+/// a done run are refused and take nothing, as a malformed argv is. When the operator runs `rigger
+/// release`, any open hold takes one `RunReleased` by the operator, and a run with no hold open
+/// takes nothing and is told so. Every write a verb makes folds into the graph.
 #[test]
 fn rigger_hold_holds_a_live_run_for_the_operator_and_rigger_release_ends_any_hold() {
     use rigger::run::{HOLD_BY_HOST, HOLD_BY_OPERATOR, HOLD_BY_PROBE};
@@ -9515,6 +9516,38 @@ fn rigger_hold_holds_a_live_run_for_the_operator_and_rigger_release_ends_any_hol
             out: "",
             err: "rigger: hold: no run is live: run {run} is done\n",
             appended: vec![],
+        },
+        Case {
+            name: "hold on a run whose units all integrated behind a failed deferred gate",
+            seed: |root| {
+                seed_done_run_with_persisted_base(root, "main");
+                let failed = (
+                    rigger::ledger::TYPE_DEFERRED_GATE_FAILED,
+                    r#"{"gate":"itest"}"#,
+                );
+                common::cli::seed_run_events(root, &[failed]);
+            },
+            args: hold,
+            ok: true,
+            out: holds,
+            err: "",
+            appended: held(""),
+        },
+        Case {
+            name: "hold on a run with a unit left to integrate",
+            seed: |root| {
+                seed_done_run_with_persisted_base(root, "main");
+                let started = (
+                    rigger::ledger::TYPE_UNIT_STARTED,
+                    r#"{"id":"u2","agent":"worker"}"#,
+                );
+                common::cli::seed_run_events(root, &[started]);
+            },
+            args: hold,
+            ok: true,
+            out: holds,
+            err: "",
+            appended: held(""),
         },
         Case {
             name: "hold on an unheld run carries no model",
@@ -20203,23 +20236,57 @@ fn a_help_flag_after_a_separator_passes_through_to_the_command() {
     );
 }
 
-/// `rigger help <command>` prints that command's entry of the usage text and nothing else.
+/// `rigger help <command>` prints that command's entry of the usage text and nothing else, its
+/// first line's description at the column its later lines indent to: `rigger hold` and `rigger
+/// release` (spec 105) as they were spliced in, and `rigger reported`, the entry they landed on.
 #[test]
 fn rigger_help_of_a_command_prints_only_its_usage_entry() {
+    let rows: [(&str, &str); 4] = [
+        (
+            "docs",
+            concat!(
+                "  rigger docs                 render the code-derived docs (every registry skill and\n",
+                "                              handbook page) into their committed paths\n",
+                "  rigger docs --check         check every rendered output against a fresh render,\n",
+                "                              writing nothing: prints `fresh <path>` or `drifted <path>`\n",
+                "                              per output on disk; exits 1 when any drifted\n",
+            ),
+        ),
+        (
+            "hold",
+            concat!(
+                "  rigger hold --reason <text> hold the current run for the operator, the text its\n",
+                "                              reason: no probe ends this hold, only `rigger release`.\n",
+                "                              Refuses, recording nothing, when no run is live\n",
+            ),
+        ),
+        (
+            "release",
+            concat!(
+                "  rigger release              end the current run's hold, whichever writer declared\n",
+                "                              it; with no hold open it records nothing and says so\n",
+            ),
+        ),
+        (
+            "reported",
+            concat!(
+                "  rigger reported <id>        exit 0 iff spawn <id> already has a recorded result in\n",
+                "                              this project's run stream (else non-zero). A read-only check\n",
+                "                              of whether a spawn reported yet; the death courier records\n",
+                "                              atomically instead via `rigger result --if-absent`\n",
+            ),
+        ),
+    ];
     let dir = temp_project();
-    let (out, err, ok) = run_rigger(dir.path(), &["help", "docs"]);
-    assert!(ok, "rigger help docs succeeds; stderr:\n{err}");
-    assert_eq!(
-        err,
-        concat!(
-            "  rigger docs                 render the code-derived docs (every registry skill and\n",
-            "                              handbook page) into their committed paths\n",
-            "  rigger docs --check         check every rendered output against a fresh render,\n",
-            "                              writing nothing: prints `fresh <path>` or `drifted <path>`\n",
-            "                              per output on disk; exits 1 when any drifted\n",
-        )
-    );
-    assert!(out.is_empty(), "rigger help docs prints nothing on stdout");
+    for (command, entry) in rows {
+        let (out, err, ok) = run_rigger(dir.path(), &["help", command]);
+        assert!(ok, "rigger help {command} succeeds; stderr:\n{err}");
+        assert_eq!(err, entry, "rigger help {command} prints its entry");
+        assert!(
+            out.is_empty(),
+            "rigger help {command} prints nothing on stdout"
+        );
+    }
 }
 
 /// MODEL PINNING criterion (spec 61 c7): `--model <tier>=<id>` argument validation is CLI

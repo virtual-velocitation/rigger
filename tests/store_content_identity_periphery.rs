@@ -708,8 +708,20 @@ fn no_hold_writer_reports_a_hold_or_a_release_the_store_never_wrote() {
     let cases = [
         Case {
             name: "a sighting with no hold open",
-            replayed: unheld,
+            replayed: unheld.clone(),
             write: |store| rigger::run_store::record_hold_sighting(store, &SIGHTED),
+            lost: "event store: reported writing nothing for RunHeld",
+        },
+        Case {
+            name: "an operator hold with no hold open",
+            replayed: unheld,
+            write: |store| rigger::run_store::hold_by_operator(store, "pausing"),
+            lost: "event store: reported writing nothing for RunHeld",
+        },
+        Case {
+            name: "an operator hold on a held run",
+            replayed: held.clone(),
+            write: |store| rigger::run_store::hold_by_operator(store, "pausing"),
             lost: "event store: reported writing nothing for RunHeld",
         },
         Case {
