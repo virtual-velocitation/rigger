@@ -7197,13 +7197,18 @@ fn seed_an_operator_release(root: &Path) {
     );
 }
 
-/// Whether `root`'s current run stands held, as the ledger folds it.
-fn hold_is_open(root: &Path) -> bool {
+/// `root`'s current run as the ledger folds it.
+fn folded_run(root: &Path) -> rigger::ledger::RunState {
     common::cli::with_run_store(root, |store| {
         let (events, _) =
             rigger::run::read::read_current_run(store, rigger::conductor::STREAM).unwrap();
-        rigger::ledger::project(&events).unwrap().hold.is_some()
+        rigger::ledger::project(&events).unwrap()
     })
+}
+
+/// Whether `root`'s current run stands held, as the ledger folds it.
+fn hold_is_open(root: &Path) -> bool {
+    folded_run(root).hold.is_some()
 }
 
 /// How long a hold stands before [`releasing_holds`] releases it. The host appends a hold before
@@ -7338,23 +7343,33 @@ fn classed_behind_the_close_session(category: &str) -> String {
     api_error_session(READ_LAUNCH_CONFIG, &fire_stop_failure_hook(category))
 }
 
+/// The shell of an arm waiting until `$here/<mark>` stands, the literal `mark` naming it, bounded
+/// at 20 s.
+macro_rules! waiting_for {
+    ($mark:literal) => {
+        concat!(
+            "    tries=0\n    while [ ! -e \"$here/",
+            $mark,
+            "\" ] && [ $tries -lt 1000 ]; do\n        sleep 0.02\n        tries=$((tries + 1))\n    done\n"
+        )
+    };
+}
+
 /// The shell holding a session until `$here/operator-held` stands, marking `$here/session-live` as
 /// it starts, so a hold lands on a live session.
-const SESSION_WAITS_FOR_A_HOLD: &str = r#"    : > "$here/session-live"
-    tries=0
-    while [ ! -e "$here/operator-held" ] && [ $tries -lt 1000 ]; do
-        sleep 0.02
-        tries=$((tries + 1))
-    done
-"#;
+const SESSION_WAITS_FOR_A_HOLD: &str = concat!(
+    "    : > \"$here/session-live\"\n",
+    waiting_for!("operator-held")
+);
 
-/// A `beside` for [`run_on_arms_beside`] landing `hold` on the session that marked
-/// `$here/session-live`, `after` that mark was first seen, then marking `$here/operator-held`.
-fn holding_the_live_session<'a>(
-    root: &'a Path,
+/// A `beside` for [`run_on_arms_beside`] landing the `RunHeld` event `held` on the session that
+/// marked `$here/session-live`, `after` that mark was first seen, then marking
+/// `$here/operator-held`.
+fn holding_the_live_session(
+    root: &Path,
     after: Duration,
-    hold: rigger::run::RunHeld,
-) -> impl FnMut(&Path) + 'a {
+    held: rigger::eventstore::Event,
+) -> impl FnMut(&Path) + '_ {
     let mut live_since = None;
     move |fake| {
         let landed = fake.join("bin/operator-held");
@@ -7362,7 +7377,7 @@ fn holding_the_live_session<'a>(
             && !landed.exists()
             && live_since.get_or_insert_with(Instant::now).elapsed() >= after
         {
-            common::cli::seed_on_the_run(root, common::fixtures::run_held_event(&hold));
+            common::cli::seed_on_the_run(root, held.clone());
             std::fs::write(&landed, "").unwrap();
         }
     }
@@ -7594,7 +7609,11 @@ fn an_is_error_result_reruns_uncharged_and_holds_as_its_class_says() {
 {opening}{session}    ;;
 "#
         );
-        let mut hold = holding_the_live_session(root, Duration::ZERO, seeded_operator_hold());
+        let mut hold = holding_the_live_session(
+            root,
+            Duration::ZERO,
+            common::fixtures::run_held_event(&seeded_operator_hold()),
+        );
         let mut release = releasing_holds(root, 1, |_| true);
         let (out, err, ok, fake) =
             run_on_arms_beside(root, &["run"], scratch.path(), &arm, |fake| {
@@ -8931,10 +8950,11 @@ const NO_PROBE_WITHIN: Duration = Duration::from_secs(4);
 
 /// Drive each of `cases` through `rigger run` on a fresh project, the stand-in `claude` answering
 /// the worker and the probe, and assert exactly what the run records: the probe lines, the login
-/// read and the canary's argv and working directory, the holds and releases, and the worker's
-/// launch records alone, the canary writing none. A hold still open once the probe is over, or
-/// once a row expecting none has waited, is released as the operator does, so every row reaches
-/// done; the canary's `session-live` mark lands a re-declared host hold on it first.
+/// read and the canary's argv and working directory, the holds and releases, the worker's launch
+/// records alone, the canary writing none, and every write of the probe folded into the graph. A
+/// hold still open once the probe is over, or once a row expecting none has waited, is released as
+/// the operator does, so every row reaches done; the canary's `session-live` mark lands a
+/// re-declared host hold on it first.
 #[cfg(unix)]
 fn assert_probe_cases(cases: &[ProbeCase]) {
     for case in cases {
@@ -8943,6 +8963,7 @@ fn assert_probe_cases(cases: &[ProbeCase]) {
         let root = dir.path();
         write_workflow_fixture(root, &REVIEWLESS_GIT_UNIT_WORKFLOW);
         let (seeded_holds, mut lines) = seed_probe_history(root, &case.seeds);
+        let head = common::cli::run_log_head(root);
         let probed = latest_hold_revision(root);
         let probed_cause = seeded_holds.last().unwrap().cause.clone();
         let seeded_lines = lines.len();
@@ -8952,7 +8973,11 @@ fn assert_probe_cases(cases: &[ProbeCase]) {
             common::fixtures::probe_arms(&case.auth, &case.canary)
         );
         let redeclared = probed_hold(SEEDED_HOLD_CAUSE, rigger::run::HOLD_BY_HOST);
-        let mut redeclare = holding_the_live_session(root, Duration::ZERO, redeclared);
+        let mut redeclare = holding_the_live_session(
+            root,
+            Duration::ZERO,
+            common::fixtures::run_held_event(&redeclared),
+        );
         let mut release = releasing_holds(root, 1, unit_started);
         let last_mark = if case.runs_canary {
             "bin/canary-ran"
@@ -9029,7 +9054,36 @@ fn assert_probe_cases(cases: &[ProbeCase]) {
             ],
             "{name}: the launch records are the worker's alone"
         );
+        let seeded_releases = case
+            .seeds
+            .iter()
+            .filter(|seed| matches!(seed, Seed::Released(..)))
+            .count();
+        let mut beside_writes = Vec::new();
+        if fake.path().join("bin/operator-held").exists() {
+            beside_writes.push(rigger::run::TYPE_RUN_HELD);
+        }
+        beside_writes.extend(
+            case.releases[seeded_releases..]
+                .iter()
+                .filter(|by| **by == rigger::run::HOLD_BY_OPERATOR)
+                .map(|_| rigger::run::TYPE_RUN_RELEASED),
+        );
+        assert_eq!(
+            unfolded_types_past(root, head),
+            beside_writes,
+            "{name}: every write of the probe folds, the test's own writes alone standing unfolded"
+        );
     }
+}
+
+/// The type of each event of `root`'s run log past `head` that the graph has not folded
+/// ([`unfolded_past`]), in log order.
+fn unfolded_types_past(root: &Path, head: u64) -> Vec<String> {
+    unfolded_past(root, head)
+        .into_iter()
+        .map(|(_, type_)| type_)
+        .collect()
 }
 
 /// Spec 105's RELEASE BY PROBE through `rigger run`: given a run held by the host, when its probe
@@ -9236,6 +9290,87 @@ fn a_probes_delay_doubles_per_probe_of_the_holds_chain() {
         ),
     ];
     assert_probe_cases(&cases);
+}
+
+/// The opening of a worker session a hold lands on mid-run: it marks `$here/session-live`, then
+/// waits for the hold's canary to start, so the drive cannot return ahead of the probe.
+const SESSION_WAITS_FOR_THE_CANARY: &str = concat!(
+    "    : > \"$here/session-live\"\n",
+    waiting_for!("canary-argv")
+);
+
+/// The shell of a canary still running when the drive returns: it waits for `$here/run-done`,
+/// which the test marks once the run's ledger is done, then 2 s more, long past the drive's return.
+const CANARY_OUTLASTS_THE_DRIVE: &str = concat!(waiting_for!("run-done"), "    sleep 2\n");
+
+/// Spec 105's hold controller beside the drive, through `rigger run`: given a run whose session is
+/// live, when a host hold dated past its first delay lands on it, then a later poll probes it on
+/// the hold's model, and the canary still running when the drive returns is waited out, never cut
+/// short: the run exits only once the canary has ended, its pass releasing the hold by probe ahead
+/// of the done run's own release, and every write of the probe folds into the graph.
+#[cfg(unix)]
+#[test]
+fn a_hold_landing_mid_run_is_probed_and_its_canary_outlasting_the_drive_is_waited_out() {
+    use common::fixtures::{printing, LOGGED_IN_STATUS, PASSING_CANARY};
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_workflow_fixture(root, &REVIEWLESS_GIT_UNIT_WORKFLOW);
+    seed_a_run_held_by(root, None);
+    let head = common::cli::run_log_head(root);
+    let scratch = tempfile::tempdir().unwrap();
+    let arms = format!(
+        "{}{}",
+        sighting_worker_arm(SESSION_WAITS_FOR_THE_CANARY, &[]),
+        common::fixtures::probe_arms(
+            &printing(LOGGED_IN_STATUS),
+            &format!("{CANARY_OUTLASTS_THE_DRIVE}{PASSING_CANARY}")
+        )
+    );
+    let hold = probed_hold(SEEDED_HOLD_CAUSE, rigger::run::HOLD_BY_HOST);
+    let held = common::fixtures::dated_ago(common::fixtures::run_held_event(&hold), 120);
+    let mut land = holding_the_live_session(root, Duration::ZERO, held);
+    let (out, err, ok, fake) = run_on_arms_beside(root, &["run"], scratch.path(), &arms, |fake| {
+        land(fake);
+        let done = fake.join("bin/run-done");
+        if !done.exists() && folded_run(root).done() {
+            std::fs::write(&done, "").unwrap();
+        }
+    });
+    assert!(
+        fake.path().join("bin/canary-ran").exists(),
+        "the hold's canary ran and ended before the run exited; stderr: {err}\nstdout: {out}"
+    );
+    assert!(ok, "the run exits 0; stderr: {err}\nstdout: {out}");
+    assert_eq!(
+        out.lines().nth(2).unwrap(),
+        "done: every unit integrated",
+        "how the run ended; stderr: {err}"
+    );
+    assert_eq!(
+        probe_lines(root),
+        [common::fixtures::probe_line(
+            SEEDED_HOLD_CAUSE,
+            60,
+            latest_hold_revision(root)
+        )],
+        "one probe of the hold that landed"
+    );
+    assert_eq!(
+        recorded_argv(&fake.path().join("bin/canary-argv")),
+        common::fixtures::canary_argv(PROBED_MODEL),
+        "the canary runs on the hold's model"
+    );
+    assert_eq!(run_holds(root), [hold], "the holds");
+    assert_eq!(
+        run_releases(root),
+        [rigger::run::HOLD_BY_PROBE],
+        "the canary's pass releases the hold ahead of the done run"
+    );
+    assert_eq!(
+        unfolded_types_past(root, head),
+        [rigger::run::TYPE_RUN_HELD],
+        "every write of the probe folds, the test's own hold alone standing unfolded"
+    );
 }
 
 /// The shell of a session that dies with no result on its first launch: each later launch goes on
@@ -10542,7 +10677,11 @@ fn a_resume_ending_api_side_or_on_a_held_run_launches_nothing_fresh() {
         );
         let closes = case.launches[0].1.is_some();
         let scratch_root = scratch.path().to_str().unwrap();
-        let mut hold = holding_the_live_session(root, case.hold_lands, seeded_operator_hold());
+        let mut hold = holding_the_live_session(
+            root,
+            case.hold_lands,
+            common::fixtures::run_held_event(&seeded_operator_hold()),
+        );
         // The host reads the hold once the launch has ended, so the release waits for what follows
         // that read: the launch's close, or the reclaim of its scratch when it closes nothing.
         let mut release = releasing_holds(root, 1, |root| {
