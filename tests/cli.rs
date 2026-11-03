@@ -10487,8 +10487,7 @@ fn a_resume_ending_api_side_or_on_a_held_run_launches_nothing_fresh() {
                         solo/implementer#1` (last-write-wins supersedes this liveness fault).";
     const ENDS: &str = "    exit 1\n";
     const UNREADABLE: &str = "    printf '\\377\\376\\n' >&3\n";
-    /// Reads the session's input to its close: the start of a stop, or the reap past a read error,
-    /// which the arm outlives, a subshell of the child the host reaps holding its output pipes.
+    /// Reads the session's input to its close: the start of a stop, or the reap past a read error.
     const READS_TO_ITS_CLOSE: &str = "    while IFS= read -r _unused; do :; done\n";
 
     /// One launch of the re-attempt, at the ordinal its place says: whether it resumed the first
@@ -10513,6 +10512,9 @@ fn a_resume_ending_api_side_or_on_a_held_run_launches_nothing_fresh() {
     let retried = |category| format!("{}{ENDS}", api_retry_lines(&[category], 1));
     let under_a_hold = |shell: String| format!("{SESSION_WAITS_FOR_A_HOLD}{shell}{ENDS}");
     let held_as_its_input_closes = format!("{READS_TO_ITS_CLOSE}{}", under_a_hold(String::new()));
+    // Past a read error the host reaps the child it spawned and drains its output pipes, so a
+    // subshell of that child, holding them, outlives the reap, and the drain ends when it does.
+    let outliving_its_reap = format!("    (\n{held_as_its_input_closes}    )\n{ENDS}");
     let cases = [
         Case {
             name: "a wait class",
@@ -10578,7 +10580,7 @@ fn a_resume_ending_api_side_or_on_a_held_run_launches_nothing_fresh() {
         Case {
             name: "a hold landing between a read error and the end of the drain joins",
             workflow: &TWO_ATTEMPT_RED_UNIT_WORKFLOW,
-            endings: vec![format!("{UNREADABLE}{held_as_its_input_closes}")],
+            endings: vec![format!("{UNREADABLE}{outliving_its_reap}")],
             hold_lands: Duration::ZERO,
             launches: vec![(true, None, None), completed],
             holds: vec![seeded_operator_hold()],
