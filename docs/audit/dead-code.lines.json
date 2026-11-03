@@ -1,1 +1,58 @@
-[]
+[
+  {
+    "file": "crates/rigger-domain/src/hold_probe.rs",
+    "name": "checks_login",
+    "line": 51,
+    "test_only_references": [
+      {
+        "file": "crates/rigger-domain/src/hold_probe.rs",
+        "line": 444
+      }
+    ]
+  },
+  {
+    "file": "crates/rigger-domain/src/hold_probe.rs",
+    "name": "owed_probe",
+    "line": 84,
+    "test_only_references": [
+      {
+        "file": "crates/rigger-domain/src/hold_probe.rs",
+        "line": 409
+      },
+      {
+        "file": "crates/rigger-domain/src/hold_probe.rs",
+        "line": 443
+      },
+      {
+        "file": "crates/rigger-domain/src/hold_probe.rs",
+        "line": 453
+      }
+    ]
+  },
+  {
+    "file": "crates/rigger-store-sqlite/src/run_store.rs",
+    "name": "record_failed_probe",
+    "line": 269,
+    "test_only_references": [
+      {
+        "file": "crates/rigger-store-sqlite/src/run_store.rs",
+        "line": 842
+      }
+    ]
+  },
+  {
+    "file": "crates/rigger-store-sqlite/src/run_store.rs",
+    "name": "release_probed_hold",
+    "line": 312,
+    "test_only_references": [
+      {
+        "file": "crates/rigger-store-sqlite/src/run_store.rs",
+        "line": 898
+      },
+      {
+        "file": "crates/rigger-store-sqlite/src/run_store.rs",
+        "line": 945
+      }
+    ]
+  }
+]

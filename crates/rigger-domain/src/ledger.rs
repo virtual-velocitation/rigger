@@ -8,7 +8,7 @@ use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
 
-use crate::eventstore::Event;
+use crate::eventstore::{Event, Revision};
 use crate::run::{RunHeld, HOLD_BY_OPERATOR, TYPE_RUN_HELD, TYPE_RUN_RELEASED, TYPE_RUN_STARTED};
 
 /// Status of a unit of work, over its lifecycle
@@ -231,6 +231,24 @@ pub struct Hold {
     pub operator: bool,
     /// Its latest `RunHeld`, whose cause is the hold's cause.
     pub latest: RunHeld,
+    /// The run-stream revision of [`Hold::latest`]: a probe of the hold releases it only while
+    /// its latest `RunHeld` is still the one at this revision.
+    pub revision: Revision,
+}
+
+impl Hold {
+    /// The hold `open` (`None` when the run is unheld) becomes on the [`TYPE_RUN_HELD`] `e`: the
+    /// one fold of a `RunHeld` onto a hold, which [`project`] and the probe's delay
+    /// ([`crate::hold_probe::owed_probe`]) both read a hold by.
+    pub fn on_held(open: Option<Hold>, e: &Event) -> Result<Hold, serde_json::Error> {
+        let latest: RunHeld = serde_json::from_slice(&e.data)?;
+        Ok(Hold {
+            since: open.as_ref().map_or(e.valid_from, |hold| hold.since),
+            operator: open.is_some_and(|hold| hold.operator) || latest.by == HOLD_BY_OPERATOR,
+            latest,
+            revision: e.revision,
+        })
+    }
 }
 
 /// One of the watching-discipline signals `AttentionEntry::kind` carries: spec 69's five, and
@@ -618,16 +636,7 @@ impl RunState {
                 self.run_id = p.run;
                 self.spec_path = p.spec;
             }
-            TYPE_RUN_HELD => {
-                let latest: RunHeld = serde_json::from_slice(&e.data)?;
-                let open = self.hold.take();
-                self.hold = Some(Hold {
-                    since: open.as_ref().map_or(e.valid_from, |hold| hold.since),
-                    operator: open.is_some_and(|hold| hold.operator)
-                        || latest.by == HOLD_BY_OPERATOR,
-                    latest,
-                });
-            }
+            TYPE_RUN_HELD => self.hold = Some(Hold::on_held(self.hold.take(), e)?),
             TYPE_RUN_RELEASED => self.hold = None,
             TYPE_UNIT_STARTED => {
                 let p: UnitStarted = serde_json::from_slice(&e.data)?;

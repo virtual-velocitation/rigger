@@ -21,8 +21,8 @@ use crate::eventstore::{Error, Event, EventStore, ExpectedRevision, Revision, Ty
 use crate::run::read::read_run;
 use crate::run::{
     adopted_run, current_run, effective_definition, RunHeld, RunReleased, RunStart, RunStarted,
-    HOLD_BY_HOST, META_DEFINITION, META_DEFINITION_PRIOR, META_RUN_ID, STREAM, TYPE_RUN_HELD,
-    TYPE_RUN_RELEASED, TYPE_RUN_STARTED,
+    HOLD_BY_HOST, HOLD_BY_PROBE, META_DEFINITION, META_DEFINITION_PRIOR, META_RUN_ID, STREAM,
+    TYPE_RUN_HELD, TYPE_RUN_RELEASED, TYPE_RUN_STARTED,
 };
 
 /// Record a `--rebase-definition` supersession on the current run (spec 13, unit 1): the
@@ -249,39 +249,81 @@ pub struct HoldSighting<'a> {
 /// sighting whose category needs no person, it appends nothing; otherwise the run's cause moves
 /// to the new person-needing category.
 pub fn record_hold_sighting(store: &dyn EventStore, sighting: &HoldSighting) -> Result<(), Error> {
-    let row = cause_row(sighting.cause);
-    let body = RunHeld {
-        cause: sighting.cause.to_string(),
-        detail: sighting.detail.to_string(),
-        action: row.action.to_string(),
-        needs_person: row.needs_person,
-        by: HOLD_BY_HOST.to_string(),
-        model: sighting.model.to_string(),
-    };
+    let body = held_by(
+        sighting.cause,
+        sighting.detail,
+        HOLD_BY_HOST,
+        sighting.model,
+    );
     let held = hold_event(TYPE_RUN_HELD, &body)?;
     append_on_hold(store, TYPE_RUN_HELD, |hold| {
-        let appends = match hold {
-            None => true,
-            Some(hold) if hold.operator => false,
-            Some(hold) => row.needs_person && hold.latest.cause != sighting.cause,
-        };
+        let appends = hold.is_none_or(|hold| moves_the_cause(hold, &body));
         Ok(appends.then(|| held.clone()))
     })
+}
+
+/// Record a failed probe's `category` (the last `api_retry` category of the canary's stream) as a
+/// `RunHeld {by: probe}` whose detail is the category, carrying the hold's latest model forward,
+/// when it moves the open hold's cause: on a hold of the same cause, on a category that needs no
+/// person, on an operator hold and on an unheld run it appends nothing (spec 105 RELEASE).
+pub fn record_failed_probe(store: &dyn EventStore, category: &str) -> Result<(), Error> {
+    append_on_hold(store, TYPE_RUN_HELD, |hold| {
+        hold.map(|hold| {
+            let body = held_by(category, category, HOLD_BY_PROBE, &hold.latest.model);
+            (hold, body)
+        })
+        .filter(|(hold, body)| moves_the_cause(hold, body))
+        .map(|(_, body)| hold_event(TYPE_RUN_HELD, &body))
+        .transpose()
+    })
+}
+
+/// The `RunHeld` of `cause` written by `by`, its action and need for a person read from the
+/// cause's row of the disposition table.
+fn held_by(cause: &str, detail: &str, by: &str, model: &str) -> RunHeld {
+    let row = cause_row(cause);
+    RunHeld {
+        cause: cause.to_string(),
+        detail: detail.to_string(),
+        action: row.action.to_string(),
+        needs_person: row.needs_person,
+        by: by.to_string(),
+        model: model.to_string(),
+    }
+}
+
+/// Whether `body` moves the open `hold`'s cause: on no operator hold, to a person-needing cause
+/// other than the hold's own.
+fn moves_the_cause(hold: &Hold, body: &RunHeld) -> bool {
+    !hold.operator && body.needs_person && hold.latest.cause != body.cause
 }
 
 /// Release the current run's open hold, an operator hold included, as `RunReleased {by: host}`:
 /// the done run's and the mint's release (spec 105). With no hold open it appends nothing.
 pub fn release_hold(store: &dyn EventStore) -> Result<(), Error> {
     append_on_hold(store, TYPE_RUN_RELEASED, |hold| {
-        hold.map(|hold| {
-            let body = RunReleased {
-                by: HOLD_BY_HOST.to_string(),
-                held_for_s: held_for_s(hold.since, SystemTime::now()),
-            };
-            hold_event(TYPE_RUN_RELEASED, &body)
-        })
-        .transpose()
+        hold.map(|hold| released_by(HOLD_BY_HOST, hold)).transpose()
     })
+}
+
+/// Release the hold a passing probe read, as `RunReleased {by: probe}`, only while the hold's
+/// latest `RunHeld` is the one at `probed`: a hold re-declared since, by any writer and of any
+/// cause, a released hold and an unheld run take nothing (spec 105 RELEASE).
+pub fn release_probed_hold(store: &dyn EventStore, probed: Revision) -> Result<(), Error> {
+    append_on_hold(store, TYPE_RUN_RELEASED, |hold| {
+        hold.filter(|hold| hold.revision == probed)
+            .map(|hold| released_by(HOLD_BY_PROBE, hold))
+            .transpose()
+    })
+}
+
+/// The `RunReleased` by `by` of `hold`, carrying how long it stood.
+fn released_by(by: &str, hold: &Hold) -> Result<Event, Error> {
+    let body = RunReleased {
+        by: by.to_string(),
+        held_for_s: held_for_s(hold.since, SystemTime::now()),
+    };
+    hold_event(TYPE_RUN_RELEASED, &body)
 }
 
 /// The revision a launch close stamps: the newest of the current run's slice, the head a hold

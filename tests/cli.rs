@@ -30434,6 +30434,7 @@ fn mcp_spawn_binds_writes_and_serves_no_result_tool_over_stdio() {
         vec![rigger::progress::AgentProgress {
             id: bound_spawn.to_string(),
             activity: "ran the gates".to_string(),
+            revision: None,
         }]
     );
 }

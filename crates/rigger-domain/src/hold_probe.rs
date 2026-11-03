@@ -1,13 +1,164 @@
 //! THE PROBE'S DELAY (spec 105 RELEASE): when the hold controller owes the open hold its next
 //! probe, read from the run's hold events and the progress store's probe lines alone, so no other
 //! probe state is stored.
+//!
+//! A probe's delay is 60 s doubled per probe already made of the hold's chain, capped at 900 s: a
+//! probe that finds the account still failing waits longer before the next. The chain is the open
+//! hold and every hold behind it that a quick re-hold continued: a hold released and held again
+//! within 600 s keeps its probes' count, so a hold the host re-declares straight after a probe
+//! released it does not start over at 60 s. An operator hold breaks the chain, since the operator
+//! ended it, and is never probed itself; a `model_not_found` hold is never probed either, its
+//! action being a configuration a probe cannot change.
+
+use std::time::{Duration, SystemTime};
+
+use crate::agent::{cause_row, AgentFailure};
+use crate::eventstore::{Event, Revision};
+use crate::ledger::Hold;
+use crate::progress::{AgentProgress, TYPE_AGENT_PROGRESS};
+use crate::run::{RunHeld, TYPE_RUN_HELD, TYPE_RUN_RELEASED};
+
+/// The [`AgentProgress::id`] of the line the hold controller writes for each probe it makes.
+pub const HOLD_PROBE_ID: &str = "hold-probe";
+
+/// The delay of a hold's first probe.
+const FIRST_DELAY: Duration = Duration::from_secs(60);
+
+/// The delay no doubling exceeds.
+const MAX_DELAY: Duration = Duration::from_secs(900);
+
+/// The longest a released hold's release may fall before the next hold's first `RunHeld` and
+/// still have that hold continue its chain.
+const QUICK_RE_HOLD: Duration = Duration::from_secs(600);
+
+/// The probe the open hold is owed: the hold's latest `RunHeld` and its run-stream revision, the
+/// delay that bounds the probe and the instant it falls due.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OwedProbe {
+    /// The hold's latest `RunHeld`: its cause is what the probe tests, its model the canary's.
+    pub held: RunHeld,
+    /// The run-stream revision of [`OwedProbe::held`]: the probe releases the hold only while
+    /// its latest `RunHeld` is still this one.
+    pub revision: Revision,
+    /// The delay since the chain's latest probe or `RunHeld`, which also bounds the probe.
+    pub delay: Duration,
+    /// When the probe falls due.
+    pub due: SystemTime,
+}
+
+impl OwedProbe {
+    /// Whether the probe reads the login before its canary: a credential cause's.
+    pub fn checks_login(&self) -> bool {
+        cause_row(&self.held.cause).credential
+    }
+
+    /// The progress line the hold controller writes as it makes this probe.
+    pub fn line(&self) -> AgentProgress {
+        AgentProgress {
+            id: HOLD_PROBE_ID.to_string(),
+            activity: format!(
+                "probing the {} hold within {} s",
+                self.held.cause,
+                self.delay.as_secs()
+            ),
+            revision: Some(self.revision),
+        }
+    }
+}
+
+/// One hold of the run: the hold as [`Hold::on_held`] folds it, the revision of its first
+/// `RunHeld` and the valid time of its latest.
+struct Span {
+    hold: Hold,
+    first: Revision,
+    latest_at: SystemTime,
+}
+
+/// The probe the run's open hold is owed at `now`, read from the current run's events
+/// (`run_events`) and the run's progress lines (`progress_events`): `None` for an unheld run, an
+/// operator hold, a `model_not_found` hold or a run slice whose `RunHeld` does not decode.
+/// Otherwise the delay is [`FIRST_DELAY`] doubled per hold-probe line stamped inside the
+/// revisions of the hold's chain, capped at [`MAX_DELAY`], and the probe falls due one delay
+/// after the later of the chain's latest such line and the hold's latest `RunHeld`, and never
+/// later than one delay from `now`.
+pub fn owed_probe(
+    run_events: &[Event],
+    progress_events: &[Event],
+    now: SystemTime,
+) -> Option<OwedProbe> {
+    let mut released: Vec<(Span, SystemTime, Revision)> = Vec::new();
+    let mut open: Option<Span> = None;
+    for e in run_events {
+        match e.type_.as_str() {
+            TYPE_RUN_HELD => {
+                let first = open.as_ref().map_or(e.revision, |span| span.first);
+                let hold = Hold::on_held(open.take().map(|span| span.hold), e).ok()?;
+                open = Some(Span {
+                    hold,
+                    first,
+                    latest_at: e.valid_from,
+                });
+            }
+            TYPE_RUN_RELEASED => {
+                if let Some(span) = open.take() {
+                    released.push((span, e.valid_from, e.revision));
+                }
+            }
+            _ => {}
+        }
+    }
+    let open = open?;
+    if open.hold.operator || open.hold.latest.cause == AgentFailure::ModelNotFound.as_str() {
+        return None;
+    }
+    // Each hold of the chain as the revision of its first `RunHeld` and of its release, the open
+    // hold's none.
+    let mut chain: Vec<(Revision, Option<Revision>)> = vec![(open.first, None)];
+    let mut since = open.hold.since;
+    for (span, released_at, release) in released.iter().rev() {
+        let gap = since.duration_since(*released_at).unwrap_or_default();
+        if span.hold.operator || gap > QUICK_RE_HOLD {
+            break;
+        }
+        chain.push((span.first, Some(*release)));
+        since = span.hold.since;
+    }
+    let probes: Vec<SystemTime> = progress_events
+        .iter()
+        .filter(|e| e.type_ == TYPE_AGENT_PROGRESS)
+        .filter_map(|e| {
+            let line: AgentProgress = serde_json::from_slice(&e.data).ok()?;
+            let revision = line.revision.filter(|_| line.id == HOLD_PROBE_ID)?;
+            chain
+                .iter()
+                .any(|&(first, release)| {
+                    first <= revision && release.is_none_or(|release| revision < release)
+                })
+                .then_some(e.valid_from)
+        })
+        .collect();
+    let delay = delay_after(probes.len());
+    let last = probes.into_iter().fold(open.latest_at, SystemTime::max);
+    Some(OwedProbe {
+        held: open.hold.latest,
+        revision: open.hold.revision,
+        delay,
+        due: (last + delay).min(now + delay),
+    })
+}
+
+/// The delay after `probes` probes: [`FIRST_DELAY`] doubled per probe, capped at [`MAX_DELAY`].
+fn delay_after(probes: usize) -> Duration {
+    let doublings = u32::try_from(probes).unwrap_or(u32::MAX);
+    let factor = 1u32.checked_shl(doublings).unwrap_or(u32::MAX);
+    FIRST_DELAY.saturating_mul(factor).min(MAX_DELAY)
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::event_fixtures::at;
-    use crate::eventstore::Event;
-    use crate::progress::{AgentProgress, RunStamped};
+    use crate::progress::RunStamped;
     use crate::run::{
         RunHeld, RunReleased, HOLD_BY_HOST, HOLD_BY_OPERATOR, HOLD_BY_PROBE, TYPE_RUN_HELD,
         TYPE_RUN_RELEASED,

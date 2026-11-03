@@ -2880,6 +2880,7 @@ mod tests {
             vec![AgentProgress {
                 id: "u104-spawn-mcp/implementer#0".to_string(),
                 activity: "ran the gates".to_string(),
+                revision: None,
             }],
             "the progress report must be attributed to the BOUND spawn with the given activity"
         );

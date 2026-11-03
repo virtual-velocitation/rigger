@@ -5269,6 +5269,7 @@ mod tests {
         let ap = progress::AgentProgress {
             id: req.id.clone(),
             activity: "grep #12: conductor.rs".into(),
+            revision: None,
         };
         let mut prog = Event::new(
             progress::TYPE_AGENT_PROGRESS,
@@ -5333,6 +5334,7 @@ mod tests {
             let ap = progress::AgentProgress {
                 id: id.into(),
                 activity: activity.into(),
+                revision: None,
             };
             Event::new(
                 progress::TYPE_AGENT_PROGRESS,
@@ -5452,6 +5454,7 @@ mod tests {
         let bp = progress::AgentProgress {
             id: b_impl.id.clone(),
             activity: "grep #7: dash.rs".into(),
+            revision: None,
         };
         let mut bprog = Event::new(
             progress::TYPE_AGENT_PROGRESS,

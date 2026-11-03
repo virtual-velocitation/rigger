@@ -312,7 +312,7 @@ pub enum Disposition {
 }
 
 /// One row of the disposition table: what a category does to the run, the action a hold of it
-/// names and whether that action needs a person.
+/// names, whether that action needs a person and whether it is a credential category.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DispositionRow {
     pub disposition: Disposition,
@@ -320,6 +320,9 @@ pub struct DispositionRow {
     pub action: &'static str,
     /// The `RunHeld.needs_person` of a hold of this cause.
     pub needs_person: bool,
+    /// Whether a probe of a hold of this cause reads the login (`claude auth status`) before
+    /// its canary: a logged-out answer is the cause itself, so no canary runs.
+    pub credential: bool,
 }
 
 /// The cause of the hold three consecutive failed launches set: the API is failing with no
@@ -333,12 +336,14 @@ const WAITS: DispositionRow = DispositionRow {
     disposition: Disposition::Wait,
     action: RETRIES_BY_ITSELF,
     needs_person: false,
+    credential: false,
 };
 
 const FAULTS: DispositionRow = DispositionRow {
     disposition: Disposition::Fault,
     action: "",
     needs_person: false,
+    credential: false,
 };
 
 /// The row a hold of `action` reads, every category that holds on sight needing a person.
@@ -347,6 +352,7 @@ const fn holds(action: &'static str) -> DispositionRow {
         disposition: Disposition::Hold,
         action,
         needs_person: true,
+        credential: false,
     }
 }
 
@@ -359,6 +365,7 @@ pub fn cause_row(cause: &str) -> DispositionRow {
             disposition: Disposition::Hold,
             action: RETRIES_BY_ITSELF,
             needs_person: false,
+            credential: false,
         };
     }
     AgentFailure::from_category(cause).row()
@@ -423,7 +430,10 @@ impl AgentFailure {
     pub fn row(self) -> DispositionRow {
         match self {
             AgentFailure::AuthenticationFailed | AgentFailure::OauthOrgNotAllowed => {
-                holds("run claude auth login")
+                DispositionRow {
+                    credential: true,
+                    ..holds("run claude auth login")
+                }
             }
             AgentFailure::CloudCredentialError => holds("refresh the cloud provider's credentials"),
             AgentFailure::BillingError => holds("fix the account's billing"),

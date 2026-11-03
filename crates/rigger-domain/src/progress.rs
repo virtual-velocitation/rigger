@@ -99,6 +99,11 @@ pub struct AgentProgress {
     pub id: String,
     /// A short, human, one-line description of the agent's latest step.
     pub activity: String,
+    /// The run stream's revision a hold-probe line probed (the revision of the hold's latest
+    /// `RunHeld`, [`crate::hold_probe::OwedProbe::line`]), `None` on every other line.
+    /// [`crate::hold_probe::owed_probe`] counts a hold's probes by it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revision: Option<Revision>,
 }
 
 impl AgentProgress {
@@ -492,6 +497,7 @@ mod tests {
         let mut p1 = AgentProgress {
             id: req.id.clone(),
             activity: "grep #1".into(),
+            revision: None,
         }
         .to_stamped_event("run-1")
         .unwrap();
@@ -499,6 +505,7 @@ mod tests {
         let mut p2 = AgentProgress {
             id: req.id.clone(),
             activity: "grep #12: conductor.rs".into(),
+            revision: None,
         }
         .to_stamped_event("run-1")
         .unwrap();
@@ -1031,6 +1038,7 @@ mod tests {
         let mut events = vec![AgentProgress {
             id: "u/implementer#0".into(),
             activity: "not a stop failure".into(),
+            revision: None,
         }
         .to_stamped_event("run-1")
         .unwrap()];

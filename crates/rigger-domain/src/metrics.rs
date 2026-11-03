@@ -3470,6 +3470,7 @@ mod tests {
         let ap = crate::progress::AgentProgress {
             id: id.to_string(),
             activity: activity.to_string(),
+            revision: None,
         };
         Event::new(
             crate::progress::TYPE_AGENT_PROGRESS,
