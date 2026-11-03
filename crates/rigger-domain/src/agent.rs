@@ -312,7 +312,7 @@ pub enum Disposition {
 }
 
 /// One row of the disposition table: what a category does to the run, the action a hold of it
-/// names and whether that action needs a person.
+/// names, whether that action needs a person and whether it is a credential category.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DispositionRow {
     pub disposition: Disposition,
@@ -320,6 +320,9 @@ pub struct DispositionRow {
     pub action: &'static str,
     /// The `RunHeld.needs_person` of a hold of this cause.
     pub needs_person: bool,
+    /// Whether a probe of a hold of this cause reads the login (`claude auth status`) before
+    /// its canary: a logged-out answer is the cause itself, so no canary runs.
+    pub credential: bool,
 }
 
 /// The cause of the hold three consecutive failed launches set: the API is failing with no
@@ -333,12 +336,14 @@ const WAITS: DispositionRow = DispositionRow {
     disposition: Disposition::Wait,
     action: RETRIES_BY_ITSELF,
     needs_person: false,
+    credential: false,
 };
 
 const FAULTS: DispositionRow = DispositionRow {
     disposition: Disposition::Fault,
     action: "",
     needs_person: false,
+    credential: false,
 };
 
 /// The row a hold of `action` reads, every category that holds on sight needing a person.
@@ -347,6 +352,7 @@ const fn holds(action: &'static str) -> DispositionRow {
         disposition: Disposition::Hold,
         action,
         needs_person: true,
+        credential: false,
     }
 }
 
@@ -359,6 +365,7 @@ pub fn cause_row(cause: &str) -> DispositionRow {
             disposition: Disposition::Hold,
             action: RETRIES_BY_ITSELF,
             needs_person: false,
+            credential: false,
         };
     }
     AgentFailure::from_category(cause).row()
@@ -423,7 +430,10 @@ impl AgentFailure {
     pub fn row(self) -> DispositionRow {
         match self {
             AgentFailure::AuthenticationFailed | AgentFailure::OauthOrgNotAllowed => {
-                holds("run claude auth login")
+                DispositionRow {
+                    credential: true,
+                    ..holds("run claude auth login")
+                }
             }
             AgentFailure::CloudCredentialError => holds("refresh the cloud provider's credentials"),
             AgentFailure::BillingError => holds("fix the account's billing"),
@@ -574,42 +584,57 @@ mod tests {
     }
 
     /// THE DISPOSITION TABLE (spec 105): every category, by its wire name, maps to the disposition,
-    /// the action and the need for a person decided for it, and a name no binary knows faults as
-    /// `unknown` does.
+    /// the action and the need for a person decided for it, and whether it is a credential
+    /// category whose probe reads the login first; a name no binary knows faults as `unknown` does.
     #[test]
     fn every_category_maps_to_its_decided_disposition_action_and_person() {
         use Disposition::{Fault, Hold, Wait};
-        let rows: [(&str, Disposition, &str, bool); 14] = [
-            ("rate_limit", Wait, RETRIES, false),
-            ("overloaded", Wait, RETRIES, false),
-            ("server_error", Wait, RETRIES, false),
-            ("authentication_failed", Hold, LOGIN, true),
-            ("oauth_org_not_allowed", Hold, LOGIN, true),
+        let rows: [(&str, Disposition, &str, bool, bool); 14] = [
+            ("rate_limit", Wait, RETRIES, false, false),
+            ("overloaded", Wait, RETRIES, false, false),
+            ("server_error", Wait, RETRIES, false, false),
+            ("authentication_failed", Hold, LOGIN, true, true),
+            ("oauth_org_not_allowed", Hold, LOGIN, true, true),
             (
                 "cloud_credential_error",
                 Hold,
                 "refresh the cloud provider's credentials",
                 true,
+                false,
             ),
-            ("billing_error", Hold, "fix the account's billing", true),
-            ("account_on_hold", Hold, "resolve the account's hold", true),
+            (
+                "billing_error",
+                Hold,
+                "fix the account's billing",
+                true,
+                false,
+            ),
+            (
+                "account_on_hold",
+                Hold,
+                "resolve the account's hold",
+                true,
+                false,
+            ),
             (
                 "verification_required",
                 Hold,
                 "complete the account's verification",
                 true,
+                false,
             ),
-            ("model_not_found", Hold, MODEL, true),
-            ("invalid_request", Fault, "", false),
-            ("max_output_tokens", Fault, "", false),
-            ("unknown", Fault, "", false),
-            ("a_category_no_binary_knows", Fault, "", false),
+            ("model_not_found", Hold, MODEL, true, false),
+            ("invalid_request", Fault, "", false, false),
+            ("max_output_tokens", Fault, "", false, false),
+            ("unknown", Fault, "", false, false),
+            ("a_category_no_binary_knows", Fault, "", false, false),
         ];
-        for (category, disposition, action, needs_person) in rows {
+        for (category, disposition, action, needs_person, credential) in rows {
             let row = DispositionRow {
                 disposition,
                 action,
                 needs_person,
+                credential,
             };
             assert_eq!(
                 AgentFailure::from_category(category).row(),
@@ -634,6 +659,7 @@ mod tests {
                     disposition: Disposition::Hold,
                     action: RETRIES,
                     needs_person: false,
+                    credential: false,
                 },
             ),
             (

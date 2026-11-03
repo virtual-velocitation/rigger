@@ -3,6 +3,8 @@
 
 use std::path::{Path, PathBuf};
 
+use super::fixtures::{recorded_argv, recorded_task};
+
 /// The repository root (the package's manifest directory).
 pub fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -112,26 +114,6 @@ pub fn write_critique_stub_reporting(work: &Path, critique: &str, rigger_server:
 pub fn critique_stub_spawns(work: &Path) -> usize {
     std::fs::read_to_string(work.join("bin").join(CRITIQUE_SPAWNS))
         .map_or(0, |count| count.lines().count())
-}
-
-/// The task a stand-in `claude` saved at `path`: the `content` of the host's first stream-json
-/// user message.
-pub fn recorded_task(path: &Path) -> String {
-    let line = std::fs::read_to_string(path).unwrap();
-    let message: serde_json::Value = serde_json::from_str(line.trim_end()).unwrap();
-    message["message"]["content"]
-        .as_str()
-        .expect("the first user message carries its task as text")
-        .to_string()
-}
-
-/// The argv a stand-in `claude` saved at `path`, one NUL-terminated field per argument.
-pub fn recorded_argv(path: &Path) -> Vec<String> {
-    std::fs::read_to_string(path)
-        .unwrap()
-        .split_terminator('\0')
-        .map(str::to_string)
-        .collect()
 }
 
 /// The words the shell a hook runs under reads out of the hook `command`: the argv the command

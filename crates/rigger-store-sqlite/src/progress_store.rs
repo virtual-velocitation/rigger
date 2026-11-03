@@ -25,6 +25,7 @@ pub fn record(
     let progress = AgentProgress {
         id: id.to_string(),
         activity: activity.to_string(),
+        revision: None,
     };
     append_stamped(
         store,

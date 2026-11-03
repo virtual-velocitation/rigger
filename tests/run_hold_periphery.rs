@@ -61,8 +61,8 @@ fn read_back(root: &Path) -> (Vec<String>, Option<Hold>) {
 
 /// THE EVENTS, through the log on disk: each row appends its events one at a time to a real store
 /// at the valid times it names, then reads the current run back as a reader does. Each row crosses
-/// something the crate's own fold table cannot: the body and the valid time surviving the store,
-/// the boundary `read_run` finds by position, or an order the log and the valid times disagree on.
+/// something the crate's own fold table cannot: the body, the valid time and the revision the
+/// store stamped surviving it, the boundary `read_run` finds by position, or an order the log and the valid times disagree on.
 /// The order that counts is the log's, so a hold's start and its end are decided by position.
 #[test]
 fn the_open_hold_reads_back_from_the_log_on_disk_by_the_rules_of_the_events() {
@@ -82,11 +82,12 @@ fn the_open_hold_reads_back_from_the_log_on_disk_by_the_rules_of_the_events() {
         by: "operator".to_string(),
         model: "m1".to_string(),
     };
-    let open = |offset: u64, operator: bool, latest: &RunHeld| {
+    let open = |offset: u64, operator: bool, latest: &RunHeld, revision: i64| {
         Some(Hold {
             since: valid_at(offset),
             operator,
             latest: latest.clone(),
+            revision,
         })
     };
 
@@ -104,7 +105,7 @@ fn the_open_hold_reads_back_from_the_log_on_disk_by_the_rules_of_the_events() {
             "with no run started the whole stream is the slice, its RunHeld with it",
             vec![(TYPE_RUN_HELD, HELD_BY_HOST, 5)],
             vec!["RunHeld"],
-            open(5, false, &by_host),
+            open(5, false, &by_host, 0),
         ),
         (
             "a stored RunHeld keeps every field and its valid time to the nanosecond",
@@ -113,7 +114,7 @@ fn the_open_hold_reads_back_from_the_log_on_disk_by_the_rules_of_the_events() {
                 (TYPE_RUN_HELD, HELD_BY_HOST, 5),
             ],
             vec!["RunStarted", "RunHeld"],
-            open(5, false, &by_host),
+            open(5, false, &by_host, 1),
         ),
         (
             "a stored operator RunHeld reads as an operator hold",
@@ -122,7 +123,7 @@ fn the_open_hold_reads_back_from_the_log_on_disk_by_the_rules_of_the_events() {
                 (TYPE_RUN_HELD, HELD_BY_OPERATOR, 5),
             ],
             vec!["RunStarted", "RunHeld"],
-            open(5, true, &by_operator),
+            open(5, true, &by_operator, 1),
         ),
         (
             "a body carrying a field this binary never heard of still holds the run",
@@ -131,7 +132,7 @@ fn the_open_hold_reads_back_from_the_log_on_disk_by_the_rules_of_the_events() {
                 (TYPE_RUN_HELD, HELD_WITH_A_LATER_FIELD, 5),
             ],
             vec!["RunStarted", "RunHeld"],
-            open(5, false, &by_host),
+            open(5, false, &by_host, 1),
         ),
         (
             "a stored RunReleased ends the hold",
@@ -151,7 +152,7 @@ fn the_open_hold_reads_back_from_the_log_on_disk_by_the_rules_of_the_events() {
                 (TYPE_RUN_HELD, HELD_BY_OPERATOR, 5),
             ],
             vec!["RunStarted", "RunHeld", "RunHeld"],
-            open(9, true, &by_operator),
+            open(9, true, &by_operator, 2),
         ),
         (
             "a RunReleased later in the log ends the hold, whatever its valid time",

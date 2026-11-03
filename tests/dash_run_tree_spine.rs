@@ -90,6 +90,7 @@ fn progress_event(id: &str, doing: &str) -> Event {
     let ap = AgentProgress {
         id: id.to_string(),
         activity: doing.to_string(),
+        revision: None,
     };
     Event::new(TYPE_AGENT_PROGRESS, serde_json::to_vec(&ap).unwrap())
 }

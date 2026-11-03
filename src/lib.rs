@@ -61,6 +61,9 @@ pub mod grounder;
 pub use rigger_config_files::playbooks;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use rigger_dash::mcpserver;
+/// The hold probe's delay and its progress line (spec 105 RELEASE).
+#[cfg(any(feature = "store", not(feature = "core")))]
+pub use rigger_domain::hold_probe;
 pub use rigger_domain::instructions;
 pub use rigger_domain::ledger;
 pub use rigger_domain::metrics;
@@ -78,6 +81,9 @@ pub use rigger_domain::sleep_hold;
 pub use rigger_driver::hooks;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use rigger_driver::liveness;
+/// The supervised child guard and the one timed line reader over a child's stream.
+#[cfg(any(feature = "store", not(feature = "core")))]
+pub use rigger_driver::reaped_child;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use rigger_driver::sidecar;
 #[cfg(any(feature = "store", not(feature = "core")))]

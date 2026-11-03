@@ -10,7 +10,7 @@
 //! `impl AgentDriver for Driver`. `rigger run` and `rigger critique` launch their agents through
 //! this host, each building [`Driver`] at its own composition root.
 
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStderr, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -397,7 +397,8 @@ impl Driver<'_> {
     /// STOP (spec 104 criterion 6): stdout is likewise read on its OWN thread (the SAME
     /// stderr-deadlock reasoning applies to it too - this function must never itself sit
     /// blocked in `BufReader::lines()` with no way to notice silence), forwarding each
-    /// line (or `None` on a clean EOF) over a channel this function drains with
+    /// line ([`crate::reaped_child::line_channel`], disconnecting on a clean EOF) over a channel
+    /// this function drains with
     /// `recv_timeout`, so `max_wall_clock` (0 = unbounded, [`crate::config::AgentDef`]'s
     /// own resolved bound) can be enforced against STREAM SILENCE - the session's silent time
     /// ([`Driver::silence`]), not total run time and not the bare wall time since the last
@@ -469,15 +470,7 @@ impl Driver<'_> {
         // so stdout is read on its own thread too (see the doc above) and forwarded here
         // over a channel this loop drains with a timeout instead of `BufRead::lines`'s
         // own unbounded blocking iterator.
-        let (line_tx, line_rx) = std::sync::mpsc::channel::<Option<std::io::Result<String>>>();
-        let stdout_reader = std::thread::spawn(move || {
-            for line in BufReader::new(stdout).lines() {
-                if line_tx.send(Some(line)).is_err() {
-                    return; // the reader (this function) is gone; nothing left to feed.
-                }
-            }
-            let _ = line_tx.send(None); // clean EOF
-        });
+        let (line_rx, stdout_reader) = crate::reaped_child::line_channel(stdout);
 
         let marker = liveness::marker_path(&self.scratch_root, &opts.run_id, &opts.id);
         let mut stream_file = open_stream_file(
@@ -538,14 +531,14 @@ impl Driver<'_> {
             };
 
             let line = match received {
-                Ok(None) => break, // clean EOF; ended_via_break stays false
-                Ok(Some(line)) => {
+                Ok(line) => {
                     last_line = SystemTime::now();
                     armed_at = std::time::Instant::now();
                     armed_for = bound;
                     line
                 }
-                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break, // reader thread gone; treat as EOF
+                // The stream's end: the clean EOF, so ended_via_break stays false.
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) if result.is_none() => {
                     if max_wall_clock != 0 {
                         let silent = self.silence(opts, last_line);
@@ -660,10 +653,7 @@ impl Driver<'_> {
                 continue;
             };
 
-            match (
-                v.get("type").and_then(Value::as_str),
-                v.get("subtype").and_then(Value::as_str),
-            ) {
+            match line_kind(&v) {
                 (Some("system"), Some("init")) => {
                     awaiting_session = false;
                     resolved_model = v
@@ -701,7 +691,7 @@ impl Driver<'_> {
                     // FAILURE CLASS's second-priority source (criterion 5): the LATEST
                     // category wins, a later line overwriting an earlier one exactly like
                     // `resolved_model` does as the stream plays.
-                    if let Some(category) = v.get("error").and_then(Value::as_str) {
+                    if let Some(category) = message_error(&v) {
                         last_api_retry_category = Some(category.to_string());
                         let row = AgentFailure::from_category(category).row();
                         if row.disposition == Disposition::Hold {
@@ -710,7 +700,7 @@ impl Driver<'_> {
                     }
                 }
                 (Some("assistant"), _) => {
-                    assistant_error = v.get("error").and_then(Value::as_str).map(str::to_string);
+                    assistant_error = message_error(&v).map(str::to_string);
                 }
                 // A live progress note ONLY - never the denial count, which the `result`
                 // message's own `permission_denials` array carries ([`spawn_result_from`]):
@@ -740,7 +730,7 @@ impl Driver<'_> {
                 // `errored` half of the guard does the same behind an `is_error` first
                 // `result`, which sets no `result` of its own.
                 (Some("result"), _) if result.is_none() && !errored => {
-                    errored = v.get("is_error").and_then(Value::as_bool) == Some(true);
+                    errored = result_errored(&v);
                     if !errored {
                         let res = spawn_result_from(&v, opts, &resolved_model);
                         spawn_store::record_result_if_absent(self.run_store, &res)?;
@@ -1465,6 +1455,104 @@ impl AgentDriver for Driver<'_> {
     }
 }
 
+/// The task a hold probe's canary is given: the least a session can answer.
+pub const CANARY_TASK: &str = "Reply with the single word: ok";
+
+/// The canary's `--settings`: every hook off, the operator's own included.
+const CANARY_SETTINGS: &str = r#"{"disableAllHooks":true}"#;
+
+/// What a hold probe ([`Driver::probe`]) found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProbeOutcome {
+    /// The canary's first result carried no error: a launch on the hold's model answers again.
+    Passed,
+    /// The login read found the session logged out, or answered nothing within the delay, so no
+    /// canary ran: a person must log in.
+    LoggedOut,
+    /// The canary did not answer: the category of its stream's last `api_retry` line,
+    /// [`AgentFailure::Unknown`]'s with none.
+    Failed(String),
+}
+
+impl Driver<'_> {
+    /// THE HOLD PROBE (spec 105 RELEASE): whether a launch on the hold `owed` probes would answer
+    /// now, within `owed.delay`. A hold whose cause a login fixes reads the login first
+    /// ([`crate::claude_auth::logged_in`]), and a session logged out runs no canary. The canary is
+    /// a host entry apart from [`AgentDriver::spawn`]: a session on the hold's model in `root`,
+    /// on this process's environment with no tools, no MCP server, no hooks and no session file
+    /// ([`canary_args`]), its task [`CANARY_TASK`], read with the readers [`Driver::read_stream`]
+    /// uses. Its first result answers, the input closing on it so the session ends on its own;
+    /// one that never comes by the delay, or a canary that does not start, fails. The login read
+    /// and the canary share the one deadline. It writes no store: the caller records what the
+    /// outcome decides.
+    pub fn probe(&self, root: &str, owed: &crate::hold_probe::OwedProbe) -> ProbeOutcome {
+        let deadline = std::time::Instant::now() + owed.delay;
+        let bin = bin_or_path_default(&self.bin, "claude");
+        if owed.checks_login() && !crate::claude_auth::logged_in(bin, deadline) {
+            return ProbeOutcome::LoggedOut;
+        }
+        let mut category = None;
+        let mut passed = false;
+        let spawned = crate::subprocess::command_in(bin, root)
+            .args(canary_args(&owed.held.model))
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn();
+        if let Ok(child) = spawned {
+            let mut canary = crate::reaped_child::ReapedChild::new(child);
+            let mut input = canary.child_mut().stdin.take();
+            if let Some(stdin) = input.as_mut() {
+                let _ = writeln!(stdin, "{}", first_user_message(CANARY_TASK));
+            }
+            canary.read_lines_until(deadline, |line| {
+                let Ok(v) = serde_json::from_str::<Value>(line) else {
+                    return std::ops::ControlFlow::Continue(());
+                };
+                match line_kind(&v) {
+                    (Some("system"), Some("api_retry")) if input.is_some() => {
+                        if let Some(latest) = message_error(&v) {
+                            category = Some(latest.to_string());
+                        }
+                    }
+                    (Some("result"), _) if input.is_some() => {
+                        passed = !result_errored(&v);
+                        input = None;
+                    }
+                    _ => {}
+                }
+                std::ops::ControlFlow::Continue(())
+            });
+        }
+        if passed {
+            ProbeOutcome::Passed
+        } else {
+            ProbeOutcome::Failed(category.unwrap_or_else(|| AgentFailure::Unknown.as_str().into()))
+        }
+    }
+}
+
+/// The hold probe's canary argv on `model`: [`stream_json_args`], then no tools, no MCP server
+/// (`--strict-mcp-config` with no config), no hooks ([`CANARY_SETTINGS`]), no session file and
+/// [`model_args`]. Never `--bare`, which reads no OAuth login and so would probe nothing the
+/// operator's sessions use.
+fn canary_args(model: &str) -> Vec<String> {
+    let mut args = stream_json_args();
+    args.extend(
+        [
+            "--tools",
+            "",
+            "--strict-mcp-config",
+            "--settings",
+            CANARY_SETTINGS,
+            "--no-session-persistence",
+        ]
+        .map(str::to_string),
+    );
+    args.extend(model_args(model));
+    args
+}
+
 /// Touch `marker` (create it, or bump its mtime if it already exists) so a fresh liveness
 /// read from `rigger step`/the dash sees this spawn as alive - the pure filesystem side
 /// of `liveness::marker_path`'s contract. `None` (no scratch root, or a degenerate id
@@ -1521,8 +1609,29 @@ fn open_stream_file(path: Option<&Path>) -> Option<std::fs::File> {
 fn api_retry_fields(v: &Value) -> (u64, &str) {
     (
         v.get("retry_delay_ms").and_then(Value::as_u64).unwrap_or(0),
-        v.get("error").and_then(Value::as_str).unwrap_or("unknown"),
+        message_error(v).unwrap_or("unknown"),
     )
+}
+
+/// A stream message's `type` and `subtype`, the pair every reader of this host's stream
+/// dispatches on.
+fn line_kind(v: &Value) -> (Option<&str>, Option<&str>) {
+    (
+        v.get("type").and_then(Value::as_str),
+        v.get("subtype").and_then(Value::as_str),
+    )
+}
+
+/// The error category a stream message names (its `error`), when it names one: a
+/// `system/api_retry` line's, or an assistant line's ahead of the result it fails.
+fn message_error(v: &Value) -> Option<&str> {
+    v.get("error").and_then(Value::as_str)
+}
+
+/// Whether a `result` message is the session reporting that it answered nothing: its `is_error`
+/// is `true`.
+fn result_errored(v: &Value) -> bool {
+    v.get("is_error").and_then(Value::as_bool) == Some(true)
 }
 
 /// The waiting progress line for a `system/api_retry` message (architecture addendum
@@ -1671,6 +1780,30 @@ fn write_roots(dir: &str, container: Option<&Path>) -> Result<Vec<String>, Error
         .collect()
 }
 
+/// The headless stream-json base every launch of this host starts with: print mode, typed
+/// stream-json lines out and in, and every message on the stream.
+fn stream_json_args() -> Vec<String> {
+    [
+        "-p",
+        "--output-format",
+        "stream-json",
+        "--input-format",
+        "stream-json",
+        "--verbose",
+    ]
+    .map(str::to_string)
+    .to_vec()
+}
+
+/// `--model <model>`, or nothing for an empty `model`, which leaves the session on its default.
+fn model_args(model: &str) -> Vec<String> {
+    if model.is_empty() {
+        Vec::new()
+    } else {
+        vec!["--model".to_string(), model.to_string()]
+    }
+}
+
 /// Build the typed `claude` headless invocation (architecture addendum §4.1 table): the
 /// ONE argv authority for this driver, exactly as `cli::build_args` is for the cli driver
 /// - every field below is a fact, never inferred at read time.
@@ -1699,21 +1832,10 @@ pub fn build_args(
     rigger_bin: &str,
     write_roots: &[String],
 ) -> Result<Vec<String>, Error> {
-    let mut args = vec![
-        "-p".to_string(),
-        "--output-format".to_string(),
-        "stream-json".to_string(),
-        "--input-format".to_string(),
-        "stream-json".to_string(),
-        "--verbose".to_string(),
-    ];
+    let mut args = stream_json_args();
     args.extend(session.args());
     args.extend(persona.args());
-    let model = agent.model_for_attempt(opts.attempt);
-    if !model.is_empty() {
-        args.push("--model".to_string());
-        args.push(model);
-    }
+    args.extend(model_args(&agent.model_for_attempt(opts.attempt)));
     if !agent.fallback_model.is_empty() {
         args.push("--fallback-model".to_string());
         args.push(agent.fallback_model.clone());
@@ -2222,6 +2344,276 @@ mod tests {
             id: id.to_string(),
             resumed: false,
         }
+    }
+
+    // ---- probe(): the hold probe's login read and canary, via the checked-in arms fixture ----
+
+    /// The probe owed to the open hold of `cause` on `model`, bounded by `delay`.
+    fn owed(cause: &str, model: &str, delay: Duration) -> crate::hold_probe::OwedProbe {
+        crate::hold_probe::OwedProbe {
+            held: run::RunHeld {
+                cause: cause.to_string(),
+                model: model.to_string(),
+                ..run::RunHeld::default()
+            },
+            revision: 7,
+            delay,
+            due: SystemTime::now(),
+        }
+    }
+
+    /// One probe through a stand-in `claude`: the open hold's cause and model, the shell of the
+    /// login read and of the canary, the probe's delay, and what the probe answers, whether it
+    /// read the login, whether it ran the canary, how long it took (from, below) and how many
+    /// sleeps the stand-in started.
+    struct ProbeRow {
+        name: &'static str,
+        cause: &'static str,
+        model: &'static str,
+        auth: String,
+        canary: String,
+        delay: Duration,
+        outcome: ProbeOutcome,
+        reads_login: bool,
+        runs_canary: bool,
+        elapsed: (Duration, Duration),
+        sleepers: usize,
+    }
+
+    /// A probe through a stand-in `claude`: a credential cause reads the login first, and a read
+    /// that finds the session logged out, or answers nothing within the delay, runs no canary;
+    /// otherwise the canary runs on the hold's model in the project root, with no tools, no
+    /// server, no hooks and no session file, and its first result answers: a result with no
+    /// error passes, and an error result, a stream that ends with none or no result within the
+    /// delay fails on the stream's last `api_retry` category, `unknown` with none. The login read
+    /// and the canary share the one bound, the probe's delay, a probe writes no store, and no
+    /// process of the stand-in outlives the probe.
+    #[cfg(unix)]
+    #[test]
+    fn a_probe_reads_a_credential_holds_login_then_runs_its_canary_within_the_delay() {
+        use crate::test_support::{
+            api_retry_lines, arms_claude, assert_no_sleeper_left, canary_argv, failing_canary,
+            printing, probe_arms, recorded_argv, recorded_task, sleeping, LOGGED_IN_STATUS,
+            LOGGED_OUT_STATUS, PASSING_CANARY,
+        };
+        const MODEL: &str = "claude-opus-4-1";
+        let long = Duration::from_secs(5);
+        let short = Duration::from_millis(600);
+        let quick = (Duration::ZERO, Duration::from_secs(3));
+        let at = |bound: Duration| (bound, bound + Duration::from_millis(1500));
+        let logged_in = printing(LOGGED_IN_STATUS);
+        let logged_out = printing(LOGGED_OUT_STATUS);
+        let failed = |category: &str| ProbeOutcome::Failed(category.to_string());
+        let rows = [
+            ProbeRow {
+                name: "a logged-out credential hold",
+                cause: "authentication_failed",
+                model: MODEL,
+                auth: logged_out.clone(),
+                canary: PASSING_CANARY.to_string(),
+                delay: long,
+                outcome: ProbeOutcome::LoggedOut,
+                reads_login: true,
+                runs_canary: false,
+                elapsed: quick,
+                sleepers: 0,
+            },
+            ProbeRow {
+                name: "a login read that answers nothing within the delay",
+                cause: "authentication_failed",
+                model: MODEL,
+                auth: sleeping(5),
+                canary: PASSING_CANARY.to_string(),
+                delay: short,
+                outcome: ProbeOutcome::LoggedOut,
+                reads_login: true,
+                runs_canary: false,
+                elapsed: at(short),
+                sleepers: 1,
+            },
+            ProbeRow {
+                name: "a logged-in credential hold whose canary passes",
+                cause: "oauth_org_not_allowed",
+                model: MODEL,
+                auth: logged_in.clone(),
+                canary: PASSING_CANARY.to_string(),
+                delay: long,
+                outcome: ProbeOutcome::Passed,
+                reads_login: true,
+                runs_canary: true,
+                elapsed: quick,
+                sleepers: 0,
+            },
+            ProbeRow {
+                name: "a hold no login fixes, on the default model",
+                cause: "rate_limit",
+                model: "",
+                auth: logged_out.clone(),
+                canary: PASSING_CANARY.to_string(),
+                delay: long,
+                outcome: ProbeOutcome::Passed,
+                reads_login: false,
+                runs_canary: true,
+                elapsed: quick,
+                sleepers: 0,
+            },
+            ProbeRow {
+                name: "a cloud credential hold, whose canary runs alone",
+                cause: "cloud_credential_error",
+                model: MODEL,
+                auth: logged_out.clone(),
+                canary: PASSING_CANARY.to_string(),
+                delay: long,
+                outcome: ProbeOutcome::Passed,
+                reads_login: false,
+                runs_canary: true,
+                elapsed: quick,
+                sleepers: 0,
+            },
+            ProbeRow {
+                name: "an error result, on its stream's last category",
+                cause: "rate_limit",
+                model: MODEL,
+                auth: logged_in.clone(),
+                canary: failing_canary(&["billing_error", "server_error"]),
+                delay: long,
+                outcome: failed("server_error"),
+                reads_login: false,
+                runs_canary: true,
+                elapsed: quick,
+                sleepers: 0,
+            },
+            ProbeRow {
+                name: "an error result on a stream with no api_retry line",
+                cause: "rate_limit",
+                model: MODEL,
+                auth: logged_in.clone(),
+                canary: failing_canary(&[]),
+                delay: long,
+                outcome: failed("unknown"),
+                reads_login: false,
+                runs_canary: true,
+                elapsed: quick,
+                sleepers: 0,
+            },
+            ProbeRow {
+                name: "a stream that ends with no result",
+                cause: "rate_limit",
+                model: MODEL,
+                auth: logged_in.clone(),
+                canary: format!("{}    exit 1\n", api_retry_lines(&["overloaded"], 1)),
+                delay: long,
+                outcome: failed("overloaded"),
+                reads_login: false,
+                runs_canary: true,
+                elapsed: quick,
+                sleepers: 0,
+            },
+            ProbeRow {
+                name: "a canary that answers nothing within the delay",
+                cause: "rate_limit",
+                model: MODEL,
+                auth: logged_in.clone(),
+                canary: format!("{}{}", api_retry_lines(&["overloaded"], 1), sleeping(5)),
+                delay: short,
+                outcome: failed("overloaded"),
+                reads_login: false,
+                runs_canary: true,
+                elapsed: at(short),
+                sleepers: 1,
+            },
+            ProbeRow {
+                name: "a slow login read, which the canary's bound counts",
+                cause: "authentication_failed",
+                model: MODEL,
+                auth: format!("{logged_in}{}", sleeping(2)),
+                canary: sleeping(5),
+                delay: Duration::from_millis(2500),
+                outcome: failed("unknown"),
+                reads_login: true,
+                runs_canary: true,
+                elapsed: at(Duration::from_millis(2500)),
+                sleepers: 2,
+            },
+        ];
+        for row in rows {
+            let name = row.name;
+            let fake = tempfile::tempdir().unwrap();
+            let root = tempfile::tempdir().unwrap();
+            let (progress, run_store, hold_sink) = (
+                Store::open(":memory:").unwrap(),
+                Store::open(":memory:").unwrap(),
+                Store::open(":memory:").unwrap(),
+            );
+            let driver = Driver {
+                bin: arms_claude(fake.path(), &probe_arms(&row.auth, &row.canary)),
+                progress_store: &progress,
+                run_store: &run_store,
+                beat_source: Some(&progress),
+                hold_sink: Some(&hold_sink),
+                ..Driver::default()
+            };
+            let started = std::time::Instant::now();
+            let outcome = driver.probe(
+                root.path().to_str().unwrap(),
+                &owed(row.cause, row.model, row.delay),
+            );
+            let elapsed = started.elapsed();
+            assert_eq!(outcome, row.outcome, "{name}");
+            let (from, below) = row.elapsed;
+            assert!(
+                from <= elapsed && elapsed < below,
+                "{name}: the probe answered after {elapsed:?}, outside {from:?}..{below:?}"
+            );
+            assert_no_sleeper_left(fake.path(), row.sleepers, name);
+            let auth_argv = fake.path().join("auth-argv");
+            if row.reads_login {
+                assert_eq!(
+                    recorded_argv(&auth_argv),
+                    ["auth", "status", "--json"],
+                    "{name}: the login read"
+                );
+            } else {
+                assert!(!auth_argv.exists(), "{name}: the probe read no login");
+            }
+            let canary = fake.path().join("canary-argv");
+            if row.runs_canary {
+                assert_eq!(recorded_argv(&canary), canary_argv(row.model), "{name}");
+                assert_eq!(
+                    std::fs::read_to_string(fake.path().join("canary-cwd")).unwrap(),
+                    format!(
+                        "{}\n",
+                        std::fs::canonicalize(root.path()).unwrap().display()
+                    ),
+                    "{name}: the canary runs in the project root"
+                );
+                assert_eq!(
+                    recorded_task(&fake.path().join("canary-first")),
+                    CANARY_TASK,
+                    "{name}: the canary's task"
+                );
+            } else {
+                assert!(!canary.exists(), "{name}: the probe ran no canary");
+            }
+            for (store, what) in [
+                (&progress, "progress"),
+                (&run_store, "run"),
+                (&hold_sink, "hold"),
+            ] {
+                assert_eq!(store.log_head().unwrap(), None, "{name}: the {what} store");
+            }
+        }
+        let driver = Driver {
+            bin: "/definitely/does/not/exist/claude-xyz".to_string(),
+            ..Driver::default()
+        };
+        let started = std::time::Instant::now();
+        assert_eq!(
+            driver.probe(".", &owed("rate_limit", MODEL, long)),
+            failed("unknown"),
+            "a canary that does not start fails on no category"
+        );
+        assert!(started.elapsed() < quick.1, "and at once");
     }
 
     // ---- launch(): real subprocess via the checked-in fixture ----

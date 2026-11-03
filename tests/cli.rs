@@ -49,12 +49,12 @@ use common::cli::{
 use common::fixtures::assert_driver_guards_a_null_step;
 use common::fixtures::file_len;
 use common::fixtures::pgid_of;
+use common::fixtures::{api_retry_lines, recorded_argv, recorded_task, ERROR_RESULT};
 use common::git::git_answer;
 use common::git::temp_git_project_with_commit;
 use common::mcp::McpSession;
 use common::repo::{
-    assert_carries_spawn_hooks, flag_value, hook_words, recorded_argv, recorded_task, stub_path,
-    SILENT_PAST_THE_POLL,
+    assert_carries_spawn_hooks, flag_value, hook_words, stub_path, SILENT_PAST_THE_POLL,
 };
 use common::rigger_bin;
 use common::workflow_probe::write_workflow;
@@ -6712,25 +6712,13 @@ stages:
 /// `claude-code-arms-agent.sh`, answering each spawn from the shell `case` `arms` over its system
 /// prompt (the content of the file its `--system-prompt-file` names; each arm is
 /// `*MARKER*) ... ;;`, and what it prints is the session's `result`), failing loudly on any
-/// prompt no arm names. Only the arms are written here, beside the stand-in's symlink in the
-/// directory's `bin`. Returns the directory (keep it alive for the run) and a `PATH` value that
+/// prompt no arm names. Only the arms are written here ([`common::fixtures::write_claude_arms`]),
+/// beside the stand-in's symlink in the directory's `bin`. Returns the directory (keep it alive for the run) and a `PATH` value that
 /// resolves the stand-in first.
 fn install_fake_claude(arms: &str) -> (tempfile::TempDir, String) {
     let fakebin = tempfile::tempdir().unwrap();
     let path_env = stub_path(fakebin.path(), "claude", Some("claude-code-arms-agent.sh"));
-    std::fs::write(
-        fakebin.path().join("bin/claude-arms"),
-        format!(
-            r#"case "$sp" in
-{arms}  *)
-    echo "fake-claude: unrecognized system prompt: $sp" 1>&2
-    exit 1
-    ;;
-esac
-"#
-        ),
-    )
-    .unwrap();
+    common::fixtures::write_claude_arms(&fakebin.path().join("bin"), arms);
     (fakebin, path_env)
 }
 
@@ -7220,13 +7208,18 @@ fn seed_an_operator_release(root: &Path) {
     );
 }
 
-/// Whether `root`'s current run stands held, as the ledger folds it.
-fn hold_is_open(root: &Path) -> bool {
+/// `root`'s current run as the ledger folds it.
+fn folded_run(root: &Path) -> rigger::ledger::RunState {
     common::cli::with_run_store(root, |store| {
         let (events, _) =
             rigger::run::read::read_current_run(store, rigger::conductor::STREAM).unwrap();
-        rigger::ledger::project(&events).unwrap().hold.is_some()
+        rigger::ledger::project(&events).unwrap()
     })
+}
+
+/// Whether `root`'s current run stands held, as the ledger folds it.
+fn hold_is_open(root: &Path) -> bool {
+    folded_run(root).hold.is_some()
 }
 
 /// How long a hold stands before [`releasing_holds`] releases it. The host appends a hold before
@@ -7334,28 +7327,12 @@ fn sighting_worker_arm(opening: &str, categories: &[&str]) -> String {
     )
 }
 
-/// The shell printing one `api_retry` line of each of `categories`, each announcing a wait of
-/// `delay_ms`.
-fn api_retry_lines(categories: &[&str], delay_ms: u32) -> String {
-    categories
-        .iter()
-        .map(|category| {
-            format!(
-                "    printf '%s\\n' '{{\"type\":\"system\",\"subtype\":\"api_retry\",\"attempt\":1,\
-                 \"max_retries\":10,\"retry_delay_ms\":{delay_ms},\"error_status\":500,\
-                 \"error\":\"{category}\"}}' >&3\n"
-            )
-        })
-        .collect()
-}
-
 /// The shell of a session that ends on an API error as the real host does: it runs `reporting`,
 /// prints an `is_error` result, exits only when the host closes its input, running `at_close`
 /// then, and leaves no result of its own.
 fn api_error_session(reporting: &str, at_close: &str) -> String {
     format!(
-        r#"{reporting}    printf '%s\n' '{{"type":"result","subtype":"success","is_error":true,"num_turns":1,"session_id":"arms","result":"the API failed"}}' >&3
-    while IFS= read -r _line; do :; done
+        r#"{reporting}{ERROR_RESULT}    while IFS= read -r _line; do :; done
 {at_close}    exit 1
 "#
     )
@@ -7377,19 +7354,34 @@ fn classed_behind_the_close_session(category: &str) -> String {
     api_error_session(READ_LAUNCH_CONFIG, &fire_stop_failure_hook(category))
 }
 
+/// The shell of an arm waiting until `$here/<mark>` stands, the literal `mark` naming it, bounded
+/// at 20 s.
+macro_rules! waiting_for {
+    ($mark:literal) => {
+        concat!(
+            "    tries=0\n    while [ ! -e \"$here/",
+            $mark,
+            "\" ] && [ $tries -lt 1000 ]; do\n        sleep 0.02\n        tries=$((tries + 1))\n    done\n"
+        )
+    };
+}
+
 /// The shell holding a session until `$here/operator-held` stands, marking `$here/session-live` as
 /// it starts, so a hold lands on a live session.
-const SESSION_WAITS_FOR_A_HOLD: &str = r#"    : > "$here/session-live"
-    tries=0
-    while [ ! -e "$here/operator-held" ] && [ $tries -lt 1000 ]; do
-        sleep 0.02
-        tries=$((tries + 1))
-    done
-"#;
+const SESSION_WAITS_FOR_A_HOLD: &str = concat!(
+    "    : > \"$here/session-live\"\n",
+    waiting_for!("operator-held")
+);
 
-/// A `beside` for [`run_on_arms_beside`] landing an operator hold on the session that marked
-/// `$here/session-live`, `after` that mark was first seen, then marking `$here/operator-held`.
-fn holding_the_live_session<'a>(root: &'a Path, after: Duration) -> impl FnMut(&Path) + 'a {
+/// A `beside` for [`run_on_arms_beside`] landing the `RunHeld` event `held` builds on the session
+/// that marked `$here/session-live`, `after` that mark was first seen, then marking
+/// `$here/operator-held`. The event is built as it lands, so it is dated then unless `held` dates
+/// it otherwise.
+fn holding_the_live_session<'a>(
+    root: &'a Path,
+    after: Duration,
+    held: impl Fn() -> rigger::eventstore::Event + 'a,
+) -> impl FnMut(&Path) + 'a {
     let mut live_since = None;
     move |fake| {
         let landed = fake.join("bin/operator-held");
@@ -7397,13 +7389,14 @@ fn holding_the_live_session<'a>(root: &'a Path, after: Duration) -> impl FnMut(&
             && !landed.exists()
             && live_since.get_or_insert_with(Instant::now).elapsed() >= after
         {
-            seed_a_hold_by(root, rigger::run::HOLD_BY_OPERATOR);
+            common::cli::seed_on_the_run(root, held());
             std::fs::write(&landed, "").unwrap();
         }
     }
 }
 
-/// The hold [`holding_the_live_session`] seeds, as [`run_holds`] reads it back.
+/// The operator hold a test lands with [`holding_the_live_session`], as [`run_holds`] reads it
+/// back.
 fn seeded_operator_hold() -> rigger::run::RunHeld {
     let held = common::fixtures::held_event(SEEDED_HOLD_CAUSE, rigger::run::HOLD_BY_OPERATOR);
     serde_json::from_slice(&held.data).unwrap()
@@ -7628,7 +7621,9 @@ fn an_is_error_result_reruns_uncharged_and_holds_as_its_class_says() {
 {opening}{session}    ;;
 "#
         );
-        let mut hold = holding_the_live_session(root, Duration::ZERO);
+        let mut hold = holding_the_live_session(root, Duration::ZERO, || {
+            common::fixtures::run_held_event(&seeded_operator_hold())
+        });
         let mut release = releasing_holds(root, 1, |_| true);
         let (out, err, ok, fake) =
             run_on_arms_beside(root, &["run"], scratch.path(), &arm, |fake| {
@@ -9094,6 +9089,597 @@ fn a_command_driving_no_run_takes_no_keep_awake_hold() {
     }
 }
 
+/// The model every hold a probe row seeds names, so its canary is launched on it.
+const PROBED_MODEL: &str = "claude-opus-4-1";
+
+/// A hold of `cause` by the writer `by` on [`PROBED_MODEL`].
+fn probed_hold(cause: &str, by: &str) -> rigger::run::RunHeld {
+    rigger::run::RunHeld {
+        model: PROBED_MODEL.to_string(),
+        ..common::fixtures::hold_naming(cause, "", by)
+    }
+}
+
+/// One entry a probe row seeds on its run, `ago` seconds back: a hold of a cause by a writer, a
+/// release by a writer, or a probe line of the latest hold seeded before it.
+enum Seed {
+    Held(&'static str, &'static str, u64),
+    Released(&'static str, u64),
+    Probed(u64),
+}
+
+/// A row of the hold-probe tables: the run's seeded history, what the stand-in `claude` reports
+/// for the login and answers as the canary, and what the run does with the hold it adopts.
+struct ProbeCase {
+    name: &'static str,
+    seeds: Vec<Seed>,
+    /// The shell of the `claude auth status --json` arm ([`common::fixtures::probe_arms`]).
+    auth: String,
+    /// The shell of the canary arm.
+    canary: String,
+    /// The delay, in seconds, of the one probe the run makes; `None` when it makes none.
+    probes_within: Option<u64>,
+    /// Whether the probe reads the login.
+    reads_login: bool,
+    /// Whether the probe runs the canary.
+    runs_canary: bool,
+    /// The holds the run appends beyond the seeded ones, oldest first.
+    appended: Vec<rigger::run::RunHeld>,
+    /// The writer of every release on the run stream, the seeded ones first.
+    releases: &'static [&'static str],
+}
+
+/// A release-table row: a hold of `cause` by `by` declared 120 s back, so its first probe falls due
+/// as the run starts, under the login report `auth` and the canary `canary`.
+fn released_row(
+    name: &'static str,
+    (cause, by): (&'static str, &'static str),
+    (auth, canary): (String, String),
+    probes_within: Option<u64>,
+    (reads_login, runs_canary): (bool, bool),
+    appended: Vec<rigger::run::RunHeld>,
+    releases: &'static [&'static str],
+) -> ProbeCase {
+    ProbeCase {
+        name,
+        seeds: vec![Seed::Held(cause, by, 120)],
+        auth,
+        canary,
+        probes_within,
+        reads_login,
+        runs_canary,
+        appended,
+        releases,
+    }
+}
+
+/// A delay-table row: a host hold of [`SEEDED_HOLD_CAUSE`] whose history is `seeds`, probed under
+/// a logged-in report and a passing canary.
+fn delay_row(
+    name: &'static str,
+    seeds: Vec<Seed>,
+    probes_within: Option<u64>,
+    releases: &'static [&'static str],
+) -> ProbeCase {
+    ProbeCase {
+        name,
+        seeds,
+        auth: common::fixtures::printing(common::fixtures::LOGGED_IN_STATUS),
+        canary: common::fixtures::PASSING_CANARY.to_string(),
+        probes_within,
+        reads_login: false,
+        runs_canary: probes_within.is_some(),
+        appended: Vec::new(),
+        releases,
+    }
+}
+
+/// Append the probe line `line` to the progress stream of `root`'s run `run_id`, dated `ago`
+/// seconds back.
+fn seed_a_probe_line(root: &Path, run_id: &str, line: &rigger::progress::AgentProgress, ago: u64) {
+    use rigger::progress::RunStamped;
+    let event = common::fixtures::dated_ago(line.to_stamped_event(run_id).unwrap(), ago);
+    common::cli::with_store_file(root, "progress.db", |store| {
+        store
+            .append(
+                &rigger::progress::stream_of(run_id),
+                rigger::eventstore::ExpectedRevision::Any,
+                &[event],
+            )
+            .unwrap();
+    });
+}
+
+/// The run-stream revision of the latest `RunHeld` on `root`'s run stream.
+fn latest_hold_revision(root: &Path) -> rigger::eventstore::Revision {
+    read_run_events(root)
+        .iter()
+        .rev()
+        .find(|e| e.type_ == rigger::run::TYPE_RUN_HELD)
+        .expect("a seeded hold")
+        .revision
+}
+
+/// Seed `root` with a run the workflow's launch adopts and the history `seeds`, oldest first: each
+/// hold and release on the run stream, each probe line on its progress stream at the revision of
+/// the latest hold seeded before it. The holds and the probe lines seeded, in their order.
+fn seed_probe_history(
+    root: &Path,
+    seeds: &[Seed],
+) -> (
+    Vec<rigger::run::RunHeld>,
+    Vec<rigger::progress::AgentProgress>,
+) {
+    seed_a_run_held_by(root, None);
+    let run_id = common::cli::current_run_id_of(root).unwrap();
+    let mut holds: Vec<rigger::run::RunHeld> = Vec::new();
+    let mut lines = Vec::new();
+    for seed in seeds {
+        match *seed {
+            Seed::Held(cause, by, ago) => {
+                let hold = probed_hold(cause, by);
+                let held = common::fixtures::run_held_event(&hold);
+                common::cli::seed_on_the_run(root, common::fixtures::dated_ago(held, ago));
+                holds.push(hold);
+            }
+            Seed::Released(by, ago) => {
+                let released = common::fixtures::released_event(by);
+                common::cli::seed_on_the_run(root, common::fixtures::dated_ago(released, ago));
+            }
+            Seed::Probed(ago) => {
+                let cause = &holds.last().expect("a probe of a seeded hold").cause;
+                let line = rigger::progress::AgentProgress {
+                    activity: "a seeded probe".to_string(),
+                    ..common::fixtures::probe_line(cause, 0, latest_hold_revision(root))
+                };
+                seed_a_probe_line(root, &run_id, &line, ago);
+                lines.push(line);
+            }
+        }
+    }
+    (holds, lines)
+}
+
+/// The `hold-probe` lines on `root`'s run, oldest first.
+fn probe_lines(root: &Path) -> Vec<rigger::progress::AgentProgress> {
+    common::cli::recorded_progress::<rigger::progress::AgentProgress>(root)
+        .into_iter()
+        .filter(|line| line.id == rigger::hold_probe::HOLD_PROBE_ID)
+        .collect()
+}
+
+/// How long a row expecting a probe waits for it before the operator releases the hold anyway: a
+/// probe due as the run starts records its line within a poll, and the stand-in answers at once.
+const A_PROBE_LANDS_WITHIN: Duration = Duration::from_secs(20);
+
+/// How long a row expecting no probe leaves the hold to the run's polls before the operator
+/// releases it: a poll a second, the first as the run starts.
+const NO_PROBE_WITHIN: Duration = Duration::from_secs(4);
+
+/// Drive each of `cases` through `rigger run` on a fresh project, the stand-in `claude` answering
+/// the worker and the probe, and assert exactly what the run records: the probe lines, the login
+/// read and the canary's argv and working directory, the holds and releases, the worker's launch
+/// records alone, the canary writing none, and every write of the probe folded into the graph. A
+/// hold still open once the probe is over, or once a row expecting none has waited, is released as
+/// the operator does, so every row reaches done; the canary's `session-live` mark lands a
+/// re-declared host hold on it first.
+#[cfg(unix)]
+fn assert_probe_cases(cases: &[ProbeCase]) {
+    for case in cases {
+        let name = case.name;
+        let dir = temp_git_project_with_commit();
+        let root = dir.path();
+        write_workflow_fixture(root, &REVIEWLESS_GIT_UNIT_WORKFLOW);
+        let (seeded_holds, mut lines) = seed_probe_history(root, &case.seeds);
+        let head = common::cli::run_log_head(root);
+        let probed = latest_hold_revision(root);
+        let probed_cause = seeded_holds.last().unwrap().cause.clone();
+        let seeded_lines = lines.len();
+        let scratch = tempfile::tempdir().unwrap();
+        let arms = format!(
+            "{RECORDING_WORKER_ARM}{}",
+            common::fixtures::probe_arms(&case.auth, &case.canary)
+        );
+        let redeclared = probed_hold(SEEDED_HOLD_CAUSE, rigger::run::HOLD_BY_HOST);
+        let mut redeclare = holding_the_live_session(root, Duration::ZERO, move || {
+            common::fixtures::run_held_event(&redeclared)
+        });
+        let mut release = releasing_holds(root, 1, unit_started);
+        let last_mark = if case.runs_canary {
+            "bin/canary-ran"
+        } else {
+            "bin/auth-argv"
+        };
+        let started = Instant::now();
+        let (out, err, ok, fake) =
+            run_on_arms_beside(root, &["run"], scratch.path(), &arms, |fake| {
+                redeclare(fake);
+                let over = match case.probes_within {
+                    None => started.elapsed() >= NO_PROBE_WITHIN,
+                    Some(_) => {
+                        started.elapsed() >= A_PROBE_LANDS_WITHIN
+                            || (probe_lines(root).len() > seeded_lines
+                                && fake.join(last_mark).exists())
+                    }
+                };
+                if over {
+                    release(fake);
+                }
+            });
+        assert!(ok, "{name}: the run exits 0; stderr: {err}\nstdout: {out}");
+        assert_eq!(
+            out.lines().nth(2).unwrap(),
+            "done: every unit integrated",
+            "{name}: how the run ended; stderr: {err}"
+        );
+        lines.extend(
+            case.probes_within
+                .map(|secs| common::fixtures::probe_line(&probed_cause, secs, probed)),
+        );
+        assert_eq!(probe_lines(root), lines, "{name}: the probe lines");
+        let recorded = |mark: &str| {
+            let path = fake.path().join(mark);
+            path.exists().then(|| recorded_argv(&path))
+        };
+        assert_eq!(
+            recorded("bin/auth-argv"),
+            case.reads_login
+                .then(|| ["auth", "status", "--json"].map(str::to_string).to_vec()),
+            "{name}: the login read"
+        );
+        assert_eq!(
+            recorded("bin/canary-argv"),
+            case.runs_canary
+                .then(|| common::fixtures::canary_argv(PROBED_MODEL)),
+            "{name}: the canary"
+        );
+        let cwd = fake.path().join("bin/canary-cwd");
+        assert_eq!(
+            cwd.exists().then(|| std::fs::read_to_string(&cwd).unwrap()),
+            case.runs_canary
+                .then(|| format!("{}\n", std::fs::canonicalize(root).unwrap().display())),
+            "{name}: the canary runs in the project root"
+        );
+        let mut holds = seeded_holds;
+        holds.extend(case.appended.iter().cloned());
+        assert_eq!(run_holds(root), holds, "{name}: the holds");
+        assert_eq!(run_releases(root), case.releases, "{name}: the releases");
+        let launches: Vec<(String, Option<String>)> =
+            common::cli::recorded_progress::<rigger::progress::SpawnLaunched>(root)
+                .into_iter()
+                .map(|launch| (launch.spawn, launch.ended))
+                .collect();
+        assert_eq!(
+            launches,
+            [
+                ("solo/implementer#0".to_string(), None),
+                (
+                    "solo/implementer#0".to_string(),
+                    Some("completed".to_string())
+                ),
+            ],
+            "{name}: the launch records are the worker's alone"
+        );
+        let seeded_releases = case
+            .seeds
+            .iter()
+            .filter(|seed| matches!(seed, Seed::Released(..)))
+            .count();
+        let mut beside_writes = Vec::new();
+        if fake.path().join("bin/operator-held").exists() {
+            beside_writes.push(rigger::run::TYPE_RUN_HELD);
+        }
+        beside_writes.extend(
+            case.releases[seeded_releases..]
+                .iter()
+                .filter(|by| **by == rigger::run::HOLD_BY_OPERATOR)
+                .map(|_| rigger::run::TYPE_RUN_RELEASED),
+        );
+        assert_eq!(
+            unfolded_types_past(root, head),
+            beside_writes,
+            "{name}: every write of the probe folds, the test's own writes alone standing unfolded"
+        );
+    }
+}
+
+/// The type of each event of `root`'s run log past `head` that the graph has not folded
+/// ([`unfolded_past`]), in log order.
+fn unfolded_types_past(root: &Path, head: u64) -> Vec<String> {
+    unfolded_past(root, head)
+        .into_iter()
+        .map(|(_, type_)| type_)
+        .collect()
+}
+
+/// Spec 105's RELEASE BY PROBE through `rigger run`: given a run held by the host, when its probe
+/// falls due, then a credential hold reads the login first and a logged-out report runs no
+/// canary; a logged-in report, or a cause that reads no login, runs the canary on the hold's
+/// model, whose passing result releases the hold by probe and whose error result does not; a
+/// failed canary's last person-needing category moves the cause, carrying the hold's model; a
+/// hold re-declared while its probe runs is not released by it; and a `model_not_found` hold or
+/// an operator hold is never probed.
+#[cfg(unix)]
+#[test]
+fn a_probe_releases_a_held_run_only_on_a_passing_canary_of_the_hold_it_read() {
+    use common::fixtures::{
+        failing_canary, printing, LOGGED_IN_STATUS, LOGGED_OUT_STATUS, PASSING_CANARY,
+    };
+    use rigger::run::{HOLD_BY_HOST, HOLD_BY_OPERATOR};
+    let logged_in = || printing(LOGGED_IN_STATUS);
+    let passing = || PASSING_CANARY.to_string();
+    let billing = rigger::run::RunHeld {
+        detail: "billing_error".to_string(),
+        needs_person: true,
+        model: PROBED_MODEL.to_string(),
+        ..common::fixtures::hold_naming(
+            "billing_error",
+            "fix the account's billing",
+            rigger::run::HOLD_BY_PROBE,
+        )
+    };
+    let cases = [
+        released_row(
+            "a logged-out credential hold runs no canary",
+            ("authentication_failed", HOLD_BY_HOST),
+            (printing(LOGGED_OUT_STATUS), passing()),
+            Some(60),
+            (true, false),
+            vec![],
+            &["operator"],
+        ),
+        released_row(
+            "a logged-in credential hold's passing canary releases it",
+            ("authentication_failed", HOLD_BY_HOST),
+            (logged_in(), passing()),
+            Some(60),
+            (true, true),
+            vec![],
+            &["probe"],
+        ),
+        released_row(
+            "a cloud credential hold runs its canary alone",
+            ("cloud_credential_error", HOLD_BY_HOST),
+            (printing(LOGGED_OUT_STATUS), passing()),
+            Some(60),
+            (false, true),
+            vec![],
+            &["probe"],
+        ),
+        released_row(
+            "an error result keeps the hold",
+            (SEEDED_HOLD_CAUSE, HOLD_BY_HOST),
+            (logged_in(), failing_canary(&["server_error"])),
+            Some(60),
+            (false, true),
+            vec![],
+            &["operator"],
+        ),
+        released_row(
+            "a failed canary's last person-needing category moves the cause",
+            (SEEDED_HOLD_CAUSE, HOLD_BY_HOST),
+            (
+                logged_in(),
+                failing_canary(&["rate_limit", "billing_error"]),
+            ),
+            Some(60),
+            (false, true),
+            vec![billing],
+            &["operator"],
+        ),
+        released_row(
+            "a failed canary of the hold's own cause appends nothing",
+            ("billing_error", HOLD_BY_HOST),
+            (logged_in(), failing_canary(&["billing_error"])),
+            Some(60),
+            (false, true),
+            vec![],
+            &["operator"],
+        ),
+        released_row(
+            "a hold re-declared during its probe is not released by it",
+            (SEEDED_HOLD_CAUSE, HOLD_BY_HOST),
+            (
+                logged_in(),
+                format!("{SESSION_WAITS_FOR_A_HOLD}{PASSING_CANARY}"),
+            ),
+            Some(60),
+            (false, true),
+            vec![probed_hold(SEEDED_HOLD_CAUSE, HOLD_BY_HOST)],
+            &["operator"],
+        ),
+        released_row(
+            "a model_not_found hold is never probed",
+            ("model_not_found", HOLD_BY_HOST),
+            (logged_in(), passing()),
+            None,
+            (false, false),
+            vec![],
+            &["operator"],
+        ),
+        released_row(
+            "an operator hold is never probed",
+            (SEEDED_HOLD_CAUSE, HOLD_BY_OPERATOR),
+            (logged_in(), passing()),
+            None,
+            (false, false),
+            vec![],
+            &["operator"],
+        ),
+    ];
+    assert_probe_cases(&cases);
+}
+
+/// Spec 105's PROBE DELAY through `rigger run` on backdated records: given a host hold and its
+/// history, when the run polls it, then the probe's line names a delay of 60 s doubled per probe
+/// already made of the hold's chain and capped at 900 s, a quick re-hold carrying its predecessor's
+/// probes and a slow one or an operator hold between starting over, and a hold whose delay has not
+/// passed since its latest probe is not probed.
+#[cfg(unix)]
+#[test]
+fn a_probes_delay_doubles_per_probe_of_the_holds_chain() {
+    use rigger::run::{HOLD_BY_HOST, HOLD_BY_OPERATOR, HOLD_BY_PROBE};
+    use Seed::{Held, Probed, Released};
+    let host = |ago| Held(SEEDED_HOLD_CAUSE, HOLD_BY_HOST, ago);
+    let cases = [
+        delay_row(
+            "no probe yet waits 60 s",
+            vec![host(120)],
+            Some(60),
+            &["probe"],
+        ),
+        delay_row(
+            "one probe doubles it to 120 s",
+            vec![host(1000), Probed(200)],
+            Some(120),
+            &["probe"],
+        ),
+        delay_row(
+            "three probes make it 480 s",
+            vec![host(3000), Probed(2900), Probed(2700), Probed(1000)],
+            Some(480),
+            &["probe"],
+        ),
+        delay_row(
+            "four probes cap it at 900 s",
+            vec![
+                host(5000),
+                Probed(4900),
+                Probed(4700),
+                Probed(4300),
+                Probed(3500),
+            ],
+            Some(900),
+            &["probe"],
+        ),
+        delay_row(
+            "a quick re-hold carries its predecessor's probes",
+            vec![
+                host(2000),
+                Probed(1900),
+                Probed(1800),
+                Released(HOLD_BY_PROBE, 1500),
+                host(1200),
+            ],
+            Some(240),
+            &["probe", "probe"],
+        ),
+        delay_row(
+            "a slow re-hold starts over",
+            vec![
+                host(2000),
+                Probed(1900),
+                Released(HOLD_BY_PROBE, 1500),
+                host(800),
+            ],
+            Some(60),
+            &["probe", "probe"],
+        ),
+        delay_row(
+            "an operator hold between breaks the chain",
+            vec![
+                host(3000),
+                Probed(2950),
+                Released(HOLD_BY_PROBE, 2900),
+                Held(SEEDED_HOLD_CAUSE, HOLD_BY_OPERATOR, 2800),
+                Released(HOLD_BY_OPERATOR, 2700),
+                host(2600),
+            ],
+            Some(60),
+            &["probe", "operator", "probe"],
+        ),
+        delay_row(
+            "a hold probed less than its delay ago is not probed",
+            vec![host(1000), Probed(60)],
+            None,
+            &["operator"],
+        ),
+    ];
+    assert_probe_cases(&cases);
+}
+
+/// The opening of a worker session a hold lands on mid-run: it marks `$here/session-live`, then
+/// waits for the hold's canary to start, so the drive cannot return ahead of the probe.
+const SESSION_WAITS_FOR_THE_CANARY: &str = concat!(
+    "    : > \"$here/session-live\"\n",
+    waiting_for!("canary-argv")
+);
+
+/// The shell of a canary still running when the drive returns: it waits for `$here/run-done`,
+/// which the test marks once the run's ledger is done, then 2 s more, long past the drive's return.
+const CANARY_OUTLASTS_THE_DRIVE: &str = concat!(waiting_for!("run-done"), "    sleep 2\n");
+
+/// Spec 105's hold controller beside the drive, through `rigger run`: given a run whose session is
+/// live, when a host hold dated past its first delay lands on it, then a later poll probes it on
+/// the hold's model, and the canary still running when the drive returns is waited out, never cut
+/// short: the run exits only once the canary has ended, its pass releasing the hold by probe ahead
+/// of the done run's own release, and every write of the probe folds into the graph.
+#[cfg(unix)]
+#[test]
+fn a_hold_landing_mid_run_is_probed_and_its_canary_outlasting_the_drive_is_waited_out() {
+    use common::fixtures::{printing, LOGGED_IN_STATUS, PASSING_CANARY};
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_workflow_fixture(root, &REVIEWLESS_GIT_UNIT_WORKFLOW);
+    seed_a_run_held_by(root, None);
+    let head = common::cli::run_log_head(root);
+    let scratch = tempfile::tempdir().unwrap();
+    let arms = format!(
+        "{}{}",
+        sighting_worker_arm(SESSION_WAITS_FOR_THE_CANARY, &[]),
+        common::fixtures::probe_arms(
+            &printing(LOGGED_IN_STATUS),
+            &format!("{CANARY_OUTLASTS_THE_DRIVE}{PASSING_CANARY}")
+        )
+    );
+    let hold = probed_hold(SEEDED_HOLD_CAUSE, rigger::run::HOLD_BY_HOST);
+    let mut land = holding_the_live_session(root, Duration::ZERO, || {
+        common::fixtures::dated_ago(common::fixtures::run_held_event(&hold), 120)
+    });
+    let (out, err, ok, fake) = run_on_arms_beside(root, &["run"], scratch.path(), &arms, |fake| {
+        land(fake);
+        let done = fake.join("bin/run-done");
+        if !done.exists() && folded_run(root).done() {
+            std::fs::write(&done, "").unwrap();
+        }
+    });
+    assert!(
+        fake.path().join("bin/canary-ran").exists(),
+        "the hold's canary ran and ended before the run exited; stderr: {err}\nstdout: {out}"
+    );
+    assert!(ok, "the run exits 0; stderr: {err}\nstdout: {out}");
+    assert_eq!(
+        out.lines().nth(2).unwrap(),
+        "done: every unit integrated",
+        "how the run ended; stderr: {err}"
+    );
+    assert_eq!(
+        probe_lines(root),
+        [common::fixtures::probe_line(
+            SEEDED_HOLD_CAUSE,
+            60,
+            latest_hold_revision(root)
+        )],
+        "one probe of the hold that landed"
+    );
+    assert_eq!(
+        recorded_argv(&fake.path().join("bin/canary-argv")),
+        common::fixtures::canary_argv(PROBED_MODEL),
+        "the canary runs on the hold's model"
+    );
+    assert_eq!(run_holds(root), std::slice::from_ref(&hold), "the holds");
+    assert_eq!(
+        run_releases(root),
+        [rigger::run::HOLD_BY_PROBE],
+        "the canary's pass releases the hold ahead of the done run"
+    );
+    assert_eq!(
+        unfolded_types_past(root, head),
+        [rigger::run::TYPE_RUN_HELD],
+        "every write of the probe folds, the test's own hold alone standing unfolded"
+    );
+}
+
 /// The shell of a session that dies with no result on its first launch: each later launch goes on
 /// past it.
 const FIRST_SESSION_DIES: &str = r#"    if [ ! -e "$here/first-session-died" ]; then
@@ -10210,8 +10796,7 @@ fn a_resume_ending_api_side_or_on_a_held_run_launches_nothing_fresh() {
                         solo/implementer#1` (last-write-wins supersedes this liveness fault).";
     const ENDS: &str = "    exit 1\n";
     const UNREADABLE: &str = "    printf '\\377\\376\\n' >&3\n";
-    /// Reads the session's input to its close: the start of a stop, or the reap past a read error,
-    /// which the arm outlives, a subshell of the child the host reaps holding its output pipes.
+    /// Reads the session's input to its close: the start of a stop, or the reap past a read error.
     const READS_TO_ITS_CLOSE: &str = "    while IFS= read -r _unused; do :; done\n";
 
     /// One launch of the re-attempt, at the ordinal its place says: whether it resumed the first
@@ -10236,6 +10821,9 @@ fn a_resume_ending_api_side_or_on_a_held_run_launches_nothing_fresh() {
     let retried = |category| format!("{}{ENDS}", api_retry_lines(&[category], 1));
     let under_a_hold = |shell: String| format!("{SESSION_WAITS_FOR_A_HOLD}{shell}{ENDS}");
     let held_as_its_input_closes = format!("{READS_TO_ITS_CLOSE}{}", under_a_hold(String::new()));
+    // Past a read error the host reaps the child it spawned and drains its output pipes, so a
+    // subshell of that child, holding them, outlives the reap, and the drain ends when it does.
+    let outliving_its_reap = format!("    (\n{held_as_its_input_closes}    )\n{ENDS}");
     let cases = [
         Case {
             name: "a wait class",
@@ -10301,7 +10889,7 @@ fn a_resume_ending_api_side_or_on_a_held_run_launches_nothing_fresh() {
         Case {
             name: "a hold landing between a read error and the end of the drain joins",
             workflow: &TWO_ATTEMPT_RED_UNIT_WORKFLOW,
-            endings: vec![format!("{UNREADABLE}{held_as_its_input_closes}")],
+            endings: vec![format!("{UNREADABLE}{outliving_its_reap}")],
             hold_lands: Duration::ZERO,
             launches: vec![(true, None, None), completed],
             holds: vec![seeded_operator_hold()],
@@ -10398,7 +10986,9 @@ fn a_resume_ending_api_side_or_on_a_held_run_launches_nothing_fresh() {
         );
         let closes = case.launches[0].1.is_some();
         let scratch_root = scratch.path().to_str().unwrap();
-        let mut hold = holding_the_live_session(root, case.hold_lands);
+        let mut hold = holding_the_live_session(root, case.hold_lands, || {
+            common::fixtures::run_held_event(&seeded_operator_hold())
+        });
         // The host reads the hold once the launch has ended, so the release waits for what follows
         // that read: the launch's close, or the reclaim of its scratch when it closes nothing.
         let mut release = releasing_holds(root, 1, |root| {
@@ -30743,6 +31333,7 @@ fn mcp_spawn_binds_writes_and_serves_no_result_tool_over_stdio() {
         vec![rigger::progress::AgentProgress {
             id: bound_spawn.to_string(),
             activity: "ran the gates".to_string(),
+            revision: None,
         }]
     );
 }

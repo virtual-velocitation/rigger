@@ -99,6 +99,11 @@ pub struct AgentProgress {
     pub id: String,
     /// A short, human, one-line description of the agent's latest step.
     pub activity: String,
+    /// The run stream's revision a hold-probe line probed (the revision of the hold's latest
+    /// `RunHeld`, [`crate::hold_probe::OwedProbe::line`]), `None` on every other line.
+    /// [`crate::hold_probe::owed_probe`] counts a hold's probes by it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revision: Option<Revision>,
 }
 
 impl AgentProgress {
@@ -492,6 +497,7 @@ mod tests {
         let mut p1 = AgentProgress {
             id: req.id.clone(),
             activity: "grep #1".into(),
+            revision: None,
         }
         .to_stamped_event("run-1")
         .unwrap();
@@ -499,6 +505,7 @@ mod tests {
         let mut p2 = AgentProgress {
             id: req.id.clone(),
             activity: "grep #12: conductor.rs".into(),
+            revision: None,
         }
         .to_stamped_event("run-1")
         .unwrap();
@@ -941,32 +948,48 @@ mod tests {
         }
     }
 
-    /// The stamp rides a close and stays off every record that has none, so a sparse body - an
-    /// open record, or a close written before the stamp existed - folds as `None`.
+    /// The run-stream revision stamp rides a record that carries it and stays off every record
+    /// that has none, so a sparse body folds as `None`: a launch close beside an open record or a
+    /// close written before the stamp existed, and a probe line beside any other progress line.
     #[test]
-    fn a_closes_revision_stamp_round_trips_and_stays_off_an_unstamped_record() {
-        let stamped = closing(ENDED_FAULT, Some(7));
-        assert_eq!(
-            serde_json::from_slice::<SpawnLaunched>(&stamped.data)
-                .unwrap()
-                .revision,
-            Some(7)
-        );
-        let body: serde_json::Value = serde_json::from_slice(&stamped.data).unwrap();
-        assert_eq!(body["revision"], 7);
-        for unstamped in [
-            SpawnLaunched::closed("u", 0, "s", ENDED_FAULT, ""),
-            SpawnLaunched::default(),
-        ] {
-            let body = serde_json::to_value(&unstamped).unwrap();
-            assert_eq!(body.get("revision"), None, "{unstamped:?}");
-            assert_eq!(
-                serde_json::from_value::<SpawnLaunched>(body)
-                    .unwrap()
-                    .revision,
-                None
-            );
+    fn a_revision_stamp_round_trips_and_stays_off_an_unstamped_record() {
+        fn assert_stamp<T>(stamped: T, unstamped: [T; 2], stamp: fn(&T) -> Option<Revision>)
+        where
+            T: Serialize + serde::de::DeserializeOwned + std::fmt::Debug,
+        {
+            let body = serde_json::to_value(&stamped).unwrap();
+            assert_eq!(body["revision"], 7, "{stamped:?}");
+            assert_eq!(stamp(&serde_json::from_value(body).unwrap()), Some(7));
+            for unstamped in unstamped {
+                let body = serde_json::to_value(&unstamped).unwrap();
+                assert_eq!(body.get("revision"), None, "{unstamped:?}");
+                assert_eq!(stamp(&serde_json::from_value(body).unwrap()), None);
+            }
         }
+        assert_stamp(
+            serde_json::from_slice(&closing(ENDED_FAULT, Some(7)).data).unwrap(),
+            [
+                SpawnLaunched::closed("u", 0, "s", ENDED_FAULT, ""),
+                SpawnLaunched::default(),
+            ],
+            |launch: &SpawnLaunched| launch.revision,
+        );
+        assert_stamp(
+            AgentProgress {
+                id: "hold-probe".into(),
+                activity: "probing".into(),
+                revision: Some(7),
+            },
+            [
+                AgentProgress {
+                    id: "u/implementer#0".into(),
+                    activity: "a step".into(),
+                    revision: None,
+                },
+                AgentProgress::default(),
+            ],
+            |line: &AgentProgress| line.revision,
+        );
     }
 
     #[test]
@@ -1015,6 +1038,7 @@ mod tests {
         let mut events = vec![AgentProgress {
             id: "u/implementer#0".into(),
             activity: "not a stop failure".into(),
+            revision: None,
         }
         .to_stamped_event("run-1")
         .unwrap()];

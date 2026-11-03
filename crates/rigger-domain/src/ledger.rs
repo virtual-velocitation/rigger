@@ -8,7 +8,7 @@ use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
 
-use crate::eventstore::Event;
+use crate::eventstore::{Event, Revision};
 use crate::run::{RunHeld, HOLD_BY_OPERATOR, TYPE_RUN_HELD, TYPE_RUN_RELEASED, TYPE_RUN_STARTED};
 
 /// Status of a unit of work, over its lifecycle
@@ -231,6 +231,24 @@ pub struct Hold {
     pub operator: bool,
     /// Its latest `RunHeld`, whose cause is the hold's cause.
     pub latest: RunHeld,
+    /// The run-stream revision of [`Hold::latest`]: a probe of the hold releases it only while
+    /// its latest `RunHeld` is still the one at this revision.
+    pub revision: Revision,
+}
+
+impl Hold {
+    /// The hold `open` (`None` when the run is unheld) becomes on the [`TYPE_RUN_HELD`] `e`: the
+    /// one fold of a `RunHeld` onto a hold, which [`project`] and the probe's delay
+    /// ([`crate::hold_probe::owed_probe`]) both read a hold by.
+    pub fn on_held(open: Option<Hold>, e: &Event) -> Result<Hold, serde_json::Error> {
+        let latest: RunHeld = serde_json::from_slice(&e.data)?;
+        Ok(Hold {
+            since: open.as_ref().map_or(e.valid_from, |hold| hold.since),
+            operator: open.is_some_and(|hold| hold.operator) || latest.by == HOLD_BY_OPERATOR,
+            latest,
+            revision: e.revision,
+        })
+    }
 }
 
 /// One of the watching-discipline signals `AttentionEntry::kind` carries: spec 69's five, and
@@ -618,16 +636,7 @@ impl RunState {
                 self.run_id = p.run;
                 self.spec_path = p.spec;
             }
-            TYPE_RUN_HELD => {
-                let latest: RunHeld = serde_json::from_slice(&e.data)?;
-                let open = self.hold.take();
-                self.hold = Some(Hold {
-                    since: open.as_ref().map_or(e.valid_from, |hold| hold.since),
-                    operator: open.is_some_and(|hold| hold.operator)
-                        || latest.by == HOLD_BY_OPERATOR,
-                    latest,
-                });
-            }
+            TYPE_RUN_HELD => self.hold = Some(Hold::on_held(self.hold.take(), e)?),
             TYPE_RUN_RELEASED => self.hold = None,
             TYPE_UNIT_STARTED => {
                 let p: UnitStarted = serde_json::from_slice(&e.data)?;
@@ -1285,8 +1294,9 @@ mod tests {
 
     /// THE EVENTS: a run is held while a `RunHeld` has no later `RunReleased`, over the current
     /// run's slice. The hold starts at its earliest `RunHeld` since the last `RunReleased`, its
-    /// cause is its latest, and it is an operator hold when any of its `RunHeld` events is by
-    /// the operator. Each row folds as every production reader does, `project` over the slice.
+    /// cause and its revision are its latest's, and it is an operator hold when any of its
+    /// `RunHeld` events is by the operator. Each row folds as every production reader does,
+    /// `project` over the slice, each event at its index's revision.
     #[test]
     fn the_open_hold_folds_from_the_current_run_by_the_rules_of_the_events() {
         let host = RunHeld {
@@ -1319,11 +1329,12 @@ mod tests {
             (TYPE_RUN_RELEASED, body, secs)
         };
         let started = |secs: u64| (TYPE_RUN_STARTED, r#"{"run":"r2"}"#.to_string(), secs);
-        let open = |secs: u64, operator: bool, latest: &RunHeld| {
+        let open = |secs: u64, operator: bool, latest: &RunHeld, revision: i64| {
             Some(Hold {
                 since: UNIX_EPOCH + Duration::from_secs(secs),
                 operator,
                 latest: latest.clone(),
+                revision,
             })
         };
 
@@ -1333,12 +1344,12 @@ mod tests {
             (
                 "the first RunHeld opens the hold at its own time",
                 vec![held(&host, 5)],
-                open(5, false, &host),
+                open(5, false, &host, 0),
             ),
             (
                 "a later RunHeld keeps the start and takes the cause",
                 vec![held(&host, 5), held(&probe, 9)],
-                open(5, false, &probe),
+                open(5, false, &probe, 1),
             ),
             (
                 "an unrelated event leaves the hold as it stood",
@@ -1346,32 +1357,32 @@ mod tests {
                     held(&host, 5),
                     (TYPE_UNIT_STARTED, r#"{"id":"u"}"#.to_string(), 7),
                 ],
-                open(5, false, &host),
+                open(5, false, &host, 0),
             ),
             (
                 "a sparse body is still a hold",
                 vec![(TYPE_RUN_HELD, "{}".to_string(), 5)],
-                open(5, false, &RunHeld::default()),
+                open(5, false, &RunHeld::default(), 0),
             ),
             (
                 "an operator RunHeld alone is an operator hold",
                 vec![held(&operator, 5)],
-                open(5, true, &operator),
+                open(5, true, &operator, 0),
             ),
             (
                 "an operator RunHeld upgrades a host hold, keeping its start",
                 vec![held(&host, 5), held(&operator, 9)],
-                open(5, true, &operator),
+                open(5, true, &operator, 1),
             ),
             (
                 "a host RunHeld after an operator one stays an operator hold",
                 vec![held(&operator, 5), held(&host, 9)],
-                open(5, true, &host),
+                open(5, true, &host, 1),
             ),
             (
                 "two operator RunHeld events stay an operator hold",
                 vec![held(&operator, 5), held(&operator, 9)],
-                open(5, true, &operator),
+                open(5, true, &operator, 1),
             ),
             (
                 "a release ends the hold",
@@ -1386,12 +1397,12 @@ mod tests {
             (
                 "a RunHeld after a release starts a new hold at its own time",
                 vec![held(&host, 5), released(7), held(&probe, 9)],
-                open(9, false, &probe),
+                open(9, false, &probe, 2),
             ),
             (
                 "an operator hold does not outlive its release",
                 vec![held(&operator, 5), released(7), held(&host, 9)],
-                open(9, false, &host),
+                open(9, false, &host, 2),
             ),
             (
                 "the mint's release leaves the new run unheld",
@@ -1406,15 +1417,21 @@ mod tests {
             (
                 "the new run's own RunHeld holds it, carrying nothing from the old slice",
                 vec![held(&operator, 3), started(5), held(&host, 7)],
-                open(7, false, &host),
+                open(7, false, &host, 2),
             ),
         ];
         for (name, log, want) in cases {
             let log: Vec<Event> = log
                 .into_iter()
-                .map(|(type_, body, secs): (&str, String, u64)| {
-                    ev(type_, &body).with_valid_from(UNIX_EPOCH + Duration::from_secs(secs))
-                })
+                .enumerate()
+                .map(
+                    |(revision, (type_, body, secs)): (usize, (&str, String, u64))| {
+                        let mut event = ev(type_, &body)
+                            .with_valid_from(UNIX_EPOCH + Duration::from_secs(secs));
+                        event.revision = revision as i64;
+                        event
+                    },
+                )
                 .collect();
             assert_eq!(project(current_run(&log)).unwrap().hold, want, "{name}");
         }

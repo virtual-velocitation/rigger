@@ -26,6 +26,8 @@ pub mod gate;
 /// The grounding port: the `Grounder` trait and the plain values it returns.
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod grounder;
+#[cfg(any(feature = "store", not(feature = "core")))]
+pub mod hold_probe;
 /// The ingest fold rules (spec 45): the replay-key vocabulary and the project-scoped suppression
 /// predicate the live run and the standalone `rigger graph build` both seed from.
 #[cfg(any(feature = "store", not(feature = "core")))]
@@ -79,6 +81,10 @@ mod event_fixtures;
 #[allow(dead_code, unused_imports)]
 #[path = "../../../tests/common/fixtures/graph.rs"]
 mod graph_fixtures;
+#[cfg(all(test, any(feature = "store", not(feature = "core"))))]
+#[allow(dead_code, unused_imports)]
+#[path = "../../../tests/common/fixtures/hold_probe.rs"]
+mod hold_probe_fixtures;
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 #[allow(dead_code, unused_imports)]
 #[path = "../../../tests/common/fixtures/ingest.rs"]

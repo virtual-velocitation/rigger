@@ -1439,15 +1439,27 @@ fn beat(run_store: &dyn EventStore, progress: &dyn EventStore) {
     }
 }
 
-/// Hand back what `drive` returns, with the supervisor beating beside it on a thread of its own:
-/// a [`beat`] as `drive` starts, so an adopting supervisor is on record at once, then one each
-/// `interval`. The thread sleeps on a channel whose one sender lives only as long as `drive`, so
-/// `drive`'s return wakes it at once, it writes no further beat, and the scope joins it. A dead
-/// beat freezes silent time and nothing more: no exit and no host state hangs on it.
+/// Hand back what `drive` returns, with the supervisor beating beside it ([`ticking`] a [`beat`]
+/// each `interval`): a beat as `drive` starts, so an adopting supervisor is on record at once, and
+/// none once `drive` returns. A dead beat freezes silent time and nothing more: no exit and no host
+/// state hangs on it.
 fn beating<T>(
     run_store: &dyn EventStore,
     progress: &dyn EventStore,
     interval: std::time::Duration,
+    drive: impl FnOnce() -> T,
+) -> T {
+    ticking(interval, || beat(run_store, progress), drive)
+}
+
+/// Hand back what `drive` returns, with `tick` running beside it on a thread of its own: once as
+/// `drive` starts, then once each `interval` after the last tick ends. The thread sleeps on a
+/// channel whose one sender lives only as long as `drive`, so `drive`'s return wakes it at once and
+/// it ticks no further; the scope joins it, so a tick still running when `drive` returns is waited
+/// out, never cut short.
+fn ticking<T>(
+    interval: std::time::Duration,
+    tick: impl Fn() + Send,
     drive: impl FnOnce() -> T,
 ) -> T {
     use std::sync::mpsc::{channel, RecvTimeoutError};
@@ -1455,9 +1467,9 @@ fn beating<T>(
     std::thread::scope(|scope| {
         let (_driving, driven) = channel::<()>();
         scope.spawn(move || {
-            beat(run_store, progress);
+            tick();
             while let Err(RecvTimeoutError::Timeout) = driven.recv_timeout(interval) {
-                beat(run_store, progress);
+                tick();
             }
         });
         drive()
@@ -1541,7 +1553,45 @@ fn keep_awake(sleep: &dyn SleepHold, command: &str) -> Option<SleepGuard> {
         .ok()
 }
 
-/// How often a launch waiting on a held run reads the run again (spec 105).
+/// One poll of the HOLD CONTROLLER (spec 105 RELEASE): the probe the current run's open hold is
+/// owed ([`rigger::hold_probe::owed_probe`]), made by `host` in `root` once it falls due, its
+/// `hold-probe` line recorded on the run's progress stream first so every later poll counts it. A
+/// passing canary releases the hold by probe while its latest `RunHeld` is still the one probed, a
+/// failed canary's person-needing category moves the cause, and a logged-out session leaves the
+/// hold as it stands, its cause already naming the login a person makes. `run_store` is the
+/// folding store the host holds the run on. A read or a write that fails ends the poll with its
+/// error, the line unwritten making no probe, and the next poll is the retry.
+fn probe_an_owed_hold(
+    run_store: &dyn EventStore,
+    progress: &dyn EventStore,
+    host: &claude_code::Driver<'_>,
+    root: &str,
+) -> Result<(), String> {
+    let (run_events, run) = runscope::read::read_current_run(run_store, conductor::STREAM)
+        .map_err(|e| e.to_string())?;
+    let progress_events = rigger::progress::read_run(progress, &run).map_err(|e| e.to_string())?;
+    let now = std::time::SystemTime::now();
+    let Some(owed) = rigger::hold_probe::owed_probe(&run_events, &progress_events, now)
+        .filter(|owed| owed.due <= now)
+    else {
+        return Ok(());
+    };
+    rigger::progress_store::append_stamped(progress, &run, &owed.line(), "the hold probe's line")
+        .map_err(|e| e.to_string())?;
+    match host.probe(root, &owed) {
+        claude_code::ProbeOutcome::Passed => {
+            runscope_store::release_probed_hold(run_store, owed.revision)
+        }
+        claude_code::ProbeOutcome::Failed(category) => {
+            runscope_store::record_failed_probe(run_store, &category)
+        }
+        claude_code::ProbeOutcome::LoggedOut => Ok(()),
+    }
+    .map_err(|e| e.to_string())
+}
+
+/// How often a launch waiting on a held run reads the run again (spec 105), and how often the hold
+/// controller polls for a probe its open hold is owed.
 const HOLD_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// The pause between two reads of a standing hold, each run path's [`HeldDriver`] sleeping it.
@@ -1551,8 +1601,9 @@ fn pause_a_hold_poll() {
 
 /// The standalone CLI path: ground, host the agents as headless `claude` sessions
 /// ([`claude_code::Driver`]) behind the [`HeldDriver`] that launches nothing while the run is
-/// held, drive the DAG to integration with the supervisor [`beating`] beside it, and reclaim a
-/// done run's scratch. The store is selected by flag and wrapped in the per-project namespace
+/// held, drive the DAG to integration with the supervisor [`beating`] and the hold controller
+/// ([`probe_an_owed_hold`] each [`HOLD_POLL_INTERVAL`]) [`ticking`] beside it, and reclaim a done
+/// run's scratch. The store is selected by flag and wrapped in the per-project namespace
 /// decorator before it is injected (§5.1.1, R9). The machine stays awake through `sleep` from the
 /// moment the loop starts driving until this returns ([`keep_awake`]).
 fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
@@ -1688,11 +1739,21 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
     // guard reaps the dash when this scope ends (unit 3's reaping mechanism).
     let _dash = start_run_dashboard(cfg.workflow.dash_enabled(), &store);
     let _awake = keep_awake(sleep, "rigger run");
+    // The hold controller polls beside the drive, on the folding store the host holds the run on.
+    let control_holds = || {
+        if let Err(e) = probe_an_owed_hold(&folding, &progress, &driver, &root) {
+            stderr_line(&format!("rigger run: the hold probe: {e}"));
+        }
+    };
     let rs = beating(
         &store,
         &progress,
         rigger::progress::SUPERVISOR_BEAT_INTERVAL,
-        || conductor::run(&cfg, &deps),
+        || {
+            ticking(HOLD_POLL_INTERVAL, control_holds, || {
+                conductor::run(&cfg, &deps)
+            })
+        },
     )?;
     // A done run releases its open hold, an operator hold included (spec 105); any other exit
     // leaves it to the next supervisor's probes. A failed release never fails a run that already

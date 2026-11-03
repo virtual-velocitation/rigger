@@ -4,6 +4,9 @@
 //! supervised child guard. They know `std::process`, the filesystem, the stores and the domain;
 //! the root `rigger` crate re-exports every module under its historical path.
 
+/// The one reader of `claude auth status --json`: whether the operator's session is logged in.
+#[cfg(any(feature = "store", not(feature = "core")))]
+pub mod claude_auth;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod driver;
 #[cfg(any(feature = "store", not(feature = "core")))]
@@ -24,7 +27,7 @@ use rigger_domain::contextgraph;
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 use rigger_domain::retention;
 #[cfg(any(feature = "store", not(feature = "core")))]
-use rigger_domain::{agent, failure, progress, run};
+use rigger_domain::{agent, failure, hold_probe, progress, run};
 #[cfg(any(feature = "store", not(feature = "core")))]
 use rigger_process::{reap, subprocess};
 #[cfg(any(feature = "store", not(feature = "core")))]

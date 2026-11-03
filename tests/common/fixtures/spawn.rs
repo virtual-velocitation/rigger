@@ -59,3 +59,188 @@ pub const PROMPT_CAPTURE_DIR: &str = "PROMPT_CAPTURE_DIR";
 pub fn captured_system_prompt(capture: &std::path::Path) -> String {
     std::fs::read_to_string(capture.join("system-prompt")).unwrap()
 }
+
+/// The task a stand-in `claude` saved at `path`: the `content` of the host's first stream-json
+/// user message.
+pub fn recorded_task(path: &std::path::Path) -> String {
+    let line = std::fs::read_to_string(path).unwrap();
+    let message: serde_json::Value = serde_json::from_str(line.trim_end()).unwrap();
+    message["message"]["content"]
+        .as_str()
+        .expect("the first user message carries its task as text")
+        .to_string()
+}
+
+/// The argv a stand-in `claude` saved at `path`, one NUL-terminated field per argument.
+pub fn recorded_argv(path: &std::path::Path) -> Vec<String> {
+    std::fs::read_to_string(path)
+        .unwrap()
+        .split_terminator('\0')
+        .map(str::to_string)
+        .collect()
+}
+
+/// Write `dir/claude-arms`, the shell `case` over the system prompt `$sp` the checked-in
+/// `claude-code-arms-agent.sh` stand-in sources beside its symlink in `dir`: `arms`, each
+/// `*MARKER*) ... ;;`, then an arm failing loudly on any prompt they do not name.
+pub fn write_claude_arms(dir: &std::path::Path, arms: &str) {
+    std::fs::write(
+        dir.join("claude-arms"),
+        format!(
+            r#"case "$sp" in
+{arms}  *)
+    echo "fake-claude: unrecognized system prompt: $sp" 1>&2
+    exit 1
+    ;;
+esac
+"#
+        ),
+    )
+    .unwrap();
+}
+
+/// The arm of [`write_claude_arms`] for the launches naming no system prompt, the hold probe's:
+/// the `claude auth status --json` read records its argv as `auth-argv` and runs `auth`, whose
+/// output, on its stdout or straight to the host's stream, is the status it reports; the canary
+/// records its argv as `canary-argv`, its working directory as `canary-cwd` and its first user
+/// message as `canary-first`, then runs `canary`.
+pub fn probe_arms(auth: &str, canary: &str) -> String {
+    format!(
+        r#"  "")
+    if [ "$1" = auth ]; then
+        printf '%s\0' "$@" > "$here/auth-argv"
+{auth}    else
+        printf '%s\0' "$@" > "$here/canary-argv"
+        pwd -P > "$here/canary-cwd"
+        printf '%s\n' "$first" > "$here/canary-first"
+{canary}    fi
+    ;;
+"#
+    )
+}
+
+/// A `claude auth status --json` report of a logged-in session, every key the installed `claude`
+/// reports, each value a placeholder.
+pub const LOGGED_IN_STATUS: &str = r#"{
+  "loggedIn": true,
+  "authMethod": "claude.ai",
+  "apiProvider": "firstParty",
+  "analyticsDisabled": false,
+  "projectsDirectory": "/home/operator/.claude/projects",
+  "configDirectory": "/home/operator/.claude",
+  "email": "operator@example.com",
+  "orgId": "00000000-0000-0000-0000-000000000000",
+  "orgName": "Example Org",
+  "subscriptionType": "max"
+}"#;
+
+/// A `claude auth status --json` report of a logged-out session.
+pub const LOGGED_OUT_STATUS: &str = r#"{
+  "loggedIn": false,
+  "authMethod": "none",
+  "apiProvider": "firstParty"
+}"#;
+
+/// The shell of a [`probe_arms`] body printing `text`, as it stands, straight to the host's
+/// stream, so a body that then sleeps ([`sleeping`]) has answered already.
+pub fn printing(text: &str) -> String {
+    format!("    cat >&3 <<'TEXT'\n{text}\nTEXT\n")
+}
+
+/// The shell of a [`probe_arms`] body that sleeps `seconds` in the stand-in's own place,
+/// answering nothing more and holding the host's stream open: it records its pid as a line of
+/// `sleepers` beside the stand-in, then becomes the sleep, so the sleep is the very process the
+/// host's deadline ends ([`assert_no_sleeper_left`]).
+pub fn sleeping(seconds: u32) -> String {
+    format!("    exec sh -c 'echo $$ >> \"$1\"; exec sleep {seconds}' sh \"$here/sleepers\"\n")
+}
+
+/// The stand-in `claude` in `dir` started exactly `count` sleeps ([`sleeping`]) and none is left
+/// once the read that launched it has returned: each pid they recorded is gone from `/proc` within
+/// 500 ms, read every 20 ms and never signalled.
+pub fn assert_no_sleeper_left(dir: &std::path::Path, count: usize, name: &str) {
+    let recorded = std::fs::read_to_string(dir.join("sleepers")).unwrap_or_default();
+    let pids: Vec<&str> = recorded.lines().collect();
+    assert_eq!(
+        pids.len(),
+        count,
+        "{name}: the sleeps the fake started: {pids:?}"
+    );
+    let alive = |pid: &&str| std::path::Path::new("/proc").join(pid).exists();
+    let given_up = std::time::Instant::now() + std::time::Duration::from_millis(500);
+    while pids.iter().any(alive) && std::time::Instant::now() < given_up {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let left: Vec<&str> = pids.into_iter().filter(alive).collect();
+    assert_eq!(
+        left,
+        Vec::<&str>::new(),
+        "{name}: the sleeps still running once the read returned"
+    );
+}
+
+/// The shell of a canary that passes: it marks `canary-ran` and answers, the stand-in printing a
+/// result with `is_error: false`.
+pub const PASSING_CANARY: &str = "    : > \"$here/canary-ran\"\n";
+
+/// The shell printing one `api_retry` line of each of `categories` to the host's stream, each
+/// announcing a wait of `delay_ms`.
+pub fn api_retry_lines(categories: &[&str], delay_ms: u32) -> String {
+    categories
+        .iter()
+        .map(|category| {
+            format!(
+                "    printf '%s\\n' '{{\"type\":\"system\",\"subtype\":\"api_retry\",\"attempt\":1,\
+                 \"max_retries\":10,\"retry_delay_ms\":{delay_ms},\"error_status\":500,\
+                 \"error\":\"{category}\"}}' >&3\n"
+            )
+        })
+        .collect()
+}
+
+/// The shell printing, to the host's stream, the `is_error` result a session ending on an API
+/// error prints.
+pub const ERROR_RESULT: &str = r#"    printf '%s\n' '{"type":"result","subtype":"success","is_error":true,"num_turns":1,"session_id":"arms","result":"the API failed"}' >&3
+"#;
+
+/// The shell of a canary that fails: it sights each of `categories` on its own `api_retry` line,
+/// prints an `is_error` result, marks `canary-ran` and exits 1.
+pub fn failing_canary(categories: &[&str]) -> String {
+    format!(
+        "{}{ERROR_RESULT}    : > \"$here/canary-ran\"\n    exit 1\n",
+        api_retry_lines(categories, 1)
+    )
+}
+
+/// The argv the hold probe's canary is launched with on `model`: the host's stream-json base, no
+/// tools, no MCP server, no hooks, no session file, and `--model` only for a model it names.
+pub fn canary_argv(model: &str) -> Vec<String> {
+    let mut argv = vec![
+        "-p",
+        "--output-format",
+        "stream-json",
+        "--input-format",
+        "stream-json",
+        "--verbose",
+        "--tools",
+        "",
+        "--strict-mcp-config",
+        "--settings",
+        r#"{"disableAllHooks":true}"#,
+        "--no-session-persistence",
+    ];
+    if !model.is_empty() {
+        argv.extend(["--model", model]);
+    }
+    argv.into_iter().map(str::to_string).collect()
+}
+
+/// A stand-in `claude` in `dir`: the checked-in `claude-code-arms-agent.sh` linked as
+/// `dir/claude`, answering from `arms` ([`write_claude_arms`]). Its path.
+#[cfg(unix)]
+pub fn arms_claude(dir: &std::path::Path, arms: &str) -> String {
+    let claude = dir.join("claude");
+    std::os::unix::fs::symlink(fixture_script("claude-code-arms-agent.sh"), &claude).unwrap();
+    write_claude_arms(dir, arms);
+    claude.to_string_lossy().into_owned()
+}

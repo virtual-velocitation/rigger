@@ -52,6 +52,9 @@ pub const HOLD_BY_OPERATOR: &str = "operator";
 /// The `by` of a hold the host wrote, and of a release a done run or a mint wrote.
 pub const HOLD_BY_HOST: &str = "host";
 
+/// The `by` of a hold a failed probe wrote, and of the release a passing probe wrote.
+pub const HOLD_BY_PROBE: &str = "probe";
+
 /// The metadata key that stamps every conductor-emitted event with the id of the run it
 /// belongs to (spec 06, unit 1). Its value is the current run's uuid; a pre-run-id
 /// (legacy) event carries no such key and so belongs to no run - it folds as "before the
@@ -169,7 +172,7 @@ pub struct RunHeld {
     pub action: String,
     /// Whether the cause's row needs a person.
     pub needs_person: bool,
-    /// Who held the run: [`HOLD_BY_HOST`], `probe` or [`HOLD_BY_OPERATOR`].
+    /// Who held the run: [`HOLD_BY_HOST`], [`HOLD_BY_PROBE`] or [`HOLD_BY_OPERATOR`].
     pub by: String,
     /// The model the hold's probes ask, empty for the default model: a host hold names its
     /// launch's model.
@@ -180,7 +183,7 @@ pub struct RunHeld {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct RunReleased {
-    /// Who released the run: [`HOLD_BY_HOST`], `probe` or [`HOLD_BY_OPERATOR`].
+    /// Who released the run: [`HOLD_BY_HOST`], [`HOLD_BY_PROBE`] or [`HOLD_BY_OPERATOR`].
     pub by: String,
     /// How long the hold lasted, in seconds.
     pub held_for_s: u64,

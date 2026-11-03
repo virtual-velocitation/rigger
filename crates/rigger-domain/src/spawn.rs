@@ -2371,6 +2371,7 @@ mod tests {
                 detail: "the detail stays off the step line".to_string(),
                 ..Default::default()
             },
+            revision: 0,
         };
         assert_eq!(
             serde_json::to_string(&step_of_hold(&hold)).unwrap(),
