@@ -350,6 +350,13 @@ fn failed_key(unit: &str, attempt: u32) -> String {
     format!("{unit}/failed#{attempt}")
 }
 
+/// The replay key of the `verified` status `unit` records once its gates at `attempt` pass (a
+/// speculation winner's at its lane), which [`RunCtx::attempt_gates_started`] reads back for an
+/// attempt whose gate selection ran no gate.
+fn verified_key(unit: &str, attempt: u32) -> String {
+    format!("{unit}/verified#{attempt}")
+}
+
 /// The replay key of the lesson a plan-critique `gate`'s spec-defect stop records for its reject
 /// at `attempt` (spec 112, criterion 5): the first of the stop's three records.
 fn spec_defect_lesson_key(gate: &str, attempt: u32) -> String {
@@ -1827,6 +1834,34 @@ const HALT_MARKERS: [&str; 5] = [
 /// unit an attempt for an outage it did not cause.
 const INFRA_MARKER: &str = "\u{1}rigger:infra-halt\u{1}";
 
+/// The sentinel a sdet-author or review-tier spawn crash embeds in its error: a spawn error that
+/// is no park, no budget refusal and no refused record (and, for the sdet-author, its opts
+/// guard's error too). The single lane ([`RunCtx::run_single_stage`]) reads it through
+/// [`infra_crash`] as an outage of the unit's stage and reruns the stage uncharged under the F3
+/// infra retry ([`CAUSE_INFRA_SPAWN`]), as it does an implementer crash. It is no halt: every
+/// other caller (a standalone review stage, the plan-critique gate, a speculation candidate)
+/// keeps its own crash handling, and the wave's generic arm and the plan-critique gate strip it
+/// from the operator's message.
+const SPAWN_CRASH_MARKER: &str = "\u{1}rigger:spawn-crashed\u{1}";
+
+/// The error a sdet-author or review-tier spawn crash returns: `message` marked with
+/// [`SPAWN_CRASH_MARKER`].
+fn spawn_crash(message: String) -> Error {
+    Error(format!("{SPAWN_CRASH_MARKER}{message}"))
+}
+
+/// A sdet seam or review result split for the single lane: `Ok(Err(crash))` when it carries the
+/// [`SPAWN_CRASH_MARKER`], `crash` its message with the marker stripped so the F3 evidence names
+/// it, and every other result as it was.
+fn infra_crash<T>(r: Result<T, Error>) -> Result<Result<T, String>, Error> {
+    match r {
+        Err(e) if carries_marker(&e, SPAWN_CRASH_MARKER) => {
+            Ok(Err(e.0.replace(SPAWN_CRASH_MARKER, "")))
+        }
+        r => r.map(Ok),
+    }
+}
+
 /// The `UnitStatus` token of an infra RERUN mark (F3): a unit's stage failed on
 /// infrastructure at `(attempt, ordinal)` and was not charged. Keyed by [`infra_mark_key`].
 /// Like [`STATUS_REVIEW_ROUND_START`] it is deliberately NOT a [`ledger::Status`] variant, so
@@ -2489,7 +2524,9 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
                     Err(e) if carries_marker(&e, MISMATCH_MARKER) => {
                         return Err(Error(e.0.replace(MISMATCH_MARKER, "")))
                     }
-                    Err(e) => return Err(e),
+                    // Any other error propagates as before; a gate reviewer's crash
+                    // ([`SPAWN_CRASH_MARKER`]) has no infra retry here and loses its marker.
+                    Err(e) => return Err(Error(e.0.replace(SPAWN_CRASH_MARKER, ""))),
                 }
             }
         }
@@ -3676,6 +3713,19 @@ impl RunCtx<'_> {
             .max()
     }
 
+    /// Whether `unit`'s gates already started at `attempt`, read from existing records only
+    /// (op-105-sdet-seam-joins-the-infra-retry): a gate verdict at this attempt
+    /// ([`gate_verdict_high_water`](RunCtx::gate_verdict_high_water), every `~retry{n}` rerun
+    /// included), or this attempt's [`verified_key`] stamp replayed or emitted, which a
+    /// gate-free selection records with no verdict. Gates start only once the sdet seam has
+    /// returned, so a re-entered attempt (an adopting relaunch, an F3 review rerun) for which this
+    /// holds never re-runs the seam over a tip its gates, `verified` and review-round start all
+    /// replay from the log.
+    fn attempt_gates_started(&self, unit: &str, attempt: u32) -> bool {
+        self.gate_verdict_high_water(unit) == Some(attempt)
+            || self.replayed_keys.contains(&verified_key(unit, attempt))
+    }
+
     /// Drain the queued post-integration COMPENSATIONS (spec 12, unit 4), single-threaded
     /// after a wave: for each ALREADY-INTEGRATED unit a later unit's review named as the
     /// defect source, REVERT its integrating commit(s) on the run branch in reverse
@@ -4372,8 +4422,10 @@ impl RunCtx<'_> {
                 // wraps), so no current or future call site that lets an `Err`
                 // reach this generic fallback unformatted can leak the raw marker.
                 // A no-op for every marker-free error (every other driver, or text
-                // a leaf site already cleaned).
-                let msg = strip_failure_marker(&e);
+                // a leaf site already cleaned). A spawn crash's own marker
+                // ([`SPAWN_CRASH_MARKER`]) reaches here from a review stage outside
+                // the single lane, and is stripped with it.
+                let msg = strip_failure_marker(&e).replace(SPAWN_CRASH_MARKER, "");
                 let _ = self.emit_lesson(
                     None,
                     &name,
@@ -5395,10 +5447,12 @@ impl RunCtx<'_> {
     /// The fixed `sdet-author` id is a convention resolved through the SAME
     /// `AgentDef` / `build_system_prompt` agent-loading path as every other role (no
     /// `workflow.yml` change, which would drift the pinned definition). The deterministic
-    /// spawn id (`spawn_id(stage, ROLE_SDET_AUTHOR, attempt)` - `attempt` is the single-lane
-    /// remediation attempt or the speculation lane) lets a stepwise/replay driver answer or
-    /// park it exactly like the implementer; a spawn whose record the emit guard refused re-runs
-    /// once under the next [`review_retry_window`] id with the refusal after its prompt
+    /// spawn id (`spawn_retry_id(stage, ROLE_SDET_AUTHOR, attempt, retry)` - `attempt` is the
+    /// single-lane remediation attempt or the speculation lane, and `retry` the first of the
+    /// stage run's infra `ordinal`'s [`review_retry_window`], as the reviewers are keyed, so an
+    /// F3 rerun's sdet-author is a fresh spawn) lets a stepwise/replay driver answer or park it
+    /// exactly like the implementer; a spawn whose record the emit guard refused re-runs once
+    /// under the next id of that window with the refusal after its prompt
     /// ([`rerun_once_on_refusal`]). The spawn is gated on a real worktree (an empty
     /// `dir` is a repo-less or `isolation: none` unit with no tree to author into, and an
     /// Edit/Write agent must never run in the live main checkout) and on the agent being
@@ -5410,15 +5464,18 @@ impl RunCtx<'_> {
     /// worktree of its own).
     ///
     /// Returns `Ok(())` when the caller may proceed to its commit: a normal result (files
-    /// authored), a crash (the non-parked spawn/opts error whose disposition is the next
-    /// unit's - never propagated past this unit), an absent agent, or a budget refusal. Returns
-    /// the PARK signal `Err(parked)` when the spawn parked (an unrecorded stepwise/replay
-    /// frontier); the caller unwinds per its own discipline - the single lane propagates it
-    /// (holding the unit, no commit), a speculation lane collects it into `any_parked` and does
-    /// NOT commit that candidate, so a later step replays the sdet and its periphery tests land.
-    /// Returns the stage error naming the refusal when the emit guard refused the re-run's record
-    /// too: a refusal is a defect in what the sdet printed, never a crash to proceed past, so the
-    /// single lane fails its stage with it and a speculation candidate loses.
+    /// authored), an absent agent, or a budget refusal. Returns the PARK signal `Err(parked)`
+    /// when the spawn parked (an unrecorded stepwise/replay frontier); the caller unwinds per its
+    /// own discipline - the single lane propagates it (holding the unit, no commit), a
+    /// speculation lane collects it into `any_parked` and does NOT commit that candidate, so a
+    /// later step replays the sdet and its periphery tests land. Returns the stage error naming
+    /// the crash, marked [`SPAWN_CRASH_MARKER`], when the spawn or its opts guard failed any
+    /// other way: no gate may run on a tree the seam never touched, so the single lane reruns
+    /// the stage uncharged under the F3 infra retry and halts loudly past the infra limit, and a
+    /// speculation candidate loses. Returns the stage error naming the refusal when the emit
+    /// guard refused the re-run's record too: a refusal is a defect in what the sdet printed,
+    /// never an outage to rerun, so the single lane fails its stage with it and a speculation
+    /// candidate loses.
     ///
     /// A round whose [`round_delta`](RunCtx::round_delta) in `wt` changed documentation only
     /// appends [`DOC_ONLY_ROUND`] to the prompt, so a wording round moves an existing pin's
@@ -5429,6 +5486,10 @@ impl RunCtx<'_> {
         wt: Option<&Worktree>,
         dir: &str,
         attempt: u32,
+        // The stage run's infra retry ordinal (F3): the sdet-author spawns over the round's
+        // [`review_retry_window`], so an infra rerun's seam is fresh work. 0 for a speculation
+        // candidate, which never reruns.
+        ordinal: u32,
         // The gates the previous attempt failed (its `PriorFailure` gate evidence, the same the
         // implementer is handed): what a later attempt's resumed session is told changed when
         // no review round sent the unit back. Empty on a first attempt.
@@ -5477,7 +5538,18 @@ impl RunCtx<'_> {
         let sdet_emit = |t: &str, v: Value| {
             self.emit_agent(t, v, &[(contextgraph::META_ACTOR, ROLE_SDET_AUTHOR)])
         };
-        rerun_once_on_refusal(review_retry_window(0), |retry, refused| {
+        let window = review_retry_window(ordinal);
+        let first_retry = *window.start();
+        // A crash names the stage and the seam, its failure class stripped, as a review tier's
+        // crash does.
+        let crashed = |e: &Error| {
+            spawn_crash(format!(
+                "stage {:?} sdet author: {}",
+                st.name,
+                strip_failure_marker(e)
+            ))
+        };
+        rerun_once_on_refusal(window, |retry, refused| {
             let sdet_id = spawn_retry_id(&st.name, ROLE_SDET_AUTHOR, attempt, retry);
             // Budget breaker at spawn granularity: reserve the sdet spawn against the run budget
             // FIRST, exactly like the implementer and every reviewer tier, so it funnels through
@@ -5505,13 +5577,12 @@ impl RunCtx<'_> {
                 // A log that cannot be read is a fault, propagated - never a cold start. A
                 // re-run after a refusal starts fresh rather than continuing the session that
                 // printed the refused record.
-                Ok(opts) if retry == 0 => {
+                Ok(opts) if retry == first_retry => {
                     self.continue_prior_session(opts, ROLE_SDET_AUTHOR, resume_task.clone())?
                 }
                 Ok(opts) => opts,
-                // An opts-guard error takes the crash disposition below: the unit proceeds to
-                // the commit.
-                Err(_) => return Ok(()),
+                // An opts-guard error is a crash of the seam: the spawn cannot run.
+                Err(e) => return Err(crashed(&e)),
             };
             match self
                 .deps
@@ -5527,10 +5598,10 @@ impl RunCtx<'_> {
                 // remediation - and a later step replays the result. A refused record surfaces
                 // too: the first re-runs above, a second fails the stage below.
                 Err(e) if is_parked_or_refused(&e, EMIT_REFUSED_MARKER) => Err(e),
-                // The crash disposition (a non-parked spawn/opts-guard error) is the next
-                // unit's to decide; this unit places the spawn and its parked arm, so a crash
-                // proceeds to the commit rather than propagating past the unit.
-                Err(_) => Ok(()),
+                // A crash (a non-zero exit, a live host's wall-clock stop) is an outage of the
+                // seam, never a tree to gate: it surfaces marked for the caller's crash
+                // disposition.
+                Err(e) => Err(crashed(&e)),
             }
         })
         .map_err(|e| {
@@ -5889,6 +5960,10 @@ impl RunCtx<'_> {
             let radius = self.grounded_blast_radius(st);
             self.record_blast_radius(st, attempts, &blast_radius, &radius)?;
             let mut spawn_err: Option<String> = None;
+            // The crash of a spawn after the implementer's (the sdet seam's or a review tier's,
+            // [`SPAWN_CRASH_MARKER`]) that failed this attempt as an outage: the F3 evidence
+            // names it, and the rerun keeps the committed implementation.
+            let mut tier_crash: Option<String> = None;
             // The cause wire (spec 69, criterion 3): set at whichever branch below
             // actually fails this attempt, so the single convergent `UnitFailed` emit
             // near the bottom of this loop stamps the REAL cause rather than inferring
@@ -6112,14 +6187,46 @@ impl RunCtx<'_> {
                 }
             }
 
+            // The SDET-author spawn (spec 33): author periphery tests into the implementer's OWN
+            // worktree (`dir`) at the build seam - AFTER the implementer's green status and BEFORE
+            // the pre-gate commit below - so on every unit the SDET authors its periphery tests
+            // into the same tree that commit sweeps in and the unscoped gates and the reviewers
+            // judge. ONE shared seam authority (`spawn_sdet_author`), so the single-lane path and
+            // the speculation path place the spawn identically; a producer writes no code, so it
+            // has no seam. A park propagates through `?`, holding the unit with no commit until a
+            // later step replays the sdet and its periphery tests land in the committed tree. A
+            // crash is an outage (op-105-sdet-seam-joins-the-infra-retry): no gate may run on a
+            // tree the seam never touched, so the stage reruns uncharged under the F3 retry below
+            // with the crash as its evidence. An attempt whose gates already started never re-runs
+            // the seam: an adopting relaunch or an F3 review rerun re-enters with the seam's work
+            // committed and gated, and a fresh sdet-author would move a tip whose gate verdicts,
+            // `verified` stamp and review-round start all replay from the log.
+            if cause.is_empty()
+                && !is_producer(st)
+                && !self.attempt_gates_started(&st.name, attempts)
+            {
+                let seam = self.spawn_sdet_author(
+                    st,
+                    wt,
+                    dir,
+                    attempts,
+                    infra.ordinal,
+                    &prior.gate_evidence,
+                );
+                if let Err(crash) = infra_crash(seam)? {
+                    tier_crash = Some(crash);
+                    cause = CAUSE_INFRA_SPAWN.to_string();
+                }
+            }
+
             // The unit's own lifecycle (§3.2): implement -> the unit's gates -> the
             // three-tier review OF THIS UNIT -> integrate. The gates and the
             // adjudicator's verdict BOTH gate integration: a gate failure OR a reject
             // feeds back into this same loop (re-ground via build_prompt, re-implement
             // WITH THE FEEDBACK, re-review) and escalates after the retry bound. Review
             // runs only once the implementer's own gates are green, so the lenses never
-            // review a red diff. None of it runs once the spawn itself failed this attempt
-            // (a crash or a refused emit, each setting `cause` above).
+            // review a red diff. None of it runs once the implementer or the sdet seam failed
+            // this attempt (a crash or a refused emit, each setting `cause` above).
             if cause.is_empty() {
                 // A `produces` (planner) stage emits a DAG, NOT code: its agent has
                 // just proposed the units (UnitProposed events). It wrote no diff, so
@@ -6193,19 +6300,8 @@ impl RunCtx<'_> {
                         }
                     }
                 } else {
-                    // The SDET-author spawn (spec 33): author periphery tests into the
-                    // implementer's OWN worktree (`dir`) at the build seam - AFTER the
-                    // implementer's green status and BEFORE the pre-gate commit below - so on
-                    // every unit the SDET authors its periphery tests into the same tree the
-                    // existing commit sweeps in and the unscoped gates and the reviewers judge.
-                    // ONE shared seam authority (`spawn_sdet_author`), so the single-lane path
-                    // and the speculation path place the spawn identically. This unit OWNS the
-                    // spawn placement and its role token; result-advancement, absent-agent, and
-                    // crash disposition are the next unit's - so only the replay-safe parked arm
-                    // acts here: `?` propagates it, holding the unit with no commit until a later
-                    // step replays the sdet and its periphery tests land in the committed tree.
-                    self.spawn_sdet_author(st, wt, dir, attempts, &prior.gate_evidence)?;
-                    // Commit the implementer's worktree BEFORE running the gates (§3.2),
+                    // Commit the implementer's worktree, with the sdet seam's periphery tests,
+                    // BEFORE running the gates (§3.2),
                     // so the gate measures EXACTLY the committed artifact that the
                     // subsequent integrate merges - never a dirty worktree. A unit could
                     // otherwise pass `cargo test` on uncommitted files (e.g. three new
@@ -6260,7 +6356,7 @@ impl RunCtx<'_> {
                         // (omitted) on a repo-less unit with no worktree.
                         let reviewed_sha = worktree::head_sha_of(dir);
                         self.emit_keyed_meta(
-                            &format!("{}/verified#{attempts}", st.name),
+                            &verified_key(&st.name, attempts),
                             ledger::TYPE_UNIT_STATUS,
                             json!({
                                 "id": st.name,
@@ -6278,7 +6374,7 @@ impl RunCtx<'_> {
                         // structural width forces the full panel for a beyond-cap high-risk file, and a
                         // wide structural change earns the full panel by size. On the non-symbols
                         // default `radius.safe == radius.precise`, so routing is byte-for-byte unchanged.
-                        let mut review = self.review_unit(
+                        let review = self.review_unit(
                             st,
                             dir,
                             attempts,
@@ -6289,132 +6385,156 @@ impl RunCtx<'_> {
                             any_parked,
                             wt,
                             &prior.required,
-                        )?;
-                        // The round has ruled on the REQUIRED list: what stays open is what
-                        // its verdict requires (nothing, on an approve).
-                        next.required = std::mem::take(&mut review.required);
-                        // A contradiction against a PRIOR integrated unit (spec 12, unit 4): the
-                        // adjudicator named another, already-integrated unit as the real defect
-                        // source. QUEUE the rollback for the run loop to drain after this wave
-                        // (single-threaded, so the git revert never races a concurrent merge). A
-                        // unit never compensates ITSELF (that is ordinary remediation below).
-                        if let Some(target) = &review.compensate {
-                            if target != &st.name {
-                                // DURABLY record the compensation INTENT here, the MOMENT the
-                                // review names the target - BEFORE this unit integrates and before
-                                // the post-wave drain reverts anything - so a crash between now and
-                                // the drain does not silently drop the rollback. A resume
-                                // re-derives this un-drained mark (`pending_compensations_from_log`)
-                                // and the pre-loop drain re-drives it. Rides the existing
-                                // `UnitStatus` vocabulary as a fold-neutral marker (no new event
-                                // type, spec 12 G2): `META_COMPENSATE_TARGET` names the unit to roll
-                                // back and `META_CONTRADICTION` the reason; keyed so a stepwise
-                                // resume re-appends it exactly once. The mark's `id` is the TARGET
-                                // and its status token is not a real lifecycle status, so folding it
-                                // leaves the target `Integrated` until the drain reverts it.
-                                self.emit_keyed_meta(
-                                    &compensation_queued_key(&st.name, target, attempts),
-                                    ledger::TYPE_UNIT_STATUS,
-                                    json!({
-                                        "id": target,
-                                        "status": STATUS_COMPENSATION_QUEUED,
-                                        "evidence": {
-                                            "compensation-queued": review.reason.trim(),
-                                        },
-                                    }),
-                                    &[
-                                        (META_COMPENSATE_TARGET, target),
-                                        (META_CONTRADICTION, review.reason.trim()),
-                                    ],
-                                )?;
-                                self.compensations.lock().unwrap().push(Compensation {
-                                    target: target.clone(),
-                                    reason: review.reason.clone(),
-                                });
+                        );
+                        match infra_crash(review)? {
+                            // A review tier's spawn crashed: an outage of the round, never a
+                            // verdict (op-105-sdet-seam-joins-the-infra-retry). The stage reruns
+                            // uncharged under the F3 retry below while the committed
+                            // implementation stands, the rerun's reviewers fresh spawns under the
+                            // next infra ordinal's [`review_retry_window`].
+                            Err(crash) => {
+                                tier_crash = Some(crash);
+                                cause = CAUSE_INFRA_SPAWN.to_string();
                             }
-                        }
-                        if review.approved {
-                            // on_pass governs integration (§3.2): empty or `merge` lands
-                            // the work; any other value (e.g. `none`) runs the gates but
-                            // never integrates - the verified, reviewed work stays
-                            // un-merged.
-                            if !integrates(st) {
-                                return Ok(false);
-                            }
-                            // The integrate door's EXHAUSTIVE gate (spec 12, unit 3): "done" is
-                            // asserted against the FULL gate library, never the blast-radius-narrowed
-                            // inner-loop subset, so a unit never lands on a partial suite (R6). Cheap
-                            // via unit-1's content cache - the gates the inner loop already ran replay
-                            // from the log, so only the gates it SKIPPED actually run here. A red here
-                            // (a skipped gate the merged-to-be tree fails) BLOCKS the merge and feeds
-                            // remediation, exactly like an inner-loop gate failure. `integrate_and_emit`
-                            // itself is untouched - the exhaustive suite gates whether it is CALLED.
-                            let full = self.run_gates_at(
-                                st,
-                                dir,
-                                attempts,
-                                infra.ordinal,
-                                GateSelection::Exhaustive,
-                            )?;
-                            if full.pass {
-                                // The gates passed AND the review explicitly approved: the only
-                                // path that mints an `IntegrationApproval`, so the only path that
-                                // can merge. The reject branch below has no approval to hand to
-                                // `integrate_and_emit`, so it cannot land the unit's code.
-                                //
-                                // Gap 16 invariant (spec 06 unit 3): the verdict is folded and
-                                // acted on HERE, and an approve returns before the `remediate`
-                                // terminal check below ever runs. So an approval on a unit's
-                                // FINAL permitted attempt integrates - `max_retries` gates only
-                                // STARTING another attempt, it never overrides an approval. This
-                                // ordering (verdict-fold before attempt-counter) is load-bearing;
-                                // reversing it re-opens the bug where unit-2's approved-on-
-                                // attempt-6 review was recorded as UnitFailed/UnitEscalated.
-                                let integration = self.integrate_and_emit(
-                                    wt,
-                                    st,
-                                    attempts,
-                                    IntegrationApproval::approved(),
-                                )?;
-                                match integration.blocked {
-                                    None => {
-                                        self.emit(
-                                            ledger::TYPE_UNIT_INTEGRATED,
-                                            json!({"id": st.name, "commit": integration.commit}),
+                            Ok(mut review) => {
+                                // The round has ruled on the REQUIRED list: what stays open is what
+                                // its verdict requires (nothing, on an approve).
+                                next.required = std::mem::take(&mut review.required);
+                                // A contradiction against a PRIOR integrated unit (spec 12, unit
+                                // 4): the adjudicator named another, already-integrated unit as the
+                                // real defect source. QUEUE the rollback for the run loop to drain
+                                // after this wave (single-threaded, so the git revert never races a
+                                // concurrent merge). A unit never compensates ITSELF (that is
+                                // ordinary remediation below).
+                                if let Some(target) = &review.compensate {
+                                    if target != &st.name {
+                                        // DURABLY record the compensation INTENT here, the MOMENT
+                                        // the review names the target - BEFORE this unit integrates
+                                        // and before the post-wave drain reverts anything - so a
+                                        // crash between now and the drain does not silently drop
+                                        // the rollback. A resume re-derives this un-drained mark
+                                        // (`pending_compensations_from_log`) and the pre-loop drain
+                                        // re-drives it. Rides the existing `UnitStatus` vocabulary
+                                        // as a fold-neutral marker (no new event type, spec 12 G2):
+                                        // `META_COMPENSATE_TARGET` names the unit to roll back and
+                                        // `META_CONTRADICTION` the reason; keyed so a stepwise
+                                        // resume re-appends it exactly once. The mark's `id` is the
+                                        // TARGET and its status token is not a real lifecycle
+                                        // status, so folding it leaves the target `Integrated`
+                                        // until the drain reverts it.
+                                        self.emit_keyed_meta(
+                                            &compensation_queued_key(&st.name, target, attempts),
+                                            ledger::TYPE_UNIT_STATUS,
+                                            json!({
+                                                "id": target,
+                                                "status": STATUS_COMPENSATION_QUEUED,
+                                                "evidence": {
+                                                    "compensation-queued": review.reason.trim(),
+                                                },
+                                            }),
+                                            &[
+                                                (META_COMPENSATE_TARGET, target),
+                                                (META_CONTRADICTION, review.reason.trim()),
+                                            ],
                                         )?;
-                                        return Ok(true);
-                                    }
-                                    // The post-merge re-gate went RED (spec 12, unit 5): the pre-
-                                    // merge gates passed in this unit's OWN worktree, but the MERGED
-                                    // tree failed - an unpredicted batch-mate overlap auto-merged
-                                    // into a broken tree. The merge was ROLLED BACK (nothing
-                                    // landed), so capture the merge-break evidence and fall through
-                                    // to remediation, exactly like the exhaustive pre-merge red
-                                    // below - never integrate a broken merged tree.
-                                    Some(evidence) => {
-                                        // spec 69, criterion 3: a post-merge break is a merge
-                                        // conflict, never a plain gate cause - set it HERE, at
-                                        // the branch that detected it, not inferred later from
-                                        // the evidence this shares with a plain gate failure.
-                                        cause = CAUSE_INTEGRATE_CONFLICT.to_string();
-                                        next.gate_evidence = evidence;
+                                        self.compensations.lock().unwrap().push(Compensation {
+                                            target: target.clone(),
+                                            reason: review.reason.clone(),
+                                        });
                                     }
                                 }
-                            } else {
-                                // The exhaustive suite went red on an approved unit (a gate the
-                                // inner loop had skipped fails against the merged-to-be tree): treat
-                                // it like any gate failure - capture the evidence and fall through
-                                // to remediation, do NOT integrate a tree that fails the full suite.
-                                cause = full.cause();
-                                next.gate_evidence = full.evidence;
+                                if review.approved {
+                                    // on_pass governs integration (§3.2): empty or `merge` lands
+                                    // the work; any other value (e.g. `none`) runs the gates but
+                                    // never integrates - the verified, reviewed work stays
+                                    // un-merged.
+                                    if !integrates(st) {
+                                        return Ok(false);
+                                    }
+                                    // The integrate door's EXHAUSTIVE gate (spec 12, unit 3):
+                                    // "done" is asserted against the FULL gate library, never the
+                                    // blast-radius-narrowed inner-loop subset, so a unit never
+                                    // lands on a partial suite (R6). Cheap via unit-1's content
+                                    // cache - the gates the inner loop already ran replay from the
+                                    // log, so only the gates it SKIPPED actually run here. A red
+                                    // here (a skipped gate the merged-to-be tree fails) BLOCKS the
+                                    // merge and feeds remediation, exactly like an inner-loop gate
+                                    // failure. `integrate_and_emit` itself is untouched - the
+                                    // exhaustive suite gates whether it is CALLED.
+                                    let full = self.run_gates_at(
+                                        st,
+                                        dir,
+                                        attempts,
+                                        infra.ordinal,
+                                        GateSelection::Exhaustive,
+                                    )?;
+                                    if full.pass {
+                                        // The gates passed AND the review explicitly approved: the
+                                        // only path that mints an `IntegrationApproval`, so the
+                                        // only path that can merge. The reject branch below has no
+                                        // approval to hand to `integrate_and_emit`, so it cannot
+                                        // land the unit's code.
+                                        //
+                                        // Gap 16 invariant (spec 06 unit 3): the verdict is folded
+                                        // and acted on HERE, and an approve returns before the
+                                        // `remediate` terminal check below ever runs. So an
+                                        // approval on a unit's FINAL permitted attempt integrates -
+                                        // `max_retries` gates only STARTING another attempt, it
+                                        // never overrides an approval. This ordering (verdict-fold
+                                        // before attempt-counter) is load-bearing; reversing it
+                                        // re-opens the bug where unit-2's approved-on-attempt-6
+                                        // review was recorded as UnitFailed/UnitEscalated.
+                                        let integration = self.integrate_and_emit(
+                                            wt,
+                                            st,
+                                            attempts,
+                                            IntegrationApproval::approved(),
+                                        )?;
+                                        match integration.blocked {
+                                            None => {
+                                                self.emit(
+                                                ledger::TYPE_UNIT_INTEGRATED,
+                                                json!({"id": st.name, "commit": integration.commit}),
+                                            )?;
+                                                return Ok(true);
+                                            }
+                                            // The post-merge re-gate went RED (spec 12, unit 5):
+                                            // the pre-merge gates passed in this unit's OWN
+                                            // worktree, but the MERGED tree failed - an unpredicted
+                                            // batch-mate overlap auto-merged into a broken tree.
+                                            // The merge was ROLLED BACK (nothing landed), so
+                                            // capture the merge-break evidence and fall through to
+                                            // remediation, exactly like the exhaustive pre-merge
+                                            // red below - never integrate a broken merged tree.
+                                            Some(evidence) => {
+                                                // spec 69, criterion 3: a post-merge break is a
+                                                // merge conflict, never a plain gate cause - set it
+                                                // HERE, at the branch that detected it, not
+                                                // inferred later from the evidence this shares with
+                                                // a plain gate failure.
+                                                cause = CAUSE_INTEGRATE_CONFLICT.to_string();
+                                                next.gate_evidence = evidence;
+                                            }
+                                        }
+                                    } else {
+                                        // The exhaustive suite went red on an approved unit (a gate
+                                        // the inner loop had skipped fails against the merged-to-be
+                                        // tree): treat it like any gate failure - capture the
+                                        // evidence and fall through to remediation, do NOT
+                                        // integrate a tree that fails the full suite.
+                                        cause = full.cause();
+                                        next.gate_evidence = full.evidence;
+                                    }
+                                } else {
+                                    // A rejecting adjudicator is treated exactly like a gate
+                                    // failure: capture its reasoning for the next attempt's prompt
+                                    // (item 5) and fall through to remediation, do NOT integrate. A
+                                    // reject blaming infrastructure reruns the stage uncharged
+                                    // instead (F3).
+                                    cause = review_failure_cause(&review.reason);
+                                    next.review_reason = review.reason;
+                                }
                             }
-                        } else {
-                            // A rejecting adjudicator is treated exactly like a gate failure:
-                            // capture its reasoning for the next attempt's prompt (item 5) and
-                            // fall through to remediation, do NOT integrate. A reject blaming
-                            // infrastructure reruns the stage uncharged instead (F3).
-                            cause = review_failure_cause(&review.reason);
-                            next.review_reason = review.reason;
                         }
                     } else {
                         // Capture the failing gates' evidence for the next attempt's
@@ -6427,13 +6547,21 @@ impl RunCtx<'_> {
 
             // An infrastructure failure (F3) is never the author's: no `remediate`, no
             // `UnitFailed`. The stage reruns at the SAME attempt under the next retry ordinal -
-            // re-implementing only when the implementer itself crashed, otherwise re-gating and
-            // re-reviewing the committed tree - until the taxonomy's infra limit halts the
-            // step. `prior` is left as it was: an outage is no feedback for the author.
+            // re-implementing only when the implementer itself crashed, otherwise re-running the
+            // seam (when it crashed before any gate), re-gating and re-reviewing the committed
+            // tree - until the taxonomy's infra limit halts the step. `prior` is left as it was:
+            // an outage is no feedback for the author.
             if is_infra_cause(&cause) {
-                let evidence = spawn_err.clone().unwrap_or_else(|| next.summary());
+                let evidence = spawn_err
+                    .clone()
+                    .or_else(|| tier_crash.clone())
+                    .unwrap_or_else(|| next.summary());
                 infra = self.retry_infra_failure(&st.name, attempts, infra, &cause, &evidence)?;
                 skip_implement = spawn_err.is_none();
+                // The rerun spawns every review tier afresh under its own window, so a park of
+                // the round the outage spoiled no longer holds this unit's worktree; a park of
+                // the rerun sets it again.
+                any_parked.store(false, Ordering::SeqCst);
                 continue;
             }
             let rem = safety::remediate(attempts, self.max_retries_for(&st.name, st));
@@ -6687,12 +6815,12 @@ impl RunCtx<'_> {
                 // like the implementer park - and this candidate is NOT committed, so all K park
                 // together this step and a later step replays the sdet and commits the candidate
                 // WITH its periphery. The lane dir persists across the park (dropping `wt` does not
-                // remove it - `Worktree` has no `Drop`), so the worker finds it. An sdet whose record
-                // the emit guard refused again after its one re-run takes the crash arm: the
-                // candidate loses, as a losing candidate has no later attempt to carry the refusal
-                // into.
+                // remove it - `Worktree` has no `Drop`), so the worker finds it. An sdet that
+                // crashed, or whose record the emit guard refused again after its one re-run,
+                // takes the crash arm: the candidate loses, as a losing candidate has no later
+                // attempt or infra rerun to carry the crash or the refusal into (infra ordinal 0).
                 .and_then(|result| {
-                    self.spawn_sdet_author(st, Some(&wt), &dir, lane, &[])
+                    self.spawn_sdet_author(st, Some(&wt), &dir, lane, 0, &[])
                         .map(|()| result)
                 }) {
                 Ok(result) => {
@@ -6718,11 +6846,11 @@ impl RunCtx<'_> {
                 // A candidate parked (stepwise/replay frontier): collect it and keep going so
                 // ALL K candidates park this step. The dir persists for the worker.
                 Err(e) if is_parked(&e) => any_parked = true,
-                // A candidate CRASHED (usage limit, non-zero exit, or an sdet record refused
-                // past its re-run): it is simply absent from the group - a losing candidate
-                // whose diff never commits. The remaining
-                // candidates still race; if none survives, the escalation tail fires. Its lane
-                // worktree AND branch were already created (above), and NO terminal path below
+                // A candidate CRASHED (usage limit, non-zero exit, an sdet crash, or an sdet
+                // record refused past its re-run): it is simply absent from the group - a losing
+                // candidate whose diff never commits. The remaining candidates still race; if
+                // none survives, the escalation tail fires. Its lane worktree AND branch were
+                // already created (above), and NO terminal path below
                 // tears them down - winner cleanup, `cancel_speculation_candidates`, and the
                 // escalation tail all iterate `candidates`, which EXCLUDES this never-pushed
                 // lane, and `Worktree` has no `Drop`. So remove them HERE, or the conductor
@@ -6983,7 +7111,7 @@ impl RunCtx<'_> {
         candidate.wt.ensure_present()?;
         let winner_sha = worktree::head_sha_of(dir);
         self.emit_keyed_meta(
-            &format!("{}/verified#{lane}", st.name),
+            &verified_key(&st.name, lane),
             ledger::TYPE_UNIT_STATUS,
             json!({
                 "id": st.name,
@@ -7762,9 +7890,13 @@ impl RunCtx<'_> {
                         // so `is_parked`/`carries_marker(.., BUDGET_MARKER)` still recognize it upstream).
                         // The headless host RECORDS its result as the replay path does, so a failed
                         // hosted review re-drives through this same bound. Only the workflow driver
-                        // records none, so `review_spawn_errored` is false there and a genuine
-                        // in-process review failure still propagates as the stage's error exactly as
-                        // before.
+                        // records none, so `review_spawn_errored` is false there, and a live
+                        // driver's crash (a non-zero exit, a wall-clock stop) records none before
+                        // it returns: that genuine crash surfaces marked
+                        // ([`SPAWN_CRASH_MARKER`]), so the single lane reruns the whole review
+                        // uncharged under its F3 infra retry
+                        // (op-105-sdet-seam-joins-the-infra-retry) while every other caller keeps
+                        // its own handling of a failed review.
                         if !is_parked_or_refused(&e, BUDGET_MARKER)
                             && self.review_spawn_errored(&id)?
                         {
@@ -7774,12 +7906,21 @@ impl RunCtx<'_> {
                         // `\u{2}`-bracketed class and the emit guard's refusal marker, so a
                         // PARKED_MARKER/BUDGET_MARKER error still passes through byte-for-byte
                         // unchanged here - `is_parked`/`carries_marker(.., BUDGET_MARKER)` upstream
-                        // are unaffected.
-                        return Err(Error(format!(
+                        // are unaffected. A park, a budget refusal or a refused record is no crash.
+                        let message = format!(
                             "stage {:?} {tier} {agent_id:?}: {}",
                             st.name,
                             strip_failure_marker(&e)
-                        )));
+                        );
+                        return Err(
+                            if is_parked_or_refused(&e, BUDGET_MARKER)
+                                || carries_marker(&e, EMIT_REFUSED_MARKER)
+                            {
+                                Error(message)
+                            } else {
+                                spawn_crash(message)
+                            },
+                        );
                     }
                 };
             // A substantive result folds into the review; a degenerate one loops to respawn
@@ -12078,8 +12219,10 @@ impl RunCtx<'_> {
     /// - last status `reviewed` (the adjudicator approved, only the merge was
     ///   interrupted) -> [`ResumePhase::Reviewed`]: skip implement AND review, integrate.
     /// - last status `green`/`verified` (implemented + maybe gated, not yet approved)
-    ///   -> [`ResumePhase::Implemented`]: skip the implementer spawn, re-run gates +
-    ///   the three-tier review on the committed code.
+    ///   -> [`ResumePhase::Implemented`]: skip the implementer spawn, re-run the sdet seam
+    ///   only when this attempt's gates never started
+    ///   ([`RunCtx::attempt_gates_started`]), then gates + the three-tier review on the
+    ///   committed code.
     /// - anything below `green`, or no committed work on the branch, or a non-isolated
     ///   / repo-less run -> [`ResumePhase::Fresh`]: the full lifecycle, unchanged.
     ///
@@ -12803,7 +12946,8 @@ fn review_evidence(reason: &str) -> BTreeMap<String, String> {
 ///   unit's stage, which is never charged (F3): the stage reruns at the same attempt and
 ///   records the cause on an [`STATUS_INFRA_RETRY`] mark, never on a `UnitFailed`.
 ///   [`CAUSE_INFRA_SPAWN`] is a mid-spawn driver crash (a non-zero exit, a non-usage-limit
-///   error, a live host's wall-clock stop) - the usage-limit case never reaches here at all
+///   error, a live host's wall-clock stop) of the implementer, the sdet-author or a review
+///   tier ([`SPAWN_CRASH_MARKER`]) - the usage-limit case never reaches here at all
 ///   (spec 06 unit 6: wait-until-reset + re-spawn); [`CAUSE_INFRA_GATE`] a gate red whose
 ///   every failing gate is of the taxonomy's `infra` class ([`GateOutcome::infra`]);
 ///   [`CAUSE_INFRA_REVIEW`] an adjudicator reject blaming infrastructure
@@ -31695,7 +31839,10 @@ mod tests {
         let relaunched = gated_seam_stub("periphery-relaunch.rs");
         let rs = match reentry {
             GatedReentry::ParkedLens => {
-                assert!(outcome.is_ok(), "premise: a parked lens ends the step cleanly");
+                assert!(
+                    outcome.is_ok(),
+                    "premise: a parked lens ends the step cleanly"
+                );
                 run(&relaunched)
             }
             GatedReentry::CrashedLens => {
@@ -33554,7 +33701,9 @@ mod tests {
         let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
         let gate_keys = unit_gate_verdict_keys(&events, "s");
         assert!(
-            gate_keys.first().is_some_and(|key| key.ends_with("~retry4")),
+            gate_keys
+                .first()
+                .is_some_and(|key| key.ends_with("~retry4")),
             "the first gates to run are the recovered ordinal's: {gate_keys:?}"
         );
     }
@@ -38182,7 +38331,9 @@ mod tests {
         let store = Store::open(":memory:").unwrap();
         let every_window = |lens: &str| -> std::collections::HashSet<String> {
             (0..3)
-                .map(|n| spawn_retry_id("solo", &lens_role(lens), 0, *review_retry_window(n).start()))
+                .map(|n| {
+                    spawn_retry_id("solo", &lens_role(lens), 0, *review_retry_window(n).start())
+                })
                 .collect()
         };
         let driver = Stub {
