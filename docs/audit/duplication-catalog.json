@@ -237,7 +237,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-0a7aeeeffe48",
+    "id": "dup-76bcb4a3dc95",
     "classification": "near",
     "sites": [
       {
@@ -248,6 +248,11 @@
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
         "name": "failed_key",
+        "content_hash": "7f40f97a5c856b17"
+      },
+      {
+        "file": "crates/rigger-conductor/src/conductor.rs",
+        "name": "verified_key",
         "content_hash": "7f40f97a5c856b17"
       },
       {
@@ -435,6 +440,25 @@
       }
     ],
     "proposed_home": "a new shared module (sites span 2 files: crates/rigger-conductor/src/conductor.rs, crates/rigger-domain/src/spawn.rs)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-500f0a1aa6c2",
+    "classification": "exact",
+    "sites": [
+      {
+        "file": "crates/rigger-conductor/src/conductor.rs",
+        "name": "spawn_crash",
+        "content_hash": "46b10d78ec2b4b72"
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "unread_entry",
+        "content_hash": "46b10d78ec2b4b72"
+      }
+    ],
+    "proposed_home": "a new shared module (sites span 2 files: crates/rigger-conductor/src/conductor.rs, crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
