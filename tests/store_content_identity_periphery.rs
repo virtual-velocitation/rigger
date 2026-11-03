@@ -715,7 +715,9 @@ fn no_hold_writer_reports_a_hold_or_a_release_the_store_never_wrote() {
         Case {
             name: "a done run's release",
             replayed: held.clone(),
-            write: |store| rigger::run_store::release_hold(store),
+            write: |store| {
+                rigger::run_store::release_hold(store, rigger::run::HOLD_BY_HOST).map(drop)
+            },
             lost: "event store: reported writing nothing for RunReleased",
         },
         Case {

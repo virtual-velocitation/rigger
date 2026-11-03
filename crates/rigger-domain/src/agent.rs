@@ -329,6 +329,9 @@ pub struct DispositionRow {
 /// category that names a person's action.
 pub const API_UNSTABLE: &str = "api-unstable";
 
+/// The cause of the hold `rigger hold` appends: the operator holds the run, giving a reason.
+pub const OPERATOR: &str = "operator";
+
 /// The action of a hold that clears without anyone: a wait-class category's and `api-unstable`'s.
 const RETRIES_BY_ITSELF: &str = "none, the run retries by itself";
 
@@ -356,19 +359,20 @@ const fn holds(action: &'static str) -> DispositionRow {
     }
 }
 
-/// The disposition table's row for a host hold's `cause`: `api-unstable`'s, or the category's.
-/// The `operator` cause has no row yet: a host never writes it, and `rigger hold`'s append
-/// carries its own reason as its action.
+/// The disposition table's row for a hold's `cause`: `api-unstable`'s, `operator`'s, or the
+/// category's. The `operator` row needs a person and names no action: no row can hold a per-hold
+/// reason, so `rigger hold`'s append puts its reason in the action over the row's.
 pub fn cause_row(cause: &str) -> DispositionRow {
-    if cause == API_UNSTABLE {
-        return DispositionRow {
+    match cause {
+        API_UNSTABLE => DispositionRow {
             disposition: Disposition::Hold,
             action: RETRIES_BY_ITSELF,
             needs_person: false,
             credential: false,
-        };
+        },
+        OPERATOR => holds(""),
+        category => AgentFailure::from_category(category).row(),
     }
-    AgentFailure::from_category(cause).row()
 }
 
 impl AgentFailure {

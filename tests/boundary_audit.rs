@@ -802,6 +802,7 @@ const GRAPH_OPENS: &[&str] = &[
     "src/cli/graph.rs:cmd_emit",
     "src/cli/graph.rs:cmd_graph_build",
     "src/cli/graph.rs:run_graph_pass",
+    "src/cli/hold.rs:on_the_run",
     "src/cli/hygiene.rs:reset_derived",
     "src/cli/hygiene.rs:reset_menu",
     "src/cli/hygiene.rs:reset_runs",

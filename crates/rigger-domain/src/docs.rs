@@ -303,6 +303,18 @@ fn discipline_body(ctx: &DocsContext) -> String {
          the unit.\n"
     );
 
+    let _ = writeln!(s, "## Holding a run\n");
+    let _ = writeln!(
+        s,
+        "`rigger hold --reason <text>` holds the current run for you, the text recorded as the \
+         hold's reason: a run driven by `rigger run` or `rigger serve` launches no agent while a \
+         hold stands, a session already running finishes, and no probe ends your hold. It \
+         refuses, recording nothing, when no run is live: none has started, or every unit of the \
+         current run is integrated. `rigger release` ends the current run's hold, whichever \
+         writer declared it, an outage hold included, so the next launch goes at once instead of \
+         after the next probe; with no hold open it records nothing and says so.\n"
+    );
+
     let _ = writeln!(s, "## Auto-integration on approve\n");
     let _ = writeln!(
         s,
@@ -1008,6 +1020,12 @@ fn render_resume_a_run_skill(_ctx: &DocsContext) -> String {
              spec and relaunch`) is never adopted by a command naming its spec: amend the spec, \
              critique it with `rigger critique <spec>`, then relaunch on it, which begins a new \
              run with no `--fresh`.\n",
+            "A run that is HELD, not dead, needs no relaunch: its `rigger run` or `rigger serve` \
+             driver is alive and launches nothing until the hold ends. A passing probe ends an \
+             outage hold by itself, save a `model_not_found` hold, which runs none; `rigger \
+             release` ends any hold at once, and is the only end of one you declared with \
+             `rigger hold --reason <text>`. A release with no hold open records nothing and \
+             says so.\n",
         ],
         "Never hand-drive `rigger step` yourself in a shell to \"help it along\" - the \
          driver owns stepping, and a hand step races it, which can double-spawn a unit or \

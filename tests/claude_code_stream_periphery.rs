@@ -2456,7 +2456,11 @@ impl Fixture {
                 );
                 spawned.expect("a session with a result answers its spawn");
             }
-            Step::Release => rigger::run_store::release_hold(&self.run_store).unwrap(),
+            Step::Release => {
+                rigger::run_store::release_hold(&self.run_store, rigger::run::HOLD_BY_HOST)
+                    .map(drop)
+                    .unwrap()
+            }
         }
     }
 }

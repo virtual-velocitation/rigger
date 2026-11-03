@@ -1677,7 +1677,7 @@ fn run_cli(parsed: &RunArgs) -> Res {
     // leaves it to the next supervisor's probes. A failed release never fails a run that already
     // succeeded: the hold stays open for `rigger release` or the next mint.
     if rs.done() {
-        if let Err(e) = runscope_store::release_hold(&folding) {
+        if let Err(e) = runscope_store::release_hold(&folding, runscope::HOLD_BY_HOST) {
             stderr_line(&format!(
                 "rigger run: the done run's hold was not released: {e}"
             ));

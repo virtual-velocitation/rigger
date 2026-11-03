@@ -13,7 +13,7 @@
 
 use std::time::SystemTime;
 
-use rigger_domain::agent::cause_row;
+use rigger_domain::agent::{cause_row, OPERATOR};
 use rigger_domain::ledger::{Hold, RunState};
 
 use crate::contextgraph::TYPE_DECISION_MADE;
@@ -21,8 +21,8 @@ use crate::eventstore::{Error, Event, EventStore, ExpectedRevision, Revision, Ty
 use crate::run::read::read_run;
 use crate::run::{
     adopted_run, current_run, effective_definition, RunHeld, RunReleased, RunStart, RunStarted,
-    HOLD_BY_HOST, HOLD_BY_PROBE, META_DEFINITION, META_DEFINITION_PRIOR, META_RUN_ID, STREAM,
-    TYPE_RUN_HELD, TYPE_RUN_RELEASED, TYPE_RUN_STARTED,
+    HOLD_BY_HOST, HOLD_BY_OPERATOR, HOLD_BY_PROBE, META_DEFINITION, META_DEFINITION_PRIOR,
+    META_RUN_ID, STREAM, TYPE_RUN_HELD, TYPE_RUN_RELEASED, TYPE_RUN_STARTED,
 };
 
 /// Record a `--rebase-definition` supersession on the current run (spec 13, unit 1): the
@@ -203,10 +203,10 @@ pub fn ensure_started_pinned(
 /// spec (an offline replay, a no-spec workflow run); the head-name derivation then degrades to
 /// the run-short-id alone.
 ///
-/// A hold open on the run it ends, an operator hold included, is released first (spec 105):
-/// every mint path comes through here, and the release and the `RunStarted` stay two appends, so
-/// a `rigger hold` landing between them stands in the slice it landed in, never swept by the
-/// release and never refused.
+/// A hold open on the run it ends, an operator hold included, is released first, by the host
+/// (spec 105): every mint path comes through here, and the release and the `RunStarted` stay two
+/// appends, so a `rigger hold` landing between them stands in the slice it landed in, never swept
+/// by the release.
 pub fn start_fresh(
     store: &dyn EventStore,
     criteria: &[String],
@@ -215,7 +215,7 @@ pub fn start_fresh(
     base_tip: &str,
     spec_path: &str,
 ) -> Result<String, Error> {
-    release_hold(store)?;
+    release_hold(store, HOLD_BY_HOST)?;
     let started = RunStarted {
         run: uuid::Uuid::new_v4().to_string(),
         criteria: criteria.to_vec(),
@@ -260,6 +260,7 @@ pub fn record_hold_sighting(store: &dyn EventStore, sighting: &HoldSighting) -> 
         let appends = hold.is_none_or(|hold| moves_the_cause(hold, &body));
         Ok(appends.then(|| held.clone()))
     })
+    .map(drop)
 }
 
 /// Record a failed probe's `category` (the last `api_retry` category of the canary's stream) as a
@@ -276,6 +277,7 @@ pub fn record_failed_probe(store: &dyn EventStore, category: &str) -> Result<(),
         .map(|(_, body)| hold_event(TYPE_RUN_HELD, &body))
         .transpose()
     })
+    .map(drop)
 }
 
 /// The `RunHeld` of `cause` written by `by`, its action and need for a person read from the
@@ -298,11 +300,27 @@ fn moves_the_cause(hold: &Hold, body: &RunHeld) -> bool {
     !hold.operator && body.needs_person && hold.latest.cause != body.cause
 }
 
-/// Release the current run's open hold, an operator hold included, as `RunReleased {by: host}`:
-/// the done run's and the mint's release (spec 105). With no hold open it appends nothing.
-pub fn release_hold(store: &dyn EventStore) -> Result<(), Error> {
+/// Hold the current run for the operator (`rigger hold`, spec 105): one `RunHeld {by: operator}`
+/// of cause `operator`, its action the operator's `reason`, carrying the open hold's latest model
+/// forward, empty when no hold is open. It appends on every call, on a held run too.
+pub fn hold_by_operator(store: &dyn EventStore, reason: &str) -> Result<(), Error> {
+    append_on_hold(store, TYPE_RUN_HELD, |hold| {
+        let model = hold.map_or("", |hold| hold.latest.model.as_str());
+        let body = RunHeld {
+            action: reason.to_string(),
+            ..held_by(OPERATOR, "", HOLD_BY_OPERATOR, model)
+        };
+        hold_event(TYPE_RUN_HELD, &body).map(Some)
+    })
+    .map(drop)
+}
+
+/// Release the current run's open hold, an operator hold included, as `RunReleased` by `by`: the
+/// done run's and the mint's release by the host, `rigger release`'s by the operator (spec 105).
+/// With no hold open it appends nothing. Answers whether it appended.
+pub fn release_hold(store: &dyn EventStore, by: &str) -> Result<bool, Error> {
     append_on_hold(store, TYPE_RUN_RELEASED, |hold| {
-        hold.map(|hold| released_by(HOLD_BY_HOST, hold)).transpose()
+        hold.map(|hold| released_by(by, hold)).transpose()
     })
 }
 
@@ -315,6 +333,7 @@ pub fn release_probed_hold(store: &dyn EventStore, probed: Revision) -> Result<(
             .map(|hold| released_by(HOLD_BY_PROBE, hold))
             .transpose()
     })
+    .map(drop)
 }
 
 /// The `RunReleased` by `by` of `hold`, carrying how long it stood.
@@ -348,25 +367,26 @@ pub(crate) fn read_run_at_head(
 /// over the hold folded forward through what landed, by type from the pinned revision, re-pinned
 /// to the conflict's actual revision, so a concurrent writer's hold or release is never missed
 /// and a perception event landing behind the read costs one retry. `what` names the event type
-/// for the store's report of an append it did not write.
+/// for the store's report of an append it did not write. Answers whether it appended: `false`
+/// when `decide` left it nothing to say.
 fn append_on_hold(
     store: &dyn EventStore,
     what: &str,
     decide: impl Fn(Option<&Hold>) -> Result<Option<Event>, Error>,
-) -> Result<(), Error> {
+) -> Result<bool, Error> {
     let (run, mut head) = read_run_at_head(store)?;
     let mut state = RunState::new();
     fold_holds(&mut state, &run)?;
     loop {
         let Some(ev) = decide(state.hold.as_ref())? else {
-            return Ok(());
+            return Ok(false);
         };
         let expected = match head {
             Some(revision) => ExpectedRevision::Exact(revision),
             None => ExpectedRevision::NoStream,
         };
         match store.append(STREAM, expected, std::slice::from_ref(&ev)) {
-            Ok(appended) => return appended.one(what).map(|_| ()),
+            Ok(appended) => return appended.one(what).map(|_| true),
             Err(Error::Conflict { actual, .. }) => {
                 let landed = store.read_stream_typed(
                     STREAM,

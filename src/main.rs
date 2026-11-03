@@ -43,6 +43,8 @@ const SUBCOMMANDS: &[&str] = &[
     "run",
     "step",
     "resume-unit",
+    "hold",
+    "release",
     "reported",
     "prompt",
     "scratch",
@@ -142,6 +144,8 @@ fn main() {
         "run" => cmd_run(&args[2..]),
         "step" => cmd_step(&args[2..]),
         "resume-unit" => cmd_resume_unit(&args[2..]),
+        "hold" => cmd_hold(&args[2..]),
+        "release" => cmd_release(&args[2..]),
         "reported" => cmd_reported(&args[2..]),
         "prompt" => cmd_prompt(&args[2..]),
         "scratch" => cmd_scratch(&args[2..]),
@@ -220,7 +224,12 @@ rigger resume-unit <unit>   give an escalated unit of the current run more attem
 re-parks its implementer there. Refuses, recording\n                              \
 nothing, when the unit is not escalated or its branch\n                              \
 is gone\n  \
-rigger reported <id>        exit 0 iff spawn <id> already has a recorded result in\n                              \
+rigger hold --reason <text> hold the current run for the operator, the text its\n                              \
+reason: no probe ends this hold, only `rigger release`.\n                              \
+Refuses, recording nothing, when no run is live\n  \
+rigger release              end the current run's hold, whichever writer declared\n                              \
+it; with no hold open it records nothing and says so\n  \
+rigger reported <id>       exit 0 iff spawn <id> already has a recorded result in\n                              \
 this project's run stream (else non-zero). A read-only check\n                              \
 of whether a spawn reported yet; the death courier records\n                              \
 atomically instead via `rigger result --if-absent`\n  \

@@ -15,6 +15,8 @@ Relaunch the same blessed driver on the same spec WITHOUT `--fresh` - `rigger ru
 
 A run its plan-critique gate stopped on a spec defect (its halt opens `amend the spec and relaunch`) is never adopted by a command naming its spec: amend the spec, critique it with `rigger critique <spec>`, then relaunch on it, which begins a new run with no `--fresh`.
 
+A run that is HELD, not dead, needs no relaunch: its `rigger run` or `rigger serve` driver is alive and launches nothing until the hold ends. A passing probe ends an outage hold by itself, save a `model_not_found` hold, which runs none; `rigger release` ends any hold at once, and is the only end of one you declared with `rigger hold --reason <text>`. A release with no hold open records nothing and says so.
+
 ## Anti-move
 
 Never hand-drive `rigger step` yourself in a shell to "help it along" - the driver owns stepping, and a hand step races it, which can double-spawn a unit or wedge the frontier (see using-rigger). And do not reach for `--fresh` reflexively just because a run looks stuck: on a merely-interrupted run it abandons the adoptable state your relaunch would otherwise have continued from, in exchange for nothing - reserve it for the genuinely wedged-terminal case above.
