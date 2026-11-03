@@ -5979,8 +5979,8 @@
       },
       {
         "file": "crates/rigger-store-sqlite/src/run_store.rs",
-        "start_line": 1003,
-        "end_line": 1003
+        "start_line": 1179,
+        "end_line": 1179
       },
       {
         "file": "crates/rigger-store-sqlite/src/sqlite.rs",
@@ -6894,13 +6894,13 @@
     "sites": [
       {
         "file": "crates/rigger-store-sqlite/src/run_store.rs",
-        "start_line": 1214,
-        "end_line": 1228
+        "start_line": 1390,
+        "end_line": 1404
       },
       {
         "file": "crates/rigger-store-sqlite/src/run_store.rs",
-        "start_line": 1283,
-        "end_line": 1298
+        "start_line": 1459,
+        "end_line": 1474
       }
     ]
   },
