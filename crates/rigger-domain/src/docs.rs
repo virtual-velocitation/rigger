@@ -309,8 +309,8 @@ fn discipline_body(ctx: &DocsContext) -> String {
         "`rigger hold --reason <text>` holds the current run for you, the text recorded as the \
          hold's reason: a run driven by `rigger run` or `rigger serve` launches no agent while a \
          hold stands, a session already running finishes, and no probe ends your hold. It \
-         refuses, recording nothing, when no run is live: none has started, or every unit of the \
-         current run is integrated. `rigger release` ends the current run's hold, whichever \
+         refuses, recording nothing, when no run is live: none has started, or the current run \
+         is done. `rigger release` ends the current run's hold, whichever \
          writer declared it, an outage hold included, so the next launch goes at once instead of \
          after the next probe; with no hold open it records nothing and says so.\n"
     );

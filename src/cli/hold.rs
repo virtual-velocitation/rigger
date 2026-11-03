@@ -7,7 +7,7 @@ use super::*;
 /// `rigger hold --reason <text>`: hold the current run for the operator, the text the hold's
 /// action, an empty text included, carrying the open hold's latest model forward. Refuses,
 /// appending nothing, a malformed argv and a run that is not live: none started, an empty store
-/// included, or one whose units are all integrated. The run is read before the append, so a run
+/// included, or one that is done. The run is read before the append, so a run
 /// turning done between the two takes the hold, which the next mint releases.
 pub(crate) fn cmd_hold(args: &[String]) -> Res {
     let reason = match args {
