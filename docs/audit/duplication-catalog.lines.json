@@ -194,8 +194,8 @@
       },
       {
         "file": "tests/common/fixtures/spawn.rs",
-        "start_line": 144,
-        "end_line": 146
+        "start_line": 146,
+        "end_line": 148
       },
       {
         "file": "tests/halted_spawn_wip_recovery_periphery.rs",
@@ -384,8 +384,8 @@
       },
       {
         "file": "tests/common/fixtures/spawn.rs",
-        "start_line": 106,
-        "end_line": 119
+        "start_line": 107,
+        "end_line": 120
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
@@ -4635,7 +4635,7 @@
     ]
   },
   {
-    "id": "dup-38e1ee983333",
+    "id": "dup-df045298da71",
     "sites": [
       {
         "file": "crates/rigger-dash/src/dash.rs",
@@ -4796,6 +4796,11 @@
         "file": "tests/common/fixtures/host.rs",
         "start_line": 83,
         "end_line": 83
+      },
+      {
+        "file": "tests/common/fixtures/spawn.rs",
+        "start_line": 169,
+        "end_line": 169
       },
       {
         "file": "tests/duplication_catalog_contract_periphery.rs",
@@ -7750,7 +7755,7 @@
     ]
   },
   {
-    "id": "dup-cb013976dcf4",
+    "id": "dup-38d9b33987ea",
     "sites": [
       {
         "file": "tests/common/cli.rs",
@@ -7766,6 +7771,11 @@
         "file": "tests/common/fixtures/cursor.rs",
         "start_line": 173,
         "end_line": 175
+      },
+      {
+        "file": "tests/common/fixtures/spawn.rs",
+        "start_line": 154,
+        "end_line": 156
       }
     ]
   },

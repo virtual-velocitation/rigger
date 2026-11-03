@@ -4787,7 +4787,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-38e1ee983333",
+    "id": "dup-df045298da71",
     "classification": "semantic",
     "sites": [
       {
@@ -4951,6 +4951,11 @@
         "content_hash": "6856f69bec49452d"
       },
       {
+        "file": "tests/common/fixtures/spawn.rs",
+        "name": "\"/proc\"",
+        "content_hash": "daeb7ad73c59a860"
+      },
+      {
         "file": "tests/duplication_catalog_contract_periphery.rs",
         "name": "\"/proc-path string literals\"",
         "content_hash": "e24c26c0d9d4cbdb"
@@ -5077,7 +5082,7 @@
       }
     ],
     "proposed_home": "crates/rigger-process/src/reap.rs as the one /proc-reading module (dash.rs's own /proc readers already duplicate reap.rs's field-after-the-comm's-closing-paren /proc/<pid>/stat parse - see the report's worked example)",
-    "note": "mandatory sweep: /proc-path string literals - 57 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: /proc-path string literals - 58 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {
@@ -8434,7 +8439,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-cb013976dcf4",
+    "id": "dup-38d9b33987ea",
     "classification": "exact",
     "sites": [
       {
@@ -8451,9 +8456,14 @@
         "file": "tests/common/fixtures/cursor.rs",
         "name": "caught_up_line",
         "content_hash": "b051a6d6f4b01ca2"
+      },
+      {
+        "file": "tests/common/fixtures/spawn.rs",
+        "name": "sleeping",
+        "content_hash": "b051a6d6f4b01ca2"
       }
     ],
-    "proposed_home": "a new shared module (sites span 2 files: tests/common/cli.rs, tests/common/fixtures/cursor.rs)",
+    "proposed_home": "a new shared module (sites span 3 files: tests/common/cli.rs, tests/common/fixtures/cursor.rs, tests/common/fixtures/spawn.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },

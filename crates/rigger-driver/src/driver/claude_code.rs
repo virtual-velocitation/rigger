@@ -2364,7 +2364,8 @@ mod tests {
 
     /// One probe through a stand-in `claude`: the open hold's cause and model, the shell of the
     /// login read and of the canary, the probe's delay, and what the probe answers, whether it
-    /// read the login, whether it ran the canary and how long it took (from, below).
+    /// read the login, whether it ran the canary, how long it took (from, below) and how many
+    /// sleeps the stand-in started.
     struct ProbeRow {
         name: &'static str,
         cause: &'static str,
@@ -2376,6 +2377,7 @@ mod tests {
         reads_login: bool,
         runs_canary: bool,
         elapsed: (Duration, Duration),
+        sleepers: usize,
     }
 
     /// A probe through a stand-in `claude`: a credential cause reads the login first, and a read
@@ -2384,14 +2386,15 @@ mod tests {
     /// server, no hooks and no session file, and its first result answers: a result with no
     /// error passes, and an error result, a stream that ends with none or no result within the
     /// delay fails on the stream's last `api_retry` category, `unknown` with none. The login read
-    /// and the canary share the one bound, the probe's delay, and a probe writes no store.
+    /// and the canary share the one bound, the probe's delay, a probe writes no store, and no
+    /// process of the stand-in outlives the probe.
     #[cfg(unix)]
     #[test]
     fn a_probe_reads_a_credential_holds_login_then_runs_its_canary_within_the_delay() {
         use crate::test_support::{
-            api_retry_lines, arms_claude, canary_argv, failing_canary, printing, probe_arms,
-            recorded_argv, recorded_task, HANGS, LOGGED_IN_STATUS, LOGGED_OUT_STATUS,
-            PASSING_CANARY,
+            api_retry_lines, arms_claude, assert_no_sleeper_left, canary_argv, failing_canary,
+            printing, probe_arms, recorded_argv, recorded_task, sleeping, LOGGED_IN_STATUS,
+            LOGGED_OUT_STATUS, PASSING_CANARY,
         };
         const MODEL: &str = "claude-opus-4-1";
         let long = Duration::from_secs(5);
@@ -2413,18 +2416,20 @@ mod tests {
                 reads_login: true,
                 runs_canary: false,
                 elapsed: quick,
+                sleepers: 0,
             },
             ProbeRow {
                 name: "a login read that answers nothing within the delay",
                 cause: "authentication_failed",
                 model: MODEL,
-                auth: HANGS.to_string(),
+                auth: sleeping(5),
                 canary: PASSING_CANARY.to_string(),
                 delay: short,
                 outcome: ProbeOutcome::LoggedOut,
                 reads_login: true,
                 runs_canary: false,
                 elapsed: at(short),
+                sleepers: 1,
             },
             ProbeRow {
                 name: "a logged-in credential hold whose canary passes",
@@ -2437,6 +2442,7 @@ mod tests {
                 reads_login: true,
                 runs_canary: true,
                 elapsed: quick,
+                sleepers: 0,
             },
             ProbeRow {
                 name: "a hold no login fixes, on the default model",
@@ -2449,6 +2455,7 @@ mod tests {
                 reads_login: false,
                 runs_canary: true,
                 elapsed: quick,
+                sleepers: 0,
             },
             ProbeRow {
                 name: "a cloud credential hold, whose canary runs alone",
@@ -2461,6 +2468,7 @@ mod tests {
                 reads_login: false,
                 runs_canary: true,
                 elapsed: quick,
+                sleepers: 0,
             },
             ProbeRow {
                 name: "an error result, on its stream's last category",
@@ -2473,6 +2481,7 @@ mod tests {
                 reads_login: false,
                 runs_canary: true,
                 elapsed: quick,
+                sleepers: 0,
             },
             ProbeRow {
                 name: "an error result on a stream with no api_retry line",
@@ -2485,6 +2494,7 @@ mod tests {
                 reads_login: false,
                 runs_canary: true,
                 elapsed: quick,
+                sleepers: 0,
             },
             ProbeRow {
                 name: "a stream that ends with no result",
@@ -2497,30 +2507,33 @@ mod tests {
                 reads_login: false,
                 runs_canary: true,
                 elapsed: quick,
+                sleepers: 0,
             },
             ProbeRow {
                 name: "a canary that answers nothing within the delay",
                 cause: "rate_limit",
                 model: MODEL,
                 auth: logged_in.clone(),
-                canary: format!("{}{HANGS}", api_retry_lines(&["overloaded"], 1)),
+                canary: format!("{}{}", api_retry_lines(&["overloaded"], 1), sleeping(5)),
                 delay: short,
                 outcome: failed("overloaded"),
                 reads_login: false,
                 runs_canary: true,
                 elapsed: at(short),
+                sleepers: 1,
             },
             ProbeRow {
                 name: "a slow login read, which the canary's bound counts",
                 cause: "authentication_failed",
                 model: MODEL,
-                auth: format!("    sleep 2\n{logged_in}"),
-                canary: HANGS.to_string(),
+                auth: format!("{logged_in}{}", sleeping(2)),
+                canary: sleeping(5),
                 delay: Duration::from_millis(2500),
                 outcome: failed("unknown"),
                 reads_login: true,
                 runs_canary: true,
                 elapsed: at(Duration::from_millis(2500)),
+                sleepers: 2,
             },
         ];
         for row in rows {
@@ -2552,6 +2565,7 @@ mod tests {
                 from <= elapsed && elapsed < below,
                 "{name}: the probe answered after {elapsed:?}, outside {from:?}..{below:?}"
             );
+            assert_no_sleeper_left(fake.path(), row.sleepers, name);
             let auth_argv = fake.path().join("auth-argv");
             if row.reads_login {
                 assert_eq!(

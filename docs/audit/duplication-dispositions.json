@@ -1020,9 +1020,9 @@
     "reason": "`f11` renders the plan critique's F11 advisory for one criterion, `graph_build_line` renders the line `rigger graph build` prints for an event count and a fold-loss clause, and the cursor fixtures' `catch_up_stopped` renders the head both of `rigger setup`'s catch-up stop lines share for a position and a reason: three test-side spellings of different product lines, each defined once, sharing only the shape of one `format!` over a number and a string."
   },
   {
-    "id": "dup-cb013976dcf4",
+    "id": "dup-38d9b33987ea",
     "disposition": "not-a-duplicate",
-    "reason": "`reclaimed_line` is the line `rigger reset --derived` prints for the bytes its compaction reclaimed, `caught_up_line` the line `rigger setup` prints for the events its catch-up folded and `emit_folded_line` the line `rigger emit` prints for the decision it appended and folded at a position: three test-side expected lines of different commands, each defined once, sharing only the shape of one `format!` over one number."
+    "reason": "`reclaimed_line` is the line `rigger reset --derived` prints for the bytes its compaction reclaimed, `caught_up_line` the line `rigger setup` prints for the events its catch-up folded and `emit_folded_line` the line `rigger emit` prints for the decision it appended and folded at a position: three test-side expected lines of different commands; `sleeping` is the fake host's hold-probe arm shell that records its own pid and becomes a sleep of some seconds. Each is defined once, and they share only the shape of one `format!` over one number."
   },
   {
     "id": "dup-3f04af8603ff",

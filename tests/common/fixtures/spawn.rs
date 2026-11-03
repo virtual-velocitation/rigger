@@ -101,8 +101,9 @@ esac
 
 /// The arm of [`write_claude_arms`] for the launches naming no system prompt, the hold probe's:
 /// the `claude auth status --json` read records its argv as `auth-argv` and runs `auth`, whose
-/// output is the status it reports; the canary records its argv as `canary-argv`, its working
-/// directory as `canary-cwd` and its first user message as `canary-first`, then runs `canary`.
+/// output, on its stdout or straight to the host's stream, is the status it reports; the canary
+/// records its argv as `canary-argv`, its working directory as `canary-cwd` and its first user
+/// message as `canary-first`, then runs `canary`.
 pub fn probe_arms(auth: &str, canary: &str) -> String {
     format!(
         r#"  "")
@@ -140,14 +141,43 @@ pub const LOGGED_OUT_STATUS: &str = r#"{
   "apiProvider": "firstParty"
 }"#;
 
-/// The shell of a [`probe_arms`] body printing `text` as it stands.
+/// The shell of a [`probe_arms`] body printing `text`, as it stands, straight to the host's
+/// stream, so a body that then sleeps ([`sleeping`]) has answered already.
 pub fn printing(text: &str) -> String {
-    format!("    cat <<'TEXT'\n{text}\nTEXT\n")
+    format!("    cat >&3 <<'TEXT'\n{text}\nTEXT\n")
 }
 
-/// The shell of a [`probe_arms`] body that answers nothing for 5 s: it closes the host's stream
-/// first, so the sleep it leaves behind once the host ends the launch holds no pipe the host reads.
-pub const HANGS: &str = "    exec 3>&-\n    sleep 5\n";
+/// The shell of a [`probe_arms`] body that sleeps `seconds` in the stand-in's own place,
+/// answering nothing more and holding the host's stream open: it records its pid as a line of
+/// `sleepers` beside the stand-in, then becomes the sleep, so the sleep is the very process the
+/// host's deadline ends ([`assert_no_sleeper_left`]).
+pub fn sleeping(seconds: u32) -> String {
+    format!("    exec sh -c 'echo $$ >> \"$1\"; exec sleep {seconds}' sh \"$here/sleepers\"\n")
+}
+
+/// The stand-in `claude` in `dir` started exactly `count` sleeps ([`sleeping`]) and none is left
+/// once the read that launched it has returned: each pid they recorded is gone from `/proc` within
+/// 500 ms, read every 20 ms and never signalled.
+pub fn assert_no_sleeper_left(dir: &std::path::Path, count: usize, name: &str) {
+    let recorded = std::fs::read_to_string(dir.join("sleepers")).unwrap_or_default();
+    let pids: Vec<&str> = recorded.lines().collect();
+    assert_eq!(
+        pids.len(),
+        count,
+        "{name}: the sleeps the fake started: {pids:?}"
+    );
+    let alive = |pid: &&str| std::path::Path::new("/proc").join(pid).exists();
+    let given_up = std::time::Instant::now() + std::time::Duration::from_millis(500);
+    while pids.iter().any(alive) && std::time::Instant::now() < given_up {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let left: Vec<&str> = pids.into_iter().filter(alive).collect();
+    assert_eq!(
+        left,
+        Vec::<&str>::new(),
+        "{name}: the sleeps still running once the read returned"
+    );
+}
 
 /// The shell of a canary that passes: it marks `canary-ran` and answers, the stand-in printing a
 /// result with `is_error: false`.

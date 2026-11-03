@@ -48,8 +48,8 @@ fn parse_logged_in(report: &str) -> bool {
 mod tests {
     use super::*;
     use crate::test_support::{
-        printing, probe_arms, recorded_argv, HANGS, LOGGED_IN_STATUS, LOGGED_OUT_STATUS,
-        PASSING_CANARY,
+        assert_no_sleeper_left, printing, probe_arms, recorded_argv, sleeping, LOGGED_IN_STATUS,
+        LOGGED_OUT_STATUS, PASSING_CANARY,
     };
     use std::time::{Duration, Instant};
 
@@ -89,7 +89,8 @@ mod tests {
 
     /// The login read through a stand-in `claude`: it runs `claude auth status --json` and
     /// answers the report, and a report that has not come by the deadline answers not logged in
-    /// at the deadline, as does a binary that does not start.
+    /// at the deadline, leaving no process of the stand-in behind, as does a binary that does
+    /// not start.
     #[cfg(unix)]
     #[test]
     fn the_login_read_answers_the_report_by_its_deadline() {
@@ -97,25 +98,35 @@ mod tests {
         let at_the_bound = |bound| (bound, bound + Duration::from_secs(2));
         let short = Duration::from_millis(300);
         let long = Duration::from_secs(5);
-        // (name, the report's shell, the bound, logged in, elapsed from and below)
+        // (name, the report's shell, the bound, logged in, elapsed from and below, the sleeps the
+        // stand-in starts)
         let rows = [
-            ("logged in", printing(LOGGED_IN_STATUS), long, true, quick),
+            (
+                "logged in",
+                printing(LOGGED_IN_STATUS),
+                long,
+                true,
+                quick,
+                0,
+            ),
             (
                 "logged out",
                 printing(LOGGED_OUT_STATUS),
                 long,
                 false,
                 quick,
+                0,
             ),
             (
                 "no report by the deadline",
-                HANGS.to_string(),
+                sleeping(5),
                 short,
                 false,
                 at_the_bound(short),
+                1,
             ),
         ];
-        for (name, report, bound, expected, (from, below)) in rows {
+        for (name, report, bound, expected, (from, below), sleepers) in rows {
             let fake = tempfile::tempdir().unwrap();
             let bin =
                 crate::test_support::arms_claude(fake.path(), &probe_arms(&report, PASSING_CANARY));
@@ -136,6 +147,7 @@ mod tests {
                 !fake.path().join("canary-argv").exists(),
                 "{name}: the read runs no session"
             );
+            assert_no_sleeper_left(fake.path(), sleepers, name);
         }
         let absent = tempfile::tempdir().unwrap();
         let bin = absent.path().join("claude");

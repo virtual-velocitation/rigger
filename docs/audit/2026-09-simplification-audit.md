@@ -1772,12 +1772,12 @@ Every function in `crates/rigger-conductor/src/conductor.rs`, `src/cli/mod.rs` a
 
 ## 2. Duplication Catalog
 
-214 clusters (1493 total sites) across `src/` and `tests/`, found by `tests/simplification_audit.rs`'s deterministic normalized-token-shingle Jaccard pass (8-token shingles, threshold 0.72) plus five mandatory mechanical sweeps. Strict definition (spec 85 Goal): any logic present in more than one place anywhere in the codebase is a violation, with no "small enough to duplicate" exemption.
+214 clusters (1495 total sites) across `src/` and `tests/`, found by `tests/simplification_audit.rs`'s deterministic normalized-token-shingle Jaccard pass (8-token shingles, threshold 0.72) plus five mandatory mechanical sweeps. Strict definition (spec 85 Goal): any logic present in more than one place anywhere in the codebase is a violation, with no "small enough to duplicate" exemption.
 
 ### Mandatory sweeps
 
 - **Command::new call sites**: 94 site(s) - `dup-52f23a94bdbf`
-- **/proc-path string literals**: 57 site(s) - `dup-38e1ee983333`
+- **/proc-path string literals**: 58 site(s) - `dup-df045298da71`
 - **sqlite Connection::open call sites**: 68 site(s) - `dup-d89a88dac133`
 - **.rigger-path string literals**: 604 site(s) - `dup-8174f771276c`
 - **error-shaping helper functions**: 20 site(s) - `dup-b840281b3dd6`
@@ -1834,7 +1834,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/common/fixtures/fold.rs:399-401` `lock_held_past`
 - `tests/common/fixtures/fold.rs:406-408` `catch_up_short_after`
 - `tests/common/fixtures/instructions.rs:192-194` `builtin_instruction_source`
-- `tests/common/fixtures/spawn.rs:144-146` `printing`
+- `tests/common/fixtures/spawn.rs:146-148` `printing`
 - `tests/halted_spawn_wip_recovery_periphery.rs:128-130` `unit_branch`
 - `tests/native_driver_pipelining_behavior.rs:597-599` `worker_prompts_harness`
 - `tests/regate_landed_on_resume_periphery.rs:76-78` `unit_branch`
@@ -1890,7 +1890,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/cli.rs:7322-7328` `api_error_session`
 - `tests/common/fixtures/config.rs:429-431` `separator_refusal`
 - `tests/common/fixtures/plan_critique.rs:66-71` `spec_defect_halt_text`
-- `tests/common/fixtures/spawn.rs:106-119` `probe_arms`
+- `tests/common/fixtures/spawn.rs:107-120` `probe_arms`
 - `tests/compaction_generations_periphery.rs:5103-5108` `closed_unit_line`
 - `tests/new_run_critique_refusal_periphery.rs:144-146` `no_critic_line`
 - `tests/no_os_kill_audit.rs:52-54` `join`
@@ -3508,11 +3508,11 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `crates/rigger-dash/src/dash.rs:619-621` `serialize`
 - `crates/rigger-domain/src/retention.rs:50-52` `identity`
 
-#### `dup-38e1ee983333` (semantic, 57 sites)
+#### `dup-df045298da71` (semantic, 58 sites)
 
 Proposed home: `crates/rigger-process/src/reap.rs as the one /proc-reading module (dash.rs's own /proc readers already duplicate reap.rs's field-after-the-comm's-closing-paren /proc/<pid>/stat parse - see the report's worked example)`
 
-mandatory sweep: /proc-path string literals - 57 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
+mandatory sweep: /proc-path string literals - 58 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
 
 - `crates/rigger-dash/src/dash.rs:658-658` `"/proc/net/tcp"`
 - `crates/rigger-dash/src/dash.rs:689-689` `"/proc"`
@@ -3549,6 +3549,7 @@ mandatory sweep: /proc-path string literals - 57 site(s), collected mechanically
              discovery"`
 - `tests/cli.rs:30663-30663` `"/proc"`
 - `tests/common/fixtures/host.rs:83-83` `"/proc/{pid}/stat has a pgrp field after comm"`
+- `tests/common/fixtures/spawn.rs:169-169` `"/proc"`
 - `tests/duplication_catalog_contract_periphery.rs:100-100` `"/proc-path string literals"`
 - `tests/kurrentdb_store_threads.rs:21-21` `"/proc/self/task"`
 - `tests/mutation_runner_pdeathsig_periphery.rs:170-170` `"cat /proc/self/limits; echo \"MALLOC_ARENA_MAX=${MALLOC_ARENA_MAX-unset}\""`
@@ -5047,15 +5048,16 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/common/cli.rs:464-468` `temp_store_project`
 - `tests/courier_registry_refresh_boundary_periphery.rs:40-44` `courier_project_with_commit`
 
-#### `dup-cb013976dcf4` (exact, 3 sites)
+#### `dup-38d9b33987ea` (exact, 4 sites)
 
-Proposed home: `a new shared module (sites span 2 files: tests/common/cli.rs, tests/common/fixtures/cursor.rs)`
+Proposed home: `a new shared module (sites span 3 files: tests/common/cli.rs, tests/common/fixtures/cursor.rs, tests/common/fixtures/spawn.rs)`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `tests/common/cli.rs:1236-1238` `emit_folded_line`
 - `tests/common/cli.rs:1535-1537` `reclaimed_line`
 - `tests/common/fixtures/cursor.rs:173-175` `caught_up_line`
+- `tests/common/fixtures/spawn.rs:154-156` `sleeping`
 
 #### `dup-90e32eb50d95` (exact, 4 sites)
 
@@ -5464,7 +5466,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 ### Adversarial sample
 
-Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 10994 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
+Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 10996 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
 
 - `crates/rigger-conductor/src/conductor.rs:15703-15725` `branch_is_foreign_when_only_one_axis_differs` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-conductor/src/conductor.rs:16664-16671` `resume_of` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
@@ -5603,12 +5605,12 @@ Instrument: subsystem grouping is a hand-derived, ordered filename-keyword rule 
 
 `tests/common/mod.rs` and `tests/common/fixtures/` already hold the shared fixtures - the gap is everything still duplicated OUTSIDE them. The catalog's all-helper-function test-only clusters (33 of the 62 test-only clusters) are the evidence; the 4 widest, by distinct files, are the headline case for extraction:
 
+- `caught_up_line` / `emit_folded_line` / `reclaimed_line` / `sleeping` - 4 sites across 3 files (`dup-38d9b33987ea`, exact).
 - `live_contains` / `live_memberships_of` / `live_node_ids` - 3 sites across 3 files (`dup-9c3b5c80063e`, near).
 - `fixture_graph` - 3 sites across 3 files (`dup-c49b09543e58`, semantic).
 - `courier_project` / `courier_project_with_commit` / `temp_rigger_project` / `temp_store_project` - 4 sites across 2 files (`dup-2a101767f24d`, near).
-- `communities_no_concepts_graph` / `file_over_code_graph` / `mixed_membership_graph` - 3 sites across 2 files (`dup-498b51115191`, near).
 
-Proposed home for each: `tests/common` (the catalog's own `proposed_home` field says so for each). Consolidating just these collapses roughly 13 duplicate definitions into 4 shared ones - the single largest mechanical simplification this audit identifies anywhere in the test suite.
+Proposed home for each: `tests/common` (the catalog's own `proposed_home` field says so for each). Consolidating just these collapses roughly 14 duplicate definitions into 4 shared ones - the single largest mechanical simplification this audit identifies anywhere in the test suite.
 
 ### 5.3 `tests/cli.rs` split plan
 
@@ -5618,9 +5620,9 @@ Proposed home for each: `tests/common` (the catalog's own `proposed_home` field 
 
 33 test-only clusters in the committed catalog have every site as an ordinary (non-`#[test]`) helper function - the shared-fixture-extraction candidate class. Beyond the 4 in 5.2, the widest are:
 
+- `communities_no_concepts_graph` / `file_over_code_graph` / `mixed_membership_graph` - 3 sites across 2 files (`dup-498b51115191`, near).
 - `assert_selected_server` / `assert_selected_sqlite` / `assert_server_reached_and_credentials_redacted` - 3 sites across 2 files (`dup-b58b0ff72b22`, near).
 - `drop_the_cursor` / `drop_the_cursor_s_log` / `plant_stale_marker` - 3 sites across 2 files (`dup-be2d1a3f8f8b`, exact).
-- `caught_up_line` / `emit_folded_line` / `reclaimed_line` - 3 sites across 2 files (`dup-cb013976dcf4`, exact).
 - `community_over_concepts_graph` / `full_in_budget_graph` - 2 sites across 2 files (`dup-06ffd3c67857`, near).
 - `spawn` - 2 sites across 2 files (`dup-14d812231784`, near).
 - `holds_table` / `poison` - 2 sites across 2 files (`dup-36ebafe7bb7e`, near).
@@ -5669,9 +5671,9 @@ Within a tier, entries are ordered largest-first by the site or line count each 
 - Risk: medium. `ingest.rs`'s own module doc calls it "the ONE walk-and-content-key authority" - a load-bearing path; needs the existing whole-project-ingest and reindex-freshening coverage to stay green, not just the duplicate sites' own tests.
 - Unblocks: retires the one `Grounder` port violation section 3 found and `dup-f2eee0c78cd6` together, rather than as two separately-tracked fixes.
 
-#### 2. Retire the duplicate `/proc`-reading authority (`dup-38e1ee983333` + `dup-96daf6c3e468`)
+#### 2. Retire the duplicate `/proc`-reading authority (`dup-df045298da71` + `dup-96daf6c3e468`)
 
-- Scope: the production half is done - `crates/rigger-dash/src/dash.rs::process_state` and `crates/rigger-process/src/reap.rs::pid_starttime` both read their `/proc/<pid>/stat` field through `crates/rigger-process/src/reap.rs::stat_field_after_comm`, the one parser of the kernel's `pid (comm) state ...` layout (`read_ppid` reads `/status`, a different file). What remains is the test-only readers (`dup-96daf6c3e468`, 9 sites across `crates/rigger-process/src/reap.rs`, `tests/common/fixtures/host.rs`, `tests/simplification_audit.rs`, such as the shared `tests/common/fixtures/host.rs::pgid_of` fixture) and 57 raw `/proc`-path string literals across 12 files (`dup-38e1ee983333`), most of them assertion messages and this audit's own sweep names rather than reads.
+- Scope: the production half is done - `crates/rigger-dash/src/dash.rs::process_state` and `crates/rigger-process/src/reap.rs::pid_starttime` both read their `/proc/<pid>/stat` field through `crates/rigger-process/src/reap.rs::stat_field_after_comm`, the one parser of the kernel's `pid (comm) state ...` layout (`read_ppid` reads `/status`, a different file). What remains is the test-only readers (`dup-96daf6c3e468`, 9 sites across `crates/rigger-process/src/reap.rs`, `tests/common/fixtures/host.rs`, `tests/simplification_audit.rs`, such as the shared `tests/common/fixtures/host.rs::pgid_of` fixture) and 58 raw `/proc`-path string literals across 13 files (`dup-df045298da71`), most of them assertion messages and this audit's own sweep names rather than reads.
 - Files: the test-only readers `dup-96daf6c3e468` names.
 - Expected line delta: small and negative - a test fixture reads its field through one shared helper instead of re-splitting the stat line.
 - Risk: low - test-only; nothing this touches can signal or end a process, so it carries none of the no-os-kill gate's own risk surface.
@@ -5776,7 +5778,7 @@ Every entry cites section 5's own already-catalogued test-only duplication; none
 
 #### 13. Extract the headline shared test fixtures into `tests/common` (section 5.2)
 
-- Scope: `dup-9c3b5c80063e` (3 files), `dup-c49b09543e58` (3 files), `dup-2a101767f24d` (2 files), `dup-498b51115191` (2 files) - roughly 13 duplicate definitions collapsing into 4 shared ones, the single largest mechanical simplification section 5 identifies anywhere in the test suite.
+- Scope: `dup-38d9b33987ea` (3 files), `dup-9c3b5c80063e` (3 files), `dup-c49b09543e58` (3 files), `dup-2a101767f24d` (2 files) - roughly 14 duplicate definitions collapsing into 4 shared ones, the single largest mechanical simplification section 5 identifies anywhere in the test suite.
 - Files: per-cluster, from the committed catalog, plus `tests/common/`.
 - Expected line delta: negative - each fixture's small body survives once instead of once per file.
 - Risk: low - test-only, and `tests/common/` already holds the same shape of shared fixture.
@@ -5821,7 +5823,7 @@ Unlike tier 5, this entry's own clusters are NOT known to be test-only - each on
 
 #### 18. Sweep the remaining 145 src-touching duplication clusters (section 2, beyond tiers 1 and 4's 7 named clusters)
 
-- Scope: of the catalog's 214 clusters, 62 are test-only (items 13 and 15-17 above) and 7 are the named tier-1/tier-4 items (`dup-52f23a94bdbf`, `dup-8174f771276c`, `dup-d89a88dac133`, `dup-38e1ee983333`, `dup-96daf6c3e468`, `dup-f2eee0c78cd6`, `dup-b840281b3dd6`); the remaining 145 clusters touching `src/` - mostly small 2-5-site exact/near matches like the two worked examples section 2 itself opens with (`dup-49d4d9f335fc`, `dup-f1828ea41892`) - are swept here, largest exact-duplicate clusters first, consumed directly from `docs/audit/duplication-catalog.json`.
+- Scope: of the catalog's 214 clusters, 62 are test-only (items 13 and 15-17 above) and 7 are the named tier-1/tier-4 items (`dup-52f23a94bdbf`, `dup-8174f771276c`, `dup-d89a88dac133`, `dup-df045298da71`, `dup-96daf6c3e468`, `dup-f2eee0c78cd6`, `dup-b840281b3dd6`); the remaining 145 clusters touching `src/` - mostly small 2-5-site exact/near matches like the two worked examples section 2 itself opens with (`dup-49d4d9f335fc`, `dup-f1828ea41892`) - are swept here, largest exact-duplicate clusters first, consumed directly from `docs/audit/duplication-catalog.json`.
 - Files: per-cluster, from the committed catalog.
 - Expected line delta: negative, cumulative; the largest single contributor is whichever exact cluster has the most sites (read from the catalog at spec-writing time, not fixed here).
 - Risk: low-medium - unlike tier 5, some of these clusters are production code, so each merge needs its own test-coverage check, not a blanket "test-only" pass.
