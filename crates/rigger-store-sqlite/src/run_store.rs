@@ -662,9 +662,10 @@ mod tests {
         assert!(err.to_string().contains(TYPE_RUN_HELD), "{err}");
     }
 
-    /// THE RELEASE (spec 105): a hold open, an operator hold included, takes one
-    /// `RunReleased {by: host}` carrying how long it stood, from its earliest `RunHeld`; no open
-    /// hold takes nothing.
+    /// THE RELEASE (spec 105): a hold open, an operator hold included, takes one `RunReleased` by
+    /// its writer, the host's or the operator's, carrying how long it stood, from its earliest
+    /// `RunHeld`, and the release answers that it appended; no open hold takes nothing and the
+    /// release answers so.
     #[test]
     fn a_release_appends_only_on_an_open_hold() {
         let held_at = |cause: &str, by: &str, ago: u64| {
@@ -696,28 +697,32 @@ mod tests {
                 Some(900),
             ),
         ];
-        for (name, log, expected) in rows {
-            let store = run_holding(log);
-            let appended_before = stream(&store).len();
-            let before = SystemTime::now();
-            release_hold(&store).unwrap();
-            let after = SystemTime::now();
-            let events = stream(&store);
-            let mut landed = events[appended_before..].to_vec();
-            match expected {
-                None => assert_eq!(types_of(&landed), Vec::<&str>::new(), "{name}"),
-                Some(ago) => {
-                    let event = landed.pop().unwrap();
-                    assert_eq!(event.type_, TYPE_RUN_RELEASED, "{name}");
-                    assert_eq!(types_of(&landed), Vec::<&str>::new(), "{name}: one event");
-                    let body: RunReleased = serde_json::from_slice(&event.data).unwrap();
-                    assert_eq!(body.by, HOLD_BY_HOST, "{name}");
-                    let span = after.duration_since(before).unwrap().as_secs();
-                    assert!(
-                        (ago..=ago + span + 1).contains(&body.held_for_s),
-                        "{name}: {} seconds",
-                        body.held_for_s
-                    );
+        for by in [HOLD_BY_HOST, HOLD_BY_OPERATOR] {
+            for (name, log, expected) in rows.clone() {
+                let store = run_holding(log);
+                let appended_before = stream(&store).len();
+                let before = SystemTime::now();
+                let appended = release_hold(&store, by).unwrap();
+                let after = SystemTime::now();
+                assert_eq!(appended, expected.is_some(), "{name} by {by}: the answer");
+                let events = stream(&store);
+                let mut landed = events[appended_before..].to_vec();
+                match expected {
+                    None => assert_eq!(types_of(&landed), Vec::<&str>::new(), "{name} by {by}"),
+                    Some(ago) => {
+                        let event = landed.pop().unwrap();
+                        assert_eq!(event.type_, TYPE_RUN_RELEASED, "{name} by {by}");
+                        let only = types_of(&landed);
+                        assert_eq!(only, Vec::<&str>::new(), "{name} by {by}: one event");
+                        let body: RunReleased = serde_json::from_slice(&event.data).unwrap();
+                        assert_eq!(body.by, by, "{name} by {by}");
+                        let span = after.duration_since(before).unwrap().as_secs();
+                        assert!(
+                            (ago..=ago + span + 1).contains(&body.held_for_s),
+                            "{name} by {by}: {} seconds",
+                            body.held_for_s
+                        );
+                    }
                 }
             }
         }
@@ -745,33 +750,38 @@ mod tests {
         );
     }
 
-    /// The release compares and appends too: a concurrent release leaves nothing to release, a
-    /// hold landing behind its read leaves one release, later.
+    /// The release compares and appends too: a concurrent release leaves nothing to release, and
+    /// the release answers that it appended none; a hold landing behind its read leaves one
+    /// release, later.
     #[test]
     fn a_concurrent_writer_sends_a_release_back_to_re_decide() {
         let open = || held("rate_limit", HOLD_BY_HOST, "");
-        let rows: [(&str, Vec<Event>, Vec<&str>); 3] = [
+        let rows: [(&str, Vec<Event>, Vec<&str>, bool); 3] = [
             (
                 "another release",
                 vec![released()],
                 vec!["RunStarted", "RunHeld", "RunReleased"],
+                false,
             ),
             (
                 "a second hold",
                 vec![held("billing_error", HOLD_BY_HOST, "")],
                 vec!["RunStarted", "RunHeld", "RunHeld", "RunReleased"],
+                true,
             ),
             (
                 "an unrelated event",
                 vec![ev("RunNote", "{}")],
                 vec!["RunStarted", "RunHeld", "RunNote", "RunReleased"],
+                true,
             ),
         ];
-        for (name, landing, expected) in rows {
+        for (name, landing, expected, appends) in rows {
             let inner = run_holding(vec![open()]);
             let store = ReadCountingStore::new(&inner).interleaving(2, STREAM, landing);
-            release_hold(&store).unwrap();
+            let appended = release_hold(&store, HOLD_BY_HOST).unwrap();
             assert_eq!(types_of(&stream(&inner)), expected, "{name}");
+            assert_eq!(appended, appends, "{name}: the answer");
         }
     }
 

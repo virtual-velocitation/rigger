@@ -648,10 +648,11 @@ mod tests {
         }
     }
 
-    /// A hold's `cause` reads its row from the one table, `api-unstable`, which no category names,
-    /// included: it needs no person and the run retries by itself.
+    /// A hold's `cause` reads its row from the one table, the two causes no category names
+    /// included: `api-unstable` needs no person and the run retries by itself; `operator` needs a
+    /// person and names no action, `rigger hold`'s reason standing in for it.
     #[test]
-    fn a_holds_cause_reads_the_table_api_unstable_included() {
+    fn a_holds_cause_reads_the_table_api_unstable_and_operator_included() {
         let rows = [
             (
                 API_UNSTABLE,
@@ -659,6 +660,15 @@ mod tests {
                     disposition: Disposition::Hold,
                     action: RETRIES,
                     needs_person: false,
+                    credential: false,
+                },
+            ),
+            (
+                "operator",
+                DispositionRow {
+                    disposition: Disposition::Hold,
+                    action: "",
+                    needs_person: true,
                     credential: false,
                 },
             ),

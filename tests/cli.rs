@@ -9371,6 +9371,358 @@ fn a_hold_landing_mid_run_is_probed_and_its_canary_outlasting_the_drive_is_waite
     );
 }
 
+/// The `RunHeld` `rigger hold --reason <reason>` appends on a run whose open hold's latest model is
+/// `model`, empty when no hold is open: cause `operator`, the reason its action, needing a person.
+fn verb_hold(reason: &str, model: &str) -> rigger::run::RunHeld {
+    rigger::run::RunHeld {
+        needs_person: true,
+        model: model.to_string(),
+        ..common::fixtures::hold_naming("operator", reason, rigger::run::HOLD_BY_OPERATOR)
+    }
+}
+
+/// One event `rigger hold` or `rigger release` appends to the run stream: a hold, or a release by
+/// its writer.
+#[derive(Debug, PartialEq)]
+enum VerbAppend {
+    Held(rigger::run::RunHeld),
+    Released(String),
+}
+
+/// Each event of `root`'s run stream past its first `seeded`, as a [`VerbAppend`].
+fn verb_appends_past(root: &Path, seeded: usize) -> Vec<VerbAppend> {
+    read_run_events(root)[seeded..]
+        .iter()
+        .map(|event| match event.type_.as_str() {
+            rigger::run::TYPE_RUN_HELD => {
+                VerbAppend::Held(serde_json::from_slice(&event.data).unwrap())
+            }
+            rigger::run::TYPE_RUN_RELEASED => {
+                let body: rigger::run::RunReleased = serde_json::from_slice(&event.data).unwrap();
+                VerbAppend::Released(body.by)
+            }
+            other => panic!("an event neither verb appends: {other}"),
+        })
+        .collect()
+}
+
+/// The reason every `rigger hold` row but the empty one gives.
+const HOLD_REASON: &str = "pausing for a deploy";
+
+/// What `rigger hold` refuses a malformed argv with.
+const HOLD_USAGE: &str = "rigger: hold: usage: rigger hold --reason <text>\n";
+
+/// What `rigger hold` refuses a store with no run started with.
+const NO_RUN_STARTED: &str = "rigger: hold: no run is live: no run has started\n";
+
+/// What `rigger release` says on a run with no hold open.
+const NOTHING_TO_RELEASE: &str = "nothing to release: no hold is open\n";
+
+/// Spec 105's operator verbs: given a project's run, when the operator runs `rigger hold --reason
+/// <text>`, then a live run - a started run not done - takes one `RunHeld` by the operator, cause
+/// `operator`, the text its action even when empty, carrying the open hold's latest model and none
+/// when no hold is open, on a held run too; an empty store, a log no run started and a done run are
+/// refused and take nothing, as a malformed argv is. When the operator runs `rigger release`, any
+/// open hold takes one `RunReleased` by the operator, and a run with no hold open takes nothing and
+/// is told so. Every write a verb makes folds into the graph.
+#[test]
+fn rigger_hold_holds_a_live_run_for_the_operator_and_rigger_release_ends_any_hold() {
+    use rigger::run::{HOLD_BY_HOST, HOLD_BY_OPERATOR, HOLD_BY_PROBE};
+    use Seed::{Held, Released};
+    struct Case {
+        name: &'static str,
+        seed: fn(&Path),
+        args: &'static [&'static str],
+        ok: bool,
+        /// The verb's stdout, `{run}` standing for the current run's id.
+        out: &'static str,
+        /// The verb's stderr, `{run}` standing for the current run's id.
+        err: &'static str,
+        appended: Vec<VerbAppend>,
+    }
+    let nothing: fn(&Path) = |_| {};
+    let live: fn(&Path) = |root| seed_a_run_held_by(root, None);
+    let host_held: fn(&Path) = |root| {
+        seed_probe_history(root, &[Held(SEEDED_HOLD_CAUSE, HOLD_BY_HOST, 0)]);
+    };
+    let operator_held: fn(&Path) = |root| {
+        seed_probe_history(root, &[Held(SEEDED_HOLD_CAUSE, HOLD_BY_OPERATOR, 0)]);
+    };
+    let released: fn(&Path) = |root| {
+        seed_probe_history(
+            root,
+            &[
+                Held(SEEDED_HOLD_CAUSE, HOLD_BY_HOST, 0),
+                Released(HOLD_BY_PROBE, 0),
+            ],
+        );
+    };
+    let hold: &[&str] = &["hold", "--reason", HOLD_REASON];
+    let held = |model: &str| vec![VerbAppend::Held(verb_hold(HOLD_REASON, model))];
+    let holds = "held run {run} for the operator; `rigger release` ends the hold\n";
+    let releases = || vec![VerbAppend::Released(HOLD_BY_OPERATOR.to_string())];
+    let cases = [
+        Case {
+            name: "hold with no --reason",
+            seed: live,
+            args: &["hold"],
+            ok: false,
+            out: "",
+            err: HOLD_USAGE,
+            appended: vec![],
+        },
+        Case {
+            name: "hold with --reason and no text",
+            seed: live,
+            args: &["hold", "--reason"],
+            ok: false,
+            out: "",
+            err: HOLD_USAGE,
+            appended: vec![],
+        },
+        Case {
+            name: "hold with an argument past its reason",
+            seed: live,
+            args: &["hold", "--reason", HOLD_REASON, "now"],
+            ok: false,
+            out: "",
+            err: HOLD_USAGE,
+            appended: vec![],
+        },
+        Case {
+            name: "hold on an empty store",
+            seed: nothing,
+            args: hold,
+            ok: false,
+            out: "",
+            err: NO_RUN_STARTED,
+            appended: vec![],
+        },
+        Case {
+            name: "hold on a held log no run started",
+            seed: |root| seed_a_hold_by(root, HOLD_BY_HOST),
+            args: hold,
+            ok: false,
+            out: "",
+            err: NO_RUN_STARTED,
+            appended: vec![],
+        },
+        Case {
+            name: "hold on a done run",
+            seed: |root| seed_done_run_with_persisted_base(root, "main"),
+            args: hold,
+            ok: false,
+            out: "",
+            err: "rigger: hold: no run is live: run {run} is done\n",
+            appended: vec![],
+        },
+        Case {
+            name: "hold on an unheld run carries no model",
+            seed: live,
+            args: hold,
+            ok: true,
+            out: holds,
+            err: "",
+            appended: held(""),
+        },
+        Case {
+            name: "hold on a host hold carries its model",
+            seed: host_held,
+            args: hold,
+            ok: true,
+            out: holds,
+            err: "",
+            appended: held(PROBED_MODEL),
+        },
+        Case {
+            name: "hold on an operator hold appends another",
+            seed: operator_held,
+            args: hold,
+            ok: true,
+            out: holds,
+            err: "",
+            appended: held(PROBED_MODEL),
+        },
+        Case {
+            name: "hold on a released hold carries no model",
+            seed: released,
+            args: hold,
+            ok: true,
+            out: holds,
+            err: "",
+            appended: held(""),
+        },
+        Case {
+            name: "an empty reason stands",
+            seed: live,
+            args: &["hold", "--reason", ""],
+            ok: true,
+            out: holds,
+            err: "",
+            appended: vec![VerbAppend::Held(verb_hold("", ""))],
+        },
+        Case {
+            name: "release with an argument",
+            seed: host_held,
+            args: &["release", "now"],
+            ok: false,
+            out: "",
+            err: "rigger: release: usage: rigger release\n",
+            appended: vec![],
+        },
+        Case {
+            name: "release ends a host hold",
+            seed: host_held,
+            args: &["release"],
+            ok: true,
+            out: "released the current run's hold\n",
+            err: "",
+            appended: releases(),
+        },
+        Case {
+            name: "release ends an operator hold",
+            seed: operator_held,
+            args: &["release"],
+            ok: true,
+            out: "released the current run's hold\n",
+            err: "",
+            appended: releases(),
+        },
+        Case {
+            name: "release on an unheld run",
+            seed: live,
+            args: &["release"],
+            ok: true,
+            out: NOTHING_TO_RELEASE,
+            err: "",
+            appended: vec![],
+        },
+        Case {
+            name: "release on a released hold",
+            seed: released,
+            args: &["release"],
+            ok: true,
+            out: NOTHING_TO_RELEASE,
+            err: "",
+            appended: vec![],
+        },
+        Case {
+            name: "release on an empty store",
+            seed: nothing,
+            args: &["release"],
+            ok: true,
+            out: NOTHING_TO_RELEASE,
+            err: "",
+            appended: vec![],
+        },
+    ];
+    for case in cases {
+        let name = case.name;
+        let dir = temp_store_project();
+        let root = dir.path();
+        (case.seed)(root);
+        let seeded = read_run_events(root);
+        let head = seeded.last().map_or(0, |event| event.position);
+        let run = common::cli::current_run_id_of(root).unwrap_or_default();
+        let (out, err, ok) = run_rigger(root, case.args);
+        assert_eq!(
+            (ok, out.as_str(), err.as_str()),
+            (
+                case.ok,
+                case.out.replace("{run}", &run).as_str(),
+                case.err.replace("{run}", &run).as_str()
+            ),
+            "{name}: the exit, stdout and stderr"
+        );
+        assert_eq!(
+            verb_appends_past(root, seeded.len()),
+            case.appended,
+            "{name}: what the verb appended"
+        );
+        if !case.appended.is_empty() {
+            assert_eq!(
+                unfolded_past(root, head),
+                Vec::<(u64, String)>::new(),
+                "{name}: the verb's write folds into the graph"
+            );
+        }
+    }
+}
+
+/// Spec 105's operator hold against the hold controller, through `rigger run`: given a run held by
+/// the host 120 s back, whose probe falls due as the run starts, when the operator holds it with
+/// `rigger hold`, then the run probes nothing while the hold stands, reading no login and running
+/// no canary, and `rigger release` ends the hold, the run then driving to done; the operator's hold
+/// carries the host hold's model and both verbs' writes fold into the graph.
+#[cfg(unix)]
+#[test]
+fn an_operator_hold_no_probe_ends_stands_until_rigger_release_ends_it() {
+    use common::fixtures::{printing, LOGGED_IN_STATUS, PASSING_CANARY};
+    use rigger::run::{HOLD_BY_HOST, HOLD_BY_OPERATOR};
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_workflow_fixture(root, &REVIEWLESS_GIT_UNIT_WORKFLOW);
+    let (mut holds, _) =
+        seed_probe_history(root, &[Seed::Held(SEEDED_HOLD_CAUSE, HOLD_BY_HOST, 120)]);
+    let head = common::cli::run_log_head(root);
+    let run = common::cli::current_run_id_of(root).unwrap();
+    assert_eq!(
+        run_rigger(root, &["hold", "--reason", HOLD_REASON]),
+        (
+            format!("held run {run} for the operator; `rigger release` ends the hold\n"),
+            String::new(),
+            true
+        ),
+        "the operator holds the run"
+    );
+    let scratch = tempfile::tempdir().unwrap();
+    let arms = format!(
+        "{RECORDING_WORKER_ARM}{}",
+        common::fixtures::probe_arms(&printing(LOGGED_IN_STATUS), PASSING_CANARY)
+    );
+    let started = Instant::now();
+    let mut release = None;
+    let (out, err, ok, fake) = run_on_arms_beside(root, &["run"], scratch.path(), &arms, |_| {
+        if release.is_none() && started.elapsed() >= NO_PROBE_WITHIN {
+            release = Some((probe_lines(root).len(), run_rigger(root, &["release"])));
+        }
+    });
+    assert_eq!(
+        release,
+        Some((
+            0,
+            (
+                "released the current run's hold\n".to_string(),
+                String::new(),
+                true
+            )
+        )),
+        "no probe while the operator's hold stood, and `rigger release` ended it"
+    );
+    assert!(ok, "the run exits 0; stderr: {err}\nstdout: {out}");
+    assert_eq!(
+        out.lines().nth(2).unwrap(),
+        "done: every unit integrated",
+        "how the run ended; stderr: {err}"
+    );
+    assert_eq!(
+        probe_lines(root),
+        Vec::<rigger::progress::AgentProgress>::new(),
+        "the run probed nothing"
+    );
+    for mark in ["bin/auth-argv", "bin/canary-argv"] {
+        assert!(!fake.path().join(mark).exists(), "{mark}: no probe ran");
+    }
+    holds.push(verb_hold(HOLD_REASON, PROBED_MODEL));
+    assert_eq!(run_holds(root), holds, "the holds");
+    assert_eq!(run_releases(root), [HOLD_BY_OPERATOR], "the releases");
+    assert_eq!(
+        unfolded_types_past(root, head),
+        Vec::<String>::new(),
+        "both verbs' writes and the run's fold"
+    );
+}
+
 /// The shell of a session that dies with no result on its first launch: each later launch goes on
 /// past it.
 const FIRST_SESSION_DIES: &str = r#"    if [ ! -e "$here/first-session-died" ]; then
