@@ -4,6 +4,47 @@
 //! report's `loggedIn` is `true`, and a report that does not come by the deadline, does not parse
 //! or names no such key answers not logged in.
 
+use std::ops::ControlFlow;
+use std::process::Stdio;
+use std::time::Instant;
+
+use serde::Deserialize;
+
+use crate::reaped_child::ReapedChild;
+
+/// The one key of the report the read decides on.
+#[derive(Deserialize)]
+struct AuthStatus {
+    #[serde(rename = "loggedIn")]
+    logged_in: bool,
+}
+
+/// Whether `bin`'s session is logged in, by its `auth status --json` report as it stands by
+/// `deadline`: the child reads no input and its stderr and exit status go unread, and a binary
+/// that does not start answers not logged in at once.
+pub fn logged_in(bin: &str, deadline: Instant) -> bool {
+    let Ok(child) = crate::subprocess::command(bin)
+        .args(["auth", "status", "--json"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+    else {
+        return false;
+    };
+    let mut report = Vec::new();
+    ReapedChild::new(child).read_lines_until(deadline, |line| {
+        report.push(line.to_string());
+        ControlFlow::Continue(())
+    });
+    parse_logged_in(&report.join("\n"))
+}
+
+/// Whether `report` is one JSON object whose `loggedIn` is `true`.
+fn parse_logged_in(report: &str) -> bool {
+    serde_json::from_str::<AuthStatus>(report).is_ok_and(|status| status.logged_in)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

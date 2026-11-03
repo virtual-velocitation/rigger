@@ -1,6 +1,8 @@
 //! The supervised child-process guard (workspace split: moved from the dash, whose auto-started
-//! child it first wrapped, beside the agent host that reaps through it too). The root `rigger`
-//! crate re-exports it under its historical `rigger::dash::ReapedChild` path.
+//! child it first wrapped, beside the agent host that reaps through it too), and the one timed
+//! line reader over a child's stream, [`line_channel`]. The root `rigger` crate re-exports the
+//! module as `rigger::reaped_child` and the guard under its historical `rigger::dash::ReapedChild`
+//! path.
 
 /// A supervised handle over a long-lived `rigger` child PROCESS - the auto-started
 /// dashboard, and any future `rigger` child a run spawns. When this guard is dropped,
@@ -53,6 +55,51 @@ impl ReapedChild {
     pub(crate) fn child_mut(&mut self) -> &mut std::process::Child {
         &mut self.child
     }
+
+    /// Hand each line of the child's stdout to `each` until the child ends the stream, `each`
+    /// breaks, a line is no text or `deadline` passes, whichever comes first: a child that answers
+    /// nothing holds this read no longer than `deadline`. A child with no stdout pipe hands over
+    /// nothing. The child is left running; this guard's drop still reaps it.
+    pub fn read_lines_until(
+        &mut self,
+        deadline: std::time::Instant,
+        mut each: impl FnMut(&str) -> std::ops::ControlFlow<()>,
+    ) {
+        let Some(stdout) = self.child.stdout.take() else {
+            return;
+        };
+        let (lines, _reader) = line_channel(stdout);
+        while let Ok(Ok(line)) =
+            lines.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+        {
+            if each(&line).is_break() {
+                return;
+            }
+        }
+    }
+}
+
+/// A stream (a child's stdout or stderr) read line by line on its own thread and forwarded over a
+/// channel, so its reader can wait on a line with a timeout where `BufRead::lines` alone would
+/// block until the child writes. Each line arrives as `BufRead::lines` yields it, a read error
+/// included, and the receiver disconnects at the stream's end. The thread ends there or once
+/// the receiver is gone; its handle is the caller's to join or to leave.
+pub fn line_channel(
+    stream: impl std::io::Read + Send + 'static,
+) -> (
+    std::sync::mpsc::Receiver<std::io::Result<String>>,
+    std::thread::JoinHandle<()>,
+) {
+    use std::io::BufRead;
+    let (line_tx, line_rx) = std::sync::mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        for line in std::io::BufReader::new(stream).lines() {
+            if line_tx.send(line).is_err() {
+                return; // the reader is gone; nothing left to feed.
+            }
+        }
+    });
+    (line_rx, reader)
 }
 
 impl Drop for ReapedChild {
@@ -141,6 +188,17 @@ mod bounded_read {
     use std::process::{Command, Stdio};
     use std::time::{Duration, Instant};
 
+    /// One row of the table below.
+    type Row<'a> = (
+        &'a str,
+        &'a str,
+        bool,
+        Duration,
+        Option<&'a str>,
+        &'a [&'a str],
+        (Duration, Duration),
+    );
+
     #[cfg(unix)]
     #[test]
     fn a_read_ends_at_the_end_of_the_stream_a_break_a_line_that_is_no_text_or_the_deadline() {
@@ -150,7 +208,7 @@ mod bounded_read {
         let at_the_bound = (short, short + Duration::from_millis(1500));
         // (name, the child's shell, its stdout piped, the bound, the line the reader breaks at,
         // the lines read, elapsed from and below)
-        let rows: [(&str, &str, bool, Duration, Option<&str>, &[&str], _); 5] = [
+        let rows: [Row; 5] = [
             (
                 "a child that ends",
                 "printf 'a\\nb\\n'",

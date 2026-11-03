@@ -30,7 +30,6 @@
 
 mod common;
 
-use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
@@ -45,6 +44,7 @@ use common::cli::temp_project;
 use common::cli::temp_store_project;
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::Store;
+use rigger::reaped_child::line_channel;
 
 // --- `rigger watch --once`: the composition root, driven through the real binary ---
 
@@ -69,20 +69,6 @@ fn spawn_streaming_watch(root: &Path) -> std::process::Child {
         .stderr(Stdio::piped())
         .spawn()
         .expect("failed to spawn `rigger watch`")
-}
-
-/// Forwards each line `stream` produces onto the returned channel from a reader thread.
-fn line_channel(stream: impl std::io::Read + Send + 'static) -> std::sync::mpsc::Receiver<String> {
-    let (tx, rx) = std::sync::mpsc::channel::<String>();
-    std::thread::spawn(move || {
-        let reader = BufReader::new(stream);
-        for line in reader.lines().map_while(Result::ok) {
-            if tx.send(line).is_err() {
-                break;
-            }
-        }
-    });
-    rx
 }
 
 /// The headline boundary proof: a project seeded (via a real store, not an injected
@@ -286,7 +272,7 @@ fn watch_without_once_streams_and_re_polls_a_live_mutating_store_until_killed() 
     let mut child = spawn_streaming_watch(root);
     let stdout = child.stdout.take().expect("watch stdout is piped");
 
-    let rx = line_channel(stdout);
+    let (rx, _reader) = line_channel(stdout);
 
     // Phase 1: the store is clean. The first poll (immediate, before any sleep) must print
     // nothing, and the process must still be running afterward - streaming mode does not exit
@@ -313,6 +299,8 @@ fn watch_without_once_streams_and_re_polls_a_live_mutating_store_until_killed() 
     // Phase 3: within a few 1s poll cycles, the new anomaly must appear on stdout.
     let line = rx
         .recv_timeout(Duration::from_secs(8))
+        .ok()
+        .and_then(Result::ok)
         .expect("streaming watch never re-polled the live store and printed the new anomaly");
     assert_names(
         &line,
@@ -356,8 +344,8 @@ fn watch_streaming_survives_a_transient_store_read_failure_and_recovers() {
     let stdout = child.stdout.take().expect("watch stdout is piped");
     let stderr = child.stderr.take().expect("watch stderr is piped");
 
-    let out_rx = line_channel(stdout);
-    let err_rx = line_channel(stderr);
+    let (out_rx, _out_reader) = line_channel(stdout);
+    let (err_rx, _err_reader) = line_channel(stderr);
 
     // Phase 1: a clean first poll prints nothing and the process stays alive.
     assert!(
@@ -373,9 +361,13 @@ fn watch_streaming_survives_a_transient_store_read_failure_and_recovers() {
 
     // Phase 3: the process must survive the failing poll(s), reporting the failure on stderr
     // rather than dying silently or propagating it out of the process.
-    let err_line = err_rx.recv_timeout(Duration::from_secs(5)).expect(
-        "a transient store-read failure must be reported on stderr, not silently swallowed",
-    );
+    let err_line = err_rx
+        .recv_timeout(Duration::from_secs(5))
+        .ok()
+        .and_then(Result::ok)
+        .expect(
+            "a transient store-read failure must be reported on stderr, not silently swallowed",
+        );
     assert!(
         err_line.contains("watch") && err_line.contains("poll"),
         "stderr must name the poll failure: {err_line}"
@@ -397,6 +389,8 @@ fn watch_streaming_survives_a_transient_store_read_failure_and_recovers() {
     );
     let line = out_rx
         .recv_timeout(Duration::from_secs(8))
+        .ok()
+        .and_then(Result::ok)
         .expect("streaming watch never recovered and resumed reporting after the store healed");
     assert!(
         line.contains("escalated blockers") && line.contains("u-recovered"),
@@ -555,7 +549,7 @@ fn watch_streaming_re_alerts_a_reject_recurrence_churn_count_on_each_increment()
     let mut child = spawn_streaming_watch(root);
     let stdout = child.stdout.take().expect("watch stdout is piped");
 
-    let rx = line_channel(stdout);
+    let (rx, _reader) = line_channel(stdout);
 
     // Phase 1: two same-cause failures is below threshold - the first (immediate) poll must
     // print nothing, and the process must still be running.
@@ -579,6 +573,8 @@ fn watch_streaming_re_alerts_a_reject_recurrence_churn_count_on_each_increment()
     );
     let first = rx
         .recv_timeout(Duration::from_secs(8))
+        .ok()
+        .and_then(Result::ok)
         .expect("crossing the reject-recurrence threshold live must alert");
     assert!(
         first.contains("reject-recurrence trend")
@@ -608,6 +604,8 @@ fn watch_streaming_re_alerts_a_reject_recurrence_churn_count_on_each_increment()
     );
     let second = rx
         .recv_timeout(Duration::from_secs(8))
+        .ok()
+        .and_then(Result::ok)
         .expect("the churn count climbing from 3 to 4 must re-alert live, not stay deduped");
     assert!(
         second.contains("reject-recurrence trend")

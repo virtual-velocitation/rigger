@@ -279,8 +279,8 @@
       },
       {
         "file": "crates/rigger-driver/src/driver/claude_code.rs",
-        "start_line": 1548,
-        "end_line": 1556
+        "start_line": 1657,
+        "end_line": 1665
       },
       {
         "file": "tests/common/fixtures/fold.rs",
@@ -509,8 +509,8 @@
       },
       {
         "file": "crates/rigger-driver/src/driver/claude_code.rs",
-        "start_line": 1561,
-        "end_line": 1566
+        "start_line": 1670,
+        "end_line": 1675
       },
       {
         "file": "crates/rigger-grounder/src/grounder/mod.rs",
@@ -804,13 +804,13 @@
       },
       {
         "file": "crates/rigger-driver/src/reaped_child.rs",
-        "start_line": 90,
-        "end_line": 90
+        "start_line": 137,
+        "end_line": 137
       },
       {
         "file": "crates/rigger-driver/src/reaped_child.rs",
-        "start_line": 201,
-        "end_line": 201
+        "start_line": 259,
+        "end_line": 259
       },
       {
         "file": "crates/rigger-gates-shell/src/gate.rs",
@@ -874,23 +874,23 @@
       },
       {
         "file": "src/cli/run.rs",
-        "start_line": 3414,
-        "end_line": 3414
+        "start_line": 3475,
+        "end_line": 3475
       },
       {
         "file": "src/cli/run.rs",
-        "start_line": 3447,
-        "end_line": 3447
+        "start_line": 3508,
+        "end_line": 3508
       },
       {
         "file": "src/cli/run.rs",
-        "start_line": 3491,
-        "end_line": 3491
+        "start_line": 3552,
+        "end_line": 3552
       },
       {
         "file": "src/cli/run.rs",
-        "start_line": 3560,
-        "end_line": 3560
+        "start_line": 3621,
+        "end_line": 3621
       },
       {
         "file": "src/cli/setup.rs",
@@ -4224,13 +4224,13 @@
       },
       {
         "file": "tests/watchdog_cli_periphery.rs",
-        "start_line": 165,
-        "end_line": 165
+        "start_line": 151,
+        "end_line": 151
       },
       {
         "file": "tests/watchdog_cli_periphery.rs",
-        "start_line": 352,
-        "end_line": 352
+        "start_line": 340,
+        "end_line": 340
       },
       {
         "file": "tests/workflow_definition_and_js_constants_periphery.rs",
@@ -4724,13 +4724,13 @@
       },
       {
         "file": "src/cli/run.rs",
-        "start_line": 3552,
-        "end_line": 3552
+        "start_line": 3613,
+        "end_line": 3613
       },
       {
         "file": "src/cli/run.rs",
-        "start_line": 3656,
-        "end_line": 3656
+        "start_line": 3717,
+        "end_line": 3717
       },
       {
         "file": "tests/cli.rs",
@@ -5149,8 +5149,8 @@
       },
       {
         "file": "crates/rigger-driver/src/reaped_child.rs",
-        "start_line": 42,
-        "end_line": 44
+        "start_line": 44,
+        "end_line": 46
       }
     ]
   },
@@ -5739,13 +5739,13 @@
     "sites": [
       {
         "file": "crates/rigger-driver/src/driver/claude_code.rs",
-        "start_line": 1854,
-        "end_line": 1861
+        "start_line": 1976,
+        "end_line": 1983
       },
       {
         "file": "crates/rigger-driver/src/driver/claude_code.rs",
-        "start_line": 1908,
-        "end_line": 1915
+        "start_line": 2030,
+        "end_line": 2037
       }
     ]
   },
@@ -5754,13 +5754,13 @@
     "sites": [
       {
         "file": "crates/rigger-driver/src/driver/claude_code.rs",
-        "start_line": 1901,
-        "end_line": 1907
+        "start_line": 2023,
+        "end_line": 2029
       },
       {
         "file": "crates/rigger-driver/src/driver/claude_code.rs",
-        "start_line": 1935,
-        "end_line": 1941
+        "start_line": 2057,
+        "end_line": 2063
       }
     ]
   },
@@ -5769,13 +5769,13 @@
     "sites": [
       {
         "file": "crates/rigger-driver/src/driver/claude_code.rs",
-        "start_line": 2146,
-        "end_line": 2167
+        "start_line": 2268,
+        "end_line": 2289
       },
       {
         "file": "crates/rigger-driver/src/driver/claude_code.rs",
-        "start_line": 2170,
-        "end_line": 2188
+        "start_line": 2292,
+        "end_line": 2310
       }
     ]
   },
@@ -6019,8 +6019,8 @@
       },
       {
         "file": "src/cli/run.rs",
-        "start_line": 4613,
-        "end_line": 4613
+        "start_line": 4674,
+        "end_line": 4674
       },
       {
         "file": "tests/cli.rs",
@@ -6249,8 +6249,8 @@
       },
       {
         "file": "tests/watchdog_cli_periphery.rs",
-        "start_line": 171,
-        "end_line": 171
+        "start_line": 157,
+        "end_line": 157
       }
     ]
   },
@@ -7519,18 +7519,18 @@
       },
       {
         "file": "tests/watchdog_cli_periphery.rs",
-        "start_line": 145,
-        "end_line": 155
+        "start_line": 131,
+        "end_line": 141
       },
       {
         "file": "tests/watchdog_cli_periphery.rs",
-        "start_line": 236,
-        "end_line": 250
+        "start_line": 222,
+        "end_line": 236
       },
       {
         "file": "tests/watchdog_cli_periphery.rs",
-        "start_line": 257,
-        "end_line": 270
+        "start_line": 243,
+        "end_line": 256
       }
     ]
   },

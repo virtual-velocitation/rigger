@@ -1863,7 +1863,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `crates/rigger-conductor/src/conductor.rs:1097-1099` `conflict_regenerate_key`
 - `crates/rigger-conductor/src/conductor.rs:13049-13051` `audit_id`
 - `crates/rigger-domain/src/spawn.rs:276-278` `spawn_id`
-- `crates/rigger-driver/src/driver/claude_code.rs:1548-1556` `stop_message`
+- `crates/rigger-driver/src/driver/claude_code.rs:1657-1665` `stop_message`
 - `tests/common/fixtures/fold.rs:757-759` `code_batch_key`
 - `tests/common/fixtures/graph.rs:204-206` `spoke_id`
 - `tests/postmerge_gate_error_cleanup_periphery.rs:56-58` `expected_postmerge_dir`
@@ -1945,7 +1945,7 @@ mandatory sweep: error-shaping helper functions - 20 site(s), collected mechanic
 - `crates/rigger-domain/src/agent.rs:489-491` `no_result_error`
 - `crates/rigger-domain/src/agent.rs:546-584` `an_error_answers_the_class_it_carries`
 - `crates/rigger-domain/src/ingest.rs:604-649` `a_walk_reaches_every_batch_past_a_failed_one_and_answers_the_first_error`
-- `crates/rigger-driver/src/driver/claude_code.rs:1561-1566` `read_agent_stream_error`
+- `crates/rigger-driver/src/driver/claude_code.rs:1670-1675` `read_agent_stream_error`
 - `crates/rigger-grounder/src/grounder/mod.rs:207-213` `retired_grounder_error`
 - `crates/rigger-worktree-git/src/worktree.rs:3964-3991` `land_reports_a_generic_error_for_a_refusal_that_is_neither_tip_moved_nor_blocked`
 - `crates/rigger-worktree-git/src/worktree.rs:5322-5376` `revert_on_base_aborts_and_errors_on_a_conflicting_revert`
@@ -2052,8 +2052,8 @@ mandatory sweep: Command::new call sites - 94 site(s), collected mechanically re
 - `crates/rigger-conductor/src/conductor.rs:44362-44362` `Command::new`
 - `crates/rigger-conductor/src/conductor.rs:44384-44384` `Command::new`
 - `crates/rigger-conductor/src/conductor.rs:45487-45487` `Command::new`
-- `crates/rigger-driver/src/reaped_child.rs:90-90` `Command::new`
-- `crates/rigger-driver/src/reaped_child.rs:201-201` `Command::new`
+- `crates/rigger-driver/src/reaped_child.rs:137-137` `Command::new`
+- `crates/rigger-driver/src/reaped_child.rs:259-259` `Command::new`
 - `crates/rigger-gates-shell/src/gate.rs:1531-1531` `Command::new`
 - `crates/rigger-grounder/src/grounder/mod.rs:1001-1001` `Command::new`
 - `crates/rigger-process/src/budget.rs:198-198` `Command::new`
@@ -2066,10 +2066,10 @@ mandatory sweep: Command::new call sites - 94 site(s), collected mechanically re
 - `src/cli/mod.rs:10426-10426` `Command::new`
 - `src/cli/mod.rs:12166-12166` `Command::new`
 - `src/cli/mod.rs:12200-12200` `Command::new`
-- `src/cli/run.rs:3414-3414` `Command::new`
-- `src/cli/run.rs:3447-3447` `Command::new`
-- `src/cli/run.rs:3491-3491` `Command::new`
-- `src/cli/run.rs:3560-3560` `Command::new`
+- `src/cli/run.rs:3475-3475` `Command::new`
+- `src/cli/run.rs:3508-3508` `Command::new`
+- `src/cli/run.rs:3552-3552` `Command::new`
+- `src/cli/run.rs:3621-3621` `Command::new`
 - `src/cli/setup.rs:3874-3874` `Command::new`
 - `src/cli/setup.rs:3903-3903` `Command::new`
 - `src/cli/validate.rs:1509-1509` `Command::new`
@@ -3311,8 +3311,8 @@ project identity so one backend can hold many projects without their data mixing
 - `tests/validate_footprint_default_scratch_root_periphery.rs:34-34` `".rigger"`
 - `tests/validate_footprint_default_scratch_root_periphery.rs:35-35` `".rigger"`
 - `tests/validate_footprint_default_scratch_root_periphery.rs:70-70` `".rigger"`
-- `tests/watchdog_cli_periphery.rs:165-165` `".rigger"`
-- `tests/watchdog_cli_periphery.rs:352-352` `".rigger"`
+- `tests/watchdog_cli_periphery.rs:151-151` `".rigger"`
+- `tests/watchdog_cli_periphery.rs:340-340` `".rigger"`
 - `tests/workflow_definition_and_js_constants_periphery.rs:91-91` `".rigger"`
 - `tests/workflow_definition_and_js_constants_periphery.rs:93-93` `".rigger"`
 - `tests/workflow_definition_and_js_constants_periphery.rs:355-355` `".rigger"`
@@ -3531,8 +3531,8 @@ mandatory sweep: /proc-path string literals - 57 site(s), collected mechanically
 - `crates/rigger-worktree-git/src/worktree.rs:3061-3061` `"/proc"`
 - `crates/rigger-worktree-git/src/worktree.rs:3065-3065` `"/proc/{pid}/cmdline"`
 - `crates/rigger-worktree-git/src/worktree.rs:3089-3089` `"/proc/{}"`
-- `src/cli/run.rs:3552-3552` `"/proc"`
-- `src/cli/run.rs:3656-3656` `"/proc"`
+- `src/cli/run.rs:3613-3613` `"/proc"`
+- `src/cli/run.rs:3717-3717` `"/proc"`
 - `tests/cli.rs:25824-25824` `"/proc"`
 - `tests/cli.rs:30039-30039` `"/proc"`
 - `tests/cli.rs:30147-30147` `"the holder pid {holder_pid} never reached the STOPPED (T) state in /proc"`
@@ -3806,7 +3806,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `crates/rigger-domain/src/eventstore.rs:262-264` `handed`
 - `crates/rigger-domain/src/failure.rs:227-229` `is_empty`
 - `crates/rigger-domain/src/metrics.rs:552-554` `adversary_precision`
-- `crates/rigger-driver/src/reaped_child.rs:42-44` `id`
+- `crates/rigger-driver/src/reaped_child.rs:44-46` `id`
 
 #### `dup-a9ed3e0e9d47` (exact, 3 sites)
 
@@ -4110,8 +4110,8 @@ Proposed home: `claude_code::failing_read_store`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-driver/src/driver/claude_code.rs:1854-1861` `read_stream`
-- `crates/rigger-driver/src/driver/claude_code.rs:1908-1915` `read_stream_typed`
+- `crates/rigger-driver/src/driver/claude_code.rs:1976-1983` `read_stream`
+- `crates/rigger-driver/src/driver/claude_code.rs:2030-2037` `read_stream_typed`
 
 #### `dup-4979c76ee36f` (near, 2 sites)
 
@@ -4119,8 +4119,8 @@ Proposed home: `claude_code::failing_read_store`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-driver/src/driver/claude_code.rs:1901-1907` `last_position`
-- `crates/rigger-driver/src/driver/claude_code.rs:1935-1941` `latest_in_group`
+- `crates/rigger-driver/src/driver/claude_code.rs:2023-2029` `last_position`
+- `crates/rigger-driver/src/driver/claude_code.rs:2057-2063` `latest_in_group`
 
 #### `dup-117928e59e0c` (near, 2 sites)
 
@@ -4128,8 +4128,8 @@ Proposed home: `claude_code::support (consolidate these 2 sites into one functio
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-driver/src/driver/claude_code.rs:2146-2167` `build_args_mcp_config_names_the_spawn_bound_server`
-- `crates/rigger-driver/src/driver/claude_code.rs:2170-2188` `build_args_mcp_config_uses_the_configured_rigger_bin`
+- `crates/rigger-driver/src/driver/claude_code.rs:2268-2289` `build_args_mcp_config_names_the_spawn_bound_server`
+- `crates/rigger-driver/src/driver/claude_code.rs:2292-2310` `build_args_mcp_config_uses_the_configured_rigger_bin`
 
 #### `dup-bada7e276fc1` (semantic, 2 sites)
 
@@ -4232,7 +4232,7 @@ mandatory sweep: sqlite Connection::open call sites - 68 site(s), collected mech
 - `src/cli/mod.rs:5612-5612` `Connection::open`
 - `src/cli/mod.rs:12261-12261` `Connection::open`
 - `src/cli/mod.rs:12741-12741` `Connection::open`
-- `src/cli/run.rs:4613-4613` `Connection::open`
+- `src/cli/run.rs:4674-4674` `Connection::open`
 - `tests/cli.rs:839-839` `Connection::open`
 - `tests/cli.rs:942-942` `Connection::open`
 - `tests/cli.rs:1045-1045` `Connection::open`
@@ -4278,7 +4278,7 @@ mandatory sweep: sqlite Connection::open call sites - 68 site(s), collected mech
 - `tests/reset_derived_live_writer_guard_periphery.rs:76-76` `Connection::open`
 - `tests/run_boundary_lookup_periphery.rs:72-72` `Connection::open`
 - `tests/store_append_order_periphery.rs:60-60` `Connection::open`
-- `tests/watchdog_cli_periphery.rs:171-171` `Connection::open`
+- `tests/watchdog_cli_periphery.rs:157-157` `Connection::open`
 
 #### `dup-c650c3e62b50` (exact, 2 sites)
 
@@ -4922,9 +4922,9 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/reset_derived_live_writer_guard_periphery.rs:1664-1674` `reset_force_live_alone_is_refused_as_no_mode`
 - `tests/statusline_command_periphery.rs:91-101` `status_line_on_a_clean_run`
 - `tests/statusline_command_periphery.rs:137-147` `status_line_and_json_are_mutually_exclusive`
-- `tests/watchdog_cli_periphery.rs:145-155` `watch_once_on_a_freshly_initialized_store_reports_nothing_and_exits_cleanly`
-- `tests/watchdog_cli_periphery.rs:236-250` `watch_refuses_a_project_with_no_rigger_store_at_all_through_the_real_binary`
-- `tests/watchdog_cli_periphery.rs:257-270` `watch_rejects_an_unknown_flag_through_the_real_binary_with_a_nonzero_exit`
+- `tests/watchdog_cli_periphery.rs:131-141` `watch_once_on_a_freshly_initialized_store_reports_nothing_and_exits_cleanly`
+- `tests/watchdog_cli_periphery.rs:222-236` `watch_refuses_a_project_with_no_rigger_store_at_all_through_the_real_binary`
+- `tests/watchdog_cli_periphery.rs:243-256` `watch_rejects_an_unknown_flag_through_the_real_binary_with_a_nonzero_exit`
 
 #### `dup-4cd3708b516f` (exact, 2 sites)
 
@@ -5464,7 +5464,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 ### Adversarial sample
 
-Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 10979 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
+Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 10991 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
 
 - `crates/rigger-conductor/src/conductor.rs:15703-15725` `branch_is_foreign_when_only_one_axis_differs` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-conductor/src/conductor.rs:16664-16671` `resume_of` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
@@ -5484,8 +5484,8 @@ Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85
 - `crates/rigger-worktree-git/src/worktree.rs:1956-1978` `reclaim_cache_sibling` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `src/cli/mod.rs:4711-4737` `footprint_reclaim_lines` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `src/cli/mod.rs:8881-8891` `parse_run_args_reads_rebase_definition` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
-- `src/cli/run.rs:1468-1470` `pause_a_hold_poll` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
-- `src/cli/run.rs:2232-2256` `start_run_dashboard` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
+- `src/cli/run.rs:1518-1520` `pause_a_hold_poll` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
+- `src/cli/run.rs:2293-2317` `start_run_dashboard` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `tests/change_path_revert_periphery.rs:213-323` `a_revert_through_the_shipped_build_records_the_earlier_generations_entry_again` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `tests/code_entity_test_exclusion_periphery.rs:1810-1822` `edges_where` - duplicate found by reading and closed: the design-doc assertion, the dev-only path test and the test-region test each re-rolled its `(from, rel, to)` edge projection inline; all now call `edges_where`
 - `tests/common/fixtures/events.rs:897-899` `after_call` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
@@ -5568,21 +5568,7 @@ A function is either live or deleted; there is no third state. rigger's library 
 
 ### 4.3 The ledger
 
-| File | Count |
-|---|---|
-| `crates/rigger-domain/src/hold_probe.rs` | 2 |
-| `crates/rigger-store-sqlite/src/run_store.rs` | 2 |
-| **Total** | **4** |
-
-**`crates/rigger-domain/src/hold_probe.rs`**
-
-- **checks_login** (`crates/rigger-domain/src/hold_probe.rs:51`, `pub`)
-- **owed_probe** (`crates/rigger-domain/src/hold_probe.rs:84`, `pub`)
-
-**`crates/rigger-store-sqlite/src/run_store.rs`**
-
-- **record_failed_probe** (`crates/rigger-store-sqlite/src/run_store.rs:269`, `pub`)
-- **release_probed_hold** (`crates/rigger-store-sqlite/src/run_store.rs:312`, `pub`)
+The ledger is empty.
 
 ### 4.4 Retired-feature remnants and stale doc claims
 
@@ -5671,11 +5657,7 @@ Within a tier, entries are ordered largest-first by the site or line count each 
 #### 0. Delete the dead-code set
 
 - Scope: every entry of section 4.3's ledger (`docs/audit/dead-code.json`) and the tests that exercise only it; a test that also exercises live code is trimmed, not deleted. Under section 4.2's rule no entry is kept, and a function whose only caller was a deleted entry is deleted in the same pass.
-- Deletion list:
-
-  - `crates/rigger-domain/src/hold_probe.rs`: `checks_login` (line 51), `owed_probe` (line 84)
-  - `crates/rigger-store-sqlite/src/run_store.rs`: `record_failed_probe` (line 269), `release_probed_hold` (line 312)
-
+- Status: complete - the ledger is empty.
 - Risk: low. A deletion is a pure subtraction: `cargo build` and `clippy -D warnings` on both feature lanes catch any missed reference immediately.
 - Unblocks: shrinks the files tiers 2-4 operate on before they touch them, so it runs first.
 

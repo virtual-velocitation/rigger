@@ -100,8 +100,6 @@ mod test_support {
     pub use crate::event_fixtures::*;
     pub use crate::graph_fixtures::*;
     #[cfg(any(feature = "store", not(feature = "core")))]
-    pub use crate::hold_probe_fixtures::*;
-    #[cfg(any(feature = "store", not(feature = "core")))]
     pub use crate::ingest_fixtures::*;
     pub use crate::instructions_fixtures::*;
     pub use crate::spawn_fixtures::*;
