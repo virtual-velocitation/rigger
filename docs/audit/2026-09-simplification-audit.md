@@ -2596,7 +2596,7 @@ reason: no probe ends this hold, only `rigger release`.\n                       
 Refuses, recording nothing, when no run is live\n  \
 rigger release              end the current run's hold, whichever writer declared\n                              \
 it; with no hold open it records nothing and says so\n  \
-rigger reported <id>       exit 0 iff spawn <id> already has a recorded result in\n                              \
+rigger reported <id>        exit 0 iff spawn <id> already has a recorded result in\n                              \
 this project's run stream (else non-zero). A read-only check\n                              \
 of whether a spawn reported yet; the death courier records\n                              \
 atomically instead via `rigger result --if-absent`\n  \
