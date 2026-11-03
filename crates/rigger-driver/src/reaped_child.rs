@@ -129,3 +129,97 @@ mod supervised_lifecycle {
         assert_eq!(n, 0, "a reaped child's stdout should be at EOF");
     }
 }
+
+#[cfg(test)]
+mod bounded_read {
+    //! [`ReapedChild::read_lines_until`]: a read of the child's stdout that hands each line over
+    //! until the child ends it, the reader breaks, a line is no text or the deadline passes,
+    //! whichever comes first, so a child that answers nothing holds its reader no longer than the
+    //! deadline.
+    use super::ReapedChild;
+    use std::ops::ControlFlow;
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+
+    #[cfg(unix)]
+    #[test]
+    fn a_read_ends_at_the_end_of_the_stream_a_break_a_line_that_is_no_text_or_the_deadline() {
+        let long = Duration::from_secs(5);
+        let short = Duration::from_millis(600);
+        let early = (Duration::ZERO, Duration::from_secs(2));
+        let at_the_bound = (short, short + Duration::from_millis(1500));
+        // (name, the child's shell, its stdout piped, the bound, the line the reader breaks at,
+        // the lines read, elapsed from and below)
+        let rows: [(&str, &str, bool, Duration, Option<&str>, &[&str], _); 5] = [
+            (
+                "a child that ends",
+                "printf 'a\\nb\\n'",
+                true,
+                long,
+                None,
+                &["a", "b"],
+                early,
+            ),
+            (
+                "a child still running at the deadline",
+                "printf 'a\\nb\\n'; exec sleep 3",
+                true,
+                short,
+                None,
+                &["a", "b"],
+                at_the_bound,
+            ),
+            (
+                "a reader that breaks",
+                "printf 'a\\nb\\n'; exec sleep 3",
+                true,
+                long,
+                Some("a"),
+                &["a"],
+                early,
+            ),
+            (
+                "a line that is no text",
+                "printf 'a\\n\\377\\nb\\n'; exec sleep 3",
+                true,
+                long,
+                None,
+                &["a"],
+                early,
+            ),
+            (
+                "a child with no stdout pipe",
+                "exec sleep 3",
+                false,
+                long,
+                None,
+                &[],
+                early,
+            ),
+        ];
+        for (name, script, piped, bound, break_at, expected, (from, below)) in rows {
+            let child = Command::new("sh")
+                .args(["-c", script])
+                .stdout(if piped { Stdio::piped() } else { Stdio::null() })
+                .spawn()
+                .unwrap();
+            let mut child = ReapedChild::new(child);
+            let mut read = Vec::new();
+            let started = Instant::now();
+            child.read_lines_until(started + bound, |line| {
+                read.push(line.to_string());
+                if Some(line) == break_at {
+                    ControlFlow::Break(())
+                } else {
+                    ControlFlow::Continue(())
+                }
+            });
+            let elapsed = started.elapsed();
+            assert_eq!(read, expected, "{name}");
+            assert!(
+                from <= elapsed && elapsed < below,
+                "{name}: the read ended after {elapsed:?}, outside {from:?}..{below:?}"
+            );
+        }
+    }
+}

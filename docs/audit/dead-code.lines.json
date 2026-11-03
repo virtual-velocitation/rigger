@@ -6,7 +6,7 @@
     "test_only_references": [
       {
         "file": "crates/rigger-domain/src/hold_probe.rs",
-        "line": 444
+        "line": 445
       }
     ]
   },
@@ -17,15 +17,15 @@
     "test_only_references": [
       {
         "file": "crates/rigger-domain/src/hold_probe.rs",
-        "line": 409
+        "line": 410
       },
       {
         "file": "crates/rigger-domain/src/hold_probe.rs",
-        "line": 443
+        "line": 444
       },
       {
         "file": "crates/rigger-domain/src/hold_probe.rs",
-        "line": 453
+        "line": 454
       }
     ]
   },

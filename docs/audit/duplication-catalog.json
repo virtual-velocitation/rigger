@@ -19,7 +19,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-12daf46450fd",
+    "id": "dup-f1828ea41892",
     "classification": "near",
     "sites": [
       {
@@ -198,6 +198,11 @@
         "content_hash": "b0b4170272f04fb7"
       },
       {
+        "file": "tests/common/fixtures/spawn.rs",
+        "name": "printing",
+        "content_hash": "b0b4170272f04fb7"
+      },
+      {
         "file": "tests/halted_spawn_wip_recovery_periphery.rs",
         "name": "unit_branch",
         "content_hash": "6fd90a8c2eed6379"
@@ -213,7 +218,7 @@
         "content_hash": "6fd90a8c2eed6379"
       }
     ],
-    "proposed_home": "a new shared module (sites span 23 files: crates/rigger-conductor/src/blast_radius_eval.rs, crates/rigger-conductor/src/conductor.rs, crates/rigger-domain/src/contextgraph.rs, crates/rigger-domain/src/instructions.rs, crates/rigger-domain/src/review.rs, crates/rigger-domain/src/spawn.rs, crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs, crates/rigger-grounder/src/grounder/mod.rs, crates/rigger-grounder/src/grounder/workflowdef.rs, crates/rigger-grounder/src/ingest.rs, crates/rigger-store-sqlite/src/eventstore/namespace.rs, crates/rigger-worktree-git/src/worktree.rs, src/cli/hygiene.rs, src/cli/mod.rs, src/cli/setup.rs, tests/canary_model_drift_periphery.rs, tests/cli.rs, tests/common/cli.rs, tests/common/fixtures/fold.rs, tests/common/fixtures/instructions.rs, tests/halted_spawn_wip_recovery_periphery.rs, tests/native_driver_pipelining_behavior.rs, tests/regate_landed_on_resume_periphery.rs)",
+    "proposed_home": "a new shared module (sites span 24 files: crates/rigger-conductor/src/blast_radius_eval.rs, crates/rigger-conductor/src/conductor.rs, crates/rigger-domain/src/contextgraph.rs, crates/rigger-domain/src/instructions.rs, crates/rigger-domain/src/review.rs, crates/rigger-domain/src/spawn.rs, crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs, crates/rigger-grounder/src/grounder/mod.rs, crates/rigger-grounder/src/grounder/workflowdef.rs, crates/rigger-grounder/src/ingest.rs, crates/rigger-store-sqlite/src/eventstore/namespace.rs, crates/rigger-worktree-git/src/worktree.rs, src/cli/hygiene.rs, src/cli/mod.rs, src/cli/setup.rs, tests/canary_model_drift_periphery.rs, tests/cli.rs, tests/common/cli.rs, tests/common/fixtures/fold.rs, tests/common/fixtures/instructions.rs, tests/common/fixtures/spawn.rs, tests/halted_spawn_wip_recovery_periphery.rs, tests/native_driver_pipelining_behavior.rs, tests/regate_landed_on_resume_periphery.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
@@ -321,7 +326,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-b7331f15dec2",
+    "id": "dup-512babd81d8b",
     "classification": "near",
     "sites": [
       {
@@ -395,6 +400,11 @@
         "content_hash": "7963312db697b9f4"
       },
       {
+        "file": "tests/common/fixtures/spawn.rs",
+        "name": "probe_arms",
+        "content_hash": "7963312db697b9f4"
+      },
+      {
         "file": "tests/compaction_generations_periphery.rs",
         "name": "closed_unit_line",
         "content_hash": "5d23ae9ae3e76aee"
@@ -410,7 +420,7 @@
         "content_hash": "5d23ae9ae3e76aee"
       }
     ],
-    "proposed_home": "a new shared module (sites span 13 files: crates/rigger-conductor/src/conductor.rs, crates/rigger-domain/src/contextgraph/query.rs, crates/rigger-domain/src/review.rs, crates/rigger-driver/src/driver/mod.rs, crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs, crates/rigger-store-sqlite/src/eventstore/kurrentdb.rs, crates/rigger-store-sqlite/src/spawn_store.rs, tests/cli.rs, tests/common/fixtures/config.rs, tests/common/fixtures/plan_critique.rs, tests/compaction_generations_periphery.rs, tests/new_run_critique_refusal_periphery.rs, tests/no_os_kill_audit.rs)",
+    "proposed_home": "a new shared module (sites span 14 files: crates/rigger-conductor/src/conductor.rs, crates/rigger-domain/src/contextgraph/query.rs, crates/rigger-domain/src/review.rs, crates/rigger-driver/src/driver/mod.rs, crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs, crates/rigger-store-sqlite/src/eventstore/kurrentdb.rs, crates/rigger-store-sqlite/src/spawn_store.rs, tests/cli.rs, tests/common/fixtures/config.rs, tests/common/fixtures/plan_critique.rs, tests/common/fixtures/spawn.rs, tests/compaction_generations_periphery.rs, tests/new_run_critique_refusal_periphery.rs, tests/no_os_kill_audit.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
@@ -501,7 +511,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-cee4dc00e04b",
+    "id": "dup-f1b46fc9d341",
     "classification": "semantic",
     "sites": [
       {
@@ -582,7 +592,7 @@
       {
         "file": "tests/cli.rs",
         "name": "an_is_error_result_reruns_uncharged_and_holds_as_its_class_says",
-        "content_hash": "f3da433319f52aa2"
+        "content_hash": "59eed44d81f7bd35"
       },
       {
         "file": "tests/cli.rs",
@@ -828,7 +838,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-509bbab83e7f",
+    "id": "dup-52f23a94bdbf",
     "classification": "semantic",
     "sites": [
       {
@@ -865,6 +875,11 @@
         "file": "crates/rigger-driver/src/reaped_child.rs",
         "name": "Command::new",
         "content_hash": "da3ee123d4540dd7"
+      },
+      {
+        "file": "crates/rigger-driver/src/reaped_child.rs",
+        "name": "Command::new",
+        "content_hash": "583982587bb6b9ca"
       },
       {
         "file": "crates/rigger-gates-shell/src/gate.rs",
@@ -1298,7 +1313,7 @@
       }
     ],
     "proposed_home": "a single injected process-spawn port every Command::new site routes through instead of constructing its own Command",
-    "note": "mandatory sweep: Command::new call sites - 93 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: Command::new call sites - 94 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {

@@ -8,7 +8,10 @@
 # there; what it prints is the session's answer, and what it prints to fd 3 reaches the host as raw
 # stream lines ahead of the rest. The stand-in reports the spawn's `rigger` server connected, then
 # a `result` carrying that answer as a JSON string. An arm that exits non-zero ends the session
-# with its status and no `result`. A checked-in executable fixture (never
+# with its status and no `result`. A launch whose first argument is `auth` (the
+# `claude auth status --json` read) prints the arm's answer as it stands, with no stream framing.
+# A launch naming no `--system-prompt-file` (the hold probe's canary) reaches the arm for the
+# empty prompt, `""`. A checked-in executable fixture (never
 # written at test time), for the same reason as every sibling fixture here: no concurrent test's
 # fork+exec can inherit a write fd to it.
 here=$(dirname "$0")
@@ -28,6 +31,10 @@ exec 3>&1
 answer=$(. "$here/claude-arms")
 status=$?
 [ "$status" = 0 ] || exit "$status"
+if [ "$1" = auth ]; then
+    printf '%s\n' "$answer"
+    exit 0
+fi
 tab=$(printf '\t')
 json=$(printf '%s' "$answer" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e "s/$tab/\\\\t/g" |
     awk 'NR > 1 { printf "%s", "\\n" } { printf "%s", $0 }')

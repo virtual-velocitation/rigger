@@ -12,6 +12,12 @@ pub fn at(secs: u64) -> std::time::SystemTime {
     std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(secs)
 }
 
+/// `event` dated `ago` seconds before now by its `valid_from`, as a store keeps a hand's
+/// backdated append.
+pub fn dated_ago(event: Event, ago: u64) -> Event {
+    event.with_valid_from(std::time::SystemTime::now() - std::time::Duration::from_secs(ago))
+}
+
 /// An event of type `type_` whose payload is the UTF-8 bytes of `json`.
 pub fn ev(type_: &str, json: &str) -> Event {
     Event::new(type_, json.as_bytes().to_vec())

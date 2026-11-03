@@ -158,6 +158,7 @@ fn delay_after(probes: usize) -> Duration {
 mod tests {
     use super::*;
     use crate::event_fixtures::at;
+    use crate::hold_probe_fixtures::probe_line;
     use crate::progress::RunStamped;
     use crate::run::{
         RunHeld, RunReleased, HOLD_BY_HOST, HOLD_BY_OPERATOR, HOLD_BY_PROBE, TYPE_RUN_HELD,
@@ -451,13 +452,6 @@ mod tests {
     fn a_probe_line_names_its_hold_and_delay_at_the_probed_revision() {
         let log = run_log(&[Held("billing_error", HOLD_BY_HOST, 100), Other(150)]);
         let owed = owed_probe(&log, &[probed(0, 200)], at(10_000)).unwrap();
-        assert_eq!(
-            owed.line(),
-            AgentProgress {
-                id: "hold-probe".to_string(),
-                activity: "probing the billing_error hold within 120 s".to_string(),
-                revision: Some(0),
-            }
-        );
+        assert_eq!(owed.line(), probe_line("billing_error", 120, 0));
     }
 }

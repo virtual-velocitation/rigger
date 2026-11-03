@@ -61,6 +61,9 @@ pub mod grounder;
 pub use rigger_config_files::playbooks;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use rigger_dash::mcpserver;
+/// The hold probe's delay and its progress line (spec 105 RELEASE).
+#[cfg(any(feature = "store", not(feature = "core")))]
+pub use rigger_domain::hold_probe;
 pub use rigger_domain::instructions;
 pub use rigger_domain::ledger;
 pub use rigger_domain::metrics;

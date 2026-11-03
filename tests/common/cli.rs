@@ -14,6 +14,7 @@ use rigger::eventstore::{Direction, Event, EventStore, ExpectedRevision};
 use rigger::run::{RunHeld, RunReleased, TYPE_RUN_HELD, TYPE_RUN_RELEASED};
 
 pub use super::fixtures::keyed;
+use super::fixtures::{dated_ago, run_held_event};
 
 /// A throwaway project directory that is its own (commit-less) git repo, so the project
 /// identity the binary resolves for it is its basename, stable across every call a test makes.
@@ -699,18 +700,18 @@ pub fn append_run_events<B: AsRef<str>>(store: &dyn EventStore, events: &[(&str,
 /// Seed one released hold into `root`'s namespaced run stream, raised `held_ago` seconds ago and
 /// released `released_ago` seconds ago, dated by `valid_from` as a run's hold intervals read it.
 pub fn seed_released_hold(root: &Path, held_ago: u64, released_ago: u64) {
-    fn dated(type_: &str, body: impl serde::Serialize, ago: u64) -> Event {
-        Event::new(type_, serde_json::to_vec(&body).unwrap())
-            .with_valid_from(SystemTime::now() - Duration::from_secs(ago))
-    }
+    let released = Event::new(
+        TYPE_RUN_RELEASED,
+        serde_json::to_vec(&RunReleased::default()).unwrap(),
+    );
     with_run_store(root, |store| {
         store
             .append(
                 rigger::conductor::STREAM,
                 ExpectedRevision::Any,
                 &[
-                    dated(TYPE_RUN_HELD, RunHeld::default(), held_ago),
-                    dated(TYPE_RUN_RELEASED, RunReleased::default(), released_ago),
+                    dated_ago(run_held_event(&RunHeld::default()), held_ago),
+                    dated_ago(released, released_ago),
                 ],
             )
             .unwrap();
@@ -818,7 +819,13 @@ pub fn idle_window_secs() -> u64 {
 /// `f` over `root`'s own project namespace of its on-disk `.rigger/events.db` - the store the
 /// binary writes, opened through the same composition the binary opens it through.
 pub fn with_run_store<R>(root: &Path, f: impl FnOnce(&dyn EventStore) -> R) -> R {
-    let backend = Store::open(rigger_file(root, "events.db").to_str().unwrap()).unwrap();
+    with_store_file(root, "events.db", f)
+}
+
+/// `f` over `root`'s own project namespace of its on-disk `.rigger/<file>` (`progress.db` the
+/// progress log), opened as [`with_run_store`] opens the event log.
+pub fn with_store_file<R>(root: &Path, file: &str, f: impl FnOnce(&dyn EventStore) -> R) -> R {
+    let backend = Store::open(rigger_file(root, file).to_str().unwrap()).unwrap();
     let store = Namespaced::new(&backend, &run_stream_identity(root));
     f(&store)
 }
@@ -907,17 +914,16 @@ pub fn seed_a_run(root: &Path) -> String {
 /// Every event of `type_` of the current run in `root`'s own `.rigger/progress.db`, read directly
 /// (never through a command under test) so an assertion is independent of it: the run's id
 /// cold-read from `events.db` (empty before any run), then that run's progress stream, under the
-/// same [`Namespaced`] scoping the binary writes through ([`run_stream_identity`]).
+/// same [`Namespaced`] scoping the binary writes through ([`with_store_file`]).
 pub fn current_run_progress_events(root: &Path, type_: &str) -> Vec<Event> {
-    let db = rigger_file(root, "progress.db");
-    let backend = Store::open(db.to_str().expect("a utf-8 store path")).expect("the store opens");
-    let identity = run_stream_identity(root);
     let run_id = current_run_id_of(root).unwrap_or_default();
-    rigger::progress::read_run(&Namespaced::new(&backend, &identity), &run_id)
-        .expect("the progress stream reads")
-        .into_iter()
-        .filter(|e| e.type_ == type_)
-        .collect()
+    with_store_file(root, "progress.db", |store| {
+        rigger::progress::read_run(store, &run_id)
+    })
+    .expect("the progress stream reads")
+    .into_iter()
+    .filter(|e| e.type_ == type_)
+    .collect()
 }
 
 /// Every record of type `T` of the current run in `root`'s own `.rigger/progress.db`
