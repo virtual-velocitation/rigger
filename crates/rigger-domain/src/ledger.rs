@@ -379,19 +379,20 @@ pub fn attention_kind_rank(kind: &str) -> usize {
     ORDER.iter().position(|k| *k == kind).unwrap_or(usize::MAX)
 }
 
-/// The attention a run's holds yield (spec 105, WHAT A PERSON SEES), in log order, from one run's
-/// slice of the run stream: one [`ATTENTION_HELD`] entry per hold, keyed by its first `RunHeld`
-/// and naming the [`Hold::reason`] of its latest, so a repeated or upgraded `RunHeld` adds none;
-/// and one [`ATTENTION_RELEASED`] entry per release of an open hold, reading the `held_for_s` its
-/// `RunReleased` carries. A `RunReleased` with no open hold ends nothing and adds nothing. Each
-/// hold is one [`holds`] walks, so an open hold's entry is the last. `None` when a `RunHeld`, or
-/// the `RunReleased` of an open hold, does not decode. The console's dock reads it.
-pub fn hold_attention(run_events: &[Event]) -> Option<Vec<AttentionEntry>> {
+/// The attention a run's holds yield (spec 105, WHAT A PERSON SEES), in log order, from the holds
+/// [`holds`] walks in one run's slice of the run stream: one [`ATTENTION_HELD`] entry per hold,
+/// keyed by its first `RunHeld` and naming the [`Hold::reason`] of its latest, so a repeated or
+/// upgraded `RunHeld` adds none; and one [`ATTENTION_RELEASED`] entry per release of an open
+/// hold, reading the `held_for_s` its `RunReleased` carries. A `RunReleased` with no open hold
+/// ends nothing and adds nothing. Each hold is one span, so an open hold's entry is the last.
+/// `None` when a `RunHeld`, or the `RunReleased` of an open hold, does not decode. The console's
+/// dock reads it from the same walk it reads the open hold from.
+pub fn hold_attention(spans: &[HoldSpan]) -> Option<Vec<AttentionEntry>> {
     let mut entries = Vec::new();
-    for span in holds(run_events) {
-        let detail = format!("held - {}", span.hold?.reason());
+    for span in spans {
+        let detail = format!("held - {}", span.hold.as_ref()?.reason());
         entries.push(AttentionEntry::run_scoped(ATTENTION_HELD, detail));
-        if let Some(release) = span.release {
+        if let Some(release) = &span.release {
             let detail = format!("released after {}s", release.held_for_s?);
             entries.push(AttentionEntry::run_scoped(ATTENTION_RELEASED, detail));
         }
@@ -1662,7 +1663,7 @@ mod tests {
             ),
         ];
         for (name, log, want) in cases {
-            assert_eq!(hold_attention(&log), want, "{name}");
+            assert_eq!(hold_attention(&holds(&log)), want, "{name}");
         }
     }
 

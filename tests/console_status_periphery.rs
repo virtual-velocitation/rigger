@@ -507,7 +507,7 @@ fn hold_attention_folds_what_the_hold_verbs_write_into_one_held_and_one_released
         AttentionEntry::run_scoped(ATTENTION_RELEASED, format!("released after {secs}s"))
     };
     assert_eq!(
-        rigger::ledger::hold_attention(&read_run_events(root)),
+        rigger::ledger::hold_attention(&rigger::ledger::holds(&read_run_events(root))),
         Some(vec![
             held(),
             released(held_for[0]),

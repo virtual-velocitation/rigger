@@ -107,12 +107,13 @@ pub fn dock(run: &RunState, events: &[Event]) -> Dock {
 
     // The open hold is the walk's last hold while unreleased, and its entry the attention fold's
     // last, since that fold lists the same walk's holds in order.
-    let open_hold = ledger::holds(events)
-        .pop()
+    let spans = ledger::holds(events);
+    let open_hold = spans
+        .last()
         .filter(|span| span.release.is_none())
-        .and_then(|span| span.hold);
+        .and_then(|span| span.hold.as_ref());
     if open_hold.is_some_and(|hold| hold.latest.needs_person) {
-        needs_you.extend(ledger::hold_attention(events).and_then(|mut entries| entries.pop()));
+        needs_you.extend(ledger::hold_attention(&spans).and_then(|mut entries| entries.pop()));
     }
 
     for u in run.units.values() {
