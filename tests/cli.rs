@@ -16005,6 +16005,9 @@ fn a_live_runs_launch_is_left_alone_beside_it_and_reconciled_by_the_next_start_o
     };
     if !common::fixtures::wait_until_for(POLLS_BESIDE_A_RUN, || recorded_pid().is_some()) {
         drop(live);
+        // An agent launched between the wait's last read and the run's end is owned before the
+        // panic, so the failure ends it too.
+        let _late_agent = recorded_pid().map(common::OwnedPid::new);
         panic!(
             "the live run never launched its agent; stderr: {}",
             std::fs::read_to_string(&stderr).unwrap()
