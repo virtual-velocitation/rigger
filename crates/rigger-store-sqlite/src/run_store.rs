@@ -308,36 +308,38 @@ pub fn hold_by_operator(store: &dyn EventStore, reason: &str) -> Result<(), Erro
     .map(drop)
 }
 
-/// Release the current run's open hold, an operator hold included, as `RunReleased` by `by`: the
-/// done run's and the mint's release by the host, `rigger release`'s by the operator (spec 105).
-/// With no hold open it appends nothing. Answers whether it appended.
-pub fn release_hold(store: &dyn EventStore, by: &str, _now: SystemTime) -> Result<bool, Error> {
+/// Release the current run's open hold, an operator hold included, as `RunReleased` by `by`,
+/// carrying how long it stood at the caller's `now`: the done run's and the mint's release by the
+/// host, `rigger release`'s by the operator (spec 105). With no hold open it appends nothing.
+/// Answers whether it appended.
+pub fn release_hold(store: &dyn EventStore, by: &str, now: SystemTime) -> Result<bool, Error> {
     append_on_hold(store, TYPE_RUN_RELEASED, |hold| {
-        hold.map(|hold| released_by(by, hold)).transpose()
+        hold.map(|hold| released_by(by, hold, now)).transpose()
     })
 }
 
-/// Release the hold a passing probe read, as `RunReleased {by: probe}`, only while the hold's
-/// latest `RunHeld` is the one at `probed`: a hold re-declared since, by any writer and of any
-/// cause, a released hold and an unheld run take nothing (spec 105 RELEASE).
+/// Release the hold a passing probe read, as `RunReleased {by: probe}` carrying how long it stood
+/// at the controller's `now`, only while the hold's latest `RunHeld` is the one at `probed`: a
+/// hold re-declared since, by any writer and of any cause, a released hold and an unheld run take
+/// nothing (spec 105 RELEASE).
 pub fn release_probed_hold(
     store: &dyn EventStore,
     probed: Revision,
-    _now: SystemTime,
+    now: SystemTime,
 ) -> Result<(), Error> {
     append_on_hold(store, TYPE_RUN_RELEASED, |hold| {
         hold.filter(|hold| hold.revision == probed)
-            .map(|hold| released_by(HOLD_BY_PROBE, hold))
+            .map(|hold| released_by(HOLD_BY_PROBE, hold, now))
             .transpose()
     })
     .map(drop)
 }
 
-/// The `RunReleased` by `by` of `hold`, carrying how long it stood.
-fn released_by(by: &str, hold: &Hold) -> Result<Event, Error> {
+/// The `RunReleased` by `by` of `hold`, carrying how long it stood at `now`.
+fn released_by(by: &str, hold: &Hold, now: SystemTime) -> Result<Event, Error> {
     let body = RunReleased {
         by: by.to_string(),
-        held_for_s: held_for_s(hold.since, SystemTime::now()),
+        held_for_s: held_for_s(hold.since, now),
     };
     serialized(TYPE_RUN_RELEASED, body.to_event())
 }
