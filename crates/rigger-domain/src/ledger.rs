@@ -1604,4 +1604,27 @@ mod tests {
             assert_eq!(hold_attention(&log), want, "{name}");
         }
     }
+
+    /// WHAT A PERSON SEES: a hold reads as `<cause> - <action>` of its latest `RunHeld`, and as its
+    /// cause alone when that action is empty, as an operator hold held with an empty reason is.
+    #[test]
+    fn a_hold_reads_as_its_cause_and_action_or_its_cause_alone() {
+        for (cause, action, want) in [
+            ("auth", "log in again", "auth - log in again"),
+            ("operator", "moving quota", "operator - moving quota"),
+            ("operator", "", "operator"),
+        ] {
+            let hold = Hold {
+                since: UNIX_EPOCH,
+                operator: cause == "operator",
+                latest: RunHeld {
+                    cause: cause.to_string(),
+                    action: action.to_string(),
+                    ..RunHeld::default()
+                },
+                revision: 0,
+            };
+            assert_eq!(hold.reason(), want, "{cause} with action {action:?}");
+        }
+    }
 }

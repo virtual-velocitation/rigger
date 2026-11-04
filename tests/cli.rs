@@ -7536,7 +7536,7 @@ fn an_is_error_result_reruns_uncharged_and_holds_as_its_class_says() {
              Continue where you left off."
         ))
     };
-    let operator_released = released(&format!("{SEEDED_HOLD_CAUSE} - "));
+    let operator_released = released(SEEDED_HOLD_CAUSE);
     let cases = [
         Case {
             name: "a FAULT class on an unheld run",
