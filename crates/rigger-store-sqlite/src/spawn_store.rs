@@ -150,7 +150,7 @@ fn record_result_unless(
             .map_err(|e| Error::Backend(format!("decode results for {}: {e}", res.id)))?
             .is_some())
     };
-    let (run, mut head) = crate::run_store::read_run_at_head(store)?;
+    let (run, mut head) = crate::run::read::read_run_at_head(store, STREAM)?;
     if answered(&run)? {
         // A standing result - leave it untouched (the no-op every caller wants).
         return Ok(None);

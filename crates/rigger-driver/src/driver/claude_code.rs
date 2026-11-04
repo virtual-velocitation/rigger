@@ -18,8 +18,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde_json::Value;
 
 use crate::agent::{
-    classify_failure, no_result_error, AgentDriver, AgentFailure, AgentResult, Disposition, Error,
-    SpawnOpts, API_UNSTABLE, SPAWN_BOUND_TOOLS, SPAWN_PROGRESS_TOOL,
+    classify_failure, launch_interrupted, no_result_error, AgentDriver, AgentFailure, AgentResult,
+    Disposition, Error, SpawnOpts, API_UNSTABLE, SPAWN_BOUND_TOOLS, SPAWN_PROGRESS_TOOL,
 };
 use crate::config::AgentDef;
 use crate::driver::replay::{
@@ -31,12 +31,11 @@ use crate::driver::{
 };
 use crate::eventstore::EventStore;
 use crate::hooks;
-use crate::ledger;
 use crate::liveness;
 use crate::progress::{self, ApiRetry, SpawnLaunched};
 use crate::progress_store;
 use crate::run;
-use crate::run::read::{read_current_hold, read_current_run};
+use crate::run::read::{read_current_hold_at_head, read_current_run, released_past};
 use crate::run::STREAM;
 use crate::run_store;
 use crate::spawn::SpawnResult;
@@ -183,9 +182,25 @@ enum StreamEnd {
     /// ([`Driver::session_gone`]): the spawn lands a fresh launch next.
     NoSession,
     /// A launch closed `interrupted` for its class or a held run ([`Driver::fault`]): the spawn
-    /// returns the classed error and, recording no result and charging no attempt, keeps its
-    /// scratch for the same id's next launch.
+    /// returns the classed error, marked interrupted ([`launch_interrupted`]) so the held-run
+    /// decorator relaunches on the host's decision, and, recording no result and charging no
+    /// attempt, keeps its scratch for the same id's next launch.
     Interrupted(Error),
+}
+
+/// What a hold read at a launch's ending proved ([`Driver::run_held`]), the one rule its readers
+/// share: only a run proved [`HoldRead::Unheld`] takes the resume fallback.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HoldRead {
+    /// The run stands held, at the head of the read that proved it: the stamp an `interrupted`
+    /// close that read decided carries ([`Driver::close_at`]).
+    Held(Option<crate::eventstore::Revision>),
+    /// The run stands unheld, or the host has no hold sink to read.
+    Unheld,
+    /// The read failed, proving neither: a run not proved unheld launches nothing, as the
+    /// decorator's own read rules, and no `interrupted` close stands on a hold no read proved, so
+    /// the launch keeps its own ending and the spawn's own failure is never masked.
+    Unproved,
 }
 
 /// One launch as the record names it: the ordinal it took and the session it ran as, what every
@@ -194,6 +209,8 @@ enum StreamEnd {
 struct LaunchId<'a> {
     ordinal: u32,
     session_id: &'a str,
+    /// The session the launch continues, empty on a fresh launch: what the fallback names.
+    resumed_from: &'a str,
     model: &'a str,
 }
 
@@ -239,12 +256,14 @@ impl Driver<'_> {
         // the ONE session authority the cli host shares ([`LaunchSession`]).
         let session = LaunchSession::of(opts);
         let task = session.task(task, opts);
-        self.launch_as(session, agent, task, opts, store)
+        self.launch_as(session, agent, task, opts, store, None)
     }
 
-    /// [`Driver::launch`] as `session`, sending `task` as it stands: the way in of the fallback,
-    /// a fresh session for a spawn whose `opts` still name the one that is gone, and of the
-    /// relaunch ([`Driver::first_launch`]), a resume of the session a launch left `interrupted`.
+    /// [`Driver::launch`] as `session`, sending `task` as it stands, at `ordinal` when the caller
+    /// already read it off the record and at [`progress_store::next_launch`] when `None`: the way
+    /// in of the fallback, a fresh session for a spawn whose `opts` still name the one that is
+    /// gone, and of the relaunch ([`Driver::first_launch`]), a fork of the session a launch left
+    /// `interrupted`.
     fn launch_as(
         &self,
         session: LaunchSession,
@@ -252,6 +271,7 @@ impl Driver<'_> {
         task: &str,
         opts: &SpawnOpts,
         store: &dyn EventStore,
+        ordinal: Option<u32>,
     ) -> Result<Launch, Error> {
         let session_id = session.id.clone();
         let container = spawn_scratch_path(&self.scratch_root, &opts.run_id, &opts.id);
@@ -272,7 +292,10 @@ impl Driver<'_> {
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
-        let ordinal = progress_store::next_launch(store, &opts.run_id, &opts.id, opts.launch)?;
+        let ordinal = match ordinal {
+            Some(ordinal) => ordinal,
+            None => progress_store::next_launch(store, &opts.run_id, &opts.id, opts.launch)?,
+        };
         progress_store::record_launch(
             store,
             &opts.run_id,
@@ -280,7 +303,7 @@ impl Driver<'_> {
                 spawn: opts.id.clone(),
                 launch: ordinal,
                 session_id: session_id.clone(),
-                resumed_from: session.resumed.then(|| session.id.clone()),
+                resumed_from: session.resumed().then(|| session.resumed_from()),
                 started,
                 ended: None,
                 class: None,
@@ -331,7 +354,7 @@ impl Driver<'_> {
             // A session that refused a resume exits without reading its input, so a task past
             // the pipe buffer fails here on the very launch the fallback answers: the ended
             // child goes on to `read_stream`, which reads what it printed.
-            if !session.resumed {
+            if !session.resumed() {
                 return Err(Error(format!(
                     "claude_code driver: write task to {:?}: {e}",
                     opts.id
@@ -351,12 +374,13 @@ impl Driver<'_> {
     }
 
     /// The spawn's first launch (spec 105, RESUME BY SESSION). When the latest launch of `opts.id`
-    /// in this run ([`progress_store::latest_launch`]) ended `interrupted`, whichever site closed
-    /// it, it is a resume of that launch's session at the next ordinal in `opts.dir`, charged no
-    /// attempt, sent the [`Driver::interruption_note`], then [`SpawnOpts::resume_task`] when the
-    /// interrupted launch carried it, as a launch of [`SpawnOpts::resumed_from`] does. Any other
-    /// spawn takes [`Driver::launch`]. A failed read of the record or of the hold sink launches
-    /// nothing.
+    /// in this run ([`progress_store::latest_launch_records`]) ended `interrupted`, whichever site
+    /// closed it, it is a relaunch ([`LaunchSession::relaunch`]) at the next ordinal in `opts.dir`,
+    /// a fork of that launch's session under a minted id, charged no attempt, sent the
+    /// [`Driver::interruption_note`] in front of what [`LaunchSession::task`] sends, the
+    /// [`SpawnOpts::resume_task`] when that launch's record, its open record unless it was lost,
+    /// says it carried it. Any other spawn takes [`Driver::launch`]. A failed read of the record
+    /// or of the hold sink launches nothing.
     fn first_launch(
         &self,
         agent: &AgentDef,
@@ -364,19 +388,27 @@ impl Driver<'_> {
         opts: &SpawnOpts,
     ) -> Result<Launch, Error> {
         let store = self.progress_store;
-        let Some(interrupted) = progress_store::latest_launch(store, &opts.run_id, &opts.id)?
+        let records = progress_store::latest_launch_records(store, &opts.run_id, &opts.id)?;
+        let Some(interrupted) = records
+            .last()
             .filter(|latest| latest.ended.as_deref() == Some(progress::ENDED_INTERRUPTED))
         else {
             return self.launch(agent, prompt, opts, store);
         };
-        let note = self.interruption_note(&interrupted)?;
-        let task = if interrupted.session_id == opts.resumed_from {
-            format!("{note}\n\n{}", opts.resume_task)
-        } else {
-            note
+        let note = self.interruption_note(interrupted)?;
+        let session = LaunchSession::relaunch(records.first().unwrap_or(interrupted), opts);
+        let task = match session.task(prompt, opts) {
+            "" => note,
+            carried => format!("{note}\n\n{carried}"),
         };
-        let session = LaunchSession::resume(interrupted.session_id);
-        self.launch_as(session, agent, &task, opts, store)
+        self.launch_as(
+            session,
+            agent,
+            &task,
+            opts,
+            store,
+            Some(interrupted.launch + 1),
+        )
     }
 
     /// What a relaunch tells the session `interrupted` closed (spec 105): a close with no class,
@@ -389,7 +421,7 @@ impl Driver<'_> {
             None => ": rigger's supervisor restarted".to_string(),
             Some(class) => {
                 let released = match self.hold_sink.zip(interrupted.revision) {
-                    Some((sink, stamp)) => released_past(sink, stamp)?,
+                    Some((sink, stamp)) => released_past(sink, STREAM, stamp)?,
                     None => None,
                 };
                 match released {
@@ -515,6 +547,7 @@ impl Driver<'_> {
         let id = LaunchId {
             ordinal: launch.ordinal,
             session_id: &launch.session_id,
+            resumed_from: &launch.resumed_from,
             model: &launch.model,
         };
         let mut reaper = crate::reaped_child::ReapedChild::new(launch.child);
@@ -622,7 +655,7 @@ impl Driver<'_> {
                                     opts,
                                     self.stop_grace,
                                 );
-                                if self.run_held(opts) == Some(false) {
+                                if self.run_held(opts) == HoldRead::Unheld {
                                     return Ok(self.session_gone(opts, id));
                                 }
                                 let message = self.announce_stop(opts, max_wall_clock);
@@ -876,7 +909,7 @@ impl Driver<'_> {
 
         match (result, read_error) {
             (Some(result), _) => Ok(StreamEnd::Result(result)),
-            (None, Some(_)) if self.run_held(opts) == Some(false) => {
+            (None, Some(_)) if self.run_held(opts) == HoldRead::Unheld => {
                 Ok(self.session_gone(opts, id))
             }
             (None, Some(e)) => Err(read_agent_stream_error(opts, &e)),
@@ -901,7 +934,7 @@ impl Driver<'_> {
             &format!(
                 "stream: session {} to resume yielded no system/init, falling back to a fresh \
                  launch",
-                id.session_id
+                id.resumed_from
             ),
         );
         StreamEnd::NoSession
@@ -974,10 +1007,11 @@ impl Driver<'_> {
     /// HELD MEANS NO LAUNCH AND NO CHARGE (spec 105) decides ahead of that close: a host with a
     /// hold sink closes `interrupted` under `class` instead when the class's row holds or waits,
     /// which reads no hold, or when the run is held at this ending ([`Driver::run_held`]), whatever
-    /// the class, and the error rides [`StreamEnd::Interrupted`]: no result, no attempt, the
-    /// scratch kept. A `fallback` launch, a resume that still awaits its session, on a run proved
-    /// unheld leaves here by THE RESUME FALLBACK ([`Driver::session_gone`]). A read that fails
-    /// proves neither, so it closes `fault` with no fallback.
+    /// the class, and the error rides [`StreamEnd::Interrupted`], marked interrupted: no result,
+    /// no attempt, the scratch kept. A close the hold read decided carries that read's head as its
+    /// stamp ([`Driver::close_at`]). A `fallback` launch, a resume that still awaits its session,
+    /// on a run proved unheld leaves here by THE RESUME FALLBACK ([`Driver::session_gone`]). A
+    /// read that fails proves neither, so it closes `fault` with no fallback.
     ///
     /// The holds follow the close and come before the `Error` returns: an ending of a class whose
     /// row holds or waits sights that class, with no `detail` since an ending is no sighting line,
@@ -993,61 +1027,76 @@ impl Driver<'_> {
         fallback: bool,
     ) -> Result<StreamEnd, Error> {
         let waits = class.row().disposition != Disposition::Fault;
-        let held = if waits && self.hold_sink.is_some() {
-            Some(true)
-        } else {
-            self.run_held(opts)
-        };
-        if fallback && held == Some(false) {
+        // A class whose row holds or waits interrupts a host with a hold sink on its own, with no
+        // read; any other ending reads the hold, so `read` holds only what a read proved.
+        let class_interrupts = waits && self.hold_sink.is_some();
+        let read = (!class_interrupts).then(|| self.run_held(opts));
+        if fallback && read == Some(HoldRead::Unheld) {
             return Ok(self.session_gone(opts, id));
         }
-        let interrupted = held == Some(true);
+        let interrupted = class_interrupts || matches!(read, Some(HoldRead::Held(_)));
         let ended = if interrupted {
             progress::ENDED_INTERRUPTED
         } else {
             progress::ENDED_FAULT
         };
-        self.close(opts, id, ended, class.as_str());
+        match read {
+            Some(HoldRead::Held(head)) => self.close_at(opts, id, ended, class.as_str(), head),
+            _ => self.close(opts, id, ended, class.as_str()),
+        }
         if waits {
             self.sight(opts, id, class.as_str(), "");
         }
-        let error = no_result_error(class, message);
         if interrupted {
-            return Ok(StreamEnd::Interrupted(error));
+            return Ok(StreamEnd::Interrupted(launch_interrupted(class, message)));
         }
         self.sight_unstable(opts, id);
-        Err(error)
+        Err(no_result_error(class, message))
     }
 
-    /// Whether this run stands held once a launch has ended, what [`Driver::fault`] and the
+    /// What this run's hold read proves once a launch has ended, what [`Driver::fault`] and the
     /// fallback at the stop and the read error weigh (spec 105): the fallback runs inside the
     /// spawn, past the decorator's gate, so the read follows the ending. A host with no hold sink
-    /// reads no hold and answers `Some(false)`. A read that fails is a progress line and answers
-    /// `None`, proving neither: a run not proved unheld launches nothing, as the decorator's own
-    /// read rules, and no `interrupted` close stands on a hold no read proved, so the launch keeps
-    /// its own ending and the spawn's own failure is never masked.
-    fn run_held(&self, opts: &SpawnOpts) -> Option<bool> {
+    /// reads no hold and answers [`HoldRead::Unheld`]. A read that fails is a progress line and
+    /// answers [`HoldRead::Unproved`].
+    fn run_held(&self, opts: &SpawnOpts) -> HoldRead {
         let Some(sink) = self.hold_sink else {
-            return Some(false);
+            return HoldRead::Unheld;
         };
-        match hold_stands(sink) {
-            Ok(held) => Some(held),
+        match read_current_hold_at_head(sink, STREAM) {
+            Ok((Some(_), head)) => HoldRead::Held(head),
+            Ok((None, _)) => HoldRead::Unheld,
             Err(e) => {
                 self.record_progress(opts, &format!("hold not read: {}", e.0));
-                None
+                HoldRead::Unproved
             }
         }
     }
 
     /// Close this launch's record `ended` under `class`, stamped with the run stream's revision
-    /// read just now: the one close an ending that closes writes. Best-effort, a courtesy for
-    /// reconciliation and for the failed-close count, never the source of truth: the classed
-    /// `Error` or the recorded result is, a lost close only leaves a record the supervisor's
-    /// start-up reconciliation closes later, and a failed read leaves the close unstamped.
+    /// read just now: the one close an ending that closes writes, [`Driver::close_at`] that
+    /// revision. A failed read leaves the close unstamped.
     fn close(&self, opts: &SpawnOpts, id: LaunchId, ended: &str, class: &str) {
         let revision = self
             .hold_sink
             .and_then(|sink| run_store::run_stream_head(sink).ok().flatten());
+        self.close_at(opts, id, ended, class, revision);
+    }
+
+    /// Close this launch's record `ended` under `class`, stamped with `revision`: the head of the
+    /// run read that decided the ending, so a `RunReleased` landing after that read lies past the
+    /// close ([`released_past`]). Best-effort, a courtesy for reconciliation and for the
+    /// failed-close count, never the source of truth: the classed `Error` or the recorded result
+    /// is, and a lost close only leaves a record the supervisor's start-up reconciliation closes
+    /// later.
+    fn close_at(
+        &self,
+        opts: &SpawnOpts,
+        id: LaunchId,
+        ended: &str,
+        class: &str,
+        revision: Option<crate::eventstore::Revision>,
+    ) {
         let _ = progress_store::record_launch(
             self.progress_store,
             &opts.run_id,
@@ -1449,31 +1498,6 @@ fn drain_child_stderr_tail(mut stderr: ChildStderr) -> Vec<u8> {
     tail
 }
 
-/// Whether the run on `sink` stands held: the hold its current events project to.
-fn hold_stands(sink: &dyn EventStore) -> Result<bool, Error> {
-    Ok(read_current_hold(sink, STREAM)?.is_some())
-}
-
-/// The hold the first `RunReleased` of the run on `sink` past revision `stamp` ended, the hold
-/// its current events before that release project to, with how long it stood, or `None` when no
-/// release lies past `stamp` or the one that does ended no hold. A close stamped at a release's
-/// own revision read it, so that release lies before the close.
-fn released_past(
-    sink: &dyn EventStore,
-    stamp: crate::eventstore::Revision,
-) -> Result<Option<(ledger::Hold, u64)>, Error> {
-    let (events, _) = read_current_run(sink, STREAM)?;
-    let Some(at) = events
-        .iter()
-        .position(|event| event.type_ == run::TYPE_RUN_RELEASED && event.revision > stamp)
-    else {
-        return Ok(None);
-    };
-    let released: run::RunReleased = serde_json::from_slice(&events[at].data)?;
-    let hold = ledger::project(&events[..at])?.hold;
-    Ok(hold.map(|hold| (hold, released.held_for_s)))
-}
-
 /// Append `chunk` to `tail`, then trim from the FRONT down to at most [`STDERR_TAIL_CAP`]
 /// bytes - the pure ring-buffer step [`drain_child_stderr_tail`]'s read loop calls on every
 /// chunk, split out so the bounding behavior itself is testable with no process, no pipe,
@@ -1545,7 +1569,8 @@ impl AgentDriver for Driver<'_> {
                 Ok(StreamEnd::Result(result)) => break Ok(result),
                 Ok(StreamEnd::NoSession) => {
                     let session = LaunchSession::fresh();
-                    launched = self.launch_as(session, agent, prompt, opts, self.progress_store);
+                    let store = self.progress_store;
+                    launched = self.launch_as(session, agent, prompt, opts, store, None);
                 }
                 Ok(StreamEnd::Interrupted(e)) => return Err(e),
                 Err(e) => break Err(e),
@@ -1981,6 +2006,7 @@ mod tests {
     const LAUNCH: LaunchId = LaunchId {
         ordinal: 0,
         session_id: "sess-1",
+        resumed_from: "",
         model: "",
     };
 
@@ -2473,10 +2499,7 @@ mod tests {
 
     /// A fresh launch session under the fixed `id`, so an argv test compares exact values.
     fn fresh_session(id: &str) -> LaunchSession {
-        LaunchSession {
-            id: id.to_string(),
-            resumed: false,
-        }
+        LaunchSession::new(id.to_string(), None, false)
     }
 
     // ---- probe(): the hold probe's login read and canary, via the checked-in arms fixture ----
@@ -3134,6 +3157,66 @@ mod tests {
         let v: serde_json::Value =
             serde_json::from_str(stdin_line.trim_start_matches("STDIN=")).unwrap();
         assert_eq!(v["message"]["content"], framed("fix exactly these"));
+    }
+
+    /// THE RELAUNCH FORKS (spec 105, RESUME BY SESSION): the relaunch of an interrupted launch
+    /// resumes its session as a fork under a session id the host mints, so an orphan of that
+    /// launch keeps its transcript to itself, and the record carries the minted id with
+    /// `resumed_from` naming the interrupted session.
+    #[test]
+    fn a_relaunch_forks_the_interrupted_session_under_a_minted_id() {
+        let store = Store::open(":memory:").unwrap();
+        let driver = Driver {
+            bin: fixture_bin(),
+            rigger_bin: "rigger".to_string(),
+            progress_store: &store,
+            ..Driver::default()
+        };
+        let o = opts("u/implementer#1");
+        let interrupted = "sess-interrupted";
+        for record in [
+            SpawnLaunched {
+                spawn: o.id.clone(),
+                session_id: interrupted.to_string(),
+                ..Default::default()
+            },
+            SpawnLaunched::closed(&o.id, 0, interrupted, progress::ENDED_INTERRUPTED, ""),
+        ] {
+            progress_store::record_launch(&store, &o.run_id, &record).unwrap();
+        }
+
+        let mut launch = driver
+            .first_launch(&AgentDef::default(), "the full task", &o)
+            .unwrap();
+        read_fixture_lines(&mut launch.child);
+
+        let minted = launch.session_id.clone();
+        assert_ne!(
+            minted, interrupted,
+            "the fork runs under a session of its own"
+        );
+        let at = launch.args.iter().position(|x| x == "--resume");
+        assert_eq!(
+            at.and_then(|at| launch.args.get(at..at + 5)),
+            Some(
+                &[
+                    "--resume".to_string(),
+                    interrupted.to_string(),
+                    "--fork-session".to_string(),
+                    "--session-id".to_string(),
+                    minted.clone(),
+                ][..]
+            ),
+            "{:?}",
+            launch.args
+        );
+        let recorded = crate::progress::read_run(&store, &o.run_id).unwrap();
+        let sl: SpawnLaunched = serde_json::from_slice(&recorded[2].data).unwrap();
+        assert_eq!(
+            (sl.launch, sl.session_id, sl.resumed_from),
+            (1, minted, Some(interrupted.to_string()))
+        );
+        assert_eq!(launch.resumed_from, interrupted);
     }
 
     /// The ordinal comes from the record, so a launch that cannot read the record cannot name

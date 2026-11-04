@@ -5,10 +5,11 @@
 //! events reach it. A use case over the port only: it names no adapter and touches no file.
 
 use crate::contextgraph::{TYPE_DECISION_MADE, TYPE_LESSON_LEARNED, TYPE_REVIEW_FINDING};
-use crate::eventstore::{Error, Event, EventStore, TypeSelection};
+use crate::eventstore::{Error, Event, EventStore, Revision, TypeSelection};
 use crate::ledger::{
     self, Hold, TYPE_UNIT_FAILED, TYPE_UNIT_INTEGRATED, TYPE_UNIT_STARTED, TYPE_UNIT_STATUS,
 };
+use crate::progress::closed_after_release;
 use crate::retention::PERCEPTION_TYPES;
 
 use super::{TYPE_RUN_HELD, TYPE_RUN_RELEASED, TYPE_RUN_STARTED};
@@ -75,6 +76,19 @@ pub fn read_run(store: &dyn EventStore, stream: &str) -> Result<Vec<Event>, Erro
     Ok(events)
 }
 
+/// [`read_run`]'s read and the newest revision in it, `None` on an empty stream: the head a
+/// compare-and-append over that read pins to, and the revision a launch close stamps. Perception
+/// events stay out of the read, so it can lag the stream's true head, and a close orders against
+/// `RunHeld` and `RunReleased` alone.
+pub fn read_run_at_head(
+    store: &dyn EventStore,
+    stream: &str,
+) -> Result<(Vec<Event>, Option<Revision>), Error> {
+    let run = read_run(store, stream)?;
+    let head = run.iter().map(|e| e.revision).max();
+    Ok((run, head))
+}
+
 /// THE CURRENT RUN, READ ONCE: [`read_run`]'s slice of the current run
 /// ([`crate::run::current_run`]) and the run's id ([`crate::run::current_run_id`], empty when no
 /// run has started) - the one composition every one-shot command, the MCP tools and a step's
@@ -102,6 +116,40 @@ pub fn read_current_hold(
     let boundary = store.last_position(stream, TYPE_RUN_STARTED)?.unwrap_or(0);
     let events = store.read_stream_typed(stream, boundary, TypeSelection::Only(&HOLD_TYPES))?;
     Ok(ledger::project(super::current_run(&events))?.hold)
+}
+
+/// The hold [`read_current_hold`] answers and the head of the one read that answered it: the
+/// stamp a close this hold decided carries, so a `RunReleased` landing after the read lies past the
+/// close. It reads the run's slice ([`read_run_at_head`]) rather than the hold types alone, so its
+/// head is the run stream's head, the stamp every other close carries, and closes keep one order.
+/// An ending reads it once, never a poll.
+pub fn read_current_hold_at_head(
+    store: &dyn EventStore,
+    stream: &str,
+) -> Result<(Option<Hold>, Option<Revision>), crate::agent::Error> {
+    let (read, head) = read_run_at_head(store, stream)?;
+    Ok((ledger::project(super::current_run(&read))?.hold, head))
+}
+
+/// The hold the first `RunReleased` of the run on `store`'s `stream` past revision `stamp`
+/// ended, the hold the run's current events before that release project to, with how long it
+/// stood, or `None` when no release lies past `stamp` or the one that does ended no hold. A
+/// release lies past `stamp` when a close so stamped does not follow it
+/// ([`closed_after_release`]).
+pub fn released_past(
+    store: &dyn EventStore,
+    stream: &str,
+    stamp: Revision,
+) -> Result<Option<(Hold, u64)>, crate::agent::Error> {
+    let (events, _) = read_current_run(store, stream)?;
+    let Some(at) = events.iter().position(|event| {
+        event.type_ == TYPE_RUN_RELEASED && !closed_after_release(Some(stamp), Some(event.revision))
+    }) else {
+        return Ok(None);
+    };
+    let released: super::RunReleased = serde_json::from_slice(&events[at].data)?;
+    let hold = ledger::project(&events[..at])?.hold;
+    Ok(hold.map(|hold| (hold, released.held_for_s)))
 }
 
 #[cfg(test)]

@@ -124,7 +124,7 @@ impl Driver {
             opts,
             &session,
         )?;
-        if !(session.resumed && session_missing(&out)) {
+        if !(session.resumed() && session_missing(&out)) {
             return Ok((out, session));
         }
         let fresh = LaunchSession::fresh();
@@ -841,10 +841,7 @@ thinking out loud, not json\n\
 
     /// The fresh session the argv tests launch under, its id fixed so an exact argv compares.
     fn fresh_session() -> LaunchSession {
-        LaunchSession {
-            id: "sess-fresh".to_string(),
-            resumed: false,
-        }
+        LaunchSession::new("sess-fresh".to_string(), None, false)
     }
 
     /// The prompt `-p` carries in `args`: none, since the task travels on stdin.

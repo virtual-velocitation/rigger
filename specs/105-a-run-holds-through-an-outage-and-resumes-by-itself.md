@@ -262,12 +262,16 @@ error for a parked id that `spawn::ended_by` does not end, a marked error aside,
 error on the id as an error `SpawnResult` through the same write, so the id ends as the replay
 driver's recorded failure does and `review_spawn_errored` reads it; when `opts.id`'s latest
 launch ended `interrupted`, the host launches the next ordinal with `--resume` of that launch's
-session (the `resumed_from` path, `SpawnOpts`, `crates/rigger-domain/src/agent.rs:159`) in the
-same `dir`, its first user message stating the hold's cause and duration, or the supervisor's
-restart, followed by the interrupted launch's `resume_task` when it carried one. Every relaunch
-of a spawn id, by this path, the decorator of HELD or the fallback, takes the ordinal after the
-highest the progress store records for that id, never `opts.launch`. When `read_stream` sees no
-`system/init` from any `--resume` launch, the conductor's `continue_prior_session`
+session (the `resumed_from` path, `SpawnOpts`, `crates/rigger-domain/src/agent.rs:159`) and
+`--fork-session --session-id` of an id it mints, so an orphan of a supervisor that died without
+unwinding keeps that transcript to itself, its record carrying the minted id with `resumed_from`
+naming the interrupted session, in the same `dir`, its first user message stating the hold's
+cause and duration, or the supervisor's restart, followed by the `resume_task` when the
+interrupted launch carried it, read from that launch's record: its session or its `resumed_from`
+is the spawn's non-empty `resumed_from`; a `continue_prior_session` launch does not fork. Every
+relaunch of a spawn id, by this path, the decorator of HELD or the fallback, takes the ordinal
+after the highest the progress store records for that id, never `opts.launch`. When `read_stream`
+sees no `system/init` from any `--resume` launch, the conductor's `continue_prior_session`
 (`crates/rigger-conductor/src/conductor.rs:4784`) included, the host closes that launch
 `interrupted` and launches the spawn fresh at the next ordinal with `resumed_from` empty,
 logging the fallback as a progress line, except that a launch HELD closes `interrupted` for its

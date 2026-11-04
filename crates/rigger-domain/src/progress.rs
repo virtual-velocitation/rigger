@@ -273,17 +273,25 @@ pub const ENDED_STOPPED: &str = "stopped";
 /// How many consecutive failed closes hold a run `api-unstable`.
 pub const API_UNSTABLE_CLOSES: usize = 3;
 
+/// Whether a close stamped `close` lies after the `RunReleased` at revision `release`, the one
+/// order a progress record takes against a release. PURE. A close stamped at the release's own
+/// revision follows it, since its writer read it, and an unstamped close follows no stamped
+/// release.
+pub fn closed_after_release(close: Option<Revision>, release: Option<Revision>) -> bool {
+    close >= release
+}
+
 /// The count of [`ENDED_FAULT`] and [`ENDED_STOPPED`] closes across the run's `progress_events`
 /// (one run's progress stream, in stream order) since the later of the last
 /// [`ENDED_COMPLETED`] close and the last `RunReleased`, whose revision is `released`. PURE.
 ///
 /// Closes order by [`SpawnLaunched::revision`]: no run-stream event lands during an outage, so
-/// closes share a stamp, and a tie falls to progress-stream order. A close stamped equal to
-/// `released` is after the release, since its writer read it. An unstamped close takes the stamp
-/// of the last stamped close before it in progress-stream order, since it was written after that
-/// one, so a `completed` close whose writer's head read failed still ends the count where it
-/// stands; with no stamped close before it, a close written before spec 105 among them, it
-/// orders before every stamped one and counts as it stands. An
+/// closes share a stamp, and a tie falls to progress-stream order. A close counts when it lies
+/// after `released` ([`closed_after_release`]). An unstamped close takes the stamp of the last
+/// stamped close before it in progress-stream order, since it was written after that one, so a
+/// `completed` close whose writer's head read failed still ends the count where it stands; with no
+/// stamped close before it, a close written before spec 105 among them, it orders before every
+/// stamped one and counts as it stands. An
 /// [`ENDED_INTERRUPTED`] close neither counts nor resets: the resume fallback, a hold or a
 /// supervisor start's reconciliation wrote it, and no launch failed.
 pub fn failed_closes_since(progress_events: &[Event], released: Option<Revision>) -> usize {
@@ -302,7 +310,8 @@ pub fn failed_closes_since(progress_events: &[Event], released: Option<Revision>
         .iter()
         .rev()
         .take_while(|close| {
-            close.ended.as_deref() != Some(ENDED_COMPLETED) && close.revision >= released
+            close.ended.as_deref() != Some(ENDED_COMPLETED)
+                && closed_after_release(close.revision, released)
         })
         .filter(|close| matches!(close.ended.as_deref(), Some(ENDED_FAULT | ENDED_STOPPED)))
         .count()
@@ -326,18 +335,20 @@ pub fn open_launches(progress_events: &[Event]) -> Vec<(String, SpawnLaunched)> 
         .collect()
 }
 
-/// The latest [`SpawnLaunched`] record of `spawn` among `progress_events`, one run's records
-/// (spec 105, RESUME BY SESSION): the last record, in stream order, of the highest ordinal they
-/// hold for that id, so its close once that launch closed and its open record until then, or
-/// `None` when they hold none. Opening and closing records both count, so a launch whose open
-/// record was lost still names its ordinal. A record that does not decode names nothing. PURE:
-/// the store crate's `latest_launch` reads the run's records and folds them here.
-pub fn latest_launch_of(progress_events: &[Event], spawn: &str) -> Option<SpawnLaunched> {
-    // `max_by_key` keeps the last of equal maxima: the latest record of the highest ordinal.
-    decoded_launches(progress_events)
+/// The [`SpawnLaunched`] records of the latest launch of `spawn` among `progress_events`, one
+/// run's records (spec 105, RESUME BY SESSION), in stream order: those of the highest ordinal they
+/// hold for that id, its open record first unless it was lost, or none when they hold none. Opening
+/// and closing records both count, so a launch whose open record was lost still names its ordinal.
+/// A record that does not decode names nothing. PURE: the store crate's `latest_launch_records`
+/// reads the run's records and folds them here.
+pub fn latest_launch_records_of(progress_events: &[Event], spawn: &str) -> Vec<SpawnLaunched> {
+    let mut records: Vec<SpawnLaunched> = decoded_launches(progress_events)
         .map(|(_, record)| record)
         .filter(|record| record.spawn == spawn)
-        .max_by_key(|record| record.launch)
+        .collect();
+    let latest = records.iter().map(|record| record.launch).max();
+    records.retain(|record| Some(record.launch) == latest);
+    records
 }
 
 /// Each [`SpawnLaunched`] record among `progress_events`, beside its event, in their order: a
