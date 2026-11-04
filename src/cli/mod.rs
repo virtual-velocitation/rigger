@@ -1987,20 +1987,21 @@ fn result_refusal(
 /// once [`RUN_BRANCH`] exists, an explicit `--base` is ignored (re-anchoring would orphan
 /// the integrated units), and the step says so on stderr rather than silently. A
 /// repo-less invocation skips run-branch setup entirely.
-/// The busy-refusal token a second concurrent `rigger step` prints (see
-/// [`acquire_step_lock`]). A DRIVER couriering steps keys on this exact substring to tell a
-/// benign "wait, another step holds the lock" from a real step failure - so it backs off
+/// The busy-refusal token a `rigger step` or a `rigger run` started beside a held step lock
+/// prints (see [`acquire_step_lock`]). A DRIVER couriering steps keys on this exact substring to
+/// tell a benign "wait, another step holds the lock" from a real step failure - so it backs off
 /// and retries `rigger step` instead of tearing the run down. Kept as a named constant so
 /// the conductor side and the driver prompt can never drift apart.
 const STEP_BUSY_TOKEN: &str = "another `rigger step` is already running";
 
-/// Acquire the exclusive advisory lock that SERIALIZES `rigger step`, returning it held as a
-/// [`HeldLock`] guard - released when it drops, explicitly, so a child forked meanwhile never keeps
-/// it held, and by the OS when the process dies, so a crashed step never wedges the run. A
-/// NON-blocking take: if another step already holds it, refuse fast
-/// and loudly ([`STEP_BUSY_TOKEN`]) rather than blocking - a driver whose courier gets the
-/// refusal backs off and retries, which keeps the run flowing without ever running two
-/// steps at once. See the call site for why concurrent steps corrupt the run.
+/// Acquire the exclusive advisory lock that SERIALIZES `rigger step` and `rigger run`, returning it
+/// held as a [`HeldLock`] guard - released when it drops, explicitly, so a child forked meanwhile
+/// never keeps it held, and by the OS when the process dies, so a crashed step or run never wedges
+/// the next. A step holds it for the step, a run for its whole life (spec 105). A NON-blocking
+/// take: if a step or a run already holds it, refuse fast and loudly ([`STEP_BUSY_TOKEN`]) rather
+/// than blocking - a driver whose courier gets a step's refusal backs off and retries, which keeps
+/// the run flowing without ever running two steps at once, while a run's refusal stands until the
+/// operator re-runs it. See the call sites for why two at once corrupt the run.
 ///
 /// `rigger_dir` is the `.rigger` directory the lock file (`step.lock`) lives under, so a caller
 /// resolves it exactly as it resolves every other store file: `cmd_step` always runs against the
@@ -2014,10 +2015,10 @@ fn acquire_step_lock(rigger_dir: &Path) -> Result<HeldLock, Box<dyn std::error::
     let path = rigger_dir.join("step.lock");
     HeldLock::try_take(&path)?.ok_or_else(|| {
         format!(
-            "rigger step: {STEP_BUSY_TOKEN} in this repo (lock {}). Refusing to run \
-             concurrently: two steps would race the run-branch checkout and the unit \
-             worktrees branched off HEAD, corrupting the run. \
-             Wait for the running step to finish (or kill it) and retry.",
+            "{STEP_BUSY_TOKEN} in this repo, or a `rigger run` is (lock {}). Refusing to run \
+             concurrently: two would race the run-branch checkout and the unit worktrees \
+             branched off HEAD, corrupting the run. Wait for the running one to finish and \
+             retry.",
             path.display()
         )
         .into()
@@ -3372,8 +3373,8 @@ fn watch_poll_over(
     // command reads the run, never the whole log): a disordered tail of the run stream is
     // reported here, and `rigger validate` keeps the whole-store detector (spec 71).
 
-    // No step process running right now: a non-blocking try-lock that succeeds means
-    // free. Dropped immediately either way, so this probe never holds the lock.
+    // No step and no run holds the step lock right now: a non-blocking try-lock that succeeds
+    // means free. Dropped immediately either way, so this probe never holds the lock.
     let step_lock_free = acquire_step_lock(&loc.dir).is_ok();
 
     // Each currently-parked spawn's heartbeat-marker age (spec 19a), through the builder

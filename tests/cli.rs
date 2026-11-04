@@ -15455,9 +15455,10 @@ fn step_creates_run_branch_off_head_when_base_unresolvable() {
 /// UNBORN HEAD (`temp_project()` is a `git init` with NO commit, nothing to branch from) AND an
 /// unresolvable base - `rigger <args...> --base origin/does-not-exist` must FAIL LOUDLY, naming
 /// the missing base, pointing at `--base` and carrying the entry point's own `label` (when it
-/// has one), rather than mint a run branch that branches from nowhere. The refusal is
-/// side-effect-free: no run branch is minted, so HEAD is untouched (still the unborn default
-/// branch, never rigger-run) and a corrected retry anchors the run fresh.
+/// has one), rather than mint a run branch that branches from nowhere. The refusal anchors
+/// nothing: a `rigger run` has already reconciled its open launches, but no run branch is minted,
+/// so HEAD is untouched (still the unborn default branch, never rigger-run) and a corrected retry
+/// anchors the run fresh.
 fn assert_no_reachable_base_is_refused(args: &[&str], label: Option<&str>) {
     let dir = temp_project();
     let root = dir.path();

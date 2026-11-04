@@ -278,6 +278,7 @@ impl Driver<'_> {
                 ended: None,
                 class: None,
                 revision: None,
+                dir: opts.dir.clone(),
             },
         )?;
 

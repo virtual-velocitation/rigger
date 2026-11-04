@@ -14,12 +14,13 @@
 //! unit 2's consolidator folds it into the per-agent view, [`crate::metrics::grep_fallbacks`]
 //! counts this store's `grep-fallback:` lines for the dash, and the host classes a failed session
 //! from its [`StopFailure`] records, counts a run's failed launches from its closes
-//! ([`failed_closes_since`]) and times a session's silence from its [`ApiRetry`] and
-//! [`SupervisorBeat`] records - never in a run-stream fold, so the isolation that keeps replay
+//! ([`failed_closes_since`]), times a session's silence from its [`ApiRetry`] and
+//! [`SupervisorBeat`] records, and a supervisor's start closes every launch it holds open
+//! ([`open_launches`]) - never in a run-stream fold, so the isolation that keeps replay
 //! byte-identical is preserved. A close carries the run stream's revision its writer last read,
 //! the one order a progress record takes against a run-stream event.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::time::{Duration, SystemTime};
 
 use serde::{Deserialize, Serialize};
@@ -161,15 +162,16 @@ pub struct SpawnLaunched {
     /// [`ENDED_COMPLETED`] (a first non-error `result` landed), [`ENDED_INTERRUPTED`] (the
     /// host ended a `--resume` launch that yielded no `system/init` and fell back to a fresh
     /// one, or a host with a hold sink closed in place of a `fault` an ending whose class holds
-    /// or waits, or any ending on a held run), [`ENDED_FAULT`] (any other session that left no
-    /// usable `result`), or [`ENDED_STOPPED`] (THE STOP's silence expiry). A plain string so
-    /// the record reads whatever a later writer's ending says.
+    /// or waits, or any ending on a held run, or a supervisor's start found the launch still
+    /// open), [`ENDED_FAULT`] (any other session that left no usable `result`), or
+    /// [`ENDED_STOPPED`] (THE STOP's silence expiry). A plain string so the record reads
+    /// whatever a later writer's ending says.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ended: Option<String>,
     /// The failure class this launch ended under, criterion 5's `AgentFailure` category: a
     /// `fault` close's and that of an `interrupted` close written in a `fault`'s place, which keeps
-    /// why the launch ended. `None` for `completed`, `stopped` and the resume fallback's
-    /// `interrupted`, which carry no class.
+    /// why the launch ended. `None` for `completed`, `stopped`, the resume fallback's `interrupted`
+    /// and the start-up reconciliation's, which carry no class.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub class: Option<String>,
     /// The run stream's revision the host last read when it wrote this close, `None` on an
@@ -177,6 +179,12 @@ pub struct SpawnLaunched {
     /// it from. [`failed_closes_since`] orders a close against a `RunReleased` by it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub revision: Option<Revision>,
+    /// The directory the host launched the session in, empty on a close and on an open record
+    /// written before spec 105. Its one reader is a supervisor start's reconciliation
+    /// ([`open_launches`]), which reaps what is still rooted under it once the launch is found
+    /// open.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub dir: String,
 }
 
 impl RunStamped for SpawnLaunched {
@@ -191,7 +199,8 @@ impl SpawnLaunched {
     /// rather than each building a divergent literal. `session_id` identifies WHICH launch is
     /// closing; `started`/`resumed_from` are left at their defaults because only the LATEST
     /// record's `ended` decides open-vs-closed - the
-    /// original open record (already durable) is what carries those. An empty `class`
+    /// original open record (already durable) is what carries those, the
+    /// [`dir`](Self::dir) included. An empty `class`
     /// stores as `None` (see [`class`](Self::class) for the closes that carry none). The
     /// [`revision`](Self::revision) stays `None`: the host stamps its own closes, and a
     /// supervisor's reconciliation close orders against nothing.
@@ -215,6 +224,7 @@ impl SpawnLaunched {
                 Some(class.to_string())
             },
             revision: None,
+            dir: String::new(),
         }
     }
 }
@@ -222,7 +232,8 @@ impl SpawnLaunched {
 /// The `ended` of a launch whose first `result` was not an error.
 pub const ENDED_COMPLETED: &str = "completed";
 
-/// The `ended` of a resume that fell back, and of an ending a hold answers: no launch failed.
+/// The `ended` of a resume that fell back, of an ending a hold answers and of a launch a
+/// supervisor's start found open: no launch failed.
 pub const ENDED_INTERRUPTED: &str = "interrupted";
 
 /// The `ended` of a launch that left no usable `result`.
@@ -242,13 +253,11 @@ pub const API_UNSTABLE_CLOSES: usize = 3;
 /// closes share a stamp, and a tie falls to progress-stream order. A close stamped equal to
 /// `released` is after the release, since its writer read it. An unstamped close orders before
 /// every stamped one, so a close written before spec 105 counts as it stands. An
-/// [`ENDED_INTERRUPTED`] close neither counts nor resets: the resume fallback or a hold answered
-/// it, and no launch failed.
+/// [`ENDED_INTERRUPTED`] close neither counts nor resets: the resume fallback, a hold or a
+/// supervisor start's reconciliation wrote it, and no launch failed.
 pub fn failed_closes_since(progress_events: &[Event], released: Option<Revision>) -> usize {
-    let mut closes: Vec<SpawnLaunched> = progress_events
-        .iter()
-        .filter(|e| e.type_ == TYPE_SPAWN_LAUNCHED)
-        .filter_map(|e| serde_json::from_slice::<SpawnLaunched>(&e.data).ok())
+    let mut closes: Vec<SpawnLaunched> = decoded_launches(progress_events)
+        .map(|(_, launch)| launch)
         .filter(|launch| launch.ended.is_some())
         .collect();
     closes.sort_by_key(|close| close.revision);
@@ -260,6 +269,33 @@ pub fn failed_closes_since(progress_events: &[Event], released: Option<Revision>
         })
         .filter(|close| matches!(close.ended.as_deref(), Some(ENDED_FAULT | ENDED_STOPPED)))
         .count()
+}
+
+/// Every launch `progress_events` leave open, each with the run its record is stamped with (""
+/// for none), ordered by run, spawn and launch. PURE. The latest record of each (run, spawn,
+/// launch) decides: a launch is open while its latest record carries no `ended`. A supervisor's
+/// start reads it over the whole progress store, every run's stream at once, to close each launch
+/// no live process still answers for.
+pub fn open_launches(progress_events: &[Event]) -> Vec<(String, SpawnLaunched)> {
+    let mut latest = BTreeMap::new();
+    for (event, record) in decoded_launches(progress_events) {
+        let run = event.meta.get(META_RUN_ID).cloned().unwrap_or_default();
+        latest.insert((run, record.spawn.clone(), record.launch), record);
+    }
+    latest
+        .into_iter()
+        .filter(|(_, record)| record.ended.is_none())
+        .map(|((run, _, _), record)| (run, record))
+        .collect()
+}
+
+/// Each [`SpawnLaunched`] record among `progress_events`, beside its event, in their order: a
+/// record that does not decode names no launch.
+fn decoded_launches(progress_events: &[Event]) -> impl Iterator<Item = (&Event, SpawnLaunched)> {
+    progress_events
+        .iter()
+        .filter(|e| e.type_ == TYPE_SPAWN_LAUNCHED)
+        .filter_map(|e| Some((e, serde_json::from_slice(&e.data).ok()?)))
 }
 
 /// The event type a [`StopFailure`] record serializes as (spec 104 criterion 5: A FAILURE

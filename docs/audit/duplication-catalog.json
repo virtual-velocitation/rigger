@@ -1327,7 +1327,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-2a4075448454",
+    "id": "dup-ec0de15be469",
     "classification": "semantic",
     "sites": [
       {
@@ -1737,8 +1737,8 @@
       },
       {
         "file": "src/cli/hygiene.rs",
-        "name": "\"a `rigger step` is running right now (it holds .rigger/step.lock)\"",
-        "content_hash": "052897e17aced00a"
+        "name": "\"a `rigger step` or `rigger run` is running right now (it holds .rigger/step.lock)\"",
+        "content_hash": "25597419b8dbb616"
       },
       {
         "file": "src/cli/mod.rs",

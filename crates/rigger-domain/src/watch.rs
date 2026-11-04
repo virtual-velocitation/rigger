@@ -330,8 +330,8 @@ pub struct WatchInputs<'a> {
     pub now: SystemTime,
     /// When the run's last event was recorded, or `None` for an empty run.
     pub last_event_at: Option<SystemTime>,
-    /// Whether NO `rigger step` currently holds the step lock (true = free = no
-    /// step process is running right now).
+    /// Whether the step lock is free: true when no `rigger step` holds it and no `rigger run`
+    /// does, which holds it for its whole life, so a hung run keeps the alert silent.
     pub step_lock_free: bool,
     /// Heartbeat-marker AGE in seconds, keyed by spawn id, for the run's CURRENTLY
     /// PARKED frontier (mirrors `rigger status`'s own liveness-age fold). Empty when
@@ -540,7 +540,8 @@ pub fn detect(inputs: &WatchInputs) -> Vec<Anomaly> {
                 signal: Signal::DeadDriver,
                 subject: "run".to_string(),
                 magnitude: 0,
-                detail: "store quiet an hour, no step process, every heartbeat stale past 30m"
+                detail: "store quiet an hour, no step or run holds the step lock, every \
+                         heartbeat stale past 30m"
                     .to_string(),
             });
         }
