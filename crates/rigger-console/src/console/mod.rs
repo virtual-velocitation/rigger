@@ -732,9 +732,9 @@ mod tests {
     }
 
     /// WHAT A PERSON SEES: the dock lists `held` for a hold whose latest `RunHeld` carries
-    /// `needs_person`, first ahead of every other kind and naming the hold's latest cause and
-    /// action, and lists nothing for a hold that needs no person, a released hold, or a hold whose
-    /// events the attention fold cannot decode.
+    /// `needs_person`, first ahead of every other kind and naming the open hold's latest cause and
+    /// action, never an earlier released hold's, and lists nothing for a hold that needs no person,
+    /// a released hold, or a hold whose events the attention fold cannot decode.
     #[test]
     fn dock_lists_held_first_for_a_hold_that_needs_a_person_and_nothing_for_any_other() {
         use rigger_domain::run::{TYPE_RUN_HELD, TYPE_RUN_RELEASED};
@@ -768,6 +768,11 @@ mod tests {
                 "a released hold lists nothing",
                 vec![needs, released],
                 vec![escalated],
+            ),
+            (
+                "a hold after a released one is listed under its own cause, not the earlier hold's",
+                vec![no_person, released, needs],
+                vec![held, escalated],
             ),
             (
                 "a hold upgraded to need a person is listed under its latest cause",
