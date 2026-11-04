@@ -17,7 +17,9 @@ use rigger_domain::agent::{cause_row, OPERATOR};
 use rigger_domain::ledger::{Hold, RunState};
 
 use crate::contextgraph::TYPE_DECISION_MADE;
-use crate::eventstore::{Error, Event, EventStore, ExpectedRevision, Revision, TypeSelection};
+use crate::eventstore::{
+    Error, Event, EventStore, ExpectedRevision, Position, Revision, TypeSelection,
+};
 use crate::run::read::{fold_holds, read_run, read_run_at_head, HOLD_TYPES};
 use crate::run::{
     adopted_run, current_run, effective_definition, RunHeld, RunReleased, RunStart, RunStarted,
@@ -350,43 +352,56 @@ pub fn run_stream_head(store: &dyn EventStore) -> Result<Option<Revision>, Error
     Ok(read_run_at_head(store, STREAM)?.1)
 }
 
-/// Append what `decide` makes of the current run's hold, at the revision that hold was read at:
-/// every `RunHeld` and `RunReleased` goes through here (spec 105). A conflict sends `decide` back
-/// over the hold folded forward through what landed, by type from the pinned revision, re-pinned
-/// to the conflict's actual revision, so a concurrent writer's hold or release is never missed
-/// and a perception event landing behind the read costs one retry. `what` names the event type
-/// for the store's report of an append it did not write. Answers whether it appended: `false`
-/// when `decide` left it nothing to say.
-fn append_on_hold(
+/// THE ONE COMPARE-AND-APPEND every conditional run-stream writer goes through: append what
+/// `decide` makes of the current run's slice ([`read_run_at_head`]) at the revision that slice
+/// was read at. A conflict sends `decide` back over what landed from the pinned revision on, read
+/// by `landed` alone, re-pinned to the conflict's actual revision, so a concurrent writer's event
+/// of those types is never missed and an event of any other type landing behind the read costs
+/// one retry. `what` names the append for the store's report of an append it did not write.
+/// Answers the appended event's position, `None` when `decide` left it nothing to say.
+pub(crate) fn append_at_head(
     store: &dyn EventStore,
+    landed: TypeSelection<'_>,
     what: &str,
-    decide: impl Fn(Option<&Hold>) -> Result<Option<Event>, Error>,
-) -> Result<bool, Error> {
-    let (run, mut head) = read_run_at_head(store, STREAM)?;
-    let mut state = RunState::new();
-    fold_holds(&mut state, &run)?;
+    mut decide: impl FnMut(&[Event]) -> Result<Option<Event>, Error>,
+) -> Result<Option<Position>, Error> {
+    let (mut read, mut head) = read_run_at_head(store, STREAM)?;
     loop {
-        let Some(ev) = decide(state.hold.as_ref())? else {
-            return Ok(false);
+        let Some(ev) = decide(&read)? else {
+            return Ok(None);
         };
         let expected = match head {
             Some(revision) => ExpectedRevision::Exact(revision),
             None => ExpectedRevision::NoStream,
         };
         match store.append(STREAM, expected, std::slice::from_ref(&ev)) {
-            Ok(appended) => return appended.one(what).map(|_| true),
+            Ok(appended) => return appended.one(what).map(Some),
             Err(Error::Conflict { actual, .. }) => {
-                let landed = store.read_stream_typed(
-                    STREAM,
-                    head.unwrap_or(0),
-                    TypeSelection::Only(&HOLD_TYPES),
-                )?;
-                fold_holds(&mut state, &landed)?;
+                read = store.read_stream_typed(STREAM, head.unwrap_or(0), landed)?;
                 head = Some(actual);
             }
             Err(e) => return Err(e),
         }
     }
+}
+
+/// Append what `decide` makes of the current run's hold through [`append_at_head`], the hold
+/// folded by [`fold_holds`] from the run's slice and forward through the [`HOLD_TYPES`] that
+/// land behind it: every `RunHeld` and `RunReleased` goes through here (spec 105), so a
+/// concurrent writer's hold or release is never missed. `what` names the event type for the
+/// store's report of an append it did not write. Answers whether it appended: `false` when
+/// `decide` left it nothing to say.
+fn append_on_hold(
+    store: &dyn EventStore,
+    what: &str,
+    decide: impl Fn(Option<&Hold>) -> Result<Option<Event>, Error>,
+) -> Result<bool, Error> {
+    let mut state = RunState::new();
+    append_at_head(store, TypeSelection::Only(&HOLD_TYPES), what, |read| {
+        fold_holds(&mut state, read)?;
+        decide(state.hold.as_ref())
+    })
+    .map(|appended| appended.is_some())
 }
 
 /// The event a run vocabulary type built of `type_`, its serialization failure the store's error.

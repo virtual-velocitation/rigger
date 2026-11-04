@@ -13,6 +13,7 @@
 // The run stream (the conductor re-exports the same constant as `conductor::STREAM`).
 use crate::eventstore::{Error, Event, EventStore, ExpectedRevision, Position, TypeSelection};
 use crate::run::STREAM;
+use crate::run_store::append_at_head;
 use crate::spawn::SpawnEvent;
 use crate::spawn::{SpawnRequest, SpawnResult};
 
@@ -134,9 +135,12 @@ pub fn record_result_unless_ended(
     record_result_unless(store, res, crate::spawn::ended_by)
 }
 
-/// The one compare-and-append both conditional result writes share: append `res` unless
-/// `standing` finds a result of its id in the current run, re-deciding over the results that
-/// landed past the pinned revision whenever a concurrent append moves the stream.
+/// The one compare-and-append both conditional result writes share, through
+/// [`append_at_head`]: append `res` unless `standing` finds a result of its id in the current
+/// run, re-deciding over the results that landed past the pinned revision whenever a concurrent
+/// append moves the stream, so a racing writer that recorded THIS id is never clobbered. `None`
+/// means a result already stood; a store that wrote nothing is a different answer, raised as the
+/// failure it is by [`append_at_head`]'s report.
 fn record_result_unless(
     store: &dyn EventStore,
     res: &SpawnResult,
@@ -150,38 +154,12 @@ fn record_result_unless(
             .map_err(|e| Error::Backend(format!("decode results for {}: {e}", res.id)))?
             .is_some())
     };
-    let (run, mut head) = crate::run::read::read_run_at_head(store, STREAM)?;
-    if answered(&run)? {
-        // A standing result - leave it untouched (the no-op every caller wants).
-        return Ok(None);
-    }
-    loop {
-        let expected = match head {
-            Some(revision) => ExpectedRevision::Exact(revision),
-            None => ExpectedRevision::NoStream,
-        };
-        match store.append(STREAM, expected, std::slice::from_ref(&ev)) {
-            // `Ok(None)` from THIS function means "a result already stood, so I chose to
-            // write nothing" - the idempotent no-op. A store that wrote nothing is a
-            // different answer entirely, and the shared authority raises it as the failure
-            // it is rather than letting it collapse into the no-op.
-            Ok(appended) => return appended.one(&what(&ev.type_, &res.id)).map(Some),
-            // The stream moved under us: re-decide over the results recorded from the pinned
-            // revision on. If the racing writer recorded THIS id, nothing is clobbered.
-            Err(Error::Conflict { actual, .. }) => {
-                let landed = store.read_stream_typed(
-                    STREAM,
-                    head.unwrap_or(0),
-                    TypeSelection::Only(&[crate::spawn::TYPE_SPAWN_RESULT]),
-                )?;
-                if answered(&landed)? {
-                    return Ok(None);
-                }
-                head = Some(actual);
-            }
-            Err(e) => return Err(e),
-        }
-    }
+    append_at_head(
+        store,
+        TypeSelection::Only(&[crate::spawn::TYPE_SPAWN_RESULT]),
+        &what(&ev.type_, &res.id),
+        |read| Ok((!answered(read)?).then(|| ev.clone())),
+    )
 }
 
 #[cfg(test)]
