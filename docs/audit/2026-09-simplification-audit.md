@@ -4712,7 +4712,7 @@ Proposed home: `a new shared module (sites span 2 files: src/cli/guard.rs, src/c
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/cli/guard.rs:1314-1316` `parse_guard_write_roots_requires_at_least_one`
+- `src/cli/guard.rs:1323-1325` `parse_guard_write_roots_requires_at_least_one`
 - `src/cli/validate.rs:2063-2065` `order_signature_advisories_is_empty_when_no_signatures_are_given`
 
 #### `dup-db3e199dd312` (near, 7 sites)

@@ -1867,8 +1867,8 @@ fn first_user_message(task: &str) -> String {
 /// The roots a launch's write guard admits: the session's working directory, the host's own for
 /// an empty `dir` as [`crate::subprocess::command_in`] leaves it, then the spawn's scratch
 /// `container` when it has one. Each is made absolute here, since the guard resolves a root
-/// lexically and never against the session's cwd: an empty root refuses every write and a `.`
-/// admits every target.
+/// lexically and never against the session's cwd, so it refuses an empty or relative root and
+/// with it every write.
 fn write_roots(dir: &str, container: Option<&Path>) -> Result<Vec<String>, Error> {
     let session_cwd = if dir.is_empty() { "." } else { dir };
     std::iter::once(Path::new(session_cwd))

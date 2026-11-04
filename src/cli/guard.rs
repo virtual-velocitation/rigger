@@ -211,7 +211,10 @@ pub(crate) fn cmd_grep_guard(_args: &[String]) -> Res {
 /// (the deny reason names the FIRST one, so order is meaningful, not just a set). At least
 /// one is required - a guard installed with no root would silently allow every write, the
 /// opposite of THE WRITE GUARD's contract, so a misconfigured host fails loudly at argument
-/// parse time rather than silently passing every future tool call.
+/// parse time rather than silently passing every future tool call. Every root must be
+/// absolute: the guard resolves a root lexically, never against the session's cwd, so a
+/// relative root such as `.` would resolve to the empty path every target starts with and
+/// admit every write.
 fn parse_guard_write_roots(args: &[String]) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     let mut roots = Vec::new();
     let mut i = 0;
@@ -223,6 +226,12 @@ fn parse_guard_write_roots(args: &[String]) -> Result<Vec<String>, Box<dyn std::
                 )?;
                 if dir.is_empty() {
                     return Err("guard-write: --root expects a non-empty directory".into());
+                }
+                if !Path::new(dir).is_absolute() {
+                    return Err(format!(
+                        "guard-write: --root expects an absolute directory, got {dir:?}"
+                    )
+                    .into());
                 }
                 roots.push(dir.clone());
                 i += 2;
