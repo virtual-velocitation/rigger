@@ -188,6 +188,20 @@ enum StreamEnd {
     Interrupted(Error),
 }
 
+/// What a hold read at a launch's ending proved ([`Driver::run_held`]), the one rule its readers
+/// share: only a run proved [`HoldRead::Unheld`] takes the resume fallback.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HoldRead {
+    /// The run stands held.
+    Held,
+    /// The run stands unheld, or the host has no hold sink to read.
+    Unheld,
+    /// The read failed, proving neither: a run not proved unheld launches nothing, as the
+    /// decorator's own read rules, and no `interrupted` close stands on a hold no read proved, so
+    /// the launch keeps its own ending and the spawn's own failure is never masked.
+    Unproved,
+}
+
 /// One launch as the record names it: the ordinal it took and the session it ran as, what every
 /// close of it carries ([`Driver::close`]), and the model a hold of it names ([`Driver::sight`]).
 #[derive(Clone, Copy)]
@@ -622,7 +636,7 @@ impl Driver<'_> {
                                     opts,
                                     self.stop_grace,
                                 );
-                                if self.run_held(opts) == Some(false) {
+                                if self.run_held(opts) == HoldRead::Unheld {
                                     return Ok(self.session_gone(opts, id));
                                 }
                                 let message = self.announce_stop(opts, max_wall_clock);
@@ -876,7 +890,7 @@ impl Driver<'_> {
 
         match (result, read_error) {
             (Some(result), _) => Ok(StreamEnd::Result(result)),
-            (None, Some(_)) if self.run_held(opts) == Some(false) => {
+            (None, Some(_)) if self.run_held(opts) == HoldRead::Unheld => {
                 Ok(self.session_gone(opts, id))
             }
             (None, Some(e)) => Err(read_agent_stream_error(opts, &e)),
@@ -993,15 +1007,14 @@ impl Driver<'_> {
         fallback: bool,
     ) -> Result<StreamEnd, Error> {
         let waits = class.row().disposition != Disposition::Fault;
-        let held = if waits && self.hold_sink.is_some() {
-            Some(true)
-        } else {
-            self.run_held(opts)
-        };
-        if fallback && held == Some(false) {
+        // A class whose row holds or waits interrupts a host with a hold sink on its own, with no
+        // read; any other ending reads the hold, so `read` holds only what a read proved.
+        let class_interrupts = waits && self.hold_sink.is_some();
+        let read = (!class_interrupts).then(|| self.run_held(opts));
+        if fallback && read == Some(HoldRead::Unheld) {
             return Ok(self.session_gone(opts, id));
         }
-        let interrupted = held == Some(true);
+        let interrupted = class_interrupts || read == Some(HoldRead::Held);
         let ended = if interrupted {
             progress::ENDED_INTERRUPTED
         } else {
@@ -1019,22 +1032,21 @@ impl Driver<'_> {
         Err(error)
     }
 
-    /// Whether this run stands held once a launch has ended, what [`Driver::fault`] and the
+    /// What this run's hold read proves once a launch has ended, what [`Driver::fault`] and the
     /// fallback at the stop and the read error weigh (spec 105): the fallback runs inside the
     /// spawn, past the decorator's gate, so the read follows the ending. A host with no hold sink
-    /// reads no hold and answers `Some(false)`. A read that fails is a progress line and answers
-    /// `None`, proving neither: a run not proved unheld launches nothing, as the decorator's own
-    /// read rules, and no `interrupted` close stands on a hold no read proved, so the launch keeps
-    /// its own ending and the spawn's own failure is never masked.
-    fn run_held(&self, opts: &SpawnOpts) -> Option<bool> {
+    /// reads no hold and answers [`HoldRead::Unheld`]. A read that fails is a progress line and
+    /// answers [`HoldRead::Unproved`].
+    fn run_held(&self, opts: &SpawnOpts) -> HoldRead {
         let Some(sink) = self.hold_sink else {
-            return Some(false);
+            return HoldRead::Unheld;
         };
         match hold_stands(sink) {
-            Ok(held) => Some(held),
+            Ok(true) => HoldRead::Held,
+            Ok(false) => HoldRead::Unheld,
             Err(e) => {
                 self.record_progress(opts, &format!("hold not read: {}", e.0));
-                None
+                HoldRead::Unproved
             }
         }
     }
