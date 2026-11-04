@@ -17,21 +17,18 @@
 # with no assertion naming why. A
 # launch whose first argument is `auth` (the `claude auth status --json` read) prints the arm's
 # answer as it stands, with no stream framing. A launch naming no `--system-prompt-file` (the
-# hold probe's canary) reaches the arm for the empty prompt, `""`. A checked-in executable
-# fixture (never written at test time), for the same reason as every sibling fixture here: no
-# concurrent test's fork+exec can inherit a write fd to it.
+# hold probe's canary) reaches the arm for the empty prompt, `""`; the stand-in finds that file
+# through `system-prompt-file.sh`, sourced from beside this fixture's own path. A checked-in
+# executable fixture (never written at test time), for the same reason as every sibling fixture
+# here: no concurrent test's fork+exec can inherit a write fd to it.
 here=$(dirname "$0")
+self=$(readlink "$0") || self=$0
+. "$(dirname "$self")/system-prompt-file.sh"
+sp_file=$(system_prompt_file "$@")
 sp=""
-next=0
-for a in "$@"; do
-    if [ "$next" = "1" ]; then
-        sp=$(cat "$a")
-        next=0
-    fi
-    if [ "$a" = "--system-prompt-file" ]; then
-        next=1
-    fi
-done
+if [ -n "$sp_file" ]; then
+    sp=$(cat "$sp_file")
+fi
 IFS= read -r first
 verb=$1
 reply="$here/reply.$$"
