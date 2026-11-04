@@ -18,8 +18,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde_json::Value;
 
 use crate::agent::{
-    classify_failure, no_result_error, AgentDriver, AgentFailure, AgentResult, Disposition, Error,
-    SpawnOpts, API_UNSTABLE, SPAWN_BOUND_TOOLS, SPAWN_PROGRESS_TOOL,
+    classify_failure, launch_interrupted, no_result_error, AgentDriver, AgentFailure, AgentResult,
+    Disposition, Error, SpawnOpts, API_UNSTABLE, SPAWN_BOUND_TOOLS, SPAWN_PROGRESS_TOOL,
 };
 use crate::config::AgentDef;
 use crate::driver::replay::{
@@ -36,7 +36,7 @@ use crate::liveness;
 use crate::progress::{self, ApiRetry, SpawnLaunched};
 use crate::progress_store;
 use crate::run;
-use crate::run::read::{read_current_hold, read_current_run};
+use crate::run::read::{read_current_hold_at_head, read_current_run};
 use crate::run::STREAM;
 use crate::run_store;
 use crate::spawn::SpawnResult;
@@ -183,8 +183,9 @@ enum StreamEnd {
     /// ([`Driver::session_gone`]): the spawn lands a fresh launch next.
     NoSession,
     /// A launch closed `interrupted` for its class or a held run ([`Driver::fault`]): the spawn
-    /// returns the classed error and, recording no result and charging no attempt, keeps its
-    /// scratch for the same id's next launch.
+    /// returns the classed error, marked interrupted ([`launch_interrupted`]) so the held-run
+    /// decorator relaunches on the host's decision, and, recording no result and charging no
+    /// attempt, keeps its scratch for the same id's next launch.
     Interrupted(Error),
 }
 
@@ -192,8 +193,9 @@ enum StreamEnd {
 /// share: only a run proved [`HoldRead::Unheld`] takes the resume fallback.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum HoldRead {
-    /// The run stands held.
-    Held,
+    /// The run stands held, at the head of the read that proved it: the stamp an `interrupted`
+    /// close that read decided carries ([`Driver::close_at`]).
+    Held(Option<crate::eventstore::Revision>),
     /// The run stands unheld, or the host has no hold sink to read.
     Unheld,
     /// The read failed, proving neither: a run not proved unheld launches nothing, as the
@@ -988,10 +990,11 @@ impl Driver<'_> {
     /// HELD MEANS NO LAUNCH AND NO CHARGE (spec 105) decides ahead of that close: a host with a
     /// hold sink closes `interrupted` under `class` instead when the class's row holds or waits,
     /// which reads no hold, or when the run is held at this ending ([`Driver::run_held`]), whatever
-    /// the class, and the error rides [`StreamEnd::Interrupted`]: no result, no attempt, the
-    /// scratch kept. A `fallback` launch, a resume that still awaits its session, on a run proved
-    /// unheld leaves here by THE RESUME FALLBACK ([`Driver::session_gone`]). A read that fails
-    /// proves neither, so it closes `fault` with no fallback.
+    /// the class, and the error rides [`StreamEnd::Interrupted`], marked interrupted: no result,
+    /// no attempt, the scratch kept. A close the hold read decided carries that read's head as its
+    /// stamp ([`Driver::close_at`]). A `fallback` launch, a resume that still awaits its session,
+    /// on a run proved unheld leaves here by THE RESUME FALLBACK ([`Driver::session_gone`]). A
+    /// read that fails proves neither, so it closes `fault` with no fallback.
     ///
     /// The holds follow the close and come before the `Error` returns: an ending of a class whose
     /// row holds or waits sights that class, with no `detail` since an ending is no sighting line,
@@ -1014,22 +1017,24 @@ impl Driver<'_> {
         if fallback && read == Some(HoldRead::Unheld) {
             return Ok(self.session_gone(opts, id));
         }
-        let interrupted = class_interrupts || read == Some(HoldRead::Held);
+        let interrupted = class_interrupts || matches!(read, Some(HoldRead::Held(_)));
         let ended = if interrupted {
             progress::ENDED_INTERRUPTED
         } else {
             progress::ENDED_FAULT
         };
-        self.close(opts, id, ended, class.as_str());
+        match read {
+            Some(HoldRead::Held(head)) => self.close_at(opts, id, ended, class.as_str(), head),
+            _ => self.close(opts, id, ended, class.as_str()),
+        }
         if waits {
             self.sight(opts, id, class.as_str(), "");
         }
-        let error = no_result_error(class, message);
         if interrupted {
-            return Ok(StreamEnd::Interrupted(error));
+            return Ok(StreamEnd::Interrupted(launch_interrupted(class, message)));
         }
         self.sight_unstable(opts, id);
-        Err(error)
+        Err(no_result_error(class, message))
     }
 
     /// What this run's hold read proves once a launch has ended, what [`Driver::fault`] and the
@@ -1041,9 +1046,9 @@ impl Driver<'_> {
         let Some(sink) = self.hold_sink else {
             return HoldRead::Unheld;
         };
-        match hold_stands(sink) {
-            Ok(true) => HoldRead::Held,
-            Ok(false) => HoldRead::Unheld,
+        match read_current_hold_at_head(sink, STREAM) {
+            Ok((Some(_), head)) => HoldRead::Held(head),
+            Ok((None, _)) => HoldRead::Unheld,
             Err(e) => {
                 self.record_progress(opts, &format!("hold not read: {}", e.0));
                 HoldRead::Unproved
@@ -1052,14 +1057,29 @@ impl Driver<'_> {
     }
 
     /// Close this launch's record `ended` under `class`, stamped with the run stream's revision
-    /// read just now: the one close an ending that closes writes. Best-effort, a courtesy for
-    /// reconciliation and for the failed-close count, never the source of truth: the classed
-    /// `Error` or the recorded result is, a lost close only leaves a record the supervisor's
-    /// start-up reconciliation closes later, and a failed read leaves the close unstamped.
+    /// read just now: the one close an ending that closes writes, [`Driver::close_at`] that
+    /// revision. A failed read leaves the close unstamped.
     fn close(&self, opts: &SpawnOpts, id: LaunchId, ended: &str, class: &str) {
         let revision = self
             .hold_sink
             .and_then(|sink| run_store::run_stream_head(sink).ok().flatten());
+        self.close_at(opts, id, ended, class, revision);
+    }
+
+    /// Close this launch's record `ended` under `class`, stamped with `revision`: the head of the
+    /// run read that decided the ending, so a `RunReleased` landing after that read lies past the
+    /// close ([`released_past`]). Best-effort, a courtesy for reconciliation and for the
+    /// failed-close count, never the source of truth: the classed `Error` or the recorded result
+    /// is, and a lost close only leaves a record the supervisor's start-up reconciliation closes
+    /// later.
+    fn close_at(
+        &self,
+        opts: &SpawnOpts,
+        id: LaunchId,
+        ended: &str,
+        class: &str,
+        revision: Option<crate::eventstore::Revision>,
+    ) {
         let _ = progress_store::record_launch(
             self.progress_store,
             &opts.run_id,
@@ -1459,11 +1479,6 @@ fn drain_child_stderr_tail(mut stderr: ChildStderr) -> Vec<u8> {
         push_bounded_tail(&mut tail, &buf[..n]);
     }
     tail
-}
-
-/// Whether the run on `sink` stands held: the hold its current events project to.
-fn hold_stands(sink: &dyn EventStore) -> Result<bool, Error> {
-    Ok(read_current_hold(sink, STREAM)?.is_some())
 }
 
 /// The hold the first `RunReleased` of the run on `sink` past revision `stamp` ended, the hold

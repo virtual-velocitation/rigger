@@ -18,7 +18,7 @@ use rigger_domain::ledger::{Hold, RunState};
 
 use crate::contextgraph::TYPE_DECISION_MADE;
 use crate::eventstore::{Error, Event, EventStore, ExpectedRevision, Revision, TypeSelection};
-use crate::run::read::read_run;
+use crate::run::read::{read_run, read_run_at_head};
 use crate::run::{
     adopted_run, current_run, effective_definition, RunHeld, RunReleased, RunStart, RunStarted,
     HOLD_BY_HOST, HOLD_BY_OPERATOR, HOLD_BY_PROBE, META_DEFINITION, META_DEFINITION_PRIOR,
@@ -349,17 +349,7 @@ fn released_by(by: &str, hold: &Hold) -> Result<Event, Error> {
 /// writer pins to, `None` on an empty stream. Perception events stay out of the read, so it can
 /// lag the stream's true head, and a close orders against `RunHeld` and `RunReleased` alone.
 pub fn run_stream_head(store: &dyn EventStore) -> Result<Option<Revision>, Error> {
-    Ok(read_run_at_head(store)?.1)
-}
-
-/// The current run's slice and the newest revision in it, the head a compare-and-append over that
-/// read pins to.
-pub(crate) fn read_run_at_head(
-    store: &dyn EventStore,
-) -> Result<(Vec<Event>, Option<Revision>), Error> {
-    let run = read_run(store, STREAM)?;
-    let head = run.iter().map(|e| e.revision).max();
-    Ok((run, head))
+    Ok(read_run_at_head(store, STREAM)?.1)
 }
 
 /// Append what `decide` makes of the current run's hold, at the revision that hold was read at:
@@ -374,7 +364,7 @@ fn append_on_hold(
     what: &str,
     decide: impl Fn(Option<&Hold>) -> Result<Option<Event>, Error>,
 ) -> Result<bool, Error> {
-    let (run, mut head) = read_run_at_head(store)?;
+    let (run, mut head) = read_run_at_head(store, STREAM)?;
     let mut state = RunState::new();
     fold_holds(&mut state, &run)?;
     loop {

@@ -5,7 +5,7 @@
 //! events reach it. A use case over the port only: it names no adapter and touches no file.
 
 use crate::contextgraph::{TYPE_DECISION_MADE, TYPE_LESSON_LEARNED, TYPE_REVIEW_FINDING};
-use crate::eventstore::{Error, Event, EventStore, TypeSelection};
+use crate::eventstore::{Error, Event, EventStore, Revision, TypeSelection};
 use crate::ledger::{
     self, Hold, TYPE_UNIT_FAILED, TYPE_UNIT_INTEGRATED, TYPE_UNIT_STARTED, TYPE_UNIT_STATUS,
 };
@@ -70,6 +70,19 @@ pub fn read_run(store: &dyn EventStore, stream: &str) -> Result<Vec<Event>, Erro
     Ok(events)
 }
 
+/// [`read_run`]'s read and the newest revision in it, `None` on an empty stream: the head a
+/// compare-and-append over that read pins to, and the revision a launch close stamps. Perception
+/// events stay out of the read, so it can lag the stream's true head, and a close orders against
+/// `RunHeld` and `RunReleased` alone.
+pub fn read_run_at_head(
+    store: &dyn EventStore,
+    stream: &str,
+) -> Result<(Vec<Event>, Option<Revision>), Error> {
+    let run = read_run(store, stream)?;
+    let head = run.iter().map(|e| e.revision).max();
+    Ok((run, head))
+}
+
 /// THE CURRENT RUN, READ ONCE: [`read_run`]'s slice of the current run
 /// ([`crate::run::current_run`]) and the run's id ([`crate::run::current_run_id`], empty when no
 /// run has started) - the one composition every one-shot command, the MCP tools and a step's
@@ -90,8 +103,18 @@ pub fn read_current_hold(
     store: &dyn EventStore,
     stream: &str,
 ) -> Result<Option<Hold>, crate::agent::Error> {
-    let (events, _) = read_current_run(store, stream)?;
-    Ok(ledger::project(&events)?.hold)
+    Ok(read_current_hold_at_head(store, stream)?.0)
+}
+
+/// [`read_current_hold`] and the head of the one read that answered it ([`read_run_at_head`]):
+/// the stamp a close this hold decided carries, so a `RunReleased` landing after the read lies
+/// past the close.
+pub fn read_current_hold_at_head(
+    store: &dyn EventStore,
+    stream: &str,
+) -> Result<(Option<Hold>, Option<Revision>), crate::agent::Error> {
+    let (read, head) = read_run_at_head(store, stream)?;
+    Ok((ledger::project(super::current_run(&read))?.hold, head))
 }
 
 #[cfg(test)]

@@ -273,6 +273,14 @@ pub fn parked_spawn(id: &str) -> Error {
 /// text reaches an agent's prompt or the operator.
 pub const EMIT_REFUSED_MARKER: &str = "\u{1}rigger:emit-refused\u{1}";
 
+/// Sentinel heading the message of the [`Error`] a spawn returns for a launch the host closed
+/// `interrupted` ([`launch_interrupted`]): the host decides interrupted once, and the decision
+/// crosses the `AgentDriver` port with its error, in the [`PARKED_MARKER`] idiom, so the held-run
+/// decorator relaunches on it without reading the hold again. It sits behind the class bracket,
+/// which stays at the head for [`failure_class`]; [`strip_failure_marker`] drops both before the
+/// text reaches an agent's prompt or the operator.
+pub const INTERRUPTED_MARKER: &str = "\u{1}rigger:launch-interrupted\u{1}";
+
 // ---- FAILURE CLASS (spec 104 criterion 5: A FAILURE HAS A CLASS) ----
 //
 // adj-u104c5 REQUIRED FIX 3 (arch-u104c5-failure-class-belongs-in-conductor-not-driver):
@@ -498,14 +506,23 @@ pub fn no_result_error(class: AgentFailure, message: String) -> Error {
     Error(format!("{FAILURE_MARKER}{class}{FAILURE_MARKER}{message}"))
 }
 
+/// The `Error` a spawn returns for a launch the host closed `interrupted` on `class`: the
+/// [`no_result_error`] of `class` with [`INTERRUPTED_MARKER`] heading its `message`, so the class
+/// stays at the head of the error for [`failure_class`].
+pub fn launch_interrupted(class: AgentFailure, message: String) -> Error {
+    no_result_error(class, format!("{INTERRUPTED_MARKER}{message}"))
+}
+
 /// Drop the class marker a driver spawn [`Error`] carries ahead of its message, if present,
 /// leaving only the human-readable text: the [`FAILURE_MARKER`]-bracketed class
 /// [`no_result_error`] embeds (adj-u104c5 REQUIRED FIX 2,
-/// sdet-u104c5-failure-marker-leaks-unstripped-into-operator-visible-text), or the
+/// sdet-u104c5-failure-marker-leaks-unstripped-into-operator-visible-text), with the
+/// [`INTERRUPTED_MARKER`] a [`launch_interrupted`] error carries behind it, or the
 /// [`EMIT_REFUSED_MARKER`] the conductor's agent emit puts ahead of an emit guard's refusal
-/// (dropped here because its readers - the implementer's attempt arm and the refused record's
-/// re-run - match it before this strip runs, while `PARKED_MARKER` and `BUDGET_MARKER` pass
-/// through untouched, since callers upstream still branch on them).
+/// (each dropped here because its readers - the held-run decorator for the first, the
+/// implementer's attempt arm and the refused record's re-run for the second - match it before
+/// this strip runs, while `PARKED_MARKER` and `BUDGET_MARKER` pass through untouched, since
+/// callers upstream still branch on them).
 /// Unlike `PARKED_MARKER`/`PLAN_LANDING_MARKER`/`LAND_REFUSED_MARKER` - bare prefixes a plain
 /// `.replace(MARKER, "")` cleans - [`FAILURE_MARKER`] brackets DATA (the class name) that
 /// the message ALSO repeats in prose (`no_result_error`'s own "class {class}"), so a bare
@@ -520,7 +537,10 @@ pub fn strip_failure_marker(e: &Error) -> String {
         return refusal.to_string();
     }
     match failure_parts(e) {
-        Some((_, message)) => message.to_string(),
+        Some((_, message)) => message
+            .strip_prefix(INTERRUPTED_MARKER)
+            .unwrap_or(message)
+            .to_string(),
         None => e.0.clone(),
     }
 }
@@ -595,9 +615,9 @@ mod tests {
     /// keeps its class at the head, and stripped it reads as its message alone.
     #[test]
     fn an_interrupted_launchs_error_answers_its_class_and_strips_to_its_message() {
-        let e = no_result_error(
+        let e = launch_interrupted(
             AgentFailure::Unknown,
-            "\u{1}rigger:launch-interrupted\u{1}the stream ended with no result".into(),
+            "the stream ended with no result".into(),
         );
         assert_eq!(
             (failure_class(&e), strip_failure_marker(&e)),

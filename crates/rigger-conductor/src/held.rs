@@ -9,18 +9,23 @@
 //! way and launches the same spawn id again, its next ordinal coming from the host's own read of
 //! the spawn stream, so the conductor sees no failure and writes no infra mark. The hold is read
 //! after the host returns, because the host appends a third-fault hold before it returns its
-//! error.
+//! error. An error the host marked interrupted
+//! ([`INTERRUPTED_MARKER`](rigger_domain::agent::INTERRUPTED_MARKER)) relaunches on its mark
+//! without that read: the host decided the run held once, and a release landing after its read
+//! relaunches the interrupted session instead of reaching the conductor.
 //!
 //! Three errors reach the conductor unchanged, held or not: one carrying a conductor marker, one
 //! for a spawn the current run's slice has ended, and the next error of a spawn id that has
 //! relaunched [`RELAUNCH_BOUND`] times with no non-error outcome between. An unclassed or
-//! fault-class error on an unheld run reaches it too, its spawn site deciding what follows.
+//! fault-class error on an unheld run reaches it too, unless the host marked it interrupted, its
+//! spawn site deciding what follows.
 //!
-//! On `rigger run`, an unmarked error it hands the conductor for a spawn the current run parked
-//! and has not ended is recorded as that spawn's result, so a restarted run answers the spawn
-//! from the log instead of launching it again. It writes no other event: a hold, a release and a
-//! spawn's close each have their author. Its count of relaunches lives in memory over one
-//! supervisor's life, so a restarted supervisor starts it again.
+//! On `rigger run`, an error it hands the conductor for a spawn the current run parked and has
+//! not ended is recorded as that spawn's result, so a restarted run answers the spawn from the
+//! log instead of launching it again: any error but a park or an emit refusal, and an
+//! interrupted one only once its spawn id has no relaunch left. It writes no other event: a hold,
+//! a release and a spawn's close each have their author. Its count of relaunches lives in memory
+//! over one supervisor's life, so a restarted supervisor starts it again.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -32,7 +37,7 @@ use rigger_domain::agent::{
 };
 use serde_json::Value;
 
-use crate::conductor::is_parked_or_refused;
+use crate::conductor::{is_interrupted, is_parked_or_refused};
 use crate::config::AgentDef;
 use crate::eventstore::{Event, EventStore};
 use crate::ledger;
@@ -108,7 +113,8 @@ impl<'a> HeldDriver<'a> {
 
     /// Whether `e`, the error of spawn `id`, is one this decorator carries across instead of its
     /// spawn site. A run it cannot read leaves `e` to the conductor, the spawn's own failure
-    /// never masked by the read's. Counts the relaunch it answers true for.
+    /// never masked by the read's. An error the host marked interrupted relaunches without a read
+    /// of the hold, since the host's own read decided it. Counts the relaunch it answers true for.
     fn relaunches(&self, e: &Error, id: &str) -> bool {
         if is_parked_or_refused(e, EMIT_REFUSED_MARKER) {
             return false;
@@ -119,20 +125,21 @@ impl<'a> HeldDriver<'a> {
         if !matches!(spawn::ended_by(&slice, id), Ok(None)) {
             return false;
         }
-        let Ok(run) = ledger::project(&slice) else {
-            return false;
-        };
-        let class_waits =
-            failure_class(e).is_some_and(|class| class.row().disposition != Disposition::Fault);
-        if run.hold.is_none() && !class_waits {
-            return false;
+        if !is_interrupted(e) {
+            let Ok(run) = ledger::project(&slice) else {
+                return false;
+            };
+            let class_waits =
+                failure_class(e).is_some_and(|class| class.row().disposition != Disposition::Fault);
+            if run.hold.is_none() && !class_waits {
+                return false;
+            }
         }
         let mut relaunches = self.relaunches.lock().expect("relaunch count lock");
-        let count = relaunches.entry(id.to_string()).or_insert(0);
-        if *count >= RELAUNCH_BOUND {
+        if !relaunch_owed(&relaunches, id) {
             return false;
         }
-        *count += 1;
+        *relaunches.entry(id.to_string()).or_insert(0) += 1;
         true
     }
 
@@ -141,11 +148,17 @@ impl<'a> HeldDriver<'a> {
     /// the spawn from the log with that error instead of launching it again. Only on `rigger
     /// run`: on `rigger serve` the shim hands each result back in process and none is logged. A
     /// park and an emit refusal end no spawn, so their marked errors record nothing; neither does
-    /// a spawn the current run never parked. The write lands over no result or a liveness fault
-    /// alone ([`spawn_store::record_result_unless_ended`]), never beside a result that ended the
-    /// spawn. Best-effort: a failed read or write leaves `e` to reach the conductor unchanged.
+    /// an interrupted error while `id` has a relaunch owed, nor a spawn the current run never
+    /// parked. The write lands over no result or a liveness fault alone
+    /// ([`spawn_store::record_result_unless_ended`]), never beside a result that ended the spawn.
+    /// Best-effort: a failed read or write leaves `e` to reach the conductor unchanged.
     fn record_error(&self, e: &Error, id: &str) {
         if self.session_closed.is_some() || is_parked_or_refused(e, EMIT_REFUSED_MARKER) {
+            return;
+        }
+        if is_interrupted(e)
+            && relaunch_owed(&self.relaunches.lock().expect("relaunch count lock"), id)
+        {
             return;
         }
         let Ok(slice) = self.run_slice() else {
@@ -158,6 +171,13 @@ impl<'a> HeldDriver<'a> {
             );
         }
     }
+}
+
+/// Whether spawn `id` has a relaunch left under [`RELAUNCH_BOUND`] in `relaunches`.
+fn relaunch_owed(relaunches: &HashMap<String, u32>, id: &str) -> bool {
+    relaunches
+        .get(id)
+        .is_none_or(|count| *count < RELAUNCH_BOUND)
 }
 
 impl AgentDriver for HeldDriver<'_> {
@@ -195,8 +215,8 @@ mod tests {
     use std::sync::Mutex;
 
     use rigger_domain::agent::{
-        no_result_error, parked_spawn, AgentDriver, AgentFailure, AgentResult, Error, SpawnOpts,
-        API_UNSTABLE, EMIT_REFUSED_MARKER,
+        launch_interrupted, no_result_error, parked_spawn, AgentDriver, AgentFailure, AgentResult,
+        Error, SpawnOpts, API_UNSTABLE, EMIT_REFUSED_MARKER,
     };
     use serde_json::Value;
 
@@ -247,10 +267,7 @@ mod tests {
     /// The error the host returns for a launch it closed `interrupted` on a FAULT class, a run it
     /// read held deciding that close.
     fn interrupted() -> Error {
-        no_result_error(
-            FAULT,
-            "\u{1}rigger:launch-interrupted\u{1}the session was interrupted".into(),
-        )
+        launch_interrupted(FAULT, "the session was interrupted".into())
     }
 
     /// The hold the host appends on the third failed close, before it returns its error.

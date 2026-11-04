@@ -54,7 +54,7 @@ pub use rigger_domain::agent::{
     classify_failure, no_result_error, parked_spawn, spawn_request, strip_failure_marker,
     AgentDriver, AgentFailure, AgentResult, Error, SpawnOpts, TYPE_UNIT_PROPOSED,
 };
-use rigger_domain::agent::{EMIT_REFUSED_MARKER, PARKED_MARKER};
+use rigger_domain::agent::{EMIT_REFUSED_MARKER, INTERRUPTED_MARKER, PARKED_MARKER};
 #[cfg(test)]
 use rigger_domain::wave::{ready_stages, unit_slug};
 
@@ -1468,10 +1468,17 @@ pub fn is_parked(e: &Error) -> bool {
     carries_marker(e, PARKED_MARKER)
 }
 
+/// Whether `e` carries the host's [`INTERRUPTED_MARKER`]: a launch the host closed `interrupted`,
+/// which the held-run decorator relaunches on the mark alone.
+pub(crate) fn is_interrupted(e: &Error) -> bool {
+    carries_marker(e, INTERRUPTED_MARKER)
+}
+
 /// Whether `e` carries the sentinel `marker` ([`PARKED_MARKER`], [`BUDGET_MARKER`],
 /// [`DEGENERATE_MARKER`], [`MISMATCH_MARKER`], [`PLAN_LANDING_MARKER`] or
-/// [`LAND_REFUSED_MARKER`], each a halt's signal, or [`EMIT_REFUSED_MARKER`], the emit guard's
-/// refusal of a record the spawn emitted) rather than a plain spawn or stage failure. Robust to
+/// [`LAND_REFUSED_MARKER`], each a halt's signal, [`EMIT_REFUSED_MARKER`], the emit guard's
+/// refusal of a record the spawn emitted, or [`INTERRUPTED_MARKER`], the host's interrupted
+/// close) rather than a plain spawn or stage failure. Robust to
 /// the conductor's own `format!("... {}", e.0)` wrapping at every call site, since each marker
 /// survives as a substring.
 fn carries_marker(e: &Error, marker: &str) -> bool {
