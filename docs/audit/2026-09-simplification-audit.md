@@ -2080,8 +2080,8 @@ mandatory sweep: Command::new call sites - 94 site(s), collected mechanically re
 - `src/cli/run.rs:3752-3752` `Command::new`
 - `src/cli/setup.rs:3874-3874` `Command::new`
 - `src/cli/setup.rs:3903-3903` `Command::new`
-- `src/cli/validate.rs:1541-1541` `Command::new`
-- `src/cli/validate.rs:1820-1820` `Command::new`
+- `src/cli/validate.rs:1544-1544` `Command::new`
+- `src/cli/validate.rs:1823-1823` `Command::new`
 - `tests/adaptive_labels_periphery.rs:87-87` `Command::new`
 - `tests/adoption_keys_on_criterion_periphery.rs:2067-2067` `Command::new`
 - `tests/checkin_mutation_diff_base_periphery.rs:76-76` `Command::new`
@@ -2569,19 +2569,19 @@ __END__
 - `src/cli/setup.rs:4428-4428` `"`src/`, `crates/`, `tests/`, `docs/`, `skills/`, `scaffold/` and `.rigger/`"`
 - `src/cli/setup.rs:4431-4431` `"`git ls-files src crates tests docs skills scaffold .rigger | xargs awk"`
 - `src/cli/setup.rs:4433-4433` `"`sh .rigger/gates/lanes.sh <lane>`"`
-- `src/cli/validate.rs:892-892` `"warning: tracked .rigger/ files have uncommitted modifications:"`
-- `src/cli/validate.rs:1381-1381` `" M .rigger/workflow.yml\n\
+- `src/cli/validate.rs:895-895` `"warning: tracked .rigger/ files have uncommitted modifications:"`
+- `src/cli/validate.rs:1384-1384` `" M .rigger/workflow.yml\n\
                          M  .rigger/agents/sdet.md\n\
                          A  .rigger/agents/new.md\n\
                          D  .rigger/agents/gone.md\n\
                          ?? .rigger/events.db\n\
                          !! .rigger/shim/node_modules\n"`
-- `src/cli/validate.rs:1391-1391` `".rigger/workflow.yml"`
-- `src/cli/validate.rs:1392-1392` `".rigger/agents/sdet.md"`
-- `src/cli/validate.rs:1393-1393` `".rigger/agents/new.md"`
-- `src/cli/validate.rs:1394-1394` `".rigger/agents/gone.md"`
-- `src/cli/validate.rs:2284-2284` `".rigger"`
-- `src/cli/validate.rs:2338-2338` `".rigger"`
+- `src/cli/validate.rs:1394-1394` `".rigger/workflow.yml"`
+- `src/cli/validate.rs:1395-1395` `".rigger/agents/sdet.md"`
+- `src/cli/validate.rs:1396-1396` `".rigger/agents/new.md"`
+- `src/cli/validate.rs:1397-1397` `".rigger/agents/gone.md"`
+- `src/cli/validate.rs:2287-2287` `".rigger"`
+- `src/cli/validate.rs:2341-2341` `".rigger"`
 - `src/main.rs:210-210` `"rigger - a config-driven, event-sourced multi-agent dev-loop harness\n\n\
 usage:\n  \
 rigger run [spec] [opts]    run the workflow (opts below)\n  \
@@ -3453,7 +3453,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `crates/rigger-config-files/src/config_store.rs:957-959` `rejects_missing_frontmatter`
 - `crates/rigger-domain/src/contextgraph/query.rs:2096-2098` `graph_load_rejects_malformed_json_without_panicking`
 - `crates/rigger-domain/src/spec.rs:1275-1277` `empty_when_no_criteria`
-- `src/cli/validate.rs:1402-1404` `dirty_tracked_paths_on_a_clean_tree_is_empty`
+- `src/cli/validate.rs:1405-1407` `dirty_tracked_paths_on_a_clean_tree_is_empty`
 
 #### `dup-f61039476fc4` (near, 3 sites)
 
@@ -4577,7 +4577,7 @@ Proposed home: `a new shared module (sites span 2 files: crates/rigger-process/s
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `crates/rigger-process/src/reap.rs:873-880` `processes_rooted_under_is_a_graceful_no_op_when_the_base_is_absent`
-- `src/cli/validate.rs:1866-1873` `leaked_process_advisories_is_a_graceful_no_op_when_the_scratch_root_is_absent`
+- `src/cli/validate.rs:1869-1876` `leaked_process_advisories_is_a_graceful_no_op_when_the_scratch_root_is_absent`
 
 #### `dup-183455104b30` (near, 3 sites)
 
@@ -4713,7 +4713,7 @@ Proposed home: `a new shared module (sites span 2 files: src/cli/guard.rs, src/c
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `src/cli/guard.rs:1323-1325` `parse_guard_write_roots_requires_at_least_one`
-- `src/cli/validate.rs:2064-2066` `order_signature_advisories_is_empty_when_no_signatures_are_given`
+- `src/cli/validate.rs:2067-2069` `order_signature_advisories_is_empty_when_no_signatures_are_given`
 
 #### `dup-db3e199dd312` (near, 7 sites)
 
@@ -4853,8 +4853,8 @@ Proposed home: `validate::support (consolidate these 2 sites into one function i
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/cli/validate.rs:1569-1590` `git_is_ancestor_decides_commit_order_in_a_real_repo`
-- `src/cli/validate.rs:1593-1614` `git_commit_distance_counts_commits_ahead_in_a_real_repo`
+- `src/cli/validate.rs:1572-1593` `git_is_ancestor_decides_commit_order_in_a_real_repo`
+- `src/cli/validate.rs:1596-1617` `git_commit_distance_counts_commits_ahead_in_a_real_repo`
 
 #### `dup-5f516fce9f0b` (near, 2 sites)
 

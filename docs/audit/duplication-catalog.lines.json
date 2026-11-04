@@ -929,13 +929,13 @@
       },
       {
         "file": "src/cli/validate.rs",
-        "start_line": 1541,
-        "end_line": 1541
+        "start_line": 1544,
+        "end_line": 1544
       },
       {
         "file": "src/cli/validate.rs",
-        "start_line": 1820,
-        "end_line": 1820
+        "start_line": 1823,
+        "end_line": 1823
       },
       {
         "file": "tests/adaptive_labels_periphery.rs",
@@ -2109,28 +2109,13 @@
       },
       {
         "file": "src/cli/validate.rs",
-        "start_line": 892,
-        "end_line": 892
+        "start_line": 895,
+        "end_line": 895
       },
       {
         "file": "src/cli/validate.rs",
-        "start_line": 1381,
-        "end_line": 1381
-      },
-      {
-        "file": "src/cli/validate.rs",
-        "start_line": 1391,
-        "end_line": 1391
-      },
-      {
-        "file": "src/cli/validate.rs",
-        "start_line": 1392,
-        "end_line": 1392
-      },
-      {
-        "file": "src/cli/validate.rs",
-        "start_line": 1393,
-        "end_line": 1393
+        "start_line": 1384,
+        "end_line": 1384
       },
       {
         "file": "src/cli/validate.rs",
@@ -2139,13 +2124,28 @@
       },
       {
         "file": "src/cli/validate.rs",
-        "start_line": 2284,
-        "end_line": 2284
+        "start_line": 1395,
+        "end_line": 1395
       },
       {
         "file": "src/cli/validate.rs",
-        "start_line": 2338,
-        "end_line": 2338
+        "start_line": 1396,
+        "end_line": 1396
+      },
+      {
+        "file": "src/cli/validate.rs",
+        "start_line": 1397,
+        "end_line": 1397
+      },
+      {
+        "file": "src/cli/validate.rs",
+        "start_line": 2287,
+        "end_line": 2287
+      },
+      {
+        "file": "src/cli/validate.rs",
+        "start_line": 2341,
+        "end_line": 2341
       },
       {
         "file": "src/main.rs",
@@ -4514,8 +4514,8 @@
       },
       {
         "file": "src/cli/validate.rs",
-        "start_line": 1402,
-        "end_line": 1404
+        "start_line": 1405,
+        "end_line": 1407
       }
     ]
   },
@@ -6814,8 +6814,8 @@
       },
       {
         "file": "src/cli/validate.rs",
-        "start_line": 1866,
-        "end_line": 1873
+        "start_line": 1869,
+        "end_line": 1876
       }
     ]
   },
@@ -7044,8 +7044,8 @@
       },
       {
         "file": "src/cli/validate.rs",
-        "start_line": 2064,
-        "end_line": 2066
+        "start_line": 2067,
+        "end_line": 2069
       }
     ]
   },
@@ -7294,13 +7294,13 @@
     "sites": [
       {
         "file": "src/cli/validate.rs",
-        "start_line": 1569,
-        "end_line": 1590
+        "start_line": 1572,
+        "end_line": 1593
       },
       {
         "file": "src/cli/validate.rs",
-        "start_line": 1593,
-        "end_line": 1614
+        "start_line": 1596,
+        "end_line": 1617
       }
     ]
   },

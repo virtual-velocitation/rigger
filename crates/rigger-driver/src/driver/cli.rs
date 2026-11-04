@@ -35,7 +35,7 @@ pub struct Driver {
 impl Default for Driver {
     fn default() -> Self {
         Driver {
-            bin: "claude".to_string(),
+            bin: crate::claude_auth::DEFAULT_BIN.to_string(),
             rigger_bin: "rigger".to_string(),
         }
     }
@@ -66,7 +66,7 @@ impl Driver {
         session: &LaunchSession,
     ) -> Result<Output, Error> {
         let persona = system_prompt_file(&opts.system_prompt, blocking_spawn_scratch_dir(opts))?;
-        let bin = bin_or_path_default(&self.bin, "claude");
+        let bin = bin_or_path_default(&self.bin, crate::claude_auth::DEFAULT_BIN);
         let mut cmd = crate::subprocess::command_in(bin, &opts.dir);
         cmd.args(build_args(
             agent,

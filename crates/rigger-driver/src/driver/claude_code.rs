@@ -139,7 +139,7 @@ impl Default for Driver<'static> {
         // same file's `launch_records_a_lost_write_loudly_rather_than_spawning_blind`
         // test) rather than a second, unnecessary spelling of the same thing.
         Driver {
-            bin: "claude".to_string(),
+            bin: crate::claude_auth::DEFAULT_BIN.to_string(),
             rigger_bin: "rigger".to_string(),
             progress_store: &crate::eventstore::SilentStore,
             run_store: &crate::eventstore::SilentStore,
@@ -289,7 +289,7 @@ impl Driver<'_> {
             },
         )?;
 
-        let bin = bin_or_path_default(&self.bin, "claude");
+        let bin = bin_or_path_default(&self.bin, crate::claude_auth::DEFAULT_BIN);
         let mut cmd = crate::subprocess::command_in(bin, &opts.dir);
         cmd.args(&args);
         // The ONE build-environment authority's injection site for this driver (spec 65),
@@ -1593,7 +1593,7 @@ impl Driver<'_> {
     /// outcome decides.
     pub fn probe(&self, root: &str, owed: &crate::hold_probe::OwedProbe) -> ProbeOutcome {
         let deadline = std::time::Instant::now() + owed.delay;
-        let bin = bin_or_path_default(&self.bin, "claude");
+        let bin = bin_or_path_default(&self.bin, crate::claude_auth::DEFAULT_BIN);
         if owed.checks_login() && !crate::claude_auth::logged_in(bin, deadline) {
             return ProbeOutcome::LoggedOut;
         }
