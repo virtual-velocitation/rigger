@@ -1,0 +1,264 @@
+//! The Linux keep-awake adapter (spec 105): a logind inhibitor lock, taken over the system bus.
+
+#[cfg(test)]
+mod tests {
+    use super::{no_system_bus, unavailable};
+    use crate::keep_awake::OsSleepHold;
+    use crate::test_support::{release, wait_until, waiting_shell};
+    use rigger_domain::sleep_hold::{SleepHold, Unavailable};
+    use std::path::Path;
+    use zbus::blocking::fdo::DBusProxy;
+    use zbus::blocking::Connection;
+    use zbus::names::BusName;
+
+    /// The bus name logind owns on the system bus.
+    const LOGIND: &str = "org.freedesktop.login1";
+
+    /// One inhibitor as logind's `ListInhibitors` lists it: what, who, why, mode, uid and pid.
+    type Listed = (String, String, String, String, u32, u32);
+
+    /// One inhibitor by what, who, why and mode.
+    type Inhibitor = (String, String, String, String);
+
+    /// Logind's answer to an `Inhibit` this test asks for itself, with the arguments the adapter
+    /// passes for `reason`.
+    fn inhibit(bus: &Connection, reason: &str) -> zbus::Result<zbus::Message> {
+        bus.call_method(
+            Some(LOGIND),
+            "/org/freedesktop/login1",
+            Some("org.freedesktop.login1.Manager"),
+            "Inhibit",
+            &("sleep:idle", "rigger", reason, "block"),
+        )
+    }
+
+    /// The inhibitors logind lists for `reason`, a reason unique to one run of the test. They are
+    /// found by the reason, not the uid and pid logind lists: a test run inside a user or PID
+    /// namespace knows its own ids by other numbers than logind does.
+    fn inhibitors_for(bus: &Connection, reason: &str) -> Vec<Inhibitor> {
+        let listed: Vec<Listed> = bus
+            .call_method(
+                Some(LOGIND),
+                "/org/freedesktop/login1",
+                Some("org.freedesktop.login1.Manager"),
+                "ListInhibitors",
+                &(),
+            )
+            .expect("logind lists its inhibitors")
+            .body()
+            .deserialize()
+            .expect("ListInhibitors answers a(ssssuu)");
+        listed
+            .into_iter()
+            .filter(|(_, _, why, ..)| why == reason)
+            .map(|(what, who, why, mode, ..)| (what, who, why, mode))
+            .collect()
+    }
+
+    /// The unique name of the process that owns logind's name on the bus, `None` when no process
+    /// does: asked after an `Inhibit`, which starts an activatable logind, so `None` means no
+    /// logind runs on the bus, neither started nor startable.
+    fn logind_owner(bus: &Connection) -> Option<String> {
+        let driver = DBusProxy::new(bus).expect("the bus driver answers");
+        match driver.get_name_owner(BusName::try_from(LOGIND).unwrap()) {
+            Ok(owner) => Some(owner.to_string()),
+            Err(zbus::fdo::Error::NameHasNoOwner(_)) => None,
+            Err(e) => panic!("GetNameOwner answers an owner or NameHasNoOwner: {e}"),
+        }
+    }
+
+    /// An error reply named `name` to an `Inhibit` call, sent by `sender` and carrying `detail`
+    /// where each is given, as zbus hands it to the caller.
+    fn error_reply(sender: Option<&str>, name: &str, detail: Option<&str>) -> zbus::Error {
+        let call = zbus::Message::method_call("/org/freedesktop/login1", "Inhibit")
+            .unwrap()
+            .build(&())
+            .unwrap();
+        let mut reply = zbus::Message::error(&call.header(), name).unwrap();
+        if let Some(sender) = sender {
+            reply = reply.sender(sender).unwrap();
+        }
+        let reply = match detail {
+            Some(detail) => reply.build(&detail),
+            None => reply.build(&()),
+        };
+        zbus::Error::from(reply.unwrap())
+    }
+
+    /// Each way taking the inhibitor fails is answered unavailable with the spelling that names
+    /// it, on every host: a bus the adapter cannot reach; an error the bus driver sends, since
+    /// logind never answered, whatever its name; an error any other sender sends, logind's
+    /// refusal, whatever its name and with or without a detail; and a failure that is no error
+    /// reply at all.
+    #[test]
+    fn each_failure_is_answered_unavailable_naming_it() {
+        let driver = Some("org.freedesktop.DBus");
+        let logind = Some(":1.14");
+        let rows: Vec<(&str, Unavailable, &str)> = vec![
+            (
+                "the system bus cannot be reached",
+                no_system_bus(zbus::Error::Address("no such socket".to_string())),
+                "no system bus: address error: no such socket",
+            ),
+            (
+                "the bus driver: no process owns or provides logind's name",
+                unavailable(error_reply(
+                    driver,
+                    "org.freedesktop.DBus.Error.ServiceUnknown",
+                    Some("The name org.freedesktop.login1 was not provided by any .service files"),
+                )),
+                "no logind on the system bus: org.freedesktop.DBus.Error.ServiceUnknown: The name \
+                 org.freedesktop.login1 was not provided by any .service files",
+            ),
+            (
+                "the bus driver: logind's activation failed",
+                unavailable(error_reply(
+                    driver,
+                    "org.freedesktop.DBus.Error.Spawn.ChildExited",
+                    Some("Process org.freedesktop.login1 exited with status 1"),
+                )),
+                "no logind on the system bus: org.freedesktop.DBus.Error.Spawn.ChildExited: \
+                 Process org.freedesktop.login1 exited with status 1",
+            ),
+            (
+                "logind denies the lock",
+                unavailable(error_reply(
+                    logind,
+                    "org.freedesktop.DBus.Error.AccessDenied",
+                    Some("Permission denied"),
+                )),
+                "logind refused the inhibitor: org.freedesktop.DBus.Error.AccessDenied: \
+                 Permission denied",
+            ),
+            (
+                "logind refuses with no detail",
+                unavailable(error_reply(
+                    logind,
+                    "org.freedesktop.DBus.Error.InteractiveAuthorizationRequired",
+                    None,
+                )),
+                "logind refused the inhibitor: \
+                 org.freedesktop.DBus.Error.InteractiveAuthorizationRequired: no details",
+            ),
+            (
+                "a sender other than the bus driver, under a name the driver also sends",
+                unavailable(error_reply(
+                    logind,
+                    "org.freedesktop.DBus.Error.ServiceUnknown",
+                    Some("unknown"),
+                )),
+                "logind refused the inhibitor: org.freedesktop.DBus.Error.ServiceUnknown: unknown",
+            ),
+            (
+                "an error reply naming no sender",
+                unavailable(error_reply(
+                    None,
+                    "org.freedesktop.DBus.Error.AccessDenied",
+                    Some("Permission denied"),
+                )),
+                "logind refused the inhibitor: org.freedesktop.DBus.Error.AccessDenied: \
+                 Permission denied",
+            ),
+            (
+                "no error reply: the reply carries no descriptor",
+                unavailable(zbus::Error::InvalidReply),
+                "cannot take a logind inhibitor: Invalid D-Bus method reply",
+            ),
+        ];
+        for (what, answered, expected) in rows {
+            assert_eq!(answered, Unavailable(expected.to_string()), "{what}");
+        }
+    }
+
+    /// Spec 105's Linux adapter against the host's system bus, in whichever of its worlds the host
+    /// is. Where logind grants the inhibitor, logind lists it as a `sleep:idle` block lock by
+    /// `rigger` for the reason given while the guard stands, and lists it no more once the guard
+    /// drops, even while a child spawned under the guard still runs, since the guard holds the one
+    /// descriptor and it is close-on-exec. Where logind refuses, the adapter answers unavailable
+    /// naming the refusal logind itself sends this test's own `Inhibit`. Where no logind runs on
+    /// the bus, its name owned by no process once `Inhibit` was asked, the adapter answers
+    /// unavailable with the bus driver's own answer to `Inhibit`; and where there is no system
+    /// bus, with the error reaching it.
+    #[test]
+    fn the_inhibitor_stands_while_its_guard_does_and_ends_with_it() {
+        let reason = &format!(
+            "the rigger-process keep-awake test at {} ns",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let held = OsSleepHold.acquire(reason);
+        let bus = match Connection::system() {
+            Ok(bus) => bus,
+            Err(e) => {
+                assert_eq!(
+                    held.err(),
+                    Some(Unavailable(format!("no system bus: {e}"))),
+                    "no system bus: the adapter's answer"
+                );
+                return;
+            }
+        };
+        let why = match held {
+            Ok(guard) => {
+                let ours: Vec<Inhibitor> = vec![(
+                    "sleep:idle".to_string(),
+                    "rigger".to_string(),
+                    reason.to_string(),
+                    "block".to_string(),
+                )];
+                assert_eq!(
+                    inhibitors_for(&bus, reason),
+                    ours,
+                    "logind grants: the inhibitors for this reason while the guard stands"
+                );
+                let child = waiting_shell("true", Path::new("/"));
+                drop(guard);
+                wait_until(|| inhibitors_for(&bus, reason).is_empty());
+                let after = inhibitors_for(&bus, reason);
+                release(child);
+                assert_eq!(
+                    after,
+                    Vec::<Inhibitor>::new(),
+                    "logind grants: the inhibitors for this reason once the guard dropped, \
+                     a child spawned under the guard still running"
+                );
+                return;
+            }
+            Err(why) => why,
+        };
+        let refusal = inhibit(&bus, reason)
+            .expect_err("the bus refuses this test's own inhibitor, as it refused the adapter's");
+        let zbus::Error::MethodError(_, _, reply) = &refusal else {
+            panic!("the bus answered Inhibit with no error reply: {refusal}");
+        };
+        let sender = reply.header().sender().map(|sender| sender.to_string());
+        match logind_owner(&bus) {
+            Some(logind) => {
+                assert_eq!(
+                    sender,
+                    Some(logind),
+                    "logind refuses: the process owning logind's name sent the refusal"
+                );
+                assert_eq!(
+                    why,
+                    Unavailable(format!("logind refused the inhibitor: {refusal}")),
+                    "logind refuses: the adapter's answer"
+                );
+            }
+            None => {
+                assert_eq!(
+                    sender.as_deref(),
+                    Some("org.freedesktop.DBus"),
+                    "no logind: the bus driver answered for the name no process owns"
+                );
+                assert_eq!(
+                    why,
+                    Unavailable(format!("no logind on the system bus: {refusal}")),
+                    "no logind: the adapter's answer"
+                );
+            }
+        }
+    }
+}

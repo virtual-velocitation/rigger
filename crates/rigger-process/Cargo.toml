@@ -30,6 +30,11 @@ rustix = { version = "1.1", default-features = false, features = ["std", "proces
 # The build budget's cross-process advisory slot lock (`flock` under the hood).
 fs2 = "0.4"
 
+# The Linux keep-awake adapter's logind client (spec 105): zbus's blocking API, run on zbus's own
+# tokio executor, so the adapter takes no direct `tokio` edge.
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus = { version = "5.15", default-features = false, features = ["blocking-api", "tokio"] }
+
 [dev-dependencies]
 tempfile = "3"
 

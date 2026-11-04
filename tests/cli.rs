@@ -9000,12 +9000,14 @@ fn a_run_driver_holds_the_machine_awake_while_it_drives_and_releases_it_as_it_ex
 }
 
 /// Spec 105's KEEP-AWAKE default at the composition root: given no keep-awake knob, when `rigger
-/// run` drives a run, then it takes the host's adapter, which answers unavailable naming the OS
-/// until the native adapters land, so the driver prints the one keep-awake line and the run still
-/// reaches done.
+/// run` drives a run, then it takes the host's adapter, so its keep-awake lines are the host
+/// adapter's own answer here - none where the adapter holds the machine awake, else the one line
+/// naming why it is unavailable - and the run still reaches done.
 #[cfg(unix)]
 #[test]
 fn a_run_with_no_keep_awake_knob_takes_the_hosts_adapter() {
+    use rigger::keep_awake::OsSleepHold;
+    use rigger::sleep_hold::{SleepHold, Unavailable};
     let dir = temp_git_project_with_commit();
     let root = dir.path();
     write_workflow_fixture(root, &REVIEWLESS_GIT_UNIT_WORKFLOW);
@@ -9023,12 +9025,13 @@ fn a_run_with_no_keep_awake_knob_takes_the_hosts_adapter() {
     .expect("run rigger with no keep-awake knob");
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(out.status.success(), "the run exits 0; stderr: {err}");
+    let hosts_lines = match OsSleepHold.acquire("the keep-awake host adapter test") {
+        Ok(_held) => vec![],
+        Err(Unavailable(why)) => vec![keep_awake_unavailable(&why)],
+    };
     assert_eq!(
         lines_starting_with(&err, "rigger: keep-awake"),
-        [keep_awake_unavailable(&format!(
-            "no keep-awake adapter for {}",
-            std::env::consts::OS
-        ))],
+        hosts_lines,
         "the keep-awake lines"
     );
     let integrated = common::cli::run_payloads(root, rigger::ledger::TYPE_UNIT_INTEGRATED);
