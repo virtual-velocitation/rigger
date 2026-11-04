@@ -228,26 +228,13 @@ impl CriticHost<'_> {
 /// Remove the liveness, transcript and spawn-scratch directories of every critique run (`critique-<hash>`, any
 /// hash) under the scratch root, so whatever a crashed critique left goes with the next call; the
 /// log holds the output. A loop run's directories are never touched. Each goes through the same
-/// reap-then-remove as the run's own liveness sweep. Best-effort: a directory that cannot be read
-/// or removed stays for the next call.
+/// entry-by-entry removal as a done run's teardown ([`remove_agent_area_entries`]). Best-effort:
+/// a directory that cannot be read or removed stays for the next call.
 fn remove_critique_scratch(scratch_root: &str) {
     if scratch_root.is_empty() {
         return;
     }
-    for sub in [
-        rigger::liveness::MARKER_SUBDIR,
-        claude_code::AGENT_STREAM_SUBDIR,
-        rigger::driver::replay::SPAWN_SCRATCH_SUBDIR,
-    ] {
-        let Ok(entries) = std::fs::read_dir(Path::new(scratch_root).join(sub)) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            if review::is_critique_run(&entry.file_name().to_string_lossy()) {
-                reap_then_remove_dir(&entry.path(), Path::new(scratch_root));
-            }
-        }
-    }
+    remove_agent_area_entries(Path::new(scratch_root), review::is_critique_run);
 }
 
 /// Append one `ReviewFinding` to the project run stream for each finding of `critique` that the

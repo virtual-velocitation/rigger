@@ -1083,8 +1083,12 @@ fn merge_hung_attention(
 /// build-cache names mirror exactly what `rigger validate`'s residue report flags as a shared
 /// cache (`scan_residue`), so validate-reports and step-reclaims stay in lockstep.
 ///
-/// Each area is reaped-then-removed (spec 23): any process still rooted in it is reaped BEFORE
-/// the dir is removed so nothing outlives a dir holding a now-deleted cwd. Scoped to the EXACT
+/// The three agent areas are reclaimed entry by entry ([`remove_agent_area_entries`]), each area
+/// then removed once empty: a critique run's entries (`critique-<hash>`) share those areas and
+/// are left to that critique's own next call, so a critique still running as the run ends keeps
+/// its scratch and its processes. Each reclaimed entry and the bare `target` are
+/// reaped-then-removed (spec 23): any process still rooted in one is reaped BEFORE the dir is
+/// removed so nothing outlives a dir holding a now-deleted cwd. Scoped to the EXACT
 /// dir removed under the resolved scratch `root` (`RIGGER_TMPDIR` > `defaults.workdir` > repo
 /// default), never a hardcoded `.rigger/tmp`, so a relocated scratch root stays safe and only
 /// rigger's own scratch is ever reaped. Every half is best-effort - a missing area is a graceful
@@ -1119,11 +1123,43 @@ fn merge_hung_attention(
 /// rigger-directed build actually targets; `target` stays a bare reap as before.
 fn reclaim_run_scratch(root: &str) {
     let base = std::path::Path::new(root);
-    reap_then_remove_dir(&base.join("agent-scratch"), base);
-    reap_then_remove_dir(&base.join(rigger::liveness::MARKER_SUBDIR), base);
-    reap_then_remove_dir(&base.join(claude_code::AGENT_STREAM_SUBDIR), base);
+    remove_agent_area_entries(base, |name| !review::is_critique_run(name));
+    for area in AGENT_AREAS {
+        let _ = std::fs::remove_dir(base.join(area));
+    }
     let _ = reclaim_shared_build_cache(&base.join(rigger::worktree::SHARED_BUILD_CACHE_NAME), base);
     reap_then_remove_dir(&base.join("target"), base);
+}
+
+/// The agent areas under a scratch root, each holding one entry per run: the scratch a worker
+/// parks probe repos and verify builds in, per-spawn liveness markers, and a headless host's raw
+/// transcripts.
+const AGENT_AREAS: [&str; 3] = [
+    rigger::driver::replay::SPAWN_SCRATCH_SUBDIR,
+    rigger::liveness::MARKER_SUBDIR,
+    claude_code::AGENT_STREAM_SUBDIR,
+];
+
+/// Remove every entry of the [`AGENT_AREAS`] under `scratch_root` whose name `takes` accepts: a
+/// directory through the reap-then-remove every scratch removal shares, scoped to
+/// `scratch_root`, anything else as a file. Best-effort: an area or entry that cannot be read or
+/// removed stays for a later call.
+pub(crate) fn remove_agent_area_entries(scratch_root: &Path, takes: impl Fn(&str) -> bool) {
+    for area in AGENT_AREAS {
+        let Ok(entries) = std::fs::read_dir(scratch_root.join(area)) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            if !takes(&entry.file_name().to_string_lossy()) {
+                continue;
+            }
+            if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                reap_then_remove_dir(&entry.path(), scratch_root);
+            } else {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
 }
 
 /// `rigger reported <id>` - exit 0 iff spawn `<id>` already has a recorded result in this
