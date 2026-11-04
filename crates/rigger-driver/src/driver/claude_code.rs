@@ -165,8 +165,11 @@ pub struct Launch {
     /// its transcript and its close carry.
     pub ordinal: u32,
     /// The session this launch continues, empty on a fresh launch: what the spawn's result
-    /// records, and what makes [`Driver::read_stream`] await the session's `system/init`.
+    /// records.
     pub resumed_from: String,
+    /// Whether this launch continues a session ([`LaunchSession::resumed`]): what makes
+    /// [`Driver::read_stream`] await the session's `system/init`.
+    pub resumed: bool,
     pub args: Vec<String>,
     /// The file the session reads its system prompt from (`--system-prompt-file`), held for
     /// as long as the launch is, so the session can read it whenever it starts.
@@ -368,6 +371,7 @@ impl Driver<'_> {
             model: agent.model_for_attempt(opts.attempt).to_string(),
             ordinal,
             resumed_from: session.resumed_from(),
+            resumed: session.resumed(),
             args,
             persona,
         })
@@ -594,7 +598,7 @@ impl Driver<'_> {
         let mut errored = false;
         // THE RESUME FALLBACK's one predicate (see the doc above): a resume with no
         // `system/init` yet.
-        let mut awaiting_session = !launch.resumed_from.is_empty();
+        let mut awaiting_session = launch.resumed;
         // adj-u104-stream round-5 REQUIRED FIX (op-104-stream-clean-eof-waits-before-the-reap):
         // distinguishes the loop's two exit shapes below. `false` when the loop instead runs
         // to real exhaustion (a clean EOF: the child closed its stdout pipe on its own,
