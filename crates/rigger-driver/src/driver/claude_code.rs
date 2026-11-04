@@ -518,7 +518,10 @@ impl Driver<'_> {
     /// a resume's refusal (THE RESUME FALLBACK below), a non-error one is recorded and closes the
     /// launch `completed`, and one with `is_error: true` records nothing: no later `result` acts,
     /// and the launch takes its class after the child exits, as a no-result launch does
-    /// ([`Driver::classify_no_result`]), or takes THE STOP when a bounded session never does.
+    /// ([`Driver::classify_no_result`]), or takes THE STOP when a bounded session never does. On
+    /// an unbounded launch a live child that ignores its input close keeps the turn until it
+    /// exits, as a no-result child does, and a read error behind that `result` fails the launch
+    /// unclassed, as a read error before any result does.
     ///
     /// THE RESUME FALLBACK (spec 105 criterion 1): a `--resume` launch awaits its session until
     /// the first `system/init`. Ending while it still awaits one - at the end of the stream,
