@@ -69,6 +69,12 @@ impl SleepHold for OsSleepHold {
     }
 }
 
+/// The knob selecting the keep-awake adapter a run's driver takes its hold from (spec 105), read
+/// by the composition root's `sleep_hold` alone: production leaves it unset, so the driver holds
+/// the host awake through [`OsSleepHold`]; the tests set a fake, so only the native adapters' rows
+/// and the no-knob row use the host.
+pub const KEEP_AWAKE_ENV: &str = "RIGGER_KEEP_AWAKE";
+
 #[cfg(test)]
 mod tests {
     use crate::test_support::table_lines;

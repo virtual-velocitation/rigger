@@ -10,6 +10,7 @@
 
 #![allow(dead_code)]
 
+use rigger::keep_awake::KEEP_AWAKE_ENV;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -206,11 +207,6 @@ pub fn unfenced(cmd: &mut Command) -> &mut Command {
     cmd.env(KEEP_AWAKE_ENV, format!("record:{}", record.display()));
     cmd
 }
-
-/// The knob selecting the keep-awake adapter a `rigger run` or `rigger serve` holds the machine
-/// awake through (spec 105): `record:<path>` selects the recording fake and `unavailable:<reason>`
-/// the fake whose acquire fails with `<reason>`.
-pub const KEEP_AWAKE_ENV: &str = "RIGGER_KEEP_AWAKE";
 
 /// Clears this test process's own ambient `STORE_FENCE_ENV` (the fence a gate pins on its
 /// whole subprocess tree) when created AND again when dropped, so a test that sets the fence

@@ -7,6 +7,7 @@
 
 use common::git::git_ok;
 use common::repo::repo_text;
+use rigger::keep_awake::KEEP_AWAKE_ENV;
 use rigger::spawn::{SpawnEvent, SpawnResult};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -8958,7 +8959,7 @@ fn drive_a_held_run(root: &Path, knob: &str, record: &Path) -> (Vec<Checkpoint>,
     let (out, err, ok, _fake) = run_on_arms_beside_with(
         root,
         &["run"],
-        &[(common::KEEP_AWAKE_ENV, knob)],
+        &[(KEEP_AWAKE_ENV, knob)],
         scratch.path(),
         RECORDING_WORKER_ARM,
         |fake| {
@@ -8988,7 +8989,7 @@ fn drive_a_held_serve(root: &Path, knob: &str, record: &Path) -> (Vec<Checkpoint
     let mut mcp = McpSession::from_command(common::cli::rigger_command(
         root,
         &["serve", "--base", "HEAD"],
-        &[(common::KEEP_AWAKE_ENV, knob)],
+        &[(KEEP_AWAKE_ENV, knob)],
         root,
     ));
     mcp.initialize();
@@ -9086,7 +9087,7 @@ fn a_run_driver_holds_the_machine_awake_while_it_drives_and_releases_it_as_it_ex
             lines: |_: &Path| {
                 vec![keep_awake_unavailable(&format!(
                     "{}=awake names no keep-awake adapter",
-                    common::KEEP_AWAKE_ENV
+                    KEEP_AWAKE_ENV
                 ))]
             },
         },
@@ -9146,7 +9147,7 @@ fn drive_an_unknobbed_run(root: &Path) -> (bool, String) {
         &fake_claude_env(&path_env, scratch.path()),
         state.path(),
     )
-    .env_remove(common::KEEP_AWAKE_ENV)
+    .env_remove(KEEP_AWAKE_ENV)
     .stdin(std::process::Stdio::null())
     .output()
     .expect("run rigger with no keep-awake knob");
@@ -9160,7 +9161,7 @@ fn drive_an_unknobbed_run(root: &Path) -> (bool, String) {
 /// run is done, then its session closed: whether it exited 0, and its stderr.
 fn drive_an_unknobbed_serve(root: &Path) -> (bool, String) {
     let mut serve = common::cli::rigger_command(root, &["serve", "--base", "HEAD"], &[], root);
-    serve.env_remove(common::KEEP_AWAKE_ENV);
+    serve.env_remove(KEEP_AWAKE_ENV);
     let mut mcp = McpSession::from_command(serve);
     mcp.initialize();
     assert_eq!(
@@ -9249,7 +9250,7 @@ fn a_command_driving_no_run_takes_no_keep_awake_hold() {
         let here = tempfile::tempdir().unwrap();
         let record = here.path().join("keep-awake");
         let knob = format!("record:{}", record.display());
-        let (out, err, ok) = run_rigger_envs(root, args, &[(common::KEEP_AWAKE_ENV, &knob)]);
+        let (out, err, ok) = run_rigger_envs(root, args, &[(KEEP_AWAKE_ENV, &knob)]);
         assert_eq!(
             ok, exits_0,
             "{name}: how it exits; stderr: {err}\nstdout: {out}"
