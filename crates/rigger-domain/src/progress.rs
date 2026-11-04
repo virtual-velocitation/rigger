@@ -294,8 +294,15 @@ pub fn open_launches(progress_events: &[Event]) -> Vec<(String, SpawnLaunched)> 
 fn decoded_launches(progress_events: &[Event]) -> impl Iterator<Item = (&Event, SpawnLaunched)> {
     progress_events
         .iter()
-        .filter(|e| e.type_ == TYPE_SPAWN_LAUNCHED)
-        .filter_map(|e| Some((e, serde_json::from_slice(&e.data).ok()?)))
+        .filter_map(|e| Some((e, decode_launch(e)?)))
+}
+
+/// The [`SpawnLaunched`] record `e` carries; `None` for another type or a body that does not
+/// decode.
+fn decode_launch(e: &Event) -> Option<SpawnLaunched> {
+    (e.type_ == TYPE_SPAWN_LAUNCHED)
+        .then(|| serde_json::from_slice(&e.data).ok())
+        .flatten()
 }
 
 /// The event type a [`StopFailure`] record serializes as (spec 104 criterion 5: A FAILURE
@@ -336,11 +343,9 @@ impl RunStamped for StopFailure {
 pub fn latest_stop_failure_class(progress_events: &[Event], spawn_id: &str) -> Option<String> {
     let mut found = None;
     for e in progress_events {
-        if e.type_ == TYPE_SPAWN_LAUNCHED {
-            if let Ok(launch) = serde_json::from_slice::<SpawnLaunched>(&e.data) {
-                if launch.spawn == spawn_id && launch.ended.is_none() {
-                    found = None;
-                }
+        if let Some(launch) = decode_launch(e) {
+            if launch.spawn == spawn_id && launch.ended.is_none() {
+                found = None;
             }
         } else if e.type_ == TYPE_STOP_FAILURE {
             if let Ok(sf) = serde_json::from_slice::<StopFailure>(&e.data) {

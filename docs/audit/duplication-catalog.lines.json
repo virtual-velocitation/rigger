@@ -4579,8 +4579,8 @@
       },
       {
         "file": "crates/rigger-domain/src/progress.rs",
-        "start_line": 507,
-        "end_line": 510
+        "start_line": 512,
+        "end_line": 515
       },
       {
         "file": "tests/simplification_audit.rs",
@@ -5940,7 +5940,7 @@
     ]
   },
   {
-    "id": "dup-d89a88dac133",
+    "id": "dup-b812e9924aed",
     "sites": [
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
@@ -6046,11 +6046,6 @@
         "file": "src/cli/mod.rs",
         "start_line": 12744,
         "end_line": 12744
-      },
-      {
-        "file": "src/cli/run.rs",
-        "start_line": 4805,
-        "end_line": 4805
       },
       {
         "file": "tests/cli.rs",

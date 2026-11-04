@@ -2163,7 +2163,7 @@ fn run_workflow(parsed: &RunArgs, command: &str, sleep: &dyn SleepHold) -> Res {
     // liveness-marker ages rigger reads in Rust) to the shim over its existing connection -
     // the shim never touches the filesystem. Progress is always the local sqlite sibling of
     // the run store, regardless of the run store's backend.
-    let prog_backend = Store::open(&db_path("progress.db"))?;
+    let prog_backend = open_progress_backend()?;
     let prog_store = Namespaced::new(&prog_backend, &project_identity());
     // Reuses the `repo` resolved once at this function's entry (see its own comment) rather
     // than a second `git_repo()` re-read.
@@ -4802,10 +4802,7 @@ mod tests {
         let db = dir.path().join("events.db");
         let run_log = Store::open(db.to_str().unwrap()).unwrap();
         mint_run(&run_log, "run-a");
-        rusqlite::Connection::open(&db)
-            .unwrap()
-            .execute_batch("DROP TABLE events")
-            .unwrap();
+        crate::test_support::drop_the_log(&db);
         let progress = Store::open(":memory:").unwrap();
         beat(&run_log, &progress);
         assert_eq!(beat_streams(&progress), Vec::<String>::new());

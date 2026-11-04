@@ -1,16 +1,61 @@
 //! The keep-awake adapter (spec 105): the host's facility behind
 //! [`rigger_domain::sleep_hold::SleepHold`], which keeps the machine from sleeping while a run
-//! drives, through the native adapter of the OS the binary is built for. Only the composition
-//! root names [`OsSleepHold`].
+//! drives, through the native adapter of the OS the binary is built for. Of the production code
+//! outside this crate, only the composition root names [`OsSleepHold`].
 
 use rigger_domain::sleep_hold::{SleepGuard, SleepHold, Unavailable};
 
-#[cfg(target_os = "linux")]
-mod linux;
-#[cfg(target_os = "macos")]
-mod macos;
-#[cfg(target_os = "windows")]
-mod windows;
+// The one spelling of the OS set: each OS with a native adapter declares its module and binds
+// the module's `acquire` as `native_acquire`, and every other OS binds the inline `unsupported`
+// module's in the `_` arm.
+std::cfg_select! {
+    target_os = "linux" => {
+        mod linux;
+        use linux::acquire as native_acquire;
+    }
+    target_os = "macos" => {
+        mod macos;
+        use macos::acquire as native_acquire;
+    }
+    target_os = "windows" => {
+        mod windows;
+        use windows::acquire as native_acquire;
+    }
+    _ => {
+        /// The OSes with no native adapter, the `_` arm of the dispatch above.
+        mod unsupported {
+            use rigger_domain::sleep_hold::{SleepGuard, Unavailable};
+
+            /// Unavailable, naming the OS.
+            pub(super) fn acquire(_reason: &str) -> Result<SleepGuard, Unavailable> {
+                Err(Unavailable(format!(
+                    "no keep-awake adapter for {}",
+                    std::env::consts::OS
+                )))
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use crate::keep_awake::OsSleepHold;
+                use rigger_domain::sleep_hold::{SleepHold, Unavailable};
+
+                /// On an OS with no native adapter, the host's acquire answers unavailable naming
+                /// the OS.
+                #[test]
+                fn the_hosts_acquire_answers_unavailable_naming_the_os() {
+                    assert_eq!(
+                        OsSleepHold.acquire("rigger run is driving a run").err(),
+                        Some(Unavailable(format!(
+                            "no keep-awake adapter for {}",
+                            std::env::consts::OS
+                        )))
+                    );
+                }
+            }
+        }
+        use unsupported::acquire as native_acquire;
+    }
+}
 
 /// The keep-awake facility of the operating system this binary runs on: on Linux a logind
 /// inhibitor lock, on macOS an IOKit power assertion, on Windows a power request; on an OS with
@@ -19,45 +64,7 @@ pub struct OsSleepHold;
 
 impl SleepHold for OsSleepHold {
     fn acquire(&self, reason: &str) -> Result<SleepGuard, Unavailable> {
-        std::cfg_select! {
-            target_os = "linux" => { linux::acquire(reason) }
-            target_os = "macos" => { macos::acquire(reason) }
-            target_os = "windows" => { windows::acquire(reason) }
-            _ => { unsupported::acquire(reason) }
-        }
-    }
-}
-
-/// The OSes with no native adapter, the complement of the arms [`OsSleepHold::acquire`]
-/// dispatches to an adapter.
-#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-mod unsupported {
-    use rigger_domain::sleep_hold::{SleepGuard, Unavailable};
-
-    /// Unavailable, naming the OS.
-    pub(super) fn acquire(_reason: &str) -> Result<SleepGuard, Unavailable> {
-        Err(Unavailable(format!(
-            "no keep-awake adapter for {}",
-            std::env::consts::OS
-        )))
-    }
-
-    #[cfg(test)]
-    mod tests {
-        use crate::keep_awake::OsSleepHold;
-        use rigger_domain::sleep_hold::{SleepHold, Unavailable};
-
-        /// On an OS with no native adapter, the host's acquire answers unavailable naming the OS.
-        #[test]
-        fn the_hosts_acquire_answers_unavailable_naming_the_os() {
-            assert_eq!(
-                OsSleepHold.acquire("rigger run is driving a run").err(),
-                Some(Unavailable(format!(
-                    "no keep-awake adapter for {}",
-                    std::env::consts::OS
-                )))
-            );
-        }
+        native_acquire(reason)
     }
 }
 

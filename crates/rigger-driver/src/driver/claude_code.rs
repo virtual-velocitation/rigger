@@ -3285,18 +3285,14 @@ mod tests {
             .spawn(&AgentDef::default(), "do the thing", &o, &no_emit)
             .unwrap();
 
-        let recorded: Vec<progress::ApiRetry> = progress::read_run(&progress_store, &o.run_id)
-            .unwrap()
+        let recorded = crate::test_support::payloads_of_type(
+            &progress::read_run(&progress_store, &o.run_id).unwrap(),
+            progress::TYPE_API_RETRY,
+        );
+        let expected: Vec<Value> = announced
             .iter()
-            .filter(|e| e.type_ == progress::TYPE_API_RETRY)
-            .map(|e| serde_json::from_slice(&e.data).unwrap())
-            .collect();
-        let expected: Vec<progress::ApiRetry> = announced
-            .iter()
-            .map(|&(delay_ms, category)| progress::ApiRetry {
-                spawn: o.id.clone(),
-                delay_ms,
-                category: category.to_string(),
+            .map(|&(delay_ms, category)| {
+                serde_json::json!({"spawn": o.id, "delay_ms": delay_ms, "category": category})
             })
             .collect();
         assert_eq!(recorded, expected);
