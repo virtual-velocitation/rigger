@@ -19,7 +19,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-f1828ea41892",
+    "id": "dup-b18a35b27307",
     "classification": "near",
     "sites": [
       {
@@ -175,6 +175,16 @@
       {
         "file": "tests/cli.rs",
         "name": "rendezvous",
+        "content_hash": "6fd90a8c2eed6379"
+      },
+      {
+        "file": "tests/cli.rs",
+        "name": "acquired_by",
+        "content_hash": "6fd90a8c2eed6379"
+      },
+      {
+        "file": "tests/cli.rs",
+        "name": "keep_awake_unavailable",
         "content_hash": "6fd90a8c2eed6379"
       },
       {

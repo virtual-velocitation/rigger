@@ -51,6 +51,8 @@ pub mod retention;
 pub mod review;
 pub mod run;
 pub mod safety;
+/// The keep-awake port (spec 105): the hold a run's driver takes so the machine does not sleep.
+pub mod sleep_hold;
 pub mod spawn;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod spec;
