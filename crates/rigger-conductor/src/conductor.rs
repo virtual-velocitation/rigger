@@ -1630,7 +1630,9 @@ pub(crate) fn is_parked_or_refused(e: &Error, refusal: &str) -> bool {
 /// under a fresh deterministic id ([`spawn_retry_id`]); bounded here so a persistently
 /// broken reviewer agent/driver cannot loop the conductor forever. The reviewer runs at
 /// most `1 + REVIEWER_RESPAWN_BOUND` times (its original spawn plus this many respawns)
-/// before [`degenerate_reviewer`] halts the run. A reviewer, sdet author or re-planner whose
+/// in one review round, after which [`degenerate_reviewer`] halts the run, or, when a spawn
+/// of the round recorded an error, the round reruns under the F3 infra retry
+/// ([`SPAWN_CRASH_MARKER`]). A reviewer, sdet author or re-planner whose
 /// record the emit guard refused re-runs once inside the same window
 /// ([`rerun_once_on_refusal`]).
 const REVIEWER_RESPAWN_BOUND: u32 = 2;
@@ -1840,7 +1842,8 @@ const INFRA_MARKER: &str = "\u{1}rigger:infra-halt\u{1}";
 
 /// The sentinel a sdet-author or review-tier spawn crash embeds in its error: a spawn error that
 /// is no park, no budget refusal and no refused record (and, for the sdet-author, its opts
-/// guard's error too). The single lane ([`RunCtx::run_single_stage`]) reads it through
+/// guard's error too), or a review round whose window ends with a recorded spawn error among its
+/// spawns ([`RunCtx::run_reviewer`]). The single lane ([`RunCtx::run_single_stage`]) reads it through
 /// [`infra_crash`] as an outage of the unit's stage and reruns the stage uncharged under the F3
 /// infra retry ([`CAUSE_INFRA_SPAWN`]), as it does an implementer crash. It is no halt: every
 /// other caller (a standalone review stage, the plan-critique gate, a speculation candidate)
@@ -7764,6 +7767,12 @@ impl RunCtx<'_> {
     /// a substantive result for a retry id lets the next step replay it and fold normally
     /// (see [`degenerate_reviewer`]).
     ///
+    /// A spawn whose RECORDED result is an error re-drives the same way, but a window that
+    /// ends with a recorded error among its spawns is an outage of the round, not a dead
+    /// reviewer: it returns the [`spawn_crash`] error naming the last such error, so the single
+    /// lane reruns the review uncharged under its F3 infra retry in the next ordinal's window
+    /// and halts on infrastructure past the taxonomy's infra limit.
+    ///
     /// A spawn whose record the emit guard refused (a line the fold cannot apply, or an id
     /// another seat holds) is the reviewer's own defect, not infra: it re-runs once at the
     /// window's next id with the refusal after its prompt ([`RefusedRecord`]), so the reviewer
@@ -7826,6 +7835,16 @@ impl RunCtx<'_> {
         // first re-drives the review, a second halts (one bounded re-drive, never a loop).
         let mut verdictless = false;
         let mut refused = RefusedRecord::default();
+        // The stage error a spawn error of this reviewer reads as, its failure class stripped.
+        let failed = |e: &Error| {
+            format!(
+                "stage {:?} {tier} {agent_id:?}: {}",
+                st.name,
+                strip_failure_marker(e)
+            )
+        };
+        // The last recorded spawn error of this round, which makes the round an outage.
+        let mut errored: Option<String> = None;
         for retry in window {
             let id = spawn_retry_id(&st.name, role, attempt, retry);
             let opts =
@@ -7903,10 +7922,13 @@ impl RunCtx<'_> {
                         // (the work was never judged) and RE-PARKS a FRESH attempt of the SAME review by
                         // looping to the next `spawn_retry_id`. That id is unrecorded, so the replay
                         // driver parks it and the next `rigger step` returns it in the wave; a completed
-                        // real verdict then folds through the NORMAL adjudication path below. This is
-                        // bounded by `REVIEWER_RESPAWN_BOUND` exactly like the degenerate loop, so a
-                        // persistently-erroring review spawn escalates through the halt below rather
-                        // than re-parking forever (spec 51, criterion 2 owns that bound).
+                        // real verdict then folds through the NORMAL adjudication path below. The
+                        // round's window bounds it exactly like the degenerate loop: a round whose
+                        // window ends with a recorded error among its spawns is an outage of the
+                        // round, so it returns the crash below the loop, and the single lane reruns
+                        // the review uncharged under its F3 infra retry in the next ordinal's window
+                        // until the taxonomy's infra limit halts the step
+                        // (op-105-errored-review-window-joins-the-infra-retry).
                         //
                         // A driver PARK (the replay frontier) or a BUDGET refusal unwinds the unit
                         // cleanly and PROPAGATES unchanged (its marker survives the `format!` wrapping,
@@ -7923,6 +7945,7 @@ impl RunCtx<'_> {
                         if !is_parked_or_refused(&e, BUDGET_MARKER)
                             && self.review_spawn_errored(&id)?
                         {
+                            errored = Some(failed(&e));
                             continue;
                         }
                         // adj-u104c5 REQUIRED FIX 2: `strip_failure_marker` drops only its own
@@ -7930,11 +7953,7 @@ impl RunCtx<'_> {
                         // PARKED_MARKER/BUDGET_MARKER error still passes through byte-for-byte
                         // unchanged here - `is_parked`/`carries_marker(.., BUDGET_MARKER)` upstream
                         // are unaffected. A park, a budget refusal or a refused record is no crash.
-                        let message = format!(
-                            "stage {:?} {tier} {agent_id:?}: {}",
-                            st.name,
-                            strip_failure_marker(&e)
-                        );
+                        let message = failed(&e);
                         return Err(
                             if is_parked_or_refused(&e, BUDGET_MARKER)
                                 || carries_marker(&e, EMIT_REFUSED_MARKER)
@@ -8012,9 +8031,13 @@ impl RunCtx<'_> {
                 return Ok(result);
             }
         }
-        Err(degenerate_reviewer(
-            &st.name, tier, agent_id, role, attempt, ordinal,
-        ))
+        // A window spent with a recorded spawn error among its spawns is an outage, the crash the
+        // single lane reruns under its infra retry; one spent on empty outputs alone is the
+        // degenerate halt.
+        Err(match errored {
+            Some(message) => spawn_crash(message),
+            None => degenerate_reviewer(&st.name, tier, agent_id, role, attempt, ordinal),
+        })
     }
 
     /// Whether the GATING spawn `id` emitted an approve-shaped verdict via `rigger_emit`
