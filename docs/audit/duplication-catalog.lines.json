@@ -780,7 +780,7 @@
     ]
   },
   {
-    "id": "dup-52f23a94bdbf",
+    "id": "dup-64397d781d9d",
     "sites": [
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
@@ -1064,13 +1064,18 @@
       },
       {
         "file": "tests/common/repo.rs",
-        "start_line": 125,
-        "end_line": 125
+        "start_line": 23,
+        "end_line": 23
       },
       {
         "file": "tests/common/repo.rs",
-        "start_line": 451,
-        "end_line": 451
+        "start_line": 142,
+        "end_line": 142
+      },
+      {
+        "file": "tests/common/repo.rs",
+        "start_line": 468,
+        "end_line": 468
       },
       {
         "file": "tests/common/served.rs",
@@ -1241,11 +1246,6 @@
         "file": "tests/store_resolution.rs",
         "start_line": 153,
         "end_line": 153
-      },
-      {
-        "file": "tests/turbovec_retired_cargo_boundary.rs",
-        "start_line": 50,
-        "end_line": 50
       },
       {
         "file": "tests/validate_behind_the_tree_periphery.rs",
