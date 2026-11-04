@@ -31,6 +31,7 @@ use crate::driver::{
 };
 use crate::eventstore::EventStore;
 use crate::hooks;
+use crate::ledger;
 use crate::liveness;
 use crate::progress::{self, ApiRetry, SpawnLaunched};
 use crate::progress_store;
@@ -235,11 +236,14 @@ impl Driver<'_> {
     ) -> Result<Launch, Error> {
         // The session this launch runs as: the one `opts` resumes, or a freshly minted one -
         // the ONE session authority the cli host shares ([`LaunchSession`]).
-        self.launch_as(LaunchSession::of(opts), agent, task, opts, store)
+        let session = LaunchSession::of(opts);
+        let task = session.task(task, opts);
+        self.launch_as(session, agent, task, opts, store)
     }
 
-    /// [`Driver::launch`] as `session`, the fallback's way in: a fresh session for a spawn whose
-    /// `opts` still name the one that is gone.
+    /// [`Driver::launch`] as `session`, sending `task` as it stands: the way in of the fallback,
+    /// a fresh session for a spawn whose `opts` still name the one that is gone, and of the
+    /// relaunch ([`Driver::first_launch`]), a resume of the session a launch left `interrupted`.
     fn launch_as(
         &self,
         session: LaunchSession,
@@ -310,7 +314,7 @@ impl Driver<'_> {
         // the input stream (§4.1); stdin stays open afterward (§4.2's "the host closes the
         // input after the first `result`" is the reader's call, not this one's). Every launch
         // passes through here, so a resume and a relaunch are framed too.
-        let message = first_user_message(&framed(session.task(task, opts)));
+        let message = first_user_message(&framed(task));
         let write_result = child
             .stdin
             .as_mut()
@@ -343,6 +347,62 @@ impl Driver<'_> {
             args,
             persona,
         })
+    }
+
+    /// The spawn's first launch (spec 105, RESUME BY SESSION). When the latest launch of `opts.id`
+    /// in this run ([`progress_store::latest_launch`]) ended `interrupted`, whichever site closed
+    /// it, it is a resume of that launch's session at the next ordinal in `opts.dir`, charged no
+    /// attempt, sent the [`Driver::interruption_note`], then [`SpawnOpts::resume_task`] when the
+    /// interrupted launch carried it, as a launch of [`SpawnOpts::resumed_from`] does. Any other
+    /// spawn takes [`Driver::launch`]. A failed read of the record or of the hold sink launches
+    /// nothing.
+    fn first_launch(
+        &self,
+        agent: &AgentDef,
+        prompt: &str,
+        opts: &SpawnOpts,
+    ) -> Result<Launch, Error> {
+        let store = self.progress_store;
+        let Some(interrupted) = progress_store::latest_launch(store, &opts.run_id, &opts.id)?
+            .filter(|latest| latest.ended.as_deref() == Some(progress::ENDED_INTERRUPTED))
+        else {
+            return self.launch(agent, prompt, opts, store);
+        };
+        let note = self.interruption_note(&interrupted)?;
+        let task = if interrupted.session_id == opts.resumed_from {
+            format!("{note}\n\n{}", opts.resume_task)
+        } else {
+            note
+        };
+        let session = LaunchSession::resume(interrupted.session_id);
+        self.launch_as(session, agent, &task, opts, store)
+    }
+
+    /// What a relaunch tells the session `interrupted` closed (spec 105): a close with no class,
+    /// the supervisor's start-up reconciliation or the fallback's, names the restart; a classed
+    /// close, the host's own in a fault place, names the hold the first release on the hold sink
+    /// past the close's stamp ended ([`released_past`]) and how long it stood, or the class alone
+    /// when the close is unstamped, the host has no hold sink or no such release ended a hold.
+    fn interruption_note(&self, interrupted: &SpawnLaunched) -> Result<String, Error> {
+        let why = match &interrupted.class {
+            None => ": rigger's supervisor restarted".to_string(),
+            Some(class) => {
+                let released = match self.hold_sink.zip(interrupted.revision) {
+                    Some((sink, stamp)) => released_past(sink, stamp)?,
+                    None => None,
+                };
+                match released {
+                    Some((hold, held_for_s)) => format!(
+                        ": the run was held {held_for_s}s ({}) and is released now",
+                        hold.reason()
+                    ),
+                    None => format!(" by {class}"),
+                }
+            }
+        };
+        Ok(format!(
+            "This session was interrupted{why}. Continue where you left off."
+        ))
     }
 
     /// THE STREAM (spec 104 criterion 2): read `launch`'s child stdout line by line to
@@ -1393,6 +1453,26 @@ fn hold_stands(sink: &dyn EventStore) -> Result<bool, Error> {
     Ok(read_current_hold(sink, STREAM)?.is_some())
 }
 
+/// The hold the first `RunReleased` of the run on `sink` past revision `stamp` ended, the hold
+/// its current events before that release project to, with how long it stood, or `None` when no
+/// release lies past `stamp` or the one that does ended no hold. A close stamped at a release's
+/// own revision read it, so that release lies before the close.
+fn released_past(
+    sink: &dyn EventStore,
+    stamp: crate::eventstore::Revision,
+) -> Result<Option<(ledger::Hold, u64)>, Error> {
+    let (events, _) = read_current_run(sink, STREAM)?;
+    let Some(at) = events
+        .iter()
+        .position(|event| event.type_ == run::TYPE_RUN_RELEASED && event.revision > stamp)
+    else {
+        return Ok(None);
+    };
+    let released: run::RunReleased = serde_json::from_slice(&events[at].data)?;
+    let hold = ledger::project(&events[..at])?.hold;
+    Ok(hold.map(|hold| (hold, released.held_for_s)))
+}
+
 /// Append `chunk` to `tail`, then trim from the FRONT down to at most [`STDERR_TAIL_CAP`]
 /// bytes - the pure ring-buffer step [`drain_child_stderr_tail`]'s read loop calls on every
 /// chunk, split out so the bounding behavior itself is testable with no process, no pipe,
@@ -1422,7 +1502,9 @@ impl AgentDriver for Driver<'_> {
     /// and no `resumed_from`, so a restarted run does not run a finished agent again. A spawn
     /// whose only result is a liveness fault, or one only a prior run ended, is launched. A
     /// spawn whose request does not stand in the run is parked first, stamped with the run and
-    /// this host's scratch root, so the budget's admission finds every spawn this host ran.
+    /// this host's scratch root, so the budget's admission finds every spawn this host ran. The
+    /// first launch resumes the session this run's latest launch of the id left `interrupted`,
+    /// after a release or a restart alike, telling it which ([`Driver::first_launch`]).
     ///
     /// THE RESUME FALLBACK (spec 105 criterion 1) lands here: a launch that ends
     /// [`StreamEnd::NoSession`] is followed, inside this call and charged no attempt, by a fresh
@@ -1431,10 +1513,10 @@ impl AgentDriver for Driver<'_> {
     ///
     /// HELD MEANS NO LAUNCH AND NO CHARGE (spec 105): a launch that ends
     /// [`StreamEnd::Interrupted`] returns its error with its scratch kept, since the spawn has
-    /// not ended, only that launch: the same id launches again once the hold releases, and the
-    /// run's own end reclaims whatever no next launch does. The stop and the read error of a run
-    /// not proved unheld return their error through the reclaim like any other `Err`, and the
-    /// decorator weighs what comes next.
+    /// not ended, only that launch: the same id launches again once the hold releases, resuming
+    /// that launch's session, and the run's own end reclaims whatever no next launch does. The
+    /// stop and the read error of a run not proved unheld return their error through the reclaim
+    /// like any other `Err`, and the decorator weighs what comes next.
     fn spawn(
         &self,
         agent: &AgentDef,
@@ -1456,7 +1538,7 @@ impl AgentDriver for Driver<'_> {
             });
         }
         let bound = agent.max_wall_clock.unwrap_or(0);
-        let mut launched = self.launch(agent, prompt, opts, self.progress_store);
+        let mut launched = self.first_launch(agent, prompt, opts);
         let result = loop {
             match launched.and_then(|launch| self.read_stream(launch, opts, bound)) {
                 Ok(StreamEnd::Result(result)) => break Ok(result),

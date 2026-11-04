@@ -28,7 +28,7 @@ use rigger_domain::contextgraph;
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 use rigger_domain::retention;
 #[cfg(any(feature = "store", not(feature = "core")))]
-use rigger_domain::{agent, failure, hold_probe, progress, run};
+use rigger_domain::{agent, failure, hold_probe, ledger, progress, run};
 #[cfg(any(feature = "store", not(feature = "core")))]
 use rigger_process::{reap, subprocess};
 #[cfg(any(feature = "store", not(feature = "core")))]
@@ -48,7 +48,7 @@ mod spawn {
     pub use rigger_domain::spawn::*;
 }
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
-use rigger_domain::{ledger, test_cases};
+use rigger_domain::test_cases;
 // The root-crate vocabulary the tests and the shared fixtures name (see the manifest's
 // `rigger-root` dev-dependency).
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]

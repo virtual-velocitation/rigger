@@ -163,19 +163,23 @@ impl LaunchSession {
         if opts.resumed_from.is_empty() {
             LaunchSession::fresh()
         } else {
-            LaunchSession {
-                id: opts.resumed_from.clone(),
-                resumed: true,
-            }
+            LaunchSession::resume(opts.resumed_from.clone())
         }
+    }
+
+    /// A resume of the session `id`.
+    pub fn resume(id: String) -> LaunchSession {
+        LaunchSession::new(id, true)
     }
 
     /// A fresh session under a newly minted id.
     pub fn fresh() -> LaunchSession {
-        LaunchSession {
-            id: uuid::Uuid::new_v4().to_string(),
-            resumed: false,
-        }
+        LaunchSession::new(uuid::Uuid::new_v4().to_string(), false)
+    }
+
+    /// The session `id`, continued when `resumed`: the one constructor the others name.
+    fn new(id: String, resumed: bool) -> LaunchSession {
+        LaunchSession { id, resumed }
     }
 
     /// The session flag pair this launch passes: `--resume <id>` or `--session-id <id>`.

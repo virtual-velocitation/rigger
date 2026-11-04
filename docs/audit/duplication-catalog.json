@@ -6161,25 +6161,6 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-bada7e276fc1",
-    "classification": "semantic",
-    "sites": [
-      {
-        "file": "crates/rigger-driver/src/driver/mod.rs",
-        "name": "of",
-        "content_hash": "f1e9321ba1f00b94"
-      },
-      {
-        "file": "crates/rigger-driver/src/driver/mod.rs",
-        "name": "fresh",
-        "content_hash": "525018472881488b"
-      }
-    ],
-    "proposed_home": "mod::launch_session - one canonical constructor, the rest thin variants over it (or a builder), rather than each re-listing every field",
-    "note": "mandatory sweep: parallel constructor functions - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
-    "disposition": "not-a-duplicate"
-  },
-  {
     "id": "dup-282069e7109f",
     "classification": "near",
     "sites": [

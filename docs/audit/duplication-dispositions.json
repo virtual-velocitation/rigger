@@ -990,11 +990,6 @@
     "reason": "Two argv tests of different facts about the spawn-bound MCP server (the server is bound to the spawn's id versus it runs the configured rigger binary); they share only the build-and-parse preamble."
   },
   {
-    "id": "dup-bada7e276fc1",
-    "disposition": "not-a-duplicate",
-    "reason": "`LaunchSession::of` already delegates its fresh case to `LaunchSession::fresh`; the remaining arm builds the resumed session, a different value."
-  },
-  {
     "id": "dup-3eae43945289",
     "disposition": "not-a-duplicate",
     "reason": "`DashMarker::serialize` renders the dash marker's on-disk `port\npid\n` record and `GenerationIngested::identity` joins a ledger entry's prefix and file into the `<prefix>/<file>` identity its generation is recorded under; the shared token shape is a one-line `format!` of two fields, and no logic is repeated."
