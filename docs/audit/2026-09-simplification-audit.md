@@ -2074,8 +2074,8 @@ mandatory sweep: Command::new call sites - 94 site(s), collected mechanically re
 - `src/cli/run.rs:3752-3752` `Command::new`
 - `src/cli/setup.rs:3874-3874` `Command::new`
 - `src/cli/setup.rs:3903-3903` `Command::new`
-- `src/cli/validate.rs:1509-1509` `Command::new`
-- `src/cli/validate.rs:1788-1788` `Command::new`
+- `src/cli/validate.rs:1540-1540` `Command::new`
+- `src/cli/validate.rs:1819-1819` `Command::new`
 - `tests/adaptive_labels_periphery.rs:87-87` `Command::new`
 - `tests/adoption_keys_on_criterion_periphery.rs:2067-2067` `Command::new`
 - `tests/checkin_mutation_diff_base_periphery.rs:76-76` `Command::new`
@@ -2563,19 +2563,19 @@ __END__
 - `src/cli/setup.rs:4428-4428` `"`src/`, `crates/`, `tests/`, `docs/`, `skills/`, `scaffold/` and `.rigger/`"`
 - `src/cli/setup.rs:4431-4431` `"`git ls-files src crates tests docs skills scaffold .rigger | xargs awk"`
 - `src/cli/setup.rs:4433-4433` `"`sh .rigger/gates/lanes.sh <lane>`"`
-- `src/cli/validate.rs:860-860` `"warning: tracked .rigger/ files have uncommitted modifications:"`
-- `src/cli/validate.rs:1349-1349` `" M .rigger/workflow.yml\n\
+- `src/cli/validate.rs:891-891` `"warning: tracked .rigger/ files have uncommitted modifications:"`
+- `src/cli/validate.rs:1380-1380` `" M .rigger/workflow.yml\n\
                          M  .rigger/agents/sdet.md\n\
                          A  .rigger/agents/new.md\n\
                          D  .rigger/agents/gone.md\n\
                          ?? .rigger/events.db\n\
                          !! .rigger/shim/node_modules\n"`
-- `src/cli/validate.rs:1359-1359` `".rigger/workflow.yml"`
-- `src/cli/validate.rs:1360-1360` `".rigger/agents/sdet.md"`
-- `src/cli/validate.rs:1361-1361` `".rigger/agents/new.md"`
-- `src/cli/validate.rs:1362-1362` `".rigger/agents/gone.md"`
-- `src/cli/validate.rs:2252-2252` `".rigger"`
-- `src/cli/validate.rs:2306-2306` `".rigger"`
+- `src/cli/validate.rs:1390-1390` `".rigger/workflow.yml"`
+- `src/cli/validate.rs:1391-1391` `".rigger/agents/sdet.md"`
+- `src/cli/validate.rs:1392-1392` `".rigger/agents/new.md"`
+- `src/cli/validate.rs:1393-1393` `".rigger/agents/gone.md"`
+- `src/cli/validate.rs:2283-2283` `".rigger"`
+- `src/cli/validate.rs:2337-2337` `".rigger"`
 - `src/main.rs:210-210` `"rigger - a config-driven, event-sourced multi-agent dev-loop harness\n\n\
 usage:\n  \
 rigger run [spec] [opts]    run the workflow (opts below)\n  \
@@ -3444,7 +3444,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `crates/rigger-config-files/src/config_store.rs:957-959` `rejects_missing_frontmatter`
 - `crates/rigger-domain/src/contextgraph/query.rs:2096-2098` `graph_load_rejects_malformed_json_without_panicking`
 - `crates/rigger-domain/src/spec.rs:1275-1277` `empty_when_no_criteria`
-- `src/cli/validate.rs:1370-1372` `dirty_tracked_paths_on_a_clean_tree_is_empty`
+- `src/cli/validate.rs:1401-1403` `dirty_tracked_paths_on_a_clean_tree_is_empty`
 
 #### `dup-f61039476fc4` (near, 3 sites)
 
@@ -4578,7 +4578,7 @@ Proposed home: `a new shared module (sites span 2 files: crates/rigger-process/s
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `crates/rigger-process/src/reap.rs:873-880` `processes_rooted_under_is_a_graceful_no_op_when_the_base_is_absent`
-- `src/cli/validate.rs:1834-1841` `leaked_process_advisories_is_a_graceful_no_op_when_the_scratch_root_is_absent`
+- `src/cli/validate.rs:1865-1872` `leaked_process_advisories_is_a_graceful_no_op_when_the_scratch_root_is_absent`
 
 #### `dup-183455104b30` (near, 3 sites)
 
@@ -4705,7 +4705,7 @@ Proposed home: `a new shared module (sites span 2 files: src/cli/guard.rs, src/c
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `src/cli/guard.rs:1279-1281` `parse_guard_write_roots_requires_at_least_one`
-- `src/cli/validate.rs:2032-2034` `order_signature_advisories_is_empty_when_no_signatures_are_given`
+- `src/cli/validate.rs:2063-2065` `order_signature_advisories_is_empty_when_no_signatures_are_given`
 
 #### `dup-db3e199dd312` (near, 7 sites)
 
@@ -4845,8 +4845,8 @@ Proposed home: `validate::support (consolidate these 2 sites into one function i
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/cli/validate.rs:1537-1558` `git_is_ancestor_decides_commit_order_in_a_real_repo`
-- `src/cli/validate.rs:1561-1582` `git_commit_distance_counts_commits_ahead_in_a_real_repo`
+- `src/cli/validate.rs:1568-1589` `git_is_ancestor_decides_commit_order_in_a_real_repo`
+- `src/cli/validate.rs:1592-1613` `git_commit_distance_counts_commits_ahead_in_a_real_repo`
 
 #### `dup-5f516fce9f0b` (near, 2 sites)
 
@@ -5477,7 +5477,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 ### Adversarial sample
 
-Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 11097 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
+Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 11100 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
 
 - `crates/rigger-conductor/src/conductor.rs:15703-15725` `branch_is_foreign_when_only_one_axis_differs` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-conductor/src/conductor.rs:16664-16671` `resume_of` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`

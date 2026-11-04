@@ -35,6 +35,10 @@ pub use rigger_domain::blocker;
 pub use rigger_domain::canary;
 pub use rigger_domain::community;
 pub use rigger_domain::concepts;
+/// The one reader of `claude auth status --json` (spec 105): the login the hold probe reads and
+/// the auth method `rigger validate` reports.
+#[cfg(any(feature = "store", not(feature = "core")))]
+pub use rigger_driver::claude_auth;
 /// The machine-wide build concurrency budget (spec 65): a flock-based slot directory that
 /// caps how many actual compiler invocations run at once, across every rigger process on
 /// the machine. Wired at the gate-build call site ([`crate::gate::ExecRunner::run`]) only -

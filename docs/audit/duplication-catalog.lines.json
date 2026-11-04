@@ -914,13 +914,13 @@
       },
       {
         "file": "src/cli/validate.rs",
-        "start_line": 1509,
-        "end_line": 1509
+        "start_line": 1540,
+        "end_line": 1540
       },
       {
         "file": "src/cli/validate.rs",
-        "start_line": 1788,
-        "end_line": 1788
+        "start_line": 1819,
+        "end_line": 1819
       },
       {
         "file": "tests/adaptive_labels_periphery.rs",
@@ -2094,43 +2094,43 @@
       },
       {
         "file": "src/cli/validate.rs",
-        "start_line": 860,
-        "end_line": 860
+        "start_line": 891,
+        "end_line": 891
       },
       {
         "file": "src/cli/validate.rs",
-        "start_line": 1349,
-        "end_line": 1349
+        "start_line": 1380,
+        "end_line": 1380
       },
       {
         "file": "src/cli/validate.rs",
-        "start_line": 1359,
-        "end_line": 1359
+        "start_line": 1390,
+        "end_line": 1390
       },
       {
         "file": "src/cli/validate.rs",
-        "start_line": 1360,
-        "end_line": 1360
+        "start_line": 1391,
+        "end_line": 1391
       },
       {
         "file": "src/cli/validate.rs",
-        "start_line": 1361,
-        "end_line": 1361
+        "start_line": 1392,
+        "end_line": 1392
       },
       {
         "file": "src/cli/validate.rs",
-        "start_line": 1362,
-        "end_line": 1362
+        "start_line": 1393,
+        "end_line": 1393
       },
       {
         "file": "src/cli/validate.rs",
-        "start_line": 2252,
-        "end_line": 2252
+        "start_line": 2283,
+        "end_line": 2283
       },
       {
         "file": "src/cli/validate.rs",
-        "start_line": 2306,
-        "end_line": 2306
+        "start_line": 2337,
+        "end_line": 2337
       },
       {
         "file": "src/main.rs",
@@ -4489,8 +4489,8 @@
       },
       {
         "file": "src/cli/validate.rs",
-        "start_line": 1370,
-        "end_line": 1372
+        "start_line": 1401,
+        "end_line": 1403
       }
     ]
   },
@@ -6809,8 +6809,8 @@
       },
       {
         "file": "src/cli/validate.rs",
-        "start_line": 1834,
-        "end_line": 1841
+        "start_line": 1865,
+        "end_line": 1872
       }
     ]
   },
@@ -7024,8 +7024,8 @@
       },
       {
         "file": "src/cli/validate.rs",
-        "start_line": 2032,
-        "end_line": 2034
+        "start_line": 2063,
+        "end_line": 2065
       }
     ]
   },
@@ -7274,13 +7274,13 @@
     "sites": [
       {
         "file": "src/cli/validate.rs",
-        "start_line": 1537,
-        "end_line": 1558
+        "start_line": 1568,
+        "end_line": 1589
       },
       {
         "file": "src/cli/validate.rs",
-        "start_line": 1561,
-        "end_line": 1582
+        "start_line": 1592,
+        "end_line": 1613
       }
     ]
   },
