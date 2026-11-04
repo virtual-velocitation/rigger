@@ -15,7 +15,7 @@ use std::time::{Duration, SystemTime};
 use crate::agent::{cause_row, AgentFailure};
 use crate::eventstore::{Event, Revision};
 use crate::ledger::Hold;
-use crate::progress::{AgentProgress, TYPE_AGENT_PROGRESS};
+use crate::progress::{decoded_progress, AgentProgress};
 use crate::run::{RunHeld, TYPE_RUN_HELD, TYPE_RUN_RELEASED};
 
 /// The [`AgentProgress::id`] of the line the hold controller writes for each probe it makes.
@@ -130,11 +130,8 @@ pub fn owed_probe(
         chain.push((span.first, Some(*release)));
         since = span.hold.since;
     }
-    let probes: Vec<SystemTime> = progress_events
-        .iter()
-        .filter(|e| e.type_ == TYPE_AGENT_PROGRESS)
-        .filter_map(|e| {
-            let line: AgentProgress = serde_json::from_slice(&e.data).ok()?;
+    let probes: Vec<SystemTime> = decoded_progress(progress_events)
+        .filter_map(|(e, line)| {
             let revision = line.revision.filter(|_| line.id == HOLD_PROBE_ID)?;
             chain
                 .iter()

@@ -12333,7 +12333,7 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "2cfe4117e6fa854d"
+    "content_hash": "9b88672ace768c6f"
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
@@ -12493,7 +12493,7 @@
     "is_test": false,
     "proposed_module": "dash::server",
     "reason": "name contains \"serve\" (HTTP serving); grouped under `dash::server`.",
-    "content_hash": "b714de717d79a2a0"
+    "content_hash": "68a0e89a5d7c71bc"
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
@@ -12821,7 +12821,7 @@
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "d1bf94b12877637e"
+    "content_hash": "a026a383af6c6c41"
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",

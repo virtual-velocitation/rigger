@@ -80,9 +80,9 @@
     "reason": "`any_finding_is_critical` checks a canary prompt for its critical-defect marker while `is_handbook_path` classifies a design-doc path: one `contains` call each, on different inputs for different decisions."
   },
   {
-    "id": "dup-0a701eb6cf8d",
+    "id": "dup-b248b80c112e",
     "disposition": "not-a-duplicate",
-    "reason": "Six one-line accessors on six different types, each reading a different field (community nodes, a child process id, store placements, failure rules, the adversary's survival)."
+    "reason": "Seven one-line accessors on six different types, each reading a different field (community nodes, a child process id, store placements, failure rules, the adversary's survival, a launch record's `ended`)."
   },
   {
     "id": "dup-a9ed3e0e9d47",
@@ -1073,5 +1073,10 @@
     "id": "dup-2c13c330b0e0",
     "disposition": "not-a-duplicate",
     "reason": "`record_result_if_absent` and `record_result_unless_ended` are the two named entry points to the one compare-and-append `record_result_unless`, each passing the standing-result reader its callers need: `spawn::result_of`, which any standing result stops (every liveness-fault write), or `spawn::ended_by`, which a liveness fault does not stop (a relaunched session's real result and the held-run decorator's error); the loop itself exists once."
+  },
+  {
+    "id": "dup-0bd924af75c5",
+    "disposition": "not-a-duplicate",
+    "reason": "`agent_progress_events` and `spawn_requested_events` are the one type prefilter of two different logs (the progress store's `AgentProgress` lines, the run stream's `SpawnRequested` events), each the single place its own folds skip another record type; they share only the one-line filter-by-type-constant shape."
   }
 ]

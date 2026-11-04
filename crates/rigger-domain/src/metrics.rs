@@ -1156,15 +1156,13 @@ fn field_str_vec(e: &Event, key: &str) -> Vec<String> {
 /// A read over the SEPARATE progress store, NOT the run stream: it takes the progress slice
 /// the caller already scoped to the run (the same slice [`crate::progress::consolidate`]
 /// reads), so [`project`] and the replay-authoritative run-stream folds stay byte-identical
-/// whether or not any progress was emitted. Non-`AgentProgress` events on the slice are
-/// ignored; the fallback predicate is [`crate::progress::AgentProgress::is_grep_fallback`],
-/// the one definition shared with the writer.
+/// whether or not any progress was emitted. It reads the lines through
+/// [`crate::progress::decoded_progress`], so the slice's other records are ignored; the
+/// fallback predicate is [`crate::progress::AgentProgress::is_grep_fallback`], the one
+/// definition shared with the writer.
 pub fn grep_fallbacks(progress_events: &[Event]) -> u64 {
-    progress_events
-        .iter()
-        .filter(|e| e.type_ == crate::progress::TYPE_AGENT_PROGRESS)
-        .filter_map(|e| serde_json::from_slice::<crate::progress::AgentProgress>(&e.data).ok())
-        .filter(crate::progress::AgentProgress::is_grep_fallback)
+    crate::progress::decoded_progress(progress_events)
+        .filter(|(_, line)| line.is_grep_fallback())
         .count() as u64
 }
 

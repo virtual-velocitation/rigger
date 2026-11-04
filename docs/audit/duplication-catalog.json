@@ -5389,7 +5389,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-0a701eb6cf8d",
+    "id": "dup-b248b80c112e",
     "classification": "exact",
     "sites": [
       {
@@ -5418,12 +5418,17 @@
         "content_hash": "101c4f39f5928941"
       },
       {
+        "file": "crates/rigger-domain/src/progress.rs",
+        "name": "is_open",
+        "content_hash": "101c4f39f5928941"
+      },
+      {
         "file": "crates/rigger-driver/src/reaped_child.rs",
         "name": "id",
         "content_hash": "101c4f39f5928941"
       }
     ],
-    "proposed_home": "a new shared module (sites span 5 files: crates/rigger-domain/src/community.rs, crates/rigger-domain/src/eventstore.rs, crates/rigger-domain/src/failure.rs, crates/rigger-domain/src/metrics.rs, crates/rigger-driver/src/reaped_child.rs)",
+    "proposed_home": "a new shared module (sites span 6 files: crates/rigger-domain/src/community.rs, crates/rigger-domain/src/eventstore.rs, crates/rigger-domain/src/failure.rs, crates/rigger-domain/src/metrics.rs, crates/rigger-domain/src/progress.rs, crates/rigger-driver/src/reaped_child.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
@@ -5957,6 +5962,25 @@
       }
     ],
     "proposed_home": "metrics::support (consolidate these 2 sites into one function in this file)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-0bd924af75c5",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "crates/rigger-domain/src/progress.rs",
+        "name": "agent_progress_events",
+        "content_hash": "c2d9ab481b342104"
+      },
+      {
+        "file": "crates/rigger-domain/src/spawn.rs",
+        "name": "spawn_requested_events",
+        "content_hash": "1b85a943980e5756"
+      }
+    ],
+    "proposed_home": "a new shared module (sites span 2 files: crates/rigger-domain/src/progress.rs, crates/rigger-domain/src/spawn.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },

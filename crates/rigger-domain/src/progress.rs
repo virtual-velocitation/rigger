@@ -121,6 +121,25 @@ impl RunStamped for AgentProgress {
     const EVENT_TYPE: &'static str = TYPE_AGENT_PROGRESS;
 }
 
+/// The [`AgentProgress`] events among `progress_events`, in their order: the one reader of the
+/// agents' progress lines on a progress-store slice, which also carries [`SpawnLaunched`],
+/// [`StopFailure`], [`ApiRetry`] and [`SupervisorBeat`] records. It leaves a line's body
+/// undecoded, so a reader that renders a malformed body rather than dropping it keeps the line.
+pub fn agent_progress_events(progress_events: &[Event]) -> impl Iterator<Item = &Event> {
+    progress_events
+        .iter()
+        .filter(|e| e.type_ == TYPE_AGENT_PROGRESS)
+}
+
+/// Each [`AgentProgress`] line [`agent_progress_events`] reads, beside its event, in their
+/// order: a body that does not decode names no line.
+pub fn decoded_progress(
+    progress_events: &[Event],
+) -> impl Iterator<Item = (&Event, AgentProgress)> {
+    agent_progress_events(progress_events)
+        .filter_map(|e| Some((e, serde_json::from_slice(&e.data).ok()?)))
+}
+
 /// The event type a [`SpawnLaunched`] record serializes as (spec 104 criterion 1: THE
 /// LAUNCH IS TYPED). Recorded to the progress store - never the run stream, same file
 /// boundary as [`TYPE_AGENT_PROGRESS`] - the moment the host starts a child agent process,
@@ -175,8 +194,9 @@ pub struct SpawnLaunched {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub class: Option<String>,
     /// The run stream's revision the host last read when it wrote this close, `None` on an
-    /// open record, on a close written before spec 105 and when the host holds no sink to read
-    /// it from. [`failed_closes_since`] orders a close against a `RunReleased` by it.
+    /// open record, on a close written before spec 105, when the host holds no sink to read
+    /// it from and when that read failed. [`failed_closes_since`] orders a close against a
+    /// `RunReleased` by it, an unstamped close by the last stamp before it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub revision: Option<Revision>,
     /// The directory the host launched the session in, empty on a close, on an open record
@@ -199,7 +219,7 @@ impl SpawnLaunched {
     /// FAILURE CLASS, STOP, THE RESUME FALLBACK and the supervisor reconciliation share it
     /// rather than each building a divergent literal. `session_id` identifies WHICH launch is
     /// closing; `started`/`resumed_from` are left at their defaults because only the LATEST
-    /// record's `ended` decides open-vs-closed - the
+    /// record's [`is_open`](Self::is_open) decides open-vs-closed - the
     /// original open record (already durable) is what carries those, the
     /// [`dir`](Self::dir) included. An empty `class`
     /// stores as `None` (see [`class`](Self::class) for the closes that carry none). The
@@ -228,6 +248,13 @@ impl SpawnLaunched {
             dir: String::new(),
         }
     }
+
+    /// Whether this record leaves its launch open: it carries no [`ended`](Self::ended). The one
+    /// spelling of an open record, which [`open_launches`], [`latest_stop_failure_class`] and
+    /// [`failed_closes_since`] read.
+    pub fn is_open(&self) -> bool {
+        self.ended.is_none()
+    }
 }
 
 /// The `ended` of a launch whose first `result` was not an error.
@@ -252,14 +279,23 @@ pub const API_UNSTABLE_CLOSES: usize = 3;
 ///
 /// Closes order by [`SpawnLaunched::revision`]: no run-stream event lands during an outage, so
 /// closes share a stamp, and a tie falls to progress-stream order. A close stamped equal to
-/// `released` is after the release, since its writer read it. An unstamped close orders before
-/// every stamped one, so a close written before spec 105 counts as it stands. An
+/// `released` is after the release, since its writer read it. An unstamped close takes the stamp
+/// of the last stamped close before it in progress-stream order, since it was written after that
+/// one, so a `completed` close whose writer's head read failed still ends the count where it
+/// stands; with no stamped close before it, a close written before spec 105 among them, it
+/// orders before every stamped one and counts as it stands. An
 /// [`ENDED_INTERRUPTED`] close neither counts nor resets: the resume fallback, a hold or a
 /// supervisor start's reconciliation wrote it, and no launch failed.
 pub fn failed_closes_since(progress_events: &[Event], released: Option<Revision>) -> usize {
+    let mut stamp = None;
     let mut closes: Vec<SpawnLaunched> = decoded_launches(progress_events)
         .map(|(_, launch)| launch)
-        .filter(|launch| launch.ended.is_some())
+        .filter(|launch| !launch.is_open())
+        .map(|mut close| {
+            close.revision = close.revision.or(stamp);
+            stamp = close.revision;
+            close
+        })
         .collect();
     closes.sort_by_key(|close| close.revision);
     closes
@@ -285,9 +321,23 @@ pub fn open_launches(progress_events: &[Event]) -> Vec<(String, SpawnLaunched)> 
     }
     latest
         .into_iter()
-        .filter(|(_, record)| record.ended.is_none())
+        .filter(|(_, record)| record.is_open())
         .map(|((run, _, _), record)| (run, record))
         .collect()
+}
+
+/// The latest [`SpawnLaunched`] record of `spawn` among `progress_events`, one run's records
+/// (spec 105, RESUME BY SESSION): the last record, in stream order, of the highest ordinal they
+/// hold for that id, so its close once that launch closed and its open record until then, or
+/// `None` when they hold none. Opening and closing records both count, so a launch whose open
+/// record was lost still names its ordinal. A record that does not decode names nothing. PURE:
+/// the store crate's `latest_launch` reads the run's records and folds them here.
+pub fn latest_launch_of(progress_events: &[Event], spawn: &str) -> Option<SpawnLaunched> {
+    // `max_by_key` keeps the last of equal maxima: the latest record of the highest ordinal.
+    decoded_launches(progress_events)
+        .map(|(_, record)| record)
+        .filter(|record| record.spawn == spawn)
+        .max_by_key(|record| record.launch)
 }
 
 /// Each [`SpawnLaunched`] record among `progress_events`, beside its event, in their order: a
@@ -345,7 +395,7 @@ pub fn latest_stop_failure_class(progress_events: &[Event], spawn_id: &str) -> O
     let mut found = None;
     for e in progress_events {
         if let Some(launch) = decode_launch(e) {
-            if launch.spawn == spawn_id && launch.ended.is_none() {
+            if launch.spawn == spawn_id && launch.is_open() {
                 found = None;
             }
         } else if e.type_ == TYPE_STOP_FAILURE {
@@ -449,13 +499,8 @@ pub fn consolidate(
     // Latest progress per spawn id: the store appends in order, so a later event for the same
     // id overwrites the earlier one, leaving the most recent activity + when it was reported.
     let mut latest_prog: HashMap<String, (String, SystemTime)> = HashMap::new();
-    for e in progress_events {
-        if e.type_ != TYPE_AGENT_PROGRESS {
-            continue;
-        }
-        if let Ok(ap) = serde_json::from_slice::<AgentProgress>(&e.data) {
-            latest_prog.insert(ap.id, (ap.activity, e.recorded_at));
-        }
+    for (e, ap) in decoded_progress(progress_events) {
+        latest_prog.insert(ap.id, (ap.activity, e.recorded_at));
     }
 
     // Latest run-stream milestone per unit: the most recent event whose data `id` is the unit
@@ -1036,7 +1081,8 @@ mod tests {
     /// The count `api-unstable` reads (spec 105): failed closes newest first, ordered by revision,
     /// back to the later of the last `completed` close and the last `RunReleased`. A close
     /// stamped equal to the release is behind it, a tie of closes falls to stream order, and an
-    /// unstamped close takes no special rule.
+    /// unstamped close takes the stamp of the last stamped close before it in stream order, so it
+    /// orders first only when no stamped close stands before it.
     #[test]
     fn the_count_of_failed_closes_runs_since_the_later_of_the_last_completed_and_release() {
         const F: &str = ENDED_FAULT;
@@ -1044,7 +1090,7 @@ mod tests {
         const C: &str = ENDED_COMPLETED;
         const I: &str = ENDED_INTERRUPTED;
         type Close = (&'static str, Option<Revision>);
-        let rows: [(&str, Vec<Close>, Option<Revision>, usize); 19] = [
+        let rows: [(&str, Vec<Close>, Option<Revision>, usize); 20] = [
             ("no closes", vec![], None, 0),
             ("two faults", vec![(F, Some(1)), (F, Some(1))], None, 2),
             (
@@ -1124,6 +1170,12 @@ mod tests {
                 vec![(F, None)],
                 Some(0),
                 0,
+            ),
+            (
+                "a completed close whose head read failed ends the streak",
+                vec![(F, Some(1)), (F, Some(1)), (C, None), (F, Some(1))],
+                None,
+                1,
             ),
             (
                 "a fault tied behind a completed close counts",
