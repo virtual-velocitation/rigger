@@ -2,8 +2,10 @@
 //! machine from sleeping for as long as it drives. [`SleepHold::acquire`] takes the hold and
 //! returns the [`SleepGuard`] whose drop releases it; an adapter that cannot take one answers
 //! [`Unavailable`] with its reason, which never fails the run. One adapter per OS family sits in
-//! the process ring and only the composition root names it. A process that ends holding a guard
-//! loses the hold with it, since the OS ties each facility to the process that took it.
+//! the process ring and, of the production code outside it, only the composition root names it. A
+//! process that ends holding a guard loses the hold with it, since the OS ties each facility to
+//! the process that took it, save a child that inherited the hold while the acquire ran: a caller
+//! acquires before it starts any thread that spawns a child.
 
 /// The keep-awake facility of the host the run drives on.
 pub trait SleepHold {

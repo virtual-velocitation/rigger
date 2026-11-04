@@ -203,8 +203,9 @@ impl Driver<'_> {
     /// Ordering is the criterion: `SpawnLaunched` is appended to the progress store
     /// BEFORE the child is started (so a launch that never even started a process because
     /// `bin` does not exist still cannot be re-attempted silently - the record proves the
-    /// attempt), and it is the ONLY event this call writes - [`Driver::read_stream`]'s endings
-    /// close it. The environment the child sees is the operator's ambient
+    /// attempt), and it is the ONLY event this call writes - a close, where an ending writes
+    /// one, is [`Driver::read_stream`]'s to write. The environment the child sees is the
+    /// operator's ambient
     /// environment (inherited unchanged, credential included) plus the harness environment
     /// ([`harness_env`]) plus `opts.env` plus [`Driver::handed_env`], each later source winning
     /// under a shared key; this function neither reads nor sets a credential variable of its
@@ -323,8 +324,8 @@ impl Driver<'_> {
             // The durable `SpawnLaunched` record above already claims this launch
             // happened - a write failure here must not also leak the OS process behind
             // it. End it through the handle that spawned it (process lifecycle
-            // discipline: kill() + wait(), never a computed-pid signal) before
-            // reporting the error, so no unaccounted-for child outlives this `Err`.
+            // discipline: kill() + wait(), never a computed-pid signal) first, so no
+            // unaccounted-for child outlives the `Err` a fresh launch returns below.
             let _ = child.kill();
             let _ = child.wait();
             // A session that refused a resume exits without reading its input, so a task past
@@ -1039,7 +1040,7 @@ impl Driver<'_> {
     }
 
     /// Close this launch's record `ended` under `class`, stamped with the run stream's revision
-    /// read just now: the ONE close every ending writes. Best-effort, a courtesy for
+    /// read just now: the one close an ending that closes writes. Best-effort, a courtesy for
     /// reconciliation and for the failed-close count, never the source of truth: the classed
     /// `Error` or the recorded result is, a lost close only leaves a record the supervisor's
     /// start-up reconciliation closes later, and a failed read leaves the close unstamped.
@@ -1574,8 +1575,8 @@ pub enum ProbeOutcome {
     /// The login read found the session logged out, or answered nothing within the delay, so no
     /// canary ran: a person must log in.
     LoggedOut,
-    /// The canary did not answer: the category of its stream's last `api_retry` line,
-    /// [`AgentFailure::Unknown`]'s with none.
+    /// The canary did not answer, or its first result carried an error: the category of the
+    /// last `api_retry` line ahead of its first result, [`AgentFailure::Unknown`]'s with none.
     Failed(String),
 }
 

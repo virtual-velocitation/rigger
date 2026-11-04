@@ -11,7 +11,10 @@
 # `rigger` server connected, then a `result` carrying that answer as a JSON string. An arm that
 # exits non-zero ends the session with its status and no `result`. An arm that `exec`s ends the
 # session as what it execs, the very process the host spawned and reaps, with no `result`, and
-# leaves its `reply.<pid>` beside the stand-in. A
+# leaves its `reply.<pid>` beside the stand-in. Sharing the stand-in's shell, an arm leaves alone
+# what `frame` below reads: it assigns neither `verb` nor `reply`, defines no `frame`, sets no
+# `EXIT` trap of its own and never closes fd 3, else the session's answer is lost or misframed
+# with no assertion naming why. A
 # launch whose first argument is `auth` (the `claude auth status --json` read) prints the arm's
 # answer as it stands, with no stream framing. A launch naming no `--system-prompt-file` (the
 # hold probe's canary) reaches the arm for the empty prompt, `""`. A checked-in executable

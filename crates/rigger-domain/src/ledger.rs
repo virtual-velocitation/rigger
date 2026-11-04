@@ -683,9 +683,11 @@ impl RunState {
                 // SAME body every other lifecycle event decodes from - no metadata read, no
                 // second traversal. `events` callers already pass here is the run-scoped
                 // slice (`runscope::current_run`), so exactly one RunStarted is present; a
-                // caller that instead hands the whole unscoped stream still folds correctly
-                // (last RunStarted wins, matching `runscope::current_run_id`'s own "latest"
-                // rule).
+                // caller that instead hands the whole unscoped stream still folds the run id
+                // and spec correctly (last RunStarted wins, matching
+                // `runscope::current_run_id`'s own "latest" rule), but not the hold: a
+                // RunStarted leaves `hold` standing, so a hold an earlier run left open
+                // carries into the new run.
                 let p: RunStartedFold = serde_json::from_slice(&e.data)?;
                 self.run_id = p.run;
                 self.spec_path = p.spec;

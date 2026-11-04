@@ -525,7 +525,7 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "c656f39d922ab51b"
+    "content_hash": "1399ff6ef05c8b3f"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -853,7 +853,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "84e9e7c18b876134"
+    "content_hash": "81b32c949659c7df"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -925,7 +925,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "8c310b0472cb67da"
+    "content_hash": "668e0f6dcd1fe8ef"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -997,7 +997,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "a2536f4c01ec1a38"
+    "content_hash": "b996de29c169e387"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -1029,7 +1029,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "3f91eac3ca8e6c86"
+    "content_hash": "b20fc595c6aa5b4e"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -1061,7 +1061,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "6e12dd84e3aff963"
+    "content_hash": "b45525a0365bf193"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -1125,7 +1125,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "bf7350228dbda5ce"
+    "content_hash": "c975abf0055966a0"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -1181,7 +1181,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "b92a9e0c310d8add"
+    "content_hash": "545f5401f5a51f0f"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -11157,7 +11157,7 @@
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "113fd6cb2824af5c"
+    "content_hash": "c94b95b14058dd76"
   },
   {
     "file": "src/cli/mod.rs",

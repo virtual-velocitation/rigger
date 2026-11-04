@@ -355,7 +355,8 @@ pub fn run_rigger_envs(cwd: &Path, args: &[&str], envs: &[(&str, &str)]) -> (Str
 }
 
 /// The ambient `PATH` with every directory holding a `tool` removed, so a lookup of `tool` fails
-/// whatever the machine running the test has installed, while `git` and the coreutils stay found.
+/// whatever the machine running the test has installed; `git` and the coreutils stay found only
+/// where no directory holding them also holds `tool`.
 pub fn path_without(tool: &str) -> String {
     std::env::var("PATH")
         .unwrap_or_default()

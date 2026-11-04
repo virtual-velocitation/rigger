@@ -433,8 +433,9 @@ pub struct Span {
 /// A run's holds as spans, in log order, from one run's slice of the run stream (THE EVENTS): a
 /// hold starts at its earliest `RunHeld` since the last `RunReleased` and ends at the next
 /// `RunReleased`, and a hold still open at `now` ends there. Each is dated by `valid_from`, as
-/// [`rigger_domain::ledger::project`] dates a hold, so the two can never disagree on when one
-/// started.
+/// [`rigger_domain::ledger::project`] dates a hold; the rule is spelled in both, and the
+/// `a_runs_hold_intervals_run_from_the_earliest_sighting_to_the_release_or_now` table holds
+/// them level on when one started.
 pub fn hold_intervals(run_events: &[Event], now: SystemTime) -> Vec<Span> {
     let mut spans = Vec::new();
     let mut open: Option<SystemTime> = None;
@@ -824,9 +825,10 @@ pub fn unended_spawns(events: &[Event]) -> Result<UnendedSpawns, Error> {
 
 /// The NO-STILL-ADVANCING-WORK core of the never-delete-live-owned rail as ONE predicate (spec 34,
 /// criterion 3): true when the current run has NO worker that may still be alive under the shared
-/// scratch AND no unit still awaiting a human. Both run-teardown sites - the definition-drift
-/// early-return in `rigger step` and the terminal-fixpoint teardown after `conductor::run` - gate on
-/// THIS function, so every still-advancing condition is inherited by both and none can drift into a
+/// scratch AND no unit still awaiting a human. Both of `rigger step`'s run-teardown sites - the
+/// definition-drift early-return and the terminal-fixpoint teardown after `conductor::run` - gate
+/// on THIS function (`rigger run` gates its own on `RunState::done()`, its conductor having
+/// returned), so every still-advancing condition is inherited by both and none can drift into a
 /// divergent per-caller copy (the divergence that once let the drift path reclaim on an empty
 /// frontier ALONE - first omitting the hung check, then the manual-review check).
 ///

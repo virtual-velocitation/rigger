@@ -2764,7 +2764,7 @@ pub fn repoint_seed(events: &[Event], graph: &Graph, seed: &str) -> Vec<String> 
 }
 
 /// The run-lifecycle event types the console recognizes (spec 94, criterion 2; the addendum
-/// `docs/architecture-addendum-mission-control.md` §2's own list, verbatim) - the ONLY types
+/// `docs/architecture-addendum-mission-control.md` section 2's own list, verbatim) - the ONLY types
 /// that count toward the console's position N, and the ONLY types `/api/console/snapshot`'s
 /// `events` and `/api/console/stream`'s `event` frame ever carry. An ALLOW-list, so the
 /// graph-extraction types sharing the same run stream (`CodeEntityExtracted`, `EdgeInferred`,
@@ -2777,9 +2777,8 @@ pub fn repoint_seed(events: &[Event], graph: &Graph, seed: &str) -> Vec<String> 
 /// not a distinct type anywhere in this codebase today - a `--rebase-definition` supersession
 /// rides the existing `DecisionMade` vocabulary instead (`run_store::record_rebase`'s own doc:
 /// "no new event type - the spec-13 global constraint"), so it is already covered by
-/// `TYPE_DECISION_MADE` below and this literal entry is a forward-compatible no-op. Spec 105
-/// adds `RunHeld` and `RunReleased` past the addendum's list, so the page's fold sees the
-/// run's hold.
+/// `TYPE_DECISION_MADE` below and this literal entry is a forward-compatible no-op. Spec 105's
+/// `RunHeld` and `RunReleased` are on the list, so the page's fold sees the run's hold.
 const CONSOLE_EVENT_TYPES: &[&str] = &[
     run::TYPE_RUN_STARTED,
     crate::conductor::TYPE_UNIT_PROPOSED,

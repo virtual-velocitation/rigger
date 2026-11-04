@@ -129,9 +129,9 @@ Only **console events** count toward N: the run-lifecycle types (`RunStarted`,
 `UnitProposed`, `UnitStarted`, `UnitStatus`, `UnitIntegrated`, `UnitFailed`, `UnitEscalated`,
 `UnitResumed`, `SpawnRequested`, `SpawnResult`, `StepTaken`, `GateVerdict`, `ReviewFinding`,
 `DecisionMade`, `LessonLearned`, `BlastRadiusComputed`, `FileTouched`,
-`DefinitionSuperseded`, `BudgetExhausted`). The graph-extraction types that share the stream
-(`CodeEntityExtracted`, `EdgeInferred`, `DocLinkExtracted`, `DocConceptExtracted`) are the
-knowledge graph's and reach the console only as the graph payload; they never appear on the
+`DefinitionSuperseded`, `BudgetExhausted`, `RunHeld`, `RunReleased`). The graph-extraction
+types that share the stream (`CodeEntityExtracted`, `EdgeInferred`, `DocLinkExtracted`,
+`DocConceptExtracted`) are the knowledge graph's and reach the console only as the graph payload; they never appear on the
 scrubber. A run of this repository's size has a few thousand console events and two million
 graph events, so this filter is what makes "the state at every position" cheap.
 

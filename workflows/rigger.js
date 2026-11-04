@@ -982,7 +982,7 @@ for (;;) {
 
   // 3. A HALT is a LOUD stop, never a clean completion (Gap 13). `rigger step` reports it as a
   //    `halted` reason distinct from `done` convergence: the run is held and the step launched
-  //    nothing (the hold's release resumes it), else the budget breaker stopped the run with
+  //    nothing (a release and a relaunch resume it), else the budget breaker stopped the run with
   //    ready work unscheduled (a resume needs a raised budget), else a plan-critique gate stopped
   //    it on a spec defect (amend the spec and relaunch), else an agent hung. Drain whatever
   //    this (or an earlier) step already parked - never abandon a worker mid-session - then

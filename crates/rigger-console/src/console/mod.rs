@@ -71,7 +71,8 @@ impl Dock {
 /// CURRENT-STATE signals, spec 105's hold and a snapshot subset of spec 69's five crossing
 /// signals - the two that are genuinely crossings with no persisting "still true" state of their
 /// own (the budget's final-tenth threshold, a frontier stall reported only once) stay push-side,
-/// on `rigger step`'s wire, not here, and so does spec 105's `released`:
+/// on `rigger step`'s wire, not here, and spec 105's `released` stays off the dock too
+/// (spec 106's `rigger attention --follow` delivers it, never a step's wire):
 ///
 /// - **held** - the run's open hold, when its latest `RunHeld` carries `needs_person` (an
 ///   operator hold's does): the open hold's entry of [`ledger::hold_attention`], naming the

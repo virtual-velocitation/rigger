@@ -125,7 +125,7 @@ Upgrading an older workflow: the top-level `name:` key is retired, and `rigger v
 
 ### The knobs that matter
 
-**`budget`** is the hard cap on agent spawns for one unattended run. When spawns reach it, the breaker records `BudgetExhausted` and aborts. Keep it non-zero always: `0` means unlimited, and unlimited is how a unit a reviewer keeps rejecting churns for five hours. Raise it for a big spec; never disable it for an unattended run.
+**`budget`** is the hard cap on agent spawns for one unattended run. When spawns reach it, the breaker records `BudgetExhausted` and aborts. Under `rigger run` the count belongs to the run, not the process: a restarted run keeps counting from where the last one stopped, so a run halted on `BudgetExhausted` continues only once `budget` is raised. Keep it non-zero always: `0` means unlimited, and unlimited is how a unit a reviewer keeps rejecting churns for five hours. Raise it for a big spec; never disable it for an unattended run.
 
 **`max_retries`** is remediation *depth*, not review rigor. It bounds how many attempts a failed unit gets before escalating to a human. Raise it when a unit's defects are genuine but diminishing across iterations - it buys convergence room under the full-strength review; it never loosens the review bar. It is itself bounded by `budget`, so it can never spin unboundedly.
 

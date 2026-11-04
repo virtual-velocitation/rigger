@@ -21,7 +21,8 @@ DISPOSITIONS, decided, one table in code, `AgentFailure`'s disposition beside th
 (`crates/rigger-domain/src/agent.rs`), read by the host and the conductor; each row gives its
 disposition, its action text, whether it needs a person and whether it is a credential category:
 `authentication_failed`, `oauth_org_not_allowed`, `cloud_credential_error`, `billing_error`,
-`account_on_hold`, `model_not_found` - HOLD on the first `api_retry` or `StopFailure` that
+`account_on_hold`, `verification_required`, `model_not_found` - HOLD on the first `api_retry` or
+`StopFailure` that
 carries the category; each needs a person, and `authentication_failed` and
 `oauth_org_not_allowed` are the credential categories. `rate_limit`, `overloaded`,
 `server_error` - WAIT while the session retries; HOLD when a session ends of it.
@@ -30,7 +31,8 @@ existing error path unchanged, so at the implementer it reruns uncharged under
 `retry_infra_failure` and a spawn past the infra limit halts the run naming its class. The
 action texts: the credential categories `run claude auth login`; `cloud_credential_error`
 `refresh the cloud provider's credentials`; `billing_error` `fix the account's billing`;
-`account_on_hold` `resolve the account's hold`; `model_not_found` `fix the agent's configured
+`account_on_hold` `resolve the account's hold`; `verification_required` `complete the account's
+verification`; `model_not_found` `fix the agent's configured
 model, restart rigger run with --rebase-definition, then run rigger release`; the WAIT
 categories `none, the run retries by itself`; the FAULT categories none, since they never hold.
 Two causes outside the categories have rows: `api-unstable`, action `none, the run retries by
@@ -39,9 +41,10 @@ a person. A `RunHeld`'s `detail` is the error text of the line that sighted it, 
 host records no `SpawnResult` for a `result` with `is_error: true` and closes the session's
 input at it, as at any first `result` (`crates/rigger-driver/src/driver/claude_code.rs:570`), so
 its launch takes its class after the child exits from the same sources in the same order as a
-no-result launch (`classify_no_result`, `crates/rigger-driver/src/driver/claude_code.rs:652`),
-which reads only a `StopFailure` that follows its launch's `SpawnLaunched` in the run's progress
-stream, never by a comparison of seconds. The host closes a launch `completed` at its first
+no-result launch (`classify_no_result`, `crates/rigger-driver/src/driver/claude_code.rs:652`):
+the `error` of its last assistant line, else a `StopFailure` that follows its launch's
+`SpawnLaunched` in the run's progress stream, read by that order and never by a comparison of
+seconds, else its last `api_retry`'s category. The host closes a launch `completed` at its first
 non-error `result`. A host appends its `fault` or `stopped` launch close first, then re-reads
 the count of such closes across the run in the progress store since the later of the last
 `completed` close and the last `RunReleased`, and a count of at least three HOLDs with cause
@@ -126,7 +129,9 @@ with `RunState::done()` true and a hold open, an operator hold included, the sup
 leaves the hold to the next supervisor's probes. A sighting's append and the done run's and the
 mint's releases are criterion 2's; a failed probe's and `rigger hold`'s appends are criterion
 5's. Where a rule orders a progress-store record against a run-stream event, the record carries
-the run stream's revision its writer last read, and the order is by revision, never by time.
+the run stream's revision its writer last read, and the order is by revision, never by time: a
+record stamped with an event's revision is after that event, since its writer read it, and
+records sharing a stamp keep their progress-stream order.
 
 HELD, decided: `rigger run` and `rigger serve` wrap their driver in one new `AgentDriver`
 decorator in `rigger-conductor`, so no spawn site changes for the hold: before each launch it
@@ -288,7 +293,7 @@ owns the OS process facilities, which gains a normal `rigger-domain` dependency 
   the tokio the store already links, so the adapter adds no executor and no direct `tokio` edge.
 - macOS: `IOPMAssertionCreateWithName(kIOPMAssertPreventUserIdleSystemSleep, ...)` and
   `IOPMAssertionRelease`, through `extern` declarations linking IOKit; the assertion's name is a
-  CoreFoundation string made through the same `extern` block linking CoreFoundation, so the
+  CoreFoundation string made through a second `extern` block linking CoreFoundation, so the
   adapter adds no crate.
 - Windows: `PowerCreateRequest` plus `PowerSetRequest(PowerRequestSystemRequired)`, and
   `PowerClearRequest` on release, through `windows-sys` at a version the lock already resolves.

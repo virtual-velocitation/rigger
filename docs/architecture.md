@@ -1110,7 +1110,7 @@ structurally.
 | A discovered unit has no `spec_criterion` | `spawnUnit` refuses + emits a `scope_creep` event (anti-fragmentation) |
 | A conceptual criterion covered only by a mechanical gate | `coverage` proxy-gap guard => NOT covered; demands a real (LLM-judge) verifier |
 | Two concurrent units edit the same file | Wave admission starts a unit only while its blast radius shares no file with a unit in flight; they never share a worktree |
-| Agent crashes / hits usage limit mid-spawn | headless host: non-zero exit -> `remediate` (bounded retry, re-grounded) -> escalate |
+| Agent crashes / hits usage limit mid-spawn | headless host: a session that ends without a result records no `SpawnResult`, never a `remediate` charge. A HOLD- or WAIT-class category holds the run: the launch ends `interrupted` and resumes uncharged once the hold ends. Any other failed launch reruns the stage uncharged as infra, up to the failure taxonomy's infra limit, where the step halts |
 | A reviewer spawn is killed externally (no verdict) | Reviewer re-park (section 4.4): discard the dead spawn, re-park a fresh attempt, bounded - never a bogus remediation charge on the reviewed unit |
 | A leftover / stale worktree dir blocks a fresh one | Self-healing worktree (section 4.4): reconcile from the deterministic branch, never wedge the next window |
 | Stale base (a peer landed while I ran) | Integrate does `pull --rebase` + re-runs gates; the graph's `TOUCHES` edges flag the overlap pre-merge |

@@ -333,8 +333,8 @@ pub struct WatchInputs<'a> {
     /// Whether the step lock is free: true when no `rigger step` holds it and no `rigger run`
     /// does, which holds it for its whole life, so a hung run keeps the alert silent.
     pub step_lock_free: bool,
-    /// Heartbeat-marker AGE in seconds, keyed by spawn id, for the run's CURRENTLY
-    /// PARKED frontier (mirrors `rigger status`'s own liveness-age fold). Empty when
+    /// Heartbeat-marker AGE in seconds, keyed by spawn id, for the run's CURRENTLY PARKED
+    /// frontier, on wall clock: unlike `rigger status`'s, no open hold is subtracted. Empty when
     /// nothing is parked, which reads as "every heartbeat stale" vacuously.
     pub wave_liveness_ages: &'a BTreeMap<String, u64>,
     /// The dash liveness probe's already-classified outcome.

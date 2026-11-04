@@ -67,11 +67,11 @@ pub struct AgentResult {
     /// resumable session (the workflow and replay drivers, a test double), which then leaves
     /// every later spawn of that role a fresh one.
     pub session_id: String,
-    /// The session this spawn CONTINUED: [`SpawnOpts::resumed_from`] when the host resumed it,
-    /// empty for a fresh launch - including the fallback a host takes when the session it was
-    /// asked to resume no longer exists, so a requested resume that came back empty from a launch
-    /// is the record that the host fell back to a fresh spawn. Empty too for a spawn the headless
-    /// host answers from the run log, which launches nothing.
+    /// The session the spawn's last launch CONTINUED, a relaunch of an interrupted launch
+    /// included: [`SpawnOpts::resumed_from`] when the host resumed it, the interrupted session
+    /// when the host relaunched one, and empty for a fresh launch no relaunch followed - including
+    /// the fallback a host takes when the session it was asked to resume no longer exists. Empty
+    /// too for a spawn the headless host answers from the run log, which launches nothing.
     pub resumed_from: String,
 }
 
@@ -225,9 +225,9 @@ pub fn spawn_request(agent: &AgentDef, prompt: &str, opts: &SpawnOpts) -> SpawnR
 }
 
 /// AgentDriver spawns an agent to completion. The agent records events it emits
-/// during its run, so its decisions reach the log live: the workflow driver wires
-/// `emit` to an in-process tool the agent calls, and a headless session records
-/// through its spawn-bound `rigger` server, so the headless host leaves `emit` unused.
+/// during its run: the workflow and headless drivers' agents record through the `rigger`
+/// MCP server while the spawn runs, so both leave `emit` unused, and the blocking cli
+/// driver replays the emit lines of its agent's stdout through `emit` after the run.
 pub trait AgentDriver: Send + Sync {
     fn spawn(
         &self,
@@ -238,28 +238,29 @@ pub trait AgentDriver: Send + Sync {
     ) -> Result<AgentResult, Error>;
 }
 
-/// The sentinel a stepwise/replay [`AgentDriver`] embeds in its spawn error to signal
-/// that a spawn was PARKED - persisted to the log and awaiting an out-of-process
-/// result - rather than run to completion or genuinely failed. It uses control
+/// The sentinel a parking [`AgentDriver`] embeds in its spawn error to signal
+/// that a spawn was PARKED - left for an out-of-process result or a relaunch
+/// ([`parked_spawn`]) - rather than run to completion or genuinely failed. It uses control
 /// characters no real error text carries, so [`is_parked`] recognizes it even after
 /// the conductor wraps the driver error with stage/agent context (`format!("... {}",
 /// e.0)` keeps the marker as a substring).
 ///
 /// Parking is part of the `AgentDriver` PORT contract, so it lives here beside the
-/// trait: the replay adapter constructs the signal via [`parked_spawn`] and the
+/// trait: a parking adapter constructs the signal via [`parked_spawn`] and the
 /// conductor recognizes it via [`is_parked`], and the use case never has to name the
 /// adapter to tell a park from a failure.
 pub const PARKED_MARKER: &str = "\u{1}rigger:spawn-parked\u{1}";
 
-/// Construct the PARK signal a stepwise driver returns for spawn `id`: it persisted the
-/// unrecorded spawn request and cannot answer it in-process. On this signal the
-/// conductor unwinds the unit CLEANLY - no `UnitFailed`, no remediation - and the step
-/// ends once every in-flight spawn is parked at the frontier; a later step, after the
-/// courier records the result, replays it. This is a normal failure, so a non-stepwise
-/// driver (which never parks) is entirely unaffected.
+/// Construct the PARK signal a driver returns for spawn `id` it cannot answer in-process: a
+/// stepwise/replay driver persisted the unrecorded spawn request, and the workflow driver and
+/// the held-run decorator found the serving session closed. On this signal the conductor
+/// unwinds the unit CLEANLY - no `UnitFailed`, no remediation - and the step ends once every
+/// in-flight spawn is parked; a later step replays the result the courier records, or a
+/// relaunch serves the spawn again. This is a normal failure, so a spawn that never parks is
+/// entirely unaffected.
 pub fn parked_spawn(id: &str) -> Error {
     Error(format!(
-        "{PARKED_MARKER} spawn {id:?} parked at the unrecorded frontier"
+        "{PARKED_MARKER} spawn {id:?} parked: nothing serves it in-process"
     ))
 }
 

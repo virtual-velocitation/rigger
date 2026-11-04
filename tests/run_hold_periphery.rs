@@ -4,7 +4,8 @@
 //!
 //! OWNED HERE: the seam from the on-disk store through `read_current_run` into `ledger::project`,
 //! which the crate's own fold table never crosses, since it hand-builds its events and cuts them
-//! with `current_run`; and `rigger emit`, the one surface a worker reaches the run stream through.
+//! with `current_run`; and `rigger emit`, the CLI face of the one emit core the `rigger_emit` MCP
+//! tool also calls, so its refusal is the one a worker meets on either surface.
 //! The hold events are minted by the supervisor and the operator's verbs, so a worker that could
 //! emit one could hold a run or end a hold.
 //!

@@ -3231,10 +3231,10 @@ fn parse_watch_args(args: &[String]) -> Result<WatchArgs, Box<dyn std::error::Er
 }
 
 /// One poll's worth of I/O for [`cmd_watch`]: reads the run's event slice (scoped
-/// exactly as `rigger status` scopes it) AND the whole log across every stream (the
-/// scope store-integrity needs, mirroring `rigger validate`'s own order-signature
-/// detector, spec 71), tries the step lock non-blocking (free = no `rigger step` is
-/// running right now), gathers each currently-parked spawn's heartbeat-marker age
+/// exactly as `rigger status` scopes it), which is also the scope store integrity is
+/// judged over (`rigger validate` keeps the whole-store order-signature
+/// detector, spec 71), tries the step lock non-blocking (free = no `rigger step` or
+/// `rigger run` holds it right now), gathers each currently-parked spawn's heartbeat-marker age
 /// exactly as `cmd_status` does, and probes the dash's liveness with a real serve check
 /// (the recorded marker's port when one exists, else the recorded `dash.url`'s own port;
 /// see the dash-probe comment inline below for why both breadcrumbs matter), then hands
@@ -10664,9 +10664,9 @@ mod tests {
             "each attention entry must render as a log() line naming its kind and detail"
         );
 
-        // The six wire kinds (ledger::ATTENTION_*, the closed vocabulary criterion 5 stamps)
-        // each resolve to a response - pinned against the SAME string constants the wire stamp
-        // uses, so a renamed kind breaks this test rather than silently going unmapped.
+        // The six wire kinds (ledger::ATTENTION_* minus HELD and RELEASED, the closed vocabulary
+        // criterion 5 stamps) each resolve to a response - pinned against the SAME constants the
+        // wire stamp uses, so a renamed kind breaks this test rather than silently going unmapped.
         for (kind, response) in [
             (ledger::ATTENTION_ESCALATED, "rigger-handle-an-escalation"),
             (ledger::ATTENTION_SPEC_DEFECT, "amend the spec and relaunch"),

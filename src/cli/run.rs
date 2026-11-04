@@ -651,13 +651,13 @@ pub(crate) fn cmd_step(args: &[String]) -> Res {
         .map(|slug| conductor::unit_branch(slug))
         .collect();
 
-    // The maintenance half of Gap 14, made liveness-aware (spec 64, criterion 4): every step
+    // The maintenance half of Gap 14, made liveness-aware (spec 64, criterion 4): every unheld step
     // starts by sweeping the scratch root's terminal worktrees (integrated units, review
     // scaffolding), so leaks from crashed or superseded step processes are reclaimed by the
     // loop itself instead of accumulating until a human notices a full disk. Placed here (after
     // the store opens and any `--fresh` boundary is settled, but still BEFORE the
-    // definition-pin HALT below) so it keeps running at step start on every step, including one
-    // that goes on to halt on drift - exactly as before this criterion. The merged-only git
+    // definition-pin HALT below) so it keeps running at step start on every unheld step, including
+    // one that goes on to halt on drift - exactly as before this criterion. The merged-only git
     // ancestry rule alone is not sufficient: a PARKED unit whose attempt produced an EMPTY diff
     // has a branch tip that IS an ancestor of the run branch (trivially - it never advanced past
     // it) while the unit is still live in review, so `sweep_terminal` is handed the CURRENT
@@ -1441,8 +1441,8 @@ fn beat(run_store: &dyn EventStore, progress: &dyn EventStore) {
 
 /// Hand back what `drive` returns, with the supervisor beating beside it ([`ticking`] a [`beat`]
 /// each `interval`): a beat as `drive` starts, so an adopting supervisor is on record at once, and
-/// none once `drive` returns. A dead beat freezes silent time and nothing more: no exit and no host
-/// state hangs on it.
+/// none once `drive` returns. A failed beat freezes silent time and no host state hangs on it, but
+/// a beat still running as `drive` returns is waited out, and one that panics is re-raised then.
 fn beating<T>(
     run_store: &dyn EventStore,
     progress: &dyn EventStore,
@@ -1477,8 +1477,8 @@ fn ticking<T>(
 }
 
 /// The knob selecting the keep-awake adapter a run's driver takes its hold from (spec 105), read by
-/// [`sleep_hold`] alone: production leaves it unset, so the driver holds the host awake; the crate's
-/// tests set it to a fake, so no proof outside the native adapters' own depends on the host.
+/// [`sleep_hold`] alone: production leaves it unset, so the driver holds the host awake; the
+/// crate's tests set a fake, so only the native adapters' rows and the no-knob row use the host.
 const KEEP_AWAKE_ENV: &str = "RIGGER_KEEP_AWAKE";
 
 /// The keep-awake adapter [`KEEP_AWAKE_ENV`] selects: unset, the host's [`OsSleepHold`];
@@ -2225,7 +2225,7 @@ fn run_workflow(parsed: &RunArgs, command: &str, sleep: &dyn SleepHold) -> Res {
             .with_graph(&graph)
             .with_progress(&prog_store, &scratch_root);
         let _ = server.run(std::io::stdin().lock(), std::io::stdout().lock());
-        // The session is over, so this process drives the run no further.
+        // The session is over, so the hold ends here; a gate or merge still running ends unheld.
         drop(awake);
         // Nothing serves a spawn past the close, so each one parks and the scope joins the
         // conductor.

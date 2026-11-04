@@ -179,10 +179,11 @@ pub struct SpawnLaunched {
     /// it from. [`failed_closes_since`] orders a close against a `RunReleased` by it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub revision: Option<Revision>,
-    /// The directory the host launched the session in, empty on a close and on an open record
-    /// written before spec 105. Its one reader is a supervisor start's reconciliation
-    /// ([`open_launches`]), which reaps what is still rooted under it once the launch is found
-    /// open.
+    /// The directory the host launched the session in, empty on a close, on an open record
+    /// written before spec 105 and for a launch in the current dir. Its one reader is a
+    /// supervisor start's reconciliation (`reconcile_open_launches` in `src/cli/run.rs`), which,
+    /// for a launch [`open_launches`] finds open, reaps what is still rooted under it only when it
+    /// lies strictly under the project's scratch root.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub dir: String,
 }

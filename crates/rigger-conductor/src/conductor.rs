@@ -327,10 +327,11 @@ const META_SESSION_ID: &str = "session_id";
 /// spawn ran fresh.
 const META_RESUME_REQUESTED: &str = "resume_requested";
 
-/// The metadata key a [`STATUS_SPAWN_SESSION`] mark carries the session the spawn CONTINUED
-/// under; absent on a fresh spawn, including the fresh fallback a host takes when the session
-/// it was asked to resume is gone, and on a spawn the headless host answers from the run log,
-/// which continues no session.
+/// The metadata key a [`STATUS_SPAWN_SESSION`] mark carries the session the spawn's last launch
+/// CONTINUED under, a relaunch of an interrupted launch included; absent on a fresh launch no
+/// relaunch followed, including the fresh fallback a host takes when the session it was asked to
+/// resume is gone, and on a spawn the headless host answers from the run log, which continues no
+/// session.
 const META_RESUMED_FROM: &str = "resumed_from";
 
 /// The replay key for a durable [`STATUS_REVIEW_ROUND_START`] mark, keyed by the exact
@@ -1594,15 +1595,16 @@ fn spawn_halt(kind: SpawnHalt, stage: &str, tier: &str, agent: &str) -> Error {
     }
 }
 
-/// Whether `e` is a NON-TERMINAL unwind - a park (the stepwise/replay frontier) OR the refusal
-/// `refusal` marks - as opposed to a genuine terminal failure (spec 64 criterion 1).
+/// Whether `e` is a park (the stepwise/replay frontier) OR the refusal `refusal` marks, as
+/// opposed to any other spawn failure: with [`BUDGET_MARKER`] a NON-TERMINAL unwind (spec 64
+/// criterion 1), with [`EMIT_REFUSED_MARKER`] an error its site hands on unchanged.
 ///
 /// With [`BUDGET_MARKER`], a review-tier budget refusal, both dispositions get the SAME treatment
 /// everywhere a worktree-keep decision reads them: a park hands work to an out-of-process agent
 /// that resumes in this exact tree, and a budget refusal is symmetric with the implementer's
 /// `Ok(false)` refusal (also worktree-preserving) - neither is a crash a caller should tear a
 /// worktree down over. With [`EMIT_REFUSED_MARKER`], the emit guard's refusal of a record the
-/// spawn emitted, both are what the implementer's spawn site surfaces and the held-run decorator
+/// spawn emitted, both are what the SDET author's spawn site surfaces and the held-run decorator
 /// hands to the conductor unchanged with no result recorded, and the two errors the conflict
 /// resolver propagates where any other spends its round.
 ///
@@ -2096,8 +2098,10 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
     // Their ids seed `recorded_spawn_ids` so `reserve_spawn` can tell a REPLAY of an
     // already-recorded spawn (admit free) from a genuinely new one, without re-reading the
     // whole stream per spawn. The headless host parks each spawn before its first launch
-    // too, so a restarted `rigger run` folds every spawn an earlier process ran and admits
-    // each one it answers from the log free. The cli and workflow drivers record no spawn
+    // too, so a restarted `rigger run` folds every spawn an earlier process parked, the
+    // budget binding across `rigger run` processes as across steps, and admits each one it
+    // answers from the log free; a spawn whose result the log holds with no request is
+    // charged as new when answered. The cli and workflow drivers record no spawn
     // request, so both are empty for them and their in-process spawns are the whole count.
     let recorded_spawns = spawn::recorded(prior_events).map_err(|e| Error(e.to_string()))?;
     let base_spawns = recorded_spawns.len() as u32;
@@ -2891,11 +2895,12 @@ fn has_producer(stages: &BTreeMap<String, Stage>) -> bool {
 /// parsed verdict is a spec ambiguity ([`spawn::Adjudication::is_spec_ambiguity`]), the re-plan
 /// `spawn_id(plan, replan, s - 1)` between them is recorded, the re-plan at `s` is not, and no
 /// event carries the stop's completion key ([`spec_defect_escalated_key`] at `s - 1`). A re-plan
-/// is recorded by its `SpawnRequested` or `SpawnResult` (the stepwise driver records both) or by
-/// an event it emitted, stamped with its id as [`META_SPAWN`] (a blocking driver records no spawn
-/// event), under its own id or the `~retry` id it re-ran as after a refused record
-/// ([`RunCtx::re_plan`]). So a first `spec-ambiguity` reject re-plans as before, and the stop
-/// fires on one that follows a re-plan which did not clear the previous one.
+/// is recorded by its `SpawnRequested` or `SpawnResult` (the stepwise driver records both, the
+/// headless host at least the request) or by an event it emitted, stamped with its id as
+/// [`META_SPAWN`] (the cli and workflow drivers record no spawn event), under its own id or the
+/// `~retry` id it re-ran as after a refused record ([`RunCtx::re_plan`]). So a first
+/// `spec-ambiguity` reject re-plans as before, and the stop fires on one that follows a re-plan
+/// which did not clear the previous one.
 fn spec_defect_stop(run: &[Event], gate: &str, plan: &str, s: u32) -> Option<spawn::Adjudication> {
     let earlier = s.checked_sub(2)?;
     let stopping = s - 1;
@@ -4317,13 +4322,14 @@ impl RunCtx<'_> {
             }
             Ok(false) => {}
             // A PARKED unit (the stepwise/replay driver hit an unrecorded
-            // frontier) is neither integrated nor failed: it left a
-            // SpawnRequested for the courier and unwound cleanly. Record no
-            // lesson and do not collapse the wave to an error - the run loop
-            // finds no newly-ready units and returns, so the step process ends
-            // once every in-flight spawn in the wave is parked. Flag the park so
-            // the phase boundary holds the deferred gate until a later step
-            // drains the frontier and the tree is fully assembled.
+            // frontier, or a closed session left a spawn unserved) is neither
+            // integrated nor failed: it unwound cleanly, its spawn left for the
+            // courier or a relaunch. Record no lesson and do not collapse the
+            // wave to an error - the run loop finds no newly-ready units and
+            // returns, so the step process ends once every in-flight spawn in
+            // the wave is parked. Flag the park so the phase boundary holds the
+            // deferred gate until a later step drains the frontier and the tree
+            // is fully assembled.
             Err(e) if is_parked(&e) => {
                 in_flight.insert(name);
                 self.parked.store(true, Ordering::SeqCst);
@@ -4775,7 +4781,8 @@ impl RunCtx<'_> {
             // the cache the unit's gates use.
             env: Self::spawn_env(&build_env, dir, cache),
             reviews: reviews.to_vec(),
-            // The headless host reads these two; the other drivers ignore them.
+            // The headless host reads these two, the cli driver `settings_json` too; the other
+            // drivers ignore them.
             settings_json: String::new(),
             launch: 0,
             // A fresh session; `continue_prior_session` points a later round's spawn at the
@@ -5534,10 +5541,11 @@ impl RunCtx<'_> {
                 // caller falls through to the commit that sweeps them in. The session it ran as
                 // is recorded for its next attempt to continue.
                 Ok(result) => self.record_session(&opts, &result),
-                // A PARKED spawn (the stepwise/replay driver reached an unrecorded frontier):
-                // surface the park so the caller unwinds cleanly - no UnitFailed, no
-                // remediation - and a later step replays the result. A refused record surfaces
-                // too: the first re-runs above, a second fails the stage below.
+                // A PARKED spawn (the stepwise/replay driver reached an unrecorded frontier, or
+                // a closed session left it unserved): surface the park so the caller unwinds
+                // cleanly - no UnitFailed, no remediation - and a later step replays the result
+                // or a relaunch serves it. A refused record surfaces too: the first re-runs
+                // above, a second fails the stage below.
                 Err(e) if is_parked_or_refused(&e, EMIT_REFUSED_MARKER) => Err(e),
                 // The crash disposition (a non-parked spawn/opts-guard error) is the next
                 // unit's to decide; this unit places the spawn and its parked arm, so a crash
@@ -6047,7 +6055,8 @@ impl RunCtx<'_> {
                         // An implementer is never a review tier: no roster to render
                         // (spec 67, criterion 4).
                         reviews: Vec::new(),
-                        // The headless host reads these two; the other drivers ignore them.
+                        // The headless host reads these two, the cli driver `settings_json`
+                        // too; the other drivers ignore them.
                         settings_json: String::new(),
                         launch: 0,
                         // Set by `continue_prior_session` below when there is a session
@@ -6089,9 +6098,10 @@ impl RunCtx<'_> {
                         )?;
                     }
                     // A PARKED spawn (the stepwise/replay driver reached an unrecorded
-                    // frontier) is NOT a failure: unwind this unit cleanly, with no
-                    // UnitFailed and no remediation, so the step ends once every
-                    // in-flight spawn is parked and a later step replays the result.
+                    // frontier, or a closed session left it unserved) is NOT a failure:
+                    // unwind this unit cleanly, with no UnitFailed and no remediation, so
+                    // the step ends once every in-flight spawn is parked and a later step
+                    // replays the result or a relaunch serves it.
                     Err(e) if is_parked(&e) => return Err(e),
                     // A record this spawn emitted that the emit guard refused (a payload the
                     // fold cannot apply, an id another seat holds) is a defect in what the
@@ -6676,7 +6686,8 @@ impl RunCtx<'_> {
                             // A speculation candidate is an implementer lane, never a review
                             // tier: no roster to render (spec 67, criterion 4).
                             reviews: Vec::new(),
-                            // The headless host reads these; the other drivers ignore them.
+                            // The headless host reads these, the cli driver all but `launch`;
+                            // the other drivers ignore them.
                             settings_json: String::new(),
                             launch: 0,
                             resumed_from: String::new(),
@@ -7808,15 +7819,16 @@ impl RunCtx<'_> {
                 // events (they explain the failure) while the result channel still decides.
                 // The emitted approve is read from the STORE and CORRELATED to THIS spawn's
                 // own emit (`gating_spawn_emitted_approve`) by its [`META_SPAWN`] stamp: the
-                // cli emit callback stamps it in-process, the workflow MCP server stamps it for
-                // the spawn it is serving, and a NATIVE courier's `rigger emit --spawn <id>`
+                // headless host's spawn-bound MCP server stamps it with its bound id, the
+                // workflow MCP server stamps it for the spawn it is serving, and a NATIVE
+                // courier's `rigger emit --spawn <id>`
                 // stamps it at record time - so on EVERY driver the approve names its emitting
                 // spawn and a CONCURRENT sibling adjudicator's approve (which carries the
                 // SIBLING's id) is excluded by identity, not by a shared-stream position window
-                // a sibling could fall inside (addendum 2.2). So the backstop fires on
-                // ReplayDriver (rigger step) and workflow::Driver (rigger serve) too, not only
-                // the cli stdout bridge. The result-channel check is FIRST, so the store read
-                // is taken only for a genuinely empty verdict.
+                // a sibling could fall inside (addendum 2.2). So the backstop fires on every
+                // driver a conductor run takes: the headless host (rigger run), ReplayDriver
+                // (rigger step) and workflow::Driver (rigger serve). The result-channel check is
+                // FIRST, so the store read is taken only for a genuinely empty verdict.
                 if output != ReviewerOutput::Findings
                     && !has_verdict_line(&result.output)
                     && self.gating_spawn_emitted_approve(&id)?
@@ -7878,7 +7890,8 @@ impl RunCtx<'_> {
     /// `MAX_CONCURRENCY` units run in parallel in [`run_wave`](RunCtx::run_wave), all emitting
     /// to the ONE store) could fall inside. Every driver stamps the emit with the emitting
     /// spawn's id at RECORD time, so the same one identity check works on all three:
-    /// - the cli emit callback stamps it in-process;
+    /// - the headless host's spawn-bound MCP server (`rigger mcp --spawn <id>`) stamps it with
+    ///   its bound id;
     /// - the workflow MCP server stamps it with the id of the spawn it is currently serving
     ///   (the shim serves agents serially, so every `rigger_emit` between a spawn's
     ///   `rigger_next` and its `rigger_result` is that spawn's);
@@ -8314,7 +8327,8 @@ impl RunCtx<'_> {
                         // The planner/re-planner is never a review tier: no roster to render
                         // (spec 67, criterion 4).
                         reviews: Vec::new(),
-                        // The headless host reads these; the other drivers ignore them.
+                        // The headless host reads these, the cli driver all but `launch`; the
+                        // other drivers ignore them.
                         settings_json: String::new(),
                         launch: 0,
                         resumed_from: String::new(),

@@ -357,9 +357,10 @@ fn spawn_records_the_result_in_the_run_store_with_its_full_meta() {
 fn a_relaunch_never_double_records_the_result() {
     // CONSTRAINTS WALK: "Relaunch - a new session id and the next launch ordinal; the
     // log holds one result." The host answers a spawn its run has already ended from the
-    // log, and its real-result write, record_result_unless_ended, lands nothing beside a
-    // real result standing - prove it by calling spawn() twice for the SAME id and
-    // asserting the run store still holds exactly one SpawnResult.
+    // log, ahead of any launch, so the second call makes no result to write - prove it by
+    // calling spawn() twice for the SAME id and asserting the run store still holds exactly
+    // one SpawnResult. That record_result_unless_ended lands nothing beside a real result
+    // standing is the spawn store's own row.
     let fx = Fixture::new();
     let o = opts("u104-stream/implementer#0");
 
@@ -373,7 +374,7 @@ fn a_relaunch_never_double_records_the_result() {
     assert_eq!(
         fx.spawn_results().len(),
         1,
-        "the second spawn's result never clobbers the first"
+        "the second spawn is answered from the log and records no second result"
     );
 }
 
@@ -4085,6 +4086,8 @@ fn relaunch_cases() -> Vec<Relaunch> {
             answered: (MINTED, ""),
             ..Default::default()
         },
+        // A fresh fallback launch that fails before its open record (write_roots, the persona
+        // file, build_args or next_launch) leaves the same latest close as a death does.
         Relaunch {
             name: "a fallback's close a death left the latest is relaunched and falls back again",
             seeded: vec![

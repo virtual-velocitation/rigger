@@ -8128,8 +8128,9 @@ fn a_served_run_reaching_done_stays_held() {
     );
     assert_eq!(run_releases(root), Vec::<String>::new());
     assert_eq!(run_holds(root).len(), 1);
-    // Read by presence: a release wired into the serve path lands after this event, and the two
-    // assertions above are the ones that must name it.
+    // Read by presence: a release wired into the serve path lands after this event, and the
+    // no-release assertion above is the one that must name it, since `run_holds` reads `RunHeld`
+    // alone.
     let integrated = common::cli::run_payloads(root, rigger::ledger::TYPE_UNIT_INTEGRATED);
     assert_eq!(
         integrated.iter().map(|e| &e["id"]).collect::<Vec<_>>(),
@@ -10164,10 +10165,12 @@ fn rigger_hold_holds_a_live_run_for_the_operator_and_rigger_release_ends_any_hol
 }
 
 /// Spec 105's operator hold against the hold controller, through `rigger run`: given a run held by
-/// the host 120 s back, whose probe falls due as the run starts, when the operator holds it with
-/// `rigger hold`, then the run probes nothing while the hold stands, reading no login and running
-/// no canary, and `rigger release` ends the hold, the run then driving to done; the operator's hold
-/// carries the host hold's model and both verbs' writes fold into the graph.
+/// the host 120 s back, when the operator holds it with `rigger hold`, then the run probes nothing
+/// while the hold stands, reading no login and running no canary, and `rigger release` ends the
+/// hold, the run then driving to done; the operator's hold carries the host hold's model and both
+/// verbs' writes fold into the graph. The verb's `RunHeld` dates the hold's latest write to now, so
+/// no probe falls due within the 60 s first delay with or without the operator skip: the skip
+/// itself is pinned by the backdated row "an operator hold is never probed".
 #[cfg(unix)]
 #[test]
 fn an_operator_hold_no_probe_ends_stands_until_rigger_release_ends_it() {
@@ -15968,8 +15971,9 @@ fn hanging_first_worker_arm() -> String {
 /// spec 105, RESUME BY SESSION, across real supervisors: given a `rigger run` whose agent never
 /// ends, a second `rigger run` and a `rigger step` started beside it each refuse with the busy
 /// refusal, closing no launch and reaping nothing; once that run dies with its agent still
-/// running, the next `rigger run` reaps the agent rooted in the dir the host recorded before it
-/// closes the launch `interrupted` with the session the host recorded, then relaunches that
+/// running, the next `rigger run` reaps the agent rooted in the dir the host recorded, gone by the
+/// first poll that sees the launch closed `interrupted` with the session the host recorded (the
+/// two land within one poll of each other, so their order is not pinned here), then relaunches that
 /// session with `--resume` at the next ordinal in the same dir, its first user message naming the
 /// supervisor's restart, and drives the run to done.
 #[cfg(unix)]
@@ -16088,7 +16092,8 @@ fn a_live_runs_launch_is_left_alone_beside_it_and_reconciled_by_the_next_start_o
     assert_eq!(
         (running_at_close, outlived),
         (Some(false), false),
-        "the restart reaps the dead run's agent before it closes its launch; stderr: {err}"
+        "the restart has reaped the dead run's agent by the first poll that sees its launch \
+         closed; stderr: {err}"
     );
     assert_eq!(
         recorded_launches(root).get(..2),

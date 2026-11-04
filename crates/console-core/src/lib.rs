@@ -85,12 +85,12 @@ thread_local! {
     static CONSOLE: RefCell<ConsoleSession> = RefCell::new(ConsoleSession::new());
 }
 
-/// The wire shape for one event a page sends into `fold_reset`/`fold_push`: only the three
-/// fields any `core` fold actually reads (`console::fold` -> `ledger::project` /
-/// `blocker::from_events`, both proven to read only `type_`, `data`, and `position` - see
-/// this crate's own DecisionMade for the citation) - never the store-stamped fields
-/// (`id`/`stream`/`meta`/`valid_from`/`recorded_at`/`revision`) a `core`-lane caller has no
-/// business minting anyway.
+/// The wire shape for one event a page sends into `fold_reset`/`fold_push`: `type_`, `data`
+/// and `position`, which `console::fold` (`ledger::project` / `blocker::from_events`) reads,
+/// and `recorded_at` for `console::scrub_track`'s ticks - never the other store-stamped fields
+/// (`id`/`stream`/`meta`/`valid_from`/`revision`) a `core`-lane caller has no business minting.
+/// `ledger::project` also reads `valid_from` and `revision` for a hold, which stay at the mint
+/// stub here, so a page-built hold's `since` and `revision` are stubs no page surface reads.
 #[derive(serde::Deserialize)]
 struct WireEvent {
     #[serde(rename = "type")]

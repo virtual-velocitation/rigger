@@ -184,9 +184,9 @@ itself.
 ```
              first hold-class category | session death by a wait-class | 3 FAULTs | rigger hold
   RUNNING ----------------------------------------------------------------------------> HELD
-     ^                          RunHeld {cause, detail, action, by}                      |
+     ^                RunHeld {cause, detail, action, needs_person, by, model}           |
      |                                                                                   |
-     +--------------- RunReleased {by: probe | operator, held_for} <-- probe ladder -----+
+     +------ RunReleased {by: host | probe | operator, held_for_s} <-- probe ladder -----+
 
   HELD:  no launch is requested
          live sessions are left alone: each finishes, or ends by itself
@@ -262,7 +262,7 @@ step runs in-process for as long as it needs.
  18:03     the adversary session exhausts its retries and exits: launch ended `interrupted`
  18:00 ->  probe every 60 s, doubling to 15 min: auth status says logged out
  11:12     the operator logs in
- 11:13     probe: logged in; canary turn succeeds; RunReleased {by: probe, held_for: 17h13m}
+ 11:13     probe: logged in; canary turn succeeds; RunReleased {by: probe, held_for_s: 61980}
  11:13     the adversary launch resumes its session with "held 17h13m for authentication_failed"
  11:31     result recorded; the adjudicator launches
 ```

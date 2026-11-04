@@ -107,8 +107,8 @@ pub(crate) fn cmd_reset(args: &[String]) -> Res {
         // verifies nothing - the operator owns that risk once they pass it).
         //
         // The step lock the guard took is held until the migration returns, so its verdict that
-        // no `rigger step` is running stays true while the log is rewritten: a step started
-        // meanwhile refuses on the held lock, and its courier retries once the reset is done.
+        // no `rigger step` or `rigger run` is running stays true while the log is rewritten: a
+        // step or run started meanwhile refuses on the held lock; only a step's courier retries.
         let _step_lock = if modes.force_live {
             None
         } else {
@@ -989,8 +989,8 @@ fn reset_runs(loc: &StoreLocation, selection: &StoreSelection, env: &ResetEnv) -
     let boundary = superseded_edge_boundary(&events);
 
     let graph = open_graph(&graph_db, &loc.identity(), selection, "reset --runs")?;
-    // The probe's step lock is held until the close returns, so no `rigger step` starts against a
-    // run this reset is closing; the graph prune below takes no part in it.
+    // The probe's step lock is held until the close returns, so no `rigger step` or `rigger run`
+    // starts against a run this reset is closing; the graph prune below takes no part in it.
     let probe = live_writer_facts(loc, selection, env, &events)?;
     close_landed_units(loc, &store, &graph, &events, &probe.facts)?;
     std::mem::drop(probe);

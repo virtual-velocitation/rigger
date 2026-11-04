@@ -175,17 +175,18 @@ pub fn install_session_start(existing: &[u8], command: &str) -> Result<Vec<u8>, 
 }
 
 /// Merge one hook block that runs `command` into `existing` settings JSON, under the
-/// named top-level hook `event_key` (`"SessionStart"`, `"PreToolUse"`, ...), matched
-/// against tool calls by `matcher` (empty for an event `rigger` never matcher-filters,
-/// e.g. `SessionStart`). Idempotent (installing the same `command` under the same
-/// `event_key` twice does not duplicate the block) and preserves every other setting,
-/// every other event key, and every other block already present under THIS event key -
-/// a general-purpose event (`PreToolUse`) may already carry entries for a different
-/// tool, matcher, or command a person or another tool installed, so this always APPENDS
-/// a new block rather than ever replacing the array wholesale, and touches nothing under
-/// any matcher/command this call did not itself install. `existing` may be empty. The
-/// one mutation authority both [`install_session_start`] and [`install_pretooluse_hook`]
-/// build on, so the two event kinds can never diverge on what "merge a hook block" means.
+/// named top-level hook `event_key` (`"SessionStart"`, `"PreToolUse"`, ...), filtered by
+/// `matcher` (tool names under `PreToolUse`, a failure class under `StopFailure`, empty for
+/// an event `rigger` never matcher-filters, e.g. `SessionStart`). Idempotent (installing the
+/// same `command` under the same `event_key` twice does not duplicate the block) and preserves
+/// every other setting, every other event key, and every other block already present under
+/// THIS event key - a general-purpose event (`PreToolUse`) may already carry entries for a
+/// different tool, matcher, or command a person or another tool installed, so this always
+/// APPENDS a new block rather than ever replacing the array wholesale, and touches nothing
+/// under any matcher/command this call did not itself install. `existing` may be empty. The
+/// one mutation authority [`install_session_start`], [`install_pretooluse_hook`] and
+/// [`install_spawn_hooks`] build on, so no event kind can diverge on what "merge a hook block"
+/// means.
 fn merge_hook_block(
     existing: &[u8],
     event_key: &str,

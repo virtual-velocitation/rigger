@@ -34,8 +34,9 @@
 //! expiring-login warning pinned by a report recorded from the installed `claude` and cut to the
 //! key the pin reads, and the one warning printed when `claude` is absent or gives no report, the
 //! exit status unchanged on every row: 0 on a sound project, and a failure still on a project whose
-//! run store cannot be selected. The reader's own key and deadline handling are tested beside it
-//! in `crates/rigger-driver/src/claude_auth.rs`.
+//! run store cannot be selected. The reader's `loggedIn` key and its deadline are tested beside it
+//! in `crates/rigger-driver/src/claude_auth.rs`; its `authMethod` key is tested only here, through
+//! the binary.
 
 mod common;
 

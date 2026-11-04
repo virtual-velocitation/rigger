@@ -138,8 +138,9 @@ pub(crate) fn harness_env(spawn: &str) -> [(&'static str, &str); 2] {
 pub(crate) const MISSING_SESSION: &str = "No conversation found with session ID";
 
 /// The Claude Code session one launch runs as - the ONE session authority both process hosts
-/// share. A launch continues the session [`SpawnOpts::resumed_from`] names (`--resume <id>`),
-/// or starts a fresh one under an id the host mints (`--session-id <uuid>`), so the host knows
+/// share. A launch continues the session [`SpawnOpts::resumed_from`] names, or on the stream-json
+/// host's relaunch the session its interrupted launch ran as (`--resume <id>`), or starts a
+/// fresh one under an id the host mints (`--session-id <uuid>`), so the host knows
 /// the id without reading it back from the session's output. Probed on Claude Code 2.1.290: a
 /// resumed session keeps its id, so [`id`](Self::id) is the session either way; `--session-id`
 /// and `--resume` together are refused without `--fork-session`, so a launch passes exactly one.
@@ -192,8 +193,9 @@ impl LaunchSession {
         [flag.to_string(), self.id.clone()]
     }
 
-    /// The task this launch sends: [`SpawnOpts::resume_task`] when it resumes (the session
-    /// already holds the rest), the full `prompt` when it starts fresh.
+    /// The task a launch [`of`](Self::of) `opts` sends: [`SpawnOpts::resume_task`] when it
+    /// resumes (the session already holds the rest), the full `prompt` when it starts fresh. A
+    /// relaunch of an interrupted launch composes its own task and never reads this.
     pub fn task<'a>(&self, prompt: &'a str, opts: &'a SpawnOpts) -> &'a str {
         if self.resumed {
             &opts.resume_task

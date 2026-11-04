@@ -139,10 +139,10 @@ impl<'a> HeldDriver<'a> {
     /// THE ERROR WRITE (spec 105, RESUME BY SESSION): record `e`, the error this decorator hands
     /// the conductor for spawn `id`, as the spawn's result, so a restarted `rigger run` answers
     /// the spawn from the log with that error instead of launching it again. Only on `rigger
-    /// run`: on `rigger serve` the session's shim records each spawn's result. A park and an
-    /// emit refusal end no spawn, so their marked errors record nothing; neither does a spawn
-    /// the current run never parked. The write lands over no result or a liveness fault alone
-    /// ([`spawn_store::record_result_unless_ended`]), never beside a result that ended the
+    /// run`: on `rigger serve` the shim hands each result back in process and none is logged. A
+    /// park and an emit refusal end no spawn, so their marked errors record nothing; neither does
+    /// a spawn the current run never parked. The write lands over no result or a liveness fault
+    /// alone ([`spawn_store::record_result_unless_ended`]), never beside a result that ended the
     /// spawn. Best-effort: a failed read or write leaves `e` to reach the conductor unchanged.
     fn record_error(&self, e: &Error, id: &str) {
         if self.session_closed.is_some() || is_parked_or_refused(e, EMIT_REFUSED_MARKER) {
@@ -949,7 +949,8 @@ mod tests {
     }
 
     /// A FAILED READ: a run not proved unheld launches nothing and answers the read's error,
-    /// never a hang; a read failing after a spawn's error hands that error back, not its own.
+    /// never a hang; a read failing while the decorator decides on a spawn's error hands that
+    /// error back, not its own.
     #[test]
     fn a_failed_read_launches_nothing_and_never_masks_the_spawn_error() {
         check(vec![
