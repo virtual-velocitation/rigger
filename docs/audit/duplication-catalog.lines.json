@@ -4579,8 +4579,8 @@
       },
       {
         "file": "crates/rigger-domain/src/progress.rs",
-        "start_line": 537,
-        "end_line": 540
+        "start_line": 544,
+        "end_line": 547
       },
       {
         "file": "tests/simplification_audit.rs",
@@ -5165,7 +5165,7 @@
     ]
   },
   {
-    "id": "dup-0a701eb6cf8d",
+    "id": "dup-b248b80c112e",
     "sites": [
       {
         "file": "crates/rigger-domain/src/community.rs",
@@ -5191,6 +5191,11 @@
         "file": "crates/rigger-domain/src/metrics.rs",
         "start_line": 552,
         "end_line": 554
+      },
+      {
+        "file": "crates/rigger-domain/src/progress.rs",
+        "start_line": 255,
+        "end_line": 257
       },
       {
         "file": "crates/rigger-driver/src/reaped_child.rs",

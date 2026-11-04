@@ -219,7 +219,7 @@ impl SpawnLaunched {
     /// FAILURE CLASS, STOP, THE RESUME FALLBACK and the supervisor reconciliation share it
     /// rather than each building a divergent literal. `session_id` identifies WHICH launch is
     /// closing; `started`/`resumed_from` are left at their defaults because only the LATEST
-    /// record's `ended` decides open-vs-closed - the
+    /// record's [`is_open`](Self::is_open) decides open-vs-closed - the
     /// original open record (already durable) is what carries those, the
     /// [`dir`](Self::dir) included. An empty `class`
     /// stores as `None` (see [`class`](Self::class) for the closes that carry none). The
@@ -247,6 +247,13 @@ impl SpawnLaunched {
             revision: None,
             dir: String::new(),
         }
+    }
+
+    /// Whether this record leaves its launch open: it carries no [`ended`](Self::ended). The one
+    /// spelling of an open record, which [`open_launches`], [`latest_stop_failure_class`] and
+    /// [`failed_closes_since`] read.
+    pub fn is_open(&self) -> bool {
+        self.ended.is_none()
     }
 }
 
@@ -283,7 +290,7 @@ pub fn failed_closes_since(progress_events: &[Event], released: Option<Revision>
     let mut stamp = None;
     let mut closes: Vec<SpawnLaunched> = decoded_launches(progress_events)
         .map(|(_, launch)| launch)
-        .filter(|launch| launch.ended.is_some())
+        .filter(|launch| !launch.is_open())
         .map(|mut close| {
             close.revision = close.revision.or(stamp);
             stamp = close.revision;
@@ -314,7 +321,7 @@ pub fn open_launches(progress_events: &[Event]) -> Vec<(String, SpawnLaunched)> 
     }
     latest
         .into_iter()
-        .filter(|(_, record)| record.ended.is_none())
+        .filter(|(_, record)| record.is_open())
         .map(|((run, _, _), record)| (run, record))
         .collect()
 }
@@ -374,7 +381,7 @@ pub fn latest_stop_failure_class(progress_events: &[Event], spawn_id: &str) -> O
     let mut found = None;
     for e in progress_events {
         if let Some(launch) = decode_launch(e) {
-            if launch.spawn == spawn_id && launch.ended.is_none() {
+            if launch.spawn == spawn_id && launch.is_open() {
                 found = None;
             }
         } else if e.type_ == TYPE_STOP_FAILURE {

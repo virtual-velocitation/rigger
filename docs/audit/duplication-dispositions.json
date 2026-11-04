@@ -75,9 +75,9 @@
     "reason": "`any_finding_is_critical` checks a canary prompt for its critical-defect marker while `is_handbook_path` classifies a design-doc path: one `contains` call each, on different inputs for different decisions."
   },
   {
-    "id": "dup-0a701eb6cf8d",
+    "id": "dup-b248b80c112e",
     "disposition": "not-a-duplicate",
-    "reason": "Six one-line accessors on six different types, each reading a different field (community nodes, a child process id, store placements, failure rules, the adversary's survival)."
+    "reason": "Seven one-line accessors on six different types, each reading a different field (community nodes, a child process id, store placements, failure rules, the adversary's survival, a launch record's `ended`)."
   },
   {
     "id": "dup-a9ed3e0e9d47",

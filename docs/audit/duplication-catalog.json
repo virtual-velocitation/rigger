@@ -5365,7 +5365,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-0a701eb6cf8d",
+    "id": "dup-b248b80c112e",
     "classification": "exact",
     "sites": [
       {
@@ -5394,12 +5394,17 @@
         "content_hash": "101c4f39f5928941"
       },
       {
+        "file": "crates/rigger-domain/src/progress.rs",
+        "name": "is_open",
+        "content_hash": "101c4f39f5928941"
+      },
+      {
         "file": "crates/rigger-driver/src/reaped_child.rs",
         "name": "id",
         "content_hash": "101c4f39f5928941"
       }
     ],
-    "proposed_home": "a new shared module (sites span 5 files: crates/rigger-domain/src/community.rs, crates/rigger-domain/src/eventstore.rs, crates/rigger-domain/src/failure.rs, crates/rigger-domain/src/metrics.rs, crates/rigger-driver/src/reaped_child.rs)",
+    "proposed_home": "a new shared module (sites span 6 files: crates/rigger-domain/src/community.rs, crates/rigger-domain/src/eventstore.rs, crates/rigger-domain/src/failure.rs, crates/rigger-domain/src/metrics.rs, crates/rigger-domain/src/progress.rs, crates/rigger-driver/src/reaped_child.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
