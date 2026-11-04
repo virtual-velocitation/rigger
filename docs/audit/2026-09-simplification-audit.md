@@ -2122,10 +2122,10 @@ mandatory sweep: Command::new call sites - 94 site(s), collected mechanically re
 - `tests/hermetic_test_git_audit.rs:203-203` `Command::new`
 - `tests/hermetic_test_git_audit.rs:235-235` `Command::new`
 - `tests/hermetic_test_git_audit.rs:307-307` `Command::new`
-- `tests/integrate_conflict_merge_periphery.rs:340-340` `Command::new`
-- `tests/integrate_conflict_merge_periphery.rs:1713-1713` `Command::new`
-- `tests/integrate_conflict_merge_periphery.rs:1804-1804` `Command::new`
-- `tests/integrate_conflict_merge_periphery.rs:2016-2016` `Command::new`
+- `tests/integrate_conflict_merge_periphery.rs:342-342` `Command::new`
+- `tests/integrate_conflict_merge_periphery.rs:1712-1712` `Command::new`
+- `tests/integrate_conflict_merge_periphery.rs:1803-1803` `Command::new`
+- `tests/integrate_conflict_merge_periphery.rs:2015-2015` `Command::new`
 - `tests/meta_phases_declaration_periphery.rs:83-83` `Command::new`
 - `tests/mutation_runner_pdeathsig_periphery.rs:107-107` `Command::new`
 - `tests/mutation_runner_pdeathsig_periphery.rs:167-167` `Command::new`
@@ -3156,7 +3156,7 @@ project identity so one backend can hold many projects without their data mixing
 - `tests/init_template_sets_periphery.rs:182-182` `"scaffolded .rigger/gates/mutation.sh\n"`
 - `tests/init_template_sets_periphery.rs:205-205` `".rigger"`
 - `tests/init_template_sets_periphery.rs:284-284` `".rigger/workflow.yml"`
-- `tests/integrate_conflict_merge_periphery.rs:462-462` `"the project's own .rigger/workflow.yml must load through the real loader"`
+- `tests/integrate_conflict_merge_periphery.rs:464-464` `"the project's own .rigger/workflow.yml must load through the real loader"`
 - `tests/ledger_rebuild.rs:457-457` `"gw/.rigger/workflow.yml"`
 - `tests/ledger_rebuild.rs:650-650` `"gw/.rigger/workflow.yml"`
 - `tests/ledger_rebuild.rs:1238-1238` `"gw/.rigger/workflow.yml"`
@@ -5339,14 +5339,14 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/graph_show_staleness.rs:42-86` `graph_show_degrades_gracefully_when_the_recorded_file_is_missing`
 - `tests/graph_show_staleness.rs:104-182` `graph_show_never_presents_a_neighbours_body_when_the_line_drifted`
 
-#### `dup-8743cc5db2b4` (near, 2 sites)
+#### `dup-fbfd8846ef05` (near, 2 sites)
 
 Proposed home: `integrate_conflict_merge_periphery::support (consolidate these 2 sites into one function in this file)`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/integrate_conflict_merge_periphery.rs:505-570` `spawn`
-- `tests/integrate_conflict_merge_periphery.rs:1458-1503` `spawn`
+- `tests/integrate_conflict_merge_periphery.rs:507-572` `spawn`
+- `tests/integrate_conflict_merge_periphery.rs:1462-1503` `spawn`
 
 #### `dup-333ec555460f` (near, 2 sites)
 
@@ -5354,8 +5354,8 @@ Proposed home: `integrate_conflict_merge_periphery::support (consolidate these 2
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/integrate_conflict_merge_periphery.rs:2032-2096` `a_crash_right_after_the_merge_attempt_record_resumes_and_completes_row_1`
-- `tests/integrate_conflict_merge_periphery.rs:2100-2164` `a_crash_right_after_the_landing_intent_record_resumes_and_completes_row_4`
+- `tests/integrate_conflict_merge_periphery.rs:2031-2095` `a_crash_right_after_the_merge_attempt_record_resumes_and_completes_row_1`
+- `tests/integrate_conflict_merge_periphery.rs:2099-2163` `a_crash_right_after_the_landing_intent_record_resumes_and_completes_row_4`
 
 #### `dup-8fb3e9b78321` (near, 2 sites)
 

@@ -9111,7 +9111,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-8743cc5db2b4",
+    "id": "dup-fbfd8846ef05",
     "classification": "near",
     "sites": [
       {
@@ -9122,7 +9122,7 @@
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
         "name": "spawn",
-        "content_hash": "086ab13b67d52c67"
+        "content_hash": "18bcd10b21102a8f"
       }
     ],
     "proposed_home": "integrate_conflict_merge_periphery::support (consolidate these 2 sites into one function in this file)",

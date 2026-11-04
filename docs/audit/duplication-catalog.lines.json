@@ -1139,23 +1139,23 @@
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 340,
-        "end_line": 340
+        "start_line": 342,
+        "end_line": 342
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 1713,
-        "end_line": 1713
+        "start_line": 1712,
+        "end_line": 1712
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 1804,
-        "end_line": 1804
+        "start_line": 1803,
+        "end_line": 1803
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 2016,
-        "end_line": 2016
+        "start_line": 2015,
+        "end_line": 2015
       },
       {
         "file": "tests/meta_phases_declaration_periphery.rs",
@@ -3739,8 +3739,8 @@
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 462,
-        "end_line": 462
+        "start_line": 464,
+        "end_line": 464
       },
       {
         "file": "tests/ledger_rebuild.rs",
@@ -8315,16 +8315,16 @@
     ]
   },
   {
-    "id": "dup-8743cc5db2b4",
+    "id": "dup-fbfd8846ef05",
     "sites": [
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 505,
-        "end_line": 570
+        "start_line": 507,
+        "end_line": 572
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 1458,
+        "start_line": 1462,
         "end_line": 1503
       }
     ]
@@ -8334,13 +8334,13 @@
     "sites": [
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 2032,
-        "end_line": 2096
+        "start_line": 2031,
+        "end_line": 2095
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 2100,
-        "end_line": 2164
+        "start_line": 2099,
+        "end_line": 2163
       }
     ]
   },

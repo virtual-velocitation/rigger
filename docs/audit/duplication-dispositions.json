@@ -280,9 +280,9 @@
     "reason": "Different concerns sharing a lookup shape: one reaches a decision's summary through GOVERNS, the other proves recording a proof merges into and never wipes an entity's attrs."
   },
   {
-    "id": "dup-8743cc5db2b4",
+    "id": "dup-fbfd8846ef05",
     "disposition": "not-a-duplicate",
-    "reason": "The two conflict drivers share only the shared barrier and side-write helpers; their retry arms run different recovery protocols (two re-park rounds that stage a placeholder first, versus one round that commits the source and then simulates a crash)."
+    "reason": "The two conflict drivers share only the shared barrier and side-write helpers; their retry arms run different recovery protocols (two re-park rounds that stage a placeholder first, versus one round that commits the source and then parks to simulate a crash)."
   },
   {
     "id": "dup-333ec555460f",

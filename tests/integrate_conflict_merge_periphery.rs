@@ -95,9 +95,11 @@
 //! REVERTED afterward, never committed - so nothing on this branch actually holds the line. This
 //! makes that proof permanent: a real two-call drive (not hand-seeded events) against the SAME
 //! store and repo. Call 1's driver resolves the mixed conflict's SOURCE path for real (a genuine
-//! git commit, landed on disk regardless of what the function returns) and then returns an
-//! ordinary `Err` - a real process crash after the commit, before `regenerate_conflicted_paths`
-//! ever runs, leaves exactly this on-disk state. Call 2 drives a FRESH `run()` against the same
+//! git commit, landed on disk regardless of what the function returns) and then parks - the
+//! unit unwinds with nothing recorded past the commit, as a real process crash after the
+//! commit, before `regenerate_conflicted_paths` ever runs, leaves it (an unmarked `Err` would
+//! only spend the resolver's round, and call 1 would re-attempt the merge instead of ending
+//! there). Call 2 drives a FRESH `run()` against the same
 //! store+repo with a driver that panics if the conflict-resolution role (a `~retry` implementer
 //! id) is ever spawned again, proving `integrate_and_emit`'s `Merged` arm re-derives the still-
 //! owed regeneration from the durable log marker (never re-entering conflict resolution) and the
@@ -292,7 +294,7 @@ use common::fixtures::A_WORK_DRIVER;
 use common::git::git_commit_all;
 use common::git::temp_git_project_with_commit;
 use common::git::trimmed_stdout;
-use rigger::conductor::{run, AgentDriver, AgentResult, Error, SpawnOpts, STREAM};
+use rigger::conductor::{parked_spawn, run, AgentDriver, AgentResult, Error, SpawnOpts, STREAM};
 use rigger::config::{AgentDef, Config, RegenerateRule};
 use rigger::config_store;
 use rigger::eventstore::sqlite::Store;
@@ -1442,9 +1444,11 @@ fn regenerate_never_holds_integrate_mu_letting_an_unrelated_unit_land_meanwhile(
 /// Call 1's driver for the crash test: identical fixture shape to `MixedConflictDriver` (two
 /// batch-mates conflicting on both `c.rs`, a source path, and `docs/audit/report.md`, a
 /// registered regenerable path), but the ONE conflict-resolution re-park it ever answers
-/// resolves the source conflict for real (a genuine, durable git commit) and then returns an
-/// ordinary `Err` - simulating the process dying right there, after the commit lands on disk but
-/// before `RunCtx::integrate_and_emit` ever reaches the follow-up regeneration.
+/// resolves the source conflict for real (a genuine, durable git commit) and then parks -
+/// simulating the process dying right there, after the commit lands on disk but before
+/// `RunCtx::integrate_and_emit` ever reaches the follow-up regeneration. A park, never an
+/// unmarked `Err`: the resolver spends its round on an unmarked error and re-attempts the merge,
+/// so call 1 would never end at the crash point, while a park unwinds the unit recording nothing.
 struct CrashBeforeRegenerateDriver {
     repo: String,
     /// Which of unit-a/unit-b actually lost the integrate-lock race and hit the conflict -
@@ -1476,13 +1480,9 @@ impl AgentDriver for CrashBeforeRegenerateDriver {
                 // `accept_incoming` before this spawn ran - the same load-bearing proof
                 // `MixedConflictDriver`'s own `~retry2` arm relies on. This commit is the REAL,
                 // durable crash boundary: everything up to and including it is genuinely on
-                // disk when the `Err` below unwinds the whole `run()` call.
+                // disk when the park below unwinds the unit.
                 git_commit_paths(&opts.dir, &["c.rs"], "resolve source conflict");
-                return Err(Error(
-                    "simulated crash: process dies right after the source commit, before \
-                     regeneration ever runs"
-                        .into(),
-                ));
+                return Err(parked_spawn(&opts.id));
             }
             if !opts.dir.is_empty() {
                 // Barrier: both branches must exist before either writes (mirrors
@@ -1573,21 +1573,20 @@ fn a_crash_between_the_source_commit_and_regeneration_still_regenerates_on_resum
     let store = Store::open(":memory:").unwrap();
 
     // Call 1: a mixed conflict's source side resolves for real, then the process "crashes"
-    // (an ordinary Err, not a park) before the follow-up regeneration ever runs. The repo on
-    // disk keeps every commit made up to that point regardless of what this call returns.
+    // (a park, recording nothing past the commit) before the follow-up regeneration ever runs.
+    // The repo on disk keeps every commit made up to that point regardless of what this call
+    // returns.
     let loser = {
         let driver = CrashBeforeRegenerateDriver {
             repo: repo_path.clone(),
             loser: Mutex::new(None),
         };
         let deps = bare_deps(&store, &driver, &rigger::gate::ExecRunner, &repo_path);
-        let err = run(&cfg, &deps).err().expect(
-            "call 1 must end in an Err - the simulated crash right after the source commit",
-        );
+        let rs = run(&cfg, &deps)
+            .expect("call 1 must unwind its parked loser cleanly, not fail some other way");
         assert!(
-            err.0.contains("simulated crash"),
-            "call 1 must fail for the SIMULATED reason, not some other defect; got: {}",
-            err.0
+            rs.parked,
+            "call 1 must end parked - the simulated crash right after the source commit"
         );
         let loser = driver
             .loser
