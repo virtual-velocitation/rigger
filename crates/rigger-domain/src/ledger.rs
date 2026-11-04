@@ -1689,4 +1689,55 @@ mod tests {
             assert_eq!(hold.reason(), want, "{cause} with action {action:?}");
         }
     }
+
+    /// THE HOLD TRANSITION RULE: a host or probe `RunHeld` holds an unheld run whatever its cause,
+    /// says nothing to an operator hold, to a hold of its own cause or as a cause needing no
+    /// person, and otherwise moves the hold's cause.
+    #[test]
+    fn a_held_moves_an_open_hold_only_to_another_person_needing_cause() {
+        let open = |cause: &str, operator: bool| Hold {
+            since: UNIX_EPOCH,
+            operator,
+            latest: RunHeld {
+                cause: cause.to_string(),
+                needs_person: true,
+                ..RunHeld::default()
+            },
+            revision: 0,
+        };
+        let held = |cause: &str, needs_person: bool| RunHeld {
+            cause: cause.to_string(),
+            needs_person,
+            ..RunHeld::default()
+        };
+        for (hold, body, moves, case) in [
+            (None, held("rate_limit", false), true, "no hold"),
+            (
+                Some(open("operator", true)),
+                held("auth", true),
+                false,
+                "an operator hold",
+            ),
+            (
+                Some(open("auth", false)),
+                held("auth", true),
+                false,
+                "the same cause",
+            ),
+            (
+                Some(open("auth", false)),
+                held("billing", true),
+                true,
+                "a differing person-needing cause",
+            ),
+            (
+                Some(open("auth", false)),
+                held("rate_limit", false),
+                false,
+                "a differing cause needing no person",
+            ),
+        ] {
+            assert_eq!(Hold::moved_by(hold.as_ref(), &body), moves, "{case}");
+        }
+    }
 }
