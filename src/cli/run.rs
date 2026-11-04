@@ -122,19 +122,19 @@ fn register_run_instance(repo: &str, selection: &StoreSelection) -> RunRegistrat
         eprintln!("rigger: instance registry write skipped ({e}); discovery is unaffected");
         return RunRegistration::inert();
     }
-    // The heartbeat thread re-stamps `inst` every interval until the guard drops. `recv_timeout`
-    // makes the sleep interruptible: each `Timeout` refreshes the entry; a `Disconnected` (the guard
-    // dropped) ends the `while let` at once, so teardown never waits out a full interval.
+    // The heartbeat thread re-stamps `inst` every interval until the guard drops
+    // ([`tick_until_stopped`]): the guard's drop ends the wait at once, so teardown never waits
+    // out a full interval.
     let (tx, rx) = std::sync::mpsc::channel::<()>();
     let interval = registry_heartbeat_interval();
     let handle = std::thread::spawn(move || {
-        while let Err(std::sync::mpsc::RecvTimeoutError::Timeout) = rx.recv_timeout(interval) {
+        tick_until_stopped(&rx, interval, || {
             let refreshed = rigger::registry::Instance {
                 heartbeat_ms: rigger::registry::now_ms(),
                 ..inst.clone()
             };
             let _ = rigger::registry::write(&dir, &refreshed); // best-effort refresh
-        }
+        })
     });
     RunRegistration {
         tx: Some(tx),
@@ -1462,18 +1462,28 @@ fn ticking<T>(
     tick: impl Fn() + Send,
     drive: impl FnOnce() -> T,
 ) -> T {
-    use std::sync::mpsc::{channel, RecvTimeoutError};
+    use std::sync::mpsc::channel;
 
     std::thread::scope(|scope| {
         let (_driving, driven) = channel::<()>();
         scope.spawn(move || {
             tick();
-            while let Err(RecvTimeoutError::Timeout) = driven.recv_timeout(interval) {
-                tick();
-            }
+            tick_until_stopped(&driven, interval, &tick);
         });
         drive()
     })
+}
+
+/// Call `tick` once each `interval` until `stop` receives or its sender drops. The wait is a
+/// `recv_timeout` on `stop`, so the sender's drop ends it at once, never after a full interval.
+fn tick_until_stopped(
+    stop: &std::sync::mpsc::Receiver<()>,
+    interval: std::time::Duration,
+    tick: impl Fn(),
+) {
+    while let Err(std::sync::mpsc::RecvTimeoutError::Timeout) = stop.recv_timeout(interval) {
+        tick();
+    }
 }
 
 /// The knob selecting the keep-awake adapter a run's driver takes its hold from (spec 105), read by
