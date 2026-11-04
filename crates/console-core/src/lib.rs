@@ -141,7 +141,8 @@ fn ok_json(v: serde_json::Value) -> Vec<u8> {
         .unwrap_or_else(|_| error_reply("console-core: reply serialization failed"))
 }
 
-/// The four facts `console::fold` computes, as the wire shape every `fold_*` op answers with.
+/// Four of the facts `console::fold` computes (its units, blockers, dock and statusline), as the
+/// wire shape every `fold_*` op answers with.
 /// ONE render authority (this function), so `fold_reset`/`fold_push`/`fold_at` never drift
 /// from one another's reply shape.
 fn fold_state_reply(state: &console::ConsoleState) -> serde_json::Value {

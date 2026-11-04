@@ -8,15 +8,15 @@
 //! the identical answer wherever it runs (spec 93 Design, "THE PURITY RULE").
 //!
 //! [`fold`] delegates to the SAME authorities `rigger status` and the
-//! dashboard already share for two of its four facts - [`ledger::project`]
+//! dashboard already share for two of its five facts - [`ledger::project`]
 //! for unit statuses, [`blocker::from_events`]/[`blocker::lines`] for the
 //! current-blocker lines (already the one classifier both surfaces render,
-//! spec 19a) - and adds the two new ones this criterion introduces: [`dock`]
-//! (the needs-you list) and [`statusline`] (the one-line summary). `rigger
-//! status` (`cmd_status` in the binary) calls [`fold`] directly and prints
-//! its `statusline` over its table (under the HELD line of a held run) and its
-//! dock's needs-you lines,
-//! rather than composing its own copy of any of these four facts - the "CLI's
+//! spec 19a) - reads the run's open hold (spec 105) from that same projection,
+//! and adds the two new ones this criterion introduces: [`dock`] (the
+//! needs-you list) and [`statusline`] (the one-line summary). `rigger status` (`cmd_status` in the
+//! binary) calls [`fold`] directly and prints its hold's HELD line, its
+//! `statusline` over its table and its dock's needs-you lines,
+//! rather than composing its own copy of any of these five facts - the "CLI's
 //! use of the core" half of this criterion.
 
 /// The code lens's map engine (spec 84, criterion 1: "THE MAP LANDS LABELLED" - districts,
@@ -188,16 +188,19 @@ pub fn statusline(run: &RunState, blockers: &[Blocker], dock: &Dock) -> String {
 }
 
 /// The whole console fold (spec 93, criterion 4): unit statuses, the
-/// current-blocker lines, the dock, and the statusline - everything `rigger
-/// status` prints, from one call over one projected [`RunState`]. Pure over
-/// `events` plus the configured remediation bound - no clock, no store, no
-/// process.
+/// current-blocker lines, the dock, the statusline and the run's open hold -
+/// everything `rigger status` prints, from one call over one projected
+/// [`RunState`]. Pure over `events` plus the configured remediation bound - no
+/// clock, no store, no process.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ConsoleState {
     pub units: UnitStatuses,
     pub blockers: Vec<String>,
     pub dock: Dock,
     pub statusline: String,
+    /// The run's open hold (spec 105), [`RunState::hold`] of the same projection: `rigger
+    /// status` prints its HELD line from it.
+    pub hold: Option<ledger::Hold>,
 }
 
 /// Fold a recorded run stream into the [`ConsoleState`] both `rigger status`
@@ -227,6 +230,7 @@ pub fn fold(
         blockers: blocker::lines(&blockers),
         dock,
         statusline,
+        hold: run.hold,
     })
 }
 
