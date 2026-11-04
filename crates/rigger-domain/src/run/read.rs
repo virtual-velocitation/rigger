@@ -34,10 +34,11 @@ pub const ADOPTION_TYPES: [&str; 5] = [
     TYPE_UNIT_STATUS,
 ];
 
-/// The types a run's HOLD folds from ([`read_current_hold`]): the hold events, and the run
-/// boundaries, so a run started between the hold read's two store calls still slices the read to
-/// the newest run.
-const HOLD_TYPES: [&str; 3] = [TYPE_RUN_STARTED, TYPE_RUN_HELD, TYPE_RUN_RELEASED];
+/// The types a run's HOLD folds from ([`read_current_hold`], and every hold writer's re-read of
+/// what landed behind it): the hold events, and the run boundaries, so a run started between the
+/// hold read's two store calls still slices the read to the newest run. A boundary leaves the
+/// hold a fold carries untouched.
+pub const HOLD_TYPES: [&str; 3] = [TYPE_RUN_STARTED, TYPE_RUN_HELD, TYPE_RUN_RELEASED];
 
 /// The current run's own events, from its boundary forward, with perception
 /// ([`PERCEPTION_TYPES`]: the derived index types and the ledger entry that stands for them)

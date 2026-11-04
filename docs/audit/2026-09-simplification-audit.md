@@ -1952,7 +1952,7 @@ mandatory sweep: same-named helper function defined independently in 2+ files - 
 
 - `crates/rigger-conductor/src/conductor.rs:3857-3859` `read_current_run`
 - `crates/rigger-dash/src/mcpserver.rs:553-556` `read_current_run`
-- `crates/rigger-domain/src/run/read.rs:96-103` `read_current_run`
+- `crates/rigger-domain/src/run/read.rs:97-104` `read_current_run`
 
 #### `dup-f13596146362` (near, 2 sites)
 
