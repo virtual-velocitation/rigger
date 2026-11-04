@@ -143,7 +143,7 @@ impl<'a> Driver<'a> {
     }
 
     /// A guard that marks the run finished ([`finish`](Driver::finish)) as the conductor thread
-    /// holding it returns, so that thread signals the run's end on every return.
+    /// holding it ends, so that thread signals the run's end on every exit, a panic included.
     pub fn finishing(&self) -> Finishing<'_, 'a> {
         Finishing(self)
     }
@@ -203,15 +203,18 @@ impl<'a> Driver<'a> {
     }
 }
 
-/// The guard [`Driver::finishing`] hands the conductor thread: dropping it on that thread's
-/// return marks the run finished, so an empty `next()` reports done and the shim exits.
+/// The guard [`Driver::finishing`] hands the conductor thread: dropping it marks the run
+/// finished, so an empty `next()` reports done and the shim exits. Dropped by a panic, it first
+/// closes the session ([`Driver::close_session`]), since no conductor is left to take a pending
+/// spawn's result, so each pending spawn parks and the shim reads done once its queue drains.
 pub struct Finishing<'d, 'a>(&'d Driver<'a>);
 
 impl Drop for Finishing<'_, '_> {
     fn drop(&mut self) {
-        if !std::thread::panicking() {
-            self.0.finish();
+        if std::thread::panicking() {
+            self.0.close_session();
         }
+        self.0.finish();
     }
 }
 
