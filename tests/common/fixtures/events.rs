@@ -146,7 +146,8 @@ pub fn positioned(mut events: Vec<Event>) -> Vec<Event> {
 /// `append`, each forwarded unchanged to the decorator's `inner` store - expanded inside that
 /// decorator's `impl EventStore` block. `(stream)` expands every one of them but the group lookup,
 /// for a decorator that also intercepts `latest_in_group`; `(append)` expands the append alone,
-/// forwarded the same way, for a decorator that intercepts reads instead.
+/// forwarded the same way, for a decorator that intercepts reads instead; `(typed)` expands the
+/// typed stream read alone, for a decorator that intercepts the boundary lookup ahead of it.
 #[macro_export]
 macro_rules! delegate_event_store_reads {
     (append) => {
@@ -167,6 +168,16 @@ macro_rules! delegate_event_store_reads {
             group: &str,
         ) -> Result<Option<rigger::eventstore::GroupHead>, rigger::eventstore::Error> {
             self.inner.latest_in_group(stream, group)
+        }
+    };
+    (typed) => {
+        fn read_stream_typed(
+            &self,
+            stream: &str,
+            from: rigger::eventstore::Revision,
+            selection: rigger::eventstore::TypeSelection,
+        ) -> Result<Vec<rigger::eventstore::Event>, rigger::eventstore::Error> {
+            self.inner.read_stream_typed(stream, from, selection)
         }
     };
     (stream) => {
@@ -220,14 +231,7 @@ macro_rules! delegate_event_store_reads {
         ) -> Result<Option<rigger::eventstore::Revision>, rigger::eventstore::Error> {
             self.inner.last_position(stream, event_type)
         }
-        fn read_stream_typed(
-            &self,
-            stream: &str,
-            from: rigger::eventstore::Revision,
-            selection: rigger::eventstore::TypeSelection,
-        ) -> Result<Vec<rigger::eventstore::Event>, rigger::eventstore::Error> {
-            self.inner.read_stream_typed(stream, from, selection)
-        }
+        $crate::delegate_event_store_reads!(typed);
         fn read_stream_positions(
             &self,
             stream: &str,
@@ -521,6 +525,38 @@ impl EventStore for ReadsFailWhenArmed<'_> {
         self.read_allowed()?;
         self.inner.read_stream_typed(stream, from, selection)
     }
+}
+
+/// A store that runs `land` inside its next run read once `armed` is set, ahead of that read's
+/// first call, then disarms: the world moving inside a reader's read rather than between two of
+/// its reads. The run read's two calls and an append reach `inner`; every other method panics.
+pub struct LandsInTheNextRead<'a> {
+    pub inner: &'a dyn EventStore,
+    pub armed: &'a std::sync::atomic::AtomicBool,
+    pub land: &'a (dyn Fn() + Sync),
+}
+
+impl EventStore for LandsInTheNextRead<'_> {
+    refuse_event_store_calls!(
+        "only the run read and an append are reachable":
+        read_stream,
+        read_all,
+        read_all_page,
+        log_head,
+        subscribe_all,
+        subscribe_stream,
+        read_stream_positions,
+        read_stream_batched,
+        latest_in_group,
+    );
+    crate::delegate_event_store_reads!(append);
+    fn last_position(&self, stream: &str, event_type: &str) -> Result<Option<Revision>, Error> {
+        if self.armed.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            (self.land)();
+        }
+        self.inner.last_position(stream, event_type)
+    }
+    crate::delegate_event_store_reads!(typed);
 }
 
 /// A read-only store over ONE hand-built stream, for a use case tested where no backend is in

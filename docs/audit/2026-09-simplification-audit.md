@@ -1972,7 +1972,7 @@ mandatory sweep: error-shaping helper functions - 22 site(s), collected mechanic
 - `crates/rigger-conductor/src/conductor.rs:5449-5467` `guard_review_round_tree_on_tier_err`
 - `crates/rigger-conductor/src/conductor.rs:31562-31623` `integrate_plan_commits_wraps_any_hard_error_with_the_plan_landing_marker`
 - `crates/rigger-conductor/src/conductor.rs:46150-46238` `a_resolver_round_ending_on_an_unmarked_error_is_spent_like_one_resolving_nothing`
-- `crates/rigger-conductor/src/held.rs:739-823` `a_marked_error_or_an_ended_spawn_passes_held_or_not`
+- `crates/rigger-conductor/src/held.rs:756-840` `a_marked_error_or_an_ended_spawn_passes_held_or_not`
 - `crates/rigger-domain/src/agent.rs:505-507` `no_result_error`
 - `crates/rigger-domain/src/agent.rs:574-612` `an_error_answers_the_class_it_carries`
 - `crates/rigger-domain/src/ingest.rs:604-649` `a_walk_reaches_every_batch_past_a_failed_one_and_answers_the_first_error`
@@ -2060,7 +2060,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `crates/rigger-domain/src/eventstore.rs:604-606` `recv`
 - `crates/rigger-domain/src/eventstore.rs:614-616` `try_recv`
 - `crates/rigger-domain/src/eventstore.rs:619-621` `err`
-- `tests/common/fixtures/events.rs:925-927` `reads`
+- `tests/common/fixtures/events.rs:961-963` `reads`
 - `tests/common/real_driver_spy.rs:36-38` `outputs`
 
 #### `dup-60da41568392` (near, 2 sites)
@@ -4013,7 +4013,7 @@ Proposed home: `a new shared module (sites span 2 files: crates/rigger-domain/sr
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `crates/rigger-domain/src/metrics.rs:268-270` `total`
-- `tests/common/fixtures/events.rs:1143-1145` `cost`
+- `tests/common/fixtures/events.rs:1179-1181` `cost`
 
 #### `dup-6ffa6e5d1f83` (exact, 7 sites)
 
@@ -5170,8 +5170,8 @@ Proposed home: `events::silent_store`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/common/fixtures/events.rs:276-283` `read_stream`
-- `tests/common/fixtures/events.rs:316-323` `read_stream_typed`
+- `tests/common/fixtures/events.rs:280-287` `read_stream`
+- `tests/common/fixtures/events.rs:320-327` `read_stream_typed`
 
 #### `dup-3eb116c3c4c8` (exact, 2 sites)
 
@@ -5179,8 +5179,8 @@ Proposed home: `events::silent_store`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/common/fixtures/events.rs:313-315` `last_position`
-- `tests/common/fixtures/events.rs:341-343` `latest_in_group`
+- `tests/common/fixtures/events.rs:317-319` `last_position`
+- `tests/common/fixtures/events.rs:345-347` `latest_in_group`
 
 #### `dup-033af83f765c` (near, 2 sites)
 
@@ -5188,7 +5188,7 @@ Proposed home: `a new shared module (sites span 2 files: tests/common/fixtures/e
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/common/fixtures/events.rs:324-331` `read_stream_positions`
+- `tests/common/fixtures/events.rs:328-335` `read_stream_positions`
 - `tests/store_content_identity_periphery.rs:262-269` `read_stream_positions`
 
 #### `dup-6ef712aab260` (exact, 2 sites)
@@ -5197,8 +5197,8 @@ Proposed home: `events::read_counting_store`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/common/fixtures/events.rs:1039-1047` `last_position`
-- `tests/common/fixtures/events.rs:1106-1114` `latest_in_group`
+- `tests/common/fixtures/events.rs:1075-1083` `last_position`
+- `tests/common/fixtures/events.rs:1142-1150` `latest_in_group`
 
 #### `dup-aa4a3a0dfc34` (near, 2 sites)
 
@@ -5531,7 +5531,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 ### Adversarial sample
 
-Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 11206 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
+Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 11207 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
 
 - `crates/rigger-conductor/src/conductor.rs:15942-15964` `branch_is_foreign_when_only_one_axis_differs` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-conductor/src/conductor.rs:16916-16923` `resume_of` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
@@ -5555,9 +5555,9 @@ Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85
 - `src/cli/run.rs:2475-2499` `start_run_dashboard` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `tests/change_path_revert_periphery.rs:213-323` `a_revert_through_the_shipped_build_records_the_earlier_generations_entry_again` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `tests/code_entity_test_exclusion_periphery.rs:1810-1822` `edges_where` - duplicate found by reading and closed: the design-doc assertion, the dev-only path test and the test-region test each re-rolled its `(from, rel, to)` edge projection inline; all now call `edges_where`
-- `tests/common/fixtures/events.rs:908-910` `after_call` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
-- `tests/common/fixtures/events.rs:925-927` `reads` - caught: `dup-ebee743f02de`
-- `tests/common/fixtures/events.rs:1176-1178` `reads` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
+- `tests/common/fixtures/events.rs:944-946` `after_call` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
+- `tests/common/fixtures/events.rs:961-963` `reads` - caught: `dup-ebee743f02de`
+- `tests/common/fixtures/events.rs:1212-1214` `reads` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `tests/concepts_labels_membership.rs:240-267` `label_of_the_documentless_hub` - no duplicate found by reading
 - `tests/event_classes_are_one_table.rs:390-404` `a_right_side_that_is_neither_a_literal_nor_a_type_alias_fails_the_scan_naming_it` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `tests/one_shot_reads_periphery.rs:87-140` `a_project_namespace_over_a_shared_events_file_reads_its_run_as_one_typed_read_per_selection` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`

@@ -230,7 +230,7 @@ mod tests {
     use crate::spawn::{SpawnEvent, SpawnRequest, SpawnResult, TYPE_SPAWN_RESULT};
     use crate::test_support::{
         agent, ev, held_event, implementer_opts, no_emit, placed_positions, released_event,
-        run_started, spawn_result_rows, ReadsFailWhenArmed,
+        run_started, spawn_result_rows, LandsInTheNextRead, ReadsFailWhenArmed,
     };
 
     /// The spawn each row launches, and a second spawn id for the rows the bound keeps apart.
@@ -413,6 +413,10 @@ mod tests {
         BreakReads,
         /// The session closes and the store's reads start failing, both inside this one pause.
         CloseAndBreakReads,
+        /// The session closes, then the hold is released, both inside the decorator's next hold
+        /// read and ahead of that read's own calls, so only a flag read after that read sees the
+        /// close.
+        CloseThenReleaseInTheNextRead,
     }
 
     /// One scenario: a run stream, a scripted host, the spawn calls made in order, and every
@@ -501,6 +505,16 @@ mod tests {
                     .unwrap();
             };
             let close = || closed.store(true, Ordering::SeqCst);
+            let lands_armed = AtomicBool::new(false);
+            let land = || {
+                close();
+                release();
+            };
+            let lands = LandsInTheNextRead {
+                inner: &reads,
+                armed: &lands_armed,
+                land: &land,
+            };
             let paused_at = Mutex::new(Vec::new());
             let pause = || {
                 let mut paused = paused_at.lock().unwrap();
@@ -522,9 +536,12 @@ mod tests {
                         close();
                         armed.store(true, Ordering::SeqCst);
                     }
+                    AtPause::CloseThenReleaseInTheNextRead => {
+                        lands_armed.store(true, Ordering::SeqCst)
+                    }
                 }
             };
-            let held = HeldDriver::new(&host, &reads, session, &pause);
+            let held = HeldDriver::new(&host, &lands, session, &pause);
             for (call, (id, wants)) in row.calls.into_iter().enumerate() {
                 let answer = held
                     .spawn(
@@ -951,7 +968,8 @@ mod tests {
 
     /// THE SESSION: a closed `rigger serve` session ends a wait with the park of the spawn that
     /// waited, at either wait, whichever way round a release landed with the close in one pause,
-    /// and reads as nothing on a launch that did not wait.
+    /// and when both land inside the hold read, since the flag is read after the hold; it reads
+    /// as nothing on a launch that did not wait.
     #[test]
     fn a_closed_session_ends_a_wait_with_a_park() {
         check(vec![
@@ -989,6 +1007,15 @@ mod tests {
                 seeded: vec![third_fault_hold()],
                 session: Session::Open,
                 at_pause: AtPause::ReleaseThenClose,
+                calls: one_call(Err(parked_spawn(ID))),
+                paused_at: vec![0],
+                ..Row::default()
+            },
+            Row {
+                name: "a close and a release inside the paused hold read park unlaunched",
+                seeded: vec![third_fault_hold()],
+                session: Session::Open,
+                at_pause: AtPause::CloseThenReleaseInTheNextRead,
                 calls: one_call(Err(parked_spawn(ID))),
                 paused_at: vec![0],
                 ..Row::default()

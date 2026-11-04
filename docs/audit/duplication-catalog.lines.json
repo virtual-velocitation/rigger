@@ -529,8 +529,8 @@
       },
       {
         "file": "crates/rigger-conductor/src/held.rs",
-        "start_line": 739,
-        "end_line": 823
+        "start_line": 756,
+        "end_line": 840
       },
       {
         "file": "crates/rigger-domain/src/agent.rs",
@@ -789,8 +789,8 @@
       },
       {
         "file": "tests/common/fixtures/events.rs",
-        "start_line": 925,
-        "end_line": 927
+        "start_line": 961,
+        "end_line": 963
       },
       {
         "file": "tests/common/real_driver_spy.rs",
@@ -5544,8 +5544,8 @@
       },
       {
         "file": "tests/common/fixtures/events.rs",
-        "start_line": 1143,
-        "end_line": 1145
+        "start_line": 1179,
+        "end_line": 1181
       }
     ]
   },
@@ -7969,13 +7969,13 @@
     "sites": [
       {
         "file": "tests/common/fixtures/events.rs",
-        "start_line": 276,
-        "end_line": 283
+        "start_line": 280,
+        "end_line": 287
       },
       {
         "file": "tests/common/fixtures/events.rs",
-        "start_line": 316,
-        "end_line": 323
+        "start_line": 320,
+        "end_line": 327
       }
     ]
   },
@@ -7984,13 +7984,13 @@
     "sites": [
       {
         "file": "tests/common/fixtures/events.rs",
-        "start_line": 313,
-        "end_line": 315
+        "start_line": 317,
+        "end_line": 319
       },
       {
         "file": "tests/common/fixtures/events.rs",
-        "start_line": 341,
-        "end_line": 343
+        "start_line": 345,
+        "end_line": 347
       }
     ]
   },
@@ -7999,8 +7999,8 @@
     "sites": [
       {
         "file": "tests/common/fixtures/events.rs",
-        "start_line": 324,
-        "end_line": 331
+        "start_line": 328,
+        "end_line": 335
       },
       {
         "file": "tests/store_content_identity_periphery.rs",
@@ -8014,13 +8014,13 @@
     "sites": [
       {
         "file": "tests/common/fixtures/events.rs",
-        "start_line": 1039,
-        "end_line": 1047
+        "start_line": 1075,
+        "end_line": 1083
       },
       {
         "file": "tests/common/fixtures/events.rs",
-        "start_line": 1106,
-        "end_line": 1114
+        "start_line": 1142,
+        "end_line": 1150
       }
     ]
   },
