@@ -5098,6 +5098,8 @@ mod tests {
             "FileTouched",
             "DefinitionSuperseded",
             "BudgetExhausted",
+            "RunHeld",
+            "RunReleased",
         ] {
             assert!(
                 is_console_event(&ev(t, "{}")),

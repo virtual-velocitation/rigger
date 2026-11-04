@@ -8791,6 +8791,95 @@ fn a_held_run_launches_nothing_until_its_release() {
     );
 }
 
+/// Spec 105's WHAT A PERSON SEES through `rigger status`: given a run held ten minutes, when the
+/// operator asks for its status, then its first line is the HELD line naming how long the run has
+/// been held, the hold's cause and its action, ending that the run resumes by itself for a host
+/// hold under a supervisor beat that just landed, and that `rigger release` ends it for an
+/// operator hold or a `model_not_found` hold under that beat, or a host hold no beat watched.
+#[test]
+fn status_opens_with_the_held_line_naming_what_ends_the_hold() {
+    use rigger::run::{HOLD_BY_HOST, HOLD_BY_OPERATOR};
+    let resumes = "the run resumes by itself";
+    let release = "rigger release ends it";
+    let cases = [
+        (
+            "a host hold under a beat",
+            ("rate_limit", HOLD_BY_HOST),
+            true,
+            resumes,
+        ),
+        (
+            "an operator hold under a beat",
+            ("operator", HOLD_BY_OPERATOR),
+            true,
+            release,
+        ),
+        (
+            "a model_not_found hold under a beat",
+            ("model_not_found", HOLD_BY_HOST),
+            true,
+            release,
+        ),
+        (
+            "a host hold no beat watched",
+            ("rate_limit", HOLD_BY_HOST),
+            false,
+            release,
+        ),
+    ];
+    for (name, (cause, by), beat, ends) in cases {
+        let dir = temp_store_project();
+        let root = dir.path();
+        seed_a_run_held_by(root, None);
+        let hold = common::fixtures::hold_naming(cause, "wait it out", by);
+        common::cli::seed_on_the_run(
+            root,
+            common::fixtures::dated_ago(common::fixtures::run_held_event(&hold), 600),
+        );
+        if beat {
+            let run_id = common::cli::current_run_id_of(root).unwrap();
+            common::cli::with_store_file(root, "progress.db", |store| {
+                rigger::progress_store::append_stamped(
+                    store,
+                    &run_id,
+                    &rigger::progress::SupervisorBeat::default(),
+                    "a supervisor beat",
+                )
+                .unwrap();
+            });
+        }
+        let (out, err, ok) = run_rigger(root, &["status"]);
+        assert!(ok, "{name}: status exits 0; stderr: {err}");
+        let first = out.lines().next().unwrap_or_default();
+        let (held_for, rest) = first
+            .strip_prefix("HELD ")
+            .and_then(|line| line.split_once("s - "))
+            .unwrap_or_else(|| panic!("{name}: the first line is the HELD line; got:\n{out}"));
+        let held_for: f64 = held_for.parse().unwrap();
+        assert!(
+            (600.0..660.0).contains(&held_for),
+            "{name}: held for the ten minutes seeded, read at once; got {held_for}"
+        );
+        assert_eq!(
+            rest,
+            format!("{cause} - wait it out; {ends}"),
+            "{name}: the HELD line; got:\n{out}"
+        );
+    }
+
+    let dir = temp_store_project();
+    let root = dir.path();
+    seed_a_run_held_by(root, Some(HOLD_BY_OPERATOR));
+    seed_an_operator_release(root);
+    let (out, err, ok) = run_rigger(root, &["status"]);
+    assert!(ok, "a released run: status exits 0; stderr: {err}");
+    assert_eq!(
+        out.lines().filter(|line| line.starts_with("HELD")).count(),
+        0,
+        "a released run prints no HELD line; got:\n{out}"
+    );
+}
+
 /// One checkpoint of a drive and the keep-awake record standing at it.
 type Checkpoint = (&'static str, String);
 

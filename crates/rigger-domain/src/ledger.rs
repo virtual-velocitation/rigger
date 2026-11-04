@@ -1449,4 +1449,92 @@ mod tests {
             Some("invalid type: integer `1`, expected a string at line 1 column 7")
         );
     }
+
+    /// WHAT A PERSON SEES: the attention a run's holds yield is one `held` entry per hold, keyed
+    /// by its first `RunHeld` and naming its latest cause and action, and one `released` entry
+    /// reading its release's `held_for_s`, in log order; a repeated or upgraded `RunHeld` adds no
+    /// entry, a release with no open hold adds nothing, and a hold event the fold must read and
+    /// cannot decode yields no attention at all.
+    #[test]
+    fn hold_attention_yields_one_held_and_one_released_per_hold() {
+        let held = |cause: &str, action: &str| {
+            let body = format!(r#"{{"cause":"{cause}","action":"{action}","by":"host"}}"#);
+            ev(TYPE_RUN_HELD, &body)
+        };
+        let released = |held_for_s: u64| {
+            let body = format!(r#"{{"by":"probe","held_for_s":{held_for_s}}}"#);
+            ev(TYPE_RUN_RELEASED, &body)
+        };
+        let held_entry =
+            |detail: &str| AttentionEntry::run_scoped(ATTENTION_HELD, format!("held - {detail}"));
+        let released_entry = |detail: &str| AttentionEntry::run_scoped(ATTENTION_RELEASED, detail);
+        let unstable = || held("api-unstable", "wait for the canary");
+        let unstable_entry = || held_entry("api-unstable - wait for the canary");
+        let auth = || held("auth", "log in again");
+        let auth_entry = || held_entry("auth - log in again");
+
+        let cases = vec![
+            ("no hold event yields nothing", vec![], Some(vec![])),
+            (
+                "an open hold yields held alone",
+                vec![unstable()],
+                Some(vec![unstable_entry()]),
+            ),
+            (
+                "a repeated RunHeld adds no entry",
+                vec![unstable(), unstable()],
+                Some(vec![unstable_entry()]),
+            ),
+            (
+                "an upgraded RunHeld adds no entry, the hold's one entry naming its latest cause",
+                vec![unstable(), auth()],
+                Some(vec![auth_entry()]),
+            ),
+            (
+                "a released hold yields held then released",
+                vec![unstable(), released(60)],
+                Some(vec![unstable_entry(), released_entry("released after 60s")]),
+            ),
+            (
+                "two holds yield two of each, each keyed by its first RunHeld",
+                vec![
+                    unstable(),
+                    auth(),
+                    released(60),
+                    ev(TYPE_UNIT_STARTED, r#"{"id":"u"}"#),
+                    unstable(),
+                    released(120),
+                ],
+                Some(vec![
+                    auth_entry(),
+                    released_entry("released after 60s"),
+                    unstable_entry(),
+                    released_entry("released after 120s"),
+                ]),
+            ),
+            (
+                "a release with no open hold adds nothing",
+                vec![released(5), unstable(), released(60), released(90)],
+                Some(vec![unstable_entry(), released_entry("released after 60s")]),
+            ),
+            (
+                "a release with no open hold is never read",
+                vec![ev(TYPE_RUN_RELEASED, r#"{"held_for_s":"x"}"#)],
+                Some(vec![]),
+            ),
+            (
+                "a RunHeld that does not decode yields no attention",
+                vec![unstable(), ev(TYPE_RUN_HELD, r#"{"by":1}"#)],
+                None,
+            ),
+            (
+                "an open hold's release that does not decode yields no attention",
+                vec![unstable(), ev(TYPE_RUN_RELEASED, r#"{"held_for_s":"x"}"#)],
+                None,
+            ),
+        ];
+        for (name, log, want) in cases {
+            assert_eq!(hold_attention(&log), want, "{name}");
+        }
+    }
 }

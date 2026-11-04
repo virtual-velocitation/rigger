@@ -627,6 +627,85 @@ mod tests {
     use super::*;
     use crate::test_support::CwdGuard;
 
+    /// WHAT A PERSON SEES: the HELD line names how long the run has been held, its cause and its
+    /// action, and says the run resumes by itself only while the latest supervisor beat is no
+    /// older than 90 s and the hold is neither an operator hold nor a `model_not_found` hold;
+    /// every other hold reads that `rigger release` ends it.
+    #[test]
+    fn held_line_says_the_run_resumes_by_itself_only_for_a_probed_hold_under_a_fresh_beat() {
+        use std::time::{Duration, SystemTime, UNIX_EPOCH};
+        let now = UNIX_EPOCH + Duration::from_secs(10_000);
+        let ago = |millis: u64| now - Duration::from_millis(millis);
+        let hold = |cause: &str, operator: bool, since: SystemTime| ledger::Hold {
+            since,
+            operator,
+            latest: runscope::RunHeld {
+                cause: cause.to_string(),
+                action: "wait it out".to_string(),
+                ..Default::default()
+            },
+            revision: 7,
+        };
+        let host = |cause: &str| hold(cause, false, ago(600_000));
+        let resumes = "HELD 600.0s - rate_limit - wait it out; the run resumes by itself";
+        let release = "HELD 600.0s - rate_limit - wait it out; rigger release ends it";
+        let cases = vec![
+            ("a beat now", host("rate_limit"), Some(now), resumes),
+            (
+                "a beat 89 s old",
+                host("rate_limit"),
+                Some(ago(89_000)),
+                resumes,
+            ),
+            (
+                "a beat 90 s old",
+                host("rate_limit"),
+                Some(ago(90_000)),
+                resumes,
+            ),
+            (
+                "a beat 91 s old",
+                host("rate_limit"),
+                Some(ago(91_000)),
+                release,
+            ),
+            ("no beat", host("rate_limit"), None, release),
+            (
+                "a beat a clock set backwards dates after now",
+                host("rate_limit"),
+                Some(now + Duration::from_secs(5)),
+                resumes,
+            ),
+            (
+                "an operator hold under a fresh beat",
+                hold("operator", true, ago(600_000)),
+                Some(now),
+                "HELD 600.0s - operator - wait it out; rigger release ends it",
+            ),
+            (
+                "a model_not_found hold under a fresh beat",
+                host("model_not_found"),
+                Some(now),
+                "HELD 600.0s - model_not_found - wait it out; rigger release ends it",
+            ),
+            (
+                "a hold 1.5 s old",
+                hold("rate_limit", false, ago(1_500)),
+                Some(now),
+                "HELD 1.5s - rate_limit - wait it out; the run resumes by itself",
+            ),
+            (
+                "a hold a clock set backwards dates after now",
+                hold("rate_limit", false, now + Duration::from_secs(30)),
+                Some(now),
+                "HELD 0.0s - rate_limit - wait it out; the run resumes by itself",
+            ),
+        ];
+        for (name, hold, latest_beat, want) in cases {
+            assert_eq!(held_line(&hold, latest_beat, now), want, "{name}");
+        }
+    }
+
     /// `rigger watch` notes an unread CI on stderr once per distinct reason, never on every
     /// poll: the same reason again notes nothing, a new reason notes, and a CI that reads again
     /// clears the note, so a later unread CI is noted afresh.

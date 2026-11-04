@@ -280,60 +280,61 @@ fn recurrence_and_stalled_frontier_survive_real_process_boundaries() {
 /// `conductor::compute_attention`'s OWN construction order (which never calls this
 /// function - its own doc comment says so) or, in `tests/cli.rs`'s hung-liveness scenario,
 /// a single-entry array for which any rank function looks identical to a no-op. This is the
-/// crate's public ordering contract, proven directly against the function itself: the six
-/// known kinds rank strictly increasing in the canonical spec order, an unknown kind sorts
-/// past every known one (never panics), and - the actual use this contract serves -
-/// sorting a scrambled list by this exact key reproduces the canonical order.
+/// crate's public ordering contract, proven directly against the function itself: the eight
+/// known kinds take the exact ranks of the canonical order, spec 105's `held` first and its
+/// `released` last, an unknown kind sorts past every known one (never panics), and - the
+/// actual use this contract serves - sorting a scrambled list by this exact key reproduces the
+/// canonical order.
 #[test]
-fn attention_kind_rank_orders_the_six_known_kinds_and_sorts_an_unknown_kind_last() {
+fn attention_kind_rank_orders_the_eight_known_kinds_and_sorts_an_unknown_kind_last() {
     use rigger::ledger::{
         attention_kind_rank, ATTENTION_BUDGET_FINAL_TENTH, ATTENTION_ESCALATED, ATTENTION_HALTED,
-        ATTENTION_REJECT_RECURRENCE, ATTENTION_SPEC_DEFECT, ATTENTION_STALLED_FRONTIER,
+        ATTENTION_HELD, ATTENTION_REJECT_RECURRENCE, ATTENTION_RELEASED, ATTENTION_SPEC_DEFECT,
+        ATTENTION_STALLED_FRONTIER,
     };
 
-    let escalated = attention_kind_rank(ATTENTION_ESCALATED);
-    let spec_defect = attention_kind_rank(ATTENTION_SPEC_DEFECT);
-    let halted = attention_kind_rank(ATTENTION_HALTED);
-    let recurred = attention_kind_rank(ATTENTION_REJECT_RECURRENCE);
-    let final_tenth = attention_kind_rank(ATTENTION_BUDGET_FINAL_TENTH);
-    let stalled = attention_kind_rank(ATTENTION_STALLED_FRONTIER);
-    assert!(
-        escalated < spec_defect
-            && spec_defect < halted
-            && halted < recurred
-            && recurred < final_tenth
-            && final_tenth < stalled,
-        "the six known kinds must rank in the canonical spec order (escalated, spec-defect, \
-         halted, reject-recurrence, budget-final-tenth, stalled-frontier); got {escalated} \
-         {spec_defect} {halted} {recurred} {final_tenth} {stalled}"
-    );
-
-    let unknown = attention_kind_rank("some-future-kind-nobody-emits-yet");
-    assert!(
-        unknown > stalled,
-        "an unknown kind must sort AFTER every known kind (last), never panic and never \
-         interleave; got rank {unknown} vs stalled-frontier's {stalled}"
-    );
+    let canonical = [
+        ATTENTION_HELD,
+        ATTENTION_ESCALATED,
+        ATTENTION_SPEC_DEFECT,
+        ATTENTION_HALTED,
+        ATTENTION_REJECT_RECURRENCE,
+        ATTENTION_BUDGET_FINAL_TENTH,
+        ATTENTION_STALLED_FRONTIER,
+        ATTENTION_RELEASED,
+    ];
+    let ranks = [
+        (ATTENTION_HELD, 0),
+        (ATTENTION_ESCALATED, 1),
+        (ATTENTION_SPEC_DEFECT, 2),
+        (ATTENTION_HALTED, 3),
+        (ATTENTION_REJECT_RECURRENCE, 4),
+        (ATTENTION_BUDGET_FINAL_TENTH, 5),
+        (ATTENTION_STALLED_FRONTIER, 6),
+        (ATTENTION_RELEASED, 7),
+        ("some-future-kind-nobody-emits-yet", usize::MAX),
+    ];
+    for (kind, rank) in ranks {
+        assert_eq!(
+            attention_kind_rank(kind),
+            rank,
+            "{kind} must take rank {rank} in the canonical order, an unknown kind sorting last"
+        );
+    }
 
     let mut kinds = vec![
+        ATTENTION_RELEASED,
         ATTENTION_STALLED_FRONTIER,
         ATTENTION_HALTED,
         ATTENTION_SPEC_DEFECT,
+        ATTENTION_HELD,
         ATTENTION_BUDGET_FINAL_TENTH,
         ATTENTION_ESCALATED,
         ATTENTION_REJECT_RECURRENCE,
     ];
     kinds.sort_by_key(|k| attention_kind_rank(k));
     assert_eq!(
-        kinds,
-        vec![
-            ATTENTION_ESCALATED,
-            ATTENTION_SPEC_DEFECT,
-            ATTENTION_HALTED,
-            ATTENTION_REJECT_RECURRENCE,
-            ATTENTION_BUDGET_FINAL_TENTH,
-            ATTENTION_STALLED_FRONTIER,
-        ],
+        kinds, canonical,
         "sorting a scrambled kind list by attention_kind_rank must reproduce the canonical \
          order - the exact use main.rs::merge_hung_attention makes of it"
     );
