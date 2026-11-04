@@ -7205,7 +7205,7 @@ fn seed_a_hold_by(root: &Path, by: &str) {
 fn seed_an_operator_release(root: &Path) {
     common::cli::seed_on_the_run(
         root,
-        common::fixtures::released_event(rigger::run::HOLD_BY_OPERATOR),
+        common::fixtures::released_event(rigger::run::HOLD_BY_OPERATOR, 0),
     );
 }
 
@@ -7500,7 +7500,9 @@ fn a_sighting_holds_the_run_and_a_done_run_releases_the_hold() {
 /// `interrupted`, and so does any class, FAULT and unclassed included, on a run an operator held
 /// under the live session: the close keeps its class and the scratch for the launch the release
 /// brings, the same id again at the next ordinal with no infra mark, charged nothing either, each
-/// second launch closing `completed`. A `fault` close hands its error to the conductor, and the
+/// second launch closing `completed`. That launch resumes the interrupted launch's session, its
+/// first user message naming the hold the release ended and how long it stood, where a `fault`
+/// close's rerun launches a fresh session. A `fault` close hands its error to the conductor, and the
 /// decorator records it as the first spawn's result, so a restart answers that spawn from the log
 /// and the rerun's result follows it; an `interrupted` close records no `SpawnResult`, so the
 /// spawn's one result is the second launch's.
@@ -7522,9 +7524,19 @@ fn an_is_error_result_reruns_uncharged_and_holds_as_its_class_says() {
         releases: Vec<&'static str>,
         /// Whether the file the first launch left in its scratch stands at the second.
         kept: bool,
+        /// The note the second launch resumes the first launch's session with, before its frame;
+        /// `None` when it launches a fresh session.
+        note: Option<String>,
     }
     let retries = common::fixtures::RETRIES_BY_ITSELF;
     let unclassed = |_: &str| api_error_session("", "");
+    let released = |reason: &str| {
+        Some(format!(
+            "This session was interrupted: the run was held 0s ({reason}) and is released now. \
+             Continue where you left off."
+        ))
+    };
+    let operator_released = released(&format!("{SEEDED_HOLD_CAUSE} - "));
     let cases = [
         Case {
             name: "a FAULT class on an unheld run",
@@ -7536,6 +7548,7 @@ fn an_is_error_result_reruns_uncharged_and_holds_as_its_class_says() {
             again: ("solo/implementer#0~retry4", 0),
             releases: vec![],
             kept: false,
+            note: None,
         },
         Case {
             name: "an unclassed ending on an unheld run",
@@ -7547,6 +7560,7 @@ fn an_is_error_result_reruns_uncharged_and_holds_as_its_class_says() {
             again: ("solo/implementer#0~retry4", 0),
             releases: vec![],
             kept: false,
+            note: None,
         },
         Case {
             name: "a wait class",
@@ -7558,6 +7572,7 @@ fn an_is_error_result_reruns_uncharged_and_holds_as_its_class_says() {
             again: ("solo/implementer#0", 1),
             releases: vec!["operator"],
             kept: true,
+            note: released(&format!("rate_limit - {retries}")),
         },
         Case {
             name: "a hold class",
@@ -7574,6 +7589,7 @@ fn an_is_error_result_reruns_uncharged_and_holds_as_its_class_says() {
             again: ("solo/implementer#0", 1),
             releases: vec!["operator"],
             kept: true,
+            note: released("billing_error - fix the account's billing"),
         },
         Case {
             name: "a FAULT class on a held run",
@@ -7585,6 +7601,7 @@ fn an_is_error_result_reruns_uncharged_and_holds_as_its_class_says() {
             again: ("solo/implementer#0", 1),
             releases: vec!["operator"],
             kept: true,
+            note: operator_released.clone(),
         },
         Case {
             name: "an unclassed ending on a held run",
@@ -7596,6 +7613,7 @@ fn an_is_error_result_reruns_uncharged_and_holds_as_its_class_says() {
             again: ("solo/implementer#0", 1),
             releases: vec!["operator"],
             kept: true,
+            note: operator_released,
         },
     ];
     for case in cases {
@@ -7614,6 +7632,8 @@ fn an_is_error_result_reruns_uncharged_and_holds_as_its_class_says() {
             r#"  *"Do the unit."*)
     if [ -e "$here/faulted" ]; then
         ls "$(cat "$here/left-scratch")" > "$here/scratch-at-the-second-launch"
+        printf '%s\0' "$@" > "$here/argv-at-the-second-launch"
+        printf '%s\n' "$first" > "$here/first-message-at-the-second-launch"
         echo "pub fn work() {{}}" > work.rs
         exit 0
     fi
@@ -7686,6 +7706,26 @@ fn an_is_error_result_reruns_uncharged_and_holds_as_its_class_says() {
                 .any(|f| f == "left-by-the-first-launch"),
             case.kept,
             "{name}: the first launch's scratch: {at_the_second_launch:?}"
+        );
+        let first_session = common::cli::recorded_progress::<rigger::progress::SpawnLaunched>(root)
+            .into_iter()
+            .find(|l| l.spawn == "solo/implementer#0" && l.launch == 0)
+            .unwrap_or_else(|| panic!("{name}: the first launch opened"))
+            .session_id;
+        let argv = recorded_argv(&fake.path().join("bin/argv-at-the-second-launch"));
+        let resumed = argv
+            .iter()
+            .position(|a| a == "--resume")
+            .map(|at| argv[at + 1].clone());
+        assert_eq!(
+            resumed.map(|session| (
+                session,
+                recorded_task(&fake.path().join("bin/first-message-at-the-second-launch"))
+            )),
+            case.note
+                .map(|note| (first_session, format!("{note}{LIVE_PROGRESS_FRAME}"))),
+            "{name}: the second launch resumes the first launch's session with the note, or \
+             launches fresh; argv: {argv:?}"
         );
         assert_eq!(
             common::cli::run_payloads(root, "UnitFailed"),
@@ -9355,7 +9395,7 @@ fn seed_probe_history(
                 holds.push(hold);
             }
             Seed::Released(by, ago) => {
-                let released = common::fixtures::released_event(by);
+                let released = common::fixtures::released_event(by, 0);
                 common::cli::seed_on_the_run(root, common::fixtures::dated_ago(released, ago));
             }
             Seed::Probed(ago) => {
@@ -15906,13 +15946,18 @@ fn a_run_start_closes_every_open_launch_interrupted_and_reaps_its_dir_under_the_
 /// An arm of [`install_fake_claude`] for the `Do the unit.` workers whose first launch never ends:
 /// it records its working directory in the directory of the fake, then becomes a ten-minute sleep
 /// recording its pid there ([`common::fixtures::sleeping`]), the very process the host spawned.
-/// Every later launch writes the change a merging stage lands.
+/// Every later launch records there its argv, its working directory and its first user message,
+/// each overwriting the last launch's, then writes the change a merging stage lands.
 fn hanging_first_worker_arm() -> String {
     format!(
         r#"  *"Do the unit."*)
     if [ ! -e "$here/sleepers" ]; then
         pwd -P > "$here/cwd"
-{sleep}    fi
+{sleep}    else
+        printf '%s\0' "$@" > "$here/relaunch-argv"
+        pwd -P > "$here/relaunch-cwd"
+        printf '%s\n' "$first" > "$here/relaunch-first-message"
+    fi
     echo "pub fn work() {{}}" > work.rs
     ;;
 "#,
@@ -15924,7 +15969,9 @@ fn hanging_first_worker_arm() -> String {
 /// ends, a second `rigger run` and a `rigger step` started beside it each refuse with the busy
 /// refusal, closing no launch and reaping nothing; once that run dies with its agent still
 /// running, the next `rigger run` reaps the agent rooted in the dir the host recorded before it
-/// closes the launch `interrupted` with the session the host recorded, then drives the run to done.
+/// closes the launch `interrupted` with the session the host recorded, then relaunches that
+/// session with `--resume` at the next ordinal in the same dir, its first user message naming the
+/// supervisor's restart, and drives the run to done.
 #[cfg(unix)]
 #[test]
 fn a_live_runs_launch_is_left_alone_beside_it_and_reconciled_by_the_next_start_once_it_dies() {
@@ -16047,6 +16094,45 @@ fn a_live_runs_launch_is_left_alone_beside_it_and_reconciled_by_the_next_start_o
         recorded_launches(root).get(..2),
         Some(&[(stamp.clone(), open.clone()), close][..]),
         "the restart's first record closes the dead run's launch interrupted; stderr: {err}"
+    );
+    let relaunch = recorded_launches(root).get(2).cloned();
+    let started = relaunch.as_ref().map_or(0, |(_, record)| record.started);
+    assert_eq!(
+        relaunch,
+        Some((
+            stamp.clone(),
+            rigger::progress::SpawnLaunched {
+                spawn: "solo/implementer#0".to_string(),
+                launch: 1,
+                session_id: open.session_id.clone(),
+                resumed_from: Some(open.session_id.clone()),
+                started,
+                ended: None,
+                class: None,
+                revision: None,
+                dir: open.dir.clone(),
+            }
+        )),
+        "the restart relaunches the interrupted launch's session at the next ordinal in its dir; \
+         stderr: {err}"
+    );
+    let argv = recorded_argv(&fake.path().join("bin/relaunch-argv"));
+    assert_eq!(
+        (
+            flag_value(&argv, "--resume"),
+            recorded_task(&fake.path().join("bin/relaunch-first-message")),
+            std::fs::read_to_string(fake.path().join("bin/relaunch-cwd")).unwrap(),
+        ),
+        (
+            open.session_id.as_str(),
+            format!(
+                "This session was interrupted: rigger's supervisor restarted. Continue where you \
+                 left off.{LIVE_PROGRESS_FRAME}"
+            ),
+            cwd,
+        ),
+        "the relaunch resumes the session in the dir its agent ran in, its first message naming \
+         the restart"
     );
     assert_eq!(
         (ok, out.lines().nth(2)),

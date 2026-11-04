@@ -37,11 +37,18 @@
 //! an operator hold, a launch's close and the revision it read, an `is_error` result classed after
 //! the child exits, an earlier launch's `StopFailure`, and a third consecutive failed close.
 //!
-//! THE RESUME FALLBACK tests at the end (spec 105) add what only a real child can prove of a
+//! THE RESUME FALLBACK tests after them (spec 105) add what only a real child can prove of a
 //! `--resume` launch: the ways it can yield no `system/init`, grounded on the literal refusal of
 //! Claude Code 2.1.314, each close it `interrupted` and land one fresh launch at the next ordinal
 //! inside the same `spawn` call; a launch that saw `system/init`, and a launch that was fresh,
 //! stand alone; and every launch takes the ordinal after the highest the progress store records.
+//!
+//! THE RELAUNCH table at the end (spec 105) adds what only a real child can prove of a spawn whose
+//! latest launch ended `interrupted`: the host `--resume`s that launch's session at the next
+//! ordinal in the same directory, its first message the note its close decides (the hold a release
+//! ended, the supervisor's restart, or the class alone), then the `resume_task` that launch
+//! carried; any other latest launch, or one of another run, launches fresh; a relaunch with no
+//! `system/init` takes the fallback; and a hold sink the host cannot read or fold launches nothing.
 
 mod common;
 
@@ -2260,7 +2267,7 @@ fn hold_cases() -> Vec<HoldCase> {
             lines: vec![init_line(), retry_line("invalid_request")],
             seeded: vec![
                 operator_hold(),
-                common::fixtures::released_event("operator"),
+                common::fixtures::released_event("operator", 0),
             ],
             close: ("fault", Some("invalid_request")),
             stamp: Some(3),
@@ -2930,7 +2937,7 @@ fn held_ending_cases() -> Vec<HeldEnding> {
     let released = || {
         vec![
             operator_hold(),
-            common::fixtures::released_event("operator"),
+            common::fixtures::released_event("operator", 0),
         ]
     };
     let bounded = || wall_clock_bounded(SILENCE_BOUND);
@@ -3719,4 +3726,473 @@ fn a_restarts_first_spawn_keeps_the_prior_transcript() {
             (format!("{RESUMED_STEM}.1.jsonl"), 2),
         ]
     );
+}
+
+/// The session of the launch a [`relaunch_cases`] row interrupts, fresh unless the row says.
+const INTERRUPTED: &str = "sess-interrupted";
+
+/// The session of the fresh launch a fallback landed before a [`relaunch_cases`] row.
+const FELL_BACK: &str = "sess-fell-back";
+
+/// Stands, in a [`relaunch_cases`] row, for the session the host mints for a fresh launch.
+const MINTED: &str = "<the session the host mints>";
+
+/// The note of a relaunch after a supervisor restart.
+const RESTARTED: &str =
+    "This session was interrupted: rigger's supervisor restarted. Continue where you left off.";
+
+/// The note of a relaunch after [`login_hold`] stood 42s and was released.
+const LOGIN_RELEASED: &str = "This session was interrupted: the run was held 42s \
+    (authentication_failed - run claude auth login) and is released now. Continue where you left \
+    off.";
+
+/// The note of a relaunch after an `authentication_failed` close no release is known to follow.
+const LOGIN_CLASS: &str =
+    "This session was interrupted by authentication_failed. Continue where you left off.";
+
+/// What a [`relaunch_cases`] row's undecodable run-stream event carries.
+const UNDECODABLE: &[u8] = b"not json";
+
+/// A launch record of [`RESUMED_SPAWN`] a [`relaunch_cases`] row states.
+#[derive(Clone, Copy)]
+enum Record {
+    /// Launch `.0` opened as session `.1` resuming `.2`, in the fixture's launch directory.
+    Opened(u32, &'static str, Option<&'static str>),
+    /// Launch `.0` of session `.1` closed `.2` under class `.3`, stamped with the revision of the
+    /// run-log event at index `.4`.
+    Closed(u32, &'static str, &'static str, &'static str, Option<usize>),
+}
+
+/// The hold sink a [`relaunch_cases`] row builds its host with.
+#[derive(Default)]
+enum Sink {
+    /// The fixture's run store.
+    #[default]
+    Run,
+    /// The fixture's run store failing every read.
+    Failing,
+    /// None.
+    Absent,
+}
+
+/// One spawn of [`RESUMED_SPAWN`] behind the launches a row records: its world, then what it
+/// leaves.
+#[derive(Default)]
+struct Relaunch {
+    name: &'static str,
+    /// What stands on the run stream behind its `RunStarted` before the spawn.
+    log: Vec<Event>,
+    /// The launch records standing before the spawn.
+    seeded: Vec<Record>,
+    /// Whether the seeded records are a prior run's.
+    prior_run: bool,
+    /// Whether the spawn resumes [`PRIOR_SESSION`] with [`RESUME_TASK`].
+    resumed: bool,
+    /// The fixture agent's ending of a `--resume` launch, empty answering.
+    resume_ending: &'static str,
+    sink: Sink,
+    /// The records the spawn appends, their stamps not compared.
+    appended: Vec<Record>,
+    /// The first message of each launch, before its frame.
+    tasks: Vec<String>,
+    /// `(session_id, resumed_from)` of the answer, unless `failure` names the spawn's failure.
+    answered: (&'static str, &'static str),
+    failure: String,
+}
+
+impl Fixture {
+    /// `record` as the progress store holds it, [`MINTED`] read as `minted`.
+    fn record(&self, record: Record, minted: &str) -> SpawnLaunched {
+        let session = |session: &'static str| if session == MINTED { minted } else { session };
+        match record {
+            Record::Opened(launch, id, resumed_from) => {
+                self.opened(launch, session(id), resumed_from)
+            }
+            Record::Closed(launch, id, ended, class, stamp) => SpawnLaunched {
+                revision: stamp.map(|at| self.run_log()[at].revision),
+                ..closed(launch, session(id), ended, class)
+            },
+        }
+    }
+}
+
+/// Every spawn the relaunch table drives. The run log every stamp indexes holds the `RunStarted`,
+/// then the row's `log`.
+fn relaunch_cases() -> Vec<Relaunch> {
+    use common::fixtures::{released_event, run_held_event};
+    use Record::{Closed, Opened};
+    let released = |held_for_s| released_event(rigger::run::HOLD_BY_OPERATOR, held_for_s);
+    let login_released = || vec![run_held_event(&login_hold()), released(42)];
+    let login_close = |stamp| {
+        vec![
+            Opened(0, INTERRUPTED, None),
+            Closed(
+                0,
+                INTERRUPTED,
+                "interrupted",
+                "authentication_failed",
+                stamp,
+            ),
+        ]
+    };
+    let relaunched = |launch, session| {
+        vec![
+            Opened(launch, session, Some(session)),
+            Closed(launch, session, "completed", "", None),
+        ]
+    };
+    let fresh = |launch| {
+        vec![
+            Opened(launch, MINTED, None),
+            Closed(launch, MINTED, "completed", "", None),
+        ]
+    };
+    let with_task = |note: &str| format!("{note}\n\n{RESUME_TASK}");
+    let fresh_after = |ended, class| Relaunch {
+        log: login_released(),
+        seeded: vec![
+            Opened(0, INTERRUPTED, None),
+            Closed(0, INTERRUPTED, ended, class, Some(0)),
+        ],
+        appended: fresh(1),
+        tasks: vec![FULL_PROMPT.to_string()],
+        answered: (MINTED, ""),
+        ..Default::default()
+    };
+    let undecodable = |type_: &str| Event::new(type_, UNDECODABLE.to_vec());
+    vec![
+        Relaunch {
+            name: "a fresh launch a released hold interrupted",
+            log: login_released(),
+            seeded: login_close(Some(0)),
+            appended: relaunched(1, INTERRUPTED),
+            tasks: vec![LOGIN_RELEASED.to_string()],
+            answered: (INTERRUPTED, INTERRUPTED),
+            ..Default::default()
+        },
+        Relaunch {
+            name: "a resume a released hold interrupted, sending its resume task again",
+            log: login_released(),
+            seeded: vec![
+                Opened(0, PRIOR_SESSION, Some(PRIOR_SESSION)),
+                Closed(
+                    0,
+                    PRIOR_SESSION,
+                    "interrupted",
+                    "authentication_failed",
+                    Some(0),
+                ),
+            ],
+            resumed: true,
+            appended: relaunched(1, PRIOR_SESSION),
+            tasks: vec![with_task(LOGIN_RELEASED)],
+            answered: (PRIOR_SESSION, PRIOR_SESSION),
+            ..Default::default()
+        },
+        Relaunch {
+            name: "a fallback's fresh launch a released hold interrupted, sent no resume task",
+            log: login_released(),
+            seeded: vec![
+                Opened(0, PRIOR_SESSION, Some(PRIOR_SESSION)),
+                Closed(0, PRIOR_SESSION, "interrupted", "", None),
+                Opened(1, FELL_BACK, None),
+                Closed(
+                    1,
+                    FELL_BACK,
+                    "interrupted",
+                    "authentication_failed",
+                    Some(0),
+                ),
+            ],
+            resumed: true,
+            appended: relaunched(2, FELL_BACK),
+            tasks: vec![LOGIN_RELEASED.to_string()],
+            answered: (FELL_BACK, FELL_BACK),
+            ..Default::default()
+        },
+        Relaunch {
+            name: "a resume the restart's reconciliation closed",
+            seeded: vec![
+                Opened(0, PRIOR_SESSION, Some(PRIOR_SESSION)),
+                Closed(0, PRIOR_SESSION, "interrupted", "", None),
+            ],
+            resumed: true,
+            appended: relaunched(1, PRIOR_SESSION),
+            tasks: vec![with_task(RESTARTED)],
+            answered: (PRIOR_SESSION, PRIOR_SESSION),
+            ..Default::default()
+        },
+        Relaunch {
+            name: "a relaunch the restart interrupted in its turn",
+            log: login_released(),
+            seeded: vec![
+                Opened(0, PRIOR_SESSION, Some(PRIOR_SESSION)),
+                Closed(
+                    0,
+                    PRIOR_SESSION,
+                    "interrupted",
+                    "authentication_failed",
+                    Some(0),
+                ),
+                Opened(1, PRIOR_SESSION, Some(PRIOR_SESSION)),
+                Closed(1, PRIOR_SESSION, "interrupted", "", None),
+            ],
+            resumed: true,
+            appended: relaunched(2, PRIOR_SESSION),
+            tasks: vec![with_task(RESTARTED)],
+            answered: (PRIOR_SESSION, PRIOR_SESSION),
+            ..Default::default()
+        },
+        Relaunch {
+            name: "an upgraded hold names its latest cause",
+            log: vec![
+                run_held_event(&hold("rate_limit", "", RETRIES_BY_ITSELF, false, "")),
+                run_held_event(&login_hold()),
+                released(7),
+            ],
+            seeded: vec![
+                Opened(0, INTERRUPTED, None),
+                Closed(0, INTERRUPTED, "interrupted", "rate_limit", Some(0)),
+            ],
+            appended: relaunched(1, INTERRUPTED),
+            tasks: vec!["This session was interrupted: the run was held 7s \
+                (authentication_failed - run claude auth login) and is released now. Continue \
+                where you left off."
+                .to_string()],
+            answered: (INTERRUPTED, INTERRUPTED),
+            ..Default::default()
+        },
+        Relaunch {
+            name: "the first release past the close names the hold",
+            log: vec![
+                run_held_event(&login_hold()),
+                released(42),
+                run_held_event(&unstable_hold()),
+                released(9),
+            ],
+            seeded: login_close(Some(0)),
+            appended: relaunched(1, INTERRUPTED),
+            tasks: vec![LOGIN_RELEASED.to_string()],
+            answered: (INTERRUPTED, INTERRUPTED),
+            ..Default::default()
+        },
+        Relaunch {
+            name: "a close stamped at the hold it repeated",
+            log: login_released(),
+            seeded: login_close(Some(1)),
+            appended: relaunched(1, INTERRUPTED),
+            tasks: vec![LOGIN_RELEASED.to_string()],
+            answered: (INTERRUPTED, INTERRUPTED),
+            ..Default::default()
+        },
+        Relaunch {
+            name: "a close stamped at the release read it, so no release follows it",
+            log: login_released(),
+            seeded: login_close(Some(2)),
+            appended: relaunched(1, INTERRUPTED),
+            tasks: vec![LOGIN_CLASS.to_string()],
+            answered: (INTERRUPTED, INTERRUPTED),
+            ..Default::default()
+        },
+        Relaunch {
+            name: "an unstamped close",
+            log: login_released(),
+            seeded: login_close(None),
+            appended: relaunched(1, INTERRUPTED),
+            tasks: vec![LOGIN_CLASS.to_string()],
+            answered: (INTERRUPTED, INTERRUPTED),
+            ..Default::default()
+        },
+        Relaunch {
+            name: "a host with no hold sink",
+            log: login_released(),
+            seeded: login_close(Some(0)),
+            sink: Sink::Absent,
+            appended: relaunched(1, INTERRUPTED),
+            tasks: vec![LOGIN_CLASS.to_string()],
+            answered: (INTERRUPTED, INTERRUPTED),
+            ..Default::default()
+        },
+        Relaunch {
+            name: "a release past the close that ends no hold",
+            log: vec![released(5)],
+            seeded: login_close(Some(0)),
+            appended: relaunched(1, INTERRUPTED),
+            tasks: vec![LOGIN_CLASS.to_string()],
+            answered: (INTERRUPTED, INTERRUPTED),
+            ..Default::default()
+        },
+        Relaunch {
+            name: "a fault launches fresh",
+            ..fresh_after("fault", "unknown")
+        },
+        Relaunch {
+            name: "a stop launches fresh",
+            ..fresh_after("stopped", "")
+        },
+        Relaunch {
+            name: "an answer launches fresh",
+            ..fresh_after("completed", "")
+        },
+        Relaunch {
+            name: "an open launch launches fresh",
+            log: login_released(),
+            seeded: vec![Opened(0, INTERRUPTED, None)],
+            appended: fresh(1),
+            tasks: vec![FULL_PROMPT.to_string()],
+            answered: (MINTED, ""),
+            ..Default::default()
+        },
+        Relaunch {
+            name: "a prior run's interrupted launch launches fresh",
+            log: login_released(),
+            seeded: login_close(Some(0)),
+            prior_run: true,
+            appended: fresh(0),
+            tasks: vec![FULL_PROMPT.to_string()],
+            answered: (MINTED, ""),
+            ..Default::default()
+        },
+        Relaunch {
+            name: "a relaunch with no system/init takes the fallback",
+            log: login_released(),
+            seeded: login_close(Some(0)),
+            resume_ending: "refused-result",
+            appended: vec![
+                Opened(1, INTERRUPTED, Some(INTERRUPTED)),
+                Closed(1, INTERRUPTED, "interrupted", "", None),
+                Opened(2, MINTED, None),
+                Closed(2, MINTED, "completed", "", None),
+            ],
+            tasks: vec![LOGIN_RELEASED.to_string(), FULL_PROMPT.to_string()],
+            answered: (MINTED, ""),
+            ..Default::default()
+        },
+        Relaunch {
+            name: "a hold sink that cannot be read launches nothing",
+            log: login_released(),
+            seeded: login_close(Some(0)),
+            sink: Sink::Failing,
+            failure: "event store: the run read failed".to_string(),
+            ..Default::default()
+        },
+        Relaunch {
+            name: "an undecodable release past the close launches nothing",
+            log: vec![
+                run_held_event(&login_hold()),
+                undecodable(rigger::run::TYPE_RUN_RELEASED),
+            ],
+            seeded: login_close(Some(0)),
+            failure: serde_json::from_slice::<rigger::run::RunReleased>(UNDECODABLE)
+                .unwrap_err()
+                .to_string(),
+            ..Default::default()
+        },
+        Relaunch {
+            name: "an undecodable hold before the release launches nothing",
+            log: vec![undecodable(TYPE_RUN_HELD), released(42)],
+            seeded: login_close(Some(0)),
+            failure: serde_json::from_slice::<RunHeld>(UNDECODABLE)
+                .unwrap_err()
+                .to_string(),
+            ..Default::default()
+        },
+    ]
+}
+
+/// THE RELAUNCH: a spawn whose latest launch ended `interrupted`, whichever site closed it,
+/// `--resume`s that launch's session at the next ordinal in the same directory, its first message
+/// the note the close decides (the hold the first release past the close's stamp ended, the
+/// supervisor's restart for a close of no class, the class alone otherwise), then the
+/// `resume_task` that launch carried, recording only its answer, so no attempt is charged. Any other
+/// latest launch, or a prior run's, launches fresh, a relaunch with no `system/init` takes the
+/// fallback, and a hold sink the host cannot read or fold launches nothing.
+#[cfg(unix)]
+#[test]
+fn an_interrupted_launch_relaunches_its_session_as_its_close_decides() {
+    for case in relaunch_cases() {
+        let name = case.name;
+        let fx = Fixture::started(&case.log);
+        let run = if case.prior_run { "run-0" } else { "run-1" };
+        for &record in &case.seeded {
+            let seeded = fx.record(record, "");
+            rigger::progress_store::record_launch(&fx.progress_store, run, &seeded).unwrap();
+        }
+        let before = fx.launch_records().len();
+        let armed = std::sync::atomic::AtomicBool::new(true);
+        let failing = common::fixtures::ReadsFailWhenArmed {
+            inner: &fx.run_store,
+            armed: &armed,
+        };
+        let driver = Driver {
+            hold_sink: match case.sink {
+                Sink::Run => Some(&fx.run_store as &dyn EventStore),
+                Sink::Failing => Some(&failing),
+                Sink::Absent => None,
+            },
+            ..fx.stopping_driver(RESUME_ENDING_AGENT, WIND_DOWN_GRACE)
+        };
+        let base = if case.resumed {
+            fx.resumed_opts("", "")
+        } else {
+            fx.fresh_opts("")
+        };
+        let o = SpawnOpts {
+            env: fx.ending_env(case.resume_ending, "answer"),
+            ..base
+        };
+
+        let outcome = driver.spawn(&AgentDef::default(), FULL_PROMPT, &o, &no_emit);
+
+        let records = fx.unstamped_records();
+        let minted = records
+            .last()
+            .map(|record| record.session_id.clone())
+            .unwrap_or_default();
+        let appended: Vec<SpawnLaunched> = records[before..]
+            .iter()
+            .map(|record| SpawnLaunched {
+                revision: None,
+                ..record.clone()
+            })
+            .collect();
+        let expected: Vec<SpawnLaunched> = case
+            .appended
+            .iter()
+            .map(|&record| fx.record(record, &minted))
+            .collect();
+        assert_eq!(appended, expected, "{name}: the records");
+        if case.answered.0 == MINTED {
+            assert!(
+                ![INTERRUPTED, FELL_BACK, PRIOR_SESSION].contains(&minted.as_str()),
+                "{name}: the fresh session is minted, not {minted}"
+            );
+        }
+        let tasks: Vec<String> = case.tasks.iter().map(|task| framed(task)).collect();
+        assert_eq!(fx.tasks_read(), tasks, "{name}: the first messages");
+        let session = |id: &str| {
+            if id == MINTED {
+                minted.clone()
+            } else {
+                id.to_string()
+            }
+        };
+        assert_eq!(
+            outcome
+                .map(|result| (result.session_id, result.resumed_from))
+                .map_err(|e| rigger::conductor::strip_failure_marker(&e)),
+            if case.failure.is_empty() {
+                Ok((session(case.answered.0), session(case.answered.1)))
+            } else {
+                Err(case.failure.clone())
+            },
+            "{name}: the outcome"
+        );
+        let results = if case.failure.is_empty() {
+            fresh_answer_on_record()
+        } else {
+            Vec::new()
+        };
+        assert_eq!(fx.recorded_results(), results, "{name}: the results");
+    }
 }

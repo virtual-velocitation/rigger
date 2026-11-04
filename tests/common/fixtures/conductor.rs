@@ -38,11 +38,11 @@ pub fn run_held_event(body: &rigger::run::RunHeld) -> Event {
     )
 }
 
-/// A `RunReleased` event by `by`, the hold having stood no time.
-pub fn released_event(by: &str) -> Event {
+/// A `RunReleased` event by `by`, the hold having stood `held_for_s` seconds.
+pub fn released_event(by: &str, held_for_s: u64) -> Event {
     let body = rigger::run::RunReleased {
         by: by.to_string(),
-        held_for_s: 0,
+        held_for_s,
     };
     Event::new(
         rigger::run::TYPE_RUN_RELEASED,

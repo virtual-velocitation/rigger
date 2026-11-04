@@ -406,6 +406,90 @@ mod tests {
             an_undecodable_launch_record_is_skipped(&[2], 3);
     }
 
+    /// One seeded launch record: its run, its spawn, its ordinal and its `ended`, an open record
+    /// when `None`.
+    type Seed = (&'static str, &'static str, u32, Option<&'static str>);
+
+    /// The record `seed` appends, its session naming its place so an open and a close differ.
+    fn seeded_launch(&(_, spawn, launch, ended): &Seed, place: usize) -> SpawnLaunched {
+        let session = format!("s{place}");
+        match ended {
+            Some(ended) => SpawnLaunched::closed(spawn, launch, session, ended, ""),
+            None => SpawnLaunched {
+                spawn: spawn.into(),
+                launch,
+                session_id: session,
+                started: 1,
+                ..Default::default()
+            },
+        }
+    }
+
+    /// The latest record of `u/implementer#0`'s highest ordinal in `run-1`: the last record of
+    /// that ordinal in stream order, its close once it closed, whatever the records of a lower
+    /// ordinal, another spawn or another run say. `latest` is the seed's place, `None` when the
+    /// run holds no record of the spawn.
+    fn the_latest_launch_is_the_last_record_of_its_highest_ordinal(
+        seeded: &[Seed],
+        latest: Option<usize>,
+    ) {
+        let progress = Store::open(":memory:").unwrap();
+        for (place, seed) in seeded.iter().enumerate() {
+            record_launch(&progress, seed.0, &seeded_launch(seed, place)).unwrap();
+        }
+
+        assert_eq!(
+            latest_launch(&progress, "run-1", "u/implementer#0").unwrap(),
+            latest.map(|place| seeded_launch(&seeded[place], place))
+        );
+    }
+
+    const SPAWN: &str = "u/implementer#0";
+
+    crate::test_cases! {
+        no_record_names_no_latest_launch:
+            the_latest_launch_is_the_last_record_of_its_highest_ordinal(
+                &[("run-0", SPAWN, 4, Some("interrupted"))],
+                None,
+            );
+        another_spawns_records_name_no_latest_launch:
+            the_latest_launch_is_the_last_record_of_its_highest_ordinal(
+                &[("run-1", "u/reviewer#0", 0, None), ("run-1", "u/implementer#1", 1, None)],
+                None,
+            );
+        an_open_launch_is_its_open_record:
+            the_latest_launch_is_the_last_record_of_its_highest_ordinal(
+                &[("run-1", SPAWN, 0, None)],
+                Some(0),
+            );
+        a_closed_launch_is_its_close:
+            the_latest_launch_is_the_last_record_of_its_highest_ordinal(
+                &[("run-1", SPAWN, 0, None), ("run-1", SPAWN, 0, Some("interrupted"))],
+                Some(1),
+            );
+        a_lower_ordinals_later_close_leaves_the_highest_deciding:
+            the_latest_launch_is_the_last_record_of_its_highest_ordinal(
+                &[
+                    ("run-1", SPAWN, 1, None),
+                    ("run-1", SPAWN, 1, Some("interrupted")),
+                    ("run-1", SPAWN, 0, Some("fault")),
+                ],
+                Some(1),
+            );
+        a_higher_ordinal_opened_past_a_close_is_open:
+            the_latest_launch_is_the_last_record_of_its_highest_ordinal(
+                &[
+                    ("run-1", SPAWN, 0, None),
+                    ("run-1", SPAWN, 0, Some("interrupted")),
+                    ("run-1", "u/reviewer#0", 3, Some("fault")),
+                    ("run-1", SPAWN, 1, None),
+                    ("run-0", SPAWN, 1, Some("interrupted")),
+                    ("run-1", "u/reviewer#0", 3, Some("completed")),
+                ],
+                Some(3),
+            );
+    }
+
     #[test]
     fn append_stamped_a_report_the_store_did_not_write_is_reported_as_lost() {
         let err = append_stamped(

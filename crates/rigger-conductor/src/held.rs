@@ -467,7 +467,7 @@ mod tests {
                     .append(
                         STREAM,
                         ExpectedRevision::Any,
-                        &[released_event(HOLD_BY_OPERATOR)],
+                        &[released_event(HOLD_BY_OPERATOR, 0)],
                     )
                     .unwrap();
             };
@@ -564,7 +564,7 @@ mod tests {
             },
             Row {
                 name: "a released hold waits for nothing",
-                seeded: vec![third_fault_hold(), released_event(HOLD_BY_OPERATOR)],
+                seeded: vec![third_fault_hold(), released_event(HOLD_BY_OPERATOR, 0)],
                 script: vec![done()],
                 calls: one_call(Ok(OUTPUT)),
                 launched: vec![ID],
@@ -641,7 +641,7 @@ mod tests {
             },
             Row {
                 name: "a hold released before the error leaves the run unheld",
-                seeded: vec![third_fault_hold(), released_event(HOLD_BY_OPERATOR)],
+                seeded: vec![third_fault_hold(), released_event(HOLD_BY_OPERATOR, 0)],
                 script: vec![fails(classed(FAULT))],
                 calls: one_call(Err(classed(FAULT))),
                 launched: vec![ID],
