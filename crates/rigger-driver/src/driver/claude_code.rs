@@ -49,6 +49,12 @@ use crate::spawn_store;
 /// a hold or a dead beat cannot spin on the store.
 const UNBOUNDED_POLL: std::time::Duration = std::time::Duration::from_secs(5);
 
+/// The wait a bounded launch's wake under its `bound` re-arms for, having read `silent`: the rest
+/// of the bound, at least [`UNBOUNDED_POLL`].
+fn next_wait(bound: std::time::Duration, silent: std::time::Duration) -> std::time::Duration {
+    bound.saturating_sub(silent).max(UNBOUNDED_POLL)
+}
+
 /// Bounds [`Driver::read_stream`]'s ORDINARY (non-STOP) exit joins - the stderr-drain and
 /// stdout-reader threads, right after `reaped_child::ReapedChild::drop` reaps the one child this
 /// function held - a dedicated diagnostic-drain bound, DELIBERATELY NEVER
@@ -678,7 +684,7 @@ impl Driver<'_> {
                             );
                         }
                         armed_at = std::time::Instant::now();
-                        armed_for = bound.saturating_sub(silent).max(UNBOUNDED_POLL);
+                        armed_for = next_wait(bound, silent);
                     }
                     // Past that a wake-up is never a stop, and on an unbounded launch it never
                     // reads as one. 2026-09-28: the `max_wall_clock` 0 wake-up took THE STOP,
