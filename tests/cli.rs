@@ -7376,22 +7376,22 @@ const SESSION_WAITS_FOR_A_HOLD: &str = concat!(
 );
 
 /// A `beside` for [`run_on_arms_beside`] landing the `RunHeld` event `held` builds on the session
-/// that marked `$here/session-live`, `after` that mark was first seen, then marking
+/// that marked `$here/session-live`, as that mark is first seen, then marking
 /// `$here/operator-held`. The event is built as it lands, so it is dated then unless `held` dates
 /// it otherwise.
 fn holding_the_live_session<'a>(
     root: &'a Path,
-    after: Duration,
     held: impl Fn() -> rigger::eventstore::Event + 'a,
 ) -> impl FnMut(&Path) + 'a {
-    let mut live_since = None;
+    landing_on_the_live_session(move || common::cli::seed_on_the_run(root, held()))
+}
+
+/// [`holding_the_live_session`] making the write `land` makes in place of seeding one event.
+fn landing_on_the_live_session<'a>(land: impl Fn() + 'a) -> impl FnMut(&Path) + 'a {
     move |fake| {
         let landed = fake.join("bin/operator-held");
-        if fake.join("bin/session-live").exists()
-            && !landed.exists()
-            && live_since.get_or_insert_with(Instant::now).elapsed() >= after
-        {
-            common::cli::seed_on_the_run(root, held());
+        if fake.join("bin/session-live").exists() && !landed.exists() {
+            land();
             std::fs::write(&landed, "").unwrap();
         }
     }
@@ -7645,7 +7645,7 @@ fn an_is_error_result_reruns_uncharged_and_holds_as_its_class_says() {
 {opening}{session}    ;;
 "#
         );
-        let mut hold = holding_the_live_session(root, Duration::ZERO, || {
+        let mut hold = holding_the_live_session(root, || {
             common::fixtures::run_held_event(&seeded_operator_hold())
         });
         let mut release = releasing_holds(root, 1, |_| true);
@@ -8245,8 +8245,9 @@ fn a_served_hold_hands_out_no_queued_spawn_until_its_release() {
 
 /// Spec 105's HELD BEFORE EACH LAUNCH on a read that fails, wired where the launch is the handout:
 /// given a spawn queued and a `RunHeld` no fold applies, when the shim polls, then `rigger_next`
-/// hands out nothing, since a run not proved unheld launches nothing, and when the session closes
-/// `rigger serve` ends on that read's error with no unit charged.
+/// hands out nothing, since a run not proved unheld launches nothing, and names the failed read on
+/// stderr once however many polls it fails, and when the session closes `rigger serve` ends on
+/// that read's error with no unit charged.
 #[test]
 fn a_served_run_not_proved_unheld_hands_out_no_queued_spawn() {
     const NAME: &str = "a spawn queued behind a failed read";
@@ -8262,8 +8263,10 @@ fn a_served_run_not_proved_unheld_hands_out_no_queued_spawn() {
     let out = mcp.finish_within(Duration::from_secs(30));
     assert_eq!(
         String::from_utf8_lossy(&out.stderr),
-        "rigger: conductor: conductor: expected ident at line 1 column 2\n",
-        "{NAME}: the failed read"
+        "rigger: the hold read failed, so no spawn is handed out until a read proves the run \
+         unheld: conductor: expected ident at line 1 column 2\n\
+         rigger: conductor: conductor: expected ident at line 1 column 2\n",
+        "{NAME}: the failed read, named once by the handout and then by the conductor"
     );
     assert_eq!(
         common::cli::run_payloads(root, "UnitFailed"),
@@ -8466,7 +8469,9 @@ stages:
 /// A session's end with no result, as a served spawn's `rigger_result` carries it.
 const SERVED_ERROR: &str = "the session ended with no result";
 
-/// [`SERVED_ERROR`] carrying `class`, the way a host's error does.
+/// [`SERVED_ERROR`] carrying `class`, the way a host's error does. Only a test serves one:
+/// `shim/shim.mjs` hands a session's error back as its bare message text, with no
+/// `FAILURE_MARKER` bracket, so a live serve's error is unclassed.
 fn classed_served_error(class: rigger::conductor::AgentFailure) -> String {
     rigger::conductor::no_result_error(class, SERVED_ERROR.to_string()).0
 }
@@ -8477,7 +8482,10 @@ fn classed_served_error(class: rigger::conductor::AgentFailure) -> String {
 /// errored spawn id with no infra mark. Given a wait class, the same id relaunches with no hold at
 /// all. Past two relaunches of an id the next error passes, whatever the errors' classes and held
 /// or not, to the conductor's infra rerun, whose own id waits on the hold in turn. The unit is
-/// charged nothing and a served run leaves each hold to its release.
+/// charged nothing and a served run leaves each hold to its release. The classed rows prove the
+/// decorator's reading of a class, not a live path: `shim/shim.mjs` hands an error back as bare
+/// message text with no `FAILURE_MARKER`, so a live serve's error is unclassed and relaunches only
+/// while the run is held.
 #[test]
 fn a_served_wait_ends_by_its_release_and_relaunches_the_same_spawn_up_to_the_bound() {
     struct Case {
@@ -9437,6 +9445,9 @@ struct ProbeCase {
     appended: Vec<rigger::run::RunHeld>,
     /// The writer of every release on the run stream, the seeded ones first.
     releases: &'static [&'static str],
+    /// Re-declares the hold on the run of the project it is given, once the canary marks its
+    /// session live.
+    redeclare: fn(&Path),
 }
 
 /// A release-table row: a hold of `cause` by `by` declared 120 s back, so its first probe falls due
@@ -9460,6 +9471,7 @@ fn released_row(
         runs_canary,
         appended,
         releases,
+        redeclare: redeclare_its_own_cause,
     }
 }
 
@@ -9481,7 +9493,16 @@ fn delay_row(
         runs_canary: probes_within.is_some(),
         appended: Vec::new(),
         releases,
+        redeclare: redeclare_its_own_cause,
     }
+}
+
+/// Re-declare the hold on `root`'s run as a host hold of [`SEEDED_HOLD_CAUSE`] on [`PROBED_MODEL`],
+/// seeded whole: the probed hold's own cause, which no production writer re-declares, so only the
+/// probe's revision guard tells it from the hold the probe read.
+fn redeclare_its_own_cause(root: &Path) {
+    let held = probed_hold(SEEDED_HOLD_CAUSE, rigger::run::HOLD_BY_HOST);
+    common::cli::seed_on_the_run(root, common::fixtures::run_held_event(&held));
 }
 
 /// Append the probe line `line` to the progress stream of `root`'s run `run_id`, dated `ago`
@@ -9571,8 +9592,8 @@ const NO_PROBE_WITHIN: Duration = Duration::from_secs(4);
 /// read and the canary's argv and working directory, the holds and releases, the worker's launch
 /// records alone, the canary writing none, and every write of the probe folded into the graph. A
 /// hold still open once the probe is over, or once a row expecting none has waited, is released as
-/// the operator does, so every row reaches done; the canary's `session-live` mark lands a
-/// re-declared host hold on it first.
+/// the operator does, so every row reaches done; the canary's `session-live` mark lands the row's
+/// re-declaration on it first.
 #[cfg(unix)]
 fn assert_probe_cases(cases: &[ProbeCase]) {
     for case in cases {
@@ -9590,10 +9611,7 @@ fn assert_probe_cases(cases: &[ProbeCase]) {
             "{RECORDING_WORKER_ARM}{}",
             common::fixtures::probe_arms(&case.auth, &case.canary)
         );
-        let redeclared = probed_hold(SEEDED_HOLD_CAUSE, rigger::run::HOLD_BY_HOST);
-        let mut redeclare = holding_the_live_session(root, Duration::ZERO, move || {
-            common::fixtures::run_held_event(&redeclared)
-        });
+        let mut redeclare = landing_on_the_live_session(|| (case.redeclare)(root));
         let mut release = releasing_holds(root, 1, unit_started);
         let last_mark = if case.runs_canary {
             "bin/canary-ran"
@@ -9707,8 +9725,9 @@ fn unfolded_types_past(root: &Path, head: u64) -> Vec<String> {
 /// canary; a logged-in report, or a cause that reads no login, runs the canary on the hold's
 /// model, whose passing result releases the hold by probe and whose error result does not; a
 /// failed canary's last person-needing category moves the cause, carrying the hold's model; a
-/// hold re-declared while its probe runs is not released by it; and a `model_not_found` hold or
-/// an operator hold is never probed.
+/// hold re-declared while its probe runs is not released by it, whether seeded on its own cause,
+/// moved to another person-needing cause by a host sighting, or held by the operator as `rigger
+/// hold` holds it; and a `model_not_found` hold or an operator hold is never probed.
 #[cfg(unix)]
 #[test]
 fn a_probe_releases_a_held_run_only_on_a_passing_canary_of_the_hold_it_read() {
@@ -9727,6 +9746,10 @@ fn a_probe_releases_a_held_run_only_on_a_passing_canary_of_the_hold_it_read() {
             "fix the account's billing",
             rigger::run::HOLD_BY_PROBE,
         )
+    };
+    let sighted = rigger::run::RunHeld {
+        by: HOLD_BY_HOST.to_string(),
+        ..billing.clone()
     };
     let cases = [
         released_row(
@@ -9798,6 +9821,49 @@ fn a_probe_releases_a_held_run_only_on_a_passing_canary_of_the_hold_it_read() {
             vec![probed_hold(SEEDED_HOLD_CAUSE, HOLD_BY_HOST)],
             &["operator"],
         ),
+        ProbeCase {
+            redeclare: |root| {
+                let sighting = rigger::run_store::HoldSighting {
+                    cause: "billing_error",
+                    detail: "billing_error",
+                    model: PROBED_MODEL,
+                };
+                common::cli::with_run_store(root, |store| {
+                    rigger::run_store::record_hold_sighting(store, &sighting).unwrap()
+                });
+            },
+            ..released_row(
+                "a hold a host sighting moves during its probe is not released by it",
+                (SEEDED_HOLD_CAUSE, HOLD_BY_HOST),
+                (
+                    logged_in(),
+                    format!("{SESSION_WAITS_FOR_A_HOLD}{PASSING_CANARY}"),
+                ),
+                Some(60),
+                (false, true),
+                vec![sighted],
+                &["operator"],
+            )
+        },
+        ProbeCase {
+            redeclare: |root| {
+                common::cli::with_run_store(root, |store| {
+                    rigger::run_store::hold_by_operator(store, HOLD_REASON).unwrap()
+                });
+            },
+            ..released_row(
+                "a hold the operator holds during its probe is not released by it",
+                (SEEDED_HOLD_CAUSE, HOLD_BY_HOST),
+                (
+                    logged_in(),
+                    format!("{SESSION_WAITS_FOR_A_HOLD}{PASSING_CANARY}"),
+                ),
+                Some(60),
+                (false, true),
+                vec![verb_hold(HOLD_REASON, PROBED_MODEL)],
+                &["operator"],
+            )
+        },
         released_row(
             "a model_not_found hold is never probed",
             ("model_not_found", HOLD_BY_HOST),
@@ -9943,7 +10009,7 @@ fn a_hold_landing_mid_run_is_probed_and_its_canary_outlasting_the_drive_is_waite
         )
     );
     let hold = probed_hold(SEEDED_HOLD_CAUSE, rigger::run::HOLD_BY_HOST);
-    let mut land = holding_the_live_session(root, Duration::ZERO, || {
+    let mut land = holding_the_live_session(root, || {
         common::fixtures::dated_ago(common::fixtures::run_held_event(&hold), 120)
     });
     let (out, err, ok, fake) = run_on_arms_beside(root, &["run"], scratch.path(), &arms, |fake| {
@@ -11520,8 +11586,6 @@ fn a_resume_ending_api_side_or_on_a_held_run_launches_nothing_fresh() {
         workflow: &'static WorkflowFixture,
         /// The shell of each `--resume` launch in turn; the one past them answers.
         endings: Vec<String>,
-        /// How long past `$here/session-live` an operator hold lands, when a session marks it.
-        hold_lands: Duration,
         launches: Vec<Launch>,
         holds: Vec<rigger::run::RunHeld>,
         /// The fault a stop records ahead of the relaunch's answer, which supersedes it: a real
@@ -11542,7 +11606,6 @@ fn a_resume_ending_api_side_or_on_a_held_run_launches_nothing_fresh() {
             name: "a wait class",
             workflow: &TWO_ATTEMPT_RED_UNIT_WORKFLOW,
             endings: vec![retried("rate_limit")],
-            hold_lands: Duration::ZERO,
             launches: vec![(true, Some("interrupted"), Some("rate_limit")), completed],
             holds: vec![worker_hold(
                 "rate_limit",
@@ -11556,7 +11619,6 @@ fn a_resume_ending_api_side_or_on_a_held_run_launches_nothing_fresh() {
             name: "a hold class",
             workflow: &TWO_ATTEMPT_RED_UNIT_WORKFLOW,
             endings: vec![retried("billing_error")],
-            hold_lands: Duration::ZERO,
             launches: vec![
                 (true, Some("interrupted"), Some("billing_error")),
                 completed,
@@ -11573,7 +11635,6 @@ fn a_resume_ending_api_side_or_on_a_held_run_launches_nothing_fresh() {
             name: "a FAULT class on a held run",
             workflow: &TWO_ATTEMPT_RED_UNIT_WORKFLOW,
             endings: vec![under_a_hold(api_retry_lines(&["invalid_request"], 1))],
-            hold_lands: Duration::ZERO,
             launches: vec![
                 (true, Some("interrupted"), Some("invalid_request")),
                 completed,
@@ -11585,7 +11646,6 @@ fn a_resume_ending_api_side_or_on_a_held_run_launches_nothing_fresh() {
             name: "an unclassed refusal on a held run",
             workflow: &TWO_ATTEMPT_RED_UNIT_WORKFLOW,
             endings: vec![under_a_hold(String::new())],
-            hold_lands: Duration::ZERO,
             launches: vec![(true, Some("interrupted"), Some("unknown")), completed],
             holds: vec![seeded_operator_hold()],
             fault: None,
@@ -11594,7 +11654,6 @@ fn a_resume_ending_api_side_or_on_a_held_run_launches_nothing_fresh() {
             name: "a read error on a held run",
             workflow: &TWO_ATTEMPT_RED_UNIT_WORKFLOW,
             endings: vec![under_a_hold(UNREADABLE.to_string())],
-            hold_lands: Duration::ZERO,
             launches: vec![(true, None, None), completed],
             holds: vec![seeded_operator_hold()],
             fault: None,
@@ -11603,21 +11662,21 @@ fn a_resume_ending_api_side_or_on_a_held_run_launches_nothing_fresh() {
             name: "a hold landing between a read error and the end of the drain joins",
             workflow: &TWO_ATTEMPT_RED_UNIT_WORKFLOW,
             endings: vec![format!("{UNREADABLE}{outliving_its_reap}")],
-            hold_lands: Duration::ZERO,
             launches: vec![(true, None, None), completed],
             holds: vec![seeded_operator_hold()],
             fault: None,
         },
-        // The announced wait excuses the first wake of the bound, so the silence this launch runs
-        // up before the hold lands stands past the bound at the wake after, the hold still open.
+        // The announced wait excuses the first wake of the bound, which re-arms for at least five
+        // seconds, so the session marks itself live only once it has been silent past the bound
+        // and the announced wait: the hold landing at that mark leaves the silence run up before
+        // it past the bound at the wake after, the hold still open.
         Case {
             name: "a stop on a held run",
             workflow: &SILENCE_BOUNDED_TWO_ATTEMPT_WORKFLOW,
             endings: vec![format!(
-                "    : > \"$here/session-live\"\n{}{READS_TO_ITS_CLOSE}{ENDS}",
+                "{}    sleep 2.5\n    : > \"$here/session-live\"\n{READS_TO_ITS_CLOSE}{ENDS}",
                 api_retry_lines(&["rate_limit"], 1000)
             )],
-            hold_lands: Duration::from_secs(3),
             launches: vec![(true, Some("stopped"), None), completed],
             holds: vec![seeded_operator_hold()],
             fault: Some(STOP),
@@ -11626,7 +11685,6 @@ fn a_resume_ending_api_side_or_on_a_held_run_launches_nothing_fresh() {
             name: "a hold landing inside the stop grace",
             workflow: &SILENCE_BOUNDED_TWO_ATTEMPT_WORKFLOW,
             endings: vec![held_as_its_input_closes.clone()],
-            hold_lands: Duration::ZERO,
             launches: vec![(true, Some("stopped"), None), completed],
             holds: vec![seeded_operator_hold()],
             fault: Some(STOP),
@@ -11635,7 +11693,6 @@ fn a_resume_ending_api_side_or_on_a_held_run_launches_nothing_fresh() {
             name: "a FAULT class on an unheld run",
             workflow: &TWO_ATTEMPT_RED_UNIT_WORKFLOW,
             endings: vec![retried("invalid_request")],
-            hold_lands: Duration::ZERO,
             launches: vec![fallen_back, completed_fresh],
             holds: vec![],
             fault: None,
@@ -11644,7 +11701,6 @@ fn a_resume_ending_api_side_or_on_a_held_run_launches_nothing_fresh() {
             name: "a read error on an unheld run",
             workflow: &TWO_ATTEMPT_RED_UNIT_WORKFLOW,
             endings: vec![format!("{UNREADABLE}{ENDS}")],
-            hold_lands: Duration::ZERO,
             launches: vec![fallen_back, completed_fresh],
             holds: vec![],
             fault: None,
@@ -11653,7 +11709,6 @@ fn a_resume_ending_api_side_or_on_a_held_run_launches_nothing_fresh() {
             name: "a lost session behind an outage",
             workflow: &TWO_ATTEMPT_RED_UNIT_WORKFLOW,
             endings: vec![retried("rate_limit"), ENDS.to_string()],
-            hold_lands: Duration::ZERO,
             launches: vec![
                 (true, Some("interrupted"), Some("rate_limit")),
                 fallen_back,
@@ -11699,7 +11754,7 @@ fn a_resume_ending_api_side_or_on_a_held_run_launches_nothing_fresh() {
         );
         let closes = case.launches[0].1.is_some();
         let scratch_root = scratch.path().to_str().unwrap();
-        let mut hold = holding_the_live_session(root, case.hold_lands, || {
+        let mut hold = holding_the_live_session(root, || {
             common::fixtures::run_held_event(&seeded_operator_hold())
         });
         // The host reads the hold once the launch has ended, so the release waits for what follows
@@ -13862,14 +13917,6 @@ fn step_weighs_a_markers_silence_outside_a_released_hold() {
     }
 }
 
-/// The type of every event on `root`'s run stream, oldest first.
-fn run_event_types(root: &Path) -> Vec<String> {
-    common::cli::read_run_events(root)
-        .into_iter()
-        .map(|event| event.type_)
-        .collect()
-}
-
 /// Spec 105's step exit: given a held run with a leftover worktree on its scratch root, a definition
 /// drifted from its pin and a spawn whose marker went stale, when the operator steps, then the step
 /// prints the hold with an empty wave, exits 0 and records nothing, with its sweep, definition pin
@@ -13909,7 +13956,7 @@ fn a_held_step_names_the_hold_ahead_of_its_sweep_pin_and_liveness_sweep() {
         common::cli::plant_stale_marker(Path::new(&marker));
         edit_worker_prompt(root, "Do the unit, but differently now.");
         common::cli::seed_on_the_run(root, common::fixtures::run_held_event(&held));
-        let recorded = run_event_types(root);
+        let recorded = read_run_events(root);
 
         let (out, err, ok) = step_with_scratch_root(root, &scratch);
         assert!(ok, "{name}: a held step exits 0; stderr: {err}");
@@ -13920,8 +13967,8 @@ fn a_held_step_names_the_hold_ahead_of_its_sweep_pin_and_liveness_sweep() {
             "{name}: the sweeps report nothing"
         );
         assert_eq!(
-            run_event_types(root),
-            recorded,
+            common::fixtures::types_of(&read_run_events(root)),
+            common::fixtures::types_of(&recorded),
             "{name}: a held step records nothing"
         );
         assert!(leftover.exists(), "{name}: a held step sweeps nothing");
@@ -13932,10 +13979,7 @@ fn a_held_step_names_the_hold_ahead_of_its_sweep_pin_and_liveness_sweep() {
             !ok,
             "{name}: the drift halts the released run; stdout: {out}"
         );
-        assert!(
-            err.contains("definition drift"),
-            "{name}: the pin ran; stderr: {err}"
-        );
+        let halt = lines_starting_with(&err, "rigger: ");
         assert_eq!(
             lines_starting_with(&err, "rigger step: swept"),
             [format!(
@@ -13956,6 +14000,27 @@ fn a_held_step_names_the_hold_ahead_of_its_sweep_pin_and_liveness_sweep() {
             lines_starting_with(&err, "rigger step: liveness swept"),
             ["rigger step: liveness swept 1 hung spawn(s) (classified infra, no attempt charged): a/implementer#0"],
             "{name}: the liveness sweep ran; stderr: {err}"
+        );
+        let rebase = read_run_events(root)
+            .into_iter()
+            .rfind(|event| event.meta.contains_key(rigger::run::META_DEFINITION_PRIOR))
+            .unwrap_or_else(|| panic!("{name}: the rebased step records the supersession"));
+        let meta = |key: &str| rebase.meta[key].clone();
+        let (run, pinned, current) = (
+            meta(rigger::run::META_RUN_ID),
+            meta(rigger::run::META_DEFINITION_PRIOR),
+            meta(rigger::run::META_DEFINITION),
+        );
+        assert_eq!(
+            halt,
+            [format!(
+                "rigger: definition drift - the on-disk workflow/agent definition (hash {current}) \
+                 differs from the hash run {run} pinned at start ({pinned}). A live run pins its \
+                 definition so replay semantics cannot silently change mid-campaign. Re-run with \
+                 --rebase-definition to record the supersession ({pinned} -> {current}) and \
+                 continue, or restore the definition to match the pin."
+            )],
+            "{name}: the pin ran, halting on the drift the rebase then superseded"
         );
     }
 }
@@ -14033,7 +14098,7 @@ fn a_step_of_a_run_not_proved_unheld_fails_on_its_read_ahead_of_its_sweep() {
     assert!(ok, "the first step parks the worker; stderr: {err}");
     let leftover = plant_a_leftover_worktree(root, &scratch);
     common::cli::seed_a_hold_no_fold_applies(root);
-    let recorded = run_event_types(root);
+    let recorded = read_run_events(root);
 
     let (out, err, ok) = step_with_scratch_root(root, &scratch);
     assert!(!ok, "a run not proved unheld fails the step; stdout: {out}");
@@ -14042,7 +14107,11 @@ fn a_step_of_a_run_not_proved_unheld_fails_on_its_read_ahead_of_its_sweep() {
         err, "rigger: conductor: expected ident at line 1 column 2\n",
         "the failed read"
     );
-    assert_eq!(run_event_types(root), recorded, "the step records nothing");
+    assert_eq!(
+        common::fixtures::types_of(&read_run_events(root)),
+        common::fixtures::types_of(&recorded),
+        "the step records nothing"
+    );
     assert!(leftover.exists(), "the step sweeps nothing");
 }
 
@@ -16146,6 +16215,9 @@ fn a_live_runs_launch_is_left_alone_beside_it_and_reconciled_by_the_next_start_o
     };
     if !common::fixtures::wait_until_for(POLLS_BESIDE_A_RUN, || recorded_pid().is_some()) {
         drop(live);
+        // An agent launched between the wait's last read and the run's end is owned before the
+        // panic, so the failure ends it too.
+        let _late_agent = recorded_pid().map(common::OwnedPid::new);
         panic!(
             "the live run never launched its agent; stderr: {}",
             std::fs::read_to_string(&stderr).unwrap()

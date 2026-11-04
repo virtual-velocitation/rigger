@@ -408,8 +408,8 @@ pub fn stop_pid(pid: u32) -> bool {
 /// A process this test did not spawn and holds no [`std::process::Child`] handle to, owned from
 /// the moment its pid is read: dropping the owner, on any path out of its scope and a panic's
 /// unwind included, ends it through [`terminate_pid`], but only while the pid still carries the
-/// start time it was read with ([`rigger::reap::pid_starttime`], the witness the production reap
-/// re-reads before it signals). A pid that had already ended when it was read, or that was
+/// start time it was read with ([`rigger::reap::still_started`], the witness check the production
+/// reap runs before it signals). A pid that had already ended when it was read, or that was
 /// recycled onto another process since, is never signalled.
 pub struct OwnedPid {
     pid: u32,
@@ -419,16 +419,27 @@ pub struct OwnedPid {
 impl OwnedPid {
     /// Own `pid`, its start time read now.
     pub fn new(pid: u32) -> Self {
-        Self {
-            pid,
-            started: rigger::reap::pid_starttime(pid),
-        }
+        Self::owning(pid, rigger::reap::pid_starttime(pid))
+    }
+
+    /// Own `pid` as read with the start time `started`, so a row can hand the owner a witness the
+    /// pid no longer carries, as a recycled pid reads.
+    pub fn with_witness(pid: u32, started: u64) -> Self {
+        Self::owning(pid, Some(started))
+    }
+
+    /// Own `pid` as read with the start time `started`, `None` when it was not read.
+    fn owning(pid: u32, started: Option<u64>) -> Self {
+        Self { pid, started }
     }
 }
 
 impl Drop for OwnedPid {
     fn drop(&mut self) {
-        if self.started.is_some() && rigger::reap::pid_starttime(self.pid) == self.started {
+        if self
+            .started
+            .is_some_and(|started| rigger::reap::still_started(self.pid, started))
+        {
             terminate_pid(self.pid);
         }
     }

@@ -79,6 +79,9 @@ pub struct Driver<'a> {
     /// Whether the run stands held, read ahead of each handout; `None` on a driver no hold
     /// governs.
     hold_read: Option<&'a (dyn Fn() -> Result<bool, Error> + Sync)>,
+    /// Set while the hold reads fail in a row, so `next` names a failing streak on stderr once,
+    /// not at every poll.
+    hold_read_failing: AtomicBool,
 }
 
 impl Default for Driver<'_> {
@@ -92,6 +95,7 @@ impl Default for Driver<'_> {
             finished: AtomicBool::new(false),
             session_closed: AtomicBool::new(false),
             hold_read: None,
+            hold_read_failing: AtomicBool::new(false),
         }
     }
 }
@@ -121,17 +125,31 @@ impl<'a> Driver<'a> {
 
     /// Return the next queued spawn request for the shim, or None if none waits or the run is not
     /// proved unheld: a held run or a read that fails hands out nothing and pops nothing, so the
-    /// request stays pending for a later poll. The hold is read only with a spawn queued, since
-    /// the shim polls at 20 Hz while idle, and outside the lock, which a spawn queues under.
+    /// request stays pending for a later poll. A read that fails names its error on stderr once
+    /// per streak of failed reads. The hold is read only with a spawn queued, since the shim polls
+    /// at 20 Hz while idle, and outside the lock, which a spawn queues under.
     pub fn next(&self) -> Option<SpawnRequest> {
         if self.inner.lock().unwrap().queue.is_empty() {
             return None;
         }
-        if self
-            .hold_read
-            .is_some_and(|read| !matches!(read(), Ok(false)))
-        {
-            return None;
+        if let Some(read) = self.hold_read {
+            match read() {
+                Ok(held) => {
+                    self.hold_read_failing.store(false, Ordering::SeqCst);
+                    if held {
+                        return None;
+                    }
+                }
+                Err(e) => {
+                    if !self.hold_read_failing.swap(true, Ordering::SeqCst) {
+                        eprintln!(
+                            "rigger: the hold read failed, so no spawn is handed out until a \
+                             read proves the run unheld: {e}"
+                        );
+                    }
+                    return None;
+                }
+            }
         }
         let mut inner = self.inner.lock().unwrap();
         while let Some(id) = inner.queue.pop_front() {
@@ -140,6 +158,12 @@ impl<'a> Driver<'a> {
             }
         }
         None
+    }
+
+    /// A guard that marks the run finished ([`finish`](Driver::finish)) as the conductor thread
+    /// holding it ends, so that thread signals the run's end on every exit, a panic included.
+    pub fn finishing(&self) -> Finishing<'_, 'a> {
+        Finishing(self)
     }
 
     /// Mark the run finished - the conductor's `run` has returned, so no further
@@ -194,6 +218,21 @@ impl<'a> Driver<'a> {
         } else {
             false
         }
+    }
+}
+
+/// The guard [`Driver::finishing`] hands the conductor thread: dropping it marks the run
+/// finished, so an empty `next()` reports done and the shim exits. Dropped by a panic, it first
+/// closes the session ([`Driver::close_session`]), since no conductor is left to take a pending
+/// spawn's result, so each pending spawn parks and the shim reads done once its queue drains.
+pub struct Finishing<'d, 'a>(&'d Driver<'a>);
+
+impl Drop for Finishing<'_, '_> {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            self.0.close_session();
+        }
+        self.0.finish();
     }
 }
 
@@ -602,6 +641,34 @@ mod tests {
             let ended = returned(outcome);
             assert_eq!(ended.map_err(|e| e.0).unwrap_err(), parked_spawn(ID).0);
         });
+    }
+
+    /// Spec 105 KEEP-AWAKE: a conductor thread that panics under [`Driver::finishing`] still ends
+    /// the serve: the guard parks every pending spawn, since no conductor is left to take its
+    /// result, and marks the run finished, so the shim's next poll reads done and `rigger serve`
+    /// returns and drops its keep-awake guard.
+    #[test]
+    fn a_conductor_panicking_under_its_finishing_guard_parks_its_spawns_and_finishes() {
+        for (name, handed_out) in [("a spawn handed out", true), ("a spawn queued", false)] {
+            let driver = Driver::new();
+            with_a_pending_spawn(&driver, |outcome| {
+                if handed_out {
+                    assert_eq!(next_id(&driver), Some(ID.to_string()), "{name}");
+                }
+                let conductor = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let _finishing = driver.finishing();
+                    panic!("{name}: the conductor panics");
+                }));
+                assert!(conductor.is_err(), "{name}");
+                assert_eq!(
+                    returned(outcome).map_err(|e| e.0).unwrap_err(),
+                    parked_spawn(ID).0,
+                    "{name}: the pending spawn parks"
+                );
+                assert_eq!(next_id(&driver), None, "{name}: nothing is handed out");
+                assert!(driver.is_finished(), "{name}: the shim reads done");
+            });
+        }
     }
 
     #[test]

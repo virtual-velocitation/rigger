@@ -135,6 +135,30 @@ pub fn insert_pre_ledger_rows(
     positions
 }
 
+/// THE ONE AGED ROW INSERTER: rows `(revision, type, body, recorded_at)` written on `stream` in
+/// the sqlite store file `db` with raw SQL, each with empty metadata, the id `e<revision>` and a
+/// valid-time equal to its recording time in nanoseconds since the epoch, so a row stands dated
+/// in the past, past the store's own current-time stamping. A store has opened `db` before, so
+/// the file holds the schema.
+pub fn insert_aged_rows(db: &std::path::Path, stream: &str, rows: &[(i64, &str, String, i64)]) {
+    let conn = rusqlite::Connection::open(db).expect("open the log to insert aged rows");
+    for (revision, ty, body, recorded_at) in rows {
+        conn.execute(
+            "INSERT INTO events (stream, type, id, data, meta, valid_from, recorded_at, revision)
+             VALUES (?1, ?2, ?3, ?4, '{}', ?5, ?5, ?6)",
+            rusqlite::params![
+                stream,
+                ty,
+                format!("e{revision}"),
+                body.as_bytes(),
+                recorded_at,
+                revision
+            ],
+        )
+        .expect("insert an aged row");
+    }
+}
+
 /// A STORE AS A BINARY BEFORE THE LEDGER WROTE IT (spec 107): the sqlite store `inner` over the
 /// file `db`, whose every append lands through [`insert_pre_ledger_rows`] and so records a
 /// derived event the store itself refuses; every read is `inner`'s own. It appends

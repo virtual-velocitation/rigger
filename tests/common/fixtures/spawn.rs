@@ -157,8 +157,13 @@ pub fn sleeping(seconds: u32) -> String {
 
 /// The stand-in `claude` in `dir` started exactly `count` sleeps ([`sleeping`]) and none is left
 /// once the read that launched it has returned: each pid they recorded is gone from `/proc` within
-/// 500 ms, read every 20 ms and never signalled.
+/// 500 ms, read every 20 ms and never signalled. A host with no `/proc` fails the check rather
+/// than reading every pid as gone.
 pub fn assert_no_sleeper_left(dir: &std::path::Path, count: usize, name: &str) {
+    assert!(
+        std::path::Path::new("/proc/self").exists(),
+        "{name}: the sleeper check reads /proc, which this host does not mount"
+    );
     let recorded = std::fs::read_to_string(dir.join("sleepers")).unwrap_or_default();
     let pids: Vec<&str> = recorded.lines().collect();
     assert_eq!(

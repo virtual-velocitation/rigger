@@ -161,6 +161,24 @@ fn a_dropped_owned_pid_ends_its_process_by_sigkill() {
     );
 }
 
+/// A dropped [`common::OwnedPid`] whose pid no longer carries the start time it was read with, as
+/// a pid recycled onto another process reads, leaves that process running: the drop re-reads the
+/// witness and refuses a pid whose start time moved. The half-second bound is the wait a wrongly
+/// ended process would need to be seen gone.
+#[cfg(unix)]
+#[test]
+fn a_dropped_owned_pid_whose_start_time_moved_leaves_its_process_running() {
+    let mut child = spawn_sleeper();
+    let started = rigger::reap::pid_starttime(child.id()).expect("the sleeper's start time");
+
+    drop(common::OwnedPid::with_witness(child.id(), started + 1));
+
+    let ended = common::fixtures::wait_until_for(20, || matches!(child.try_wait(), Ok(Some(_))));
+    // cleanup() never leaks the fixture regardless of the assertion outcome below.
+    cleanup(&mut child);
+    assert!(!ended, "a pid whose start time moved is never ended");
+}
+
 #[test]
 fn is_alive_is_false_for_a_pid_that_was_never_a_real_process() {
     // Mirrors `send_signal`'s own liveness twin in `src/reap.rs`: a bogus pid answers

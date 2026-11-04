@@ -122,19 +122,19 @@ fn register_run_instance(repo: &str, selection: &StoreSelection) -> RunRegistrat
         eprintln!("rigger: instance registry write skipped ({e}); discovery is unaffected");
         return RunRegistration::inert();
     }
-    // The heartbeat thread re-stamps `inst` every interval until the guard drops. `recv_timeout`
-    // makes the sleep interruptible: each `Timeout` refreshes the entry; a `Disconnected` (the guard
-    // dropped) ends the `while let` at once, so teardown never waits out a full interval.
+    // The heartbeat thread re-stamps `inst` every interval until the guard drops
+    // ([`tick_until_stopped`]): the guard's drop ends the wait at once, so teardown never waits
+    // out a full interval.
     let (tx, rx) = std::sync::mpsc::channel::<()>();
     let interval = registry_heartbeat_interval();
     let handle = std::thread::spawn(move || {
-        while let Err(std::sync::mpsc::RecvTimeoutError::Timeout) = rx.recv_timeout(interval) {
+        tick_until_stopped(&rx, interval, || {
             let refreshed = rigger::registry::Instance {
                 heartbeat_ms: rigger::registry::now_ms(),
                 ..inst.clone()
             };
             let _ = rigger::registry::write(&dir, &refreshed); // best-effort refresh
-        }
+        })
     });
     RunRegistration {
         tx: Some(tx),
@@ -1083,8 +1083,12 @@ fn merge_hung_attention(
 /// build-cache names mirror exactly what `rigger validate`'s residue report flags as a shared
 /// cache (`scan_residue`), so validate-reports and step-reclaims stay in lockstep.
 ///
-/// Each area is reaped-then-removed (spec 23): any process still rooted in it is reaped BEFORE
-/// the dir is removed so nothing outlives a dir holding a now-deleted cwd. Scoped to the EXACT
+/// The three agent areas are reclaimed entry by entry ([`remove_agent_area_entries`]), each area
+/// then removed once empty: a critique run's entries (`critique-<hash>`) share those areas and
+/// are left to that critique's own next call, so a critique still running as the run ends keeps
+/// its scratch and its processes. Each reclaimed entry and the bare `target` are
+/// reaped-then-removed (spec 23): any process still rooted in one is reaped BEFORE the dir is
+/// removed so nothing outlives a dir holding a now-deleted cwd. Scoped to the EXACT
 /// dir removed under the resolved scratch `root` (`RIGGER_TMPDIR` > `defaults.workdir` > repo
 /// default), never a hardcoded `.rigger/tmp`, so a relocated scratch root stays safe and only
 /// rigger's own scratch is ever reaped. Every half is best-effort - a missing area is a graceful
@@ -1119,11 +1123,43 @@ fn merge_hung_attention(
 /// rigger-directed build actually targets; `target` stays a bare reap as before.
 fn reclaim_run_scratch(root: &str) {
     let base = std::path::Path::new(root);
-    reap_then_remove_dir(&base.join("agent-scratch"), base);
-    reap_then_remove_dir(&base.join(rigger::liveness::MARKER_SUBDIR), base);
-    reap_then_remove_dir(&base.join(claude_code::AGENT_STREAM_SUBDIR), base);
+    remove_agent_area_entries(base, |name| !review::is_critique_run(name));
+    for area in AGENT_AREAS {
+        let _ = std::fs::remove_dir(base.join(area));
+    }
     let _ = reclaim_shared_build_cache(&base.join(rigger::worktree::SHARED_BUILD_CACHE_NAME), base);
     reap_then_remove_dir(&base.join("target"), base);
+}
+
+/// The agent areas under a scratch root, each holding one entry per run: the scratch a worker
+/// parks probe repos and verify builds in, per-spawn liveness markers, and a headless host's raw
+/// transcripts.
+const AGENT_AREAS: [&str; 3] = [
+    rigger::driver::replay::SPAWN_SCRATCH_SUBDIR,
+    rigger::liveness::MARKER_SUBDIR,
+    claude_code::AGENT_STREAM_SUBDIR,
+];
+
+/// Remove every entry of the [`AGENT_AREAS`] under `scratch_root` whose name `takes` accepts: a
+/// directory through the reap-then-remove every scratch removal shares, scoped to
+/// `scratch_root`, anything else as a file. Best-effort: an area or entry that cannot be read or
+/// removed stays for a later call.
+pub(crate) fn remove_agent_area_entries(scratch_root: &Path, takes: impl Fn(&str) -> bool) {
+    for area in AGENT_AREAS {
+        let Ok(entries) = std::fs::read_dir(scratch_root.join(area)) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            if !takes(&entry.file_name().to_string_lossy()) {
+                continue;
+            }
+            if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                reap_then_remove_dir(&entry.path(), scratch_root);
+            } else {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
 }
 
 /// `rigger reported <id>` - exit 0 iff spawn `<id>` already has a recorded result in this
@@ -1462,18 +1498,28 @@ fn ticking<T>(
     tick: impl Fn() + Send,
     drive: impl FnOnce() -> T,
 ) -> T {
-    use std::sync::mpsc::{channel, RecvTimeoutError};
+    use std::sync::mpsc::channel;
 
     std::thread::scope(|scope| {
         let (_driving, driven) = channel::<()>();
         scope.spawn(move || {
             tick();
-            while let Err(RecvTimeoutError::Timeout) = driven.recv_timeout(interval) {
-                tick();
-            }
+            tick_until_stopped(&driven, interval, &tick);
         });
         drive()
     })
+}
+
+/// Call `tick` once each `interval` until `stop` receives or its sender drops. The wait is a
+/// `recv_timeout` on `stop`, so the sender's drop ends it at once, never after a full interval.
+fn tick_until_stopped(
+    stop: &std::sync::mpsc::Receiver<()>,
+    interval: std::time::Duration,
+    tick: impl Fn(),
+) {
+    while let Err(std::sync::mpsc::RecvTimeoutError::Timeout) = stop.recv_timeout(interval) {
+        tick();
+    }
 }
 
 /// The keep-awake adapter [`KEEP_AWAKE_ENV`] selects: unset, the host's [`OsSleepHold`];
@@ -1601,17 +1647,22 @@ fn pause_a_hold_poll() {
 /// `rigger critique`'s launch is closed too, and that false close stands until its own close lands.
 /// Each launch is reaped before its close, so a crash between the two re-reaps at the next start:
 /// what is still rooted under its `dir`, when the project has a `scratch` root and the record names
-/// a dir, through [`rigger::reap::reap_processes_rooted_under`], whose containment check refuses a
-/// dir outside the scratch root by name and reaps nothing there. A read or an append that fails
-/// ends the start with its error.
-fn reconcile_open_launches(store: &dyn EventStore, scratch: Option<&str>) -> Res {
+/// a dir, through `reap` called with that dir and the root; the composition root passes
+/// [`rigger::reap::reap_processes_rooted_under`], whose containment check refuses a dir outside
+/// the scratch root by name and reaps nothing there. A read or an append that fails ends the start
+/// with its error.
+fn reconcile_open_launches(
+    store: &dyn EventStore,
+    scratch: Option<&str>,
+    reap: &dyn Fn(&Path, &Path),
+) -> Res {
     let every_run = Filter {
         stream_prefix: Some(progress::STREAM.to_string()),
     };
     let events = store.read_all(0, Direction::Forward, &every_run)?;
     for (run, open) in progress::open_launches(&events) {
         if let Some(root) = scratch.filter(|_| !open.dir.is_empty()) {
-            rigger::reap::reap_processes_rooted_under(Path::new(&open.dir), Path::new(root));
+            reap(Path::new(&open.dir), Path::new(root));
         }
         let close = progress::SpawnLaunched::closed(
             open.spawn,
@@ -1635,6 +1686,7 @@ fn reconcile_open_launches(store: &dyn EventStore, scratch: Option<&str>) -> Res
 /// the progress store holds open ([`reconcile_open_launches`]). The machine stays awake through
 /// `sleep` from the moment the loop starts driving until this returns ([`keep_awake`]).
 fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
+    let command = "rigger run";
     // DISCOVERABILITY (spec 66, criterion 5): `rigger run <spec>` is a REAL pre-launch
     // surface that genuinely holds the spec path in production (unlike the SessionStart-only
     // `rigger prime` hook, which the installed hook always invokes with zero args - see
@@ -1652,14 +1704,14 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
     // FIRST, mirroring `cmd_step`'s own placement - see `resolve_main_worktree_or_refuse`'s
     // doc comment.
     let cwd = cwd();
-    let repo = resolve_main_worktree_or_refuse(&cwd, "rigger run")?;
+    let repo = resolve_main_worktree_or_refuse(&cwd, command)?;
     // Refuse before starting if a gating persona would stall the integration gate (spec 18,
     // unit 2); `load_run_config` reuses unit 1's lint at this run's config-load seam.
     let cfg = load_run_config(".")?;
     // EXACTLY ONE ROOT: this run's teardown reclaims the scratch root and its hosted agents write
     // into it, so it is refused here, before anything is reclaimed, reaped or anchored.
     let scratch = project_scratch_root(&repo, &cfg);
-    refuse_unless_one_root(&cwd, &repo, scratch.as_deref(), "rigger run")?;
+    refuse_unless_one_root(&cwd, &repo, scratch.as_deref(), command)?;
     let (criteria, text) = load_criteria(parsed.spec.as_deref())?;
     std::fs::create_dir_all(RIGGER_DIR)?;
     // ONE DRIVER AT A TIME (spec 105, RESUME BY SESSION): the step lock is held from here until
@@ -1680,7 +1732,11 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
     // step lock: each is reaped and closed before the base gates, so a start they refuse has
     // already reconciled. The reconciliation reads the progress store alone, so the run store
     // still opens after the anchor, behind this instance's registration.
-    reconcile_open_launches(&progress, scratch.as_deref())?;
+    reconcile_open_launches(
+        &progress,
+        scratch.as_deref(),
+        &rigger::reap::reap_processes_rooted_under,
+    )?;
     // Anchor + check out the run branch off `--base` (spec 18, criterion 6) BEFORE the
     // conductor branches any unit worktree off HEAD, so machine-generated units never
     // branch/merge onto the operator's own branch. `--base` threads here exactly as it does
@@ -1704,9 +1760,9 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
         // Loop-readiness gate (spec 38, criterion 2): refuse a run with no reachable base (an
         // unresolvable base AND no HEAD to fall back to) loudly rather than minting a run branch
         // that branches from nowhere.
-        refuse_when_base_unreachable(&repo, "rigger run", &base, planned)?;
-        refuse_when_base_lacks_spec_paths(&repo, "rigger run", &base, planned, &criteria)?;
-        anchor_run_branch(&repo, "rigger run", &base, base_explicit)?;
+        refuse_when_base_unreachable(&repo, command, &base, planned)?;
+        refuse_when_base_lacks_spec_paths(&repo, command, &base, planned, &criteria)?;
+        anchor_run_branch(&repo, command, &base, base_explicit)?;
         base_tip = rigger::worktree::branch_tip(&repo, RUN_BRANCH).unwrap_or_default();
     }
     // Register this instance in the machine-global discovery registry (spec 50, criterion 2).
@@ -1737,7 +1793,7 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
         false,
         &base_tip,
         &RunStartCritique {
-            command: "rigger run",
+            command,
             backend: backend.as_ref(),
             identity: &project_identity(),
             workflow: &cfg.workflow,
@@ -1776,7 +1832,7 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
     // the loop begins, so an active harness is never invisible. Held for the whole run - the
     // guard reaps the dash when this scope ends (unit 3's reaping mechanism).
     let _dash = start_run_dashboard(cfg.workflow.dash_enabled(), &store);
-    let _awake = keep_awake(sleep, "rigger run");
+    let _awake = keep_awake(sleep, command);
     // The hold controller polls beside the drive, on the folding store the host holds the run on.
     let control_holds = || {
         if let Err(e) = probe_an_owed_hold(&folding, &progress, &driver, &root) {
@@ -2177,6 +2233,10 @@ fn run_workflow(parsed: &RunArgs, command: &str, sleep: &dyn SleepHold) -> Res {
     // stdin ends the session.
     std::thread::scope(|s| {
         s.spawn(|| {
+            // Signal the run is over as this thread ends, so an empty rigger_next reports
+            // done:true and the shim exits cleanly. Set on success, error and panic alike: a
+            // conductor that fails still ends the run, and the shim must not poll forever.
+            let _finishing = driver.finishing();
             let held = HeldDriver::new(
                 &driver,
                 &store,
@@ -2206,10 +2266,6 @@ fn run_workflow(parsed: &RunArgs, command: &str, sleep: &dyn SleepHold) -> Res {
                 }
                 Err(e) => eprintln!("rigger: conductor: {e}"),
             }
-            // Signal the run is over so an empty rigger_next reports done:true and the
-            // shim exits cleanly. Set on BOTH success and error: a conductor error
-            // still ends the run, and the shim must not poll forever.
-            driver.finish();
         });
         // Wire the graph into the MCP server too, so a ReviewFinding (or DecisionMade)
         // an agent emits via rigger_emit folds into the graph as it lands - the
@@ -4207,6 +4263,43 @@ mod tests {
     }
 
     #[test]
+    fn reclaim_run_scratch_leaves_a_critique_runs_entries_in_every_agent_area() {
+        // A critique run shares the scratch root's agent areas with the loop run and reclaims its
+        // own entries on its next call, so a done run's teardown reclaims only the loop run's
+        // entries: a critique still running as the run ends keeps its marker, transcript and
+        // scratch, and no process rooted in them is reaped.
+        const CRITIQUE: &str = "critique-0123456789abcdef";
+        let root = tempfile::tempdir().unwrap();
+        let base = root.path();
+        let areas = [
+            rigger::driver::replay::SPAWN_SCRATCH_SUBDIR,
+            rigger::liveness::MARKER_SUBDIR,
+            claude_code::AGENT_STREAM_SUBDIR,
+        ];
+        for area in areas {
+            for run in ["run-1", CRITIQUE] {
+                let dir = base.join(area).join(run);
+                std::fs::create_dir_all(&dir).unwrap();
+                std::fs::write(dir.join("residue.bin"), [0u8; 32]).unwrap();
+            }
+        }
+
+        reclaim_run_scratch(base.to_str().unwrap());
+
+        for area in areas {
+            let area_dir = base.join(area);
+            assert_eq!(
+                (
+                    area_dir.join("run-1").exists(),
+                    area_dir.join(CRITIQUE).join("residue.bin").exists()
+                ),
+                (false, true),
+                "{area}: the run's entry is reclaimed and the critique's is left to its own next call"
+            );
+        }
+    }
+
+    #[test]
     fn reclaim_run_scratch_spares_the_shared_build_cache_while_a_build_holds_its_guard() {
         // spec 77 criterion 5 / Global Constraint 3: this run-teardown fires automatically
         // and unconditionally at every qualifying terminal state, with no operator action -
@@ -4828,46 +4921,97 @@ mod tests {
         assert_eq!(beat_streams(&progress), vec!["progress/run-a"]);
     }
 
-    /// spec 105, RESUME BY SESSION: a project with no scratch root (a repo-less run) has no root
-    /// to authorize a reap against, so its start-up reconciliation closes each open launch
-    /// `interrupted` and reaps nothing: a process rooted in the launch's dir lives on.
+    /// spec 105, RESUME BY SESSION: a start's reconciliation reaps the dir of each open launch that
+    /// names one, under the project's scratch root and while that launch still stands open, so a
+    /// crash ahead of the close re-reaps at the next start, then closes every open launch
+    /// `interrupted` with no class. A project with no scratch root (a repo-less run) has no root to
+    /// authorize a reap against, and a launch naming no dir has nothing to reap, so neither reaches
+    /// the reaper.
     #[test]
-    fn a_reconciliation_with_no_scratch_root_closes_every_open_launch_and_reaps_nothing() {
-        use crate::test_support::{cleanup, sleeper_in, wait_until};
+    fn a_reconciliation_reaps_each_named_dir_under_the_scratch_root_ahead_of_its_close() {
         use rigger::progress::{SpawnLaunched, ENDED_INTERRUPTED};
-
-        let launched_in = tempfile::tempdir().unwrap();
-        let mut rooted = sleeper_in(launched_in.path());
-        let seen = wait_until(|| {
-            rigger::reap::processes_rooted_under(launched_in.path())
+        use std::cell::RefCell;
+        const ROOT: &str = "/scratch";
+        const DIR: &str = "/scratch/agent-scratch/run-a/u1";
+        let launches = [
+            ("run-a", "u1/implementer#0", DIR),
+            ("run-b", "u2/implementer#0", ""),
+        ];
+        for (name, scratch, reaped) in [
+            (
+                "a scratch root",
+                Some(ROOT),
+                vec![(DIR.to_string(), ROOT.to_string(), true)],
+            ),
+            ("no scratch root", None, Vec::new()),
+        ] {
+            let progress = Store::open(":memory:").unwrap();
+            let opened: Vec<SpawnLaunched> = launches
                 .iter()
-                .any(|(pid, _)| *pid == rooted.id())
-        });
-        let progress = Store::open(":memory:").unwrap();
-        let open = SpawnLaunched {
-            spawn: "u1/implementer#0".into(),
-            launch: 0,
-            session_id: "s-u1".into(),
-            started: 1,
-            dir: launched_in.path().to_str().unwrap().into(),
-            ..SpawnLaunched::default()
-        };
-        rigger::progress_store::record_launch(&progress, "run-a", &open).unwrap();
+                .map(|&(run, spawn, dir)| {
+                    let open = SpawnLaunched {
+                        spawn: spawn.into(),
+                        launch: 0,
+                        session_id: format!("s-{run}"),
+                        started: 1,
+                        dir: dir.into(),
+                        ..SpawnLaunched::default()
+                    };
+                    rigger::progress_store::record_launch(&progress, run, &open).unwrap();
+                    open
+                })
+                .collect();
+            // The fake reaper records each call with whether the launch naming its dir still
+            // stands open in the store as it is called.
+            let reaps = RefCell::new(Vec::new());
+            let reap = |dir: &Path, root: &Path| {
+                let every_run = Filter {
+                    stream_prefix: Some(progress::STREAM.to_string()),
+                };
+                let events = progress
+                    .read_all(0, Direction::Forward, &every_run)
+                    .unwrap();
+                let open = progress::open_launches(&events)
+                    .iter()
+                    .any(|(_, launch)| Path::new(&launch.dir) == dir);
+                reaps.borrow_mut().push((
+                    dir.display().to_string(),
+                    root.display().to_string(),
+                    open,
+                ));
+            };
 
-        let reconciled = reconcile_open_launches(&progress, None).map_err(|e| e.to_string());
+            let reconciled =
+                reconcile_open_launches(&progress, scratch, &reap).map_err(|e| e.to_string());
 
-        let alive = matches!(rooted.try_wait(), Ok(None));
-        cleanup(&mut rooted);
-        let records: Vec<SpawnLaunched> = progress::read_run(&progress, "run-a")
-            .unwrap()
-            .iter()
-            .map(|e| serde_json::from_slice(&e.data).unwrap())
-            .collect();
-        let closed = SpawnLaunched::closed("u1/implementer#0", 0, "s-u1", ENDED_INTERRUPTED, "");
-        assert_eq!(
-            (seen, reconciled, alive, records),
-            (true, Ok(()), true, vec![open, closed]),
-            "the open launch closes interrupted and the process in its dir survives"
-        );
+            let records = |run: &str| -> Vec<SpawnLaunched> {
+                progress::read_run(&progress, run)
+                    .unwrap()
+                    .iter()
+                    .map(|e| serde_json::from_slice(&e.data).unwrap())
+                    .collect()
+            };
+            let ran = |open: &SpawnLaunched| {
+                let closed = SpawnLaunched::closed(
+                    open.spawn.clone(),
+                    0,
+                    open.session_id.clone(),
+                    ENDED_INTERRUPTED,
+                    "",
+                );
+                vec![open.clone(), closed]
+            };
+            assert_eq!(
+                (
+                    reconciled,
+                    reaps.into_inner(),
+                    records("run-a"),
+                    records("run-b")
+                ),
+                (Ok(()), reaped, ran(&opened[0]), ran(&opened[1])),
+                "{name}: each named dir is reaped while its launch stands open, then every launch \
+                 closes interrupted"
+            );
+        }
     }
 }

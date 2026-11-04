@@ -126,19 +126,6 @@ fn seed_stale_in_flight_spawn(root: &Path, age_secs: i64) {
     let spawn_requested = format!(
         r#"{{"id":"{SPAWN_ID}","unit":"seam-unit","stage":"implementer","prompt":"do the seam work"}}"#
     );
-    insert_aged_rows(
-        root,
-        &[
-            (1, "RunStarted", run_started, age_secs),
-            (2, "SpawnRequested", spawn_requested, age_secs),
-        ],
-    );
-}
-
-/// Insert `(revision, type, body, age in seconds)` rows on `root`'s run stream, each stamped that
-/// far in the past, past the store's own current-time stamping (see
-/// [`seed_stale_in_flight_spawn`]).
-fn insert_aged_rows(root: &Path, rows: &[(i64, &str, String, i64)]) {
     let db = root.join(".rigger").join("events.db");
     // Opened through the real store first, so the schema is laid down exactly as the binary
     // itself would lay it down (mirrors `seed_order_signature`'s own precondition).
@@ -148,24 +135,15 @@ fn insert_aged_rows(root: &Path, rows: &[(i64, &str, String, i64)]) {
         Namespaced::prefix_for(&run_stream_identity(root)),
         rigger::conductor::STREAM
     );
-    let conn = rusqlite::Connection::open(&db).unwrap();
-    let now = now_nanos();
-    for (revision, ty, body, age_secs) in rows {
-        let ts = now - age_secs * 1_000_000_000;
-        conn.execute(
-            "INSERT INTO events (stream, type, id, data, meta, valid_from, recorded_at, revision)
-             VALUES (?1, ?2, ?3, ?4, '{}', ?5, ?5, ?6)",
-            rusqlite::params![
-                stream,
-                ty,
-                format!("e{revision}"),
-                body.as_bytes(),
-                ts,
-                revision
-            ],
-        )
-        .unwrap();
-    }
+    let recorded_at = now_nanos() - age_secs * 1_000_000_000;
+    common::fixtures::insert_aged_rows(
+        &db,
+        &stream,
+        &[
+            (1, "RunStarted", run_started, recorded_at),
+            (2, "SpawnRequested", spawn_requested, recorded_at),
+        ],
+    );
 }
 
 /// Run `rigger <args>` with cwd `dir`. `RIGGER_TMPDIR` is explicitly cleared (never merely
