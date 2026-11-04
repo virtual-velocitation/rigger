@@ -1984,6 +1984,14 @@ impl Fixture {
         rigger::progress::failed_closes_since(&self.progress_stream(), None)
     }
 
+    /// Every close of the run as `(launch, ended, class)` ([`close`]), in append order.
+    fn closes(&self) -> Vec<(u32, String, Option<String>)> {
+        self.launch_records()
+            .into_iter()
+            .filter_map(|record| Some((record.launch, record.ended?, record.class)))
+            .collect()
+    }
+
     /// [`opts`] for `spawn` whose environment hands the scripted agent `lines`.
     fn scripted(&self, spawn: &str, lines: &[String]) -> SpawnOpts {
         let file = self.scratch_file(&format!("{}.jsonl", spawn.replace(['/', '#'], "-")));
@@ -2768,6 +2776,11 @@ fn closed(launch: u32, session: &str, ended: &str, class: &str) -> SpawnLaunched
     SpawnLaunched::closed(RESUMED_SPAWN, launch, session, ended, class)
 }
 
+/// One close as [`Fixture::closes`] reads it: launch `launch` ended `ended` under `class`.
+fn close(launch: u32, ended: &str, class: Option<&str>) -> (u32, String, Option<String>) {
+    (launch, ended.to_string(), class.map(str::to_string))
+}
+
 /// The one result-line a fallback leaves on the run log: the fresh launch's answer.
 fn fresh_answer_on_record() -> Vec<(String, String, bool)> {
     vec![(FIXTURE_ANSWER.to_string(), String::new(), false)]
@@ -3165,28 +3178,28 @@ fn a_launch_ends_as_the_hold_and_its_class_decide() {
         let planted = fx.plant_scratch(&o);
         let (closes, failure, launches, results, kept) = match case.left {
             Ending::Interrupted(class, failure) => (
-                vec![(0, "interrupted", Some(class))],
+                vec![close(0, "interrupted", Some(class))],
                 failure,
                 1,
                 Vec::new(),
                 true,
             ),
             Ending::Faulted(class, failure) => (
-                vec![(0, "fault", Some(class))],
+                vec![close(0, "fault", Some(class))],
                 failure,
                 1,
                 Vec::new(),
                 false,
             ),
             Ending::FellBack => (
-                vec![(0, "interrupted", None), (1, "completed", None)],
+                vec![close(0, "interrupted", None), close(1, "completed", None)],
                 String::new(),
                 2,
                 fresh_answer_on_record(),
                 false,
             ),
             Ending::Stopped => (
-                vec![(0, "stopped", None)],
+                vec![close(0, "stopped", None)],
                 SILENCE_FAILURE.to_string(),
                 1,
                 liveness_fault_on_record(),
@@ -3226,12 +3239,7 @@ fn a_launch_ends_as_the_hold_and_its_class_decide() {
             Err(e) => rigger::conductor::strip_failure_marker(&e).to_string(),
         };
         assert_eq!(spawned, failure, "{name}: the failure");
-        let records = fx.launch_records();
-        let closed: Vec<_> = records
-            .iter()
-            .filter_map(|r| Some((r.launch, r.ended.as_deref()?, r.class.as_deref())))
-            .collect();
-        assert_eq!(closed, closes, "{name}: the closes");
+        assert_eq!(fx.closes(), closes, "{name}: the closes");
         assert_eq!(fx.tasks_read().len(), launches, "{name}: the launches");
         assert_eq!(fx.holds()[before..], case.holds, "{name}: the holds");
         assert_eq!(fx.recorded_results(), results, "{name}: the results");
@@ -3298,7 +3306,7 @@ fn a_hold_read_that_fails_launches_nothing_fresh_and_masks_no_failure() {
         resumed: bool,
         ending: &'static str,
         agent: AgentDef,
-        closes: Vec<(u32, &'static str, Option<&'static str>)>,
+        closes: Vec<(u32, String, Option<String>)>,
         failure: &'static str,
         results: Vec<(String, String, bool)>,
         activities: Vec<&'a str>,
@@ -3315,7 +3323,7 @@ fn a_hold_read_that_fails_launches_nothing_fresh_and_masks_no_failure() {
             resumed: false,
             ending: "init-eof",
             agent: AgentDef::default(),
-            closes: vec![(0, "fault", Some("unknown"))],
+            closes: vec![close(0, "fault", Some("unknown"))],
             failure: NO_RESULT_FAILURE,
             results: Vec::new(),
             activities: vec![FRESH_INIT_LINE, unread, uncounted],
@@ -3325,7 +3333,7 @@ fn a_hold_read_that_fails_launches_nothing_fresh_and_masks_no_failure() {
             resumed: true,
             ending: "refused-eof",
             agent: AgentDef::default(),
-            closes: vec![(0, "fault", Some("unknown"))],
+            closes: vec![close(0, "fault", Some("unknown"))],
             failure: REFUSED_FAILURE,
             results: Vec::new(),
             activities: vec![unread, uncounted],
@@ -3335,7 +3343,7 @@ fn a_hold_read_that_fails_launches_nothing_fresh_and_masks_no_failure() {
             resumed: true,
             ending: "silent",
             agent: wall_clock_bounded(SILENCE_BOUND),
-            closes: vec![(0, "stopped", None)],
+            closes: vec![close(0, "stopped", None)],
             failure: SILENCE_FAILURE,
             results: liveness_fault_on_record(),
             activities: vec![unread, &stopping, uncounted],
@@ -3380,15 +3388,11 @@ fn a_hold_read_that_fails_launches_nothing_fresh_and_masks_no_failure() {
             |_| String::new(),
         );
         assert_eq!(failure, row.failure, "{name}: the failure");
-        let records = fx.launch_records();
-        let closes: Vec<_> = records
-            .iter()
-            .filter_map(|r| Some((r.launch, r.ended.as_deref()?, r.class.as_deref())))
-            .collect();
-        assert_eq!(closes, row.closes, "{name}: the closes");
+        assert_eq!(fx.closes(), row.closes, "{name}: the closes");
         assert_eq!(fx.tasks_read().len(), 1, "{name}: the one launch");
         assert_eq!(fx.recorded_results(), row.results, "{name}: the results");
         assert_eq!(fx.activities(), row.activities, "{name}: the progress");
+        let records = fx.launch_records();
         assert!(
             records.iter().all(|r| r.revision.is_none()),
             "{name}: no close is stamped: {records:?}"
@@ -4342,16 +4346,11 @@ fn a_release_behind_the_hosts_held_read_relaunches_the_session_naming_the_hold()
         &no_emit,
     );
 
-    let closes: Vec<(u32, String, Option<String>)> = fx
-        .launch_records()
-        .into_iter()
-        .filter_map(|record| Some((record.launch, record.ended?, record.class)))
-        .collect();
     assert_eq!(
-        closes,
+        fx.closes(),
         vec![
-            (0, "interrupted".to_string(), Some("unknown".to_string())),
-            (1, "completed".to_string(), None),
+            close(0, "interrupted", Some("unknown")),
+            close(1, "completed", None)
         ],
         "the closes"
     );
