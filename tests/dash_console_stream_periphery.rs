@@ -500,6 +500,55 @@ fn a_new_progress_line_arrives_as_a_progress_frame() {
     );
 }
 
+/// The progress stream's other records - a retry, a launch, a stop failure, a supervisor beat -
+/// send no `progress` frame: the first frame past them is the one progress line behind them,
+/// never a blank row per record.
+#[test]
+#[serial(dash_console_stream_periphery)]
+fn a_record_of_another_type_on_the_progress_stream_sends_no_progress_frame() {
+    use rigger::progress::{
+        TYPE_AGENT_PROGRESS, TYPE_API_RETRY, TYPE_SPAWN_LAUNCHED, TYPE_STOP_FAILURE,
+        TYPE_SUPERVISOR_BEAT,
+    };
+    let store = FakeStore::default();
+    for (type_, body) in [
+        (
+            TYPE_API_RETRY,
+            r#"{"spawn":"u1/implementer#0","delay_ms":618,"category":"rate_limit"}"#,
+        ),
+        (
+            TYPE_SPAWN_LAUNCHED,
+            r#"{"spawn":"u1/implementer#0","launch":0,"session_id":"s0","started":1}"#,
+        ),
+        (
+            TYPE_STOP_FAILURE,
+            r#"{"spawn":"u1/implementer#0","class":"rate_limit"}"#,
+        ),
+        (TYPE_SUPERVISOR_BEAT, "{}"),
+        (
+            TYPE_AGENT_PROGRESS,
+            r#"{"id":"u1/implementer#0","activity":"reading spec"}"#,
+        ),
+    ] {
+        append_at_next_position(&store.progress, ev(type_, body));
+    }
+    let addr = serve_test_dash(store.clone());
+    let mut stream = open_stream(addr, 0);
+
+    let frame = read_frame(&mut stream).expect("a progress frame must arrive");
+    assert_eq!(frame.event, "progress");
+    let data: serde_json::Value = serde_json::from_str(&frame.data).unwrap();
+    assert_eq!(
+        (&data["id"], &data["activity"], &data["position"]),
+        (
+            &serde_json::json!("u1/implementer#0"),
+            &serde_json::json!("reading spec"),
+            &serde_json::json!(5)
+        ),
+        "the first progress frame is the progress line: {data:?}"
+    );
+}
+
 /// Regression for the progress-floor race (`adj-u94c2-verdict-reject-progress-floor-race`):
 /// a progress line recorded in the gap between a client's snapshot fetch and that same
 /// client's subsequent stream connect must still be delivered, not silently dropped. The

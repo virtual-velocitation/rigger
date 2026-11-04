@@ -5206,10 +5206,17 @@ mod tests {
             }
         }
 
-        let progress = positioned(vec![ev(
-            "AgentProgress",
-            r#"{"id":"u1/implementer#0","activity":"reading spec"}"#,
-        )]);
+        let progress = positioned(vec![
+            ev(
+                "AgentProgress",
+                r#"{"id":"u1/implementer#0","activity":"reading spec"}"#,
+            ),
+            // A retry record sharing the progress stream: never a progress row.
+            ev(
+                crate::progress::TYPE_API_RETRY,
+                r#"{"spawn":"u1/implementer#0","delay_ms":618,"category":"rate_limit"}"#,
+            ),
+        ]);
         let liveness = HashMap::from([("u1/implementer#0".to_string(), 12u64)]);
 
         let r = route(
@@ -5250,8 +5257,8 @@ mod tests {
         assert_eq!(progress_out[0]["id"], "u1/implementer#0");
         assert_eq!(progress_out[0]["activity"], "reading spec");
         // `progress_head` mirrors `head`, but over the separate progress store: the cursor a
-        // client threads into `?progress_since=` to resume with no gap.
-        assert_eq!(v["progress_head"], 1);
+        // client threads into `?progress_since=` to resume with no gap, past the retry record.
+        assert_eq!(v["progress_head"], 2);
 
         assert_eq!(v["liveness"]["u1/implementer#0"], 12);
 

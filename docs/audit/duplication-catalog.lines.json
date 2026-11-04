@@ -4689,13 +4689,8 @@
       },
       {
         "file": "crates/rigger-dash/src/dash.rs",
-        "start_line": 8608,
-        "end_line": 8608
-      },
-      {
-        "file": "crates/rigger-dash/src/dash.rs",
-        "start_line": 8616,
-        "end_line": 8616
+        "start_line": 8615,
+        "end_line": 8615
       },
       {
         "file": "crates/rigger-dash/src/dash.rs",
@@ -4704,13 +4699,18 @@
       },
       {
         "file": "crates/rigger-dash/src/dash.rs",
-        "start_line": 8647,
-        "end_line": 8647
+        "start_line": 8630,
+        "end_line": 8630
       },
       {
         "file": "crates/rigger-dash/src/dash.rs",
-        "start_line": 8689,
-        "end_line": 8689
+        "start_line": 8654,
+        "end_line": 8654
+      },
+      {
+        "file": "crates/rigger-dash/src/dash.rs",
+        "start_line": 8696,
+        "end_line": 8696
       },
       {
         "file": "crates/rigger-process/src/holders.rs",
@@ -5019,8 +5019,8 @@
     "sites": [
       {
         "file": "crates/rigger-dash/src/dash.rs",
-        "start_line": 9194,
-        "end_line": 9196
+        "start_line": 9201,
+        "end_line": 9203
       },
       {
         "file": "tests/common/fixtures/graph.rs",
@@ -5034,8 +5034,8 @@
     "sites": [
       {
         "file": "crates/rigger-dash/src/dash.rs",
-        "start_line": 9197,
-        "end_line": 9199
+        "start_line": 9204,
+        "end_line": 9206
       },
       {
         "file": "crates/rigger-grounder/src/grounder/workflowdef.rs",
@@ -5049,13 +5049,13 @@
     "sites": [
       {
         "file": "crates/rigger-dash/src/dash.rs",
-        "start_line": 9805,
-        "end_line": 9829
+        "start_line": 9812,
+        "end_line": 9836
       },
       {
         "file": "crates/rigger-dash/src/dash.rs",
-        "start_line": 10067,
-        "end_line": 10087
+        "start_line": 10074,
+        "end_line": 10094
       },
       {
         "file": "tests/metadata_card_periphery.rs",
@@ -5069,8 +5069,8 @@
     "sites": [
       {
         "file": "crates/rigger-dash/src/dash.rs",
-        "start_line": 10113,
-        "end_line": 10163
+        "start_line": 10120,
+        "end_line": 10170
       },
       {
         "file": "tests/metadata_card_periphery.rs",
@@ -5084,8 +5084,8 @@
     "sites": [
       {
         "file": "crates/rigger-dash/src/dash.rs",
-        "start_line": 10442,
-        "end_line": 10484
+        "start_line": 10449,
+        "end_line": 10491
       },
       {
         "file": "tests/metadata_card_periphery.rs",
