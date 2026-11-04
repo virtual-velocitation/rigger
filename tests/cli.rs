@@ -8244,8 +8244,9 @@ fn a_served_hold_hands_out_no_queued_spawn_until_its_release() {
 
 /// Spec 105's HELD BEFORE EACH LAUNCH on a read that fails, wired where the launch is the handout:
 /// given a spawn queued and a `RunHeld` no fold applies, when the shim polls, then `rigger_next`
-/// hands out nothing, since a run not proved unheld launches nothing, and when the session closes
-/// `rigger serve` ends on that read's error with no unit charged.
+/// hands out nothing, since a run not proved unheld launches nothing, and names the failed read on
+/// stderr once however many polls it fails, and when the session closes `rigger serve` ends on
+/// that read's error with no unit charged.
 #[test]
 fn a_served_run_not_proved_unheld_hands_out_no_queued_spawn() {
     const NAME: &str = "a spawn queued behind a failed read";
@@ -8261,8 +8262,10 @@ fn a_served_run_not_proved_unheld_hands_out_no_queued_spawn() {
     let out = mcp.finish_within(Duration::from_secs(30));
     assert_eq!(
         String::from_utf8_lossy(&out.stderr),
-        "rigger: conductor: conductor: expected ident at line 1 column 2\n",
-        "{NAME}: the failed read"
+        "rigger: the hold read failed, so no spawn is handed out until a read proves the run \
+         unheld: conductor: expected ident at line 1 column 2\n\
+         rigger: conductor: conductor: expected ident at line 1 column 2\n",
+        "{NAME}: the failed read, named once by the handout and then by the conductor"
     );
     assert_eq!(
         common::cli::run_payloads(root, "UnitFailed"),
