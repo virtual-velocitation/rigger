@@ -8999,18 +8999,13 @@ fn a_run_driver_holds_the_machine_awake_while_it_drives_and_releases_it_as_it_ex
     }
 }
 
-/// Spec 105's KEEP-AWAKE default at the composition root: given no keep-awake knob, when `rigger
-/// run` drives a run, then it takes the host's adapter, so its keep-awake lines are the host
-/// adapter's own answer here - none where the adapter holds the machine awake, else the one line
-/// naming why it is unavailable - and the run still reaches done.
-#[cfg(unix)]
-#[test]
-fn a_run_with_no_keep_awake_knob_takes_the_hosts_adapter() {
-    use rigger::keep_awake::OsSleepHold;
-    use rigger::sleep_hold::{SleepHold, Unavailable};
-    let dir = temp_git_project_with_commit();
-    let root = dir.path();
-    write_workflow_fixture(root, &REVIEWLESS_GIT_UNIT_WORKFLOW);
+/// A drive of `root`'s run by a run driver whose keep-awake knob is removed, so it takes the
+/// host's adapter: whether the driver exited 0, and its stderr.
+type UnknobbedDrive = fn(&Path) -> (bool, String);
+
+/// `rigger run` driving `root`'s run with no keep-awake knob, its worker answered by
+/// [`RECORDING_WORKER_ARM`]'s fake: whether it exited 0, and its stderr.
+fn drive_an_unknobbed_run(root: &Path) -> (bool, String) {
     let (scratch, state) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
     let (_fakebin, path_env) = install_fake_claude(RECORDING_WORKER_ARM);
     let out = common::cli::rigger_command(
@@ -9023,23 +9018,66 @@ fn a_run_with_no_keep_awake_knob_takes_the_hosts_adapter() {
     .stdin(std::process::Stdio::null())
     .output()
     .expect("run rigger with no keep-awake knob");
-    let err = String::from_utf8_lossy(&out.stderr);
-    assert!(out.status.success(), "the run exits 0; stderr: {err}");
-    let hosts_lines = match OsSleepHold.acquire("the keep-awake host adapter test") {
-        Ok(_held) => vec![],
-        Err(Unavailable(why)) => vec![keep_awake_unavailable(&why)],
-    };
+    (
+        out.status.success(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+/// `rigger serve` driving `root`'s run with no keep-awake knob, its one spawn answered until the
+/// run is done, then its session closed: whether it exited 0, and its stderr.
+fn drive_an_unknobbed_serve(root: &Path) -> (bool, String) {
+    let mut serve = common::cli::rigger_command(root, &["serve", "--base", "HEAD"], &[], root);
+    serve.env_remove(common::KEEP_AWAKE_ENV);
+    let mut mcp = McpSession::from_command(serve);
+    mcp.initialize();
     assert_eq!(
-        lines_starting_with(&err, "rigger: keep-awake"),
-        hosts_lines,
-        "the keep-awake lines"
+        answer_spawns_until_done(&mut mcp, || {}),
+        ["solo/implementer#0"],
+        "rigger serve: the spawns the run served"
     );
-    let integrated = common::cli::run_payloads(root, rigger::ledger::TYPE_UNIT_INTEGRATED);
-    assert_eq!(
-        integrated.iter().map(|e| &e["id"]).collect::<Vec<_>>(),
-        vec!["solo"],
-        "the run reaches done"
-    );
+    let out = mcp.finish_within(Duration::from_secs(30));
+    (
+        out.status.success(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+/// Spec 105's KEEP-AWAKE default at the composition root: given no keep-awake knob, when `rigger
+/// run` or `rigger serve` drives a run, then it takes the host's adapter, so its keep-awake lines
+/// are the host adapter's own answer here - none where the adapter holds the machine awake, else
+/// the one line naming why it is unavailable - and the run still reaches done.
+#[cfg(unix)]
+#[test]
+fn a_run_driver_with_no_keep_awake_knob_takes_the_hosts_adapter() {
+    use rigger::keep_awake::OsSleepHold;
+    use rigger::sleep_hold::{SleepHold, Unavailable};
+    let drives: [(&str, UnknobbedDrive); 2] = [
+        ("rigger run", drive_an_unknobbed_run),
+        ("rigger serve", drive_an_unknobbed_serve),
+    ];
+    for (name, drive) in drives {
+        let dir = temp_git_project_with_commit();
+        let root = dir.path();
+        write_workflow_fixture(root, &REVIEWLESS_GIT_UNIT_WORKFLOW);
+        let (ok, err) = drive(root);
+        assert!(ok, "{name}: the run exits 0; stderr: {err}");
+        let hosts_lines = match OsSleepHold.acquire("the keep-awake host adapter test") {
+            Ok(_held) => vec![],
+            Err(Unavailable(why)) => vec![keep_awake_unavailable(&why)],
+        };
+        assert_eq!(
+            lines_starting_with(&err, "rigger: keep-awake"),
+            hosts_lines,
+            "{name}: the keep-awake lines"
+        );
+        let integrated = common::cli::run_payloads(root, rigger::ledger::TYPE_UNIT_INTEGRATED);
+        assert_eq!(
+            integrated.iter().map(|e| &e["id"]).collect::<Vec<_>>(),
+            vec!["solo"],
+            "{name}: the run reaches done"
+        );
+    }
 }
 
 /// [`REVIEWLESS_GIT_UNIT_WORKFLOW`]'s worker beside a workflow body no load parses.
