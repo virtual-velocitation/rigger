@@ -1,5 +1,74 @@
 //! The Linux keep-awake adapter (spec 105): a logind inhibitor lock, taken over the system bus.
 
+use rigger_domain::sleep_hold::{SleepGuard, Unavailable};
+use std::os::fd::OwnedFd;
+use zbus::blocking::Connection;
+
+/// The bus name logind owns on the system bus.
+const LOGIND: &str = "org.freedesktop.login1";
+
+/// The object path of logind's manager.
+const LOGIND_PATH: &str = "/org/freedesktop/login1";
+
+/// The interface of logind's manager, which `Inhibit` belongs to.
+const LOGIND_MANAGER: &str = "org.freedesktop.login1.Manager";
+
+/// The bus name the bus driver itself sends under: an error it sent for a call to logind means
+/// logind never answered.
+const BUS_DRIVER: &str = "org.freedesktop.DBus";
+
+/// Take a logind `block` inhibitor of sleep and idle by `rigger` for `reason`, over a system-bus
+/// connection of its own. The guard holds the descriptor logind answers with, and logind ends the
+/// inhibitor when the guard drops it; the connection and the reply are dropped before the guard
+/// is returned, so that descriptor is the one copy the process keeps.
+pub(super) fn acquire(reason: &str) -> Result<SleepGuard, Unavailable> {
+    let bus = Connection::system().map_err(no_system_bus)?;
+    let descriptor = inhibit(&bus, reason).map_err(unavailable)?;
+    Ok(SleepGuard::new(move || drop(descriptor)))
+}
+
+/// Ask logind for the inhibitor, without the interactive-authorization flag, so no
+/// authorization prompt opens mid-run. The descriptor is zvariant's close-on-exec duplicate of
+/// the one the reply carries, so a child spawned while the guard stands never inherits it; the
+/// reply, and the original with it, drops on return.
+fn inhibit(bus: &Connection, reason: &str) -> zbus::Result<OwnedFd> {
+    let reply = bus.call_method(
+        Some(LOGIND),
+        LOGIND_PATH,
+        Some(LOGIND_MANAGER),
+        "Inhibit",
+        &("sleep:idle", "rigger", reason, "block"),
+    )?;
+    let descriptor: zbus::zvariant::OwnedFd = reply.body().deserialize()?;
+    Ok(descriptor.into())
+}
+
+/// Unavailable because the system bus cannot be reached.
+fn no_system_bus(error: zbus::Error) -> Unavailable {
+    Unavailable(format!("no system bus: {error}"))
+}
+
+/// Unavailable because `Inhibit` failed, classified by the error reply's sender, never its name:
+/// an error the bus driver sent means logind never answered (no process owns or provides its
+/// name, or its activation failed); an error any other sender sent is logind's refusal; a failure
+/// that is no error reply (no answer, or an answer with no descriptor) is neither.
+fn unavailable(error: zbus::Error) -> Unavailable {
+    match &error {
+        zbus::Error::MethodError(_, _, reply)
+            if reply
+                .header()
+                .sender()
+                .is_some_and(|sender| sender.as_str() == BUS_DRIVER) =>
+        {
+            Unavailable(format!("no logind on the system bus: {error}"))
+        }
+        zbus::Error::MethodError(..) => {
+            Unavailable(format!("logind refused the inhibitor: {error}"))
+        }
+        _ => Unavailable(format!("cannot take a logind inhibitor: {error}")),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{no_system_bus, unavailable};

@@ -7,11 +7,18 @@ use rigger_domain::sleep_hold::{SleepGuard, SleepHold, Unavailable};
 #[cfg(target_os = "linux")]
 mod linux;
 
-/// The keep-awake facility of the operating system this binary runs on. No native adapter is
-/// wired yet, so every acquire answers unavailable naming the OS.
+/// The keep-awake facility of the operating system this binary runs on: on Linux a logind
+/// inhibitor lock; on an OS with no native adapter yet, every acquire answers unavailable naming
+/// the OS.
 pub struct OsSleepHold;
 
 impl SleepHold for OsSleepHold {
+    #[cfg(target_os = "linux")]
+    fn acquire(&self, reason: &str) -> Result<SleepGuard, Unavailable> {
+        linux::acquire(reason)
+    }
+
+    #[cfg(not(target_os = "linux"))]
     fn acquire(&self, _reason: &str) -> Result<SleepGuard, Unavailable> {
         Err(Unavailable(format!(
             "no keep-awake adapter for {}",
