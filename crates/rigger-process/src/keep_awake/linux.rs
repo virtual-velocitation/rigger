@@ -76,13 +76,18 @@ fn unavailable(error: zbus::Error) -> Unavailable {
 
 #[cfg(test)]
 mod tests {
-    use super::{no_system_bus, unavailable};
+    use super::{acquire_on, no_system_bus, unavailable};
     use crate::keep_awake::OsSleepHold;
     use crate::test_support::{release, wait_until, waiting_shell};
     use rigger_domain::sleep_hold::{SleepHold, Unavailable};
+    use std::os::linux::net::SocketAddrExt;
+    use std::os::unix::net::{SocketAddr, UnixListener};
     use std::path::Path;
+    use std::pin::Pin;
+    use std::time::Duration;
     use zbus::blocking::fdo::DBusProxy;
     use zbus::blocking::Connection;
+    use zbus::export::futures_core::Stream;
     use zbus::names::BusName;
 
     /// The bus name logind owns on the system bus.
@@ -157,6 +162,113 @@ mod tests {
             None => reply.build(&()),
         };
         zbus::Error::from(reply.unwrap())
+    }
+
+    /// One call as a bus delivers it: destination, path, interface and member, and the inhibitor
+    /// its body asks for.
+    type Call = (
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Inhibitor,
+    );
+
+    /// A fake logind on the private bus `listener` listens on, serving the one connection it
+    /// accepts as the bus itself: it answers the connection's `Hello` and answers no other call,
+    /// handing back each one it received once the connection closes.
+    fn silent_logind(listener: UnixListener) -> std::thread::JoinHandle<Vec<Call>> {
+        std::thread::spawn(move || {
+            let (stream, _) = listener
+                .accept()
+                .expect("the adapter connects to the private bus");
+            stream
+                .set_nonblocking(true)
+                .expect("the accepted stream turns non-blocking");
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("the fake bus's runtime");
+            runtime.block_on(async {
+                let stream = tokio::net::UnixStream::from_std(stream).expect("the accepted stream");
+                let mut messages = zbus::connection::Builder::unix_stream(stream)
+                    .server(zbus::Guid::generate())
+                    .expect("a bus-side connection")
+                    .p2p()
+                    .build_message_stream()
+                    .await
+                    .expect("the adapter completes the handshake");
+                let bus = zbus::Connection::from(&messages);
+                let mut calls = Vec::new();
+                while let Some(Ok(message)) =
+                    std::future::poll_fn(|cx| Pin::new(&mut messages).poll_next(cx)).await
+                {
+                    let header = message.header();
+                    if header.member().is_some_and(|member| member == "Hello") {
+                        bus.reply(&header, &":1.1")
+                            .await
+                            .expect("the fake bus answers Hello");
+                        continue;
+                    }
+                    calls.push((
+                        header.destination().map(|name| name.to_string()),
+                        header.path().map(|path| path.to_string()),
+                        header.interface().map(|name| name.to_string()),
+                        header.member().map(|name| name.to_string()),
+                        message
+                            .body()
+                            .deserialize()
+                            .expect("the call asks for an inhibitor"),
+                    ));
+                }
+                calls
+            })
+        })
+    }
+
+    /// Where logind takes the adapter's `Inhibit` and never answers it, the acquire answers
+    /// unavailable, timed out, once its deadline passes: over a private bus whose fake logind
+    /// answers the bus `Hello` and nothing more, `Inhibit` reaches the fake with the adapter's
+    /// arguments and the answer is the timed-out failure.
+    #[test]
+    fn an_inhibit_logind_never_answers_is_answered_unavailable_at_the_deadline() {
+        let name = format!(
+            "rigger-keep-awake-silent-logind-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let address = SocketAddr::from_abstract_name(name.as_bytes()).expect("an abstract name");
+        let logind =
+            silent_logind(UnixListener::bind_addr(&address).expect("the private bus listens"));
+        let bus = zbus::connection::Builder::address(format!("unix:abstract={name}").as_str())
+            .expect("the private bus's address");
+        assert_eq!(
+            acquire_on(bus, "a reason", Duration::from_secs(5)).err(),
+            Some(Unavailable(
+                "cannot take a logind inhibitor: I/O error: timed out".to_string()
+            )),
+            "logind never answers Inhibit: the adapter's answer at its deadline"
+        );
+        let inhibit: Call = (
+            Some(LOGIND.to_string()),
+            Some("/org/freedesktop/login1".to_string()),
+            Some("org.freedesktop.login1.Manager".to_string()),
+            Some("Inhibit".to_string()),
+            (
+                "sleep:idle".to_string(),
+                "rigger".to_string(),
+                "a reason".to_string(),
+                "block".to_string(),
+            ),
+        );
+        assert_eq!(
+            logind.join().expect("the fake logind ends"),
+            vec![inhibit],
+            "the calls the fake logind received, none of them answered"
+        );
     }
 
     /// Each way taking the inhibitor fails is answered unavailable with the spelling that names

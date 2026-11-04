@@ -200,6 +200,7 @@ mod tests {
                 "[target.'cfg(target_os = \"linux\")'.dependencies] zbus",
                 "[target.'cfg(target_os = \"windows\")'.dependencies] windows-sys",
                 "[dev-dependencies] tempfile",
+                "[target.'cfg(target_os = \"linux\")'.dev-dependencies] zbus",
             ],
             "each dependency table of crates/rigger-process/Cargo.toml, with the crates it declares"
         );

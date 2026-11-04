@@ -45,5 +45,10 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_
 [dev-dependencies]
 tempfile = "3"
 
+# The Linux keep-awake adapter's tests: the live test's own calls to logind, over zbus's blocking
+# API, and the fake logind a private bus serves, built as a bus implementation.
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+zbus = { version = "5.15", default-features = false, features = ["blocking-api", "bus-impl", "tokio"] }
+
 [lints]
 workspace = true
