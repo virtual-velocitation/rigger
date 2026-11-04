@@ -13787,10 +13787,7 @@ fn a_held_step_names_the_hold_ahead_of_its_sweep_pin_and_liveness_sweep() {
             !ok,
             "{name}: the drift halts the released run; stdout: {out}"
         );
-        assert!(
-            err.contains("definition drift"),
-            "{name}: the pin ran; stderr: {err}"
-        );
+        let halt = lines_starting_with(&err, "rigger: ");
         assert_eq!(
             lines_starting_with(&err, "rigger step: swept"),
             [format!(
@@ -13811,6 +13808,27 @@ fn a_held_step_names_the_hold_ahead_of_its_sweep_pin_and_liveness_sweep() {
             lines_starting_with(&err, "rigger step: liveness swept"),
             ["rigger step: liveness swept 1 hung spawn(s) (classified infra, no attempt charged): a/implementer#0"],
             "{name}: the liveness sweep ran; stderr: {err}"
+        );
+        let rebase = read_run_events(root)
+            .into_iter()
+            .rfind(|event| event.meta.contains_key(rigger::run::META_DEFINITION_PRIOR))
+            .unwrap_or_else(|| panic!("{name}: the rebased step records the supersession"));
+        let meta = |key: &str| rebase.meta[key].clone();
+        let (run, pinned, current) = (
+            meta(rigger::run::META_RUN_ID),
+            meta(rigger::run::META_DEFINITION_PRIOR),
+            meta(rigger::run::META_DEFINITION),
+        );
+        assert_eq!(
+            halt,
+            [format!(
+                "rigger: definition drift - the on-disk workflow/agent definition (hash {current}) \
+                 differs from the hash run {run} pinned at start ({pinned}). A live run pins its \
+                 definition so replay semantics cannot silently change mid-campaign. Re-run with \
+                 --rebase-definition to record the supersession ({pinned} -> {current}) and \
+                 continue, or restore the definition to match the pin."
+            )],
+            "{name}: the pin ran, halting on the drift the rebase then superseded"
         );
     }
 }
