@@ -102,8 +102,9 @@ pub fn read_current_run(
     Ok((super::current_run(&read).to_vec(), run_id))
 }
 
-/// THE RUN'S HOLD, READ ONCE (spec 105): the hold the current run leaves open, the one read every
-/// launch path decides on. It reads only [`HOLD_TYPES`], from the boundary [`read_run`] finds
+/// THE RUN'S HOLD, READ ONCE (spec 105): the hold the current run leaves open, the read every
+/// launch gate and every poll through a hold decides on; an ending, whose close carries the run
+/// stream's head, reads [`read_current_hold_at_head`] instead. It reads only [`HOLD_TYPES`], from the boundary [`read_run`] finds
 /// ([`EventStore::last_position`]'s answer for the run's `RunStarted`; the whole stream with no
 /// run started), and folds the hold from [`crate::run::current_run`] of that read, so a read made
 /// at every launch decision and through the whole of a hold never materializes the carried-over
