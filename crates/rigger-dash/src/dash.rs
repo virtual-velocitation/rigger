@@ -2777,7 +2777,9 @@ pub fn repoint_seed(events: &[Event], graph: &Graph, seed: &str) -> Vec<String> 
 /// not a distinct type anywhere in this codebase today - a `--rebase-definition` supersession
 /// rides the existing `DecisionMade` vocabulary instead (`run_store::record_rebase`'s own doc:
 /// "no new event type - the spec-13 global constraint"), so it is already covered by
-/// `TYPE_DECISION_MADE` below and this literal entry is a forward-compatible no-op.
+/// `TYPE_DECISION_MADE` below and this literal entry is a forward-compatible no-op. Spec 105
+/// adds `RunHeld` and `RunReleased` past the addendum's list, so the page's fold sees the
+/// run's hold.
 const CONSOLE_EVENT_TYPES: &[&str] = &[
     run::TYPE_RUN_STARTED,
     crate::conductor::TYPE_UNIT_PROPOSED,
@@ -2798,6 +2800,8 @@ const CONSOLE_EVENT_TYPES: &[&str] = &[
     crate::contextgraph::TYPE_FILE_TOUCHED,
     "DefinitionSuperseded",
     blocker::TYPE_BUDGET_EXHAUSTED,
+    run::TYPE_RUN_HELD,
+    run::TYPE_RUN_RELEASED,
 ];
 
 /// Whether `e` is one of [`CONSOLE_EVENT_TYPES`] - the one membership test both
@@ -5073,9 +5077,9 @@ mod tests {
     }
 
     /// Spec 94, criterion 2 (THE SNAPSHOT AND THE STREAM): the console-event allow-list
-    /// admits exactly the run-lifecycle types the addendum §2 names, and excludes the
-    /// graph-extraction types that share the same stream plus this project's own
-    /// `AgentProgress` (a separate store regardless).
+    /// admits exactly the run-lifecycle types the addendum §2 names and spec 105's `RunHeld`
+    /// and `RunReleased`, and excludes the graph-extraction types that share the same stream
+    /// plus this project's own `AgentProgress` (a separate store regardless).
     #[test]
     fn console_event_filter_admits_only_the_named_run_lifecycle_types() {
         for t in [
@@ -5098,6 +5102,8 @@ mod tests {
             "FileTouched",
             "DefinitionSuperseded",
             "BudgetExhausted",
+            "RunHeld",
+            "RunReleased",
         ] {
             assert!(
                 is_console_event(&ev(t, "{}")),

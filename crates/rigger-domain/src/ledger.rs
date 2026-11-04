@@ -9,7 +9,9 @@ use std::time::SystemTime;
 use serde::{Deserialize, Serialize};
 
 use crate::eventstore::{Event, Revision};
-use crate::run::{RunHeld, HOLD_BY_OPERATOR, TYPE_RUN_HELD, TYPE_RUN_RELEASED, TYPE_RUN_STARTED};
+use crate::run::{
+    RunHeld, RunReleased, HOLD_BY_OPERATOR, TYPE_RUN_HELD, TYPE_RUN_RELEASED, TYPE_RUN_STARTED,
+};
 
 /// Status of a unit of work, over its lifecycle
 /// pending -> grounding -> red -> green -> verified -> reviewed -> integrated.
@@ -249,14 +251,29 @@ impl Hold {
             revision: e.revision,
         })
     }
+
+    /// What the hold reads as to a person, `<cause> - <action>` of its latest `RunHeld`: the one
+    /// text the HELD line of `rigger status`, the [`ATTENTION_HELD`] entry and the step a held
+    /// run prints (`spawn::step_of_hold`) name a hold by.
+    pub fn reason(&self) -> String {
+        format!("{} - {}", self.latest.cause, self.latest.action)
+    }
 }
 
-/// One of the watching-discipline signals `AttentionEntry::kind` carries: spec 69's five, and
-/// spec 112's spec-defect stop ([`ATTENTION_SPEC_DEFECT`]). Closed vocabulary (never inferred
+/// One of the watching-discipline signals `AttentionEntry::kind` carries: spec 69's five,
+/// spec 112's spec-defect stop ([`ATTENTION_SPEC_DEFECT`]) and spec 105's hold and release
+/// ([`ATTENTION_HELD`], [`ATTENTION_RELEASED`]). Closed vocabulary (never inferred
 /// downstream) - kept as `&str` constants rather than an enum so the wire value and the Rust
 /// match arm are the same literal, with no separate `as_str`/`parse` translation to drift out
 /// of sync.
 pub const ATTENTION_ESCALATED: &str = "escalated";
+/// The run is held (spec 105): run-scoped, its detail the hold's [`Hold::reason`], one per hold
+/// ([`hold_attention`]); the console's dock lists it for a hold whose latest `RunHeld` needs a
+/// person.
+pub const ATTENTION_HELD: &str = "held";
+/// A hold ended (spec 105): run-scoped, its detail how long the hold stood, one per released hold
+/// ([`hold_attention`]).
+pub const ATTENTION_RELEASED: &str = "released";
 /// A plan-critique gate stopped the run on a spec defect (spec 112, criterion 5): listed for
 /// the stopped unit in place of its [`ATTENTION_ESCALATED`] entry, its detail the stop's reason
 /// ([`AttentionEntry::escalation`]).
@@ -266,30 +283,66 @@ pub const ATTENTION_REJECT_RECURRENCE: &str = "reject-recurrence";
 pub const ATTENTION_BUDGET_FINAL_TENTH: &str = "budget-final-tenth";
 pub const ATTENTION_STALLED_FRONTIER: &str = "stalled-frontier";
 
-/// The canonical kind order (spec 69, criterion 5; spec 112, criterion 5): escalated,
-/// spec-defect, halted, reject-recurrence, budget-final-tenth, stalled-frontier.
-/// `conductor::compute_attention` and the console's dock sort their entries by it (a STABLE
-/// sort, so entries of the SAME kind keep their lexical unit order); `rigger step` (main.rs)
-/// re-sorts `attention` by it after appending the hung-liveness half of signal 2, which
+/// The canonical kind order (spec 69, criterion 5; spec 112, criterion 5; spec 105): held,
+/// escalated, spec-defect, halted, reject-recurrence, budget-final-tenth, stalled-frontier,
+/// released. `conductor::compute_attention` and the console's dock sort their entries by it (a
+/// STABLE sort, so entries of the SAME kind keep their lexical unit order); `rigger step`
+/// (main.rs) re-sorts `attention` by it after appending the hung-liveness half of signal 2, which
 /// `main.rs` computes separately and merges in - see `compute_attention`'s own doc comment for
 /// why. An unknown kind (never produced today) sorts last rather than panicking.
 pub fn attention_kind_rank(kind: &str) -> usize {
-    const ORDER: [&str; 6] = [
+    const ORDER: [&str; 8] = [
+        ATTENTION_HELD,
         ATTENTION_ESCALATED,
         ATTENTION_SPEC_DEFECT,
         ATTENTION_HALTED,
         ATTENTION_REJECT_RECURRENCE,
         ATTENTION_BUDGET_FINAL_TENTH,
         ATTENTION_STALLED_FRONTIER,
+        ATTENTION_RELEASED,
     ];
     ORDER.iter().position(|k| *k == kind).unwrap_or(usize::MAX)
+}
+
+/// The attention a run's holds yield (spec 105, WHAT A PERSON SEES), in log order, from one run's
+/// slice of the run stream: one [`ATTENTION_HELD`] entry per hold, keyed by its first `RunHeld`
+/// and naming the [`Hold::reason`] of its latest, so a repeated or upgraded `RunHeld` adds none;
+/// and one [`ATTENTION_RELEASED`] entry per release of an open hold, reading the `held_for_s` its
+/// `RunReleased` carries. A `RunReleased` with no open hold ends nothing and adds nothing. `None`
+/// when a `RunHeld`, or the `RunReleased` of an open hold, does not decode, as
+/// [`crate::hold_probe::owed_probe`] answers. The console's dock reads it.
+pub fn hold_attention(run_events: &[Event]) -> Option<Vec<AttentionEntry>> {
+    let mut entries = Vec::new();
+    let mut open: Option<Hold> = None;
+    for e in run_events {
+        match e.type_.as_str() {
+            TYPE_RUN_HELD => {
+                // An open hold's entry is the last one: a released entry follows a closed hold.
+                if open.is_some() {
+                    entries.pop();
+                }
+                let hold = Hold::on_held(open.take(), e).ok()?;
+                let detail = format!("held - {}", hold.reason());
+                entries.push(AttentionEntry::run_scoped(ATTENTION_HELD, detail));
+                open = Some(hold);
+            }
+            TYPE_RUN_RELEASED if open.is_some() => {
+                open = None;
+                let released: RunReleased = e.decode()?;
+                let detail = format!("released after {}s", released.held_for_s);
+                entries.push(AttentionEntry::run_scoped(ATTENTION_RELEASED, detail));
+            }
+            _ => {}
+        }
+    }
+    Some(entries)
 }
 
 /// One push-side anomaly a step surfaced (spec 69): the wire carries what an unattended
 /// run needs read, so an orchestrator never has to poll the log for it. `kind` is one of
 /// the `ATTENTION_*` constants above; `unit` names the subject for a unit-scoped kind
-/// and is empty (omitted from the wire) for a run-scoped one (`halted`,
-/// `budget-final-tenth`); `detail` is the human-readable why, so a later criterion's
+/// and is empty (omitted from the wire) for a run-scoped one (`held`, `halted`,
+/// `budget-final-tenth`, `released`); `detail` is the human-readable why, so a later criterion's
 /// narrator line needs no further log lookup to render one line naming event + unit.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct AttentionEntry {
@@ -313,7 +366,8 @@ impl AttentionEntry {
         }
     }
 
-    /// A run-scoped entry (halted / budget-final-tenth) - no single unit is the subject.
+    /// A run-scoped entry (held / halted / budget-final-tenth / released) - no single unit is the
+    /// subject.
     pub fn run_scoped(kind: &'static str, detail: impl Into<String>) -> Self {
         Self::unit_scoped(kind, String::new(), detail)
     }
@@ -1448,5 +1502,93 @@ mod tests {
             said.as_deref(),
             Some("invalid type: integer `1`, expected a string at line 1 column 7")
         );
+    }
+
+    /// WHAT A PERSON SEES: the attention a run's holds yield is one `held` entry per hold, keyed
+    /// by its first `RunHeld` and naming its latest cause and action, and one `released` entry
+    /// reading its release's `held_for_s`, in log order; a repeated or upgraded `RunHeld` adds no
+    /// entry, a release with no open hold adds nothing, and a hold event the fold must read and
+    /// cannot decode yields no attention at all.
+    #[test]
+    fn hold_attention_yields_one_held_and_one_released_per_hold() {
+        let held = |cause: &str, action: &str| {
+            let body = format!(r#"{{"cause":"{cause}","action":"{action}","by":"host"}}"#);
+            ev(TYPE_RUN_HELD, &body)
+        };
+        let released = |held_for_s: u64| {
+            let body = format!(r#"{{"by":"probe","held_for_s":{held_for_s}}}"#);
+            ev(TYPE_RUN_RELEASED, &body)
+        };
+        let held_entry =
+            |detail: &str| AttentionEntry::run_scoped(ATTENTION_HELD, format!("held - {detail}"));
+        let released_entry = |detail: &str| AttentionEntry::run_scoped(ATTENTION_RELEASED, detail);
+        let unstable = || held("api-unstable", "wait for the canary");
+        let unstable_entry = || held_entry("api-unstable - wait for the canary");
+        let auth = || held("auth", "log in again");
+        let auth_entry = || held_entry("auth - log in again");
+
+        let cases = vec![
+            ("no hold event yields nothing", vec![], Some(vec![])),
+            (
+                "an open hold yields held alone",
+                vec![unstable()],
+                Some(vec![unstable_entry()]),
+            ),
+            (
+                "a repeated RunHeld adds no entry",
+                vec![unstable(), unstable()],
+                Some(vec![unstable_entry()]),
+            ),
+            (
+                "an upgraded RunHeld adds no entry, the hold's one entry naming its latest cause",
+                vec![unstable(), auth()],
+                Some(vec![auth_entry()]),
+            ),
+            (
+                "a released hold yields held then released",
+                vec![unstable(), released(60)],
+                Some(vec![unstable_entry(), released_entry("released after 60s")]),
+            ),
+            (
+                "two holds yield two of each, each keyed by its first RunHeld",
+                vec![
+                    unstable(),
+                    auth(),
+                    released(60),
+                    ev(TYPE_UNIT_STARTED, r#"{"id":"u"}"#),
+                    unstable(),
+                    released(120),
+                ],
+                Some(vec![
+                    auth_entry(),
+                    released_entry("released after 60s"),
+                    unstable_entry(),
+                    released_entry("released after 120s"),
+                ]),
+            ),
+            (
+                "a release with no open hold adds nothing",
+                vec![released(5), unstable(), released(60), released(90)],
+                Some(vec![unstable_entry(), released_entry("released after 60s")]),
+            ),
+            (
+                "a release with no open hold is never read",
+                vec![ev(TYPE_RUN_RELEASED, r#"{"held_for_s":"x"}"#)],
+                Some(vec![]),
+            ),
+            (
+                "a RunHeld that does not decode yields no attention",
+                vec![unstable(), ev(TYPE_RUN_HELD, r#"{"by":1}"#)],
+                None,
+            ),
+            (
+                "an open hold's release that does not decode yields no attention",
+                vec![unstable(), ev(TYPE_RUN_RELEASED, r#"{"held_for_s":"x"}"#)],
+                None,
+            ),
+        ];
+        for (name, log, want) in cases {
+            assert_eq!(hold_attention(&log), want, "{name}");
+        }
     }
 }

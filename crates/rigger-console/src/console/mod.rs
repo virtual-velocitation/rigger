@@ -14,7 +14,8 @@
 //! spec 19a) - and adds the two new ones this criterion introduces: [`dock`]
 //! (the needs-you list) and [`statusline`] (the one-line summary). `rigger
 //! status` (`cmd_status` in the binary) calls [`fold`] directly and prints
-//! its `statusline` as the first line and its dock's needs-you lines,
+//! its `statusline` over its table (under the HELD line of a held run) and its
+//! dock's needs-you lines,
 //! rather than composing its own copy of any of these four facts - the "CLI's
 //! use of the core" half of this criterion.
 
@@ -66,12 +67,17 @@ impl Dock {
 
 /// Derive the dock's needs-you list from a projected [`RunState`] plus the raw
 /// `events` (needed only for the durable budget fact, exactly as
-/// [`blocker::from_state`] already takes both). Three CURRENT-STATE signals,
-/// a snapshot subset of spec 69's five crossing signals - the two that are
-/// genuinely crossings with no persisting "still true" state of their own
-/// (the budget's final-tenth threshold, a frontier stall reported only once)
-/// stay push-side, on `rigger step`'s wire, not here:
+/// [`blocker::from_state`] already takes both, and for the hold's attention fold). Four
+/// CURRENT-STATE signals, spec 105's hold and a snapshot subset of spec 69's five crossing
+/// signals - the two that are genuinely crossings with no persisting "still true" state of their
+/// own (the budget's final-tenth threshold, a frontier stall reported only once) stay push-side,
+/// on `rigger step`'s wire, not here, and so does spec 105's `released`:
 ///
+/// - **held** - the run's open hold, when its latest `RunHeld` carries `needs_person` (an
+///   operator hold's does): the open hold's entry of [`ledger::hold_attention`], naming the
+///   hold's latest cause and action. A hold that needs no person shows on `rigger status`'s
+///   HELD line and the statusline only, and an `events` slice whose hold events that fold cannot
+///   decode lists no held entry.
 /// - **escalated** - every unit whose [`Status`] is currently [`Status::Escalated`], listed
 ///   under the spec-defect stop's own kind and reason when it stopped the run on one
 ///   ([`AttentionEntry::escalation`], spec 112 criterion 5).
@@ -98,6 +104,15 @@ impl Dock {
 pub fn dock(run: &RunState, events: &[Event]) -> Dock {
     let mut needs_you = Vec::new();
 
+    // An open hold's entry is the fold's last: the fold steps a hold as the projection does.
+    if run
+        .hold
+        .as_ref()
+        .is_some_and(|hold| hold.latest.needs_person)
+    {
+        needs_you.extend(ledger::hold_attention(events).and_then(|mut entries| entries.pop()));
+    }
+
     for u in run.units.values() {
         if u.status == Status::Escalated {
             needs_you.push(AttentionEntry::escalation(u));
@@ -122,17 +137,20 @@ pub fn dock(run: &RunState, events: &[Event]) -> Dock {
 }
 
 /// The one-line statusline (spec 93 Design, "6.8"): `rigger status` prints
-/// this as its first line, and a later criterion's `rigger status --line`
-/// prints exactly this text for an editor status bar - one authority for
-/// both. `focus` is the first unit, in the run's own lexical order, that has
-/// NOT reached a terminal state (mirrors the theater's own leftmost lane);
-/// `-` when every unit is terminal or the run holds none. The health word is
-/// the two facts a pure fold over the log can actually see - the deeper
-/// five-signal health strip (heartbeats, frontier, churn, dash, store) needs
-/// LIVE process state (liveness ages, a stream connection, a store probe)
-/// no static event slice carries, and is specs 94-98's page-side job:
-/// - `"needs-you"` - the dock is non-empty.
-/// - `"working"` - clean of needs-you, but a unit is still mid-flight
+/// this over its table, under the HELD line of a held run, and a later
+/// criterion's `rigger status --line` prints exactly this text for an editor
+/// status bar - one authority for both. `focus` is the first unit, in the run's
+/// own lexical order, that has NOT reached a terminal state (mirrors the
+/// theater's own leftmost lane); `-` when every unit is terminal or the run
+/// holds none. The health word is the facts a pure fold over the log can
+/// actually see - the deeper five-signal health strip (heartbeats, frontier,
+/// churn, dash, store) needs LIVE process state (liveness ages, a stream
+/// connection, a store probe) no static event slice carries, and is specs
+/// 94-98's page-side job:
+/// - `"needs-you"` - the dock lists an entry other than `held`.
+/// - `"held"` - no such entry, and the run is held (spec 105), whether or not
+///   its hold's own `held` entry stands on the dock.
+/// - `"working"` - clean of needs-you and unheld, but a unit is still mid-flight
 ///   (a current-blocker line exists).
 /// - `"done"` - every unit integrated (a non-empty run with no blockers left).
 /// - `"healthy"` - no units yet, or nothing to report either way.
@@ -149,8 +167,14 @@ pub fn statusline(run: &RunState, blockers: &[Blocker], dock: &Dock) -> String {
         .find(|u| !matches!(u.status, Status::Integrated | Status::Escalated))
         .map(|u| u.id.as_str())
         .unwrap_or("-");
-    let health = if !dock.needs_you.is_empty() {
+    let health = if dock
+        .needs_you
+        .iter()
+        .any(|entry| entry.kind != ledger::ATTENTION_HELD)
+    {
         "needs-you"
+    } else if run.hold.is_some() {
+        "held"
     } else if !blockers.is_empty() {
         "working"
     } else if total > 0 && landed == total {
@@ -695,6 +719,93 @@ mod tests {
         );
     }
 
+    /// A unit `u-esc` escalated, then `hold`'s events: the run log the dock's hold rows read.
+    fn escalated_then(hold: &[(&str, &str)]) -> Vec<Event> {
+        [
+            (ledger::TYPE_UNIT_STARTED, r#"{"id":"u-esc"}"#),
+            (ledger::TYPE_UNIT_ESCALATED, r#"{"id":"u-esc"}"#),
+        ]
+        .iter()
+        .chain(hold)
+        .map(|(type_, body)| ev(type_, body))
+        .collect()
+    }
+
+    /// WHAT A PERSON SEES: the dock lists `held` for a hold whose latest `RunHeld` carries
+    /// `needs_person`, first ahead of every other kind and naming the open hold's latest cause and
+    /// action, never an earlier released hold's, and lists nothing for a hold that needs no person,
+    /// a released hold, or a hold whose events the attention fold cannot decode.
+    #[test]
+    fn dock_lists_held_first_for_a_hold_that_needs_a_person_and_nothing_for_any_other() {
+        use rigger_domain::run::{TYPE_RUN_HELD, TYPE_RUN_RELEASED};
+        let needs = (
+            TYPE_RUN_HELD,
+            r#"{"cause":"auth","action":"log in again","needs_person":true,"by":"host"}"#,
+        );
+        let no_person = (
+            TYPE_RUN_HELD,
+            r#"{"cause":"api-unstable","action":"wait for the canary","by":"host"}"#,
+        );
+        let released = (TYPE_RUN_RELEASED, r#"{"by":"operator","held_for_s":60}"#);
+        let undecodable_release = (TYPE_RUN_RELEASED, r#"{"held_for_s":"x"}"#);
+        let held = (ledger::ATTENTION_HELD, "run: held - auth - log in again");
+        let escalated = (
+            ledger::ATTENTION_ESCALATED,
+            "u-esc: escalated after exhausting remediation",
+        );
+        let cases = vec![
+            (
+                "a hold that needs a person is listed first, ahead of an escalation",
+                vec![needs],
+                vec![held, escalated],
+            ),
+            (
+                "a hold that needs no person lists nothing",
+                vec![no_person],
+                vec![escalated],
+            ),
+            (
+                "a released hold lists nothing",
+                vec![needs, released],
+                vec![escalated],
+            ),
+            (
+                "a hold after a released one is listed under its own cause, not the earlier hold's",
+                vec![no_person, released, needs],
+                vec![held, escalated],
+            ),
+            (
+                "a hold upgraded to need a person is listed under its latest cause",
+                vec![no_person, needs],
+                vec![held, escalated],
+            ),
+            (
+                "a hold whose latest RunHeld needs no person lists nothing",
+                vec![needs, no_person],
+                vec![escalated],
+            ),
+            (
+                "a hold whose earlier release does not decode lists nothing",
+                vec![needs, undecodable_release, needs],
+                vec![escalated],
+            ),
+        ];
+        for (name, hold, want) in cases {
+            let events = escalated_then(hold.as_slice());
+            let docked = dock(&ledger::project(&events).unwrap(), &events);
+            let got: Vec<(&str, String)> = docked
+                .needs_you
+                .iter()
+                .map(|entry| (entry.kind, entry.line()))
+                .collect();
+            let want: Vec<(&str, String)> = want
+                .into_iter()
+                .map(|(kind, line)| (kind, line.to_string()))
+                .collect();
+            assert_eq!(got, want, "{name}");
+        }
+    }
+
     /// A clean run (no units at all) needs nobody: an empty dock, and the
     /// statusline reads `healthy`.
     #[test]
@@ -756,6 +867,48 @@ mod tests {
             assert!(blockers > 0, "an escalated unit is also a blocker");
             assert_eq!(line, "- . 0/1 units . needs-you");
         };
+        /// WHAT A PERSON SEES: a held run reads `held` over `working` when no dock entry stands,
+        /// its hold needing no person.
+        statusline_reads_held_over_working: assert_eq!(
+            statusline_of(&[
+                ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"u1"}"#),
+                ev(rigger_domain::run::TYPE_RUN_HELD, r#"{"cause":"api-unstable"}"#),
+            ]),
+            ("u1 . 0/1 units . held".to_string(), 1)
+        );
+        /// A hold's own `held` dock entry is no other entry: a held run whose hold needs a person
+        /// still reads `held`.
+        statusline_reads_held_when_the_hold_is_the_only_dock_entry: assert_eq!(
+            statusline_of(&[ev(
+                rigger_domain::run::TYPE_RUN_HELD,
+                r#"{"cause":"auth","needs_person":true}"#,
+            )])
+            .0,
+            "- . 0/0 units . held"
+        );
+        /// A dock entry other than `held` reads `needs-you` over a hold.
+        statusline_reads_needs_you_over_held: assert_eq!(
+            statusline_of(&[
+                ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"u-esc"}"#),
+                ev(ledger::TYPE_UNIT_ESCALATED, r#"{"id":"u-esc"}"#),
+                ev(
+                    rigger_domain::run::TYPE_RUN_HELD,
+                    r#"{"cause":"auth","needs_person":true}"#,
+                ),
+            ])
+            .0,
+            "- . 0/1 units . needs-you"
+        );
+        /// A released hold leaves the run reading as it did before the hold.
+        statusline_reads_working_once_the_hold_is_released: assert_eq!(
+            statusline_of(&[
+                ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"u1"}"#),
+                ev(rigger_domain::run::TYPE_RUN_HELD, r#"{"cause":"api-unstable"}"#),
+                ev(rigger_domain::run::TYPE_RUN_RELEASED, r#"{"held_for_s":5}"#),
+            ])
+            .0,
+            "u1 . 0/1 units . working"
+        );
     }
 
     /// Determinism: folding the same stream twice yields byte-identical

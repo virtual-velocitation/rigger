@@ -866,6 +866,28 @@ pub fn with_store_file<R>(root: &Path, file: &str, f: impl FnOnce(&dyn EventStor
     f(&store)
 }
 
+/// Land one supervisor beat, now, on the progress stream of `root`'s current run: the beat
+/// `rigger status` reads to tell whether a supervisor still watches a held run.
+pub fn seed_a_supervisor_beat(root: &Path) {
+    let run_id = current_run_id_of(root).expect("a started run to beat on");
+    with_store_file(root, "progress.db", |store| {
+        rigger::progress_store::append_stamped(
+            store,
+            &run_id,
+            &rigger::progress::SupervisorBeat::default(),
+            "a supervisor beat",
+        )
+        .unwrap();
+    });
+}
+
+/// The duration text and the rest of `line` when it is `rigger status`'s HELD line, `HELD
+/// <duration>s - <reason>; <what ends it>`, else `None`: how a binary test reads the one part of
+/// the line the wall clock decides apart from the part it pins.
+pub fn held_line_parts(line: &str) -> Option<(&str, &str)> {
+    line.strip_prefix("HELD ")?.split_once("s - ")
+}
+
 /// Every `SpawnLaunched` record among `events`, each with the run it is stamped with ("" for
 /// none), in their order.
 pub fn spawn_launches(events: &[Event]) -> Vec<(String, rigger::progress::SpawnLaunched)> {
@@ -1306,7 +1328,14 @@ pub fn backdate_the_log(root: &Path) {
 /// connection of its own (spec 124, HORIZON IN TESTS): how a binary test ages the events whose
 /// store stamps `rigger setup`'s seeding reads.
 pub fn backdate_the_log_by(root: &Path, age: Duration) {
-    rigger_db(root, "events.db")
+    backdate_store_file_by(root, "events.db", age);
+}
+
+/// Record every event `root`'s `.rigger/<file>` holds `age` earlier than it was, through a
+/// connection of its own: how a binary test ages the store stamps a command reads, the event log's
+/// ([`backdate_the_log_by`]) or the progress log's supervisor beats.
+pub fn backdate_store_file_by(root: &Path, file: &str, age: Duration) {
+    rigger_db(root, file)
         .execute(
             "UPDATE events SET recorded_at = recorded_at - ?1",
             [age.as_nanos() as i64],
