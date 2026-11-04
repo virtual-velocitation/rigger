@@ -2233,11 +2233,33 @@ mod tests {
     /// The silence THE STOP weighs at a wake: with no beat source the wall time since the last
     /// line, read from no store; with one, a record that does not read, from either store, leaves
     /// the wake uncounted rather than reading as a stop, and the next wake a poll away rather than
-    /// a whole bound.
+    /// a whole bound. The readable store carries a beat the last line follows, so a working read
+    /// of either pair counts the silence since that line and re-arms for the rest of the bound.
     #[test]
     fn the_stop_counts_from_the_line_with_no_source_and_not_at_all_on_a_failed_read() {
         let readable = Store::open(":memory:").unwrap();
         let o = opts("u/implementer#0");
+        progress_store::append_stamped(
+            &readable,
+            &o.run_id,
+            &progress::SupervisorBeat::default(),
+            "a supervisor beat",
+        )
+        .unwrap();
+        let after_the_beat = SystemTime::now();
+        let bound = Duration::from_secs(60);
+        let working = Driver {
+            beat_source: Some(&readable),
+            run_store: &readable,
+            ..Driver::default()
+        };
+        let counted = working
+            .silence(&o, after_the_beat)
+            .expect("a working read counts the silence since the line");
+        assert!(
+            next_wait(bound, Some(counted)) > UNBOUNDED_POLL,
+            "a working read re-arms for the rest of the bound: {counted:?}"
+        );
         let quiet = Duration::from_secs(40);
         let last_line = SystemTime::now() - quiet;
 
@@ -2265,7 +2287,7 @@ mod tests {
                 ..Driver::default()
             };
             assert_eq!(
-                next_wait(Duration::from_secs(60), driver.silence(&o, last_line)),
+                next_wait(bound, driver.silence(&o, after_the_beat)),
                 UNBOUNDED_POLL,
                 "{case}: the next wake"
             );
