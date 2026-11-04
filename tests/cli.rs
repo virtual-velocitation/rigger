@@ -9032,7 +9032,7 @@ fn a_run_driver_holds_the_machine_awake_while_it_drives_and_releases_it_as_it_ex
         /// The keep-awake lines on the driver's stderr, given the record's path.
         lines: fn(&Path) -> Vec<String>,
     }
-    const NO_LOGIND: &str = "no logind on the system bus";
+    const NO_LOGIND: &str = "logind was not reached on the system bus";
     let run = acquired_by("rigger run");
     let serve = acquired_by("rigger serve");
     let cases = [
@@ -21587,8 +21587,9 @@ fn rigger_help_of_a_command_prints_only_its_usage_entry() {
             "hold",
             concat!(
                 "  rigger hold --reason <text> hold the current run for the operator, the text its\n",
-                "                              reason: no probe ends this hold, only `rigger release`.\n",
-                "                              Refuses, recording nothing, when no run is live\n",
+                "                              reason: no probe ends this hold; `rigger release`, a\n",
+                "                              new run, or `rigger run` reaching done does. Refuses,\n",
+                "                              recording nothing, when no run is live\n",
             ),
         ),
         (

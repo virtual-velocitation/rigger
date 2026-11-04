@@ -155,10 +155,10 @@ mod tests {
     }
 
     /// Each way taking the inhibitor fails is answered unavailable with the spelling that names
-    /// it, on every host: a bus the adapter cannot reach; an error the bus driver sends, since
-    /// logind never answered, whatever its name; an error any other sender sends, logind's
-    /// refusal, whatever its name and with or without a detail; and a failure that is no error
-    /// reply at all.
+    /// it, on every host: a bus the adapter cannot connect to; an error the bus driver sends,
+    /// since logind was never reached, whatever its name, the bus's policy refusing the call
+    /// included; an error any other sender sends, logind's refusal, whatever its name and with or
+    /// without a detail; and a failure that is no error reply at all.
     #[test]
     fn each_failure_is_answered_unavailable_naming_it() {
         let driver = Some("org.freedesktop.DBus");
@@ -167,7 +167,7 @@ mod tests {
             (
                 "the system bus cannot be reached",
                 no_system_bus(zbus::Error::Address("no such socket".to_string())),
-                "no system bus: address error: no such socket",
+                "cannot connect to the system bus: address error: no such socket",
             ),
             (
                 "the bus driver: no process owns or provides logind's name",
@@ -176,8 +176,9 @@ mod tests {
                     "org.freedesktop.DBus.Error.ServiceUnknown",
                     Some("The name org.freedesktop.login1 was not provided by any .service files"),
                 )),
-                "no logind on the system bus: org.freedesktop.DBus.Error.ServiceUnknown: The name \
-                 org.freedesktop.login1 was not provided by any .service files",
+                "logind was not reached on the system bus: \
+                 org.freedesktop.DBus.Error.ServiceUnknown: The name org.freedesktop.login1 was \
+                 not provided by any .service files",
             ),
             (
                 "the bus driver: logind's activation failed",
@@ -186,8 +187,19 @@ mod tests {
                     "org.freedesktop.DBus.Error.Spawn.ChildExited",
                     Some("Process org.freedesktop.login1 exited with status 1"),
                 )),
-                "no logind on the system bus: org.freedesktop.DBus.Error.Spawn.ChildExited: \
-                 Process org.freedesktop.login1 exited with status 1",
+                "logind was not reached on the system bus: \
+                 org.freedesktop.DBus.Error.Spawn.ChildExited: Process org.freedesktop.login1 \
+                 exited with status 1",
+            ),
+            (
+                "the bus driver: its policy refuses the call to logind",
+                unavailable(error_reply(
+                    driver,
+                    "org.freedesktop.DBus.Error.AccessDenied",
+                    Some("Rejected send message"),
+                )),
+                "logind was not reached on the system bus: org.freedesktop.DBus.Error.AccessDenied: \
+                 Rejected send message",
             ),
             (
                 "logind denies the lock",
@@ -244,10 +256,11 @@ mod tests {
     /// `rigger` for the reason given while the guard stands, and lists it no more once the guard
     /// drops, even while a child spawned under the guard still runs, since the guard holds the one
     /// descriptor and it is close-on-exec. Where logind refuses, the adapter answers unavailable
-    /// naming the refusal logind itself sends this test's own `Inhibit`. Where no logind runs on
-    /// the bus, its name owned by no process once `Inhibit` was asked, the adapter answers
-    /// unavailable with the bus driver's own answer to `Inhibit`; and where there is no system
-    /// bus, with the error reaching it.
+    /// naming the refusal logind itself sends this test's own `Inhibit`. Where the bus driver
+    /// answers `Inhibit` instead, its policy refusing the call while logind runs or no logind
+    /// running, its name owned by no process once `Inhibit` was asked, the adapter answers that
+    /// logind was not reached, with the bus driver's own answer to `Inhibit`; and where no
+    /// connection to the system bus opens, that it cannot connect, with the error opening it.
     #[test]
     fn the_inhibitor_stands_while_its_guard_does_and_ends_with_it() {
         let reason = &format!(
@@ -263,8 +276,10 @@ mod tests {
             Err(e) => {
                 assert_eq!(
                     held.err(),
-                    Some(Unavailable(format!("no system bus: {e}"))),
-                    "no system bus: the adapter's answer"
+                    Some(Unavailable(format!(
+                        "cannot connect to the system bus: {e}"
+                    ))),
+                    "no connection to the system bus: the adapter's answer"
                 );
                 return;
             }
@@ -304,6 +319,15 @@ mod tests {
         };
         let sender = reply.header().sender().map(|sender| sender.to_string());
         match logind_owner(&bus) {
+            Some(_) if sender.as_deref() == Some("org.freedesktop.DBus") => {
+                assert_eq!(
+                    why,
+                    Unavailable(format!(
+                        "logind was not reached on the system bus: {refusal}"
+                    )),
+                    "the bus's policy refuses the call while logind runs: the adapter's answer"
+                );
+            }
             Some(logind) => {
                 assert_eq!(
                     sender,
@@ -324,7 +348,9 @@ mod tests {
                 );
                 assert_eq!(
                     why,
-                    Unavailable(format!("no logind on the system bus: {refusal}")),
+                    Unavailable(format!(
+                        "logind was not reached on the system bus: {refusal}"
+                    )),
                     "no logind: the adapter's answer"
                 );
             }
