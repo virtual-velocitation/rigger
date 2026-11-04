@@ -4221,6 +4221,95 @@ mod tests {
         );
     }
 
+    /// A merge's finalize commit takes no conflict-marker text the merge introduced
+    /// (op-105-merge-finalize-refuses-markers): a resolution staged with markers still in it,
+    /// or staged with them and cleared only in the worktree (the commit takes the index), is a
+    /// `Conflict` naming the path, the merge left in progress and the unit branch unmoved; a
+    /// resolution keeping the Setext underline both parents carry at that path finalizes clean.
+    #[test]
+    fn a_merge_finalize_refuses_marker_text_the_merge_introduced_and_no_line_a_parent_carries() {
+        const RESOLVED: &str = "Title\n=======\nA and B\n";
+        // (row, what the resolver stages - `None` is the file as the merge left it - what it
+        // then leaves in the worktree unstaged, the conflict the finalize answers)
+        let rows = [
+            (
+                "a resolution still carrying the markers",
+                None,
+                None,
+                Some(&["notes.md"]),
+            ),
+            (
+                "markers staged and cleared only in the worktree",
+                None,
+                Some(RESOLVED),
+                Some(&["notes.md"]),
+            ),
+            (
+                "a resolution keeping the underline both parents carry",
+                Some(RESOLVED),
+                None,
+                None,
+            ),
+        ];
+        for (row, staged, unstaged, conflict) in rows {
+            let repo = init_repo();
+            let repo_path = repo.path().to_str().unwrap().to_string();
+            std::fs::write(repo.path().join("notes.md"), "Title\n=======\nbase\n").unwrap();
+            run_git(&repo_path, &["add", "notes.md"]).unwrap();
+            run_git(&repo_path, &["commit", "-q", "-m", "seed notes"]).unwrap();
+            // Each side commits its edit directly: `Worktree::commit`'s own marker scan reads
+            // the Setext underline in a touched file as marker text.
+            let edit = |dir: &std::path::Path, body: &str| {
+                std::fs::write(dir.join("notes.md"), format!("Title\n=======\n{body}\n")).unwrap();
+                git(dir.to_str().unwrap(), &["commit", "-q", "-am", body]).unwrap();
+            };
+            let (wa, a) = temp_wt(&repo_path, "rigger/u/a");
+            let (wb, b) = temp_wt(&repo_path, "rigger/u/b");
+            edit(&wa, "A");
+            a.integrate("rigger: integrate a").unwrap().expect_merged();
+            edit(&wb, "B");
+            let Ok(MergeOutcome::Conflict(first)) = b.merge_into_worktree("rigger: integrate b")
+            else {
+                panic!("{row}: the divergent edit must conflict first");
+            };
+            assert_eq!(first, ["notes.md"], "{row}");
+            let wb_dir = wb.to_str().unwrap();
+            if let Some(content) = staged {
+                std::fs::write(wb.join("notes.md"), content).unwrap();
+            }
+            git(wb_dir, &["add", "notes.md"]).unwrap();
+            if let Some(content) = unstaged {
+                std::fs::write(wb.join("notes.md"), content).unwrap();
+            }
+            let tip = || branch_tip(&repo_path, "rigger/u/b").unwrap();
+            let tip_before = tip();
+
+            let outcome = b.merge_into_worktree("rigger: integrate b").unwrap();
+            let tip_after = tip();
+            match (outcome, conflict) {
+                (MergeOutcome::Conflict(paths), Some(expected)) => {
+                    assert_eq!(paths, expected, "{row}: the conflict names the path");
+                    assert_eq!(tip_after, tip_before, "{row}: no marker commit lands");
+                    assert!(b.merge_in_progress(), "{row}: the merge stays in progress");
+                }
+                (MergeOutcome::Ready(commit), None) => {
+                    assert_eq!(commit, tip_after, "{row}: the merge commits");
+                    assert_eq!(
+                        git(&repo_path, &["show", "rigger/u/b:notes.md"]).unwrap(),
+                        RESOLVED,
+                        "{row}: the unit branch holds the resolution"
+                    );
+                }
+                (MergeOutcome::Conflict(paths), None) => {
+                    panic!("{row}: expected a clean finalize, got a conflict in {paths:?}")
+                }
+                (MergeOutcome::Ready(commit), Some(_)) => {
+                    panic!("{row}: expected a conflict, the merge committed {commit}")
+                }
+            }
+        }
+    }
+
     #[test]
     #[cfg(unix)]
     fn integrate_reports_a_non_content_merge_failure_instead_of_silently_landing_a_stale_branch() {

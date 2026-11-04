@@ -544,8 +544,8 @@
       },
       {
         "file": "crates/rigger-worktree-git/src/worktree.rs",
-        "start_line": 5322,
-        "end_line": 5376
+        "start_line": 5411,
+        "end_line": 5465
       },
       {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
@@ -869,8 +869,8 @@
       },
       {
         "file": "crates/rigger-worktree-git/src/worktree.rs",
-        "start_line": 4264,
-        "end_line": 4264
+        "start_line": 4353,
+        "end_line": 4353
       },
       {
         "file": "src/cli/mod.rs",
@@ -1624,53 +1624,53 @@
       },
       {
         "file": "crates/rigger-worktree-git/src/worktree.rs",
-        "start_line": 5650,
-        "end_line": 5650
+        "start_line": 5739,
+        "end_line": 5739
       },
       {
         "file": "crates/rigger-worktree-git/src/worktree.rs",
-        "start_line": 5651,
-        "end_line": 5651
+        "start_line": 5740,
+        "end_line": 5740
       },
       {
         "file": "crates/rigger-worktree-git/src/worktree.rs",
-        "start_line": 5654,
-        "end_line": 5654
+        "start_line": 5743,
+        "end_line": 5743
       },
       {
         "file": "crates/rigger-worktree-git/src/worktree.rs",
-        "start_line": 5654,
-        "end_line": 5654
+        "start_line": 5743,
+        "end_line": 5743
       },
       {
         "file": "crates/rigger-worktree-git/src/worktree.rs",
-        "start_line": 5655,
-        "end_line": 5655
+        "start_line": 5744,
+        "end_line": 5744
       },
       {
         "file": "crates/rigger-worktree-git/src/worktree.rs",
-        "start_line": 5674,
-        "end_line": 5674
+        "start_line": 5763,
+        "end_line": 5763
       },
       {
         "file": "crates/rigger-worktree-git/src/worktree.rs",
-        "start_line": 5698,
-        "end_line": 5698
+        "start_line": 5787,
+        "end_line": 5787
       },
       {
         "file": "crates/rigger-worktree-git/src/worktree.rs",
-        "start_line": 5699,
-        "end_line": 5699
+        "start_line": 5788,
+        "end_line": 5788
       },
       {
         "file": "crates/rigger-worktree-git/src/worktree.rs",
-        "start_line": 7371,
-        "end_line": 7371
+        "start_line": 7460,
+        "end_line": 7460
       },
       {
         "file": "crates/rigger-worktree-git/src/worktree.rs",
-        "start_line": 7401,
-        "end_line": 7401
+        "start_line": 7490,
+        "end_line": 7490
       },
       {
         "file": "src/cli/critique.rs",
@@ -7014,8 +7014,8 @@
       },
       {
         "file": "crates/rigger-worktree-git/src/worktree.rs",
-        "start_line": 5459,
-        "end_line": 5482
+        "start_line": 5548,
+        "end_line": 5571
       }
     ]
   },
