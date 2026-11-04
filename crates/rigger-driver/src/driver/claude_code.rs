@@ -138,7 +138,7 @@ impl Default for Driver<'static> {
         // same file's `launch_records_a_lost_write_loudly_rather_than_spawning_blind`
         // test) rather than a second, unnecessary spelling of the same thing.
         Driver {
-            bin: "claude".to_string(),
+            bin: crate::claude_auth::DEFAULT_BIN.to_string(),
             rigger_bin: "rigger".to_string(),
             progress_store: &crate::eventstore::SilentStore,
             run_store: &crate::eventstore::SilentStore,
@@ -312,7 +312,7 @@ impl Driver<'_> {
             },
         )?;
 
-        let bin = bin_or_path_default(&self.bin, "claude");
+        let bin = bin_or_path_default(&self.bin, crate::claude_auth::DEFAULT_BIN);
         let mut cmd = crate::subprocess::command_in(bin, &opts.dir);
         cmd.args(&args);
         // The ONE build-environment authority's injection site for this driver (spec 65),
@@ -1618,7 +1618,7 @@ impl Driver<'_> {
     /// outcome decides.
     pub fn probe(&self, root: &str, owed: &crate::hold_probe::OwedProbe) -> ProbeOutcome {
         let deadline = std::time::Instant::now() + owed.delay;
-        let bin = bin_or_path_default(&self.bin, "claude");
+        let bin = bin_or_path_default(&self.bin, crate::claude_auth::DEFAULT_BIN);
         if owed.checks_login() && !crate::claude_auth::logged_in(bin, deadline) {
             return ProbeOutcome::LoggedOut;
         }
@@ -1889,14 +1889,13 @@ fn first_user_message(task: &str) -> String {
     .to_string()
 }
 
-/// The roots a launch's write guard admits: the session's working directory, the host's own for
-/// an empty `dir` as [`crate::subprocess::command_in`] leaves it, then the spawn's scratch
-/// `container` when it has one. Each is made absolute here, since the guard resolves a root
-/// lexically and never against the session's cwd: an empty root refuses every write and a `.`
-/// admits every target.
+/// The roots a launch's write guard admits: the session's working directory,
+/// [`crate::subprocess::session_dir`] of `dir` as [`crate::subprocess::command_in`] runs it, then
+/// the spawn's scratch `container` when it has one. Each is made absolute here, since the guard
+/// resolves a root lexically and never against the session's cwd, so it refuses an empty or
+/// relative root and with it every write.
 fn write_roots(dir: &str, container: Option<&Path>) -> Result<Vec<String>, Error> {
-    let session_cwd = if dir.is_empty() { "." } else { dir };
-    std::iter::once(Path::new(session_cwd))
+    std::iter::once(crate::subprocess::session_dir(dir))
         .chain(container)
         .map(|root| {
             std::path::absolute(root)

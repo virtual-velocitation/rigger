@@ -160,10 +160,10 @@ fn stub(critique: &str) -> (tempfile::TempDir, String) {
     (work, path)
 }
 
-/// Given a critique, when its critic launches, then the launch carries the write guard rooted at
-/// the critic's working directory and its spawn scratch container, and one `StopFailure` entry per
-/// category for its own spawn id, all on the `rigger` the host resolves on PATH, beside the deny
-/// the spawn's own settings hold.
+/// Given a critique, when its critic launches, then its spawn-bound server runs the running
+/// executable, and the launch carries the write guard rooted at the critic's working directory and
+/// its spawn scratch container, and one `StopFailure` entry per category for its own spawn id, all
+/// on that same executable, beside the deny the spawn's own settings hold.
 #[test]
 fn a_critique_launch_carries_the_spawn_hooks_on_its_own_settings() {
     let dir = temp_project();
@@ -180,8 +180,15 @@ fn a_critique_launch_carries_the_spawn_hooks_on_its_own_settings() {
         spawn_scratch_path(scratch.to_str().unwrap(), &critique_unit(&hash), &spawn).unwrap();
     let roots = [root, container].map(|root| root.to_str().unwrap().to_string());
     let argv = critique_stub_argv(work.path());
+    let bin = std::fs::canonicalize(common::rigger_bin()).unwrap();
+    let mcp: Value = serde_json::from_str(flag_value(&argv, "--mcp-config")).unwrap();
+    assert_eq!(
+        mcp["mcpServers"]["rigger"],
+        serde_json::json!({"command": bin, "args": ["mcp", "--spawn", spawn]}),
+        "the critic's spawn-bound server runs the running executable"
+    );
     let settings: Value = serde_json::from_str(flag_value(&argv, "--settings")).unwrap();
-    assert_carries_spawn_hooks(&settings, "rigger", &spawn, &roots);
+    assert_carries_spawn_hooks(&settings, bin.to_str().unwrap(), &spawn, &roots);
     assert_eq!(
         settings["permissions"]["deny"].as_array().map(Vec::len),
         Some(CRITIC_DENIED_TOOLS.len()),

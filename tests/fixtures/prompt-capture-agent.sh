@@ -2,7 +2,8 @@
 # A fixture "agent" for prompt delivery: it stands in for the real `claude` binary and copies
 # what it was handed into the directory `$PROMPT_CAPTURE_DIR` names (a path the test owns,
 # outside the spawn's scratch) - its stdin to `stdin`, and the file its
-# `--system-prompt-file` argument names to `system-prompt` (and that path itself to
+# `--system-prompt-file` argument names (found through `system-prompt-file.sh`, sourced from
+# beside this fixture's own path) to `system-prompt` (and that path itself to
 # `system-prompt-path`) - so a test can read back that a
 # prompt larger than the kernel's per-argument limit arrived intact. Both hosts drive it: under
 # `--input-format` (the headless host, which keeps stdin open until a `result`) it takes the
@@ -10,17 +11,11 @@
 # takes stdin to its end and prints its answer. Checked in, never written at test time, for the
 # same reason as its sibling fixtures.
 : "${PROMPT_CAPTURE_DIR:?the test names the capture directory}"
-sp=""
+self=$(readlink "$0") || self=$0
+. "$(dirname "$self")/system-prompt-file.sh"
+sp=$(system_prompt_file "$@")
 stream=0
-next=0
 for a in "$@"; do
-    if [ "$next" = "1" ]; then
-        sp="$a"
-        next=0
-    fi
-    if [ "$a" = "--system-prompt-file" ]; then
-        next=1
-    fi
     if [ "$a" = "--input-format" ]; then
         stream=1
     fi

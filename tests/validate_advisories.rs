@@ -739,27 +739,36 @@ const EXPIRING_LOGIN_WARNING: &str = "warning: claude login: claude.ai is an int
 /// The one line `rigger validate` warns on when it read no login report.
 #[cfg(unix)]
 const NO_LOGIN_REPORT_WARNING: &str = "warning: claude login: `claude auth status --json` gave \
-     no report within 5 s (claude is not on PATH, or its status failed); a run launches `claude` \
-     from PATH, logged in.";
+     no report within 5 s (claude is not on PATH, its status failed or gave no answer by the \
+     bound, or its report is not one JSON object naming an authMethod string); a run launches \
+     `claude` from PATH, logged in.";
 
 /// `rigger validate` in `root` with a stand-in `claude` first on PATH whose `auth status --json`
-/// runs the [`probe_arms`](common::fixtures::probe_arms) body `auth`, or with no `claude` on PATH
-/// for none: the stand-in's directory, holding what it recorded, then validate's stdout, stderr and
-/// success, and how long it ran.
+/// runs the [`probe_arms`](common::fixtures::probe_arms) body `auth`, or for none with a PATH of
+/// only the tools validate runs, which holds no `claude`: the stand-in's directory, holding what it
+/// recorded, then validate's stdout, stderr and success, and how long it ran.
 #[cfg(unix)]
 fn validate_with_claude(
     root: &Path,
     auth: Option<&str>,
 ) -> (tempfile::TempDir, String, String, bool, std::time::Duration) {
-    use common::cli::{path_without, run_rigger_envs};
+    use common::cli::{ambient_tools_bin, run_rigger_envs};
     use common::fixtures::{arms_claude, probe_arms};
 
     let fake = tempfile::tempdir().unwrap();
-    let mut path = path_without("claude");
-    if let Some(auth) = auth {
-        arms_claude(fake.path(), &probe_arms(auth, ""));
-        path = format!("{}:{path}", fake.path().display());
-    }
+    let path = match auth {
+        Some(auth) => {
+            arms_claude(fake.path(), &probe_arms(auth, ""));
+            format!(
+                "{}:{}",
+                fake.path().display(),
+                std::env::var("PATH").unwrap_or_default()
+            )
+        }
+        None => ambient_tools_bin(fake.path(), &["git"])
+            .display()
+            .to_string(),
+    };
     let started = std::time::Instant::now();
     let (out, err, ok) = run_rigger_envs(root, &["validate"], &[("PATH", &path)]);
     (fake, out, err, ok, started.elapsed())
@@ -799,9 +808,9 @@ fn the_recorded_subscription_login_keeps_only_the_key_the_pin_reads() {
 /// Given a project, when the operator runs `rigger validate` with a stand-in `claude` first on
 /// PATH, or none on it, then validate reads `claude auth status --json` once, reports on stdout
 /// the auth method it names, warns of a subscription login naming its long-lived token and of no
-/// other auth method, one only sharing its prefix included, prints one warning in place of the
-/// report when none came by its 5 s bound, leaves no process of the stand-in behind and exits 0 on
-/// every row.
+/// other auth method, one only sharing its prefix or its suffix included, prints one warning in
+/// place of the report when none came by its 5 s bound, leaves no process of the stand-in behind
+/// and exits 0 on every row.
 #[cfg(unix)]
 #[test]
 fn validate_reports_the_claude_login_and_warns_when_it_expires_or_gives_no_report() {
@@ -810,8 +819,11 @@ fn validate_reports_the_claude_login_and_warns_when_it_expires_or_gives_no_repor
     };
     use std::time::Duration;
 
+    // Each window times the whole `rigger validate` process. `quick` stays below the 5 s bound,
+    // since it proves no wait; `at_the_bound` leaves the rest of validate room above the bound
+    // and stays below the stand-in's 30 s sleep, which it proves validate does not wait out.
     let quick = (Duration::ZERO, Duration::from_secs(3));
-    let at_the_bound = (Duration::from_secs(5), Duration::from_secs(7));
+    let at_the_bound = (Duration::from_secs(5), Duration::from_secs(20));
     let reported = |method: &str| vec![format!("claude login: {method}")];
     let exits_1 = "    exit 1\n";
     // (name, the stand-in's `auth` arm, none for no `claude` on PATH, the login lines on stdout,
@@ -845,6 +857,14 @@ fn validate_reports_the_claude_login_and_warns_when_it_expires_or_gives_no_repor
             "an auth method the subscription login's is only the prefix of",
             Some(printing(r#"{"authMethod": "claude.ai-enterprise"}"#)),
             reported("claude.ai-enterprise"),
+            vec![],
+            quick,
+            0,
+        ),
+        (
+            "an auth method the subscription login's is only the suffix of",
+            Some(printing(r#"{"authMethod": "enterprise.claude.ai"}"#)),
+            reported("enterprise.claude.ai"),
             vec![],
             quick,
             0,

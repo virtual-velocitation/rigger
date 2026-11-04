@@ -24,7 +24,10 @@ const CLAUDE_LOGIN_BOUND: Duration = Duration::from_secs(5);
 /// is the subscription login, which can expire under a long run; when no report came, one warning
 /// in its place. Neither changes the exit status.
 fn print_claude_login() {
-    match rigger::claude_auth::auth_method("claude", Instant::now() + CLAUDE_LOGIN_BOUND) {
+    match rigger::claude_auth::auth_method(
+        rigger::claude_auth::DEFAULT_BIN,
+        Instant::now() + CLAUDE_LOGIN_BOUND,
+    ) {
         Some(method) => {
             println!("claude login: {method}");
             if method == rigger::claude_auth::SUBSCRIPTION_LOGIN {
@@ -37,8 +40,9 @@ fn print_claude_login() {
         }
         None => eprintln!(
             "warning: claude login: `claude auth status --json` gave no report within {} s \
-             (claude is not on PATH, or its status failed); a run launches `claude` from PATH, \
-             logged in.",
+             (claude is not on PATH, its status failed or gave no answer by the bound, or its \
+             report is not one JSON object naming an authMethod string); a run launches `claude` \
+             from PATH, logged in.",
             CLAUDE_LOGIN_BOUND.as_secs()
         ),
     }

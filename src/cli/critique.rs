@@ -201,7 +201,7 @@ impl CriticHost<'_> {
         let progress = Namespaced::new(&progress_backend, self.identity);
         let host = claude_code::Driver {
             bin: String::new(),
-            rigger_bin: String::new(),
+            rigger_bin: running_executable(),
             progress_store: &progress,
             run_store: self.critiques,
             scratch_root: self.scratch_root.to_string(),

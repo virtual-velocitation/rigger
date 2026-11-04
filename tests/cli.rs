@@ -33498,7 +33498,7 @@ fn guard_write_exits_the_blocking_code_on_every_transport_failure() {
 /// each asserted to DENY naming the first root exactly as a resolved out-of-root target
 /// does - never folding into the same `{}` (Allow) as a tool this guard does not cover.
 /// `WriteTarget::NotCovered` (Allow) is reachable ONLY through a JSON object whose
-/// `tool_name` is an actual string outside `Edit`/`Write`/`NotebookEdit` (proven by
+/// `tool_name` is an actual string outside the editing tools (proven by
 /// `guard_write_covers_notebook_edit_and_ignores_other_tools`); every row below is a
 /// DIFFERENT way of failing to reach that one narrow condition, and every one denies.
 #[test]

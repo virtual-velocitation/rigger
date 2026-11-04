@@ -152,8 +152,8 @@ fn installed_spawn_settings(base: &[u8], dir: &Path) -> Value {
 /// both helper agents.
 fn assert_spawn_is_configured(argv: &[String], dir: &Path) {
     assert_settings_are_the_installed_ones(argv, dir);
-    assert_mcp_config_is_the_installed_server(argv, dir);
-    assert_helper_agents_reach_the_spawn(argv, dir);
+    assert_mcp_config_is_the_installed_server(argv);
+    assert_helper_agents_reach_the_spawn(argv);
 }
 
 /// `argv`'s `--settings`, launched in `dir`, is exactly what the hooks installers build: the
@@ -170,7 +170,7 @@ fn assert_settings_are_the_installed_ones(argv: &[String], dir: &Path) {
 
 /// `argv`'s `--mcp-config` is the one `rigger` server the MCP installer builds for this spawn,
 /// and `--strict-mcp-config` keeps any other configuration out.
-fn assert_mcp_config_is_the_installed_server(argv: &[String], _dir: &Path) {
+fn assert_mcp_config_is_the_installed_server(argv: &[String]) {
     let installed =
         hooks::install_mcp_server(b"", "rigger", RIGGER_BIN, &["mcp", "--spawn", SPAWN_ID])
             .unwrap();
@@ -188,7 +188,7 @@ fn assert_mcp_config_is_the_installed_server(argv: &[String], _dir: &Path) {
 /// `argv`'s `--agents` defines `lookup` and `verify` carrying every byte of the committed
 /// `.claude/agents/{name}.md`: each frontmatter field (the name as the key, `tools` as the list
 /// its comma-separated value spells) and the body as the prompt, verbatim, with nothing else.
-fn assert_helper_agents_reach_the_spawn(argv: &[String], _dir: &Path) {
+fn assert_helper_agents_reach_the_spawn(argv: &[String]) {
     let agents = flag_json(argv, "--agents");
     for name in ["lookup", "verify"] {
         let text = std::fs::read_to_string(repo_root().join(format!(".claude/agents/{name}.md")))
@@ -257,7 +257,7 @@ fn porcelain(dir: &Path) -> String {
 }
 
 /// Launch one spawn in a fresh committed worktree and hand the argv it received to `check`.
-fn spawn_in_a_fresh_worktree(check: fn(&[String], &Path)) {
+fn spawn_in_a_fresh_worktree(check: impl Fn(&[String], &Path)) {
     let dir = committed_worktree();
     check(&launch_capturing(dir.path(), ""), dir.path());
 }
@@ -266,9 +266,9 @@ rigger::test_cases! {
     a_headless_spawn_carries_the_hooks_and_status_line_rigger_setup_installs:
         spawn_in_a_fresh_worktree(assert_settings_are_the_installed_ones);
     a_headless_spawn_carries_the_installer_built_mcp_server:
-        spawn_in_a_fresh_worktree(assert_mcp_config_is_the_installed_server);
+        spawn_in_a_fresh_worktree(|argv, _| assert_mcp_config_is_the_installed_server(argv));
     a_headless_spawn_carries_both_helper_agents_as_committed:
-        spawn_in_a_fresh_worktree(assert_helper_agents_reach_the_spawn);
+        spawn_in_a_fresh_worktree(|argv, _| assert_helper_agents_reach_the_spawn(argv));
 }
 
 #[test]

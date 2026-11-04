@@ -17,6 +17,10 @@ use crate::reaped_child::ReapedChild;
 /// long run, which `rigger validate` warns of.
 pub const SUBSCRIPTION_LOGIN: &str = "claude.ai";
 
+/// The agent binary a driver launches from `PATH` when it is given none, and so the one whose
+/// login `rigger validate` reads.
+pub const DEFAULT_BIN: &str = "claude";
+
 /// The one key of the report the login read decides on.
 #[derive(Deserialize)]
 struct AuthStatus {
