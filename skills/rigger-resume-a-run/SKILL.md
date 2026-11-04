@@ -7,7 +7,7 @@ description: Continue interrupted work after a dead driver (spent quota, a crash
 
 ## Procedure
 
-Diagnose first: `rigger status` (or the dashboard) shows each in-flight agent's last progress report and heartbeat age. A stale heartbeat with no recent store event means the DRIVER died mid-run (quota ran out, the process crashed, the machine slept) - it does not mean the run itself is broken; the event log already holds every decision and gate verdict the run made before the driver stopped.
+Diagnose first: `rigger status` (or the dashboard) shows each in-flight agent's last progress report and heartbeat age. A stale heartbeat with no recent store event means the DRIVER died mid-run (quota ran out, the process crashed, the machine slept) - it does not mean the run itself is broken; the event log already holds every decision and gate verdict the run made before the driver stopped. Under an open hold the heartbeat age stops at the hold's start, so a driver that dies inside a hold never reads stale there: `rigger watch` reads the heartbeat on wall clock and names it.
 
 Relaunch the same blessed driver on the same spec WITHOUT `--fresh` - `rigger run <spec>`, `rigger serve <spec>` / `rigger workflow <spec>`, or the native `/rigger <spec>` workflow with its `fresh` argument left unset. Because the run lives in the event log, not in the dead process, the conductor's own run-starting step adopts the existing run instead of minting a new one: it replays the log, rebuilds its in-memory state, and continues exactly where the dead driver left off. No unit restarts from zero and no work already recorded is lost.
 
@@ -15,7 +15,7 @@ Relaunch the same blessed driver on the same spec WITHOUT `--fresh` - `rigger ru
 
 A run its plan-critique gate stopped on a spec defect (its halt opens `amend the spec and relaunch`) is never adopted by a command naming its spec: amend the spec, critique it with `rigger critique <spec>`, then relaunch on it, which begins a new run with no `--fresh`.
 
-A run that is HELD, not dead, needs no relaunch: its `rigger run` or `rigger serve` driver is alive and launches nothing until the hold ends. A passing probe ends an outage hold by itself, save a `model_not_found` hold, which runs none; `rigger release` ends any hold at once, and is the only end of one you declared with `rigger hold --reason <text>`. A release with no hold open records nothing and says so.
+A run that is HELD, not dead, launches nothing until the hold ends, and its driver decides what ends it. A `rigger run` driver stays alive through the hold, and a passing probe ends an outage hold by itself, save a `model_not_found` hold, which runs none. `rigger serve` runs no probe, so its hold stands until `rigger release` or the start of a new run ends it, and a wait still open when its session closes parks the spawn; a relaunch then continues the run. A `rigger workflow` driver drains its live workers and stops on a held run, and `rigger release` and a new `rigger workflow` resume it. `rigger release` ends any hold at once. No probe ends one you declared with `rigger hold --reason <text>`: `rigger release` does, as do the start of a new run and a `rigger run` run reaching done. A release with no hold open records nothing and says so.
 
 ## Anti-move
 

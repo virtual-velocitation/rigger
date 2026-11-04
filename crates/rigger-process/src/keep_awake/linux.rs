@@ -30,7 +30,10 @@ pub(super) fn acquire(reason: &str) -> Result<SleepGuard, Unavailable> {
 /// Ask logind for the inhibitor, without the interactive-authorization flag, so no
 /// authorization prompt opens mid-run. The descriptor is zvariant's close-on-exec duplicate of
 /// the one the reply carries, so a child spawned while the guard stands never inherits it; the
-/// reply, and the original with it, drops on return.
+/// reply, and the original with it, drops on return. zbus receives that original without
+/// close-on-exec, so a child another thread spawns between its receipt and this return inherits
+/// it and holds the inhibitor past the guard: a caller acquires before it starts any thread that
+/// spawns a child.
 fn inhibit(bus: &Connection, reason: &str) -> zbus::Result<OwnedFd> {
     let reply = bus.call_method(
         Some(LOGIND),
@@ -43,15 +46,17 @@ fn inhibit(bus: &Connection, reason: &str) -> zbus::Result<OwnedFd> {
     Ok(descriptor.into())
 }
 
-/// Unavailable because the system bus cannot be reached.
+/// Unavailable because no connection to the system bus opens: none is reachable, or the bus
+/// refused the connection.
 fn no_system_bus(error: zbus::Error) -> Unavailable {
-    Unavailable(format!("no system bus: {error}"))
+    Unavailable(format!("cannot connect to the system bus: {error}"))
 }
 
 /// Unavailable because `Inhibit` failed, classified by the error reply's sender, never its name:
 /// an error the bus driver sent means logind never answered (no process owns or provides its
-/// name, or its activation failed); an error any other sender sent is logind's refusal; a failure
-/// that is no error reply (no answer, or an answer with no descriptor) is neither.
+/// name, its activation failed, or the bus's policy refused the call); an error any other sender
+/// sent is logind's refusal; a failure that is no error reply (no answer, or an answer with no
+/// descriptor) is neither.
 fn unavailable(error: zbus::Error) -> Unavailable {
     match &error {
         zbus::Error::MethodError(_, _, reply)
@@ -60,7 +65,7 @@ fn unavailable(error: zbus::Error) -> Unavailable {
                 .sender()
                 .is_some_and(|sender| sender.as_str() == BUS_DRIVER) =>
         {
-            Unavailable(format!("no logind on the system bus: {error}"))
+            Unavailable(format!("logind was not reached on the system bus: {error}"))
         }
         zbus::Error::MethodError(..) => {
             Unavailable(format!("logind refused the inhibitor: {error}"))

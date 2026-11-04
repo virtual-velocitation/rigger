@@ -2225,31 +2225,31 @@ mandatory sweep: .rigger-path string literals - 607 site(s), collected mechanica
          courier's (`emit`, `result`, `progress`) discovery refresh of that registration never \
          does. `--force-live` overrides the refusal for an operator certain no writer is using \
          the store; it checks nothing.\n"`
-- `crates/rigger-domain/src/docs.rs:862-862` `"Store hygiene for rigger's own state - growing .rigger/ disk usage, \
+- `crates/rigger-domain/src/docs.rs:864-864` `"Store hygiene for rigger's own state - growing .rigger/ disk usage, \
          the bloat advisory from `rigger validate`, or `rigger step`/replay running slow. \
          Read this before running `rigger reset` or touching any store file by hand."`
-- `crates/rigger-domain/src/docs.rs:866-866` `"rigger keeps three stores under `.rigger/`, and only one of them holds anything \
+- `crates/rigger-domain/src/docs.rs:868-868` `"rigger keeps three stores under `.rigger/`, and only one of them holds anything \
              durable:\n"`
-- `crates/rigger-domain/src/docs.rs:937-937` `"`rigger graph build` folds the project's source straight into `.rigger/graph.db` - \
+- `crates/rigger-domain/src/docs.rs:941-941` `"`rigger graph build` folds the project's source straight into `.rigger/graph.db` - \
              no run, no `RunStarted`, and nothing on the event log but one ledger entry per file \
              batch whose generation moved, since the tree re-derives the batch itself. \
              It CREATES the store when the checkout is cold (`.rigger/` does not exist yet) and \
              REFRESHES an existing store incrementally: an unchanged file re-ingests nothing, and \
              it reuses the exact same walk-and-content-key ingest authority a live run uses, so a \
              standalone build and a run can never fold the same file under two different keys.\n"`
-- `crates/rigger-domain/src/docs.rs:948-948` `"Never force a rebuild by deleting `.rigger/graph.db` (or `events.db`) and \
+- `crates/rigger-domain/src/docs.rs:952-952` `"Never force a rebuild by deleting `.rigger/graph.db` (or `events.db`) and \
          re-running `rigger graph build` on the empty result. Deleting the log throws away \
          truth that no rebuild can get back, and deleting only the graph is unnecessary work \
          `rigger graph build` already does FOR you, incrementally, without erasing anything \
          first. If lookups are empty, just run `rigger graph build`; only reach for \
          rigger-reset-store if you specifically mean to prune, not rebuild.\n"`
-- `crates/rigger-domain/src/docs.rs:972-972` `"`rigger reindex <file>...` re-parses ONLY the named files and persists the delta to \
+- `crates/rigger-domain/src/docs.rs:976-976` `"`rigger reindex <file>...` re-parses ONLY the named files and persists the delta to \
              the project's symbols grounding index at `.rigger/symbols/` - the fast, targeted fix \
              for an index that has drifted from files you just changed (a unit's own commit, a \
              rebase, a branch switch). It is scoped strictly to the symbols index, a DIFFERENT \
              store from the structural context graph, so it costs only the named files, never a \
              walk of the whole tree.\n"`
-- `crates/rigger-domain/src/docs.rs:1693-1693` `"the partition holding .rigger/ needs about the compacted size of the log \
+- `crates/rigger-domain/src/docs.rs:1705-1705` `"the partition holding .rigger/ needs about the compacted size of the log \
                      free"`
 - `crates/rigger-gates-shell/src/gate.rs:336-336` `".rigger-cache-probe-{}"`
 - `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:8803-8803` `"local:/p/.rigger/events.db"`
@@ -2600,8 +2600,9 @@ re-parks its implementer there. Refuses, recording\n                            
 nothing, when the unit is not escalated or its branch\n                              \
 is gone\n  \
 rigger hold --reason <text> hold the current run for the operator, the text its\n                              \
-reason: no probe ends this hold, only `rigger release`.\n                              \
-Refuses, recording nothing, when no run is live\n  \
+reason: no probe ends this hold; `rigger release`, a\n                              \
+new run, or `rigger run` reaching done does. Refuses,\n                              \
+recording nothing, when no run is live\n  \
 rigger release              end the current run's hold, whichever writer declared\n                              \
 it; with no hold open it records nothing and says so\n  \
 rigger reported <id>        exit 0 iff spawn <id> already has a recorded result in\n                              \
@@ -3893,10 +3894,10 @@ Proposed home: `docs::support (consolidate these 4 sites into one function in th
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-domain/src/docs.rs:929-958` `render_build_graph_skill`
-- `crates/rigger-domain/src/docs.rs:963-990` `render_reindex_skill`
-- `crates/rigger-domain/src/docs.rs:995-1039` `render_resume_a_run_skill`
-- `crates/rigger-domain/src/docs.rs:1168-1218` `render_restore_the_dash_skill`
+- `crates/rigger-domain/src/docs.rs:933-962` `render_build_graph_skill`
+- `crates/rigger-domain/src/docs.rs:967-994` `render_reindex_skill`
+- `crates/rigger-domain/src/docs.rs:999-1051` `render_resume_a_run_skill`
+- `crates/rigger-domain/src/docs.rs:1180-1230` `render_restore_the_dash_skill`
 
 #### `dup-3d5ea11431d3` (near, 2 sites)
 
@@ -3904,8 +3905,8 @@ Proposed home: `docs::support (consolidate these 2 sites into one function in th
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-domain/src/docs.rs:1046-1081` `render_handle_an_escalation_skill`
-- `crates/rigger-domain/src/docs.rs:1227-1276` `render_diagnose_churn_skill`
+- `crates/rigger-domain/src/docs.rs:1058-1093` `render_handle_an_escalation_skill`
+- `crates/rigger-domain/src/docs.rs:1239-1288` `render_diagnose_churn_skill`
 
 #### `dup-e45a74e51e8a` (near, 4 sites)
 
@@ -4827,7 +4828,7 @@ Proposed home: `a new shared module (sites span 2 files: src/cli/setup.rs, src/m
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `src/cli/setup.rs:312-319` `print_scaffold_pointer`
-- `src/main.rs:431-433` `usage`
+- `src/main.rs:432-434` `usage`
 
 #### `dup-3f04af8603ff` (semantic, 2 sites)
 

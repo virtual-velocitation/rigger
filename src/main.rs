@@ -225,8 +225,9 @@ re-parks its implementer there. Refuses, recording\n                            
 nothing, when the unit is not escalated or its branch\n                              \
 is gone\n  \
 rigger hold --reason <text> hold the current run for the operator, the text its\n                              \
-reason: no probe ends this hold, only `rigger release`.\n                              \
-Refuses, recording nothing, when no run is live\n  \
+reason: no probe ends this hold; `rigger release`, a\n                              \
+new run, or `rigger run` reaching done does. Refuses,\n                              \
+recording nothing, when no run is live\n  \
 rigger release              end the current run's hold, whichever writer declared\n                              \
 it; with no hold open it records nothing and says so\n  \
 rigger reported <id>        exit 0 iff spawn <id> already has a recorded result in\n                              \

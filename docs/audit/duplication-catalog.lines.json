@@ -1379,33 +1379,33 @@
       },
       {
         "file": "crates/rigger-domain/src/docs.rs",
-        "start_line": 862,
-        "end_line": 862
+        "start_line": 864,
+        "end_line": 864
       },
       {
         "file": "crates/rigger-domain/src/docs.rs",
-        "start_line": 866,
-        "end_line": 866
+        "start_line": 868,
+        "end_line": 868
       },
       {
         "file": "crates/rigger-domain/src/docs.rs",
-        "start_line": 937,
-        "end_line": 937
+        "start_line": 941,
+        "end_line": 941
       },
       {
         "file": "crates/rigger-domain/src/docs.rs",
-        "start_line": 948,
-        "end_line": 948
+        "start_line": 952,
+        "end_line": 952
       },
       {
         "file": "crates/rigger-domain/src/docs.rs",
-        "start_line": 972,
-        "end_line": 972
+        "start_line": 976,
+        "end_line": 976
       },
       {
         "file": "crates/rigger-domain/src/docs.rs",
-        "start_line": 1693,
-        "end_line": 1693
+        "start_line": 1705,
+        "end_line": 1705
       },
       {
         "file": "crates/rigger-gates-shell/src/gate.rs",
@@ -5319,23 +5319,23 @@
     "sites": [
       {
         "file": "crates/rigger-domain/src/docs.rs",
-        "start_line": 929,
-        "end_line": 958
+        "start_line": 933,
+        "end_line": 962
       },
       {
         "file": "crates/rigger-domain/src/docs.rs",
-        "start_line": 963,
-        "end_line": 990
+        "start_line": 967,
+        "end_line": 994
       },
       {
         "file": "crates/rigger-domain/src/docs.rs",
-        "start_line": 995,
-        "end_line": 1039
+        "start_line": 999,
+        "end_line": 1051
       },
       {
         "file": "crates/rigger-domain/src/docs.rs",
-        "start_line": 1168,
-        "end_line": 1218
+        "start_line": 1180,
+        "end_line": 1230
       }
     ]
   },
@@ -5344,13 +5344,13 @@
     "sites": [
       {
         "file": "crates/rigger-domain/src/docs.rs",
-        "start_line": 1046,
-        "end_line": 1081
+        "start_line": 1058,
+        "end_line": 1093
       },
       {
         "file": "crates/rigger-domain/src/docs.rs",
-        "start_line": 1227,
-        "end_line": 1276
+        "start_line": 1239,
+        "end_line": 1288
       }
     ]
   },
@@ -7259,8 +7259,8 @@
       },
       {
         "file": "src/main.rs",
-        "start_line": 431,
-        "end_line": 433
+        "start_line": 432,
+        "end_line": 434
       }
     ]
   },
