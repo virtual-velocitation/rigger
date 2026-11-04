@@ -3,6 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
+pub use super::fixtures::table_lines;
 use super::fixtures::{recorded_argv, recorded_task};
 
 /// The repository root (the package's manifest directory).
@@ -269,24 +270,6 @@ pub fn assert_doc_carries_none_of(rel: &str, phrasings: &[&str], why: &str) {
         present.is_empty(),
         "{rel} {why}. Phrasings still present in the document: {present:#?}"
     );
-}
-
-/// The lines of the TOML table `[header]` in `manifest`, up to the next table header.
-pub fn table_lines(manifest: &str, header: &str) -> Vec<String> {
-    let want = format!("[{header}]");
-    let mut in_table = false;
-    let mut out = Vec::new();
-    for raw in manifest.lines() {
-        let line = raw.trim();
-        if line.starts_with('[') && line.ends_with(']') {
-            in_table = line == want;
-            continue;
-        }
-        if in_table {
-            out.push(raw.to_string());
-        }
-    }
-    out
 }
 
 /// Whether the TOML table `[header]` in `manifest` declares `key` (as `key = ..`, `key=..` or a
