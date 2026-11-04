@@ -6314,7 +6314,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-b812e9924aed",
+    "id": "dup-880060c29e31",
     "classification": "semantic",
     "sites": [
       {
@@ -6411,11 +6411,6 @@
         "file": "src/cli/mod.rs",
         "name": "Connection::open",
         "content_hash": "a26e651ef0fda2a7"
-      },
-      {
-        "file": "src/cli/mod.rs",
-        "name": "Connection::open",
-        "content_hash": "6ad0a4b6d2a9cca4"
       },
       {
         "file": "src/cli/mod.rs",
@@ -6533,6 +6528,11 @@
         "content_hash": "e4bfcfaa4e39b2d2"
       },
       {
+        "file": "tests/common/fixtures/sqlite.rs",
+        "name": "Connection::open",
+        "content_hash": "a2fad77eaca35107"
+      },
+      {
         "file": "tests/common/fixtures/write_lock.rs",
         "name": "Connection::open",
         "content_hash": "21e10304a9cde36f"
@@ -6603,11 +6603,6 @@
         "content_hash": "21e10304a9cde36f"
       },
       {
-        "file": "tests/heartbeat_write_read_agree_periphery.rs",
-        "name": "Connection::open",
-        "content_hash": "6ad0a4b6d2a9cca4"
-      },
-      {
         "file": "tests/reclaim_space_periphery.rs",
         "name": "Connection::open",
         "content_hash": "6ad0a4b6d2a9cca4"
@@ -6654,7 +6649,7 @@
       }
     ],
     "proposed_home": "one sqlite-connection-opening adapter function every caller is injected with",
-    "note": "mandatory sweep: sqlite Connection::open call sites - 67 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: sqlite Connection::open call sites - 66 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {

@@ -12260,41 +12260,32 @@ mod tests {
             .as_nanos() as i64
             - (watch::DEAD_DRIVER_QUIET_BOUND + watch::DEAD_DRIVER_HEARTBEAT_BOUND).as_nanos()
                 as i64;
-        let scoped_run_stream = loc.run_stream();
-        let conn = rusqlite::Connection::open(&db).unwrap();
-        for (revision, (ty, body)) in [
-            (
-                runscope::TYPE_RUN_STARTED,
-                format!(r#"{{"run":"{run_id}","criteria":["held"]}}"#),
-            ),
-            (
-                spawn::TYPE_SPAWN_REQUESTED,
-                format!(
-                    r#"{{"id":"{spawn_id}","unit":"u-held","stage":"implementer","prompt":"do it"}}"#
-                ),
-            ),
-            (
-                runscope::TYPE_RUN_HELD,
-                serde_json::to_string(&runscope::RunHeld::default()).unwrap(),
-            ),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            conn.execute(
-                "INSERT INTO events (stream, type, id, data, meta, valid_from, recorded_at, \
-                 revision) VALUES (?1, ?2, ?3, ?4, '{}', ?5, ?5, ?6)",
-                rusqlite::params![
-                    scoped_run_stream,
-                    ty,
-                    format!("e{revision}"),
-                    body.as_bytes(),
+        crate::test_support::insert_aged_rows(
+            std::path::Path::new(&db),
+            &loc.run_stream(),
+            &[
+                (
+                    0,
+                    runscope::TYPE_RUN_STARTED,
+                    format!(r#"{{"run":"{run_id}","criteria":["held"]}}"#),
                     stamped_at,
-                    revision as i64
-                ],
-            )
-            .unwrap();
-        }
+                ),
+                (
+                    1,
+                    spawn::TYPE_SPAWN_REQUESTED,
+                    format!(
+                        r#"{{"id":"{spawn_id}","unit":"u-held","stage":"implementer","prompt":"do it"}}"#
+                    ),
+                    stamped_at,
+                ),
+                (
+                    2,
+                    runscope::TYPE_RUN_HELD,
+                    serde_json::to_string(&runscope::RunHeld::default()).unwrap(),
+                    stamped_at,
+                ),
+            ],
+        );
         let marker = rigger::liveness::marker_path(
             &marker_root(&loc.repo_root(), &scratch_defaults(&loc).0),
             run_id,

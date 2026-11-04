@@ -3644,18 +3644,18 @@
       },
       {
         "file": "tests/heartbeat_write_read_agree_periphery.rs",
-        "start_line": 142,
-        "end_line": 142
+        "start_line": 129,
+        "end_line": 129
       },
       {
         "file": "tests/heartbeat_write_read_agree_periphery.rs",
-        "start_line": 247,
-        "end_line": 247
+        "start_line": 225,
+        "end_line": 225
       },
       {
         "file": "tests/heartbeat_write_read_agree_periphery.rs",
-        "start_line": 252,
-        "end_line": 252
+        "start_line": 230,
+        "end_line": 230
       },
       {
         "file": "tests/init_setup_unknown_key_agent_fleet_periphery.rs",
@@ -5950,7 +5950,7 @@
     ]
   },
   {
-    "id": "dup-b812e9924aed",
+    "id": "dup-880060c29e31",
     "sites": [
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
@@ -6049,13 +6049,8 @@
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 12264,
-        "end_line": 12264
-      },
-      {
-        "file": "src/cli/mod.rs",
-        "start_line": 12744,
-        "end_line": 12744
+        "start_line": 12735,
+        "end_line": 12735
       },
       {
         "file": "tests/cli.rs",
@@ -6168,6 +6163,11 @@
         "end_line": 99
       },
       {
+        "file": "tests/common/fixtures/sqlite.rs",
+        "start_line": 144,
+        "end_line": 144
+      },
+      {
         "file": "tests/common/fixtures/write_lock.rs",
         "start_line": 11,
         "end_line": 11
@@ -6236,11 +6236,6 @@
         "file": "tests/graph_additive_indexes_persist.rs",
         "start_line": 237,
         "end_line": 237
-      },
-      {
-        "file": "tests/heartbeat_write_read_agree_periphery.rs",
-        "start_line": 151,
-        "end_line": 151
       },
       {
         "file": "tests/reclaim_space_periphery.rs",
