@@ -744,23 +744,31 @@ const NO_LOGIN_REPORT_WARNING: &str = "warning: claude login: `claude auth statu
      `claude` from PATH, logged in.";
 
 /// `rigger validate` in `root` with a stand-in `claude` first on PATH whose `auth status --json`
-/// runs the [`probe_arms`](common::fixtures::probe_arms) body `auth`, or with no `claude` on PATH
-/// for none: the stand-in's directory, holding what it recorded, then validate's stdout, stderr and
-/// success, and how long it ran.
+/// runs the [`probe_arms`](common::fixtures::probe_arms) body `auth`, or for none with a PATH of
+/// only the tools validate runs, which holds no `claude`: the stand-in's directory, holding what it
+/// recorded, then validate's stdout, stderr and success, and how long it ran.
 #[cfg(unix)]
 fn validate_with_claude(
     root: &Path,
     auth: Option<&str>,
 ) -> (tempfile::TempDir, String, String, bool, std::time::Duration) {
-    use common::cli::{path_without, run_rigger_envs};
+    use common::cli::{ambient_tools_bin, run_rigger_envs};
     use common::fixtures::{arms_claude, probe_arms};
 
     let fake = tempfile::tempdir().unwrap();
-    let mut path = path_without("claude");
-    if let Some(auth) = auth {
-        arms_claude(fake.path(), &probe_arms(auth, ""));
-        path = format!("{}:{path}", fake.path().display());
-    }
+    let path = match auth {
+        Some(auth) => {
+            arms_claude(fake.path(), &probe_arms(auth, ""));
+            format!(
+                "{}:{}",
+                fake.path().display(),
+                std::env::var("PATH").unwrap_or_default()
+            )
+        }
+        None => ambient_tools_bin(fake.path(), &["git"])
+            .display()
+            .to_string(),
+    };
     let started = std::time::Instant::now();
     let (out, err, ok) = run_rigger_envs(root, &["validate"], &[("PATH", &path)]);
     (fake, out, err, ok, started.elapsed())

@@ -51,6 +51,7 @@
 
 mod common;
 
+use common::cli::ambient_tools_bin;
 use common::fixtures::write_text;
 use common::git::{commit_files, git_answer, git_commit_all, git_ok, git_out, init_repo};
 use common::repo::repo_root;
@@ -80,25 +81,11 @@ fn cores() -> u64 {
         .expect("nproc prints a number")
 }
 
-/// The first executable named `tool` on the ambient PATH.
-fn ambient_tool(tool: &str) -> PathBuf {
-    std::env::var_os("PATH")
-        .into_iter()
-        .flat_map(|p| std::env::split_paths(&p).collect::<Vec<_>>())
-        .map(|d| d.join(tool))
-        .find(|p| p.is_file())
-        .unwrap_or_else(|| panic!("`{tool}` must be on PATH for the mutation gate fixture"))
-}
-
 /// A fixture PATH directory holding the gate's ordinary tools, the stand-in `cargo`, and - when
 /// `with_systemd_run` - the stand-in `systemd-run`. Every entry is a symlink, so no test ever
 /// writes a file it then executes.
 fn fixture_bin(dir: &Path, with_systemd_run: bool) -> PathBuf {
-    let bin = dir.join("bin");
-    std::fs::create_dir_all(&bin).unwrap();
-    for tool in GATE_TOOLS {
-        std::os::unix::fs::symlink(ambient_tool(tool), bin.join(tool)).unwrap();
-    }
+    let bin = ambient_tools_bin(&dir.join("bin"), GATE_TOOLS);
     let fixtures = repo_root().join("tests").join("fixtures");
     std::os::unix::fs::symlink(fixtures.join("mutation-gate-cargo.sh"), bin.join("cargo")).unwrap();
     if with_systemd_run {

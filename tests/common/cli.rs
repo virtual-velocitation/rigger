@@ -354,6 +354,66 @@ pub fn run_rigger_envs(cwd: &Path, args: &[&str], envs: &[(&str, &str)]) -> (Str
     rigger_outcome(child)
 }
 
+/// The first executable named `tool` on the ambient `PATH`, which the test needs there.
+pub fn ambient_tool(tool: &str) -> PathBuf {
+    std::env::var_os("PATH")
+        .into_iter()
+        .flat_map(|p| std::env::split_paths(&p).collect::<Vec<_>>())
+        .map(|d| d.join(tool))
+        .find(|p| p.is_file())
+        .unwrap_or_else(|| panic!("`{tool}` must be on PATH for this test"))
+}
+
+/// `dir` made a `PATH` directory holding each of `tools` as a symlink to its [`ambient_tool`], so a
+/// `PATH` of `dir` finds exactly those tools whatever else the machine has installed, and no test
+/// writes a file it then executes.
+#[cfg(unix)]
+pub fn ambient_tools_bin(dir: &Path, tools: &[&str]) -> PathBuf {
+    std::fs::create_dir_all(dir).unwrap();
+    for tool in tools {
+        std::os::unix::fs::symlink(ambient_tool(tool), dir.join(tool)).unwrap();
+    }
+    dir.to_path_buf()
+}
+
+/// The directory holding the stand-in agent binary [`rigger_command`] puts on every `PATH`: a
+/// `claude` linked to the ambient `false`, so whatever it is asked it prints nothing and fails. It
+/// lives in the test target's scratch directory, made by whichever test process reaches it first
+/// and shared by the rest.
+#[cfg(unix)]
+fn no_report_agent_dir() -> PathBuf {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("no-login-report");
+    std::fs::create_dir_all(&dir).unwrap();
+    match std::os::unix::fs::symlink(ambient_tool("false"), dir.join("claude")) {
+        Err(e) if e.kind() != std::io::ErrorKind::AlreadyExists => {
+            panic!(
+                "the stand-in agent binary links into {}: {e}",
+                dir.display()
+            )
+        }
+        _ => dir,
+    }
+}
+
+/// `path` with [`no_report_agent_dir`] ahead of its first entry the ambient `PATH` holds, so the
+/// rigger a test runs finds the stand-in agent binary before the machine's own, and a stand-in the
+/// test put ahead of those entries before both; a `path` holding no ambient entry, one a test built
+/// to hold only the tools it names, comes back whole.
+#[cfg(unix)]
+fn behind_the_no_report_agent(path: &str) -> std::ffi::OsString {
+    let ambient: Vec<PathBuf> = std::env::var_os("PATH")
+        .map(|p| std::env::split_paths(&p).collect())
+        .unwrap_or_default();
+    let mut entries: Vec<PathBuf> = std::env::split_paths(path).collect();
+    let first_ambient = entries
+        .iter()
+        .position(|entry| !entry.as_os_str().is_empty() && ambient.contains(entry));
+    if let Some(first_ambient) = first_ambient {
+        entries.insert(first_ambient, no_report_agent_dir());
+    }
+    std::env::join_paths(entries).expect("a PATH's own entries join back into one")
+}
+
 /// The ambient `PATH` with every directory holding a `tool` removed, so a lookup of `tool` fails
 /// whatever the machine running the test has installed; `git` and the coreutils stay found only
 /// where no directory holding them also holds `tool`.
@@ -486,7 +546,9 @@ pub fn setup_ok(cwd: &Path, envs: &[(&str, &str)]) -> String {
 }
 
 /// `rigger <args...>` in `cwd` with extra environment `envs`, as [`run_rigger_envs`] runs it, for
-/// a caller that spawns it and acts while it runs; `state` must outlive the process.
+/// a caller that spawns it and acts while it runs; `state` must outlive the process. Its `PATH`
+/// finds the stand-in agent binary that gives no report ahead of the machine's own
+/// ([`behind_the_no_report_agent`]).
 pub fn rigger_command(cwd: &Path, args: &[&str], envs: &[(&str, &str)], state: &Path) -> Command {
     let mut cmd = super::rigger_courier();
     cmd.args(args).current_dir(cwd);
@@ -505,6 +567,16 @@ pub fn rigger_command(cwd: &Path, args: &[&str], envs: &[(&str, &str)], state: &
     cmd.env("XDG_STATE_HOME", state);
     for (k, v) in envs {
         cmd.env(k, v);
+    }
+    // No rigger a test runs reaches the machine's own agent binary: the caller's `PATH`, else the
+    // ambient one, goes behind the stand-in that gives no report.
+    #[cfg(unix)]
+    {
+        let path = envs.iter().rev().find(|(k, _)| *k == "PATH").map_or_else(
+            || std::env::var("PATH").unwrap_or_default(),
+            |(_, path)| path.to_string(),
+        );
+        cmd.env("PATH", behind_the_no_report_agent(&path));
     }
     cmd
 }
