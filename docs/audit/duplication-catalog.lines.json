@@ -4089,13 +4089,13 @@
       },
       {
         "file": "tests/spec_critique_periphery.rs",
-        "start_line": 430,
-        "end_line": 430
+        "start_line": 437,
+        "end_line": 437
       },
       {
         "file": "tests/spec_critique_periphery.rs",
-        "start_line": 865,
-        "end_line": 865
+        "start_line": 872,
+        "end_line": 872
       },
       {
         "file": "tests/statusline_command_periphery.rs",
