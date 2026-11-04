@@ -428,7 +428,7 @@ mod tests {
     };
     use rigger_domain::agent::API_UNSTABLE;
     use rigger_domain::retention::PERCEPTION_TYPES;
-    use std::time::Duration;
+    use std::time::{Duration, UNIX_EPOCH};
 
     const LOGIN: &str = "run claude auth login";
     const RETRIES: &str = "none, the run retries by itself";
@@ -671,13 +671,14 @@ mod tests {
     }
 
     /// THE RELEASE (spec 105): a hold open, an operator hold included, takes one `RunReleased` by
-    /// its writer, the host's or the operator's, carrying how long it stood, from its earliest
-    /// `RunHeld`, and the release answers that it appended; no open hold takes nothing and the
-    /// release answers so.
+    /// its writer, the host's or the operator's, carrying how long it stood at the caller's `now`,
+    /// from its earliest `RunHeld`, and the release answers that it appended; no open hold takes
+    /// nothing and the release answers so.
     #[test]
     fn a_release_appends_only_on_an_open_hold() {
+        let now = UNIX_EPOCH + Duration::from_secs(1_000_000);
         let held_at = |cause: &str, by: &str, ago: u64| {
-            held(cause, by, "").with_valid_from(SystemTime::now() - Duration::from_secs(ago))
+            held(cause, by, "").with_valid_from(now - Duration::from_secs(ago))
         };
         let rows: [(&str, Vec<Event>, Option<u64>); 5] = [
             ("no hold", vec![], None),
@@ -709,9 +710,7 @@ mod tests {
             for (name, log, expected) in rows.clone() {
                 let store = run_holding(log);
                 let appended_before = stream(&store).len();
-                let before = SystemTime::now();
-                let appended = release_hold(&store, by, SystemTime::now()).unwrap();
-                let after = SystemTime::now();
+                let appended = release_hold(&store, by, now).unwrap();
                 assert_eq!(appended, expected.is_some(), "{name} by {by}: the answer");
                 let events = stream(&store);
                 let mut landed = events[appended_before..].to_vec();
@@ -724,12 +723,7 @@ mod tests {
                         assert_eq!(only, Vec::<&str>::new(), "{name} by {by}: one event");
                         let body: RunReleased = serde_json::from_slice(&event.data).unwrap();
                         assert_eq!(body.by, by, "{name} by {by}");
-                        let span = after.duration_since(before).unwrap().as_secs();
-                        assert!(
-                            (ago..=ago + span + 1).contains(&body.held_for_s),
-                            "{name} by {by}: {} seconds",
-                            body.held_for_s
-                        );
+                        assert_eq!(body.held_for_s, ago, "{name} by {by}: seconds held");
                     }
                 }
             }
@@ -866,13 +860,14 @@ mod tests {
     }
 
     /// A PASSING PROBE RELEASES (spec 105 RELEASE): `RunReleased {by: probe}`, carrying how long
-    /// the hold stood, lands only while the hold's latest `RunHeld` is the one the probe read; a
-    /// hold re-declared since, a released hold and an unheld run take nothing.
+    /// the hold stood at the controller's `now`, lands only while the hold's latest `RunHeld` is
+    /// the one the probe read; a hold re-declared since, a released hold and an unheld run take
+    /// nothing.
     #[test]
     fn a_passing_probe_releases_only_the_hold_it_probed() {
+        let now = UNIX_EPOCH + Duration::from_secs(1_000_000);
         let held_ago = |cause: &str| {
-            held(cause, HOLD_BY_HOST, "")
-                .with_valid_from(SystemTime::now() - Duration::from_secs(300))
+            held(cause, HOLD_BY_HOST, "").with_valid_from(now - Duration::from_secs(300))
         };
         // (name, log, which event of the log the probe read (`None`: the head), released)
         let rows: [(&str, Vec<Event>, Option<usize>, bool); 5] = [
@@ -912,9 +907,7 @@ mod tests {
             let probed = probed.map_or(events.last().unwrap().revision, |at| {
                 events[at + 1].revision
             });
-            let before = SystemTime::now();
-            release_probed_hold(&store, probed, SystemTime::now()).unwrap();
-            let after = SystemTime::now();
+            release_probed_hold(&store, probed, now).unwrap();
             let mut landed = stream(&store).split_off(events.len());
             if !expected {
                 assert_eq!(types_of(&landed), Vec::<&str>::new(), "{name}");
@@ -925,12 +918,7 @@ mod tests {
             assert_eq!(event.type_, TYPE_RUN_RELEASED, "{name}");
             let body: RunReleased = serde_json::from_slice(&event.data).unwrap();
             assert_eq!(body.by, HOLD_BY_PROBE, "{name}");
-            let span = after.duration_since(before).unwrap().as_secs();
-            assert!(
-                (300..=300 + span + 1).contains(&body.held_for_s),
-                "{name}: {} seconds",
-                body.held_for_s
-            );
+            assert_eq!(body.held_for_s, 300, "{name}: seconds held");
         }
     }
 

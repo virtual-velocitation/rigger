@@ -4295,7 +4295,7 @@ mandatory sweep: sqlite Connection::open call sites - 66 site(s), collected mech
 - `crates/rigger-store-sqlite/src/eventstore/sqlite.rs:2284-2284` `Connection::open`
 - `crates/rigger-store-sqlite/src/eventstore/sqlite.rs:2306-2306` `Connection::open_with_flags`
 - `crates/rigger-store-sqlite/src/eventstore/sqlite.rs:2629-2629` `Connection::open`
-- `crates/rigger-store-sqlite/src/run_store.rs:1281-1281` `Connection::open`
+- `crates/rigger-store-sqlite/src/run_store.rs:1269-1269` `Connection::open`
 - `crates/rigger-store-sqlite/src/sqlite.rs:13-13` `Connection::open`
 - `src/cli/mod.rs:5615-5615` `Connection::open`
 - `src/cli/mod.rs:12735-12735` `Connection::open`
@@ -4704,8 +4704,8 @@ Proposed home: `run_store::support (consolidate these 2 sites into one function 
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-store-sqlite/src/run_store.rs:1492-1506` `ensure_started_adopts_the_same_criteria_run_without_re_minting`
-- `crates/rigger-store-sqlite/src/run_store.rs:1561-1576` `ensure_started_mints_a_new_run_when_the_criteria_change`
+- `crates/rigger-store-sqlite/src/run_store.rs:1480-1494` `ensure_started_adopts_the_same_criteria_run_without_re_minting`
+- `crates/rigger-store-sqlite/src/run_store.rs:1549-1564` `ensure_started_mints_a_new_run_when_the_criteria_change`
 
 #### `dup-2c13c330b0e0` (exact, 2 sites)
 
