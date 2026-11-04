@@ -1764,15 +1764,16 @@ mod tests {
         );
     }
 
-    /// Emit the `typ` record `id` through the one emit core, stamped with `spawn` as its
-    /// `meta.spawn` (unstamped when `None`): the position the store issued it.
+    /// Emit the `typ` record `id`, about one file (the location a finding or lesson must name),
+    /// through the one emit core, stamped with `spawn` as its `meta.spawn` (unstamped when
+    /// `None`): the position the store issued it.
     fn emit_record(
         store: &Store,
         typ: &str,
         id: &str,
         spawn: Option<&str>,
     ) -> Result<crate::eventstore::Position, String> {
-        let mut args = json!({"type": typ, "data": {"id": id, "summary": "s"}});
+        let mut args = json!({"type": typ, "data": {"id": id, "summary": "s", "about": ["a.rs"]}});
         if let Some(spawn) = spawn {
             args["meta"][crate::conductor::META_SPAWN] = json!(spawn);
         }

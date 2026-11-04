@@ -23584,8 +23584,10 @@ fn emit_event_accepts_every_agent_context_event_and_appends_it() {
         // A fresh isolated store per type: the read-back must see exactly the one event
         // this iteration emitted, nothing else.
         let store = Store::open(":memory:").unwrap();
-        // A distinct payload per type, so the read-back proves THIS event actually landed.
-        let data = json!({ "id": typ, "summary": format!("payload for {typ}") });
+        // A distinct payload per type, so the read-back proves THIS event actually landed,
+        // about one file (the location a finding or lesson must name).
+        let data =
+            json!({ "id": typ, "summary": format!("payload for {typ}"), "about": ["src/main.rs"] });
         let args = json!({ "type": typ, "data": data });
 
         let emitted = rigger::mcpserver::emit_event(
