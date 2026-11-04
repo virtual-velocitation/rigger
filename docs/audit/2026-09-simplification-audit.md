@@ -1868,7 +1868,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `crates/rigger-conductor/src/conductor.rs:1099-1101` `conflict_regenerate_key`
 - `crates/rigger-conductor/src/conductor.rs:13095-13097` `audit_id`
 - `crates/rigger-domain/src/spawn.rs:276-278` `spawn_id`
-- `crates/rigger-driver/src/driver/claude_code.rs:1809-1817` `stop_message`
+- `crates/rigger-driver/src/driver/claude_code.rs:1788-1796` `stop_message`
 - `tests/cli.rs:7903-7916` `rendezvous`
 - `tests/common/fixtures/fold.rs:757-759` `code_batch_key`
 - `tests/common/fixtures/graph.rs:204-206` `spoke_id`
@@ -1929,7 +1929,7 @@ mandatory sweep: same-named helper function defined independently in 2+ files - 
 
 - `crates/rigger-conductor/src/conductor.rs:3798-3800` `read_current_run`
 - `crates/rigger-dash/src/mcpserver.rs:553-556` `read_current_run`
-- `crates/rigger-domain/src/run/read.rs:90-97` `read_current_run`
+- `crates/rigger-domain/src/run/read.rs:91-98` `read_current_run`
 
 #### `dup-f13596146362` (near, 2 sites)
 
@@ -1953,7 +1953,7 @@ mandatory sweep: error-shaping helper functions - 22 site(s), collected mechanic
 - `crates/rigger-domain/src/agent.rs:505-507` `no_result_error`
 - `crates/rigger-domain/src/agent.rs:574-612` `an_error_answers_the_class_it_carries`
 - `crates/rigger-domain/src/ingest.rs:604-649` `a_walk_reaches_every_batch_past_a_failed_one_and_answers_the_first_error`
-- `crates/rigger-driver/src/driver/claude_code.rs:1822-1827` `read_agent_stream_error`
+- `crates/rigger-driver/src/driver/claude_code.rs:1801-1806` `read_agent_stream_error`
 - `crates/rigger-grounder/src/grounder/mod.rs:207-213` `retired_grounder_error`
 - `crates/rigger-worktree-git/src/worktree.rs:3964-3991` `land_reports_a_generic_error_for_a_refusal_that_is_neither_tip_moved_nor_blocked`
 - `crates/rigger-worktree-git/src/worktree.rs:5322-5376` `revert_on_base_aborts_and_errors_on_a_conflicting_revert`
@@ -3485,7 +3485,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `crates/rigger-console/src/console/map.rs:1285-1289` `district_purpose_uses_the_curated_table_when_present`
 - `crates/rigger-domain/src/ledger.rs:1144-1151` `short_run_id_truncates_to_twelve_chars_and_passes_shorter_ids_through`
 - `crates/rigger-domain/src/ledger.rs:1154-1169` `spec_stem_extracts_and_sanitizes_the_file_stem`
-- `crates/rigger-domain/src/progress.rs:513-516` `each_run_reports_on_its_own_stream_and_a_run_less_report_on_the_bare_one`
+- `crates/rigger-domain/src/progress.rs:522-525` `each_run_reports_on_its_own_stream_and_a_run_less_report_on_the_bare_one`
 - `tests/simplification_audit.rs:7286-7297` `impl_self_type_strips_a_trailing_where_clause_on_a_non_generic_self_type`
 - `tests/simplification_audit.rs:7317-7328` `impl_self_type_strips_a_leading_dyn_token_on_the_self_type`
 - `tests/simplification_audit.rs:7340-7346` `strip_trailing_where_clause_is_a_word_boundary_match_not_a_substring_match`
@@ -4133,8 +4133,8 @@ Proposed home: `claude_code::failing_read_store`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-driver/src/driver/claude_code.rs:2129-2136` `read_stream`
-- `crates/rigger-driver/src/driver/claude_code.rs:2183-2190` `read_stream_typed`
+- `crates/rigger-driver/src/driver/claude_code.rs:2108-2115` `read_stream`
+- `crates/rigger-driver/src/driver/claude_code.rs:2162-2169` `read_stream_typed`
 
 #### `dup-4979c76ee36f` (near, 2 sites)
 
@@ -4142,8 +4142,8 @@ Proposed home: `claude_code::failing_read_store`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-driver/src/driver/claude_code.rs:2176-2182` `last_position`
-- `crates/rigger-driver/src/driver/claude_code.rs:2210-2216` `latest_in_group`
+- `crates/rigger-driver/src/driver/claude_code.rs:2155-2161` `last_position`
+- `crates/rigger-driver/src/driver/claude_code.rs:2189-2195` `latest_in_group`
 
 #### `dup-117928e59e0c` (near, 2 sites)
 
@@ -4151,8 +4151,8 @@ Proposed home: `claude_code::support (consolidate these 2 sites into one functio
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-driver/src/driver/claude_code.rs:2448-2469` `build_args_mcp_config_names_the_spawn_bound_server`
-- `crates/rigger-driver/src/driver/claude_code.rs:2472-2490` `build_args_mcp_config_uses_the_configured_rigger_bin`
+- `crates/rigger-driver/src/driver/claude_code.rs:2427-2448` `build_args_mcp_config_names_the_spawn_bound_server`
+- `crates/rigger-driver/src/driver/claude_code.rs:2451-2469` `build_args_mcp_config_uses_the_configured_rigger_bin`
 
 #### `dup-ccd4dd4d7b0d` (near, 2 sites)
 
@@ -5496,7 +5496,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 ### Adversarial sample
 
-Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 11149 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
+Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 11150 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
 
 - `crates/rigger-conductor/src/conductor.rs:15749-15771` `branch_is_foreign_when_only_one_axis_differs` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-conductor/src/conductor.rs:16723-16730` `resume_of` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`

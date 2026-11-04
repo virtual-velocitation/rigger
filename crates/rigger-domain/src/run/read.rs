@@ -9,9 +9,10 @@ use crate::eventstore::{Error, Event, EventStore, Revision, TypeSelection};
 use crate::ledger::{
     self, Hold, TYPE_UNIT_FAILED, TYPE_UNIT_INTEGRATED, TYPE_UNIT_STARTED, TYPE_UNIT_STATUS,
 };
+use crate::progress::closed_after_release;
 use crate::retention::PERCEPTION_TYPES;
 
-use super::TYPE_RUN_STARTED;
+use super::{TYPE_RUN_RELEASED, TYPE_RUN_STARTED};
 
 /// The CARRIED-OVER KNOWLEDGE: the event types a fold consults across runs - the decisions, the
 /// lessons (the playbooks distill from them) and the review findings - read by type over the
@@ -115,6 +116,27 @@ pub fn read_current_hold_at_head(
 ) -> Result<(Option<Hold>, Option<Revision>), crate::agent::Error> {
     let (read, head) = read_run_at_head(store, stream)?;
     Ok((ledger::project(super::current_run(&read))?.hold, head))
+}
+
+/// The hold the first `RunReleased` of the run on `store`'s `stream` past revision `stamp`
+/// ended, the hold the run's current events before that release project to, with how long it
+/// stood, or `None` when no release lies past `stamp` or the one that does ended no hold. A
+/// release lies past `stamp` when a close so stamped does not follow it
+/// ([`closed_after_release`]).
+pub fn released_past(
+    store: &dyn EventStore,
+    stream: &str,
+    stamp: Revision,
+) -> Result<Option<(Hold, u64)>, crate::agent::Error> {
+    let (events, _) = read_current_run(store, stream)?;
+    let Some(at) = events.iter().position(|event| {
+        event.type_ == TYPE_RUN_RELEASED && !closed_after_release(Some(stamp), Some(event.revision))
+    }) else {
+        return Ok(None);
+    };
+    let released: super::RunReleased = serde_json::from_slice(&events[at].data)?;
+    let hold = ledger::project(&events[..at])?.hold;
+    Ok(hold.map(|hold| (hold, released.held_for_s)))
 }
 
 #[cfg(test)]

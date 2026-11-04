@@ -25,10 +25,10 @@ pub mod sidecar;
 use rigger_domain::config;
 #[cfg(all(not(test), any(feature = "store", not(feature = "core"))))]
 use rigger_domain::contextgraph;
-#[cfg(all(test, any(feature = "store", not(feature = "core"))))]
-use rigger_domain::retention;
 #[cfg(any(feature = "store", not(feature = "core")))]
-use rigger_domain::{agent, failure, hold_probe, ledger, progress, run};
+use rigger_domain::{agent, failure, hold_probe, progress, run};
+#[cfg(all(test, any(feature = "store", not(feature = "core"))))]
+use rigger_domain::{ledger, retention};
 #[cfg(any(feature = "store", not(feature = "core")))]
 use rigger_process::{reap, subprocess};
 #[cfg(any(feature = "store", not(feature = "core")))]

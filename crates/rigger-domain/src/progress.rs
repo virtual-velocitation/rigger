@@ -246,14 +246,22 @@ pub const ENDED_STOPPED: &str = "stopped";
 /// How many consecutive failed closes hold a run `api-unstable`.
 pub const API_UNSTABLE_CLOSES: usize = 3;
 
+/// Whether a close stamped `close` lies after the `RunReleased` at revision `release`, the one
+/// order a progress record takes against a release. PURE. A close stamped at the release's own
+/// revision follows it, since its writer read it, and an unstamped close follows no stamped
+/// release.
+pub fn closed_after_release(close: Option<Revision>, release: Option<Revision>) -> bool {
+    close >= release
+}
+
 /// The count of [`ENDED_FAULT`] and [`ENDED_STOPPED`] closes across the run's `progress_events`
 /// (one run's progress stream, in stream order) since the later of the last
 /// [`ENDED_COMPLETED`] close and the last `RunReleased`, whose revision is `released`. PURE.
 ///
 /// Closes order by [`SpawnLaunched::revision`]: no run-stream event lands during an outage, so
-/// closes share a stamp, and a tie falls to progress-stream order. A close stamped equal to
-/// `released` is after the release, since its writer read it. An unstamped close orders before
-/// every stamped one, so a close written before spec 105 counts as it stands. An
+/// closes share a stamp, and a tie falls to progress-stream order. A close counts when it lies
+/// after `released` ([`closed_after_release`]). An unstamped close orders before every stamped
+/// one, so a close written before spec 105 counts as it stands. An
 /// [`ENDED_INTERRUPTED`] close neither counts nor resets: the resume fallback, a hold or a
 /// supervisor start's reconciliation wrote it, and no launch failed.
 pub fn failed_closes_since(progress_events: &[Event], released: Option<Revision>) -> usize {
@@ -266,7 +274,8 @@ pub fn failed_closes_since(progress_events: &[Event], released: Option<Revision>
         .iter()
         .rev()
         .take_while(|close| {
-            close.ended.as_deref() != Some(ENDED_COMPLETED) && close.revision >= released
+            close.ended.as_deref() != Some(ENDED_COMPLETED)
+                && closed_after_release(close.revision, released)
         })
         .filter(|close| matches!(close.ended.as_deref(), Some(ENDED_FAULT | ENDED_STOPPED)))
         .count()

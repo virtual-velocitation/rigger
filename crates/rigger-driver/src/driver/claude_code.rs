@@ -31,12 +31,11 @@ use crate::driver::{
 };
 use crate::eventstore::EventStore;
 use crate::hooks;
-use crate::ledger;
 use crate::liveness;
 use crate::progress::{self, ApiRetry, SpawnLaunched};
 use crate::progress_store;
 use crate::run;
-use crate::run::read::{read_current_hold_at_head, read_current_run};
+use crate::run::read::{read_current_hold_at_head, read_current_run, released_past};
 use crate::run::STREAM;
 use crate::run_store;
 use crate::spawn::SpawnResult;
@@ -422,7 +421,7 @@ impl Driver<'_> {
             None => ": rigger's supervisor restarted".to_string(),
             Some(class) => {
                 let released = match self.hold_sink.zip(interrupted.revision) {
-                    Some((sink, stamp)) => released_past(sink, stamp)?,
+                    Some((sink, stamp)) => released_past(sink, STREAM, stamp)?,
                     None => None,
                 };
                 match released {
@@ -1497,26 +1496,6 @@ fn drain_child_stderr_tail(mut stderr: ChildStderr) -> Vec<u8> {
         push_bounded_tail(&mut tail, &buf[..n]);
     }
     tail
-}
-
-/// The hold the first `RunReleased` of the run on `sink` past revision `stamp` ended, the hold
-/// its current events before that release project to, with how long it stood, or `None` when no
-/// release lies past `stamp` or the one that does ended no hold. A close stamped at a release's
-/// own revision read it, so that release lies before the close.
-fn released_past(
-    sink: &dyn EventStore,
-    stamp: crate::eventstore::Revision,
-) -> Result<Option<(ledger::Hold, u64)>, Error> {
-    let (events, _) = read_current_run(sink, STREAM)?;
-    let Some(at) = events
-        .iter()
-        .position(|event| event.type_ == run::TYPE_RUN_RELEASED && event.revision > stamp)
-    else {
-        return Ok(None);
-    };
-    let released: run::RunReleased = serde_json::from_slice(&events[at].data)?;
-    let hold = ledger::project(&events[..at])?.hold;
-    Ok(hold.map(|hold| (hold, released.held_for_s)))
 }
 
 /// Append `chunk` to `tail`, then trim from the FRONT down to at most [`STDERR_TAIL_CAP`]
