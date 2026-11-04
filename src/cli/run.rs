@@ -307,7 +307,7 @@ pub(crate) fn open_progress_backend() -> Result<Store, Box<dyn std::error::Error
 
 /// This binary's own path, so a child rigger process is always the same build as its parent (no
 /// PATH ambiguity); `rigger` on `$PATH` when the path cannot be read.
-fn running_executable() -> String {
+pub(crate) fn running_executable() -> String {
     std::env::current_exe()
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_else(|_| "rigger".to_string())
