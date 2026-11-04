@@ -8842,9 +8842,7 @@ fn status_opens_with_the_held_line_naming_what_ends_the_hold() {
         let (out, err, ok) = run_rigger(root, &["status"]);
         assert!(ok, "{name}: status exits 0; stderr: {err}");
         let first = out.lines().next().unwrap_or_default();
-        let (held_for, rest) = first
-            .strip_prefix("HELD ")
-            .and_then(|line| line.split_once("s - "))
+        let (held_for, rest) = common::cli::held_line_parts(first)
             .unwrap_or_else(|| panic!("{name}: the first line is the HELD line; got:\n{out}"));
         let held_for: f64 = held_for.parse().unwrap();
         assert!(

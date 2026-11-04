@@ -845,6 +845,13 @@ pub fn seed_a_supervisor_beat(root: &Path) {
     });
 }
 
+/// The duration text and the rest of `line` when it is `rigger status`'s HELD line, `HELD
+/// <duration>s - <reason>; <what ends it>`, else `None`: how a binary test reads the one part of
+/// the line the wall clock decides apart from the part it pins.
+pub fn held_line_parts(line: &str) -> Option<(&str, &str)> {
+    line.strip_prefix("HELD ")?.split_once("s - ")
+}
+
 /// Append `event` to `root`'s run stream through a bare store, a hand beside the run.
 pub fn seed_on_the_run(root: &Path, event: Event) {
     with_run_store(root, |store| {

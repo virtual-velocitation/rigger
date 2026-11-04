@@ -1,9 +1,9 @@
 //! Periphery for spec 93, criterion 4 ("ONE FOLD"): `rigger status` (`cmd_status` in the
 //! binary) prints its statusline and its needs-you lines through `rigger::console`'s
 //! [`console::fold`], never a second, independently-composed copy of either. The statusline is
-//! the first line of a run that is neither held nor started; a started run's goes under its run
-//! header, and a held run's status opens with its HELD line (spec 105, WHAT A PERSON SEES), which
-//! this file drives through the real hold verbs.
+//! the first line of a run that is neither held nor started and records no dash URL; a started
+//! run's goes under its run header, and a held run's status opens with its HELD line (spec 105,
+//! WHAT A PERSON SEES), which this file drives through the real hold verbs.
 //!
 //! WHY THIS FILE. `cmd_status` is a PRIVATE free function in the `rigger` BINARY crate
 //! (`src/main.rs`), unreachable from an integration-test crate under `tests/` other than by
@@ -24,7 +24,9 @@ use common::cli::read_run_events;
 use common::cli::run_rigger;
 use common::cli::seed_run_events;
 use common::cli::temp_store_project;
-use common::cli::{backdate_store_file_by, seed_a_run, seed_a_supervisor_beat, seed_on_the_run};
+use common::cli::{
+    backdate_store_file_by, held_line_parts, seed_a_run, seed_a_supervisor_beat, seed_on_the_run,
+};
 use common::fixtures::{dated_ago, hold_naming, run_held_event};
 use rigger::ledger::{AttentionEntry, ATTENTION_HELD, ATTENTION_RELEASED};
 use rigger::run::HOLD_BY_HOST;
@@ -423,10 +425,8 @@ fn rigger_status_shows_a_person_the_hold_in_its_held_line_statusline_and_needs_y
         let mut expected = Vec::new();
         if let Some(held) = &case.held {
             // The HELD line's duration is the wall clock's, every hold here raised moments ago.
-            let held_for = out
-                .strip_prefix("HELD ")
-                .and_then(|line| line.split_once("s - "))
-                .map(|(held_for, _)| held_for)
+            let first = out.lines().next().unwrap_or_default();
+            let (held_for, _) = held_line_parts(first)
                 .unwrap_or_else(|| panic!("{name}: the status opens with the HELD line:\n{out}"));
             let secs: f64 = held_for.parse().unwrap();
             assert!(
