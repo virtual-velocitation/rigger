@@ -12,6 +12,7 @@ use std::path::PathBuf;
 use crate::agent::{Error, SpawnOpts};
 use crate::config::AgentDef;
 use crate::hooks;
+use crate::progress::SpawnLaunched;
 
 pub mod claude_code;
 pub mod cli;
@@ -138,12 +139,14 @@ pub(crate) fn harness_env(spawn: &str) -> [(&'static str, &str); 2] {
 pub(crate) const MISSING_SESSION: &str = "No conversation found with session ID";
 
 /// The Claude Code session one launch runs as - the ONE session authority both process hosts
-/// share. A launch continues the session [`SpawnOpts::resumed_from`] names, or on the stream-json
-/// host's relaunch the session its interrupted launch ran as (`--resume <id>`), or starts a
-/// fresh one under an id the host mints (`--session-id <uuid>`), so the host knows
-/// the id without reading it back from the session's output. Probed on Claude Code 2.1.290: a
-/// resumed session keeps its id, so [`id`](Self::id) is the session either way; `--session-id`
-/// and `--resume` together are refused without `--fork-session`, so a launch passes exactly one.
+/// share. A launch continues the session [`SpawnOpts::resumed_from`] names (`--resume <id>`), or
+/// starts a fresh one under an id the host mints (`--session-id <uuid>`), so the host knows the id
+/// without reading it back from the session's output; a resumed session keeps its id, so
+/// [`id`](Self::id) is the session either way. The stream-json host's relaunch of an interrupted
+/// launch ([`relaunch`](Self::relaunch)) passes both, forking the session that launch ran as into
+/// one under a minted id (`--resume <session> --fork-session --session-id <uuid>`; the host CLI
+/// refuses `--session-id` beside `--resume` without `--fork-session`), so an orphan of a
+/// supervisor that died without unwinding keeps the interrupted transcript to itself.
 ///
 /// A resume carries the rest of the argv unchanged. The session snapshots its system prompt on
 /// its first request and reuses that record on a resume, so the persona file passed again is
@@ -154,65 +157,96 @@ pub(crate) const MISSING_SESSION: &str = "No conversation found with session ID"
 pub struct LaunchSession {
     /// The session id this launch runs as.
     pub id: String,
-    /// Whether the launch continues `id` rather than starting it.
-    pub resumed: bool,
+    /// The session this launch continues: `id` on a resume, the interrupted launch's session on
+    /// a relaunch, which forks it into `id`, and `None` on a fresh launch.
+    continues: Option<String>,
+    /// Whether the launch sends [`SpawnOpts::resume_task`]: a resume of the session the spawn
+    /// names does, and a relaunch does when the launch it continues carried it.
+    sends_resume_task: bool,
 }
 
 impl LaunchSession {
-    /// The session `opts` asks for: the one it resumes, or a freshly minted one.
+    /// The session `opts` asks for: a resume of [`SpawnOpts::resumed_from`], which never forks,
+    /// or a freshly minted one.
     pub fn of(opts: &SpawnOpts) -> LaunchSession {
         if opts.resumed_from.is_empty() {
             LaunchSession::fresh()
         } else {
-            LaunchSession::resume(opts.resumed_from.clone())
+            let id = opts.resumed_from.clone();
+            LaunchSession::new(id.clone(), Some(id), true)
         }
-    }
-
-    /// A resume of the session `id`.
-    pub fn resume(id: String) -> LaunchSession {
-        LaunchSession::new(id, true)
     }
 
     /// A fresh session under a newly minted id.
     pub fn fresh() -> LaunchSession {
-        LaunchSession::new(uuid::Uuid::new_v4().to_string(), false)
+        LaunchSession::new(uuid::Uuid::new_v4().to_string(), None, false)
     }
 
-    /// The session `id`, continued when `resumed`: the one constructor the others name.
-    fn new(id: String, resumed: bool) -> LaunchSession {
-        LaunchSession { id, resumed }
+    /// The session `id`, continuing `continues` and sending [`SpawnOpts::resume_task`] when
+    /// `sends_resume_task`: the one constructor the others name.
+    fn new(id: String, continues: Option<String>, sends_resume_task: bool) -> LaunchSession {
+        LaunchSession {
+            id,
+            continues,
+            sends_resume_task,
+        }
     }
 
-    /// The session flag pair this launch passes: `--resume <id>` or `--session-id <id>`.
-    pub fn args(&self) -> [String; 2] {
-        let flag = if self.resumed {
-            "--resume"
-        } else {
-            "--session-id"
-        };
-        [flag.to_string(), self.id.clone()]
+    /// The relaunch of the interrupted launch `launched` records, for the spawn `opts`: a fork of
+    /// the session that launch ran as under a newly minted id, sending
+    /// [`SpawnOpts::resume_task`] when that launch carried it - its session or its
+    /// `resumed_from` is the spawn's non-empty [`SpawnOpts::resumed_from`] - so the task keeps
+    /// travelling when a relaunch is itself interrupted and relaunched.
+    pub fn relaunch(launched: &SpawnLaunched, opts: &SpawnOpts) -> LaunchSession {
+        let named = opts.resumed_from.as_str();
+        let carried = !named.is_empty()
+            && (launched.session_id == named || launched.resumed_from.as_deref() == Some(named));
+        let minted = LaunchSession::fresh().id;
+        LaunchSession::new(minted, Some(launched.session_id.clone()), carried)
     }
 
-    /// The task a launch [`of`](Self::of) `opts` sends: [`SpawnOpts::resume_task`] when it
-    /// resumes (the session already holds the rest), the full `prompt` when it starts fresh. A
-    /// relaunch of an interrupted launch composes its own task and never reads this.
+    /// Whether the launch continues a session rather than starting one: a resume or a relaunch.
+    pub fn resumed(&self) -> bool {
+        self.continues.is_some()
+    }
+
+    /// The session flags this launch passes: `--session-id <id>` on a fresh launch,
+    /// `--resume <id>` on a resume, and `--resume <session> --fork-session --session-id <id>` on
+    /// a relaunch of `session`.
+    pub fn args(&self) -> Vec<String> {
+        let (resume, session) = ("--resume".to_string(), "--session-id".to_string());
+        match &self.continues {
+            None => vec![session, self.id.clone()],
+            Some(continued) if *continued == self.id => vec![resume, self.id.clone()],
+            Some(continued) => vec![
+                resume,
+                continued.clone(),
+                "--fork-session".to_string(),
+                session,
+                self.id.clone(),
+            ],
+        }
+    }
+
+    /// What the launch sends of the spawn's task: the full `prompt` when it starts fresh,
+    /// [`SpawnOpts::resume_task`] when it continues a session that carried it (the session
+    /// already holds the rest), and nothing otherwise. A relaunch puts its interruption note in
+    /// front of it.
     pub fn task<'a>(&self, prompt: &'a str, opts: &'a SpawnOpts) -> &'a str {
-        if self.resumed {
+        if !self.resumed() {
+            prompt
+        } else if self.sends_resume_task {
             &opts.resume_task
         } else {
-            prompt
+            ""
         }
     }
 
     /// The session the launch continued, as the spawn's result records it
     /// ([`AgentResult::resumed_from`](crate::agent::AgentResult::resumed_from)): `id` on a
-    /// resume, empty on a fresh launch.
+    /// resume, the interrupted launch's session on a relaunch, empty on a fresh launch.
     pub fn resumed_from(&self) -> String {
-        if self.resumed {
-            self.id.clone()
-        } else {
-            String::new()
-        }
+        self.continues.clone().unwrap_or_default()
     }
 }
 

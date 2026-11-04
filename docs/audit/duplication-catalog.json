@@ -5365,7 +5365,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-0a701eb6cf8d",
+    "id": "dup-3e95d891f0f8",
     "classification": "exact",
     "sites": [
       {
@@ -5394,12 +5394,17 @@
         "content_hash": "101c4f39f5928941"
       },
       {
+        "file": "crates/rigger-driver/src/driver/mod.rs",
+        "name": "resumed",
+        "content_hash": "101c4f39f5928941"
+      },
+      {
         "file": "crates/rigger-driver/src/reaped_child.rs",
         "name": "id",
         "content_hash": "101c4f39f5928941"
       }
     ],
-    "proposed_home": "a new shared module (sites span 5 files: crates/rigger-domain/src/community.rs, crates/rigger-domain/src/eventstore.rs, crates/rigger-domain/src/failure.rs, crates/rigger-domain/src/metrics.rs, crates/rigger-driver/src/reaped_child.rs)",
+    "proposed_home": "a new shared module (sites span 6 files: crates/rigger-domain/src/community.rs, crates/rigger-domain/src/eventstore.rs, crates/rigger-domain/src/failure.rs, crates/rigger-domain/src/metrics.rs, crates/rigger-driver/src/driver/mod.rs, crates/rigger-driver/src/reaped_child.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
@@ -6157,6 +6162,25 @@
       }
     ],
     "proposed_home": "claude_code::support (consolidate these 2 sites into one function in this file)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-ccd4dd4d7b0d",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "crates/rigger-driver/src/driver/mod.rs",
+        "name": "resumed_from",
+        "content_hash": "5990e7f4142ac46a"
+      },
+      {
+        "file": "tests/claude_code_stream_periphery.rs",
+        "name": "launch_dir",
+        "content_hash": "e07a8817765f70b7"
+      }
+    ],
+    "proposed_home": "a new shared module (sites span 2 files: crates/rigger-driver/src/driver/mod.rs, tests/claude_code_stream_periphery.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },

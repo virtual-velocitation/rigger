@@ -3,10 +3,10 @@
 //! the model (`AgentProgress`, `AgentActivity`) and the pure fold (`consolidate`) -
 //! everything computable from already-read `&[Event]` slices, with no store at all. This
 //! module is the other half: `record`, the typed writers beside it and the [`append_stamped`]
-//! they share, the functions that append to a `&dyn EventStore`, with [`latest_launch`] and
-//! [`next_launch`], the reads a launch decides on, split into their own file (never a
-//! function-by-function `#[cfg]`
-//! inside `progress.rs`) so the pure half can compile for `wasm32-unknown-unknown`.
+//! they share, the functions that append to a `&dyn EventStore`, with [`latest_launch_records`],
+//! [`latest_launch`] and [`next_launch`], the reads a launch decides on, split into their own file
+//! (never a function-by-function `#[cfg]` inside `progress.rs`) so the pure half can compile for
+//! `wasm32-unknown-unknown`.
 
 use crate::eventstore::{Error, EventStore, ExpectedRevision, Position, TypeSelection};
 use crate::progress::{
@@ -71,26 +71,39 @@ pub fn next_launch(
 }
 
 /// The latest [`SpawnLaunched`] record of `spawn` in the run `run_id` (spec 105, RESUME BY
-/// SESSION): the last record, in stream order, of the highest ordinal the run's records hold for
-/// that id, so its close once that launch closed and its open record until then, or `None` when
-/// they hold none. Opening and closing records both count, so a launch whose open record was lost
-/// still names its ordinal. A record that does not decode names nothing.
+/// SESSION): the last of its [`latest_launch_records`], so its close once that launch closed and
+/// its open record until then, or `None` when the run holds none.
 pub fn latest_launch(
     store: &dyn EventStore,
     run_id: &str,
     spawn: &str,
 ) -> Result<Option<SpawnLaunched>, Error> {
+    Ok(latest_launch_records(store, run_id, spawn)?.pop())
+}
+
+/// The [`SpawnLaunched`] records of the latest launch of `spawn` in the run `run_id` (spec 105,
+/// RESUME BY SESSION), in stream order: those of the highest ordinal the run's records hold for
+/// that id, its open record first unless it was lost, or none when they hold none. Opening and
+/// closing records both count, so a launch whose open record was lost still names its ordinal. A
+/// record that does not decode names nothing.
+pub fn latest_launch_records(
+    store: &dyn EventStore,
+    run_id: &str,
+    spawn: &str,
+) -> Result<Vec<SpawnLaunched>, Error> {
     let recorded = store.read_stream_typed(
         &stream_of(run_id),
         0,
         TypeSelection::Only(&[TYPE_SPAWN_LAUNCHED]),
     )?;
-    // `max_by_key` keeps the last of equal maxima: the latest record of the highest ordinal.
-    Ok(recorded
+    let mut records: Vec<SpawnLaunched> = recorded
         .iter()
         .filter_map(|event| serde_json::from_slice::<SpawnLaunched>(&event.data).ok())
         .filter(|record| record.spawn == spawn)
-        .max_by_key(|record| record.launch))
+        .collect();
+    let latest = records.iter().map(|record| record.launch).max();
+    records.retain(|record| Some(record.launch) == latest);
+    Ok(records)
 }
 
 /// Record one [`StopFailure`] hook firing to the progress `store`, stamped with `run_id`
