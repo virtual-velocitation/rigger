@@ -8837,16 +8837,7 @@ fn status_opens_with_the_held_line_naming_what_ends_the_hold() {
             common::fixtures::dated_ago(common::fixtures::run_held_event(&hold), 600),
         );
         if beat {
-            let run_id = common::cli::current_run_id_of(root).unwrap();
-            common::cli::with_store_file(root, "progress.db", |store| {
-                rigger::progress_store::append_stamped(
-                    store,
-                    &run_id,
-                    &rigger::progress::SupervisorBeat::default(),
-                    "a supervisor beat",
-                )
-                .unwrap();
-            });
+            common::cli::seed_a_supervisor_beat(root);
         }
         let (out, err, ok) = run_rigger(root, &["status"]);
         assert!(ok, "{name}: status exits 0; stderr: {err}");

@@ -830,6 +830,21 @@ pub fn with_store_file<R>(root: &Path, file: &str, f: impl FnOnce(&dyn EventStor
     f(&store)
 }
 
+/// Land one supervisor beat, now, on the progress stream of `root`'s current run: the beat
+/// `rigger status` reads to tell whether a supervisor still watches a held run.
+pub fn seed_a_supervisor_beat(root: &Path) {
+    let run_id = current_run_id_of(root).expect("a started run to beat on");
+    with_store_file(root, "progress.db", |store| {
+        rigger::progress_store::append_stamped(
+            store,
+            &run_id,
+            &rigger::progress::SupervisorBeat::default(),
+            "a supervisor beat",
+        )
+        .unwrap();
+    });
+}
+
 /// Append `event` to `root`'s run stream through a bare store, a hand beside the run.
 pub fn seed_on_the_run(root: &Path, event: Event) {
     with_run_store(root, |store| {
@@ -1254,7 +1269,14 @@ pub fn backdate_the_log(root: &Path) {
 /// connection of its own (spec 124, HORIZON IN TESTS): how a binary test ages the events whose
 /// store stamps `rigger setup`'s seeding reads.
 pub fn backdate_the_log_by(root: &Path, age: Duration) {
-    rigger_db(root, "events.db")
+    backdate_store_file_by(root, "events.db", age);
+}
+
+/// Record every event `root`'s `.rigger/<file>` holds `age` earlier than it was, through a
+/// connection of its own: how a binary test ages the store stamps a command reads, the event log's
+/// ([`backdate_the_log_by`]) or the progress log's supervisor beats.
+pub fn backdate_store_file_by(root: &Path, file: &str, age: Duration) {
+    rigger_db(root, file)
         .execute(
             "UPDATE events SET recorded_at = recorded_at - ?1",
             [age.as_nanos() as i64],

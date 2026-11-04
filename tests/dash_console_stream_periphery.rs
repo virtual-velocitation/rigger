@@ -771,6 +771,94 @@ fn console_snapshot_is_served_over_a_real_socket_with_the_filtered_feed_and_defi
     assert_eq!(v["definition"]["gates"], serde_json::json!(["cargo test"]));
 }
 
+/// The page's console stream carries the hold (spec 105): a `RunHeld` and the `RunReleased` that
+/// ends it, appended once a console tab is connected, reach it over the real socket as `event`
+/// frames in the console wire shape, each body whole and at its own position, with the graph type
+/// appended between them skipped; and a tab that bootstraps after both reads exactly the two in
+/// the snapshot's feed.
+#[test]
+#[serial(dash_console_stream_periphery)]
+fn a_hold_and_its_release_reach_the_console_as_event_frames_and_in_the_snapshot_feed() {
+    let held = rigger::run::RunHeld {
+        detail: "401 from the host".to_string(),
+        needs_person: true,
+        model: "a-model".to_string(),
+        ..common::fixtures::hold_naming("auth", "log in again", rigger::run::HOLD_BY_HOST)
+    };
+    let released = rigger::run::RunReleased {
+        by: rigger::run::HOLD_BY_PROBE.to_string(),
+        held_for_s: 42,
+    };
+    let store = FakeStore::default();
+    let addr = serve_test_dash(store.clone());
+    let mut stream = open_stream(addr, 0);
+
+    append_at_next_position(&store.events, common::fixtures::run_held_event(&held));
+    append_at_next_position(
+        &store.events,
+        ev(
+            "GenerationIngested",
+            r#"{"prefix":"gc","file":"src/dash.rs","generation":"h1","blob":"","excluded":false}"#,
+        ),
+    );
+    append_at_next_position(
+        &store.events,
+        Event::new(
+            rigger::run::TYPE_RUN_RELEASED,
+            serde_json::to_vec(&released).unwrap(),
+        ),
+    );
+
+    let wire =
+        |type_: &str, body: serde_json::Value, position: u64| (type_.to_string(), body, position);
+    let of = |data: &serde_json::Value| {
+        (
+            data["type"].as_str().unwrap_or_default().to_string(),
+            data["data"].clone(),
+            data["position"].as_u64().unwrap_or_default(),
+        )
+    };
+    let want = vec![
+        wire(
+            rigger::run::TYPE_RUN_HELD,
+            serde_json::to_value(&held).unwrap(),
+            1,
+        ),
+        wire(
+            rigger::run::TYPE_RUN_RELEASED,
+            serde_json::to_value(&released).unwrap(),
+            3,
+        ),
+    ];
+    let mut streamed = Vec::new();
+    for _ in 0..2 {
+        let frame = read_frame(&mut stream).expect("a frame must arrive");
+        let data: serde_json::Value =
+            serde_json::from_str(&frame.data).expect("frame data is JSON");
+        streamed.push((frame.event, of(&data)));
+    }
+    assert_eq!(
+        streamed,
+        want.iter()
+            .map(|event| ("event".to_string(), event.clone()))
+            .collect::<Vec<_>>(),
+        "the stream's two frames are the hold and its release"
+    );
+
+    let (status, _, v) = get_json(addr, "/api/console/snapshot");
+    assert_eq!(status, 200);
+    let feed: Vec<_> = v["events"]
+        .as_array()
+        .expect("events is an array")
+        .iter()
+        .map(of)
+        .collect();
+    assert_eq!(
+        feed, want,
+        "the snapshot's feed is the hold and its release"
+    );
+}
+
 /// THE SNAPSHOT's `base` field (`console_snapshot_json`'s own doc comment: "the run's
 /// PERSISTED base (`run::current_run_base`) wins" - the exact same `effective_base` pattern
 /// `build_state` already uses for `/api/state`, line-for-line): a run's own persisted base,
