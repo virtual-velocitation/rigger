@@ -5139,8 +5139,8 @@
       },
       {
         "file": "tests/common/mod.rs",
-        "start_line": 573,
-        "end_line": 587
+        "start_line": 581,
+        "end_line": 595
       }
     ]
   },
@@ -6729,8 +6729,8 @@
       },
       {
         "file": "tests/common/mod.rs",
-        "start_line": 524,
-        "end_line": 529
+        "start_line": 532,
+        "end_line": 537
       }
     ]
   },

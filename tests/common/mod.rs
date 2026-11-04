@@ -423,10 +423,18 @@ pub struct OwnedPid {
 impl OwnedPid {
     /// Own `pid`, its start time read now.
     pub fn new(pid: u32) -> Self {
-        Self {
-            pid,
-            started: rigger::reap::pid_starttime(pid),
-        }
+        Self::owning(pid, rigger::reap::pid_starttime(pid))
+    }
+
+    /// Own `pid` as read with the start time `started`, so a row can hand the owner a witness the
+    /// pid no longer carries, as a recycled pid reads.
+    pub fn with_witness(pid: u32, started: u64) -> Self {
+        Self::owning(pid, Some(started))
+    }
+
+    /// Own `pid` as read with the start time `started`, `None` when it was not read.
+    fn owning(pid: u32, started: Option<u64>) -> Self {
+        Self { pid, started }
     }
 }
 
