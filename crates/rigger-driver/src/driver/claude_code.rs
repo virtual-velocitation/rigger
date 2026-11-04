@@ -50,9 +50,15 @@ use crate::spawn_store;
 const UNBOUNDED_POLL: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// The wait a bounded launch's wake under its `bound` re-arms for, having read `silent`: the rest
-/// of the bound, at least [`UNBOUNDED_POLL`].
-fn next_wait(bound: std::time::Duration, silent: std::time::Duration) -> std::time::Duration {
-    bound.saturating_sub(silent).max(UNBOUNDED_POLL)
+/// of the bound, at least [`UNBOUNDED_POLL`]; a wake that read no silence (`None`) waits the poll,
+/// since its read proved nothing about the bound.
+fn next_wait(
+    bound: std::time::Duration,
+    silent: Option<std::time::Duration>,
+) -> std::time::Duration {
+    silent.map_or(UNBOUNDED_POLL, |silent| {
+        bound.saturating_sub(silent).max(UNBOUNDED_POLL)
+    })
 }
 
 /// Bounds [`Driver::read_stream`]'s ORDINARY (non-STOP) exit joins - the stderr-drain and
@@ -512,9 +518,10 @@ impl Driver<'_> {
     /// enforced HERE because this host has no external stepper polling a marker file. Silent
     /// time can pass the bound no sooner than the wall time since the last line does, so a
     /// line costs no read: the records are read only on a wake at that point, and a wake under
-    /// the bound waits out the rest of it, at least [`UNBOUNDED_POLL`], and re-checks the
-    /// child. A genuine expiry before any result exists
-    /// runs THE STOP sequence (close the session's input, wait [`Driver::stop_grace`], end
+    /// the bound waits out the rest of it, at least [`UNBOUNDED_POLL`], or the poll when its
+    /// records do not read ([`next_wait`]), and re-checks the child. A genuine expiry before any
+    /// result exists runs THE STOP sequence (close the session's input, wait
+    /// [`Driver::stop_grace`], end
     /// the child via [`crate::reap::end_child`] - the handle-bound production helper, never a
     /// computed pid) and, short of THE RESUME FALLBACK below, records the EXISTING
     /// [`SpawnResult::liveness_fault`] shape, same
@@ -652,7 +659,7 @@ impl Driver<'_> {
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) if result.is_none() => {
                     if max_wall_clock != 0 {
                         let silent = self.silence(opts, last_line);
-                        if liveness::past_bound(silent, bound) {
+                        if silent.is_some_and(|silent| liveness::past_bound(silent, bound)) {
                             // THE STOP (spec 104 criterion 6): genuine SILENCE with no result
                             // yet, on a BOUNDED launch only. Runs the whole sequence inline so
                             // the caller sees exactly one outcome for "this launch never
@@ -1202,25 +1209,26 @@ impl Driver<'_> {
     /// weighs against `max_wall_clock` (spec 105 LIVENESS): [`liveness::silent_time`] over the
     /// run's holds and, from [`Driver::beat_source`], this spawn's announced retry delays and
     /// the supervisor's beats. With no beat source it reads no record and counts from the last
-    /// line. A record read that fails reads no silence at all: that wake proves nothing and the
-    /// next wake reads again, so a store hiccup never stops a healthy session.
-    fn silence(&self, opts: &SpawnOpts, last_line: SystemTime) -> std::time::Duration {
+    /// line. A record read that fails reads no silence at all (`None`): that wake proves nothing
+    /// and the next wake, a poll away ([`next_wait`]), reads again, so a store hiccup never stops
+    /// a healthy session.
+    fn silence(&self, opts: &SpawnOpts, last_line: SystemTime) -> Option<std::time::Duration> {
         let now = SystemTime::now();
         let Some(beat_source) = self.beat_source else {
-            return liveness::silent_time(last_line, now, &[], &[], None);
+            return Some(liveness::silent_time(last_line, now, &[], &[], None));
         };
         match (
             read_current_run(self.run_store, STREAM),
             progress::read_run(beat_source, &opts.run_id),
         ) {
-            (Ok((run_events, _)), Ok(progress_events)) => liveness::silent_time(
+            (Ok((run_events, _)), Ok(progress_events)) => Some(liveness::silent_time(
                 last_line,
                 now,
                 &liveness::hold_intervals(&run_events, now),
                 &liveness::retry_delays(&progress_events, &opts.id),
                 Some(&liveness::beat_times(&progress_events)),
-            ),
-            _ => std::time::Duration::ZERO,
+            )),
+            _ => None,
         }
     }
 
@@ -2238,7 +2246,9 @@ mod tests {
             progress_store: &FailingReadStore,
             ..Driver::default()
         };
-        let counted = no_source.silence(&o, last_line);
+        let counted = no_source
+            .silence(&o, last_line)
+            .expect("a host with no beat source reads no record");
         assert!(
             counted >= quiet && counted < quiet + Duration::from_secs(60),
             "wall time since the line: {counted:?}"
