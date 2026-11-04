@@ -182,7 +182,7 @@ pub fn assert_carries_spawn_hooks(
     assert_eq!(
         hook_words(settings, "PreToolUse"),
         [
-            ("Edit|Write|NotebookEdit".to_string(), guard),
+            ("Edit|MultiEdit|Write|NotebookEdit".to_string(), guard),
             ("Grep|Bash".to_string(), words(&["rigger", "grep-guard"])),
         ],
         "the write guard, then the session's grep guard: {settings}"

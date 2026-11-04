@@ -911,8 +911,8 @@ mod tests {
     // ---- rigger guard-write (spec 104 criterion 4, THE WRITE GUARD) ----
 
     #[test]
-    fn guard_write_target_reads_edit_and_write_file_path() {
-        for tool in ["Edit", "Write"] {
+    fn guard_write_target_reads_edit_multiedit_and_write_file_path() {
+        for tool in ["Edit", "MultiEdit", "Write"] {
             assert_eq!(
                 guard_write_target(tool, &serde_json::json!({"file_path": "src/main.rs"})),
                 WriteTarget::Target("src/main.rs".to_string()),
@@ -948,7 +948,7 @@ mod tests {
     /// cover - each is a distinct, distinguishable `WriteTarget` variant.
     #[test]
     fn guard_write_target_reports_target_unreadable_for_a_covered_tool_missing_the_field() {
-        for tool in ["Edit", "Write", "NotebookEdit"] {
+        for tool in ["Edit", "MultiEdit", "Write", "NotebookEdit"] {
             assert_eq!(
                 guard_write_target(tool, &serde_json::json!({})),
                 WriteTarget::TargetUnreadable,

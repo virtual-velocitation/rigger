@@ -410,7 +410,7 @@ mod tests {
                     ("/model", Value::from("opus")),
                     (
                         "/hooks/PreToolUse",
-                        json!([entry("Edit|Write|NotebookEdit", guard)]),
+                        json!([entry("Edit|MultiEdit|Write|NotebookEdit", guard)]),
                     ),
                     ("/hooks/StopFailure", Value::Array(stop_failures)),
                 ],
