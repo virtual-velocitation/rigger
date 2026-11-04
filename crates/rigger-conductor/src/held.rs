@@ -60,7 +60,7 @@ pub struct HeldDriver<'a> {
     session_closed: Option<&'a AtomicBool>,
     pause: &'a (dyn Fn() + Sync),
     /// Each spawn id's relaunches since its last non-error outcome.
-    relaunches: Mutex<HashMap<String, u32>>,
+    relaunch_counts: Mutex<HashMap<String, u32>>,
 }
 
 impl<'a> HeldDriver<'a> {
@@ -78,7 +78,7 @@ impl<'a> HeldDriver<'a> {
             store,
             session_closed,
             pause,
-            relaunches: Mutex::new(HashMap::new()),
+            relaunch_counts: Mutex::new(HashMap::new()),
         }
     }
 
@@ -115,9 +115,10 @@ impl<'a> HeldDriver<'a> {
 
     /// Whether `e`, the error of spawn `id`, is one this decorator carries across instead of its
     /// spawn site. A run it cannot read leaves `e` to the conductor, the spawn's own failure
-    /// never masked by the read's. An error the host marked interrupted relaunches without a read
-    /// of the hold, since the host's own read decided it. Counts the relaunch it answers true for.
-    fn relaunches(&self, e: &Error, id: &str) -> bool {
+    /// never masked by the read's. An error the host marked interrupted is carried across without
+    /// a read of the hold, since the host's own read decided it. Spends nothing: the relaunch it
+    /// answers true for is spent by [`Self::try_spend_relaunch`].
+    fn carries_across(&self, e: &Error, id: &str) -> bool {
         if is_parked_or_refused(e, EMIT_REFUSED_MARKER) {
             return false;
         }
@@ -127,21 +128,25 @@ impl<'a> HeldDriver<'a> {
         if !matches!(spawn::ended_by(&slice, id), Ok(None)) {
             return false;
         }
-        if !is_interrupted(e) {
-            let Ok(run) = ledger::project(&slice) else {
-                return false;
-            };
-            let class_waits =
-                failure_class(e).is_some_and(|class| class.row().disposition != Disposition::Fault);
-            if run.hold.is_none() && !class_waits {
-                return false;
-            }
+        if is_interrupted(e) {
+            return true;
         }
-        let mut relaunches = self.relaunches.lock().expect("relaunch count lock");
-        if !relaunch_owed(&relaunches, id) {
+        let Ok(run) = ledger::project(&slice) else {
+            return false;
+        };
+        let class_waits =
+            failure_class(e).is_some_and(|class| class.row().disposition != Disposition::Fault);
+        run.hold.is_some() || class_waits
+    }
+
+    /// Spend one of spawn `id`'s relaunches: false, spending nothing, once `id` has used the
+    /// [`RELAUNCH_BOUND`] since its last non-error outcome.
+    fn try_spend_relaunch(&self, id: &str) -> bool {
+        let mut counts = self.relaunch_counts.lock().expect("relaunch count lock");
+        if !relaunch_owed(&counts, id) {
             return false;
         }
-        *relaunches.entry(id.to_string()).or_insert(0) += 1;
+        *counts.entry(id.to_string()).or_insert(0) += 1;
         true
     }
 
@@ -159,7 +164,10 @@ impl<'a> HeldDriver<'a> {
             return;
         }
         if is_interrupted(e)
-            && relaunch_owed(&self.relaunches.lock().expect("relaunch count lock"), id)
+            && relaunch_owed(
+                &self.relaunch_counts.lock().expect("relaunch count lock"),
+                id,
+            )
         {
             return;
         }
@@ -175,11 +183,9 @@ impl<'a> HeldDriver<'a> {
     }
 }
 
-/// Whether spawn `id` has a relaunch left under [`RELAUNCH_BOUND`] in `relaunches`.
-fn relaunch_owed(relaunches: &HashMap<String, u32>, id: &str) -> bool {
-    relaunches
-        .get(id)
-        .is_none_or(|count| *count < RELAUNCH_BOUND)
+/// Whether spawn `id` has a relaunch left under [`RELAUNCH_BOUND`] in `counts`.
+fn relaunch_owed(counts: &HashMap<String, u32>, id: &str) -> bool {
+    counts.get(id).is_none_or(|count| *count < RELAUNCH_BOUND)
 }
 
 impl AgentDriver for HeldDriver<'_> {
@@ -195,13 +201,17 @@ impl AgentDriver for HeldDriver<'_> {
             self.wait_out_the_hold(&opts.id, relaunched.take())?;
             match self.inner.spawn(agent, prompt, opts, emit) {
                 Ok(result) => {
-                    self.relaunches
+                    self.relaunch_counts
                         .lock()
                         .expect("relaunch count lock")
                         .remove(&opts.id);
                     return Ok(result);
                 }
-                Err(e) if self.relaunches(&e, &opts.id) => relaunched = Some(e),
+                Err(e)
+                    if self.carries_across(&e, &opts.id) && self.try_spend_relaunch(&opts.id) =>
+                {
+                    relaunched = Some(e)
+                }
                 Err(e) => {
                     self.record_error(&e, &opts.id);
                     return Err(e);
