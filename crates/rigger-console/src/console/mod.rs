@@ -14,7 +14,8 @@
 //! spec 19a) - and adds the two new ones this criterion introduces: [`dock`]
 //! (the needs-you list) and [`statusline`] (the one-line summary). `rigger
 //! status` (`cmd_status` in the binary) calls [`fold`] directly and prints
-//! its `statusline` as the first line and its dock's needs-you lines,
+//! its `statusline` over its table (under the HELD line of a held run) and its
+//! dock's needs-you lines,
 //! rather than composing its own copy of any of these four facts - the "CLI's
 //! use of the core" half of this criterion.
 
