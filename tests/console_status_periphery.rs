@@ -46,6 +46,15 @@ fn seed_a_host_hold(root: &Path) {
     seed_on_the_run(root, run_held_event(&hold));
 }
 
+/// Hold `root`'s current run as the host does on a failed login, needing a person.
+fn seed_a_login_hold(root: &Path) {
+    let hold = rigger::run::RunHeld {
+        needs_person: true,
+        ..hold_naming("auth", "log in again", HOLD_BY_HOST)
+    };
+    seed_on_the_run(root, run_held_event(&hold));
+}
+
 /// ONE FOLD, the CLI's use of the core: for a run with an escalated unit, `rigger status`'s
 /// FIRST printed line is exactly `console::fold`'s `statusline` computed independently by this
 /// test from a real store round trip, and the needs-you section names that unit through
@@ -291,8 +300,9 @@ fn console_dock_and_statusline_are_reachable_directly_over_a_real_store_round_tr
 /// opens with the HELD line, ending that the run resumes by itself only for a host hold a
 /// supervisor beat watched within 90 s; the statusline under the run header reads `held` while
 /// the dock lists nothing but the hold, and `needs-you` beside any other entry; and the needs-you
-/// section lists the hold first for a hold whose latest `RunHeld` needs a person, and nothing for
-/// one that needs none. A hold the operator released prints no HELD line and lists nothing.
+/// section lists the open hold first, under its own cause and never an earlier released hold's,
+/// for a hold whose latest `RunHeld` needs a person, and nothing for one that needs none. A hold
+/// the operator released prints no HELD line and lists nothing.
 /// `rigger status --line` prints that same statusline alone, and the statusline, the needs-you and
 /// the current-blocker lines are `console::fold`'s own.
 #[test]
@@ -353,13 +363,18 @@ fn rigger_status_shows_a_person_the_hold_in_its_held_line_statusline_and_needs_y
             needs_you: vec![operator_entry.clone()],
         },
         Case {
+            name: "an operator hold after a released hold of another cause that needed a person",
+            seed: seed_a_login_hold,
+            verbs: &[RELEASE, HOLD],
+            beat: None,
+            held: Some(operator_held.clone()),
+            statusline: "- . 0/0 units . held",
+            needs_you: vec![operator_entry.clone()],
+        },
+        Case {
             name: "a hold needing a person the host holds over needing none",
             seed: |root| {
-                let login = rigger::run::RunHeld {
-                    needs_person: true,
-                    ..hold_naming("auth", "log in again", HOLD_BY_HOST)
-                };
-                seed_on_the_run(root, run_held_event(&login));
+                seed_a_login_hold(root);
                 seed_a_host_hold(root);
             },
             verbs: &[],
