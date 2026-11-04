@@ -4069,6 +4069,41 @@ fn relaunch_cases() -> Vec<Relaunch> {
             ..Default::default()
         },
         Relaunch {
+            name: "a restart's relaunch of a session that never started takes the fallback",
+            seeded: vec![
+                Opened(0, INTERRUPTED, None),
+                Closed(0, INTERRUPTED, "interrupted", "", None),
+            ],
+            resume_ending: "refused-result",
+            appended: vec![
+                Opened(1, INTERRUPTED, Some(INTERRUPTED)),
+                Closed(1, INTERRUPTED, "interrupted", "", None),
+                Opened(2, MINTED, None),
+                Closed(2, MINTED, "completed", "", None),
+            ],
+            tasks: vec![RESTARTED.to_string(), FULL_PROMPT.to_string()],
+            answered: (MINTED, ""),
+            ..Default::default()
+        },
+        Relaunch {
+            name: "a fallback's close a death left the latest is relaunched and falls back again",
+            seeded: vec![
+                Opened(0, PRIOR_SESSION, Some(PRIOR_SESSION)),
+                Closed(0, PRIOR_SESSION, "interrupted", "", None),
+            ],
+            resumed: true,
+            resume_ending: "refused-result",
+            appended: vec![
+                Opened(1, PRIOR_SESSION, Some(PRIOR_SESSION)),
+                Closed(1, PRIOR_SESSION, "interrupted", "", None),
+                Opened(2, MINTED, None),
+                Closed(2, MINTED, "completed", "", None),
+            ],
+            tasks: vec![with_task(RESTARTED), FULL_PROMPT.to_string()],
+            answered: (MINTED, ""),
+            ..Default::default()
+        },
+        Relaunch {
             name: "a hold sink that cannot be read launches nothing",
             log: login_released(),
             seeded: login_close(Some(0)),
