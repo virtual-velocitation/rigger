@@ -253,6 +253,75 @@ mod tests {
         }
     }
 
+    /// A hold read asks the store for the run's `RunStarted`, `RunHeld` and `RunReleased` from
+    /// the boundary [`EventStore::last_position`] finds, the whole stream with no run started,
+    /// and nothing else (op-105-hold-read-reads-only-the-hold): no carried-over decision,
+    /// lesson or finding and no other event of the run is materialized, and the answer is the
+    /// hold the current run leaves open.
+    #[test]
+    fn a_hold_read_reads_only_the_runs_hold_types_from_its_boundary() {
+        let started = |run: &str| ev("RunStarted", &format!(r#"{{"run":"{run}"}}"#));
+        let held = |cause: &str| ev(TYPE_RUN_HELD, &format!(r#"{{"cause":"{cause}"}}"#));
+        let hold_types = [TYPE_RUN_STARTED, TYPE_RUN_HELD, TYPE_RUN_RELEASED];
+        // (row, the log, the boundary the read starts from, the events it materializes, the
+        // open hold's cause)
+        for (name, events, from, materialized, cause) in [
+            (
+                "a held run after an earlier one",
+                vec![
+                    started("r1"),
+                    held("rate_limit"),
+                    ev("DecisionMade", r#"{"id":"d-prior"}"#),
+                    started("r2"),
+                    ev("UnitStarted", r#"{"id":"u1"}"#),
+                    held("billing_error"),
+                    ev("LessonLearned", r#"{"id":"l-run"}"#),
+                ],
+                3,
+                2,
+                "billing_error",
+            ),
+            (
+                "a held stream with no run started",
+                vec![
+                    ev("UnitStarted", r#"{"id":"u1"}"#),
+                    held("rate_limit"),
+                    ev("DecisionMade", r#"{"id":"d-run"}"#),
+                ],
+                0,
+                1,
+                "rate_limit",
+            ),
+        ] {
+            let log = HandBuiltLog::new(STREAM, events);
+            let store = ReadCountingStore::new(&log);
+
+            let hold = read_current_hold(&store, STREAM).unwrap();
+            assert_eq!(
+                hold.as_ref().map(|hold| hold.latest.cause.as_str()),
+                Some(cause),
+                "{name}"
+            );
+            assert_eq!(
+                store.reads(),
+                [
+                    CountedRead::LastPosition {
+                        stream: STREAM.to_string(),
+                        event_type: "RunStarted".to_string(),
+                    },
+                    CountedRead::Typed {
+                        stream: STREAM.to_string(),
+                        from,
+                        only: true,
+                        types: hold_types.map(String::from).to_vec(),
+                        materialized,
+                    },
+                ],
+                "{name}"
+            );
+        }
+    }
+
     /// A run [`read_current_hold`] cannot prove unheld answers an error, never `None`: a failed
     /// read and a hold event no fold can apply each name their own failure.
     #[test]
