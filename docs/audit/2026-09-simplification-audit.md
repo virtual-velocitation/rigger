@@ -4125,7 +4125,7 @@ Proposed home: `a new shared module (sites span 2 files: crates/rigger-domain/sr
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `crates/rigger-domain/src/watch.rs:670-672` `new`
-- `crates/rigger-driver/src/driver/workflow.rs:100-102` `new`
+- `crates/rigger-driver/src/driver/workflow.rs:104-106` `new`
 
 #### `dup-161c827c2a70` (near, 2 sites)
 

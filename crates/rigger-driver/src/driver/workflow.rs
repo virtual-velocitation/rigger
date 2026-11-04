@@ -79,6 +79,9 @@ pub struct Driver<'a> {
     /// Whether the run stands held, read ahead of each handout; `None` on a driver no hold
     /// governs.
     hold_read: Option<&'a (dyn Fn() -> Result<bool, Error> + Sync)>,
+    /// Set while the hold reads fail in a row, so `next` names a failing streak on stderr once,
+    /// not at every poll.
+    hold_read_failing: AtomicBool,
 }
 
 impl Default for Driver<'_> {
@@ -92,6 +95,7 @@ impl Default for Driver<'_> {
             finished: AtomicBool::new(false),
             session_closed: AtomicBool::new(false),
             hold_read: None,
+            hold_read_failing: AtomicBool::new(false),
         }
     }
 }
@@ -121,17 +125,31 @@ impl<'a> Driver<'a> {
 
     /// Return the next queued spawn request for the shim, or None if none waits or the run is not
     /// proved unheld: a held run or a read that fails hands out nothing and pops nothing, so the
-    /// request stays pending for a later poll. The hold is read only with a spawn queued, since
-    /// the shim polls at 20 Hz while idle, and outside the lock, which a spawn queues under.
+    /// request stays pending for a later poll. A read that fails names its error on stderr once
+    /// per streak of failed reads. The hold is read only with a spawn queued, since the shim polls
+    /// at 20 Hz while idle, and outside the lock, which a spawn queues under.
     pub fn next(&self) -> Option<SpawnRequest> {
         if self.inner.lock().unwrap().queue.is_empty() {
             return None;
         }
-        if self
-            .hold_read
-            .is_some_and(|read| !matches!(read(), Ok(false)))
-        {
-            return None;
+        if let Some(read) = self.hold_read {
+            match read() {
+                Ok(held) => {
+                    self.hold_read_failing.store(false, Ordering::SeqCst);
+                    if held {
+                        return None;
+                    }
+                }
+                Err(e) => {
+                    if !self.hold_read_failing.swap(true, Ordering::SeqCst) {
+                        eprintln!(
+                            "rigger: the hold read failed, so no spawn is handed out until a \
+                             read proves the run unheld: {e}"
+                        );
+                    }
+                    return None;
+                }
+            }
         }
         let mut inner = self.inner.lock().unwrap();
         while let Some(id) = inner.queue.pop_front() {
