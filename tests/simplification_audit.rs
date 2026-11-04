@@ -10586,6 +10586,43 @@ mod tests {
                 PLAYBOOKS_REBUILD.0,
             )
         };
+        /// A `use` binding a module under another name resolves the alias: `books::rebuild()`
+        /// through `use crate::playbooks as books;` attributes to `playbooks`'s definition.
+        a_call_through_a_module_alias_attributes_to_the_aliased_module: the_one_flagged_rebuild(
+            &[
+                DISTILLER_REBUILD,
+                PLAYBOOKS_REBUILD,
+                ("src/main.rs", "use crate::playbooks as books;\nfn main() {\n    let _ = books::rebuild();\n}\n"),
+            ],
+            DISTILLER_REBUILD.0,
+        );
+        /// The same alias bound by a group's `self` member: `use crate::{playbooks::{self as
+        /// books}};` names `playbooks`, the module of the group that holds it.
+        a_call_through_a_group_self_alias_attributes_to_the_group_module: the_one_flagged_rebuild(
+            &[
+                DISTILLER_REBUILD,
+                PLAYBOOKS_REBUILD,
+                ("src/main.rs", "use crate::{distiller::Report, playbooks::{self as books}};\nfn main() {\n    let _ = books::rebuild();\n}\n"),
+            ],
+            DISTILLER_REBUILD.0,
+        );
+    }
+
+    rigger::test_cases! {
+        /// An inline module aliased by `use self::linux as native;` credits `linux::acquire`
+        /// with `native::acquire()`, so only the uncalled `macos` sharer (line 7) is flagged.
+        a_call_through_an_inline_module_alias_attributes_to_that_module: assert_eq!(
+            ambiguous_sharers(
+                &[(
+                    "src/hold.rs",
+                    "mod linux {\n    pub fn acquire() -> u32 {\n        1\n    }\n}\nmod macos {\n    pub fn acquire() -> u32 {\n        2\n    }\n}\nuse self::linux as native;\npub fn hold() -> u32 {\n    native::acquire()\n}\n",
+                )],
+                "acquire",
+                1,
+            )[0]
+            .line,
+            7
+        );
     }
 
     rigger::test_cases! {
