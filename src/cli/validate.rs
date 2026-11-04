@@ -37,8 +37,9 @@ fn print_claude_login() {
         }
         None => eprintln!(
             "warning: claude login: `claude auth status --json` gave no report within {} s \
-             (claude is not on PATH, or its status failed); a run launches `claude` from PATH, \
-             logged in.",
+             (claude is not on PATH, its status failed or gave no answer by the bound, or its \
+             report is not one JSON object naming an authMethod string); a run launches `claude` \
+             from PATH, logged in.",
             CLAUDE_LOGIN_BOUND.as_secs()
         ),
     }

@@ -739,8 +739,9 @@ const EXPIRING_LOGIN_WARNING: &str = "warning: claude login: claude.ai is an int
 /// The one line `rigger validate` warns on when it read no login report.
 #[cfg(unix)]
 const NO_LOGIN_REPORT_WARNING: &str = "warning: claude login: `claude auth status --json` gave \
-     no report within 5 s (claude is not on PATH, or its status failed); a run launches `claude` \
-     from PATH, logged in.";
+     no report within 5 s (claude is not on PATH, its status failed or gave no answer by the \
+     bound, or its report is not one JSON object naming an authMethod string); a run launches \
+     `claude` from PATH, logged in.";
 
 /// `rigger validate` in `root` with a stand-in `claude` first on PATH whose `auth status --json`
 /// runs the [`probe_arms`](common::fixtures::probe_arms) body `auth`, or with no `claude` on PATH

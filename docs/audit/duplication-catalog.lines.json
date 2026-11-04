@@ -929,13 +929,13 @@
       },
       {
         "file": "src/cli/validate.rs",
-        "start_line": 1540,
-        "end_line": 1540
+        "start_line": 1541,
+        "end_line": 1541
       },
       {
         "file": "src/cli/validate.rs",
-        "start_line": 1819,
-        "end_line": 1819
+        "start_line": 1820,
+        "end_line": 1820
       },
       {
         "file": "tests/adaptive_labels_periphery.rs",
@@ -2109,18 +2109,13 @@
       },
       {
         "file": "src/cli/validate.rs",
-        "start_line": 891,
-        "end_line": 891
+        "start_line": 892,
+        "end_line": 892
       },
       {
         "file": "src/cli/validate.rs",
-        "start_line": 1380,
-        "end_line": 1380
-      },
-      {
-        "file": "src/cli/validate.rs",
-        "start_line": 1390,
-        "end_line": 1390
+        "start_line": 1381,
+        "end_line": 1381
       },
       {
         "file": "src/cli/validate.rs",
@@ -2139,13 +2134,18 @@
       },
       {
         "file": "src/cli/validate.rs",
-        "start_line": 2283,
-        "end_line": 2283
+        "start_line": 1394,
+        "end_line": 1394
       },
       {
         "file": "src/cli/validate.rs",
-        "start_line": 2337,
-        "end_line": 2337
+        "start_line": 2284,
+        "end_line": 2284
+      },
+      {
+        "file": "src/cli/validate.rs",
+        "start_line": 2338,
+        "end_line": 2338
       },
       {
         "file": "src/main.rs",
@@ -4514,8 +4514,8 @@
       },
       {
         "file": "src/cli/validate.rs",
-        "start_line": 1401,
-        "end_line": 1403
+        "start_line": 1402,
+        "end_line": 1404
       }
     ]
   },
@@ -6814,8 +6814,8 @@
       },
       {
         "file": "src/cli/validate.rs",
-        "start_line": 1865,
-        "end_line": 1872
+        "start_line": 1866,
+        "end_line": 1873
       }
     ]
   },
@@ -7044,8 +7044,8 @@
       },
       {
         "file": "src/cli/validate.rs",
-        "start_line": 2063,
-        "end_line": 2065
+        "start_line": 2064,
+        "end_line": 2066
       }
     ]
   },
@@ -7294,13 +7294,13 @@
     "sites": [
       {
         "file": "src/cli/validate.rs",
-        "start_line": 1568,
-        "end_line": 1589
+        "start_line": 1569,
+        "end_line": 1590
       },
       {
         "file": "src/cli/validate.rs",
-        "start_line": 1592,
-        "end_line": 1613
+        "start_line": 1593,
+        "end_line": 1614
       }
     ]
   },
