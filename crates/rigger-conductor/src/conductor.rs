@@ -45092,7 +45092,7 @@ mod tests {
         /// The prompt each spawn id was launched with.
         prompts: Mutex<HashMap<String, String>>,
         /// Each conflict-resolution round of attempt 0 that ends without resolving, and how;
-        /// empty in every test but the one that reads how a round ends.
+        /// empty in every test but the ones that read how a round ends.
         unresolved: Vec<(u32, Unresolved)>,
     }
 
@@ -45980,14 +45980,24 @@ mod tests {
     const RESOLVER_ERROR: &str = "the resolver's session stopped";
 
     /// Run the [`conflict_fixture`]'s two batch-mates `unit-a`/`unit-b` in `repo_path` through
-    /// `driver` on `store`, each gated, reviewed by one lens and an adjudicator and merged, with
-    /// three remediation attempts allowed and `regenerate` registering regenerable paths.
+    /// `driver` on `store` under `cfg` ([`conflicting_units_cfg`]'s shape).
     fn run_conflicting_units(
         repo_path: &str,
         store: &Store,
         driver: &ConflictDriver,
-        regenerate: Vec<crate::config::RegenerateRule>,
+        cfg: &Config,
     ) -> Result<RunState, Error> {
+        let deps = Deps {
+            repo: repo_path.to_string(),
+            ..stub_deps(store, driver, Vec::new())
+        };
+        run_isolated(cfg, &deps)
+    }
+
+    /// The [`conflict_fixture`]'s two batch-mates `unit-a`/`unit-b`, each gated, reviewed by
+    /// one lens and an adjudicator and merged, with three remediation attempts allowed and
+    /// `regenerate` registering regenerable paths.
+    fn conflicting_units_cfg(regenerate: Vec<crate::config::RegenerateRule>) -> Config {
         let mut cfg = Config::default();
         cfg.workflow.defaults.max_retries = 3;
         cfg.workflow.regenerate = regenerate;
@@ -46012,11 +46022,7 @@ mod tests {
                 },
             );
         }
-        let deps = Deps {
-            repo: repo_path.to_string(),
-            ..stub_deps(store, driver, Vec::new())
-        };
-        run_isolated(&cfg, &deps)
+        cfg
     }
 
     /// Two batch-mates `unit-a`/`unit-b` edit the SAME line of `c.rs` off the same base (the
@@ -46033,7 +46039,13 @@ mod tests {
     ) -> (Vec<String>, String, HashMap<String, String>) {
         let (repo, repo_path, store, mut driver) = conflict_fixture(regenerate.clone(), true);
         driver.refused_retry = refused_retry;
-        let rs = run_conflicting_units(&repo_path, &store, &driver, regenerate).unwrap();
+        let rs = run_conflicting_units(
+            &repo_path,
+            &store,
+            &driver,
+            &conflicting_units_cfg(regenerate),
+        )
+        .unwrap();
         for unit in ["unit-a", "unit-b"] {
             assert_eq!(
                 rs.units[unit].status,
@@ -46155,7 +46167,8 @@ mod tests {
         for (name, unresolved, want) in rows {
             let (repo, repo_path, store, mut driver) = conflict_fixture(Vec::new(), true);
             driver.unresolved = unresolved;
-            let got = run_conflicting_units(&repo_path, &store, &driver, Vec::new()).map(|rs| {
+            let cfg = conflicting_units_cfg(Vec::new());
+            let got = run_conflicting_units(&repo_path, &store, &driver, &cfg).map(|rs| {
                 let calls = driver.calls.lock().unwrap().clone();
                 let loser = calls
                     .iter()
@@ -46187,6 +46200,79 @@ mod tests {
                 (unit.status, unit.attempts, causes, rounds)
             });
             assert_eq!(got.map_err(|e| e.0), Ok(want), "{name}");
+            drop(repo);
+        }
+    }
+
+    #[test]
+    fn an_unreviewed_unit_halted_mid_merge_resumes_at_the_resolver_and_integrates() {
+        // op-105-unreviewed-mid-merge-resumes-at-integrate, the reproduction of lesson
+        // u105r2c6park-sdet-verified-unit-mid-merge-resume-refuses: two batch-mates with no
+        // review conflict, and the spawn budget halts the run at the loser's second resolver
+        // round, its merge left in progress and its last status `verified`. A resume with the
+        // budget lifted reaches the resolver from the log and both units integrate, uncharged,
+        // with no conflict-marker refusal. Each row: how the first resolver round ends.
+        // NON-VACUOUS: RED while the resume routes the loser to `ResumePhase::Implemented`,
+        // whose pre-gate checkpoint refuses the merge's own conflict markers.
+        for (name, first_round) in [
+            ("a first round resolving nothing", Unresolved::Nothing),
+            (
+                "a first round ending on an unmarked error",
+                Unresolved::Errs,
+            ),
+        ] {
+            let (repo, repo_path, store, mut driver) = conflict_fixture(Vec::new(), true);
+            driver.unresolved = vec![(1, first_round)];
+            let mut cfg = conflicting_units_cfg(Vec::new());
+            for stage in cfg.workflow.stages.values_mut() {
+                stage.review = crate::config::ReviewPanel::default();
+            }
+            // Both implementers and the first resolver round: the second round is refused.
+            cfg.workflow.defaults.budget = 3;
+            let halted = run_conflicting_units(&repo_path, &store, &driver, &cfg).unwrap();
+            let calls = driver.calls.lock().unwrap().clone();
+            let loser = calls
+                .iter()
+                .find_map(|id| id.strip_suffix("/implementer#0~retry1"))
+                .unwrap_or_else(|| panic!("{name}: no unit was re-parked: {calls:?}"))
+                .to_string();
+            let second_round = spawn_retry_id(&loser, ROLE_IMPLEMENTER, 0, 2);
+            assert!(
+                halted.budget_halt.is_some() && !calls.contains(&second_round),
+                "{name}: the budget halts the run at the second resolver round: {calls:?}"
+            );
+            assert_eq!(
+                halted.units[&loser].status,
+                ledger::Status::Verified,
+                "{name}: the loser halts mid-merge with no review recorded"
+            );
+            cfg.workflow.defaults.budget = 0;
+            let resumed = run_conflicting_units(&repo_path, &store, &driver, &cfg)
+                .unwrap_or_else(|e| panic!("{name}: the resume refused: {}", e.0));
+            for unit in ["unit-a", "unit-b"] {
+                assert_eq!(
+                    (resumed.units[unit].status, resumed.units[unit].attempts),
+                    (ledger::Status::Integrated, 0),
+                    "{name}: {unit} integrates, uncharged"
+                );
+            }
+            assert!(
+                driver.calls.lock().unwrap().contains(&second_round),
+                "{name}: the resume reaches the resolver's second round"
+            );
+            let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+            for charged in [ledger::TYPE_UNIT_FAILED, contextgraph::TYPE_LESSON_LEARNED] {
+                assert_eq!(
+                    count_of_type(&events, charged),
+                    0,
+                    "{name}: the resume records no {charged}"
+                );
+            }
+            assert_eq!(
+                std::fs::read_to_string(Path::new(&repo_path).join("c.rs")).unwrap(),
+                "RESOLVED\n",
+                "{name}: the resolution lands"
+            );
             drop(repo);
         }
     }

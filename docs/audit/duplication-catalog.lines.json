@@ -510,7 +510,7 @@
     ]
   },
   {
-    "id": "dup-1531affe0065",
+    "id": "dup-dfb71a76f084",
     "sites": [
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
@@ -524,8 +524,8 @@
       },
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 46105,
-        "end_line": 46192
+        "start_line": 46117,
+        "end_line": 46205
       },
       {
         "file": "crates/rigger-conductor/src/held.rs",
@@ -844,8 +844,8 @@
       },
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 46382,
-        "end_line": 46382
+        "start_line": 46468,
+        "end_line": 46468
       },
       {
         "file": "crates/rigger-driver/src/reaped_child.rs",
@@ -4404,8 +4404,8 @@
     "sites": [
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 48583,
-        "end_line": 48593
+        "start_line": 48669,
+        "end_line": 48679
       },
       {
         "file": "tests/replan_episode_identity.rs",
@@ -4419,8 +4419,8 @@
     "sites": [
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 49944,
-        "end_line": 49946
+        "start_line": 50030,
+        "end_line": 50032
       },
       {
         "file": "crates/rigger-domain/src/metrics.rs",
