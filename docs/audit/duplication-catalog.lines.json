@@ -4579,8 +4579,8 @@
       },
       {
         "file": "crates/rigger-domain/src/progress.rs",
-        "start_line": 544,
-        "end_line": 547
+        "start_line": 558,
+        "end_line": 561
       },
       {
         "file": "tests/simplification_audit.rs",
@@ -6939,13 +6939,13 @@
     "sites": [
       {
         "file": "crates/rigger-store-sqlite/src/progress_store.rs",
-        "start_line": 44,
-        "end_line": 58
+        "start_line": 46,
+        "end_line": 60
       },
       {
         "file": "crates/rigger-store-sqlite/src/progress_store.rs",
-        "start_line": 100,
-        "end_line": 111
+        "start_line": 94,
+        "end_line": 105
       }
     ]
   },

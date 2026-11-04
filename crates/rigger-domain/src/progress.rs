@@ -326,6 +326,20 @@ pub fn open_launches(progress_events: &[Event]) -> Vec<(String, SpawnLaunched)> 
         .collect()
 }
 
+/// The latest [`SpawnLaunched`] record of `spawn` among `progress_events`, one run's records
+/// (spec 105, RESUME BY SESSION): the last record, in stream order, of the highest ordinal they
+/// hold for that id, so its close once that launch closed and its open record until then, or
+/// `None` when they hold none. Opening and closing records both count, so a launch whose open
+/// record was lost still names its ordinal. A record that does not decode names nothing. PURE:
+/// the store crate's `latest_launch` reads the run's records and folds them here.
+pub fn latest_launch_of(progress_events: &[Event], spawn: &str) -> Option<SpawnLaunched> {
+    // `max_by_key` keeps the last of equal maxima: the latest record of the highest ordinal.
+    decoded_launches(progress_events)
+        .map(|(_, record)| record)
+        .filter(|record| record.spawn == spawn)
+        .max_by_key(|record| record.launch)
+}
+
 /// Each [`SpawnLaunched`] record among `progress_events`, beside its event, in their order: a
 /// record that does not decode names no launch.
 fn decoded_launches(progress_events: &[Event]) -> impl Iterator<Item = (&Event, SpawnLaunched)> {

@@ -1,6 +1,7 @@
 //! The store half of [`crate::progress`] (spec 93, criterion 1: THE CORE LANE IS PURE):
 //! recording one live progress report to a LIVE progress store. [`crate::progress`] keeps
-//! the model (`AgentProgress`, `AgentActivity`) and the pure fold (`consolidate`) -
+//! the model (`AgentProgress`, `AgentActivity`) and the pure folds (`consolidate`,
+//! `latest_launch_of`) -
 //! everything computable from already-read `&[Event]` slices, with no store at all. This
 //! module is the other half: `record`, the typed writers beside it and the [`append_stamped`]
 //! they share, the functions that append to a `&dyn EventStore`, with [`latest_launch`] and
@@ -10,7 +11,8 @@
 
 use crate::eventstore::{Error, EventStore, ExpectedRevision, Position, TypeSelection};
 use crate::progress::{
-    stream_of, AgentProgress, RunStamped, SpawnLaunched, StopFailure, TYPE_SPAWN_LAUNCHED,
+    latest_launch_of, stream_of, AgentProgress, RunStamped, SpawnLaunched, StopFailure,
+    TYPE_SPAWN_LAUNCHED,
 };
 
 /// Record one progress report to the progress `store`, stamped with `run_id`. Append-only
@@ -70,11 +72,8 @@ pub fn next_launch(
     Ok(latest_launch(store, run_id, spawn)?.map_or(first, |latest| latest.launch + 1))
 }
 
-/// The latest [`SpawnLaunched`] record of `spawn` in the run `run_id` (spec 105, RESUME BY
-/// SESSION): the last record, in stream order, of the highest ordinal the run's records hold for
-/// that id, so its close once that launch closed and its open record until then, or `None` when
-/// they hold none. Opening and closing records both count, so a launch whose open record was lost
-/// still names its ordinal. A record that does not decode names nothing.
+/// The latest [`SpawnLaunched`] record of `spawn` in the run `run_id`: the run's launch records,
+/// read from its progress stream, folded by [`latest_launch_of`] (spec 105, RESUME BY SESSION).
 pub fn latest_launch(
     store: &dyn EventStore,
     run_id: &str,
@@ -85,12 +84,7 @@ pub fn latest_launch(
         0,
         TypeSelection::Only(&[TYPE_SPAWN_LAUNCHED]),
     )?;
-    // `max_by_key` keeps the last of equal maxima: the latest record of the highest ordinal.
-    Ok(recorded
-        .iter()
-        .filter_map(|event| serde_json::from_slice::<SpawnLaunched>(&event.data).ok())
-        .filter(|record| record.spawn == spawn)
-        .max_by_key(|record| record.launch))
+    Ok(latest_launch_of(&recorded, spawn))
 }
 
 /// Record one [`StopFailure`] hook firing to the progress `store`, stamped with `run_id`
