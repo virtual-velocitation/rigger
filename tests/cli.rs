@@ -8465,7 +8465,9 @@ stages:
 /// A session's end with no result, as a served spawn's `rigger_result` carries it.
 const SERVED_ERROR: &str = "the session ended with no result";
 
-/// [`SERVED_ERROR`] carrying `class`, the way a host's error does.
+/// [`SERVED_ERROR`] carrying `class`, the way a host's error does. Only a test serves one:
+/// `shim/shim.mjs` hands a session's error back as its bare message text, with no
+/// `FAILURE_MARKER` bracket, so a live serve's error is unclassed.
 fn classed_served_error(class: rigger::conductor::AgentFailure) -> String {
     rigger::conductor::no_result_error(class, SERVED_ERROR.to_string()).0
 }
@@ -8476,7 +8478,10 @@ fn classed_served_error(class: rigger::conductor::AgentFailure) -> String {
 /// errored spawn id with no infra mark. Given a wait class, the same id relaunches with no hold at
 /// all. Past two relaunches of an id the next error passes, whatever the errors' classes and held
 /// or not, to the conductor's infra rerun, whose own id waits on the hold in turn. The unit is
-/// charged nothing and a served run leaves each hold to its release.
+/// charged nothing and a served run leaves each hold to its release. The classed rows prove the
+/// decorator's reading of a class, not a live path: `shim/shim.mjs` hands an error back as bare
+/// message text with no `FAILURE_MARKER`, so a live serve's error is unclassed and relaunches only
+/// while the run is held.
 #[test]
 fn a_served_wait_ends_by_its_release_and_relaunches_the_same_spawn_up_to_the_bound() {
     struct Case {
