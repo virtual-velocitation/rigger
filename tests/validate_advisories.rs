@@ -799,9 +799,9 @@ fn the_recorded_subscription_login_keeps_only_the_key_the_pin_reads() {
 /// Given a project, when the operator runs `rigger validate` with a stand-in `claude` first on
 /// PATH, or none on it, then validate reads `claude auth status --json` once, reports on stdout
 /// the auth method it names, warns of a subscription login naming its long-lived token and of no
-/// other auth method, one only sharing its prefix included, prints one warning in place of the
-/// report when none came by its 5 s bound, leaves no process of the stand-in behind and exits 0 on
-/// every row.
+/// other auth method, one only sharing its prefix or its suffix included, prints one warning in
+/// place of the report when none came by its 5 s bound, leaves no process of the stand-in behind
+/// and exits 0 on every row.
 #[cfg(unix)]
 #[test]
 fn validate_reports_the_claude_login_and_warns_when_it_expires_or_gives_no_report() {
@@ -845,6 +845,14 @@ fn validate_reports_the_claude_login_and_warns_when_it_expires_or_gives_no_repor
             "an auth method the subscription login's is only the prefix of",
             Some(printing(r#"{"authMethod": "claude.ai-enterprise"}"#)),
             reported("claude.ai-enterprise"),
+            vec![],
+            quick,
+            0,
+        ),
+        (
+            "an auth method the subscription login's is only the suffix of",
+            Some(printing(r#"{"authMethod": "enterprise.claude.ai"}"#)),
+            reported("enterprise.claude.ai"),
             vec![],
             quick,
             0,
