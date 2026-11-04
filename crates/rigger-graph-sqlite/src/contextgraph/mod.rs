@@ -268,6 +268,67 @@ mod tests {
         );
     }
 
+    /// The emit guard refuses a lesson or finding naming no location - an empty `about` and no
+    /// `file` - in words naming `about`, and passes one naming either; a decision, judged by its
+    /// own shape only, passes without one (op-105-every-finding-reaches-the-graph).
+    #[test]
+    fn an_emit_naming_no_location_is_refused_naming_about() {
+        let log = crate::test_support::HandBuiltLog::new("run", vec![]);
+        let refused = |type_: &str, id: &str| {
+            Err(format!(
+                "refusing to emit {type_} {id:?}: it names no location, so no read of the graph \
+                 reaches it - list the files or node ids it is about in `about`"
+            ))
+        };
+        for (row, type_, payload, outcome) in [
+            (
+                "a finding with no about and no file",
+                TYPE_REVIEW_FINDING,
+                r#"{"id":"f1","summary":"s"}"#,
+                refused(TYPE_REVIEW_FINDING, "f1"),
+            ),
+            (
+                "a finding with an empty about and an empty file",
+                TYPE_REVIEW_FINDING,
+                r#"{"id":"f2","summary":"s","about":[],"file":""}"#,
+                refused(TYPE_REVIEW_FINDING, "f2"),
+            ),
+            (
+                "a lesson with an empty about",
+                TYPE_LESSON_LEARNED,
+                r#"{"id":"l1","summary":"s","about":[]}"#,
+                refused(TYPE_LESSON_LEARNED, "l1"),
+            ),
+            (
+                "a finding about a file",
+                TYPE_REVIEW_FINDING,
+                r#"{"id":"f3","summary":"s","about":["src/a.rs"]}"#,
+                Ok(()),
+            ),
+            (
+                "a finding naming its file and line",
+                TYPE_REVIEW_FINDING,
+                r#"{"id":"f4","summary":"s","file":"src/a.rs","line":3}"#,
+                Ok(()),
+            ),
+            (
+                "a lesson naming a cited file",
+                TYPE_LESSON_LEARNED,
+                r#"{"id":"l2","summary":"s","file":"src/a.rs:3"}"#,
+                Ok(()),
+            ),
+            (
+                "a decision governing nothing",
+                TYPE_DECISION_MADE,
+                r#"{"id":"d1","summary":"s"}"#,
+                Ok(()),
+            ),
+        ] {
+            let event = Event::new(type_, payload.as_bytes().to_vec());
+            assert_eq!(check_emit(&log, "run", &event), outcome, "{row}");
+        }
+    }
+
     /// A ledger entry is judged by the parse its fold reads it with: a payload missing a field is
     /// refused in that parse's own words, and one carrying all five passes.
     #[test]

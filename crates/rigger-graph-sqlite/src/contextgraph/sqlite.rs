@@ -7248,6 +7248,72 @@ mod tests {
         );
     }
 
+    /// A rebuild folds every lesson and finding the log holds as a node, one naming no location
+    /// among them - the emit guard refuses such a record at emit only - and a finding naming its
+    /// file is reached from that file (op-105-every-finding-reaches-the-graph).
+    #[test]
+    fn a_rebuild_folds_a_location_free_record_as_a_node() {
+        let log = [
+            event_at(
+                TYPE_REVIEW_FINDING,
+                br#"{"id":"f-nowhere","summary":"s"}"#,
+                1,
+            ),
+            event_at(
+                TYPE_LESSON_LEARNED,
+                br#"{"id":"l-nowhere","summary":"s","about":[]}"#,
+                2,
+            ),
+            event_at(
+                TYPE_REVIEW_FINDING,
+                br#"{"id":"f-file","summary":"s","file":"src/a.rs","line":3}"#,
+                3,
+            ),
+        ];
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("graph.db");
+        let path = path.to_str().unwrap();
+        drop(Projector::open(path, "test").unwrap());
+
+        let rebuilt = rebuild_in_batches(path, &log, 10, &mut Vec::new()).unwrap();
+        let p = Projector::open(path, "test").unwrap();
+        let g = p.whole().unwrap();
+        let mut nodes: Vec<(&str, &str)> = g
+            .nodes
+            .iter()
+            .map(|n| (n.id.as_str(), n.kind.as_str()))
+            .collect();
+        nodes.sort_unstable();
+        let about: Vec<(&str, &str)> = g
+            .edges
+            .iter()
+            .filter(|x| x.rel == REL_ABOUT)
+            .map(|x| (x.from.as_str(), x.to.as_str()))
+            .collect();
+        assert_eq!(
+            (
+                rebuilt.map(|r| r.pruned),
+                applied_through(&p, 3),
+                crate::test_support::passed_over_rows(path),
+                nodes,
+                about,
+            ),
+            (
+                Some(PruneStats::default()),
+                vec![true; 3],
+                vec![],
+                vec![
+                    ("f-file", KIND_FINDING),
+                    ("f-nowhere", KIND_FINDING),
+                    ("l-nowhere", KIND_LESSON),
+                    ("src/a.rs", KIND_ARTIFACT),
+                ],
+                vec![("f-file", "src/a.rs")],
+            ),
+            "every record folds as a node, none passed over, and the file a finding names is ABOUT it"
+        );
+    }
+
     /// What a rebuild passed over is recorded by its fold of the shadow and by its tail into the
     /// live file alike: two rejected payloads the log held when it started, carried by the swap,
     /// and one it gained meanwhile, each with its cause.
@@ -14446,6 +14512,46 @@ mod tests {
         assert!(
             !g.edges.iter().any(|x| x.rel == REL_RAISED),
             "no REL_RAISED agent-attribution edge is projected"
+        );
+    }
+
+    /// A finding or lesson naming its location by `file`, with a line or without, is reached from
+    /// that file's node as one naming it in `about` is (op-105-every-finding-reaches-the-graph):
+    /// the fold reads the file as one more `about` reference, a cited line folding onto the file.
+    #[test]
+    fn a_record_naming_its_file_is_reached_from_that_files_node() {
+        let p = Projector::open(":memory:", "test").unwrap();
+        let events = [
+            event_at(
+                TYPE_REVIEW_FINDING,
+                br#"{"id":"f-line","summary":"s","file":"src/combat.rs","line":12}"#,
+                1,
+            ),
+            event_at(
+                TYPE_REVIEW_FINDING,
+                br#"{"id":"f-cited","summary":"s","file":"src/combat.rs:40-44"}"#,
+                2,
+            ),
+            event_at(
+                TYPE_LESSON_LEARNED,
+                br#"{"id":"l-file","summary":"s","file":"src/combat.rs"}"#,
+                3,
+            ),
+        ];
+        crate::test_support::folds(&p, &events);
+
+        let g = p.subgraph(&["src/combat.rs".to_string()], 2).unwrap();
+        let mut about: Vec<&str> = g
+            .edges
+            .iter()
+            .filter(|x| x.rel == REL_ABOUT && x.to == "src/combat.rs")
+            .map(|x| x.from.as_str())
+            .collect();
+        about.sort_unstable();
+        assert_eq!(
+            about,
+            ["f-cited", "f-line", "l-file"],
+            "each record is ABOUT the file it names, reached from that file's node"
         );
     }
 
