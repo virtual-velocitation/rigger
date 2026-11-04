@@ -288,19 +288,22 @@ owns the OS process facilities, which gains a normal `rigger-domain` dependency 
 - Linux: a logind inhibitor lock, `org.freedesktop.login1.Manager.Inhibit("sleep:idle",
   "rigger", <reason>, "block")` over the system bus, holding the returned file descriptor for
   the guard's life; where logind answers but refuses `Inhibit` (its polkit default denies a
-  caller with no local session), the adapter returns unavailable naming the refusal. One 25 s
-  deadline, the D-Bus default call timeout, bounds the whole acquire (the system-bus connect,
-  its auth handshake and the `Inhibit` call); past it the adapter returns unavailable, timed
-  out, and the run proceeds. The client is `zbus` with default features off and its tokio
-  integration on, driven through its async API on a current-thread tokio runtime local to the
-  acquire, which the calling thread drives under that deadline. The adapter keeps only the
-  close-on-exec duplicate of the returned descriptor and drops the connection and the runtime
-  before it returns, since logind holds the inhibitor for as long as that descriptor is open,
-  not the connection; so it adds no executor sized by core count and no thread that outlives
-  the acquire, save one still running once the deadline has passed (a connect it cut short),
-  which the acquire leaves to end on its own rather than wait past its bound. That runtime is a
-  direct `tokio` edge, features `rt` and `time`, to the tokio the store already links, so the
-  lock gains no package.
+  caller with no local session), the adapter returns unavailable naming the refusal. Where
+  logind owns its bus name but the bus's policy refuses the `Inhibit` call, the bus driver
+  answers it in logind's stead, so the adapter returns the error labelled `logind was not
+  reached on the system bus`, and the run warns and drives on, as it does for a bus that lacks
+  logind. One 25 s deadline, the D-Bus default call timeout, bounds the whole acquire (the
+  system-bus connect, its auth handshake and the `Inhibit` call); past it the adapter returns
+  unavailable, timed out, and the run proceeds. The client is `zbus` with default features off
+  and its tokio integration on, driven through its async API on a current-thread tokio runtime
+  local to the acquire, which the calling thread drives under that deadline. The adapter keeps
+  only the close-on-exec duplicate of the returned descriptor and drops the connection and the
+  runtime before it returns, since logind holds the inhibitor for as long as that descriptor is
+  open, not the connection; so it adds no executor sized by core count and no thread that
+  outlives the acquire, save one still running once the deadline has passed (a connect it cut
+  short), which the acquire leaves to end on its own rather than wait past its bound. That
+  runtime is a direct `tokio` edge, features `rt` and `time`, to the tokio the store already
+  links, so the lock gains no package.
 - macOS: `IOPMAssertionCreateWithName(kIOPMAssertPreventUserIdleSystemSleep, ...)` and
   `IOPMAssertionRelease`, through `extern` declarations linking IOKit; the assertion's name is a
   CoreFoundation string made through a second `extern` block linking CoreFoundation, so the
