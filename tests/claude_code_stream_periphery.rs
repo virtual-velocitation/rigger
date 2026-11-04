@@ -4234,3 +4234,69 @@ fn an_interrupted_launch_relaunches_its_session_as_its_close_decides() {
         assert_eq!(fx.recorded_results(), results, "{name}: the results");
     }
 }
+
+/// THE HOST'S DECISION TRAVELS WITH ITS ERROR (spec 105): a release landing behind the host's held
+/// read at a launch's ending, before its close and before the held-run decorator decides on the
+/// error, relaunches the interrupted session at the next ordinal: the decorator hands the conductor
+/// no error and records no result for it, and the close, stamped from the held read, names the
+/// hold that release ended in the relaunch's note. The decorator and the host read the run
+/// through one counting store: the decorator's read before the launch is calls 0 to 2, the hold
+/// landing behind it, and the host's held read at the ending is calls 3 to 5, the release landing
+/// behind it.
+#[cfg(unix)]
+#[test]
+fn a_release_behind_the_hosts_held_read_relaunches_the_session_naming_the_hold() {
+    use common::fixtures::{released_event, run_held_event, ReadCountingStore};
+    let fx = Fixture::started(&[]);
+    let stream = rigger::conductor::STREAM;
+    let run = ReadCountingStore::new(&fx.run_store)
+        .interleaving(2, stream, vec![run_held_event(&login_hold())])
+        .interleaving(
+            5,
+            stream,
+            vec![released_event(rigger::run::HOLD_BY_OPERATOR, 42)],
+        );
+    let host = Driver {
+        hold_sink: Some(&run),
+        ..fx.stopping_driver(RESUME_ENDING_AGENT, WIND_DOWN_GRACE)
+    };
+    let held = rigger::held::HeldDriver::new(&host, &run, None, &|| {});
+
+    let outcome = held.spawn(
+        &AgentDef::default(),
+        FULL_PROMPT,
+        &fx.fresh_opts("init-eof"),
+        &no_emit,
+    );
+
+    let closes: Vec<(u32, String, Option<String>)> = fx
+        .launch_records()
+        .into_iter()
+        .filter_map(|record| Some((record.launch, record.ended?, record.class)))
+        .collect();
+    assert_eq!(
+        closes,
+        vec![
+            (0, "interrupted".to_string(), Some("unknown".to_string())),
+            (1, "completed".to_string(), None),
+        ],
+        "the closes"
+    );
+    assert_eq!(
+        fx.tasks_read(),
+        vec![framed(FULL_PROMPT), framed(LOGIN_RELEASED)],
+        "the first messages"
+    );
+    assert_eq!(
+        outcome
+            .map(|result| result.output)
+            .map_err(|e| rigger::conductor::strip_failure_marker(&e)),
+        Ok(FIXTURE_ANSWER.to_string()),
+        "the outcome"
+    );
+    assert_eq!(
+        fx.recorded_results(),
+        fresh_answer_on_record(),
+        "the results"
+    );
+}

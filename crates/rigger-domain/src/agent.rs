@@ -591,6 +591,23 @@ mod tests {
         }
     }
 
+    /// THE INTERRUPTED MARK (spec 105): the error a launch the host closed `interrupted` returns
+    /// keeps its class at the head, and stripped it reads as its message alone.
+    #[test]
+    fn an_interrupted_launchs_error_answers_its_class_and_strips_to_its_message() {
+        let e = no_result_error(
+            AgentFailure::Unknown,
+            "\u{1}rigger:launch-interrupted\u{1}the stream ended with no result".into(),
+        );
+        assert_eq!(
+            (failure_class(&e), strip_failure_marker(&e)),
+            (
+                Some(AgentFailure::Unknown),
+                "the stream ended with no result".to_string()
+            )
+        );
+    }
+
     /// THE DISPOSITION TABLE (spec 105): every category, by its wire name, maps to the disposition,
     /// the action and the need for a person decided for it, and whether it is a credential
     /// category whose probe reads the login first; a name no binary knows faults as `unknown` does.

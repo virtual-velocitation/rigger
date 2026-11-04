@@ -244,6 +244,15 @@ mod tests {
         Error(format!("{EMIT_REFUSED_MARKER}the guard refused the record"))
     }
 
+    /// The error the host returns for a launch it closed `interrupted` on a FAULT class, a run it
+    /// read held deciding that close.
+    fn interrupted() -> Error {
+        no_result_error(
+            FAULT,
+            "\u{1}rigger:launch-interrupted\u{1}the session was interrupted".into(),
+        )
+    }
+
     /// The hold the host appends on the third failed close, before it returns its error.
     fn third_fault_hold() -> Event {
         held_event(API_UNSTABLE, HOLD_BY_HOST)
@@ -644,6 +653,56 @@ mod tests {
                 seeded: vec![third_fault_hold(), released_event(HOLD_BY_OPERATOR, 0)],
                 script: vec![fails(classed(FAULT))],
                 calls: one_call(Err(classed(FAULT))),
+                launched: vec![ID],
+                ..Row::default()
+            },
+        ]);
+    }
+
+    /// THE HOST'S DECISION TRAVELS WITH ITS ERROR: an error the host marked interrupted relaunches
+    /// on its mark with no read of the hold, so a release landing between the host's held read and
+    /// this decision relaunches the spawn with nothing recorded; a spawn its run has ended and a
+    /// failed read still pass it, and the bound passes the next one, recording it.
+    #[test]
+    fn an_error_the_host_marked_interrupted_relaunches_on_its_mark_alone() {
+        check(vec![
+            Row {
+                name: "a release landing behind the host's held read relaunches, recording nothing",
+                seeded: vec![requested()],
+                script: vec![
+                    held_then_fails(interrupted()).appending(released_event(HOLD_BY_OPERATOR, 0)),
+                    done(),
+                ],
+                calls: one_call(Ok(OUTPUT)),
+                launched: vec![ID, ID],
+                ..Row::default()
+            },
+            Row {
+                name: "the bound passes the third and records it",
+                seeded: vec![requested()],
+                script: vec![
+                    fails(interrupted()),
+                    fails(interrupted()),
+                    fails(interrupted()),
+                ],
+                calls: one_call(Err(interrupted())),
+                launched: vec![ID, ID, ID],
+                results: vec![ended_on(interrupted())],
+                ..Row::default()
+            },
+            Row {
+                name: "a spawn its run has ended passes",
+                seeded: vec![requested()],
+                script: vec![fails(interrupted()).appending(ended())],
+                calls: one_call(Err(interrupted())),
+                launched: vec![ID],
+                ..Row::default()
+            },
+            Row {
+                name: "a store failing after the error passes it",
+                seeded: vec![requested()],
+                script: vec![fails(interrupted()).breaking_reads()],
+                calls: one_call(Err(interrupted())),
                 launched: vec![ID],
                 ..Row::default()
             },
