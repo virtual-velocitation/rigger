@@ -1740,10 +1740,15 @@ fn open_stream_file(path: Option<&Path>) -> Option<std::fs::File> {
 
 /// The announced delay and the category of a `system/api_retry` message: the one reading of
 /// the two fields the waiting line and the [`ApiRetry`] record both carry, a field the line
-/// lacks reading as `0` and `unknown`.
+/// lacks reading as `0` and `unknown`. A retry the API sent no response headers for announces
+/// its wait as the header wait `no_response.retry_wait_ms` beside a zero `retry_delay_ms`, so
+/// that wait is the delay when the line carries it.
 fn api_retry_fields(v: &Value) -> (u64, &str) {
     (
-        v.get("retry_delay_ms").and_then(Value::as_u64).unwrap_or(0),
+        v.pointer("/no_response/retry_wait_ms")
+            .or_else(|| v.get("retry_delay_ms"))
+            .and_then(Value::as_u64)
+            .unwrap_or(0),
         message_error(v).unwrap_or("unknown"),
     )
 }

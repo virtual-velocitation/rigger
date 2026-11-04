@@ -194,7 +194,10 @@ current run's stream, re-reading the current run at each beat as the hold contro
 each tick, and the host appends a progress-store `ApiRetry {spawn, delay_ms, category}` per
 `api_retry` line. A spawn's silent time is the wall time since its last stream line outside the
 union of every hold interval, every announced retry delay, every gap between consecutive beats
-longer than 90 s, and the open span since the latest beat when longer than 90 s. Negative spans
+longer than 90 s, and the open span since the latest beat when longer than 90 s. A retry the API
+sent no response headers for announces its delay as the header wait the retry waits
+(`no_response.retry_wait_ms`) beside a zero `retry_delay_ms`, and that wait is the delay its
+`ApiRetry` carries. Negative spans
 clamp to zero. One pure function in `crates/rigger-driver/src/liveness.rs` computes it from
 those records alone, and the host's stream-silence stop fires when it, not the time since the
 last line, passes `max_wall_clock`. A run with no beats is unsupervised only for the span before

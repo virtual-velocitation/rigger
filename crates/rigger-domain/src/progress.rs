@@ -432,7 +432,9 @@ pub const TYPE_API_RETRY: &str = "ApiRetry";
 pub struct ApiRetry {
     /// The deterministic spawn id this retry belongs to (e.g. `u/implementer#0`).
     pub spawn: String,
-    /// The delay the line announced before the retry, in milliseconds; `0` when it named none.
+    /// The delay the line announced before the retry, in milliseconds: its retry delay, or the
+    /// header wait it announced for a retry the API sent no response headers for; `0` when it
+    /// named none.
     pub delay_ms: u64,
     /// Claude Code's own error-category string (e.g. `rate_limit`), exactly as the line
     /// carried it; `unknown` when it named none.

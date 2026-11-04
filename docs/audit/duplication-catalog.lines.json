@@ -289,8 +289,8 @@
       },
       {
         "file": "crates/rigger-driver/src/driver/claude_code.rs",
-        "start_line": 1792,
-        "end_line": 1800
+        "start_line": 1797,
+        "end_line": 1805
       },
       {
         "file": "tests/cli.rs",
@@ -549,8 +549,8 @@
       },
       {
         "file": "crates/rigger-driver/src/driver/claude_code.rs",
-        "start_line": 1805,
-        "end_line": 1810
+        "start_line": 1810,
+        "end_line": 1815
       },
       {
         "file": "crates/rigger-grounder/src/grounder/mod.rs",
@@ -4599,8 +4599,8 @@
       },
       {
         "file": "crates/rigger-domain/src/progress.rs",
-        "start_line": 569,
-        "end_line": 572
+        "start_line": 571,
+        "end_line": 574
       },
       {
         "file": "tests/simplification_audit.rs",
@@ -5844,13 +5844,13 @@
     "sites": [
       {
         "file": "crates/rigger-driver/src/driver/claude_code.rs",
-        "start_line": 2103,
-        "end_line": 2110
+        "start_line": 2108,
+        "end_line": 2115
       },
       {
         "file": "crates/rigger-driver/src/driver/claude_code.rs",
-        "start_line": 2157,
-        "end_line": 2164
+        "start_line": 2162,
+        "end_line": 2169
       }
     ]
   },
@@ -5859,13 +5859,13 @@
     "sites": [
       {
         "file": "crates/rigger-driver/src/driver/claude_code.rs",
-        "start_line": 2150,
-        "end_line": 2156
+        "start_line": 2155,
+        "end_line": 2161
       },
       {
         "file": "crates/rigger-driver/src/driver/claude_code.rs",
-        "start_line": 2184,
-        "end_line": 2190
+        "start_line": 2189,
+        "end_line": 2195
       }
     ]
   },
@@ -5874,13 +5874,13 @@
     "sites": [
       {
         "file": "crates/rigger-driver/src/driver/claude_code.rs",
-        "start_line": 2405,
-        "end_line": 2426
+        "start_line": 2410,
+        "end_line": 2431
       },
       {
         "file": "crates/rigger-driver/src/driver/claude_code.rs",
-        "start_line": 2429,
-        "end_line": 2447
+        "start_line": 2434,
+        "end_line": 2452
       }
     ]
   },
