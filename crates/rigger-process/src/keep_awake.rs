@@ -1,29 +1,63 @@
 //! The keep-awake adapter (spec 105): the host's facility behind
 //! [`rigger_domain::sleep_hold::SleepHold`], which keeps the machine from sleeping while a run
-//! drives. Only the composition root names [`OsSleepHold`].
+//! drives, through the native adapter of the OS the binary is built for. Only the composition
+//! root names [`OsSleepHold`].
 
 use rigger_domain::sleep_hold::{SleepGuard, SleepHold, Unavailable};
 
 #[cfg(target_os = "linux")]
 mod linux;
+#[cfg(target_os = "macos")]
+mod macos;
+#[cfg(target_os = "windows")]
+mod windows;
 
 /// The keep-awake facility of the operating system this binary runs on: on Linux a logind
-/// inhibitor lock; on an OS with no native adapter yet, every acquire answers unavailable naming
-/// the OS.
+/// inhibitor lock, on macOS an IOKit power assertion, on Windows a power request; on an OS with
+/// no native adapter, every acquire answers unavailable naming the OS.
 pub struct OsSleepHold;
 
 impl SleepHold for OsSleepHold {
-    #[cfg(target_os = "linux")]
     fn acquire(&self, reason: &str) -> Result<SleepGuard, Unavailable> {
-        linux::acquire(reason)
+        std::cfg_select! {
+            target_os = "linux" => { linux::acquire(reason) }
+            target_os = "macos" => { macos::acquire(reason) }
+            target_os = "windows" => { windows::acquire(reason) }
+            _ => { unsupported::acquire(reason) }
+        }
     }
+}
 
-    #[cfg(not(target_os = "linux"))]
-    fn acquire(&self, _reason: &str) -> Result<SleepGuard, Unavailable> {
+/// The OSes with no native adapter, the complement of the arms [`OsSleepHold::acquire`]
+/// dispatches to an adapter.
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+mod unsupported {
+    use rigger_domain::sleep_hold::{SleepGuard, Unavailable};
+
+    /// Unavailable, naming the OS.
+    pub(super) fn acquire(_reason: &str) -> Result<SleepGuard, Unavailable> {
         Err(Unavailable(format!(
             "no keep-awake adapter for {}",
             std::env::consts::OS
         )))
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use crate::keep_awake::OsSleepHold;
+        use rigger_domain::sleep_hold::{SleepHold, Unavailable};
+
+        /// On an OS with no native adapter, the host's acquire answers unavailable naming the OS.
+        #[test]
+        fn the_hosts_acquire_answers_unavailable_naming_the_os() {
+            assert_eq!(
+                OsSleepHold.acquire("rigger run is driving a run").err(),
+                Some(Unavailable(format!(
+                    "no keep-awake adapter for {}",
+                    std::env::consts::OS
+                )))
+            );
+        }
     }
 }
 
@@ -31,21 +65,6 @@ impl SleepHold for OsSleepHold {
 mod tests {
     use crate::test_support::table_lines;
     use std::collections::{BTreeMap, BTreeSet};
-
-    /// On an OS with no native adapter, the host's acquire answers unavailable naming the OS.
-    #[test]
-    #[cfg(not(target_os = "linux"))]
-    fn the_hosts_acquire_answers_unavailable_naming_the_os() {
-        use super::OsSleepHold;
-        use rigger_domain::sleep_hold::{SleepHold, Unavailable};
-        assert_eq!(
-            OsSleepHold.acquire("rigger run is driving a run").err(),
-            Some(Unavailable(format!(
-                "no keep-awake adapter for {}",
-                std::env::consts::OS
-            )))
-        );
-    }
 
     /// This crate's manifest.
     const MANIFEST: &str = include_str!("../Cargo.toml");
