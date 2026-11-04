@@ -27204,144 +27204,201 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_review_spawn_that_errors_on_every_re_parked_attempt_escalates_through_the_bound() {
-        // Spec 51, criterion 2 (ESCALATION BOUND): the reviewer-error RE-PARK (criterion 1) is
-        // BOUNDED - it can never re-park forever. When the SAME review spawn's RECORDED result is a
-        // plain ERROR on its ORIGINAL spawn AND on every re-parked `~retry{n}` attempt up to
-        // [`REVIEWER_RESPAWN_BOUND`], the conductor does NOT keep minting a fresh review spawn: it
-        // escalates through the SAME bounded path the degenerate-output loop uses, halting the run
-        // LOUDLY (naming the dead reviewer) rather than looping. Like that degenerate halt it is an
-        // INFRASTRUCTURE fault - the unit is charged NO attempt (no `UnitFailed`/`UnitEscalated`),
-        // because the work was never judged. Driven under the PRODUCTION stepwise/replay driver
-        // (each `replay_step` is one `rigger step`), so the bound is exercised exactly as a live run
-        // replays a CHAIN of recorded review errors - the multi-error path criterion 1's
-        // single-error re-park test cannot reach. This criterion OWNS the bound; it does NOT own the
-        // re-park (criterion 1).
+    /// How an adjudicator spawn of [`per_unit_panel_cfg`]'s unit ends in a [`ReviewWindowRun`].
+    #[derive(Clone, Copy)]
+    enum AdjudicatorEnds {
+        /// A recorded error, as a reviewer killed mid-run leaves on its id.
+        Errors,
+        /// A recorded whitespace-only output.
+        Empty,
+        /// A recorded approve.
+        Approves,
+    }
+
+    /// A run of [`per_unit_panel_cfg`]'s unit whose adjudicator spawns end as `ends` says, and
+    /// what the run comes to.
+    struct ReviewWindowRun {
+        /// How the adjudicator spawn of retry id `retry` ends.
+        ends: fn(u32) -> AdjudicatorEnds,
+        /// The run's `infra-retry` marks, in log order.
+        infra_retries: &'static [&'static str],
+        /// The run's `infra-halt` marks.
+        infra_halts: &'static [&'static str],
+        /// The infra ordinal whose [`review_retry_window`] the run's last review spawned in.
+        last_window: u32,
+        /// The opening of the error the run halts with, or `None` when the unit integrates.
+        halt: Option<&'static str>,
+    }
+
+    /// The whole degenerate halt of [`per_unit_panel_cfg`]'s adjudicator at attempt 0 and infra
+    /// ordinal 0, spelled out so a change to its text is a red row.
+    const DEGENERATE_ADJUDICATOR_HALT: &str = r#"stage "implement" adjudicator "adj" returned empty/whitespace-only output on all 3 spawns (its original spawn plus 2 respawns): a degenerate reviewer result is an infrastructure failure, not a verdict - the run halts and the unit is NOT charged a remediation attempt. Recover by re-driving the reviewer and recording a SUBSTANTIVE result for one of its spawn ids over the empty one with `--supersede` (results are last-write-wins, and a plain record refuses to replace an ended spawn's result), e.g. `rigger result "implement/adjudicator#0~retry2" --supersede <substantive output>`; then re-run. Re-running WITHOUT a corrected result replays the recorded empties and halts here again."#;
+
+    /// op-105-errored-review-window-joins-the-infra-retry, under the production replay driver in
+    /// a real repository: drives `run`'s unit one `rigger step` at a time, recording each parked
+    /// spawn's result as a courier would (an adjudicator's as `run.ends` says, every other
+    /// spawn's as prose), until the unit integrates or a step halts. A review window that ends
+    /// with a recorded error among its spawns takes the F3 infra retry, so the next step reviews
+    /// in the next ordinal's window and the infra limit bounds the reruns with the infra halt; a
+    /// window of empty outputs alone halts degenerate. Neither charges the unit or records a
+    /// lesson, and no spawn past the last window is ever parked.
+    fn assert_a_review_window_run(run: ReviewWindowRun) {
+        let repo = temp_git_project_with_commit();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let cfg = per_unit_panel_cfg(None);
         let store = Store::open(":memory:").unwrap();
-        let cfg = degenerate_reviewer_cfg();
-        let replay_step = |store: &Store| -> Result<(), Error> {
-            let driver = crate::driver::replay::ReplayDriver::new(store, "");
-            let deps = Deps {
-                store,
-                driver: &driver,
-                gates: &ExecRunner,
-                repo: String::new(),
-                grounder: None,
-                graph: None,
-                criteria: Vec::new(),
-                log: &|_| {},
-                hash_blob: &|_| Ok(String::new()),
-                check_emit: &crate::contextgraph::check_emit,
-            };
-            run_isolated(&cfg, &deps).map(|_| ())
-        };
-
-        let impl0 = spawn_id("u", ROLE_IMPLEMENTER, 0);
-        let lens0 = spawn_id("u", &lens_role("sdet"), 0);
-        // The adjudicator's ORIGINAL spawn plus its bounded respawns: at most `1 +
-        // REVIEWER_RESPAWN_BOUND` attempts before the bound trips. All of them will error.
-        let adj_attempts: Vec<String> = (0..=REVIEWER_RESPAWN_BOUND)
-            .map(|retry| spawn_retry_id("u", ROLE_ADJUDICATOR, 0, retry))
+        let adjudicator: HashMap<String, u32> = (0..=*review_retry_window(3).end())
+            .map(|retry| (adjudicator_at(0, retry), retry))
             .collect();
-        // The FOURTH attempt (one past the bound): it must NEVER be parked - the bound holds.
-        let adj_past_bound = spawn_retry_id("u", ROLE_ADJUDICATOR, 0, REVIEWER_RESPAWN_BOUND + 1);
-
-        // Step 1: the implementer parks; record its success.
-        replay_step(&store).expect("the implementer step is a clean unwind");
-        crate::spawn_store::record_result(
-            &store,
-            &crate::spawn::SpawnResult::ok(&impl0, "the diff"),
-        )
-        .unwrap();
-
-        // Step 2: the review LENS parks; record a substantive lens review so only the ADJUDICATOR
-        // exercises the errored-re-park bound under test.
-        replay_step(&store).expect("the lens step is a clean unwind");
-        crate::spawn_store::record_result(
-            &store,
-            &crate::spawn::SpawnResult::ok(&lens0, "lens: no blocker"),
-        )
-        .unwrap();
-
-        // Steps 3..=(3 + REVIEWER_RESPAWN_BOUND): the adjudicator's original spawn and each
-        // re-parked `~retry{n}` attempt parks in turn; the death courier records a PLAIN ERROR (a
-        // reviewer killed mid-run: usage-limit exhaustion) on each, re-parking the NEXT attempt.
-        // EVERY re-park is a clean unwind (never a run failure) right up to the bound.
-        for id in &adj_attempts {
-            replay_step(&store)
-                .expect("each errored re-park within the bound is a clean unwind, never a failure");
-            let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
-            assert!(
-                crate::spawn::is_recorded(&events, id),
-                "the adjudicator attempt {id} parked before the bound tripped"
+        let mut outcome = None;
+        for _ in 0..30 {
+            let driver = crate::driver::replay::ReplayDriver::new(&store, "");
+            let step = run_isolated(
+                &cfg,
+                &Deps {
+                    repo: repo_path.clone(),
+                    ..stub_deps(&store, &driver, Vec::new())
+                },
             );
-            crate::spawn_store::record_result(
-                &store,
-                &crate::spawn::SpawnResult::failed(id, "agent killed mid-run: usage limit reached"),
-            )
-            .unwrap();
+            match step {
+                Ok(rs) if rs.units["implement"].status != ledger::Status::Integrated => {}
+                ended => {
+                    outcome = Some(ended);
+                    break;
+                }
+            }
+            let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+            for id in crate::spawn::recorded(&events).unwrap().into_keys() {
+                let result = match adjudicator.get(&id).map(|retry| (run.ends)(*retry)) {
+                    Some(AdjudicatorEnds::Errors) => crate::spawn::SpawnResult::failed(
+                        &id,
+                        "agent killed mid-run: usage limit reached",
+                    ),
+                    Some(AdjudicatorEnds::Empty) => crate::spawn::SpawnResult::ok(&id, " \n"),
+                    Some(AdjudicatorEnds::Approves) => {
+                        crate::spawn::SpawnResult::ok(&id, r#"{"verdict":"approve"}"#)
+                    }
+                    None => crate::spawn::SpawnResult::ok(&id, "reviewed the diff"),
+                };
+                crate::spawn_store::record_result_if_absent(&store, &result).unwrap();
+            }
         }
-
-        // The NEXT step EXHAUSTS the bound: the original plus all REVIEWER_RESPAWN_BOUND respawns
-        // have each errored, so the conductor does NOT re-park a further attempt - it escalates
-        // through the bounded path, halting the run LOUDLY instead of re-parking forever.
-        let err = match replay_step(&store) {
-            Ok(()) => panic!(
-                "a review spawn that errors on every attempt up to the bound must HALT the run, \
-                 not re-park a further attempt forever"
+        match (outcome.expect("the run integrates or halts"), run.halt) {
+            (Ok(rs), None) => assert_eq!(rs.units["implement"].attempts, 0, "nothing is charged"),
+            (Err(Error(halt)), Some(opening)) => {
+                assert!(halt.starts_with(opening), "the halt: {halt}");
+                assert!(
+                    !halt.contains('\u{1}'),
+                    "no sentinel reaches the operator: {halt:?}"
+                );
+            }
+            (ended, halt) => panic!(
+                "the run was to halt with {halt:?} (None: to integrate), and came to {:?}",
+                ended.map(|rs| rs.units["implement"].status)
             ),
-            Err(e) => e,
-        };
-        // The bounded halt NAMES the dead reviewer (its agent id, the tier, and the unit) so the
-        // operator sees WHICH spawn is failing - the same loud surface the degenerate bound uses.
-        assert!(
-            err.0.contains("\"judge\"") && err.0.contains("adjudicator") && err.0.contains("\"u\""),
-            "the bounded escalation must name the dead reviewer, its tier, and the unit: {}",
-            err.0
-        );
-        // The internal recognition marker is stripped before the halt reaches the operator.
-        assert!(
-            !err.0.contains(DEGENERATE_MARKER),
-            "the operator-facing halt must not carry the internal sentinel marker: {:?}",
-            err.0
-        );
-
+        }
         let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
-        // THE BOUND HOLDS: no attempt PAST the bound is ever parked. A missing `SpawnRequested` for
-        // the fourth id proves the re-park did not loop forever - it stopped at exactly `1 +
-        // REVIEWER_RESPAWN_BOUND` spawns and escalated instead.
-        assert!(
-            !crate::spawn::is_recorded(&events, &adj_past_bound),
-            "the bound holds: the attempt past REVIEWER_RESPAWN_BOUND ({adj_past_bound}) is never parked"
+        assert_eq!(
+            status_mark_keys(&events, "infra-retry"),
+            run.infra_retries,
+            "the infra reruns"
         );
-        // The unit was charged NO attempt: like the degenerate halt, a persistently-erroring
-        // reviewer is the operator's infrastructure problem, NOT code for remediation.
-        assert!(
-            !events.iter().any(|e| e.type_ == ledger::TYPE_UNIT_FAILED),
-            "a bounded reviewer-error escalation must not charge the unit an attempt (no UnitFailed)"
+        assert_eq!(
+            status_mark_keys(&events, "infra-halt"),
+            run.infra_halts,
+            "the infra halts"
         );
-        assert!(
-            !events
-                .iter()
-                .any(|e| e.type_ == ledger::TYPE_UNIT_ESCALATED),
-            "a bounded reviewer-error escalation is not a code defect for remediation (no UnitEscalated)"
-        );
-        // And it emits NO per-unit lesson - routing the halt through run_wave's dedicated
-        // degenerate arm keeps the operator's broken reviewer from being misattributed to the unit
-        // under review as a LESSON_LEARNED.
-        assert!(
-            !events
-                .iter()
-                .any(|e| e.type_ == contextgraph::TYPE_LESSON_LEARNED),
-            "a bounded reviewer-error escalation must emit no per-unit lesson (no misattribution)"
-        );
-        // The `reviewed` status is NEVER emitted: an error is not a verdict, and an exhausted bound
-        // is a halt, not an approval or a rejection - review integrity is preserved.
-        assert!(
-            !has_status(&events, "reviewed"),
-            "an all-errored, bound-exhausted review never yields a verdict (no `reviewed` status)"
-        );
+        for charged in [
+            ledger::TYPE_UNIT_FAILED,
+            ledger::TYPE_UNIT_ESCALATED,
+            contextgraph::TYPE_LESSON_LEARNED,
+        ] {
+            assert_eq!(
+                count_of_type(&events, charged),
+                0,
+                "an errored or empty review window charges the unit nothing: no {charged}"
+            );
+        }
+        let window = review_retry_window(run.last_window);
+        for (role, retry, parked) in [
+            (lens_role("lens"), *window.start(), true),
+            (ROLE_ADJUDICATOR.to_string(), *window.start(), true),
+            (ROLE_ADJUDICATOR.to_string(), window.end() + 1, false),
+        ] {
+            let id = spawn_retry_id("implement", &role, 0, retry);
+            assert_eq!(
+                crate::spawn::is_recorded(&events, &id),
+                parked,
+                "whether {id} was parked"
+            );
+        }
+    }
+
+    crate::test_cases! {
+        /// Every spawn of the first review window ends in a recorded error: the step takes the
+        /// F3 infra retry, and the next step reviews in the window of infra ordinal 1 and
+        /// integrates. NON-VACUOUS: RED while an errored window halts degenerate.
+        every_spawn_of_an_errored_review_window_takes_the_infra_retry_and_the_next_window_integrates:
+            assert_a_review_window_run(ReviewWindowRun {
+                ends: |retry| {
+                    if review_retry_window(0).contains(&retry) {
+                        AdjudicatorEnds::Errors
+                    } else {
+                        AdjudicatorEnds::Approves
+                    }
+                },
+                infra_retries: &["implement/infra-retry#0~0"],
+                infra_halts: &[],
+                last_window: 1,
+                halt: None,
+            });
+        /// A recorded error among a window's empty outputs is the window's outage too: the step
+        /// takes the infra retry, never the degenerate halt. NON-VACUOUS: RED while it halts
+        /// degenerate.
+        an_error_among_a_review_windows_empty_spawns_takes_the_infra_retry:
+            assert_a_review_window_run(ReviewWindowRun {
+                ends: |retry| match retry {
+                    1 => AdjudicatorEnds::Errors,
+                    0 | 2 => AdjudicatorEnds::Empty,
+                    _ => AdjudicatorEnds::Approves,
+                },
+                infra_retries: &["implement/infra-retry#0~0"],
+                infra_halts: &[],
+                last_window: 1,
+                halt: None,
+            });
+        /// Spec 51's bound, under the infra retry: a review whose every window errors reruns
+        /// uncharged up to the infra limit, then halts on infrastructure naming the dead
+        /// reviewer, and no spawn past its last window is ever parked. NON-VACUOUS: RED while
+        /// the first errored window halts degenerate.
+        a_review_whose_every_window_errors_halts_on_infrastructure_past_the_infra_limit:
+            assert_a_review_window_run(ReviewWindowRun {
+                ends: |_| AdjudicatorEnds::Errors,
+                infra_retries: &[
+                    "implement/infra-retry#0~0",
+                    "implement/infra-retry#0~1",
+                    "implement/infra-retry#0~2",
+                ],
+                infra_halts: &["implement/infra-halt#0~2"],
+                last_window: 2,
+                halt: Some(r#"infra: stage "implement" adjudicator "adj": "#),
+            });
+        /// A window whose every spawn returned empty output still halts degenerate, its text
+        /// unchanged, with no infra retry.
+        a_review_window_of_empty_spawns_still_halts_degenerate_with_its_text_unchanged:
+            assert_a_review_window_run(ReviewWindowRun {
+                ends: |retry| {
+                    if review_retry_window(0).contains(&retry) {
+                        AdjudicatorEnds::Empty
+                    } else {
+                        AdjudicatorEnds::Approves
+                    }
+                },
+                infra_retries: &[],
+                infra_halts: &[],
+                last_window: 0,
+                halt: Some(DEGENERATE_ADJUDICATOR_HALT),
+            });
     }
 
     #[test]
