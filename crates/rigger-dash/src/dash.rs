@@ -1465,7 +1465,8 @@ pub struct ConsoleSnapshotView {
     /// The highest position among `events` (0 for an empty run) - the cursor a client
     /// passes straight to `GET /api/console/stream?since=` to resume with no gap.
     pub head: Position,
-    /// The highest position among `progress` (0 for an empty run) - the cursor a client
+    /// The highest position on the run's progress stream, its records of other types than a
+    /// `progress` line included (0 for an empty run) - the cursor a client
     /// passes straight to `GET /api/console/stream?progress_since=` to resume with no gap,
     /// mirroring `head`/`since=` (`adj-u94c2-verdict-reject-progress-floor-race`: the
     /// stream's own floor MUST come from this cursor, never from whatever its first live
@@ -2831,8 +2832,9 @@ fn console_event_wire(e: &Event) -> serde_json::Value {
     })
 }
 
-/// One progress-store event as the stream's `progress` frame / the snapshot's `progress`
-/// list render it - the [`AgentProgress`](progress::AgentProgress) payload plus this event's
+/// One progress line, an event [`progress::agent_progress_events`] yields, as the stream's
+/// `progress` frame / the snapshot's `progress` list render it - the
+/// [`AgentProgress`](progress::AgentProgress) payload plus this event's
 /// own position (the progress store's own ordering, distinct from a console event's
 /// position) and recorded time. A malformed body degrades to an empty id/activity rather
 /// than dropping the line or failing the feed.
@@ -2959,7 +2961,9 @@ pub fn console_snapshot_json(
         .map(|e| e.position)
         .max()
         .unwrap_or(0);
-    let progress = progress_events.iter().map(console_progress_wire).collect();
+    let progress = progress::agent_progress_events(progress_events)
+        .map(console_progress_wire)
+        .collect();
 
     // Definition names (Design's "the definition's stage and gate names"): read from THIS
     // run's own recorded events, never from a loaded `workflow.yml` Config - see
@@ -3829,8 +3833,7 @@ fn serve_console_stream<F>(
                 last_event = e.position;
             }
 
-            let mut new_progress: Vec<&Event> = progress_events
-                .iter()
+            let mut new_progress: Vec<&Event> = progress::agent_progress_events(&progress_events)
                 .filter(|e| e.position > progress_floor)
                 .collect();
             new_progress.sort_by_key(|e| e.position);

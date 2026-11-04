@@ -121,6 +121,25 @@ impl RunStamped for AgentProgress {
     const EVENT_TYPE: &'static str = TYPE_AGENT_PROGRESS;
 }
 
+/// The [`AgentProgress`] events among `progress_events`, in their order: the one reader of the
+/// agents' progress lines on a progress-store slice, which also carries [`SpawnLaunched`],
+/// [`StopFailure`], [`ApiRetry`] and [`SupervisorBeat`] records. It leaves a line's body
+/// undecoded, so a reader that renders a malformed body rather than dropping it keeps the line.
+pub fn agent_progress_events(progress_events: &[Event]) -> impl Iterator<Item = &Event> {
+    progress_events
+        .iter()
+        .filter(|e| e.type_ == TYPE_AGENT_PROGRESS)
+}
+
+/// Each [`AgentProgress`] line [`agent_progress_events`] reads, beside its event, in their
+/// order: a body that does not decode names no line.
+pub fn decoded_progress(
+    progress_events: &[Event],
+) -> impl Iterator<Item = (&Event, AgentProgress)> {
+    agent_progress_events(progress_events)
+        .filter_map(|e| Some((e, serde_json::from_slice(&e.data).ok()?)))
+}
+
 /// The event type a [`SpawnLaunched`] record serializes as (spec 104 criterion 1: THE
 /// LAUNCH IS TYPED). Recorded to the progress store - never the run stream, same file
 /// boundary as [`TYPE_AGENT_PROGRESS`] - the moment the host starts a child agent process,
@@ -459,13 +478,8 @@ pub fn consolidate(
     // Latest progress per spawn id: the store appends in order, so a later event for the same
     // id overwrites the earlier one, leaving the most recent activity + when it was reported.
     let mut latest_prog: HashMap<String, (String, SystemTime)> = HashMap::new();
-    for e in progress_events {
-        if e.type_ != TYPE_AGENT_PROGRESS {
-            continue;
-        }
-        if let Ok(ap) = serde_json::from_slice::<AgentProgress>(&e.data) {
-            latest_prog.insert(ap.id, (ap.activity, e.recorded_at));
-        }
+    for (e, ap) in decoded_progress(progress_events) {
+        latest_prog.insert(ap.id, (ap.activity, e.recorded_at));
     }
 
     // Latest run-stream milestone per unit: the most recent event whose data `id` is the unit

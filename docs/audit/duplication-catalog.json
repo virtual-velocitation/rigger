@@ -5937,6 +5937,25 @@
     "disposition": "not-a-duplicate"
   },
   {
+    "id": "dup-0bd924af75c5",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "crates/rigger-domain/src/progress.rs",
+        "name": "agent_progress_events",
+        "content_hash": "c2d9ab481b342104"
+      },
+      {
+        "file": "crates/rigger-domain/src/spawn.rs",
+        "name": "spawn_requested_events",
+        "content_hash": "1b85a943980e5756"
+      }
+    ],
+    "proposed_home": "a new shared module (sites span 2 files: crates/rigger-domain/src/progress.rs, crates/rigger-domain/src/spawn.rs)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
     "id": "dup-4b3a37bb0a60",
     "classification": "exact",
     "sites": [
