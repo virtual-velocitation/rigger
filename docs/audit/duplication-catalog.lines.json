@@ -4579,8 +4579,8 @@
       },
       {
         "file": "crates/rigger-domain/src/progress.rs",
-        "start_line": 513,
-        "end_line": 516
+        "start_line": 523,
+        "end_line": 526
       },
       {
         "file": "tests/simplification_audit.rs",

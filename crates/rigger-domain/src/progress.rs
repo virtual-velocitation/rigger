@@ -175,8 +175,9 @@ pub struct SpawnLaunched {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub class: Option<String>,
     /// The run stream's revision the host last read when it wrote this close, `None` on an
-    /// open record, on a close written before spec 105 and when the host holds no sink to read
-    /// it from. [`failed_closes_since`] orders a close against a `RunReleased` by it.
+    /// open record, on a close written before spec 105, when the host holds no sink to read
+    /// it from and when that read failed. [`failed_closes_since`] orders a close against a
+    /// `RunReleased` by it, an unstamped close by the last stamp before it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub revision: Option<Revision>,
     /// The directory the host launched the session in, empty on a close, on an open record
@@ -252,14 +253,23 @@ pub const API_UNSTABLE_CLOSES: usize = 3;
 ///
 /// Closes order by [`SpawnLaunched::revision`]: no run-stream event lands during an outage, so
 /// closes share a stamp, and a tie falls to progress-stream order. A close stamped equal to
-/// `released` is after the release, since its writer read it. An unstamped close orders before
-/// every stamped one, so a close written before spec 105 counts as it stands. An
+/// `released` is after the release, since its writer read it. An unstamped close takes the stamp
+/// of the last stamped close before it in progress-stream order, since it was written after that
+/// one, so a `completed` close whose writer's head read failed still ends the count where it
+/// stands; with no stamped close before it, a close written before spec 105 among them, it
+/// orders before every stamped one and counts as it stands. An
 /// [`ENDED_INTERRUPTED`] close neither counts nor resets: the resume fallback, a hold or a
 /// supervisor start's reconciliation wrote it, and no launch failed.
 pub fn failed_closes_since(progress_events: &[Event], released: Option<Revision>) -> usize {
+    let mut stamp = None;
     let mut closes: Vec<SpawnLaunched> = decoded_launches(progress_events)
         .map(|(_, launch)| launch)
         .filter(|launch| launch.ended.is_some())
+        .map(|mut close| {
+            close.revision = close.revision.or(stamp);
+            stamp = close.revision;
+            close
+        })
         .collect();
     closes.sort_by_key(|close| close.revision);
     closes
