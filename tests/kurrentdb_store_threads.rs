@@ -12,23 +12,9 @@
 
 mod common;
 
-use common::fixtures::{wait_until_for, with_kurrentdb};
+use common::fixtures::{thread_ids, wait_until_for, with_kurrentdb};
 use rigger::eventstore::kurrentdb::Store;
 use std::collections::BTreeSet;
-
-/// The ids of every thread this process holds right now.
-fn thread_ids() -> BTreeSet<u64> {
-    std::fs::read_dir("/proc/self/task")
-        .expect("this process's thread list")
-        .map(|task| {
-            task.expect("a thread entry")
-                .file_name()
-                .to_str()
-                .and_then(|id| id.parse().ok())
-                .expect("a numeric thread id")
-        })
-        .collect()
-}
 
 /// Opening a store adds exactly one thread to the process - its runtime's one worker, on a host
 /// of any core count - and dropping it takes that thread back. The connection string names the

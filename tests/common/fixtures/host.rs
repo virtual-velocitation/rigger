@@ -184,6 +184,20 @@ pub fn wait_until(pred: impl FnMut() -> bool) -> bool {
     wait_until_for(200, pred)
 }
 
+/// The ids of every thread this process holds right now, as `/proc/self/task` lists them.
+pub fn thread_ids() -> std::collections::BTreeSet<u32> {
+    std::fs::read_dir("/proc/self/task")
+        .expect("this process's thread list")
+        .map(|task| {
+            task.expect("a thread entry")
+                .file_name()
+                .to_str()
+                .and_then(|id| id.parse().ok())
+                .expect("a numeric thread id")
+        })
+        .collect()
+}
+
 /// How many of the open files of process `pid` ([`rigger::holders::open_files`]) name the file at
 /// `path`: a connection that opened the file holds one. A process that is gone holds none.
 #[cfg(any(feature = "store", not(feature = "core")))]

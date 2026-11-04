@@ -4827,7 +4827,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-df045298da71",
+    "id": "dup-cbaa9d49da4d",
     "classification": "semantic",
     "sites": [
       {
@@ -4991,6 +4991,11 @@
         "content_hash": "6856f69bec49452d"
       },
       {
+        "file": "tests/common/fixtures/host.rs",
+        "name": "\"/proc/self/task\"",
+        "content_hash": "76b81d47301fccfa"
+      },
+      {
         "file": "tests/common/fixtures/spawn.rs",
         "name": "\"/proc\"",
         "content_hash": "daeb7ad73c59a860"
@@ -4999,11 +5004,6 @@
         "file": "tests/duplication_catalog_contract_periphery.rs",
         "name": "\"/proc-path string literals\"",
         "content_hash": "e24c26c0d9d4cbdb"
-      },
-      {
-        "file": "tests/kurrentdb_store_threads.rs",
-        "name": "\"/proc/self/task\"",
-        "content_hash": "76b81d47301fccfa"
       },
       {
         "file": "tests/mutation_runner_pdeathsig_periphery.rs",

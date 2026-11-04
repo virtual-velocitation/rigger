@@ -1064,8 +1064,8 @@
       },
       {
         "file": "tests/common/fixtures/host.rs",
-        "start_line": 201,
-        "end_line": 201
+        "start_line": 215,
+        "end_line": 215
       },
       {
         "file": "tests/common/layer_cli.rs",
@@ -4675,7 +4675,7 @@
     ]
   },
   {
-    "id": "dup-df045298da71",
+    "id": "dup-cbaa9d49da4d",
     "sites": [
       {
         "file": "crates/rigger-dash/src/dash.rs",
@@ -4838,6 +4838,11 @@
         "end_line": 83
       },
       {
+        "file": "tests/common/fixtures/host.rs",
+        "start_line": 189,
+        "end_line": 189
+      },
+      {
         "file": "tests/common/fixtures/spawn.rs",
         "start_line": 169,
         "end_line": 169
@@ -4846,11 +4851,6 @@
         "file": "tests/duplication_catalog_contract_periphery.rs",
         "start_line": 100,
         "end_line": 100
-      },
-      {
-        "file": "tests/kurrentdb_store_threads.rs",
-        "start_line": 21,
-        "end_line": 21
       },
       {
         "file": "tests/mutation_runner_pdeathsig_periphery.rs",
