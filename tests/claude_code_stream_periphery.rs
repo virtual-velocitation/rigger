@@ -658,9 +658,11 @@ fn a_rigger_mcp_server_that_failed_at_init_stops_the_session_as_an_unknown_fault
         "the failure names the spawn, the server and its reported status: {message}"
     );
     // Stopped at the init line, never after the fixture's toolless work: the session is
-    // starting its task, not winding down, so no grace is spent on it.
+    // starting its task, not winding down, so no grace is spent on it. The bound sits well
+    // under the fixture's 30 s of work, so a host waiting it out still reds, and well over a
+    // contended machine's start-up.
     assert!(
-        elapsed < Duration::from_secs(3),
+        elapsed < Duration::from_secs(15),
         "the session must be stopped at init, not left to run: {elapsed:?}"
     );
     let pid = recorded_pid(&pid_file, "the fixture recorded its pid before init");

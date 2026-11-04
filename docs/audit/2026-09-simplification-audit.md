@@ -2112,7 +2112,7 @@ mandatory sweep: Command::new call sites - 94 site(s), collected mechanically re
 - `tests/checkin_mutation_diff_base_periphery.rs:169-169` `Command::new`
 - `tests/ci_lanes.rs:383-383` `Command::new`
 - `tests/ci_lanes.rs:406-406` `Command::new`
-- `tests/claude_code_stream_periphery.rs:1161-1161` `Command::new`
+- `tests/claude_code_stream_periphery.rs:1163-1163` `Command::new`
 - `tests/cli.rs:1661-1661` `Command::new`
 - `tests/cli.rs:5804-5804` `Command::new`
 - `tests/cli.rs:19762-19762` `Command::new`
@@ -4197,7 +4197,7 @@ Proposed home: `a new shared module (sites span 2 files: crates/rigger-driver/sr
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `crates/rigger-driver/src/driver/mod.rs:248-250` `resumed_from`
-- `tests/claude_code_stream_periphery.rs:2746-2748` `launch_dir`
+- `tests/claude_code_stream_periphery.rs:2748-2750` `launch_dir`
 
 #### `dup-282069e7109f` (near, 3 sites)
 
