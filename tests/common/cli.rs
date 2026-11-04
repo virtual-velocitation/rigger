@@ -345,6 +345,17 @@ pub fn run_rigger_envs(cwd: &Path, args: &[&str], envs: &[(&str, &str)]) -> (Str
     rigger_outcome(child)
 }
 
+/// The ambient `PATH` with every directory holding a `tool` removed, so a lookup of `tool` fails
+/// whatever the machine running the test has installed, while `git` and the coreutils stay found.
+pub fn path_without(tool: &str) -> String {
+    std::env::var("PATH")
+        .unwrap_or_default()
+        .split(':')
+        .filter(|dir| !dir.is_empty() && !Path::new(dir).join(tool).exists())
+        .collect::<Vec<_>>()
+        .join(":")
+}
+
 /// A spawned child the test owns: dropping the owner, on any path out of its scope and a panic's
 /// unwind included, ends and reaps it through its handle ([`super::fixtures::cleanup`]), since a
 /// `Child` dropped bare leaves its process running. [`OwnedChild::into_child`] hands the handle
