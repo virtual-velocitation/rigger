@@ -417,7 +417,8 @@ continues mid-stream:
 | Recorded status + branch          | Resume behavior                                         |
 | --------------------------------- | ------------------------------------------------------- |
 | `reviewed` (approved) + has work  | skip implement AND review; integrate directly           |
-| `green` / `verified` + has work   | skip the implementer spawn; re-run gates + the review panel on the committed code |
+| `green` / `verified` on a stage carrying no review, with an integrate attempt logged at its attempt | skip implement AND review; integrate directly (its empty panel's trivial approve records no `reviewed`) |
+| `green` / `verified` + has work otherwise | skip the implementer spawn; re-run gates + the review panel on the committed code |
 | below `green`, or branch empty/missing | the full lifecycle (implement -> gates -> review -> integrate), unchanged |
 
 A unit's branch is deleted **only after a successful integrate**. An **interrupted** unit

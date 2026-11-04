@@ -1461,10 +1461,13 @@ enum ResumePhase {
     /// implementer spawn, recreate the worktree from the unit's branch, and continue
     /// the lifecycle from gates + the three-tier review on the committed code.
     Implemented,
-    /// The unit's review was APPROVED in a prior window (last status `reviewed`) and
-    /// its branch carries committed work, but the merge was interrupted (no
-    /// UnitIntegrated). SKIP both implement and review and go straight to integrate -
-    /// the work was approved, only the merge did not land.
+    /// The unit was APPROVED in a prior window and its branch carries committed work,
+    /// but the merge was interrupted (no UnitIntegrated): its adjudicator approved (last
+    /// status `reviewed`), or its stage carries no review and its log records an
+    /// integrate attempt at its current attempt (last status `green`/`verified`, since
+    /// an empty panel's trivial approve records no `reviewed`). SKIP both implement and
+    /// review and go straight to integrate - the work was approved, only the merge did
+    /// not land.
     Reviewed,
 }
 
@@ -3136,10 +3139,13 @@ struct RunCtx<'a> {
     /// lost") from "this branch's work already fast-forward-landed into base" (GAP 9's row-4
     /// after-record fixture: a crash between `Worktree::land` and the durable
     /// `UnitIntegrated`/[`STATUS_INTEGRATE_LANDED`] record leaves EXACTLY this git state) -
-    /// both make `tip == base` true. A `Reviewed` unit whose log already shows a genuine
-    /// integrate attempt is never the lost-branch case, so `resume_phase` trusts THIS durable
-    /// evidence over `branch_has_work`'s git-state-only answer, exactly the principle the
-    /// whole round 4 table exists to establish. Seeded once from `prior_events` at run start
+    /// both make `tip == base` true. A unit routed to `Reviewed` whose log already shows a
+    /// genuine integrate attempt is never the lost-branch case, so `resume_phase` trusts THIS
+    /// durable evidence over `branch_has_work`'s git-state-only answer, exactly the principle
+    /// the whole round 4 table exists to establish. It is also what routes a unit whose
+    /// stage carries no review to `Reviewed`: an empty panel's trivial approve records no
+    /// `reviewed`, so an integrate attempt at the unit's current attempt is the log's proof
+    /// that its approval reached the merge. Seeded once from `prior_events` at run start
     /// ([`integrate_attempted_from_log`]), mirroring [`RunCtx::conflict_regenerate_pending`]'s
     /// own seeded-once-at-start pattern - never mutated afterward. Sufficient because
     /// `resume_phase` for a given unit is only ever consulted BEFORE this process's own first
@@ -5758,8 +5764,10 @@ impl RunCtx<'_> {
         // state belongs entirely to `merge_into_worktree`'s OWN crash-resume idempotency (spec
         // 88, criterion 1): it reads the worktree's already-recorded conflict list back
         // (`conflicting_paths`) rather than re-attempting the merge command, reachable ONLY
-        // through the `ResumePhase::Reviewed` branch just below (the sole phase whose ledger
-        // status means "already approved - only the merge could still be running"). Calling
+        // through the `ResumePhase::Reviewed` branch just below (the sole phase that means
+        // "already approved - only the merge could still be running": an adjudicator's
+        // `reviewed`, or a stage carrying no review whose log records an integrate attempt at
+        // its current attempt). Calling
         // `commit` unconditionally here first - BEFORE that branch ever runs - trips its
         // conflict-marker refusal on the merge's own still-unresolved marker text (correct
         // for an abandoned edit, but a false alarm for a legitimate in-progress merge) and
@@ -5819,20 +5827,20 @@ impl RunCtx<'_> {
             }
             _ => String::new(),
         };
-        // Resume-continuity, Reviewed phase: the unit's review was APPROVED in a prior
-        // window and its branch carries the committed, approved code - only the merge
-        // was interrupted. Skip BOTH implement and review and integrate the existing
-        // work directly. No implementer, no lenses/adversary/adjudicator spawn: the
-        // adjudicator already approved, re-reviewing would re-litigate a settled
-        // verdict and re-spend the budget. A `none`-on_pass unit (verified-but-never-
-        // merged by design) still does not merge.
+        // Resume-continuity, Reviewed phase: the unit was APPROVED in a prior window (its
+        // adjudicator's `reviewed`, or the trivial approve of a stage carrying no review whose
+        // log records an integrate attempt) and its branch carries the committed, approved
+        // code - only the merge was interrupted. Skip BOTH implement and review and integrate
+        // the existing work directly. No implementer, no lenses/adversary/adjudicator spawn:
+        // the approval is settled, re-reviewing would re-litigate it and re-spend the budget.
+        // A `none`-on_pass unit (verified-but-never-merged by design) still does not merge.
         if phase == ResumePhase::Reviewed {
             if !integrates(st) {
                 return Ok(false);
             }
             // The exhaustive integrate door still gates a RESUMED merge (spec 12, unit 3): a
-            // prior window recorded `reviewed` after its blast-radius-narrowed inner loop and
-            // the approve, but may have crashed BEFORE the integrate-time exhaustive suite ran.
+            // prior window approved the unit after its blast-radius-narrowed inner loop, but
+            // may have crashed BEFORE the integrate-time exhaustive suite ran.
             // So re-assert the FULL library here before merging - "done" is measured against the
             // exhaustive suite, never the narrowed subset (R6). Cheap: every gate the prior
             // window already ran replays its recorded verdict; only gates it skipped run now.
@@ -5858,8 +5866,8 @@ impl RunCtx<'_> {
             if !full.pass {
                 // The exhaustive suite is red on a resumed approve (a skipped gate fails):
                 // do NOT integrate a failing tree. Record the failure so the unit re-enters
-                // its lifecycle next step rather than wedging forever on a `reviewed` status
-                // it can never safely merge.
+                // its lifecycle next step rather than wedging forever on a resumed merge it
+                // can never safely land.
                 //
                 // Ensure-on-park, defense in depth (spec 64 criterion 3, round 6,
                 // sdet-u3c3r5-resumed-reviewed-gate-failure-failed-sha-still-empty-sentinel,
@@ -5887,18 +5895,20 @@ impl RunCtx<'_> {
                 )?;
                 return Ok(false);
             }
-            // The prior window recorded `reviewed` - which is emitted ONLY on an
-            // explicit adjudicator approve (`review_unit` / the fan-out review stage) -
-            // so this resumed merge carries a real approval.
+            // The prior window approved the unit: a `reviewed` is emitted ONLY on an explicit
+            // adjudicator approve (`review_unit` / the fan-out review stage), and a stage
+            // carrying no review records an integrate attempt only past its passed gates and
+            // its empty panel's trivial approve - so this resumed merge carries a real
+            // approval.
             let integration =
                 self.integrate_and_emit(wt, st, attempts, IntegrationApproval::approved())?;
             if let Some(evidence) = integration.blocked {
                 // spec 12, unit 5: the MERGED tree failed the post-merge re-gate on a RESUMED
                 // merge (a batch-mate integrated onto the run branch since this unit was
-                // reviewed, and the two auto-merged into a broken tree). The merge was rolled
+                // approved, and the two auto-merged into a broken tree). The merge was rolled
                 // back; record the failure so the unit re-enters its lifecycle next step and
-                // re-implements against the changed world, rather than wedging on a `reviewed`
-                // status it can never safely merge.
+                // re-implements against the changed world, rather than wedging on a resumed
+                // merge it can never safely land.
                 //
                 // Ensure-on-park, defense in depth (spec 64 criterion 3, round 6,
                 // adv-u3c3r5-two-more-unguarded-empty-sha-siblings, UPHELD): the post-merge
@@ -12279,9 +12289,13 @@ impl RunCtx<'_> {
     /// recorded status proves how far it got CONTINUES from that phase instead of
     /// restarting from implement:
     /// - last status `reviewed` (the adjudicator approved, only the merge was
-    ///   interrupted) -> [`ResumePhase::Reviewed`]: skip implement AND review, integrate.
-    /// - last status `green`/`verified` (implemented + maybe gated, not yet approved)
-    ///   -> [`ResumePhase::Implemented`]: skip the implementer spawn, re-run the sdet seam
+    ///   interrupted), or last status `green`/`verified` on a stage carrying no review whose
+    ///   log records an integrate attempt at the unit's current attempt
+    ///   ([`RunCtx::integrate_attempted`]: its gates passed, its empty panel approved
+    ///   trivially, and only the merge was interrupted) -> [`ResumePhase::Reviewed`]: skip
+    ///   implement AND review, integrate.
+    /// - last status `green`/`verified` otherwise (implemented + maybe gated, not yet
+    ///   approved) -> [`ResumePhase::Implemented`]: skip the implementer spawn, re-run the sdet seam
     ///   only when this attempt's gates never started
     ///   ([`RunCtx::attempt_gates_started`]), then gates + the three-tier review on the
     ///   committed code.
@@ -12294,7 +12308,7 @@ impl RunCtx<'_> {
     /// log itself already proves the integrate door was reached (round 4 fix,
     /// [`RunCtx::integrate_attempted`]'s own doc): `branch_has_work`'s `tip == base` check
     /// alone cannot tell "never had work" apart from "already fast-forward-landed", and a
-    /// `Reviewed` unit with a durably-recorded integrate attempt is never the former.
+    /// unit routed to `Reviewed` with a durably-recorded integrate attempt is never the former.
     fn resume_phase(&self, st: &Stage) -> ResumePhase {
         // A repo-less or non-isolated unit has no branch to checkpoint on, so there is
         // never reusable prior work - it always runs fresh.
@@ -12306,18 +12320,39 @@ impl RunCtx<'_> {
             None => return ResumePhase::Fresh,
         };
         let attempts = self.prior_attempts.get(&st.name).copied().unwrap_or(0);
-        // Round 4 fix: a `Reviewed` unit whose log already durably proves an integrate
-        // attempt was made for THIS attempt is never the "prior worktree's commits were
+        // Whether the log durably records an integrate attempt at THIS attempt: the merge
+        // door was reached, past the unit's approve.
+        let integrating = self
+            .integrate_attempted
+            .contains(&conflict_regenerate_key(&st.name, attempts));
+        let phase = match prior {
+            // Approved last window; only the merge was interrupted -> integrate.
+            ledger::Status::Reviewed => ResumePhase::Reviewed,
+            // A stage carrying no review approves trivially and records no `reviewed`, so
+            // its last status stays `verified` through the merge: an integrate attempt at
+            // this attempt is its approval reaching the merge -> integrate, never back
+            // through gates on a tree the merge left mid-conflict.
+            ledger::Status::Green | ledger::Status::Verified
+                if integrating && self.cfg.workflow.effective_review_panel(st).is_empty() =>
+            {
+                ResumePhase::Reviewed
+            }
+            // Implemented (and possibly gated) last window, not yet approved -> re-run
+            // gates + review on the committed code, skip the implementer.
+            ledger::Status::Green | ledger::Status::Verified => ResumePhase::Implemented,
+            // Below green (pending/grounding/red), or a terminal status that should not
+            // have reached the lifecycle: run fresh.
+            _ => return ResumePhase::Fresh,
+        };
+        // Round 4 fix: a unit routed to `Reviewed` whose log already durably proves an
+        // integrate attempt was made for THIS attempt is never the "prior worktree's commits were
         // lost" case `branch_has_work` exists to catch - it is the OTHER git state that
         // check cannot tell apart from that: the unit's own merge already fast-forward-
         // landed onto the run branch (GAP 9's row-4 after-record fixture: a crash between
         // `Worktree::land` and the durable landed/`UnitIntegrated` record leaves exactly
         // `tip == base` behind), so the integrate door must still run to finish recording
         // and reporting it - never restart the whole unit from implement.
-        let already_integrating = prior == ledger::Status::Reviewed
-            && self
-                .integrate_attempted
-                .contains(&conflict_regenerate_key(&st.name, attempts));
+        let already_integrating = phase == ResumePhase::Reviewed && integrating;
         // The unit's branch must actually carry committed work to build on; a recorded
         // status with an empty/missing branch (the prior worktree's commits were lost)
         // falls back to a fresh run rather than skipping a non-existent implementation.
@@ -12326,16 +12361,7 @@ impl RunCtx<'_> {
         {
             return ResumePhase::Fresh;
         }
-        match prior {
-            // Approved last window; only the merge was interrupted -> integrate.
-            ledger::Status::Reviewed => ResumePhase::Reviewed,
-            // Implemented (and possibly gated) last window, not yet approved -> re-run
-            // gates + review on the committed code, skip the implementer.
-            ledger::Status::Green | ledger::Status::Verified => ResumePhase::Implemented,
-            // Below green (pending/grounding/red), or a terminal status that should not
-            // have reached the lifecycle: run fresh.
-            _ => ResumePhase::Fresh,
-        }
+        phase
     }
 
     fn stage_worktree(&self, st: &Stage) -> Result<Option<Worktree>, Error> {
