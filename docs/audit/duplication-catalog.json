@@ -1327,7 +1327,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-ec0de15be469",
+    "id": "dup-c2ec502eaea8",
     "classification": "semantic",
     "sites": [
       {
@@ -2607,8 +2607,8 @@
       },
       {
         "file": "tests/cli.rs",
-        "name": "\"rigger: another `rigger step` is already running in this repo, or a `rigger run` is \\\n             (lock .rigger/step.lock). Refusing to run concurrently: two would race the \\\n             run-branch checkout and the unit worktrees branched off HEAD, corrupting the run. \\\n             Wait for the running one to finish and retry.\\n\"",
-        "content_hash": "25597419b8dbb616"
+        "name": "\"rigger: another `rigger step` is already running in this repo, or a \\\n     `rigger run` is (lock .rigger/step.lock). Refusing to run concurrently: two would race the \\\n     run-branch checkout and the unit worktrees branched off HEAD, corrupting the run. Wait for \\\n     the running one to finish and retry.\\n\"",
+        "content_hash": "5622b7d32f9ba9c7"
       },
       {
         "file": "tests/cli.rs",

@@ -10761,8 +10761,8 @@ fn a_done_runs_agent_streams_are_reclaimed_and_an_unfinished_runs_are_kept() {
 
 /// Spec 105's root check on the run entry: given a run whose directory and repository disagree,
 /// or whose scratch root belongs to another repository, when the operator runs `rigger run`,
-/// then it refuses naming the verb, before any launch and before it reclaims or reaps, and leaves
-/// no store where it stood.
+/// then it refuses naming the verb, before it takes the step lock - a held one included - before
+/// any launch and before it reclaims or reaps, and leaves no store where it stood.
 #[cfg(unix)]
 #[test]
 fn a_run_whose_roots_disagree_refuses_before_it_reclaims() {
@@ -10788,7 +10788,11 @@ fn a_run_whose_roots_disagree_refuses_before_it_reclaims() {
                       a DIFFERENT repository than the one this command resolved",
         },
     ];
-    for case in cases {
+    for (case, held) in cases.iter().flat_map(|case| [(case, false), (case, true)]) {
+        let name = match held {
+            false => case.name.to_string(),
+            true => format!("{}, beside a held step lock", case.name),
+        };
         let dir = temp_git_project_with_commit();
         let cwd = if case.nested_cwd {
             dir.path().join("nested")
@@ -10797,6 +10801,7 @@ fn a_run_whose_roots_disagree_refuses_before_it_reclaims() {
         };
         std::fs::create_dir_all(&cwd).unwrap();
         write_workflow_fixture(&cwd, &LIVENESS_WORKFLOW);
+        let _held = held.then(|| common::cli::hold_step_lock(&cwd));
         let other = temp_git_project_with_commit();
         let outside = tempfile::tempdir().unwrap();
         let scratch = if case.scratch_in_another_repo {
@@ -10806,27 +10811,23 @@ fn a_run_whose_roots_disagree_refuses_before_it_reclaims() {
         };
         let stale = plant_stale_stream(&scratch);
         let (out, err, ok, fake) = run_recording(&cwd, &["run"], &scratch);
-        assert!(!ok, "{}: the run refuses; stdout: {out}", case.name);
+        assert!(!ok, "{name}: the run refuses; stdout: {out}");
         assert!(
             err.starts_with(&format!("rigger: {}", case.refusal)),
-            "{}: the refusal leads with the verb: {err}",
-            case.name
+            "{name}: the refusal leads with the verb: {err}"
         );
         assert_eq!(
             std::fs::read_to_string(&stale).unwrap(),
             "stale",
-            "{}: nothing is reclaimed",
-            case.name
+            "{name}: nothing is reclaimed"
         );
         assert!(
             !fake.path().join("bin/argv").exists(),
-            "{}: no agent is launched",
-            case.name
+            "{name}: no agent is launched"
         );
         assert!(
             !common::cli::rigger_file(&cwd, "events.db").exists(),
-            "{}: no store is opened",
-            case.name
+            "{name}: no store is opened"
         );
     }
 }
@@ -15529,6 +15530,13 @@ rigger::test_cases! {
 const NO_REACHABLE_BASE: &str = "rigger: rigger run: no reachable base for the run branch \
      \"rigger-run\": the base \"origin/does-not-exist\" does not resolve";
 
+/// The whole stderr of a `rigger run` or a `rigger step` started while the step lock is held: the
+/// busy refusal, naming both commands that hold the lock.
+const BUSY_REFUSAL: &str = "rigger: another `rigger step` is already running in this repo, or a \
+     `rigger run` is (lock .rigger/step.lock). Refusing to run concurrently: two would race the \
+     run-branch checkout and the unit worktrees branched off HEAD, corrupting the run. Wait for \
+     the running one to finish and retry.\n";
+
 /// An unborn git repo with the two-stage workflow, so a `rigger run --base origin/does-not-exist`
 /// started in it refuses at its base gates, anchoring nothing.
 fn an_unborn_run_project() -> tempfile::TempDir {
@@ -15599,14 +15607,7 @@ fn a_run_start_beside_a_held_step_lock_refuses_before_it_reconciles_or_anchors()
 
     assert_eq!(
         (out.as_str(), err.as_str(), ok),
-        (
-            "",
-            "rigger: another `rigger step` is already running in this repo, or a `rigger run` is \
-             (lock .rigger/step.lock). Refusing to run concurrently: two would race the \
-             run-branch checkout and the unit worktrees branched off HEAD, corrupting the run. \
-             Wait for the running one to finish and retry.\n",
-            false
-        ),
+        ("", BUSY_REFUSAL, false),
         "a start beside a held step lock refuses with the busy refusal first"
     );
     assert_eq!(
@@ -15750,6 +15751,156 @@ fn a_run_start_closes_every_open_launch_interrupted_and_reaps_its_dir_under_the_
         recorded_launches(root),
         expected,
         "every open launch closes interrupted, in (run, spawn, launch) order, after the seeds"
+    );
+}
+
+/// An arm of [`install_fake_claude`] for the `Do the unit.` workers whose first launch never ends:
+/// it records its working directory in the directory of the fake, then becomes a ten-minute sleep
+/// recording its pid there ([`common::fixtures::sleeping`]), the very process the host spawned.
+/// Every later launch writes the change a merging stage lands.
+fn hanging_first_worker_arm() -> String {
+    format!(
+        r#"  *"Do the unit."*)
+    if [ ! -e "$here/sleepers" ]; then
+        pwd -P > "$here/cwd"
+{sleep}    fi
+    echo "pub fn work() {{}}" > work.rs
+    ;;
+"#,
+        sleep = common::fixtures::sleeping(600)
+    )
+}
+
+/// spec 105, RESUME BY SESSION, across real supervisors: given a `rigger run` whose agent never
+/// ends, a second `rigger run` and a `rigger step` started beside it each refuse with the busy
+/// refusal, closing no launch and reaping nothing; once that run dies with its agent still
+/// running, the next `rigger run` reaps the agent rooted in the dir the host recorded before it
+/// closes the launch `interrupted` with the session the host recorded, then drives the run to done.
+#[cfg(unix)]
+#[test]
+fn a_live_runs_launch_is_left_alone_beside_it_and_reconciled_by_the_next_start_once_it_dies() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_workflow_fixture(root, &REVIEWLESS_GIT_UNIT_WORKFLOW);
+    let (scratch, state, logs) = (
+        tempfile::tempdir().unwrap(),
+        tempfile::tempdir().unwrap(),
+        tempfile::tempdir().unwrap(),
+    );
+    let (fake, path_env) = install_fake_claude(&hanging_first_worker_arm());
+    let envs = fake_claude_env(&path_env, scratch.path());
+    // Its output goes to files, never pipes: the agent it leaves behind holds what it inherited
+    // open past the run's death.
+    let stderr = logs.path().join("stderr");
+    let mut live = common::cli::rigger_command(root, &["run"], &envs, state.path())
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::fs::File::create(&stderr).unwrap())
+        .spawn()
+        .expect("spawn the live run");
+    let sleepers = fake.path().join("bin/sleepers");
+    let recorded_pid = || {
+        std::fs::read_to_string(&sleepers)
+            .ok()
+            .and_then(|pids| pids.strip_suffix('\n')?.parse::<u32>().ok())
+    };
+    if !common::fixtures::wait_until_for(POLLS_BESIDE_A_RUN, || recorded_pid().is_some()) {
+        common::fixtures::cleanup(&mut live);
+        panic!(
+            "the live run never launched its agent; stderr: {}",
+            std::fs::read_to_string(&stderr).unwrap()
+        );
+    }
+    let agent = recorded_pid().unwrap();
+    let opened = recorded_launches(root);
+    let open_dir = opened
+        .first()
+        .and_then(|(_, open)| std::fs::canonicalize(&open.dir).ok());
+    let run = common::cli::current_run_id_of(root);
+    let beside = ["run", "step"].map(|verb| {
+        let outcome =
+            common::cli::run_rigger_within(root, &[verb], &envs, POLLS_BESIDE_A_RUN, |_| {});
+        (
+            verb,
+            outcome,
+            recorded_launches(root),
+            common::is_running(agent),
+        )
+    });
+    common::fixtures::cleanup(&mut live);
+
+    let [(stamp, open)] = opened.as_slice() else {
+        panic!("the live run holds one launch open: {opened:?}");
+    };
+    let cwd = std::fs::read_to_string(fake.path().join("bin/cwd")).unwrap();
+    assert_eq!(
+        (Some(stamp.clone()), open.clone(), open_dir),
+        (
+            run,
+            rigger::progress::SpawnLaunched {
+                spawn: "solo/implementer#0".to_string(),
+                launch: 0,
+                session_id: open.session_id.clone(),
+                resumed_from: None,
+                started: open.started,
+                ended: None,
+                class: None,
+                revision: None,
+                dir: open.dir.clone(),
+            },
+            Some(PathBuf::from(cwd.trim_end())),
+        ),
+        "the live run's launch is open on its run, naming the dir its agent runs in"
+    );
+    for (verb, outcome, launches, agent_running) in beside {
+        assert_eq!(
+            (outcome, launches, agent_running),
+            (
+                Some((String::new(), BUSY_REFUSAL.to_string(), false)),
+                opened.clone(),
+                true
+            ),
+            "rigger {verb} beside a live run refuses with the busy refusal, closing and reaping \
+             nothing"
+        );
+    }
+
+    let close = (
+        stamp.clone(),
+        rigger::progress::SpawnLaunched::closed(
+            "solo/implementer#0",
+            0,
+            open.session_id.clone(),
+            rigger::progress::ENDED_INTERRUPTED,
+            "",
+        ),
+    );
+    let mut running_at_close = None;
+    let restarted =
+        common::cli::run_rigger_within(root, &["run"], &envs, POLLS_BESIDE_A_RUN, |_| {
+            if running_at_close.is_none() && recorded_launches(root).contains(&close) {
+                running_at_close = Some(common::is_running(agent));
+            }
+        });
+    let outlived = common::is_running(agent);
+    if outlived {
+        common::terminate_pid(agent);
+    }
+    let (out, err, ok) = restarted.expect("the restarted run ends within two minutes");
+    assert_eq!(
+        (running_at_close, outlived),
+        (Some(false), false),
+        "the restart reaps the dead run's agent before it closes its launch; stderr: {err}"
+    );
+    assert_eq!(
+        recorded_launches(root).get(..2),
+        Some(&[(stamp.clone(), open.clone()), close][..]),
+        "the restart's first record closes the dead run's launch interrupted; stderr: {err}"
+    );
+    assert_eq!(
+        (ok, out.lines().nth(2)),
+        (true, Some("done: every unit integrated")),
+        "the restart drives the run to done; stderr: {err}"
     );
 }
 
