@@ -217,7 +217,7 @@ pub fn start_fresh(
     base_tip: &str,
     spec_path: &str,
 ) -> Result<String, Error> {
-    release_hold(store, HOLD_BY_HOST)?;
+    release_hold(store, HOLD_BY_HOST, SystemTime::now())?;
     let started = RunStarted {
         run: uuid::Uuid::new_v4().to_string(),
         criteria: criteria.to_vec(),
@@ -311,7 +311,7 @@ pub fn hold_by_operator(store: &dyn EventStore, reason: &str) -> Result<(), Erro
 /// Release the current run's open hold, an operator hold included, as `RunReleased` by `by`: the
 /// done run's and the mint's release by the host, `rigger release`'s by the operator (spec 105).
 /// With no hold open it appends nothing. Answers whether it appended.
-pub fn release_hold(store: &dyn EventStore, by: &str) -> Result<bool, Error> {
+pub fn release_hold(store: &dyn EventStore, by: &str, _now: SystemTime) -> Result<bool, Error> {
     append_on_hold(store, TYPE_RUN_RELEASED, |hold| {
         hold.map(|hold| released_by(by, hold)).transpose()
     })
@@ -320,7 +320,11 @@ pub fn release_hold(store: &dyn EventStore, by: &str) -> Result<bool, Error> {
 /// Release the hold a passing probe read, as `RunReleased {by: probe}`, only while the hold's
 /// latest `RunHeld` is the one at `probed`: a hold re-declared since, by any writer and of any
 /// cause, a released hold and an unheld run take nothing (spec 105 RELEASE).
-pub fn release_probed_hold(store: &dyn EventStore, probed: Revision) -> Result<(), Error> {
+pub fn release_probed_hold(
+    store: &dyn EventStore,
+    probed: Revision,
+    _now: SystemTime,
+) -> Result<(), Error> {
     append_on_hold(store, TYPE_RUN_RELEASED, |hold| {
         hold.filter(|hold| hold.revision == probed)
             .map(|hold| released_by(HOLD_BY_PROBE, hold))
@@ -706,7 +710,7 @@ mod tests {
                 let store = run_holding(log);
                 let appended_before = stream(&store).len();
                 let before = SystemTime::now();
-                let appended = release_hold(&store, by).unwrap();
+                let appended = release_hold(&store, by, SystemTime::now()).unwrap();
                 let after = SystemTime::now();
                 assert_eq!(appended, expected.is_some(), "{name} by {by}: the answer");
                 let events = stream(&store);
@@ -783,7 +787,7 @@ mod tests {
         for (name, landing, expected, appends) in rows {
             let inner = run_holding(vec![open()]);
             let store = ReadCountingStore::new(&inner).interleaving(2, STREAM, landing);
-            let appended = release_hold(&store, HOLD_BY_HOST).unwrap();
+            let appended = release_hold(&store, HOLD_BY_HOST, SystemTime::now()).unwrap();
             assert_eq!(types_of(&stream(&inner)), expected, "{name}");
             assert_eq!(appended, appends, "{name}: the answer");
         }
@@ -909,7 +913,7 @@ mod tests {
                 events[at + 1].revision
             });
             let before = SystemTime::now();
-            release_probed_hold(&store, probed).unwrap();
+            release_probed_hold(&store, probed, SystemTime::now()).unwrap();
             let after = SystemTime::now();
             let mut landed = stream(&store).split_off(events.len());
             if !expected {
@@ -956,7 +960,7 @@ mod tests {
             let inner = run_holding(vec![held("rate_limit", HOLD_BY_HOST, "")]);
             let probed = stream(&inner).last().unwrap().revision;
             let store = ReadCountingStore::new(&inner).interleaving(2, STREAM, landing);
-            release_probed_hold(&store, probed).unwrap();
+            release_probed_hold(&store, probed, SystemTime::now()).unwrap();
             assert_eq!(types_of(&stream(&inner)), expected, "{name}");
         }
     }

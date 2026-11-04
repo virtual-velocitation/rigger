@@ -2098,10 +2098,10 @@ mandatory sweep: Command::new call sites - 94 site(s), collected mechanically re
 - `src/cli/mod.rs:10429-10429` `Command::new`
 - `src/cli/mod.rs:12169-12169` `Command::new`
 - `src/cli/mod.rs:12203-12203` `Command::new`
-- `src/cli/run.rs:3657-3657` `Command::new`
-- `src/cli/run.rs:3690-3690` `Command::new`
-- `src/cli/run.rs:3734-3734` `Command::new`
-- `src/cli/run.rs:3803-3803` `Command::new`
+- `src/cli/run.rs:3658-3658` `Command::new`
+- `src/cli/run.rs:3691-3691` `Command::new`
+- `src/cli/run.rs:3735-3735` `Command::new`
+- `src/cli/run.rs:3804-3804` `Command::new`
 - `src/cli/setup.rs:3874-3874` `Command::new`
 - `src/cli/setup.rs:3903-3903` `Command::new`
 - `src/cli/validate.rs:1544-1544` `Command::new`
@@ -3325,9 +3325,9 @@ project identity so one backend can hold many projects without their data mixing
 - `tests/step_sheds_the_freshen.rs:217-217` `"the surviving persisted index is the SYMBOL index under .rigger/symbols/; got {}"`
 - `tests/step_sheds_the_freshen.rs:282-282` `"constructing the default grounder builds and persists the SYMBOL index under \
          .rigger/symbols/ - the freshen's real target"`
-- `tests/store_content_identity_periphery.rs:834-834` `".rigger"`
-- `tests/store_content_identity_periphery.rs:835-835` `"create .rigger"`
-- `tests/store_content_identity_periphery.rs:881-881` `".rigger"`
+- `tests/store_content_identity_periphery.rs:839-839` `".rigger"`
+- `tests/store_content_identity_periphery.rs:840-840` `"create .rigger"`
+- `tests/store_content_identity_periphery.rs:886-886` `".rigger"`
 - `tests/store_precedence.rs:49-49` `".rigger"`
 - `tests/store_precedence.rs:94-94` `".rigger"`
 - `tests/store_precedence.rs:106-106` `".rigger"`
@@ -3575,8 +3575,8 @@ mandatory sweep: /proc-path string literals - 60 site(s), collected mechanically
 - `crates/rigger-worktree-git/src/worktree.rs:3147-3147` `"/proc"`
 - `crates/rigger-worktree-git/src/worktree.rs:3151-3151` `"/proc/{pid}/cmdline"`
 - `crates/rigger-worktree-git/src/worktree.rs:3175-3175` `"/proc/{}"`
-- `src/cli/run.rs:3795-3795` `"/proc"`
-- `src/cli/run.rs:3899-3899` `"/proc"`
+- `src/cli/run.rs:3796-3796` `"/proc"`
+- `src/cli/run.rs:3900-3900` `"/proc"`
 - `tests/cli.rs:27925-27925` `"/proc"`
 - `tests/cli.rs:32140-32140` `"/proc"`
 - `tests/cli.rs:32248-32248` `"the holder pid {holder_pid} never reached the STOPPED (T) state in /proc"`
@@ -4206,7 +4206,7 @@ Proposed home: `a new shared module (sites span 2 files: crates/rigger-driver/sr
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `crates/rigger-driver/src/driver/mod.rs:248-250` `resumed_from`
-- `tests/claude_code_stream_periphery.rs:2745-2747` `launch_dir`
+- `tests/claude_code_stream_periphery.rs:2747-2749` `launch_dir`
 
 #### `dup-282069e7109f` (near, 3 sites)
 
@@ -4295,7 +4295,7 @@ mandatory sweep: sqlite Connection::open call sites - 66 site(s), collected mech
 - `crates/rigger-store-sqlite/src/eventstore/sqlite.rs:2284-2284` `Connection::open`
 - `crates/rigger-store-sqlite/src/eventstore/sqlite.rs:2306-2306` `Connection::open_with_flags`
 - `crates/rigger-store-sqlite/src/eventstore/sqlite.rs:2629-2629` `Connection::open`
-- `crates/rigger-store-sqlite/src/run_store.rs:1277-1277` `Connection::open`
+- `crates/rigger-store-sqlite/src/run_store.rs:1281-1281` `Connection::open`
 - `crates/rigger-store-sqlite/src/sqlite.rs:13-13` `Connection::open`
 - `src/cli/mod.rs:5615-5615` `Connection::open`
 - `src/cli/mod.rs:12735-12735` `Connection::open`
@@ -4704,8 +4704,8 @@ Proposed home: `run_store::support (consolidate these 2 sites into one function 
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-store-sqlite/src/run_store.rs:1488-1502` `ensure_started_adopts_the_same_criteria_run_without_re_minting`
-- `crates/rigger-store-sqlite/src/run_store.rs:1557-1572` `ensure_started_mints_a_new_run_when_the_criteria_change`
+- `crates/rigger-store-sqlite/src/run_store.rs:1492-1506` `ensure_started_adopts_the_same_criteria_run_without_re_minting`
+- `crates/rigger-store-sqlite/src/run_store.rs:1561-1576` `ensure_started_mints_a_new_run_when_the_criteria_change`
 
 #### `dup-2c13c330b0e0` (exact, 2 sites)
 
@@ -5561,7 +5561,7 @@ Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85
 - `src/cli/mod.rs:4714-4740` `footprint_reclaim_lines` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `src/cli/mod.rs:8884-8894` `parse_run_args_reads_rebase_definition` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `src/cli/run.rs:1639-1641` `pause_a_hold_poll` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
-- `src/cli/run.rs:2475-2499` `start_run_dashboard` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
+- `src/cli/run.rs:2476-2500` `start_run_dashboard` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `tests/change_path_revert_periphery.rs:213-323` `a_revert_through_the_shipped_build_records_the_earlier_generations_entry_again` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `tests/code_entity_test_exclusion_periphery.rs:1810-1822` `edges_where` - duplicate found by reading and closed: the design-doc assertion, the dev-only path test and the test-region test each re-rolled its `(from, rel, to)` edge projection inline; all now call `edges_where`
 - `tests/common/fixtures/events.rs:944-946` `after_call` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`

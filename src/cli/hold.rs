@@ -35,7 +35,8 @@ pub(crate) fn cmd_release(args: &[String]) -> Res {
         return Err("release: usage: rigger release".into());
     }
     on_the_run(|store| {
-        if runscope_store::release_hold(store, runscope::HOLD_BY_OPERATOR)? {
+        let now = std::time::SystemTime::now();
+        if runscope_store::release_hold(store, runscope::HOLD_BY_OPERATOR, now)? {
             println!("released the current run's hold");
         } else {
             println!("nothing to release: no hold is open");

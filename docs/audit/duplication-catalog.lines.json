@@ -919,23 +919,23 @@
       },
       {
         "file": "src/cli/run.rs",
-        "start_line": 3657,
-        "end_line": 3657
+        "start_line": 3658,
+        "end_line": 3658
       },
       {
         "file": "src/cli/run.rs",
-        "start_line": 3690,
-        "end_line": 3690
+        "start_line": 3691,
+        "end_line": 3691
       },
       {
         "file": "src/cli/run.rs",
-        "start_line": 3734,
-        "end_line": 3734
+        "start_line": 3735,
+        "end_line": 3735
       },
       {
         "file": "src/cli/run.rs",
-        "start_line": 3803,
-        "end_line": 3803
+        "start_line": 3804,
+        "end_line": 3804
       },
       {
         "file": "src/cli/setup.rs",
@@ -4144,18 +4144,18 @@
       },
       {
         "file": "tests/store_content_identity_periphery.rs",
-        "start_line": 834,
-        "end_line": 834
+        "start_line": 839,
+        "end_line": 839
       },
       {
         "file": "tests/store_content_identity_periphery.rs",
-        "start_line": 835,
-        "end_line": 835
+        "start_line": 840,
+        "end_line": 840
       },
       {
         "file": "tests/store_content_identity_periphery.rs",
-        "start_line": 881,
-        "end_line": 881
+        "start_line": 886,
+        "end_line": 886
       },
       {
         "file": "tests/store_precedence.rs",
@@ -4784,13 +4784,13 @@
       },
       {
         "file": "src/cli/run.rs",
-        "start_line": 3795,
-        "end_line": 3795
+        "start_line": 3796,
+        "end_line": 3796
       },
       {
         "file": "src/cli/run.rs",
-        "start_line": 3899,
-        "end_line": 3899
+        "start_line": 3900,
+        "end_line": 3900
       },
       {
         "file": "tests/cli.rs",
@@ -5909,8 +5909,8 @@
       },
       {
         "file": "tests/claude_code_stream_periphery.rs",
-        "start_line": 2745,
-        "end_line": 2747
+        "start_line": 2747,
+        "end_line": 2749
       }
     ]
   },
@@ -6114,8 +6114,8 @@
       },
       {
         "file": "crates/rigger-store-sqlite/src/run_store.rs",
-        "start_line": 1277,
-        "end_line": 1277
+        "start_line": 1281,
+        "end_line": 1281
       },
       {
         "file": "crates/rigger-store-sqlite/src/sqlite.rs",
@@ -7019,13 +7019,13 @@
     "sites": [
       {
         "file": "crates/rigger-store-sqlite/src/run_store.rs",
-        "start_line": 1488,
-        "end_line": 1502
+        "start_line": 1492,
+        "end_line": 1506
       },
       {
         "file": "crates/rigger-store-sqlite/src/run_store.rs",
-        "start_line": 1557,
-        "end_line": 1572
+        "start_line": 1561,
+        "end_line": 1576
       }
     ]
   },

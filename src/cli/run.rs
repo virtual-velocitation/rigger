@@ -1621,7 +1621,7 @@ fn probe_an_owed_hold(
         .map_err(|e| e.to_string())?;
     match host.probe(root, &owed) {
         claude_code::ProbeOutcome::Passed => {
-            runscope_store::release_probed_hold(run_store, owed.revision)
+            runscope_store::release_probed_hold(run_store, owed.revision, now)
         }
         claude_code::ProbeOutcome::Failed(category) => {
             runscope_store::record_failed_probe(run_store, &category)
@@ -1853,7 +1853,8 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
     // leaves it to the next supervisor's probes. A failed release never fails a run that already
     // succeeded: the hold stays open for `rigger release` or the next mint.
     if rs.done() {
-        if let Err(e) = runscope_store::release_hold(&folding, runscope::HOLD_BY_HOST) {
+        let now = std::time::SystemTime::now();
+        if let Err(e) = runscope_store::release_hold(&folding, runscope::HOLD_BY_HOST, now) {
             stderr_line(&format!(
                 "rigger run: the done run's hold was not released: {e}"
             ));
