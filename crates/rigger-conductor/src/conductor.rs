@@ -44327,7 +44327,22 @@ mod tests {
         refused_retry: Option<u32>,
         /// The prompt each spawn id was launched with.
         prompts: Mutex<HashMap<String, String>>,
+        /// Each conflict-resolution round of attempt 0 that ends without resolving, and how;
+        /// empty in every test but the one that reads how a round ends.
+        unresolved: Vec<(u32, Unresolved)>,
     }
+
+    /// How a conflict-resolution round ends when it resolves nothing.
+    #[derive(Clone, Copy, Debug)]
+    enum Unresolved {
+        /// It returns having committed nothing.
+        Nothing,
+        /// It returns an error carrying no conductor marker.
+        Errs,
+        /// It parks.
+        Parks,
+    }
+
     impl AgentDriver for ConflictDriver {
         fn spawn(
             &self,
@@ -44348,6 +44363,16 @@ mod tests {
                         !opts.dir.is_empty(),
                         "a conflict re-park must still run in the unit's own worktree"
                     );
+                    let unresolved = self
+                        .unresolved
+                        .iter()
+                        .find(|(round, _)| opts.id.ends_with(&format!("#0~retry{round}")));
+                    match unresolved.map(|&(_, how)| how) {
+                        Some(Unresolved::Nothing) => return Ok(AgentResult::default()),
+                        Some(Unresolved::Errs) => return Err(Error(RESOLVER_ERROR.into())),
+                        Some(Unresolved::Parks) => return Err(parked_spawn(&opts.id)),
+                        None => {}
+                    }
                     if !self.resolve_on_retry {
                         // Simulates a real implementer that fails to resolve it: leave the
                         // conflict markers exactly as they are, commit nothing. Every
@@ -45181,25 +45206,24 @@ mod tests {
             resolve_on_retry,
             refused_retry: None,
             prompts: Mutex::new(HashMap::new()),
+            unresolved: Vec::new(),
         };
         let _ = regenerate;
         (repo, repo_path, store, driver)
     }
 
-    /// Two batch-mates `unit-a`/`unit-b` edit the SAME line of `c.rs` off the same base (the
-    /// [`conflict_fixture`], `regenerate` registering regenerable paths): the first to win the
-    /// integrate lock merges cleanly and the second's merge CONFLICTS. BOTH units must integrate -
-    /// the loser's textual conflict is resolved within the SAME integration call, never escalated -
-    /// with no remediation attempt charged to either and no UnitFailed ever recorded (a conflict is
-    /// not a defect). The resolver's `~retry{n}` re-park emits a record the emit guard refuses
-    /// when `refused_retry` names it. Returns every spawn id the driver was called with, the run
-    /// branch's merged `c.rs` and the prompt each spawn id was launched with.
-    fn assert_both_conflicting_units_land(
+    /// What a conflict-resolution round that errors says.
+    const RESOLVER_ERROR: &str = "the resolver's session stopped";
+
+    /// Run the [`conflict_fixture`]'s two batch-mates `unit-a`/`unit-b` in `repo_path` through
+    /// `driver` on `store`, each gated, reviewed by one lens and an adjudicator and merged, with
+    /// three remediation attempts allowed and `regenerate` registering regenerable paths.
+    fn run_conflicting_units(
+        repo_path: &str,
+        store: &Store,
+        driver: &ConflictDriver,
         regenerate: Vec<crate::config::RegenerateRule>,
-        refused_retry: Option<u32>,
-    ) -> (Vec<String>, String, HashMap<String, String>) {
-        let (repo, repo_path, store, mut driver) = conflict_fixture(regenerate.clone(), true);
-        driver.refused_retry = refused_retry;
+    ) -> Result<RunState, Error> {
         let mut cfg = Config::default();
         cfg.workflow.defaults.max_retries = 3;
         cfg.workflow.regenerate = regenerate;
@@ -45225,10 +45249,27 @@ mod tests {
             );
         }
         let deps = Deps {
-            repo: repo_path.clone(),
-            ..stub_deps(&store, &driver, Vec::new())
+            repo: repo_path.to_string(),
+            ..stub_deps(store, driver, Vec::new())
         };
-        let rs = run_isolated(&cfg, &deps).unwrap();
+        run_isolated(&cfg, &deps)
+    }
+
+    /// Two batch-mates `unit-a`/`unit-b` edit the SAME line of `c.rs` off the same base (the
+    /// [`conflict_fixture`], `regenerate` registering regenerable paths): the first to win the
+    /// integrate lock merges cleanly and the second's merge CONFLICTS. BOTH units must integrate -
+    /// the loser's textual conflict is resolved within the SAME integration call, never escalated -
+    /// with no remediation attempt charged to either and no UnitFailed ever recorded (a conflict is
+    /// not a defect). The resolver's `~retry{n}` re-park emits a record the emit guard refuses
+    /// when `refused_retry` names it. Returns every spawn id the driver was called with, the run
+    /// branch's merged `c.rs` and the prompt each spawn id was launched with.
+    fn assert_both_conflicting_units_land(
+        regenerate: Vec<crate::config::RegenerateRule>,
+        refused_retry: Option<u32>,
+    ) -> (Vec<String>, String, HashMap<String, String>) {
+        let (repo, repo_path, store, mut driver) = conflict_fixture(regenerate.clone(), true);
+        driver.refused_retry = refused_retry;
+        let rs = run_conflicting_units(&repo_path, &store, &driver, regenerate).unwrap();
         for unit in ["unit-a", "unit-b"] {
             assert_eq!(
                 rs.units[unit].status,
@@ -45294,6 +45335,96 @@ mod tests {
             prompts[rerun]
         );
         assert_eq!(merged, "RESOLVED\n", "the resolution lands");
+    }
+
+    #[test]
+    fn a_resolver_round_ending_on_an_unmarked_error_is_spent_like_one_resolving_nothing() {
+        // A conflict-resolution round whose resolver returns an error carrying no conductor
+        // marker - a live one, or one a restart answers from the log - is spent as a round that
+        // resolved nothing: the episode moves to its next `~retry` with no attempt charged, past
+        // `CONFLICT_RESOLVE_BOUND` the integration blocks, and a park still ends the episode at
+        // its round. Each row: the attempt-0 rounds that resolve nothing and how, then the
+        // conflicting unit's status, attempts, `UnitFailed` causes and the attempt-0 resolver ids
+        // the driver was called with, in order; every other round resolves.
+        use Unresolved::{Errs, Nothing, Parks};
+        type Outcome = (ledger::Status, u32, Vec<String>, Vec<u32>);
+        let integrated = |attempts: u32, causes: &[&str], rounds: &[u32]| -> Outcome {
+            (
+                ledger::Status::Integrated,
+                attempts,
+                causes.iter().map(|c| c.to_string()).collect(),
+                rounds.to_vec(),
+            )
+        };
+        let rows: [(&str, Vec<(u32, Unresolved)>, Outcome); 6] = [
+            (
+                "a round resolving nothing",
+                vec![(1, Nothing)],
+                integrated(0, &[], &[1, 2]),
+            ),
+            (
+                "every round resolving nothing",
+                vec![(1, Nothing), (2, Nothing), (3, Nothing)],
+                integrated(1, &["integrate-conflict"], &[1, 2, 3]),
+            ),
+            (
+                "a round that parks",
+                vec![(1, Parks)],
+                (ledger::Status::Reviewed, 0, Vec::new(), vec![1]),
+            ),
+            (
+                "a round ending on an unmarked error",
+                vec![(1, Errs)],
+                integrated(0, &[], &[1, 2]),
+            ),
+            (
+                "two rounds ending on an unmarked error",
+                vec![(1, Errs), (2, Errs)],
+                integrated(0, &[], &[1, 2, 3]),
+            ),
+            (
+                "every round ending on an unmarked error",
+                vec![(1, Errs), (2, Errs), (3, Errs)],
+                integrated(1, &["integrate-conflict"], &[1, 2, 3]),
+            ),
+        ];
+        for (name, unresolved, want) in rows {
+            let (repo, repo_path, store, mut driver) = conflict_fixture(Vec::new(), true);
+            driver.unresolved = unresolved;
+            let got = run_conflicting_units(&repo_path, &store, &driver, Vec::new()).map(|rs| {
+                let calls = driver.calls.lock().unwrap().clone();
+                let loser = calls
+                    .iter()
+                    .find_map(|id| id.strip_suffix("/implementer#0~retry1"))
+                    .unwrap_or_else(|| panic!("{name}: no unit was re-parked: {calls:?}"))
+                    .to_string();
+                let prefix = format!("{loser}/implementer#0~retry");
+                let rounds: Vec<u32> = calls
+                    .iter()
+                    .filter_map(|id| id.strip_prefix(&prefix)?.parse().ok())
+                    .collect();
+                for round in &rounds {
+                    assert!(
+                        calls.contains(&spawn_retry_id(&loser, ROLE_IMPLEMENTER, 0, *round)),
+                        "{name}: round {round} is the resolver id the conductor mints"
+                    );
+                }
+                let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+                let causes: Vec<String> = events
+                    .iter()
+                    .filter(|e| e.type_ == ledger::TYPE_UNIT_FAILED)
+                    .filter_map(|e| {
+                        let v: Value = serde_json::from_slice(&e.data).ok()?;
+                        (v.get("id")?.as_str()? == loser)
+                            .then(|| v.get("cause")?.as_str().map(str::to_string))?
+                    })
+                    .collect();
+                let unit = &rs.units[&loser];
+                (unit.status, unit.attempts, causes, rounds)
+            });
+            assert_eq!(got.map_err(|e| e.0), Ok(want), "{name}");
+            drop(repo);
+        }
     }
 
     #[test]

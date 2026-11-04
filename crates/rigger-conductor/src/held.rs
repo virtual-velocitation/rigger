@@ -174,13 +174,13 @@ mod tests {
     use super::HeldDriver;
     use crate::config::AgentDef;
     use crate::eventstore::sqlite::Store;
-    use crate::eventstore::{Event, EventStore, ExpectedRevision};
+    use crate::eventstore::{Direction, Event, EventStore, ExpectedRevision, Position};
     use crate::run::{HOLD_BY_HOST, HOLD_BY_OPERATOR, STREAM, TYPE_RUN_HELD};
     use crate::run_store;
-    use crate::spawn::{SpawnEvent, SpawnResult, TYPE_SPAWN_RESULT};
+    use crate::spawn::{SpawnEvent, SpawnRequest, SpawnResult, TYPE_SPAWN_RESULT};
     use crate::test_support::{
-        agent, ev, held_event, implementer_opts, no_emit, released_event, run_started,
-        ReadsFailWhenArmed,
+        agent, ev, held_event, implementer_opts, no_emit, placed_positions, released_event,
+        run_started, spawn_result_rows, ReadsFailWhenArmed,
     };
 
     /// The spawn each row launches, and a second spawn id for the rows the bound keeps apart.
@@ -223,6 +223,21 @@ mod tests {
     /// The real result that ended spawn [`ID`].
     fn ended() -> Event {
         SpawnResult::ok(ID, OUTPUT).to_event().unwrap()
+    }
+
+    /// The request that parked spawn [`ID`] in the run.
+    fn requested() -> Event {
+        SpawnRequest {
+            id: ID.to_string(),
+            ..SpawnRequest::default()
+        }
+        .to_event()
+        .unwrap()
+    }
+
+    /// The result row ([`spawn_result_rows`]) of spawn [`ID`] ending on `e`.
+    fn ended_on(e: Error) -> (String, String, String, bool) {
+        (ID.to_string(), String::new(), e.0, false)
     }
 
     /// One scripted launch: the run-stream events the host appends before it returns, then what
@@ -270,13 +285,15 @@ mod tests {
     }
 
     /// A host double playing one scripted launch per spawn. It appends a launch's events before
-    /// it returns, as the real host appends its hold before its error, and panics on a launch
-    /// past the script, so a relaunch no row expects fails that row.
+    /// it returns, as the real host appends its hold before its error, adding where they landed
+    /// to `authored`, and panics on a launch past the script, so a relaunch no row expects fails
+    /// that row.
     struct Scripted<'a> {
         store: &'a Store,
         armed: &'a AtomicBool,
         script: Mutex<VecDeque<Launch>>,
         launched: Mutex<Vec<String>>,
+        authored: &'a Mutex<Vec<Position>>,
     }
 
     impl AgentDriver for Scripted<'_> {
@@ -294,9 +311,14 @@ mod tests {
                 .unwrap()
                 .pop_front()
                 .unwrap_or_else(|| panic!("{} launched past the script", opts.id));
-            self.store
+            let appended = self
+                .store
                 .append(STREAM, ExpectedRevision::Any, &launch.appends)
                 .unwrap();
+            self.authored
+                .lock()
+                .unwrap()
+                .extend(placed_positions(&appended));
             if launch.breaks_reads {
                 self.armed.store(true, Ordering::SeqCst);
             }
@@ -352,6 +374,9 @@ mod tests {
         /// How many launches had happened at each pause, so a pause before the first launch
         /// reads 0 and a wait after the first error reads 1.
         paused_at: Vec<usize>,
+        /// Each result the decorator recorded, in order ([`spawn_result_rows`]): a result on
+        /// the stream that neither the row's seed nor a launch of its script appended.
+        results: Vec<(String, String, String, bool)>,
     }
 
     impl Default for Row {
@@ -367,6 +392,7 @@ mod tests {
                 calls: Vec::new(),
                 launched: Vec::new(),
                 paused_at: Vec::new(),
+                results: Vec::new(),
             }
         }
     }
@@ -379,16 +405,17 @@ mod tests {
     }
 
     /// Run `rows` through the real decorator over a real store and assert each exactly: every
-    /// spawn's output or error byte for byte, the ordered launches, and the launches standing at
-    /// each pause.
+    /// spawn's output or error byte for byte, the ordered launches, the launches standing at
+    /// each pause, and the results the decorator recorded.
     fn check(rows: Vec<Row>) {
         for row in rows {
             let name = row.name;
             let store = Store::open(":memory:").unwrap();
             run_store::ensure_started(&store, &["c".to_string()]).unwrap();
-            store
+            let seeded = store
                 .append(STREAM, ExpectedRevision::Any, &row.seeded)
                 .unwrap();
+            let authored = Mutex::new(placed_positions(&seeded));
             let armed = AtomicBool::new(row.reads_fail);
             let reads = ReadsFailWhenArmed {
                 inner: &store,
@@ -399,6 +426,7 @@ mod tests {
                 armed: &armed,
                 script: Mutex::new(row.script.into()),
                 launched: Mutex::new(Vec::new()),
+                authored: &authored,
             };
             let closed = AtomicBool::new(matches!(row.session, Session::Closed));
             let session = match row.session {
@@ -457,6 +485,18 @@ mod tests {
                 "{name}: launches"
             );
             assert_eq!(*paused_at.lock().unwrap(), row.paused_at, "{name}: pauses");
+            let authored = authored.into_inner().unwrap();
+            let recorded: Vec<Event> = store
+                .read_stream(STREAM, 0, Direction::Forward)
+                .unwrap()
+                .into_iter()
+                .filter(|e| !authored.contains(&e.position))
+                .collect();
+            assert_eq!(
+                spawn_result_rows(&recorded),
+                row.results,
+                "{name}: the results the decorator recorded"
+            );
         }
     }
 
@@ -921,6 +961,126 @@ mod tests {
             Row {
                 name: "a hold the fold refuses after the spawn's error",
                 script: vec![fails(classed(WAIT)).appending(ev(TYPE_RUN_HELD, MALFORMED_HOLD))],
+                calls: one_call(Err(classed(WAIT))),
+                launched: vec![ID],
+                ..Row::default()
+            },
+        ]);
+    }
+
+    /// THE ERROR WRITE (spec 105, RESUME BY SESSION): on `rigger run`, an error the decorator
+    /// hands the conductor is recorded as the result of a spawn its run parked and has not ended,
+    /// the bound's pass-through included and a liveness fault no bar, so a restart answers the
+    /// spawn from the log. A marked error, a relaunched one, an open or closed `rigger serve`
+    /// session, a spawn this run never parked, one its run has ended and a run the decorator
+    /// cannot read each record nothing, and the error returns unchanged.
+    #[test]
+    fn an_error_passing_on_rigger_run_is_recorded_for_a_parked_spawn_its_run_has_not_ended() {
+        check(vec![
+            Row {
+                name: "an unclassed error of a parked spawn is recorded",
+                seeded: vec![requested()],
+                script: vec![fails(unclassed())],
+                calls: one_call(Err(unclassed())),
+                launched: vec![ID],
+                results: vec![ended_on(unclassed())],
+                ..Row::default()
+            },
+            Row {
+                name: "the bound's pass-through records the error that passed, none relaunched",
+                seeded: vec![requested()],
+                script: vec![
+                    fails(classed(WAIT)),
+                    fails(classed(WAIT)),
+                    fails(classed(WAIT)),
+                ],
+                calls: one_call(Err(classed(WAIT))),
+                launched: vec![ID, ID, ID],
+                results: vec![ended_on(classed(WAIT))],
+                ..Row::default()
+            },
+            Row {
+                name: "an error over a liveness fault is recorded",
+                seeded: vec![requested()],
+                script: vec![fails(unclassed()).appending(
+                    SpawnResult::liveness_fault(ID, "silent", "stale")
+                        .to_event()
+                        .unwrap(),
+                )],
+                calls: one_call(Err(unclassed())),
+                launched: vec![ID],
+                results: vec![ended_on(unclassed())],
+                ..Row::default()
+            },
+            Row {
+                name: "a relaunched error records nothing",
+                seeded: vec![requested()],
+                script: vec![fails(classed(WAIT)), done()],
+                calls: one_call(Ok(OUTPUT)),
+                launched: vec![ID, ID],
+                ..Row::default()
+            },
+            Row {
+                name: "a park records nothing",
+                seeded: vec![requested()],
+                script: vec![fails(parked_spawn(ID))],
+                calls: one_call(Err(parked_spawn(ID))),
+                launched: vec![ID],
+                ..Row::default()
+            },
+            Row {
+                name: "an emit refusal records nothing",
+                seeded: vec![requested()],
+                script: vec![fails(refused())],
+                calls: one_call(Err(refused())),
+                launched: vec![ID],
+                ..Row::default()
+            },
+            Row {
+                name: "an open rigger serve session records nothing",
+                seeded: vec![requested()],
+                session: Session::Open,
+                script: vec![fails(unclassed())],
+                calls: one_call(Err(unclassed())),
+                launched: vec![ID],
+                ..Row::default()
+            },
+            Row {
+                name: "a closed rigger serve session records nothing",
+                seeded: vec![requested()],
+                session: Session::Closed,
+                script: vec![fails(unclassed())],
+                calls: one_call(Err(unclassed())),
+                launched: vec![ID],
+                ..Row::default()
+            },
+            Row {
+                name: "a spawn its run never parked records nothing",
+                script: vec![fails(unclassed())],
+                calls: one_call(Err(unclassed())),
+                launched: vec![ID],
+                ..Row::default()
+            },
+            Row {
+                name: "a request of an earlier run records nothing",
+                seeded: vec![requested(), run_started("r2", &["c"])],
+                script: vec![fails(unclassed())],
+                calls: one_call(Err(unclassed())),
+                launched: vec![ID],
+                ..Row::default()
+            },
+            Row {
+                name: "a spawn its run has ended records nothing more",
+                seeded: vec![requested()],
+                script: vec![fails(classed(WAIT)).appending(ended())],
+                calls: one_call(Err(classed(WAIT))),
+                launched: vec![ID],
+                ..Row::default()
+            },
+            Row {
+                name: "a run read failing after the error records nothing",
+                seeded: vec![requested()],
+                script: vec![fails(classed(WAIT)).breaking_reads()],
                 calls: one_call(Err(classed(WAIT))),
                 launched: vec![ID],
                 ..Row::default()

@@ -1867,7 +1867,7 @@ mod tests {
     use crate::eventstore::{Direction, EventStore, SilentStore};
     use crate::test_support::implementer_opts as opts;
     use crate::test_support::{
-        captured_system_prompt, fixture_script, no_emit, PROMPT_CAPTURE_DIR,
+        captured_system_prompt, fixture_script, no_emit, spawn_result_rows, PROMPT_CAPTURE_DIR,
     };
     use std::io::Read;
     use std::time::Duration;
@@ -3147,6 +3147,231 @@ mod tests {
             "claude-code-mcp-server-connected-agent.sh",
             &[],
         );
+    }
+
+    /// RESUME BY SESSION, the host's half (spec 105): a spawn the current run has ended is
+    /// answered from its result with no launch, carrying the recorded session and resolved model
+    /// and no `resumed_from` whatever resume its opts asked for, and an ended error answers as
+    /// that error. A spawn whose only result is a liveness fault, or one a prior run alone ended,
+    /// is launched, and its real result supersedes the fault. Each spawn is parked in the current
+    /// run before its first launch, stamped with its run and the host's scratch root, unless its
+    /// request already stands there, so a launch that cannot start leaves its request.
+    #[test]
+    fn the_host_answers_an_ended_spawn_from_the_log_and_parks_every_other_before_its_launch() {
+        const ID: &str = "u105-park/implementer#0";
+        /// The answer's session when it is the one the spawn's launch ran as, which the host
+        /// mints.
+        const LAUNCHED: &str = "<the launch's session>";
+        /// The marker root of a request the host parked: its own scratch root.
+        const SCRATCH: &str = "<the host's scratch root>";
+        type Answer = Result<(String, String, String, String), String>;
+        let answer = |output: &str, model: &str, session: &str| -> Answer {
+            Ok((output.into(), model.into(), session.into(), String::new()))
+        };
+        let launched = || {
+            answer(
+                "done: the answer is 42",
+                "claude-sonnet-4-5-20250929",
+                LAUNCHED,
+            )
+        };
+        let row_of = |output: &str, error: &str, fault: bool| {
+            (ID.to_string(), output.to_string(), error.to_string(), fault)
+        };
+        let real = || row_of("done: the answer is 42", "", false);
+        let fault = || SpawnResult::liveness_fault(ID, "silent past its bound", "stalled");
+        let stream = || fixture_script("claude-code-stream-agent.sh");
+        struct Row {
+            name: &'static str,
+            bin: String,
+            resumed_from: &'static str,
+            /// Recorded under a run the spawn's run superseded, each beside its request.
+            prior_run: Vec<SpawnResult>,
+            /// Whether the spawn's request stands in its run before the call.
+            requested: bool,
+            /// Recorded in the spawn's run before the call.
+            standing: Vec<SpawnResult>,
+            answer: Answer,
+            /// Each launch record of the spawn's run: its ordinal and how it ended.
+            launches: Vec<(u32, Option<&'static str>)>,
+            /// Every request on the stream: its run and marker root.
+            requests: Vec<(&'static str, &'static str)>,
+            /// Every result on the stream ([`spawn_result_rows`]).
+            results: Vec<(String, String, String, bool)>,
+        }
+        let rows = [
+            Row {
+                name: "a real result of the run answers with no launch",
+                bin: stream(),
+                resumed_from: "sess-asked",
+                prior_run: vec![],
+                requested: true,
+                standing: vec![spawn_result_from(
+                    &serde_json::json!({"type": "result", "result": "from the log",
+                        "session_id": "sess-logged"}),
+                    &opts(ID),
+                    "claude-logged",
+                )],
+                answer: answer("from the log", "claude-logged", "sess-logged"),
+                launches: vec![],
+                requests: vec![("run-1", "")],
+                results: vec![row_of("from the log", "", false)],
+            },
+            Row {
+                name: "an error result of the run answers as that error with no launch",
+                bin: stream(),
+                resumed_from: "",
+                prior_run: vec![],
+                requested: true,
+                standing: vec![SpawnResult::failed(ID, "the session stopped")],
+                answer: Err("the session stopped".into()),
+                launches: vec![],
+                requests: vec![("run-1", "")],
+                results: vec![row_of("", "the session stopped", false)],
+            },
+            Row {
+                name: "a liveness fault alone launches and the real result supersedes it",
+                bin: stream(),
+                resumed_from: "",
+                prior_run: vec![],
+                requested: true,
+                standing: vec![fault()],
+                answer: launched(),
+                launches: vec![(0, None), (0, Some(progress::ENDED_COMPLETED))],
+                requests: vec![("run-1", "")],
+                results: vec![row_of("", "silent past its bound", true), real()],
+            },
+            Row {
+                name: "a result of a prior run alone parks again and launches",
+                bin: stream(),
+                resumed_from: "",
+                prior_run: vec![SpawnResult::ok(ID, "from a prior run")],
+                requested: false,
+                standing: vec![],
+                answer: launched(),
+                launches: vec![(0, None), (0, Some(progress::ENDED_COMPLETED))],
+                requests: vec![("run-0", ""), ("run-1", SCRATCH)],
+                results: vec![row_of("from a prior run", "", false), real()],
+            },
+            Row {
+                name: "an unrequested spawn parks, then launches",
+                bin: stream(),
+                resumed_from: "",
+                prior_run: vec![],
+                requested: false,
+                standing: vec![],
+                answer: launched(),
+                launches: vec![(0, None), (0, Some(progress::ENDED_COMPLETED))],
+                requests: vec![("run-1", SCRATCH)],
+                results: vec![real()],
+            },
+            Row {
+                name: "a launch that cannot start leaves the request it parked",
+                bin: "/definitely/does/not/exist/claude-xyz".into(),
+                resumed_from: "",
+                prior_run: vec![],
+                requested: false,
+                standing: vec![],
+                answer: Err(format!(
+                    "claude_code driver: launch {ID:?}: No such file or directory (os error 2)"
+                )),
+                launches: vec![(0, None)],
+                requests: vec![("run-1", SCRATCH)],
+                results: vec![],
+            },
+        ];
+        for row in rows {
+            let name = row.name;
+            let (progress_store, run_store) = (
+                Store::open(":memory:").unwrap(),
+                Store::open(":memory:").unwrap(),
+            );
+            let scratch = tempfile::tempdir().unwrap();
+            let scratch_root = scratch.path().to_string_lossy().into_owned();
+            let mut o = opts(ID);
+            o.run_id = "run-1".to_string();
+            o.resumed_from = row.resumed_from.to_string();
+            let request = crate::agent::spawn_request(&AgentDef::default(), "do the thing", &o);
+            run_store::ensure_started(&run_store, &["prior".to_string()]).unwrap();
+            for res in &row.prior_run {
+                spawn_store::park_in_run(&run_store, &request, "run-0", "").unwrap();
+                spawn_store::record_result(&run_store, res).unwrap();
+            }
+            run_store::ensure_started(&run_store, &["current".to_string()]).unwrap();
+            if row.requested {
+                spawn_store::park_in_run(&run_store, &request, "run-1", "").unwrap();
+            }
+            for res in &row.standing {
+                spawn_store::record_result(&run_store, res).unwrap();
+            }
+            let driver = Driver {
+                bin: row.bin,
+                rigger_bin: "rigger".to_string(),
+                progress_store: &progress_store,
+                run_store: &run_store,
+                scratch_root: scratch_root.clone(),
+                ..Driver::default()
+            };
+
+            let spawned = driver.spawn(&AgentDef::default(), "do the thing", &o, &no_emit);
+
+            let launches: Vec<SpawnLaunched> = progress::read_run(&progress_store, "run-1")
+                .unwrap()
+                .iter()
+                .filter(|e| e.type_ == progress::TYPE_SPAWN_LAUNCHED)
+                .map(|e| serde_json::from_slice(&e.data).unwrap())
+                .collect();
+            let launch_session = launches.first().map(|l| l.session_id.clone());
+            let got: Answer = spawned
+                .map(|r| {
+                    let session = if Some(&r.session_id) == launch_session.as_ref() {
+                        LAUNCHED.to_string()
+                    } else {
+                        r.session_id
+                    };
+                    (r.output, r.resolved_model, session, r.resumed_from)
+                })
+                .map_err(|e| e.0);
+            assert_eq!(got, row.answer, "{name}: the answer");
+            assert_eq!(
+                launches
+                    .iter()
+                    .map(|l| (l.launch, l.ended.as_deref()))
+                    .collect::<Vec<_>>(),
+                row.launches,
+                "{name}: the launches"
+            );
+            let events = run_store
+                .read_stream(STREAM, 0, Direction::Forward)
+                .unwrap();
+            let requests: Vec<(String, String)> = events
+                .iter()
+                .filter(|e| e.type_ == crate::spawn::TYPE_SPAWN_REQUESTED)
+                .map(|e| {
+                    let meta = |key: &str| e.meta.get(key).cloned().unwrap_or_default();
+                    let root = meta(crate::spawn::META_MARKER_ROOT);
+                    let root = if root == scratch_root {
+                        SCRATCH.into()
+                    } else {
+                        root
+                    };
+                    (meta(crate::run::META_RUN_ID), root)
+                })
+                .collect();
+            assert_eq!(
+                requests,
+                row.requests
+                    .iter()
+                    .map(|&(run, root)| (run.to_string(), root.to_string()))
+                    .collect::<Vec<_>>(),
+                "{name}: the requests"
+            );
+            assert_eq!(
+                spawn_result_rows(&events),
+                row.results,
+                "{name}: the results"
+            );
+        }
     }
 
     #[test]

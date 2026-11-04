@@ -521,7 +521,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-b840281b3dd6",
+    "id": "dup-061563e1ed3a",
     "classification": "semantic",
     "sites": [
       {
@@ -533,6 +533,11 @@
         "file": "crates/rigger-conductor/src/conductor.rs",
         "name": "integrate_plan_commits_wraps_any_hard_error_with_the_plan_landing_marker",
         "content_hash": "f3ef6a1fc794314b"
+      },
+      {
+        "file": "crates/rigger-conductor/src/conductor.rs",
+        "name": "a_resolver_round_ending_on_an_unmarked_error_is_spent_like_one_resolving_nothing",
+        "content_hash": "8742d08209557193"
       },
       {
         "file": "crates/rigger-conductor/src/held.rs",
@@ -626,7 +631,7 @@
       }
     ],
     "proposed_home": "one error-shaping helper module",
-    "note": "mandatory sweep: error-shaping helper functions - 20 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: error-shaping helper functions - 21 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {
@@ -1327,7 +1332,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-c2ec502eaea8",
+    "id": "dup-5263f645c63a",
     "classification": "semantic",
     "sites": [
       {
@@ -2609,6 +2614,11 @@
         "file": "tests/cli.rs",
         "name": "\"rigger: another `rigger step` is already running in this repo, or a \\\n     `rigger run` is (lock .rigger/step.lock). Refusing to run concurrently: two would race the \\\n     run-branch checkout and the unit worktrees branched off HEAD, corrupting the run. Wait for \\\n     the running one to finish and retry.\\n\"",
         "content_hash": "5622b7d32f9ba9c7"
+      },
+      {
+        "file": "tests/cli.rs",
+        "name": "\".rigger/workflow.yml\"",
+        "content_hash": "d53ae5846f4d060f"
       },
       {
         "file": "tests/cli.rs",
@@ -4357,7 +4367,7 @@
       }
     ],
     "proposed_home": "one .rigger-relative path-composition helper",
-    "note": "mandatory sweep: .rigger-path string literals - 605 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: .rigger-path string literals - 606 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {

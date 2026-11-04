@@ -16025,6 +16025,98 @@ fn a_live_runs_launch_is_left_alone_beside_it_and_reconciled_by_the_next_start_o
     );
 }
 
+/// A unit reviewed by one lens and an adjudicator, merging once its one gate passes, on a budget
+/// of two spawns: its implementer and its lens fit the budget, its adjudicator does not.
+const BUDGET_TWO_REVIEWED_UNIT_WORKFLOW: WorkflowFixture = WorkflowFixture {
+    worker: ISOLATED_WORKER,
+    body: r#"defaults:
+  grounder: nop
+  budget: 2
+gates:
+  ok: { run: "true", kind: core }
+stages:
+  solo:
+    agent: worker
+    gates: [ok]
+    on_pass: merge
+    review:
+      lenses: [lens]
+      adjudicator: judge
+"#,
+};
+
+/// The lines of a `rigger run`'s stdout that say how it ended: its run state, then any halt.
+fn how_the_run_ended(out: &str) -> Vec<&str> {
+    out.lines()
+        .filter(|line| {
+            ["done: ", "incomplete: ", "halted: "]
+                .iter()
+                .any(|end| line.starts_with(end))
+        })
+        .collect()
+}
+
+/// Spec 105's RESUME BY SESSION across two `rigger run`s: given a reviewed unit whose run halted on
+/// its budget once its implementer and its lens had answered, when the operator raises the budget
+/// by one spawn and runs again, then the restart answers each spawn its run ended from the run's
+/// log with no launch and charges it no budget, so the one spawn it launches, the adjudicator,
+/// fits the one spawn added, and the unit integrates.
+#[cfg(unix)]
+#[test]
+fn a_restart_answers_each_spawn_its_run_ended_from_the_log_and_charges_it_no_budget() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_workflow_fixture(root, &BUDGET_TWO_REVIEWED_UNIT_WORKFLOW);
+    write_agent(root, "lens", "Read", "Review it.");
+    write_agent(root, "judge", "Read", "Adjudicate it.");
+    let scratch = tempfile::tempdir().unwrap();
+    let arms = r#"  *"Do the unit."*)
+    echo "pub fn work() {}" >> work.rs
+    ;;
+  *"Review it."*)
+    echo "reviewed: no blocker"
+    ;;
+  *"Adjudicate it."*)
+    echo '{"verdict":"approve"}'
+    ;;
+"#;
+    let answered = [("solo/implementer#0", 0), ("solo/lens:lens#0", 0)];
+
+    let (out, err, ok, _fake) = run_on_arms(root, &["run"], scratch.path(), arms);
+    assert_eq!(
+        (ok, how_the_run_ended(&out)),
+        (
+            true,
+            vec![
+                "incomplete: not every unit integrated",
+                "halted: budget exhausted: 2/2 spawns"
+            ]
+        ),
+        "the first run halts on its budget; stderr: {err}"
+    );
+    assert_closed_spawns(root, &answered, "the first run");
+
+    std::fs::write(
+        root.join(".rigger/workflow.yml"),
+        BUDGET_TWO_REVIEWED_UNIT_WORKFLOW
+            .body
+            .replace("budget: 2", "budget: 3"),
+    )
+    .unwrap();
+    let (out, err, ok, _fake) =
+        run_on_arms(root, &["run", "--rebase-definition"], scratch.path(), arms);
+    assert_eq!(
+        (ok, how_the_run_ended(&out)),
+        (true, vec!["done: every unit integrated"]),
+        "the restart fits the adjudicator in the one spawn added; stderr: {err}"
+    );
+    assert_closed_spawns(
+        root,
+        &[answered[0], answered[1], ("solo/adjudicator#0", 0)],
+        "the restart launches the adjudicator alone",
+    );
+}
+
 /// Spec 47 - KurrentDB is always available (the CLI/binary edge). Before spec 47 the
 /// DEFAULT build answered `rigger run --eventstore kurrentdb` with a recompile-required
 /// dead end ("requires the `kurrentdb` cargo feature"); the adapter was gated behind a
