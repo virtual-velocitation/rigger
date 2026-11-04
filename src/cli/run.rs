@@ -3,7 +3,7 @@ use super::*;
 use rigger::driver::claude_code;
 use rigger::eventstore::TypeSelection;
 use rigger::held::HeldDriver;
-use rigger::keep_awake::OsSleepHold;
+use rigger::keep_awake::{OsSleepHold, KEEP_AWAKE_ENV};
 use rigger::review;
 use rigger::sleep_hold::{SleepGuard, SleepHold, Unavailable};
 
@@ -1475,11 +1475,6 @@ fn ticking<T>(
         drive()
     })
 }
-
-/// The knob selecting the keep-awake adapter a run's driver takes its hold from (spec 105), read by
-/// [`sleep_hold`] alone: production leaves it unset, so the driver holds the host awake; the
-/// crate's tests set a fake, so only the native adapters' rows and the no-knob row use the host.
-const KEEP_AWAKE_ENV: &str = "RIGGER_KEEP_AWAKE";
 
 /// The keep-awake adapter [`KEEP_AWAKE_ENV`] selects: unset, the host's [`OsSleepHold`];
 /// `record:<path>`, a [`RecordingSleepHold`] appending to `<path>`; `unavailable:<reason>`, an

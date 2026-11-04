@@ -12,6 +12,7 @@ std::cfg_select! {
     target_os = "linux" => {
         mod linux;
         use linux::acquire as native_acquire;
+        pub use linux::BUS_DRIVER;
     }
     target_os = "macos" => {
         mod macos;
@@ -67,6 +68,12 @@ impl SleepHold for OsSleepHold {
         native_acquire(reason)
     }
 }
+
+/// The knob selecting the keep-awake adapter a run's driver takes its hold from (spec 105), read
+/// by the composition root's `sleep_hold` alone: production leaves it unset, so the driver holds
+/// the host awake through [`OsSleepHold`]; the tests set a fake, so only the native adapters' rows
+/// and the no-knob row use the host.
+pub const KEEP_AWAKE_ENV: &str = "RIGGER_KEEP_AWAKE";
 
 #[cfg(test)]
 mod tests {
@@ -197,9 +204,10 @@ mod tests {
             [
                 "[dependencies] rigger-domain",
                 "[target.'cfg(not(target_arch = \"wasm32\"))'.dependencies] rustix fs2",
-                "[target.'cfg(target_os = \"linux\")'.dependencies] zbus",
+                "[target.'cfg(target_os = \"linux\")'.dependencies] zbus tokio",
                 "[target.'cfg(target_os = \"windows\")'.dependencies] windows-sys",
                 "[dev-dependencies] tempfile",
+                "[target.'cfg(target_os = \"linux\")'.dev-dependencies] zbus",
             ],
             "each dependency table of crates/rigger-process/Cargo.toml, with the crates it declares"
         );
