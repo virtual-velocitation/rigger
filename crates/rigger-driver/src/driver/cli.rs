@@ -212,9 +212,8 @@ fn is_emit_type(type_: &str) -> bool {
 /// same `{type, data}` shape the rigger_emit MCP tool takes, so the cli and
 /// workflow paths record byte-identical events. Lines that are not JSON, not
 /// objects, or not one of the emit types are skipped (an agent prints plenty of
-/// other text). A bare object with the protocol fields but no `data` wrapper (the
-/// EMIT_PROTOCOL prints the decision fields at the top level) is tolerated: the
-/// object minus `type` becomes the data.
+/// other text). A flat object from an agent printing the fields beside `type`, with
+/// no `data` wrapper, is tolerated: the object minus `type` becomes the data.
 ///
 /// The first `emit` error is propagated (the event store is down, the emit guard refused the
 /// record, etc.); it is not swallowed, since a lost decision silently corrupts the cross-agent
@@ -238,8 +237,8 @@ fn bridge_emits(
             continue;
         }
         // Prefer an explicit `data` object (the rigger_emit shape). Absent it, treat
-        // the rest of the object (everything but `type`) as the data, so an agent
-        // that printed the EMIT_PROTOCOL's flat decision fields still records.
+        // the rest of the object (everything but `type`) as the data, so a flat object
+        // from an agent printing the fields beside `type` still records.
         let data = match obj.get("data") {
             Some(d) => d.clone(),
             None => {
@@ -374,8 +373,8 @@ thinking out loud, not json\n\
     #[test]
     fn bridge_emits_bridges_a_review_finding_and_tolerates_a_flat_object() {
         // A ReviewFinding with an explicit data wrapper, and a flat DecisionMade
-        // (the EMIT_PROTOCOL prints the decision fields at the top level) - the
-        // flat form's non-type fields become the data.
+        // (an agent printing the fields beside `type`) - the flat form's non-type
+        // fields become the data.
         let stdout = "\
 {\"type\":\"ReviewFinding\",\"data\":{\"id\":\"f1\",\"summary\":\"skips the buffer\",\"about\":[\"combat.rs\"]}}\n\
 {\"type\":\"DecisionMade\",\"id\":\"d2\",\"summary\":\"flat form\",\"governs\":[\"b.rs\"]}\n";
