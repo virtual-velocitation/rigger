@@ -7,7 +7,8 @@
 use crate::contextgraph::{TYPE_DECISION_MADE, TYPE_LESSON_LEARNED, TYPE_REVIEW_FINDING};
 use crate::eventstore::{Error, Event, EventStore, Revision, TypeSelection};
 use crate::ledger::{
-    self, Hold, TYPE_UNIT_FAILED, TYPE_UNIT_INTEGRATED, TYPE_UNIT_STARTED, TYPE_UNIT_STATUS,
+    self, Hold, RunState, TYPE_UNIT_FAILED, TYPE_UNIT_INTEGRATED, TYPE_UNIT_STARTED,
+    TYPE_UNIT_STATUS,
 };
 use crate::progress::closed_after_release;
 use crate::retention::PERCEPTION_TYPES;
@@ -118,6 +119,18 @@ pub fn read_current_hold(
     let boundary = store.last_position(stream, TYPE_RUN_STARTED)?.unwrap_or(0);
     let events = store.read_stream_typed(stream, boundary, TypeSelection::Only(&HOLD_TYPES))?;
     Ok(ledger::project(super::current_run(&events))?.hold)
+}
+
+/// THE ONE HOLD FOLD: the [`HOLD_TYPES`] among `events` folded into `state` by
+/// [`RunState::apply`], since a hold reads nothing else, which every hold writer folds the run it
+/// read and what landed behind it through. A body no fold applies answers the store's error,
+/// naming the run's hold.
+pub fn fold_holds(state: &mut RunState, events: &[Event]) -> Result<(), Error> {
+    events
+        .iter()
+        .filter(|e| HOLD_TYPES.contains(&e.type_.as_str()))
+        .try_for_each(|e| state.apply(e))
+        .map_err(|e| Error::Backend(format!("fold the run's hold: {e}")))
 }
 
 /// The hold [`read_current_hold`] answers and the head of the one read that answered it: the

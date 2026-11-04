@@ -18,7 +18,7 @@ use rigger_domain::ledger::{Hold, RunState};
 
 use crate::contextgraph::TYPE_DECISION_MADE;
 use crate::eventstore::{Error, Event, EventStore, ExpectedRevision, Revision, TypeSelection};
-use crate::run::read::{read_run, read_run_at_head, HOLD_TYPES};
+use crate::run::read::{fold_holds, read_run, read_run_at_head, HOLD_TYPES};
 use crate::run::{
     adopted_run, current_run, effective_definition, RunHeld, RunReleased, RunStart, RunStarted,
     HOLD_BY_HOST, HOLD_BY_OPERATOR, HOLD_BY_PROBE, META_DEFINITION, META_DEFINITION_PRIOR,
@@ -387,16 +387,6 @@ fn append_on_hold(
             Err(e) => return Err(e),
         }
     }
-}
-
-/// Fold the hold types among `events` ([`HOLD_TYPES`]) into `state`, part 1's fold applied to
-/// them alone, since a hold reads nothing else.
-fn fold_holds(state: &mut RunState, events: &[Event]) -> Result<(), Error> {
-    events
-        .iter()
-        .filter(|e| HOLD_TYPES.contains(&e.type_.as_str()))
-        .try_for_each(|e| state.apply(e))
-        .map_err(|e| Error::Backend(format!("fold the run's hold: {e}")))
 }
 
 /// The event a run vocabulary type built of `type_`, its serialization failure the store's error.
