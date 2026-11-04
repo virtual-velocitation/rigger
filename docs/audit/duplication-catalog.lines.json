@@ -54,8 +54,8 @@
       },
       {
         "file": "crates/rigger-domain/src/review.rs",
-        "start_line": 391,
-        "end_line": 393
+        "start_line": 400,
+        "end_line": 402
       },
       {
         "file": "crates/rigger-domain/src/spawn.rs",
@@ -5914,8 +5914,8 @@
     "sites": [
       {
         "file": "crates/rigger-driver/src/hooks.rs",
-        "start_line": 295,
-        "end_line": 312
+        "start_line": 299,
+        "end_line": 316
       },
       {
         "file": "src/cli/setup.rs",

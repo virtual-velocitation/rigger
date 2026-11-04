@@ -10,6 +10,7 @@
 //! the headless host hands those over, and `rigger setup` never writes them.
 
 use rigger_domain::quoting::single_quoted;
+use rigger_domain::review::EDITING_TOOLS;
 use serde_json::{json, Map, Value};
 
 use crate::agent::AgentFailure;
@@ -30,8 +31,11 @@ pub const GREP_GUARD_MATCHER: &str = "Grep|Bash";
 /// See [`GREP_GUARD_MATCHER`].
 pub const GREP_GUARD_COMMAND: &str = "rigger grep-guard";
 
-/// The tools the write guard judges, as the matcher it installs under `PreToolUse`.
-const WRITE_GUARD_MATCHER: &str = "Edit|Write|NotebookEdit";
+/// The tools the write guard judges, every one of [`EDITING_TOOLS`], as the matcher it installs
+/// under `PreToolUse`.
+fn write_guard_matcher() -> String {
+    EDITING_TOOLS.map(|(tool, _)| tool).join("|")
+}
 
 /// The editor's status line command (spec 94, criterion 5): the same one-line summary
 /// `rigger status` prints first.
@@ -82,7 +86,7 @@ pub fn install_spawn_hooks(
     for root in roots {
         guard.push_str(&format!(" --root {}", shell_quote(root)));
     }
-    let mut merged = install_pretooluse_hook(existing, WRITE_GUARD_MATCHER, &guard)?;
+    let mut merged = install_pretooluse_hook(existing, &write_guard_matcher(), &guard)?;
     for category in AgentFailure::CATEGORIES {
         let class = category.as_str();
         let command = format!("{bin} hook stop-failure --spawn {spawn} --class {class}");
@@ -416,6 +420,17 @@ mod tests {
                 ],
             );
         }
+    }
+
+    /// The write guard's matcher is every editing tool, each named once, in the list's order.
+    #[test]
+    fn the_write_guard_matcher_is_the_editing_tools_joined() {
+        let matcher = write_guard_matcher();
+        assert_eq!(
+            matcher.split('|').collect::<Vec<_>>(),
+            EDITING_TOOLS.map(|(tool, _)| tool),
+            "the write guard matches every editing tool and no other: {matcher}"
+        );
     }
 
     /// Spawn settings that are not a JSON object refuse the merge.

@@ -254,8 +254,8 @@ fn parse_guard_write_roots(args: &[String]) -> Result<Vec<String>, Box<dyn std::
 /// call means for the guard's decision. THE GUARD DENIES BY DEFAULT
 /// (op-104-write-guard-deny-by-default-complete-audit): `NotCovered` (Allow) is returned
 /// ONLY when the top-level payload is a JSON object whose `tool_name` is an actual string
-/// naming a tool outside the three this guard matches - nothing this guard protects, so it
-/// is allowed rather than guessed at. Every OTHER shape - an unparseable or non-object
+/// naming a tool outside the editing tools this guard matches - nothing this guard protects,
+/// so it is allowed rather than guessed at. Every OTHER shape - an unparseable or non-object
 /// top-level payload, an absent or non-string `tool_name`, and (for a covered tool) an
 /// absent/non-object `tool_input` or an absent/non-string target field - is
 /// `TargetUnreadable`, denied exactly like a resolved target outside every root, never
@@ -270,24 +270,25 @@ enum WriteTarget {
     Target(String),
 }
 
-/// THE WRITE GUARD's target axis (spec 104 criterion 4): the path an `Edit`/`Write`/
-/// `NotebookEdit` call would touch, straight from that tool's own documented `tool_input`
-/// shape - `file_path` for `Edit`/`Write`, `notebook_path` for `NotebookEdit`. Assumes
+/// THE WRITE GUARD's target axis (spec 104 criterion 4): the path an editing tool's call would
+/// touch, read from the `tool_input` field [`rigger::review::EDITING_TOOLS`] names for that
+/// tool: `file_path` for `Edit`/`MultiEdit`/`Write`, `notebook_path` for `NotebookEdit`. Assumes
 /// `tool_name` was already confirmed to come from a JSON object's own string field -
 /// [`guard_write_read_target`] owns that classification; this function only decides the
 /// covered-vs-not-covered axis and the target-field axis underneath it.
 /// `WriteTarget::NotCovered` for every other tool name (the installed hook's own matcher
-/// already scopes calls to these three). `WriteTarget::TargetUnreadable` for a covered
+/// already scopes calls to the editing tools). `WriteTarget::TargetUnreadable` for a covered
 /// tool whose `tool_input` lacks the expected key, or carries it as a non-string (or whose
 /// `tool_input` is itself not a JSON object at all - indexing a non-object by a string key
 /// already yields `None`, so that shape falls into the same arm) - this guard's entire
 /// purpose is containment, so a payload it cannot read is denied, never folded into the
 /// same outcome as a tool it does not cover.
 fn guard_write_target(tool_name: &str, tool_input: &serde_json::Value) -> WriteTarget {
-    let key = match tool_name {
-        "Edit" | "Write" => "file_path",
-        "NotebookEdit" => "notebook_path",
-        _ => return WriteTarget::NotCovered,
+    let Some(&(_, key)) = rigger::review::EDITING_TOOLS
+        .iter()
+        .find(|(tool, _)| *tool == tool_name)
+    else {
+        return WriteTarget::NotCovered;
     };
     match tool_input.get(key).and_then(serde_json::Value::as_str) {
         Some(raw) => WriteTarget::Target(raw.to_string()),
@@ -374,7 +375,7 @@ fn resolve_lexical_realpath(path: &Path, budget: &mut u32) -> PathBuf {
 /// tree, small enough that a symlink cycle on disk cannot hang the guard.
 const SYMLINK_RESOLVE_BUDGET: u32 = 40;
 
-/// Resolve `raw` (an Edit/Write/NotebookEdit target, absolute or relative) against `cwd`
+/// Resolve `raw` (an editing tool's target, absolute or relative) against `cwd`
 /// (the PreToolUse payload's OWN reported `cwd` - never this process's, so the decision is
 /// correct no matter where the host happens to run the hook command from) into an
 /// absolute, symlink-resolved path - WITHOUT requiring the target to exist, unlike
@@ -455,7 +456,7 @@ fn guard_write_decision(roots: &[String], cwd: &str, target: WriteTarget) -> Gua
 const GUARD_WRITE_BLOCKING_EXIT_CODE: i32 = 2;
 
 /// `rigger guard-write --root <dir> [--root <dir> ...]`: THE WRITE GUARD (spec 104
-/// criterion 4) - the `PreToolUse` command hook for `Edit`/`Write`/`NotebookEdit` the host
+/// criterion 4) - the `PreToolUse` command hook for the editing tools the host
 /// injects into a launched agent's settings. Reads ONE PreToolUse payload
 /// as JSON on stdin (`{"tool_name","tool_input","cwd"}`) and allows a target under one of
 /// `roots`, denying every other - absolute, relative, `..`, symlink-escaping - with the
@@ -1037,8 +1038,7 @@ mod tests {
                 "tool_input": {"command": "ls"},
             })),
             (WriteTarget::NotCovered, "/root".to_string()),
-            "a genuine string tool_name outside Edit/Write/NotebookEdit is the ONE door to \
-             NotCovered"
+            "a genuine string tool_name outside the editing tools is the ONE door to NotCovered"
         );
     }
 

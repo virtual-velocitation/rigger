@@ -140,7 +140,7 @@ result.
 
 Per-spawn, through `--settings`:
 
-- `PreToolUse` on `Edit|Write|NotebookEdit` runs `rigger guard-write --root <dir>...`,
+- `PreToolUse` on `Edit|MultiEdit|Write|NotebookEdit` runs `rigger guard-write --root <dir>...`,
   rooted at the spawn's `dir` (the session's cwd when `dir` is empty) and its scratch
   container. A target outside every root is denied with a reason naming the first root.
 - `StopFailure`, one entry per error category, runs `rigger hook stop-failure --spawn <id>
