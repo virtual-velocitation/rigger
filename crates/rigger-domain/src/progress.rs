@@ -1036,7 +1036,8 @@ mod tests {
     /// The count `api-unstable` reads (spec 105): failed closes newest first, ordered by revision,
     /// back to the later of the last `completed` close and the last `RunReleased`. A close
     /// stamped equal to the release is behind it, a tie of closes falls to stream order, and an
-    /// unstamped close takes no special rule.
+    /// unstamped close takes the stamp of the last stamped close before it in stream order, so it
+    /// orders first only when no stamped close stands before it.
     #[test]
     fn the_count_of_failed_closes_runs_since_the_later_of_the_last_completed_and_release() {
         const F: &str = ENDED_FAULT;
@@ -1044,7 +1045,7 @@ mod tests {
         const C: &str = ENDED_COMPLETED;
         const I: &str = ENDED_INTERRUPTED;
         type Close = (&'static str, Option<Revision>);
-        let rows: [(&str, Vec<Close>, Option<Revision>, usize); 19] = [
+        let rows: [(&str, Vec<Close>, Option<Revision>, usize); 20] = [
             ("no closes", vec![], None, 0),
             ("two faults", vec![(F, Some(1)), (F, Some(1))], None, 2),
             (
@@ -1124,6 +1125,12 @@ mod tests {
                 vec![(F, None)],
                 Some(0),
                 0,
+            ),
+            (
+                "a completed close whose head read failed ends the streak",
+                vec![(F, Some(1)), (F, Some(1)), (C, None), (F, Some(1))],
+                None,
+                1,
             ),
             (
                 "a fault tied behind a completed close counts",
