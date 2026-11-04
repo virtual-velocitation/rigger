@@ -5874,13 +5874,13 @@
     "sites": [
       {
         "file": "crates/rigger-driver/src/driver/claude_code.rs",
-        "start_line": 2416,
-        "end_line": 2437
+        "start_line": 2421,
+        "end_line": 2442
       },
       {
         "file": "crates/rigger-driver/src/driver/claude_code.rs",
-        "start_line": 2440,
-        "end_line": 2458
+        "start_line": 2445,
+        "end_line": 2463
       }
     ]
   },

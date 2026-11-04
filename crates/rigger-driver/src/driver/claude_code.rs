@@ -2224,7 +2224,8 @@ mod tests {
 
     /// The silence THE STOP weighs at a wake: with no beat source the wall time since the last
     /// line, read from no store; with one, a record that does not read, from either store, leaves
-    /// the wake uncounted rather than reading as a stop.
+    /// the wake uncounted rather than reading as a stop, and the next wake a poll away rather than
+    /// a whole bound.
     #[test]
     fn the_stop_counts_from_the_line_with_no_source_and_not_at_all_on_a_failed_read() {
         let readable = Store::open(":memory:").unwrap();
@@ -2253,7 +2254,11 @@ mod tests {
                 run_store,
                 ..Driver::default()
             };
-            assert_eq!(driver.silence(&o, last_line), Duration::ZERO, "{case}");
+            assert_eq!(
+                next_wait(Duration::from_secs(60), driver.silence(&o, last_line)),
+                UNBOUNDED_POLL,
+                "{case}: the next wake"
+            );
         }
     }
 
