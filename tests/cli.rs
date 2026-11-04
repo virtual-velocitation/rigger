@@ -7375,29 +7375,21 @@ const SESSION_WAITS_FOR_A_HOLD: &str = concat!(
 );
 
 /// A `beside` for [`run_on_arms_beside`] landing the `RunHeld` event `held` builds on the session
-/// that marked `$here/session-live`, `after` that mark was first seen, then marking
+/// that marked `$here/session-live`, as that mark is first seen, then marking
 /// `$here/operator-held`. The event is built as it lands, so it is dated then unless `held` dates
 /// it otherwise.
 fn holding_the_live_session<'a>(
     root: &'a Path,
-    after: Duration,
     held: impl Fn() -> rigger::eventstore::Event + 'a,
 ) -> impl FnMut(&Path) + 'a {
-    landing_on_the_live_session(after, move || common::cli::seed_on_the_run(root, held()))
+    landing_on_the_live_session(move || common::cli::seed_on_the_run(root, held()))
 }
 
 /// [`holding_the_live_session`] making the write `land` makes in place of seeding one event.
-fn landing_on_the_live_session<'a>(
-    after: Duration,
-    land: impl Fn() + 'a,
-) -> impl FnMut(&Path) + 'a {
-    let mut live_since = None;
+fn landing_on_the_live_session<'a>(land: impl Fn() + 'a) -> impl FnMut(&Path) + 'a {
     move |fake| {
         let landed = fake.join("bin/operator-held");
-        if fake.join("bin/session-live").exists()
-            && !landed.exists()
-            && live_since.get_or_insert_with(Instant::now).elapsed() >= after
-        {
+        if fake.join("bin/session-live").exists() && !landed.exists() {
             land();
             std::fs::write(&landed, "").unwrap();
         }
@@ -7652,7 +7644,7 @@ fn an_is_error_result_reruns_uncharged_and_holds_as_its_class_says() {
 {opening}{session}    ;;
 "#
         );
-        let mut hold = holding_the_live_session(root, Duration::ZERO, || {
+        let mut hold = holding_the_live_session(root, || {
             common::fixtures::run_held_event(&seeded_operator_hold())
         });
         let mut release = releasing_holds(root, 1, |_| true);
@@ -9482,7 +9474,7 @@ fn assert_probe_cases(cases: &[ProbeCase]) {
             "{RECORDING_WORKER_ARM}{}",
             common::fixtures::probe_arms(&case.auth, &case.canary)
         );
-        let mut redeclare = landing_on_the_live_session(Duration::ZERO, || (case.redeclare)(root));
+        let mut redeclare = landing_on_the_live_session(|| (case.redeclare)(root));
         let mut release = releasing_holds(root, 1, unit_started);
         let last_mark = if case.runs_canary {
             "bin/canary-ran"
@@ -9880,7 +9872,7 @@ fn a_hold_landing_mid_run_is_probed_and_its_canary_outlasting_the_drive_is_waite
         )
     );
     let hold = probed_hold(SEEDED_HOLD_CAUSE, rigger::run::HOLD_BY_HOST);
-    let mut land = holding_the_live_session(root, Duration::ZERO, || {
+    let mut land = holding_the_live_session(root, || {
         common::fixtures::dated_ago(common::fixtures::run_held_event(&hold), 120)
     });
     let (out, err, ok, fake) = run_on_arms_beside(root, &["run"], scratch.path(), &arms, |fake| {
@@ -11625,7 +11617,7 @@ fn a_resume_ending_api_side_or_on_a_held_run_launches_nothing_fresh() {
         );
         let closes = case.launches[0].1.is_some();
         let scratch_root = scratch.path().to_str().unwrap();
-        let mut hold = holding_the_live_session(root, Duration::ZERO, || {
+        let mut hold = holding_the_live_session(root, || {
             common::fixtures::run_held_event(&seeded_operator_hold())
         });
         // The host reads the hold once the launch has ended, so the release waits for what follows
