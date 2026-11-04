@@ -1825,7 +1825,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `crates/rigger-grounder/src/grounder/workflowdef.rs:34-36` `agent_id`
 - `crates/rigger-grounder/src/ingest.rs:614-616` `code_identity`
 - `crates/rigger-store-sqlite/src/eventstore/namespace.rs:98-100` `prefix_for`
-- `crates/rigger-worktree-git/src/worktree.rs:1854-1856` `shared_build_cache_guard_path`
+- `crates/rigger-worktree-git/src/worktree.rs:1940-1942` `shared_build_cache_guard_path`
 - `src/cli/hygiene.rs:739-751` `live_writer_refusal`
 - `src/cli/mod.rs:4847-4849` `skill_source_rel`
 - `src/cli/mod.rs:5391-5397` `spec_lint_next_step`
@@ -1954,8 +1954,8 @@ mandatory sweep: error-shaping helper functions - 22 site(s), collected mechanic
 - `crates/rigger-domain/src/ingest.rs:604-649` `a_walk_reaches_every_batch_past_a_failed_one_and_answers_the_first_error`
 - `crates/rigger-driver/src/driver/claude_code.rs:1776-1781` `read_agent_stream_error`
 - `crates/rigger-grounder/src/grounder/mod.rs:207-213` `retired_grounder_error`
-- `crates/rigger-worktree-git/src/worktree.rs:3964-3991` `land_reports_a_generic_error_for_a_refusal_that_is_neither_tip_moved_nor_blocked`
-- `crates/rigger-worktree-git/src/worktree.rs:5411-5465` `revert_on_base_aborts_and_errors_on_a_conflicting_revert`
+- `crates/rigger-worktree-git/src/worktree.rs:4050-4077` `land_reports_a_generic_error_for_a_refusal_that_is_neither_tip_moved_nor_blocked`
+- `crates/rigger-worktree-git/src/worktree.rs:5497-5551` `revert_on_base_aborts_and_errors_on_a_conflicting_revert`
 - `tests/adoption_keys_on_criterion_periphery.rs:2008-2148` `a_quarantine_record_whose_ref_was_since_deleted_hard_errors_instead_of_silently_starting_fresh`
 - `tests/batched_fold_cadence.rs:177-273` `append_and_fold_is_best_effort_on_fold_error_and_a_no_op_on_an_empty_batch`
 - `tests/canary_item_sharding_jobs_cap_periphery.rs:277-367` `run_canary_runs_every_item_to_completion_even_when_one_items_spawn_errors`
@@ -2068,7 +2068,7 @@ mandatory sweep: Command::new call sites - 94 site(s), collected mechanically re
 - `crates/rigger-process/src/budget.rs:236-236` `Command::new`
 - `crates/rigger-process/src/budget.rs:247-247` `Command::new`
 - `crates/rigger-process/src/subprocess.rs:18-18` `Command::new`
-- `crates/rigger-worktree-git/src/worktree.rs:4353-4353` `Command::new`
+- `crates/rigger-worktree-git/src/worktree.rs:4439-4439` `Command::new`
 - `src/cli/mod.rs:5870-5870` `Command::new`
 - `src/cli/mod.rs:8260-8260` `Command::new`
 - `src/cli/mod.rs:10429-10429` `Command::new`
@@ -2296,16 +2296,16 @@ mandatory sweep: .rigger-path string literals - 607 site(s), collected mechanica
 - `crates/rigger-store-sqlite/src/registry.rs:708-708` `r#"{"project":"proj","root":"/home/dev/proj","store":{"kind":"local","path":"/home/dev/proj/.rigger/events.db"},"heartbeat_ms":1000}"#`
 - `crates/rigger-store-sqlite/src/registry.rs:729-729` `"/home/dev/proj/.rigger/events.db"`
 - `crates/rigger-store-sqlite/src/registry.rs:789-789` `"/home/dev/proj/.rigger/events.db"`
-- `crates/rigger-worktree-git/src/worktree.rs:5739-5739` `"{repo_path}/.rigger/tmp"`
-- `crates/rigger-worktree-git/src/worktree.rs:5740-5740` `"the default must no longer nest inside the repo's own .rigger: {dflt:?}"`
-- `crates/rigger-worktree-git/src/worktree.rs:5743-5743` `"/.rigger/"`
-- `crates/rigger-worktree-git/src/worktree.rs:5743-5743` `"/.rigger"`
-- `crates/rigger-worktree-git/src/worktree.rs:5744-5744` `"the default must never live under any .rigger: {dflt:?}"`
-- `crates/rigger-worktree-git/src/worktree.rs:5763-5763` `"{repo_path}/.rigger/tmp"`
-- `crates/rigger-worktree-git/src/worktree.rs:5787-5787` `"~/.rigger-scratch-test"`
-- `crates/rigger-worktree-git/src/worktree.rs:5788-5788` `"{home}/.rigger-scratch-test"`
-- `crates/rigger-worktree-git/src/worktree.rs:7460-7460` `"{base}..rigger-run"`
-- `crates/rigger-worktree-git/src/worktree.rs:7490-7490` `".rigger"`
+- `crates/rigger-worktree-git/src/worktree.rs:5825-5825` `"{repo_path}/.rigger/tmp"`
+- `crates/rigger-worktree-git/src/worktree.rs:5826-5826` `"the default must no longer nest inside the repo's own .rigger: {dflt:?}"`
+- `crates/rigger-worktree-git/src/worktree.rs:5829-5829` `"/.rigger/"`
+- `crates/rigger-worktree-git/src/worktree.rs:5829-5829` `"/.rigger"`
+- `crates/rigger-worktree-git/src/worktree.rs:5830-5830` `"the default must never live under any .rigger: {dflt:?}"`
+- `crates/rigger-worktree-git/src/worktree.rs:5849-5849` `"{repo_path}/.rigger/tmp"`
+- `crates/rigger-worktree-git/src/worktree.rs:5873-5873` `"~/.rigger-scratch-test"`
+- `crates/rigger-worktree-git/src/worktree.rs:5874-5874` `"{home}/.rigger-scratch-test"`
+- `crates/rigger-worktree-git/src/worktree.rs:7546-7546` `"{base}..rigger-run"`
+- `crates/rigger-worktree-git/src/worktree.rs:7576-7576` `".rigger"`
 - `src/cli/critique.rs:164-164` `"{COMMAND}: the critic {:?} the workflow names has no definition under \
                  .rigger/agents"`
 - `src/cli/hygiene.rs:689-689` `"a `rigger step` or `rigger run` is running right now (it holds .rigger/step.lock)"`
@@ -3548,9 +3548,9 @@ mandatory sweep: /proc-path string literals - 58 site(s), collected mechanically
 - `crates/rigger-process/src/reap.rs:235-235` `"/proc/{pid}/status"`
 - `crates/rigger-process/src/reap.rs:295-295` `"/proc"`
 - `crates/rigger-process/src/reap.rs:372-372` `"/proc/{}/cwd"`
-- `crates/rigger-worktree-git/src/worktree.rs:3061-3061` `"/proc"`
-- `crates/rigger-worktree-git/src/worktree.rs:3065-3065` `"/proc/{pid}/cmdline"`
-- `crates/rigger-worktree-git/src/worktree.rs:3089-3089` `"/proc/{}"`
+- `crates/rigger-worktree-git/src/worktree.rs:3147-3147` `"/proc"`
+- `crates/rigger-worktree-git/src/worktree.rs:3151-3151` `"/proc/{pid}/cmdline"`
+- `crates/rigger-worktree-git/src/worktree.rs:3175-3175` `"/proc/{}"`
 - `src/cli/run.rs:3744-3744` `"/proc"`
 - `src/cli/run.rs:3848-3848` `"/proc"`
 - `tests/cli.rs:27704-27704` `"/proc"`
@@ -4469,7 +4469,7 @@ Proposed home: `one shared `changed_files` helper (e.g. relocated into `tests/co
 mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
 
 - `crates/rigger-grounder/src/grounder/symbols/grounder.rs:75-98` `changed_files`
-- `crates/rigger-worktree-git/src/worktree.rs:609-612` `changed_files`
+- `crates/rigger-worktree-git/src/worktree.rs:621-624` `changed_files`
 
 #### `dup-9408447d0007` (near, 2 sites)
 
@@ -4632,7 +4632,7 @@ Proposed home: `a new shared module (sites span 2 files: crates/rigger-store-sql
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `crates/rigger-store-sqlite/src/lockfile.rs:52-54` `drop`
-- `crates/rigger-worktree-git/src/worktree.rs:1781-1783` `drop`
+- `crates/rigger-worktree-git/src/worktree.rs:1867-1869` `drop`
 
 #### `dup-09fd5c38b65b` (near, 2 sites)
 
@@ -4667,8 +4667,8 @@ Proposed home: `worktree::worktree`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-worktree-git/src/worktree.rs:633-635` `commit`
-- `crates/rigger-worktree-git/src/worktree.rs:651-653` `commit_checkpoint`
+- `crates/rigger-worktree-git/src/worktree.rs:645-647` `commit`
+- `crates/rigger-worktree-git/src/worktree.rs:663-665` `commit_checkpoint`
 
 #### `dup-4efef9d45e3e` (exact, 2 sites)
 
@@ -4676,8 +4676,8 @@ Proposed home: `worktree::support (consolidate these 2 sites into one function i
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-worktree-git/src/worktree.rs:2683-2691` `scratch_root`
-- `crates/rigger-worktree-git/src/worktree.rs:2782-2790` `scratch_root_path`
+- `crates/rigger-worktree-git/src/worktree.rs:2769-2777` `scratch_root`
+- `crates/rigger-worktree-git/src/worktree.rs:2868-2876` `scratch_root_path`
 
 #### `dup-e08d5a3a5d94` (exact, 2 sites)
 
@@ -4685,8 +4685,8 @@ Proposed home: `worktree::support (consolidate these 2 sites into one function i
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-worktree-git/src/worktree.rs:2880-2883` `scratch_root_from_env`
-- `crates/rigger-worktree-git/src/worktree.rs:2887-2890` `scratch_root_path_from_env`
+- `crates/rigger-worktree-git/src/worktree.rs:2966-2969` `scratch_root_from_env`
+- `crates/rigger-worktree-git/src/worktree.rs:2973-2976` `scratch_root_path_from_env`
 
 #### `dup-5a3cb86b6dd7` (near, 2 sites)
 
@@ -4694,8 +4694,8 @@ Proposed home: `worktree::support (consolidate these 2 sites into one function i
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-worktree-git/src/worktree.rs:3528-3548` `integrate_lands_work_in_the_repo`
-- `crates/rigger-worktree-git/src/worktree.rs:5548-5571` `integrate_lands_a_pre_committed_artifact_unchanged`
+- `crates/rigger-worktree-git/src/worktree.rs:3614-3634` `integrate_lands_work_in_the_repo`
+- `crates/rigger-worktree-git/src/worktree.rs:5634-5657` `integrate_lands_a_pre_committed_artifact_unchanged`
 
 #### `dup-4e9eb933164b` (near, 2 sites)
 
@@ -5485,7 +5485,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 ### Adversarial sample
 
-Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 11139 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
+Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 11140 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
 
 - `crates/rigger-conductor/src/conductor.rs:15742-15764` `branch_is_foreign_when_only_one_axis_differs` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-conductor/src/conductor.rs:16716-16723` `resume_of` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
@@ -5502,7 +5502,7 @@ Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85
 - `crates/rigger-grounder/src/grounder/symbols/extract.rs:1280-1285` `class_fields` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-grounder/src/grounder/symbols/extract.rs:1702-1710` `go_receiver` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-grounder/src/ingest.rs:1918-1937` `answered` - duplicate found by reading and closed: its view of a sink answer's batch is `wire_owned`; the root sink suite's `Handed::answer` re-rolled that view as its own `typed` and now calls `wire_owned` too
-- `crates/rigger-worktree-git/src/worktree.rs:1956-1978` `reclaim_cache_sibling` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
+- `crates/rigger-worktree-git/src/worktree.rs:2042-2064` `reclaim_cache_sibling` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `src/cli/mod.rs:4714-4740` `footprint_reclaim_lines` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `src/cli/mod.rs:8884-8894` `parse_run_args_reads_rebase_definition` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `src/cli/run.rs:1598-1600` `pause_a_hold_poll` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
