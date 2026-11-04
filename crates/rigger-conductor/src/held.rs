@@ -91,10 +91,11 @@ impl<'a> HeldDriver<'a> {
     /// Return once the run is not held. A closed session ends a held read, or a wait that paused
     /// whatever its last read found, with `id`'s park: the flag is read after the hold, so a close
     /// beats a release landing with it and a launch that did not wait reads no close. A failed
-    /// read of the run ends the wait with its error, since a run not proved unheld launches
-    /// nothing, unless the wait paused and its session closed: that wait parks, whatever its
-    /// read answered, since nothing would serve the spawn either way.
-    fn wait_out_the_hold(&self, id: &str) -> Result<(), Error> {
+    /// read of the run ends the wait with `relaunched`, the error of the spawn this wait
+    /// relaunches, or with the read's own error before a first launch, since a run not proved
+    /// unheld launches nothing, unless the wait paused and its session closed: that wait parks,
+    /// whatever its read answered, since nothing would serve the spawn either way.
+    fn wait_out_the_hold(&self, id: &str, mut relaunched: Option<Error>) -> Result<(), Error> {
         let mut paused = false;
         loop {
             let held = read_current_hold(self.store, STREAM).map(|hold| hold.is_some());
@@ -104,7 +105,7 @@ impl<'a> HeldDriver<'a> {
             if (paused || matches!(held, Ok(true))) && closed {
                 return Err(parked_spawn(id));
             }
-            if !held? {
+            if !held.map_err(|read| relaunched.take().unwrap_or(read))? {
                 return Ok(());
             }
             (self.pause)();
@@ -189,8 +190,9 @@ impl AgentDriver for HeldDriver<'_> {
         opts: &SpawnOpts,
         emit: &dyn Fn(&str, Value) -> Result<(), Error>,
     ) -> Result<AgentResult, Error> {
+        let mut relaunched = None;
         loop {
-            self.wait_out_the_hold(&opts.id)?;
+            self.wait_out_the_hold(&opts.id, relaunched.take())?;
             match self.inner.spawn(agent, prompt, opts, emit) {
                 Ok(result) => {
                     self.relaunches
@@ -199,7 +201,7 @@ impl AgentDriver for HeldDriver<'_> {
                         .remove(&opts.id);
                     return Ok(result);
                 }
-                Err(e) if self.relaunches(&e, &opts.id) => continue,
+                Err(e) if self.relaunches(&e, &opts.id) => relaunched = Some(e),
                 Err(e) => {
                     self.record_error(&e, &opts.id);
                     return Err(e);

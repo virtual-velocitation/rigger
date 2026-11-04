@@ -1972,7 +1972,7 @@ mandatory sweep: error-shaping helper functions - 22 site(s), collected mechanic
 - `crates/rigger-conductor/src/conductor.rs:5449-5467` `guard_review_round_tree_on_tier_err`
 - `crates/rigger-conductor/src/conductor.rs:31562-31623` `integrate_plan_commits_wraps_any_hard_error_with_the_plan_landing_marker`
 - `crates/rigger-conductor/src/conductor.rs:46150-46238` `a_resolver_round_ending_on_an_unmarked_error_is_spent_like_one_resolving_nothing`
-- `crates/rigger-conductor/src/held.rs:756-840` `a_marked_error_or_an_ended_spawn_passes_held_or_not`
+- `crates/rigger-conductor/src/held.rs:758-842` `a_marked_error_or_an_ended_spawn_passes_held_or_not`
 - `crates/rigger-domain/src/agent.rs:505-507` `no_result_error`
 - `crates/rigger-domain/src/agent.rs:574-612` `an_error_answers_the_class_it_carries`
 - `crates/rigger-domain/src/ingest.rs:604-649` `a_walk_reaches_every_batch_past_a_failed_one_and_answers_the_first_error`
