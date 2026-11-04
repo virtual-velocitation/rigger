@@ -601,7 +601,6 @@ fn canary_opts(
         // A canary drives the existing blocking drivers only (spec 104's host is not
         // wired in yet), which ignore these fields.
         settings_json: String::new(),
-        launch: 0,
         resumed_from: String::new(),
         resume_task: String::new(),
     }

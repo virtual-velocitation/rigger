@@ -160,14 +160,6 @@ pub struct SpawnOpts {
     /// host the session ones alone, and each passes the result as `--settings`. Empty means no
     /// settings of the spawn's own; the workflow driver ignores this field.
     pub settings_json: String,
-    /// The 0-based ordinal the first launch of this spawn id takes (spec 104 criterion 1): 0
-    /// unless a caller names another. The stream-json host reads it only for an id with no
-    /// recorded launch; every later launch, a relaunch after an API-side fault (spec 104's own
-    /// FAULT class), a hold-release resume or the resume fallback (spec 105), takes the ordinal
-    /// after the highest recorded. Distinct from `attempt`, the remediation counter the
-    /// deterministic id encodes. 0 for the cli/workflow drivers, which never relaunch a live
-    /// session.
-    pub launch: u32,
     /// The session id this launch CONTINUES (`claude -p --resume <session_id>`), empty
     /// for a fresh launch. The conductor sets it on a later attempt or review round of a
     /// role whose earlier spawn on the same unit recorded its session
@@ -746,7 +738,7 @@ mod tests {
 
     /// The request a spawn parks is derived from its options and its agent alone: every field the
     /// options carry, the agent's model rung for the attempt, its fan-out-stripped tools and its
-    /// wall-clock bound - and nothing else of the options (isolation, env, settings, launch).
+    /// wall-clock bound - and nothing else of the options (isolation, env, settings).
     #[test]
     fn a_parked_request_is_derived_from_its_spawn_options_and_its_agent() {
         let agent = AgentDef {
@@ -774,7 +766,6 @@ mod tests {
             ],
             reviews: vec!["lens:sdet".into()],
             settings_json: "{}".into(),
-            launch: 2,
             ..SpawnOpts::default()
         };
         assert_eq!(

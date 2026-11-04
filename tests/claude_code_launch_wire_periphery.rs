@@ -137,7 +137,6 @@ fn spawn_launched_survives_a_cold_start_a_second_store_instance_reads_the_first_
         let store = Store::open(&db_path).expect("open a real on-disk progress store");
         let mut o = opts("u104-launch/implementer#0");
         o.run_id = "run-cold-start".to_string();
-        o.launch = 0;
         let mut launch = driver
             .launch(&AgentDef::default(), "first launch", &o, &store)
             .expect("first launch records and starts");
@@ -172,11 +171,14 @@ fn spawn_launched_survives_a_cold_start_a_second_store_instance_reads_the_first_
     // real relaunch-after-restart takes.
     let mut o2 = opts("u104-launch/implementer#0");
     o2.run_id = "run-cold-start".to_string();
-    o2.launch = 1;
     let mut second = driver
         .launch(&AgentDef::default(), "second launch", &o2, &reopened)
         .expect("second launch, from the reopened store, records and starts");
     reap(&mut second.child);
+    assert_eq!(
+        second.ordinal, 1,
+        "the second launch takes the ordinal after the one the reopened store records"
+    );
 
     let recorded =
         rigger::progress::read_run(&reopened, "run-cold-start").expect("read both launches back");

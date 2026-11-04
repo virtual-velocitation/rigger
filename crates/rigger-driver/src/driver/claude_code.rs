@@ -236,8 +236,8 @@ impl Driver<'_> {
     /// [`Driver::read_stream`] reads what the session printed before it went.
     ///
     /// The launch takes the ordinal after the highest the record holds for this spawn
-    /// ([`progress_store::next_launch`]), and [`SpawnOpts::launch`] only for an id with no
-    /// recorded launch, so a restart's first spawn never truncates a prior transcript. Its
+    /// ([`progress_store::next_launch`]), and 0 only for an id with no recorded launch, so a
+    /// restart's first spawn never truncates a prior transcript. Its
     /// record, its transcript ([`stream_path`]) and its close all carry that
     /// [`Launch::ordinal`]; a failed read of the record starts nothing.
     ///
@@ -297,7 +297,7 @@ impl Driver<'_> {
             .unwrap_or(0);
         let ordinal = match ordinal {
             Some(ordinal) => ordinal,
-            None => progress_store::next_launch(store, &opts.run_id, &opts.id, opts.launch)?,
+            None => progress_store::next_launch(store, &opts.run_id, &opts.id)?,
         };
         progress_store::record_launch(
             store,

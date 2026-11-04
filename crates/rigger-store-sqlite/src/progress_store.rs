@@ -60,16 +60,10 @@ pub fn record_launch(
 }
 
 /// The ordinal the next launch of `spawn` takes (spec 105 criterion 1): the ordinal of its
-/// [`latest_launch`] plus one, or `first`, the ordinal the caller names, when the run holds no
-/// record of it. A failed read is the caller's to surface, since a launch that cannot name its
+/// [`latest_launch`] plus one, or 0 when the run holds no record of it. A failed read is the caller's to surface, since a launch that cannot name its
 /// ordinal could overwrite a prior launch's transcript.
-pub fn next_launch(
-    store: &dyn EventStore,
-    run_id: &str,
-    spawn: &str,
-    first: u32,
-) -> Result<u32, Error> {
-    Ok(latest_launch(store, run_id, spawn)?.map_or(first, |latest| latest.launch + 1))
+pub fn next_launch(store: &dyn EventStore, run_id: &str, spawn: &str) -> Result<u32, Error> {
+    Ok(latest_launch(store, run_id, spawn)?.map_or(0, |latest| latest.launch + 1))
 }
 
 /// The latest [`SpawnLaunched`] record of `spawn` in the run `run_id` (spec 105, RESUME BY
@@ -411,14 +405,14 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            next_launch(&progress, "run-1", "u/implementer#0", 6).unwrap(),
+            next_launch(&progress, "run-1", "u/implementer#0").unwrap(),
             next
         );
     }
 
     crate::test_cases! {
         an_undecodable_record_alone_leaves_the_first_ordinal:
-            an_undecodable_launch_record_is_skipped(&[], 6);
+            an_undecodable_launch_record_is_skipped(&[], 0);
         an_undecodable_record_leaves_the_decoded_ones_deciding:
             an_undecodable_launch_record_is_skipped(&[2], 3);
     }

@@ -3596,18 +3596,15 @@ rigger::test_cases! {
     );
 }
 
-/// A launch asked to take `launch` opens and closes at the ordinal after the highest the progress
-/// store records for its spawn on its run, a closing counting as much as an opening, and at
-/// `launch` when none does: `seeded` rows are `(run, spawn, ordinal, ended)`.
-fn the_ordinal_follows_the_record(seeded: &[(&str, &str, u32, &str)], launch: u32, ordinal: u32) {
+/// A launch opens and closes at the ordinal after the highest the progress store records for its
+/// spawn on its run, a closing counting as much as an opening, and at 0 when none does: `seeded`
+/// rows are `(run, spawn, ordinal, ended)`.
+fn the_ordinal_follows_the_record(seeded: &[(&str, &str, u32, &str)], ordinal: u32) {
     let fx = Fixture::new();
     for (run, spawn, recorded, ended) in seeded {
         fx.seed_launch(run, spawn, *recorded, ended);
     }
-    let o = SpawnOpts {
-        launch,
-        ..fx.fresh_opts("answer")
-    };
+    let o = fx.fresh_opts("answer");
 
     fx.host(&AgentDef::default(), &o)
         .expect("the launch answers");
@@ -3628,38 +3625,33 @@ fn the_ordinal_follows_the_record(seeded: &[(&str, &str, u32, &str)], launch: u3
 }
 
 rigger::test_cases! {
-    a_first_launch_takes_ordinal_zero: the_ordinal_follows_the_record(&[], 0, 0);
-    a_first_launch_keeps_the_ordinal_its_spawn_names: the_ordinal_follows_the_record(&[], 2, 2);
+    a_first_launch_takes_ordinal_zero: the_ordinal_follows_the_record(&[], 0);
     a_recorded_launch_moves_the_next_to_one:
-        the_ordinal_follows_the_record(&[("run-1", RESUMED_SPAWN, 0, "")], 0, 1);
-    a_recorded_launch_outranks_the_ordinal_a_spawn_names:
-        the_ordinal_follows_the_record(&[("run-1", RESUMED_SPAWN, 0, "")], 9, 1);
+        the_ordinal_follows_the_record(&[("run-1", RESUMED_SPAWN, 0, "")], 1);
     a_closing_record_counts_once_with_its_opening: the_ordinal_follows_the_record(
         &[
             ("run-1", RESUMED_SPAWN, 0, ""),
             ("run-1", RESUMED_SPAWN, 0, "fault"),
         ],
-        0,
         1,
     );
     a_closing_record_alone_counts:
-        the_ordinal_follows_the_record(&[("run-1", RESUMED_SPAWN, 4, "stopped")], 0, 5);
+        the_ordinal_follows_the_record(&[("run-1", RESUMED_SPAWN, 4, "stopped")], 5);
     the_highest_recorded_ordinal_decides_not_the_latest: the_ordinal_follows_the_record(
         &[
             ("run-1", RESUMED_SPAWN, 0, ""),
             ("run-1", RESUMED_SPAWN, 3, ""),
             ("run-1", RESUMED_SPAWN, 1, ""),
         ],
-        0,
         4,
     );
     another_spawns_launches_move_no_ordinal:
-        the_ordinal_follows_the_record(&[("run-1", "u105-resume/implementer#0", 7, "")], 0, 0);
+        the_ordinal_follows_the_record(&[("run-1", "u105-resume/implementer#0", 7, "")], 0);
     another_runs_launches_move_no_ordinal:
-        the_ordinal_follows_the_record(&[("run-2", RESUMED_SPAWN, 7, "")], 0, 0);
+        the_ordinal_follows_the_record(&[("run-2", RESUMED_SPAWN, 7, "")], 0);
 }
 
-/// Every close carries the ordinal its launch took, past `opts.launch`: ending `ending`, the
+/// Every close carries the ordinal its launch took: ending `ending`, the
 /// launch after a recorded launch 4 closes `ended` at 5.
 fn a_close_carries_the_ordinal_its_launch_took(ending: &str, agent: AgentDef, ended: (&str, &str)) {
     let fx = Fixture::new();
@@ -3695,7 +3687,7 @@ rigger::test_cases! {
         );
 }
 
-/// The fallback's two launches take the two ordinals after the record, past `opts.launch`, and
+/// The fallback's two launches take the two ordinals after the record, and
 /// neither touches a transcript of the prior launches'.
 #[test]
 fn a_fallback_past_recorded_launches_takes_the_next_two_ordinals() {

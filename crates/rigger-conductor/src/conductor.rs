@@ -4849,10 +4849,9 @@ impl RunCtx<'_> {
             // the cache the unit's gates use.
             env: Self::spawn_env(&build_env, dir, cache),
             reviews: reviews.to_vec(),
-            // The headless host reads these two, the cli driver `settings_json` too; the other
-            // drivers ignore them.
+            // The headless host and the cli driver read `settings_json`; the other drivers
+            // ignore it.
             settings_json: String::new(),
-            launch: 0,
             // A fresh session; `continue_prior_session` points a later round's spawn at the
             // session to continue.
             resumed_from: String::new(),
@@ -6150,10 +6149,9 @@ impl RunCtx<'_> {
                         // An implementer is never a review tier: no roster to render
                         // (spec 67, criterion 4).
                         reviews: Vec::new(),
-                        // The headless host reads these two, the cli driver `settings_json`
-                        // too; the other drivers ignore them.
+                        // The headless host and the cli driver read `settings_json`; the
+                        // other drivers ignore it.
                         settings_json: String::new(),
-                        launch: 0,
                         // Set by `continue_prior_session` below when there is a session
                         // to continue.
                         resumed_from: String::new(),
@@ -6834,10 +6832,9 @@ impl RunCtx<'_> {
                             // A speculation candidate is an implementer lane, never a review
                             // tier: no roster to render (spec 67, criterion 4).
                             reviews: Vec::new(),
-                            // The headless host reads these, the cli driver all but `launch`;
-                            // the other drivers ignore them.
+                            // The headless host and the cli driver read these; the other
+                            // drivers ignore them.
                             settings_json: String::new(),
-                            launch: 0,
                             resumed_from: String::new(),
                             resume_task: String::new(),
                         },
@@ -8508,10 +8505,9 @@ impl RunCtx<'_> {
                         // The planner/re-planner is never a review tier: no roster to render
                         // (spec 67, criterion 4).
                         reviews: Vec::new(),
-                        // The headless host reads these, the cli driver all but `launch`; the
-                        // other drivers ignore them.
+                        // The headless host and the cli driver read these; the other drivers
+                        // ignore them.
                         settings_json: String::new(),
-                        launch: 0,
                         resumed_from: String::new(),
                         resume_task: String::new(),
                     },
@@ -11308,7 +11304,6 @@ impl RunCtx<'_> {
                 env: Self::spawn_env(&build_env, &wt.dir, crate::worktree::UNIT_CACHE_PREFIX),
                 reviews: Vec::new(),
                 settings_json: String::new(),
-                launch: 0,
                 resumed_from: String::new(),
                 resume_task: String::new(),
             },
