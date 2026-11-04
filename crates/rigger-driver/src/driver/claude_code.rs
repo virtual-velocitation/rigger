@@ -916,14 +916,19 @@ impl Driver<'_> {
                 Ok(self.session_gone(opts, id))
             }
             (None, Some(e)) => Err(read_agent_stream_error(opts, &e)),
-            (None, None) => self.classify_no_result(
-                opts,
-                id,
-                awaiting_session,
-                assistant_error.as_deref(),
-                &last_api_retry_category,
-                &stderr_tail,
-            ),
+            (None, None) => {
+                let (class, message) = self.classify_no_result(
+                    opts,
+                    assistant_error.as_deref(),
+                    &last_api_retry_category,
+                    &stderr_tail,
+                );
+                let read = self.ending_read(opts, class);
+                if awaiting_session && read == Some(HoldRead::Unheld) {
+                    return Ok(self.session_gone(opts, id));
+                }
+                self.fault(opts, id, class, message, read)
+            }
         }
     }
 
@@ -944,11 +949,11 @@ impl Driver<'_> {
     }
 
     /// A FAILURE HAS A CLASS (spec 104 criterion 5): class a session that ended with no usable
-    /// `result` and end it there - the natural loop-exhaustion/clean-EOF exit
+    /// `result` - the natural loop-exhaustion/clean-EOF exit
     /// [`read_stream`](Self::read_stream)'s bottom falls through to, exactly the
     /// CONSTRAINTS WALK shape ("the child exits before `system/init` ... a fault of class
     /// `unknown` carrying the stderr tail, never a hang"), whether or not an `is_error`
-    /// `result` came first; `fallback` says a resume in that shape still awaits its session
+    /// `result` came first - into the class and the message its ending carries
     /// ([`Driver::fault`]). `assistant_error` is the FIRST-priority source, the class the
     /// session printed on its last assistant line. Next comes the `StopFailure` hook's record
     /// (keyed on `opts.id` AND scoped to `opts.run_id` -
@@ -958,10 +963,8 @@ impl Driver<'_> {
     /// run-scoping convention at `src/main.rs`), read from THIS driver's own progress store
     /// and scoped to this launch by stream order
     /// ([`progress::latest_stop_failure_class`]). The two fold against
-    /// `last_api_retry_category` via [`classify_failure`], and [`Driver::fault`] embeds the
-    /// result via [`no_result_error`] ahead of a
-    /// human-readable message carrying the class and `stderr_tail` (lossily decoded,
-    /// trimmed). A progress-store read failure degrades to "no `StopFailure` record found"
+    /// `last_api_retry_category` via [`classify_failure`], and the message carries the class and
+    /// `stderr_tail` (lossily decoded, trimmed). A progress-store read failure degrades to "no `StopFailure` record found"
     /// (`None`) rather than failing the whole classification - the second source
     /// (`last_api_retry_category`) and the `unknown` floor both still apply, so a store
     /// hiccup here never turns a classifiable failure into an opaque one
@@ -970,12 +973,10 @@ impl Driver<'_> {
     fn classify_no_result(
         &self,
         opts: &SpawnOpts,
-        id: LaunchId,
-        fallback: bool,
         assistant_error: Option<&str>,
         last_api_retry_category: &Option<String>,
         stderr_tail: &[u8],
-    ) -> Result<StreamEnd, Error> {
+    ) -> (AgentFailure, String) {
         // THIS spawn's run's progress alone - its own stream, the one read `rigger status`
         // folds too (spec 101).
         let stop_failure_class = progress::read_run(self.progress_store, &opts.run_id)
@@ -986,18 +987,13 @@ impl Driver<'_> {
             last_api_retry_category.as_deref(),
         );
         let tail = String::from_utf8_lossy(stderr_tail);
-        self.fault(
-            opts,
-            id,
-            class,
-            format!(
-                "claude_code driver: {:?}: the agent stream ended with no result (class \
-                 {class}; stderr tail: {})",
-                opts.id,
-                tail.trim()
-            ),
-            fallback,
-        )
+        let message = format!(
+            "claude_code driver: {:?}: the agent stream ended with no result (class {class}; \
+             stderr tail: {})",
+            opts.id,
+            tail.trim()
+        );
+        (class, message)
     }
 
     /// End a launch as a FAULT (spec 104 THE LAUNCH: "at exit it closes the record with
@@ -1007,14 +1003,13 @@ impl Driver<'_> {
     /// result ([`Driver::classify_no_result`]) and a session whose `rigger` MCP server did not
     /// connect ([`Driver::stop_for_launch_fault`]).
     ///
-    /// HELD MEANS NO LAUNCH AND NO CHARGE (spec 105) decides ahead of that close: a host with a
-    /// hold sink closes `interrupted` under `class` instead when the class's row holds or waits,
-    /// which reads no hold, or when the run is held at this ending ([`Driver::run_held`]), whatever
-    /// the class, and the error rides [`StreamEnd::Interrupted`], marked interrupted: no result,
-    /// no attempt, the scratch kept. A close the hold read decided carries that read's head as its
-    /// stamp ([`Driver::close_at`]). A `fallback` launch, a resume that still awaits its session,
-    /// on a run proved unheld leaves here by THE RESUME FALLBACK ([`Driver::session_gone`]). A
-    /// read that fails proves neither, so it closes `fault` with no fallback.
+    /// HELD MEANS NO LAUNCH AND NO CHARGE (spec 105) decides ahead of that close, from `read`, the
+    /// hold read the ending took ([`Driver::ending_read`]): the launch closes `interrupted` under
+    /// `class` instead when no read was taken, since the class interrupts on its own, or when the
+    /// read proved the run held, whatever the class, and the error rides
+    /// [`StreamEnd::Interrupted`], marked interrupted: no result, no attempt, the scratch kept. A
+    /// close the hold read decided carries that read's head as its stamp ([`Driver::close_at`]). A
+    /// run proved unheld and a read that fails, proving neither, close `fault`.
     ///
     /// The holds follow the close and come before the `Error` returns: an ending of a class whose
     /// row holds or waits sights that class, with no `detail` since an ending is no sighting line,
@@ -1027,17 +1022,9 @@ impl Driver<'_> {
         id: LaunchId,
         class: AgentFailure,
         message: String,
-        fallback: bool,
+        read: Option<HoldRead>,
     ) -> Result<StreamEnd, Error> {
-        let waits = class.row().waits();
-        // A class whose row holds or waits interrupts a host with a hold sink on its own, with no
-        // read; any other ending reads the hold, so `read` holds only what a read proved.
-        let class_interrupts = waits && self.hold_sink.is_some();
-        let read = (!class_interrupts).then(|| self.run_held(opts));
-        if fallback && read == Some(HoldRead::Unheld) {
-            return Ok(self.session_gone(opts, id));
-        }
-        let interrupted = class_interrupts || matches!(read, Some(HoldRead::Held(_)));
+        let interrupted = matches!(read, None | Some(HoldRead::Held(_)));
         let ended = if interrupted {
             progress::ENDED_INTERRUPTED
         } else {
@@ -1047,7 +1034,7 @@ impl Driver<'_> {
             Some(HoldRead::Held(head)) => self.close_at(opts, id, ended, class.as_str(), head),
             _ => self.close(opts, id, ended, class.as_str()),
         }
-        if waits {
+        if class.row().waits() {
             self.sight(opts, id, class.as_str(), "");
         }
         if interrupted {
@@ -1055,6 +1042,15 @@ impl Driver<'_> {
         }
         self.sight_unstable(opts, id);
         Err(no_result_error(class, message))
+    }
+
+    /// The hold read a classed ending takes, what [`Driver::fault`] closes on and the no-result
+    /// ending's fallback weighs: none when `class`'s row holds or waits on a host with a hold sink,
+    /// since that class interrupts the launch on its own, and otherwise [`Driver::run_held`], so a
+    /// read holds only what it proved.
+    fn ending_read(&self, opts: &SpawnOpts, class: AgentFailure) -> Option<HoldRead> {
+        let class_interrupts = class.row().waits() && self.hold_sink.is_some();
+        (!class_interrupts).then(|| self.run_held(opts))
     }
 
     /// What this run's hold read proves once a launch has ended, what [`Driver::fault`] and the
@@ -1188,7 +1184,8 @@ impl Driver<'_> {
             opts,
             std::time::Duration::ZERO,
         );
-        self.fault(opts, id, class, message, false)
+        let read = self.ending_read(opts, class);
+        self.fault(opts, id, class, message, read)
     }
 
     /// How long this session has really been silent since `last_line`, the reading THE STOP
@@ -1994,7 +1991,7 @@ pub fn build_args(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::{strip_failure_marker, AgentFailure};
+    use crate::agent::AgentFailure;
     use crate::eventstore::sqlite::Store;
     use crate::eventstore::{Direction, EventStore, SilentStore};
     use crate::test_support::implementer_opts as opts;
@@ -2003,14 +2000,6 @@ mod tests {
     };
     use std::io::Read;
     use std::time::Duration;
-
-    /// A launch the classification tests end, its model unread by a host with no hold sink.
-    const LAUNCH: LaunchId = LaunchId {
-        ordinal: 0,
-        session_id: "sess-1",
-        resumed_from: "",
-        model: "",
-    };
 
     // ---- build_args: pure, no process ----
 
@@ -2208,21 +2197,13 @@ mod tests {
             ..Driver::default()
         };
         let o = opts("u/implementer#0");
-        let Err(e) = driver.classify_no_result(
-            &o,
-            LAUNCH,
-            false,
-            None,
-            &Some("overloaded".to_string()),
-            b"stderr tail",
-        ) else {
-            panic!("a host with no sink ends a no-result launch on its error");
-        };
-        assert!(
-            strip_failure_marker(&e).contains(&format!("class {}", AgentFailure::Overloaded)),
+        let (class, message) =
+            driver.classify_no_result(&o, None, &Some("overloaded".to_string()), b"stderr tail");
+        assert_eq!(
+            class,
+            AgentFailure::Overloaded,
             "a failed progress-store read must still fall through to the api_retry \
-             category, never fail the whole classification: {}",
-            e.0
+             category, never fail the whole classification: {message}"
         );
     }
 
@@ -2281,21 +2262,12 @@ mod tests {
         };
         let mut o = opts("u/implementer#0");
         o.run_id = "run-1".to_string();
-        let Err(e) = driver.classify_no_result(
-            &o,
-            LAUNCH,
-            false,
-            None,
-            &Some("overloaded".to_string()),
-            b"tail",
-        ) else {
-            panic!("a host with no sink ends a no-result launch on its error");
-        };
-        assert!(
-            strip_failure_marker(&e).contains(&format!("class {expected}")),
+        let (class, message) =
+            driver.classify_no_result(&o, None, &Some("overloaded".to_string()), b"tail");
+        assert_eq!(
+            class, expected,
             "a StopFailure recorded under run {record_run:?} must classify run-1's no-result \
-             exit as {expected}: {}",
-            e.0
+             exit as {expected}: {message}"
         );
     }
 

@@ -289,8 +289,8 @@
       },
       {
         "file": "crates/rigger-driver/src/driver/claude_code.rs",
-        "start_line": 1791,
-        "end_line": 1799
+        "start_line": 1788,
+        "end_line": 1796
       },
       {
         "file": "tests/cli.rs",
@@ -549,8 +549,8 @@
       },
       {
         "file": "crates/rigger-driver/src/driver/claude_code.rs",
-        "start_line": 1804,
-        "end_line": 1809
+        "start_line": 1801,
+        "end_line": 1806
       },
       {
         "file": "crates/rigger-grounder/src/grounder/mod.rs",
@@ -5844,13 +5844,13 @@
     "sites": [
       {
         "file": "crates/rigger-driver/src/driver/claude_code.rs",
-        "start_line": 2110,
-        "end_line": 2117
+        "start_line": 2099,
+        "end_line": 2106
       },
       {
         "file": "crates/rigger-driver/src/driver/claude_code.rs",
-        "start_line": 2164,
-        "end_line": 2171
+        "start_line": 2153,
+        "end_line": 2160
       }
     ]
   },
@@ -5859,13 +5859,13 @@
     "sites": [
       {
         "file": "crates/rigger-driver/src/driver/claude_code.rs",
-        "start_line": 2157,
-        "end_line": 2163
+        "start_line": 2146,
+        "end_line": 2152
       },
       {
         "file": "crates/rigger-driver/src/driver/claude_code.rs",
-        "start_line": 2191,
-        "end_line": 2197
+        "start_line": 2180,
+        "end_line": 2186
       }
     ]
   },
@@ -5874,13 +5874,13 @@
     "sites": [
       {
         "file": "crates/rigger-driver/src/driver/claude_code.rs",
-        "start_line": 2429,
-        "end_line": 2450
+        "start_line": 2401,
+        "end_line": 2422
       },
       {
         "file": "crates/rigger-driver/src/driver/claude_code.rs",
-        "start_line": 2453,
-        "end_line": 2471
+        "start_line": 2425,
+        "end_line": 2443
       }
     ]
   },
