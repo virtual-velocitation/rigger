@@ -3482,8 +3482,8 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 - `crates/rigger-console/src/console/map.rs:1253-1256` `module_of_a_leaf_src_file_is_its_stem_never_the_file_name`
 - `crates/rigger-console/src/console/map.rs:1285-1289` `district_purpose_uses_the_curated_table_when_present`
-- `crates/rigger-domain/src/ledger.rs:1151-1158` `short_run_id_truncates_to_twelve_chars_and_passes_shorter_ids_through`
-- `crates/rigger-domain/src/ledger.rs:1161-1176` `spec_stem_extracts_and_sanitizes_the_file_stem`
+- `crates/rigger-domain/src/ledger.rs:1205-1212` `short_run_id_truncates_to_twelve_chars_and_passes_shorter_ids_through`
+- `crates/rigger-domain/src/ledger.rs:1215-1230` `spec_stem_extracts_and_sanitizes_the_file_stem`
 - `crates/rigger-domain/src/progress.rs:513-516` `each_run_reports_on_its_own_stream_and_a_run_less_report_on_the_bare_one`
 - `tests/simplification_audit.rs:7286-7297` `impl_self_type_strips_a_trailing_where_clause_on_a_non_generic_self_type`
 - `tests/simplification_audit.rs:7317-7328` `impl_self_type_strips_a_leading_dyn_token_on_the_self_type`
@@ -3964,7 +3964,7 @@ Proposed home: `a new shared module (sites span 4 files: crates/rigger-domain/sr
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `crates/rigger-domain/src/failure.rs:170-172` `is_any`
-- `crates/rigger-driver/src/liveness.rs:811-813` `is_empty`
+- `crates/rigger-driver/src/liveness.rs:800-802` `is_empty`
 - `crates/rigger-grounder/src/grounder/symbols/grounder.rs:181-183` `is_empty`
 - `src/cli/mod.rs:3632-3637` `is_empty`
 
@@ -4104,7 +4104,7 @@ Proposed home: `a new shared module (sites span 2 files: crates/rigger-domain/sr
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `crates/rigger-domain/src/spec.rs:2522-2524` `heading_level_rejects_more_than_six_hashes`
-- `crates/rigger-driver/src/liveness.rs:1049-1062` `marker_filename_is_none_only_for_a_truly_empty_input_so_a_join_can_never_be_a_no_op`
+- `crates/rigger-driver/src/liveness.rs:1038-1051` `marker_filename_is_none_only_for_a_truly_empty_input_so_a_join_can_never_be_a_no_op`
 
 #### `dup-3dc74f749a1a` (near, 3 sites)
 
@@ -4179,7 +4179,7 @@ Proposed home: `a new shared module (sites span 2 files: crates/rigger-driver/sr
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `crates/rigger-driver/src/driver/replay.rs:371-379` `spawn_scratch_path_is_none_rather_than_relative_for_an_empty_scratch_root`
-- `crates/rigger-driver/src/liveness.rs:1173-1181` `marker_path_is_none_rather_than_relative_for_an_empty_scratch_root`
+- `crates/rigger-driver/src/liveness.rs:1162-1170` `marker_path_is_none_rather_than_relative_for_an_empty_scratch_root`
 
 #### `dup-8c5011c59ed1` (near, 2 sites)
 
@@ -4214,7 +4214,7 @@ Proposed home: `a new shared module (sites span 2 files: crates/rigger-driver/sr
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-driver/src/liveness.rs:1090-1104` `marker_filename_is_injective_so_two_ids_that_collided_under_a_prior_placeholder_scheme_no_longer_do`
+- `crates/rigger-driver/src/liveness.rs:1079-1093` `marker_filename_is_injective_so_two_ids_that_collided_under_a_prior_placeholder_scheme_no_longer_do`
 - `src/cli/setup.rs:2832-2846` `normalize_origin_url_separates_distinct_repos_and_lowercases_only_the_host`
 
 #### `dup-b812e9924aed` (semantic, 67 sites)
@@ -5485,7 +5485,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 ### Adversarial sample
 
-Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 11139 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
+Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 11140 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
 
 - `crates/rigger-conductor/src/conductor.rs:15742-15764` `branch_is_foreign_when_only_one_axis_differs` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-conductor/src/conductor.rs:16716-16723` `resume_of` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
@@ -5495,7 +5495,7 @@ Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85
 - `crates/rigger-domain/src/canary.rs:283-317` `latest_run_scopes_to_the_last_batch_marker` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-domain/src/review.rs:834-871` `a_finding_line_has_five_pipe_fields_with_the_severity_second` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-domain/src/spec.rs:2249-2256` `strip_inline_code_direct_exact_output_pins_a_zero_width_quote_pair` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
-- `crates/rigger-driver/src/liveness.rs:2640-2666` `classify_stale_weighs_the_silence_outside_the_hold_intervals` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
+- `crates/rigger-driver/src/liveness.rs:2629-2655` `classify_stale_weighs_the_silence_outside_the_hold_intervals` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:7140-7142` `locked` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:17813-17833` `one_transaction_resolves_an_owed_name_once_where_one_per_reference_resolves_it_each_time` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-grounder/src/grounder/symbols/events.rs:681-693` `normalize_logical_path` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`

@@ -4569,13 +4569,13 @@
       },
       {
         "file": "crates/rigger-domain/src/ledger.rs",
-        "start_line": 1151,
-        "end_line": 1158
+        "start_line": 1205,
+        "end_line": 1212
       },
       {
         "file": "crates/rigger-domain/src/ledger.rs",
-        "start_line": 1161,
-        "end_line": 1176
+        "start_line": 1215,
+        "end_line": 1230
       },
       {
         "file": "crates/rigger-domain/src/progress.rs",
@@ -5459,8 +5459,8 @@
       },
       {
         "file": "crates/rigger-driver/src/liveness.rs",
-        "start_line": 811,
-        "end_line": 813
+        "start_line": 800,
+        "end_line": 802
       },
       {
         "file": "crates/rigger-grounder/src/grounder/symbols/grounder.rs",
@@ -5739,8 +5739,8 @@
       },
       {
         "file": "crates/rigger-driver/src/liveness.rs",
-        "start_line": 1049,
-        "end_line": 1062
+        "start_line": 1038,
+        "end_line": 1051
       }
     ]
   },
@@ -5874,8 +5874,8 @@
       },
       {
         "file": "crates/rigger-driver/src/liveness.rs",
-        "start_line": 1173,
-        "end_line": 1181
+        "start_line": 1162,
+        "end_line": 1170
       }
     ]
   },
@@ -5929,8 +5929,8 @@
     "sites": [
       {
         "file": "crates/rigger-driver/src/liveness.rs",
-        "start_line": 1090,
-        "end_line": 1104
+        "start_line": 1079,
+        "end_line": 1093
       },
       {
         "file": "src/cli/setup.rs",

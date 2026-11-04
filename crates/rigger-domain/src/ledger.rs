@@ -240,8 +240,7 @@ pub struct Hold {
 
 impl Hold {
     /// The hold `open` (`None` when the run is unheld) becomes on the [`TYPE_RUN_HELD`] `e`: the
-    /// one fold of a `RunHeld` onto a hold, which [`project`] and the probe's delay
-    /// ([`crate::hold_probe::owed_probe`]) both read a hold by.
+    /// one fold of a `RunHeld` onto a hold, which [`project`] and [`holds`] both read a hold by.
     pub fn on_held(open: Option<Hold>, e: &Event) -> Result<Hold, serde_json::Error> {
         let latest: RunHeld = serde_json::from_slice(&e.data)?;
         Ok(Hold {
@@ -265,6 +264,75 @@ impl Hold {
             format!("{} - {}", latest.cause, latest.action)
         }
     }
+}
+
+/// One hold of a run as [`holds`] walks it, from the `RunHeld` that opened it to the
+/// `RunReleased` that ended it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HoldSpan {
+    /// The hold as [`Hold::on_held`] folds its `RunHeld` events, `None` when one of them does not
+    /// decode: each reader of the walk decides what a hold it cannot read means to it.
+    pub hold: Option<Hold>,
+    /// When the hold started: the valid time of its first `RunHeld`, whether or not it decodes.
+    pub since: SystemTime,
+    /// The run-stream revision of its first `RunHeld`.
+    pub first: Revision,
+    /// The valid time of its latest `RunHeld`.
+    pub latest_at: SystemTime,
+    /// The `RunReleased` that ended it, `None` while the hold is open.
+    pub release: Option<HoldRelease>,
+}
+
+/// The `RunReleased` that ended a [`HoldSpan`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HoldRelease {
+    /// Its valid time.
+    pub at: SystemTime,
+    /// Its run-stream revision.
+    pub revision: Revision,
+    /// The `held_for_s` it carries, `None` when its body does not decode.
+    pub held_for_s: Option<u64>,
+}
+
+/// A run's holds in log order, from one run's slice of the run stream (spec 105 THE EVENTS): a
+/// hold opens at a `RunHeld` while none is open, takes each later `RunHeld` through
+/// [`Hold::on_held`] and ends at the next `RunReleased`; a `RunReleased` with no hold open ends
+/// nothing and is never read. The one walk of when a hold starts and ends, which the probe's delay
+/// ([`crate::hold_probe::owed_probe`]), the hold intervals liveness leaves out of a spawn's
+/// silence, [`hold_attention`] and the console's dock read; [`RunState::apply`] steps the open
+/// hold through the same two arms one event at a time.
+pub fn holds(run_events: &[Event]) -> Vec<HoldSpan> {
+    let mut spans: Vec<HoldSpan> = Vec::new();
+    for e in run_events {
+        let open = spans.last_mut().filter(|span| span.release.is_none());
+        match (e.type_.as_str(), open) {
+            (TYPE_RUN_HELD, Some(open)) => {
+                open.hold = open
+                    .hold
+                    .take()
+                    .and_then(|hold| Hold::on_held(Some(hold), e).ok());
+                open.latest_at = e.valid_from;
+            }
+            (TYPE_RUN_HELD, None) => spans.push(HoldSpan {
+                hold: Hold::on_held(None, e).ok(),
+                since: e.valid_from,
+                first: e.revision,
+                latest_at: e.valid_from,
+                release: None,
+            }),
+            (TYPE_RUN_RELEASED, Some(open)) => {
+                open.release = Some(HoldRelease {
+                    at: e.valid_from,
+                    revision: e.revision,
+                    held_for_s: e
+                        .decode::<RunReleased>()
+                        .map(|released| released.held_for_s),
+                });
+            }
+            _ => {}
+        }
+    }
+    spans
 }
 
 /// One of the watching-discipline signals `AttentionEntry::kind` carries: spec 69's five,
@@ -315,31 +383,17 @@ pub fn attention_kind_rank(kind: &str) -> usize {
 /// slice of the run stream: one [`ATTENTION_HELD`] entry per hold, keyed by its first `RunHeld`
 /// and naming the [`Hold::reason`] of its latest, so a repeated or upgraded `RunHeld` adds none;
 /// and one [`ATTENTION_RELEASED`] entry per release of an open hold, reading the `held_for_s` its
-/// `RunReleased` carries. A `RunReleased` with no open hold ends nothing and adds nothing. `None`
-/// when a `RunHeld`, or the `RunReleased` of an open hold, does not decode, as
-/// [`crate::hold_probe::owed_probe`] answers. The console's dock reads it.
+/// `RunReleased` carries. A `RunReleased` with no open hold ends nothing and adds nothing. Each
+/// hold is one [`holds`] walks, so an open hold's entry is the last. `None` when a `RunHeld`, or
+/// the `RunReleased` of an open hold, does not decode. The console's dock reads it.
 pub fn hold_attention(run_events: &[Event]) -> Option<Vec<AttentionEntry>> {
     let mut entries = Vec::new();
-    let mut open: Option<Hold> = None;
-    for e in run_events {
-        match e.type_.as_str() {
-            TYPE_RUN_HELD => {
-                // An open hold's entry is the last one: a released entry follows a closed hold.
-                if open.is_some() {
-                    entries.pop();
-                }
-                let hold = Hold::on_held(open.take(), e).ok()?;
-                let detail = format!("held - {}", hold.reason());
-                entries.push(AttentionEntry::run_scoped(ATTENTION_HELD, detail));
-                open = Some(hold);
-            }
-            TYPE_RUN_RELEASED if open.is_some() => {
-                open = None;
-                let released: RunReleased = e.decode()?;
-                let detail = format!("released after {}s", released.held_for_s);
-                entries.push(AttentionEntry::run_scoped(ATTENTION_RELEASED, detail));
-            }
-            _ => {}
+    for span in holds(run_events) {
+        let detail = format!("held - {}", span.hold?.reason());
+        entries.push(AttentionEntry::run_scoped(ATTENTION_HELD, detail));
+        if let Some(release) = span.release {
+            let detail = format!("released after {}s", release.held_for_s?);
+            entries.push(AttentionEntry::run_scoped(ATTENTION_RELEASED, detail));
         }
     }
     Some(entries)
