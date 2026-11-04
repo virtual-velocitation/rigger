@@ -16628,12 +16628,25 @@ mod tests {
         /// a later attempt continues it. Off, a spawn reports no session (the workflow and
         /// replay drivers' shape) and every spawn stays fresh.
         sessions: bool,
-        /// With [`sessions`](Self::sessions): every requested resume finds its session gone,
-        /// so the spawn answers as a fresh `sess-<spawn id>` session that continued nothing -
-        /// the fallback a session host takes when the transcript to resume no longer exists.
-        sessions_gone: bool,
+        /// With [`sessions`](Self::sessions): how every spawn asked to continue a session
+        /// answers.
+        resume_answer: ResumeAnswer,
         /// Every spawn's `(id, resumed_from, resume_task)`, in spawn order.
         resumes: Mutex<Vec<(String, String, String)>>,
+    }
+    /// How a [`Stub::sessions`] spawn asked to continue a session answers.
+    #[derive(Clone, Copy, Debug)]
+    enum ResumeAnswer {
+        /// The session continues: the result names it as the session it ran as and continued.
+        Continued,
+        /// The session is gone, so the spawn answers as a fresh `sess-<spawn id>` session that
+        /// continued nothing - the fallback a session host takes when the transcript to resume
+        /// no longer exists.
+        Gone,
+        /// The run log answers the spawn: the result names the session its recorded result ran
+        /// as, the requested one, and continued none - the headless host's answer to a spawn
+        /// the run already ended, which launches nothing.
+        Logged,
     }
     impl Stub {
         /// A stub whose every spawn answers `output`, otherwise [`Stub::new`].
@@ -16676,7 +16689,7 @@ mod tests {
                 read_file_by_agent: HashMap::new(),
                 read_results: Mutex::new(HashMap::new()),
                 sessions: false,
-                sessions_gone: false,
+                resume_answer: ResumeAnswer::Continued,
                 resumes: Mutex::new(Vec::new()),
             }
         }
@@ -16934,8 +16947,13 @@ mod tests {
             let (session_id, resumed_from) = match (self.sessions, opts.resumed_from.is_empty()) {
                 (false, _) => (String::new(), String::new()),
                 (true, true) => (format!("sess-{}", opts.id), String::new()),
-                (true, false) if self.sessions_gone => (format!("sess-{}", opts.id), String::new()),
-                (true, false) => (opts.resumed_from.clone(), opts.resumed_from.clone()),
+                (true, false) => match self.resume_answer {
+                    ResumeAnswer::Continued => {
+                        (opts.resumed_from.clone(), opts.resumed_from.clone())
+                    }
+                    ResumeAnswer::Gone => (format!("sess-{}", opts.id), String::new()),
+                    ResumeAnswer::Logged => (opts.resumed_from.clone(), String::new()),
+                },
             };
             Ok(AgentResult {
                 output,
@@ -32013,7 +32031,7 @@ mod tests {
     fn a_fallen_back_resume_is_recorded_as_requested_but_not_continued() {
         let repo = temp_git_project_with_commit();
         let driver = Stub {
-            sessions_gone: true,
+            resume_answer: ResumeAnswer::Gone,
             ..session_stub(&[
                 (adjudicator_at(0, 0), REJECT_FEATURE),
                 (adjudicator_at(1, 0), r#"{"verdict":"approve"}"#),
@@ -32054,6 +32072,102 @@ mod tests {
             mark.meta.get(META_SESSION_ID),
             Some(&format!("sess-{second}"))
         );
+    }
+
+    /// The operator's log tells a fallen-back resume, and only that: given a review round's
+    /// spawns each asked to continue the session its role ran as in round 0, when a spawn
+    /// answers as another, fresh session, then the conductor says the session to resume is
+    /// gone; when it answers as the session it was asked to continue, whether its host
+    /// continued it or the run log answered it with the session its recorded result ran as,
+    /// then the log says nothing of a fallback.
+    #[test]
+    fn only_a_spawn_answering_as_another_session_is_logged_as_a_fallback() {
+        struct Row {
+            answer: ResumeAnswer,
+            fell_back: bool,
+        }
+        let rows = [
+            Row {
+                answer: ResumeAnswer::Continued,
+                fell_back: false,
+            },
+            Row {
+                answer: ResumeAnswer::Gone,
+                fell_back: true,
+            },
+            Row {
+                answer: ResumeAnswer::Logged,
+                fell_back: false,
+            },
+        ];
+        for row in rows {
+            let repo = temp_git_project_with_commit();
+            let driver = Stub {
+                resume_answer: row.answer,
+                ..session_stub(&[
+                    (adjudicator_at(0, 0), REJECT_FEATURE),
+                    (adjudicator_at(1, 0), r#"{"verdict":"approve"}"#),
+                ])
+            };
+            let st = Store::open(":memory:").unwrap();
+            let lines = Mutex::new(Vec::<String>::new());
+            let log = |line: &str| lines.lock().unwrap().push(line.to_string());
+            let deps = Deps {
+                repo: repo.path().to_str().unwrap().to_string(),
+                log: &log,
+                ..stub_deps(&st, &driver, Vec::new())
+            };
+            run_isolated(&session_cfg(), &deps).unwrap();
+            let mut asked: Vec<(String, String)> = snapshot(&driver.resumes)
+                .into_iter()
+                .filter(|(_, from, _)| !from.is_empty())
+                .map(|(id, from, _)| (id, from))
+                .collect();
+            asked.sort();
+            let mut roles = [
+                ROLE_IMPLEMENTER,
+                ROLE_SDET_AUTHOR,
+                "lens:lens",
+                ROLE_ADVERSARY,
+                ROLE_ADJUDICATOR,
+            ]
+            .map(|role| {
+                (
+                    spawn_id("implement", role, 1),
+                    format!("sess-{}", spawn_id("implement", role, 0)),
+                )
+            });
+            roles.sort();
+            assert_eq!(
+                asked, roles,
+                "{:?}: premise: each role's round-1 spawn is asked to continue its round-0 session",
+                row.answer
+            );
+            let mut expected: Vec<String> = if row.fell_back {
+                asked
+                    .iter()
+                    .map(|(id, from)| {
+                        format!(
+                            "spawn {id}: session {from} to resume is gone; it ran as a fresh \
+                             session sess-{id}"
+                        )
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            expected.sort();
+            let mut said: Vec<String> = snapshot(&lines)
+                .into_iter()
+                .filter(|l| l.contains("to resume is gone"))
+                .collect();
+            said.sort();
+            assert_eq!(
+                said, expected,
+                "{:?}: the fallback lines on the operator's log",
+                row.answer
+            );
+        }
     }
 
     /// A RESPAWN WINS: when a round's first spawn of a role came back degenerate and its
@@ -45377,7 +45491,7 @@ mod tests {
                 rounds.to_vec(),
             )
         };
-        let rows: [(&str, Vec<(u32, Unresolved)>, Outcome); 6] = [
+        let rows = [
             (
                 "a round resolving nothing",
                 vec![(1, Nothing)],

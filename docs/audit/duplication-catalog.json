@@ -526,7 +526,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-3183ea18f5ba",
+    "id": "dup-e978f74f029e",
     "classification": "semantic",
     "sites": [
       {
@@ -542,7 +542,7 @@
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
         "name": "a_resolver_round_ending_on_an_unmarked_error_is_spent_like_one_resolving_nothing",
-        "content_hash": "8742d08209557193"
+        "content_hash": "699d23b8baeb47ed"
       },
       {
         "file": "crates/rigger-conductor/src/held.rs",

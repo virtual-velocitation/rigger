@@ -2821,7 +2821,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "7e5238b2a644da77"
+    "content_hash": "b80aa60d37145ef1"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -2909,7 +2909,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "581b7de31031d4fa"
+    "content_hash": "7a551ec479d01d23"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -5421,7 +5421,15 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "18c05c3ed3c12bb0"
+    "content_hash": "2a9545a0144ceec9"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "only_a_spawn_answering_as_another_session_is_logged_as_a_fallback",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "26398fd29ba57fb5"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -7829,7 +7837,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "c26b774f0ed50632"
+    "content_hash": "ca7b897ad6639d3b"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
