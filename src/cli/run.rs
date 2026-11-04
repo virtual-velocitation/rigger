@@ -4223,6 +4223,43 @@ mod tests {
     }
 
     #[test]
+    fn reclaim_run_scratch_leaves_a_critique_runs_entries_in_every_agent_area() {
+        // A critique run shares the scratch root's agent areas with the loop run and reclaims its
+        // own entries on its next call, so a done run's teardown reclaims only the loop run's
+        // entries: a critique still running as the run ends keeps its marker, transcript and
+        // scratch, and no process rooted in them is reaped.
+        const CRITIQUE: &str = "critique-0123456789abcdef";
+        let root = tempfile::tempdir().unwrap();
+        let base = root.path();
+        let areas = [
+            rigger::driver::replay::SPAWN_SCRATCH_SUBDIR,
+            rigger::liveness::MARKER_SUBDIR,
+            claude_code::AGENT_STREAM_SUBDIR,
+        ];
+        for area in areas {
+            for run in ["run-1", CRITIQUE] {
+                let dir = base.join(area).join(run);
+                std::fs::create_dir_all(&dir).unwrap();
+                std::fs::write(dir.join("residue.bin"), [0u8; 32]).unwrap();
+            }
+        }
+
+        reclaim_run_scratch(base.to_str().unwrap());
+
+        for area in areas {
+            let area_dir = base.join(area);
+            assert_eq!(
+                (
+                    area_dir.join("run-1").exists(),
+                    area_dir.join(CRITIQUE).join("residue.bin").exists()
+                ),
+                (false, true),
+                "{area}: the run's entry is reclaimed and the critique's is left to its own next call"
+            );
+        }
+    }
+
+    #[test]
     fn reclaim_run_scratch_spares_the_shared_build_cache_while_a_build_holds_its_guard() {
         // spec 77 criterion 5 / Global Constraint 3: this run-teardown fires automatically
         // and unconditionally at every qualifying terminal state, with no operator action -
