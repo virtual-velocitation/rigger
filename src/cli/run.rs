@@ -4926,48 +4926,97 @@ mod tests {
         assert_eq!(beat_streams(&progress), vec!["progress/run-a"]);
     }
 
-    /// spec 105, RESUME BY SESSION: a project with no scratch root (a repo-less run) has no root
-    /// to authorize a reap against, so its start-up reconciliation closes each open launch
-    /// `interrupted` and reaps nothing: a process rooted in the launch's dir lives on.
+    /// spec 105, RESUME BY SESSION: a start's reconciliation reaps the dir of each open launch that
+    /// names one, under the project's scratch root and while that launch still stands open, so a
+    /// crash ahead of the close re-reaps at the next start, then closes every open launch
+    /// `interrupted` with no class. A project with no scratch root (a repo-less run) has no root to
+    /// authorize a reap against, and a launch naming no dir has nothing to reap, so neither reaches
+    /// the reaper.
     #[test]
-    fn a_reconciliation_with_no_scratch_root_closes_every_open_launch_and_reaps_nothing() {
-        use crate::test_support::{cleanup, sleeper_in, wait_until};
+    fn a_reconciliation_reaps_each_named_dir_under_the_scratch_root_ahead_of_its_close() {
         use rigger::progress::{SpawnLaunched, ENDED_INTERRUPTED};
-
-        let launched_in = tempfile::tempdir().unwrap();
-        let mut rooted = sleeper_in(launched_in.path());
-        let seen = wait_until(|| {
-            rigger::reap::processes_rooted_under(launched_in.path())
+        use std::cell::RefCell;
+        const ROOT: &str = "/scratch";
+        const DIR: &str = "/scratch/agent-scratch/run-a/u1";
+        let launches = [
+            ("run-a", "u1/implementer#0", DIR),
+            ("run-b", "u2/implementer#0", ""),
+        ];
+        for (name, scratch, reaped) in [
+            (
+                "a scratch root",
+                Some(ROOT),
+                vec![(DIR.to_string(), ROOT.to_string(), true)],
+            ),
+            ("no scratch root", None, Vec::new()),
+        ] {
+            let progress = Store::open(":memory:").unwrap();
+            let opened: Vec<SpawnLaunched> = launches
                 .iter()
-                .any(|(pid, _)| *pid == rooted.id())
-        });
-        let progress = Store::open(":memory:").unwrap();
-        let open = SpawnLaunched {
-            spawn: "u1/implementer#0".into(),
-            launch: 0,
-            session_id: "s-u1".into(),
-            started: 1,
-            dir: launched_in.path().to_str().unwrap().into(),
-            ..SpawnLaunched::default()
-        };
-        rigger::progress_store::record_launch(&progress, "run-a", &open).unwrap();
+                .map(|&(run, spawn, dir)| {
+                    let open = SpawnLaunched {
+                        spawn: spawn.into(),
+                        launch: 0,
+                        session_id: format!("s-{run}"),
+                        started: 1,
+                        dir: dir.into(),
+                        ..SpawnLaunched::default()
+                    };
+                    rigger::progress_store::record_launch(&progress, run, &open).unwrap();
+                    open
+                })
+                .collect();
+            // The fake reaper records each call with whether the launch naming its dir still
+            // stands open in the store as it is called.
+            let reaps = RefCell::new(Vec::new());
+            let reap = |dir: &Path, root: &Path| {
+                let every_run = Filter {
+                    stream_prefix: Some(progress::STREAM.to_string()),
+                };
+                let events = progress
+                    .read_all(0, Direction::Forward, &every_run)
+                    .unwrap();
+                let open = progress::open_launches(&events)
+                    .iter()
+                    .any(|(_, launch)| Path::new(&launch.dir) == dir);
+                reaps.borrow_mut().push((
+                    dir.display().to_string(),
+                    root.display().to_string(),
+                    open,
+                ));
+            };
 
-        let reconciled =
-            reconcile_open_launches(&progress, None, &rigger::reap::reap_processes_rooted_under)
-                .map_err(|e| e.to_string());
+            let reconciled =
+                reconcile_open_launches(&progress, scratch, &reap).map_err(|e| e.to_string());
 
-        let alive = matches!(rooted.try_wait(), Ok(None));
-        cleanup(&mut rooted);
-        let records: Vec<SpawnLaunched> = progress::read_run(&progress, "run-a")
-            .unwrap()
-            .iter()
-            .map(|e| serde_json::from_slice(&e.data).unwrap())
-            .collect();
-        let closed = SpawnLaunched::closed("u1/implementer#0", 0, "s-u1", ENDED_INTERRUPTED, "");
-        assert_eq!(
-            (seen, reconciled, alive, records),
-            (true, Ok(()), true, vec![open, closed]),
-            "the open launch closes interrupted and the process in its dir survives"
-        );
+            let records = |run: &str| -> Vec<SpawnLaunched> {
+                progress::read_run(&progress, run)
+                    .unwrap()
+                    .iter()
+                    .map(|e| serde_json::from_slice(&e.data).unwrap())
+                    .collect()
+            };
+            let ran = |open: &SpawnLaunched| {
+                let closed = SpawnLaunched::closed(
+                    open.spawn.clone(),
+                    0,
+                    open.session_id.clone(),
+                    ENDED_INTERRUPTED,
+                    "",
+                );
+                vec![open.clone(), closed]
+            };
+            assert_eq!(
+                (
+                    reconciled,
+                    reaps.into_inner(),
+                    records("run-a"),
+                    records("run-b")
+                ),
+                (Ok(()), reaped, ran(&opened[0]), ran(&opened[1])),
+                "{name}: each named dir is reaped while its launch stands open, then every launch \
+                 closes interrupted"
+            );
+        }
     }
 }
