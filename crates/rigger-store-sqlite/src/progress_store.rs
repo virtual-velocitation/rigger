@@ -252,11 +252,8 @@ mod tests {
                 spawn: "u104-launch/implementer#0".into(),
                 launch: 0,
                 session_id: "sess-1".into(),
-                resumed_from: None,
                 started: 1_700_000_000,
-                ended: None,
-                class: None,
-                revision: None,
+                ..Default::default()
             },
         )
         .unwrap();
@@ -290,11 +287,8 @@ mod tests {
                 spawn: "u1/implementer#0".into(),
                 launch: 0,
                 session_id: "s".into(),
-                resumed_from: None,
                 started: 1,
-                ended: None,
-                class: None,
-                revision: None,
+                ..Default::default()
             },
         )
         .expect_err("a launch record nobody can find was not recorded");

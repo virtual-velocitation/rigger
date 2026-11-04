@@ -409,6 +409,35 @@ pub fn stop_pid(pid: u32) -> bool {
     rustix::process::kill_process(rpid, rustix::process::Signal::STOP).is_ok()
 }
 
+/// A process this test did not spawn and holds no [`std::process::Child`] handle to, owned from
+/// the moment its pid is read: dropping the owner, on any path out of its scope and a panic's
+/// unwind included, ends it through [`terminate_pid`], but only while the pid still carries the
+/// start time it was read with ([`rigger::reap::pid_starttime`], the witness the production reap
+/// re-reads before it signals). A pid that had already ended when it was read, or that was
+/// recycled onto another process since, is never signalled.
+pub struct OwnedPid {
+    pid: u32,
+    started: Option<u64>,
+}
+
+impl OwnedPid {
+    /// Own `pid`, its start time read now.
+    pub fn new(pid: u32) -> Self {
+        Self {
+            pid,
+            started: rigger::reap::pid_starttime(pid),
+        }
+    }
+}
+
+impl Drop for OwnedPid {
+    fn drop(&mut self) {
+        if self.started.is_some() && rigger::reap::pid_starttime(self.pid) == self.started {
+            terminate_pid(self.pid);
+        }
+    }
+}
+
 /// Whether `pid` is still running - alive and not a zombie (state `Z` in `/proc/<pid>/stat`, read
 /// through the product's one stat parser). An exited-but-unreaped child is a zombie, which
 /// [`is_alive`]'s signal probe still reports alive.

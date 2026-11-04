@@ -9309,7 +9309,7 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "56d6ecf2bbac4035"
+    "content_hash": "ba10302e3eba3626"
   },
   {
     "file": "src/cli/mod.rs",
@@ -9589,7 +9589,7 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "24e1371247203be2"
+    "content_hash": "9c958325e99b7259"
   },
   {
     "file": "src/cli/mod.rs",

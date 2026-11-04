@@ -171,11 +171,10 @@ impl Fixture {
     /// Every `SpawnLaunched` record (open and closing alike) the progress store holds for the
     /// run [`opts`] names, in append order.
     fn launch_records(&self) -> Vec<rigger::progress::SpawnLaunched> {
-        rigger::progress::read_run(&self.progress_store, &opts("").run_id)
-            .unwrap()
-            .iter()
-            .filter(|e| e.type_ == rigger::progress::TYPE_SPAWN_LAUNCHED)
-            .map(|e| serde_json::from_slice(&e.data).unwrap())
+        let events = rigger::progress::read_run(&self.progress_store, &opts("").run_id).unwrap();
+        common::cli::spawn_launches(&events)
+            .into_iter()
+            .map(|(_, record)| record)
             .collect()
     }
 
@@ -2694,7 +2693,7 @@ impl Fixture {
     fn fresh_opts(&self, fresh_ending: &str) -> SpawnOpts {
         SpawnOpts {
             env: self.ending_env("answer", fresh_ending),
-            dir: self.scratch_root.path().to_string_lossy().into_owned(),
+            dir: self.launch_dir(),
             ..opts(RESUMED_SPAWN)
         }
     }
@@ -2729,16 +2728,23 @@ impl Fixture {
         };
         rigger::progress_store::record_launch(&self.progress_store, run, &record).unwrap();
     }
-}
 
-/// The open record of [`RESUMED_SPAWN`]'s launch `launch` as `session`.
-fn opened(launch: u32, session: &str, resumed_from: Option<&str>) -> SpawnLaunched {
-    SpawnLaunched {
-        spawn: RESUMED_SPAWN.to_string(),
-        launch,
-        session_id: session.to_string(),
-        resumed_from: resumed_from.map(str::to_string),
-        ..Default::default()
+    /// The directory every launch of [`fresh_opts`](Self::fresh_opts) runs in: this fixture's own.
+    fn launch_dir(&self) -> String {
+        self.scratch_root.path().to_string_lossy().into_owned()
+    }
+
+    /// The open record of [`RESUMED_SPAWN`]'s launch `launch` as `session`, naming the
+    /// [`launch_dir`](Self::launch_dir) it ran in.
+    fn opened(&self, launch: u32, session: &str, resumed_from: Option<&str>) -> SpawnLaunched {
+        SpawnLaunched {
+            spawn: RESUMED_SPAWN.to_string(),
+            launch,
+            session_id: session.to_string(),
+            resumed_from: resumed_from.map(str::to_string),
+            dir: self.launch_dir(),
+            ..Default::default()
+        }
     }
 }
 
@@ -2775,9 +2781,9 @@ fn assert_fell_back(
     assert_eq!(
         fx.unstamped_records(),
         vec![
-            opened(0, PRIOR_SESSION, Some(PRIOR_SESSION)),
+            fx.opened(0, PRIOR_SESSION, Some(PRIOR_SESSION)),
             closed(0, PRIOR_SESSION, "interrupted", ""),
-            opened(1, &fresh, None),
+            fx.opened(1, &fresh, None),
             closed(1, &fresh, "completed", ""),
         ]
     );
@@ -3374,7 +3380,7 @@ fn assert_one_launch_stands(
     results: Vec<(String, String, bool)>,
 ) {
     let session = fx.latest_session();
-    let mut records = vec![opened(0, &session, resumed_from)];
+    let mut records = vec![fx.opened(0, &session, resumed_from)];
     records.extend(ended.map(|(ended, class)| closed(0, &session, ended, class)));
     assert_eq!(fx.unstamped_records(), records);
     assert_eq!(
@@ -3511,9 +3517,9 @@ fn a_fallback_launch_ends_at_its_own_ordinal(
 
     let fresh = fx.latest_session();
     let mut records = vec![
-        opened(0, PRIOR_SESSION, Some(PRIOR_SESSION)),
+        fx.opened(0, PRIOR_SESSION, Some(PRIOR_SESSION)),
         closed(0, PRIOR_SESSION, "interrupted", ""),
-        opened(1, &fresh, None),
+        fx.opened(1, &fresh, None),
     ];
     records.extend(ended.map(|(ended, class)| closed(1, &fresh, ended, class)));
     assert_eq!(fx.unstamped_records(), records);
@@ -3578,7 +3584,7 @@ fn the_ordinal_follows_the_record(seeded: &[(&str, &str, u32, &str)], launch: u3
     assert_eq!(
         records[records.len() - 2..],
         [
-            opened(ordinal, &session, None),
+            fx.opened(ordinal, &session, None),
             closed(ordinal, &session, "completed", ""),
         ]
     );
@@ -3671,9 +3677,9 @@ fn a_fallback_past_recorded_launches_takes_the_next_two_ordinals() {
     assert_eq!(
         fx.unstamped_records()[1..].to_vec(),
         vec![
-            opened(5, PRIOR_SESSION, Some(PRIOR_SESSION)),
+            fx.opened(5, PRIOR_SESSION, Some(PRIOR_SESSION)),
             closed(5, PRIOR_SESSION, "interrupted", ""),
-            opened(6, &fresh, None),
+            fx.opened(6, &fresh, None),
             closed(6, &fresh, "completed", ""),
         ]
     );

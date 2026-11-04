@@ -278,6 +278,7 @@ impl Driver<'_> {
                 ended: None,
                 class: None,
                 revision: None,
+                dir: opts.dir.clone(),
             },
         )?;
 
@@ -2642,7 +2643,9 @@ mod tests {
         // spec 104 criterion 1: the ordering IS the criterion. Point `bin` at a path
         // that cannot possibly exist, so `Command::spawn` fails - and prove the
         // SpawnLaunched record was still written, because it happens before the spawn
-        // attempt, not after a successful one.
+        // attempt, not after a successful one. The record names the directory the launch was
+        // to run in (spec 105): the next supervisor start reaps that directory as it closes the
+        // record this failed spawn left open.
         let driver = Driver {
             bin: "/definitely/does/not/exist/claude-xyz".to_string(),
             rigger_bin: "rigger".to_string(),
@@ -2651,6 +2654,7 @@ mod tests {
         let store = Store::open(":memory:").unwrap();
         let mut o = opts("u104-launch/implementer#0");
         o.run_id = "run-1".to_string();
+        o.dir = "/definitely/does/not/exist/scratch/u104-launch".to_string();
 
         let err = match driver.launch(&AgentDef::default(), "do the thing", &o, &store) {
             Ok(_) => panic!("spawning a nonexistent binary must fail"),
@@ -2668,6 +2672,11 @@ mod tests {
         let sl: SpawnLaunched = serde_json::from_slice(&recorded[0].data).unwrap();
         assert_eq!(sl.spawn, "u104-launch/implementer#0");
         assert!(!sl.session_id.is_empty(), "a session id was still minted");
+        assert_eq!(
+            (sl.dir.as_str(), sl.ended),
+            ("/definitely/does/not/exist/scratch/u104-launch", None),
+            "the open record names the directory the launch was to run in"
+        );
     }
 
     #[test]

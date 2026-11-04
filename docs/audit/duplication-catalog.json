@@ -1327,7 +1327,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-8174f771276c",
+    "id": "dup-c2ec502eaea8",
     "classification": "semantic",
     "sites": [
       {
@@ -1737,8 +1737,8 @@
       },
       {
         "file": "src/cli/hygiene.rs",
-        "name": "\"a `rigger step` is running right now (it holds .rigger/step.lock)\"",
-        "content_hash": "052897e17aced00a"
+        "name": "\"a `rigger step` or `rigger run` is running right now (it holds .rigger/step.lock)\"",
+        "content_hash": "25597419b8dbb616"
       },
       {
         "file": "src/cli/mod.rs",
@@ -2607,6 +2607,11 @@
       },
       {
         "file": "tests/cli.rs",
+        "name": "\"rigger: another `rigger step` is already running in this repo, or a \\\n     `rigger run` is (lock .rigger/step.lock). Refusing to run concurrently: two would race the \\\n     run-branch checkout and the unit worktrees branched off HEAD, corrupting the run. Wait for \\\n     the running one to finish and retry.\\n\"",
+        "content_hash": "5622b7d32f9ba9c7"
+      },
+      {
+        "file": "tests/cli.rs",
         "name": "\".rigger/workflow.yml\"",
         "content_hash": "529cdfeb168ff67d"
       },
@@ -3417,7 +3422,7 @@
       },
       {
         "file": "tests/common/fixtures/liveness.rs",
-        "name": "\"a `rigger step` is running right now (it holds .rigger/step.lock)\"",
+        "name": "\"a `rigger step` or `rigger run` is running right now (it holds .rigger/step.lock)\"",
         "content_hash": "e24c1bc0d9d4b92a"
       },
       {
@@ -4352,7 +4357,7 @@
       }
     ],
     "proposed_home": "one .rigger-relative path-composition helper",
-    "note": "mandatory sweep: .rigger-path string literals - 604 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: .rigger-path string literals - 605 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {

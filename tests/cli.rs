@@ -10880,8 +10880,8 @@ fn a_done_runs_agent_streams_are_reclaimed_and_an_unfinished_runs_are_kept() {
 
 /// Spec 105's root check on the run entry: given a run whose directory and repository disagree,
 /// or whose scratch root belongs to another repository, when the operator runs `rigger run`,
-/// then it refuses naming the verb, before any launch and before it reclaims or reaps, and leaves
-/// no store where it stood.
+/// then it refuses naming the verb, before it takes the step lock - a held one included - before
+/// any launch and before it reclaims or reaps, and leaves no store where it stood.
 #[cfg(unix)]
 #[test]
 fn a_run_whose_roots_disagree_refuses_before_it_reclaims() {
@@ -10907,7 +10907,11 @@ fn a_run_whose_roots_disagree_refuses_before_it_reclaims() {
                       a DIFFERENT repository than the one this command resolved",
         },
     ];
-    for case in cases {
+    for (case, held) in cases.iter().flat_map(|case| [(case, false), (case, true)]) {
+        let name = match held {
+            false => case.name.to_string(),
+            true => format!("{}, beside a held step lock", case.name),
+        };
         let dir = temp_git_project_with_commit();
         let cwd = if case.nested_cwd {
             dir.path().join("nested")
@@ -10916,6 +10920,7 @@ fn a_run_whose_roots_disagree_refuses_before_it_reclaims() {
         };
         std::fs::create_dir_all(&cwd).unwrap();
         write_workflow_fixture(&cwd, &LIVENESS_WORKFLOW);
+        let _held = held.then(|| common::cli::hold_step_lock(&cwd));
         let other = temp_git_project_with_commit();
         let outside = tempfile::tempdir().unwrap();
         let scratch = if case.scratch_in_another_repo {
@@ -10925,27 +10930,23 @@ fn a_run_whose_roots_disagree_refuses_before_it_reclaims() {
         };
         let stale = plant_stale_stream(&scratch);
         let (out, err, ok, fake) = run_recording(&cwd, &["run"], &scratch);
-        assert!(!ok, "{}: the run refuses; stdout: {out}", case.name);
+        assert!(!ok, "{name}: the run refuses; stdout: {out}");
         assert!(
             err.starts_with(&format!("rigger: {}", case.refusal)),
-            "{}: the refusal leads with the verb: {err}",
-            case.name
+            "{name}: the refusal leads with the verb: {err}"
         );
         assert_eq!(
             std::fs::read_to_string(&stale).unwrap(),
             "stale",
-            "{}: nothing is reclaimed",
-            case.name
+            "{name}: nothing is reclaimed"
         );
         assert!(
             !fake.path().join("bin/argv").exists(),
-            "{}: no agent is launched",
-            case.name
+            "{name}: no agent is launched"
         );
         assert!(
             !common::cli::rigger_file(&cwd, "events.db").exists(),
-            "{}: no store is opened",
-            case.name
+            "{name}: no store is opened"
         );
     }
 }
@@ -15574,9 +15575,10 @@ fn step_creates_run_branch_off_head_when_base_unresolvable() {
 /// UNBORN HEAD (`temp_project()` is a `git init` with NO commit, nothing to branch from) AND an
 /// unresolvable base - `rigger <args...> --base origin/does-not-exist` must FAIL LOUDLY, naming
 /// the missing base, pointing at `--base` and carrying the entry point's own `label` (when it
-/// has one), rather than mint a run branch that branches from nowhere. The refusal is
-/// side-effect-free: no run branch is minted, so HEAD is untouched (still the unborn default
-/// branch, never rigger-run) and a corrected retry anchors the run fresh.
+/// has one), rather than mint a run branch that branches from nowhere. The refusal anchors
+/// nothing: a `rigger run` has already reconciled its open launches, but no run branch is minted,
+/// so HEAD is untouched (still the unborn default branch, never rigger-run) and a corrected retry
+/// anchors the run fresh.
 fn assert_no_reachable_base_is_refused(args: &[&str], label: Option<&str>) {
     let dir = temp_project();
     let root = dir.path();
@@ -15638,6 +15640,389 @@ rigger::test_cases! {
     /// driver and pins the `rigger workflow` label to prove that this call-site fired.
     run_workflow_refuses_when_there_is_no_reachable_base:
         assert_no_reachable_base_is_refused(&["run", "--driver", "workflow"], Some("rigger workflow"));
+}
+
+// ---- a run's start: the step lock, then the reconciliation (spec 105, RESUME BY SESSION) ----
+
+/// The first words of the line `rigger run --base origin/does-not-exist` refuses with in an
+/// unborn repo: its no-reachable-base gate, which runs after the start-up reconciliation.
+const NO_REACHABLE_BASE: &str = "rigger: rigger run: no reachable base for the run branch \
+     \"rigger-run\": the base \"origin/does-not-exist\" does not resolve";
+
+/// The whole stderr of a `rigger run` or a `rigger step` started while the step lock is held: the
+/// busy refusal, naming both commands that hold the lock.
+const BUSY_REFUSAL: &str = "rigger: another `rigger step` is already running in this repo, or a \
+     `rigger run` is (lock .rigger/step.lock). Refusing to run concurrently: two would race the \
+     run-branch checkout and the unit worktrees branched off HEAD, corrupting the run. Wait for \
+     the running one to finish and retry.\n";
+
+/// An unborn git repo with the two-stage workflow, so a `rigger run --base origin/does-not-exist`
+/// started in it refuses at its base gates, anchoring nothing.
+fn an_unborn_run_project() -> tempfile::TempDir {
+    let dir = temp_project();
+    write_workflow_fixture(dir.path(), &TWO_STAGE_WORKFLOW);
+    dir
+}
+
+/// The `SpawnLaunched` record the JSON `body` spells, on the run `run` ("" for none).
+fn a_launch(run: &str, body: &serde_json::Value) -> (String, rigger::progress::SpawnLaunched) {
+    (
+        run.to_string(),
+        serde_json::from_value(body.clone()).unwrap(),
+    )
+}
+
+/// Record `seeds` in the progress store of the project at `root` through the host's writer, each
+/// `(run, body)` a `SpawnLaunched` body recorded on the run `run` ("" for none), in order.
+fn seed_launches(root: &Path, seeds: &[(&str, serde_json::Value)]) {
+    common::cli::with_store_file(root, "progress.db", |store| {
+        for (run, body) in seeds {
+            let (run, record) = a_launch(run, body);
+            rigger::progress_store::record_launch(store, &run, &record).unwrap();
+        }
+    });
+}
+
+/// Every `SpawnLaunched` record the progress store of the project at `root` holds, each with the
+/// run it is stamped with ("" for none), in log order.
+fn recorded_launches(root: &Path) -> Vec<(String, rigger::progress::SpawnLaunched)> {
+    use rigger::eventstore::{Direction, Filter};
+    let events = common::cli::with_store_file(root, "progress.db", |store| {
+        let prefix = Filter {
+            stream_prefix: Some(rigger::progress::STREAM.to_string()),
+        };
+        store.read_all(0, Direction::Forward, &prefix).unwrap()
+    });
+    common::cli::spawn_launches(&events)
+}
+
+/// `rigger run --base origin/does-not-exist` in `root`, its scratch root at `scratch`.
+fn start_a_run(root: &Path, scratch: &Path) -> (String, String, bool) {
+    run_rigger_envs(
+        root,
+        &["run", "--base", "origin/does-not-exist"],
+        &[("RIGGER_TMPDIR", scratch.to_str().unwrap())],
+    )
+}
+
+/// spec 105, RESUME BY SESSION: a `rigger run` takes the step lock right after its root check and
+/// holds it for its whole life, so a start beside a held lock - a `rigger step`, or another run -
+/// refuses with the busy refusal before anything else: it closes no launch, opens no event log and
+/// anchors no run branch.
+#[test]
+fn a_run_start_beside_a_held_step_lock_refuses_before_it_reconciles_or_anchors() {
+    let scratch = tempfile::tempdir().unwrap();
+    let dir = an_unborn_run_project();
+    let root = dir.path();
+    let open = serde_json::json!({
+        "spawn": "u1/implementer#0", "launch": 0, "session_id": "s-u1", "started": 1,
+        "dir": scratch.path().join("u1"),
+    });
+    seed_launches(root, &[("run-a", open.clone())]);
+    let head_before = git_answer(root, &["symbolic-ref", "--short", "-q", "HEAD"]);
+    let _held = common::cli::hold_step_lock(root);
+
+    let (out, err, ok) = start_a_run(root, scratch.path());
+
+    assert_eq!(
+        (out.as_str(), err.as_str(), ok),
+        ("", BUSY_REFUSAL, false),
+        "a start beside a held step lock refuses with the busy refusal first"
+    );
+    assert_eq!(
+        recorded_launches(root),
+        vec![a_launch("run-a", &open)],
+        "the refused start closes no launch"
+    );
+    assert!(
+        !common::cli::rigger_file(root, "events.db").exists(),
+        "the refused start opens no event log"
+    );
+    assert_eq!(
+        git_answer(root, &["symbolic-ref", "--short", "-q", "HEAD"]),
+        head_before,
+        "the refused start anchors no run branch"
+    );
+}
+
+/// spec 105, RESUME BY SESSION: a `rigger run` start closes every launch the progress store holds
+/// open - of any run, a `rigger critique`'s and an unstamped record's included - `interrupted`,
+/// the latest record of each launch deciding, and reaps the dir of each under the scratch root;
+/// all before its base gates, so a start they refuse has already reconciled. A dir outside the
+/// scratch root (the critique's, the repo root) is refused by name and nothing in it is reaped, a
+/// launch with no dir closes and reaps nothing, and a closed launch's dir is left alone.
+#[cfg(unix)]
+#[test]
+fn a_run_start_closes_every_open_launch_interrupted_and_reaps_its_dir_under_the_scratch_root() {
+    let scratch = tempfile::tempdir().unwrap();
+    let under = |leaf: &str| scratch.path().join(leaf);
+    for leaf in ["u1", "u2", "u3"] {
+        std::fs::create_dir_all(under(leaf)).unwrap();
+    }
+    let dir = an_unborn_run_project();
+    let root = dir.path();
+    let seeds = [
+        (
+            "run-a",
+            serde_json::json!({
+                "spawn": "u1/implementer#0", "launch": 0, "session_id": "s-u1", "started": 1,
+                "dir": under("u1"),
+            }),
+        ),
+        (
+            "run-a",
+            serde_json::json!({
+                "spawn": "u2/implementer#0", "launch": 0, "session_id": "s-u2", "started": 2,
+                "dir": under("u2"),
+            }),
+        ),
+        (
+            "run-a",
+            serde_json::json!({
+                "spawn": "u2/implementer#0", "launch": 0, "session_id": "s-u2", "started": 0,
+                "ended": "completed",
+            }),
+        ),
+        (
+            "run-a",
+            serde_json::json!({
+                "spawn": "u3/implementer#0", "launch": 0, "session_id": "s-u3", "started": 3,
+                "dir": under("u3"),
+            }),
+        ),
+        (
+            "run-a",
+            serde_json::json!({
+                "spawn": "u3/implementer#0", "launch": 0, "session_id": "s-u3", "started": 0,
+                "ended": "fault", "class": "rate_limit",
+            }),
+        ),
+        (
+            "run-a",
+            serde_json::json!({
+                "spawn": "u3/implementer#0", "launch": 1, "session_id": "s-u3b",
+                "resumed_from": "s-u3", "started": 4,
+            }),
+        ),
+        (
+            "run-b",
+            serde_json::json!({
+                "spawn": "u4/reviewer#0", "launch": 0, "session_id": "s-u4", "started": 5,
+            }),
+        ),
+        (
+            "critique-5e1f",
+            serde_json::json!({
+                "spawn": "critique/critic#0", "launch": 0, "session_id": "s-c", "started": 6,
+                "dir": root,
+            }),
+        ),
+        (
+            "",
+            serde_json::json!({
+                "spawn": "u5/implementer#0", "launch": 0, "session_id": "s-u5", "started": 7,
+                "dir": under("gone"),
+            }),
+        ),
+    ];
+    seed_launches(root, &seeds);
+    let mut outcome = None;
+
+    common::fixtures::assert_teardown_reaps_only_what_is_rooted_inside(
+        &under("u1"),
+        &[root, &under("u2"), &under("u3")],
+        || outcome = Some(start_a_run(root, scratch.path())),
+        "a run start's reconciliation",
+    );
+
+    let (out, err, ok) = outcome.unwrap();
+    assert_eq!((out.as_str(), ok), ("", false), "stderr: {err}");
+    let refused = format!(
+        "rigger: reap refused: {} is not strictly under {}\n",
+        root.display(),
+        scratch.path().canonicalize().unwrap().display()
+    );
+    assert_eq!(
+        err.strip_prefix(&refused)
+            .map(|rest| (rest.starts_with(NO_REACHABLE_BASE), rest.lines().count())),
+        Some((true, 1)),
+        "the critique's dir is refused by name, then the base gate refuses: {err}"
+    );
+    let closes = |run: &str, spawn: &str, launch: u32, session: &str| {
+        let body = serde_json::json!({
+            "spawn": spawn, "launch": launch, "session_id": session, "started": 0,
+            "ended": "interrupted",
+        });
+        a_launch(run, &body)
+    };
+    let mut expected: Vec<_> = seeds
+        .iter()
+        .map(|(run, body)| a_launch(run, body))
+        .collect();
+    expected.extend([
+        closes("", "u5/implementer#0", 0, "s-u5"),
+        closes("critique-5e1f", "critique/critic#0", 0, "s-c"),
+        closes("run-a", "u1/implementer#0", 0, "s-u1"),
+        closes("run-a", "u3/implementer#0", 1, "s-u3b"),
+        closes("run-b", "u4/reviewer#0", 0, "s-u4"),
+    ]);
+    assert_eq!(
+        recorded_launches(root),
+        expected,
+        "every open launch closes interrupted, in (run, spawn, launch) order, after the seeds"
+    );
+}
+
+/// An arm of [`install_fake_claude`] for the `Do the unit.` workers whose first launch never ends:
+/// it records its working directory in the directory of the fake, then becomes a ten-minute sleep
+/// recording its pid there ([`common::fixtures::sleeping`]), the very process the host spawned.
+/// Every later launch writes the change a merging stage lands.
+fn hanging_first_worker_arm() -> String {
+    format!(
+        r#"  *"Do the unit."*)
+    if [ ! -e "$here/sleepers" ]; then
+        pwd -P > "$here/cwd"
+{sleep}    fi
+    echo "pub fn work() {{}}" > work.rs
+    ;;
+"#,
+        sleep = common::fixtures::sleeping(600)
+    )
+}
+
+/// spec 105, RESUME BY SESSION, across real supervisors: given a `rigger run` whose agent never
+/// ends, a second `rigger run` and a `rigger step` started beside it each refuse with the busy
+/// refusal, closing no launch and reaping nothing; once that run dies with its agent still
+/// running, the next `rigger run` reaps the agent rooted in the dir the host recorded before it
+/// closes the launch `interrupted` with the session the host recorded, then drives the run to done.
+#[cfg(unix)]
+#[test]
+fn a_live_runs_launch_is_left_alone_beside_it_and_reconciled_by_the_next_start_once_it_dies() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_workflow_fixture(root, &REVIEWLESS_GIT_UNIT_WORKFLOW);
+    let (scratch, state, logs) = (
+        tempfile::tempdir().unwrap(),
+        tempfile::tempdir().unwrap(),
+        tempfile::tempdir().unwrap(),
+    );
+    let (fake, path_env) = install_fake_claude(&hanging_first_worker_arm());
+    let envs = fake_claude_env(&path_env, scratch.path());
+    // Its output goes to files, never pipes: the agent it leaves behind holds what it inherited
+    // open past the run's death. The test owns the live run, and the agent from the moment it
+    // reads its pid, until each is meant to end, so a failure on any path ends both.
+    let stderr = logs.path().join("stderr");
+    let live = common::cli::OwnedChild::new(
+        common::cli::rigger_command(root, &["run"], &envs, state.path())
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::fs::File::create(&stderr).unwrap())
+            .spawn()
+            .expect("spawn the live run"),
+    );
+    let sleepers = fake.path().join("bin/sleepers");
+    let recorded_pid = || {
+        std::fs::read_to_string(&sleepers)
+            .ok()
+            .and_then(|pids| pids.strip_suffix('\n')?.parse::<u32>().ok())
+    };
+    if !common::fixtures::wait_until_for(POLLS_BESIDE_A_RUN, || recorded_pid().is_some()) {
+        drop(live);
+        panic!(
+            "the live run never launched its agent; stderr: {}",
+            std::fs::read_to_string(&stderr).unwrap()
+        );
+    }
+    let agent = recorded_pid().unwrap();
+    let owned_agent = common::OwnedPid::new(agent);
+    let opened = recorded_launches(root);
+    let open_dir = opened
+        .first()
+        .and_then(|(_, open)| std::fs::canonicalize(&open.dir).ok());
+    let run = common::cli::current_run_id_of(root);
+    let beside = ["run", "step"].map(|verb| {
+        let outcome =
+            common::cli::run_rigger_within(root, &[verb], &envs, POLLS_BESIDE_A_RUN, |_| {});
+        (
+            verb,
+            outcome,
+            recorded_launches(root),
+            common::is_running(agent),
+        )
+    });
+    drop(live);
+
+    let [(stamp, open)] = opened.as_slice() else {
+        panic!("the live run holds one launch open: {opened:?}");
+    };
+    let cwd = std::fs::read_to_string(fake.path().join("bin/cwd")).unwrap();
+    assert_eq!(
+        (Some(stamp.clone()), open.clone(), open_dir),
+        (
+            run,
+            rigger::progress::SpawnLaunched {
+                spawn: "solo/implementer#0".to_string(),
+                launch: 0,
+                session_id: open.session_id.clone(),
+                resumed_from: None,
+                started: open.started,
+                ended: None,
+                class: None,
+                revision: None,
+                dir: open.dir.clone(),
+            },
+            Some(PathBuf::from(cwd.trim_end())),
+        ),
+        "the live run's launch is open on its run, naming the dir its agent runs in"
+    );
+    for (verb, outcome, launches, agent_running) in beside {
+        assert_eq!(
+            (outcome, launches, agent_running),
+            (
+                Some((String::new(), BUSY_REFUSAL.to_string(), false)),
+                opened.clone(),
+                true
+            ),
+            "rigger {verb} beside a live run refuses with the busy refusal, closing and reaping \
+             nothing"
+        );
+    }
+
+    let close = (
+        stamp.clone(),
+        rigger::progress::SpawnLaunched::closed(
+            "solo/implementer#0",
+            0,
+            open.session_id.clone(),
+            rigger::progress::ENDED_INTERRUPTED,
+            "",
+        ),
+    );
+    let mut running_at_close = None;
+    let restarted =
+        common::cli::run_rigger_within(root, &["run"], &envs, POLLS_BESIDE_A_RUN, |_| {
+            if running_at_close.is_none() && recorded_launches(root).contains(&close) {
+                running_at_close = Some(common::is_running(agent));
+            }
+        });
+    let outlived = common::is_running(agent);
+    drop(owned_agent);
+    let (out, err, ok) = restarted.expect("the restarted run ends within two minutes");
+    assert_eq!(
+        (running_at_close, outlived),
+        (Some(false), false),
+        "the restart reaps the dead run's agent before it closes its launch; stderr: {err}"
+    );
+    assert_eq!(
+        recorded_launches(root).get(..2),
+        Some(&[(stamp.clone(), open.clone()), close][..]),
+        "the restart's first record closes the dead run's launch interrupted; stderr: {err}"
+    );
+    assert_eq!(
+        (ok, out.lines().nth(2)),
+        (true, Some("done: every unit integrated")),
+        "the restart drives the run to done; stderr: {err}"
+    );
 }
 
 /// Spec 47 - KurrentDB is always available (the CLI/binary edge). Before spec 47 the

@@ -1599,13 +1599,46 @@ fn pause_a_hold_poll() {
     std::thread::sleep(HOLD_POLL_INTERVAL);
 }
 
+/// A supervisor start's reconciliation (spec 105, RESUME BY SESSION): every launch the progress
+/// `store` holds open, of any run ([`progress::open_launches`]), is closed
+/// [`progress::ENDED_INTERRUPTED`] with no class on its own run's stream, so the close enters no
+/// fault count. The start holds the step lock, so no step or run of its own is driving them; a live
+/// `rigger critique`'s launch is closed too, and that false close stands until its own close lands.
+/// Each launch is reaped before its close, so a crash between the two re-reaps at the next start:
+/// what is still rooted under its `dir`, when the project has a `scratch` root and the record names
+/// a dir, through [`rigger::reap::reap_processes_rooted_under`], whose containment check refuses a
+/// dir outside the scratch root by name and reaps nothing there. A read or an append that fails
+/// ends the start with its error.
+fn reconcile_open_launches(store: &dyn EventStore, scratch: Option<&str>) -> Res {
+    let every_run = Filter {
+        stream_prefix: Some(progress::STREAM.to_string()),
+    };
+    let events = store.read_all(0, Direction::Forward, &every_run)?;
+    for (run, open) in progress::open_launches(&events) {
+        if let Some(root) = scratch.filter(|_| !open.dir.is_empty()) {
+            rigger::reap::reap_processes_rooted_under(Path::new(&open.dir), Path::new(root));
+        }
+        let close = progress::SpawnLaunched::closed(
+            open.spawn,
+            open.launch,
+            open.session_id,
+            progress::ENDED_INTERRUPTED,
+            "",
+        );
+        rigger::progress_store::record_launch(store, &run, &close)?;
+    }
+    Ok(())
+}
+
 /// The standalone CLI path: ground, host the agents as headless `claude` sessions
 /// ([`claude_code::Driver`]) behind the [`HeldDriver`] that launches nothing while the run is
 /// held, drive the DAG to integration with the supervisor [`beating`] and the hold controller
 /// ([`probe_an_owed_hold`] each [`HOLD_POLL_INTERVAL`]) [`ticking`] beside it, and reclaim a done
 /// run's scratch. The store is selected by flag and wrapped in the per-project namespace
-/// decorator before it is injected (§5.1.1, R9). The machine stays awake through `sleep` from the
-/// moment the loop starts driving until this returns ([`keep_awake`]).
+/// decorator before it is injected (§5.1.1, R9). It holds the step lock from right after its root
+/// check and spec read until it returns, and before its base gates closes and reaps every launch
+/// the progress store holds open ([`reconcile_open_launches`]). The machine stays awake through
+/// `sleep` from the moment the loop starts driving until this returns ([`keep_awake`]).
 fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
     // DISCOVERABILITY (spec 66, criterion 5): `rigger run <spec>` is a REAL pre-launch
     // surface that genuinely holds the spec path in production (unlike the SessionStart-only
@@ -1634,6 +1667,25 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
     refuse_unless_one_root(&cwd, &repo, scratch.as_deref(), "rigger run")?;
     let (criteria, text) = load_criteria(parsed.spec.as_deref())?;
     std::fs::create_dir_all(RIGGER_DIR)?;
+    // ONE DRIVER AT A TIME (spec 105, RESUME BY SESSION): the step lock is held from here until
+    // this run returns, before any store is opened, any launch closed or any run branch anchored,
+    // so a second `rigger run` or a `rigger step` beside this one refuses with the busy refusal
+    // first, and a run that hangs keeps it, which keeps `rigger watch`'s dead-driver alert silent.
+    let _step_lock = acquire_step_lock(Path::new(RIGGER_DIR))?;
+    // Migrate a pre-spec-09 store's legacy-namespace history to the minted identity once,
+    // before opening the run backend (spec 09). Local-sqlite only - the migration renames
+    // streams in the local `.rigger/events.db`; a shared KurrentDB backend is out of scope.
+    let selection = store_selection(parsed.store, parsed.conn.as_deref())?;
+    if selection.is_sqlite() {
+        migrate_local_identity(None)?;
+    }
+    let progress_backend = open_progress_backend()?;
+    let progress = Namespaced::new(&progress_backend, &project_identity());
+    // No launch the progress store holds open has a live driver now that this run holds the
+    // step lock: each is reaped and closed before the base gates, so a start they refuse has
+    // already reconciled. The reconciliation reads the progress store alone, so the run store
+    // still opens after the anchor, behind this instance's registration.
+    reconcile_open_launches(&progress, scratch.as_deref())?;
     // Anchor + check out the run branch off `--base` (spec 18, criterion 6) BEFORE the
     // conductor branches any unit worktree off HEAD, so machine-generated units never
     // branch/merge onto the operator's own branch. `--base` threads here exactly as it does
@@ -1662,16 +1714,6 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
         anchor_run_branch(&repo, "rigger run", &base, base_explicit)?;
         base_tip = rigger::worktree::branch_tip(&repo, RUN_BRANCH).unwrap_or_default();
     }
-    // The boxed backend and its namespaced wrapper both live here, in this stack
-    // frame, for the whole run: the decorator borrows the concrete store, and both
-    // outlive the `conductor::run` call below.
-    // Migrate a pre-spec-09 store's legacy-namespace history to the minted identity once,
-    // before opening the run backend (spec 09). Local-sqlite only - the migration renames
-    // streams in the local `.rigger/events.db`; a shared KurrentDB backend is out of scope.
-    let selection = store_selection(parsed.store, parsed.conn.as_deref())?;
-    if selection.is_sqlite() {
-        migrate_local_identity(None)?;
-    }
     // Register this instance in the machine-global discovery registry (spec 50, criterion 2).
     // `rigger run` drives the WHOLE run in-process through a single `conductor::run` below, so the
     // held guard's heartbeat thread (not a one-shot register) is what keeps the entry from aging out
@@ -1679,6 +1721,9 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
     // run. Registered here, off the same resolved `selection` `rigger step` uses, so a native
     // `rigger run` is as discoverable as the stepwise loop path.
     let _registration = register_run_instance(&repo, &selection);
+    // The boxed backend and its namespaced wrapper both live here, in this stack
+    // frame, for the whole run: the decorator borrows the concrete store, and both
+    // outlive the `conductor::run` call below.
     let backend = resolve_store(&selection, &db_path("events.db"))?;
     let store = Namespaced::new(backend.as_ref(), &project_identity());
     let graph = open_graph(&db_path("graph.db"), &project_identity(), &selection, "run")?;
@@ -1705,8 +1750,6 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
             text: &text,
         },
     )?;
-    let progress_backend = open_progress_backend()?;
-    let progress = Namespaced::new(&progress_backend, &project_identity());
     let driver = claude_code::Driver {
         bin: String::new(),
         rigger_bin: running_executable(),
@@ -4791,5 +4834,48 @@ mod tests {
         });
         assert!(landed, "the tick after the refused one lands its beat");
         assert_eq!(beat_streams(&progress), vec!["progress/run-a"]);
+    }
+
+    /// spec 105, RESUME BY SESSION: a project with no scratch root (a repo-less run) has no root
+    /// to authorize a reap against, so its start-up reconciliation closes each open launch
+    /// `interrupted` and reaps nothing: a process rooted in the launch's dir lives on.
+    #[test]
+    fn a_reconciliation_with_no_scratch_root_closes_every_open_launch_and_reaps_nothing() {
+        use crate::test_support::{cleanup, sleeper_in, wait_until};
+        use rigger::progress::{SpawnLaunched, ENDED_INTERRUPTED};
+
+        let launched_in = tempfile::tempdir().unwrap();
+        let mut rooted = sleeper_in(launched_in.path());
+        let seen = wait_until(|| {
+            rigger::reap::processes_rooted_under(launched_in.path())
+                .iter()
+                .any(|(pid, _)| *pid == rooted.id())
+        });
+        let progress = Store::open(":memory:").unwrap();
+        let open = SpawnLaunched {
+            spawn: "u1/implementer#0".into(),
+            launch: 0,
+            session_id: "s-u1".into(),
+            started: 1,
+            dir: launched_in.path().to_str().unwrap().into(),
+            ..SpawnLaunched::default()
+        };
+        rigger::progress_store::record_launch(&progress, "run-a", &open).unwrap();
+
+        let reconciled = reconcile_open_launches(&progress, None).map_err(|e| e.to_string());
+
+        let alive = matches!(rooted.try_wait(), Ok(None));
+        cleanup(&mut rooted);
+        let records: Vec<SpawnLaunched> = progress::read_run(&progress, "run-a")
+            .unwrap()
+            .iter()
+            .map(|e| serde_json::from_slice(&e.data).unwrap())
+            .collect();
+        let closed = SpawnLaunched::closed("u1/implementer#0", 0, "s-u1", ENDED_INTERRUPTED, "");
+        assert_eq!(
+            (seen, reconciled, alive, records),
+            (true, Ok(()), true, vec![open, closed]),
+            "the open launch closes interrupted and the process in its dir survives"
+        );
     }
 }
