@@ -810,8 +810,11 @@ fn validate_reports_the_claude_login_and_warns_when_it_expires_or_gives_no_repor
     };
     use std::time::Duration;
 
+    // Each window times the whole `rigger validate` process. `quick` stays below the 5 s bound,
+    // since it proves no wait; `at_the_bound` leaves the rest of validate room above the bound
+    // and stays below the stand-in's 30 s sleep, which it proves validate does not wait out.
     let quick = (Duration::ZERO, Duration::from_secs(3));
-    let at_the_bound = (Duration::from_secs(5), Duration::from_secs(7));
+    let at_the_bound = (Duration::from_secs(5), Duration::from_secs(20));
     let reported = |method: &str| vec![format!("claude login: {method}")];
     let exits_1 = "    exit 1\n";
     // (name, the stand-in's `auth` arm, none for no `claude` on PATH, the login lines on stdout,
