@@ -228,6 +228,13 @@ pub fn spawn_request(agent: &AgentDef, prompt: &str, opts: &SpawnOpts) -> SpawnR
 /// during its run: the workflow and headless drivers' agents record through the `rigger`
 /// MCP server while the spawn runs, so both leave `emit` unused, and the blocking cli
 /// driver replays the emit lines of its agent's stdout through `emit` after the run.
+///
+/// A driver that launches more than once inside one spawn (a resume fallback) launches fresh
+/// only on a run it has proved unheld, reading the hold after the ending. A driver handed no
+/// hold reads none and its fallback stands, so a driver with a fallback sits behind the
+/// held-run decorator (`HeldDriver`) only when it is handed the run's hold. The blocking cli
+/// driver `rigger canary` probes with and the critique host, which is handed no hold sink, are
+/// that no-hold case, and neither sits behind the decorator.
 pub trait AgentDriver: Send + Sync {
     fn spawn(
         &self,

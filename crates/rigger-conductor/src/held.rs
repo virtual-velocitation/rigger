@@ -64,7 +64,9 @@ pub struct HeldDriver<'a> {
 }
 
 impl<'a> HeldDriver<'a> {
-    /// A decorator over `inner`, reading the run from `store`. `session_closed` is `rigger
+    /// A decorator over `inner`, reading the run from `store`. A resume fallback launches inside
+    /// `inner`'s spawn, past this gate, so an `inner` with one reads the run's hold itself
+    /// ([`AgentDriver`]'s contract). `session_closed` is `rigger
     /// serve`'s flag, `None` on `rigger run`, which has no session to end a wait. `pause` runs
     /// between two reads of a standing hold.
     pub fn new(
