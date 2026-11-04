@@ -325,7 +325,7 @@ owns the OS process facilities, which gains a normal `rigger-domain` dependency 
   no gate, container or runner verifies them, by decision; a defect there surfaces as an issue
   report on the project. Only the port's lifecycle and the Linux adapter are tested here.
 
-ADDENDUM DEPARTURES, decided: the Design departs from the Goal's addendum in seven places, each
+ADDENDUM DEPARTURES, decided: the Design departs from the Goal's addendum in six places, each
 kept as decided above: a `rate_limit` hold honors no known reset time (section 5.1), since the probe
 backoff already bounds a rate-limit hold's canary spend; a `cloud_credential_error` hold runs no
 `claude auth status` probe (5.1), since that status reports the login, not the cloud provider's
@@ -333,9 +333,7 @@ credentials; a `model_not_found` hold runs no canary (5.1), since a supervisor l
 configuration it read at start; the canary runs on the hold's model, not the cheapest configured
 one (5.4), since that model is the one the held launches need; the page shows the hold in its
 dock entry and statusline word, not its health strip (5.5), since that strip reports the dash's
-and the store's connection; the write guard roots every spawn at its `dir` and scratch
-container, not a reviewer persona at its scratch only (4.4), since personas and review's steps
-are the consumer's to declare; and a probe releases a hold at worst 900 s after a login, not
+and the store's connection; and a probe releases a hold at worst 900 s after a login, not
 within section 9's two minutes, since the probe delay caps at 900 s, and `rigger release` is the
 instant path.
 

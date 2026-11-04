@@ -174,7 +174,7 @@ itself.
 | `billing_error`, `account_on_hold`, `verification_required` | HOLD on first sight | a canary turn succeeds |
 | `model_not_found` | HOLD on first sight, naming the model | a canary turn on that model succeeds |
 | `rate_limit`, `overloaded`, `server_error` | WAIT while Claude Code retries; HOLD when a session dies of it | a canary turn succeeds; a known reset time is honored |
-| `invalid_request`, `max_output_tokens`, `unknown` | FAULT: the spawn is relaunched, at most twice, no attempt charged; then the unit fails as infra | - |
+| `invalid_request`, `max_output_tokens`, `unknown` | FAULT: the error takes its spawn site's existing error path unchanged, so at the implementer it reruns uncharged under the infra limit and a spawn past that limit halts the run naming its class | - |
 | three consecutive FAULTs across the run | HOLD `api-unstable` | a canary turn succeeds |
 | host suspended, supervisor absent | an implicit hold interval (5.3) | the supervisor is alive |
 | operator | `rigger hold --reason <text>` | `rigger release` |
