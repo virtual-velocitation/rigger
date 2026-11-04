@@ -197,7 +197,7 @@ mod tests {
             [
                 "[dependencies] rigger-domain",
                 "[target.'cfg(not(target_arch = \"wasm32\"))'.dependencies] rustix fs2",
-                "[target.'cfg(target_os = \"linux\")'.dependencies] zbus",
+                "[target.'cfg(target_os = \"linux\")'.dependencies] zbus tokio",
                 "[target.'cfg(target_os = \"windows\")'.dependencies] windows-sys",
                 "[dev-dependencies] tempfile",
                 "[target.'cfg(target_os = \"linux\")'.dev-dependencies] zbus",

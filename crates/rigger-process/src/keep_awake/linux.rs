@@ -2,7 +2,9 @@
 
 use rigger_domain::sleep_hold::{SleepGuard, Unavailable};
 use std::os::fd::OwnedFd;
-use zbus::blocking::Connection;
+use std::time::{Duration, Instant};
+use zbus::connection::Builder;
+use zbus::Connection;
 
 /// The bus name logind owns on the system bus.
 const LOGIND: &str = "org.freedesktop.login1";
@@ -17,13 +19,51 @@ const LOGIND_MANAGER: &str = "org.freedesktop.login1.Manager";
 /// logind never answered.
 const BUS_DRIVER: &str = "org.freedesktop.DBus";
 
+/// The one bound on an acquire, over connecting to the system bus, its authentication handshake
+/// and logind's answer to `Inhibit` together: the D-Bus default method-call timeout.
+const DEADLINE: Duration = Duration::from_secs(25);
+
 /// Take a logind `block` inhibitor of sleep and idle by `rigger` for `reason`, over a system-bus
-/// connection of its own. The guard holds the descriptor logind answers with, and logind ends the
-/// inhibitor when the guard drops it; the connection and the reply are dropped before the guard
-/// is returned, so that descriptor is the one copy the process keeps.
+/// connection of its own, within [`DEADLINE`]. The guard holds the descriptor logind answers
+/// with, and logind ends the inhibitor when the guard drops it.
 pub(super) fn acquire(reason: &str) -> Result<SleepGuard, Unavailable> {
-    let bus = Connection::system().map_err(no_system_bus)?;
-    let descriptor = inhibit(&bus, reason).map_err(unavailable)?;
+    let bus = Builder::system().map_err(no_system_bus)?;
+    acquire_on(bus, reason, DEADLINE)
+}
+
+/// Take the inhibitor over the connection `bus` builds, answering unavailable, timed out, once
+/// `deadline` passes wherever the acquire then stands: connecting, authenticating or awaiting
+/// logind's answer. The connection runs on a current-thread runtime of this acquire's own, which
+/// the calling thread drives; the connection and the reply drop inside it, and the runtime is
+/// shut down before this returns, so the descriptor the guard holds is the one copy the process
+/// keeps. The shutdown joins every thread the runtime started, waiting no longer than what
+/// remains of `deadline`: past it, a thread still running, one blocked in a connect the deadline
+/// cut short among them, is left to end on its own rather than hold the acquire past its bound.
+fn acquire_on(
+    bus: Builder<'_>,
+    reason: &str,
+    deadline: Duration,
+) -> Result<SleepGuard, Unavailable> {
+    let started = Instant::now();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| unavailable(e.into()))?;
+    let taken = runtime.block_on(async {
+        let inhibitor = async {
+            let bus = bus.build().await.map_err(no_system_bus)?;
+            inhibit(&bus, reason).await.map_err(unavailable)
+        };
+        tokio::time::timeout(deadline, inhibitor)
+            .await
+            .unwrap_or_else(|_| {
+                Err(unavailable(
+                    std::io::Error::from(std::io::ErrorKind::TimedOut).into(),
+                ))
+            })
+    });
+    runtime.shutdown_timeout(deadline.saturating_sub(started.elapsed()));
+    let descriptor = taken?;
     Ok(SleepGuard::new(move || drop(descriptor)))
 }
 
@@ -34,14 +74,16 @@ pub(super) fn acquire(reason: &str) -> Result<SleepGuard, Unavailable> {
 /// close-on-exec, so a child another thread spawns between its receipt and this return inherits
 /// it and holds the inhibitor past the guard: a caller acquires before it starts any thread that
 /// spawns a child.
-fn inhibit(bus: &Connection, reason: &str) -> zbus::Result<OwnedFd> {
-    let reply = bus.call_method(
-        Some(LOGIND),
-        LOGIND_PATH,
-        Some(LOGIND_MANAGER),
-        "Inhibit",
-        &("sleep:idle", "rigger", reason, "block"),
-    )?;
+async fn inhibit(bus: &Connection, reason: &str) -> zbus::Result<OwnedFd> {
+    let reply = bus
+        .call_method(
+            Some(LOGIND),
+            LOGIND_PATH,
+            Some(LOGIND_MANAGER),
+            "Inhibit",
+            &("sleep:idle", "rigger", reason, "block"),
+        )
+        .await?;
     let descriptor: zbus::zvariant::OwnedFd = reply.body().deserialize()?;
     Ok(descriptor.into())
 }

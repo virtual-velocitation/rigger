@@ -2187,6 +2187,7 @@ dependencies = [
  "rigger-domain",
  "rustix 1.1.4",
  "tempfile",
+ "tokio",
  "windows-sys 0.61.2",
  "zbus",
 ]
