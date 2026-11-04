@@ -1650,6 +1650,7 @@ fn reconcile_open_launches(store: &dyn EventStore, scratch: Option<&str>) -> Res
 /// the progress store holds open ([`reconcile_open_launches`]). The machine stays awake through
 /// `sleep` from the moment the loop starts driving until this returns ([`keep_awake`]).
 fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
+    let command = "rigger run";
     // DISCOVERABILITY (spec 66, criterion 5): `rigger run <spec>` is a REAL pre-launch
     // surface that genuinely holds the spec path in production (unlike the SessionStart-only
     // `rigger prime` hook, which the installed hook always invokes with zero args - see
@@ -1667,14 +1668,14 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
     // FIRST, mirroring `cmd_step`'s own placement - see `resolve_main_worktree_or_refuse`'s
     // doc comment.
     let cwd = cwd();
-    let repo = resolve_main_worktree_or_refuse(&cwd, "rigger run")?;
+    let repo = resolve_main_worktree_or_refuse(&cwd, command)?;
     // Refuse before starting if a gating persona would stall the integration gate (spec 18,
     // unit 2); `load_run_config` reuses unit 1's lint at this run's config-load seam.
     let cfg = load_run_config(".")?;
     // EXACTLY ONE ROOT: this run's teardown reclaims the scratch root and its hosted agents write
     // into it, so it is refused here, before anything is reclaimed, reaped or anchored.
     let scratch = project_scratch_root(&repo, &cfg);
-    refuse_unless_one_root(&cwd, &repo, scratch.as_deref(), "rigger run")?;
+    refuse_unless_one_root(&cwd, &repo, scratch.as_deref(), command)?;
     let (criteria, text) = load_criteria(parsed.spec.as_deref())?;
     std::fs::create_dir_all(RIGGER_DIR)?;
     // ONE DRIVER AT A TIME (spec 105, RESUME BY SESSION): the step lock is held from here until
@@ -1719,9 +1720,9 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
         // Loop-readiness gate (spec 38, criterion 2): refuse a run with no reachable base (an
         // unresolvable base AND no HEAD to fall back to) loudly rather than minting a run branch
         // that branches from nowhere.
-        refuse_when_base_unreachable(&repo, "rigger run", &base, planned)?;
-        refuse_when_base_lacks_spec_paths(&repo, "rigger run", &base, planned, &criteria)?;
-        anchor_run_branch(&repo, "rigger run", &base, base_explicit)?;
+        refuse_when_base_unreachable(&repo, command, &base, planned)?;
+        refuse_when_base_lacks_spec_paths(&repo, command, &base, planned, &criteria)?;
+        anchor_run_branch(&repo, command, &base, base_explicit)?;
         base_tip = rigger::worktree::branch_tip(&repo, RUN_BRANCH).unwrap_or_default();
     }
     // Register this instance in the machine-global discovery registry (spec 50, criterion 2).
@@ -1752,7 +1753,7 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
         false,
         &base_tip,
         &RunStartCritique {
-            command: "rigger run",
+            command,
             backend: backend.as_ref(),
             identity: &project_identity(),
             workflow: &cfg.workflow,
@@ -1791,7 +1792,7 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
     // the loop begins, so an active harness is never invisible. Held for the whole run - the
     // guard reaps the dash when this scope ends (unit 3's reaping mechanism).
     let _dash = start_run_dashboard(cfg.workflow.dash_enabled(), &store);
-    let _awake = keep_awake(sleep, "rigger run");
+    let _awake = keep_awake(sleep, command);
     // The hold controller polls beside the drive, on the folding store the host holds the run on.
     let control_holds = || {
         if let Err(e) = probe_an_owed_hold(&folding, &progress, &driver, &root) {
