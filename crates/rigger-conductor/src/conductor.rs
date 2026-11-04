@@ -2473,9 +2473,9 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
                         fan_out_released = end == GateEnd::Released;
                         gate_stopped = end == GateEnd::Stopped;
                     }
-                    // A parked reviewer/re-plan spawn (stepwise/replay) ends the step
-                    // cleanly; a later step replays the recorded result and re-reaches
-                    // the gate.
+                    // A parked reviewer/re-plan spawn (stepwise/replay, or a closed session
+                    // left it unserved) ends the step cleanly; a later step replays the
+                    // recorded result, or a relaunch serves it, and re-reaches the gate.
                     Err(e) if is_parked(&e) => {
                         ctx.parked.store(true, Ordering::SeqCst);
                         fan_out_released = false;
@@ -3004,12 +3004,12 @@ struct RunCtx<'a> {
     /// The run loop checks this after each wave to record the breaker and stop.
     budget_broke: std::sync::atomic::AtomicBool,
     /// Set the moment any in-flight spawn PARKS (the stepwise/replay driver hit an
-    /// unrecorded frontier). A parked wave loop empties with units still un-integrated,
-    /// so the run has NOT genuinely converged: a later step will drain the park and
-    /// integrate more units. The phase boundary consults this so the DEFERRED gate is
-    /// held until the step that fully assembles the tree - never recording a verdict
-    /// against the partial/base tree a parked frontier leaves behind (finding
-    /// adv-deferred-replay-locks-partial-tree).
+    /// unrecorded frontier, or a closed session left a spawn unserved). A parked wave loop
+    /// empties with units still un-integrated, so the run has NOT genuinely converged: a
+    /// later step, or the relaunch that serves the spawn, will drain the park and integrate
+    /// more units. The phase boundary consults this so the DEFERRED gate is held until the
+    /// step that fully assembles the tree - never recording a verdict against the
+    /// partial/base tree a parked frontier leaves behind (adv-deferred-replay-locks-partial-tree).
     parked: std::sync::atomic::AtomicBool,
     /// Set the moment a stage PAUSES for human review (§4.3, its effective autonomy is
     /// Manual): the unit emitted ManualReview and returned pending WITHOUT parking, so

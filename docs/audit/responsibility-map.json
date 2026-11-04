@@ -525,7 +525,7 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "1399ff6ef05c8b3f"
+    "content_hash": "6ac3309f28eb270a"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
