@@ -2879,6 +2879,9 @@ rigger::test_cases! {
             &["stream (read error before system/init): stream did not contain valid UTF-8"],
             0,
         );
+    // A success `result` with no `system/init` before it is no session's answer either.
+    a_resume_answering_with_no_init_falls_back:
+        a_resume_ending_with_no_session_falls_back("answer-no-init", AgentDef::default(), &[], 1);
 }
 
 /// A session gone before it reads a task too big for the pipe breaks the host's write, and it
