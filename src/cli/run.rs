@@ -1652,17 +1652,22 @@ fn pause_a_hold_poll() {
 /// `rigger critique`'s launch is closed too, and that false close stands until its own close lands.
 /// Each launch is reaped before its close, so a crash between the two re-reaps at the next start:
 /// what is still rooted under its `dir`, when the project has a `scratch` root and the record names
-/// a dir, through [`rigger::reap::reap_processes_rooted_under`], whose containment check refuses a
-/// dir outside the scratch root by name and reaps nothing there. A read or an append that fails
-/// ends the start with its error.
-fn reconcile_open_launches(store: &dyn EventStore, scratch: Option<&str>) -> Res {
+/// a dir, through `reap` called with that dir and the root; the composition root passes
+/// [`rigger::reap::reap_processes_rooted_under`], whose containment check refuses a dir outside
+/// the scratch root by name and reaps nothing there. A read or an append that fails ends the start
+/// with its error.
+fn reconcile_open_launches(
+    store: &dyn EventStore,
+    scratch: Option<&str>,
+    reap: &dyn Fn(&Path, &Path),
+) -> Res {
     let every_run = Filter {
         stream_prefix: Some(progress::STREAM.to_string()),
     };
     let events = store.read_all(0, Direction::Forward, &every_run)?;
     for (run, open) in progress::open_launches(&events) {
         if let Some(root) = scratch.filter(|_| !open.dir.is_empty()) {
-            rigger::reap::reap_processes_rooted_under(Path::new(&open.dir), Path::new(root));
+            reap(Path::new(&open.dir), Path::new(root));
         }
         let close = progress::SpawnLaunched::closed(
             open.spawn,
@@ -1732,7 +1737,11 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
     // step lock: each is reaped and closed before the base gates, so a start they refuse has
     // already reconciled. The reconciliation reads the progress store alone, so the run store
     // still opens after the anchor, behind this instance's registration.
-    reconcile_open_launches(&progress, scratch.as_deref())?;
+    reconcile_open_launches(
+        &progress,
+        scratch.as_deref(),
+        &rigger::reap::reap_processes_rooted_under,
+    )?;
     // Anchor + check out the run branch off `--base` (spec 18, criterion 6) BEFORE the
     // conductor branches any unit worktree off HEAD, so machine-generated units never
     // branch/merge onto the operator's own branch. `--base` threads here exactly as it does
@@ -4943,7 +4952,9 @@ mod tests {
         };
         rigger::progress_store::record_launch(&progress, "run-a", &open).unwrap();
 
-        let reconciled = reconcile_open_launches(&progress, None).map_err(|e| e.to_string());
+        let reconciled =
+            reconcile_open_launches(&progress, None, &rigger::reap::reap_processes_rooted_under)
+                .map_err(|e| e.to_string());
 
         let alive = matches!(rooted.try_wait(), Ok(None));
         cleanup(&mut rooted);

@@ -2074,10 +2074,10 @@ mandatory sweep: Command::new call sites - 94 site(s), collected mechanically re
 - `src/cli/mod.rs:10429-10429` `Command::new`
 - `src/cli/mod.rs:12169-12169` `Command::new`
 - `src/cli/mod.rs:12203-12203` `Command::new`
-- `src/cli/run.rs:3653-3653` `Command::new`
-- `src/cli/run.rs:3686-3686` `Command::new`
-- `src/cli/run.rs:3730-3730` `Command::new`
-- `src/cli/run.rs:3799-3799` `Command::new`
+- `src/cli/run.rs:3662-3662` `Command::new`
+- `src/cli/run.rs:3695-3695` `Command::new`
+- `src/cli/run.rs:3739-3739` `Command::new`
+- `src/cli/run.rs:3808-3808` `Command::new`
 - `src/cli/setup.rs:3874-3874` `Command::new`
 - `src/cli/setup.rs:3903-3903` `Command::new`
 - `src/cli/validate.rs:1540-1540` `Command::new`
@@ -3551,8 +3551,8 @@ mandatory sweep: /proc-path string literals - 60 site(s), collected mechanically
 - `crates/rigger-worktree-git/src/worktree.rs:3061-3061` `"/proc"`
 - `crates/rigger-worktree-git/src/worktree.rs:3065-3065` `"/proc/{pid}/cmdline"`
 - `crates/rigger-worktree-git/src/worktree.rs:3089-3089` `"/proc/{}"`
-- `src/cli/run.rs:3791-3791` `"/proc"`
-- `src/cli/run.rs:3895-3895` `"/proc"`
+- `src/cli/run.rs:3800-3800` `"/proc"`
+- `src/cli/run.rs:3904-3904` `"/proc"`
 - `tests/cli.rs:27729-27729` `"/proc"`
 - `tests/cli.rs:31944-31944` `"/proc"`
 - `tests/cli.rs:32052-32052` `"the holder pid {holder_pid} never reached the STOPPED (T) state in /proc"`
@@ -5508,7 +5508,7 @@ Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85
 - `src/cli/mod.rs:4714-4740` `footprint_reclaim_lines` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `src/cli/mod.rs:8884-8894` `parse_run_args_reads_rebase_definition` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `src/cli/run.rs:1644-1646` `pause_a_hold_poll` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
-- `src/cli/run.rs:2471-2495` `start_run_dashboard` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
+- `src/cli/run.rs:2480-2504` `start_run_dashboard` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `tests/change_path_revert_periphery.rs:213-323` `a_revert_through_the_shipped_build_records_the_earlier_generations_entry_again` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `tests/code_entity_test_exclusion_periphery.rs:1810-1822` `edges_where` - duplicate found by reading and closed: the design-doc assertion, the dev-only path test and the test-region test each re-rolled its `(from, rel, to)` edge projection inline; all now call `edges_where`
 - `tests/common/fixtures/events.rs:908-910` `after_call` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
