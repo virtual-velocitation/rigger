@@ -32,8 +32,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 use rigger_domain::agent::{
-    failure_class, parked_spawn, AgentDriver, AgentResult, Disposition, Error, SpawnOpts,
-    EMIT_REFUSED_MARKER,
+    failure_class, parked_spawn, AgentDriver, AgentResult, Error, SpawnOpts, EMIT_REFUSED_MARKER,
 };
 use serde_json::Value;
 
@@ -131,8 +130,7 @@ impl<'a> HeldDriver<'a> {
             let Ok(run) = ledger::project(&slice) else {
                 return false;
             };
-            let class_waits =
-                failure_class(e).is_some_and(|class| class.row().disposition != Disposition::Fault);
+            let class_waits = failure_class(e).is_some_and(|class| class.row().waits());
             if run.hold.is_none() && !class_waits {
                 return false;
             }

@@ -529,18 +529,18 @@
       },
       {
         "file": "crates/rigger-conductor/src/held.rs",
-        "start_line": 734,
-        "end_line": 818
+        "start_line": 732,
+        "end_line": 816
       },
       {
         "file": "crates/rigger-domain/src/agent.rs",
-        "start_line": 512,
-        "end_line": 514
+        "start_line": 520,
+        "end_line": 522
       },
       {
         "file": "crates/rigger-domain/src/agent.rs",
-        "start_line": 581,
-        "end_line": 619
+        "start_line": 589,
+        "end_line": 627
       },
       {
         "file": "crates/rigger-domain/src/ingest.rs",
@@ -5169,8 +5169,8 @@
     "sites": [
       {
         "file": "crates/rigger-domain/src/agent.rs",
-        "start_line": 419,
-        "end_line": 435
+        "start_line": 427,
+        "end_line": 443
       },
       {
         "file": "crates/rigger-domain/src/spec.rs",

@@ -1029,7 +1029,7 @@ impl Driver<'_> {
         message: String,
         fallback: bool,
     ) -> Result<StreamEnd, Error> {
-        let waits = class.row().disposition != Disposition::Fault;
+        let waits = class.row().waits();
         // A class whose row holds or waits interrupts a host with a hold sink on its own, with no
         // read; any other ending reads the hold, so `read` holds only what a read proved.
         let class_interrupts = waits && self.hold_sink.is_some();

@@ -344,6 +344,14 @@ pub struct DispositionRow {
     pub credential: bool,
 }
 
+impl DispositionRow {
+    /// Whether a session that ended of this category waits on the run, a hold or a wait row,
+    /// rather than failing its spawn as a fault row does.
+    pub fn waits(&self) -> bool {
+        self.disposition != Disposition::Fault
+    }
+}
+
 /// The cause of the hold three consecutive failed launches set: the API is failing with no
 /// category that names a person's action.
 pub const API_UNSTABLE: &str = "api-unstable";
