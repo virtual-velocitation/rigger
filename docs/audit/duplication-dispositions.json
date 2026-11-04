@@ -10,9 +10,9 @@
     "reason": "`hooks::install_status_line` is the pure settings.json merge of the `statusLine` key, while `main::install_status_line` is the setup step that reads and writes `.claude/settings.json` through it and reports the install outcome."
   },
   {
-    "id": "dup-0a7aeeeffe48",
+    "id": "dup-5cf7a82215b9",
     "disposition": "not-a-duplicate",
-    "reason": "Each function formats a different durable key or message from different fields (review-round start, a review reject's failed record, the plan-critique spec-defect stop's lesson, SpecDefect and completion records, compensation queue, conflict regeneration, stop message, spawn id, adversarial-sample identity, a whole-tree audit record id, a test fold's code-batch replay key); the shared token shape is a one-line `format!`, and each replay key is the one named key fn its writers and readers share."
+    "reason": "Each function formats a different durable key, message or shell fragment from different fields (review-round start, a review reject's failed record, the plan-critique spec-defect stop's lesson, SpecDefect and completion records, compensation queue, conflict regeneration, stop message, spawn id, adversarial-sample identity, a whole-tree audit record id, a test fold's code-batch replay key, the fake host's shell fragment holding a wave's sessions at one gate until all of them stand there); the shared token shape is a one-line `format!`, and each replay key is the one named key fn its writers and readers share."
   },
   {
     "id": "dup-4b3a37bb0a60",
@@ -855,9 +855,9 @@
     "reason": "Builder setters for two different declarations of the content-identity policy (how a key names its generation versus how a recording names its fact); the shared token shape is a one-field assignment."
   },
   {
-    "id": "dup-b18a35b27307",
+    "id": "dup-c63400fe9b8e",
     "disposition": "not-a-duplicate",
-    "reason": "One-line key, path, message and harness builders for different concerns (deferred-gate verdict and failure keys, review protocol text, namespace prefixes, workflow node ids, a critique run's unit name, a path's `gc` identity, retired-grounder error, the not-folded report line, the owed-rebuild refusal, the live-run refusals of `reset --derived` and of a new rebuild in `rigger setup`, a rebuild's shadow and pruned-copy file names, the edge text expression after a target column's first `::`, an id's file half before it, a staged reference row's liveness term, the proof rows' selection by one key column, the driver test's worker-prompts harness completed by its check, the blast-radius eval's code-span wrapper, a planted refusing trigger's text, a built-in instruction entry's checked-in source path, an operator instruction file's path as the instruction reports name it, the appender's write-lock-held and short-catch-up cause texts for a ceiling, the emit surface's refusal sentence as the periphery expects it, the fake host's shell fragments that fire a launch's `StopFailure` hook, that meet a wave's sessions at one gate and that print a hold-probe arm's text as it stands, the line the recording keep-awake fake appends on a driver's acquire and the keep-awake-unavailable line a driver's stderr is expected to carry); they share only the `format!` shape."
+    "reason": "One-line key, path, message and harness builders for different concerns (deferred-gate verdict and failure keys, review protocol text, namespace prefixes, workflow node ids, a critique run's unit name, a path's `gc` identity, retired-grounder error, the not-folded report line, the owed-rebuild refusal, the live-run refusals of `reset --derived` and of a new rebuild in `rigger setup`, a rebuild's shadow and pruned-copy file names, the edge text expression after a target column's first `::`, an id's file half before it, a staged reference row's liveness term, the proof rows' selection by one key column, the driver test's worker-prompts harness completed by its check, the blast-radius eval's code-span wrapper, a planted refusing trigger's text, a built-in instruction entry's checked-in source path, an operator instruction file's path as the instruction reports name it, the appender's write-lock-held and short-catch-up cause texts for a ceiling, the emit surface's refusal sentence as the periphery expects it, the fake host's shell fragments that fire a launch's `StopFailure` hook and that print a hold-probe arm's text as it stands, the line the recording keep-awake fake appends on a driver's acquire and the keep-awake-unavailable line a driver's stderr is expected to carry); they share only the `format!` shape."
   },
   {
     "id": "dup-db3e199dd312",

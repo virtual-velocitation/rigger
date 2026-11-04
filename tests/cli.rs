@@ -7856,20 +7856,20 @@ stages:
 "#,
 };
 
-/// The shell holding a session of [`THREE_UNIT_WORKFLOW`] at `gate` until all three stand there,
-/// spinning with no process of its own so they leave within a few reads of one another. One left
-/// waiting past the bound marks `alone`, the row then proving nothing about concurrency.
-fn rendezvous(gate: &str) -> String {
+/// The shell holding a session of a wave of `sessions` units at `gate` until all of them stand
+/// there, spinning with no process of its own so they leave within a few reads of one another. One
+/// left waiting past the bound marks `alone`, the row then proving nothing about concurrency.
+fn rendezvous(gate: &str, sessions: u32) -> String {
     format!(
         r#"    mkdir -p "$here/{gate}"
     : > "$here/{gate}/$$"
     set -- "$here/{gate}"/*
     spins=0
-    while [ $# -lt 3 ] && [ $spins -lt 20000000 ]; do
+    while [ $# -lt {sessions} ] && [ $spins -lt 20000000 ]; do
         set -- "$here/{gate}"/*
         spins=$((spins + 1))
     done
-    [ $# -ge 3 ] || : > "$here/alone"
+    [ $# -ge {sessions} ] || : > "$here/alone"
 "#
     )
 }
@@ -7880,7 +7880,7 @@ fn rendezvous(gate: &str) -> String {
 /// its own close.
 fn faulting_at_once_arm(category: &str) -> String {
     let session = classed_session(category);
-    let (faulted, reran) = (rendezvous("faulted"), rendezvous("reran"));
+    let (faulted, reran) = (rendezvous("faulted", 3), rendezvous("reran", 3));
     format!(
         r#"  *"Do the unit."*)
     unit="${{RIGGER_SPAWN%%/*}}"
@@ -7922,7 +7922,7 @@ fn sessions_of_one_wave_racing_append_one_hold_between_them() {
     let cases = [
         Case {
             name: "one hold class sighted at once",
-            arm: sighting_worker_arm(&rendezvous("sighted"), &[login]),
+            arm: sighting_worker_arm(&rendezvous("sighted", 3), &[login]),
             hold: worker_hold(login, login, "run claude auth login", true),
             closes: vec![("#0", 0, "completed", None)],
             reruns_race_relaunches: false,
@@ -16143,6 +16143,316 @@ fn a_restart_answers_each_spawn_its_run_ended_from_the_log_and_charges_it_no_bud
         root,
         &[answered[0], answered[1], ("solo/adjudicator#0", 0)],
         "the restart launches the adjudicator alone",
+    );
+}
+
+/// The launches that closed on `root`'s run, ordered by spawn and ordinal, for a run whose
+/// concurrent spawns close in no fixed order.
+fn sorted_closes(root: &Path) -> Vec<ClosedLaunch> {
+    let mut closes = closed_launches(root);
+    closes.sort();
+    closes
+}
+
+/// The close of `spawn`'s first launch, ended `completed`.
+fn completed_first_launch(spawn: &str) -> ClosedLaunch {
+    (spawn.to_string(), 0, "completed".to_string(), None)
+}
+
+/// Every `SpawnRequested` on `root`'s run stream as its run id and spawn id, ordered by both.
+fn sorted_spawn_requests(root: &Path) -> Vec<(String, String)> {
+    let mut parked: Vec<_> = read_run_events(root)
+        .into_iter()
+        .filter(|e| e.type_ == rigger::spawn::TYPE_SPAWN_REQUESTED)
+        .map(|e| {
+            let request: serde_json::Value = serde_json::from_slice(&e.data).unwrap();
+            let run = e.meta.get(rigger::run::META_RUN_ID).cloned();
+            (
+                run.unwrap_or_default(),
+                request["id"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    parked.sort();
+    parked
+}
+
+/// [`common::fixtures::spawn_result_rows`] over `root`'s run stream ordered by spawn, each spawn's
+/// rows kept in the order they landed.
+fn spawn_results_by_spawn(root: &Path) -> Vec<(String, String, String, bool)> {
+    let mut rows = common::fixtures::spawn_result_rows(&read_run_events(root));
+    rows.sort_by(|a, b| a.0.cmp(&b.0));
+    rows
+}
+
+/// The arms of [`install_fake_claude`] for a unit's reviewers, each finding nothing: the lens
+/// reports no blocker, the adversary fails to break the unit and the adjudicator approves it.
+const APPROVING_REVIEWER_ARMS: &str = r#"  *"Review it."*)
+    echo "reviewed: no blocker"
+    ;;
+  *"Break it."*)
+    echo "tried and failed"
+    ;;
+  *"Adjudicate it."*)
+    echo '{"verdict":"approve"}'
+    ;;
+"#;
+
+/// Spec 105's RESUME BY SESSION never answers across runs: given a reviewed unit a run drove to
+/// done, when the operator begins a fresh run of it, then the new run launches each of its spawns
+/// again, parks each once under its own run id and records its own result for each, since only
+/// the run that ended a spawn answers it from the log.
+#[cfg(unix)]
+#[test]
+fn a_fresh_run_launches_each_spawn_only_a_prior_run_ended() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_reviewed_unit(root);
+    let scratch = tempfile::tempdir().unwrap();
+    let arms = format!(
+        r#"  *"Do the unit."*)
+    echo "pub fn work() {{}}" >> work.rs
+    ;;
+{APPROVING_REVIEWER_ARMS}"#
+    );
+    let answers = [
+        ("solo/adjudicator#0", r#"{"verdict":"approve"}"#),
+        ("solo/adversary#0", "tried and failed"),
+        ("solo/implementer#0", ""),
+        ("solo/lens:lens#0", "reviewed: no blocker"),
+    ];
+    let launched: Vec<_> = answers
+        .iter()
+        .map(|(spawn, _)| completed_first_launch(spawn))
+        .collect();
+    let mut runs = Vec::new();
+    for args in [&["run"][..], &["run", "--fresh"]] {
+        let (out, err, ok, _fake) = run_on_arms(root, args, scratch.path(), &arms);
+        assert_eq!(
+            (ok, how_the_run_ended(&out)),
+            (true, vec!["done: every unit integrated"]),
+            "rigger {args:?} drives the unit to done; stderr: {err}"
+        );
+        assert_eq!(
+            sorted_closes(root),
+            launched,
+            "rigger {args:?} launches each of its spawns once; stderr: {err}"
+        );
+        runs.push(common::cli::current_run_id_of(root).unwrap());
+    }
+    assert_eq!(runs.len(), 2, "the runs");
+    assert_ne!(runs[0], runs[1], "the fresh run is a run of its own");
+    let mut parked: Vec<_> = runs
+        .iter()
+        .flat_map(|run| {
+            answers
+                .iter()
+                .map(|(spawn, _)| (run.clone(), spawn.to_string()))
+        })
+        .collect();
+    parked.sort();
+    assert_eq!(
+        sorted_spawn_requests(root),
+        parked,
+        "each run parks each of its spawns once, under its own run id"
+    );
+    let recorded: Vec<_> = answers
+        .iter()
+        .flat_map(|(spawn, output)| {
+            let row = (spawn.to_string(), output.to_string(), String::new(), false);
+            [row.clone(), row]
+        })
+        .collect();
+    assert_eq!(
+        spawn_results_by_spawn(root),
+        recorded,
+        "each run records its own result for each spawn"
+    );
+}
+
+/// Two units of one wave, each reviewed by a lens and an adjudicator and merging once its one gate
+/// passes, on a budget of seven spawns: both units' implementer, lens and adjudicator and one
+/// conflict-resolution round fit the budget, a second round does not. The units are reviewed
+/// because only an approved unit's restart resumes at its merge.
+const BUDGET_SEVEN_TWO_REVIEWED_UNITS_WORKFLOW: WorkflowFixture = WorkflowFixture {
+    worker: ISOLATED_WORKER,
+    body: r#"defaults:
+  grounder: nop
+  budget: 7
+gates:
+  ok: { run: "true", kind: core }
+stages:
+  a:
+    agent: worker
+    gates: [ok]
+    on_pass: merge
+    review:
+      lenses: [lens]
+      adjudicator: judge
+  b:
+    agent: worker
+    gates: [ok]
+    on_pass: merge
+    review:
+      lenses: [lens]
+      adjudicator: judge
+"#,
+};
+
+/// The arms of [`install_fake_claude`] for [`BUDGET_SEVEN_TWO_REVIEWED_UNITS_WORKFLOW`]: each
+/// implementer meets the other before it writes its own working directory to `shared.rs`, so the
+/// unit integrating second meets a real merge conflict there; every launch of that unit's first
+/// conflict-resolution round (`~retry1`) dies with no result, and a later round writes `resolved`
+/// to `shared.rs` and commits the merge. Each unit's reviewers approve it.
+fn conflicting_units_arm() -> String {
+    let met = rendezvous("edited", 2);
+    format!(
+        r#"  *"Do the unit."*)
+    case "$RIGGER_SPAWN" in
+      *"~retry1")
+        exit 1
+        ;;
+      *"~retry"*)
+        echo resolved > shared.rs
+        git add shared.rs
+        git commit -q -m "resolve the conflict"
+        ;;
+      *)
+{met}        pwd -P > shared.rs
+        ;;
+    esac
+    ;;
+{APPROVING_REVIEWER_ARMS}"#
+    )
+}
+
+/// Spec 105's RESUME BY SESSION at the conflict resolver, across two `rigger run`s: given two
+/// approved units of one wave writing one file, when the unit integrating second meets a real merge
+/// conflict and its first resolution round ends on an error its session left unmarked, then the
+/// round is spent like one resolving nothing, its error recorded as its result and no attempt
+/// charged, and the second round is refused on the run's budget; when the operator raises the
+/// budget by one spawn and runs again, then the restart answers the first round from the run's log
+/// with no launch, launches the second round alone, and the unit integrates its resolution.
+#[cfg(unix)]
+#[test]
+fn a_resolver_round_ending_on_an_error_is_spent_and_a_restart_answers_it_from_the_log() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_workflow_fixture(root, &BUDGET_SEVEN_TWO_REVIEWED_UNITS_WORKFLOW);
+    write_agent(root, "lens", "Read", "Review it.");
+    write_agent(root, "judge", "Read", "Adjudicate it.");
+    let scratch = tempfile::tempdir().unwrap();
+    let arm = conflicting_units_arm();
+
+    let (out, err, ok, fake) = run_on_arms(root, &["run"], scratch.path(), &arm);
+    assert!(
+        !fake.path().join("bin/alone").exists(),
+        "both implementers met before either wrote; stderr: {err}"
+    );
+    assert_eq!(
+        (ok, how_the_run_ended(&out)),
+        (
+            true,
+            vec![
+                "incomplete: not every unit integrated",
+                "halted: budget exhausted: 7/7 spawns"
+            ]
+        ),
+        "the first run halts on its budget at the second round; stderr: {err}"
+    );
+    let errored = closed_launches(root)
+        .into_iter()
+        .map(|close| close.0)
+        .find(|spawn| spawn.ends_with("~retry1"))
+        .unwrap_or_else(|| panic!("a first resolution round closed; stderr: {err}"));
+    let unit = &errored[..errored.find('/').unwrap()];
+    let resolving = format!("{unit}/implementer#0~retry2");
+    let approved: Vec<_> = ["a", "b"]
+        .into_iter()
+        .flat_map(|unit| {
+            [
+                (format!("{unit}/implementer#0"), ""),
+                (format!("{unit}/lens:lens#0"), "reviewed: no blocker"),
+                (format!("{unit}/adjudicator#0"), r#"{"verdict":"approve"}"#),
+            ]
+        })
+        .collect();
+    let mut closes: Vec<_> = approved
+        .iter()
+        .map(|(spawn, _)| completed_first_launch(spawn))
+        .chain([(
+            errored.clone(),
+            0,
+            "fault".to_string(),
+            Some("unknown".to_string()),
+        )])
+        .collect();
+    closes.sort();
+    assert_eq!(
+        sorted_closes(root),
+        closes,
+        "the first run launches both units' implementer and reviewers and one round; stderr: {err}"
+    );
+
+    std::fs::write(
+        root.join(".rigger/workflow.yml"),
+        BUDGET_SEVEN_TWO_REVIEWED_UNITS_WORKFLOW
+            .body
+            .replace("budget: 7", "budget: 8"),
+    )
+    .unwrap();
+    let (out, err, ok, _fake) =
+        run_on_arms(root, &["run", "--rebase-definition"], scratch.path(), &arm);
+    assert_eq!(
+        (ok, how_the_run_ended(&out)),
+        (true, vec!["done: every unit integrated"]),
+        "the restart fits the second round in the one spawn added; stderr: {err}"
+    );
+    closes.push(completed_first_launch(&resolving));
+    closes.sort();
+    assert_eq!(
+        sorted_closes(root),
+        closes,
+        "the restart launches the second round alone; stderr: {err}"
+    );
+    let mut recorded: Vec<_> = approved
+        .iter()
+        .map(|(spawn, output)| (spawn.clone(), output.to_string(), String::new(), false))
+        .chain([
+            (
+                errored.clone(),
+                String::new(),
+                common::cli::no_result_failure(&errored, "unknown", ""),
+                false,
+            ),
+            (resolving.clone(), String::new(), String::new(), false),
+        ])
+        .collect();
+    recorded.sort();
+    let run = common::cli::current_run_id_of(root).unwrap();
+    let parked: Vec<_> = recorded
+        .iter()
+        .map(|(spawn, ..)| (run.clone(), spawn.clone()))
+        .collect();
+    assert_eq!(
+        sorted_spawn_requests(root),
+        parked,
+        "each spawn parks once across both runs"
+    );
+    assert_eq!(
+        spawn_results_by_spawn(root),
+        recorded,
+        "each spawn's one result, the first round's the error its session ended on"
+    );
+    assert_eq!(
+        common::cli::run_payloads(root, "UnitFailed"),
+        Vec::<serde_json::Value>::new(),
+        "no attempt is charged"
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("shared.rs")).unwrap(),
+        "resolved\n",
+        "the run checkout holds the resolution"
     );
 }
 

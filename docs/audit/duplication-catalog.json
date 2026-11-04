@@ -19,7 +19,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-b18a35b27307",
+    "id": "dup-c63400fe9b8e",
     "classification": "near",
     "sites": [
       {
@@ -174,11 +174,6 @@
       },
       {
         "file": "tests/cli.rs",
-        "name": "rendezvous",
-        "content_hash": "6fd90a8c2eed6379"
-      },
-      {
-        "file": "tests/cli.rs",
         "name": "acquired_by",
         "content_hash": "6fd90a8c2eed6379"
       },
@@ -252,7 +247,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-0a7aeeeffe48",
+    "id": "dup-5cf7a82215b9",
     "classification": "near",
     "sites": [
       {
@@ -306,6 +301,11 @@
         "content_hash": "7f40f97a5c856b17"
       },
       {
+        "file": "tests/cli.rs",
+        "name": "rendezvous",
+        "content_hash": "7f40f97a5c856b17"
+      },
+      {
         "file": "tests/common/fixtures/fold.rs",
         "name": "code_batch_key",
         "content_hash": "3ee1a513e6d79e12"
@@ -331,7 +331,7 @@
         "content_hash": "1314e6adae890d88"
       }
     ],
-    "proposed_home": "a new shared module (sites span 7 files: crates/rigger-conductor/src/conductor.rs, crates/rigger-domain/src/spawn.rs, crates/rigger-driver/src/driver/claude_code.rs, tests/common/fixtures/fold.rs, tests/common/fixtures/graph.rs, tests/postmerge_gate_error_cleanup_periphery.rs, tests/simplification_audit.rs)",
+    "proposed_home": "a new shared module (sites span 8 files: crates/rigger-conductor/src/conductor.rs, crates/rigger-domain/src/spawn.rs, crates/rigger-driver/src/driver/claude_code.rs, tests/cli.rs, tests/common/fixtures/fold.rs, tests/common/fixtures/graph.rs, tests/postmerge_gate_error_cleanup_periphery.rs, tests/simplification_audit.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
@@ -526,7 +526,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-e978f74f029e",
+    "id": "dup-e4a4e947ddf7",
     "classification": "semantic",
     "sites": [
       {
@@ -625,6 +625,11 @@
         "content_hash": "c0f6e3d647f2a511"
       },
       {
+        "file": "tests/cli.rs",
+        "name": "a_resolver_round_ending_on_an_error_is_spent_and_a_restart_answers_it_from_the_log",
+        "content_hash": "ffa9c5cb17f14528"
+      },
+      {
         "file": "tests/compaction_generations_periphery.rs",
         "name": "setup_whose_rebuild_meets_a_storage_error_fails_and_the_next_setup_folds_the_event",
         "content_hash": "b3774553a56bb20d"
@@ -636,7 +641,7 @@
       }
     ],
     "proposed_home": "one error-shaping helper module",
-    "note": "mandatory sweep: error-shaping helper functions - 21 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: error-shaping helper functions - 22 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {
@@ -1337,7 +1342,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-5263f645c63a",
+    "id": "dup-ef80c2b78fcc",
     "classification": "semantic",
     "sites": [
       {
@@ -2619,6 +2624,11 @@
         "file": "tests/cli.rs",
         "name": "\"rigger: another `rigger step` is already running in this repo, or a \\\n     `rigger run` is (lock .rigger/step.lock). Refusing to run concurrently: two would race the \\\n     run-branch checkout and the unit worktrees branched off HEAD, corrupting the run. Wait for \\\n     the running one to finish and retry.\\n\"",
         "content_hash": "5622b7d32f9ba9c7"
+      },
+      {
+        "file": "tests/cli.rs",
+        "name": "\".rigger/workflow.yml\"",
+        "content_hash": "d53ae5846f4d060f"
       },
       {
         "file": "tests/cli.rs",
@@ -4372,7 +4382,7 @@
       }
     ],
     "proposed_home": "one .rigger-relative path-composition helper",
-    "note": "mandatory sweep: .rigger-path string literals - 606 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: .rigger-path string literals - 607 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {
