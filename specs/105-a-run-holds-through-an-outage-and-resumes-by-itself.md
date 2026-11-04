@@ -141,9 +141,14 @@ mark, up to the bound of DISPOSITIONS. Two other errors pass to the conductor un
 carrying a conductor marker (`is_parked`, or `EMIT_REFUSED_MARKER`, which arises only under a
 driver that calls the emit callback, `crates/rigger-conductor/src/conductor.rs:3413`), and one
 for a spawn the current run's slice has ended (`spawn::ended_by`, read as RESUME reads it).
-Every relaunch of a spawn id takes the ordinal RESUME decides, never `opts.launch`. `cmd_step`
-reads the hold right after its step lock and `--fresh` (`src/cli/run.rs:584`), before
-`sweep_terminal` (`:656`), `enforce_definition_pin` (`:675`) and `liveness::sweep` (`:748`), so
+Every relaunch of a spawn id takes the ordinal RESUME decides, never `opts.launch`.
+A plain `rigger step`, one without `--fresh`, reads the run's hold once, ahead of the
+new-run critique refusal (`RunStartCritique::refuse_unless_clean`), since a held step
+begins no run for that refusal to guard, so a held plain step prints the held step
+JSON whatever the spec's critique state; a `--fresh` step keeps that refusal ahead of
+its mint and reads the hold once behind the mint, which released the hold it ended.
+Each read precedes `sweep_terminal`, `enforce_definition_pin` and `liveness::sweep`,
+behind the step lock, the base refusals, `ensure_run_branch` and `open_graph`, so
 `rigger step` on a held run launches nothing and prints its step JSON with an empty `wave`,
 `done` false and `halted` naming the hold, exiting 0, so the workflow driver drains its live
 workers and stops; `rigger release` and a new `rigger workflow` resume it. `rigger serve` hosts
