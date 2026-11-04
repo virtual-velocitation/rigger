@@ -13725,14 +13725,6 @@ fn step_weighs_a_markers_silence_outside_a_released_hold() {
     }
 }
 
-/// The type of every event on `root`'s run stream, oldest first.
-fn run_event_types(root: &Path) -> Vec<String> {
-    common::cli::read_run_events(root)
-        .into_iter()
-        .map(|event| event.type_)
-        .collect()
-}
-
 /// Spec 105's step exit: given a held run with a leftover worktree on its scratch root, a definition
 /// drifted from its pin and a spawn whose marker went stale, when the operator steps, then the step
 /// prints the hold with an empty wave, exits 0 and records nothing, with its sweep, definition pin
@@ -13772,7 +13764,7 @@ fn a_held_step_names_the_hold_ahead_of_its_sweep_pin_and_liveness_sweep() {
         common::cli::plant_stale_marker(Path::new(&marker));
         edit_worker_prompt(root, "Do the unit, but differently now.");
         common::cli::seed_on_the_run(root, common::fixtures::run_held_event(&held));
-        let recorded = run_event_types(root);
+        let recorded = read_run_events(root);
 
         let (out, err, ok) = step_with_scratch_root(root, &scratch);
         assert!(ok, "{name}: a held step exits 0; stderr: {err}");
@@ -13783,8 +13775,8 @@ fn a_held_step_names_the_hold_ahead_of_its_sweep_pin_and_liveness_sweep() {
             "{name}: the sweeps report nothing"
         );
         assert_eq!(
-            run_event_types(root),
-            recorded,
+            common::fixtures::types_of(&read_run_events(root)),
+            common::fixtures::types_of(&recorded),
             "{name}: a held step records nothing"
         );
         assert!(leftover.exists(), "{name}: a held step sweeps nothing");
@@ -13896,7 +13888,7 @@ fn a_step_of_a_run_not_proved_unheld_fails_on_its_read_ahead_of_its_sweep() {
     assert!(ok, "the first step parks the worker; stderr: {err}");
     let leftover = plant_a_leftover_worktree(root, &scratch);
     common::cli::seed_a_hold_no_fold_applies(root);
-    let recorded = run_event_types(root);
+    let recorded = read_run_events(root);
 
     let (out, err, ok) = step_with_scratch_root(root, &scratch);
     assert!(!ok, "a run not proved unheld fails the step; stdout: {out}");
@@ -13905,7 +13897,11 @@ fn a_step_of_a_run_not_proved_unheld_fails_on_its_read_ahead_of_its_sweep() {
         err, "rigger: conductor: expected ident at line 1 column 2\n",
         "the failed read"
     );
-    assert_eq!(run_event_types(root), recorded, "the step records nothing");
+    assert_eq!(
+        common::fixtures::types_of(&read_run_events(root)),
+        common::fixtures::types_of(&recorded),
+        "the step records nothing"
+    );
     assert!(leftover.exists(), "the step sweeps nothing");
 }
 
