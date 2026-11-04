@@ -142,6 +142,12 @@ impl<'a> Driver<'a> {
         None
     }
 
+    /// A guard that marks the run finished ([`finish`](Driver::finish)) as the conductor thread
+    /// holding it returns, so that thread signals the run's end on every return.
+    pub fn finishing(&self) -> Finishing<'_, 'a> {
+        Finishing(self)
+    }
+
     /// Mark the run finished - the conductor's `run` has returned, so no further
     /// spawns will be enqueued. Called by the composition root after `conductor::run`
     /// completes; flips an empty `next()` from "wait, more may come" to "done".
@@ -193,6 +199,18 @@ impl<'a> Driver<'a> {
             true
         } else {
             false
+        }
+    }
+}
+
+/// The guard [`Driver::finishing`] hands the conductor thread: dropping it on that thread's
+/// return marks the run finished, so an empty `next()` reports done and the shim exits.
+pub struct Finishing<'d, 'a>(&'d Driver<'a>);
+
+impl Drop for Finishing<'_, '_> {
+    fn drop(&mut self) {
+        if !std::thread::panicking() {
+            self.0.finish();
         }
     }
 }

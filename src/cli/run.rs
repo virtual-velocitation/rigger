@@ -2229,6 +2229,10 @@ fn run_workflow(parsed: &RunArgs, command: &str, sleep: &dyn SleepHold) -> Res {
     // stdin ends the session.
     std::thread::scope(|s| {
         s.spawn(|| {
+            // Signal the run is over as this thread returns, so an empty rigger_next reports
+            // done:true and the shim exits cleanly. Set on BOTH success and error: a conductor
+            // error still ends the run, and the shim must not poll forever.
+            let _finishing = driver.finishing();
             let held = HeldDriver::new(
                 &driver,
                 &store,
@@ -2258,10 +2262,6 @@ fn run_workflow(parsed: &RunArgs, command: &str, sleep: &dyn SleepHold) -> Res {
                 }
                 Err(e) => eprintln!("rigger: conductor: {e}"),
             }
-            // Signal the run is over so an empty rigger_next reports done:true and the
-            // shim exits cleanly. Set on BOTH success and error: a conductor error
-            // still ends the run, and the shim must not poll forever.
-            driver.finish();
         });
         // Wire the graph into the MCP server too, so a ReviewFinding (or DecisionMade)
         // an agent emits via rigger_emit folds into the graph as it lands - the
