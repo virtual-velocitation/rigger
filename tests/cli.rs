@@ -11457,8 +11457,6 @@ fn a_resume_ending_api_side_or_on_a_held_run_launches_nothing_fresh() {
         workflow: &'static WorkflowFixture,
         /// The shell of each `--resume` launch in turn; the one past them answers.
         endings: Vec<String>,
-        /// How long past `$here/session-live` an operator hold lands, when a session marks it.
-        hold_lands: Duration,
         launches: Vec<Launch>,
         holds: Vec<rigger::run::RunHeld>,
         /// The fault a stop records ahead of the relaunch's answer, which supersedes it: a real
@@ -11479,7 +11477,6 @@ fn a_resume_ending_api_side_or_on_a_held_run_launches_nothing_fresh() {
             name: "a wait class",
             workflow: &TWO_ATTEMPT_RED_UNIT_WORKFLOW,
             endings: vec![retried("rate_limit")],
-            hold_lands: Duration::ZERO,
             launches: vec![(true, Some("interrupted"), Some("rate_limit")), completed],
             holds: vec![worker_hold(
                 "rate_limit",
@@ -11493,7 +11490,6 @@ fn a_resume_ending_api_side_or_on_a_held_run_launches_nothing_fresh() {
             name: "a hold class",
             workflow: &TWO_ATTEMPT_RED_UNIT_WORKFLOW,
             endings: vec![retried("billing_error")],
-            hold_lands: Duration::ZERO,
             launches: vec![
                 (true, Some("interrupted"), Some("billing_error")),
                 completed,
@@ -11510,7 +11506,6 @@ fn a_resume_ending_api_side_or_on_a_held_run_launches_nothing_fresh() {
             name: "a FAULT class on a held run",
             workflow: &TWO_ATTEMPT_RED_UNIT_WORKFLOW,
             endings: vec![under_a_hold(api_retry_lines(&["invalid_request"], 1))],
-            hold_lands: Duration::ZERO,
             launches: vec![
                 (true, Some("interrupted"), Some("invalid_request")),
                 completed,
@@ -11522,7 +11517,6 @@ fn a_resume_ending_api_side_or_on_a_held_run_launches_nothing_fresh() {
             name: "an unclassed refusal on a held run",
             workflow: &TWO_ATTEMPT_RED_UNIT_WORKFLOW,
             endings: vec![under_a_hold(String::new())],
-            hold_lands: Duration::ZERO,
             launches: vec![(true, Some("interrupted"), Some("unknown")), completed],
             holds: vec![seeded_operator_hold()],
             fault: None,
@@ -11531,7 +11525,6 @@ fn a_resume_ending_api_side_or_on_a_held_run_launches_nothing_fresh() {
             name: "a read error on a held run",
             workflow: &TWO_ATTEMPT_RED_UNIT_WORKFLOW,
             endings: vec![under_a_hold(UNREADABLE.to_string())],
-            hold_lands: Duration::ZERO,
             launches: vec![(true, None, None), completed],
             holds: vec![seeded_operator_hold()],
             fault: None,
@@ -11540,21 +11533,21 @@ fn a_resume_ending_api_side_or_on_a_held_run_launches_nothing_fresh() {
             name: "a hold landing between a read error and the end of the drain joins",
             workflow: &TWO_ATTEMPT_RED_UNIT_WORKFLOW,
             endings: vec![format!("{UNREADABLE}{outliving_its_reap}")],
-            hold_lands: Duration::ZERO,
             launches: vec![(true, None, None), completed],
             holds: vec![seeded_operator_hold()],
             fault: None,
         },
-        // The announced wait excuses the first wake of the bound, so the silence this launch runs
-        // up before the hold lands stands past the bound at the wake after, the hold still open.
+        // The announced wait excuses the first wake of the bound, which re-arms for at least five
+        // seconds, so the session marks itself live only once it has been silent past the bound
+        // and the announced wait: the hold landing at that mark leaves the silence run up before
+        // it past the bound at the wake after, the hold still open.
         Case {
             name: "a stop on a held run",
             workflow: &SILENCE_BOUNDED_TWO_ATTEMPT_WORKFLOW,
             endings: vec![format!(
-                "    : > \"$here/session-live\"\n{}{READS_TO_ITS_CLOSE}{ENDS}",
+                "{}    sleep 2.5\n    : > \"$here/session-live\"\n{READS_TO_ITS_CLOSE}{ENDS}",
                 api_retry_lines(&["rate_limit"], 1000)
             )],
-            hold_lands: Duration::from_secs(3),
             launches: vec![(true, Some("stopped"), None), completed],
             holds: vec![seeded_operator_hold()],
             fault: Some(STOP),
@@ -11563,7 +11556,6 @@ fn a_resume_ending_api_side_or_on_a_held_run_launches_nothing_fresh() {
             name: "a hold landing inside the stop grace",
             workflow: &SILENCE_BOUNDED_TWO_ATTEMPT_WORKFLOW,
             endings: vec![held_as_its_input_closes.clone()],
-            hold_lands: Duration::ZERO,
             launches: vec![(true, Some("stopped"), None), completed],
             holds: vec![seeded_operator_hold()],
             fault: Some(STOP),
@@ -11572,7 +11564,6 @@ fn a_resume_ending_api_side_or_on_a_held_run_launches_nothing_fresh() {
             name: "a FAULT class on an unheld run",
             workflow: &TWO_ATTEMPT_RED_UNIT_WORKFLOW,
             endings: vec![retried("invalid_request")],
-            hold_lands: Duration::ZERO,
             launches: vec![fallen_back, completed_fresh],
             holds: vec![],
             fault: None,
@@ -11581,7 +11572,6 @@ fn a_resume_ending_api_side_or_on_a_held_run_launches_nothing_fresh() {
             name: "a read error on an unheld run",
             workflow: &TWO_ATTEMPT_RED_UNIT_WORKFLOW,
             endings: vec![format!("{UNREADABLE}{ENDS}")],
-            hold_lands: Duration::ZERO,
             launches: vec![fallen_back, completed_fresh],
             holds: vec![],
             fault: None,
@@ -11590,7 +11580,6 @@ fn a_resume_ending_api_side_or_on_a_held_run_launches_nothing_fresh() {
             name: "a lost session behind an outage",
             workflow: &TWO_ATTEMPT_RED_UNIT_WORKFLOW,
             endings: vec![retried("rate_limit"), ENDS.to_string()],
-            hold_lands: Duration::ZERO,
             launches: vec![
                 (true, Some("interrupted"), Some("rate_limit")),
                 fallen_back,
@@ -11636,7 +11625,7 @@ fn a_resume_ending_api_side_or_on_a_held_run_launches_nothing_fresh() {
         );
         let closes = case.launches[0].1.is_some();
         let scratch_root = scratch.path().to_str().unwrap();
-        let mut hold = holding_the_live_session(root, case.hold_lands, || {
+        let mut hold = holding_the_live_session(root, Duration::ZERO, || {
             common::fixtures::run_held_event(&seeded_operator_hold())
         });
         // The host reads the hold once the launch has ended, so the release waits for what follows
