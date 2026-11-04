@@ -2761,6 +2761,18 @@ mod tests {
                 "rigger_scratch",
             ]
         );
+        // Every tool a headless launch pre-approves as the bound server's is one this server
+        // registers: the launch spells the names in `SPAWN_BOUND_TOOLS`, the server here.
+        let prefix = format!("mcp__{}__", rigger_driver::hooks::MCP_SERVER_NAME);
+        let unregistered: Vec<&str> = rigger_domain::agent::SPAWN_BOUND_TOOLS
+            .iter()
+            .copied()
+            .filter(|t| {
+                !t.strip_prefix(&prefix)
+                    .is_some_and(|n| names.iter().any(|r| r == n))
+            })
+            .collect();
+        assert_eq!(unregistered, Vec::<&str>::new());
     }
 
     crate::test_cases! {

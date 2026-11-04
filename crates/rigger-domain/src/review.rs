@@ -1608,4 +1608,17 @@ mod tests {
             );
         }
     }
+
+    /// Every recording tool of the spawn's own server is on the critic's deny list: the list
+    /// names them by position, so a tool [`SPAWN_BOUND_TOOLS`] gains past those positions turns
+    /// this red until the list names it too.
+    #[test]
+    fn every_spawn_bound_tool_is_denied_to_the_critic() {
+        let allowed: Vec<&str> = SPAWN_BOUND_TOOLS
+            .iter()
+            .copied()
+            .filter(|t| !CRITIC_DENIED_TOOLS.contains(t))
+            .collect();
+        assert_eq!(allowed, Vec::<&str>::new());
+    }
 }

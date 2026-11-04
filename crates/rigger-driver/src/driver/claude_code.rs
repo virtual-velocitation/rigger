@@ -2328,6 +2328,33 @@ mod tests {
         }
     }
 
+    /// A launch whose write root cannot be made absolute, or whose spawn settings are no JSON
+    /// object, is refused with the error naming what could not be composed.
+    #[test]
+    fn a_launch_refuses_a_write_root_or_settings_it_cannot_compose() {
+        assert_eq!(
+            write_roots("/wt", Some(std::path::Path::new("")))
+                .unwrap_err()
+                .0,
+            "claude_code driver: resolve the write root : cannot make an empty path absolute"
+        );
+        let mut o = opts("u/implementer#0");
+        o.settings_json = "[]".to_string();
+        let refused = build_args(
+            &AgentDef::default(),
+            &SystemPromptFile::default(),
+            &o,
+            &fresh_session("sess"),
+            "/custom/rigger",
+            &["/wt".to_string()],
+        )
+        .unwrap_err();
+        assert_eq!(
+            refused.0,
+            "driver: compose the spawn's settings: hooks: settings.json is not a JSON object"
+        );
+    }
+
     /// A launch's settings carry its own hooks ahead of the session's, on its own settings.
     #[test]
     fn build_args_settings_carry_the_spawn_hooks_ahead_of_the_session_ones() {
@@ -2490,16 +2517,16 @@ mod tests {
     /// otherwise the canary runs on the hold's model in the project root, with no tools, no
     /// server, no hooks and no session file, and its first result answers: a result with no
     /// error passes, and an error result, a stream that ends with none or no result within the
-    /// delay fails on the stream's last `api_retry` category, `unknown` with none. The login read
-    /// and the canary share the one bound, the probe's delay, a probe writes no store, and no
-    /// process of the stand-in outlives the probe.
+    /// delay fails on the last `api_retry` category ahead of the first result, `unknown` with none.
+    /// The login read and the canary share the one bound, the probe's delay, a probe writes
+    /// no store, and no process of the stand-in outlives the probe.
     #[cfg(unix)]
     #[test]
     fn a_probe_reads_a_credential_holds_login_then_runs_its_canary_within_the_delay() {
         use crate::test_support::{
             api_retry_lines, arms_claude, assert_no_sleeper_left, canary_argv, failing_canary,
-            printing, probe_arms, recorded_argv, recorded_task, sleeping, LOGGED_IN_STATUS,
-            LOGGED_OUT_STATUS, PASSING_CANARY,
+            printing, probe_arms, recorded_argv, recorded_task, sleeping, ERROR_RESULT,
+            LOGGED_IN_STATUS, LOGGED_OUT_STATUS, PASSING_CANARY,
         };
         const MODEL: &str = "claude-opus-4-1";
         let long = Duration::from_secs(5);
@@ -2596,6 +2623,39 @@ mod tests {
                 canary: failing_canary(&[]),
                 delay: long,
                 outcome: failed("unknown"),
+                reads_login: false,
+                runs_canary: true,
+                elapsed: quick,
+                sleepers: 0,
+            },
+            ProbeRow {
+                name: "a passing result after the first, an error result, answers nothing",
+                cause: "rate_limit",
+                model: MODEL,
+                auth: logged_in.clone(),
+                canary: format!(
+                    "{}{ERROR_RESULT}{PASSING_CANARY}",
+                    api_retry_lines(&["overloaded"], 1)
+                ),
+                delay: long,
+                outcome: failed("overloaded"),
+                reads_login: false,
+                runs_canary: true,
+                elapsed: quick,
+                sleepers: 0,
+            },
+            ProbeRow {
+                name: "an api_retry line after the first result names no category",
+                cause: "rate_limit",
+                model: MODEL,
+                auth: logged_in.clone(),
+                canary: format!(
+                    "{}{ERROR_RESULT}{}{PASSING_CANARY}    exit 1\n",
+                    api_retry_lines(&["overloaded"], 1),
+                    api_retry_lines(&["rate_limit"], 1)
+                ),
+                delay: long,
+                outcome: failed("overloaded"),
                 reads_login: false,
                 runs_canary: true,
                 elapsed: quick,

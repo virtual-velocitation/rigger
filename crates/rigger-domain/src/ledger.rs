@@ -1474,25 +1474,36 @@ mod tests {
                 open(7, false, &host, 2),
             ),
         ];
-        for (name, log, want) in cases {
-            let log: Vec<Event> = log
-                .into_iter()
+        let log_of = |log: Vec<(&str, String, u64)>| -> Vec<Event> {
+            log.into_iter()
                 .enumerate()
-                .map(
-                    |(revision, (type_, body, secs)): (usize, (&str, String, u64))| {
-                        let mut event = ev(type_, &body)
-                            .with_valid_from(UNIX_EPOCH + Duration::from_secs(secs));
-                        event.revision = revision as i64;
-                        event
-                    },
-                )
-                .collect();
-            assert_eq!(project(current_run(&log)).unwrap().hold, want, "{name}");
+                .map(|(revision, (type_, body, secs))| {
+                    let mut event =
+                        ev(type_, &body).with_valid_from(UNIX_EPOCH + Duration::from_secs(secs));
+                    event.revision = revision as i64;
+                    event
+                })
+                .collect()
+        };
+        for (name, log, want) in cases {
+            assert_eq!(
+                project(current_run(&log_of(log))).unwrap().hold,
+                want,
+                "{name}"
+            );
         }
+        // Unsliced, a RunStarted leaves the hold standing: an earlier run's open hold carries
+        // into the new run unless the reader slices with `current_run`, as every production
+        // reader does.
+        let unsliced = log_of(vec![held(&operator, 3), started(5)]);
+        assert_eq!(
+            project(&unsliced).unwrap().hold,
+            open(3, true, &operator, 0)
+        );
     }
 
-    /// A `RunHeld` whose body is the wrong shape fails the fold as every other lifecycle event's
-    /// does, never a silently dropped hold.
+    /// A `RunHeld` whose body is the wrong shape fails the fold, as every event whose body the
+    /// fold decodes does, never a silently dropped hold (a `RunReleased`'s body is never read).
     #[test]
     fn a_run_held_of_the_wrong_shape_fails_the_fold() {
         let said = project(&[ev(TYPE_RUN_HELD, r#"{"by":1}"#)])

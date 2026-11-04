@@ -977,6 +977,48 @@ mod tests {
         }
     }
 
+    /// `rigger hold` compares and appends too: a hold or a release landing between its read and
+    /// its append sends it back to re-decide, so its `RunHeld` carries the model of the hold that
+    /// landed, and none behind a release; an unrelated event leaves the model it read.
+    #[test]
+    fn a_hold_or_release_behind_the_operators_read_re_decides_the_carried_model() {
+        let operator = |model: &str| RunHeld {
+            cause: OPERATOR.to_string(),
+            detail: String::new(),
+            action: "pausing".to_string(),
+            needs_person: true,
+            by: HOLD_BY_OPERATOR.to_string(),
+            model: model.to_string(),
+        };
+        let rows: [(&str, Vec<Event>, Vec<&str>, &str); 3] = [
+            (
+                "a host hold naming another model",
+                vec![held("billing_error", HOLD_BY_HOST, "sonnet")],
+                vec!["RunStarted", "RunHeld", "RunHeld", "RunHeld"],
+                "sonnet",
+            ),
+            (
+                "a release",
+                vec![released()],
+                vec!["RunStarted", "RunHeld", "RunReleased", "RunHeld"],
+                "",
+            ),
+            (
+                "an unrelated event",
+                vec![ev("RunNote", "{}")],
+                vec!["RunStarted", "RunHeld", "RunNote", "RunHeld"],
+                "opus",
+            ),
+        ];
+        for (name, landing, expected, model) in rows {
+            let inner = run_holding(vec![held("rate_limit", HOLD_BY_HOST, "opus")]);
+            let store = ReadCountingStore::new(&inner).interleaving(2, STREAM, landing);
+            hold_by_operator(&store, "pausing").unwrap();
+            assert_eq!(types_of(&stream(&inner)), expected, "{name}");
+            assert_eq!(holds(&inner).pop(), Some(operator(model)), "{name}");
+        }
+    }
+
     /// The head a launch close stamps: the newest revision of the run stream, none on an empty
     /// one.
     #[test]

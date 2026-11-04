@@ -173,14 +173,15 @@ mod tests {
     };
     use std::time::{Duration, SystemTime};
 
-    /// One run-stream entry of a row: a `RunHeld` of a cause by a writer, a `RunReleased`, or an
-    /// event no hold reads, each at its valid time.
+    /// One run-stream entry of a row: a `RunHeld` of a cause by a writer, a `RunHeld` whose body
+    /// does not decode, a `RunReleased`, or an event no hold reads, each at its valid time.
     enum Entry {
         Held(&'static str, &'static str, u64),
+        BadHeld(u64),
         Released(u64),
         Other(u64),
     }
-    use Entry::{Held, Other, Released};
+    use Entry::{BadHeld, Held, Other, Released};
 
     /// The run slice `log` spells, each event at its index's revision.
     fn run_log(log: &[Entry]) -> Vec<Event> {
@@ -197,6 +198,7 @@ mod tests {
                         };
                         (TYPE_RUN_HELD, serde_json::to_vec(&body).unwrap(), *secs)
                     }
+                    BadHeld(secs) => (TYPE_RUN_HELD, br#"{"by":1}"#.to_vec(), *secs),
                     Released(secs) => {
                         let body = RunReleased::default();
                         (TYPE_RUN_RELEASED, serde_json::to_vec(&body).unwrap(), *secs)
@@ -273,6 +275,13 @@ mod tests {
             (
                 "a model_not_found hold",
                 vec![host("model_not_found", 100)],
+                vec![],
+                now,
+                None,
+            ),
+            (
+                "an undecodable RunHeld",
+                vec![rate(100), BadHeld(200)],
                 vec![],
                 now,
                 None,

@@ -315,11 +315,11 @@ mod tests {
     use super::*;
 
     /// `install` onto an empty settings file writes every one of `needles`, and installing again
-    /// onto its own output does not duplicate `command`.
+    /// onto its own output leaves each command of `counted` exactly as many times as it names.
     fn assert_installs_idempotently(
         install: impl Fn(&[u8]) -> Result<Vec<u8>, Error>,
         needles: &[&str],
-        command: &str,
+        counted: &[(&str, usize)],
     ) {
         let first = install(b"").unwrap();
         let s = String::from_utf8(first.clone()).unwrap();
@@ -327,28 +327,31 @@ mod tests {
             assert!(s.contains(needle), "{needle} is installed: {s}");
         }
         let s2 = String::from_utf8(install(&first).unwrap()).unwrap();
-        assert_eq!(
-            s2.matches(command).count(),
-            1,
-            "installing twice must not duplicate"
-        );
+        let installed: Vec<(&str, usize)> = counted
+            .iter()
+            .map(|&(command, _)| (command, s2.matches(command).count()))
+            .collect();
+        assert_eq!(installed, counted, "installing twice must not duplicate");
     }
 
     crate::test_cases! {
         installs_and_is_idempotent: assert_installs_idempotently(
             |existing| install_session_start(existing, "rigger prime"),
             &["SessionStart", "rigger prime"],
-            "rigger prime",
+            &[("rigger prime", 1)],
         );
         pretooluse_hook_installs_and_is_idempotent: assert_installs_idempotently(
             |existing| install_pretooluse_hook(existing, "Grep|Bash", "rigger grep-guard"),
             &["PreToolUse", "rigger grep-guard", "\"matcher\": \"Grep|Bash\""],
-            "rigger grep-guard",
+            &[("rigger grep-guard", 1)],
         );
         spawn_hooks_install_and_are_idempotent: assert_installs_idempotently(
             |existing| install_spawn_hooks(existing, "rigger", "u/i#0", &["/wt".to_string()]),
             &["PreToolUse", "StopFailure", "'rigger' guard-write --root '/wt'"],
-            "guard-write",
+            &[
+                ("guard-write", 1),
+                ("hook stop-failure", AgentFailure::CATEGORIES.len()),
+            ],
         );
     }
 

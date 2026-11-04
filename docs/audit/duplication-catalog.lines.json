@@ -5814,13 +5814,13 @@
     "sites": [
       {
         "file": "crates/rigger-driver/src/driver/claude_code.rs",
-        "start_line": 2373,
-        "end_line": 2394
+        "start_line": 2400,
+        "end_line": 2421
       },
       {
         "file": "crates/rigger-driver/src/driver/claude_code.rs",
-        "start_line": 2397,
-        "end_line": 2415
+        "start_line": 2424,
+        "end_line": 2442
       }
     ]
   },
@@ -6024,8 +6024,8 @@
       },
       {
         "file": "crates/rigger-store-sqlite/src/run_store.rs",
-        "start_line": 1251,
-        "end_line": 1251
+        "start_line": 1293,
+        "end_line": 1293
       },
       {
         "file": "crates/rigger-store-sqlite/src/sqlite.rs",
@@ -6939,13 +6939,13 @@
     "sites": [
       {
         "file": "crates/rigger-store-sqlite/src/run_store.rs",
-        "start_line": 1462,
-        "end_line": 1476
+        "start_line": 1504,
+        "end_line": 1518
       },
       {
         "file": "crates/rigger-store-sqlite/src/run_store.rs",
-        "start_line": 1531,
-        "end_line": 1546
+        "start_line": 1573,
+        "end_line": 1588
       }
     ]
   },
