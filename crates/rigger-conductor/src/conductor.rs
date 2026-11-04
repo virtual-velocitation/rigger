@@ -322,14 +322,15 @@ const META_SESSION_ID: &str = "session_id";
 
 /// The metadata key a [`STATUS_SPAWN_SESSION`] mark carries the session the spawn was ASKED to
 /// continue under ([`SpawnOpts::resumed_from`]); absent on a spawn asked for a fresh session.
-/// Beside [`META_RESUMED_FROM`] it records a host's fallback in the log: a requested session
-/// with no continued one is a resume the host could not honour (its transcript was gone), so
-/// the spawn ran fresh.
+/// Beside [`META_SESSION_ID`] it records a host's fallback in the log: a requested session the
+/// spawn did not run as is a resume the host could not honour (its transcript was gone), so the
+/// spawn ran fresh.
 const META_RESUME_REQUESTED: &str = "resume_requested";
 
 /// The metadata key a [`STATUS_SPAWN_SESSION`] mark carries the session the spawn CONTINUED
 /// under; absent on a fresh spawn, including the fresh fallback a host takes when the session
-/// it was asked to resume is gone.
+/// it was asked to resume is gone, and on a spawn the headless host answers from the run log,
+/// which continues no session.
 const META_RESUMED_FROM: &str = "resumed_from";
 
 /// The replay key for a durable [`STATUS_REVIEW_ROUND_START`] mark, keyed by the exact
@@ -4812,12 +4813,15 @@ impl RunCtx<'_> {
     /// spawn id, with the session it was asked to continue and the one it did continue, so a
     /// later attempt reads it back from the log and the log tells a fallback (asked, but none
     /// continued: the session was gone, so it ran fresh) from an ordinary fresh spawn. A result
-    /// naming no session records nothing. A fallback is also said on the operator's log.
+    /// naming no session records nothing. A fallback is also said on the operator's log, when
+    /// the spawn ran as a session other than the one it was asked to continue: a spawn the
+    /// headless host answers from the run log continued none yet names the session its recorded
+    /// result ran as, the requested one when that launch continued it.
     fn record_session(&self, opts: &SpawnOpts, result: &AgentResult) -> Result<(), Error> {
         if result.session_id.is_empty() {
             return Ok(());
         }
-        if !opts.resumed_from.is_empty() && result.resumed_from.is_empty() {
+        if !opts.resumed_from.is_empty() && result.session_id != opts.resumed_from {
             (self.deps.log)(&format!(
                 "spawn {}: session {} to resume is gone; it ran as a fresh session {}",
                 opts.id, opts.resumed_from, result.session_id
