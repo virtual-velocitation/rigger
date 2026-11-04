@@ -408,7 +408,9 @@ pub(crate) fn cmd_status(args: &[String]) -> Res {
     println!("{}", console_state.statusline);
 
     // The per-agent "doing" detail, unchanged from before this criterion: one block per
-    // in-flight spawn. The blackout is visible as `last store event` age >> activity age.
+    // in-flight spawn. The blackout is visible as `last store event` age >> activity age. The
+    // heartbeat age is the marker's silence counted outside the run's holds (spec 105
+    // LIVENESS), so the line says so rather than reading as wall-clock time.
     if !view.is_empty() {
         let age = |s: Option<u64>| s.map(|s| format!("{s}s ago")).unwrap_or_else(|| "-".into());
         for a in &view {
@@ -420,7 +422,7 @@ pub(crate) fn cmd_status(args: &[String]) -> Res {
                     .unwrap_or("(none reported yet)"),
                 age(a.activity_age_s),
                 a.liveness_age_s
-                    .map(|s| format!("{s}s ago"))
+                    .map(|s| format!("{s}s ago outside holds"))
                     .unwrap_or_else(|| "-".into()),
                 a.last_milestone.as_deref().unwrap_or("-"),
                 age(a.milestone_age_s),
