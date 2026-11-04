@@ -622,6 +622,34 @@ mod tests {
         });
     }
 
+    /// Spec 105 KEEP-AWAKE: a conductor thread that panics under [`Driver::finishing`] still ends
+    /// the serve: the guard parks every pending spawn, since no conductor is left to take its
+    /// result, and marks the run finished, so the shim's next poll reads done and `rigger serve`
+    /// returns and drops its keep-awake guard.
+    #[test]
+    fn a_conductor_panicking_under_its_finishing_guard_parks_its_spawns_and_finishes() {
+        for (name, handed_out) in [("a spawn handed out", true), ("a spawn queued", false)] {
+            let driver = Driver::new();
+            with_a_pending_spawn(&driver, |outcome| {
+                if handed_out {
+                    assert_eq!(next_id(&driver), Some(ID.to_string()), "{name}");
+                }
+                let conductor = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let _finishing = driver.finishing();
+                    panic!("{name}: the conductor panics");
+                }));
+                assert!(conductor.is_err(), "{name}");
+                assert_eq!(
+                    returned(outcome).map_err(|e| e.0).unwrap_err(),
+                    parked_spawn(ID).0,
+                    "{name}: the pending spawn parks"
+                );
+                assert_eq!(next_id(&driver), None, "{name}: nothing is handed out");
+                assert!(driver.is_finished(), "{name}: the shim reads done");
+            });
+        }
+    }
+
     #[test]
     fn recurse_false_strips_fan_out_from_the_spawn_request() {
         let driver = Arc::new(Driver::new());
