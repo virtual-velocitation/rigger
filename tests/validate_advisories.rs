@@ -33,8 +33,9 @@
 //! `rigger validate` reads from `claude auth status --json` through the one login reader, the
 //! expiring-login warning pinned by a report recorded from the installed `claude` and cut to the
 //! key the pin reads, and the one warning printed when `claude` is absent or gives no report, the
-//! exit status unchanged on every row. The reader's own key and deadline handling are tested
-//! beside it in `crates/rigger-driver/src/claude_auth.rs`.
+//! exit status unchanged on every row: 0 on a sound project, and a failure still on a project whose
+//! run store cannot be selected. The reader's own key and deadline handling are tested beside it
+//! in `crates/rigger-driver/src/claude_auth.rs`.
 
 mod common;
 
@@ -740,6 +741,53 @@ const NO_LOGIN_REPORT_WARNING: &str = "warning: claude login: `claude auth statu
      no report within 5 s (claude is not on PATH, or its status failed); a run launches `claude` \
      from PATH, logged in.";
 
+/// `rigger validate` in `root` with a stand-in `claude` first on PATH whose `auth status --json`
+/// runs the [`probe_arms`](common::fixtures::probe_arms) body `auth`, or with no `claude` on PATH
+/// for none: the stand-in's directory, holding what it recorded, then validate's stdout, stderr and
+/// success, and how long it ran.
+#[cfg(unix)]
+fn validate_with_claude(
+    root: &Path,
+    auth: Option<&str>,
+) -> (tempfile::TempDir, String, String, bool, std::time::Duration) {
+    use common::cli::{path_without, run_rigger_envs};
+    use common::fixtures::{arms_claude, probe_arms};
+
+    let fake = tempfile::tempdir().unwrap();
+    let mut path = path_without("claude");
+    if let Some(auth) = auth {
+        arms_claude(fake.path(), &probe_arms(auth, ""));
+        path = format!("{}:{path}", fake.path().display());
+    }
+    let started = std::time::Instant::now();
+    let (out, err, ok) = run_rigger_envs(root, &["validate"], &[("PATH", &path)]);
+    (fake, out, err, ok, started.elapsed())
+}
+
+/// Validate's stdout `out` carries exactly the login lines `lines` and its stderr `err` exactly
+/// the login warnings `warnings` (`name`).
+#[cfg(unix)]
+fn assert_reports_the_claude_login(
+    name: &str,
+    out: &str,
+    err: &str,
+    lines: Vec<String>,
+    warnings: Vec<&str>,
+) {
+    use common::cli::lines_where;
+
+    assert_eq!(
+        lines_where(out, |line| line.starts_with("claude login: ")),
+        lines,
+        "{name}: stdout:\n{out}"
+    );
+    assert_eq!(
+        lines_where(err, |line| line.starts_with("warning: claude login: ")),
+        warnings,
+        "{name}: stderr:\n{err}"
+    );
+}
+
 #[test]
 fn the_recorded_subscription_login_keeps_only_the_key_the_pin_reads() {
     let report: serde_json::Map<String, serde_json::Value> =
@@ -749,18 +797,17 @@ fn the_recorded_subscription_login_keeps_only_the_key_the_pin_reads() {
 
 /// Given a project, when the operator runs `rigger validate` with a stand-in `claude` first on
 /// PATH, or none on it, then validate reads `claude auth status --json` once, reports on stdout
-/// the auth method it names, warns of a subscription login naming its long-lived token, prints
-/// one warning in place of the report when none came by its 5 s bound, leaves no process of the
-/// stand-in behind and exits 0 on every row.
+/// the auth method it names, warns of a subscription login naming its long-lived token and of no
+/// other auth method, one only sharing its prefix included, prints one warning in place of the
+/// report when none came by its 5 s bound, leaves no process of the stand-in behind and exits 0 on
+/// every row.
 #[cfg(unix)]
 #[test]
 fn validate_reports_the_claude_login_and_warns_when_it_expires_or_gives_no_report() {
-    use common::cli::{lines_where, path_without, run_rigger_envs};
     use common::fixtures::{
-        arms_claude, assert_no_sleeper_left, printing, probe_arms, recorded_argv, sleeping,
-        LOGGED_OUT_STATUS,
+        assert_no_sleeper_left, printing, recorded_argv, sleeping, LOGGED_OUT_STATUS,
     };
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
 
     let quick = (Duration::ZERO, Duration::from_secs(3));
     let at_the_bound = (Duration::from_secs(5), Duration::from_secs(7));
@@ -781,6 +828,22 @@ fn validate_reports_the_claude_login_and_warns_when_it_expires_or_gives_no_repor
             "a long-lived token",
             Some(printing(r#"{"authMethod": "oauth_token"}"#)),
             reported("oauth_token"),
+            vec![],
+            quick,
+            0,
+        ),
+        (
+            "an API key",
+            Some(printing(r#"{"authMethod": "api_key"}"#)),
+            reported("api_key"),
+            vec![],
+            quick,
+            0,
+        ),
+        (
+            "an auth method the subscription login's is only the prefix of",
+            Some(printing(r#"{"authMethod": "claude.ai-enterprise"}"#)),
+            reported("claude.ai-enterprise"),
             vec![],
             quick,
             0,
@@ -847,29 +910,12 @@ fn validate_reports_the_claude_login_and_warns_when_it_expires_or_gives_no_repor
     let (_out, err, ok) = run_rigger(root, &["init"]);
     assert!(ok, "rigger init must succeed; stderr:\n{err}");
     for (name, auth, lines, warnings, (from, below), sleepers) in rows {
-        let fake = tempfile::tempdir().unwrap();
-        let mut path = path_without("claude");
-        if let Some(auth) = &auth {
-            arms_claude(fake.path(), &probe_arms(auth, ""));
-            path = format!("{}:{path}", fake.path().display());
-        }
-        let started = Instant::now();
-        let (out, err, ok) = run_rigger_envs(root, &["validate"], &[("PATH", &path)]);
-        let elapsed = started.elapsed();
+        let (fake, out, err, ok, elapsed) = validate_with_claude(root, auth.as_deref());
         assert!(
             ok,
             "{name}: the login read never fails validate; stderr:\n{err}"
         );
-        assert_eq!(
-            lines_where(&out, |line| line.starts_with("claude login: ")),
-            lines,
-            "{name}: stdout:\n{out}"
-        );
-        assert_eq!(
-            lines_where(&err, |line| line.starts_with("warning: claude login: ")),
-            warnings,
-            "{name}: stderr:\n{err}"
-        );
+        assert_reports_the_claude_login(name, &out, &err, lines, warnings);
         assert!(
             from <= elapsed && elapsed < below,
             "{name}: validate took {elapsed:?}, outside {from:?}..{below:?}"
@@ -882,5 +928,62 @@ fn validate_reports_the_claude_login_and_warns_when_it_expires_or_gives_no_repor
             );
         }
         assert_no_sleeper_left(fake.path(), sleepers, name);
+    }
+}
+
+/// Given a project whose run store cannot be selected (a directory stands where
+/// `.rigger/store.conn` goes), when the operator runs `rigger validate` with a subscription login,
+/// a long-lived token or no `claude` on PATH, then validate reports the login as it does on a sound
+/// project and still fails on the store, the store error the last line it prints: the login read
+/// changes no exit status, a failing one included.
+#[cfg(unix)]
+#[test]
+fn validate_still_fails_on_a_store_it_cannot_select_whatever_the_claude_login() {
+    use common::cli::make_store_conn_unreadable;
+    use common::fixtures::printing;
+
+    let reported = |method: &str| vec![format!("claude login: {method}")];
+    // (name, the stand-in's `auth` arm, none for no `claude` on PATH, the login lines on stdout,
+    // the login warnings on stderr): one row for each way the login report can end
+    let rows = [
+        (
+            "the recorded subscription login",
+            Some(printing(SUBSCRIPTION_LOGIN_REPORT)),
+            reported("claude.ai"),
+            vec![EXPIRING_LOGIN_WARNING],
+        ),
+        (
+            "a long-lived token",
+            Some(printing(r#"{"authMethod": "oauth_token"}"#)),
+            reported("oauth_token"),
+            vec![],
+        ),
+        (
+            "no claude on PATH",
+            None,
+            vec![],
+            vec![NO_LOGIN_REPORT_WARNING],
+        ),
+    ];
+    let dir = temp_rigger_project();
+    let root = dir.path();
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+    make_store_conn_unreadable(root);
+    let unreadable = std::fs::read_to_string(rigger_file(root, "store.conn")).unwrap_err();
+    let store_error = format!("rigger: read store connection file: {unreadable}");
+    for (name, auth, lines, warnings) in rows {
+        let (_fake, out, err, ok, _elapsed) = validate_with_claude(root, auth.as_deref());
+        assert!(
+            !ok,
+            "{name}: validate fails on a store it cannot select, whatever the login; \
+             stdout:\n{out}\nstderr:\n{err}"
+        );
+        assert_eq!(
+            err.lines().last(),
+            Some(store_error.as_str()),
+            "{name}: the store error ends what validate prints; stderr:\n{err}"
+        );
+        assert_reports_the_claude_login(name, &out, &err, lines, warnings);
     }
 }

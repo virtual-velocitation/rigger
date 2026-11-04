@@ -1327,7 +1327,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-c2ec502eaea8",
+    "id": "dup-c410146a8906",
     "classification": "semantic",
     "sites": [
       {
@@ -3333,6 +3333,11 @@
       {
         "file": "tests/common/cli.rs",
         "name": "\".rigger\"",
+        "content_hash": "bd5c09ebe3b4227d"
+      },
+      {
+        "file": "tests/common/cli.rs",
+        "name": "\".rigger\"",
         "content_hash": "090bbeba5641ea09"
       },
       {
@@ -4184,11 +4189,6 @@
         "file": "tests/store_precedence.rs",
         "name": "\".rigger\"",
         "content_hash": "0672997d4aa6bd3c"
-      },
-      {
-        "file": "tests/store_precedence.rs",
-        "name": "\".rigger\"",
-        "content_hash": "bd5c09ebe3b4227d"
       },
       {
         "file": "tests/store_precedence.rs",

@@ -94,6 +94,15 @@ pub fn rigger_file(root: &Path, name: &str) -> PathBuf {
     root.join(RIGGER_DIR).join(name)
 }
 
+/// Place a DIRECTORY where `<root>/.rigger/store.conn` should be a file, so reading it as the secret
+/// file yields an IO error DISTINCT from NotFound - the present-but-unreadable class. This mirrors
+/// the config rung's parity test exactly and is more portable than `chmod 000`, which a test running
+/// as root would bypass (root reads any file), silently defeating the guard under test.
+pub fn make_store_conn_unreadable(root: &Path) {
+    std::fs::create_dir(root.join(".rigger").join("store.conn"))
+        .expect("place a directory where store.conn goes");
+}
+
 /// A raw connection of its own to the store file `name` under `root`'s rigger dir, for reading or
 /// planting what the store's API never writes.
 pub fn rigger_db(root: &Path, name: &str) -> rusqlite::Connection {
