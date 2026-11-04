@@ -3735,8 +3735,15 @@ const INTERRUPTED: &str = "sess-interrupted";
 /// The session of the fresh launch a fallback landed before a [`relaunch_cases`] row.
 const FELL_BACK: &str = "sess-fell-back";
 
+/// The session a relaunch before a [`relaunch_cases`] row forked its interrupted session under.
+const RELAUNCHED: &str = "sess-relaunched";
+
 /// Stands, in a [`relaunch_cases`] row, for the session the host mints for a fresh launch.
 const MINTED: &str = "<the session the host mints>";
+
+/// Stands, in a [`relaunch_cases`] row, for the session the host mints for the fork its
+/// relaunch resumes the interrupted session as.
+const FORKED: &str = "<the session the host forks>";
 
 /// The note of a relaunch after a supervisor restart.
 const RESTARTED: &str =
@@ -3802,9 +3809,14 @@ struct Relaunch {
 }
 
 impl Fixture {
-    /// `record` as the progress store holds it, [`MINTED`] read as `minted`.
-    fn record(&self, record: Record, minted: &str) -> SpawnLaunched {
-        let session = |session: &'static str| if session == MINTED { minted } else { session };
+    /// `record` as the progress store holds it, [`FORKED`] read as `forked` and [`MINTED`] as
+    /// `minted`.
+    fn record(&self, record: Record, forked: &str, minted: &str) -> SpawnLaunched {
+        let session = |session: &'static str| match session {
+            FORKED => forked,
+            MINTED => minted,
+            named => named,
+        };
         match record {
             Record::Opened(launch, id, resumed_from) => {
                 self.opened(launch, session(id), resumed_from)
@@ -3838,8 +3850,8 @@ fn relaunch_cases() -> Vec<Relaunch> {
     };
     let relaunched = |launch, session| {
         vec![
-            Opened(launch, session, Some(session)),
-            Closed(launch, session, "completed", "", None),
+            Opened(launch, FORKED, Some(session)),
+            Closed(launch, FORKED, "completed", "", None),
         ]
     };
     let fresh = |launch| {
@@ -3868,7 +3880,7 @@ fn relaunch_cases() -> Vec<Relaunch> {
             seeded: login_close(Some(0)),
             appended: relaunched(1, INTERRUPTED),
             tasks: vec![LOGIN_RELEASED.to_string()],
-            answered: (INTERRUPTED, INTERRUPTED),
+            answered: (FORKED, INTERRUPTED),
             ..Default::default()
         },
         Relaunch {
@@ -3887,7 +3899,7 @@ fn relaunch_cases() -> Vec<Relaunch> {
             resumed: true,
             appended: relaunched(1, PRIOR_SESSION),
             tasks: vec![with_task(LOGIN_RELEASED)],
-            answered: (PRIOR_SESSION, PRIOR_SESSION),
+            answered: (FORKED, PRIOR_SESSION),
             ..Default::default()
         },
         Relaunch {
@@ -3908,7 +3920,7 @@ fn relaunch_cases() -> Vec<Relaunch> {
             resumed: true,
             appended: relaunched(2, FELL_BACK),
             tasks: vec![LOGIN_RELEASED.to_string()],
-            answered: (FELL_BACK, FELL_BACK),
+            answered: (FORKED, FELL_BACK),
             ..Default::default()
         },
         Relaunch {
@@ -3920,11 +3932,12 @@ fn relaunch_cases() -> Vec<Relaunch> {
             resumed: true,
             appended: relaunched(1, PRIOR_SESSION),
             tasks: vec![with_task(RESTARTED)],
-            answered: (PRIOR_SESSION, PRIOR_SESSION),
+            answered: (FORKED, PRIOR_SESSION),
             ..Default::default()
         },
         Relaunch {
-            name: "a relaunch the restart interrupted in its turn",
+            name: "a relaunch of a resume the restart interrupted in its turn, sending its resume \
+                task again",
             log: login_released(),
             seeded: vec![
                 Opened(0, PRIOR_SESSION, Some(PRIOR_SESSION)),
@@ -3935,13 +3948,37 @@ fn relaunch_cases() -> Vec<Relaunch> {
                     "authentication_failed",
                     Some(0),
                 ),
-                Opened(1, PRIOR_SESSION, Some(PRIOR_SESSION)),
-                Closed(1, PRIOR_SESSION, "interrupted", "", None),
+                Opened(1, RELAUNCHED, Some(PRIOR_SESSION)),
+                Closed(1, RELAUNCHED, "interrupted", "", None),
             ],
             resumed: true,
-            appended: relaunched(2, PRIOR_SESSION),
+            appended: relaunched(2, RELAUNCHED),
             tasks: vec![with_task(RESTARTED)],
-            answered: (PRIOR_SESSION, PRIOR_SESSION),
+            answered: (FORKED, RELAUNCHED),
+            ..Default::default()
+        },
+        Relaunch {
+            name:
+                "a relaunch of a fallback the restart interrupted in its turn, sent no resume task",
+            log: login_released(),
+            seeded: vec![
+                Opened(0, PRIOR_SESSION, Some(PRIOR_SESSION)),
+                Closed(0, PRIOR_SESSION, "interrupted", "", None),
+                Opened(1, FELL_BACK, None),
+                Closed(
+                    1,
+                    FELL_BACK,
+                    "interrupted",
+                    "authentication_failed",
+                    Some(0),
+                ),
+                Opened(2, RELAUNCHED, Some(FELL_BACK)),
+                Closed(2, RELAUNCHED, "interrupted", "", None),
+            ],
+            resumed: true,
+            appended: relaunched(3, RELAUNCHED),
+            tasks: vec![RESTARTED.to_string()],
+            answered: (FORKED, RELAUNCHED),
             ..Default::default()
         },
         Relaunch {
@@ -3960,7 +3997,7 @@ fn relaunch_cases() -> Vec<Relaunch> {
                 (authentication_failed - run claude auth login) and is released now. Continue \
                 where you left off."
                 .to_string()],
-            answered: (INTERRUPTED, INTERRUPTED),
+            answered: (FORKED, INTERRUPTED),
             ..Default::default()
         },
         Relaunch {
@@ -3974,7 +4011,7 @@ fn relaunch_cases() -> Vec<Relaunch> {
             seeded: login_close(Some(0)),
             appended: relaunched(1, INTERRUPTED),
             tasks: vec![LOGIN_RELEASED.to_string()],
-            answered: (INTERRUPTED, INTERRUPTED),
+            answered: (FORKED, INTERRUPTED),
             ..Default::default()
         },
         Relaunch {
@@ -3983,7 +4020,7 @@ fn relaunch_cases() -> Vec<Relaunch> {
             seeded: login_close(Some(1)),
             appended: relaunched(1, INTERRUPTED),
             tasks: vec![LOGIN_RELEASED.to_string()],
-            answered: (INTERRUPTED, INTERRUPTED),
+            answered: (FORKED, INTERRUPTED),
             ..Default::default()
         },
         Relaunch {
@@ -3992,7 +4029,7 @@ fn relaunch_cases() -> Vec<Relaunch> {
             seeded: login_close(Some(2)),
             appended: relaunched(1, INTERRUPTED),
             tasks: vec![LOGIN_CLASS.to_string()],
-            answered: (INTERRUPTED, INTERRUPTED),
+            answered: (FORKED, INTERRUPTED),
             ..Default::default()
         },
         Relaunch {
@@ -4001,7 +4038,7 @@ fn relaunch_cases() -> Vec<Relaunch> {
             seeded: login_close(None),
             appended: relaunched(1, INTERRUPTED),
             tasks: vec![LOGIN_CLASS.to_string()],
-            answered: (INTERRUPTED, INTERRUPTED),
+            answered: (FORKED, INTERRUPTED),
             ..Default::default()
         },
         Relaunch {
@@ -4011,7 +4048,7 @@ fn relaunch_cases() -> Vec<Relaunch> {
             sink: Sink::Absent,
             appended: relaunched(1, INTERRUPTED),
             tasks: vec![LOGIN_CLASS.to_string()],
-            answered: (INTERRUPTED, INTERRUPTED),
+            answered: (FORKED, INTERRUPTED),
             ..Default::default()
         },
         Relaunch {
@@ -4020,7 +4057,7 @@ fn relaunch_cases() -> Vec<Relaunch> {
             seeded: login_close(Some(0)),
             appended: relaunched(1, INTERRUPTED),
             tasks: vec![LOGIN_CLASS.to_string()],
-            answered: (INTERRUPTED, INTERRUPTED),
+            answered: (FORKED, INTERRUPTED),
             ..Default::default()
         },
         Relaunch {
@@ -4060,8 +4097,8 @@ fn relaunch_cases() -> Vec<Relaunch> {
             seeded: login_close(Some(0)),
             resume_ending: "refused-result",
             appended: vec![
-                Opened(1, INTERRUPTED, Some(INTERRUPTED)),
-                Closed(1, INTERRUPTED, "interrupted", "", None),
+                Opened(1, FORKED, Some(INTERRUPTED)),
+                Closed(1, FORKED, "interrupted", "", None),
                 Opened(2, MINTED, None),
                 Closed(2, MINTED, "completed", "", None),
             ],
@@ -4077,8 +4114,8 @@ fn relaunch_cases() -> Vec<Relaunch> {
             ],
             resume_ending: "refused-result",
             appended: vec![
-                Opened(1, INTERRUPTED, Some(INTERRUPTED)),
-                Closed(1, INTERRUPTED, "interrupted", "", None),
+                Opened(1, FORKED, Some(INTERRUPTED)),
+                Closed(1, FORKED, "interrupted", "", None),
                 Opened(2, MINTED, None),
                 Closed(2, MINTED, "completed", "", None),
             ],
@@ -4097,8 +4134,8 @@ fn relaunch_cases() -> Vec<Relaunch> {
             resumed: true,
             resume_ending: "refused-result",
             appended: vec![
-                Opened(1, PRIOR_SESSION, Some(PRIOR_SESSION)),
-                Closed(1, PRIOR_SESSION, "interrupted", "", None),
+                Opened(1, FORKED, Some(PRIOR_SESSION)),
+                Closed(1, FORKED, "interrupted", "", None),
                 Opened(2, MINTED, None),
                 Closed(2, MINTED, "completed", "", None),
             ],
@@ -4139,12 +4176,14 @@ fn relaunch_cases() -> Vec<Relaunch> {
 }
 
 /// THE RELAUNCH: a spawn whose latest launch ended `interrupted`, whichever site closed it,
-/// `--resume`s that launch's session at the next ordinal in the same directory, its first message
-/// the note the close decides (the hold the first release past the close's stamp ended, the
-/// supervisor's restart for a close of no class, the class alone otherwise), then the
-/// `resume_task` that launch carried, recording only its answer, so no attempt is charged. Any other
-/// latest launch, or a prior run's, launches fresh, a relaunch with no `system/init` takes the
-/// fallback, and a hold sink the host cannot read or fold launches nothing.
+/// `--resume`s that launch's session as a fork under a session the host mints at the next ordinal
+/// in the same directory, its first message the note the close decides (the hold the first
+/// release past the close's stamp ended, the supervisor's restart for a close of no class, the
+/// class alone otherwise), then the `resume_task` when that launch carried it, as its record says
+/// (its session or the session it resumed is the one the spawn names), recording only its answer,
+/// so no attempt is charged. Any other latest launch, or a prior run's, launches fresh, a relaunch
+/// with no `system/init` takes the fallback, and a hold sink the host cannot read or fold launches
+/// nothing.
 #[cfg(unix)]
 #[test]
 fn an_interrupted_launch_relaunches_its_session_as_its_close_decides() {
@@ -4153,7 +4192,7 @@ fn an_interrupted_launch_relaunches_its_session_as_its_close_decides() {
         let fx = Fixture::started(&case.log);
         let run = if case.prior_run { "run-0" } else { "run-1" };
         for &record in &case.seeded {
-            let seeded = fx.record(record, "");
+            let seeded = fx.record(record, "", "");
             rigger::progress_store::record_launch(&fx.progress_store, run, &seeded).unwrap();
         }
         let before = fx.launch_records().len();
@@ -4183,10 +4222,14 @@ fn an_interrupted_launch_relaunches_its_session_as_its_close_decides() {
         let outcome = driver.spawn(&AgentDef::default(), FULL_PROMPT, &o, &no_emit);
 
         let records = fx.unstamped_records();
-        let minted = records
-            .last()
-            .map(|record| record.session_id.clone())
-            .unwrap_or_default();
+        // The sessions the host minted: a relaunch's fork on the first record the spawn appends,
+        // a fresh launch on the last.
+        let session_of = |record: Option<&SpawnLaunched>| {
+            record
+                .map(|record| record.session_id.clone())
+                .unwrap_or_default()
+        };
+        let (forked, minted) = (session_of(records.get(before)), session_of(records.last()));
         let appended: Vec<SpawnLaunched> = records[before..]
             .iter()
             .map(|record| SpawnLaunched {
@@ -4197,23 +4240,37 @@ fn an_interrupted_launch_relaunches_its_session_as_its_close_decides() {
         let expected: Vec<SpawnLaunched> = case
             .appended
             .iter()
-            .map(|&record| fx.record(record, &minted))
+            .map(|&record| fx.record(record, &forked, &minted))
             .collect();
         assert_eq!(appended, expected, "{name}: the records");
-        if case.answered.0 == MINTED {
-            assert!(
-                ![INTERRUPTED, FELL_BACK, PRIOR_SESSION].contains(&minted.as_str()),
-                "{name}: the fresh session is minted, not {minted}"
+        let stands_for = |placeholder: &str| {
+            case.appended.iter().any(|record| match *record {
+                Record::Opened(_, session, _) | Record::Closed(_, session, ..) => {
+                    session == placeholder
+                }
+            })
+        };
+        for (placeholder, session) in [(FORKED, &forked), (MINTED, &minted)] {
+            if stands_for(placeholder) {
+                assert!(
+                    ![INTERRUPTED, FELL_BACK, PRIOR_SESSION, RELAUNCHED]
+                        .contains(&session.as_str()),
+                    "{name}: the session {placeholder} stands for is minted, not {session}"
+                );
+            }
+        }
+        if stands_for(FORKED) && stands_for(MINTED) {
+            assert_ne!(
+                forked, minted,
+                "{name}: the fork and the fresh launch mint their own"
             );
         }
         let tasks: Vec<String> = case.tasks.iter().map(|task| framed(task)).collect();
         assert_eq!(fx.tasks_read(), tasks, "{name}: the first messages");
-        let session = |id: &str| {
-            if id == MINTED {
-                minted.clone()
-            } else {
-                id.to_string()
-            }
+        let session = |id: &str| match id {
+            FORKED => forked.clone(),
+            MINTED => minted.clone(),
+            named => named.to_string(),
         };
         assert_eq!(
             outcome

@@ -3163,6 +3163,66 @@ mod tests {
         assert_eq!(v["message"]["content"], framed("fix exactly these"));
     }
 
+    /// THE RELAUNCH FORKS (spec 105, RESUME BY SESSION): the relaunch of an interrupted launch
+    /// resumes its session as a fork under a session id the host mints, so an orphan of that
+    /// launch keeps its transcript to itself, and the record carries the minted id with
+    /// `resumed_from` naming the interrupted session.
+    #[test]
+    fn a_relaunch_forks_the_interrupted_session_under_a_minted_id() {
+        let store = Store::open(":memory:").unwrap();
+        let driver = Driver {
+            bin: fixture_bin(),
+            rigger_bin: "rigger".to_string(),
+            progress_store: &store,
+            ..Driver::default()
+        };
+        let o = opts("u/implementer#1");
+        let interrupted = "sess-interrupted";
+        for record in [
+            SpawnLaunched {
+                spawn: o.id.clone(),
+                session_id: interrupted.to_string(),
+                ..Default::default()
+            },
+            SpawnLaunched::closed(&o.id, 0, interrupted, progress::ENDED_INTERRUPTED, ""),
+        ] {
+            progress_store::record_launch(&store, &o.run_id, &record).unwrap();
+        }
+
+        let mut launch = driver
+            .first_launch(&AgentDef::default(), "the full task", &o)
+            .unwrap();
+        read_fixture_lines(&mut launch.child);
+
+        let minted = launch.session_id.clone();
+        assert_ne!(
+            minted, interrupted,
+            "the fork runs under a session of its own"
+        );
+        let at = launch.args.iter().position(|x| x == "--resume");
+        assert_eq!(
+            at.and_then(|at| launch.args.get(at..at + 5)),
+            Some(
+                &[
+                    "--resume".to_string(),
+                    interrupted.to_string(),
+                    "--fork-session".to_string(),
+                    "--session-id".to_string(),
+                    minted.clone(),
+                ][..]
+            ),
+            "{:?}",
+            launch.args
+        );
+        let recorded = crate::progress::read_run(&store, &o.run_id).unwrap();
+        let sl: SpawnLaunched = serde_json::from_slice(&recorded[2].data).unwrap();
+        assert_eq!(
+            (sl.launch, sl.session_id, sl.resumed_from),
+            (1, minted, Some(interrupted.to_string()))
+        );
+        assert_eq!(launch.resumed_from, interrupted);
+    }
+
     /// The ordinal comes from the record, so a launch that cannot read the record cannot name
     /// its own: it fails with the store's error and starts nothing, never a launch that might
     /// truncate a prior transcript.

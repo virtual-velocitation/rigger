@@ -15974,8 +15974,8 @@ fn hanging_first_worker_arm() -> String {
 /// running, the next `rigger run` reaps the agent rooted in the dir the host recorded, gone by the
 /// first poll that sees the launch closed `interrupted` with the session the host recorded (the
 /// two land within one poll of each other, so their order is not pinned here), then relaunches that
-/// session with `--resume` at the next ordinal in the same dir, its first user message naming the
-/// supervisor's restart, and drives the run to done.
+/// session with `--resume` as a fork under a session of its own at the next ordinal in the same
+/// dir, its first user message naming the supervisor's restart, and drives the run to done.
 #[cfg(unix)]
 #[test]
 fn a_live_runs_launch_is_left_alone_beside_it_and_reconciled_by_the_next_start_once_it_dies() {
@@ -16101,7 +16101,13 @@ fn a_live_runs_launch_is_left_alone_beside_it_and_reconciled_by_the_next_start_o
         "the restart's first record closes the dead run's launch interrupted; stderr: {err}"
     );
     let relaunch = recorded_launches(root).get(2).cloned();
-    let started = relaunch.as_ref().map_or(0, |(_, record)| record.started);
+    let (started, forked) = relaunch.as_ref().map_or((0, String::new()), |(_, record)| {
+        (record.started, record.session_id.clone())
+    });
+    assert_ne!(
+        forked, open.session_id,
+        "the relaunch forks the session under one of its own; stderr: {err}"
+    );
     assert_eq!(
         relaunch,
         Some((
@@ -16109,7 +16115,7 @@ fn a_live_runs_launch_is_left_alone_beside_it_and_reconciled_by_the_next_start_o
             rigger::progress::SpawnLaunched {
                 spawn: "solo/implementer#0".to_string(),
                 launch: 1,
-                session_id: open.session_id.clone(),
+                session_id: forked.clone(),
                 resumed_from: Some(open.session_id.clone()),
                 started,
                 ended: None,
@@ -16125,19 +16131,23 @@ fn a_live_runs_launch_is_left_alone_beside_it_and_reconciled_by_the_next_start_o
     assert_eq!(
         (
             flag_value(&argv, "--resume"),
+            argv.iter().any(|arg| arg == "--fork-session"),
+            flag_value(&argv, "--session-id"),
             recorded_task(&fake.path().join("bin/relaunch-first-message")),
             std::fs::read_to_string(fake.path().join("bin/relaunch-cwd")).unwrap(),
         ),
         (
             open.session_id.as_str(),
+            true,
+            forked.as_str(),
             format!(
                 "This session was interrupted: rigger's supervisor restarted. Continue where you \
                  left off.{LIVE_PROGRESS_FRAME}"
             ),
             cwd,
         ),
-        "the relaunch resumes the session in the dir its agent ran in, its first message naming \
-         the restart"
+        "the relaunch forks the session in the dir its agent ran in, its first message naming the \
+         restart"
     );
     assert_eq!(
         (ok, out.lines().nth(2)),
