@@ -149,8 +149,17 @@ reads the hold right after its step lock and `--fresh` (`src/cli/run.rs:584`), b
 workers and stops; `rigger release` and a new `rigger workflow` resume it. `rigger serve` hosts
 no prober, so no probe ends its hold, and `run_workflow` hands the decorator a session-closed
 flag its serving thread sets when `server.run` returns, so a wait there ends with `parked_spawn`
-(`crates/rigger-domain/src/agent.rs:241`) when the session closes and the conductor unwinds as
-on any park. Live sessions are left alone. A host with a hold sink closes a launch `interrupted`
+(`crates/rigger-domain/src/agent.rs`) when the session closes and the conductor unwinds as
+on any park. On `rigger serve` the launch is the handout, so `workflow::Driver::next`
+hands out no queued spawn while the run is not proved unheld, reading the hold
+through `read_current_hold`, the read the decorator uses, which `run_workflow` injects
+(`Driver::with_hold_read`), so the shim keeps polling and the request stays pending;
+once the session closes (`Driver::close_session`), every pending spawn, queued or
+handed out, returns `parked_spawn` to its caller and `rigger serve` exits. A spawn
+asked for after that close returns `parked_spawn` at once and queues nothing, one a
+sibling stage still running asks for after a release that trails the close included,
+so no spawn blocks on a session nothing serves and the `run_workflow` scope joins.
+Live sessions are left alone. A host with a hold sink closes a launch `interrupted`
 in place of `fault` when its class is HOLD or WAIT or the run is held at its end: no
 `SpawnResult`, no attempt charged, the spawn's scratch kept. Gates and merges already running
 continue.
