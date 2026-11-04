@@ -139,12 +139,11 @@ impl Fixture {
 
     /// Open a hold on the run this fixture's run store carries.
     fn hold_the_run(&self) {
-        let held = serde_json::to_vec(&RunHeld::default()).unwrap();
         self.run_store
             .append(
                 rigger::conductor::STREAM,
                 ExpectedRevision::Any,
-                &[Event::new(TYPE_RUN_HELD, held)],
+                &[RunHeld::default().to_event().unwrap()],
             )
             .unwrap();
     }

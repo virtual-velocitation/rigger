@@ -32,22 +32,17 @@ pub fn held_event(cause: &str, by: &str) -> Event {
 
 /// A `RunHeld` event carrying `body`.
 pub fn run_held_event(body: &rigger::run::RunHeld) -> Event {
-    Event::new(
-        rigger::run::TYPE_RUN_HELD,
-        serde_json::to_vec(body).unwrap(),
-    )
+    body.to_event().unwrap()
 }
 
 /// A `RunReleased` event by `by`, the hold having stood `held_for_s` seconds.
 pub fn released_event(by: &str, held_for_s: u64) -> Event {
-    let body = rigger::run::RunReleased {
+    rigger::run::RunReleased {
         by: by.to_string(),
         held_for_s,
-    };
-    Event::new(
-        rigger::run::TYPE_RUN_RELEASED,
-        serde_json::to_vec(&body).unwrap(),
-    )
+    }
+    .to_event()
+    .unwrap()
 }
 
 /// The spawn options of an attempt-0 implementer spawn `id` carrying a fixed persona prompt.

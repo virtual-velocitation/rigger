@@ -179,6 +179,16 @@ pub struct RunHeld {
     pub model: String,
 }
 
+impl RunHeld {
+    /// Build the appendable [`TYPE_RUN_HELD`] event carrying this body. `pub` because its writers
+    /// outside this module, the hold writers of `run_store`, live in the `rigger-store-sqlite`
+    /// adapter crate.
+    #[cfg_attr(all(feature = "core", not(feature = "store")), allow(dead_code))] // only called from the *_store sibling under core-only
+    pub fn to_event(&self) -> Result<Event, serde_json::Error> {
+        Ok(Event::new(TYPE_RUN_HELD, serde_json::to_vec(self)?))
+    }
+}
+
 /// The body of a [`TYPE_RUN_RELEASED`] event. `#[serde(default)]`, as [`RunHeld`] is.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -187,6 +197,15 @@ pub struct RunReleased {
     pub by: String,
     /// How long the hold lasted, in seconds.
     pub held_for_s: u64,
+}
+
+impl RunReleased {
+    /// Build the appendable [`TYPE_RUN_RELEASED`] event carrying this body, `pub` for the same
+    /// adapter-crate writers [`RunHeld::to_event`] serves.
+    #[cfg_attr(all(feature = "core", not(feature = "store")), allow(dead_code))] // only called from the *_store sibling under core-only
+    pub fn to_event(&self) -> Result<Event, serde_json::Error> {
+        Ok(Event::new(TYPE_RUN_RELEASED, serde_json::to_vec(self)?))
+    }
 }
 
 /// The latest [`RunStarted`] in `events`, decoded, or `None` when no run has started.

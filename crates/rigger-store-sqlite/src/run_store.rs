@@ -224,9 +224,7 @@ pub fn start_fresh(
         base_tip: base_tip.to_string(),
         spec: spec_path.to_string(),
     };
-    let ev = started
-        .to_event()
-        .map_err(|e| Error::Backend(format!("serialize RunStarted: {e}")))?;
+    let ev = serialized(TYPE_RUN_STARTED, started.to_event())?;
     store
         .append(STREAM, ExpectedRevision::Any, std::slice::from_ref(&ev))?
         .one(&format!("the {TYPE_RUN_STARTED} of run {}", started.run))?;
@@ -255,7 +253,7 @@ pub fn record_hold_sighting(store: &dyn EventStore, sighting: &HoldSighting) -> 
         HOLD_BY_HOST,
         sighting.model,
     );
-    let held = hold_event(TYPE_RUN_HELD, &body)?;
+    let held = serialized(TYPE_RUN_HELD, body.to_event())?;
     append_on_hold(store, TYPE_RUN_HELD, |hold| {
         let appends = hold.is_none_or(|hold| moves_the_cause(hold, &body));
         Ok(appends.then(|| held.clone()))
@@ -274,7 +272,7 @@ pub fn record_failed_probe(store: &dyn EventStore, category: &str) -> Result<(),
             (hold, body)
         })
         .filter(|(hold, body)| moves_the_cause(hold, body))
-        .map(|(_, body)| hold_event(TYPE_RUN_HELD, &body))
+        .map(|(_, body)| serialized(TYPE_RUN_HELD, body.to_event()))
         .transpose()
     })
     .map(drop)
@@ -310,7 +308,7 @@ pub fn hold_by_operator(store: &dyn EventStore, reason: &str) -> Result<(), Erro
             action: reason.to_string(),
             ..held_by(OPERATOR, "", HOLD_BY_OPERATOR, model)
         };
-        hold_event(TYPE_RUN_HELD, &body).map(Some)
+        serialized(TYPE_RUN_HELD, body.to_event()).map(Some)
     })
     .map(drop)
 }
@@ -342,7 +340,7 @@ fn released_by(by: &str, hold: &Hold) -> Result<Event, Error> {
         by: by.to_string(),
         held_for_s: held_for_s(hold.since, SystemTime::now()),
     };
-    hold_event(TYPE_RUN_RELEASED, &body)
+    serialized(TYPE_RUN_RELEASED, body.to_event())
 }
 
 /// The revision a launch close stamps: the newest of the current run's slice, the head a hold
@@ -401,11 +399,9 @@ fn fold_holds(state: &mut RunState, events: &[Event]) -> Result<(), Error> {
         .map_err(|e| Error::Backend(format!("fold the run's hold: {e}")))
 }
 
-/// A hold event of `type_` carrying `body`.
-fn hold_event(type_: &str, body: &impl serde::Serialize) -> Result<Event, Error> {
-    let data =
-        serde_json::to_vec(body).map_err(|e| Error::Backend(format!("serialize {type_}: {e}")))?;
-    Ok(Event::new(type_, data))
+/// The event a run vocabulary type built of `type_`, its serialization failure the store's error.
+fn serialized(type_: &str, event: Result<Event, serde_json::Error>) -> Result<Event, Error> {
+    event.map_err(|e| Error::Backend(format!("serialize {type_}: {e}")))
 }
 
 /// The whole seconds from `since` to `now`, `0` for a clock that went backwards.
@@ -444,7 +440,7 @@ mod tests {
             model: model.to_string(),
             ..RunHeld::default()
         };
-        Event::new(TYPE_RUN_HELD, serde_json::to_vec(&body).unwrap())
+        body.to_event().unwrap()
     }
 
     /// A `RunReleased` event by the operator, as a writer of the release left it on the stream.
@@ -453,7 +449,7 @@ mod tests {
             by: HOLD_BY_OPERATOR.to_string(),
             held_for_s: 0,
         };
-        Event::new(TYPE_RUN_RELEASED, serde_json::to_vec(&body).unwrap())
+        body.to_event().unwrap()
     }
 
     /// A store whose run stream holds a started run and then `log`.

@@ -6005,6 +6005,25 @@
     "disposition": "not-a-duplicate"
   },
   {
+    "id": "dup-e04bda77465d",
+    "classification": "exact",
+    "sites": [
+      {
+        "file": "crates/rigger-domain/src/run.rs",
+        "name": "to_event",
+        "content_hash": "1137774c3223d21d"
+      },
+      {
+        "file": "crates/rigger-domain/src/run.rs",
+        "name": "to_event",
+        "content_hash": "1137774c3223d21d"
+      }
+    ],
+    "proposed_home": "run::support (consolidate these 2 sites into one function in this file)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
     "id": "dup-4b3a37bb0a60",
     "classification": "exact",
     "sites": [
