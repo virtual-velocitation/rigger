@@ -7039,8 +7039,8 @@
     "sites": [
       {
         "file": "src/cli/guard.rs",
-        "start_line": 1279,
-        "end_line": 1281
+        "start_line": 1314,
+        "end_line": 1316
       },
       {
         "file": "src/cli/validate.rs",

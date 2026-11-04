@@ -1275,6 +1275,41 @@ mod tests {
         );
     }
 
+    /// A root that is empty or relative is refused wherever it stands among the roots: the
+    /// guard resolves a root lexically, never against the session's cwd, so a relative root
+    /// such as `.` would resolve to the empty path every target starts with and admit every
+    /// write.
+    #[test]
+    fn parse_guard_write_roots_refuses_an_empty_or_relative_root() {
+        // (the root after an absolute one, the whole error text)
+        let rows = [
+            ("", "guard-write: --root expects a non-empty directory"),
+            (
+                ".",
+                "guard-write: --root expects an absolute directory, got \".\"",
+            ),
+            (
+                "..",
+                "guard-write: --root expects an absolute directory, got \"..\"",
+            ),
+            (
+                "sub/dir",
+                "guard-write: --root expects an absolute directory, got \"sub/dir\"",
+            ),
+        ];
+        for (root, error) in rows {
+            let args: Vec<String> = ["--root", "/a", "--root", root]
+                .iter()
+                .map(|s| s.to_string())
+                .collect();
+            assert_eq!(
+                parse_guard_write_roots(&args).map_err(|e| e.to_string()),
+                Err(error.to_string()),
+                "--root {root:?}"
+            );
+        }
+    }
+
     #[test]
     fn parse_guard_write_roots_requires_at_least_one() {
         assert!(parse_guard_write_roots(&[]).is_err());
