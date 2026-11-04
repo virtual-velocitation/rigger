@@ -129,7 +129,9 @@ with `RunState::done()` true and a hold open, an operator hold included, the sup
 leaves the hold to the next supervisor's probes. A sighting's append and the done run's and the
 mint's releases are criterion 2's; a failed probe's and `rigger hold`'s appends are criterion
 5's. Where a rule orders a progress-store record against a run-stream event, the record carries
-the run stream's revision its writer last read, and the order is by revision, never by time: a
+the run stream's revision its writer last read, except a hold-probe line (`OwedProbe::line`),
+which carries the revision of the probed hold's latest `RunHeld`, the stamp `owed_probe` counts
+a hold's probes by inside its chain's revisions; the order is by revision, never by time: a
 record stamped with an event's revision is after that event, since its writer read it, and
 records sharing a stamp keep their progress-stream order.
 
@@ -141,16 +143,30 @@ mark, up to the bound of DISPOSITIONS. Two other errors pass to the conductor un
 carrying a conductor marker (`is_parked`, or `EMIT_REFUSED_MARKER`, which arises only under a
 driver that calls the emit callback, `crates/rigger-conductor/src/conductor.rs:3413`), and one
 for a spawn the current run's slice has ended (`spawn::ended_by`, read as RESUME reads it).
-Every relaunch of a spawn id takes the ordinal RESUME decides, never `opts.launch`. `cmd_step`
-reads the hold right after its step lock and `--fresh` (`src/cli/run.rs:584`), before
-`sweep_terminal` (`:656`), `enforce_definition_pin` (`:675`) and `liveness::sweep` (`:748`), so
+Every relaunch of a spawn id takes the ordinal RESUME decides, never `opts.launch`.
+A plain `rigger step`, one without `--fresh`, reads the run's hold once, ahead of the
+new-run critique refusal (`RunStartCritique::refuse_unless_clean`), since a held step
+begins no run for that refusal to guard, so a held plain step prints the held step
+JSON whatever the spec's critique state; a `--fresh` step keeps that refusal ahead of
+its mint and reads the hold once behind the mint, which released the hold it ended.
+Each read precedes `sweep_terminal`, `enforce_definition_pin` and `liveness::sweep`,
+behind the step lock, the base refusals, `ensure_run_branch` and `open_graph`, so
 `rigger step` on a held run launches nothing and prints its step JSON with an empty `wave`,
 `done` false and `halted` naming the hold, exiting 0, so the workflow driver drains its live
 workers and stops; `rigger release` and a new `rigger workflow` resume it. `rigger serve` hosts
 no prober, so no probe ends its hold, and `run_workflow` hands the decorator a session-closed
 flag its serving thread sets when `server.run` returns, so a wait there ends with `parked_spawn`
-(`crates/rigger-domain/src/agent.rs:241`) when the session closes and the conductor unwinds as
-on any park. Live sessions are left alone. A host with a hold sink closes a launch `interrupted`
+(`crates/rigger-domain/src/agent.rs`) when the session closes and the conductor unwinds as
+on any park. On `rigger serve` the launch is the handout, so `workflow::Driver::next`
+hands out no queued spawn while the run is not proved unheld, reading the hold
+through `read_current_hold`, the read the decorator uses, which `run_workflow` injects
+(`Driver::with_hold_read`), so the shim keeps polling and the request stays pending;
+once the session closes (`Driver::close_session`), every pending spawn, queued or
+handed out, returns `parked_spawn` to its caller and `rigger serve` exits. A spawn
+asked for after that close returns `parked_spawn` at once and queues nothing, one a
+sibling stage still running asks for after a release that trails the close included,
+so no spawn blocks on a session nothing serves and the `run_workflow` scope joins.
+Live sessions are left alone. A host with a hold sink closes a launch `interrupted`
 in place of `fault` when its class is HOLD or WAIT or the run is held at its end: no
 `SpawnResult`, no attempt charged, the spawn's scratch kept. Gates and merges already running
 continue.
@@ -311,7 +327,7 @@ owns the OS process facilities, which gains a normal `rigger-domain` dependency 
   no gate, container or runner verifies them, by decision; a defect there surfaces as an issue
   report on the project. Only the port's lifecycle and the Linux adapter are tested here.
 
-ADDENDUM DEPARTURES, decided: the Design departs from the Goal's addendum in seven places, each
+ADDENDUM DEPARTURES, decided: the Design departs from the Goal's addendum in six places, each
 kept as decided above: a `rate_limit` hold honors no known reset time (section 5.1), since the probe
 backoff already bounds a rate-limit hold's canary spend; a `cloud_credential_error` hold runs no
 `claude auth status` probe (5.1), since that status reports the login, not the cloud provider's
@@ -319,9 +335,7 @@ credentials; a `model_not_found` hold runs no canary (5.1), since a supervisor l
 configuration it read at start; the canary runs on the hold's model, not the cheapest configured
 one (5.4), since that model is the one the held launches need; the page shows the hold in its
 dock entry and statusline word, not its health strip (5.5), since that strip reports the dash's
-and the store's connection; the write guard roots every spawn at its `dir` and scratch
-container, not a reviewer persona at its scratch only (4.4), since personas and review's steps
-are the consumer's to declare; and a probe releases a hold at worst 900 s after a login, not
+and the store's connection; and a probe releases a hold at worst 900 s after a login, not
 within section 9's two minutes, since the probe delay caps at 900 s, and `rigger release` is the
 instant path.
 

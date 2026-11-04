@@ -16,8 +16,8 @@
 //! history appends no duplicate spawn request (it parks only an id that is not already
 //! recorded), so the same run stream can be replayed any number of times.
 //!
-//! The blocking drivers (`cli`, `workflow`) are unaffected: they never park, and they
-//! ignore the [`SpawnOpts`] id/unit/stage fields this driver keys on.
+//! The blocking drivers read the [`SpawnOpts`] id, never its unit/stage: `cli` never parks, and
+//! `workflow` parks only a spawn its closed session leaves unserved, which a relaunch serves.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
