@@ -22,7 +22,9 @@ use crate::agent::{
     SpawnOpts, API_UNSTABLE, SPAWN_BOUND_TOOLS, SPAWN_PROGRESS_TOOL,
 };
 use crate::config::AgentDef;
-use crate::driver::replay::{reclaim_spawn_registered_scratch, spawn_scratch_path};
+use crate::driver::replay::{
+    answered, read_or_park, reclaim_spawn_registered_scratch, spawn_scratch_path, Logged,
+};
 use crate::driver::{
     allowed_tools_args, bin_or_path_default, harness_env, json_arg, progress_framed,
     spawn_config_args, system_prompt_file, LaunchSession, SystemPromptFile,
@@ -356,7 +358,7 @@ impl Driver<'_> {
     /// concern; deleted in favor of reusing the canonical one, per this codebase's
     /// standing one-reaping-mechanism precedent). `launch.child` is moved into it before
     /// the stdout loop below, so the missing-stdout-pipe guard, a read error before any
-    /// result, and a `record_result_if_absent` write failure all leave `reaper` in scope
+    /// result, and a `record_result_unless_ended` write failure all leave `reaper` in scope
     /// with the process still possibly running behind it; dropping it ends it either way:
     /// `try_wait` first, falling back to a best-effort end-then-collect through the same
     /// handle when the process is not yet known to have exited. That mirrors `launch()`'s
@@ -371,14 +373,14 @@ impl Driver<'_> {
     /// handle (`reaper.child_mut().wait()`, no signal) BEFORE the trailing `drop(reaper)`,
     /// so that teardown always finishes on its own first. Every other exit path (missing
     /// stdout pipe, a read error before any result, the post-result-read-error `break`
-    /// below, a `record_result_if_absent` failure) is unchanged: straight to the
+    /// below, a `record_result_unless_ended` failure) is unchanged: straight to the
     /// signal-capable drop, since none of those is evidence the child is mid-teardown.
     ///
     /// A read error AFTER a result is already captured (adj-u104-stream round-2 REQUIRED
     /// FIX) is handled the same uniform way: the loop below just stops reading (`break`)
     /// rather than propagating `Err`, so this function still returns the
     /// already-recorded `Ok(AgentResult)` rather than discarding it, since
-    /// `record_result_if_absent` already wrote the real result to the run store one line
+    /// `record_result_unless_ended` already wrote the real result to the run store one line
     /// earlier and only the FIRST result ever acts (round-3 REQUIRED FIX 1 pins the
     /// in-memory result to that same first line too - see the `result.is_none()` guard
     /// below).
@@ -605,7 +607,7 @@ impl Driver<'_> {
 
             let line = match line {
                 Ok(line) => line,
-                // adj-u104-stream round-2 REQUIRED FIX: `record_result_if_absent` may
+                // adj-u104-stream round-2 REQUIRED FIX: `record_result_unless_ended` may
                 // already have durably written the real `SpawnResult` one line ago (the
                 // loop keeps reading after the FIRST result by design - a duplicate
                 // result, or more transcript, is anticipated, not an error). A read
@@ -711,8 +713,8 @@ impl Driver<'_> {
                 }
                 // A resume's `result` with no `system/init` before it is the host's refusal,
                 // never the session's answer: Claude Code 2.1.314 prints one for a session it
-                // cannot find. It goes unrecorded, since the run log keeps the first result of
-                // a spawn id and this one would stand in the fresh launch's place. Input closes
+                // cannot find. It goes unrecorded, since the run log keeps the first real result
+                // of a spawn id and this one would stand in the fresh launch's place. Input closes
                 // as after any result, so a session held on it ends and the fallback answers.
                 (Some("result"), _) if awaiting_session => {
                     drop(reaper.child_mut().stdin.take());
@@ -725,7 +727,7 @@ impl Driver<'_> {
                 // line between the two results). The `result.is_none()` GUARD on this
                 // arm - rather than an `if` inside a catch-all `(Some("result"), _)` arm -
                 // means a later duplicate falls straight through to the `_` arm below: no
-                // `spawn_result_from`/`record_result_if_absent` round trip for it either,
+                // `spawn_result_from`/`record_result_unless_ended` round trip for it either,
                 // matching "the log holds one result" (CONSTRAINTS WALK) instead of
                 // merely relying on that call's own idempotence to paper over it. The
                 // `errored` half of the guard does the same behind an `is_error` first
@@ -733,8 +735,11 @@ impl Driver<'_> {
                 (Some("result"), _) if result.is_none() && !errored => {
                     errored = result_errored(&v);
                     if !errored {
+                        // The real result supersedes a liveness fault a courier recorded for
+                        // a launch this one replaced, and lands nothing beside a real result
+                        // already standing.
                         let res = spawn_result_from(&v, opts, &resolved_model);
-                        spawn_store::record_result_if_absent(self.run_store, &res)?;
+                        spawn_store::record_result_unless_ended(self.run_store, &res)?;
                         self.close(opts, id, progress::ENDED_COMPLETED, "");
                         // The session this launch ran as rides back for the conductor to record:
                         // a resume reaches this arm only once its `system/init` showed the
@@ -1411,6 +1416,14 @@ impl AgentDriver for Driver<'_> {
     /// agent records its own decisions LIVE through its bound MCP server
     /// (`rigger mcp --spawn <id>`, criterion 3) - there is nothing left to bridge here.
     ///
+    /// RESUME BY SESSION (spec 105): before any launch the current run's log is read
+    /// ([`read_or_park`]). A spawn the run ended is answered from its result with no launch, an
+    /// error result as that error, carrying the session and resolved model the result recorded
+    /// and no `resumed_from`, so a restarted run does not run a finished agent again. A spawn
+    /// whose only result is a liveness fault, or one only a prior run ended, is launched. A
+    /// spawn whose request does not stand in the run is parked first, stamped with the run and
+    /// this host's scratch root, so the budget's admission finds every spawn this host ran.
+    ///
     /// THE RESUME FALLBACK (spec 105 criterion 1) lands here: a launch that ends
     /// [`StreamEnd::NoSession`] is followed, inside this call and charged no attempt, by a fresh
     /// launch with the full `prompt` at the next ordinal, and the spawn's result is that
@@ -1433,6 +1446,15 @@ impl AgentDriver for Driver<'_> {
         // 3, `AgentDef::max_wall_clock`, already folded from `defaults.max_wall_clock` at
         // config-load time) - 0 stays unbounded, the established convention this field's
         // own doc already sets.
+        if let Logged::Ended(res) =
+            read_or_park(self.run_store, agent, prompt, opts, &self.scratch_root)?
+        {
+            let session_id = res.meta_str(crate::spawn::META_SESSION_ID);
+            return answered(res).map(|answer| AgentResult {
+                session_id,
+                ..answer
+            });
+        }
         let bound = agent.max_wall_clock.unwrap_or(0);
         let mut launched = self.launch(agent, prompt, opts, self.progress_store);
         let result = loop {
@@ -1703,8 +1725,8 @@ fn spawn_result_from(v: &Value, opts: &SpawnOpts, resolved_model: &str) -> Spawn
     let usage = v.get("usage").cloned().unwrap_or(Value::Null);
     let get_u64 = |key: &str| usage.get(key).and_then(Value::as_u64).unwrap_or(0);
     let meta = serde_json::json!({
-        "resolved_model": resolved_model,
-        "session_id": session_id,
+        crate::spawn::META_RESOLVED_MODEL: resolved_model,
+        crate::spawn::META_SESSION_ID: session_id,
         "usage": {
             "input": get_u64("input_tokens"),
             "output": get_u64("output_tokens"),

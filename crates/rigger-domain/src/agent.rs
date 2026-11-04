@@ -60,15 +60,18 @@ pub struct AgentResult {
     pub resolved_model: String,
     /// The Claude Code session this spawn ran as - the id a later attempt or review round of
     /// the same role on the same unit continues with `--resume` ([`SpawnOpts::resumed_from`]).
-    /// A process host mints it for a fresh launch and keeps the continued one on a resume; the
-    /// conductor records it in the run log beside the spawn. Empty from a driver that runs no
+    /// A process host mints it for a fresh launch and keeps the continued one on a resume, and
+    /// the headless host answering a spawn from the run log carries the session its recorded
+    /// result names; the conductor records it in the run log beside the spawn. Empty from a
+    /// driver that runs no
     /// resumable session (the workflow and replay drivers, a test double), which then leaves
     /// every later spawn of that role a fresh one.
     pub session_id: String,
     /// The session this spawn CONTINUED: [`SpawnOpts::resumed_from`] when the host resumed it,
     /// empty for a fresh launch - including the fallback a host takes when the session it was
-    /// asked to resume no longer exists, so a requested resume that came back empty here is the
-    /// record that the host fell back to a fresh spawn.
+    /// asked to resume no longer exists, so a requested resume that came back empty from a launch
+    /// is the record that the host fell back to a fresh spawn. Empty too for a spawn the headless
+    /// host answers from the run log, which launches nothing.
     pub resumed_from: String,
 }
 

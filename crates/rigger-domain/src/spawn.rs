@@ -695,6 +695,11 @@ pub const TYPE_SPAWN_RESULT: &str = "SpawnResult";
 /// name the concrete model that ran, not only the requested alias on the spawn request.
 pub const META_RESOLVED_MODEL: &str = "resolved_model";
 
+/// The [`SpawnResult::meta`] key the headless host records the Claude Code session a spawn ran
+/// as under, beside [`META_RESOLVED_MODEL`] on the result it wrote. A spawn answered from that
+/// result carries the session back to the conductor, which records it as the spawn's session.
+pub const META_SESSION_ID: &str = "session_id";
+
 /// The [`SpawnResult::meta`] key `rigger step` stamps on a spawn it recorded as a LIVENESS
 /// fault (spec 10, unit 3): its value is the failure CLASS the taxonomy assigned the hung
 /// agent (e.g. `"infra"`). Its presence marks the result as a step-synthesized liveness
@@ -789,7 +794,7 @@ impl SpawnResult {
     }
 
     /// The string value of the `key` entry of [`meta`](SpawnResult::meta), or empty when the
-    /// worker reported none (or reported a non-string value). The two keys it serves:
+    /// worker reported none (or reported a non-string value). The three keys it serves:
     ///
     /// - [`META_LIVENESS_CLASS`]: the liveness class recorded on a fault (empty when it is not
     ///   a liveness fault).
@@ -797,6 +802,7 @@ impl SpawnResult {
     ///   This is the concrete model that actually ran the spawn - distinct from the requested
     ///   alias on the spawn REQUEST - which the conductor copies onto the spawn's unit events
     ///   (spec 05 line 52).
+    /// - [`META_SESSION_ID`]: the session the headless host recorded the spawn ran as.
     pub fn meta_str(&self, key: &str) -> String {
         self.meta
             .get(key)

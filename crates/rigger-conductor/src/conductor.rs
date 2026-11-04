@@ -1602,7 +1602,8 @@ fn spawn_halt(kind: SpawnHalt, stage: &str, tier: &str, agent: &str) -> Error {
 /// `Ok(false)` refusal (also worktree-preserving) - neither is a crash a caller should tear a
 /// worktree down over. With [`EMIT_REFUSED_MARKER`], the emit guard's refusal of a record the
 /// spawn emitted, both are what the implementer's spawn site surfaces and the held-run decorator
-/// hands to the conductor unchanged.
+/// hands to the conductor unchanged with no result recorded, and the two errors the conflict
+/// resolver propagates where any other spends its round.
 ///
 /// One predicate, so every site that answers "should this unwind KEEP the worktree" (or, negated,
 /// "is this the genuine error to prioritize over a co-chunked park/refusal") reads it from ONE
@@ -2093,9 +2094,10 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
     // and `defaults.budget` binds no matter how many `rigger step` processes the run spans.
     // Their ids seed `recorded_spawn_ids` so `reserve_spawn` can tell a REPLAY of an
     // already-recorded spawn (admit free) from a genuinely new one, without re-reading the
-    // whole stream per spawn. The blocking drivers never park a request, so both are empty
-    // for them and their in-process spawns are the whole count - historical behavior,
-    // unchanged.
+    // whole stream per spawn. The headless host parks each spawn before its first launch
+    // too, so a restarted `rigger run` folds every spawn an earlier process ran and admits
+    // each one it answers from the log free. The cli and workflow drivers record no spawn
+    // request, so both are empty for them and their in-process spawns are the whole count.
     let recorded_spawns = spawn::recorded(prior_events).map_err(|e| Error(e.to_string()))?;
     let base_spawns = recorded_spawns.len() as u32;
     let recorded_spawn_ids: HashSet<String> = recorded_spawns.into_keys().collect();
@@ -2642,11 +2644,13 @@ fn settle_run_state(
     // `base_spawns` is the already-folded distinct-spawn count from BEFORE this call (seeded
     // at its start for the budget breaker itself); the after-count reads the SAME in-process
     // `ctx.spawns` counter `budget_tripped`/`halt_reason` read - the single source of truth
-    // for "spawns made", which (unlike `spawn::recorded` over the event log) counts a
-    // BLOCKING driver's spawns too: only a stepwise/replay driver ever PARKS a
+    // for "spawns made", which (unlike `spawn::recorded` over the event log) counts the cli
+    // and workflow drivers' spawns too: only the replay driver and the headless host PARK a
     // `SpawnRequested` for the log to hold, so scanning the log would silently read zero
-    // for every other driver. The still-parked wave IS read from the log (a blocking
-    // driver leaves it empty, correctly never stalling the frontier).
+    // for every other driver. The still-parked wave IS read from the log (the cli and
+    // workflow drivers leave it empty, and on `rigger run` a spawn the headless host parks
+    // ends the call with its result recorded, by the host or by the decorator's error
+    // write, so none of them stalls the frontier).
     let after_spawns = ctx.spawns.load(Ordering::SeqCst) as usize;
     let parked_units: BTreeSet<String> = spawn::step_result(current_events)
         .map_err(|e| Error(e.to_string()))?
@@ -2966,8 +2970,10 @@ struct RunCtx<'a> {
     /// `defaults.budget` binds across the many `rigger step` processes a stepwise run
     /// spans (spec 04, criterion 5 / finding adv-budget-per-step-resets). A replayed
     /// spawn (an id already recorded) never increments this - its budget was spent when
-    /// it was first parked. The blocking drivers never park, so `base_spawns` is 0 for
-    /// them and this counts their in-process spawns exactly as before.
+    /// it was first parked. The cli and workflow drivers record no spawn request, so
+    /// `base_spawns` is 0 for them and this counts their in-process spawns; the headless host
+    /// parks each spawn before its launch, so a restarted `rigger run` starts from every spawn
+    /// its earlier processes ran.
     spawns: AtomicU32,
     /// The spawn count already recorded in the log when this process started - the value
     /// `spawns` is seeded to. The pre-wave breaker only halts a process that has itself
@@ -2983,8 +2989,9 @@ struct RunCtx<'a> {
     /// already recorded by an earlier step - admit free, its budget was already spent) or
     /// a genuinely NEW spawn (count it against the cumulative budget) with an O(1) lookup,
     /// rather than re-reading and re-folding the whole stream on every spawn. A spawn this
-    /// process parks is not added here: it is reached only once per process (a parked unit
-    /// unwinds and every spawn site has a distinct id), so the prior-only set is sufficient.
+    /// process parks is not added here: it is reached only once per process (every spawn
+    /// site has a distinct id, and a unit the replay driver parked unwinds), so the
+    /// prior-only set is sufficient.
     recorded_spawn_ids: HashSet<String>,
     /// Set the moment a spawn is REFUSED because the budget is spent (item 9): the
     /// breaker now trips at spawn granularity, mid-wave, not only at wave boundaries.
@@ -4027,11 +4034,12 @@ impl RunCtx<'_> {
             && safety::budget_exhausted(budget as i64, spawns as i64)
     }
 
-    /// Whether `spawn_id` was already parked in the run log by an EARLIER step process -
-    /// i.e. this spawn is a REPLAY whose budget was spent when it was first parked. An
-    /// O(1) lookup into `recorded_spawn_ids`, seeded once at run start; the blocking
-    /// drivers never park, so this is always `false` for them and every one of their
-    /// spawns counts against the budget, unchanged.
+    /// Whether `spawn_id` was already parked in the run log by an EARLIER process of the run
+    /// (a `rigger step`, or a `rigger run` whose headless host parked it) - i.e. this spawn
+    /// is a REPLAY whose budget was spent when it was first parked. An O(1) lookup into
+    /// `recorded_spawn_ids`, seeded once at run start; the cli and workflow drivers record no
+    /// spawn request, so this is always `false` for them and every one of their spawns counts
+    /// against the budget.
     fn spawn_is_recorded(&self, spawn_id: &str) -> bool {
         self.recorded_spawn_ids.contains(spawn_id)
     }
@@ -7760,11 +7768,12 @@ impl RunCtx<'_> {
                         // A driver PARK (the replay frontier) or a BUDGET refusal unwinds the unit
                         // cleanly and PROPAGATES unchanged (its marker survives the `format!` wrapping,
                         // so `is_parked`/`carries_marker(.., BUDGET_MARKER)` still recognize it upstream).
-                        // The headless host RECORDS its result as the replay path does, so a failed
-                        // hosted review re-drives through this same bound. Only the workflow driver
-                        // records none, so `review_spawn_errored` is false there and a genuine
-                        // in-process review failure still propagates as the stage's error exactly as
-                        // before.
+                        // The headless host RECORDS its result as the replay path does, and on
+                        // `rigger run` the decorator records an unmarked error the host hands back
+                        // for a spawn the run has not ended, so a failed hosted review re-drives
+                        // through this same bound. Only the workflow driver records none, so
+                        // `review_spawn_errored` is false there and a genuine in-process review
+                        // failure still propagates as the stage's error exactly as before.
                         if !is_parked_or_refused(&e, BUDGET_MARKER)
                             && self.review_spawn_errored(&id)?
                         {
@@ -7917,10 +7926,11 @@ impl RunCtx<'_> {
     ///
     /// Scoped to the CURRENT run (like every execution-replay lookup, spec 06 unit 1), so a
     /// prior run's recorded review error never re-parks a fresh run's same-id review spawn. The
-    /// headless host records its result as the replay path does, so this reads a failed hosted
-    /// review as it reads a replayed one. The workflow driver records no spawn result, so this
-    /// is always `false` there and a genuine in-process review failure still propagates to
-    /// remediation unchanged.
+    /// headless host records its result as the replay path does, and on `rigger run` the
+    /// decorator records an unmarked error the host hands back for a spawn the run has not
+    /// ended, so this reads a failed hosted review as it reads a replayed one. The workflow
+    /// driver records no spawn result, so this is always `false` there and a genuine in-process
+    /// review failure still propagates to remediation unchanged.
     fn review_spawn_errored(&self, id: &str) -> Result<bool, Error> {
         let events = self.read_current_run()?;
         Ok(spawn::result_of(&events, id)
@@ -10108,10 +10118,10 @@ impl RunCtx<'_> {
                         // integrate_mu is released HERE, before the spawn, so siblings
                         // integrate meanwhile (the ruling's own words: "returns the unit to
                         // building"). A park propagates straight through the `?` below with
-                        // no lock held at all; a real (non-parked) result - a replay hit, or a
-                        // synchronous/blocking driver - re-acquires `lock` and loops back to
-                        // re-attempt the merge from scratch, never trusting anything this
-                        // iteration observed before the spawn. A resolver whose record the emit
+                        // no lock held at all; any other round's end - a result or an unmarked
+                        // error, from a live session or the log - re-acquires `lock` and loops
+                        // back to re-attempt the merge from scratch, never trusting anything
+                        // this iteration observed before the spawn. A resolver whose record the emit
                         // guard refused re-runs once at the next round's id, told why, so the
                         // re-run spends one of the episode's `CONFLICT_RESOLVE_BOUND` rounds.
                         drop(lock);
@@ -11031,9 +11041,16 @@ impl RunCtx<'_> {
     ///
     /// Operator ruling op-u88c1-round-1-conflict-resolution-is-a-parked-spawn-not-an-inline-
     /// loop (round 1 REJECT): the caller ([`Self::integrate_and_emit`]) drops `integrate_mu`
-    /// BEFORE calling this - never held across it - so a park propagates through the `?`
-    /// below with no lock held at all, and a real (non-parked) result never blocks a
-    /// sibling's concurrent integration behind an open-ended agent turnaround.
+    /// BEFORE calling this - never held across it - so a park propagates with no lock held at
+    /// all, and a real (non-parked) result never blocks a sibling's concurrent integration
+    /// behind an open-ended agent turnaround.
+    ///
+    /// RESUME BY SESSION (spec 105): only a marked error returns `Err` - a park, or an emit
+    /// refusal [`rerun_once_on_refusal`] re-runs. An unmarked error, from a live session or
+    /// answered from the log, spends the round like one that resolved nothing: the caller
+    /// re-merges and, still conflicting, moves to the next `~retry` with no attempt charged,
+    /// blocking past [`CONFLICT_RESOLVE_BOUND`]. The budget's refusal is returned before the
+    /// spawn and propagates as ever.
     fn spawn_conflict_resolution_implementer(
         &self,
         st: &Stage,
@@ -11074,7 +11091,7 @@ impl RunCtx<'_> {
                 ],
             )
         };
-        self.deps.driver.spawn(
+        let spawned = self.deps.driver.spawn(
             agent_def,
             &prompt,
             &SpawnOpts {
@@ -11097,8 +11114,12 @@ impl RunCtx<'_> {
                 resume_task: String::new(),
             },
             &emit,
-        )?;
-        Ok(())
+        );
+        // The merge the caller re-attempts, never this round's outcome, decides what follows.
+        match spawned {
+            Err(e) if is_parked_or_refused(&e, EMIT_REFUSED_MARKER) => Err(e),
+            _ => Ok(()),
+        }
     }
 
     /// Build the SYSTEM prompt the conductor threads into every spawn: the agent's

@@ -785,7 +785,7 @@ const PROJECT_STREAM_APPENDS: &[&str] = &[
     "crates/rigger-store-sqlite/src/run_store.rs:record_rebase",
     "crates/rigger-store-sqlite/src/run_store.rs:start_fresh",
     "crates/rigger-store-sqlite/src/spawn_store.rs:one_position",
-    "crates/rigger-store-sqlite/src/spawn_store.rs:record_result_if_absent",
+    "crates/rigger-store-sqlite/src/spawn_store.rs:record_result_unless",
     "src/cli/critique.rs:copy_findings",
     "src/cli/graph.rs:cmd_emit",
     "src/cli/graph.rs:record_batch",

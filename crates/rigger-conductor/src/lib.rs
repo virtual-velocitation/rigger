@@ -47,7 +47,7 @@ use rigger_grounder::{grounder, ingest};
 use rigger_process::{budget, parallel};
 #[cfg(any(feature = "store", not(feature = "core")))]
 use rigger_store_sqlite::run_store;
-#[cfg(all(test, any(feature = "store", not(feature = "core"))))]
+#[cfg(any(feature = "store", not(feature = "core")))]
 use rigger_store_sqlite::spawn_store;
 #[cfg(any(feature = "store", not(feature = "core")))]
 use rigger_worktree_git::worktree;

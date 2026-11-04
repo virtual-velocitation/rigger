@@ -3,7 +3,7 @@
 # guard (spec 104 criterion 2 round 4, adj-u104-stream round-3 REQUIRED FIX 1: "a genuine
 # SECOND result-type line must never overwrite the already-captured result"). Replays the
 # SAME recorded success stream every sibling fixture uses (so the real, FIRST `result`
-# line is durably recorded through `record_result_if_absent` exactly once, precisely as
+# line is durably recorded through `record_result_unless_ended` exactly once, precisely as
 # `claude-code-stream-agent.sh` proves a clean run), THEN - after that result line has
 # already gone out and closed stdin's write side is irrelevant here (the host, not this
 # fixture, closes ITS OWN stdin to the child on the first result; this fixture keeps

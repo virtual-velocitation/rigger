@@ -154,6 +154,79 @@ pub fn cache_home_from(xdg: Option<OsString>, home: Option<OsString>) -> Option<
     Some(PathBuf::from(home).join(".cache"))
 }
 
+/// What the current run's log holds for one spawn, read by [`read_or_park`].
+pub(crate) enum Logged {
+    /// The run ended the spawn: its standing result, which is no liveness fault
+    /// ([`spawn::ended_by`]).
+    Ended(spawn::SpawnResult),
+    /// No request of the spawn stood in the run, so this read parked one.
+    Parked,
+    /// The spawn's request stands in the run and nothing ended it.
+    Requested,
+}
+
+/// Read the CURRENT run's log for spawn `opts.id`, answering an ended spawn and parking one
+/// whose request does not stand. The one log read every driver that consults the log before
+/// it runs a spawn shares: the replay driver, which never runs one, and the headless host,
+/// which launches whatever this does not answer.
+///
+/// The read is fresh on every call: the whole run's state lives in the log, and a concurrent
+/// sibling spawn in the same wave may have appended a park since the call started. It is
+/// scoped to the current run (completes Gap 11): spawn ids for the fixed stages (`plan/...`,
+/// `plan-critique/adjudicator#N`, `plan/replan#N`) are spec-INDEPENDENT, so without
+/// run-scoping a fresh run would answer with a prior run's recorded result for the same id -
+/// e.g. a stale plan-critique REJECT - instead of running the new reviewer (observed: a
+/// spec-12 run replayed the spec-10 plan-critique reject).
+///
+/// A recorded result ANSWERS: the agent already ran, so its outcome is returned without
+/// running it again, a recorded failure as that failure (never a fabricated success). EXCEPT a
+/// LIVENESS fault (spec 10, unit 3): the agent hung or died and a courier recorded an infra
+/// fault on its id to make that visible, which is not the spawn ending, so it answers nothing
+/// and the spawn is run again; a real result recorded later (last-write-wins) is a genuine
+/// answer and supersedes it.
+///
+/// A spawn with no request in the run PARKS: its request is persisted stamped with the run
+/// `opts` names and with `marker_root`, the scratch root its liveness marker is stamped under
+/// (spec 101; empty records none). IDEMPOTENT (finding adv-park-not-idempotent): a re-read over
+/// recorded history appends no duplicate `SpawnRequested`, since only an id not already
+/// recorded is parked.
+pub(crate) fn read_or_park(
+    store: &dyn EventStore,
+    agent: &AgentDef,
+    prompt: &str,
+    opts: &SpawnOpts,
+    marker_root: &str,
+) -> Result<Logged, Error> {
+    let (events, _) =
+        crate::run::read::read_current_run(store, STREAM).map_err(|e| Error(e.to_string()))?;
+    if let Some(res) = spawn::ended_by(&events, &opts.id).map_err(|e| Error(e.to_string()))? {
+        return Ok(Logged::Ended(res));
+    }
+    if spawn::is_recorded(&events, &opts.id) {
+        return Ok(Logged::Requested);
+    }
+    let req = spawn_request(agent, prompt, opts);
+    spawn_store::park_in_run(store, &req, &opts.run_id, marker_root)
+        .map_err(|e| Error(e.to_string()))?;
+    Ok(Logged::Parked)
+}
+
+/// The answer an ended spawn's result gives: a recorded failure as that failure, so the
+/// conductor sees the identical outcome the run that recorded it saw; otherwise its output,
+/// with the RESOLVED model its run reported ([`spawn::META_RESOLVED_MODEL`], spec 05 line 52)
+/// for the conductor to copy onto the spawn's unit events.
+pub(crate) fn answered(res: spawn::SpawnResult) -> Result<AgentResult, Error> {
+    if res.is_error() {
+        return Err(Error(res.error));
+    }
+    let resolved_model = res.meta_str(spawn::META_RESOLVED_MODEL);
+    Ok(AgentResult {
+        output: res.output,
+        resolved_model,
+        ..Default::default()
+    })
+}
+
 /// A replay driver answers each `spawn` from the run's event log: it replays an
 /// already-recorded spawn or parks an unrecorded one.
 ///
@@ -189,59 +262,8 @@ impl AgentDriver for ReplayDriver<'_> {
         // would replay are already in the log.
         _emit: &dyn Fn(&str, Value) -> Result<(), Error>,
     ) -> Result<AgentResult, Error> {
-        // Read the run stream fresh on every spawn: the whole run's state lives in the
-        // log, and a concurrent sibling spawn in the same wave may have appended a park
-        // since this call started.
-        let (events, _) = crate::run::read::read_current_run(self.store, STREAM)
-            .map_err(|e| Error(e.to_string()))?;
-        // Scope the spawn lookup to the CURRENT run (completes Gap 11): spawn ids for the
-        // fixed stages (`plan/...`, `plan-critique/adjudicator#N`, `plan/replan#N`) are
-        // spec-INDEPENDENT, so without run-scoping a fresh run REPLAYS a prior run's
-        // recorded result for the same id - e.g. a stale plan-critique REJECT - and the
-        // gate escalates by replaying an old verdict instead of running the new reviewer
-        // (observed: a spec-12 run replayed the spec-10 plan-critique reject). Answering
-        // and park-dedup must see only THIS run's events; the park itself is already
-        // run-stamped (`park_in_run`).
-        let events = events.as_slice();
-
-        // ANSWER an already-recorded spawn (replay): a recorded RESULT for this id means
-        // the agent already ran, so return its outcome without re-running it. A recorded
-        // failure replays AS a failure (never a fabricated success), so a step sees the
-        // identical outcome the live run saw and remediates it exactly the same way.
-        //
-        // EXCEPT a step-synthesized LIVENESS fault (spec 10, unit 3): the agent HUNG and
-        // `rigger step` recorded an infra fault on its id to make the stall visible. That
-        // is NOT the unit's code failing, so it must charge no remediation attempt - we
-        // fall through to RE-PARK it (idempotent, the request is already recorded), so the
-        // unit unwinds cleanly like any parked spawn. A real worker result recorded later
-        // (last-write-wins) is a genuine answer and supersedes it here.
-        if let Some(res) = spawn::ended_by(events, &opts.id).map_err(|e| Error(e.to_string()))? {
-            if res.is_error() {
-                return Err(Error(res.error));
-            }
-            // Surface the RESOLVED model the worker reported through `rigger result
-            // --meta` (spec 05 line 52), so the conductor can copy it onto this spawn's
-            // unit events.
-            let resolved_model = res.meta_str(crate::spawn::META_RESOLVED_MODEL);
-            return Ok(AgentResult {
-                output: res.output,
-                resolved_model,
-                ..Default::default()
-            });
-        }
-
-        // PARK an unrecorded spawn: persist the request so a courier can drain it and the
-        // next step replays its result. IDEMPOTENT (finding adv-park-not-idempotent): a
-        // step re-running the conductor over recorded history must append NO duplicate
-        // SpawnRequested, so park only an id that is not already recorded.
-        if !spawn::is_recorded(events, &opts.id) {
-            let req = spawn_request(agent, prompt, opts);
-            // Park stamped with the run this spawn belongs to (spec 06, unit 1): the
-            // conductor threaded the current run id onto `opts`, so the persisted
-            // `SpawnRequested` carries the same run-id metadata as the run's other events -
-            // and with the scratch root its liveness marker is stamped under (spec 101).
-            spawn_store::park_in_run(self.store, &req, &opts.run_id, self.marker_root)
-                .map_err(|e| Error(e.to_string()))?;
+        match read_or_park(self.store, agent, prompt, opts, self.marker_root)? {
+            Logged::Ended(res) => return answered(res),
             // ASSIGN this spawn its dedicated scratch dir (spec 34, criterion 1): the moment
             // rigger REQUESTS a spawn it allocates a rigger-owned per-spawn scratch location
             // under the run's scratch root, so a verify/build lands there (not an ad-hoc
@@ -250,13 +272,16 @@ impl AgentDriver for ReplayDriver<'_> {
             // `<scratch_root>/rigger-wt-<slug>`, the conductor's `unit_worktree_dir`), so
             // assignment and reclaim resolve the same root; a worktree-less spawn
             // (`isolation: none`, empty `dir`) has no per-spawn scratch to assign. Assigned
-            // once (this parks only an id not already recorded, so it never re-runs after the
-            // request lands) and best-effort - a create failure never blocks parking.
-            if let Some(path) = spawn_scratch_root(opts)
-                .and_then(|root| spawn_scratch_path(&root, &opts.run_id, &opts.id))
-            {
-                let _ = std::fs::create_dir_all(path);
+            // once (only the call that parked the request reaches here, so it never re-runs
+            // after the request lands) and best-effort - a create failure never blocks parking.
+            Logged::Parked => {
+                if let Some(path) = spawn_scratch_root(opts)
+                    .and_then(|root| spawn_scratch_path(&root, &opts.run_id, &opts.id))
+                {
+                    let _ = std::fs::create_dir_all(path);
+                }
             }
+            Logged::Requested => {}
         }
 
         // Signal the parked frontier. The conductor unwinds this unit cleanly (no

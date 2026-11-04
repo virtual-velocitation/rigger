@@ -3,7 +3,7 @@
 # path (spec 104 criterion 2 round 3, adj-u104-stream round-2 REQUIRED FIX: "once
 # `result` is `Some`, a later per-line read error must not overturn the durably-recorded
 # success"). Replays the SAME recorded success stream every sibling fixture uses (so the
-# real `result` line is durably recorded through `record_result_if_absent` exactly once,
+# real `result` line is durably recorded through `record_result_unless_ended` exactly once,
 # the same way `claude-code-stream-agent.sh` proves a clean run), THEN - after that
 # `result` line has already gone out - writes ONE line of INVALID UTF-8
 # (`BufRead::lines()` errors on this the same way `claude-code-invalid-utf8-agent.sh`

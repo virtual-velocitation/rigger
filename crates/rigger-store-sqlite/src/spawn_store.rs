@@ -115,17 +115,44 @@ pub fn record_result_if_absent(
     store: &dyn EventStore,
     res: &SpawnResult,
 ) -> Result<Option<Position>, Error> {
+    record_result_unless(store, res, crate::spawn::result_of)
+}
+
+/// Record `res` to the run's event log unless the current run already ENDED the spawn: a
+/// standing result that is no liveness fault ([`crate::spawn::ended_by`]). Returns
+/// `Some(position)` when it recorded, `None` when a real result already stood.
+///
+/// A relaunched session's real result calls this, so it supersedes the liveness fault the
+/// stall or crash courier recorded for the session it replaced, while the same result again,
+/// or one a racing writer landed first, lands nothing. Every liveness-fault write keeps
+/// [`record_result_if_absent`], which a fault already standing also stops. The atomicity is
+/// that function's: the same compare-and-append, deciding over the real results alone.
+pub fn record_result_unless_ended(
+    store: &dyn EventStore,
+    res: &SpawnResult,
+) -> Result<Option<Position>, Error> {
+    record_result_unless(store, res, crate::spawn::ended_by)
+}
+
+/// The one compare-and-append both conditional result writes share: append `res` unless
+/// `standing` finds a result of its id in the current run, re-deciding over the results that
+/// landed past the pinned revision whenever a concurrent append moves the stream.
+fn record_result_unless(
+    store: &dyn EventStore,
+    res: &SpawnResult,
+    standing: fn(&[Event], &str) -> Result<Option<SpawnResult>, serde_json::Error>,
+) -> Result<Option<Position>, Error> {
     let ev = res
         .to_event()
         .map_err(|e| Error::Backend(format!("serialize spawn result {}: {e}", res.id)))?;
     let answered = |events: &[Event]| -> Result<bool, Error> {
-        Ok(crate::spawn::result_of(events, &res.id)
+        Ok(standing(events, &res.id)
             .map_err(|e| Error::Backend(format!("decode results for {}: {e}", res.id)))?
             .is_some())
     };
     let (run, mut head) = crate::run_store::read_run_at_head(store)?;
     if answered(&run)? {
-        // A result already exists - leave it untouched (the no-op the courier wants).
+        // A standing result - leave it untouched (the no-op every caller wants).
         return Ok(None);
     }
     loop {

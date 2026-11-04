@@ -549,6 +549,15 @@ pub fn emit_refused(typ: &str) -> String {
     )
 }
 
+/// The error the headless host hands back for spawn `id` when its session ended with no result
+/// under `class`, `tail` the stderr tail it kept, the class marked as the conductor reads it.
+pub fn no_result_failure(id: &str, class: &str, tail: &str) -> String {
+    format!(
+        "\u{2}{class}\u{2}claude_code driver: {id:?}: the agent stream ended with no result \
+         (class {class}; stderr tail: {tail})"
+    )
+}
+
 /// Record the critic's `answer` as the critique of `spec`'s current text in the project at `root`
 /// (spec 112): `rigger critique <spec>` with the checked-in critique stub, answering `answer`,
 /// first on `PATH` for that one call only, so a fixture's own fake agent keeps its `PATH` slot for

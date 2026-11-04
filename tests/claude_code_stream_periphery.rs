@@ -349,9 +349,10 @@ fn spawn_records_the_result_in_the_run_store_with_its_full_meta() {
 #[test]
 fn a_relaunch_never_double_records_the_result() {
     // CONSTRAINTS WALK: "Relaunch - a new session id and the next launch ordinal; the
-    // log holds one result." record_result_if_absent is what enforces that - prove it
-    // by calling spawn() twice for the SAME id and asserting the run store still holds
-    // exactly one SpawnResult.
+    // log holds one result." The host answers a spawn its run has already ended from the
+    // log, and its real-result write, record_result_unless_ended, lands nothing beside a
+    // real result standing - prove it by calling spawn() twice for the SAME id and
+    // asserting the run store still holds exactly one SpawnResult.
     let fx = Fixture::new();
     let o = opts("u104-stream/implementer#0");
 
@@ -876,7 +877,7 @@ fn spawn_survives_a_read_error_that_arrives_after_the_result_line() {
     // including a duplicate result, are anticipated), but a bare `?` on any LATER
     // line's read error still discarded the already-recorded success. This fixture
     // emits the real recorded result line first - durably recording it via
-    // `record_result_if_absent`, exactly like every other test in this file - THEN one
+    // `record_result_unless_ended`, exactly like every other test in this file - THEN one
     // line of invalid UTF-8: the opposite order from
     // `spawn_reaps_the_child_on_a_mid_stream_read_error`'s error-before-any-result
     // shape.
@@ -925,7 +926,7 @@ fn spawn_pins_the_returned_result_to_the_first_result_line_not_the_last() {
     // after capturing `result` (by design - a duplicate result is anticipated, not an
     // error), but unconditionally overwrote the in-memory `result` on every result-type
     // line, so the value `spawn()` RETURNED reflected the LAST result while
-    // `record_result_if_absent` durably recorded only the FIRST - a returned-value vs
+    // `record_result_unless_ended` durably recorded only the FIRST - a returned-value vs
     // durable-store mismatch. This fixture emits the real recorded success stream (the
     // FIRST, genuine result), then a SECOND well-formed result carrying deliberately
     // different values in every field the reader maps, then a clean EOF - the opposite
@@ -2003,7 +2004,8 @@ struct HoldCase {
     results: usize,
     /// The launch's close: its `ended`, then its class.
     close: (&'static str, Option<&'static str>),
-    /// The index in the run log of the event whose revision the close carries.
+    /// The index in the run log of the event whose revision the close carries, the log holding
+    /// `RunStarted`, then `seeded`, then the `SpawnRequested` the host parks ahead of its launch.
     stamp: Option<usize>,
 }
 
@@ -2041,7 +2043,7 @@ fn hold_cases() -> Vec<HoldCase> {
             holds: vec![login_hold()],
             results: 1,
             close: ("completed", None),
-            stamp: Some(2),
+            stamp: Some(3),
             ..HoldCase::default()
         },
         HoldCase {
@@ -2055,7 +2057,7 @@ fn hold_cases() -> Vec<HoldCase> {
             holds: vec![login_hold()],
             results: 1,
             close: ("completed", None),
-            stamp: Some(2),
+            stamp: Some(3),
             ..HoldCase::default()
         },
         HoldCase {
@@ -2072,7 +2074,7 @@ fn hold_cases() -> Vec<HoldCase> {
             ],
             results: 1,
             close: ("completed", None),
-            stamp: Some(3),
+            stamp: Some(4),
             ..HoldCase::default()
         },
         HoldCase {
@@ -2091,7 +2093,7 @@ fn hold_cases() -> Vec<HoldCase> {
             )],
             results: 1,
             close: ("completed", None),
-            stamp: Some(2),
+            stamp: Some(3),
             ..HoldCase::default()
         },
         HoldCase {
@@ -2105,7 +2107,7 @@ fn hold_cases() -> Vec<HoldCase> {
             holds: vec![login_hold()],
             results: 1,
             close: ("completed", None),
-            stamp: Some(2),
+            stamp: Some(3),
             ..HoldCase::default()
         },
         HoldCase {
@@ -2113,7 +2115,7 @@ fn hold_cases() -> Vec<HoldCase> {
             lines: vec![init_line(), retry_line("rate_limit"), result_line(false)],
             results: 1,
             close: ("completed", None),
-            stamp: Some(1),
+            stamp: Some(2),
             ..HoldCase::default()
         },
         HoldCase {
@@ -2121,7 +2123,7 @@ fn hold_cases() -> Vec<HoldCase> {
             lines: vec![init_line(), retry_line("rate_limit")],
             holds: vec![wait_ending.clone()],
             close: ("interrupted", Some("rate_limit")),
-            stamp: Some(0),
+            stamp: Some(1),
             ..HoldCase::default()
         },
         HoldCase {
@@ -2129,7 +2131,7 @@ fn hold_cases() -> Vec<HoldCase> {
             lines: vec![init_line(), retry_line(login)],
             holds: vec![login_hold()],
             close: ("interrupted", Some(login)),
-            stamp: Some(1),
+            stamp: Some(2),
             ..HoldCase::default()
         },
         HoldCase {
@@ -2137,21 +2139,21 @@ fn hold_cases() -> Vec<HoldCase> {
             lines: vec![init_line(), retry_line(login), retry_line("rate_limit")],
             holds: vec![login_hold()],
             close: ("interrupted", Some("rate_limit")),
-            stamp: Some(1),
+            stamp: Some(2),
             ..HoldCase::default()
         },
         HoldCase {
             name: "a session ending of a fault class",
             lines: vec![init_line(), retry_line("invalid_request")],
             close: ("fault", Some("invalid_request")),
-            stamp: Some(0),
+            stamp: Some(1),
             ..HoldCase::default()
         },
         HoldCase {
             name: "a category no binary knows",
             lines: vec![init_line(), retry_line("a_category_no_binary_knows")],
             close: ("fault", Some("unknown")),
-            stamp: Some(0),
+            stamp: Some(1),
             ..HoldCase::default()
         },
         HoldCase {
@@ -2163,7 +2165,7 @@ fn hold_cases() -> Vec<HoldCase> {
             ],
             holds: vec![model_ending.clone()],
             close: ("interrupted", Some("model_not_found")),
-            stamp: Some(0),
+            stamp: Some(1),
             ..HoldCase::default()
         },
         HoldCase {
@@ -2176,14 +2178,14 @@ fn hold_cases() -> Vec<HoldCase> {
             ],
             holds: vec![wait_ending],
             close: ("interrupted", Some("rate_limit")),
-            stamp: Some(0),
+            stamp: Some(1),
             ..HoldCase::default()
         },
         HoldCase {
             name: "an is_error result nothing classes",
             lines: vec![init_line(), result_line(true)],
             close: ("fault", Some("unknown")),
-            stamp: Some(0),
+            stamp: Some(1),
             ..HoldCase::default()
         },
         HoldCase {
@@ -2195,7 +2197,7 @@ fn hold_cases() -> Vec<HoldCase> {
                 result_line(true),
             ],
             close: ("fault", Some("unknown")),
-            stamp: Some(0),
+            stamp: Some(1),
             ..HoldCase::default()
         },
         HoldCase {
@@ -2204,7 +2206,7 @@ fn hold_cases() -> Vec<HoldCase> {
             stop_failure: Some("billing_error"),
             holds: vec![login_hold(), hold("billing_error", "", billing, true, "")],
             close: ("interrupted", Some("billing_error")),
-            stamp: Some(1),
+            stamp: Some(2),
             ..HoldCase::default()
         },
         HoldCase {
@@ -2217,7 +2219,7 @@ fn hold_cases() -> Vec<HoldCase> {
             stop_failure: Some("billing_error"),
             holds: vec![model_ending],
             close: ("interrupted", Some("model_not_found")),
-            stamp: Some(0),
+            stamp: Some(1),
             ..HoldCase::default()
         },
         HoldCase {
@@ -2226,7 +2228,7 @@ fn hold_cases() -> Vec<HoldCase> {
             seeded: vec![operator_hold()],
             results: 1,
             close: ("completed", None),
-            stamp: Some(2),
+            stamp: Some(3),
             ..HoldCase::default()
         },
         HoldCase {
@@ -2234,7 +2236,7 @@ fn hold_cases() -> Vec<HoldCase> {
             lines: vec![init_line(), retry_line("rate_limit")],
             seeded: vec![operator_hold()],
             close: ("interrupted", Some("rate_limit")),
-            stamp: Some(1),
+            stamp: Some(2),
             ..HoldCase::default()
         },
         HoldCase {
@@ -2242,7 +2244,7 @@ fn hold_cases() -> Vec<HoldCase> {
             lines: vec![init_line(), retry_line("invalid_request")],
             seeded: vec![operator_hold()],
             close: ("interrupted", Some("invalid_request")),
-            stamp: Some(1),
+            stamp: Some(2),
             ..HoldCase::default()
         },
         HoldCase {
@@ -2250,7 +2252,7 @@ fn hold_cases() -> Vec<HoldCase> {
             lines: vec![init_line(), result_line(true)],
             seeded: vec![operator_hold()],
             close: ("interrupted", Some("unknown")),
-            stamp: Some(1),
+            stamp: Some(2),
             ..HoldCase::default()
         },
         HoldCase {
@@ -2261,7 +2263,7 @@ fn hold_cases() -> Vec<HoldCase> {
                 common::fixtures::released_event("operator"),
             ],
             close: ("fault", Some("invalid_request")),
-            stamp: Some(2),
+            stamp: Some(3),
             ..HoldCase::default()
         },
         HoldCase {
@@ -2300,7 +2302,7 @@ fn hold_cases() -> Vec<HoldCase> {
             }],
             results: 1,
             close: ("completed", None),
-            stamp: Some(2),
+            stamp: Some(3),
             ..HoldCase::default()
         },
         HoldCase {
@@ -2317,7 +2319,7 @@ fn hold_cases() -> Vec<HoldCase> {
             }],
             results: 1,
             close: ("completed", None),
-            stamp: Some(2),
+            stamp: Some(3),
             ..HoldCase::default()
         },
     ]
@@ -2513,9 +2515,12 @@ fn a_close_on_a_held_run_enters_no_unstable_count() {
 
     assert_eq!(fx.failed_closes(), 2);
     assert_eq!(
-        fx.run_log().len(),
-        before + 1,
-        "nothing lands past the hold"
+        fx.run_log()[before..]
+            .iter()
+            .map(|event| event.type_.as_str())
+            .collect::<Vec<_>>(),
+        vec![TYPE_RUN_HELD, spawn::TYPE_SPAWN_REQUESTED],
+        "nothing but the third spawn's park lands past the hold"
     );
     let closing = fx.launch_records().pop().unwrap();
     assert_eq!(
@@ -3692,37 +3697,26 @@ fn a_fallback_past_recorded_launches_takes_the_next_two_ordinals() {
     );
 }
 
-/// A restart spawns an id it already launched with the spawn's own `launch` at 0: the transcript
-/// of the first launch survives it.
+/// A restart spawns an id an earlier launch of its run left unended with the spawn's own `launch`
+/// at 0: the transcript of the first launch survives it.
 #[test]
 fn a_restarts_first_spawn_keeps_the_prior_transcript() {
     let fx = Fixture::new();
-    let answering = |answer: &str| SpawnOpts {
-        env: [
-            fx.ending_env("answer", "answer"),
-            vec![("RIGGER_TEST_ANSWER".to_string(), answer.to_string())],
-        ]
-        .concat(),
+    let ending = |fresh_ending: &str| SpawnOpts {
+        env: fx.ending_env("answer", fresh_ending),
         ..opts(RESUMED_SPAWN)
     };
 
-    for answer in ["before the restart", "after the restart"] {
-        fx.host(&AgentDef::default(), &answering(answer))
-            .expect("the launch answers");
-    }
+    fx.host(&AgentDef::default(), &ending("init-eof"))
+        .expect_err("a launch ending with no result leaves its spawn unended");
+    fx.host(&AgentDef::default(), &ending("answer"))
+        .expect("the restart's launch answers");
 
-    let transcript = |ordinal: u32| {
-        std::fs::read_to_string(
-            fx.scratch_file("agent-stream")
-                .join("run-1")
-                .join(format!("{RESUMED_STEM}.{ordinal}.jsonl")),
-        )
-        .unwrap()
-    };
-    let answer_in = |raw: String| {
-        let result: Value = serde_json::from_str(raw.lines().last().unwrap()).unwrap();
-        result["result"].as_str().unwrap().to_string()
-    };
-    assert_eq!(answer_in(transcript(0)), "before the restart");
-    assert_eq!(answer_in(transcript(1)), "after the restart");
+    assert_eq!(
+        fx.transcripts(),
+        vec![
+            (format!("{RESUMED_STEM}.0.jsonl"), 1),
+            (format!("{RESUMED_STEM}.1.jsonl"), 2),
+        ]
+    );
 }

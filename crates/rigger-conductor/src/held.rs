@@ -16,9 +16,11 @@
 //! relaunched [`RELAUNCH_BOUND`] times with no non-error outcome between. An unclassed or
 //! fault-class error on an unheld run reaches it too, its spawn site deciding what follows.
 //!
-//! The decorator writes no event: a hold, a release and a spawn's close each have their author.
-//! Its count of relaunches lives in memory over one supervisor's life, so a restarted supervisor
-//! starts it again.
+//! On `rigger run`, an unmarked error it hands the conductor for a spawn the current run parked
+//! and has not ended is recorded as that spawn's result, so a restarted run answers the spawn
+//! from the log instead of launching it again. It writes no other event: a hold, a release and a
+//! spawn's close each have their author. Its count of relaunches lives in memory over one
+//! supervisor's life, so a restarted supervisor starts it again.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -39,6 +41,7 @@ use crate::run::{
     STREAM,
 };
 use crate::spawn;
+use crate::spawn_store;
 
 /// How many times one spawn id relaunches with no non-error outcome of that id between: its next
 /// error passes through, whatever the error's class and whether or not the run is held.
@@ -132,6 +135,29 @@ impl<'a> HeldDriver<'a> {
         *count += 1;
         true
     }
+
+    /// THE ERROR WRITE (spec 105, RESUME BY SESSION): record `e`, the error this decorator hands
+    /// the conductor for spawn `id`, as the spawn's result, so a restarted `rigger run` answers
+    /// the spawn from the log with that error instead of launching it again. Only on `rigger
+    /// run`: on `rigger serve` the session's shim records each spawn's result. A park and an
+    /// emit refusal end no spawn, so their marked errors record nothing; neither does a spawn
+    /// the current run never parked. The write lands over no result or a liveness fault alone
+    /// ([`spawn_store::record_result_unless_ended`]), never beside a result that ended the
+    /// spawn. Best-effort: a failed read or write leaves `e` to reach the conductor unchanged.
+    fn record_error(&self, e: &Error, id: &str) {
+        if self.session_closed.is_some() || is_parked_or_refused(e, EMIT_REFUSED_MARKER) {
+            return;
+        }
+        let Ok(slice) = self.run_slice() else {
+            return;
+        };
+        if spawn::is_recorded(&slice, id) {
+            let _ = spawn_store::record_result_unless_ended(
+                self.store,
+                &spawn::SpawnResult::failed(id, e.0.clone()),
+            );
+        }
+    }
 }
 
 impl AgentDriver for HeldDriver<'_> {
@@ -153,7 +179,10 @@ impl AgentDriver for HeldDriver<'_> {
                     return Ok(result);
                 }
                 Err(e) if self.relaunches(&e, &opts.id) => continue,
-                Err(e) => return Err(e),
+                Err(e) => {
+                    self.record_error(&e, &opts.id);
+                    return Err(e);
+                }
             }
         }
     }

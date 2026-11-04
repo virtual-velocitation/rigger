@@ -7499,8 +7499,10 @@ fn a_sighting_holds_the_run_and_a_done_run_releases_the_hold() {
 /// `interrupted`, and so does any class, FAULT and unclassed included, on a run an operator held
 /// under the live session: the close keeps its class and the scratch for the launch the release
 /// brings, the same id again at the next ordinal with no infra mark, charged nothing either, each
-/// second launch closing `completed`. Whichever way, the first launch records no `SpawnResult`, so
-/// the spawn's one result is the second launch's.
+/// second launch closing `completed`. A `fault` close hands its error to the conductor, and the
+/// decorator records it as the first spawn's result, so a restart answers that spawn from the log
+/// and the rerun's result follows it; an `interrupted` close records no `SpawnResult`, so the
+/// spawn's one result is the second launch's.
 #[cfg(unix)]
 #[test]
 fn an_is_error_result_reruns_uncharged_and_holds_as_its_class_says() {
@@ -7654,15 +7656,25 @@ fn an_is_error_result_reruns_uncharged_and_holds_as_its_class_says() {
             ],
             "{name}: the closes; stderr: {err}"
         );
+        // Only a `fault` close hands its error to the conductor; an `interrupted` one relaunches.
+        let handed_back = (case.ended == "fault").then(|| {
+            (
+                "solo/implementer#0".to_string(),
+                String::new(),
+                common::cli::no_result_failure("solo/implementer#0", case.category, ""),
+                false,
+            )
+        });
+        let again = (
+            case.again.0.to_string(),
+            String::new(),
+            String::new(),
+            false,
+        );
         assert_eq!(
             common::fixtures::spawn_result_rows(&read_run_events(root)),
-            [(
-                case.again.0.to_string(),
-                String::new(),
-                String::new(),
-                false
-            )],
-            "{name}: the one result is the second launch's"
+            handed_back.into_iter().chain([again]).collect::<Vec<_>>(),
+            "{name}: the error handed back, then the second launch's result"
         );
         let at_the_second_launch =
             std::fs::read_to_string(fake.path().join("bin/scratch-at-the-second-launch"))
@@ -10196,18 +10208,32 @@ const FIRST_SESSION_DIES: &str = r#"    if [ ! -e "$here/first-session-died" ]; 
 /// landed on it, then the launch closes `interrupted` under its `unknown` class, its error waits
 /// for the release and the same spawn id launches at its next ordinal with no infra mark, the hold
 /// being read after the host returned; when none landed, the launch closes `fault` and the error
-/// keeps its spawn site's path, the conductor's infra rerun. The first launch records no result and
-/// the unit is charged nothing.
+/// keeps its spawn site's path, the conductor's infra rerun, the decorator recording that error as
+/// the first spawn's result ahead of the rerun's. A held first launch records no result, and the
+/// unit is charged nothing either way.
 #[cfg(unix)]
 #[test]
 fn a_session_dying_with_no_result_relaunches_only_on_a_held_run() {
     const SPAWN: &str = "solo/implementer#0";
     const RERUN: &str = "solo/implementer#0~retry4";
+    let handed_back = (
+        SPAWN.to_string(),
+        String::new(),
+        common::cli::no_result_failure(SPAWN, "unknown", ""),
+        false,
+    );
     let cases = [
-        ("a hold landed on it", true, "interrupted", SPAWN, 1),
-        ("no hold landed on it", false, "fault", RERUN, 0),
+        ("a hold landed on it", true, "interrupted", SPAWN, 1, vec![]),
+        (
+            "no hold landed on it",
+            false,
+            "fault",
+            RERUN,
+            0,
+            vec![handed_back],
+        ),
     ];
-    for (name, held, ended, again, ordinal) in cases {
+    for (name, held, ended, again, ordinal, mut results) in cases {
         let dir = temp_git_project_with_commit();
         let root = dir.path();
         write_workflow_fixture(root, &REVIEWLESS_GIT_UNIT_WORKFLOW);
@@ -10246,10 +10272,11 @@ fn a_session_dying_with_no_result_relaunches_only_on_a_held_run() {
             ],
             "{name}: the closes; stderr: {err}"
         );
+        results.push((again.to_string(), String::new(), String::new(), false));
         assert_eq!(
             common::fixtures::spawn_result_rows(&read_run_events(root)),
-            [(again.to_string(), String::new(), String::new(), false)],
-            "{name}: the one result is the second launch's"
+            results,
+            "{name}: the error handed back, if any, then the second launch's result"
         );
         assert_eq!(
             run_holds(root).len(),
@@ -11316,8 +11343,8 @@ fn a_resume_ending_api_side_or_on_a_held_run_launches_nothing_fresh() {
         hold_lands: Duration,
         launches: Vec<Launch>,
         holds: Vec<rigger::run::RunHeld>,
-        /// The fault a stop records, which stands as the re-attempt's one result: the store reads a
-        /// liveness fault as answered, so the relaunch's answer reaches the conductor unrecorded.
+        /// The fault a stop records ahead of the relaunch's answer, which supersedes it: a real
+        /// result lands behind a liveness fault, never behind another real result.
         fault: Option<&'static str>,
     }
     let completed: Launch = (true, Some("completed"), None);
@@ -11546,13 +11573,15 @@ fn a_resume_ending_api_side_or_on_a_held_run_launches_nothing_fresh() {
             "{name}: the re-attempt's records; stderr: {err}"
         );
         let built = |id: &str| (id.to_string(), BUILT.to_string(), String::new(), false);
-        let re_attempt = case.fault.map_or_else(
-            || built(RESUMED),
-            |error| (RESUMED.to_string(), String::new(), error.to_string(), true),
-        );
+        let stopped = case
+            .fault
+            .map(|error| (RESUMED.to_string(), String::new(), error.to_string(), true));
         assert_eq!(
             common::fixtures::spawn_result_rows(&read_run_events(root)),
-            [built(FIRST), re_attempt],
+            std::iter::once(built(FIRST))
+                .chain(stopped)
+                .chain([built(RESUMED)])
+                .collect::<Vec<_>>(),
             "{name}: the results"
         );
         assert_eq!(

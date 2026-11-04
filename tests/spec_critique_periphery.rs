@@ -17,10 +17,10 @@ mod common;
 use std::path::Path;
 
 use common::cli::{
-    assert_selected_server, critique_finding_id, emit, pin_identity, read_run_events,
-    recorded_progress, rigger_file, run_payloads, run_rigger, run_rigger_envs, run_rigger_ok,
-    run_stream_identity, seed_a_run, seed_on_the_run, seed_run_events, seed_store, temp_project,
-    temp_repoless_project, write_spec_project,
+    assert_selected_server, critique_finding_id, emit, no_result_failure, pin_identity,
+    read_run_events, recorded_progress, rigger_file, run_payloads, run_rigger, run_rigger_envs,
+    run_rigger_ok, run_stream_identity, seed_a_run, seed_on_the_run, seed_run_events, seed_store,
+    temp_project, temp_repoless_project, write_spec_project,
 };
 use common::fixtures::{composed_system_prompt, git_ok, held_event, temp_git_project_with_commit};
 use common::repo::{
@@ -667,9 +667,8 @@ fn a_critique_session_ending_api_side_closes_fault_since_no_hold_sink_is_wired()
         let id = critique_spawn_id(SPEC_HASH, 0);
         let failed = format!(
             "rigger: rigger critique: {SPEC_REL} (hash {SPEC_HASH}): no critique was recorded - \
-             conductor: \u{2}{class}\u{2}claude_code driver: {id:?}: the agent stream ended with \
-             no result (class {class}; stderr tail: {})",
-            case.tail
+             conductor: {}",
+            no_result_failure(&id, class, case.tail)
         );
         assert_eq!(
             err.lines().last(),
@@ -1750,10 +1749,10 @@ fn every_spec_taking_verb_refuses_a_second_spec_and_an_unknown_flag_through_the_
 
 /// Given the critique stream already holds a result for the critic's attempt-0 spawn that is no
 /// critique - a concurrent call that minted the same spawn id recorded it first - when the spec is
-/// critiqued, then the critic's session runs at attempt 0 but the first recorded result stands,
-/// and the verb judges what it reads back from the store, never its own session's output: it says
-/// why that result is no critique, exits non-zero and copies nothing. The next call counts the
-/// parked request and critiques at attempt 1.
+/// critiqued, then the headless host answers the critic's attempt-0 spawn from that result and
+/// runs no session, and the verb judges what it reads back from the store: it says why that result
+/// is no critique, exits non-zero and copies nothing. The next call counts the parked request and
+/// critiques at attempt 1.
 #[test]
 fn a_result_recorded_first_for_the_critics_spawn_id_is_read_back_never_the_sessions_own() {
     let dir = temp_project();
@@ -1764,12 +1763,16 @@ fn a_result_recorded_first_for_the_critics_spawn_id_is_read_back_never_the_sessi
     let raced = json!({"id": first, "output": "I could not decide."});
     seed_critique(root, &[(TYPE_SPAWN_RESULT, raced.clone())]);
 
-    // When the spec is critiqued and the critic's own session answers with a real reject ...
+    // When the spec is critiqued by a critic whose session would answer with a real reject ...
     let (session, session_path) = stub(REJECT);
     let (out, err, ok) = critique(root, SPEC_REL, &session_path, &scratch);
 
-    // ... the session ran at attempt 0, yet the verb answers from the result recorded first.
-    assert_eq!(critique_stub_spawns(session.path()), 1, "the session ran");
+    // ... the result recorded first answers attempt 0, so no session runs.
+    assert_eq!(
+        critique_stub_spawns(session.path()),
+        0,
+        "the recorded result answers the spawn"
+    );
     assert!(
         err.contains(&format!(
             "rigger critique: {SPEC_REL} (hash {SPEC_HASH}): critiquing with critic at attempt 0"

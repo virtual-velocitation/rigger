@@ -336,7 +336,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-512babd81d8b",
+    "id": "dup-53994f0e802d",
     "classification": "near",
     "sites": [
       {
@@ -400,6 +400,11 @@
         "content_hash": "5d23ae9ae3e76aee"
       },
       {
+        "file": "tests/common/cli.rs",
+        "name": "no_result_failure",
+        "content_hash": "cf2123f9424fc9e7"
+      },
+      {
         "file": "tests/common/fixtures/config.rs",
         "name": "separator_refusal",
         "content_hash": "7963312db697b9f4"
@@ -430,7 +435,7 @@
         "content_hash": "5d23ae9ae3e76aee"
       }
     ],
-    "proposed_home": "a new shared module (sites span 14 files: crates/rigger-conductor/src/conductor.rs, crates/rigger-domain/src/contextgraph/query.rs, crates/rigger-domain/src/review.rs, crates/rigger-driver/src/driver/mod.rs, crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs, crates/rigger-store-sqlite/src/eventstore/kurrentdb.rs, crates/rigger-store-sqlite/src/spawn_store.rs, tests/cli.rs, tests/common/fixtures/config.rs, tests/common/fixtures/plan_critique.rs, tests/common/fixtures/spawn.rs, tests/compaction_generations_periphery.rs, tests/new_run_critique_refusal_periphery.rs, tests/no_os_kill_audit.rs)",
+    "proposed_home": "a new shared module (sites span 15 files: crates/rigger-conductor/src/conductor.rs, crates/rigger-domain/src/contextgraph/query.rs, crates/rigger-domain/src/review.rs, crates/rigger-driver/src/driver/mod.rs, crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs, crates/rigger-store-sqlite/src/eventstore/kurrentdb.rs, crates/rigger-store-sqlite/src/spawn_store.rs, tests/cli.rs, tests/common/cli.rs, tests/common/fixtures/config.rs, tests/common/fixtures/plan_critique.rs, tests/common/fixtures/spawn.rs, tests/compaction_generations_periphery.rs, tests/new_run_critique_refusal_periphery.rs, tests/no_os_kill_audit.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
@@ -521,7 +526,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-061563e1ed3a",
+    "id": "dup-3183ea18f5ba",
     "classification": "semantic",
     "sites": [
       {
@@ -607,7 +612,7 @@
       {
         "file": "tests/cli.rs",
         "name": "an_is_error_result_reruns_uncharged_and_holds_as_its_class_says",
-        "content_hash": "cc9fb33b5930cf66"
+        "content_hash": "c61dc74c9c1aeea3"
       },
       {
         "file": "tests/cli.rs",
@@ -7470,6 +7475,25 @@
       }
     ],
     "proposed_home": "run_store::support (consolidate these 2 sites into one function in this file)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-2c13c330b0e0",
+    "classification": "exact",
+    "sites": [
+      {
+        "file": "crates/rigger-store-sqlite/src/spawn_store.rs",
+        "name": "record_result_if_absent",
+        "content_hash": "626f60e853a45cd9"
+      },
+      {
+        "file": "crates/rigger-store-sqlite/src/spawn_store.rs",
+        "name": "record_result_unless_ended",
+        "content_hash": "626f60e853a45cd9"
+      }
+    ],
+    "proposed_home": "spawn_store::support (consolidate these 2 sites into one function in this file)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
