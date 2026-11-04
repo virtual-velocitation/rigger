@@ -252,11 +252,18 @@ impl Hold {
         })
     }
 
-    /// What the hold reads as to a person, `<cause> - <action>` of its latest `RunHeld`: the one
-    /// text the HELD line of `rigger status`, the [`ATTENTION_HELD`] entry and the step a held
-    /// run prints (`spawn::step_of_hold`) name a hold by.
+    /// What the hold reads as to a person, `<cause> - <action>` of its latest `RunHeld`, or its
+    /// cause alone when that action is empty, as an operator hold held with an empty reason has:
+    /// the one text the HELD line of `rigger status`, the [`ATTENTION_HELD`] entry, the step a
+    /// held run prints (`spawn::step_of_hold`) and the note a relaunched session reads name a
+    /// hold by.
     pub fn reason(&self) -> String {
-        format!("{} - {}", self.latest.cause, self.latest.action)
+        let latest = &self.latest;
+        if latest.action.is_empty() {
+            latest.cause.clone()
+        } else {
+            format!("{} - {}", latest.cause, latest.action)
+        }
     }
 }
 

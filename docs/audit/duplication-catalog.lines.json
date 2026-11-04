@@ -4569,13 +4569,13 @@
       },
       {
         "file": "crates/rigger-domain/src/ledger.rs",
-        "start_line": 1144,
-        "end_line": 1151
+        "start_line": 1151,
+        "end_line": 1158
       },
       {
         "file": "crates/rigger-domain/src/ledger.rs",
-        "start_line": 1154,
-        "end_line": 1169
+        "start_line": 1161,
+        "end_line": 1176
       },
       {
         "file": "crates/rigger-domain/src/progress.rs",
