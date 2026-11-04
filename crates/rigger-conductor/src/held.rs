@@ -92,18 +92,19 @@ impl<'a> HeldDriver<'a> {
     /// whatever its last read found, with `id`'s park: the flag is read after the hold, so a close
     /// beats a release landing with it and a launch that did not wait reads no close. A failed
     /// read of the run ends the wait with its error, since a run not proved unheld launches
-    /// nothing.
+    /// nothing, unless the wait paused and its session closed: that wait parks, whatever its
+    /// read answered, since nothing would serve the spawn either way.
     fn wait_out_the_hold(&self, id: &str) -> Result<(), Error> {
         let mut paused = false;
         loop {
-            let held = read_current_hold(self.store, STREAM)?.is_some();
+            let held = read_current_hold(self.store, STREAM).map(|hold| hold.is_some());
             let closed = self
                 .session_closed
                 .is_some_and(|closed| closed.load(Ordering::SeqCst));
-            if (held || paused) && closed {
+            if (paused || matches!(held, Ok(true))) && closed {
                 return Err(parked_spawn(id));
             }
-            if !held {
+            if !held? {
                 return Ok(());
             }
             (self.pause)();
