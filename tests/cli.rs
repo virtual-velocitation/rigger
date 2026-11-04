@@ -7383,6 +7383,14 @@ fn holding_the_live_session<'a>(
     after: Duration,
     held: impl Fn() -> rigger::eventstore::Event + 'a,
 ) -> impl FnMut(&Path) + 'a {
+    landing_on_the_live_session(after, move || common::cli::seed_on_the_run(root, held()))
+}
+
+/// [`holding_the_live_session`] making the write `land` makes in place of seeding one event.
+fn landing_on_the_live_session<'a>(
+    after: Duration,
+    land: impl Fn() + 'a,
+) -> impl FnMut(&Path) + 'a {
     let mut live_since = None;
     move |fake| {
         let landed = fake.join("bin/operator-held");
@@ -7390,7 +7398,7 @@ fn holding_the_live_session<'a>(
             && !landed.exists()
             && live_since.get_or_insert_with(Instant::now).elapsed() >= after
         {
-            common::cli::seed_on_the_run(root, held());
+            land();
             std::fs::write(&landed, "").unwrap();
         }
     }
@@ -9308,6 +9316,9 @@ struct ProbeCase {
     appended: Vec<rigger::run::RunHeld>,
     /// The writer of every release on the run stream, the seeded ones first.
     releases: &'static [&'static str],
+    /// Re-declares the hold on the run of the project it is given, once the canary marks its
+    /// session live.
+    redeclare: fn(&Path),
 }
 
 /// A release-table row: a hold of `cause` by `by` declared 120 s back, so its first probe falls due
@@ -9331,6 +9342,7 @@ fn released_row(
         runs_canary,
         appended,
         releases,
+        redeclare: redeclare_its_own_cause,
     }
 }
 
@@ -9352,7 +9364,16 @@ fn delay_row(
         runs_canary: probes_within.is_some(),
         appended: Vec::new(),
         releases,
+        redeclare: redeclare_its_own_cause,
     }
+}
+
+/// Re-declare the hold on `root`'s run as a host hold of [`SEEDED_HOLD_CAUSE`] on [`PROBED_MODEL`],
+/// seeded whole: the probed hold's own cause, which no production writer re-declares, so only the
+/// probe's revision guard tells it from the hold the probe read.
+fn redeclare_its_own_cause(root: &Path) {
+    let held = probed_hold(SEEDED_HOLD_CAUSE, rigger::run::HOLD_BY_HOST);
+    common::cli::seed_on_the_run(root, common::fixtures::run_held_event(&held));
 }
 
 /// Append the probe line `line` to the progress stream of `root`'s run `run_id`, dated `ago`
@@ -9442,8 +9463,8 @@ const NO_PROBE_WITHIN: Duration = Duration::from_secs(4);
 /// read and the canary's argv and working directory, the holds and releases, the worker's launch
 /// records alone, the canary writing none, and every write of the probe folded into the graph. A
 /// hold still open once the probe is over, or once a row expecting none has waited, is released as
-/// the operator does, so every row reaches done; the canary's `session-live` mark lands a
-/// re-declared host hold on it first.
+/// the operator does, so every row reaches done; the canary's `session-live` mark lands the row's
+/// re-declaration on it first.
 #[cfg(unix)]
 fn assert_probe_cases(cases: &[ProbeCase]) {
     for case in cases {
@@ -9461,10 +9482,7 @@ fn assert_probe_cases(cases: &[ProbeCase]) {
             "{RECORDING_WORKER_ARM}{}",
             common::fixtures::probe_arms(&case.auth, &case.canary)
         );
-        let redeclared = probed_hold(SEEDED_HOLD_CAUSE, rigger::run::HOLD_BY_HOST);
-        let mut redeclare = holding_the_live_session(root, Duration::ZERO, move || {
-            common::fixtures::run_held_event(&redeclared)
-        });
+        let mut redeclare = landing_on_the_live_session(Duration::ZERO, || (case.redeclare)(root));
         let mut release = releasing_holds(root, 1, unit_started);
         let last_mark = if case.runs_canary {
             "bin/canary-ran"
@@ -9578,8 +9596,9 @@ fn unfolded_types_past(root: &Path, head: u64) -> Vec<String> {
 /// canary; a logged-in report, or a cause that reads no login, runs the canary on the hold's
 /// model, whose passing result releases the hold by probe and whose error result does not; a
 /// failed canary's last person-needing category moves the cause, carrying the hold's model; a
-/// hold re-declared while its probe runs is not released by it; and a `model_not_found` hold or
-/// an operator hold is never probed.
+/// hold re-declared while its probe runs is not released by it, whether seeded on its own cause,
+/// moved to another person-needing cause by a host sighting, or held by the operator as `rigger
+/// hold` holds it; and a `model_not_found` hold or an operator hold is never probed.
 #[cfg(unix)]
 #[test]
 fn a_probe_releases_a_held_run_only_on_a_passing_canary_of_the_hold_it_read() {
@@ -9598,6 +9617,10 @@ fn a_probe_releases_a_held_run_only_on_a_passing_canary_of_the_hold_it_read() {
             "fix the account's billing",
             rigger::run::HOLD_BY_PROBE,
         )
+    };
+    let sighted = rigger::run::RunHeld {
+        by: HOLD_BY_HOST.to_string(),
+        ..billing.clone()
     };
     let cases = [
         released_row(
@@ -9669,6 +9692,49 @@ fn a_probe_releases_a_held_run_only_on_a_passing_canary_of_the_hold_it_read() {
             vec![probed_hold(SEEDED_HOLD_CAUSE, HOLD_BY_HOST)],
             &["operator"],
         ),
+        ProbeCase {
+            redeclare: |root| {
+                let sighting = rigger::run_store::HoldSighting {
+                    cause: "billing_error",
+                    detail: "billing_error",
+                    model: PROBED_MODEL,
+                };
+                common::cli::with_run_store(root, |store| {
+                    rigger::run_store::record_hold_sighting(store, &sighting).unwrap()
+                });
+            },
+            ..released_row(
+                "a hold a host sighting moves during its probe is not released by it",
+                (SEEDED_HOLD_CAUSE, HOLD_BY_HOST),
+                (
+                    logged_in(),
+                    format!("{SESSION_WAITS_FOR_A_HOLD}{PASSING_CANARY}"),
+                ),
+                Some(60),
+                (false, true),
+                vec![sighted],
+                &["operator"],
+            )
+        },
+        ProbeCase {
+            redeclare: |root| {
+                common::cli::with_run_store(root, |store| {
+                    rigger::run_store::hold_by_operator(store, HOLD_REASON).unwrap()
+                });
+            },
+            ..released_row(
+                "a hold the operator holds during its probe is not released by it",
+                (SEEDED_HOLD_CAUSE, HOLD_BY_HOST),
+                (
+                    logged_in(),
+                    format!("{SESSION_WAITS_FOR_A_HOLD}{PASSING_CANARY}"),
+                ),
+                Some(60),
+                (false, true),
+                vec![verb_hold(HOLD_REASON, PROBED_MODEL)],
+                &["operator"],
+            )
+        },
         released_row(
             "a model_not_found hold is never probed",
             ("model_not_found", HOLD_BY_HOST),
