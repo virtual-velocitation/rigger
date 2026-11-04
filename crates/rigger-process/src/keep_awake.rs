@@ -12,6 +12,7 @@ std::cfg_select! {
     target_os = "linux" => {
         mod linux;
         use linux::acquire as native_acquire;
+        pub use linux::BUS_DRIVER;
     }
     target_os = "macos" => {
         mod macos;

@@ -17,7 +17,7 @@ const LOGIND_MANAGER: &str = "org.freedesktop.login1.Manager";
 
 /// The bus name the bus driver itself sends under: an error it sent for a call to logind means
 /// logind never answered.
-const BUS_DRIVER: &str = "org.freedesktop.DBus";
+pub const BUS_DRIVER: &str = "org.freedesktop.DBus";
 
 /// The one bound on an acquire, over connecting to the system bus, its authentication handshake
 /// and logind's answer to `Inhibit` together: the D-Bus default method-call timeout.
