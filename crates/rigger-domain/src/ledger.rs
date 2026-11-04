@@ -251,6 +251,16 @@ impl Hold {
         })
     }
 
+    /// Whether the host or probe `RunHeld` `body` says anything to the hold `open` (`None` when
+    /// the run is unheld): the one transition rule a sighting and a failed probe append by. On an
+    /// unheld run it holds the run, whatever its cause; on an operator hold, on a hold of its own
+    /// cause and as a cause needing no person it says nothing; otherwise it moves the hold's cause.
+    pub fn moved_by(open: Option<&Hold>, body: &RunHeld) -> bool {
+        open.is_none_or(|hold| {
+            !hold.operator && body.needs_person && hold.latest.cause != body.cause
+        })
+    }
+
     /// What the hold reads as to a person, `<cause> - <action>` of its latest `RunHeld`, or its
     /// cause alone when that action is empty, as an operator hold held with an empty reason has:
     /// the one text the HELD line of `rigger status`, the [`ATTENTION_HELD`] entry, the step a

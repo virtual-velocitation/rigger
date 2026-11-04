@@ -257,8 +257,7 @@ pub fn record_hold_sighting(store: &dyn EventStore, sighting: &HoldSighting) -> 
     );
     let held = serialized(TYPE_RUN_HELD, body.to_event())?;
     append_on_hold(store, TYPE_RUN_HELD, |hold| {
-        let appends = hold.is_none_or(|hold| moves_the_cause(hold, &body));
-        Ok(appends.then(|| held.clone()))
+        Ok(Hold::moved_by(hold, &body).then(|| held.clone()))
     })
     .map(drop)
 }
@@ -273,7 +272,7 @@ pub fn record_failed_probe(store: &dyn EventStore, category: &str) -> Result<(),
             let body = held_by(category, category, HOLD_BY_PROBE, &hold.latest.model);
             (hold, body)
         })
-        .filter(|(hold, body)| moves_the_cause(hold, body))
+        .filter(|(hold, body)| Hold::moved_by(Some(hold), body))
         .map(|(_, body)| serialized(TYPE_RUN_HELD, body.to_event()))
         .transpose()
     })
@@ -292,12 +291,6 @@ fn held_by(cause: &str, detail: &str, by: &str, model: &str) -> RunHeld {
         by: by.to_string(),
         model: model.to_string(),
     }
-}
-
-/// Whether `body` moves the open `hold`'s cause: on no operator hold, to a person-needing cause
-/// other than the hold's own.
-fn moves_the_cause(hold: &Hold, body: &RunHeld) -> bool {
-    !hold.operator && body.needs_person && hold.latest.cause != body.cause
 }
 
 /// Hold the current run for the operator (`rigger hold`, spec 105): one `RunHeld {by: operator}`

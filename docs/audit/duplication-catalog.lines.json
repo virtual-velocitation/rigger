@@ -4589,13 +4589,13 @@
       },
       {
         "file": "crates/rigger-domain/src/ledger.rs",
-        "start_line": 1206,
-        "end_line": 1213
+        "start_line": 1216,
+        "end_line": 1223
       },
       {
         "file": "crates/rigger-domain/src/ledger.rs",
-        "start_line": 1216,
-        "end_line": 1231
+        "start_line": 1226,
+        "end_line": 1241
       },
       {
         "file": "crates/rigger-domain/src/progress.rs",
@@ -6114,8 +6114,8 @@
       },
       {
         "file": "crates/rigger-store-sqlite/src/run_store.rs",
-        "start_line": 1284,
-        "end_line": 1284
+        "start_line": 1277,
+        "end_line": 1277
       },
       {
         "file": "crates/rigger-store-sqlite/src/sqlite.rs",
@@ -7019,13 +7019,13 @@
     "sites": [
       {
         "file": "crates/rigger-store-sqlite/src/run_store.rs",
-        "start_line": 1495,
-        "end_line": 1509
+        "start_line": 1488,
+        "end_line": 1502
       },
       {
         "file": "crates/rigger-store-sqlite/src/run_store.rs",
-        "start_line": 1564,
-        "end_line": 1579
+        "start_line": 1557,
+        "end_line": 1572
       }
     ]
   },
