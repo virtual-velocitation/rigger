@@ -51,8 +51,8 @@ use std::time::{Duration, SystemTime};
 
 use crate::eventstore::{Error, Event, EventStore};
 use crate::failure::{FailureClass, Signal, Taxonomy};
+use crate::ledger;
 use crate::progress::{ApiRetry, TYPE_API_RETRY, TYPE_SUPERVISOR_BEAT};
-use crate::run::{TYPE_RUN_HELD, TYPE_RUN_RELEASED};
 use crate::spawn::{self, SpawnResult};
 use crate::spawn_store;
 
@@ -430,31 +430,20 @@ pub struct Span {
     pub end: SystemTime,
 }
 
-/// A run's holds as spans, in log order, from one run's slice of the run stream (THE EVENTS): a
-/// hold starts at its earliest `RunHeld` since the last `RunReleased` and ends at the next
-/// `RunReleased`, and a hold still open at `now` ends there. Each is dated by `valid_from`, as
-/// [`rigger_domain::ledger::project`] dates a hold; the rule is spelled in both, and the
-/// `a_runs_hold_intervals_run_from_the_earliest_sighting_to_the_release_or_now` table holds
-/// them level on when one started.
+/// A run's holds as spans, in log order, from one run's slice of the run stream (THE EVENTS):
+/// each hold [`ledger::holds`] walks, from the valid time of its first `RunHeld` to that of the
+/// `RunReleased` that ended it, or to `now` while it is open. That walk is the one the probe's
+/// delay and the hold attention read, so liveness spells no rule of its own for when a hold
+/// starts or ends. No hold body is decoded here: a hold whose `RunHeld` does not decode still
+/// spans its time.
 pub fn hold_intervals(run_events: &[Event], now: SystemTime) -> Vec<Span> {
-    let mut spans = Vec::new();
-    let mut open: Option<SystemTime> = None;
-    for event in run_events {
-        match event.type_.as_str() {
-            TYPE_RUN_HELD => open = open.or(Some(event.valid_from)),
-            TYPE_RUN_RELEASED => {
-                if let Some(start) = open.take() {
-                    spans.push(Span {
-                        start,
-                        end: event.valid_from,
-                    });
-                }
-            }
-            _ => {}
-        }
-    }
-    spans.extend(open.map(|start| Span { start, end: now }));
-    spans
+    ledger::holds(run_events)
+        .into_iter()
+        .map(|hold| Span {
+            start: hold.since,
+            end: hold.release.map_or(now, |release| release.at),
+        })
+        .collect()
 }
 
 /// The retry delays `spawn` announced, as spans from each `ApiRetry`'s record for the delay it
@@ -975,7 +964,7 @@ pub fn write_hung_cursor(
 mod tests {
     use super::*;
     use crate::progress::{SupervisorBeat, TYPE_SUPERVISOR_BEAT};
-    use crate::run::{RunHeld, RunReleased};
+    use crate::run::{RunHeld, RunReleased, TYPE_RUN_HELD, TYPE_RUN_RELEASED};
     use crate::test_support::at;
     use crate::test_support::run_log;
 

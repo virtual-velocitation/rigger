@@ -372,9 +372,15 @@ fn status_human_output_from_a_nested_worktree_never_prints_a_dash_heartbeat_for_
         "a working spawn's heartbeat must render an age, never the absent-marker dash that is \
          spec 83's own Problem-statement symptom of write/read disagreement; got: {stdout:?}"
     );
+    // The age is the marker's silence outside the run's holds (spec 105 LIVENESS), and the line
+    // says so rather than reading as wall-clock time.
+    let heartbeat = stdout
+        .split(" | ")
+        .find_map(|field| field.strip_prefix("heartbeat "));
     assert!(
-        stdout.contains("heartbeat ") && stdout.contains("s ago"),
-        "expected a rendered heartbeat age line (\"heartbeat <n>s ago\"); got: {stdout:?}"
+        heartbeat.is_some_and(|age| age.ends_with("s ago outside holds")),
+        "expected a rendered heartbeat age line (\"heartbeat <n>s ago outside holds\"); got: \
+         {stdout:?}"
     );
 }
 

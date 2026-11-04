@@ -8,15 +8,15 @@
 //! the identical answer wherever it runs (spec 93 Design, "THE PURITY RULE").
 //!
 //! [`fold`] delegates to the SAME authorities `rigger status` and the
-//! dashboard already share for two of its four facts - [`ledger::project`]
+//! dashboard already share for two of its five facts - [`ledger::project`]
 //! for unit statuses, [`blocker::from_events`]/[`blocker::lines`] for the
 //! current-blocker lines (already the one classifier both surfaces render,
-//! spec 19a) - and adds the two new ones this criterion introduces: [`dock`]
-//! (the needs-you list) and [`statusline`] (the one-line summary). `rigger
-//! status` (`cmd_status` in the binary) calls [`fold`] directly and prints
-//! its `statusline` over its table (under the HELD line of a held run) and its
-//! dock's needs-you lines,
-//! rather than composing its own copy of any of these four facts - the "CLI's
+//! spec 19a) - reads the run's open hold (spec 105) from that same projection,
+//! and adds the two new ones this criterion introduces: [`dock`] (the
+//! needs-you list) and [`statusline`] (the one-line summary). `rigger status` (`cmd_status` in the
+//! binary) calls [`fold`] directly and prints its hold's HELD line, its
+//! `statusline` over its table and its dock's needs-you lines,
+//! rather than composing its own copy of any of these five facts - the "CLI's
 //! use of the core" half of this criterion.
 
 /// The code lens's map engine (spec 84, criterion 1: "THE MAP LANDS LABELLED" - districts,
@@ -67,7 +67,7 @@ impl Dock {
 
 /// Derive the dock's needs-you list from a projected [`RunState`] plus the raw
 /// `events` (needed only for the durable budget fact, exactly as
-/// [`blocker::from_state`] already takes both, and for the hold's attention fold). Four
+/// [`blocker::from_state`] already takes both, and for the run's holds). Four
 /// CURRENT-STATE signals, spec 105's hold and a snapshot subset of spec 69's five crossing
 /// signals - the two that are genuinely crossings with no persisting "still true" state of their
 /// own (the budget's final-tenth threshold, a frontier stall reported only once) stay push-side,
@@ -75,10 +75,10 @@ impl Dock {
 /// (spec 106's `rigger attention --follow` delivers it, never a step's wire):
 ///
 /// - **held** - the run's open hold, when its latest `RunHeld` carries `needs_person` (an
-///   operator hold's does): the open hold's entry of [`ledger::hold_attention`], naming the
-///   hold's latest cause and action. A hold that needs no person shows on `rigger status`'s
-///   HELD line and the statusline only, and an `events` slice whose hold events that fold cannot
-///   decode lists no held entry.
+///   operator hold's does): the last hold [`ledger::holds`] walks while it is unreleased, listed
+///   as its entry of [`ledger::hold_attention`], naming the hold's latest cause and action. A
+///   hold that needs no person shows on `rigger status`'s HELD line and the statusline only, and
+///   an `events` slice whose hold events that fold cannot decode lists no held entry.
 /// - **escalated** - every unit whose [`Status`] is currently [`Status::Escalated`], listed
 ///   under the spec-defect stop's own kind and reason when it stopped the run on one
 ///   ([`AttentionEntry::escalation`], spec 112 criterion 5).
@@ -105,12 +105,13 @@ impl Dock {
 pub fn dock(run: &RunState, events: &[Event]) -> Dock {
     let mut needs_you = Vec::new();
 
-    // An open hold's entry is the fold's last: the fold steps a hold as the projection does.
-    if run
-        .hold
-        .as_ref()
-        .is_some_and(|hold| hold.latest.needs_person)
-    {
+    // The open hold is the walk's last hold while unreleased, and its entry the attention fold's
+    // last, since that fold lists the same walk's holds in order.
+    let open_hold = ledger::holds(events)
+        .pop()
+        .filter(|span| span.release.is_none())
+        .and_then(|span| span.hold);
+    if open_hold.is_some_and(|hold| hold.latest.needs_person) {
         needs_you.extend(ledger::hold_attention(events).and_then(|mut entries| entries.pop()));
     }
 
@@ -187,16 +188,19 @@ pub fn statusline(run: &RunState, blockers: &[Blocker], dock: &Dock) -> String {
 }
 
 /// The whole console fold (spec 93, criterion 4): unit statuses, the
-/// current-blocker lines, the dock, and the statusline - everything `rigger
-/// status` prints, from one call over one projected [`RunState`]. Pure over
-/// `events` plus the configured remediation bound - no clock, no store, no
-/// process.
+/// current-blocker lines, the dock, the statusline and the run's open hold -
+/// everything `rigger status` prints, from one call over one projected
+/// [`RunState`]. Pure over `events` plus the configured remediation bound - no
+/// clock, no store, no process.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ConsoleState {
     pub units: UnitStatuses,
     pub blockers: Vec<String>,
     pub dock: Dock,
     pub statusline: String,
+    /// The run's open hold (spec 105), [`RunState::hold`] of the same projection: `rigger
+    /// status` prints its HELD line from it.
+    pub hold: Option<ledger::Hold>,
 }
 
 /// Fold a recorded run stream into the [`ConsoleState`] both `rigger status`
@@ -226,6 +230,7 @@ pub fn fold(
         blockers: blocker::lines(&blockers),
         dock,
         statusline,
+        hold: run.hold,
     })
 }
 

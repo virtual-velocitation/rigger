@@ -14,9 +14,9 @@ use std::time::{Duration, SystemTime};
 
 use crate::agent::{cause_row, AgentFailure};
 use crate::eventstore::{Event, Revision};
-use crate::ledger::Hold;
+use crate::ledger::{holds, Hold, HoldSpan};
 use crate::progress::{decoded_progress, AgentProgress};
-use crate::run::{RunHeld, TYPE_RUN_HELD, TYPE_RUN_RELEASED};
+use crate::run::RunHeld;
 
 /// The [`AgentProgress::id`] of the line the hold controller writes for each probe it makes.
 pub const HOLD_PROBE_ID: &str = "hold-probe";
@@ -73,19 +73,11 @@ pub fn is_probed(hold: &Hold) -> bool {
     !hold.operator && hold.latest.cause != AgentFailure::ModelNotFound.as_str()
 }
 
-/// One hold of the run: the hold as [`Hold::on_held`] folds it, the revision of its first
-/// `RunHeld` and the valid time of its latest.
-struct Span {
-    hold: Hold,
-    first: Revision,
-    latest_at: SystemTime,
-}
-
 /// The probe the run's open hold is owed at `now`, read from the current run's events
-/// (`run_events`) and the run's progress lines (`progress_events`): `None` for an unheld run, an
-/// operator hold, a `model_not_found` hold or a run slice whose `RunHeld` does not decode.
-/// Otherwise the delay is [`FIRST_DELAY`] doubled per hold-probe line stamped inside the
-/// revisions of the hold's chain, capped at [`MAX_DELAY`], and the probe falls due one delay
+/// (`run_events`) through [`holds`] and the run's progress lines (`progress_events`): `None` for
+/// an unheld run, an operator hold, a `model_not_found` hold or a run slice whose `RunHeld` does
+/// not decode. Otherwise the delay is [`FIRST_DELAY`] doubled per hold-probe line stamped inside
+/// the revisions of the hold's chain, capped at [`MAX_DELAY`], and the probe falls due one delay
 /// after the later of the chain's latest such line and the hold's latest `RunHeld`, and never
 /// later than one delay from `now`.
 pub fn owed_probe(
@@ -93,42 +85,29 @@ pub fn owed_probe(
     progress_events: &[Event],
     now: SystemTime,
 ) -> Option<OwedProbe> {
-    let mut released: Vec<(Span, SystemTime, Revision)> = Vec::new();
-    let mut open: Option<Span> = None;
-    for e in run_events {
-        match e.type_.as_str() {
-            TYPE_RUN_HELD => {
-                let first = open.as_ref().map_or(e.revision, |span| span.first);
-                let hold = Hold::on_held(open.take().map(|span| span.hold), e).ok()?;
-                open = Some(Span {
-                    hold,
-                    first,
-                    latest_at: e.valid_from,
-                });
-            }
-            TYPE_RUN_RELEASED => {
-                if let Some(span) = open.take() {
-                    released.push((span, e.valid_from, e.revision));
-                }
-            }
-            _ => {}
-        }
-    }
-    let open = open?;
-    if !is_probed(&open.hold) {
+    let spans = holds(run_events);
+    // Each hold beside its span, `None` when any of the run's holds does not decode.
+    let decoded: Vec<(&HoldSpan, &Hold)> = spans
+        .iter()
+        .map(|span| span.hold.as_ref().map(|hold| (span, hold)))
+        .collect::<Option<_>>()?;
+    let (&(open, hold), behind) = decoded.split_last()?;
+    if open.release.is_some() || !is_probed(hold) {
         return None;
     }
     // Each hold of the chain as the revision of its first `RunHeld` and of its release, the open
     // hold's none.
     let mut chain: Vec<(Revision, Option<Revision>)> = vec![(open.first, None)];
-    let mut since = open.hold.since;
-    for (span, released_at, release) in released.iter().rev() {
-        let gap = since.duration_since(*released_at).unwrap_or_default();
-        if span.hold.operator || gap > QUICK_RE_HOLD {
+    let mut since = open.since;
+    for &(span, behind_hold) in behind.iter().rev() {
+        // Every hold behind the last is released: the walk opens a hold only while none is open.
+        let Some(release) = &span.release else { break };
+        let gap = since.duration_since(release.at).unwrap_or_default();
+        if behind_hold.operator || gap > QUICK_RE_HOLD {
             break;
         }
-        chain.push((span.first, Some(*release)));
-        since = span.hold.since;
+        chain.push((span.first, Some(release.revision)));
+        since = span.since;
     }
     let probes: Vec<SystemTime> = decoded_progress(progress_events)
         .filter_map(|(e, line)| {
@@ -144,8 +123,8 @@ pub fn owed_probe(
     let delay = delay_after(probes.len());
     let last = probes.into_iter().fold(open.latest_at, SystemTime::max);
     Some(OwedProbe {
-        held: open.hold.latest,
-        revision: open.hold.revision,
+        held: hold.latest.clone(),
+        revision: hold.revision,
         delay,
         due: (last + delay).min(now + delay),
     })

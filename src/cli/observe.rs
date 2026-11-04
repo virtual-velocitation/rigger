@@ -354,11 +354,11 @@ pub(crate) fn cmd_status(args: &[String]) -> Res {
 
     // ONE FOLD (spec 93, criterion 4): the console's own fold over the run's event slice -
     // unit statuses, the current-blocker lines (the SAME shared classifier the dashboard also
-    // renders, spec 19a), the needs-you dock and the statusline - so `rigger status` prints
-    // exactly what the future console page will render from the identical stream, never a
-    // second, independently-composed copy of any of the four. Computed even when no agent is
-    // parked, so an escalated unit or a budget halt (which have no live spawn) is still
-    // surfaced.
+    // renders, spec 19a), the needs-you dock, the statusline and the run's open hold (spec 105) -
+    // so `rigger status` prints exactly what the future console page will render from the
+    // identical stream, never a second, independently-composed copy of any of the five. Computed
+    // even when no agent is parked, so an escalated unit or a budget halt (which have no live
+    // spawn) is still surfaced.
     let console_state = console::fold(run_events, max_retries)?;
 
     // The ready-to-release handoff (spec 38, criterion 3): surfaced on this status surface
@@ -377,9 +377,9 @@ pub(crate) fn cmd_status(args: &[String]) -> Res {
 
     // WHAT A PERSON SEES (spec 105): a held run's status opens with its HELD line, ahead of
     // every other line, so the hold is the first thing an operator reads.
-    if let Some(hold) = ledger::project(run_events)?.hold {
+    if let Some(hold) = &console_state.hold {
         let latest_beat = rigger::liveness::beat_times(&prog_events).last().copied();
-        println!("{}", held_line(&hold, latest_beat, now));
+        println!("{}", held_line(hold, latest_beat, now));
     }
 
     // The auto-started dash's URL for this run (spec 19b, unit 1 discoverability): shown
@@ -408,7 +408,9 @@ pub(crate) fn cmd_status(args: &[String]) -> Res {
     println!("{}", console_state.statusline);
 
     // The per-agent "doing" detail, unchanged from before this criterion: one block per
-    // in-flight spawn. The blackout is visible as `last store event` age >> activity age.
+    // in-flight spawn. The blackout is visible as `last store event` age >> activity age. The
+    // heartbeat age is the marker's silence counted outside the run's holds (spec 105
+    // LIVENESS), so the line says so rather than reading as wall-clock time.
     if !view.is_empty() {
         let age = |s: Option<u64>| s.map(|s| format!("{s}s ago")).unwrap_or_else(|| "-".into());
         for a in &view {
@@ -420,7 +422,7 @@ pub(crate) fn cmd_status(args: &[String]) -> Res {
                     .unwrap_or("(none reported yet)"),
                 age(a.activity_age_s),
                 a.liveness_age_s
-                    .map(|s| format!("{s}s ago"))
+                    .map(|s| format!("{s}s ago outside holds"))
                     .unwrap_or_else(|| "-".into()),
                 a.last_milestone.as_deref().unwrap_or("-"),
                 age(a.milestone_age_s),
