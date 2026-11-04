@@ -3327,6 +3327,15 @@ mod tests {
             assert_api_retry_fields(r#"{"retry_delay_ms":618}"#, (618, "unknown"));
         api_retry_fields_floors_a_field_of_the_wrong_type:
             assert_api_retry_fields(r#"{"retry_delay_ms":"soon","error":429}"#, (0, "unknown"));
+        // The no-response shape: no headers came inside the first-byte window, so the line
+        // announces the retry's header wait under `no_response` beside a zero delay.
+        api_retry_fields_reads_the_header_wait_of_a_no_response_retry:
+            assert_api_retry_fields(
+                r#"{"type":"system","subtype":"api_retry","attempt":1,"max_retries":1,
+                    "retry_delay_ms":0,"error_status":null,"error":"unknown",
+                    "no_response":{"waited_ms":90000,"retry_wait_ms":180000}}"#,
+                (180000, "unknown"),
+            );
     }
 
     /// A clean spawn of the checked-in `script` leaves exactly one [`progress::ApiRetry`] per
