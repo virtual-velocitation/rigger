@@ -4827,7 +4827,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-df045298da71",
+    "id": "dup-3c37d61394bb",
     "classification": "semantic",
     "sites": [
       {
@@ -4992,6 +4992,16 @@
       },
       {
         "file": "tests/common/fixtures/spawn.rs",
+        "name": "\"/proc/self\"",
+        "content_hash": "7f3079b3ebe53fa7"
+      },
+      {
+        "file": "tests/common/fixtures/spawn.rs",
+        "name": "\"{name}: the sleeper check reads /proc, which this host does not mount\"",
+        "content_hash": "25597419b8dbb616"
+      },
+      {
+        "file": "tests/common/fixtures/spawn.rs",
         "name": "\"/proc\"",
         "content_hash": "daeb7ad73c59a860"
       },
@@ -5122,7 +5132,7 @@
       }
     ],
     "proposed_home": "crates/rigger-process/src/reap.rs as the one /proc-reading module (dash.rs's own /proc readers already duplicate reap.rs's field-after-the-comm's-closing-paren /proc/<pid>/stat parse - see the report's worked example)",
-    "note": "mandatory sweep: /proc-path string literals - 58 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: /proc-path string literals - 60 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {

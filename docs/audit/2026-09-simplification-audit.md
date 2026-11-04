@@ -1775,12 +1775,12 @@ Every function in `crates/rigger-conductor/src/conductor.rs`, `src/cli/mod.rs` a
 
 ## 2. Duplication Catalog
 
-214 clusters (1502 total sites) across `src/` and `tests/`, found by `tests/simplification_audit.rs`'s deterministic normalized-token-shingle Jaccard pass (8-token shingles, threshold 0.72) plus five mandatory mechanical sweeps. Strict definition (spec 85 Goal): any logic present in more than one place anywhere in the codebase is a violation, with no "small enough to duplicate" exemption.
+214 clusters (1504 total sites) across `src/` and `tests/`, found by `tests/simplification_audit.rs`'s deterministic normalized-token-shingle Jaccard pass (8-token shingles, threshold 0.72) plus five mandatory mechanical sweeps. Strict definition (spec 85 Goal): any logic present in more than one place anywhere in the codebase is a violation, with no "small enough to duplicate" exemption.
 
 ### Mandatory sweeps
 
 - **Command::new call sites**: 94 site(s) - `dup-64397d781d9d`
-- **/proc-path string literals**: 58 site(s) - `dup-df045298da71`
+- **/proc-path string literals**: 60 site(s) - `dup-3c37d61394bb`
 - **sqlite Connection::open call sites**: 67 site(s) - `dup-b812e9924aed`
 - **.rigger-path string literals**: 607 site(s) - `dup-c625407c68bc`
 - **error-shaping helper functions**: 22 site(s) - `dup-1531affe0065`
@@ -3528,11 +3528,11 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `crates/rigger-dash/src/dash.rs:619-621` `serialize`
 - `crates/rigger-domain/src/retention.rs:50-52` `identity`
 
-#### `dup-df045298da71` (semantic, 58 sites)
+#### `dup-3c37d61394bb` (semantic, 60 sites)
 
 Proposed home: `crates/rigger-process/src/reap.rs as the one /proc-reading module (dash.rs's own /proc readers already duplicate reap.rs's field-after-the-comm's-closing-paren /proc/<pid>/stat parse - see the report's worked example)`
 
-mandatory sweep: /proc-path string literals - 58 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
+mandatory sweep: /proc-path string literals - 60 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
 
 - `crates/rigger-dash/src/dash.rs:658-658` `"/proc/net/tcp"`
 - `crates/rigger-dash/src/dash.rs:689-689` `"/proc"`
@@ -3569,7 +3569,9 @@ mandatory sweep: /proc-path string literals - 58 site(s), collected mechanically
              discovery"`
 - `tests/cli.rs:32404-32404` `"/proc"`
 - `tests/common/fixtures/host.rs:83-83` `"/proc/{pid}/stat has a pgrp field after comm"`
-- `tests/common/fixtures/spawn.rs:169-169` `"/proc"`
+- `tests/common/fixtures/spawn.rs:164-164` `"/proc/self"`
+- `tests/common/fixtures/spawn.rs:165-165` `"{name}: the sleeper check reads /proc, which this host does not mount"`
+- `tests/common/fixtures/spawn.rs:174-174` `"/proc"`
 - `tests/duplication_catalog_contract_periphery.rs:100-100` `"/proc-path string literals"`
 - `tests/kurrentdb_store_threads.rs:21-21` `"/proc/self/task"`
 - `tests/mutation_runner_pdeathsig_periphery.rs:170-170` `"cat /proc/self/limits; echo \"MALLOC_ARENA_MAX=${MALLOC_ARENA_MAX-unset}\""`
@@ -5690,9 +5692,9 @@ Within a tier, entries are ordered largest-first by the site or line count each 
 - Risk: medium. `ingest.rs`'s own module doc calls it "the ONE walk-and-content-key authority" - a load-bearing path; needs the existing whole-project-ingest and reindex-freshening coverage to stay green, not just the duplicate sites' own tests.
 - Unblocks: retires the one `Grounder` port violation section 3 found and `dup-f2eee0c78cd6` together, rather than as two separately-tracked fixes.
 
-#### 2. Retire the duplicate `/proc`-reading authority (`dup-df045298da71` + `dup-96daf6c3e468`)
+#### 2. Retire the duplicate `/proc`-reading authority (`dup-3c37d61394bb` + `dup-96daf6c3e468`)
 
-- Scope: the production half is done - `crates/rigger-dash/src/dash.rs::process_state` and `crates/rigger-process/src/reap.rs::pid_starttime` both read their `/proc/<pid>/stat` field through `crates/rigger-process/src/reap.rs::stat_field_after_comm`, the one parser of the kernel's `pid (comm) state ...` layout (`read_ppid` reads `/status`, a different file). What remains is the test-only readers (`dup-96daf6c3e468`, 9 sites across `crates/rigger-process/src/reap.rs`, `tests/common/fixtures/host.rs`, `tests/simplification_audit.rs`, such as the shared `tests/common/fixtures/host.rs::pgid_of` fixture) and 58 raw `/proc`-path string literals across 13 files (`dup-df045298da71`), most of them assertion messages and this audit's own sweep names rather than reads.
+- Scope: the production half is done - `crates/rigger-dash/src/dash.rs::process_state` and `crates/rigger-process/src/reap.rs::pid_starttime` both read their `/proc/<pid>/stat` field through `crates/rigger-process/src/reap.rs::stat_field_after_comm`, the one parser of the kernel's `pid (comm) state ...` layout (`read_ppid` reads `/status`, a different file). What remains is the test-only readers (`dup-96daf6c3e468`, 9 sites across `crates/rigger-process/src/reap.rs`, `tests/common/fixtures/host.rs`, `tests/simplification_audit.rs`, such as the shared `tests/common/fixtures/host.rs::pgid_of` fixture) and 60 raw `/proc`-path string literals across 13 files (`dup-3c37d61394bb`), most of them assertion messages and this audit's own sweep names rather than reads.
 - Files: the test-only readers `dup-96daf6c3e468` names.
 - Expected line delta: small and negative - a test fixture reads its field through one shared helper instead of re-splitting the stat line.
 - Risk: low - test-only; nothing this touches can signal or end a process, so it carries none of the no-os-kill gate's own risk surface.
@@ -5842,7 +5844,7 @@ Unlike tier 5, this entry's own clusters are NOT known to be test-only - each on
 
 #### 18. Sweep the remaining 145 src-touching duplication clusters (section 2, beyond tiers 1 and 4's 7 named clusters)
 
-- Scope: of the catalog's 214 clusters, 62 are test-only (items 13 and 15-17 above) and 7 are the named tier-1/tier-4 items (`dup-64397d781d9d`, `dup-c625407c68bc`, `dup-b812e9924aed`, `dup-df045298da71`, `dup-96daf6c3e468`, `dup-f2eee0c78cd6`, `dup-1531affe0065`); the remaining 145 clusters touching `src/` - mostly small 2-5-site exact/near matches like the two worked examples section 2 itself opens with (`dup-49d4d9f335fc`, `dup-c63400fe9b8e`) - are swept here, largest exact-duplicate clusters first, consumed directly from `docs/audit/duplication-catalog.json`.
+- Scope: of the catalog's 214 clusters, 62 are test-only (items 13 and 15-17 above) and 7 are the named tier-1/tier-4 items (`dup-64397d781d9d`, `dup-c625407c68bc`, `dup-b812e9924aed`, `dup-3c37d61394bb`, `dup-96daf6c3e468`, `dup-f2eee0c78cd6`, `dup-1531affe0065`); the remaining 145 clusters touching `src/` - mostly small 2-5-site exact/near matches like the two worked examples section 2 itself opens with (`dup-49d4d9f335fc`, `dup-c63400fe9b8e`) - are swept here, largest exact-duplicate clusters first, consumed directly from `docs/audit/duplication-catalog.json`.
 - Files: per-cluster, from the committed catalog.
 - Expected line delta: negative, cumulative; the largest single contributor is whichever exact cluster has the most sites (read from the catalog at spec-writing time, not fixed here).
 - Risk: low-medium - unlike tier 5, some of these clusters are production code, so each merge needs its own test-coverage check, not a blanket "test-only" pass.

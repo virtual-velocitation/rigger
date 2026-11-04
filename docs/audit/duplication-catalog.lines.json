@@ -4675,7 +4675,7 @@
     ]
   },
   {
-    "id": "dup-df045298da71",
+    "id": "dup-3c37d61394bb",
     "sites": [
       {
         "file": "crates/rigger-dash/src/dash.rs",
@@ -4839,8 +4839,18 @@
       },
       {
         "file": "tests/common/fixtures/spawn.rs",
-        "start_line": 169,
-        "end_line": 169
+        "start_line": 164,
+        "end_line": 164
+      },
+      {
+        "file": "tests/common/fixtures/spawn.rs",
+        "start_line": 165,
+        "end_line": 165
+      },
+      {
+        "file": "tests/common/fixtures/spawn.rs",
+        "start_line": 174,
+        "end_line": 174
       },
       {
         "file": "tests/duplication_catalog_contract_periphery.rs",
