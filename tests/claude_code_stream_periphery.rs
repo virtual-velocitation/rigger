@@ -2822,8 +2822,13 @@ fn assert_fell_back(
     );
 }
 
+/// The longest one spawn call of a fallback row takes, well under the 30 s an `unreadable` ending
+/// stays alive past its line: a host that waited such a session out never ended the read.
+const FALLBACK_WITHIN: Duration = Duration::from_secs(20);
+
 /// THE RESUME FALLBACK: a `--resume` launch of Claude Code ending `ending` under `agent` yields
-/// no `system/init`, so one spawn call lands the fresh launch behind it ([`assert_fell_back`]).
+/// no `system/init`, so one spawn call lands the fresh launch behind it ([`assert_fell_back`]),
+/// within [`FALLBACK_WITHIN`].
 fn a_resume_ending_with_no_session_falls_back(
     ending: &str,
     agent: AgentDef,
@@ -2833,8 +2838,14 @@ fn a_resume_ending_with_no_session_falls_back(
     let fx = Fixture::new();
     let o = fx.resumed_opts(ending, "answer");
 
+    let started = Instant::now();
     let result = fx.host(&agent, &o).expect("the fresh launch answers");
+    let elapsed = started.elapsed();
 
+    assert!(
+        elapsed < FALLBACK_WITHIN,
+        "the resume ends its read at the ending, never waiting its session out: {elapsed:?}"
+    );
     assert_fell_back(
         &fx,
         &result,
