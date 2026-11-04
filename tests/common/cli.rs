@@ -94,6 +94,15 @@ pub fn rigger_file(root: &Path, name: &str) -> PathBuf {
     root.join(RIGGER_DIR).join(name)
 }
 
+/// Place a DIRECTORY where `<root>/.rigger/store.conn` should be a file, so reading it as the secret
+/// file yields an IO error DISTINCT from NotFound - the present-but-unreadable class. This mirrors
+/// the config rung's parity test exactly and is more portable than `chmod 000`, which a test running
+/// as root would bypass (root reads any file), silently defeating the guard under test.
+pub fn make_store_conn_unreadable(root: &Path) {
+    std::fs::create_dir(root.join(".rigger").join("store.conn"))
+        .expect("place a directory where store.conn goes");
+}
+
 /// A raw connection of its own to the store file `name` under `root`'s rigger dir, for reading or
 /// planting what the store's API never writes.
 pub fn rigger_db(root: &Path, name: &str) -> rusqlite::Connection {
@@ -343,6 +352,17 @@ pub fn run_rigger_envs(cwd: &Path, args: &[&str], envs: &[(&str, &str)]) -> (Str
     // Bound to `_state` so the dir lives until after the command runs.
     let (_state, child) = spawn_rigger(cwd, args, envs);
     rigger_outcome(child)
+}
+
+/// The ambient `PATH` with every directory holding a `tool` removed, so a lookup of `tool` fails
+/// whatever the machine running the test has installed, while `git` and the coreutils stay found.
+pub fn path_without(tool: &str) -> String {
+    std::env::var("PATH")
+        .unwrap_or_default()
+        .split(':')
+        .filter(|dir| !dir.is_empty() && !Path::new(dir).join(tool).exists())
+        .collect::<Vec<_>>()
+        .join(":")
 }
 
 /// A spawned child the test owns: dropping the owner, on any path out of its scope and a panic's

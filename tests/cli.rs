@@ -20,6 +20,7 @@ use common::git::run_git;
 
 use common::cli::graph_build_line;
 use common::cli::graph_node_ids;
+use common::cli::path_without;
 use common::cli::pin_identity;
 use common::cli::plant_stale_marker;
 use common::cli::read_run_events;
@@ -26245,19 +26246,6 @@ fn setup_selfhosting_repo_with_stale_docs(root: &Path) {
     seed_stale_tracked_docs(root);
 }
 
-/// A `PATH` built from the ambient `PATH` with every directory that contains a `rigger` binary
-/// removed, so the pre-commit hook's `command -v rigger` fails DETERMINISTICALLY (the
-/// graceful-degrade "rigger unavailable" path) regardless of whatever `rigger` happens to sit in
-/// the developer's ambient `PATH`. Keeps `git` and the coreutils the commit needs.
-fn path_without_rigger() -> String {
-    std::env::var("PATH")
-        .unwrap_or_default()
-        .split(':')
-        .filter(|dir| !dir.is_empty() && !Path::new(dir).join("rigger").exists())
-        .collect::<Vec<_>>()
-        .join(":")
-}
-
 /// Stage a `rigger` shim on `PATH` that is PRESENT (so `command -v rigger` succeeds) but makes
 /// `rigger docs` FAIL (exit 1), delegating every other subcommand to the real built binary. Drives
 /// the graceful-degrade "rigger docs errors" path: the hook must WARN and let the commit proceed.
@@ -26714,7 +26702,7 @@ rigger::test_cases! {
     /// The warning names that every tree-built candidate AND `PATH` were checked (spec 75).
     setup_precommit_hook_warns_and_proceeds_when_rigger_is_unavailable:
         assert_the_hook_warns_and_proceeds(
-            |_| path_without_rigger(),
+            |_| path_without("rigger"),
             "change with rigger off PATH",
             "no rigger binary found",
         );

@@ -863,7 +863,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-52f23a94bdbf",
+    "id": "dup-64397d781d9d",
     "classification": "semantic",
     "sites": [
       {
@@ -1149,6 +1149,11 @@
       {
         "file": "tests/common/repo.rs",
         "name": "Command::new",
+        "content_hash": "b1ad5143fd332b66"
+      },
+      {
+        "file": "tests/common/repo.rs",
+        "name": "Command::new",
         "content_hash": "7bc9b4eef80706b2"
       },
       {
@@ -1327,11 +1332,6 @@
         "content_hash": "583982587bb6b9ca"
       },
       {
-        "file": "tests/turbovec_retired_cargo_boundary.rs",
-        "name": "Command::new",
-        "content_hash": "b1ad5143fd332b66"
-      },
-      {
         "file": "tests/validate_behind_the_tree_periphery.rs",
         "name": "Command::new",
         "content_hash": "583982587bb6b9ca"
@@ -1342,7 +1342,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-ef80c2b78fcc",
+    "id": "dup-c625407c68bc",
     "classification": "semantic",
     "sites": [
       {
@@ -3358,6 +3358,11 @@
       {
         "file": "tests/common/cli.rs",
         "name": "\".rigger\"",
+        "content_hash": "bd5c09ebe3b4227d"
+      },
+      {
+        "file": "tests/common/cli.rs",
+        "name": "\".rigger\"",
         "content_hash": "090bbeba5641ea09"
       },
       {
@@ -4209,11 +4214,6 @@
         "file": "tests/store_precedence.rs",
         "name": "\".rigger\"",
         "content_hash": "0672997d4aa6bd3c"
-      },
-      {
-        "file": "tests/store_precedence.rs",
-        "name": "\".rigger\"",
-        "content_hash": "bd5c09ebe3b4227d"
       },
       {
         "file": "tests/store_precedence.rs",

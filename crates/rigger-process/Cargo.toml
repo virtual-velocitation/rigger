@@ -35,6 +35,13 @@ fs2 = "0.4"
 [target.'cfg(target_os = "linux")'.dependencies]
 zbus = { version = "5.15", default-features = false, features = ["blocking-api", "tokio"] }
 
+# The Windows keep-awake adapter's power request (spec 105), at the 0.61 line the lock already
+# resolves for rustix, tempfile and zbus: `PowerCreateRequest` takes its `REASON_CONTEXT` from
+# Threading and its context version from SystemServices. The macOS adapter declares no crate: it
+# reaches IOKit and CoreFoundation through `extern` declarations.
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Power", "Win32_System_SystemServices", "Win32_System_Threading"] }
+
 [dev-dependencies]
 tempfile = "3"
 

@@ -1,13 +1,31 @@
-//! Fixtures that read this repository's own checked-in files: sources, docs, manifests and the
-//! committed audit ledgers.
+//! Fixtures that read this repository's own checked-in files: sources, docs, manifests (as text,
+//! or with the lock through cargo's resolver) and the committed audit ledgers.
 
 use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
 
+pub use super::fixtures::table_lines;
 use super::fixtures::{recorded_argv, recorded_task};
 
 /// The repository root (the package's manifest directory).
 pub fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+}
+
+/// `cargo tree --prefix none` with `args`, run from [`repo_root`] so the resolver reads this
+/// repository's committed manifests and lock whatever the process CWD. The cargo binary is the
+/// one that built this suite - `env!("CARGO")` is set by cargo at build time and always points
+/// at a real cargo - so the suite needs nothing on `PATH`. `--prefix none` prints bare
+/// `name vX.Y.Z` lines instead of tree glyphs, the one rendering that is stable across cargo
+/// versions: PR #27's CI ran a newer stable whose glyph rendering broke a glyph-stripping parse.
+pub fn cargo_tree(args: &[&str]) -> Output {
+    let cargo_bin = env!("CARGO");
+    Command::new(cargo_bin)
+        .current_dir(repo_root())
+        .args(["tree", "--prefix", "none"])
+        .args(args)
+        .output()
+        .unwrap_or_else(|e| panic!("failed to spawn `{cargo_bin} tree {args:?}`: {e}"))
 }
 
 /// The committed simplification audit report, relative to [`repo_root`].
@@ -269,24 +287,6 @@ pub fn assert_doc_carries_none_of(rel: &str, phrasings: &[&str], why: &str) {
         present.is_empty(),
         "{rel} {why}. Phrasings still present in the document: {present:#?}"
     );
-}
-
-/// The lines of the TOML table `[header]` in `manifest`, up to the next table header.
-pub fn table_lines(manifest: &str, header: &str) -> Vec<String> {
-    let want = format!("[{header}]");
-    let mut in_table = false;
-    let mut out = Vec::new();
-    for raw in manifest.lines() {
-        let line = raw.trim();
-        if line.starts_with('[') && line.ends_with(']') {
-            in_table = line == want;
-            continue;
-        }
-        if in_table {
-            out.push(raw.to_string());
-        }
-    }
-    out
 }
 
 /// Whether the TOML table `[header]` in `manifest` declares `key` (as `key = ..`, `key=..` or a

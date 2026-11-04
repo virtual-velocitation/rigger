@@ -33,6 +33,7 @@ use std::process::Output;
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves,
 // and every suite that spawns the product then dies with a bare NotFound.
 mod common;
+use common::cli::make_store_conn_unreadable;
 use common::cli::rigger_file;
 use common::cli::temp_rigger_project;
 use common::cli::{assert_selected_server, assert_selected_sqlite};
@@ -46,15 +47,6 @@ const UNREACHABLE: &str = "kurrentdb://127.0.0.1:65533?tls=false";
 /// Write `<root>/.rigger/store.conn` (rung 3, the per-machine secret file).
 fn write_store_conn(root: &Path, conn: &str) {
     std::fs::write(root.join(".rigger").join("store.conn"), conn).expect("write store.conn");
-}
-
-/// Place a DIRECTORY where `<root>/.rigger/store.conn` should be a file, so reading it as the secret
-/// file yields an IO error DISTINCT from NotFound - the present-but-unreadable class. This mirrors
-/// the config rung's parity test exactly and is more portable than `chmod 000`, which a test running
-/// as root would bypass (root reads any file), silently defeating the guard under test.
-fn make_store_conn_unreadable(root: &Path) {
-    std::fs::create_dir(root.join(".rigger").join("store.conn"))
-        .expect("place a directory where store.conn goes");
 }
 
 /// Run `rigger result <id> --error <msg>` in `root` with NO `--eventstore` flag and NO

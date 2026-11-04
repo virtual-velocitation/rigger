@@ -1,7 +1,9 @@
-//! THE LOGIN READ (spec 105 RELEASE): the one reader of `claude auth status --json`, which the
-//! hold probe runs ahead of its canary on a hold whose cause a login fixes. The JSON alone
-//! answers: the session is logged in only when the report's `loggedIn` is `true`, and a report
-//! that does not come by the deadline, does not parse or names no such key answers not logged in.
+//! THE LOGIN READ (spec 105): the one reader of `claude auth status --json`, which the hold probe
+//! runs ahead of its canary on a hold whose cause a login fixes (RELEASE) and `rigger validate`
+//! runs to report the auth method (WHAT A PERSON SEES). The JSON alone answers, each read on its
+//! own key: the session is logged in only when the report's `loggedIn` is `true`, and its auth
+//! method is the report's `authMethod` string; a report that does not come by the deadline, does
+//! not parse or names no such key answers not logged in, and no auth method.
 
 use std::ops::ControlFlow;
 use std::process::Stdio;
@@ -11,17 +13,42 @@ use serde::Deserialize;
 
 use crate::reaped_child::ReapedChild;
 
-/// The one key of the report the read decides on.
+/// The `authMethod` an interactive subscription login reports: a login that can expire under a
+/// long run, which `rigger validate` warns of.
+pub const SUBSCRIPTION_LOGIN: &str = "claude.ai";
+
+/// The one key of the report the login read decides on.
 #[derive(Deserialize)]
 struct AuthStatus {
     #[serde(rename = "loggedIn")]
     logged_in: bool,
 }
 
+/// The one key of the report the auth-method read decides on.
+#[derive(Deserialize)]
+struct AuthMethod {
+    #[serde(rename = "authMethod")]
+    auth_method: String,
+}
+
 /// Whether `bin`'s session is logged in, by its `auth status --json` report as it stands by
-/// `deadline`: the child reads no input and its stderr and exit status go unread, and a binary
-/// that does not start answers not logged in at once.
+/// `deadline` ([`report`]).
 pub fn logged_in(bin: &str, deadline: Instant) -> bool {
+    parse_logged_in(&report(bin, deadline))
+}
+
+/// The auth method `bin`'s `auth status --json` report names by `deadline` ([`report`]): none
+/// when the report is not one JSON object naming an `authMethod` string.
+pub fn auth_method(bin: &str, deadline: Instant) -> Option<String> {
+    serde_json::from_str::<AuthMethod>(&report(bin, deadline))
+        .ok()
+        .map(|status| status.auth_method)
+}
+
+/// The lines `bin auth status --json` printed by `deadline`, joined: the child reads no input
+/// and its stderr and exit status go unread, and a binary that does not start reports nothing at
+/// once.
+fn report(bin: &str, deadline: Instant) -> String {
     let Ok(child) = crate::subprocess::command(bin)
         .args(["auth", "status", "--json"])
         .stdin(Stdio::null())
@@ -29,14 +56,14 @@ pub fn logged_in(bin: &str, deadline: Instant) -> bool {
         .stderr(Stdio::null())
         .spawn()
     else {
-        return false;
+        return String::new();
     };
     let mut report = Vec::new();
     ReapedChild::new(child).read_lines_until(deadline, |line| {
         report.push(line.to_string());
         ControlFlow::Continue(())
     });
-    parse_logged_in(&report.join("\n"))
+    report.join("\n")
 }
 
 /// Whether `report` is one JSON object whose `loggedIn` is `true`.

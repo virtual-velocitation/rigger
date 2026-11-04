@@ -35,6 +35,10 @@ extern crate self as rigger;
 #[path = "../../../tests/common/fixtures/host.rs"]
 mod host_fixtures;
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
+#[path = "../../../tests/common/fixtures/manifest.rs"]
+mod manifest_fixtures;
+#[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 mod test_support {
     pub use crate::host_fixtures::*;
+    pub use crate::manifest_fixtures::*;
 }
