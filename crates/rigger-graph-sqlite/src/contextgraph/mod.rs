@@ -61,6 +61,8 @@ struct LessonLearned {
     summary: String,
     #[serde(default, deserialize_with = "referenced_ids")]
     about: Vec<String>,
+    #[serde(default, deserialize_with = "referenced_file")]
+    file: Option<String>,
 }
 #[cfg(any(feature = "store", not(feature = "core")))]
 #[derive(Deserialize)]
@@ -74,6 +76,8 @@ struct ReviewFinding {
     summary: String,
     #[serde(default, deserialize_with = "referenced_ids")]
     about: Vec<String>,
+    #[serde(default, deserialize_with = "referenced_file")]
+    file: Option<String>,
 }
 
 /// A record's references - a decision's `governs`, a lesson's or finding's `about` - each read as
@@ -85,6 +89,27 @@ fn referenced_ids<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<String>,
         .iter()
         .map(|r| query::referenced_id(r).to_string())
         .collect())
+}
+
+/// A lesson's or finding's `file`, the location it names beside or in place of `about`, read as
+/// the node id it names as each `about` reference is ([`referenced_ids`]), so a file cited with a
+/// line (`path:line`) folds onto that file's node; an empty one names nothing.
+#[cfg(any(feature = "store", not(feature = "core")))]
+fn referenced_file<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    Ok(Option::<String>::deserialize(d)?
+        .filter(|f| !f.is_empty())
+        .map(|f| query::referenced_id(&f).to_string()))
+}
+
+/// Every location a lesson or finding names: each `about` reference, then its `file`. The fold
+/// ties the record ABOUT each one ([`sqlite`]), and the emit guard refuses a record naming none
+/// ([`check_emit`]).
+#[cfg(any(feature = "store", not(feature = "core")))]
+fn locations<'a>(
+    about: &'a [String],
+    file: &'a Option<String>,
+) -> impl Iterator<Item = &'a String> {
+    about.iter().chain(file)
 }
 
 /// Checks that `data` has the payload shape the fold reads for an event of type `type_`, by
@@ -145,13 +170,40 @@ pub fn check_fold_payload(type_: &str, data: &[u8]) -> Result<(), String> {
 /// in-process emit callback, and the findings
 /// `rigger critique` copies - so no surface lands what another refuses. It refuses a payload the
 /// fold cannot apply ([`check_fold_payload`]), which would sit in the log passed over by every
-/// fold, then a record whose id another author's kept record holds
-/// ([`refuse_another_authors_id`]). The error reads "refusing to emit ..."; each surface prefixes
-/// its own name.
+/// fold, then a lesson or finding naming no location ([`refuse_a_record_naming_no_location`]),
+/// then a record whose id another author's kept record holds ([`refuse_another_authors_id`]).
+/// The error reads "refusing to emit ..."; each surface prefixes its own name.
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub fn check_emit(store: &dyn EventStore, stream: &str, event: &Event) -> Result<(), String> {
     check_fold_payload(&event.type_, &event.data).map_err(|e| format!("refusing to emit: {e}"))?;
+    refuse_a_record_naming_no_location(event)?;
     refuse_another_authors_id(store, stream, event)
+}
+
+/// Refuse a lesson or finding that names no location - an empty `about` and no `file`
+/// ([`locations`]) - since no read of the graph, each seeded by a file or a node, reaches it. The
+/// refusal is the emit guard's alone: [`check_fold_payload`] accepts such a payload, so a rebuild
+/// still folds every one the log already holds as a node. It runs on a payload
+/// [`check_fold_payload`] has just accepted, so its parse of the fold's own type succeeds.
+#[cfg(any(feature = "store", not(feature = "core")))]
+fn refuse_a_record_naming_no_location(event: &Event) -> Result<(), String> {
+    let record =
+        match event.type_.as_str() {
+            TYPE_LESSON_LEARNED => serde_json::from_slice::<LessonLearned>(&event.data)
+                .map(|l| (l.id, l.about, l.file)),
+            TYPE_REVIEW_FINDING => serde_json::from_slice::<ReviewFinding>(&event.data)
+                .map(|f| (f.id, f.about, f.file)),
+            _ => return Ok(()),
+        };
+    let (id, about, file) = record.map_err(|e| format!("refusing to emit: {e}"))?;
+    if locations(&about, &file).any(|at| !at.is_empty()) {
+        return Ok(());
+    }
+    Err(format!(
+        "refusing to emit {typ} {id:?}: it names no location, so no read of the graph reaches it \
+         - list the files or node ids it is about in `about`",
+        typ = event.type_,
+    ))
 }
 
 /// Refuse a record whose id a kept record of ANOTHER author holds ([`run::kept_holder`]): the

@@ -31895,7 +31895,7 @@ mod tests {
     fn a_step_token_is_the_by_of_its_protocol_and_the_actor_of_its_findings() {
         let finding = |id: &str| {
             let finding_type = contextgraph::TYPE_REVIEW_FINDING.to_string();
-            (finding_type, json!({"id": id}))
+            (finding_type, json!({"id": id, "about": ["src/a.rs"]}))
         };
         let driver = Stub {
             emits_by_spawn_id: HashMap::from([
