@@ -1060,7 +1060,8 @@ mod tests {
 
     /// A FAILED READ: a run not proved unheld launches nothing and answers the read's error,
     /// never a hang, unless the wait paused and its session closed, which parks the spawn; a read
-    /// failing while the decorator decides on a spawn's error hands that error back, not its own.
+    /// failing while the decorator decides on a spawn's error, or in the wait after it relaunched
+    /// that spawn, hands that error back, not its own.
     #[test]
     fn a_failed_read_launches_nothing_and_never_masks_the_spawn_error() {
         check(vec![
@@ -1076,6 +1077,16 @@ mod tests {
                 at_pause: AtPause::BreakReads,
                 calls: one_call(Err(Error(READ_FAILED.to_string()))),
                 paused_at: vec![0],
+                ..Row::default()
+            },
+            Row {
+                name:
+                    "a store failing during the wait after a relaunch hands back the spawn's error",
+                script: vec![held_then_fails(classed(FAULT))],
+                at_pause: AtPause::BreakReads,
+                calls: one_call(Err(classed(FAULT))),
+                launched: vec![ID],
+                paused_at: vec![1],
                 ..Row::default()
             },
             Row {
