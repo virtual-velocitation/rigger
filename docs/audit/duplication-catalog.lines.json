@@ -469,8 +469,8 @@
       },
       {
         "file": "crates/rigger-domain/src/run/read.rs",
-        "start_line": 77,
-        "end_line": 84
+        "start_line": 82,
+        "end_line": 89
       }
     ]
   },

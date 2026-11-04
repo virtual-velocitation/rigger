@@ -11,7 +11,7 @@ use crate::ledger::{
 };
 use crate::retention::PERCEPTION_TYPES;
 
-use super::TYPE_RUN_STARTED;
+use super::{TYPE_RUN_HELD, TYPE_RUN_RELEASED, TYPE_RUN_STARTED};
 
 /// The CARRIED-OVER KNOWLEDGE: the event types a fold consults across runs - the decisions, the
 /// lessons (the playbooks distill from them) and the review findings - read by type over the
@@ -32,6 +32,11 @@ pub const ADOPTION_TYPES: [&str; 5] = [
     TYPE_UNIT_FAILED,
     TYPE_UNIT_STATUS,
 ];
+
+/// The types a run's HOLD folds from ([`read_current_hold`]): the hold events, and the run
+/// boundaries, so a run started between the hold read's two store calls still slices the read to
+/// the newest run.
+const HOLD_TYPES: [&str; 3] = [TYPE_RUN_STARTED, TYPE_RUN_HELD, TYPE_RUN_RELEASED];
 
 /// The current run's own events, from its boundary forward, with perception
 /// ([`PERCEPTION_TYPES`]: the derived index types and the ledger entry that stands for them)
@@ -83,15 +88,20 @@ pub fn read_current_run(
     Ok((super::current_run(&read).to_vec(), run_id))
 }
 
-/// THE RUN'S HOLD, READ ONCE (spec 105): the hold [`read_current_run`]'s slice leaves open, the one
-/// read every launch path decides on. `None` proves the run unheld; a read or a fold that fails
+/// THE RUN'S HOLD, READ ONCE (spec 105): the hold the current run leaves open, the one read every
+/// launch path decides on. It reads only [`HOLD_TYPES`], from the boundary [`read_run`] finds
+/// ([`EventStore::last_position`]'s answer for the run's `RunStarted`; the whole stream with no
+/// run started), and folds the hold from [`crate::run::current_run`] of that read, so a read made
+/// at every launch decision and through the whole of a hold never materializes the carried-over
+/// knowledge or the run's other events. `None` proves the run unheld; a read or a fold that fails
 /// answers its error, since a run not proved unheld launches nothing.
 pub fn read_current_hold(
     store: &dyn EventStore,
     stream: &str,
 ) -> Result<Option<Hold>, crate::agent::Error> {
-    let (events, _) = read_current_run(store, stream)?;
-    Ok(ledger::project(&events)?.hold)
+    let boundary = store.last_position(stream, TYPE_RUN_STARTED)?.unwrap_or(0);
+    let events = store.read_stream_typed(stream, boundary, TypeSelection::Only(&HOLD_TYPES))?;
+    Ok(ledger::project(super::current_run(&events))?.hold)
 }
 
 #[cfg(test)]
@@ -99,7 +109,6 @@ mod tests {
     use super::*;
     use crate::ingest::DERIVED_INDEX_TYPES;
     use crate::retention::{GenerationIngested, TYPE_GENERATION_INGESTED};
-    use crate::run::{TYPE_RUN_HELD, TYPE_RUN_RELEASED};
     use crate::test_support::{
         ev, positions_of, types_of, CountedRead, HandBuiltLog, ReadCountingStore,
         ReadsFailWhenArmed, ONE_SHOT_PERCEPTION_TYPES,
