@@ -410,6 +410,8 @@ mod tests {
         ReleaseThenClose,
         /// The store's reads start failing.
         BreakReads,
+        /// The session closes and the store's reads start failing, both inside this one pause.
+        CloseAndBreakReads,
     }
 
     /// One scenario: a run stream, a scripted host, the spawn calls made in order, and every
@@ -515,6 +517,10 @@ mod tests {
                         close();
                     }
                     AtPause::BreakReads => armed.store(true, Ordering::SeqCst),
+                    AtPause::CloseAndBreakReads => {
+                        close();
+                        armed.store(true, Ordering::SeqCst);
+                    }
                 }
             };
             let held = HeldDriver::new(&host, &reads, session, &pause);
@@ -1025,8 +1031,8 @@ mod tests {
     }
 
     /// A FAILED READ: a run not proved unheld launches nothing and answers the read's error,
-    /// never a hang; a read failing while the decorator decides on a spawn's error hands that
-    /// error back, not its own.
+    /// never a hang, unless the wait paused and its session closed, which parks the spawn; a read
+    /// failing while the decorator decides on a spawn's error hands that error back, not its own.
     #[test]
     fn a_failed_read_launches_nothing_and_never_masks_the_spawn_error() {
         check(vec![
@@ -1041,6 +1047,15 @@ mod tests {
                 seeded: vec![third_fault_hold()],
                 at_pause: AtPause::BreakReads,
                 calls: one_call(Err(Error(READ_FAILED.to_string()))),
+                paused_at: vec![0],
+                ..Row::default()
+            },
+            Row {
+                name: "a session closing as the store fails during the wait parks unlaunched",
+                seeded: vec![third_fault_hold()],
+                session: Session::Open,
+                at_pause: AtPause::CloseAndBreakReads,
+                calls: one_call(Err(parked_spawn(ID))),
                 paused_at: vec![0],
                 ..Row::default()
             },
