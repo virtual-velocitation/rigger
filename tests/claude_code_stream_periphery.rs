@@ -1494,10 +1494,14 @@ enum Beats {
 }
 
 /// A session under the bound of its row, in seconds, and a run set up as the row says: `Some` is
-/// the result the session must end in, `None` is a stop.
+/// the result the session must end in, `None` is a stop. A row naming its wakes pins how many times
+/// the host read its beat source, which only a wake reads: a wake under the bound re-arms for the
+/// rest of it and never under the host's 5 s poll, so a 7 s session held under a 1 s bound wakes
+/// at 1 s and at 6 s and no more.
 #[test]
 fn the_stream_silence_stop_fires_on_silent_time() {
-    for (case, script, bound, held, beats, ended) in [
+    use common::fixtures::ReadCountingStore;
+    for (case, script, bound, held, beats, ended, wakes) in [
         (
             "a session silent across a hold reads through it",
             SILENT_PAST_THE_POLL,
@@ -1505,6 +1509,7 @@ fn the_stream_silence_stop_fires_on_silent_time() {
             true,
             Beats::Fresh,
             Some("done: thought past the poll"),
+            Some(2),
         ),
         (
             "the same session with no hold is stopped",
@@ -1512,6 +1517,7 @@ fn the_stream_silence_stop_fires_on_silent_time() {
             1,
             false,
             Beats::Fresh,
+            None,
             None,
         ),
         (
@@ -1521,6 +1527,7 @@ fn the_stream_silence_stop_fires_on_silent_time() {
             false,
             Beats::Fresh,
             Some("done: waited the delay out"),
+            None,
         ),
         (
             "a run with no beats is unsupervised",
@@ -1529,6 +1536,7 @@ fn the_stream_silence_stop_fires_on_silent_time() {
             false,
             Beats::None,
             Some("done: thought past the poll"),
+            None,
         ),
         (
             "a wake whose records cannot be read counts no silence",
@@ -1537,6 +1545,7 @@ fn the_stream_silence_stop_fires_on_silent_time() {
             false,
             Beats::Unreadable,
             Some("done: thought past the poll"),
+            None,
         ),
         (
             "a host with no beat source counts from the last line, whatever the hold",
@@ -1544,6 +1553,7 @@ fn the_stream_silence_stop_fires_on_silent_time() {
             1,
             true,
             Beats::NoSource,
+            None,
             None,
         ),
         (
@@ -1553,6 +1563,7 @@ fn the_stream_silence_stop_fires_on_silent_time() {
             false,
             Beats::NoSource,
             None,
+            None,
         ),
         (
             "a host with no beat source reads a speaking session through",
@@ -1561,6 +1572,7 @@ fn the_stream_silence_stop_fires_on_silent_time() {
             false,
             Beats::NoSource,
             Some("done: spoke past the bound"),
+            None,
         ),
         (
             "a session older than its bound counts from its last line, never its launch",
@@ -1569,6 +1581,7 @@ fn the_stream_silence_stop_fires_on_silent_time() {
             false,
             Beats::Fresh,
             Some("done: waited the delay out at its age"),
+            None,
         ),
         (
             "a session silent past the delay it announced is stopped on a later wake",
@@ -1576,6 +1589,7 @@ fn the_stream_silence_stop_fires_on_silent_time() {
             1,
             false,
             Beats::Fresh,
+            None,
             None,
         ),
     ] {
@@ -1587,12 +1601,17 @@ fn the_stream_silence_stop_fires_on_silent_time() {
         let broken_db = fx.scratch_root.path().join("broken-progress.db");
         let broken = Store::open(broken_db.to_str().unwrap()).unwrap();
         drop_the_log(&broken_db);
+        let beat_source = ReadCountingStore::new(&fx.progress_store);
+        let counted = || Driver {
+            beat_source: Some(&beat_source),
+            ..fx.stopping_driver(script, grace)
+        };
         let driver = match beats {
             Beats::NoSource => fx.stopping_driver(script, grace),
-            Beats::None => fx.supervised_driver(script, grace),
+            Beats::None => counted(),
             Beats::Fresh => {
                 fx.beat();
-                fx.supervised_driver(script, grace)
+                counted()
             }
             Beats::Unreadable => Driver {
                 beat_source: Some(&broken),
@@ -1615,6 +1634,9 @@ fn the_stream_silence_stop_fires_on_silent_time() {
             .filter(|l| l.ended.as_deref() == Some("stopped"))
             .count();
         assert_eq!(stops, usize::from(ended.is_none()), "{case}");
+        if let Some(wakes) = wakes {
+            assert_eq!(beat_source.reads().len(), wakes, "{case}: the wakes");
+        }
         let results = fx.spawn_results();
         assert_eq!(results.len(), 1, "{case}: one result landed");
         assert_eq!(
