@@ -47,6 +47,11 @@ impl McpSession {
         }
     }
 
+    /// The session process's id.
+    pub fn id(&self) -> u32 {
+        self.child.id()
+    }
+
     /// Write one raw `line` and read back the one response line it gets (`why` names the
     /// expectation when none comes).
     pub fn exchange(&mut self, line: &str, why: &str) -> String {
