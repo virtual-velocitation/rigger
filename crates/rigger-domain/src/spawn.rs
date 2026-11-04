@@ -1193,13 +1193,11 @@ pub fn step_of_pass(events: &[Event], rs: RunState) -> Result<Step, serde_json::
 }
 
 /// The [`Step`] `rigger step` prints on a held run (spec 105), which runs no pass: an empty wave,
-/// not done, and a `halted` naming the hold by the cause and action of its latest `RunHeld`.
+/// not done, and a `halted` naming the hold by its [`Hold::reason`], the cause and action of its
+/// latest `RunHeld`.
 pub fn step_of_hold(hold: &Hold) -> Step {
     Step {
-        halted: Some(format!(
-            "run held - {} - {}",
-            hold.latest.cause, hold.latest.action
-        )),
+        halted: Some(format!("run held - {}", hold.reason())),
         ..Step::default()
     }
 }

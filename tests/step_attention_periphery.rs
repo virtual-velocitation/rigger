@@ -707,7 +707,9 @@ fn relay_attention_renders_nothing_for_a_clean_step_in_either_shape() {
 /// `halted`/`budget-final-tenth` omit it, same as the fallback test above), and driven through
 /// the real, unmodified `relayAttention`. `reject-recurrence` and `stalled-frontier` are
 /// proven from the REAL wire above, not re-derived here - together these six cases cover every
-/// kind `ledger::attention_kind_rank`'s own canonical order enumerates.
+/// kind a `rigger step` stamps. `ledger::attention_kind_rank` also orders spec 105's `held` and
+/// `released`, which only the hold attention fold (`ledger::hold_attention`) yields and no step
+/// carries.
 #[test]
 fn relay_attention_maps_the_remaining_four_known_kinds_to_their_documented_response() {
     let cases = [

@@ -66,6 +66,13 @@ impl OwedProbe {
     }
 }
 
+/// Whether a probe can release `hold`: neither an operator hold nor a `model_not_found` hold, the
+/// two [`owed_probe`] owes no probe, so `rigger status` says only of a probed hold that the run
+/// resumes by itself.
+pub fn is_probed(hold: &Hold) -> bool {
+    !hold.operator && hold.latest.cause != AgentFailure::ModelNotFound.as_str()
+}
+
 /// One hold of the run: the hold as [`Hold::on_held`] folds it, the revision of its first
 /// `RunHeld` and the valid time of its latest.
 struct Span {
@@ -108,7 +115,7 @@ pub fn owed_probe(
         }
     }
     let open = open?;
-    if open.hold.operator || open.hold.latest.cause == AgentFailure::ModelNotFound.as_str() {
+    if !is_probed(&open.hold) {
         return None;
     }
     // Each hold of the chain as the revision of its first `RunHeld` and of its release, the open

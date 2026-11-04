@@ -525,11 +525,7 @@ pub fn silent_time(
 /// set backwards reordered is no gap.
 fn unsupervised(last_line: SystemTime, now: SystemTime, beats: &[SystemTime]) -> Vec<Span> {
     let marks: Vec<SystemTime> = beats.iter().copied().chain([now]).collect();
-    let gaps = marks.windows(2).filter(|pair| {
-        pair[1]
-            .duration_since(pair[0])
-            .is_ok_and(|gap| gap > SUPERVISED_BEAT_GAP)
-    });
+    let gaps = marks.windows(2).filter(|pair| unwatched(pair[0], pair[1]));
     std::iter::once(Span {
         start: last_line,
         end: marks[0],
@@ -539,6 +535,15 @@ fn unsupervised(last_line: SystemTime, now: SystemTime, beats: &[SystemTime]) ->
         end: pair[1],
     }))
     .collect()
+}
+
+/// Whether no supervisor watched the stretch from the beat at `from` to `to`: it runs past
+/// [`SUPERVISED_BEAT_GAP`]. A `to` a clock set backwards dates before `from` is no such stretch.
+/// [`unsupervised`] reads each gap by it, and `rigger status` the stretch since a run's latest
+/// beat.
+pub fn unwatched(from: SystemTime, to: SystemTime) -> bool {
+    to.duration_since(from)
+        .is_ok_and(|gap| gap > SUPERVISED_BEAT_GAP)
 }
 
 /// The failure SIGNAL a hung spawn presents to the taxonomy: a distinctive,
