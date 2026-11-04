@@ -220,13 +220,21 @@ pub fn stat_field_after_comm(pid: u32, index: usize) -> Option<String> {
 /// The process start time from `/proc/<pid>/stat` field 22 (`starttime`, clock ticks since
 /// boot) - the TOCTOU witness [`scan_with_starttime`] records and [`signal_if_unchanged`]
 /// re-reads immediately before signalling. `None` when the process has already exited or
-/// `/proc` is unavailable. Public so a test that owns a process it did not spawn signals it
-/// only while it still carries this same witness.
+/// `/proc` is unavailable. Public so a test that owns a process it did not spawn reads the
+/// witness it later checks through [`still_started`].
 pub fn pid_starttime(pid: u32) -> Option<u64> {
     // Fields after `comm`, 1-indexed: state, ppid, pgrp, session, tty_nr, tpgid, flags,
     // minflt, cminflt, majflt, cmajflt, utime, stime, cutime, cstime, priority, nice,
     // num_threads, itrealvalue, starttime - the 20th, so index 19 (0-based).
     stat_field_after_comm(pid, 19)?.parse().ok()
+}
+
+/// Whether `pid` still carries the start time `started` it was read with ([`pid_starttime`]):
+/// the one witness check that refuses a pid that has exited, or was recycled onto another process,
+/// since it was read. Public so a test owning a process it did not spawn signals it only while
+/// this holds.
+pub fn still_started(pid: u32, started: u64) -> bool {
+    pid_starttime(pid) == Some(started)
 }
 
 /// `pid`'s parent pid from `/proc/<pid>/status`'s `PPid:` field. `None` when the process is
@@ -354,7 +362,7 @@ fn toctou_still_same_process(
     self_ancestors: &HashSet<u32>,
 ) -> bool {
     is_signal_eligible(target.pid, self_pid, self_ancestors)
-        && pid_starttime(target.pid) == Some(target.starttime)
+        && still_started(target.pid, target.starttime)
 }
 
 /// Re-read `target`'s cwd IMMEDIATELY before signalling it, and signal only if it is still

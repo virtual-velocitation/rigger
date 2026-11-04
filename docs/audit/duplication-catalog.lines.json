@@ -1539,13 +1539,13 @@
       },
       {
         "file": "crates/rigger-process/src/reap.rs",
-        "start_line": 750,
-        "end_line": 750
+        "start_line": 758,
+        "end_line": 758
       },
       {
         "file": "crates/rigger-process/src/reap.rs",
-        "start_line": 1091,
-        "end_line": 1091
+        "start_line": 1099,
+        "end_line": 1099
       },
       {
         "file": "crates/rigger-store-sqlite/src/registry.rs",
@@ -4734,18 +4734,18 @@
       },
       {
         "file": "crates/rigger-process/src/reap.rs",
-        "start_line": 235,
-        "end_line": 235
+        "start_line": 243,
+        "end_line": 243
       },
       {
         "file": "crates/rigger-process/src/reap.rs",
-        "start_line": 295,
-        "end_line": 295
+        "start_line": 303,
+        "end_line": 303
       },
       {
         "file": "crates/rigger-process/src/reap.rs",
-        "start_line": 372,
-        "end_line": 372
+        "start_line": 380,
+        "end_line": 380
       },
       {
         "file": "crates/rigger-worktree-git/src/worktree.rs",
@@ -5139,8 +5139,8 @@
       },
       {
         "file": "tests/common/mod.rs",
-        "start_line": 581,
-        "end_line": 595
+        "start_line": 584,
+        "end_line": 598
       }
     ]
   },
@@ -6729,8 +6729,8 @@
       },
       {
         "file": "tests/common/mod.rs",
-        "start_line": 532,
-        "end_line": 537
+        "start_line": 535,
+        "end_line": 540
       }
     ]
   },
@@ -6774,8 +6774,8 @@
       },
       {
         "file": "crates/rigger-process/src/reap.rs",
-        "start_line": 234,
-        "end_line": 240
+        "start_line": 242,
+        "end_line": 248
       },
       {
         "file": "tests/common/fixtures/host.rs",
@@ -6819,8 +6819,8 @@
     "sites": [
       {
         "file": "crates/rigger-process/src/reap.rs",
-        "start_line": 873,
-        "end_line": 880
+        "start_line": 881,
+        "end_line": 888
       },
       {
         "file": "src/cli/validate.rs",

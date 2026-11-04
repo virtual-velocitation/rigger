@@ -2278,8 +2278,8 @@ mandatory sweep: .rigger-path string literals - 607 site(s), collected mechanica
 - `crates/rigger-grounder/src/ingest.rs:2526-2526` `".rigger/persona.md"`
 - `crates/rigger-grounder/src/ingest.rs:2539-2539` `"gd/.rigger/"`
 - `crates/rigger-grounder/src/ingest.rs:2540-2540` `"premise: the whole walk lowers both docs and nothing under .rigger; got {walked:?}"`
-- `crates/rigger-process/src/reap.rs:750-750` `".rigger"`
-- `crates/rigger-process/src/reap.rs:1091-1091` `"a relocated/cache-home-style authorized_root with no .rigger/tmp relationship \
+- `crates/rigger-process/src/reap.rs:758-758` `".rigger"`
+- `crates/rigger-process/src/reap.rs:1099-1099` `"a relocated/cache-home-style authorized_root with no .rigger/tmp relationship \
              must still authorize the reap"`
 - `crates/rigger-store-sqlite/src/registry.rs:419-419` `"/p/.rigger/events.db"`
 - `crates/rigger-store-sqlite/src/registry.rs:421-421` `"local:/p/.rigger/events.db"`
@@ -3545,9 +3545,9 @@ mandatory sweep: /proc-path string literals - 60 site(s), collected mechanically
 - `crates/rigger-process/src/holders.rs:72-72` `"/proc"`
 - `crates/rigger-process/src/reap.rs:133-133` `"/proc"`
 - `crates/rigger-process/src/reap.rs:215-215` `"/proc/{pid}/stat"`
-- `crates/rigger-process/src/reap.rs:235-235` `"/proc/{pid}/status"`
-- `crates/rigger-process/src/reap.rs:295-295` `"/proc"`
-- `crates/rigger-process/src/reap.rs:372-372` `"/proc/{}/cwd"`
+- `crates/rigger-process/src/reap.rs:243-243` `"/proc/{pid}/status"`
+- `crates/rigger-process/src/reap.rs:303-303` `"/proc"`
+- `crates/rigger-process/src/reap.rs:380-380` `"/proc/{}/cwd"`
 - `crates/rigger-worktree-git/src/worktree.rs:3061-3061` `"/proc"`
 - `crates/rigger-worktree-git/src/worktree.rs:3065-3065` `"/proc/{pid}/cmdline"`
 - `crates/rigger-worktree-git/src/worktree.rs:3089-3089` `"/proc/{}"`
@@ -3798,7 +3798,7 @@ Proposed home: `one shared `spawn_request` helper (e.g. relocated into `tests/co
 mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
 
 - `crates/rigger-domain/src/agent.rs:196-225` `spawn_request`
-- `tests/common/mod.rs:581-595` `spawn_request`
+- `tests/common/mod.rs:584-598` `spawn_request`
 
 #### `dup-74b161ef523c` (near, 2 sites)
 
@@ -4536,7 +4536,7 @@ Proposed home: `one shared `project_events` helper (e.g. relocated into `tests/c
 mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
 
 - `crates/rigger-grounder/src/grounder/workflowdef.rs:207-213` `project_events`
-- `tests/common/mod.rs:532-537` `project_events`
+- `tests/common/mod.rs:535-540` `project_events`
 
 #### `dup-e22da6af6331` (exact, 2 sites)
 
@@ -4563,7 +4563,7 @@ Proposed home: `crates/rigger-process/src/reap.rs as the one /proc/<pid>/stat an
 mandatory sweep: /proc/<pid>/stat or /proc/<pid>/status field-extraction functions - 9 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
 
 - `crates/rigger-process/src/reap.rs:214-218` `stat_field_after_comm`
-- `crates/rigger-process/src/reap.rs:234-240` `read_ppid`
+- `crates/rigger-process/src/reap.rs:242-248` `read_ppid`
 - `tests/common/fixtures/host.rs:81-86` `pgid_of`
 - `tests/simplification_audit.rs:2966-2997` `build_sweep_clusters`
 - `tests/simplification_audit.rs:3241-3262` `build_extra_semantic_clusters`
@@ -4578,7 +4578,7 @@ Proposed home: `a new shared module (sites span 2 files: crates/rigger-process/s
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-process/src/reap.rs:873-880` `processes_rooted_under_is_a_graceful_no_op_when_the_base_is_absent`
+- `crates/rigger-process/src/reap.rs:881-888` `processes_rooted_under_is_a_graceful_no_op_when_the_base_is_absent`
 - `src/cli/validate.rs:1865-1872` `leaked_process_advisories_is_a_graceful_no_op_when_the_scratch_root_is_absent`
 
 #### `dup-183455104b30` (near, 3 sites)
@@ -5487,7 +5487,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 ### Adversarial sample
 
-Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 11146 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
+Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 11147 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
 
 - `crates/rigger-conductor/src/conductor.rs:15742-15764` `branch_is_foreign_when_only_one_axis_differs` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-conductor/src/conductor.rs:16716-16723` `resume_of` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
