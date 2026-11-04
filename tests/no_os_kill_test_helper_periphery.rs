@@ -1,5 +1,6 @@
 //! Periphery tests for spec 78's TEST HELPER (`tests/common/mod.rs::terminate_pid`/`is_alive`,
-//! plus spec 62's `stop_pid`), the sanctioned test-side signal calls, and the guard behavior
+//! plus spec 62's `stop_pid` and the `OwnedPid` guard that ends a process through
+//! `terminate_pid`), the sanctioned test-side signal calls, and the guard behavior
 //! every other suite's converted call sites (formerly `tests/cli.rs::reap_pid`, formerly a
 //! shelled-out probe/termination pair in `tests/reset_build_cache_periphery.rs`, and `stop_pid`'s
 //! own two HELD-PORT DIAGNOSIS fixture call sites in `tests/cli.rs`) now depend on.
@@ -137,6 +138,27 @@ fn terminate_pid_on_an_already_exited_pid_is_a_silent_no_op() {
     let _ = child.wait();
 
     common::terminate_pid(pid); // must not panic
+}
+
+/// A dropped [`common::OwnedPid`] whose pid still carries the start time it was read with ends
+/// that process through [`common::terminate_pid`], so by SIGKILL exactly.
+#[cfg(unix)]
+#[test]
+fn a_dropped_owned_pid_ends_its_process_by_sigkill() {
+    use std::os::unix::process::ExitStatusExt;
+    let mut child = spawn_sleeper();
+
+    drop(common::OwnedPid::new(child.id()));
+
+    let died = wait_until(|| matches!(child.try_wait(), Ok(Some(_))));
+    let signal = child.try_wait().ok().flatten().and_then(|s| s.signal());
+    // cleanup() never leaks the fixture regardless of the assertion outcome below.
+    cleanup(&mut child);
+    assert_eq!(
+        (died, signal),
+        (true, Some(9)),
+        "a dropped owned pid ends its process by SIGKILL"
+    );
 }
 
 #[test]

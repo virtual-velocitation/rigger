@@ -1169,13 +1169,13 @@
       },
       {
         "file": "tests/no_os_kill_test_helper_periphery.rs",
-        "start_line": 29,
-        "end_line": 29
+        "start_line": 30,
+        "end_line": 30
       },
       {
         "file": "tests/no_os_kill_test_helper_periphery.rs",
-        "start_line": 47,
-        "end_line": 47
+        "start_line": 48,
+        "end_line": 48
       },
       {
         "file": "tests/phase_of_role_mapping_periphery.rs",

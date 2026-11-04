@@ -2125,8 +2125,8 @@ mandatory sweep: Command::new call sites - 94 site(s), collected mechanically re
 - `tests/mutation_runner_pdeathsig_periphery.rs:107-107` `Command::new`
 - `tests/mutation_runner_pdeathsig_periphery.rs:167-167` `Command::new`
 - `tests/native_driver_pipelining_behavior.rs:293-293` `Command::new`
-- `tests/no_os_kill_test_helper_periphery.rs:29-29` `Command::new`
-- `tests/no_os_kill_test_helper_periphery.rs:47-47` `Command::new`
+- `tests/no_os_kill_test_helper_periphery.rs:30-30` `Command::new`
+- `tests/no_os_kill_test_helper_periphery.rs:48-48` `Command::new`
 - `tests/phase_of_role_mapping_periphery.rs:72-72` `Command::new`
 - `tests/principle_gates_wiring.rs:113-113` `Command::new`
 - `tests/principle_gates_wiring.rs:456-456` `Command::new`
@@ -5477,7 +5477,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 ### Adversarial sample
 
-Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 11049 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
+Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 11050 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
 
 - `crates/rigger-conductor/src/conductor.rs:15703-15725` `branch_is_foreign_when_only_one_axis_differs` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-conductor/src/conductor.rs:16664-16671` `resume_of` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
