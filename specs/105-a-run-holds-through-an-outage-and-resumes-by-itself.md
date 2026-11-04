@@ -129,7 +129,9 @@ with `RunState::done()` true and a hold open, an operator hold included, the sup
 leaves the hold to the next supervisor's probes. A sighting's append and the done run's and the
 mint's releases are criterion 2's; a failed probe's and `rigger hold`'s appends are criterion
 5's. Where a rule orders a progress-store record against a run-stream event, the record carries
-the run stream's revision its writer last read, and the order is by revision, never by time: a
+the run stream's revision its writer last read, except a hold-probe line (`OwedProbe::line`),
+which carries the revision of the probed hold's latest `RunHeld`, the stamp `owed_probe` counts
+a hold's probes by inside its chain's revisions; the order is by revision, never by time: a
 record stamped with an event's revision is after that event, since its writer read it, and
 records sharing a stamp keep their progress-stream order.
 
