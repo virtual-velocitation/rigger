@@ -15521,6 +15521,237 @@ rigger::test_cases! {
         assert_no_reachable_base_is_refused(&["run", "--driver", "workflow"], Some("rigger workflow"));
 }
 
+// ---- a run's start: the step lock, then the reconciliation (spec 105, RESUME BY SESSION) ----
+
+/// The first words of the line `rigger run --base origin/does-not-exist` refuses with in an
+/// unborn repo: its no-reachable-base gate, which runs after the start-up reconciliation.
+const NO_REACHABLE_BASE: &str = "rigger: rigger run: no reachable base for the run branch \
+     \"rigger-run\": the base \"origin/does-not-exist\" does not resolve";
+
+/// An unborn git repo with the two-stage workflow, so a `rigger run --base origin/does-not-exist`
+/// started in it refuses at its base gates, anchoring nothing.
+fn an_unborn_run_project() -> tempfile::TempDir {
+    let dir = temp_project();
+    write_workflow_fixture(dir.path(), &TWO_STAGE_WORKFLOW);
+    dir
+}
+
+/// The `SpawnLaunched` record the JSON `body` spells, on the run `run` ("" for none).
+fn a_launch(run: &str, body: &serde_json::Value) -> (String, rigger::progress::SpawnLaunched) {
+    (
+        run.to_string(),
+        serde_json::from_value(body.clone()).unwrap(),
+    )
+}
+
+/// Record `seeds` in the progress store of the project at `root` through the host's writer, each
+/// `(run, body)` a `SpawnLaunched` body recorded on the run `run` ("" for none), in order.
+fn seed_launches(root: &Path, seeds: &[(&str, serde_json::Value)]) {
+    common::cli::with_store_file(root, "progress.db", |store| {
+        for (run, body) in seeds {
+            let (run, record) = a_launch(run, body);
+            rigger::progress_store::record_launch(store, &run, &record).unwrap();
+        }
+    });
+}
+
+/// Every `SpawnLaunched` record the progress store of the project at `root` holds, each with the
+/// run it is stamped with ("" for none), in log order.
+fn recorded_launches(root: &Path) -> Vec<(String, rigger::progress::SpawnLaunched)> {
+    use rigger::eventstore::{Direction, Filter};
+    let events = common::cli::with_store_file(root, "progress.db", |store| {
+        let prefix = Filter {
+            stream_prefix: Some(rigger::progress::STREAM.to_string()),
+        };
+        store.read_all(0, Direction::Forward, &prefix).unwrap()
+    });
+    common::cli::spawn_launches(&events)
+}
+
+/// `rigger run --base origin/does-not-exist` in `root`, its scratch root at `scratch`.
+fn start_a_run(root: &Path, scratch: &Path) -> (String, String, bool) {
+    run_rigger_envs(
+        root,
+        &["run", "--base", "origin/does-not-exist"],
+        &[("RIGGER_TMPDIR", scratch.to_str().unwrap())],
+    )
+}
+
+/// spec 105, RESUME BY SESSION: a `rigger run` takes the step lock right after its root check and
+/// holds it for its whole life, so a start beside a held lock - a `rigger step`, or another run -
+/// refuses with the busy refusal before anything else: it closes no launch, opens no event log and
+/// anchors no run branch.
+#[test]
+fn a_run_start_beside_a_held_step_lock_refuses_before_it_reconciles_or_anchors() {
+    let scratch = tempfile::tempdir().unwrap();
+    let dir = an_unborn_run_project();
+    let root = dir.path();
+    let open = serde_json::json!({
+        "spawn": "u1/implementer#0", "launch": 0, "session_id": "s-u1", "started": 1,
+        "dir": scratch.path().join("u1"),
+    });
+    seed_launches(root, &[("run-a", open.clone())]);
+    let head_before = git_answer(root, &["symbolic-ref", "--short", "-q", "HEAD"]);
+    let _held = common::cli::hold_step_lock(root);
+
+    let (out, err, ok) = start_a_run(root, scratch.path());
+
+    assert_eq!(
+        (out.as_str(), err.as_str(), ok),
+        (
+            "",
+            "rigger: another `rigger step` is already running in this repo, or a `rigger run` is \
+             (lock .rigger/step.lock). Refusing to run concurrently: two would race the \
+             run-branch checkout and the unit worktrees branched off HEAD, corrupting the run. \
+             Wait for the running one to finish and retry.\n",
+            false
+        ),
+        "a start beside a held step lock refuses with the busy refusal first"
+    );
+    assert_eq!(
+        recorded_launches(root),
+        vec![a_launch("run-a", &open)],
+        "the refused start closes no launch"
+    );
+    assert!(
+        !common::cli::rigger_file(root, "events.db").exists(),
+        "the refused start opens no event log"
+    );
+    assert_eq!(
+        git_answer(root, &["symbolic-ref", "--short", "-q", "HEAD"]),
+        head_before,
+        "the refused start anchors no run branch"
+    );
+}
+
+/// spec 105, RESUME BY SESSION: a `rigger run` start closes every launch the progress store holds
+/// open - of any run, a `rigger critique`'s and an unstamped record's included - `interrupted`,
+/// the latest record of each launch deciding, and reaps the dir of each under the scratch root;
+/// all before its base gates, so a start they refuse has already reconciled. A dir outside the
+/// scratch root (the critique's, the repo root) is refused by name and nothing in it is reaped, a
+/// launch with no dir closes and reaps nothing, and a closed launch's dir is left alone.
+#[cfg(unix)]
+#[test]
+fn a_run_start_closes_every_open_launch_interrupted_and_reaps_its_dir_under_the_scratch_root() {
+    let scratch = tempfile::tempdir().unwrap();
+    let under = |leaf: &str| scratch.path().join(leaf);
+    for leaf in ["u1", "u2", "u3"] {
+        std::fs::create_dir_all(under(leaf)).unwrap();
+    }
+    let dir = an_unborn_run_project();
+    let root = dir.path();
+    let seeds = [
+        (
+            "run-a",
+            serde_json::json!({
+                "spawn": "u1/implementer#0", "launch": 0, "session_id": "s-u1", "started": 1,
+                "dir": under("u1"),
+            }),
+        ),
+        (
+            "run-a",
+            serde_json::json!({
+                "spawn": "u2/implementer#0", "launch": 0, "session_id": "s-u2", "started": 2,
+                "dir": under("u2"),
+            }),
+        ),
+        (
+            "run-a",
+            serde_json::json!({
+                "spawn": "u2/implementer#0", "launch": 0, "session_id": "s-u2", "started": 0,
+                "ended": "completed",
+            }),
+        ),
+        (
+            "run-a",
+            serde_json::json!({
+                "spawn": "u3/implementer#0", "launch": 0, "session_id": "s-u3", "started": 3,
+                "dir": under("u3"),
+            }),
+        ),
+        (
+            "run-a",
+            serde_json::json!({
+                "spawn": "u3/implementer#0", "launch": 0, "session_id": "s-u3", "started": 0,
+                "ended": "fault", "class": "rate_limit",
+            }),
+        ),
+        (
+            "run-a",
+            serde_json::json!({
+                "spawn": "u3/implementer#0", "launch": 1, "session_id": "s-u3b",
+                "resumed_from": "s-u3", "started": 4,
+            }),
+        ),
+        (
+            "run-b",
+            serde_json::json!({
+                "spawn": "u4/reviewer#0", "launch": 0, "session_id": "s-u4", "started": 5,
+            }),
+        ),
+        (
+            "critique-5e1f",
+            serde_json::json!({
+                "spawn": "critique/critic#0", "launch": 0, "session_id": "s-c", "started": 6,
+                "dir": root,
+            }),
+        ),
+        (
+            "",
+            serde_json::json!({
+                "spawn": "u5/implementer#0", "launch": 0, "session_id": "s-u5", "started": 7,
+                "dir": under("gone"),
+            }),
+        ),
+    ];
+    seed_launches(root, &seeds);
+    let mut outcome = None;
+
+    common::fixtures::assert_teardown_reaps_only_what_is_rooted_inside(
+        &under("u1"),
+        &[root, &under("u2"), &under("u3")],
+        || outcome = Some(start_a_run(root, scratch.path())),
+        "a run start's reconciliation",
+    );
+
+    let (out, err, ok) = outcome.unwrap();
+    assert_eq!((out.as_str(), ok), ("", false), "stderr: {err}");
+    let refused = format!(
+        "rigger: reap refused: {} is not strictly under {}\n",
+        root.display(),
+        scratch.path().canonicalize().unwrap().display()
+    );
+    assert_eq!(
+        err.strip_prefix(&refused)
+            .map(|rest| (rest.starts_with(NO_REACHABLE_BASE), rest.lines().count())),
+        Some((true, 1)),
+        "the critique's dir is refused by name, then the base gate refuses: {err}"
+    );
+    let closes = |run: &str, spawn: &str, launch: u32, session: &str| {
+        let body = serde_json::json!({
+            "spawn": spawn, "launch": launch, "session_id": session, "started": 0,
+            "ended": "interrupted",
+        });
+        a_launch(run, &body)
+    };
+    let mut expected: Vec<_> = seeds
+        .iter()
+        .map(|(run, body)| a_launch(run, body))
+        .collect();
+    expected.extend([
+        closes("", "u5/implementer#0", 0, "s-u5"),
+        closes("critique-5e1f", "critique/critic#0", 0, "s-c"),
+        closes("run-a", "u1/implementer#0", 0, "s-u1"),
+        closes("run-a", "u3/implementer#0", 1, "s-u3b"),
+        closes("run-b", "u4/reviewer#0", 0, "s-u4"),
+    ]);
+    assert_eq!(
+        recorded_launches(root),
+        expected,
+        "every open launch closes interrupted, in (run, spawn, launch) order, after the seeds"
+    );
+}
+
 /// Spec 47 - KurrentDB is always available (the CLI/binary edge). Before spec 47 the
 /// DEFAULT build answered `rigger run --eventstore kurrentdb` with a recompile-required
 /// dead end ("requires the `kurrentdb` cargo feature"); the adapter was gated behind a

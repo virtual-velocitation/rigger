@@ -563,12 +563,22 @@ mod tests {
             ended: None,
             class: None,
             revision: None,
+            dir: "/scratch/u104-launch".into(),
         };
-        let ev = launched.to_stamped_event("run-9").unwrap();
-        assert_eq!(ev.type_, TYPE_SPAWN_LAUNCHED);
+        assert_stamped_with_its_run(launched, TYPE_SPAWN_LAUNCHED);
+    }
+
+    /// `record` serializes as the event type `type_`, stamped with the run `run-9`, and reads
+    /// back as itself.
+    fn assert_stamped_with_its_run<R>(record: R, type_: &str)
+    where
+        R: RunStamped + serde::de::DeserializeOwned + PartialEq + std::fmt::Debug,
+    {
+        let ev = record.to_stamped_event("run-9").unwrap();
+        assert_eq!(ev.type_, type_);
         assert_eq!(ev.meta.get(META_RUN_ID).map(String::as_str), Some("run-9"));
-        let back: SpawnLaunched = serde_json::from_slice(&ev.data).unwrap();
-        assert_eq!(back, launched);
+        let back: R = serde_json::from_slice(&ev.data).unwrap();
+        assert_eq!(back, record);
     }
 
     #[test]
@@ -586,6 +596,7 @@ mod tests {
             ended: None,
             class: None,
             revision: None,
+            dir: String::new(),
         };
         let ev = launched.to_stamped_event("").unwrap();
         let v: serde_json::Value = serde_json::from_slice(&ev.data).unwrap();
@@ -600,6 +611,10 @@ mod tests {
         assert!(
             v.get("class").is_none(),
             "class must be omitted while open, not null: {v:?}"
+        );
+        assert!(
+            v.get("dir").is_none(),
+            "an empty dir must be omitted, not an empty string: {v:?}"
         );
         assert!(
             !ev.meta.contains_key(META_RUN_ID),
@@ -618,6 +633,7 @@ mod tests {
             ended: None,
             class: None,
             revision: None,
+            dir: String::new(),
         };
         let ev = launched.to_stamped_event("run-1").unwrap();
         let back: SpawnLaunched = serde_json::from_slice(&ev.data).unwrap();
@@ -655,6 +671,165 @@ mod tests {
         assert_eq!(back, closing);
     }
 
+    // ---- the launch's directory and the start-up reconciliation (spec 105, RESUME BY SESSION) ----
+
+    /// The record opening launch `launch` of `spawn` in `dir`, its session `s<launch>`.
+    fn open_in(spawn: &str, launch: u32, dir: &str) -> SpawnLaunched {
+        SpawnLaunched {
+            spawn: spawn.into(),
+            launch,
+            session_id: format!("s{launch}"),
+            started: 1,
+            dir: dir.into(),
+            ..SpawnLaunched::default()
+        }
+    }
+
+    /// The directory rides an open record that names one and stays off a record that has none,
+    /// a close included, so a close serializes as it did before the field existed and a record
+    /// written before it decodes with no directory.
+    #[test]
+    fn a_launch_directory_rides_an_open_record_and_stays_off_a_close() {
+        let rows: [(&str, SpawnLaunched, serde_json::Value); 2] = [
+            (
+                "an open record in a directory",
+                open_in("u/implementer#0", 0, "/scratch/u"),
+                serde_json::json!({
+                    "spawn": "u/implementer#0",
+                    "launch": 0,
+                    "session_id": "s0",
+                    "started": 1,
+                    "dir": "/scratch/u",
+                }),
+            ),
+            (
+                "a close",
+                SpawnLaunched::closed("u/implementer#0", 0, "s0", ENDED_INTERRUPTED, ""),
+                serde_json::json!({
+                    "spawn": "u/implementer#0",
+                    "launch": 0,
+                    "session_id": "s0",
+                    "started": 0,
+                    "ended": "interrupted",
+                }),
+            ),
+        ];
+        for (name, record, body) in rows {
+            assert_eq!(serde_json::to_value(&record).unwrap(), body, "{name}");
+            assert_eq!(
+                serde_json::from_value::<SpawnLaunched>(body).unwrap(),
+                record,
+                "{name}"
+            );
+        }
+    }
+
+    /// Every launch the progress store holds open, by the run its record is stamped with: the
+    /// latest record of a (run, spawn, launch) decides, every other record type and a record
+    /// that does not decode pass, and the answer is ordered by run, spawn and launch.
+    #[test]
+    fn the_open_launches_are_the_latest_records_of_each_run_spawn_and_launch_left_open() {
+        const U: &str = "u/implementer#0";
+        const V: &str = "v/reviewer#0";
+        let on = |run: &str, record: &SpawnLaunched| record.to_stamped_event(run).unwrap();
+        let close = |spawn: &str, launch: u32, ended: &str| {
+            SpawnLaunched::closed(spawn, launch, format!("s{launch}"), ended, "")
+        };
+        let progress_line = AgentProgress {
+            id: U.into(),
+            activity: "a step".into(),
+            revision: None,
+        }
+        .to_stamped_event("run-a")
+        .unwrap();
+        let undecodable =
+            Event::new(TYPE_SPAWN_LAUNCHED, b"not json".to_vec()).with_meta(META_RUN_ID, "run-a");
+        type Open = (&'static str, SpawnLaunched);
+        let rows: [(&str, Vec<Event>, Vec<Open>); 10] = [
+            ("an empty store", vec![], vec![]),
+            (
+                "one open launch",
+                vec![on("run-a", &open_in(U, 0, "/s/u"))],
+                vec![("run-a", open_in(U, 0, "/s/u"))],
+            ),
+            (
+                "a launch its completed close ended",
+                vec![
+                    on("run-a", &open_in(U, 0, "/s/u")),
+                    on("run-a", &close(U, 0, ENDED_COMPLETED)),
+                ],
+                vec![],
+            ),
+            (
+                "a launch an interrupted close ended",
+                vec![
+                    on("run-a", &open_in(U, 0, "/s/u")),
+                    on("run-a", &close(U, 0, ENDED_INTERRUPTED)),
+                ],
+                vec![],
+            ),
+            (
+                "a launch reopened behind its close",
+                vec![
+                    on("run-a", &open_in(U, 0, "/s/old")),
+                    on("run-a", &close(U, 0, ENDED_FAULT)),
+                    on("run-a", &open_in(U, 0, "/s/new")),
+                ],
+                vec![("run-a", open_in(U, 0, "/s/new"))],
+            ),
+            (
+                "a later launch of a spawn whose earlier launch closed",
+                vec![
+                    on("run-a", &open_in(U, 0, "/s/u")),
+                    on("run-a", &close(U, 0, ENDED_FAULT)),
+                    on("run-a", &open_in(U, 1, "")),
+                ],
+                vec![("run-a", open_in(U, 1, ""))],
+            ),
+            (
+                "one launch on two runs, closed on one",
+                vec![
+                    on("run-a", &open_in(U, 0, "/s/a")),
+                    on("run-b", &open_in(U, 0, "/s/b")),
+                    on("run-b", &close(U, 0, ENDED_COMPLETED)),
+                ],
+                vec![("run-a", open_in(U, 0, "/s/a"))],
+            ),
+            (
+                "a record no run stamped",
+                vec![on("", &open_in(U, 0, "/s/u"))],
+                vec![("", open_in(U, 0, "/s/u"))],
+            ),
+            (
+                "another record type and an undecodable record",
+                vec![progress_line, stop_failure(U, "rate_limit"), undecodable],
+                vec![],
+            ),
+            (
+                "ordered by run, spawn and launch",
+                vec![
+                    on("run-b", &open_in(U, 0, "")),
+                    on("run-a", &open_in(V, 0, "")),
+                    on("run-a", &open_in(U, 10, "")),
+                    on("run-a", &open_in(U, 2, "")),
+                ],
+                vec![
+                    ("run-a", open_in(U, 2, "")),
+                    ("run-a", open_in(U, 10, "")),
+                    ("run-a", open_in(V, 0, "")),
+                    ("run-b", open_in(U, 0, "")),
+                ],
+            ),
+        ];
+        for (name, events, expected) in rows {
+            let expected: Vec<(String, SpawnLaunched)> = expected
+                .into_iter()
+                .map(|(run, launch)| (run.to_string(), launch))
+                .collect();
+            assert_eq!(open_launches(&events), expected, "{name}");
+        }
+    }
+
     // ---- StopFailure (spec 104 criterion 5: A FAILURE HAS A CLASS) ----
 
     #[test]
@@ -663,11 +838,7 @@ mod tests {
             spawn: "u104-fail-class/implementer#0".into(),
             class: "authentication_failed".into(),
         };
-        let ev = sf.to_stamped_event("run-9").unwrap();
-        assert_eq!(ev.type_, TYPE_STOP_FAILURE);
-        assert_eq!(ev.meta.get(META_RUN_ID).map(String::as_str), Some("run-9"));
-        let back: StopFailure = serde_json::from_slice(&ev.data).unwrap();
-        assert_eq!(back, sf);
+        assert_stamped_with_its_run(sf, TYPE_STOP_FAILURE);
     }
 
     #[test]

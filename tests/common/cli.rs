@@ -830,6 +830,22 @@ pub fn with_store_file<R>(root: &Path, file: &str, f: impl FnOnce(&dyn EventStor
     f(&store)
 }
 
+/// Every `SpawnLaunched` record among `events`, each with the run it is stamped with ("" for
+/// none), in their order.
+pub fn spawn_launches(events: &[Event]) -> Vec<(String, rigger::progress::SpawnLaunched)> {
+    events
+        .iter()
+        .filter(|e| e.type_ == rigger::progress::TYPE_SPAWN_LAUNCHED)
+        .map(|e| {
+            let run = e.meta.get(rigger::run::META_RUN_ID).cloned();
+            (
+                run.unwrap_or_default(),
+                serde_json::from_slice(&e.data).unwrap(),
+            )
+        })
+        .collect()
+}
+
 /// Append `event` to `root`'s run stream through a bare store, a hand beside the run.
 pub fn seed_on_the_run(root: &Path, event: Event) {
     with_run_store(root, |store| {

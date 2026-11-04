@@ -171,11 +171,10 @@ impl Fixture {
     /// Every `SpawnLaunched` record (open and closing alike) the progress store holds for the
     /// run [`opts`] names, in append order.
     fn launch_records(&self) -> Vec<rigger::progress::SpawnLaunched> {
-        rigger::progress::read_run(&self.progress_store, &opts("").run_id)
-            .unwrap()
-            .iter()
-            .filter(|e| e.type_ == rigger::progress::TYPE_SPAWN_LAUNCHED)
-            .map(|e| serde_json::from_slice(&e.data).unwrap())
+        let events = rigger::progress::read_run(&self.progress_store, &opts("").run_id).unwrap();
+        common::cli::spawn_launches(&events)
+            .into_iter()
+            .map(|(_, record)| record)
             .collect()
     }
 

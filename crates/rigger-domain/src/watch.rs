@@ -918,7 +918,7 @@ mod tests {
     // --- Signal 2: dead driver (the conjunction) ---
 
     #[test]
-    fn a_quiet_store_with_no_step_process_and_every_heartbeat_stale_is_a_dead_driver() {
+    fn a_quiet_store_with_the_step_lock_free_and_every_heartbeat_stale_is_a_dead_driver() {
         let events = positioned(vec![ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"u"}"#)]);
         let now = SystemTime::now();
         let ages: BTreeMap<String, u64> = [("u/implementer#0".to_string(), 3600u64)]
@@ -940,17 +940,21 @@ mod tests {
         assert_eq!(anomalies.len(), 1);
         assert_eq!(anomalies[0].signal, Signal::DeadDriver);
         assert_eq!(anomalies[0].subject, "run");
+        assert_eq!(
+            anomalies[0].detail,
+            "store quiet an hour, no step or run holds the step lock, every heartbeat stale past 30m"
+        );
     }
 
     #[test]
-    fn a_running_step_process_suppresses_the_dead_driver_alert() {
+    fn a_held_step_lock_suppresses_the_dead_driver_alert() {
         let events = positioned(vec![ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"u"}"#)]);
         let now = SystemTime::now();
         let inputs = WatchInputs {
             run_events: &events,
             now,
             last_event_at: Some(now - Duration::from_secs(4000)),
-            // A step IS running - not dead, just slow.
+            // A step or a run holds the lock - not dead, just slow.
             step_lock_free: false,
             wave_liveness_ages: &BTreeMap::new(),
             dash: DashProbe::NotRecorded,

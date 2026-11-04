@@ -4792,4 +4792,47 @@ mod tests {
         assert!(landed, "the tick after the refused one lands its beat");
         assert_eq!(beat_streams(&progress), vec!["progress/run-a"]);
     }
+
+    /// spec 105, RESUME BY SESSION: a project with no scratch root (a repo-less run) has no root
+    /// to authorize a reap against, so its start-up reconciliation closes each open launch
+    /// `interrupted` and reaps nothing: a process rooted in the launch's dir lives on.
+    #[test]
+    fn a_reconciliation_with_no_scratch_root_closes_every_open_launch_and_reaps_nothing() {
+        use crate::test_support::{cleanup, sleeper_in, wait_until};
+        use rigger::progress::{SpawnLaunched, ENDED_INTERRUPTED};
+
+        let launched_in = tempfile::tempdir().unwrap();
+        let mut rooted = sleeper_in(launched_in.path());
+        let seen = wait_until(|| {
+            rigger::reap::processes_rooted_under(launched_in.path())
+                .iter()
+                .any(|(pid, _)| *pid == rooted.id())
+        });
+        let progress = Store::open(":memory:").unwrap();
+        let open = SpawnLaunched {
+            spawn: "u1/implementer#0".into(),
+            launch: 0,
+            session_id: "s-u1".into(),
+            started: 1,
+            dir: launched_in.path().to_str().unwrap().into(),
+            ..SpawnLaunched::default()
+        };
+        rigger::progress_store::record_launch(&progress, "run-a", &open).unwrap();
+
+        let reconciled = reconcile_open_launches(&progress, None).map_err(|e| e.to_string());
+
+        let alive = matches!(rooted.try_wait(), Ok(None));
+        cleanup(&mut rooted);
+        let records: Vec<SpawnLaunched> = progress::read_run(&progress, "run-a")
+            .unwrap()
+            .iter()
+            .map(|e| serde_json::from_slice(&e.data).unwrap())
+            .collect();
+        let closed = SpawnLaunched::closed("u1/implementer#0", 0, "s-u1", ENDED_INTERRUPTED, "");
+        assert_eq!(
+            (seen, reconciled, alive, records),
+            (true, Ok(()), true, vec![open, closed]),
+            "the open launch closes interrupted and the process in its dir survives"
+        );
+    }
 }
