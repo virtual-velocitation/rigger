@@ -345,12 +345,48 @@ pub fn run_rigger_envs(cwd: &Path, args: &[&str], envs: &[(&str, &str)]) -> (Str
     rigger_outcome(child)
 }
 
+/// A spawned child the test owns: dropping the owner, on any path out of its scope and a panic's
+/// unwind included, ends and reaps it through its handle ([`super::fixtures::cleanup`]), since a
+/// `Child` dropped bare leaves its process running. [`OwnedChild::into_child`] hands the handle
+/// back to a caller that reaps the child itself.
+pub struct OwnedChild(Option<Child>);
+
+impl OwnedChild {
+    /// Own `child`.
+    pub fn new(child: Child) -> Self {
+        Self(Some(child))
+    }
+
+    /// The owned handle.
+    pub fn child(&mut self) -> &mut Child {
+        self.0
+            .as_mut()
+            .expect("an owned child is held until it is handed back")
+    }
+
+    /// The handle, handed back: its caller reaps the child.
+    pub fn into_child(mut self) -> Child {
+        self.0
+            .take()
+            .expect("an owned child is held until it is handed back")
+    }
+}
+
+impl Drop for OwnedChild {
+    fn drop(&mut self) {
+        if let Some(child) = &mut self.0 {
+            super::fixtures::cleanup(child);
+        }
+    }
+}
+
 /// [`run_rigger_envs`] bounded in time: `rigger <args...>` in `cwd` with extra environment `envs`,
 /// spawned and polled up to `tries` times 25 ms apart ([`super::fixtures::wait_until_for`]),
 /// `meanwhile` handed its pid at each poll while it runs. Its (stdout, stderr, success) once it
-/// ends within them, or `None` once they are spent, the process ended and reaped through its handle
-/// ([`super::fixtures::cleanup`]) first. Its output is read once it has ended, so it suits a
-/// command whose output fits a pipe.
+/// ends within them, or `None` once they are spent. The process is owned ([`OwnedChild`]) until it
+/// ends, so once the tries are spent, or a panic in `meanwhile` unwinds out of this, it is ended
+/// and reaped through its handle. Its output is read once it has ended, so it suits a command
+/// whose output fits a pipe.
 pub fn run_rigger_within(
     cwd: &Path,
     args: &[&str],
@@ -358,17 +394,17 @@ pub fn run_rigger_within(
     tries: u32,
     mut meanwhile: impl FnMut(u32),
 ) -> Option<(String, String, bool)> {
-    let (_state, mut child) = spawn_rigger(cwd, args, envs);
+    let (_state, child) = spawn_rigger(cwd, args, envs);
     let pid = child.id();
+    let mut child = OwnedChild::new(child);
     let ended = super::fixtures::wait_until_for(tries, || {
         meanwhile(pid);
-        !matches!(child.try_wait(), Ok(None))
+        !matches!(child.child().try_wait(), Ok(None))
     });
     if !ended {
-        super::fixtures::cleanup(&mut child);
         return None;
     }
-    Some(rigger_outcome(child))
+    Some(rigger_outcome(child.into_child()))
 }
 
 /// `rigger <args...>` in `cwd` with extra environment `envs` ([`rigger_command`]) spawned under a

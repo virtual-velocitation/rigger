@@ -15790,14 +15790,17 @@ fn a_live_runs_launch_is_left_alone_beside_it_and_reconciled_by_the_next_start_o
     let (fake, path_env) = install_fake_claude(&hanging_first_worker_arm());
     let envs = fake_claude_env(&path_env, scratch.path());
     // Its output goes to files, never pipes: the agent it leaves behind holds what it inherited
-    // open past the run's death.
+    // open past the run's death. The test owns the live run, and the agent from the moment it
+    // reads its pid, until each is meant to end, so a failure on any path ends both.
     let stderr = logs.path().join("stderr");
-    let mut live = common::cli::rigger_command(root, &["run"], &envs, state.path())
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::fs::File::create(&stderr).unwrap())
-        .spawn()
-        .expect("spawn the live run");
+    let live = common::cli::OwnedChild::new(
+        common::cli::rigger_command(root, &["run"], &envs, state.path())
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::fs::File::create(&stderr).unwrap())
+            .spawn()
+            .expect("spawn the live run"),
+    );
     let sleepers = fake.path().join("bin/sleepers");
     let recorded_pid = || {
         std::fs::read_to_string(&sleepers)
@@ -15805,13 +15808,14 @@ fn a_live_runs_launch_is_left_alone_beside_it_and_reconciled_by_the_next_start_o
             .and_then(|pids| pids.strip_suffix('\n')?.parse::<u32>().ok())
     };
     if !common::fixtures::wait_until_for(POLLS_BESIDE_A_RUN, || recorded_pid().is_some()) {
-        common::fixtures::cleanup(&mut live);
+        drop(live);
         panic!(
             "the live run never launched its agent; stderr: {}",
             std::fs::read_to_string(&stderr).unwrap()
         );
     }
     let agent = recorded_pid().unwrap();
+    let owned_agent = common::OwnedPid::new(agent);
     let opened = recorded_launches(root);
     let open_dir = opened
         .first()
@@ -15827,7 +15831,7 @@ fn a_live_runs_launch_is_left_alone_beside_it_and_reconciled_by_the_next_start_o
             common::is_running(agent),
         )
     });
-    common::fixtures::cleanup(&mut live);
+    drop(live);
 
     let [(stamp, open)] = opened.as_slice() else {
         panic!("the live run holds one launch open: {opened:?}");
@@ -15883,9 +15887,7 @@ fn a_live_runs_launch_is_left_alone_beside_it_and_reconciled_by_the_next_start_o
             }
         });
     let outlived = common::is_running(agent);
-    if outlived {
-        common::terminate_pid(agent);
-    }
+    drop(owned_agent);
     let (out, err, ok) = restarted.expect("the restarted run ends within two minutes");
     assert_eq!(
         (running_at_close, outlived),
