@@ -9254,69 +9254,94 @@ const UNLOADABLE_WORKFLOW: WorkflowFixture = WorkflowFixture {
     body: "stages: [\n",
 };
 
+/// The error a command that loads [`UNLOADABLE_WORKFLOW`] refuses on.
+const UNLOADABLE_WORKFLOW_ERROR: &str =
+    "config: parse workflow: stages: invalid type: sequence, expected a map at line 1 column 9";
+
+/// How a row of [`a_command_driving_no_run_takes_no_keep_awake_hold`] ends, short of the hold.
+#[derive(Clone, Copy)]
+enum EndsUnheld {
+    /// It exits 0, its stdout the step's wave parking these spawn ids, neither halted nor done.
+    Parks(&'static [&'static str]),
+    /// It fails, its stderr ending on the refusal of [`UNLOADABLE_WORKFLOW_ERROR`].
+    RefusesTheLoad,
+    /// It stops at the grounder [`stopping_at_the_grounder`] plants.
+    StopsAtTheGrounder,
+}
+
 /// Spec 105's KEEP-AWAKE holders: given the recording keep-awake fake, when `rigger step` parks a
 /// launch, since it is one-shot, or `rigger run` or `rigger serve` refuses on a workflow it cannot
 /// load, or stops at the grounder, selected past every refusal and short of the acquire, then
 /// nothing acquires the hold.
 #[test]
 fn a_command_driving_no_run_takes_no_keep_awake_hold() {
-    for (name, args, workflow, at_the_grounder, exits_0) in [
+    use EndsUnheld::{Parks, RefusesTheLoad, StopsAtTheGrounder};
+    for (name, args, workflow, ends) in [
         (
             "rigger step",
             &["step"][..],
             &REVIEWLESS_GIT_UNIT_WORKFLOW,
-            false,
-            true,
+            Parks(&["solo/implementer#0"]),
         ),
         (
             "a refused rigger run",
             &["run"][..],
             &UNLOADABLE_WORKFLOW,
-            false,
-            false,
+            RefusesTheLoad,
         ),
         (
             "a refused rigger serve",
             &["serve", "--base", "HEAD"][..],
             &UNLOADABLE_WORKFLOW,
-            false,
-            false,
+            RefusesTheLoad,
         ),
         (
             "a rigger run stopped at its grounder",
             &["run"][..],
             &REVIEWLESS_GIT_UNIT_WORKFLOW,
-            true,
-            false,
+            StopsAtTheGrounder,
         ),
         (
             "a rigger serve stopped at its grounder",
             &["serve", "--base", "HEAD"][..],
             &REVIEWLESS_GIT_UNIT_WORKFLOW,
-            true,
-            false,
+            StopsAtTheGrounder,
         ),
     ] {
         let dir = temp_git_project_with_commit();
         let root = dir.path();
-        let body = if at_the_grounder {
-            stopping_at_the_grounder(workflow.body)
-        } else {
-            workflow.body.to_string()
+        let body = match ends {
+            StopsAtTheGrounder => stopping_at_the_grounder(workflow.body),
+            Parks(_) | RefusesTheLoad => workflow.body.to_string(),
         };
         write_scaffold(root, &[("worker", workflow.worker)], &body);
         let here = tempfile::tempdir().unwrap();
         let record = here.path().join("keep-awake");
         let knob = format!("record:{}", record.display());
         let output = run_rigger_envs(root, args, &[(common::KEEP_AWAKE_ENV, &knob)]);
-        if at_the_grounder {
-            assert_stopped_at_the_grounder(&output, name);
+        let (out, err, ok) = &output;
+        match ends {
+            Parks(wave) => {
+                assert!(ok, "{name}: the step exits 0; stderr: {err}");
+                let step: serde_json::Value = serde_json::from_str(out)
+                    .unwrap_or_else(|e| panic!("{name}: the step prints its wave: {e}; {out}"));
+                let ids: Vec<&str> = step["wave"]
+                    .as_array()
+                    .unwrap_or_else(|| panic!("{name}: the step names a wave; stdout: {out}"))
+                    .iter()
+                    .map(|item| item["id"].as_str().unwrap())
+                    .collect();
+                assert_eq!(ids, wave, "{name}: the parked launch; stdout: {out}");
+                assert_eq!(step.get("halted"), None, "{name}: stdout: {out}");
+                assert_eq!(step["done"], false, "{name}: stdout: {out}");
+            }
+            RefusesTheLoad => assert_eq!(
+                common::cli::failure_line(*ok, err),
+                Some(common::cli::refusal_line(UNLOADABLE_WORKFLOW_ERROR)),
+                "{name}: the refusal; stderr: {err}"
+            ),
+            StopsAtTheGrounder => assert_stopped_at_the_grounder(&output, name),
         }
-        let (out, err, ok) = output;
-        assert_eq!(
-            ok, exits_0,
-            "{name}: how it exits; stderr: {err}\nstdout: {out}"
-        );
         assert_eq!(
             keep_awake_record(&record),
             "",
