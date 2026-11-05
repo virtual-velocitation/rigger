@@ -672,14 +672,56 @@ pub fn critique_finding_id(text: &str, attempt: u32, k: u32) -> String {
     format!("sc-{}-{attempt}-{k}", rigger::review::critique_hash(text))
 }
 
-/// Record a clean critique of `spec`'s current text in the project at `root` ([`record_critique`]:
-/// prose, no finding line, an approve), so a new run on it under a workflow naming a critic is not
+/// The critic's clean answer: prose, no finding line, an approve.
+pub const CLEAN_CRITIQUE: &str = "No defects.\n{\"verdict\":\"approve\"}";
+
+/// Record a clean critique of `spec`'s current text in the project at `root` ([`record_critique`]
+/// answering [`CLEAN_CRITIQUE`]), so a new run on it under a workflow naming a critic is not
 /// refused (spec 112).
 pub fn record_clean_critique(root: &Path, spec: &str) {
-    let out = record_critique(root, spec, "No defects.\n{\"verdict\":\"approve\"}");
+    let out = record_critique(root, spec, CLEAN_CRITIQUE);
     assert_eq!(
         out, "{\"verdict\":\"approve\"}\n",
         "a clean critique of {spec}: no finding and an approve"
+    );
+}
+
+/// Append `(type, payload)` events to the critique's own stream of the project at `root`, in the
+/// wire form `rigger critique` records them in - standing in for a critique an earlier call
+/// recorded.
+pub fn seed_critique(root: &Path, events: &[(&str, serde_json::Value)]) {
+    std::fs::create_dir_all(root.join(".rigger")).unwrap();
+    let backend = Store::open(rigger_file(root, "events.db").to_str().unwrap()).unwrap();
+    let store = Namespaced::new(&backend, &format!("{}-critique", run_stream_identity(root)));
+    for (type_, payload) in events {
+        store
+            .append(
+                rigger::conductor::STREAM,
+                ExpectedRevision::Any,
+                &[Event::new(*type_, serde_json::to_vec(payload).unwrap())],
+            )
+            .unwrap();
+    }
+}
+
+/// Append the critic's spawn at `attempt` on the text hashed `hash` to the critique's own stream
+/// of the project at `root` ([`seed_critique`]): its request, then its result answering `output`,
+/// which is a pass of the critique when `output` is a critique (spec 123).
+pub fn seed_critique_spawn(root: &Path, hash: &str, attempt: u32, output: &str) {
+    let id = rigger::review::critique_spawn_id(hash, attempt);
+    let unit = rigger::review::critique_unit(hash);
+    seed_critique(
+        root,
+        &[
+            (
+                rigger::spawn::TYPE_SPAWN_REQUESTED,
+                serde_json::json!({"id": id, "unit": unit, "stage": "critique", "prompt": "p"}),
+            ),
+            (
+                rigger::spawn::TYPE_SPAWN_RESULT,
+                serde_json::json!({"id": id, "output": output}),
+            ),
+        ],
     );
 }
 

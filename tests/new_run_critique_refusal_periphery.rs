@@ -1,7 +1,8 @@
 //! Spec 112, criterion 2 (A NEW RUN NEEDS A CLEAN CRITIQUE) - periphery: the run entries driven
 //! as the compiled binary. Given a project whose workflow names a critic, when a command would
-//! begin a new run on a spec whose text has no critique, or whose critique holds a BLOCKING
-//! finding no later `DecisionMade` resolves, then it refuses on stderr - naming each open
+//! begin a new run on a spec whose text has no critique, or whose critique - the union of every
+//! pass recorded for the text (spec 123) - holds a BLOCKING finding no `DecisionMade` recorded
+//! after that finding's pass resolves, then it refuses on stderr - naming each open
 //! BLOCKING finding id and the two commands that clear it - and appends nothing; a step that
 //! adopts the spec's existing run proceeds whatever the critique; and under a workflow naming no
 //! critic a new run proceeds with one line saying so. Spec 105 stands ahead of the refusal: a
@@ -19,14 +20,15 @@ use std::path::Path;
 use common::cli::{
     assert_stopped_at_the_grounder, critique_finding_id, emit, printed_decision, read_run_events,
     record_clean_critique, record_critique, refused_new_run, run_payloads, run_rigger,
-    run_rigger_envs, seed_a_hold_no_fold_applies, seed_on_the_run, seed_run_events,
-    stopping_at_the_grounder, temp_repoless_project, write_scaffold, write_spec_project,
-    CRITIQUE_ROUTE, RESOLUTION_ROUTE,
+    run_rigger_envs, seed_a_hold_no_fold_applies, seed_critique_spawn, seed_on_the_run,
+    seed_run_events, stopping_at_the_grounder, temp_repoless_project, write_scaffold,
+    write_spec_project, CLEAN_CRITIQUE, CRITIQUE_ROUTE, RESOLUTION_ROUTE,
 };
 use common::fixtures::{
     git_ok, git_out, hold_naming, run_held_event, temp_git_project_with_commit,
 };
 use common::repo::{stub_path, write_critique_stub};
+use rigger::review::critique_hash;
 use rigger::wave::NO_CRITIC_CLAUSE;
 use serde_json::json;
 
@@ -580,6 +582,32 @@ fn an_approving_critique_holding_a_blocking_finding_refuses_a_new_run_on_that_fi
         Some(&[critique_finding_id(SPEC, 0, 2)]),
         0,
     );
+}
+
+/// Spec 123, THE CRITIQUE IS THE UNION OF ITS PASSES, at the refusal: given a text whose critique
+/// holds attempt 0's reject, then a resolution naming one BLOCKING id of attempt 0 and one of
+/// attempt 1, then attempt 1's reject and attempt 2's pass with no finding line, when a step
+/// begins a new run on it, then the step is refused on the open BLOCKING ids of every pass in pass
+/// order, though the latest pass approves: the resolution closes the id of the pass recorded
+/// before it and never the one of the pass recorded after it, though it names that id. Once the
+/// rest are resolved, the step begins the run.
+#[test]
+fn a_new_run_is_refused_on_the_unions_open_ids_each_closed_only_after_its_pass() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_spec_project(root, &PERSONAS, SKEPTIC_WORKFLOW, SPEC_REL, SPEC);
+    let hash = critique_hash(SPEC);
+    let id = |attempt, k| critique_finding_id(SPEC, attempt, k);
+    record_critique(root, SPEC_REL, REJECT);
+    resolve(root, "r-between", SPEC_REL, &[id(0, 1), id(1, 1)]);
+    seed_critique_spawn(root, &hash, 1, REJECT);
+    seed_critique_spawn(root, &hash, 2, CLEAN_CRITIQUE);
+
+    let open = [id(0, 3), id(1, 1), id(1, 3)];
+    assert_step_refused(root, (SPEC_REL, &[]), SPEC_REL, Some(&open), 0);
+
+    resolve(root, "r-after", SPEC_REL, &open);
+    assert_step_proceeds(root, (SPEC_REL, &[]), SPEC_REL, (0, 1));
 }
 
 #[test]

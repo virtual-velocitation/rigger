@@ -19,8 +19,9 @@ use std::path::Path;
 use common::cli::{
     assert_selected_server, critique_finding_id, emit, no_result_failure, pin_identity,
     read_run_events, recorded_progress, rigger_file, run_payloads, run_rigger, run_rigger_envs,
-    run_rigger_ok, run_stream_identity, seed_a_run, seed_on_the_run, seed_run_events, seed_store,
-    temp_project, temp_repoless_project, write_spec_project,
+    run_rigger_ok, run_stream_identity, seed_a_run, seed_critique, seed_critique_spawn,
+    seed_on_the_run, seed_run_events, seed_store, temp_project, temp_repoless_project,
+    write_spec_project,
 };
 use common::fixtures::{composed_system_prompt, git_ok, held_event, temp_git_project_with_commit};
 use common::repo::{
@@ -32,7 +33,7 @@ use rigger::driver::claude_code::framed;
 use rigger::driver::replay::spawn_scratch_path;
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::Store;
-use rigger::eventstore::{Direction, Event, EventStore, ExpectedRevision, Filter};
+use rigger::eventstore::{Direction, Event, EventStore, Filter};
 use rigger::progress::{RunStamped, SpawnLaunched, StopFailure};
 use rigger::review::{
     critique_hash, critique_spawn_id, critique_unit, spec_critique_prompt, CRITIC_DENIED_TOOLS,
@@ -866,23 +867,6 @@ fn critique_payloads(root: &Path) -> Vec<(String, Value)> {
         .collect()
 }
 
-/// Append `(type, payload)` events to the critique's own stream of the project at `root`, in the
-/// wire form the verb records them in - standing in for a critique an earlier call recorded.
-fn seed_critique(root: &Path, events: &[(&str, Value)]) {
-    std::fs::create_dir_all(root.join(".rigger")).unwrap();
-    let backend = Store::open(rigger_file(root, "events.db").to_str().unwrap()).unwrap();
-    let store = Namespaced::new(&backend, &format!("{}-critique", run_stream_identity(root)));
-    for (type_, payload) in events {
-        store
-            .append(
-                rigger::conductor::STREAM,
-                ExpectedRevision::Any,
-                &[Event::new(*type_, serde_json::to_vec(payload).unwrap())],
-            )
-            .unwrap();
-    }
-}
-
 /// The types of the project run stream's events, oldest first.
 fn run_types(root: &Path) -> Vec<String> {
     read_run_events(root)
@@ -1163,22 +1147,14 @@ fn an_answered_critique_prints_the_union_of_its_passes_then_the_verdict_it_deriv
     scaffold(root, CRITIC_WORKFLOW);
     let advisory = "C1 | NON-BLOCKING | Design | renders is vague | name the surface\n\
          {\"verdict\":\"approve\"}";
-    let unit = critique_unit(SPEC_HASH);
-    let mut seeded = Vec::new();
     for (attempt, output) in [
         (0, advisory),
         (1, "I could not decide."),
         (2, REJECT),
         (3, APPROVE),
     ] {
-        let id = critique_spawn_id(SPEC_HASH, attempt);
-        seeded.push((
-            TYPE_SPAWN_REQUESTED,
-            json!({"id": id, "unit": unit, "stage": "critique", "prompt": "p"}),
-        ));
-        seeded.push((TYPE_SPAWN_RESULT, json!({"id": id, "output": output})));
+        seed_critique_spawn(root, SPEC_HASH, attempt, output);
     }
-    seed_critique(root, &seeded);
     let (work, path) = stub(APPROVE);
     let (out, err, ok) = critique(root, SPEC_REL, &path, &root.join("scratch"));
 
