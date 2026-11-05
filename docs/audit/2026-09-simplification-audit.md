@@ -1952,7 +1952,7 @@ mandatory sweep: same-named helper function defined independently in 2+ files - 
 
 - `crates/rigger-conductor/src/conductor.rs:3857-3859` `read_current_run`
 - `crates/rigger-dash/src/mcpserver.rs:553-556` `read_current_run`
-- `crates/rigger-domain/src/run/read.rs:98-105` `read_current_run`
+- `crates/rigger-domain/src/run/read.rs:101-108` `read_current_run`
 
 #### `dup-f13596146362` (near, 2 sites)
 
@@ -2098,10 +2098,10 @@ mandatory sweep: Command::new call sites - 94 site(s), collected mechanically re
 - `src/cli/mod.rs:10429-10429` `Command::new`
 - `src/cli/mod.rs:12169-12169` `Command::new`
 - `src/cli/mod.rs:12203-12203` `Command::new`
-- `src/cli/run.rs:3654-3654` `Command::new`
-- `src/cli/run.rs:3687-3687` `Command::new`
-- `src/cli/run.rs:3731-3731` `Command::new`
-- `src/cli/run.rs:3800-3800` `Command::new`
+- `src/cli/run.rs:3651-3651` `Command::new`
+- `src/cli/run.rs:3684-3684` `Command::new`
+- `src/cli/run.rs:3728-3728` `Command::new`
+- `src/cli/run.rs:3797-3797` `Command::new`
 - `src/cli/setup.rs:3874-3874` `Command::new`
 - `src/cli/setup.rs:3903-3903` `Command::new`
 - `src/cli/validate.rs:1544-1544` `Command::new`
@@ -3575,8 +3575,8 @@ mandatory sweep: /proc-path string literals - 60 site(s), collected mechanically
 - `crates/rigger-worktree-git/src/worktree.rs:3147-3147` `"/proc"`
 - `crates/rigger-worktree-git/src/worktree.rs:3151-3151` `"/proc/{pid}/cmdline"`
 - `crates/rigger-worktree-git/src/worktree.rs:3175-3175` `"/proc/{}"`
-- `src/cli/run.rs:3792-3792` `"/proc"`
-- `src/cli/run.rs:3896-3896` `"/proc"`
+- `src/cli/run.rs:3789-3789` `"/proc"`
+- `src/cli/run.rs:3893-3893` `"/proc"`
 - `tests/cli.rs:27918-27918` `"/proc"`
 - `tests/cli.rs:32133-32133` `"/proc"`
 - `tests/cli.rs:32241-32241` `"the holder pid {holder_pid} never reached the STOPPED (T) state in /proc"`
@@ -5540,7 +5540,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 ### Adversarial sample
 
-Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 11216 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
+Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 11217 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
 
 - `crates/rigger-conductor/src/conductor.rs:15942-15964` `branch_is_foreign_when_only_one_axis_differs` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-conductor/src/conductor.rs:16916-16923` `resume_of` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
@@ -5560,8 +5560,8 @@ Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85
 - `crates/rigger-worktree-git/src/worktree.rs:2042-2064` `reclaim_cache_sibling` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `src/cli/mod.rs:4714-4740` `footprint_reclaim_lines` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `src/cli/mod.rs:8884-8894` `parse_run_args_reads_rebase_definition` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
-- `src/cli/run.rs:1633-1635` `pause_a_hold_poll` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
-- `src/cli/run.rs:2472-2496` `start_run_dashboard` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
+- `src/cli/run.rs:1630-1632` `pause_a_hold_poll` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
+- `src/cli/run.rs:2469-2493` `start_run_dashboard` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `tests/change_path_revert_periphery.rs:213-323` `a_revert_through_the_shipped_build_records_the_earlier_generations_entry_again` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `tests/code_entity_test_exclusion_periphery.rs:1810-1822` `edges_where` - duplicate found by reading and closed: the design-doc assertion, the dev-only path test and the test-region test each re-rolled its `(from, rel, to)` edge projection inline; all now call `edges_where`
 - `tests/common/fixtures/events.rs:944-946` `after_call` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`

@@ -1589,7 +1589,7 @@ fn keep_awake(sleep: &dyn SleepHold, command: &str) -> Option<SleepGuard> {
 }
 
 /// One poll of the HOLD CONTROLLER (spec 105 RELEASE): the probe the current run's open hold is
-/// owed ([`rigger::hold_probe::owed_probe`]), made by `host` in `root` once it falls due, its
+/// owed ([`runscope::read::read_owed_probe`]), made by `host` in `root` once it falls due, its
 /// `hold-probe` line recorded on the run's progress stream first so every later poll counts it. A
 /// passing canary releases the hold by probe while its latest `RunHeld` is still the one probed, a
 /// failed canary's person-needing category moves the cause, and a logged-out session leaves the
@@ -1602,13 +1602,10 @@ fn probe_an_owed_hold(
     host: &claude_code::Driver<'_>,
     root: &str,
 ) -> Result<(), String> {
-    let (run_events, run) = runscope::read::read_current_run(run_store, conductor::STREAM)
-        .map_err(|e| e.to_string())?;
-    let progress_events = rigger::progress::read_run(progress, &run).map_err(|e| e.to_string())?;
     let now = std::time::SystemTime::now();
-    let Some(owed) = rigger::hold_probe::owed_probe(&run_events, &progress_events, now)
-        .filter(|owed| owed.due <= now)
-    else {
+    let owed = runscope::read::read_owed_probe(run_store, conductor::STREAM, progress, now)
+        .map_err(|e| e.to_string())?;
+    let Some((owed, run)) = owed.filter(|(owed, _)| owed.due <= now) else {
         return Ok(());
     };
     rigger::progress_store::append_stamped(progress, &run, &owed.line(), "the hold probe's line")

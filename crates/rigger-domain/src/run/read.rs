@@ -4,13 +4,16 @@
 //! the slice this hands back ([`crate::run::current_run`] and friends); this module decides which
 //! events reach it. A use case over the port only: it names no adapter and touches no file.
 
+use std::time::SystemTime;
+
 use crate::contextgraph::{TYPE_DECISION_MADE, TYPE_LESSON_LEARNED, TYPE_REVIEW_FINDING};
 use crate::eventstore::{Error, Event, EventStore, Revision, TypeSelection};
+use crate::hold_probe::{owed_probe, OwedProbe};
 use crate::ledger::{
     self, Hold, RunState, TYPE_UNIT_FAILED, TYPE_UNIT_INTEGRATED, TYPE_UNIT_STARTED,
     TYPE_UNIT_STATUS,
 };
-use crate::progress::closed_after_release;
+use crate::progress::{self, closed_after_release};
 use crate::retention::PERCEPTION_TYPES;
 
 use super::{TYPE_RUN_HELD, TYPE_RUN_RELEASED, TYPE_RUN_STARTED};
@@ -171,6 +174,21 @@ pub fn read_current_hold_at_head(
 ) -> Result<(Option<Hold>, Option<Revision>), crate::agent::Error> {
     let (read, head) = read_run_at_head(store, stream)?;
     Ok((ledger::project(super::current_run(&read))?.hold, head))
+}
+
+/// THE PROBE THE CURRENT RUN'S OPEN HOLD IS OWED (spec 105 RELEASE), read for every poll of the
+/// hold controller: [`owed_probe`] at `now` of the current run's events on `stream` and the run's
+/// progress lines on `progress`, beside the run's id the probe's line is stamped with (empty when
+/// no run has started); `None` when no probe is owed.
+pub fn read_owed_probe(
+    store: &dyn EventStore,
+    stream: &str,
+    progress: &dyn EventStore,
+    now: SystemTime,
+) -> Result<Option<(OwedProbe, String)>, Error> {
+    let (run_events, run) = read_current_run(store, stream)?;
+    let progress_events = progress::read_run(progress, &run)?;
+    Ok(owed_probe(&run_events, &progress_events, now).map(|owed| (owed, run)))
 }
 
 /// The hold the first `RunReleased` of the run on `store`'s `stream` past revision `stamp`
