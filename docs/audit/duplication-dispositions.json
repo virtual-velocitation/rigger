@@ -1093,5 +1093,10 @@
     "id": "dup-ad62aafad4f2",
     "disposition": "not-a-duplicate",
     "reason": "`progress_store::launch_records` is the production read of one spawn's launch records in a run while the stream periphery `launch_records` is the test's independent oracle, every spawn's records of the run through `progress::read_run` and the shared test decoder, that must not reuse it."
+  },
+  {
+    "id": "dup-b6030639057d",
+    "disposition": "not-a-duplicate",
+    "reason": "`is_interrupted` and `is_store_fault` both delegate to the shared `carries_marker`; each names a different port marker (the host's interrupted close, a store read failing before the launch) that the held-run decorator and the conflict resolver act on differently."
   }
 ]

@@ -19,6 +19,8 @@ pub mod canary_store;
 pub mod conductor;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod held;
+#[cfg(any(feature = "store", not(feature = "core")))]
+pub mod hold_controller;
 #[cfg(all(feature = "symbols", any(feature = "store", not(feature = "core"))))]
 mod logged_generations;
 #[cfg(any(feature = "store", not(feature = "core")))]

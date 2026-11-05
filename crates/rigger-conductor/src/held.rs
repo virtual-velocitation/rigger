@@ -5,8 +5,8 @@
 //! session already running is left alone and a gate already running finishes: only the next
 //! launch waits. A wait ends on the run's `RunReleased` or, on `rigger serve`, on the session's
 //! close, with a park, and a close beats a release landing with it, since nothing would serve the
-//! launch. An error of a hold or wait class, or any error while the run is held, waits the same
-//! way and launches the same spawn id again, its next ordinal coming from the host's own read of
+//! launch. An error of a hold or wait class, or any error but a store fault while the run is held,
+//! waits the same way and launches the same spawn id again, its next ordinal coming from the host's own read of
 //! the spawn stream, so the conductor sees no failure and writes no infra mark. The hold is read
 //! after the host returns, because the host appends a third-fault hold before it returns its
 //! error. An error the host marked interrupted
@@ -14,16 +14,19 @@
 //! without that read: the host decided the run held once, and a release landing after its read
 //! relaunches the interrupted session instead of reaching the conductor.
 //!
-//! Three errors reach the conductor unchanged, held or not: one carrying a conductor marker, one
-//! for a spawn the current run's slice has ended, and the next error of a spawn id that has
-//! relaunched [`RELAUNCH_BOUND`] times with no non-error outcome between. An unclassed or
+//! Four errors reach the conductor unchanged, held or not: one carrying a conductor marker, a store
+//! fault ([`STORE_FAULT_MARKER`](rigger_domain::agent::STORE_FAULT_MARKER): a store read that
+//! failed before the launch, the host's or this decorator's own hold read), one for a spawn the
+//! current run's slice has ended, and the next error of a spawn id that has relaunched
+//! [`RELAUNCH_BOUND`] times with no non-error outcome between. An unclassed or
 //! fault-class error on an unheld run reaches it too, unless the host marked it interrupted, its
 //! spawn site deciding what follows.
 //!
 //! On `rigger run`, an error it hands the conductor for a spawn the current run parked and has
 //! not ended is recorded as that spawn's result, so a restarted run answers the spawn from the
-//! log instead of launching it again: any error but a park or an emit refusal, and an
-//! interrupted one only once its spawn id has no relaunch left. It writes no other event: a hold,
+//! log instead of launching it again: any error but a park, an emit refusal or a store fault, and
+//! an interrupted one only once its spawn id has no relaunch left. A store fault ended no launched
+//! spawn, so it records nothing and a restart relaunches the spawn. It writes no other event: a hold,
 //! a release and a spawn's close each have their author. Its count of relaunches lives in memory
 //! over one supervisor's life, so a restarted supervisor starts it again.
 
@@ -32,11 +35,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 use rigger_domain::agent::{
-    failure_class, parked_spawn, AgentDriver, AgentResult, Error, SpawnOpts, EMIT_REFUSED_MARKER,
+    failure_class, parked_spawn, store_fault, AgentDriver, AgentResult, Error, SpawnOpts,
+    EMIT_REFUSED_MARKER,
 };
 use serde_json::Value;
 
-use crate::conductor::{is_interrupted, is_parked_or_refused};
+use crate::conductor::{is_interrupted, is_parked_or_refused, is_store_fault};
 use crate::config::AgentDef;
 use crate::eventstore::{Event, EventStore};
 use crate::ledger;
@@ -51,11 +55,23 @@ use crate::spawn_store;
 /// error passes through, whatever the error's class and whether or not the run is held.
 const RELAUNCH_BOUND: u32 = 2;
 
+/// Where the error a [`HeldDriver`] hands the conductor ends up: whether it is also recorded as
+/// the spawn's result.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Results {
+    /// `rigger run`: the error is recorded as the spawn's result, so a restarted run answers the
+    /// spawn from the log.
+    Recorded,
+    /// `rigger serve`: the shim hands each result back in process and none is logged.
+    HandedBack,
+}
+
 /// An [`AgentDriver`] that holds `inner`'s launches back while the run is held and relaunches a
 /// session a hold or a wait class ended, up to [`RELAUNCH_BOUND`].
 pub struct HeldDriver<'a> {
     inner: &'a dyn AgentDriver,
     store: &'a dyn EventStore,
+    results: Results,
     session_closed: Option<&'a AtomicBool>,
     pause: &'a (dyn Fn() + Sync),
     /// Each spawn id's relaunches since its last non-error outcome.
@@ -63,7 +79,9 @@ pub struct HeldDriver<'a> {
 }
 
 impl<'a> HeldDriver<'a> {
-    /// A decorator over `inner`, reading the run from `store`. A resume fallback launches inside
+    /// A decorator over `inner`, reading the run from `store` and, under [`Results::Recorded`],
+    /// recording the errors it hands the conductor there, so `store` is the one every other write
+    /// of the run goes through. A resume fallback launches inside
     /// `inner`'s spawn, past this gate, so an `inner` with one reads the run's hold itself
     /// ([`AgentDriver`]'s contract). `session_closed` is `rigger
     /// serve`'s flag, `None` on `rigger run`, which has no session to end a wait. `pause` runs
@@ -71,12 +89,14 @@ impl<'a> HeldDriver<'a> {
     pub fn new(
         inner: &'a dyn AgentDriver,
         store: &'a dyn EventStore,
+        results: Results,
         session_closed: Option<&'a AtomicBool>,
         pause: &'a (dyn Fn() + Sync),
     ) -> Self {
         HeldDriver {
             inner,
             store,
+            results,
             session_closed,
             pause,
             relaunch_counts: Mutex::new(HashMap::new()),
@@ -93,8 +113,8 @@ impl<'a> HeldDriver<'a> {
     /// whatever its last read found, with `id`'s park: the flag is read after the hold, so a close
     /// beats a release landing with it and a launch that did not wait reads no close. A failed
     /// read of the run ends the wait with `relaunched`, the error of the spawn this wait
-    /// relaunches, or with the read's own error before a first launch, since a run not proved
-    /// unheld launches nothing, unless the wait paused and its session closed: that wait parks,
+    /// relaunches, or with the read's own error marked a store fault ([`store_fault`]) before a
+    /// first launch, since a run not proved unheld launches nothing, unless the wait paused and its session closed: that wait parks,
     /// whatever its read answered, since nothing would serve the spawn either way.
     fn wait_out_the_hold(&self, id: &str, mut relaunched: Option<Error>) -> Result<(), Error> {
         let mut paused = false;
@@ -106,7 +126,11 @@ impl<'a> HeldDriver<'a> {
             if (paused || matches!(held, Ok(true))) && closed {
                 return Err(parked_spawn(id));
             }
-            if !held.map_err(|read| relaunched.take().unwrap_or_else(|| Error::from(read)))? {
+            if !held.map_err(|read| {
+                relaunched
+                    .take()
+                    .unwrap_or_else(|| store_fault(Error::from(read)))
+            })? {
                 return Ok(());
             }
             (self.pause)();
@@ -115,12 +139,13 @@ impl<'a> HeldDriver<'a> {
     }
 
     /// Whether `e`, the error of spawn `id`, is one this decorator carries across instead of its
-    /// spawn site. A run it cannot read leaves `e` to the conductor, the spawn's own failure
-    /// never masked by the read's. An error the host marked interrupted is carried across without
+    /// spawn site. A store fault is never carried, held or not: no launch ran, and the
+    /// conductor's infra retry answers it. A run it cannot read leaves `e` to the conductor, the
+    /// spawn's own failure never masked by the read's. An error the host marked interrupted is carried across without
     /// a read of the hold, since the host's own read decided it. Spends nothing: the relaunch it
     /// answers true for is spent by [`Self::try_spend_relaunch`].
     fn carries_across(&self, e: &Error, id: &str) -> bool {
-        if is_parked_or_refused(e, EMIT_REFUSED_MARKER) {
+        if is_parked_or_refused(e, EMIT_REFUSED_MARKER) || is_store_fault(e) {
             return false;
         }
         let Ok(slice) = self.run_slice() else {
@@ -152,15 +177,20 @@ impl<'a> HeldDriver<'a> {
 
     /// THE ERROR WRITE (spec 105, RESUME BY SESSION): record `e`, the error this decorator hands
     /// the conductor for spawn `id`, as the spawn's result, so a restarted `rigger run` answers
-    /// the spawn from the log with that error instead of launching it again. Only on `rigger
-    /// run`: on `rigger serve` the shim hands each result back in process and none is logged. A
-    /// park and an emit refusal end no spawn, so their marked errors record nothing; neither does
+    /// the spawn from the log with that error instead of launching it again. Only under
+    /// [`Results::Recorded`], `rigger run`'s mode: under [`Results::HandedBack`] nothing is
+    /// recorded. A
+    /// park, an emit refusal and a store fault end no launched spawn, so their marked errors
+    /// record nothing; neither does
     /// an interrupted error while `id` has a relaunch owed, nor a spawn the current run never
     /// parked. The write lands over no result or a liveness fault alone
     /// ([`spawn_store::record_result_unless_ended`]), never beside a result that ended the spawn.
     /// Best-effort: a failed read or write leaves `e` to reach the conductor unchanged.
     fn record_error(&self, e: &Error, id: &str) {
-        if self.session_closed.is_some() || is_parked_or_refused(e, EMIT_REFUSED_MARKER) {
+        if self.results == Results::HandedBack
+            || is_parked_or_refused(e, EMIT_REFUSED_MARKER)
+            || is_store_fault(e)
+        {
             return;
         }
         if is_interrupted(e)
@@ -228,12 +258,12 @@ mod tests {
     use std::sync::Mutex;
 
     use rigger_domain::agent::{
-        launch_interrupted, no_result_error, parked_spawn, AgentDriver, AgentFailure, AgentResult,
-        Error, SpawnOpts, API_UNSTABLE, EMIT_REFUSED_MARKER,
+        launch_interrupted, no_result_error, parked_spawn, store_fault, AgentDriver, AgentFailure,
+        AgentResult, Error, SpawnOpts, API_UNSTABLE, EMIT_REFUSED_MARKER,
     };
     use serde_json::Value;
 
-    use super::HeldDriver;
+    use super::{HeldDriver, Results};
     use crate::config::AgentDef;
     use crate::eventstore::sqlite::Store;
     use crate::eventstore::{Direction, Event, EventStore, ExpectedRevision, Position};
@@ -281,6 +311,12 @@ mod tests {
     /// read held deciding that close.
     fn interrupted() -> Error {
         launch_interrupted(FAULT, "the session was interrupted".into())
+    }
+
+    /// The error of a store read failing before a launch: the read's own error, marked a store
+    /// fault.
+    fn faulted(read: &str) -> Error {
+        store_fault(Error(read.to_string()))
     }
 
     /// The hold the host appends on the third failed close, before it returns its error.
@@ -553,7 +589,12 @@ mod tests {
                     }
                 }
             };
-            let held = HeldDriver::new(&host, &lands, session, &pause);
+            // Each command's mode: `rigger run`, with no session, records; `rigger serve` does not.
+            let results = match row.session {
+                Session::Absent => Results::Recorded,
+                Session::Open | Session::Closed => Results::HandedBack,
+            };
+            let held = HeldDriver::new(&host, &lands, results, session, &pause);
             for (call, (id, wants)) in row.calls.into_iter().enumerate() {
                 let answer = held
                     .spawn(
@@ -762,8 +803,8 @@ mod tests {
         ]);
     }
 
-    /// THE TWO PASS-THROUGHS: a conductor marker and a spawn the current run's slice has ended
-    /// pass unchanged, held or not, ahead of the class, and neither spends the bound.
+    /// THE PASS-THROUGHS: a conductor marker, a store fault and a spawn the current run's slice has
+    /// ended pass unchanged, held or not, ahead of the class, and none spends the bound.
     #[test]
     fn a_marked_error_or_an_ended_spawn_passes_held_or_not() {
         check(vec![
@@ -778,6 +819,13 @@ mod tests {
                 name: "an emit refusal while held passes",
                 script: vec![held_then_fails(refused())],
                 calls: one_call(Err(refused())),
+                launched: vec![ID],
+                ..Row::default()
+            },
+            Row {
+                name: "a store fault while held passes",
+                script: vec![held_then_fails(faulted(READ_FAILED))],
+                calls: one_call(Err(faulted(READ_FAILED))),
                 launched: vec![ID],
                 ..Row::default()
             },
@@ -1070,8 +1118,8 @@ mod tests {
         ]);
     }
 
-    /// A FAILED READ: a run not proved unheld launches nothing and answers the read's error,
-    /// never a hang, unless the wait paused and its session closed, which parks the spawn; a read
+    /// A FAILED READ: a run not proved unheld launches nothing and answers the read's error marked a
+    /// store fault, never a hang, unless the wait paused and its session closed, which parks the spawn; a read
     /// failing while the decorator decides on a spawn's error, or in the wait after it relaunched
     /// that spawn, hands that error back, not its own.
     #[test]
@@ -1080,14 +1128,14 @@ mod tests {
             Row {
                 name: "a store failing before the launch",
                 reads_fail: true,
-                calls: one_call(Err(Error(READ_FAILED.to_string()))),
+                calls: one_call(Err(faulted(READ_FAILED))),
                 ..Row::default()
             },
             Row {
                 name: "a store failing during the wait",
                 seeded: vec![third_fault_hold()],
                 at_pause: AtPause::BreakReads,
-                calls: one_call(Err(Error(READ_FAILED.to_string()))),
+                calls: one_call(Err(faulted(READ_FAILED))),
                 paused_at: vec![0],
                 ..Row::default()
             },
@@ -1113,7 +1161,7 @@ mod tests {
             Row {
                 name: "a hold the fold refuses before the launch",
                 seeded: vec![ev(TYPE_RUN_HELD, MALFORMED_HOLD)],
-                calls: one_call(Err(Error(MALFORMED_HOLD_SAID.to_string()))),
+                calls: one_call(Err(faulted(MALFORMED_HOLD_SAID))),
                 ..Row::default()
             },
             Row {
@@ -1143,8 +1191,8 @@ mod tests {
     /// THE ERROR WRITE (spec 105, RESUME BY SESSION): on `rigger run`, an error the decorator
     /// hands the conductor is recorded as the result of a spawn its run parked and has not ended,
     /// the bound's pass-through included and a liveness fault no bar, so a restart answers the
-    /// spawn from the log. A marked error, a relaunched one, an open or closed `rigger serve`
-    /// session, a spawn this run never parked, one its run has ended and a run the decorator
+    /// spawn from the log. A marked error, a store fault, a relaunched one, an open or closed
+    /// `rigger serve` session, a spawn this run never parked, one its run has ended and a run the decorator
     /// cannot read each record nothing, and the error returns unchanged.
     #[test]
     fn an_error_passing_on_rigger_run_is_recorded_for_a_parked_spawn_its_run_has_not_ended() {
@@ -1205,6 +1253,14 @@ mod tests {
                 seeded: vec![requested()],
                 script: vec![fails(refused())],
                 calls: one_call(Err(refused())),
+                launched: vec![ID],
+                ..Row::default()
+            },
+            Row {
+                name: "a store fault of a parked spawn records nothing",
+                seeded: vec![requested()],
+                script: vec![fails(faulted(READ_FAILED))],
+                calls: one_call(Err(faulted(READ_FAILED))),
                 launched: vec![ID],
                 ..Row::default()
             },

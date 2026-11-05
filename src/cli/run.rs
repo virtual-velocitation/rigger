@@ -1585,40 +1585,6 @@ fn keep_awake(sleep: &dyn SleepHold, command: &str) -> Option<SleepGuard> {
         .ok()
 }
 
-/// One poll of the HOLD CONTROLLER (spec 105 RELEASE): the probe the current run's open hold is
-/// owed ([`runscope::read::read_owed_probe`]), made by `host` in `root` once it falls due, its
-/// `hold-probe` line recorded on the run's progress stream first so every later poll counts it. A
-/// passing canary releases the hold by probe while its latest `RunHeld` is still the one probed, a
-/// failed canary's person-needing category moves the cause, and a logged-out session leaves the
-/// hold as it stands, its cause already naming the login a person makes. `run_store` is the
-/// folding store the host holds the run on. A read or a write that fails ends the poll with its
-/// error, the line unwritten making no probe, and the next poll is the retry.
-fn probe_an_owed_hold(
-    run_store: &dyn EventStore,
-    progress: &dyn EventStore,
-    host: &claude_code::Driver<'_>,
-    root: &str,
-) -> Result<(), String> {
-    let now = std::time::SystemTime::now();
-    let owed = runscope::read::read_owed_probe(run_store, conductor::STREAM, progress, now)
-        .map_err(|e| e.to_string())?;
-    let Some((owed, run)) = owed.filter(|(owed, _)| owed.due <= now) else {
-        return Ok(());
-    };
-    rigger::progress_store::append_stamped(progress, &run, &owed.line(), "the hold probe's line")
-        .map_err(|e| e.to_string())?;
-    match host.probe(root, &owed) {
-        claude_code::ProbeOutcome::Passed => {
-            runscope_store::release_probed_hold(run_store, owed.revision, now)
-        }
-        claude_code::ProbeOutcome::Failed(category) => {
-            runscope_store::record_failed_probe(run_store, &category)
-        }
-        claude_code::ProbeOutcome::LoggedOut => Ok(()),
-    }
-    .map_err(|e| e.to_string())
-}
-
 /// How often a launch waiting on a held run reads the run again (spec 105), and how often the hold
 /// controller polls for a probe its open hold is owed.
 const HOLD_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
@@ -1667,7 +1633,7 @@ fn reconcile_open_launches(
 /// The standalone CLI path: ground, host the agents as headless `claude` sessions
 /// ([`claude_code::Driver`]) behind the [`HeldDriver`] that launches nothing while the run is
 /// held, drive the DAG to integration with the supervisor [`beating`] and the hold controller
-/// ([`probe_an_owed_hold`] each [`HOLD_POLL_INTERVAL`]) [`ticking`] beside it, and reclaim a done
+/// ([`rigger::hold_controller::probe_an_owed_hold`] each [`HOLD_POLL_INTERVAL`]) [`ticking`] beside it, and reclaim a done
 /// run's scratch. The store is selected by flag and wrapped in the per-project namespace
 /// decorator before it is injected (§5.1.1, R9). It holds the step lock from right after its root
 /// check and spec read until it returns, and before its base gates closes and reaps every launch
@@ -1800,7 +1766,15 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
         beat_source: Some(&progress),
         hold_sink: Some(&folding),
     };
-    let held = HeldDriver::new(&driver, &store, None, &pause_a_hold_poll);
+    // The decorator records the errors it hands the conductor on the folding store the host
+    // records results on, so the graph folds them as it folds the host's.
+    let held = HeldDriver::new(
+        &driver,
+        &folding,
+        rigger::held::Results::Recorded,
+        None,
+        &pause_a_hold_poll,
+    );
     let grounder = select_grounder(&cfg.workflow.defaults.grounder)?;
     let root = repo.clone();
     let hash_blob = hash_blob_in(&root);
@@ -1823,7 +1797,10 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
     let _awake = keep_awake(sleep, command);
     // The hold controller polls beside the drive, on the folding store the host holds the run on.
     let control_holds = || {
-        if let Err(e) = probe_an_owed_hold(&folding, &progress, &driver, &root) {
+        let now = std::time::SystemTime::now();
+        if let Err(e) =
+            rigger::hold_controller::probe_an_owed_hold(&folding, &progress, &driver, &root, now)
+        {
             stderr_line(&format!("rigger run: the hold probe: {e}"));
         }
     };
@@ -2231,6 +2208,7 @@ fn run_workflow(parsed: &RunArgs, command: &str, sleep: &dyn SleepHold) -> Res {
             let held = HeldDriver::new(
                 &driver,
                 &store,
+                rigger::held::Results::HandedBack,
                 Some(&driver.session_closed),
                 &pause_a_hold_poll,
             );

@@ -22,6 +22,8 @@ pub use rigger_conductor::canary_store;
 pub use rigger_conductor::conductor;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use rigger_conductor::held;
+#[cfg(any(feature = "store", not(feature = "core")))]
+pub use rigger_conductor::hold_controller;
 pub use rigger_config_files::config;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use rigger_config_files::config_store;

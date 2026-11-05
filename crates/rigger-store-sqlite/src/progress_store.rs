@@ -12,8 +12,8 @@
 
 use crate::eventstore::{Error, EventStore, ExpectedRevision, Position, TypeSelection};
 use crate::progress::{
-    latest_launch_of, launch_records_of, stream_of, AgentProgress, RunStamped, SpawnLaunched,
-    StopFailure, TYPE_SPAWN_LAUNCHED,
+    latest_launch_of, launch_records_of, next_launch_after, stream_of, AgentProgress, RunStamped,
+    SpawnLaunched, StopFailure, TYPE_SPAWN_LAUNCHED,
 };
 
 /// Record one progress report to the progress `store`, stamped with `run_id`. Append-only
@@ -64,7 +64,9 @@ pub fn record_launch(
 /// [`latest_launch`] plus one, or 0 when the run holds no record of it. A failed read is the caller's to surface, since a launch that cannot name its
 /// ordinal could overwrite a prior launch's transcript.
 pub fn next_launch(store: &dyn EventStore, run_id: &str, spawn: &str) -> Result<u32, Error> {
-    Ok(latest_launch(store, run_id, spawn)?.map_or(0, |latest| latest.launch + 1))
+    Ok(next_launch_after(
+        latest_launch(store, run_id, spawn)?.as_ref(),
+    ))
 }
 
 /// The latest [`SpawnLaunched`] record of `spawn` in the run `run_id` (spec 105, RESUME BY

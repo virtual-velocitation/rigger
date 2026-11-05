@@ -51,8 +51,9 @@ pub use rigger_domain::wave::{blast_radius_conflicts, normalize_ws, ungated_fan_
 // The agent-host port, moved inward to `rigger-domain` (workspace split) so the driver adapters
 // implement it without naming the conductor; re-exported so every `conductor::` path holds.
 pub use rigger_domain::agent::{
-    classify_failure, no_result_error, parked_spawn, spawn_request, strip_failure_marker,
-    AgentDriver, AgentFailure, AgentResult, Error, SpawnOpts, TYPE_UNIT_PROPOSED,
+    classify_failure, no_result_error, parked_spawn, spawn_request, store_fault,
+    strip_failure_marker, AgentDriver, AgentFailure, AgentResult, Error, SpawnOpts,
+    STORE_FAULT_MARKER, TYPE_UNIT_PROPOSED,
 };
 use rigger_domain::agent::{EMIT_REFUSED_MARKER, INTERRUPTED_MARKER, PARKED_MARKER};
 #[cfg(test)]
@@ -1487,11 +1488,19 @@ pub(crate) fn is_interrupted(e: &Error) -> bool {
     carries_marker(e, INTERRUPTED_MARKER)
 }
 
+/// Whether `e` carries [`STORE_FAULT_MARKER`]: a store read that failed before the spawn
+/// launched, an infra fault the held-run decorator records no result for and the conflict
+/// resolver retries as a [`spawn_crash`] on the mark alone.
+pub(crate) fn is_store_fault(e: &Error) -> bool {
+    carries_marker(e, STORE_FAULT_MARKER)
+}
+
 /// Whether `e` carries the sentinel `marker` ([`PARKED_MARKER`], [`BUDGET_MARKER`],
 /// [`DEGENERATE_MARKER`], [`MISMATCH_MARKER`], [`PLAN_LANDING_MARKER`] or
 /// [`LAND_REFUSED_MARKER`], each a halt's signal, [`EMIT_REFUSED_MARKER`], the emit guard's
-/// refusal of a record the spawn emitted, or [`INTERRUPTED_MARKER`], the host's interrupted
-/// close) rather than a plain spawn or stage failure. Robust to
+/// refusal of a record the spawn emitted, [`INTERRUPTED_MARKER`], the host's interrupted
+/// close, or [`STORE_FAULT_MARKER`], a store read failing before the launch) rather than a plain
+/// spawn or stage failure. Robust to
 /// the conductor's own `format!("... {}", e.0)` wrapping at every call site, since each marker
 /// survives as a substring.
 fn carries_marker(e: &Error, marker: &str) -> bool {
@@ -1625,8 +1634,9 @@ fn spawn_halt(kind: SpawnHalt, stage: &str, tier: &str, agent: &str) -> Error {
 /// `Ok(false)` refusal (also worktree-preserving) - neither is a crash a caller should tear a
 /// worktree down over. With [`EMIT_REFUSED_MARKER`], the emit guard's refusal of a record the
 /// spawn emitted, both are what the SDET author's spawn site surfaces and the held-run decorator
-/// hands to the conductor unchanged with no result recorded, and the two errors the conflict
-/// resolver propagates where any other spends its round.
+/// hands to the conductor unchanged with no result recorded, and two of the three errors the
+/// conflict resolver propagates where any other spends its round (the third, a store fault, as a
+/// [`spawn_crash`]).
 ///
 /// One predicate, so every site that answers "should this unwind KEEP the worktree" (or, negated,
 /// "is this the genuine error to prioritize over a co-chunked park/refusal") reads it from ONE
@@ -1858,7 +1868,9 @@ const INFRA_MARKER: &str = "\u{1}rigger:infra-halt\u{1}";
 /// guard's error too), or a review round whose window ends with a recorded spawn error among its
 /// spawns ([`RunCtx::run_reviewer`]). The single lane ([`RunCtx::run_single_stage`]) reads it through
 /// [`infra_crash`] as an outage of the unit's stage and reruns the stage uncharged under the F3
-/// infra retry ([`CAUSE_INFRA_SPAWN`]), as it does an implementer crash. It is no halt: every
+/// infra retry ([`CAUSE_INFRA_SPAWN`]), as it does an implementer crash. A conflict-resolver round
+/// a store fault ended before its launch returns it too, and the single lane's integrate doors
+/// ([`RunCtx::integrate_under_infra_retry`]) rerun the merge under the same retry. It is no halt: every
 /// other caller (a standalone review stage, the plan-critique gate, a speculation candidate)
 /// keeps its own crash handling, and the wave's generic arm and the plan-critique gate strip it
 /// from the operator's message.
@@ -2706,9 +2718,12 @@ fn settle_run_state(
     // and workflow drivers' spawns too: only the replay driver and the headless host PARK a
     // `SpawnRequested` for the log to hold, so scanning the log would silently read zero
     // for every other driver. The still-parked wave IS read from the log (the cli and
-    // workflow drivers leave it empty, and on `rigger run` a spawn the headless host parks
-    // ends the call with its result recorded, by the host or by the decorator's error
-    // write, so none of them stalls the frontier).
+    // workflow drivers leave it empty). On `rigger run` a spawn the headless host parks ends
+    // the call with its result recorded, by the host or by the decorator's error write, save
+    // two: a spawn a store fault ended before its launch, and one whose error write did not
+    // land (the write is best-effort, and a relaunch whose hold read failed hands its error
+    // back unwritten). Each keeps no result, so it stays in this wave and a restart relaunches
+    // it.
     let after_spawns = ctx.spawns.load(Ordering::SeqCst) as usize;
     let parked_units: BTreeSet<String> = spawn::step_result(current_events)
         .map_err(|e| Error(e.to_string()))?
@@ -5708,6 +5723,35 @@ impl RunCtx<'_> {
         Err(infra_halt(unit, attempt, cause, evidence))
     }
 
+    /// Integrate `st` at `attempts` under `approval`, rerunning the merge uncharged on a
+    /// [`spawn_crash`] its conflict resolver returned (a store fault before a round's launch):
+    /// each crash records an infra-retry mark under `infra`'s ordinal ([`CAUSE_INFRA_SPAWN`]),
+    /// spends no resolver round and blocks nothing, and past the taxonomy's infra limit the
+    /// [`infra_halt`] error halts the step. Every other result returns as it was.
+    fn integrate_under_infra_retry(
+        &self,
+        wt: Option<&Worktree>,
+        st: &Stage,
+        attempts: u32,
+        approval: IntegrationApproval,
+        infra: &mut InfraRetries,
+    ) -> Result<Integration, Error> {
+        loop {
+            match infra_crash(self.integrate_and_emit(wt, st, attempts, approval))? {
+                Ok(integration) => return Ok(integration),
+                Err(crash) => {
+                    *infra = self.retry_infra_failure(
+                        &st.name,
+                        attempts,
+                        *infra,
+                        CAUSE_INFRA_SPAWN,
+                        &crash,
+                    )?
+                }
+            }
+        }
+    }
+
     /// Append one infra mark ([`STATUS_INFRA_RETRY`] / [`STATUS_INFRA_HALT`]) for `unit`'s run
     /// at `(attempt, ordinal)`, its `detail` riding as the unit's evidence under the status.
     fn emit_infra_mark(
@@ -5906,8 +5950,13 @@ impl RunCtx<'_> {
             // carrying no review records an integrate attempt only past its passed gates and
             // its empty panel's trivial approve - so this resumed merge carries a real
             // approval.
-            let integration =
-                self.integrate_and_emit(wt, st, attempts, IntegrationApproval::approved())?;
+            let integration = self.integrate_under_infra_retry(
+                wt,
+                st,
+                attempts,
+                IntegrationApproval::approved(),
+                &mut infra,
+            )?;
             if let Some(evidence) = integration.blocked {
                 // spec 12, unit 5: the MERGED tree failed the post-merge re-gate on a RESUMED
                 // merge (a batch-mate integrated onto the run branch since this unit was
@@ -6524,11 +6573,12 @@ impl RunCtx<'_> {
                                         // before attempt-counter) is load-bearing; reversing it
                                         // re-opens the bug where unit-2's approved-on-attempt-6
                                         // review was recorded as UnitFailed/UnitEscalated.
-                                        let integration = self.integrate_and_emit(
+                                        let integration = self.integrate_under_infra_retry(
                                             wt,
                                             st,
                                             attempts,
                                             IntegrationApproval::approved(),
+                                            &mut infra,
                                         )?;
                                         match integration.blocked {
                                             None => {
@@ -10307,9 +10357,11 @@ impl RunCtx<'_> {
                         self.record_placeholder_staged(&st.name, attempt, retry, &regenerable)?;
                         // integrate_mu is released HERE, before the spawn, so siblings
                         // integrate meanwhile (the ruling's own words: "returns the unit to
-                        // building"). A park propagates straight through the `?` below with
-                        // no lock held at all; any other round's end - a result or an unmarked
-                        // error, from a live session or the log - re-acquires `lock` and loops
+                        // building"). A park, or a store fault before the round's launch (the
+                        // spawn crash the integrate door retries), propagates straight through
+                        // the `?` below with no lock held at all; any other round's end - a
+                        // result or an unmarked error of a launched spawn, from a live session
+                        // or the log - re-acquires `lock` and loops
                         // back to re-attempt the merge from scratch, never trusting anything
                         // this iteration observed before the spawn. A resolver whose record the emit
                         // guard refused re-runs once at the next round's id, told why, so the
@@ -11235,12 +11287,14 @@ impl RunCtx<'_> {
     /// all, and a real (non-parked) result never blocks a sibling's concurrent integration
     /// behind an open-ended agent turnaround.
     ///
-    /// RESUME BY SESSION (spec 105): only a marked error returns `Err` - a park, or an emit
-    /// refusal [`rerun_once_on_refusal`] re-runs. An unmarked error, from a live session or
-    /// answered from the log, spends the round like one that resolved nothing: the caller
-    /// re-merges and, still conflicting, moves to the next `~retry` with no attempt charged,
-    /// blocking past [`CONFLICT_RESOLVE_BOUND`]. The budget's refusal is returned before the
-    /// spawn and propagates as ever.
+    /// RESUME BY SESSION (spec 105): only a marked error returns `Err` - a park, an emit
+    /// refusal [`rerun_once_on_refusal`] re-runs, or a store fault ([`is_store_fault`]): a store
+    /// read failing before the round launched, returned as a [`spawn_crash`] the integrate door
+    /// retries under the infra limit, so it spends no round and blocks nothing. An unmarked error
+    /// of a launched spawn, from a live session or answered from the log, spends the round like
+    /// one that resolved nothing: the caller re-merges and, still conflicting, moves to the next
+    /// `~retry` with no attempt charged, blocking past [`CONFLICT_RESOLVE_BOUND`]. The budget's
+    /// refusal is returned before the spawn and propagates as ever.
     fn spawn_conflict_resolution_implementer(
         &self,
         st: &Stage,
@@ -11307,6 +11361,11 @@ impl RunCtx<'_> {
         // The merge the caller re-attempts, never this round's outcome, decides what follows.
         match spawned {
             Err(e) if is_parked_or_refused(&e, EMIT_REFUSED_MARKER) => Err(e),
+            Err(e) if is_store_fault(&e) => Err(spawn_crash(format!(
+                "stage {:?} conflict resolver: {}",
+                st.name,
+                strip_failure_marker(&e)
+            ))),
             _ => Ok(()),
         }
     }
@@ -45227,6 +45286,9 @@ mod tests {
         Errs,
         /// It parks.
         Parks,
+        /// Its first `n` launches return a store fault ([`store_fault`]); a later launch of
+        /// the same round id resolves.
+        StoreFaults(usize),
     }
 
     impl AgentDriver for ConflictDriver {
@@ -45257,7 +45319,19 @@ mod tests {
                         Some(Unresolved::Nothing) => return Ok(AgentResult::default()),
                         Some(Unresolved::Errs) => return Err(Error(RESOLVER_ERROR.into())),
                         Some(Unresolved::Parks) => return Err(parked_spawn(&opts.id)),
-                        None => {}
+                        Some(Unresolved::StoreFaults(n))
+                            if self
+                                .calls
+                                .lock()
+                                .unwrap()
+                                .iter()
+                                .filter(|id| **id == opts.id)
+                                .count()
+                                <= n =>
+                        {
+                            return Err(store_fault(Error(RESOLVER_STORE_FAULT.into())))
+                        }
+                        Some(Unresolved::StoreFaults(_)) | None => {}
                     }
                     if !self.resolve_on_retry {
                         // Simulates a real implementer that fails to resolve it: leave the
@@ -46101,6 +46175,9 @@ mod tests {
     /// What a conflict-resolution round that errors says.
     const RESOLVER_ERROR: &str = "the resolver's session stopped";
 
+    /// What a store read failing before a conflict-resolution round's launch says.
+    const RESOLVER_STORE_FAULT: &str = "event store: the run read failed";
+
     /// Run the [`conflict_fixture`]'s two batch-mates `unit-a`/`unit-b` in `repo_path` through
     /// `driver` on `store` under `cfg` ([`conflicting_units_cfg`]'s shape).
     fn run_conflicting_units(
@@ -46322,6 +46399,125 @@ mod tests {
                 (unit.status, unit.attempts, causes, rounds)
             });
             assert_eq!(got.map_err(|e| e.0), Ok(want), "{name}");
+            drop(repo);
+        }
+    }
+
+    #[test]
+    fn consecutive_store_faults_at_the_resolvers_spawn_record_an_infra_retry_mark_charge_nothing_and_return_no_blocked_integration(
+    ) {
+        // A store read failing before a conflict-resolution round's launch is an outage, never
+        // the round's outcome: it spends no round, charges no attempt and blocks no integration.
+        // The integration reruns under the F3 infra retry, an infra-retry mark per fault, until
+        // the taxonomy's infra limit halts the step. Each row: the attempt-0 rounds and how they
+        // end, then the run's end (the conflicting unit's status and attempts, or the halt the
+        // operator reads), its `UnitFailed` causes, the attempt-0 resolver rounds the driver was
+        // called with in order, and its infra-retry and infra-halt marks; every other round
+        // resolves.
+        use Unresolved::StoreFaults;
+        type Outcome = (
+            Result<(ledger::Status, u32), String>,
+            Vec<String>,
+            Vec<u32>,
+            Vec<String>,
+            Vec<String>,
+        );
+        let marks = |loser: &str, status: &str, ordinals: &[u32]| -> Vec<String> {
+            ordinals
+                .iter()
+                .map(|ordinal| format!("{loser}/{status}#0~{ordinal}"))
+                .collect()
+        };
+        let integrated = |loser: &str, rounds: &[u32], retries: &[u32]| -> Outcome {
+            (
+                Ok((ledger::Status::Integrated, 0)),
+                Vec::new(),
+                rounds.to_vec(),
+                marks(loser, "infra-retry", retries),
+                Vec::new(),
+            )
+        };
+        let halted = |loser: &str| -> Outcome {
+            let evidence = format!("stage {loser:?} conflict resolver: {RESOLVER_STORE_FAULT}");
+            (
+                Err(infra_halt(loser, 0, CAUSE_INFRA_SPAWN, &evidence)
+                    .0
+                    .replace(INFRA_MARKER, "")),
+                Vec::new(),
+                vec![1, 1, 1],
+                marks(loser, "infra-retry", &[0, 1, 2]),
+                marks(loser, "infra-halt", &[2]),
+            )
+        };
+        // `Some((rounds, infra-retry ordinals))` for a run that integrates, `None` for the halt.
+        type Want = Option<(&'static [u32], &'static [u32])>;
+        type Row = (&'static str, Vec<(u32, Unresolved)>, Want);
+        let rows: [Row; 4] = [
+            (
+                "one store fault",
+                vec![(1, StoreFaults(1))],
+                Some((&[1, 1], &[0])),
+            ),
+            (
+                "a store fault at each round's first launch",
+                vec![
+                    (1, StoreFaults(1)),
+                    (2, StoreFaults(1)),
+                    (3, StoreFaults(1)),
+                ],
+                Some((&[1, 1], &[0])),
+            ),
+            (
+                "two consecutive store faults",
+                vec![(1, StoreFaults(2))],
+                Some((&[1, 1, 1], &[0, 1])),
+            ),
+            (
+                "store faults past the infra limit halt the step",
+                vec![(1, StoreFaults(3))],
+                None,
+            ),
+        ];
+        for (name, unresolved, want) in rows {
+            let (repo, repo_path, store, mut driver) = conflict_fixture(Vec::new(), true);
+            driver.unresolved = unresolved;
+            let cfg = conflicting_units_cfg(Vec::new());
+            let ended = run_conflicting_units(&repo_path, &store, &driver, &cfg);
+            let calls = driver.calls.lock().unwrap().clone();
+            let loser = calls
+                .iter()
+                .find_map(|id| id.strip_suffix("/implementer#0~retry1"))
+                .unwrap_or_else(|| panic!("{name}: no unit was re-parked: {calls:?}"))
+                .to_string();
+            let prefix = format!("{loser}/implementer#0~retry");
+            let rounds: Vec<u32> = calls
+                .iter()
+                .filter_map(|id| id.strip_prefix(&prefix)?.parse().ok())
+                .collect();
+            let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+            let causes: Vec<String> = events
+                .iter()
+                .filter(|e| e.type_ == ledger::TYPE_UNIT_FAILED)
+                .filter_map(|e| {
+                    let v: Value = serde_json::from_slice(&e.data).ok()?;
+                    (v.get("id")?.as_str()? == loser)
+                        .then(|| v.get("cause")?.as_str().map(str::to_string))?
+                })
+                .collect();
+            let got: Outcome = (
+                ended
+                    .map(|rs| (rs.units[&loser].status, rs.units[&loser].attempts))
+                    .map_err(|e| e.0),
+                causes,
+                rounds,
+                status_mark_keys(&events, "infra-retry"),
+                status_mark_keys(&events, "infra-halt"),
+            );
+            let want = match want {
+                Some((rounds, retries)) => integrated(&loser, rounds, retries),
+                None => halted(&loser),
+            };
+            assert_eq!(got, want, "{name}");
             drop(repo);
         }
     }
