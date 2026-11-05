@@ -88,9 +88,9 @@ Run `rigger critique <spec>`. It runs the workflow's critic (the plan-critique g
 else an adversary step in `defaults.review`) over the spec text pass after pass, until a pass adds
 no finding or its attempts reach the ceiling (the effective `max_retries` of the stage it is read
 from), records each pass keyed on the text's content hash, and prints the union of their findings;
-a text exhausted or at the ceiling is answered from the record, and any edit is critiqued afresh.
-Under a workflow naming neither, `rigger critique` refuses and runs are not gated, so skip Steps 3
-and 4.2. Each finding is one line:
+a text exhausted, or at the ceiling with a pass recorded, is answered from the record, and any edit
+is critiqued afresh. Under a workflow naming neither, `rigger critique` refuses and runs are not
+gated, so skip Steps 3 and 4.2. Each finding is one line:
 
     <id> | BLOCKING or NON-BLOCKING | <criterion or Design block> | <exact reading that breaks> | <smallest Design change that closes it>
 

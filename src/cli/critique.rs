@@ -3,9 +3,9 @@
 //! keyed on the spec's content hash - on the critique's own stream, never the run stream a step
 //! folds into its wave. The critique passes to exhaustion (spec 123): the critic is spawned again,
 //! the recorded findings in its prompt, until a pass carries no finding or the critic's ceiling is
-//! reached; so unchanged text whose critique is exhausted or at its ceiling is answered from the
-//! store with no spawn, by the union of its passes and the verdict that union derives, and any
-//! edit is critiqued afresh.
+//! reached; so unchanged text whose critique is exhausted, or at its ceiling with a pass recorded,
+//! is answered from the store with no spawn, by the union of its passes and the verdict that union
+//! derives, and any edit is critiqued afresh.
 
 use super::*;
 

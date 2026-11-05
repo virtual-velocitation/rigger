@@ -383,9 +383,10 @@ text pass after pass, each recorded keyed on the\n                              
 text's content hash, until a pass adds no finding or\n                              \
 its attempts reach the ceiling (the effective\n                              \
 max_retries of the stage it is read from); the union\n                              \
-of the passes is printed, and a text exhausted or at\n                              \
-the ceiling is answered from the record with no\n                              \
-spawn; takes --eventstore/--conn as run does\n  \
+of the passes is printed, and a text exhausted, or at\n                              \
+the ceiling with a pass recorded, is answered from\n                              \
+the record with no spawn; takes --eventstore/--conn\n                              \
+as run does\n  \
 rigger validate             load and validate the workflow + agents\n  \
 rigger init                 set up a project: scaffold .rigger/ (workflow.yml +\n                              \
 an agents/ folder) and install the Claude Code\n                              \
