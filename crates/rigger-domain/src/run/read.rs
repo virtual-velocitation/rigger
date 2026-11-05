@@ -139,10 +139,17 @@ fn read_from_boundary(
 /// answers the store's error, a fold's through [`fold_holds`] naming the run's hold, since a run
 /// not proved unheld launches nothing.
 pub fn read_current_hold(store: &dyn EventStore, stream: &str) -> Result<Option<Hold>, Error> {
-    let events = read_from_boundary(store, stream, &HOLD_TYPES)?;
     let mut state = RunState::new();
-    fold_holds(&mut state, super::current_run(&events))?;
+    fold_holds(&mut state, &read_current_hold_events(store, stream)?)?;
     Ok(state.hold)
+}
+
+/// The current run's [`HOLD_TYPES`] events, read from its boundary (`read_from_boundary`) and
+/// sliced to the newest run by [`crate::run::current_run`]: what the hold read folds and what the
+/// hold controller finds the open hold and its run in.
+fn read_current_hold_events(store: &dyn EventStore, stream: &str) -> Result<Vec<Event>, Error> {
+    let events = read_from_boundary(store, stream, &HOLD_TYPES)?;
+    Ok(super::current_run(&events).to_vec())
 }
 
 /// THE ONE HOLD FOLD: the [`HOLD_TYPES`] among `events` folded into `state` by
@@ -177,16 +184,25 @@ pub fn read_current_hold_at_head(
 }
 
 /// THE PROBE THE CURRENT RUN'S OPEN HOLD IS OWED (spec 105 RELEASE), read for every poll of the
-/// hold controller: [`owed_probe`] at `now` of the current run's events on `stream` and the run's
-/// progress lines on `progress`, beside the run's id the probe's line is stamped with (empty when
-/// no run has started); `None` when no probe is owed.
+/// hold controller: [`owed_probe`] at `now` of the current run's [`HOLD_TYPES`] events on
+/// `stream`, read from its boundary, and, only when they end on an open hold, the run's progress
+/// lines on `progress`, beside the run's id the probe's line is stamped with (empty when no run
+/// has started); `None` when no probe is owed. An unheld run and a released hold read no
+/// progress, and no poll materializes the carried-over knowledge or the run's other events.
 pub fn read_owed_probe(
     store: &dyn EventStore,
     stream: &str,
     progress: &dyn EventStore,
     now: SystemTime,
 ) -> Result<Option<(OwedProbe, String)>, Error> {
-    let (run_events, run) = read_current_run(store, stream)?;
+    let run_events = read_current_hold_events(store, stream)?;
+    if ledger::holds(&run_events)
+        .last()
+        .is_none_or(|span| span.release.is_some())
+    {
+        return Ok(None);
+    }
+    let run = super::current_run_id(&run_events).unwrap_or_default();
     let progress_events = progress::read_run(progress, &run)?;
     Ok(owed_probe(&run_events, &progress_events, now).map(|owed| (owed, run)))
 }
