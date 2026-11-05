@@ -283,6 +283,16 @@ pub const EMIT_REFUSED_MARKER: &str = "\u{1}rigger:emit-refused\u{1}";
 /// text reaches an agent's prompt or the operator.
 pub const INTERRUPTED_MARKER: &str = "\u{1}rigger:launch-interrupted\u{1}";
 
+/// Sentinel heading the [`Error`] of a store read that failed before a spawn launched
+/// ([`store_fault`]), in the [`PARKED_MARKER`] control-character idiom.
+pub const STORE_FAULT_MARKER: &str = "\u{1}rigger:store-fault\u{1}";
+
+/// Mark `e`, the error of a store read that failed before a spawn launched, with
+/// [`STORE_FAULT_MARKER`].
+pub fn store_fault(e: Error) -> Error {
+    Error(format!("{STORE_FAULT_MARKER}{}", e.0))
+}
+
 // ---- FAILURE CLASS (spec 104 criterion 5: A FAILURE HAS A CLASS) ----
 //
 // adj-u104c5 REQUIRED FIX 3 (arch-u104c5-failure-class-belongs-in-conductor-not-driver):
@@ -635,6 +645,17 @@ mod tests {
                 Some(AgentFailure::Unknown),
                 "the stream ended with no result".to_string()
             )
+        );
+    }
+
+    /// THE STORE FAULT MARK (spec 105): the error of a store read that failed before a spawn
+    /// launched carries no class, and stripped it reads as the read's own error.
+    #[test]
+    fn a_store_faults_error_carries_no_class_and_strips_to_the_reads_error() {
+        let e = store_fault(Error("event store: the run read failed".into()));
+        assert_eq!(
+            (failure_class(&e), strip_failure_marker(&e)),
+            (None, "event store: the run read failed".to_string())
         );
     }
 

@@ -2127,7 +2127,7 @@ pub fn build_args(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::AgentFailure;
+    use crate::agent::{store_fault, AgentFailure};
     use crate::eventstore::sqlite::Store;
     use crate::eventstore::{Direction, EventStore, SilentStore};
     use crate::test_support::implementer_opts as opts;
@@ -3390,6 +3390,46 @@ mod tests {
         };
 
         assert_eq!(err.0, FailingReadStore::read_failure().to_string());
+    }
+
+    /// A STORE FAULT (spec 105): a store read failing before the spawn's first launch, of the
+    /// run's log or of the spawn's launch records, launches nothing and returns the read's error
+    /// marked a store fault, keeping the spawn's scratch, so a restart relaunches it.
+    #[test]
+    fn a_store_read_failing_before_the_launch_is_a_store_fault_keeping_the_scratch() {
+        let readable = Store::open(":memory:").unwrap();
+        let rows: [(&str, &dyn EventStore, &dyn EventStore); 2] = [
+            ("the run's log", &FailingReadStore, &readable),
+            ("the launch records", &readable, &FailingReadStore),
+        ];
+        for (name, run_store, progress_store) in rows {
+            let scratch_root = tempfile::tempdir().unwrap();
+            let root = scratch_root.path().to_string_lossy().into_owned();
+            let o = opts("u/implementer#0");
+            let leaf = spawn_scratch_path(&root, &o.run_id, &o.id).unwrap();
+            std::fs::create_dir_all(&leaf).unwrap();
+            std::fs::write(leaf.join("build.log"), "built").unwrap();
+            let driver = Driver {
+                run_store,
+                progress_store,
+                scratch_root: root,
+                ..Driver::default()
+            };
+
+            let err = driver
+                .spawn(&AgentDef::default(), "task", &o, &no_emit)
+                .map(|result| result.output)
+                .unwrap_err();
+
+            assert_eq!(
+                (err.0, leaf.join("build.log").exists()),
+                (
+                    store_fault(Error(FailingReadStore::read_failure().to_string())).0,
+                    true
+                ),
+                "{name}"
+            );
+        }
     }
 
     #[test]

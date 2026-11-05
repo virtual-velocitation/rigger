@@ -228,8 +228,8 @@ mod tests {
     use std::sync::Mutex;
 
     use rigger_domain::agent::{
-        launch_interrupted, no_result_error, parked_spawn, AgentDriver, AgentFailure, AgentResult,
-        Error, SpawnOpts, API_UNSTABLE, EMIT_REFUSED_MARKER,
+        launch_interrupted, no_result_error, parked_spawn, store_fault, AgentDriver, AgentFailure,
+        AgentResult, Error, SpawnOpts, API_UNSTABLE, EMIT_REFUSED_MARKER,
     };
     use serde_json::Value;
 
@@ -281,6 +281,12 @@ mod tests {
     /// read held deciding that close.
     fn interrupted() -> Error {
         launch_interrupted(FAULT, "the session was interrupted".into())
+    }
+
+    /// The error of a store read failing before a launch: the read's own error, marked a store
+    /// fault.
+    fn faulted(read: &str) -> Error {
+        store_fault(Error(read.to_string()))
     }
 
     /// The hold the host appends on the third failed close, before it returns its error.
@@ -762,8 +768,8 @@ mod tests {
         ]);
     }
 
-    /// THE TWO PASS-THROUGHS: a conductor marker and a spawn the current run's slice has ended
-    /// pass unchanged, held or not, ahead of the class, and neither spends the bound.
+    /// THE PASS-THROUGHS: a conductor marker, a store fault and a spawn the current run's slice has
+    /// ended pass unchanged, held or not, ahead of the class, and none spends the bound.
     #[test]
     fn a_marked_error_or_an_ended_spawn_passes_held_or_not() {
         check(vec![
@@ -778,6 +784,13 @@ mod tests {
                 name: "an emit refusal while held passes",
                 script: vec![held_then_fails(refused())],
                 calls: one_call(Err(refused())),
+                launched: vec![ID],
+                ..Row::default()
+            },
+            Row {
+                name: "a store fault while held passes",
+                script: vec![held_then_fails(faulted(READ_FAILED))],
+                calls: one_call(Err(faulted(READ_FAILED))),
                 launched: vec![ID],
                 ..Row::default()
             },
@@ -1070,8 +1083,8 @@ mod tests {
         ]);
     }
 
-    /// A FAILED READ: a run not proved unheld launches nothing and answers the read's error,
-    /// never a hang, unless the wait paused and its session closed, which parks the spawn; a read
+    /// A FAILED READ: a run not proved unheld launches nothing and answers the read's error marked a
+    /// store fault, never a hang, unless the wait paused and its session closed, which parks the spawn; a read
     /// failing while the decorator decides on a spawn's error, or in the wait after it relaunched
     /// that spawn, hands that error back, not its own.
     #[test]
@@ -1080,14 +1093,14 @@ mod tests {
             Row {
                 name: "a store failing before the launch",
                 reads_fail: true,
-                calls: one_call(Err(Error(READ_FAILED.to_string()))),
+                calls: one_call(Err(faulted(READ_FAILED))),
                 ..Row::default()
             },
             Row {
                 name: "a store failing during the wait",
                 seeded: vec![third_fault_hold()],
                 at_pause: AtPause::BreakReads,
-                calls: one_call(Err(Error(READ_FAILED.to_string()))),
+                calls: one_call(Err(faulted(READ_FAILED))),
                 paused_at: vec![0],
                 ..Row::default()
             },
@@ -1113,7 +1126,7 @@ mod tests {
             Row {
                 name: "a hold the fold refuses before the launch",
                 seeded: vec![ev(TYPE_RUN_HELD, MALFORMED_HOLD)],
-                calls: one_call(Err(Error(MALFORMED_HOLD_SAID.to_string()))),
+                calls: one_call(Err(faulted(MALFORMED_HOLD_SAID))),
                 ..Row::default()
             },
             Row {
@@ -1143,8 +1156,8 @@ mod tests {
     /// THE ERROR WRITE (spec 105, RESUME BY SESSION): on `rigger run`, an error the decorator
     /// hands the conductor is recorded as the result of a spawn its run parked and has not ended,
     /// the bound's pass-through included and a liveness fault no bar, so a restart answers the
-    /// spawn from the log. A marked error, a relaunched one, an open or closed `rigger serve`
-    /// session, a spawn this run never parked, one its run has ended and a run the decorator
+    /// spawn from the log. A marked error, a store fault, a relaunched one, an open or closed
+    /// `rigger serve` session, a spawn this run never parked, one its run has ended and a run the decorator
     /// cannot read each record nothing, and the error returns unchanged.
     #[test]
     fn an_error_passing_on_rigger_run_is_recorded_for_a_parked_spawn_its_run_has_not_ended() {
@@ -1205,6 +1218,14 @@ mod tests {
                 seeded: vec![requested()],
                 script: vec![fails(refused())],
                 calls: one_call(Err(refused())),
+                launched: vec![ID],
+                ..Row::default()
+            },
+            Row {
+                name: "a store fault of a parked spawn records nothing",
+                seeded: vec![requested()],
+                script: vec![fails(faulted(READ_FAILED))],
+                calls: one_call(Err(faulted(READ_FAILED))),
                 launched: vec![ID],
                 ..Row::default()
             },

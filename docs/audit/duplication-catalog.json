@@ -550,7 +550,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-9d3e6648d945",
+    "id": "dup-1e5f0181f0a0",
     "classification": "semantic",
     "sites": [
       {
@@ -571,7 +571,7 @@
       {
         "file": "crates/rigger-conductor/src/held.rs",
         "name": "a_marked_error_or_an_ended_spawn_passes_held_or_not",
-        "content_hash": "5afade9ada4bfb32"
+        "content_hash": "83bf4a87c6b34abf"
       },
       {
         "file": "crates/rigger-domain/src/agent.rs",

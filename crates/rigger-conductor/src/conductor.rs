@@ -51,8 +51,9 @@ pub use rigger_domain::wave::{blast_radius_conflicts, normalize_ws, ungated_fan_
 // The agent-host port, moved inward to `rigger-domain` (workspace split) so the driver adapters
 // implement it without naming the conductor; re-exported so every `conductor::` path holds.
 pub use rigger_domain::agent::{
-    classify_failure, no_result_error, parked_spawn, spawn_request, strip_failure_marker,
-    AgentDriver, AgentFailure, AgentResult, Error, SpawnOpts, TYPE_UNIT_PROPOSED,
+    classify_failure, no_result_error, parked_spawn, spawn_request, store_fault,
+    strip_failure_marker, AgentDriver, AgentFailure, AgentResult, Error, SpawnOpts,
+    STORE_FAULT_MARKER, TYPE_UNIT_PROPOSED,
 };
 use rigger_domain::agent::{EMIT_REFUSED_MARKER, INTERRUPTED_MARKER, PARKED_MARKER};
 #[cfg(test)]
@@ -45136,6 +45137,9 @@ mod tests {
         Errs,
         /// It parks.
         Parks,
+        /// Its first `n` launches return a store fault ([`store_fault`]); a later launch of
+        /// the same round id resolves.
+        StoreFaults(usize),
     }
 
     impl AgentDriver for ConflictDriver {
@@ -45166,7 +45170,19 @@ mod tests {
                         Some(Unresolved::Nothing) => return Ok(AgentResult::default()),
                         Some(Unresolved::Errs) => return Err(Error(RESOLVER_ERROR.into())),
                         Some(Unresolved::Parks) => return Err(parked_spawn(&opts.id)),
-                        None => {}
+                        Some(Unresolved::StoreFaults(n))
+                            if self
+                                .calls
+                                .lock()
+                                .unwrap()
+                                .iter()
+                                .filter(|id| **id == opts.id)
+                                .count()
+                                <= n =>
+                        {
+                            return Err(store_fault(Error(RESOLVER_STORE_FAULT.into())))
+                        }
+                        Some(Unresolved::StoreFaults(_)) | None => {}
                     }
                     if !self.resolve_on_retry {
                         // Simulates a real implementer that fails to resolve it: leave the
@@ -46010,6 +46026,9 @@ mod tests {
     /// What a conflict-resolution round that errors says.
     const RESOLVER_ERROR: &str = "the resolver's session stopped";
 
+    /// What a store read failing before a conflict-resolution round's launch says.
+    const RESOLVER_STORE_FAULT: &str = "event store: the run read failed";
+
     /// Run the [`conflict_fixture`]'s two batch-mates `unit-a`/`unit-b` in `repo_path` through
     /// `driver` on `store` under `cfg` ([`conflicting_units_cfg`]'s shape).
     fn run_conflicting_units(
@@ -46231,6 +46250,116 @@ mod tests {
                 (unit.status, unit.attempts, causes, rounds)
             });
             assert_eq!(got.map_err(|e| e.0), Ok(want), "{name}");
+            drop(repo);
+        }
+    }
+
+    #[test]
+    fn consecutive_store_faults_at_the_resolvers_spawn_record_an_infra_retry_mark_charge_nothing_and_return_no_blocked_integration(
+    ) {
+        // A store read failing before a conflict-resolution round's launch is an outage, never
+        // the round's outcome: it spends no round, charges no attempt and blocks no integration.
+        // The integration reruns under the F3 infra retry, an infra-retry mark per fault, until
+        // the taxonomy's infra limit halts the step. Each row: the attempt-0 rounds and how they
+        // end, then the run's end (the conflicting unit's status and attempts, or the halt the
+        // operator reads), its `UnitFailed` causes, the attempt-0 resolver rounds the driver was
+        // called with in order, and its infra-retry and infra-halt marks; every other round
+        // resolves.
+        use Unresolved::StoreFaults;
+        type Outcome = (
+            Result<(ledger::Status, u32), String>,
+            Vec<String>,
+            Vec<u32>,
+            Vec<String>,
+            Vec<String>,
+        );
+        let marks = |loser: &str, status: &str, ordinals: &[u32]| -> Vec<String> {
+            ordinals
+                .iter()
+                .map(|ordinal| format!("{loser}/{status}#0~{ordinal}"))
+                .collect()
+        };
+        let integrated = |loser: &str, rounds: &[u32], retries: &[u32]| -> Outcome {
+            (
+                Ok((ledger::Status::Integrated, 0)),
+                Vec::new(),
+                rounds.to_vec(),
+                marks(loser, "infra-retry", retries),
+                Vec::new(),
+            )
+        };
+        let halted = |loser: &str| -> Outcome {
+            let evidence = format!("stage {loser:?} conflict resolver: {RESOLVER_STORE_FAULT}");
+            (
+                Err(infra_halt(loser, 0, CAUSE_INFRA_SPAWN, &evidence)
+                    .0
+                    .replace(INFRA_MARKER, "")),
+                Vec::new(),
+                vec![1, 1, 1],
+                marks(loser, "infra-retry", &[0, 1, 2]),
+                marks(loser, "infra-halt", &[2]),
+            )
+        };
+        // `Some((rounds, infra-retry ordinals))` for a run that integrates, `None` for the halt.
+        type Want = Option<(&'static [u32], &'static [u32])>;
+        let rows: [(&str, Vec<(u32, Unresolved)>, Want); 4] = [
+            ("one store fault", vec![(1, StoreFaults(1))], Some((&[1, 1], &[0]))),
+            (
+                "a store fault at each round's first launch",
+                vec![(1, StoreFaults(1)), (2, StoreFaults(1)), (3, StoreFaults(1))],
+                Some((&[1, 1], &[0])),
+            ),
+            (
+                "two consecutive store faults",
+                vec![(1, StoreFaults(2))],
+                Some((&[1, 1, 1], &[0, 1])),
+            ),
+            (
+                "store faults past the infra limit halt the step",
+                vec![(1, StoreFaults(3))],
+                None,
+            ),
+        ];
+        for (name, unresolved, want) in rows {
+            let (repo, repo_path, store, mut driver) = conflict_fixture(Vec::new(), true);
+            driver.unresolved = unresolved;
+            let cfg = conflicting_units_cfg(Vec::new());
+            let ended = run_conflicting_units(&repo_path, &store, &driver, &cfg);
+            let calls = driver.calls.lock().unwrap().clone();
+            let loser = calls
+                .iter()
+                .find_map(|id| id.strip_suffix("/implementer#0~retry1"))
+                .unwrap_or_else(|| panic!("{name}: no unit was re-parked: {calls:?}"))
+                .to_string();
+            let prefix = format!("{loser}/implementer#0~retry");
+            let rounds: Vec<u32> = calls
+                .iter()
+                .filter_map(|id| id.strip_prefix(&prefix)?.parse().ok())
+                .collect();
+            let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+            let causes: Vec<String> = events
+                .iter()
+                .filter(|e| e.type_ == ledger::TYPE_UNIT_FAILED)
+                .filter_map(|e| {
+                    let v: Value = serde_json::from_slice(&e.data).ok()?;
+                    (v.get("id")?.as_str()? == loser)
+                        .then(|| v.get("cause")?.as_str().map(str::to_string))?
+                })
+                .collect();
+            let got: Outcome = (
+                ended
+                    .map(|rs| (rs.units[&loser].status, rs.units[&loser].attempts))
+                    .map_err(|e| e.0),
+                causes,
+                rounds,
+                status_mark_keys(&events, "infra-retry"),
+                status_mark_keys(&events, "infra-halt"),
+            );
+            let want = match want {
+                Some((rounds, retries)) => integrated(&loser, rounds, retries),
+                None => halted(&loser),
+            };
+            assert_eq!(got, want, "{name}");
             drop(repo);
         }
     }

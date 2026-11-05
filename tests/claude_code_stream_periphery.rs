@@ -4331,7 +4331,8 @@ fn relaunch_cases() -> Vec<Relaunch> {
 /// (its session or the session it resumed is the one the spawn names), recording only its answer,
 /// so no attempt is charged. Any other latest launch, or a prior run's, launches fresh, a relaunch
 /// with no `system/init` takes the fallback, and a hold sink the host cannot read or fold launches
-/// nothing.
+/// nothing: its error is marked a store fault and the spawn's scratch is kept, which a spawn that
+/// answers reclaims.
 #[cfg(unix)]
 #[test]
 fn an_interrupted_launch_relaunches_its_session_as_its_close_decides() {
@@ -4366,8 +4367,16 @@ fn an_interrupted_launch_relaunches_its_session_as_its_close_decides() {
             env: fx.ending_env(case.resume_ending, "answer"),
             ..base
         };
+        let root = fx.scratch_root.path().to_string_lossy().into_owned();
+        let scratch = spawn_scratch_path(&root, &o.run_id, &o.id).unwrap();
+        std::fs::create_dir_all(&scratch).unwrap();
+        std::fs::write(scratch.join("build.log"), "built").unwrap();
 
         let outcome = driver.spawn(&AgentDef::default(), FULL_PROMPT, &o, &no_emit);
+        let faulted = outcome
+            .as_ref()
+            .err()
+            .map(|e| e.0.starts_with(rigger::conductor::STORE_FAULT_MARKER));
 
         let records = fx.unstamped_records();
         // The sessions the host minted: a relaunch's fork on the first record the spawn appends,
@@ -4443,6 +4452,12 @@ fn an_interrupted_launch_relaunches_its_session_as_its_close_decides() {
             Vec::new()
         };
         assert_eq!(fx.recorded_results(), results, "{name}: the results");
+        let failed = !case.failure.is_empty();
+        assert_eq!(
+            (faulted, scratch.join("build.log").exists()),
+            (failed.then_some(true), failed),
+            "{name}: a store fault and the scratch it keeps"
+        );
     }
 }
 

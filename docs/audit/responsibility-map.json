@@ -7797,7 +7797,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "ebd5a9e407b1ac6a"
+    "content_hash": "eec848561cf2dec8"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -7926,6 +7926,14 @@
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
     "content_hash": "95574ea012b63adc"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "consecutive_store_faults_at_the_resolvers_spawn_record_an_infra_retry_mark_charge_nothing_and_return_no_blocked_integration",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "6b79f2265b2e5aa5"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
