@@ -5314,19 +5314,16 @@ impl RunCtx<'_> {
             // Replay-keyed on unit + attempt + infra retry ordinal + item: a re-run review over
             // the recorded verdict records each lesson once, and an infra rerun's fresh review
             // records its own.
-            self.emit_keyed(
-                &format!("{unit}/operator-lesson#{attempt}~{ordinal}.{n}"),
-                contextgraph::TYPE_LESSON_LEARNED,
-                json!({
-                    "id": format!("lesson-{unit}-{attempt}-{ordinal}-operator-{n}"),
-                    "summary": format!(
-                        "For the operator: review of unit {unit:?} at attempt {attempt} found, \
-                         outside the delta it reviewed, an item that is no correctness defect, \
-                         so it no longer holds the unit back - {}: {}",
-                        item.path, item.finding
-                    ),
-                    "about": [item.path],
-                }),
+            self.record_lesson(
+                Some(&format!("{unit}/operator-lesson#{attempt}~{ordinal}.{n}")),
+                &format!("lesson-{unit}-{attempt}-{ordinal}-operator-{n}"),
+                &format!(
+                    "For the operator: review of unit {unit:?} at attempt {attempt} found, \
+                     outside the delta it reviewed, an item that is no correctness defect, so \
+                     it no longer holds the unit back - {}: {}",
+                    item.path, item.finding
+                ),
+                vec![item.path.clone()],
             )?;
         }
         if kept.is_empty() && !dropped.is_empty() {
@@ -8811,11 +8808,6 @@ impl RunCtx<'_> {
         let k = s - 1;
         let spec = crate::run::current_run_spec_path(&run);
         let halt = spec_defect_halt(&spec, &stopping.upheld);
-        let about: Vec<String> = if spec.is_empty() {
-            Vec::new()
-        } else {
-            vec![spec]
-        };
         self.emit_lesson(
             None,
             gate,
@@ -8825,7 +8817,7 @@ impl RunCtx<'_> {
                 spawn::CAUSE_SPEC_AMBIGUITY
             ),
             Some(&spec_defect_lesson_key(gate, k)),
-            Some(&about),
+            Some(std::slice::from_ref(&spec)),
         )?;
         self.emit_keyed(
             &spec_defect_key(gate, k),
@@ -11848,7 +11840,8 @@ impl RunCtx<'_> {
 
     /// Record a `LessonLearned` about `unit_name`, answering its append's outcome. `about` names
     /// what the lesson is about when given (the spec-defect stop names the spec, spec 112
-    /// criterion 5); without it the lesson is about the files `wt` touched. `key`, when given,
+    /// criterion 5); without it the lesson is about the files `wt` touched, and about the run's
+    /// spec file when neither names one ([`Self::record_lesson`]). `key`, when given,
     /// records it under that replay key, so a step re-reaching the same lesson appends nothing.
     /// Every caller but the spec-defect stop records its lesson best-effort and discards the
     /// outcome; the stop propagates it, since its later records must never stand over a lesson
@@ -11874,6 +11867,30 @@ impl RunCtx<'_> {
         };
         let uid = uuid::Uuid::new_v4().to_string();
         let id = format!("lesson-{unit_name}-{}", &uid[..8]);
+        self.record_lesson(key, &id, summary, about)
+    }
+
+    /// Record the `LessonLearned` `id` saying `summary` about `about`, under the replay key `key`
+    /// when given: the one place every lesson the conductor records takes its location
+    /// (op-105-conductor-lessons-carry-a-location). An `about` that names no file names the run's
+    /// spec file instead, so a file-seeded read reaches the lesson; the lesson is recorded either
+    /// way, about nothing when the run's spec cannot be read, since a lost lesson costs more than
+    /// a coarse location.
+    fn record_lesson(
+        &self,
+        key: Option<&str>,
+        id: &str,
+        summary: &str,
+        about: Vec<String>,
+    ) -> Result<(), Error> {
+        let mut about: Vec<String> = about.into_iter().filter(|path| !path.is_empty()).collect();
+        if about.is_empty() {
+            let spec = self
+                .read_current_run()
+                .map(|run| crate::run::current_run_spec_path(&run))
+                .unwrap_or_default();
+            about.extend(Some(spec).filter(|spec| !spec.is_empty()));
+        }
         let payload = json!({"id": id, "summary": summary, "about": about});
         match key {
             Some(key) => self.emit_keyed(key, contextgraph::TYPE_LESSON_LEARNED, payload),
@@ -32938,7 +32955,9 @@ mod tests {
             ctx.split_reject("implement", 1, 0, Some(&round), reject.to_string())
                 .unwrap();
         }
-        let cases: [(&str, &str, fn(&RunCtx<'_>), &[&str]); 5] = [
+        /// How a row records its one lesson.
+        type Records = fn(&RunCtx<'_>);
+        let cases: [(&str, &str, Records, &[&str]); 5] = [
             (
                 "a lesson with no worktree and no about",
                 SPEC,

@@ -1013,7 +1013,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "fd83a314f25153be"
+    "content_hash": "39f73eee4b48c370"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -1245,7 +1245,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "e6de0ae760337b79"
+    "content_hash": "07f92592e38d64c7"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -1717,7 +1717,15 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "22b9d1dfae92e6f8"
+    "content_hash": "e97400a0e954823f"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "record_lesson",
+    "is_test": false,
+    "proposed_module": "conductor::run_ctx",
+    "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
+    "content_hash": "dc666b0fbdb18feb"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -5613,7 +5621,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "f425226b99106d9e"
+    "content_hash": "422e739b7d908772"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
