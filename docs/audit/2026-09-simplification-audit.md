@@ -1882,7 +1882,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `crates/rigger-conductor/src/conductor.rs:1106-1108` `conflict_regenerate_key`
 - `crates/rigger-conductor/src/conductor.rs:13283-13285` `audit_id`
 - `crates/rigger-domain/src/spawn.rs:276-278` `spawn_id`
-- `crates/rigger-driver/src/driver/claude_code.rs:1887-1895` `stop_message`
+- `crates/rigger-driver/src/driver/claude_code.rs:1886-1894` `stop_message`
 - `tests/cli.rs:7904-7917` `rendezvous`
 - `tests/common/fixtures/fold.rs:757-759` `code_batch_key`
 - `tests/common/fixtures/graph.rs:204-206` `spoke_id`
@@ -1976,7 +1976,7 @@ mandatory sweep: error-shaping helper functions - 22 site(s), collected mechanic
 - `crates/rigger-domain/src/agent.rs:512-514` `no_result_error`
 - `crates/rigger-domain/src/agent.rs:581-619` `an_error_answers_the_class_it_carries`
 - `crates/rigger-domain/src/ingest.rs:604-649` `a_walk_reaches_every_batch_past_a_failed_one_and_answers_the_first_error`
-- `crates/rigger-driver/src/driver/claude_code.rs:1900-1905` `read_agent_stream_error`
+- `crates/rigger-driver/src/driver/claude_code.rs:1899-1904` `read_agent_stream_error`
 - `crates/rigger-grounder/src/grounder/mod.rs:207-213` `retired_grounder_error`
 - `crates/rigger-worktree-git/src/worktree.rs:4050-4077` `land_reports_a_generic_error_for_a_refusal_that_is_neither_tip_moved_nor_blocked`
 - `crates/rigger-worktree-git/src/worktree.rs:5497-5551` `revert_on_base_aborts_and_errors_on_a_conflicting_revert`
@@ -4169,8 +4169,8 @@ Proposed home: `claude_code::failing_read_store`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-driver/src/driver/claude_code.rs:2198-2205` `read_stream`
-- `crates/rigger-driver/src/driver/claude_code.rs:2252-2259` `read_stream_typed`
+- `crates/rigger-driver/src/driver/claude_code.rs:2197-2204` `read_stream`
+- `crates/rigger-driver/src/driver/claude_code.rs:2251-2258` `read_stream_typed`
 
 #### `dup-4979c76ee36f` (near, 2 sites)
 
@@ -4178,8 +4178,8 @@ Proposed home: `claude_code::failing_read_store`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-driver/src/driver/claude_code.rs:2245-2251` `last_position`
-- `crates/rigger-driver/src/driver/claude_code.rs:2279-2285` `latest_in_group`
+- `crates/rigger-driver/src/driver/claude_code.rs:2244-2250` `last_position`
+- `crates/rigger-driver/src/driver/claude_code.rs:2278-2284` `latest_in_group`
 
 #### `dup-117928e59e0c` (near, 2 sites)
 
@@ -4187,8 +4187,8 @@ Proposed home: `claude_code::support (consolidate these 2 sites into one functio
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-driver/src/driver/claude_code.rs:2529-2550` `build_args_mcp_config_names_the_spawn_bound_server`
-- `crates/rigger-driver/src/driver/claude_code.rs:2553-2571` `build_args_mcp_config_uses_the_configured_rigger_bin`
+- `crates/rigger-driver/src/driver/claude_code.rs:2528-2549` `build_args_mcp_config_names_the_spawn_bound_server`
+- `crates/rigger-driver/src/driver/claude_code.rs:2552-2570` `build_args_mcp_config_uses_the_configured_rigger_bin`
 
 #### `dup-ccd4dd4d7b0d` (near, 2 sites)
 

@@ -3809,6 +3809,9 @@ const FELL_BACK: &str = "sess-fell-back";
 /// The session a relaunch before a [`relaunch_cases`] row forked its interrupted session under.
 const RELAUNCHED: &str = "sess-relaunched";
 
+/// The session a second relaunch before a [`relaunch_cases`] row forked [`RELAUNCHED`] under.
+const RELAUNCHED_AGAIN: &str = "sess-relaunched-again";
+
 /// Stands, in a [`relaunch_cases`] row, for the session the host mints for a fresh launch.
 const MINTED: &str = "<the session the host mints>";
 
@@ -4050,6 +4053,54 @@ fn relaunch_cases() -> Vec<Relaunch> {
             appended: relaunched(3, RELAUNCHED),
             tasks: vec![RESTARTED.to_string()],
             answered: (FORKED, RELAUNCHED),
+            ..Default::default()
+        },
+        Relaunch {
+            name: "a third relaunch of a resume, sending its resume task still",
+            log: login_released(),
+            seeded: vec![
+                Opened(0, PRIOR_SESSION, Some(PRIOR_SESSION)),
+                Closed(
+                    0,
+                    PRIOR_SESSION,
+                    "interrupted",
+                    "authentication_failed",
+                    Some(0),
+                ),
+                Opened(1, RELAUNCHED, Some(PRIOR_SESSION)),
+                Closed(1, RELAUNCHED, "interrupted", "", None),
+                Opened(2, RELAUNCHED_AGAIN, Some(RELAUNCHED)),
+                Closed(2, RELAUNCHED_AGAIN, "interrupted", "", None),
+            ],
+            resumed: true,
+            appended: relaunched(3, RELAUNCHED_AGAIN),
+            tasks: vec![with_task(RESTARTED)],
+            answered: (FORKED, RELAUNCHED_AGAIN),
+            ..Default::default()
+        },
+        Relaunch {
+            name: "a third relaunch of a fallback, sent no resume task still",
+            log: login_released(),
+            seeded: vec![
+                Opened(0, PRIOR_SESSION, Some(PRIOR_SESSION)),
+                Closed(0, PRIOR_SESSION, "interrupted", "", None),
+                Opened(1, FELL_BACK, None),
+                Closed(
+                    1,
+                    FELL_BACK,
+                    "interrupted",
+                    "authentication_failed",
+                    Some(0),
+                ),
+                Opened(2, RELAUNCHED, Some(FELL_BACK)),
+                Closed(2, RELAUNCHED, "interrupted", "", None),
+                Opened(3, RELAUNCHED_AGAIN, Some(RELAUNCHED)),
+                Closed(3, RELAUNCHED_AGAIN, "interrupted", "", None),
+            ],
+            resumed: true,
+            appended: relaunched(4, RELAUNCHED_AGAIN),
+            tasks: vec![RESTARTED.to_string()],
+            answered: (FORKED, RELAUNCHED_AGAIN),
             ..Default::default()
         },
         Relaunch {
@@ -4324,8 +4375,14 @@ fn an_interrupted_launch_relaunches_its_session_as_its_close_decides() {
         for (placeholder, session) in [(FORKED, &forked), (MINTED, &minted)] {
             if stands_for(placeholder) {
                 assert!(
-                    ![INTERRUPTED, FELL_BACK, PRIOR_SESSION, RELAUNCHED]
-                        .contains(&session.as_str()),
+                    ![
+                        INTERRUPTED,
+                        FELL_BACK,
+                        PRIOR_SESSION,
+                        RELAUNCHED,
+                        RELAUNCHED_AGAIN
+                    ]
+                    .contains(&session.as_str()),
                     "{name}: the session {placeholder} stands for is minted, not {session}"
                 );
             }
