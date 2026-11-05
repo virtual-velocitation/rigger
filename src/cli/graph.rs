@@ -1103,39 +1103,38 @@ pub(crate) fn cmd_emit(args: &[String]) -> Res {
     // the real work below, so the instance stays discoverable even if this emit is the only
     // traffic in the run for a while. Best-effort/warn-only; never fails the emit.
     refresh_registry_entry(&loc, &selection);
-    let backend = resolve_store(&selection, &loc.file("events.db"))?;
-    let store = Namespaced::new(backend.as_ref(), &loc.identity());
-
-    // Same args shape the MCP tool receives, so the append - the shared core both surfaces
-    // call - behaves identically here and over MCP. A non-empty spawn id (the flag's, else the
-    // exported one) rides in `meta.spawn`, the same key the MCP server's `stamp_current_spawn`
-    // writes.
-    let mut tool_args = serde_json::json!({ "type": typ, "data": data });
-    if let Some(spawn) = spawn.filter(|s| !s.is_empty()) {
-        let mut meta = serde_json::Map::new();
-        meta.insert(
-            conductor::META_SPAWN.to_string(),
-            serde_json::Value::String(spawn),
+    over_the_run_store_at(&loc, &selection, |store| {
+        // Same args shape the MCP tool receives, so the append - the shared core both surfaces
+        // call - behaves identically here and over MCP. A non-empty spawn id (the flag's, else the
+        // exported one) rides in `meta.spawn`, the same key the MCP server's `stamp_current_spawn`
+        // writes.
+        let mut tool_args = serde_json::json!({ "type": typ, "data": data });
+        if let Some(spawn) = spawn.filter(|s| !s.is_empty()) {
+            let mut meta = serde_json::Map::new();
+            meta.insert(
+                conductor::META_SPAWN.to_string(),
+                serde_json::Value::String(spawn),
+            );
+            tool_args
+                .as_object_mut()
+                .expect("json! built an object")
+                .insert("meta".to_string(), serde_json::Value::Object(meta));
+        }
+        // The event goes on the log FIRST; `graph.db` is opened only after (spec 101), and a fold
+        // that cannot happen is reported as not folded, with the reason, instead of claimed.
+        let emitted = mcpserver::emit_event(
+            store,
+            conductor::STREAM,
+            || loc.graph(&selection),
+            &tool_args,
+        )?;
+        println!(
+            "emitted {typ} (position {}){}",
+            emitted.position,
+            fold_clause(&emitted.fold)
         );
-        tool_args
-            .as_object_mut()
-            .expect("json! built an object")
-            .insert("meta".to_string(), serde_json::Value::Object(meta));
-    }
-    // The event goes on the log FIRST; `graph.db` is opened only after (spec 101), and a fold
-    // that cannot happen is reported as not folded, with the reason, instead of claimed.
-    let emitted = mcpserver::emit_event(
-        &store,
-        conductor::STREAM,
-        || loc.graph(&selection),
-        &tool_args,
-    )?;
-    println!(
-        "emitted {typ} (position {}){}",
-        emitted.position,
-        fold_clause(&emitted.fold)
-    );
-    Ok(())
+        Ok(())
+    })
 }
 
 /// The grounder for `rigger reindex`. After turbovec's retirement it resolves IDENTICALLY to

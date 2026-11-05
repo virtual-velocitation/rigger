@@ -1240,10 +1240,9 @@ pub(crate) fn cmd_prompt(args: &[String]) -> Res {
         [id] => id.as_str(),
         _ => return Err("prompt: expected exactly one spawn id: rigger prompt <id>".into()),
     };
-    let (loc, selection) = require_store_dir()?;
-    let backend = resolve_store(&selection, &loc.file("events.db"))?;
-    let store = Namespaced::new(backend.as_ref(), &loc.identity());
-    let (events, _) = runscope::read::read_current_run(&store, conductor::STREAM)?;
+    let (events, _) = over_the_run_store(|_, _, store| {
+        Ok(runscope::read::read_current_run(store, conductor::STREAM)?)
+    })?;
     println!("{}", prompt_reply(&events, id)?);
     Ok(())
 }
@@ -1288,31 +1287,30 @@ pub(crate) fn cmd_scratch(args: &[String]) -> Res {
         [id] => id.as_str(),
         _ => return Err("scratch: expected exactly one spawn id: rigger scratch <id>".into()),
     };
-    let (loc, selection) = require_store_dir()?;
-    let backend = resolve_store(&selection, &loc.file("events.db"))?;
-    let store = Namespaced::new(backend.as_ref(), &loc.identity());
-    let (_, run_id) = runscope::read::read_current_run(&store, conductor::STREAM)?;
-    let repo = loc
-        .dir
-        .parent()
-        .and_then(|p| p.to_str())
-        .ok_or("scratch: could not resolve the project root")?;
-    // `workdir` via the SAME shared, validate-independent `scratch_defaults` resolver
-    // `reclaim_spawn_scratch` uses (spec 83 criterion 2, round 3) - never `config::load`,
-    // which additionally requires a fully loadable `.rigger/agents/` fleet AND a passing
-    // `Config::validate` just to learn this one string field, and previously left this
-    // function diverging from the reaper it must stay byte-identical to (see this
-    // function's own doc comment) whenever `Config::validate` failed for an unrelated
-    // reason (arch-u83c3-cmd-scratch-diverges-from-reclaim-after-asymmetric-fix).
-    let (workdir, _max_retries) = scratch_defaults(&loc);
-    let scratch_root = rigger::worktree::scratch_root_path_from_env(repo, &workdir);
-    match spawn_scratch_path(&scratch_root, &run_id, id) {
-        Some(path) => {
-            println!("{}", path.display());
-            Ok(())
+    over_the_run_store(|loc, _, store| {
+        let (_, run_id) = runscope::read::read_current_run(store, conductor::STREAM)?;
+        let repo = loc
+            .dir
+            .parent()
+            .and_then(|p| p.to_str())
+            .ok_or("scratch: could not resolve the project root")?;
+        // `workdir` via the SAME shared, validate-independent `scratch_defaults` resolver
+        // `reclaim_spawn_scratch` uses (spec 83 criterion 2, round 3) - never `config::load`,
+        // which additionally requires a fully loadable `.rigger/agents/` fleet AND a passing
+        // `Config::validate` just to learn this one string field, and previously left this
+        // function diverging from the reaper it must stay byte-identical to (see this
+        // function's own doc comment) whenever `Config::validate` failed for an unrelated
+        // reason (arch-u83c3-cmd-scratch-diverges-from-reclaim-after-asymmetric-fix).
+        let (workdir, _max_retries) = scratch_defaults(loc);
+        let scratch_root = rigger::worktree::scratch_root_path_from_env(repo, &workdir);
+        match spawn_scratch_path(&scratch_root, &run_id, id) {
+            Some(path) => {
+                println!("{}", path.display());
+                Ok(())
+            }
+            None => Err(format!("scratch: {id:?} does not name a usable scratch path").into()),
         }
-        None => Err(format!("scratch: {id:?} does not name a usable scratch path").into()),
-    }
+    })
 }
 
 /// The parsed flags of a `rigger step` invocation.
@@ -3163,100 +3161,99 @@ pub(crate) fn cmd_result(args: &[String]) -> Res {
     // the real work below, so the instance stays discoverable even if this result is the only
     // traffic in the run for a while. Best-effort/warn-only; never fails the result.
     refresh_registry_entry(&loc, &selection);
-    let backend = resolve_store(&selection, &loc.file("events.db"))?;
-    let store = Namespaced::new(backend.as_ref(), &loc.identity());
-
-    // One cheap pre-write read of the run stream. A plain record over the result of a spawn
-    // that already ended is refused (gap 108: a driver resume re-spawns the workers of a
-    // replayed wave, and a stale one must never overwrite the result that stands) unless
-    // `--supersede` names the repair; `--if-absent` never replaces anything, so it is left
-    // to its CAS. A record that goes ahead is then advised (on stderr) about an orphan id or
-    // about superseding an existing result (see [`result_advisories`]). Weave with unit-10:
-    // under `--if-absent` nothing can supersede (the CAS refuses), so the supersede note is
-    // suppressed - the "left it untouched" line below reports that case honestly.
-    let (prior, _) = runscope::read::read_current_run(&store, conductor::STREAM)?;
-    if !parsed.if_absent {
-        if let Some(refusal) = result_refusal(&prior, &res.id, parsed.supersede)? {
-            return Err(refusal.into());
-        }
-    }
-    for note in result_advisories(&prior, &res.id, !parsed.if_absent) {
-        eprintln!("{note}");
-    }
-
-    let kind = if res.is_error() {
-        "error result"
-    } else {
-        "result"
-    };
-    // The position an append actually landed at, or `None` when `--if-absent` was a no-op
-    // (a result already stood, so a prior `rigger result` already folded it - see the fold
-    // below). Only a real append is folded into the graph.
-    let recorded = if parsed.if_absent {
-        // Conditional atomic record: write only if the spawn is still unanswered, never
-        // overwriting an existing result. A no-op (a result already stood) is a success,
-        // so the courier's `|| ...`-free single command always exits 0.
-        match spawn_store::record_result_if_absent(&store, &res)? {
-            Some(pos) => {
-                println!("recorded {kind} for {} (position {pos})", res.id);
-                Some(pos)
-            }
-            None => {
-                println!(
-                    "{} already has a result; --if-absent left it untouched",
-                    res.id
-                );
-                None
+    over_the_run_store_at(&loc, &selection, |store| {
+        // One cheap pre-write read of the run stream. A plain record over the result of a spawn
+        // that already ended is refused (gap 108: a driver resume re-spawns the workers of a
+        // replayed wave, and a stale one must never overwrite the result that stands) unless
+        // `--supersede` names the repair; `--if-absent` never replaces anything, so it is left
+        // to its CAS. A record that goes ahead is then advised (on stderr) about an orphan id or
+        // about superseding an existing result (see [`result_advisories`]). Weave with unit-10:
+        // under `--if-absent` nothing can supersede (the CAS refuses), so the supersede note is
+        // suppressed - the "left it untouched" line below reports that case honestly.
+        let (prior, _) = runscope::read::read_current_run(store, conductor::STREAM)?;
+        if !parsed.if_absent {
+            if let Some(refusal) = result_refusal(&prior, &res.id, parsed.supersede)? {
+                return Err(refusal.into());
             }
         }
-    } else {
-        let pos = spawn_store::record_result(&store, &res)?;
-        println!("recorded {kind} for {} (position {pos})", res.id);
-        Some(pos)
-    };
-
-    // Disposition-expiry (spec 25, criterion 1): fold the just-recorded result into this run's
-    // context graph through the same fold outcome `rigger emit` reports (see [`cmd_emit`] /
-    // [`mcpserver::emit_event`]). The adjudicator's recorded `SpawnResult` is the ONLY place a
-    // review's findings are disposed: the `TYPE_SPAWN_RESULT` fold arm reads its verdict line's
-    // `discarded` ids (through the single [`spawn::SpawnResult::adjudication`] authority) and
-    // invalidates those findings' graph edges, so grounding stops surfacing them. Without this
-    // fold the arm is inert in production - the courier appends the verdict to `events.db` but
-    // nothing ever folds a `SpawnResult` into the persistent `graph.db`, so a discarded finding
-    // is never pruned. Only an adjudicator result disposes anything (`adjudication` self-gates
-    // on the adjudicator role and returns `None` otherwise), so folding EVERY recorded result
-    // is safe: a plain worker/courier result folds to nothing.
-    //
-    // AFTER the durable append, as `emit_event` does: the record already landed in the log, so a
-    // fold that cannot happen (a graph that owes its rebuild, or one whose write lock or catch-up
-    // held the fold past the appender's ceiling) never fails a result the log holds - but it is
-    // SAID, with the reason, because a
-    // current graph that missed the fold keeps the result out of grounding until a later `rigger
-    // setup` folds it (a graph that owes its rebuild re-derives it from the live selection a
-    // `SpawnResult` is in, and so does a file not yet carrying the cursor whose seeding finds the
-    // hole the result left in its applied ledger old; setup's catch-up folds any other such hole
-    // forward from the file's cursor), and until then a lost adjudicator verdict keeps its
-    // discarded findings in grounding. A `--if-absent` no-op appended nothing, so there is nothing
-    // new to fold (the prior record already did).
-    if let Some(pos) = recorded {
-        if let contextgraph::Fold::NotFolded(why) =
-            fold_recorded_result(&loc, &selection, &res, pos)
-        {
-            println!("{}", not_folded(&why));
+        for note in result_advisories(&prior, &res.id, !parsed.if_absent) {
+            eprintln!("{note}");
         }
-    }
 
-    // Per-spawn scratch reclamation (spec 34, criterion 1): the moment this spawn's result is
-    // recorded - for ANY outcome (a success, a reject verdict, an `--error`, or a
-    // liveness/infra fault, all of which reach the store through THIS courier) - reclaim the
-    // dedicated scratch dir rigger assigned it under `.rigger/tmp`. `cmd_result` only ever
-    // runs for the spawn being reported, so a spawn with no recorded result is never touched
-    // (the "keeps its scratch" half of the criterion, by construction). Reclaimed even on a
-    // `--if-absent` no-op: a result already stood, so a prior `rigger result` already
-    // reclaimed it and reclaiming an already-gone path is a graceful no-op. Best-effort - the
-    // record already landed durably, so scratch reclamation may never fail a recorded result.
-    reclaim_spawn_scratch(&loc, &prior, &res.id);
-    Ok(())
+        let kind = if res.is_error() {
+            "error result"
+        } else {
+            "result"
+        };
+        // The position an append actually landed at, or `None` when `--if-absent` was a no-op
+        // (a result already stood, so a prior `rigger result` already folded it - see the fold
+        // below). Only a real append is folded into the graph.
+        let recorded = if parsed.if_absent {
+            // Conditional atomic record: write only if the spawn is still unanswered, never
+            // overwriting an existing result. A no-op (a result already stood) is a success,
+            // so the courier's `|| ...`-free single command always exits 0.
+            match spawn_store::record_result_if_absent(store, &res)? {
+                Some(pos) => {
+                    println!("recorded {kind} for {} (position {pos})", res.id);
+                    Some(pos)
+                }
+                None => {
+                    println!(
+                        "{} already has a result; --if-absent left it untouched",
+                        res.id
+                    );
+                    None
+                }
+            }
+        } else {
+            let pos = spawn_store::record_result(store, &res)?;
+            println!("recorded {kind} for {} (position {pos})", res.id);
+            Some(pos)
+        };
+
+        // Disposition-expiry (spec 25, criterion 1): fold the just-recorded result into this run's
+        // context graph through the same fold outcome `rigger emit` reports (see [`cmd_emit`] /
+        // [`mcpserver::emit_event`]). The adjudicator's recorded `SpawnResult` is the ONLY place a
+        // review's findings are disposed: the `TYPE_SPAWN_RESULT` fold arm reads its verdict line's
+        // `discarded` ids (through the single [`spawn::SpawnResult::adjudication`] authority) and
+        // invalidates those findings' graph edges, so grounding stops surfacing them. Without this
+        // fold the arm is inert in production - the courier appends the verdict to `events.db` but
+        // nothing ever folds a `SpawnResult` into the persistent `graph.db`, so a discarded finding
+        // is never pruned. Only an adjudicator result disposes anything (`adjudication` self-gates
+        // on the adjudicator role and returns `None` otherwise), so folding EVERY recorded result
+        // is safe: a plain worker/courier result folds to nothing.
+        //
+        // AFTER the durable append, as `emit_event` does: the record already landed in the log, so
+        // a fold that cannot happen (a graph that owes its rebuild, or one whose write lock or
+        // catch-up held the fold past the appender's ceiling) never fails a result the log holds -
+        // but it is SAID, with the reason, because a current graph that missed the fold keeps the
+        // result out of grounding until a later `rigger setup` folds it (a graph that owes its
+        // rebuild re-derives it from the live selection a `SpawnResult` is in, and so does a file
+        // not yet carrying the cursor whose seeding finds the hole the result left in its applied
+        // ledger old; setup's catch-up folds any other such hole forward from the file's cursor),
+        // and until then a lost adjudicator verdict keeps its discarded findings in grounding. A
+        // `--if-absent` no-op appended nothing, so there is nothing new to fold (the prior record
+        // already did).
+        if let Some(pos) = recorded {
+            if let contextgraph::Fold::NotFolded(why) =
+                fold_recorded_result(&loc, &selection, &res, pos)
+            {
+                println!("{}", not_folded(&why));
+            }
+        }
+
+        // Per-spawn scratch reclamation (spec 34, criterion 1): the moment this spawn's result is
+        // recorded - for ANY outcome (a success, a reject verdict, an `--error`, or a
+        // liveness/infra fault, all of which reach the store through THIS courier) - reclaim the
+        // dedicated scratch dir rigger assigned it under `.rigger/tmp`. `cmd_result` only ever
+        // runs for the spawn being reported, so a spawn with no recorded result is never touched
+        // (the "keeps its scratch" half of the criterion, by construction). Reclaimed even on a
+        // `--if-absent` no-op: a result already stood, so a prior `rigger result` already
+        // reclaimed it and reclaiming an already-gone path is a graceful no-op. Best-effort - the
+        // record already landed durably, so scratch reclamation may never fail a recorded result.
+        reclaim_spawn_scratch(&loc, &prior, &res.id);
+        Ok(())
+    })
 }
 
 /// Reclaim the per-spawn scratch dir [`spawn_scratch_path`] assigned spawn `spawn_id`,
