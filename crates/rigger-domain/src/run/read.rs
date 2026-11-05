@@ -219,7 +219,7 @@ mod tests {
     use crate::retention::{GenerationIngested, TYPE_GENERATION_INGESTED};
     use crate::test_support::{
         ev, positions_of, types_of, CountedRead, HandBuiltLog, ReadCountingStore,
-        ReadsFailWhenArmed, ONE_SHOT_PERCEPTION_TYPES,
+        ReadsFailWhenArmed, SilentStore, ONE_SHOT_PERCEPTION_TYPES,
     };
     use std::sync::atomic::AtomicBool;
 
@@ -479,6 +479,81 @@ mod tests {
                     },
                 ],
                 "{name}"
+            );
+        }
+    }
+
+    /// The hold controller's poll asks the run store for the run's `RunStarted`, `RunHeld` and
+    /// `RunReleased` alone, from the boundary [`EventStore::last_position`] finds, and the
+    /// progress store for the run's lines only when that read ends on an open hold: an unheld
+    /// run and a released hold read no progress, and no poll materializes the carried-over
+    /// knowledge or the run's other events.
+    #[test]
+    fn an_owed_probe_read_asks_the_hold_types_and_the_progress_of_an_open_hold_alone() {
+        let started = |run: &str| ev("RunStarted", &format!(r#"{{"run":"{run}"}}"#));
+        let held = || ev(TYPE_RUN_HELD, r#"{"cause":"rate_limit","by":"host"}"#);
+        let released = || ev(TYPE_RUN_RELEASED, r#"{"by":"host"}"#);
+        let unit = || ev("UnitStarted", r#"{"id":"u1"}"#);
+        // (row, the log, the boundary the read starts from, the events it materializes, whether
+        // a probe is owed and the progress read)
+        for (name, events, from, materialized, owed) in [
+            (
+                "an unheld run after a held one",
+                vec![started("r0"), held(), started("r1"), unit()],
+                2,
+                1,
+                false,
+            ),
+            (
+                "a released hold",
+                vec![started("r1"), unit(), held(), released()],
+                0,
+                3,
+                false,
+            ),
+            (
+                "an open hold",
+                vec![started("r1"), unit(), held()],
+                0,
+                2,
+                true,
+            ),
+        ] {
+            let log = HandBuiltLog::new(STREAM, events);
+            let store = ReadCountingStore::new(&log);
+            let progress_store = ReadCountingStore::new(&SilentStore);
+
+            let probe = read_owed_probe(&store, STREAM, &progress_store, SystemTime::now());
+            let run = probe.unwrap().map(|(_, run)| run);
+            assert_eq!(run, owed.then(|| "r1".to_string()), "{name}");
+            assert_eq!(
+                store.reads(),
+                [
+                    CountedRead::LastPosition {
+                        stream: STREAM.to_string(),
+                        event_type: "RunStarted".to_string(),
+                    },
+                    CountedRead::Typed {
+                        stream: STREAM.to_string(),
+                        from,
+                        only: true,
+                        types: HOLD_TYPES.map(String::from).to_vec(),
+                        materialized,
+                    },
+                ],
+                "{name}"
+            );
+            let progress_read = CountedRead::Stream {
+                stream: progress::stream_of("r1"),
+                from: 0,
+                forward: true,
+                materialized: 0,
+            };
+            let expected = if owed { vec![progress_read] } else { vec![] };
+            assert_eq!(
+                progress_store.reads(),
+                expected,
+                "{name}: the progress read"
             );
         }
     }
