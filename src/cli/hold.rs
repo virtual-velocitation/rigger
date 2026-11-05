@@ -5,27 +5,25 @@
 use super::*;
 
 /// `rigger hold --reason <text>`: hold the current run for the operator, the text the hold's
-/// action, an empty text included, carrying the open hold's latest model forward. Refuses,
-/// appending nothing, a malformed argv and a run that is not live: none started, an empty store
-/// included, or one that is done. The run is read before the append, so a run turning done
-/// between the two takes the hold, which a done-run release still to come or the next mint ends.
+/// action, an empty text included, carrying the open hold's latest model forward, and name the
+/// run the hold answers. Refuses, appending nothing, a malformed argv and a run the hold answers
+/// not live: none started, an empty store included, or one that is done. The run is read before
+/// the append, so a run turning done between the two takes the hold, which a done-run release
+/// still to come or the next mint ends.
 pub(crate) fn cmd_hold(args: &[String]) -> Res {
     let reason = match args {
         [flag, reason] if flag == "--reason" => reason,
         _ => return Err("hold: usage: rigger hold --reason <text>".into()),
     };
-    on_the_run(|store| {
-        let (events, run_id) = runscope::read::read_current_run(store, conductor::STREAM)?;
-        if run_id.is_empty() {
-            return Err("hold: no run is live: no run has started".into());
-        }
-        if ledger::project(&events)?.done() {
-            return Err(format!("hold: no run is live: run {run_id} is done").into());
-        }
-        runscope_store::hold_by_operator(store, reason)?;
-        println!("held run {run_id} for the operator; `rigger release` ends the hold");
-        Ok(())
-    })
+    on_the_run(
+        |store| match runscope_store::hold_by_operator(store, reason)? {
+            Ok(run_id) => {
+                println!("held run {run_id} for the operator; `rigger release` ends the hold");
+                Ok(())
+            }
+            Err(not_live) => Err(format!("hold: no run is live: {not_live}").into()),
+        },
+    )
 }
 
 /// `rigger release`: end the current run's open hold, whichever writer declared it, as a

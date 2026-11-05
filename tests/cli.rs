@@ -9841,7 +9841,9 @@ fn a_probe_releases_a_held_run_only_on_a_passing_canary_of_the_hold_it_read() {
         ProbeCase {
             redeclare: |root| {
                 common::cli::with_run_store(root, |store| {
-                    rigger::run_store::hold_by_operator(store, HOLD_REASON).unwrap()
+                    rigger::run_store::hold_by_operator(store, HOLD_REASON)
+                        .unwrap()
+                        .expect("the run is live")
                 });
             },
             ..released_row(

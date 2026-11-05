@@ -14,13 +14,13 @@
 use std::time::SystemTime;
 
 use rigger_domain::agent::{cause_row, OPERATOR};
-use rigger_domain::ledger::{Hold, RunState};
+use rigger_domain::ledger::{project, Hold, RunState};
 
 use crate::contextgraph::TYPE_DECISION_MADE;
 use crate::eventstore::{
     Error, Event, EventStore, ExpectedRevision, Position, Revision, TypeSelection,
 };
-use crate::run::read::{fold_holds, read_run, read_run_at_head, HOLD_TYPES};
+use crate::run::read::{fold_holds, read_current_run, read_run, read_run_at_head, HOLD_TYPES};
 use crate::run::{
     adopted_run, current_run, effective_definition, RunHeld, RunReleased, RunStart, RunStarted,
     HOLD_BY_HOST, HOLD_BY_OPERATOR, HOLD_BY_PROBE, META_DEFINITION, META_DEFINITION_PRIOR,
@@ -293,10 +293,42 @@ fn held_by(cause: &str, detail: &str, by: &str, model: &str) -> RunHeld {
     }
 }
 
+/// Why `rigger hold` holds nothing (spec 105): the current run is not live.
+#[derive(Debug, PartialEq, Eq)]
+pub enum NotLive {
+    /// No run has started, an empty store included.
+    NoRun,
+    /// The current run, named by its id, is done.
+    Done(String),
+}
+
+impl std::fmt::Display for NotLive {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            NotLive::NoRun => f.write_str("no run has started"),
+            NotLive::Done(run) => write!(f, "run {run} is done"),
+        }
+    }
+}
+
 /// Hold the current run for the operator (`rigger hold`, spec 105): one `RunHeld {by: operator}`
 /// of cause `operator`, its action the operator's `reason`, carrying the open hold's latest model
-/// forward, empty when no hold is open. It appends on every call, on a held run too.
-pub fn hold_by_operator(store: &dyn EventStore, reason: &str) -> Result<(), Error> {
+/// forward, empty when no hold is open. A live run, a started run not done, takes it on every
+/// call, a held run too, and the hold answers the run's id; a run not live takes nothing and is
+/// answered [`NotLive`]. The run is read before the append, so a run turning done between the
+/// two takes the hold.
+pub fn hold_by_operator(
+    store: &dyn EventStore,
+    reason: &str,
+) -> Result<Result<String, NotLive>, Error> {
+    let (events, run_id) = read_current_run(store, STREAM)?;
+    if run_id.is_empty() {
+        return Ok(Err(NotLive::NoRun));
+    }
+    let run = project(&events).map_err(|e| Error::Backend(format!("fold the run: {e}")))?;
+    if run.done() {
+        return Ok(Err(NotLive::Done(run_id)));
+    }
     append_on_hold(store, TYPE_RUN_HELD, |hold| {
         let model = hold.map_or("", |hold| hold.latest.model.as_str());
         let body = RunHeld {
@@ -304,8 +336,8 @@ pub fn hold_by_operator(store: &dyn EventStore, reason: &str) -> Result<(), Erro
             ..held_by(OPERATOR, "", HOLD_BY_OPERATOR, model)
         };
         serialized(TYPE_RUN_HELD, body.to_event()).map(Some)
-    })
-    .map(drop)
+    })?;
+    Ok(Ok(run_id))
 }
 
 /// Release the current run's open hold, an operator hold included, as `RunReleased` by `by`,
@@ -994,7 +1026,9 @@ mod tests {
         for (name, landing, expected, model) in rows {
             let inner = run_holding(vec![held("rate_limit", HOLD_BY_HOST, "opus")]);
             let store = ReadCountingStore::new(&inner).interleaving(2, STREAM, landing);
-            hold_by_operator(&store, "pausing").unwrap();
+            hold_by_operator(&store, "pausing")
+                .unwrap()
+                .expect("the run is live");
             assert_eq!(types_of(&stream(&inner)), expected, "{name}");
             assert_eq!(holds(&inner).pop(), Some(operator(model)), "{name}");
         }
