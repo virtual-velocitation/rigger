@@ -2,8 +2,9 @@
 # A fixture "agent" for THE RESUME FALLBACK (spec 105 criterion 1): stands in for the real
 # `claude` binary and ends the way its test names. A launch carrying `--resume` ends as
 # `$RIGGER_TEST_RESUME_ENDING`, any other as `$RIGGER_TEST_FRESH_ENDING`, unset reading `answer`.
-# `refused-unread` exits without reading the host's first stdin message; every other ending
-# reads it and, when `$RIGGER_TEST_LAUNCH_LOG` names a file, appends it there, one line a launch.
+# `refused-unread` exits without reading the host's first stdin message and `unread-stuck` stays
+# without reading it, silent; every other ending reads it and, when `$RIGGER_TEST_LAUNCH_LOG`
+# names a file, appends it there, one line a launch.
 #
 # `refused-result` is the literal stdout of Claude Code 2.1.314 asked to `--resume` a session it
 # holds no transcript of, probed 2026-11-01: one `result` line, no `system/init`, the tell on
@@ -70,6 +71,9 @@ errored() {
 if [ "$ending" = refused-unread ]; then
     refusal_tell
     exit 1
+fi
+if [ "$ending" = unread-stuck ]; then
+    exec sleep 30
 fi
 
 IFS= read -r line

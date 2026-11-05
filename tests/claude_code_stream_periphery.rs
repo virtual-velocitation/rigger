@@ -2866,8 +2866,8 @@ fn assert_fell_back(
     );
 }
 
-/// The longest one spawn call of a fallback row takes, well under the 30 s an `unreadable` ending
-/// stays alive past its line: a host that waited such a session out never ended the read.
+/// The longest one spawn call of a fallback or stop row takes, well under the 30 s an `unreadable`
+/// or `unread-stuck` ending stays alive: a host that waited such a session out never ended it.
 const FALLBACK_WITHIN: Duration = Duration::from_secs(20);
 
 /// THE RESUME FALLBACK: a `--resume` launch of Claude Code ending `ending` under `agent` yields
@@ -2928,8 +2928,8 @@ rigger::test_cases! {
         a_resume_ending_with_no_session_falls_back("answer-no-init", AgentDef::default(), &[], 1);
 }
 
-/// A session gone before it reads a task too big for the pipe breaks the host's write, and it
-/// has yielded no `system/init` all the same.
+/// A session gone before it reads a task too big for the pipe breaks the host's write, which
+/// leaves a progress line naming the error, and it has yielded no `system/init` all the same.
 #[test]
 fn a_resume_refused_before_it_reads_its_task_falls_back() {
     let fx = Fixture::new();
@@ -2942,7 +2942,41 @@ fn a_resume_refused_before_it_reads_its_task_falls_back() {
         .host(&AgentDef::default(), &o)
         .expect("the fresh launch answers");
 
-    assert_fell_back(&fx, &result, &[framed(FULL_PROMPT)], &[], 0);
+    assert_fell_back(
+        &fx,
+        &result,
+        &[framed(FULL_PROMPT)],
+        &["stream (task write failed): Broken pipe (os error 32)"],
+        0,
+    );
+}
+
+/// THE STOP reaches a session that never reads its input: the host writes the first message on
+/// a thread of its own, so a task past the pipe buffer holds no read, and the session silent
+/// past its bound is stopped within [`FALLBACK_WITHIN`], well under the 30 s it stays.
+#[test]
+fn a_session_that_never_reads_a_task_past_the_pipe_buffer_is_stopped_at_its_bound() {
+    let fx = Fixture::new();
+    let task = "x".repeat(1024 * 1024);
+
+    let started = Instant::now();
+    let err = fx
+        .stopping_driver(RESUME_ENDING_AGENT, Duration::from_millis(200))
+        .spawn(
+            &wall_clock_bounded(SILENCE_BOUND),
+            &task,
+            &fx.fresh_opts("unread-stuck"),
+            &no_emit,
+        )
+        .expect_err("a session silent past its bound is stopped");
+    let elapsed = started.elapsed();
+
+    assert_eq!(err.0, SILENCE_FAILURE);
+    assert!(
+        elapsed < FALLBACK_WITHIN,
+        "the stop never waits on the write: {elapsed:?}"
+    );
+    assert_eq!(fx.recorded_results(), liveness_fault_on_record());
 }
 
 /// What a launch leaves, read by [`a_launch_ends_as_the_hold_and_its_class_decide`].

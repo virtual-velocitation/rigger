@@ -1,9 +1,9 @@
 #!/bin/sh
-# A fixture "agent" for periphery-testing Driver::launch's stdin-write-failure cleanup
-# (spec 104 criterion 1: "a failure writing the first message ends the child through its
-# own handle (kill() + wait()) before the error propagates"). Unlike
-# claude-code-echo-agent.sh, this one NEVER reads its stdin - it records its own pid (so
-# the test can later prove the process does not linger) and exits immediately.
+# A fixture "agent" for periphery-testing the host's failed task write: the session ends as
+# one with no result does, reaped through the one handle that spawned it, and the write's
+# error lands as a progress line. Unlike claude-code-echo-agent.sh, this one NEVER reads its
+# stdin - it records its own pid (so the test can later prove the process does not linger)
+# and exits immediately.
 #
 # WHY THIS MATTERS: a parent write only fails once the pipe's read end is fully closed,
 # which happens at child exit - racing that exit against the parent's write timing would
