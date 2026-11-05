@@ -104,6 +104,15 @@ pub fn read_current_run(
     Ok((super::current_run(&read).to_vec(), run_id))
 }
 
+/// THE CURRENT RUN'S ID, READ ALONE: [`crate::run::current_run_id`] of the run's `RunStarted`
+/// events, `None` when no run has started - the read a supervisor beat stamps its run by every
+/// interval, which wants one id and never the run's other events.
+pub fn read_current_run_id(store: &dyn EventStore, stream: &str) -> Result<Option<String>, Error> {
+    let boundaries =
+        store.read_stream_typed(stream, 0, TypeSelection::Only(&[TYPE_RUN_STARTED]))?;
+    Ok(super::current_run_id(&boundaries))
+}
+
 /// THE RUN'S HOLD, READ ONCE (spec 105): the hold the current run leaves open, the read every
 /// launch gate and every poll through a hold decides on; an ending, whose close carries the run
 /// stream's head, reads [`read_current_hold_at_head`] instead. It reads only [`HOLD_TYPES`], from the boundary [`read_run`] finds

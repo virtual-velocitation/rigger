@@ -1459,13 +1459,7 @@ fn anchor_run_branch(repo: &str, cmd: &str, base: &str, base_explicit: bool) -> 
 ///
 /// [`SupervisorBeat`]: rigger::progress::SupervisorBeat
 fn beat(run_store: &dyn EventStore, progress: &dyn EventStore) {
-    let boundaries = run_store.read_stream_typed(
-        conductor::STREAM,
-        0,
-        TypeSelection::Only(&[runscope::TYPE_RUN_STARTED]),
-    );
-    let run = boundaries.map(|events| runscope::current_run_id(&events));
-    if let Ok(Some(run)) = run {
+    if let Ok(Some(run)) = runscope::read::read_current_run_id(run_store, conductor::STREAM) {
         let _ = rigger::progress_store::append_stamped(
             progress,
             &run,
