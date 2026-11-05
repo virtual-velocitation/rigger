@@ -2200,8 +2200,7 @@ fn run_workflow(parsed: &RunArgs, command: &str, sleep: &dyn SleepHold) -> Res {
     )?;
     // On this surface the launch is the handout, so the driver reads the hold the decorator reads.
     let hold_stands = || {
-        runscope::read::read_current_hold(&store, conductor::STREAM)
-            .map(|hold| hold.is_some())
+        runscope::read::hold_stands(&store, conductor::STREAM)
             .map_err(rigger::conductor::Error::from)
     };
     let driver = rigger::driver::workflow::Driver::new().with_hold_read(&hold_stands);

@@ -154,6 +154,12 @@ pub fn fold_holds(state: &mut RunState, events: &[Event]) -> Result<(), Error> {
         .map_err(|e| Error::Backend(format!("fold the run's hold: {e}")))
 }
 
+/// Whether the current run is held: [`read_current_hold`] answering an open hold, the one question
+/// a launch's wait and a launch gate ask of it on every poll.
+pub fn hold_stands(store: &dyn EventStore, stream: &str) -> Result<bool, Error> {
+    Ok(read_current_hold(store, stream)?.is_some())
+}
+
 /// The hold [`read_current_hold`] answers and the head of the one read that answered it: the
 /// stamp a close this hold decided carries, so a `RunReleased` landing after the read lies past the
 /// close. It reads the run's slice ([`read_run_at_head`]) rather than the hold types alone, so its

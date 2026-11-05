@@ -42,7 +42,7 @@ use crate::config::AgentDef;
 use crate::eventstore::{Event, EventStore};
 use crate::ledger;
 use crate::run::{
-    read::{read_current_hold, read_current_run},
+    read::{hold_stands, read_current_run},
     STREAM,
 };
 use crate::spawn;
@@ -98,7 +98,7 @@ impl<'a> HeldDriver<'a> {
     fn wait_out_the_hold(&self, id: &str, mut relaunched: Option<Error>) -> Result<(), Error> {
         let mut paused = false;
         loop {
-            let held = read_current_hold(self.store, STREAM).map(|hold| hold.is_some());
+            let held = hold_stands(self.store, STREAM);
             let closed = self
                 .session_closed
                 .is_some_and(|closed| closed.load(Ordering::SeqCst));
