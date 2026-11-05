@@ -163,6 +163,33 @@ pub fn critique_stub_spawns(work: &Path) -> usize {
         .map_or(0, |count| count.lines().count())
 }
 
+/// The critique stub's hold, which stops each spawn before it replays while it stands, and the
+/// record a spawn writes once it is held.
+const CRITIQUE_HOLD: &str = "critique-hold";
+const CRITIQUE_HELD: &str = "critique-held";
+
+/// Hold the critique stub under `work`, then on a thread run `act` once a spawn is held and
+/// release it: `act` runs while that pass is in flight. Join the handle after the command ends.
+pub fn hold_critique_stub(
+    work: &Path,
+    act: impl FnOnce() + Send + 'static,
+) -> std::thread::JoinHandle<()> {
+    let bin = work.join("bin");
+    std::fs::write(bin.join(CRITIQUE_HOLD), "").unwrap();
+    std::thread::spawn(move || {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while !bin.join(CRITIQUE_HELD).exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "no critique spawn was held"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        act();
+        std::fs::remove_file(bin.join(CRITIQUE_HOLD)).unwrap();
+    })
+}
+
 /// The words the shell a hook runs under reads out of the hook `command`: the argv the command
 /// starts, whatever quoting spells it.
 pub fn shell_words(command: &str) -> Vec<String> {

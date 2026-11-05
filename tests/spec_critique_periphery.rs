@@ -31,9 +31,9 @@ use common::fixtures::{
 };
 use common::repo::{
     assert_carries_spawn_hooks, collect_files, critique_stub_argv, critique_stub_record,
-    critique_stub_spawns, critique_stub_task, flag_value, hook_words, stub_path,
-    write_critique_stub_reporting, write_critique_stub_then, CRITIQUE_CONN, CRITIQUE_SYSTEM_PROMPT,
-    SILENT_PAST_THE_POLL,
+    critique_stub_spawns, critique_stub_task, flag_value, hold_critique_stub, hook_words,
+    stub_path, write_critique_stub_reporting, write_critique_stub_then, CRITIQUE_CONN,
+    CRITIQUE_SYSTEM_PROMPT, SILENT_PAST_THE_POLL,
 };
 use rigger::driver::claude_code::{framed, AGENT_STREAM_SUBDIR};
 use rigger::driver::replay::spawn_scratch_path;
@@ -2034,6 +2034,43 @@ fn an_unreadable_request_on_the_critique_stream_fails_the_attempt_count_and_spaw
         "no request is parked beside the unreadable one"
     );
     assert_eq!(review_findings(root), Vec::<Value>::new());
+}
+
+/// Given a spawn request on the critique stream turns unreadable while a pass is in flight, when
+/// that pass leaves the critique exhausted, then the call still fails on the attempt count it
+/// reads with the re-read union to settle it (`Critic::settles`), as a call that starts on that
+/// stream and a new run's refusal do: it exits non-zero naming the unreadable request and prints
+/// no answer.
+#[test]
+fn a_request_made_unreadable_during_an_exhausting_pass_fails_the_call() {
+    let dir = temp_project();
+    let root = dir.path().to_path_buf();
+    scaffold(&root, CRITIC_WORKFLOW);
+    let (work, path) = stub(CLEAN_CRITIQUE);
+    let corrupt = {
+        let root = root.clone();
+        move || {
+            seed_critique(
+                &root,
+                &[(TYPE_SPAWN_REQUESTED, json!("not a spawn request"))],
+            )
+        }
+    };
+    let held = hold_critique_stub(work.path(), corrupt);
+    let (out, err, ok) = critique(&root, SPEC_REL, &path, &root.join("scratch"));
+    held.join().expect("the pass was held and released");
+    assert_eq!(critique_stub_spawns(work.path()), 1, "the one pass ran");
+    assert!(
+        !ok,
+        "the count read after the exhausting pass fails:\n{err}"
+    );
+    assert!(
+        err.contains(&common::cli::refusal_line(
+            common::cli::UNREADABLE_CRITIQUE_REQUEST
+        )),
+        "the verb names the unreadable request:\n{err}"
+    );
+    assert_eq!(out, "", "no answer is printed");
 }
 
 /// Given two calls that raced on one text minted one spawn id, so the critique stream holds two
