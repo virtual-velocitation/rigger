@@ -1,18 +1,19 @@
 //! The store half of [`crate::progress`] (spec 93, criterion 1: THE CORE LANE IS PURE):
 //! recording one live progress report to a LIVE progress store. [`crate::progress`] keeps
 //! the model (`AgentProgress`, `AgentActivity`) and the pure folds (`consolidate`,
-//! `latest_launch_records_of`) -
+//! `launch_records_of`, `latest_launch_of`) -
 //! everything computable from already-read `&[Event]` slices, with no store at all. This
 //! module is the other half: `record`, the typed writers beside it and the [`append_stamped`]
-//! they share, the functions that append to a `&dyn EventStore`, with [`latest_launch_records`],
-//! [`latest_launch`] and [`next_launch`], the reads a launch decides on, split into their own file
+//! they share, the functions that append to a `&dyn EventStore`, with [`launch_records`],
+//! [`latest_launch_records`], [`latest_launch`] and [`next_launch`], the reads a launch decides
+//! on, split into their own file
 //! (never a function-by-function `#[cfg]` inside `progress.rs`) so the pure half can compile for
 //! `wasm32-unknown-unknown`.
 
 use crate::eventstore::{Error, EventStore, ExpectedRevision, Position, TypeSelection};
 use crate::progress::{
-    latest_launch_records_of, stream_of, AgentProgress, RunStamped, SpawnLaunched, StopFailure,
-    TYPE_SPAWN_LAUNCHED,
+    latest_launch_of, launch_records_of, stream_of, AgentProgress, RunStamped, SpawnLaunched,
+    StopFailure, TYPE_SPAWN_LAUNCHED,
 };
 
 /// Record one progress report to the progress `store`, stamped with `run_id`. Append-only
@@ -60,16 +61,10 @@ pub fn record_launch(
 }
 
 /// The ordinal the next launch of `spawn` takes (spec 105 criterion 1): the ordinal of its
-/// [`latest_launch`] plus one, or `first`, the ordinal the caller names, when the run holds no
-/// record of it. A failed read is the caller's to surface, since a launch that cannot name its
+/// [`latest_launch`] plus one, or 0 when the run holds no record of it. A failed read is the caller's to surface, since a launch that cannot name its
 /// ordinal could overwrite a prior launch's transcript.
-pub fn next_launch(
-    store: &dyn EventStore,
-    run_id: &str,
-    spawn: &str,
-    first: u32,
-) -> Result<u32, Error> {
-    Ok(latest_launch(store, run_id, spawn)?.map_or(first, |latest| latest.launch + 1))
+pub fn next_launch(store: &dyn EventStore, run_id: &str, spawn: &str) -> Result<u32, Error> {
+    Ok(latest_launch(store, run_id, spawn)?.map_or(0, |latest| latest.launch + 1))
 }
 
 /// The latest [`SpawnLaunched`] record of `spawn` in the run `run_id` (spec 105, RESUME BY
@@ -83,10 +78,20 @@ pub fn latest_launch(
     Ok(latest_launch_records(store, run_id, spawn)?.pop())
 }
 
-/// The [`SpawnLaunched`] records of the latest launch of `spawn` in the run `run_id`: the run's
-/// launch records, read from its progress stream, folded by [`latest_launch_records_of`] (spec
-/// 105, RESUME BY SESSION).
+/// The [`SpawnLaunched`] records of the latest launch of `spawn` in the run `run_id`: those of its
+/// [`launch_records`] [`latest_launch_of`] keeps (spec 105, RESUME BY SESSION).
 pub fn latest_launch_records(
+    store: &dyn EventStore,
+    run_id: &str,
+    spawn: &str,
+) -> Result<Vec<SpawnLaunched>, Error> {
+    Ok(latest_launch_of(&launch_records(store, run_id, spawn)?))
+}
+
+/// Every [`SpawnLaunched`] record of `spawn` in the run `run_id`, in stream order: the run's
+/// launch records, read from its progress stream, folded by [`launch_records_of`] (spec 105,
+/// RESUME BY SESSION).
+pub fn launch_records(
     store: &dyn EventStore,
     run_id: &str,
     spawn: &str,
@@ -96,7 +101,7 @@ pub fn latest_launch_records(
         0,
         TypeSelection::Only(&[TYPE_SPAWN_LAUNCHED]),
     )?;
-    Ok(latest_launch_records_of(&recorded, spawn))
+    Ok(launch_records_of(&recorded, spawn))
 }
 
 /// Record one [`StopFailure`] hook firing to the progress `store`, stamped with `run_id`
@@ -411,14 +416,14 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            next_launch(&progress, "run-1", "u/implementer#0", 6).unwrap(),
+            next_launch(&progress, "run-1", "u/implementer#0").unwrap(),
             next
         );
     }
 
     crate::test_cases! {
         an_undecodable_record_alone_leaves_the_first_ordinal:
-            an_undecodable_launch_record_is_skipped(&[], 6);
+            an_undecodable_launch_record_is_skipped(&[], 0);
         an_undecodable_record_leaves_the_decoded_ones_deciding:
             an_undecodable_launch_record_is_skipped(&[2], 3);
     }

@@ -32,8 +32,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 use rigger_domain::agent::{
-    failure_class, parked_spawn, AgentDriver, AgentResult, Disposition, Error, SpawnOpts,
-    EMIT_REFUSED_MARKER,
+    failure_class, parked_spawn, AgentDriver, AgentResult, Error, SpawnOpts, EMIT_REFUSED_MARKER,
 };
 use serde_json::Value;
 
@@ -64,7 +63,9 @@ pub struct HeldDriver<'a> {
 }
 
 impl<'a> HeldDriver<'a> {
-    /// A decorator over `inner`, reading the run from `store`. `session_closed` is `rigger
+    /// A decorator over `inner`, reading the run from `store`. A resume fallback launches inside
+    /// `inner`'s spawn, past this gate, so an `inner` with one reads the run's hold itself
+    /// ([`AgentDriver`]'s contract). `session_closed` is `rigger
     /// serve`'s flag, `None` on `rigger run`, which has no session to end a wait. `pause` runs
     /// between two reads of a standing hold.
     pub fn new(
@@ -134,8 +135,7 @@ impl<'a> HeldDriver<'a> {
         let Ok(run) = ledger::project(&slice) else {
             return false;
         };
-        let class_waits =
-            failure_class(e).is_some_and(|class| class.row().disposition != Disposition::Fault);
+        let class_waits = failure_class(e).is_some_and(|class| class.row().waits());
         run.hold.is_some() || class_waits
     }
 

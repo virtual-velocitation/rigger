@@ -1088,5 +1088,10 @@
     "id": "dup-e04bda77465d",
     "disposition": "not-a-duplicate",
     "reason": "`RunHeld::to_event` and `RunReleased::to_event` build two different run-stream event types (`RunHeld`, `RunReleased`) from two different bodies, each beside its own vocabulary type as `RunStarted::to_event` is; they share only the one-line `Event::new` of a serialized body."
+  },
+  {
+    "id": "dup-ad62aafad4f2",
+    "disposition": "not-a-duplicate",
+    "reason": "`progress_store::launch_records` is the production read of one spawn's launch records in a run while the stream periphery `launch_records` is the test's independent oracle, every spawn's records of the run through `progress::read_run` and the shared test decoder, that must not reuse it."
   }
 ]

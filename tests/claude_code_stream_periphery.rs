@@ -657,9 +657,11 @@ fn a_rigger_mcp_server_that_failed_at_init_stops_the_session_as_an_unknown_fault
         "the failure names the spawn, the server and its reported status: {message}"
     );
     // Stopped at the init line, never after the fixture's toolless work: the session is
-    // starting its task, not winding down, so no grace is spent on it.
+    // starting its task, not winding down, so no grace is spent on it. The bound sits well
+    // under the fixture's 30 s of work, so a host waiting it out still reds, and well over a
+    // contended machine's start-up.
     assert!(
-        elapsed < Duration::from_secs(3),
+        elapsed < Duration::from_secs(15),
         "the session must be stopped at init, not left to run: {elapsed:?}"
     );
     let pid = recorded_pid(&pid_file, "the fixture recorded its pid before init");
@@ -1491,10 +1493,14 @@ enum Beats {
 }
 
 /// A session under the bound of its row, in seconds, and a run set up as the row says: `Some` is
-/// the result the session must end in, `None` is a stop.
+/// the result the session must end in, `None` is a stop. A row naming its wakes pins how many times
+/// the host read its beat source, which only a wake reads: a wake under the bound re-arms for the
+/// rest of it and never under the host's 5 s poll, so a 7 s session held under a 1 s bound wakes
+/// at 1 s and at 6 s and no more.
 #[test]
 fn the_stream_silence_stop_fires_on_silent_time() {
-    for (case, script, bound, held, beats, ended) in [
+    use common::fixtures::ReadCountingStore;
+    for (case, script, bound, held, beats, ended, wakes) in [
         (
             "a session silent across a hold reads through it",
             SILENT_PAST_THE_POLL,
@@ -1502,6 +1508,7 @@ fn the_stream_silence_stop_fires_on_silent_time() {
             true,
             Beats::Fresh,
             Some("done: thought past the poll"),
+            Some(2),
         ),
         (
             "the same session with no hold is stopped",
@@ -1509,6 +1516,7 @@ fn the_stream_silence_stop_fires_on_silent_time() {
             1,
             false,
             Beats::Fresh,
+            None,
             None,
         ),
         (
@@ -1518,6 +1526,7 @@ fn the_stream_silence_stop_fires_on_silent_time() {
             false,
             Beats::Fresh,
             Some("done: waited the delay out"),
+            None,
         ),
         (
             "a run with no beats is unsupervised",
@@ -1526,6 +1535,7 @@ fn the_stream_silence_stop_fires_on_silent_time() {
             false,
             Beats::None,
             Some("done: thought past the poll"),
+            None,
         ),
         (
             "a wake whose records cannot be read counts no silence",
@@ -1534,6 +1544,7 @@ fn the_stream_silence_stop_fires_on_silent_time() {
             false,
             Beats::Unreadable,
             Some("done: thought past the poll"),
+            None,
         ),
         (
             "a host with no beat source counts from the last line, whatever the hold",
@@ -1541,6 +1552,7 @@ fn the_stream_silence_stop_fires_on_silent_time() {
             1,
             true,
             Beats::NoSource,
+            None,
             None,
         ),
         (
@@ -1550,6 +1562,7 @@ fn the_stream_silence_stop_fires_on_silent_time() {
             false,
             Beats::NoSource,
             None,
+            None,
         ),
         (
             "a host with no beat source reads a speaking session through",
@@ -1558,6 +1571,7 @@ fn the_stream_silence_stop_fires_on_silent_time() {
             false,
             Beats::NoSource,
             Some("done: spoke past the bound"),
+            None,
         ),
         (
             "a session older than its bound counts from its last line, never its launch",
@@ -1566,6 +1580,7 @@ fn the_stream_silence_stop_fires_on_silent_time() {
             false,
             Beats::Fresh,
             Some("done: waited the delay out at its age"),
+            None,
         ),
         (
             "a session silent past the delay it announced is stopped on a later wake",
@@ -1574,6 +1589,16 @@ fn the_stream_silence_stop_fires_on_silent_time() {
             false,
             Beats::Fresh,
             None,
+            None,
+        ),
+        (
+            "a wake the delay partly excused re-arms for the rest of the bound, not a whole bound",
+            HUNG_PAST_ITS_DELAY,
+            11,
+            false,
+            Beats::Fresh,
+            None,
+            Some(2),
         ),
     ] {
         let fx = Fixture::new();
@@ -1584,12 +1609,17 @@ fn the_stream_silence_stop_fires_on_silent_time() {
         let broken_db = fx.scratch_root.path().join("broken-progress.db");
         let broken = Store::open(broken_db.to_str().unwrap()).unwrap();
         drop_the_log(&broken_db);
+        let beat_source = ReadCountingStore::new(&fx.progress_store);
+        let counted = || Driver {
+            beat_source: Some(&beat_source),
+            ..fx.stopping_driver(script, grace)
+        };
         let driver = match beats {
             Beats::NoSource => fx.stopping_driver(script, grace),
-            Beats::None => fx.supervised_driver(script, grace),
+            Beats::None => counted(),
             Beats::Fresh => {
                 fx.beat();
-                fx.supervised_driver(script, grace)
+                counted()
             }
             Beats::Unreadable => Driver {
                 beat_source: Some(&broken),
@@ -1612,6 +1642,9 @@ fn the_stream_silence_stop_fires_on_silent_time() {
             .filter(|l| l.ended.as_deref() == Some("stopped"))
             .count();
         assert_eq!(stops, usize::from(ended.is_none()), "{case}");
+        if let Some(wakes) = wakes {
+            assert_eq!(beat_source.reads().len(), wakes, "{case}: the wakes");
+        }
         let results = fx.spawn_results();
         assert_eq!(results.len(), 1, "{case}: one result landed");
         assert_eq!(
@@ -1967,6 +2000,14 @@ impl Fixture {
     /// How many closes of the run the progress log counts toward `api-unstable`.
     fn failed_closes(&self) -> usize {
         rigger::progress::failed_closes_since(&self.progress_stream(), None)
+    }
+
+    /// Every close of the run as `(launch, ended, class)` ([`close`]), in append order.
+    fn closes(&self) -> Vec<(u32, String, Option<String>)> {
+        self.launch_records()
+            .into_iter()
+            .filter_map(|record| Some((record.launch, record.ended?, record.class)))
+            .collect()
     }
 
     /// [`opts`] for `spawn` whose environment hands the scripted agent `lines`.
@@ -2758,6 +2799,11 @@ fn closed(launch: u32, session: &str, ended: &str, class: &str) -> SpawnLaunched
     SpawnLaunched::closed(RESUMED_SPAWN, launch, session, ended, class)
 }
 
+/// One close as [`Fixture::closes`] reads it: launch `launch` ended `ended` under `class`.
+fn close(launch: u32, ended: &str, class: Option<&str>) -> (u32, String, Option<String>) {
+    (launch, ended.to_string(), class.map(str::to_string))
+}
+
 /// The one result-line a fallback leaves on the run log: the fresh launch's answer.
 fn fresh_answer_on_record() -> Vec<(String, String, bool)> {
     vec![(FIXTURE_ANSWER.to_string(), String::new(), false)]
@@ -2812,8 +2858,13 @@ fn assert_fell_back(
     );
 }
 
+/// The longest one spawn call of a fallback or stop row takes, well under the 30 s an `unreadable`
+/// or `unread-stuck` ending stays alive: a host that waited such a session out never ended it.
+const FALLBACK_WITHIN: Duration = Duration::from_secs(20);
+
 /// THE RESUME FALLBACK: a `--resume` launch of Claude Code ending `ending` under `agent` yields
-/// no `system/init`, so one spawn call lands the fresh launch behind it ([`assert_fell_back`]).
+/// no `system/init`, so one spawn call lands the fresh launch behind it ([`assert_fell_back`]),
+/// within [`FALLBACK_WITHIN`].
 fn a_resume_ending_with_no_session_falls_back(
     ending: &str,
     agent: AgentDef,
@@ -2823,8 +2874,14 @@ fn a_resume_ending_with_no_session_falls_back(
     let fx = Fixture::new();
     let o = fx.resumed_opts(ending, "answer");
 
+    let started = Instant::now();
     let result = fx.host(&agent, &o).expect("the fresh launch answers");
+    let elapsed = started.elapsed();
 
+    assert!(
+        elapsed < FALLBACK_WITHIN,
+        "the resume ends its read at the ending, never waiting its session out: {elapsed:?}"
+    );
     assert_fell_back(
         &fx,
         &result,
@@ -2858,10 +2915,13 @@ rigger::test_cases! {
             &["stream (read error before system/init): stream did not contain valid UTF-8"],
             0,
         );
+    // A success `result` with no `system/init` before it is no session's answer either.
+    a_resume_answering_with_no_init_falls_back:
+        a_resume_ending_with_no_session_falls_back("answer-no-init", AgentDef::default(), &[], 1);
 }
 
-/// A session gone before it reads a task too big for the pipe breaks the host's write, and it
-/// has yielded no `system/init` all the same.
+/// A session gone before it reads a task too big for the pipe breaks the host's write, which
+/// leaves a progress line naming the error, and it has yielded no `system/init` all the same.
 #[test]
 fn a_resume_refused_before_it_reads_its_task_falls_back() {
     let fx = Fixture::new();
@@ -2874,7 +2934,41 @@ fn a_resume_refused_before_it_reads_its_task_falls_back() {
         .host(&AgentDef::default(), &o)
         .expect("the fresh launch answers");
 
-    assert_fell_back(&fx, &result, &[framed(FULL_PROMPT)], &[], 0);
+    assert_fell_back(
+        &fx,
+        &result,
+        &[framed(FULL_PROMPT)],
+        &["stream (task write failed): Broken pipe (os error 32)"],
+        0,
+    );
+}
+
+/// THE STOP reaches a session that never reads its input: the host writes the first message on
+/// a thread of its own, so a task past the pipe buffer holds no read, and the session silent
+/// past its bound is stopped within [`FALLBACK_WITHIN`], well under the 30 s it stays.
+#[test]
+fn a_session_that_never_reads_a_task_past_the_pipe_buffer_is_stopped_at_its_bound() {
+    let fx = Fixture::new();
+    let task = "x".repeat(1024 * 1024);
+
+    let started = Instant::now();
+    let err = fx
+        .stopping_driver(RESUME_ENDING_AGENT, Duration::from_millis(200))
+        .spawn(
+            &wall_clock_bounded(SILENCE_BOUND),
+            &task,
+            &fx.fresh_opts("unread-stuck"),
+            &no_emit,
+        )
+        .expect_err("a session silent past its bound is stopped");
+    let elapsed = started.elapsed();
+
+    assert_eq!(err.0, SILENCE_FAILURE);
+    assert!(
+        elapsed < FALLBACK_WITHIN,
+        "the stop never waits on the write: {elapsed:?}"
+    );
+    assert_eq!(fx.recorded_results(), liveness_fault_on_record());
 }
 
 /// What a launch leaves, read by [`a_launch_ends_as_the_hold_and_its_class_decide`].
@@ -3013,6 +3107,32 @@ fn held_ending_cases() -> Vec<HeldEnding> {
             ..HeldEnding::default()
         },
         HeldEnding {
+            name: "silence that sights the hold inside the stop grace",
+            ending: "silent-then-retried",
+            category: login,
+            agent: bounded(),
+            holds: vec![login_hold()],
+            left: Ending::Stopped,
+            ..HeldEnding::default()
+        },
+        HeldEnding {
+            name: "an unreadable line ahead of the retry that sights the hold",
+            ending: "unreadable-then-retried",
+            category: login,
+            holds: vec![login_hold()],
+            left: Ending::Unreadable,
+            ..HeldEnding::default()
+        },
+        HeldEnding {
+            name: "a stop behind an error result of a hold class",
+            fresh: true,
+            ending: "errored-stuck",
+            agent: bounded(),
+            holds: vec![host_hold(login, "", "run claude auth login", true, "")],
+            left: Ending::Stopped,
+            ..HeldEnding::default()
+        },
+        HeldEnding {
             name: "a hold landing inside the stop grace",
             ending: "stuck",
             agent: bounded(),
@@ -3104,8 +3224,10 @@ fn held_ending_cases() -> Vec<HeldEnding> {
 /// `fault` ending on a held run, closes `interrupted`, records no result and keeps its scratch, a
 /// `--resume` launch with no `system/init` among them launching nothing fresh. On a run held at the
 /// launch's end the stop and the read error keep their endings and launch nothing fresh, a hold
-/// that lands while the launch ends among them, and on an unheld run they and a fault class take
-/// the fallback. A host with no sink reads no hold and keeps `fault` and the fallback.
+/// that lands while the launch ends among them, and one a line still on the stream sights, and on
+/// an unheld run they and a fault class take the fallback. A stop sights the class its session
+/// reported, as any ending does. A host with no sink reads no hold and
+/// keeps `fault` and the fallback.
 #[cfg(unix)]
 #[test]
 fn a_launch_ends_as_the_hold_and_its_class_decide() {
@@ -3141,28 +3263,28 @@ fn a_launch_ends_as_the_hold_and_its_class_decide() {
         let planted = fx.plant_scratch(&o);
         let (closes, failure, launches, results, kept) = match case.left {
             Ending::Interrupted(class, failure) => (
-                vec![(0, "interrupted", Some(class))],
+                vec![close(0, "interrupted", Some(class))],
                 failure,
                 1,
                 Vec::new(),
                 true,
             ),
             Ending::Faulted(class, failure) => (
-                vec![(0, "fault", Some(class))],
+                vec![close(0, "fault", Some(class))],
                 failure,
                 1,
                 Vec::new(),
                 false,
             ),
             Ending::FellBack => (
-                vec![(0, "interrupted", None), (1, "completed", None)],
+                vec![close(0, "interrupted", None), close(1, "completed", None)],
                 String::new(),
                 2,
                 fresh_answer_on_record(),
                 false,
             ),
             Ending::Stopped => (
-                vec![(0, "stopped", None)],
+                vec![close(0, "stopped", None)],
                 SILENCE_FAILURE.to_string(),
                 1,
                 liveness_fault_on_record(),
@@ -3202,12 +3324,7 @@ fn a_launch_ends_as_the_hold_and_its_class_decide() {
             Err(e) => rigger::conductor::strip_failure_marker(&e).to_string(),
         };
         assert_eq!(spawned, failure, "{name}: the failure");
-        let records = fx.launch_records();
-        let closed: Vec<_> = records
-            .iter()
-            .filter_map(|r| Some((r.launch, r.ended.as_deref()?, r.class.as_deref())))
-            .collect();
-        assert_eq!(closed, closes, "{name}: the closes");
+        assert_eq!(fx.closes(), closes, "{name}: the closes");
         assert_eq!(fx.tasks_read().len(), launches, "{name}: the launches");
         assert_eq!(fx.holds()[before..], case.holds, "{name}: the holds");
         assert_eq!(fx.recorded_results(), results, "{name}: the results");
@@ -3274,7 +3391,7 @@ fn a_hold_read_that_fails_launches_nothing_fresh_and_masks_no_failure() {
         resumed: bool,
         ending: &'static str,
         agent: AgentDef,
-        closes: Vec<(u32, &'static str, Option<&'static str>)>,
+        closes: Vec<(u32, String, Option<String>)>,
         failure: &'static str,
         results: Vec<(String, String, bool)>,
         activities: Vec<&'a str>,
@@ -3291,7 +3408,7 @@ fn a_hold_read_that_fails_launches_nothing_fresh_and_masks_no_failure() {
             resumed: false,
             ending: "init-eof",
             agent: AgentDef::default(),
-            closes: vec![(0, "fault", Some("unknown"))],
+            closes: vec![close(0, "fault", Some("unknown"))],
             failure: NO_RESULT_FAILURE,
             results: Vec::new(),
             activities: vec![FRESH_INIT_LINE, unread, uncounted],
@@ -3301,7 +3418,7 @@ fn a_hold_read_that_fails_launches_nothing_fresh_and_masks_no_failure() {
             resumed: true,
             ending: "refused-eof",
             agent: AgentDef::default(),
-            closes: vec![(0, "fault", Some("unknown"))],
+            closes: vec![close(0, "fault", Some("unknown"))],
             failure: REFUSED_FAILURE,
             results: Vec::new(),
             activities: vec![unread, uncounted],
@@ -3311,7 +3428,7 @@ fn a_hold_read_that_fails_launches_nothing_fresh_and_masks_no_failure() {
             resumed: true,
             ending: "silent",
             agent: wall_clock_bounded(SILENCE_BOUND),
-            closes: vec![(0, "stopped", None)],
+            closes: vec![close(0, "stopped", None)],
             failure: SILENCE_FAILURE,
             results: liveness_fault_on_record(),
             activities: vec![unread, &stopping, uncounted],
@@ -3356,15 +3473,11 @@ fn a_hold_read_that_fails_launches_nothing_fresh_and_masks_no_failure() {
             |_| String::new(),
         );
         assert_eq!(failure, row.failure, "{name}: the failure");
-        let records = fx.launch_records();
-        let closes: Vec<_> = records
-            .iter()
-            .filter_map(|r| Some((r.launch, r.ended.as_deref()?, r.class.as_deref())))
-            .collect();
-        assert_eq!(closes, row.closes, "{name}: the closes");
+        assert_eq!(fx.closes(), row.closes, "{name}: the closes");
         assert_eq!(fx.tasks_read().len(), 1, "{name}: the one launch");
         assert_eq!(fx.recorded_results(), row.results, "{name}: the results");
         assert_eq!(fx.activities(), row.activities, "{name}: the progress");
+        let records = fx.launch_records();
         assert!(
             records.iter().all(|r| r.revision.is_none()),
             "{name}: no close is stamped: {records:?}"
@@ -3568,18 +3681,15 @@ rigger::test_cases! {
     );
 }
 
-/// A launch asked to take `launch` opens and closes at the ordinal after the highest the progress
-/// store records for its spawn on its run, a closing counting as much as an opening, and at
-/// `launch` when none does: `seeded` rows are `(run, spawn, ordinal, ended)`.
-fn the_ordinal_follows_the_record(seeded: &[(&str, &str, u32, &str)], launch: u32, ordinal: u32) {
+/// A launch opens and closes at the ordinal after the highest the progress store records for its
+/// spawn on its run, a closing counting as much as an opening, and at 0 when none does: `seeded`
+/// rows are `(run, spawn, ordinal, ended)`.
+fn the_ordinal_follows_the_record(seeded: &[(&str, &str, u32, &str)], ordinal: u32) {
     let fx = Fixture::new();
     for (run, spawn, recorded, ended) in seeded {
         fx.seed_launch(run, spawn, *recorded, ended);
     }
-    let o = SpawnOpts {
-        launch,
-        ..fx.fresh_opts("answer")
-    };
+    let o = fx.fresh_opts("answer");
 
     fx.host(&AgentDef::default(), &o)
         .expect("the launch answers");
@@ -3600,38 +3710,33 @@ fn the_ordinal_follows_the_record(seeded: &[(&str, &str, u32, &str)], launch: u3
 }
 
 rigger::test_cases! {
-    a_first_launch_takes_ordinal_zero: the_ordinal_follows_the_record(&[], 0, 0);
-    a_first_launch_keeps_the_ordinal_its_spawn_names: the_ordinal_follows_the_record(&[], 2, 2);
+    a_first_launch_takes_ordinal_zero: the_ordinal_follows_the_record(&[], 0);
     a_recorded_launch_moves_the_next_to_one:
-        the_ordinal_follows_the_record(&[("run-1", RESUMED_SPAWN, 0, "")], 0, 1);
-    a_recorded_launch_outranks_the_ordinal_a_spawn_names:
-        the_ordinal_follows_the_record(&[("run-1", RESUMED_SPAWN, 0, "")], 9, 1);
+        the_ordinal_follows_the_record(&[("run-1", RESUMED_SPAWN, 0, "")], 1);
     a_closing_record_counts_once_with_its_opening: the_ordinal_follows_the_record(
         &[
             ("run-1", RESUMED_SPAWN, 0, ""),
             ("run-1", RESUMED_SPAWN, 0, "fault"),
         ],
-        0,
         1,
     );
     a_closing_record_alone_counts:
-        the_ordinal_follows_the_record(&[("run-1", RESUMED_SPAWN, 4, "stopped")], 0, 5);
+        the_ordinal_follows_the_record(&[("run-1", RESUMED_SPAWN, 4, "stopped")], 5);
     the_highest_recorded_ordinal_decides_not_the_latest: the_ordinal_follows_the_record(
         &[
             ("run-1", RESUMED_SPAWN, 0, ""),
             ("run-1", RESUMED_SPAWN, 3, ""),
             ("run-1", RESUMED_SPAWN, 1, ""),
         ],
-        0,
         4,
     );
     another_spawns_launches_move_no_ordinal:
-        the_ordinal_follows_the_record(&[("run-1", "u105-resume/implementer#0", 7, "")], 0, 0);
+        the_ordinal_follows_the_record(&[("run-1", "u105-resume/implementer#0", 7, "")], 0);
     another_runs_launches_move_no_ordinal:
-        the_ordinal_follows_the_record(&[("run-2", RESUMED_SPAWN, 7, "")], 0, 0);
+        the_ordinal_follows_the_record(&[("run-2", RESUMED_SPAWN, 7, "")], 0);
 }
 
-/// Every close carries the ordinal its launch took, past `opts.launch`: ending `ending`, the
+/// Every close carries the ordinal its launch took: ending `ending`, the
 /// launch after a recorded launch 4 closes `ended` at 5.
 fn a_close_carries_the_ordinal_its_launch_took(ending: &str, agent: AgentDef, ended: (&str, &str)) {
     let fx = Fixture::new();
@@ -3667,7 +3772,7 @@ rigger::test_cases! {
         );
 }
 
-/// The fallback's two launches take the two ordinals after the record, past `opts.launch`, and
+/// The fallback's two launches take the two ordinals after the record, and
 /// neither touches a transcript of the prior launches'.
 #[test]
 fn a_fallback_past_recorded_launches_takes_the_next_two_ordinals() {
@@ -3729,6 +3834,9 @@ const FELL_BACK: &str = "sess-fell-back";
 
 /// The session a relaunch before a [`relaunch_cases`] row forked its interrupted session under.
 const RELAUNCHED: &str = "sess-relaunched";
+
+/// The session a second relaunch before a [`relaunch_cases`] row forked [`RELAUNCHED`] under.
+const RELAUNCHED_AGAIN: &str = "sess-relaunched-again";
 
 /// Stands, in a [`relaunch_cases`] row, for the session the host mints for a fresh launch.
 const MINTED: &str = "<the session the host mints>";
@@ -3971,6 +4079,54 @@ fn relaunch_cases() -> Vec<Relaunch> {
             appended: relaunched(3, RELAUNCHED),
             tasks: vec![RESTARTED.to_string()],
             answered: (FORKED, RELAUNCHED),
+            ..Default::default()
+        },
+        Relaunch {
+            name: "a third relaunch of a resume, sending its resume task still",
+            log: login_released(),
+            seeded: vec![
+                Opened(0, PRIOR_SESSION, Some(PRIOR_SESSION)),
+                Closed(
+                    0,
+                    PRIOR_SESSION,
+                    "interrupted",
+                    "authentication_failed",
+                    Some(0),
+                ),
+                Opened(1, RELAUNCHED, Some(PRIOR_SESSION)),
+                Closed(1, RELAUNCHED, "interrupted", "", None),
+                Opened(2, RELAUNCHED_AGAIN, Some(RELAUNCHED)),
+                Closed(2, RELAUNCHED_AGAIN, "interrupted", "", None),
+            ],
+            resumed: true,
+            appended: relaunched(3, RELAUNCHED_AGAIN),
+            tasks: vec![with_task(RESTARTED)],
+            answered: (FORKED, RELAUNCHED_AGAIN),
+            ..Default::default()
+        },
+        Relaunch {
+            name: "a third relaunch of a fallback, sent no resume task still",
+            log: login_released(),
+            seeded: vec![
+                Opened(0, PRIOR_SESSION, Some(PRIOR_SESSION)),
+                Closed(0, PRIOR_SESSION, "interrupted", "", None),
+                Opened(1, FELL_BACK, None),
+                Closed(
+                    1,
+                    FELL_BACK,
+                    "interrupted",
+                    "authentication_failed",
+                    Some(0),
+                ),
+                Opened(2, RELAUNCHED, Some(FELL_BACK)),
+                Closed(2, RELAUNCHED, "interrupted", "", None),
+                Opened(3, RELAUNCHED_AGAIN, Some(RELAUNCHED)),
+                Closed(3, RELAUNCHED_AGAIN, "interrupted", "", None),
+            ],
+            resumed: true,
+            appended: relaunched(4, RELAUNCHED_AGAIN),
+            tasks: vec![RESTARTED.to_string()],
+            answered: (FORKED, RELAUNCHED_AGAIN),
             ..Default::default()
         },
         Relaunch {
@@ -4245,8 +4401,14 @@ fn an_interrupted_launch_relaunches_its_session_as_its_close_decides() {
         for (placeholder, session) in [(FORKED, &forked), (MINTED, &minted)] {
             if stands_for(placeholder) {
                 assert!(
-                    ![INTERRUPTED, FELL_BACK, PRIOR_SESSION, RELAUNCHED]
-                        .contains(&session.as_str()),
+                    ![
+                        INTERRUPTED,
+                        FELL_BACK,
+                        PRIOR_SESSION,
+                        RELAUNCHED,
+                        RELAUNCHED_AGAIN
+                    ]
+                    .contains(&session.as_str()),
                     "{name}: the session {placeholder} stands for is minted, not {session}"
                 );
             }
@@ -4318,16 +4480,11 @@ fn a_release_behind_the_hosts_held_read_relaunches_the_session_naming_the_hold()
         &no_emit,
     );
 
-    let closes: Vec<(u32, String, Option<String>)> = fx
-        .launch_records()
-        .into_iter()
-        .filter_map(|record| Some((record.launch, record.ended?, record.class)))
-        .collect();
     assert_eq!(
-        closes,
+        fx.closes(),
         vec![
-            (0, "interrupted".to_string(), Some("unknown".to_string())),
-            (1, "completed".to_string(), None),
+            close(0, "interrupted", Some("unknown")),
+            close(1, "completed", None)
         ],
         "the closes"
     );

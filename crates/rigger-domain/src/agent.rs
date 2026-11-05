@@ -60,18 +60,21 @@ pub struct AgentResult {
     pub resolved_model: String,
     /// The Claude Code session this spawn ran as - the id a later attempt or review round of
     /// the same role on the same unit continues with `--resume` ([`SpawnOpts::resumed_from`]).
-    /// A process host mints it for a fresh launch and keeps the continued one on a resume, and
-    /// the headless host answering a spawn from the run log carries the session its recorded
-    /// result names; the conductor records it in the run log beside the spawn. Empty from a
-    /// driver that runs no
-    /// resumable session (the workflow and replay drivers, a test double), which then leaves
-    /// every later spawn of that role a fresh one.
+    /// A process host mints it for a fresh launch and for the fork a relaunch continues an
+    /// interrupted session as, keeping the continued one on a resume; the headless host answering
+    /// a spawn from the run log carries the session its recorded result names, and the conductor
+    /// records it in the run log beside the spawn. Empty from a driver that runs no resumable
+    /// session (the workflow and replay drivers, a test double), which then leaves every later
+    /// spawn of that role a fresh one.
     pub session_id: String,
     /// The session the spawn's last launch CONTINUED, a relaunch of an interrupted launch
-    /// included: [`SpawnOpts::resumed_from`] when the host resumed it, the interrupted session
-    /// when the host relaunched one, and empty for a fresh launch no relaunch followed - including
-    /// the fallback a host takes when the session it was asked to resume no longer exists. Empty
-    /// too for a spawn the headless host answers from the run log, which launches nothing.
+    /// included: [`SpawnOpts::resumed_from`] when the host resumed it, and the session the
+    /// interrupted launch ran as when the host relaunched one, forking it into
+    /// [`AgentResult::session_id`], so behind a chain of relaunches, or a relaunch of the
+    /// fallback's fresh launch, it names a session the spawn never asked for. Empty for a fresh
+    /// launch no relaunch followed - including the fallback a host takes when the session it was
+    /// asked to resume no longer exists - and for a spawn the headless host answers from the run
+    /// log, which launches nothing.
     pub resumed_from: String,
 }
 
@@ -160,14 +163,6 @@ pub struct SpawnOpts {
     /// host the session ones alone, and each passes the result as `--settings`. Empty means no
     /// settings of the spawn's own; the workflow driver ignores this field.
     pub settings_json: String,
-    /// The 0-based ordinal the first launch of this spawn id takes (spec 104 criterion 1): 0
-    /// unless a caller names another. The stream-json host reads it only for an id with no
-    /// recorded launch; every later launch, a relaunch after an API-side fault (spec 104's own
-    /// FAULT class), a hold-release resume or the resume fallback (spec 105), takes the ordinal
-    /// after the highest recorded. Distinct from `attempt`, the remediation counter the
-    /// deterministic id encodes. 0 for the cli/workflow drivers, which never relaunch a live
-    /// session.
-    pub launch: u32,
     /// The session id this launch CONTINUES (`claude -p --resume <session_id>`), empty
     /// for a fresh launch. The conductor sets it on a later attempt or review round of a
     /// role whose earlier spawn on the same unit recorded its session
@@ -228,6 +223,13 @@ pub fn spawn_request(agent: &AgentDef, prompt: &str, opts: &SpawnOpts) -> SpawnR
 /// during its run: the workflow and headless drivers' agents record through the `rigger`
 /// MCP server while the spawn runs, so both leave `emit` unused, and the blocking cli
 /// driver replays the emit lines of its agent's stdout through `emit` after the run.
+///
+/// A driver that launches more than once inside one spawn (a resume fallback) launches fresh
+/// only on a run it has proved unheld, reading the hold after the ending. A driver handed no
+/// hold reads none and its fallback stands, so a driver with a fallback sits behind the
+/// held-run decorator (`HeldDriver`) only when it is handed the run's hold. The blocking cli
+/// driver `rigger canary` probes with and the critique host, which is handed no hold sink, are
+/// that no-hold case, and neither sits behind the decorator.
 pub trait AgentDriver: Send + Sync {
     fn spawn(
         &self,
@@ -335,6 +337,14 @@ pub struct DispositionRow {
     /// Whether a probe of a hold of this cause reads the login (`claude auth status`) before
     /// its canary: a logged-out answer is the cause itself, so no canary runs.
     pub credential: bool,
+}
+
+impl DispositionRow {
+    /// Whether a session that ended of this category waits on the run, a hold or a wait row,
+    /// rather than failing its spawn as a fault row does.
+    pub fn waits(&self) -> bool {
+        self.disposition != Disposition::Fault
+    }
 }
 
 /// The cause of the hold three consecutive failed launches set: the API is failing with no
@@ -731,7 +741,7 @@ mod tests {
 
     /// The request a spawn parks is derived from its options and its agent alone: every field the
     /// options carry, the agent's model rung for the attempt, its fan-out-stripped tools and its
-    /// wall-clock bound - and nothing else of the options (isolation, env, settings, launch).
+    /// wall-clock bound - and nothing else of the options (isolation, env, settings).
     #[test]
     fn a_parked_request_is_derived_from_its_spawn_options_and_its_agent() {
         let agent = AgentDef {
@@ -759,7 +769,6 @@ mod tests {
             ],
             reviews: vec!["lens:sdet".into()],
             settings_json: "{}".into(),
-            launch: 2,
             ..SpawnOpts::default()
         };
         assert_eq!(

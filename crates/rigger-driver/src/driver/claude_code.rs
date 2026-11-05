@@ -12,7 +12,7 @@
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStderr, Stdio};
+use std::process::{Child, ChildStderr, ChildStdin, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
@@ -48,6 +48,18 @@ use crate::spawn_store;
 /// launch waits between two reads of its silence, so a silence frozen just under the bound by
 /// a hold or a dead beat cannot spin on the store.
 const UNBOUNDED_POLL: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// The wait a bounded launch's wake under its `bound` re-arms for, having read `silent`: the rest
+/// of the bound, at least [`UNBOUNDED_POLL`]; a wake that read no silence (`None`) waits the poll,
+/// since its read proved nothing about the bound.
+fn next_wait(
+    bound: std::time::Duration,
+    silent: Option<std::time::Duration>,
+) -> std::time::Duration {
+    silent.map_or(UNBOUNDED_POLL, |silent| {
+        bound.saturating_sub(silent).max(UNBOUNDED_POLL)
+    })
+}
 
 /// Bounds [`Driver::read_stream`]'s ORDINARY (non-STOP) exit joins - the stderr-drain and
 /// stdout-reader threads, right after `reaped_child::ReapedChild::drop` reaps the one child this
@@ -151,10 +163,10 @@ impl Default for Driver<'static> {
     }
 }
 
-/// A started launch: the live child (stdin still open - THE STREAM, criterion 2, writes
-/// any later operator note and closes it after the first `result`), the session id this
-/// host minted or continued for it, and the exact argv it ran with (kept for the caller's own
-/// diagnostics/tests; not re-derivable from `Child`).
+/// A started launch: the live child (stdin open, for THE STREAM, criterion 2, to write the first
+/// message on and close after the first `result`), the session id this host minted or continued
+/// for it, and the exact argv it ran with (kept for the caller's own diagnostics/tests; not
+/// re-derivable from `Child`).
 pub struct Launch {
     pub child: Child,
     pub session_id: String,
@@ -165,12 +177,41 @@ pub struct Launch {
     /// its transcript and its close carry.
     pub ordinal: u32,
     /// The session this launch continues, empty on a fresh launch: what the spawn's result
-    /// records, and what makes [`Driver::read_stream`] await the session's `system/init`.
+    /// records.
     pub resumed_from: String,
+    /// Whether this launch continues a session ([`LaunchSession::resumed`]): what makes
+    /// [`Driver::read_stream`] await the session's `system/init`.
+    pub resumed: bool,
     pub args: Vec<String>,
     /// The file the session reads its system prompt from (`--system-prompt-file`), held for
     /// as long as the launch is, so the session can read it whenever it starts.
     pub persona: SystemPromptFile,
+    /// The first user message, the task framed with the live-progress instruction (section
+    /// 4.1, [`first_user_message`]): what [`Driver::read_stream`] writes to the session's input
+    /// on a thread of its own, so a session that never reads it still reaches THE STOP.
+    message: String,
+}
+
+/// The threads [`Driver::read_stream`] works a launch's pipes on: the writer of its first message
+/// ([`write_first_message`]), which holds the session's input until the host closes it
+/// ([`Pipes::close_input`]), the stderr drain, whose tail a no-result ending carries, and the
+/// stdout reader feeding the stream's lines. Every ending joins them once the child is reaped
+/// ([`Driver::join_pipes`]).
+struct Pipes {
+    /// What the writer waits on to close the session's input: dropping it is the close.
+    input_open: Option<std::sync::mpsc::Sender<()>>,
+    input: Option<std::thread::JoinHandle<std::io::Result<()>>>,
+    stderr_drain: Option<std::thread::JoinHandle<Vec<u8>>>,
+    stdout_reader: std::thread::JoinHandle<()>,
+}
+
+impl Pipes {
+    /// Close the session's input (THE STREAM: "the host closes the input after the first
+    /// `result`"): at once when the first message's write has returned, and the moment it
+    /// returns when it has not. A write a session never reads returns when the child ends.
+    fn close_input(&mut self) {
+        self.input_open = None;
+    }
 }
 
 /// How [`Driver::read_stream`] ended a launch short of an `Err`, which ends this `spawn` call
@@ -226,15 +267,14 @@ impl Driver<'_> {
     /// environment (inherited unchanged, credential included) plus the harness environment
     /// ([`harness_env`]) plus `opts.env` plus [`Driver::handed_env`], each later source winning
     /// under a shared key; this function neither reads nor sets a credential variable of its
-    /// own. Once the record is written the launch never returns `Err` with an unaccounted-for
-    /// child still running behind it: a failure writing the first message ends the child
-    /// through its own handle (`kill()` + `wait()`) before the error propagates. A resume's
-    /// failed write ends the child the same way and returns the launch instead, so
-    /// [`Driver::read_stream`] reads what the session printed before it went.
+    /// own. Once the child is started the launch returns it, with the first message for
+    /// [`Driver::read_stream`] to write on a thread of its own ([`Launch`]): the launch writes
+    /// nothing, so it fails before the child starts or not at all, and a session that never
+    /// reads its input still reaches THE STOP.
     ///
     /// The launch takes the ordinal after the highest the record holds for this spawn
-    /// ([`progress_store::next_launch`]), and [`SpawnOpts::launch`] only for an id with no
-    /// recorded launch, so a restart's first spawn never truncates a prior transcript. Its
+    /// ([`progress_store::next_launch`]), and 0 only for an id with no recorded launch, so a
+    /// restart's first spawn never truncates a prior transcript. Its
     /// record, its transcript ([`stream_path`]) and its close all carry that
     /// [`Launch::ordinal`]; a failed read of the record starts nothing.
     ///
@@ -294,7 +334,7 @@ impl Driver<'_> {
             .unwrap_or(0);
         let ordinal = match ordinal {
             Some(ordinal) => ordinal,
-            None => progress_store::next_launch(store, &opts.run_id, &opts.id, opts.launch)?,
+            None => progress_store::next_launch(store, &opts.run_id, &opts.id)?,
         };
         progress_store::record_launch(
             store,
@@ -330,37 +370,9 @@ impl Driver<'_> {
         cmd.stdin(Stdio::piped());
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
-        let mut child = cmd
+        let child = cmd
             .spawn()
             .map_err(|e| Error(format!("claude_code driver: launch {:?}: {e}", opts.id)))?;
-
-        // The task, framed with the live-progress instruction, is the first user message on
-        // the input stream (§4.1); stdin stays open afterward (§4.2's "the host closes the
-        // input after the first `result`" is the reader's call, not this one's). Every launch
-        // passes through here, so a resume and a relaunch are framed too.
-        let message = first_user_message(&framed(task));
-        let write_result = child
-            .stdin
-            .as_mut()
-            .map(|stdin| writeln!(stdin, "{message}"));
-        if let Some(Err(e)) = write_result {
-            // The durable `SpawnLaunched` record above already claims this launch
-            // happened - a write failure here must not also leak the OS process behind
-            // it. End it through the handle that spawned it (process lifecycle
-            // discipline: kill() + wait(), never a computed-pid signal) first, so no
-            // unaccounted-for child outlives the `Err` a fresh launch returns below.
-            let _ = child.kill();
-            let _ = child.wait();
-            // A session that refused a resume exits without reading its input, so a task past
-            // the pipe buffer fails here on the very launch the fallback answers: the ended
-            // child goes on to `read_stream`, which reads what it printed.
-            if !session.resumed() {
-                return Err(Error(format!(
-                    "claude_code driver: write task to {:?}: {e}",
-                    opts.id
-                )));
-            }
-        }
 
         Ok(Launch {
             child,
@@ -368,19 +380,26 @@ impl Driver<'_> {
             model: agent.model_for_attempt(opts.attempt).to_string(),
             ordinal,
             resumed_from: session.resumed_from(),
+            resumed: session.resumed(),
             args,
             persona,
+            // The task, framed with the live-progress instruction, is the first user message on
+            // the input stream (section 4.1), which [`Driver::read_stream`] writes. Every launch
+            // passes through here, so a resume and a relaunch are framed too.
+            message: first_user_message(&framed(task)),
         })
     }
 
     /// The spawn's first launch (spec 105, RESUME BY SESSION). When the latest launch of `opts.id`
-    /// in this run ([`progress_store::latest_launch_records`]) ended `interrupted`, whichever site
-    /// closed it, it is a relaunch ([`LaunchSession::relaunch`]) at the next ordinal in `opts.dir`,
-    /// a fork of that launch's session under a minted id, charged no attempt, sent the
+    /// among its records in this run ([`progress_store::launch_records`],
+    /// [`progress::latest_launch_of`]) ended `interrupted`, whichever site closed it, it is a
+    /// relaunch ([`LaunchSession::relaunch`]) at the next ordinal in `opts.dir`, a fork of that
+    /// launch's session under a minted id, charged no attempt, sent the
     /// [`Driver::interruption_note`] in front of what [`LaunchSession::task`] sends, the
-    /// [`SpawnOpts::resume_task`] when that launch's record, its open record unless it was lost,
-    /// says it carried it. Any other spawn takes [`Driver::launch`]. A failed read of the record
-    /// or of the hold sink launches nothing.
+    /// [`SpawnOpts::resume_task`] when that launch carried it: its record, its open record unless
+    /// it was lost, and the records its chain of sessions leads back through decide. Any other
+    /// spawn takes [`Driver::launch`]. A failed read of the records or of the hold sink launches
+    /// nothing.
     fn first_launch(
         &self,
         agent: &AgentDef,
@@ -388,7 +407,8 @@ impl Driver<'_> {
         opts: &SpawnOpts,
     ) -> Result<Launch, Error> {
         let store = self.progress_store;
-        let records = progress_store::latest_launch_records(store, &opts.run_id, &opts.id)?;
+        let chain = progress_store::launch_records(store, &opts.run_id, &opts.id)?;
+        let records = progress::latest_launch_of(&chain);
         let Some(interrupted) = records
             .last()
             .filter(|latest| latest.ended.as_deref() == Some(progress::ENDED_INTERRUPTED))
@@ -396,7 +416,7 @@ impl Driver<'_> {
             return self.launch(agent, prompt, opts, store);
         };
         let note = self.interruption_note(interrupted)?;
-        let session = LaunchSession::relaunch(records.first().unwrap_or(interrupted), opts);
+        let session = LaunchSession::relaunch(records.first().unwrap_or(interrupted), &chain, opts);
         let task = match session.task(prompt, opts) {
             "" => note,
             carried => format!("{note}\n\n{carried}"),
@@ -454,9 +474,8 @@ impl Driver<'_> {
     /// result, and a `record_result_unless_ended` write failure all leave `reaper` in scope
     /// with the process still possibly running behind it; dropping it ends it either way:
     /// `try_wait` first, falling back to a best-effort end-then-collect through the same
-    /// handle when the process is not yet known to have exited. That mirrors `launch()`'s
-    /// own "never returns `Err` with an unaccounted-for child still running behind it"
-    /// contract.
+    /// handle when the process is not yet known to have exited, so no child outlives this
+    /// function's `Err`.
     ///
     /// A CLEAN EOF is different (adj-u104-stream round-5 REQUIRED FIX,
     /// op-104-stream-clean-eof-waits-before-the-reap): the child closing its OWN stdout
@@ -490,6 +509,15 @@ impl Driver<'_> {
     /// the class it reports (CONSTRAINTS WALK: "a fault of class `unknown` carrying the
     /// stderr tail").
     ///
+    /// The first message ([`Launch`]) is written on a thread of its own too
+    /// ([`write_first_message`]), started with the readers, so a session that never reads its
+    /// input, whatever the task's size, still reaches THE STOP below rather than holding this
+    /// host in a write. The writer holds the input until the host closes it
+    /// ([`Pipes::close_input`]): after the first `result`, before the clean EOF's wait, and first
+    /// in THE STOP. A write that fails ends nothing by itself: the session ends as its stream
+    /// says, and the writer's join ([`Driver::join_pipes`]) leaves a progress line naming the
+    /// error.
+    ///
     /// STOP (spec 104 criterion 6): stdout is likewise read on its OWN thread (the SAME
     /// stderr-deadlock reasoning applies to it too - this function must never itself sit
     /// blocked in `BufReader::lines()` with no way to notice silence), forwarding each
@@ -502,23 +530,27 @@ impl Driver<'_> {
     /// enforced HERE because this host has no external stepper polling a marker file. Silent
     /// time can pass the bound no sooner than the wall time since the last line does, so a
     /// line costs no read: the records are read only on a wake at that point, and a wake under
-    /// the bound waits out the rest of it, at least [`UNBOUNDED_POLL`], and re-checks the
-    /// child. A genuine expiry before any result exists
-    /// runs THE STOP sequence (close the session's input, wait [`Driver::stop_grace`], end
-    /// the child via [`crate::reap::end_child`] - the handle-bound production helper, never a
-    /// computed pid) and, short of THE RESUME FALLBACK below, records the EXISTING
-    /// [`SpawnResult::liveness_fault`] shape, same
-    /// as `liveness::sweep`'s own fault for the stepwise driver, just recorded HERE rather
-    /// than by an external sweep. An expiry AFTER a result already landed is not a stop at
-    /// all - it degrades to the SAME soft-break the post-result read-error path already
-    /// takes (round-2 precedent), letting the existing reap decide the child's fate.
+    /// the bound waits out the rest of it, at least [`UNBOUNDED_POLL`], or the poll when its
+    /// records do not read ([`next_wait`]), and re-checks the child. A genuine expiry before any
+    /// result exists runs THE STOP sequence (close the session's input ([`Pipes::close_input`]),
+    /// wait [`Driver::stop_grace`], end the child via [`crate::reap::end_child`] - the handle-bound
+    /// production helper, never a computed pid) and, short of THE RESUME FALLBACK below, records
+    /// the EXISTING [`SpawnResult::liveness_fault`] shape, same as `liveness::sweep`'s own fault
+    /// for the stepwise driver, just recorded HERE rather than by an external sweep. An expiry
+    /// AFTER a result already landed is not a stop at all - it degrades to the SAME soft-break the
+    /// post-result read-error path already takes (round-2 precedent), letting the existing reap
+    /// decide the child's fate.
     ///
     /// HOLD (spec 105): a `system/api_retry` line of a category whose row holds is a sighting
-    /// ([`Driver::sight`]). The first `result` closes the session's input whatever it says. Past
-    /// a resume's refusal (THE RESUME FALLBACK below), a non-error one is recorded and closes the
-    /// launch `completed`, and one with `is_error: true` records nothing: no later `result` acts,
-    /// and the launch takes its class after the child exits, as a no-result launch does
-    /// ([`Driver::classify_no_result`]), or takes THE STOP when a bounded session never does.
+    /// ([`Driver::sight_retry`]). The first `result` closes the session's input whatever it says.
+    /// Past a resume's refusal (THE RESUME FALLBACK below), a non-error one is recorded and closes
+    /// the launch `completed`, and one with `is_error: true` records nothing: no later `result`
+    /// acts, and the launch takes its class after the child exits, as a no-result launch does
+    /// ([`Driver::classify_no_result`]), or takes THE STOP when a bounded session never does,
+    /// sighting the class its session reported while its close stays `stopped` with no class
+    /// ([`Driver::close_stopped`]). On an unbounded launch a live child that ignores its input
+    /// close keeps the turn until it exits, as a no-result child does, and a read error behind that
+    /// `result` fails the launch unclassed, as a read error before any result does.
     ///
     /// THE RESUME FALLBACK (spec 105 criterion 1): a `--resume` launch awaits its session until
     /// the first `system/init`. Ending while it still awaits one - at the end of the stream,
@@ -529,15 +561,16 @@ impl Driver<'_> {
     /// launch [`AgentDriver::spawn`] lands. A launch that saw `system/init` takes no fallback,
     /// whatever its ending, and a fresh launch has nothing to await.
     ///
-    /// HELD MEANS NO LAUNCH (spec 105) outranks that fallback, since a fresh launch is a launch
-    /// and runs past the decorator's gate: the fallback takes a run proved unheld
+    /// HELD MEANS NO LAUNCH (spec 105) outranks that fallback, since a fresh launch is a launch and
+    /// runs past the decorator's gate: the fallback takes a run proved unheld
     /// ([`Driver::run_held`]), read once the launch has ended, the stop's grace, the reap and the
-    /// drain joins behind it, so a hold that lands while it ends counts. An ending that closes
-    /// `interrupted` for its class or a held run ([`Driver::fault`]) returns
-    /// [`StreamEnd::Interrupted`], and on a run not proved unheld the stop and the read error keep
-    /// their own endings, each returning its error. Off that path a resume with no `system/init`
-    /// falls back whatever its class, and a host with no hold sink reads no hold and always falls
-    /// back.
+    /// drain joins behind it, and once the lines already on its stream are drained and sighted
+    /// ([`Driver::drain_lines`]), so a hold that lands while it ends counts, one its own last line
+    /// sights among them. An ending that closes `interrupted` for its class or a held run
+    /// ([`Driver::fault`]) returns [`StreamEnd::Interrupted`], and on a run not proved unheld the
+    /// stop and the read error keep their own endings, each returning its error. Off that path a
+    /// resume with no `system/init` falls back whatever its class, and a host with no hold sink
+    /// reads no hold and always falls back.
     fn read_stream(
         &self,
         launch: Launch,
@@ -568,6 +601,20 @@ impl Driver<'_> {
         // over a channel this loop drains with a timeout instead of `BufRead::lines`'s
         // own unbounded blocking iterator.
         let (line_rx, stdout_reader) = crate::reaped_child::line_channel(stdout);
+        // The first message goes on its own thread as well (see the doc above), which holds the
+        // session's input until the host closes it.
+        let (input_open, close) = std::sync::mpsc::channel();
+        let message = launch.message;
+        let input =
+            reaper.child_mut().stdin.take().map(|stdin| {
+                std::thread::spawn(move || write_first_message(stdin, &message, close))
+            });
+        let mut pipes = Pipes {
+            input_open: Some(input_open),
+            input,
+            stderr_drain,
+            stdout_reader,
+        };
 
         let marker = liveness::marker_path(&self.scratch_root, &opts.run_id, &opts.id);
         let mut stream_file = open_stream_file(
@@ -591,7 +638,7 @@ impl Driver<'_> {
         let mut errored = false;
         // THE RESUME FALLBACK's one predicate (see the doc above): a resume with no
         // `system/init` yet.
-        let mut awaiting_session = !launch.resumed_from.is_empty();
+        let mut awaiting_session = launch.resumed;
         // adj-u104-stream round-5 REQUIRED FIX (op-104-stream-clean-eof-waits-before-the-reap):
         // distinguishes the loop's two exit shapes below. `false` when the loop instead runs
         // to real exhaustion (a clean EOF: the child closed its stdout pipe on its own,
@@ -639,7 +686,7 @@ impl Driver<'_> {
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) if result.is_none() => {
                     if max_wall_clock != 0 {
                         let silent = self.silence(opts, last_line);
-                        if liveness::past_bound(silent, bound) {
+                        if silent.is_some_and(|silent| liveness::past_bound(silent, bound)) {
                             // THE STOP (spec 104 criterion 6): genuine SILENCE with no result
                             // yet, on a BOUNDED launch only. Runs the whole sequence inline so
                             // the caller sees exactly one outcome for "this launch never
@@ -648,30 +695,30 @@ impl Driver<'_> {
                             // chooses, the fallback answering a run proved unheld with no fault of
                             // its own.
                             if awaiting_session {
-                                self.stop_session(
-                                    reaper,
-                                    stderr_drain,
-                                    stdout_reader,
-                                    opts,
-                                    self.stop_grace,
-                                );
+                                self.stop_session(reaper, pipes, opts, self.stop_grace);
+                                self.drain_lines(&line_rx, &mut stream_file, opts, id);
                                 if self.run_held(opts) == HoldRead::Unheld {
                                     return Ok(self.session_gone(opts, id));
                                 }
                                 let message = self.announce_stop(opts, max_wall_clock);
-                                return self.close_stopped(opts, id, message);
+                                return self.close_stopped(
+                                    opts,
+                                    id,
+                                    message,
+                                    assistant_error.as_deref(),
+                                );
                             }
                             return self.stop_for_wall_clock_silence(
                                 reaper,
-                                stderr_drain,
-                                stdout_reader,
+                                pipes,
                                 opts,
                                 id,
                                 max_wall_clock,
+                                assistant_error.as_deref(),
                             );
                         }
                         armed_at = std::time::Instant::now();
-                        armed_for = bound.saturating_sub(silent).max(UNBOUNDED_POLL);
+                        armed_for = next_wait(bound, silent);
                     }
                     // Past that a wake-up is never a stop, and on an unbounded launch it never
                     // reads as one. 2026-09-28: the `max_wall_clock` 0 wake-up took THE STOP,
@@ -737,12 +784,7 @@ impl Driver<'_> {
             // "every line touches the spawn's liveness marker - the host proves life,
             // the agent is never asked to" (architecture addendum §4.2).
             touch_liveness_marker(marker.as_deref());
-            if let Some(f) = stream_file.as_mut() {
-                // Best-effort: the transcript is a diagnostic/audit artifact, never the
-                // record of truth (the progress store and the run store are), so a full
-                // disk here must not fail an otherwise-healthy spawn.
-                let _ = writeln!(f, "{line}");
-            }
+            write_stream_line(&mut stream_file, &line);
 
             let Ok(v) = serde_json::from_str::<Value>(&line) else {
                 // "a line that is not JSON is recorded as a progress line and skipped."
@@ -772,14 +814,7 @@ impl Driver<'_> {
                     // class. The tell of this defect class: a progress note where a failure
                     // class belongs.
                     if let Some(status) = rigger_server_fault(&v) {
-                        return self.stop_for_launch_fault(
-                            reaper,
-                            stderr_drain,
-                            stdout_reader,
-                            opts,
-                            id,
-                            &status,
-                        );
+                        return self.stop_for_launch_fault(reaper, pipes, opts, id, &status);
                     }
                 }
                 (Some("system"), Some("api_retry")) => {
@@ -788,12 +823,8 @@ impl Driver<'_> {
                     // FAILURE CLASS's second-priority source (criterion 5): the LATEST
                     // category wins, a later line overwriting an earlier one exactly like
                     // `resolved_model` does as the stream plays.
-                    if let Some(category) = message_error(&v) {
+                    if let Some(category) = self.sight_retry(opts, id, &v) {
                         last_api_retry_category = Some(category.to_string());
-                        let row = AgentFailure::from_category(category).row();
-                        if row.disposition == Disposition::Hold {
-                            self.sight(opts, id, category, category);
-                        }
                     }
                 }
                 (Some("assistant"), _) => {
@@ -811,7 +842,7 @@ impl Driver<'_> {
                 // of a spawn id and this one would stand in the fresh launch's place. Input closes
                 // as after any result, so a session held on it ends and the fallback answers.
                 (Some("result"), _) if awaiting_session => {
-                    drop(reaper.child_mut().stdin.take());
+                    pipes.close_input();
                 }
                 // adj-u104-stream round-3 REQUIRED FIX 1: only the FIRST result-type line
                 // acts - a genuine SECOND one (the comment above this match's `Err(e) if
@@ -846,10 +877,9 @@ impl Driver<'_> {
                             resumed_from: launch.resumed_from.clone(),
                         });
                     }
-                    // "the host closes the input after the first `result`" - dropping the
-                    // handle closes the pipe; a session that would otherwise wait on more
-                    // input can now exit.
-                    drop(reaper.child_mut().stdin.take());
+                    // "the host closes the input after the first `result`"; a session that would
+                    // otherwise wait on more input can now exit.
+                    pipes.close_input();
                 }
                 _ => {
                     // user turns, hook events, every other subtype, AND a duplicate
@@ -875,6 +905,8 @@ impl Driver<'_> {
         // UNCHANGED: neither is evidence of in-progress teardown, so it keeps going
         // straight to the signal-capable drop exactly as before this fix.
         if !ended_via_break {
+            // Its input closes first, so a session still reading it sees the end and exits.
+            pipes.close_input();
             let _ = reaper.child_mut().wait();
         }
 
@@ -902,25 +934,31 @@ impl Driver<'_> {
         // no-result path folds it into a classification below) - a handle that outruns
         // the bound, or whose thread panicked, degrades to an empty tail, same as no
         // stderr pipe at all.
-        let stderr_tail = stderr_drain
-            .and_then(|handle| self.join_within(opts, "stderr", handle, ORDINARY_DRAIN_JOIN_BOUND))
-            .unwrap_or_default();
-        self.join_within(opts, "stdout", stdout_reader, ORDINARY_DRAIN_JOIN_BOUND);
+        let stderr_tail = self.join_pipes(opts, pipes, ORDINARY_DRAIN_JOIN_BOUND);
 
         match (result, read_error) {
             (Some(result), _) => Ok(StreamEnd::Result(result)),
-            (None, Some(_)) if self.run_held(opts) == HoldRead::Unheld => {
-                Ok(self.session_gone(opts, id))
+            (None, Some(e)) => {
+                self.drain_lines(&line_rx, &mut stream_file, opts, id);
+                if self.run_held(opts) == HoldRead::Unheld {
+                    Ok(self.session_gone(opts, id))
+                } else {
+                    Err(read_agent_stream_error(opts, &e))
+                }
             }
-            (None, Some(e)) => Err(read_agent_stream_error(opts, &e)),
-            (None, None) => self.classify_no_result(
-                opts,
-                id,
-                awaiting_session,
-                assistant_error.as_deref(),
-                &last_api_retry_category,
-                &stderr_tail,
-            ),
+            (None, None) => {
+                let (class, message) = self.classify_no_result(
+                    opts,
+                    assistant_error.as_deref(),
+                    &last_api_retry_category,
+                    &stderr_tail,
+                );
+                let read = self.ending_read(opts, class);
+                if awaiting_session && read == Some(HoldRead::Unheld) {
+                    return Ok(self.session_gone(opts, id));
+                }
+                self.fault(opts, id, class, message, read)
+            }
         }
     }
 
@@ -941,59 +979,59 @@ impl Driver<'_> {
     }
 
     /// A FAILURE HAS A CLASS (spec 104 criterion 5): class a session that ended with no usable
-    /// `result` and end it there - the natural loop-exhaustion/clean-EOF exit
+    /// `result` - the natural loop-exhaustion/clean-EOF exit
     /// [`read_stream`](Self::read_stream)'s bottom falls through to, exactly the
     /// CONSTRAINTS WALK shape ("the child exits before `system/init` ... a fault of class
     /// `unknown` carrying the stderr tail, never a hang"), whether or not an `is_error`
-    /// `result` came first; `fallback` says a resume in that shape still awaits its session
-    /// ([`Driver::fault`]). `assistant_error` is the FIRST-priority source, the class the
-    /// session printed on its last assistant line. Next comes the `StopFailure` hook's record
-    /// (keyed on `opts.id` AND scoped to `opts.run_id` -
-    /// adj-u104c5 REQUIRED FIX 1, adv-u104c5-stopfailure-crosses-run-boundary: a stale
-    /// record from an old or unrelated run must never outrank the live session's own
-    /// `api_retry` category, matching `rigger status`'s own established progress-event
-    /// run-scoping convention at `src/main.rs`), read from THIS driver's own progress store
-    /// and scoped to this launch by stream order
-    /// ([`progress::latest_stop_failure_class`]). The two fold against
-    /// `last_api_retry_category` via [`classify_failure`], and [`Driver::fault`] embeds the
-    /// result via [`no_result_error`] ahead of a
-    /// human-readable message carrying the class and `stderr_tail` (lossily decoded,
-    /// trimmed). A progress-store read failure degrades to "no `StopFailure` record found"
-    /// (`None`) rather than failing the whole classification - the second source
-    /// (`last_api_retry_category`) and the `unknown` floor both still apply, so a store
-    /// hiccup here never turns a classifiable failure into an opaque one
-    /// (`classify_no_result_degrades_to_the_api_retry_floor_when_the_progress_store_read_fails`
-    /// below proves this branch is reachable).
+    /// `result` came first - into the class its sources give ([`Driver::no_result_class`]) and
+    /// the message its ending carries ([`Driver::fault`]), which carries the class and
+    /// `stderr_tail` (lossily decoded, trimmed).
     fn classify_no_result(
         &self,
         opts: &SpawnOpts,
-        id: LaunchId,
-        fallback: bool,
         assistant_error: Option<&str>,
         last_api_retry_category: &Option<String>,
         stderr_tail: &[u8],
-    ) -> Result<StreamEnd, Error> {
+    ) -> (AgentFailure, String) {
+        let class = self.no_result_class(opts, assistant_error, last_api_retry_category.as_deref());
+        let tail = String::from_utf8_lossy(stderr_tail);
+        let message = format!(
+            "claude_code driver: {:?}: the agent stream ended with no result (class {class}; \
+             stderr tail: {})",
+            opts.id,
+            tail.trim()
+        );
+        (class, message)
+    }
+
+    /// The class a launch with no usable `result` takes from its sources (spec 104 criterion 5).
+    /// `assistant_error` is the FIRST-priority source, the class the session printed on its last
+    /// assistant line. Next comes the `StopFailure` hook's record (keyed on `opts.id` AND scoped
+    /// to `opts.run_id` - adj-u104c5 REQUIRED FIX 1, adv-u104c5-stopfailure-crosses-run-boundary:
+    /// a stale record from an old or unrelated run must never outrank the live session's own
+    /// `api_retry` category, matching `rigger status`'s own established progress-event
+    /// run-scoping convention at `src/main.rs`), read from THIS driver's own progress store and
+    /// scoped to this launch by stream order ([`progress::latest_stop_failure_class`]). The two
+    /// fold against `last_api_retry_category` via [`classify_failure`]. A progress-store read
+    /// failure degrades to "no `StopFailure` record found" (`None`) rather than failing the whole
+    /// classification - the second source (`last_api_retry_category`) and the `unknown` floor
+    /// both still apply, so a store hiccup here never turns a classifiable failure into an opaque
+    /// one (`classify_no_result_degrades_to_the_api_retry_floor_when_the_progress_store_read_fails`
+    /// below proves this branch is reachable).
+    fn no_result_class(
+        &self,
+        opts: &SpawnOpts,
+        assistant_error: Option<&str>,
+        last_api_retry_category: Option<&str>,
+    ) -> AgentFailure {
         // THIS spawn's run's progress alone - its own stream, the one read `rigger status`
         // folds too (spec 101).
         let stop_failure_class = progress::read_run(self.progress_store, &opts.run_id)
             .ok()
             .and_then(|events| progress::latest_stop_failure_class(&events, &opts.id));
-        let class = classify_failure(
+        classify_failure(
             assistant_error.or(stop_failure_class.as_deref()),
-            last_api_retry_category.as_deref(),
-        );
-        let tail = String::from_utf8_lossy(stderr_tail);
-        self.fault(
-            opts,
-            id,
-            class,
-            format!(
-                "claude_code driver: {:?}: the agent stream ended with no result (class \
-                 {class}; stderr tail: {})",
-                opts.id,
-                tail.trim()
-            ),
-            fallback,
+            last_api_retry_category,
         )
     }
 
@@ -1004,37 +1042,27 @@ impl Driver<'_> {
     /// result ([`Driver::classify_no_result`]) and a session whose `rigger` MCP server did not
     /// connect ([`Driver::stop_for_launch_fault`]).
     ///
-    /// HELD MEANS NO LAUNCH AND NO CHARGE (spec 105) decides ahead of that close: a host with a
-    /// hold sink closes `interrupted` under `class` instead when the class's row holds or waits,
-    /// which reads no hold, or when the run is held at this ending ([`Driver::run_held`]), whatever
-    /// the class, and the error rides [`StreamEnd::Interrupted`], marked interrupted: no result,
-    /// no attempt, the scratch kept. A close the hold read decided carries that read's head as its
-    /// stamp ([`Driver::close_at`]). A `fallback` launch, a resume that still awaits its session,
-    /// on a run proved unheld leaves here by THE RESUME FALLBACK ([`Driver::session_gone`]). A
-    /// read that fails proves neither, so it closes `fault` with no fallback.
+    /// HELD MEANS NO LAUNCH AND NO CHARGE (spec 105) decides ahead of that close, from `read`, the
+    /// hold read the ending took ([`Driver::ending_read`]): the launch closes `interrupted` under
+    /// `class` instead when no read was taken, since the class interrupts on its own, or when the
+    /// read proved the run held, whatever the class, and the error rides
+    /// [`StreamEnd::Interrupted`], marked interrupted: no result, no attempt, the scratch kept. A
+    /// close the hold read decided carries that read's head as its stamp ([`Driver::close_at`]). A
+    /// run proved unheld and a read that fails, proving neither, close `fault`.
     ///
     /// The holds follow the close and come before the `Error` returns: an ending of a class whose
-    /// row holds or waits sights that class, with no `detail` since an ending is no sighting line,
-    /// then a `fault` close counts the failed closes ([`Driver::sight_unstable`]), which an
-    /// `interrupted` close never enters. A class whose row faults holds nothing on its own, so it
-    /// takes its spawn site's existing path.
+    /// row holds or waits sights that class ([`Driver::sight_ending`]), then a `fault` close counts
+    /// the failed closes ([`Driver::sight_unstable`]), which an `interrupted` close never enters. A
+    /// class whose row faults holds nothing on its own, so it takes its spawn site's existing path.
     fn fault(
         &self,
         opts: &SpawnOpts,
         id: LaunchId,
         class: AgentFailure,
         message: String,
-        fallback: bool,
+        read: Option<HoldRead>,
     ) -> Result<StreamEnd, Error> {
-        let waits = class.row().disposition != Disposition::Fault;
-        // A class whose row holds or waits interrupts a host with a hold sink on its own, with no
-        // read; any other ending reads the hold, so `read` holds only what a read proved.
-        let class_interrupts = waits && self.hold_sink.is_some();
-        let read = (!class_interrupts).then(|| self.run_held(opts));
-        if fallback && read == Some(HoldRead::Unheld) {
-            return Ok(self.session_gone(opts, id));
-        }
-        let interrupted = class_interrupts || matches!(read, Some(HoldRead::Held(_)));
+        let interrupted = matches!(read, None | Some(HoldRead::Held(_)));
         let ended = if interrupted {
             progress::ENDED_INTERRUPTED
         } else {
@@ -1044,14 +1072,30 @@ impl Driver<'_> {
             Some(HoldRead::Held(head)) => self.close_at(opts, id, ended, class.as_str(), head),
             _ => self.close(opts, id, ended, class.as_str()),
         }
-        if waits {
-            self.sight(opts, id, class.as_str(), "");
-        }
+        self.sight_ending(opts, id, class);
         if interrupted {
             return Ok(StreamEnd::Interrupted(launch_interrupted(class, message)));
         }
         self.sight_unstable(opts, id);
         Err(no_result_error(class, message))
+    }
+
+    /// Sight the `class` a launch ended under when its row holds or waits, with no `detail` since
+    /// an ending is no sighting line ([`Driver::sight`]): the one sighting [`Driver::fault`] and
+    /// [`Driver::close_stopped`] take for an ending.
+    fn sight_ending(&self, opts: &SpawnOpts, id: LaunchId, class: AgentFailure) {
+        if class.row().waits() {
+            self.sight(opts, id, class.as_str(), "");
+        }
+    }
+
+    /// The hold read a classed ending takes, what [`Driver::fault`] closes on and the no-result
+    /// ending's fallback weighs: none when `class`'s row holds or waits on a host with a hold sink,
+    /// since that class interrupts the launch on its own, and otherwise [`Driver::run_held`], so a
+    /// read holds only what it proved.
+    fn ending_read(&self, opts: &SpawnOpts, class: AgentFailure) -> Option<HoldRead> {
+        let class_interrupts = class.row().waits() && self.hold_sink.is_some();
+        (!class_interrupts).then(|| self.run_held(opts))
     }
 
     /// What this run's hold read proves once a launch has ended, what [`Driver::fault`] and the
@@ -1125,6 +1169,45 @@ impl Driver<'_> {
         }
     }
 
+    /// Sight the category an `api_retry` line `v` carries, that line's one sighting: a category
+    /// whose row holds holds the run ([`Driver::sight`], the category its detail). Returns the
+    /// category, `None` for a line that carries none. The read loop and the drain at a launch's
+    /// end ([`Driver::drain_lines`]) both sight a line through it.
+    fn sight_retry<'v>(&self, opts: &SpawnOpts, id: LaunchId, v: &'v Value) -> Option<&'v str> {
+        let category = message_error(v)?;
+        if AgentFailure::from_category(category).row().disposition == Disposition::Hold {
+            self.sight(opts, id, category, category);
+        }
+        Some(category)
+    }
+
+    /// Drain the lines already on a launch's stream, ahead of the hold read at its end (spec 105
+    /// HELD): until `line_rx` is empty or closed, each line is written to `stream_file` and an
+    /// `api_retry` among them sighted as the read loop sights one ([`Driver::sight_retry`]), so a
+    /// hold the launch's last lines sighted holds the run before that read. It acts on nothing
+    /// else: a drained `result` stays unread, the ending takes no class from a drained line and no
+    /// close changes. A line that does not read is skipped.
+    fn drain_lines(
+        &self,
+        line_rx: &std::sync::mpsc::Receiver<std::io::Result<String>>,
+        stream_file: &mut Option<std::fs::File>,
+        opts: &SpawnOpts,
+        id: LaunchId,
+    ) {
+        while let Ok(read) = line_rx.try_recv() {
+            let Ok(line) = read else {
+                continue;
+            };
+            write_stream_line(stream_file, &line);
+            let Ok(v) = serde_json::from_str::<Value>(&line) else {
+                continue;
+            };
+            if line_kind(&v) == (Some("system"), Some("api_retry")) {
+                self.sight_retry(opts, id, &v);
+            }
+        }
+    }
+
     /// Re-read this run's failed closes, this launch's own already written, and sight
     /// `api-unstable` at the third in a row (spec 105): concurrent closes each re-read, and the
     /// hold's writer leaves one `RunHeld` between them. A read that fails is a progress line and
@@ -1163,8 +1246,7 @@ impl Driver<'_> {
     fn stop_for_launch_fault(
         &self,
         reaper: crate::reaped_child::ReapedChild,
-        stderr_drain: Option<std::thread::JoinHandle<Vec<u8>>>,
-        stdout_reader: std::thread::JoinHandle<()>,
+        pipes: Pipes,
         opts: &SpawnOpts,
         id: LaunchId,
         status: &str,
@@ -1178,39 +1260,35 @@ impl Driver<'_> {
             hooks::MCP_SERVER_NAME
         );
         self.record_progress(opts, &format!("stream: {message}"));
-        self.stop_session(
-            reaper,
-            stderr_drain,
-            stdout_reader,
-            opts,
-            std::time::Duration::ZERO,
-        );
-        self.fault(opts, id, class, message, false)
+        self.stop_session(reaper, pipes, opts, std::time::Duration::ZERO);
+        let read = self.ending_read(opts, class);
+        self.fault(opts, id, class, message, read)
     }
 
     /// How long this session has really been silent since `last_line`, the reading THE STOP
     /// weighs against `max_wall_clock` (spec 105 LIVENESS): [`liveness::silent_time`] over the
     /// run's holds and, from [`Driver::beat_source`], this spawn's announced retry delays and
     /// the supervisor's beats. With no beat source it reads no record and counts from the last
-    /// line. A record read that fails reads no silence at all: that wake proves nothing and the
-    /// next wake reads again, so a store hiccup never stops a healthy session.
-    fn silence(&self, opts: &SpawnOpts, last_line: SystemTime) -> std::time::Duration {
+    /// line. A record read that fails reads no silence at all (`None`): that wake proves nothing
+    /// and the next wake, a poll away ([`next_wait`]), reads again, so a store hiccup never stops
+    /// a healthy session.
+    fn silence(&self, opts: &SpawnOpts, last_line: SystemTime) -> Option<std::time::Duration> {
         let now = SystemTime::now();
         let Some(beat_source) = self.beat_source else {
-            return liveness::silent_time(last_line, now, &[], &[], None);
+            return Some(liveness::silent_time(last_line, now, &[], &[], None));
         };
         match (
             read_current_run(self.run_store, STREAM),
             progress::read_run(beat_source, &opts.run_id),
         ) {
-            (Ok((run_events, _)), Ok(progress_events)) => liveness::silent_time(
+            (Ok((run_events, _)), Ok(progress_events)) => Some(liveness::silent_time(
                 last_line,
                 now,
                 &liveness::hold_intervals(&run_events, now),
                 &liveness::retry_delays(&progress_events, &opts.id),
                 Some(&liveness::beat_times(&progress_events)),
-            ),
-            _ => std::time::Duration::ZERO,
+            )),
+            _ => None,
         }
     }
 
@@ -1218,7 +1296,8 @@ impl Driver<'_> {
     /// factored out of
     /// [`Driver::read_stream`]'s loop so its one call site there reads as a single named step:
     /// runs THE STOP sequence ([`Driver::stop_session`], with the full [`Driver::stop_grace`]),
-    /// then ends the launch ([`Driver::close_stopped`]).
+    /// then ends the launch under the class `assistant_error` reported
+    /// ([`Driver::close_stopped`]).
     /// THE STOP
     /// sweeps nothing beyond that one child's own PID TREE - a running spawn's worktree can be shared concurrently by sibling spawns in the same unit (the review
     /// fan-out's own lenses, `run_review_agents_concurrently`), and a cwd-scanned match has no
@@ -1240,15 +1319,15 @@ impl Driver<'_> {
     fn stop_for_wall_clock_silence(
         &self,
         reaper: crate::reaped_child::ReapedChild,
-        stderr_drain: Option<std::thread::JoinHandle<Vec<u8>>>,
-        stdout_reader: std::thread::JoinHandle<()>,
+        pipes: Pipes,
         opts: &SpawnOpts,
         id: LaunchId,
         max_wall_clock: u64,
+        assistant_error: Option<&str>,
     ) -> Result<StreamEnd, Error> {
         let message = self.announce_stop(opts, max_wall_clock);
-        self.stop_session(reaper, stderr_drain, stdout_reader, opts, self.stop_grace);
-        self.close_stopped(opts, id, message)
+        self.stop_session(reaper, pipes, opts, self.stop_grace);
+        self.close_stopped(opts, id, message, assistant_error)
     }
 
     /// Say on the spawn's progress why it was stopped: the stop's `message`.
@@ -1259,13 +1338,17 @@ impl Driver<'_> {
     }
 
     /// End a launch THE STOP's sequence has ended, `message` naming why: records the EXISTING
-    /// liveness-fault shape, closes the launch record `stopped` and counts the failed closes
-    /// ([`Driver::sight_unstable`]) before the `Err` returns.
+    /// liveness-fault shape and closes the launch record `stopped` with no class. Its child gone,
+    /// it takes the class its session reported, `assistant_error` or its `StopFailure` record
+    /// ([`Driver::no_result_class`]), and sights it as any ending does ([`Driver::sight_ending`]);
+    /// its `api_retry` lines take no part, each sighted when it was read, one sighting a line.
+    /// Then it counts the failed closes ([`Driver::sight_unstable`]) before the `Err` returns.
     fn close_stopped(
         &self,
         opts: &SpawnOpts,
         id: LaunchId,
         message: String,
+        assistant_error: Option<&str>,
     ) -> Result<StreamEnd, Error> {
         // "the existing liveness-fault result is recorded" - the SAME [`SpawnResult`]
         // shape `liveness::sweep` already records for the stepwise driver's own hung
@@ -1280,6 +1363,7 @@ impl Driver<'_> {
 
         // "the launch ends `stopped`", the liveness-fault result above being the truth of it.
         self.close(opts, id, progress::ENDED_STOPPED, "");
+        self.sight_ending(opts, id, self.no_result_class(opts, assistant_error, None));
         self.sight_unstable(opts, id);
 
         Err(Error(format!(
@@ -1301,14 +1385,14 @@ impl Driver<'_> {
     fn stop_session(
         &self,
         mut reaper: crate::reaped_child::ReapedChild,
-        stderr_drain: Option<std::thread::JoinHandle<Vec<u8>>>,
-        stdout_reader: std::thread::JoinHandle<()>,
+        mut pipes: Pipes,
         opts: &SpawnOpts,
         grace: std::time::Duration,
     ) {
-        // "closes the session's input stream" - the SAME handle-drop THE STREAM's own
-        // success path uses to end a session's turn (dropping the handle closes the pipe).
-        drop(reaper.child_mut().stdin.take());
+        // "closes the session's input stream" - the SAME close THE STREAM's own success path
+        // uses to end a session's turn ([`Pipes::close_input`]); a write the session never read
+        // holds it until the end below ends that write.
+        pipes.close_input();
 
         // Snapshot the child's own descendants RIGHT NOW (spec 104 criterion 6 round-4
         // fix, decision `op-104-stop-end-the-tree-and-bound-the-joins`) - BEFORE the
@@ -1374,10 +1458,32 @@ impl Driver<'_> {
         // Bounded by `self.stop_grace` here (THIS is THE STOP's own wait-for-a-graceful-
         // exit concern, unlike `read_stream`'s ORDINARY-exit joins just below, which use
         // the dedicated `ORDINARY_DRAIN_JOIN_BOUND` instead).
-        if let Some(handle) = stderr_drain {
-            self.join_within(opts, "stderr", handle, self.stop_grace);
+        self.join_pipes(opts, pipes, self.stop_grace);
+    }
+
+    /// Join a reaped launch's pipe threads, each within `bound` ([`Driver::join_within`]), and
+    /// return the stderr tail: empty when its drain outran the bound, panicked or had no pipe.
+    /// The session's input closes first ([`Pipes::close_input`]), so the writer returns, and a
+    /// write that failed leaves a progress line naming its error.
+    fn join_pipes(
+        &self,
+        opts: &SpawnOpts,
+        mut pipes: Pipes,
+        bound: std::time::Duration,
+    ) -> Vec<u8> {
+        pipes.close_input();
+        if let Some(Err(e)) = pipes
+            .input
+            .and_then(|writer| self.join_within(opts, "stdin", writer, bound))
+        {
+            self.record_progress(opts, &format!("stream (task write failed): {e}"));
         }
-        self.join_within(opts, "stdout", stdout_reader, self.stop_grace);
+        let tail = pipes
+            .stderr_drain
+            .and_then(|handle| self.join_within(opts, "stderr", handle, bound))
+            .unwrap_or_default();
+        self.join_within(opts, "stdout", pipes.stdout_reader, bound);
+        tail
     }
 
     /// Best-effort progress line (spec 14's mechanism, spec 104's own writer): a lost
@@ -1468,6 +1574,21 @@ impl Driver<'_> {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
     }
+}
+
+/// Write `message` to a session's input and hold the input open until the host closes it by
+/// dropping the sender `close` waits on ([`Pipes::close_input`]): the first message's writer, run
+/// on a thread of its own ([`Driver::read_stream`]) so a session that never reads its input never
+/// holds the host in a write. A write such a session never reads returns when the child ends.
+/// Returns the write's own outcome; the input closes as this returns.
+fn write_first_message(
+    mut stdin: ChildStdin,
+    message: &str,
+    close: std::sync::mpsc::Receiver<()>,
+) -> std::io::Result<()> {
+    let written = writeln!(stdin, "{message}");
+    let _ = close.recv();
+    written
 }
 
 /// The most stderr bytes [`drain_child_stderr_tail`] keeps: enough for a real diagnostic
@@ -1734,12 +1855,27 @@ fn open_stream_file(path: Option<&Path>) -> Option<std::fs::File> {
     std::fs::File::create(path).ok()
 }
 
+/// Append one stream `line` to the launch's raw stream file, when [`open_stream_file`] opened
+/// one. Best-effort: the transcript is a diagnostic/audit artifact, never the record of truth
+/// (the progress store and the run store are), so a full disk here must not fail an
+/// otherwise-healthy spawn.
+fn write_stream_line(stream_file: &mut Option<std::fs::File>, line: &str) {
+    if let Some(f) = stream_file.as_mut() {
+        let _ = writeln!(f, "{line}");
+    }
+}
+
 /// The announced delay and the category of a `system/api_retry` message: the one reading of
 /// the two fields the waiting line and the [`ApiRetry`] record both carry, a field the line
-/// lacks reading as `0` and `unknown`.
+/// lacks reading as `0` and `unknown`. A retry the API sent no response headers for announces
+/// its wait as the header wait `no_response.retry_wait_ms` beside a zero `retry_delay_ms`, so
+/// that wait is the delay when the line carries it.
 fn api_retry_fields(v: &Value) -> (u64, &str) {
     (
-        v.get("retry_delay_ms").and_then(Value::as_u64).unwrap_or(0),
+        v.pointer("/no_response/retry_wait_ms")
+            .or_else(|| v.get("retry_delay_ms"))
+            .and_then(Value::as_u64)
+            .unwrap_or(0),
         message_error(v).unwrap_or("unknown"),
     )
 }
@@ -1991,7 +2127,7 @@ pub fn build_args(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::{strip_failure_marker, AgentFailure};
+    use crate::agent::AgentFailure;
     use crate::eventstore::sqlite::Store;
     use crate::eventstore::{Direction, EventStore, SilentStore};
     use crate::test_support::implementer_opts as opts;
@@ -2000,14 +2136,6 @@ mod tests {
     };
     use std::io::Read;
     use std::time::Duration;
-
-    /// A launch the classification tests end, its model unread by a host with no hold sink.
-    const LAUNCH: LaunchId = LaunchId {
-        ordinal: 0,
-        session_id: "sess-1",
-        resumed_from: "",
-        model: "",
-    };
 
     // ---- build_args: pure, no process ----
 
@@ -2205,31 +2333,46 @@ mod tests {
             ..Driver::default()
         };
         let o = opts("u/implementer#0");
-        let Err(e) = driver.classify_no_result(
-            &o,
-            LAUNCH,
-            false,
-            None,
-            &Some("overloaded".to_string()),
-            b"stderr tail",
-        ) else {
-            panic!("a host with no sink ends a no-result launch on its error");
-        };
-        assert!(
-            strip_failure_marker(&e).contains(&format!("class {}", AgentFailure::Overloaded)),
+        let (class, message) =
+            driver.classify_no_result(&o, None, &Some("overloaded".to_string()), b"stderr tail");
+        assert_eq!(
+            class,
+            AgentFailure::Overloaded,
             "a failed progress-store read must still fall through to the api_retry \
-             category, never fail the whole classification: {}",
-            e.0
+             category, never fail the whole classification: {message}"
         );
     }
 
     /// The silence THE STOP weighs at a wake: with no beat source the wall time since the last
     /// line, read from no store; with one, a record that does not read, from either store, leaves
-    /// the wake uncounted rather than reading as a stop.
+    /// the wake uncounted rather than reading as a stop, and the next wake a poll away rather than
+    /// a whole bound. The readable store carries a beat the last line follows, so a working read
+    /// of either pair counts the silence since that line and re-arms for the rest of the bound.
     #[test]
     fn the_stop_counts_from_the_line_with_no_source_and_not_at_all_on_a_failed_read() {
         let readable = Store::open(":memory:").unwrap();
         let o = opts("u/implementer#0");
+        progress_store::append_stamped(
+            &readable,
+            &o.run_id,
+            &progress::SupervisorBeat::default(),
+            "a supervisor beat",
+        )
+        .unwrap();
+        let after_the_beat = SystemTime::now();
+        let bound = Duration::from_secs(60);
+        let working = Driver {
+            beat_source: Some(&readable),
+            run_store: &readable,
+            ..Driver::default()
+        };
+        let counted = working
+            .silence(&o, after_the_beat)
+            .expect("a working read counts the silence since the line");
+        assert!(
+            next_wait(bound, Some(counted)) > UNBOUNDED_POLL,
+            "a working read re-arms for the rest of the bound: {counted:?}"
+        );
         let quiet = Duration::from_secs(40);
         let last_line = SystemTime::now() - quiet;
 
@@ -2238,7 +2381,9 @@ mod tests {
             progress_store: &FailingReadStore,
             ..Driver::default()
         };
-        let counted = no_source.silence(&o, last_line);
+        let counted = no_source
+            .silence(&o, last_line)
+            .expect("a host with no beat source reads no record");
         assert!(
             counted >= quiet && counted < quiet + Duration::from_secs(60),
             "wall time since the line: {counted:?}"
@@ -2254,7 +2399,11 @@ mod tests {
                 run_store,
                 ..Driver::default()
             };
-            assert_eq!(driver.silence(&o, last_line), Duration::ZERO, "{case}");
+            assert_eq!(
+                next_wait(bound, driver.silence(&o, after_the_beat)),
+                UNBOUNDED_POLL,
+                "{case}: the next wake"
+            );
         }
     }
 
@@ -2278,21 +2427,12 @@ mod tests {
         };
         let mut o = opts("u/implementer#0");
         o.run_id = "run-1".to_string();
-        let Err(e) = driver.classify_no_result(
-            &o,
-            LAUNCH,
-            false,
-            None,
-            &Some("overloaded".to_string()),
-            b"tail",
-        ) else {
-            panic!("a host with no sink ends a no-result launch on its error");
-        };
-        assert!(
-            strip_failure_marker(&e).contains(&format!("class {expected}")),
+        let (class, message) =
+            driver.classify_no_result(&o, None, &Some("overloaded".to_string()), b"tail");
+        assert_eq!(
+            class, expected,
             "a StopFailure recorded under run {record_run:?} must classify run-1's no-result \
-             exit as {expected}: {}",
-            e.0
+             exit as {expected}: {message}"
         );
     }
 
@@ -2813,7 +2953,14 @@ mod tests {
             .into_owned()
     }
 
-    fn read_fixture_lines(child: &mut Child) -> Vec<String> {
+    /// Write `launch`'s first message as [`Driver::read_stream`] does, its input closing with the
+    /// write, then reap the fixture and read what it printed.
+    fn read_fixture_lines(launch: &mut Launch) -> Vec<String> {
+        let (input_open, close) = std::sync::mpsc::channel();
+        drop(input_open);
+        let stdin = launch.child.stdin.take().expect("piped stdin");
+        write_first_message(stdin, &launch.message, close).expect("the fixture reads its input");
+        let child = &mut launch.child;
         child.wait().expect("fixture agent exits");
         let mut out = String::new();
         child
@@ -2915,7 +3062,7 @@ mod tests {
             launch.session_id
         );
 
-        let lines = read_fixture_lines(&mut launch.child);
+        let lines = read_fixture_lines(&mut launch);
         let cwd = std::fs::canonicalize(&lines[0]).unwrap();
         let want = std::fs::canonicalize(&dir).unwrap();
         assert_eq!(cwd, want, "child ran in the spawn's dir");
@@ -2948,7 +3095,7 @@ mod tests {
         let mut launch = driver
             .launch(&AgentDef::default(), "task", &o, &store)
             .unwrap();
-        let lines = read_fixture_lines(&mut launch.child);
+        let lines = read_fixture_lines(&mut launch);
         assert!(
             lines.contains(&"ANTHROPIC_API_KEY=operators-own-credential".to_string()),
             "lines: {lines:?}"
@@ -2978,7 +3125,7 @@ mod tests {
             let mut launch = driver
                 .launch(&AgentDef::default(), "task", &o, &store)
                 .unwrap();
-            read_fixture_lines(&mut launch.child)
+            read_fixture_lines(&mut launch)
                 .into_iter()
                 .find(|l| l.starts_with("CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS="))
                 .expect("the fixture echoes the ceiling")
@@ -3016,7 +3163,7 @@ mod tests {
                 &store,
             )
             .unwrap();
-        let lines = read_fixture_lines(&mut launch.child);
+        let lines = read_fixture_lines(&mut launch);
         assert!(
             lines.iter().any(|l| l == "RIGGER_SPAWN=u/implementer#2"),
             "the worker sees its spawn id: {lines:?}"
@@ -3024,7 +3171,7 @@ mod tests {
     }
 
     #[test]
-    fn launch_writes_the_task_as_the_first_stream_json_user_message() {
+    fn launch_frames_the_task_as_the_first_stream_json_user_message() {
         let driver = Driver {
             bin: fixture_bin(),
             rigger_bin: "rigger".to_string(),
@@ -3036,7 +3183,7 @@ mod tests {
         let mut launch = driver
             .launch(&AgentDef::default(), "implement the thing", &o, &store)
             .unwrap();
-        let lines = read_fixture_lines(&mut launch.child);
+        let lines = read_fixture_lines(&mut launch);
         let stdin_line = lines
             .iter()
             .find(|l| l.starts_with("STDIN="))
@@ -3050,9 +3197,9 @@ mod tests {
 
     #[test]
     fn launch_leaves_stdin_open_for_the_reader_to_close() {
-        // THE STREAM (criterion 2) closes input after the first `result`, not this
-        // criterion - so `launch` must hand back a child whose stdin handle is still
-        // present (not dropped/closed) after writing the first message.
+        // THE STREAM (criterion 2) writes the first message and closes input after the first
+        // `result`, not this criterion - so `launch` must hand back a child whose stdin handle
+        // is still present (not dropped/closed).
         let driver = Driver {
             bin: fixture_bin(),
             rigger_bin: "rigger".to_string(),
@@ -3065,11 +3212,11 @@ mod tests {
             .unwrap();
         assert!(
             launch.child.stdin.is_some(),
-            "stdin must stay open after the first message"
+            "stdin must stay open for the reader"
         );
-        // Reap: the fixture reads its one line and exits on its own, so this never
-        // blocks - matching every sibling test in this file (`read_fixture_lines`'s
-        // own `.wait()`), never leaving a zombie behind.
+        // Reap: `wait()` closes the input first, so the fixture reads its end and exits on its
+        // own - this never blocks, matching every sibling test in this file
+        // (`read_fixture_lines`'s own `.wait()`), never leaving a zombie behind.
         launch.child.wait().unwrap();
     }
 
@@ -3133,7 +3280,7 @@ mod tests {
         let mut launch = driver
             .launch(&AgentDef::default(), "the full task", &o, &store)
             .unwrap();
-        let lines = read_fixture_lines(&mut launch.child);
+        let lines = read_fixture_lines(&mut launch);
 
         assert_eq!(launch.session_id, "sess-prior");
         let flag = |name: &str| {
@@ -3187,7 +3334,7 @@ mod tests {
         let mut launch = driver
             .first_launch(&AgentDef::default(), "the full task", &o)
             .unwrap();
-        read_fixture_lines(&mut launch.child);
+        read_fixture_lines(&mut launch);
 
         let minted = launch.session_id.clone();
         assert_ne!(
@@ -3348,6 +3495,15 @@ mod tests {
             assert_api_retry_fields(r#"{"retry_delay_ms":618}"#, (618, "unknown"));
         api_retry_fields_floors_a_field_of_the_wrong_type:
             assert_api_retry_fields(r#"{"retry_delay_ms":"soon","error":429}"#, (0, "unknown"));
+        // The no-response shape: no headers came inside the first-byte window, so the line
+        // announces the retry's header wait under `no_response` beside a zero delay.
+        api_retry_fields_reads_the_header_wait_of_a_no_response_retry:
+            assert_api_retry_fields(
+                r#"{"type":"system","subtype":"api_retry","attempt":1,"max_retries":1,
+                    "retry_delay_ms":0,"error_status":null,"error":"unknown",
+                    "no_response":{"waited_ms":90000,"retry_wait_ms":180000}}"#,
+                (180000, "unknown"),
+            );
     }
 
     /// A clean spawn of the checked-in `script` leaves exactly one [`progress::ApiRetry`] per

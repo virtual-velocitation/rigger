@@ -15,5 +15,5 @@ if [ -n "$RIGGER_TEST_MCP_FAILED_PID_FILE" ]; then
 fi
 IFS= read -r line
 echo '{"type":"system","subtype":"init","cwd":"/work","session_id":"44444444-4444-4444-8444-444444444444","tools":["Read","Bash"],"mcp_servers":[{"name":"rigger","status":"failed"}],"model":"claude-opus-4-1","permissionMode":"default","apiKeySource":"none"}'
-sleep 4
+sleep 30
 echo '{"type":"result","subtype":"success","is_error":false,"num_turns":4,"result":"done without any rigger tools","session_id":"44444444-4444-4444-8444-444444444444","total_cost_usd":0.01,"usage":{"input_tokens":10,"output_tokens":5},"permission_denials":[]}'

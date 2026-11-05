@@ -168,8 +168,10 @@ sibling stage still running asks for after a release that trails the close inclu
 so no spawn blocks on a session nothing serves and the `run_workflow` scope joins.
 Live sessions are left alone. A host with a hold sink closes a launch `interrupted`
 in place of `fault` when its class is HOLD or WAIT or the run is held at its end: no
-`SpawnResult`, no attempt charged, the spawn's scratch kept. Gates and merges already running
-continue.
+`SpawnResult`, no attempt charged, the spawn's scratch kept. Before it reads the hold at a
+launch's end, the host drains the lines already on its stream and sights each `api_retry` among
+them as its read does, acting on nothing else, so a hold the launch's own last line sights holds
+the run before that read. Gates and merges already running continue.
 
 LANDING ORDER, decided: criterion 2 lands `RunHeld`, `RunReleased` and the fold, and criteria 3
 to 8 build on them; criterion 5 lands after criterion 3, whose wait keeps a held run alive to be
@@ -194,7 +196,10 @@ current run's stream, re-reading the current run at each beat as the hold contro
 each tick, and the host appends a progress-store `ApiRetry {spawn, delay_ms, category}` per
 `api_retry` line. A spawn's silent time is the wall time since its last stream line outside the
 union of every hold interval, every announced retry delay, every gap between consecutive beats
-longer than 90 s, and the open span since the latest beat when longer than 90 s. Negative spans
+longer than 90 s, and the open span since the latest beat when longer than 90 s. A retry the API
+sent no response headers for announces its delay as the header wait the retry waits
+(`no_response.retry_wait_ms`) beside a zero `retry_delay_ms`, and that wait is the delay its
+`ApiRetry` carries. Negative spans
 clamp to zero. One pure function in `crates/rigger-driver/src/liveness.rs` computes it from
 those records alone, and the host's stream-silence stop fires when it, not the time since the
 last line, passes `max_wall_clock`. A run with no beats is unsupervised only for the span before
@@ -267,10 +272,13 @@ session (the `resumed_from` path, `SpawnOpts`, `crates/rigger-domain/src/agent.r
 unwinding keeps that transcript to itself, its record carrying the minted id with `resumed_from`
 naming the interrupted session, in the same `dir`, its first user message stating the hold's
 cause and duration, or the supervisor's restart, followed by the `resume_task` when the
-interrupted launch carried it, read from that launch's record: its session or its `resumed_from`
-is the spawn's non-empty `resumed_from`; a `continue_prior_session` launch does not fork. Every
-relaunch of a spawn id, by this path, the decorator of HELD or the fallback, takes the ordinal
-after the highest the progress store records for that id, never `opts.launch`. When `read_stream`
+interrupted launch carried it, read from the spawn's launch records in the run: a record carried
+it when its session or its `resumed_from` is the spawn's non-empty `resumed_from`, or when its
+`resumed_from` names another session whose record carried it, so the task keeps travelling along
+a chain of relaunches, and a fresh launch's record, the fallback's among them, did not; a
+`continue_prior_session` launch does not fork. Every relaunch of a spawn id, by this path, the
+decorator of HELD or the fallback, takes the ordinal after the highest the progress store
+records for that id, never `opts.launch`. When `read_stream`
 sees no `system/init` from any `--resume` launch, the conductor's `continue_prior_session`
 (`crates/rigger-conductor/src/conductor.rs:4784`) included, the host closes that launch
 `interrupted` and launches the spawn fresh at the next ordinal with `resumed_from` empty,
