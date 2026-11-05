@@ -12,7 +12,7 @@
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStderr, Stdio};
+use std::process::{Child, ChildStderr, ChildStdin, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
@@ -163,10 +163,10 @@ impl Default for Driver<'static> {
     }
 }
 
-/// A started launch: the live child (stdin still open - THE STREAM, criterion 2, writes
-/// any later operator note and closes it after the first `result`), the session id this
-/// host minted or continued for it, and the exact argv it ran with (kept for the caller's own
-/// diagnostics/tests; not re-derivable from `Child`).
+/// A started launch: the live child (stdin open, for THE STREAM, criterion 2, to write the first
+/// message on and close after the first `result`), the session id this host minted or continued
+/// for it, and the exact argv it ran with (kept for the caller's own diagnostics/tests; not
+/// re-derivable from `Child`).
 pub struct Launch {
     pub child: Child,
     pub session_id: String,
@@ -186,14 +186,32 @@ pub struct Launch {
     /// The file the session reads its system prompt from (`--system-prompt-file`), held for
     /// as long as the launch is, so the session can read it whenever it starts.
     pub persona: SystemPromptFile,
+    /// The first user message, the task framed with the live-progress instruction (§4.1,
+    /// [`first_user_message`]): what [`Driver::read_stream`] writes to the session's input on a
+    /// thread of its own, so a session that never reads it still reaches THE STOP.
+    message: String,
 }
 
-/// The threads [`Driver::read_stream`] reads a launch's output pipes on: the stderr drain, whose
-/// tail a no-result ending carries, and the stdout reader feeding the stream's lines. Every
-/// ending joins them once the child is reaped ([`Driver::join_pipes`]).
+/// The threads [`Driver::read_stream`] works a launch's pipes on: the writer of its first message
+/// ([`write_first_message`]), which holds the session's input until the host closes it
+/// ([`Pipes::close_input`]), the stderr drain, whose tail a no-result ending carries, and the
+/// stdout reader feeding the stream's lines. Every ending joins them once the child is reaped
+/// ([`Driver::join_pipes`]).
 struct Pipes {
+    /// What the writer waits on to close the session's input: dropping it is the close.
+    input_open: Option<std::sync::mpsc::Sender<()>>,
+    input: Option<std::thread::JoinHandle<std::io::Result<()>>>,
     stderr_drain: Option<std::thread::JoinHandle<Vec<u8>>>,
     stdout_reader: std::thread::JoinHandle<()>,
+}
+
+impl Pipes {
+    /// Close the session's input (THE STREAM: "the host closes the input after the first
+    /// `result`"): at once when the first message's write has returned, and the moment it
+    /// returns when it has not. A write a session never reads returns when the child ends.
+    fn close_input(&mut self) {
+        self.input_open = None;
+    }
 }
 
 /// How [`Driver::read_stream`] ended a launch short of an `Err`, which ends this `spawn` call
@@ -249,11 +267,10 @@ impl Driver<'_> {
     /// environment (inherited unchanged, credential included) plus the harness environment
     /// ([`harness_env`]) plus `opts.env` plus [`Driver::handed_env`], each later source winning
     /// under a shared key; this function neither reads nor sets a credential variable of its
-    /// own. Once the record is written the launch never returns `Err` with an unaccounted-for
-    /// child still running behind it: a failure writing the first message ends the child
-    /// through its own handle (`kill()` + `wait()`) before the error propagates. A resume's
-    /// failed write ends the child the same way and returns the launch instead, so
-    /// [`Driver::read_stream`] reads what the session printed before it went.
+    /// own. Once the child is started the launch returns it, with the first message for
+    /// [`Driver::read_stream`] to write on a thread of its own ([`Launch`]): the launch writes
+    /// nothing, so it fails before the child starts or not at all, and a session that never
+    /// reads its input still reaches THE STOP.
     ///
     /// The launch takes the ordinal after the highest the record holds for this spawn
     /// ([`progress_store::next_launch`]), and 0 only for an id with no recorded launch, so a
@@ -353,37 +370,9 @@ impl Driver<'_> {
         cmd.stdin(Stdio::piped());
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
-        let mut child = cmd
+        let child = cmd
             .spawn()
             .map_err(|e| Error(format!("claude_code driver: launch {:?}: {e}", opts.id)))?;
-
-        // The task, framed with the live-progress instruction, is the first user message on
-        // the input stream (§4.1); stdin stays open afterward (§4.2's "the host closes the
-        // input after the first `result`" is the reader's call, not this one's). Every launch
-        // passes through here, so a resume and a relaunch are framed too.
-        let message = first_user_message(&framed(task));
-        let write_result = child
-            .stdin
-            .as_mut()
-            .map(|stdin| writeln!(stdin, "{message}"));
-        if let Some(Err(e)) = write_result {
-            // The durable `SpawnLaunched` record above already claims this launch
-            // happened - a write failure here must not also leak the OS process behind
-            // it. End it through the handle that spawned it (process lifecycle
-            // discipline: kill() + wait(), never a computed-pid signal) first, so no
-            // unaccounted-for child outlives the `Err` a fresh launch returns below.
-            let _ = child.kill();
-            let _ = child.wait();
-            // A session that refused a resume exits without reading its input, so a task past
-            // the pipe buffer fails here on the very launch the fallback answers: the ended
-            // child goes on to `read_stream`, which reads what it printed.
-            if !session.resumed() {
-                return Err(Error(format!(
-                    "claude_code driver: write task to {:?}: {e}",
-                    opts.id
-                )));
-            }
-        }
 
         Ok(Launch {
             child,
@@ -394,6 +383,10 @@ impl Driver<'_> {
             resumed: session.resumed(),
             args,
             persona,
+            // The task, framed with the live-progress instruction, is the first user message on
+            // the input stream (§4.1), which [`Driver::read_stream`] writes. Every launch passes
+            // through here, so a resume and a relaunch are framed too.
+            message: first_user_message(&framed(task)),
         })
     }
 
@@ -481,9 +474,8 @@ impl Driver<'_> {
     /// result, and a `record_result_unless_ended` write failure all leave `reaper` in scope
     /// with the process still possibly running behind it; dropping it ends it either way:
     /// `try_wait` first, falling back to a best-effort end-then-collect through the same
-    /// handle when the process is not yet known to have exited. That mirrors `launch()`'s
-    /// own "never returns `Err` with an unaccounted-for child still running behind it"
-    /// contract.
+    /// handle when the process is not yet known to have exited, so no child outlives this
+    /// function's `Err`.
     ///
     /// A CLEAN EOF is different (adj-u104-stream round-5 REQUIRED FIX,
     /// op-104-stream-clean-eof-waits-before-the-reap): the child closing its OWN stdout
@@ -517,6 +509,15 @@ impl Driver<'_> {
     /// the class it reports (CONSTRAINTS WALK: "a fault of class `unknown` carrying the
     /// stderr tail").
     ///
+    /// The first message ([`Launch`]) is written on a thread of its own too
+    /// ([`write_first_message`]), started with the readers, so a session that never reads its
+    /// input, whatever the task's size, still reaches THE STOP below rather than holding this
+    /// host in a write. The writer holds the input until the host closes it
+    /// ([`Pipes::close_input`]): after the first `result`, before the clean EOF's wait, and first
+    /// in THE STOP. A write that fails ends nothing by itself: the session ends as its stream
+    /// says, and the writer's join ([`Driver::join_pipes`]) leaves a progress line naming the
+    /// error.
+    ///
     /// STOP (spec 104 criterion 6): stdout is likewise read on its OWN thread (the SAME
     /// stderr-deadlock reasoning applies to it too - this function must never itself sit
     /// blocked in `BufReader::lines()` with no way to notice silence), forwarding each
@@ -531,15 +532,14 @@ impl Driver<'_> {
     /// line costs no read: the records are read only on a wake at that point, and a wake under
     /// the bound waits out the rest of it, at least [`UNBOUNDED_POLL`], or the poll when its
     /// records do not read ([`next_wait`]), and re-checks the child. A genuine expiry before any
-    /// result exists runs THE STOP sequence (close the session's input, wait
-    /// [`Driver::stop_grace`], end
-    /// the child via [`crate::reap::end_child`] - the handle-bound production helper, never a
-    /// computed pid) and, short of THE RESUME FALLBACK below, records the EXISTING
-    /// [`SpawnResult::liveness_fault`] shape, same
-    /// as `liveness::sweep`'s own fault for the stepwise driver, just recorded HERE rather
-    /// than by an external sweep. An expiry AFTER a result already landed is not a stop at
-    /// all - it degrades to the SAME soft-break the post-result read-error path already
-    /// takes (round-2 precedent), letting the existing reap decide the child's fate.
+    /// result exists runs THE STOP sequence (close the session's input ([`Pipes::close_input`]),
+    /// wait [`Driver::stop_grace`], end the child via [`crate::reap::end_child`] - the handle-bound
+    /// production helper, never a computed pid) and, short of THE RESUME FALLBACK below, records
+    /// the EXISTING [`SpawnResult::liveness_fault`] shape, same as `liveness::sweep`'s own fault
+    /// for the stepwise driver, just recorded HERE rather than by an external sweep. An expiry
+    /// AFTER a result already landed is not a stop at all - it degrades to the SAME soft-break the
+    /// post-result read-error path already takes (round-2 precedent), letting the existing reap
+    /// decide the child's fate.
     ///
     /// HOLD (spec 105): a `system/api_retry` line of a category whose row holds is a sighting
     /// ([`Driver::sight_retry`]). The first `result` closes the session's input whatever it says.
@@ -601,7 +601,17 @@ impl Driver<'_> {
         // over a channel this loop drains with a timeout instead of `BufRead::lines`'s
         // own unbounded blocking iterator.
         let (line_rx, stdout_reader) = crate::reaped_child::line_channel(stdout);
-        let pipes = Pipes {
+        // The first message goes on its own thread as well (see the doc above), which holds the
+        // session's input until the host closes it.
+        let (input_open, close) = std::sync::mpsc::channel();
+        let message = launch.message;
+        let input =
+            reaper.child_mut().stdin.take().map(|stdin| {
+                std::thread::spawn(move || write_first_message(stdin, &message, close))
+            });
+        let mut pipes = Pipes {
+            input_open: Some(input_open),
+            input,
             stderr_drain,
             stdout_reader,
         };
@@ -832,7 +842,7 @@ impl Driver<'_> {
                 // of a spawn id and this one would stand in the fresh launch's place. Input closes
                 // as after any result, so a session held on it ends and the fallback answers.
                 (Some("result"), _) if awaiting_session => {
-                    drop(reaper.child_mut().stdin.take());
+                    pipes.close_input();
                 }
                 // adj-u104-stream round-3 REQUIRED FIX 1: only the FIRST result-type line
                 // acts - a genuine SECOND one (the comment above this match's `Err(e) if
@@ -867,10 +877,9 @@ impl Driver<'_> {
                             resumed_from: launch.resumed_from.clone(),
                         });
                     }
-                    // "the host closes the input after the first `result`" - dropping the
-                    // handle closes the pipe; a session that would otherwise wait on more
-                    // input can now exit.
-                    drop(reaper.child_mut().stdin.take());
+                    // "the host closes the input after the first `result`"; a session that would
+                    // otherwise wait on more input can now exit.
+                    pipes.close_input();
                 }
                 _ => {
                     // user turns, hook events, every other subtype, AND a duplicate
@@ -896,6 +905,8 @@ impl Driver<'_> {
         // UNCHANGED: neither is evidence of in-progress teardown, so it keeps going
         // straight to the signal-capable drop exactly as before this fix.
         if !ended_via_break {
+            // Its input closes first, so a session still reading it sees the end and exits.
+            pipes.close_input();
             let _ = reaper.child_mut().wait();
         }
 
@@ -1374,13 +1385,14 @@ impl Driver<'_> {
     fn stop_session(
         &self,
         mut reaper: crate::reaped_child::ReapedChild,
-        pipes: Pipes,
+        mut pipes: Pipes,
         opts: &SpawnOpts,
         grace: std::time::Duration,
     ) {
-        // "closes the session's input stream" - the SAME handle-drop THE STREAM's own
-        // success path uses to end a session's turn (dropping the handle closes the pipe).
-        drop(reaper.child_mut().stdin.take());
+        // "closes the session's input stream" - the SAME close THE STREAM's own success path
+        // uses to end a session's turn ([`Pipes::close_input`]); a write the session never read
+        // holds it until the end below ends that write.
+        pipes.close_input();
 
         // Snapshot the child's own descendants RIGHT NOW (spec 104 criterion 6 round-4
         // fix, decision `op-104-stop-end-the-tree-and-bound-the-joins`) - BEFORE the
@@ -1451,7 +1463,21 @@ impl Driver<'_> {
 
     /// Join a reaped launch's pipe threads, each within `bound` ([`Driver::join_within`]), and
     /// return the stderr tail: empty when its drain outran the bound, panicked or had no pipe.
-    fn join_pipes(&self, opts: &SpawnOpts, pipes: Pipes, bound: std::time::Duration) -> Vec<u8> {
+    /// The session's input closes first ([`Pipes::close_input`]), so the writer returns, and a
+    /// write that failed leaves a progress line naming its error.
+    fn join_pipes(
+        &self,
+        opts: &SpawnOpts,
+        mut pipes: Pipes,
+        bound: std::time::Duration,
+    ) -> Vec<u8> {
+        pipes.close_input();
+        if let Some(Err(e)) = pipes
+            .input
+            .and_then(|writer| self.join_within(opts, "stdin", writer, bound))
+        {
+            self.record_progress(opts, &format!("stream (task write failed): {e}"));
+        }
         let tail = pipes
             .stderr_drain
             .and_then(|handle| self.join_within(opts, "stderr", handle, bound))
@@ -1548,6 +1574,21 @@ impl Driver<'_> {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
     }
+}
+
+/// Write `message` to a session's input and hold the input open until the host closes it by
+/// dropping the sender `close` waits on ([`Pipes::close_input`]): the first message's writer, run
+/// on a thread of its own ([`Driver::read_stream`]) so a session that never reads its input never
+/// holds the host in a write. A write such a session never reads returns when the child ends.
+/// Returns the write's own outcome; the input closes as this returns.
+fn write_first_message(
+    mut stdin: ChildStdin,
+    message: &str,
+    close: std::sync::mpsc::Receiver<()>,
+) -> std::io::Result<()> {
+    let written = writeln!(stdin, "{message}");
+    let _ = close.recv();
+    written
 }
 
 /// The most stderr bytes [`drain_child_stderr_tail`] keeps: enough for a real diagnostic
@@ -2912,7 +2953,14 @@ mod tests {
             .into_owned()
     }
 
-    fn read_fixture_lines(child: &mut Child) -> Vec<String> {
+    /// Write `launch`'s first message as [`Driver::read_stream`] does, its input closing with the
+    /// write, then reap the fixture and read what it printed.
+    fn read_fixture_lines(launch: &mut Launch) -> Vec<String> {
+        let (input_open, close) = std::sync::mpsc::channel();
+        drop(input_open);
+        let stdin = launch.child.stdin.take().expect("piped stdin");
+        write_first_message(stdin, &launch.message, close).expect("the fixture reads its input");
+        let child = &mut launch.child;
         child.wait().expect("fixture agent exits");
         let mut out = String::new();
         child
@@ -3014,7 +3062,7 @@ mod tests {
             launch.session_id
         );
 
-        let lines = read_fixture_lines(&mut launch.child);
+        let lines = read_fixture_lines(&mut launch);
         let cwd = std::fs::canonicalize(&lines[0]).unwrap();
         let want = std::fs::canonicalize(&dir).unwrap();
         assert_eq!(cwd, want, "child ran in the spawn's dir");
@@ -3047,7 +3095,7 @@ mod tests {
         let mut launch = driver
             .launch(&AgentDef::default(), "task", &o, &store)
             .unwrap();
-        let lines = read_fixture_lines(&mut launch.child);
+        let lines = read_fixture_lines(&mut launch);
         assert!(
             lines.contains(&"ANTHROPIC_API_KEY=operators-own-credential".to_string()),
             "lines: {lines:?}"
@@ -3077,7 +3125,7 @@ mod tests {
             let mut launch = driver
                 .launch(&AgentDef::default(), "task", &o, &store)
                 .unwrap();
-            read_fixture_lines(&mut launch.child)
+            read_fixture_lines(&mut launch)
                 .into_iter()
                 .find(|l| l.starts_with("CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS="))
                 .expect("the fixture echoes the ceiling")
@@ -3115,7 +3163,7 @@ mod tests {
                 &store,
             )
             .unwrap();
-        let lines = read_fixture_lines(&mut launch.child);
+        let lines = read_fixture_lines(&mut launch);
         assert!(
             lines.iter().any(|l| l == "RIGGER_SPAWN=u/implementer#2"),
             "the worker sees its spawn id: {lines:?}"
@@ -3123,7 +3171,7 @@ mod tests {
     }
 
     #[test]
-    fn launch_writes_the_task_as_the_first_stream_json_user_message() {
+    fn launch_frames_the_task_as_the_first_stream_json_user_message() {
         let driver = Driver {
             bin: fixture_bin(),
             rigger_bin: "rigger".to_string(),
@@ -3135,7 +3183,7 @@ mod tests {
         let mut launch = driver
             .launch(&AgentDef::default(), "implement the thing", &o, &store)
             .unwrap();
-        let lines = read_fixture_lines(&mut launch.child);
+        let lines = read_fixture_lines(&mut launch);
         let stdin_line = lines
             .iter()
             .find(|l| l.starts_with("STDIN="))
@@ -3149,9 +3197,9 @@ mod tests {
 
     #[test]
     fn launch_leaves_stdin_open_for_the_reader_to_close() {
-        // THE STREAM (criterion 2) closes input after the first `result`, not this
-        // criterion - so `launch` must hand back a child whose stdin handle is still
-        // present (not dropped/closed) after writing the first message.
+        // THE STREAM (criterion 2) writes the first message and closes input after the first
+        // `result`, not this criterion - so `launch` must hand back a child whose stdin handle
+        // is still present (not dropped/closed).
         let driver = Driver {
             bin: fixture_bin(),
             rigger_bin: "rigger".to_string(),
@@ -3164,11 +3212,11 @@ mod tests {
             .unwrap();
         assert!(
             launch.child.stdin.is_some(),
-            "stdin must stay open after the first message"
+            "stdin must stay open for the reader"
         );
-        // Reap: the fixture reads its one line and exits on its own, so this never
-        // blocks - matching every sibling test in this file (`read_fixture_lines`'s
-        // own `.wait()`), never leaving a zombie behind.
+        // Reap: `wait()` closes the input first, so the fixture reads its end and exits on its
+        // own - this never blocks, matching every sibling test in this file
+        // (`read_fixture_lines`'s own `.wait()`), never leaving a zombie behind.
         launch.child.wait().unwrap();
     }
 
@@ -3232,7 +3280,7 @@ mod tests {
         let mut launch = driver
             .launch(&AgentDef::default(), "the full task", &o, &store)
             .unwrap();
-        let lines = read_fixture_lines(&mut launch.child);
+        let lines = read_fixture_lines(&mut launch);
 
         assert_eq!(launch.session_id, "sess-prior");
         let flag = |name: &str| {
@@ -3286,7 +3334,7 @@ mod tests {
         let mut launch = driver
             .first_launch(&AgentDef::default(), "the full task", &o)
             .unwrap();
-        read_fixture_lines(&mut launch.child);
+        read_fixture_lines(&mut launch);
 
         let minted = launch.session_id.clone();
         assert_ne!(
