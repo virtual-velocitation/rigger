@@ -225,6 +225,15 @@ impl Critic {
     pub fn reached(&self, attempts: u32) -> bool {
         attempts >= self.ceiling
     }
+
+    /// Whether `critique`, with `attempts` recorded critique attempts, is settled (spec 123, CLEAN
+    /// MEANS EXHAUSTED; ANSWERED FROM THE STORE): exhausted
+    /// ([`Critique::exhausted`](crate::review::Critique::exhausted)) or at the ceiling
+    /// ([`Critic::reached`]). THE one spelling of the rule: `rigger critique` spawns the critic only
+    /// while the critique is unsettled, and a new run's critique is CLEAN only once it is settled.
+    pub fn settles(&self, critique: &crate::review::Critique, attempts: u32) -> bool {
+        critique.exhausted() || self.reached(attempts)
+    }
 }
 
 /// The workflow's spec critic (spec 112): the adversary persona of the plan-critique gate

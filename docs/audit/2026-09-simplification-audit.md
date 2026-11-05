@@ -2122,10 +2122,10 @@ mandatory sweep: Command::new call sites - 94 site(s), collected mechanically re
 - `src/cli/mod.rs:10466-10466` `Command::new`
 - `src/cli/mod.rs:12206-12206` `Command::new`
 - `src/cli/mod.rs:12240-12240` `Command::new`
-- `src/cli/run.rs:3658-3658` `Command::new`
-- `src/cli/run.rs:3691-3691` `Command::new`
-- `src/cli/run.rs:3735-3735` `Command::new`
-- `src/cli/run.rs:3804-3804` `Command::new`
+- `src/cli/run.rs:3657-3657` `Command::new`
+- `src/cli/run.rs:3690-3690` `Command::new`
+- `src/cli/run.rs:3734-3734` `Command::new`
+- `src/cli/run.rs:3803-3803` `Command::new`
 - `src/cli/setup.rs:3875-3875` `Command::new`
 - `src/cli/setup.rs:3904-3904` `Command::new`
 - `src/cli/validate.rs:1544-1544` `Command::new`
@@ -3602,8 +3602,8 @@ mandatory sweep: /proc-path string literals - 60 site(s), collected mechanically
 - `crates/rigger-worktree-git/src/worktree.rs:3147-3147` `"/proc"`
 - `crates/rigger-worktree-git/src/worktree.rs:3151-3151` `"/proc/{pid}/cmdline"`
 - `crates/rigger-worktree-git/src/worktree.rs:3175-3175` `"/proc/{}"`
-- `src/cli/run.rs:3796-3796` `"/proc"`
-- `src/cli/run.rs:3900-3900` `"/proc"`
+- `src/cli/run.rs:3795-3795` `"/proc"`
+- `src/cli/run.rs:3899-3899` `"/proc"`
 - `tests/cli.rs:27938-27938` `"/proc"`
 - `tests/cli.rs:32153-32153` `"/proc"`
 - `tests/cli.rs:32261-32261` `"the holder pid {holder_pid} never reached the STOPPED (T) state in /proc"`
@@ -5586,7 +5586,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 ### Adversarial sample
 
-Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 11334 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
+Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 11335 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
 
 - `crates/rigger-conductor/src/conductor.rs:16031-16053` `branch_is_foreign_when_only_one_axis_differs` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-conductor/src/conductor.rs:17005-17012` `resume_of` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
@@ -5607,7 +5607,7 @@ Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85
 - `src/cli/mod.rs:4751-4777` `footprint_reclaim_lines` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `src/cli/mod.rs:8921-8931` `parse_run_args_reads_rebase_definition` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `src/cli/run.rs:1593-1595` `pause_a_hold_poll` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
-- `src/cli/run.rs:2477-2501` `start_run_dashboard` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
+- `src/cli/run.rs:2476-2500` `start_run_dashboard` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `tests/change_path_revert_periphery.rs:213-323` `a_revert_through_the_shipped_build_records_the_earlier_generations_entry_again` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `tests/code_entity_test_exclusion_periphery.rs:1810-1822` `edges_where` - duplicate found by reading and closed: the design-doc assertion, the dev-only path test and the test-region test each re-rolled its `(from, rel, to)` edge projection inline; all now call `edges_where`
 - `tests/common/fixtures/events.rs:944-946` `after_call` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`

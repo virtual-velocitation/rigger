@@ -127,7 +127,7 @@ pub(crate) fn cmd_critique(args: &[String]) -> Res {
 
     let union = recorded_union(&critiques, &hash)?;
     let attempts = review::next_critique_attempt(&critiques, &hash)?;
-    let critique = if !union.exhausted() && !critic.reached(attempts) {
+    let critique = if !critic.settles(&union, attempts) {
         // Every recorded pass is copied before any spawn can fail; then pass after pass, each
         // judged and copied at once, until the re-read union is exhausted or its re-read attempt
         // count is at the ceiling.

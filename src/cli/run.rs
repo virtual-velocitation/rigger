@@ -2011,8 +2011,8 @@ impl RunStartCritique<'_> {
     /// EXHAUSTED); `None` when it is CLEAN. The critique and its attempt count
     /// ([`review::next_critique_attempt`]) are read through the critique's own store, the
     /// resolutions from the project run stream's `DecisionMade` events ([`open_blocking_ids`]).
-    /// The critique is settled when it is exhausted ([`review::Critique::exhausted`]) or its
-    /// attempt count has reached the ceiling ([`rigger::wave::Critic::reached`]). An open BLOCKING
+    /// The critique is settled when it is exhausted or its attempt count has reached the ceiling
+    /// ([`rigger::wave::Critic::settles`]). An open BLOCKING
     /// id refuses on the ids, settled or not; with none open a settled critique is CLEAN, and an
     /// unsettled one, or a text with no pass, is not critiqued to exhaustion.
     fn refusal(
@@ -2027,8 +2027,7 @@ impl RunStartCritique<'_> {
             return Ok(Some(NewRunRefusal::Unexhausted));
         };
         let ids = open_blocking_ids(project, &critique, spec, self.root)?;
-        let settled = critique.exhausted()
-            || critic.reached(review::next_critique_attempt(&critiques, &hash)?);
+        let settled = critic.settles(&critique, review::next_critique_attempt(&critiques, &hash)?);
         Ok(match (ids.is_empty(), settled) {
             (false, settled) => Some(NewRunRefusal::Open { ids, settled }),
             (true, true) => None,
