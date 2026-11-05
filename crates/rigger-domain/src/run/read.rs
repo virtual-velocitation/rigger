@@ -334,6 +334,50 @@ mod tests {
         }
     }
 
+    /// A run-id read, a supervisor beat's every interval, asks the store for the run's
+    /// `RunStarted` alone, from the boundary [`EventStore::last_position`] finds, the whole stream
+    /// with no run started: the runs before the current one are never walked, and the answer is
+    /// the current run's id.
+    #[test]
+    fn a_run_id_read_asks_only_the_runs_started_from_its_boundary() {
+        let started = |run: &str| ev("RunStarted", &format!(r#"{{"run":"{run}"}}"#));
+        let unit = || ev("UnitStarted", r#"{"id":"u1"}"#);
+        // (row, the log, the boundary the read starts from, the events it materializes, the id)
+        for (name, events, from, materialized, run) in [
+            (
+                "a run after an earlier one",
+                vec![started("r1"), unit(), started("r2"), unit()],
+                2,
+                1,
+                Some("r2"),
+            ),
+            ("a stream with no run started", vec![unit()], 0, 0, None),
+        ] {
+            let log = HandBuiltLog::new(STREAM, events);
+            let store = ReadCountingStore::new(&log);
+
+            let id = read_current_run_id(&store, STREAM).unwrap();
+            assert_eq!(id.as_deref(), run, "{name}");
+            assert_eq!(
+                store.reads(),
+                [
+                    CountedRead::LastPosition {
+                        stream: STREAM.to_string(),
+                        event_type: "RunStarted".to_string(),
+                    },
+                    CountedRead::Typed {
+                        stream: STREAM.to_string(),
+                        from,
+                        only: true,
+                        types: vec!["RunStarted".to_string()],
+                        materialized,
+                    },
+                ],
+                "{name}"
+            );
+        }
+    }
+
     /// A hold read asks the store for the run's `RunStarted`, `RunHeld` and `RunReleased` from
     /// the boundary [`EventStore::last_position`] finds, the whole stream with no run started,
     /// and nothing else (op-105-hold-read-reads-only-the-hold): no carried-over decision,
