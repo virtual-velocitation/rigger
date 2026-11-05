@@ -16,6 +16,8 @@
 # puts both on the pipe. `stuck` is `silent` outliving the close of its input, the session THE
 # STOP's grace waits on. `errored-stuck` shows its session, prints an assistant line of the
 # `authentication_failed` class and an `is_error` `result`, and outlives the close of its input.
+# `answer-another-session` answers as `answer` does under a `system/init` naming the session
+# `sess-ran-as`, not the one its launch named, as a session the binary did not continue would.
 # `unreadable-pipes-held` is `unreadable` with a descendant holding the output pipes past the reap,
 # which keeps the host's drain joins open; the end of its input is how the descendant sees the
 # reap, since the host's handle on that input drops with the child. Each stays past that point
@@ -90,6 +92,11 @@ answer)
     answer
     ;;
 answer-no-init)
+    answer
+    ;;
+answer-another-session)
+    sid=sess-ran-as
+    init
     answer
     ;;
 refused-result)

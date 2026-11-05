@@ -2630,6 +2630,9 @@ const RESUMED_STEM: &str = "u105-resume_2fimplementer_231";
 /// The session [`RESUMED_SPAWN`] asks to continue.
 const PRIOR_SESSION: &str = "sess-prior";
 
+/// The session a launch's `system/init` names in place of the one the launch named.
+const RAN_AS: &str = "sess-ran-as";
+
 /// The first message of a `--resume` launch, before its frame.
 const RESUME_TASK: &str = "fix exactly these";
 
@@ -2652,6 +2655,10 @@ const FALLBACK_LINE: &str =
 
 /// The progress line of the first healthy `system/init` of the fixture agent.
 const FRESH_INIT_LINE: &str = "mcp servers: []";
+
+/// The progress line of a launch of [`PRIOR_SESSION`] whose `system/init` named [`RAN_AS`].
+const RAN_AS_LINE: &str = "stream: launched as session sess-prior, system/init named session \
+    sess-ran-as, which the launch runs as";
 
 impl Fixture {
     /// The file the fixture agent appends each launch's first message to.
@@ -2941,6 +2948,38 @@ fn a_resume_refused_before_it_reads_its_task_falls_back() {
         &["stream (task write failed): Broken pipe (os error 32)"],
         0,
     );
+}
+
+/// A resume whose `system/init` names a session other than the one it launched as runs as the
+/// session the init named: a progress line names both, its close and its answer carry that
+/// session, so the next attempt resumes the session that ran, and its open record keeps the one
+/// it launched as.
+#[test]
+fn a_resume_answered_under_another_session_runs_as_the_session_its_init_named() {
+    let fx = Fixture::new();
+    let o = fx.resumed_opts("answer-another-session", "answer");
+
+    let result = fx
+        .host(&AgentDef::default(), &o)
+        .expect("the resume answers");
+
+    assert_eq!(
+        fx.unstamped_records(),
+        vec![
+            fx.opened(0, PRIOR_SESSION, Some(PRIOR_SESSION)),
+            closed(0, RAN_AS, "completed", ""),
+        ]
+    );
+    assert_eq!(
+        (
+            result.output.as_str(),
+            result.session_id.as_str(),
+            result.resumed_from.as_str()
+        ),
+        (FIXTURE_ANSWER, RAN_AS, PRIOR_SESSION)
+    );
+    assert_eq!(fx.activities(), [RAN_AS_LINE, FRESH_INIT_LINE]);
+    assert_eq!(fx.recorded_results(), fresh_answer_on_record());
 }
 
 /// THE STOP reaches a session that never reads its input: the host writes the first message on
@@ -4082,6 +4121,35 @@ fn relaunch_cases() -> Vec<Relaunch> {
             ..Default::default()
         },
         Relaunch {
+            name: "a relaunch of a fresh launch that ran under another session forks the session \
+                that ran",
+            log: login_released(),
+            seeded: vec![
+                Opened(0, INTERRUPTED, None),
+                Closed(0, RAN_AS, "interrupted", "authentication_failed", Some(0)),
+            ],
+            appended: relaunched(1, RAN_AS),
+            tasks: vec![LOGIN_RELEASED.to_string()],
+            answered: (FORKED, RAN_AS),
+            ..Default::default()
+        },
+        Relaunch {
+            name: "a relaunch of a resume whose launch ran under another session, sending its \
+                resume task still",
+            log: login_released(),
+            seeded: vec![
+                Opened(0, PRIOR_SESSION, Some(PRIOR_SESSION)),
+                Closed(0, RAN_AS, "interrupted", "authentication_failed", Some(0)),
+                Opened(1, RELAUNCHED, Some(RAN_AS)),
+                Closed(1, RELAUNCHED, "interrupted", "", None),
+            ],
+            resumed: true,
+            appended: relaunched(2, RELAUNCHED),
+            tasks: vec![with_task(RESTARTED)],
+            answered: (FORKED, RELAUNCHED),
+            ..Default::default()
+        },
+        Relaunch {
             name: "a third relaunch of a resume, sending its resume task still",
             log: login_released(),
             seeded: vec![
@@ -4405,6 +4473,7 @@ fn an_interrupted_launch_relaunches_its_session_as_its_close_decides() {
                         INTERRUPTED,
                         FELL_BACK,
                         PRIOR_SESSION,
+                        RAN_AS,
                         RELAUNCHED,
                         RELAUNCHED_AGAIN
                     ]

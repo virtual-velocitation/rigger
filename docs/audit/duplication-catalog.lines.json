@@ -5909,8 +5909,8 @@
       },
       {
         "file": "tests/claude_code_stream_periphery.rs",
-        "start_line": 2779,
-        "end_line": 2781
+        "start_line": 2786,
+        "end_line": 2788
       }
     ]
   },
