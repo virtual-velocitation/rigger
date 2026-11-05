@@ -1036,7 +1036,7 @@ fn a_text_reverted_to_a_critiqued_hash_is_answered_by_that_critique_with_zero_sp
     assert!(
         err.contains(&format!(
             "rigger critique: {SPEC_REL} (hash {SPEC_HASH}): answered from the critique recorded \
-             at attempt 0"
+             over 1 pass"
         )),
         "the verb says it answered from the record:\n{err}"
     );
@@ -1135,11 +1135,11 @@ fn a_recorded_critique_whose_copies_were_never_appended_is_completed_with_zero_s
     let (work, path) = stub(APPROVE);
     let (out, err, ok) = critique(root, SPEC_REL, &path, &root.join("scratch"));
 
-    // ... the next call answers from attempt 0's critique, the latest one, and appends its copies.
+    // ... the next call answers from the hash's one pass, attempt 0's, and appends its copies.
     assert!(ok, "an answered critique exits 0; stderr:\n{err}");
     assert_eq!(out, reject_out(SPEC, 0));
     assert!(
-        err.contains("answered from the critique recorded at attempt 0"),
+        err.contains("answered from the critique recorded over 1 pass"),
         "a later result that is no critique never displaces the critique:\n{err}"
     );
     assert_eq!(critique_stub_spawns(work.path()), 0, "zero spawns");
@@ -1149,6 +1149,71 @@ fn a_recorded_critique_whose_copies_were_never_appended_is_completed_with_zero_s
         "nothing appended to the record"
     );
     assert_eq!(review_findings(root), reject_copies(SPEC, 0, SPEC_REL));
+}
+
+/// Spec 123, THE RECORD IS THE UNION: given a hash whose store holds passes at attempts 0, 2 and
+/// 3 around attempt 1's result that is no pass, when the unchanged text is critiqued, then the verb
+/// answers from the record of every pass with zero spawns: it says it answered over three passes,
+/// prints every finding of the union in pass order under the id its pass minted, then the verdict
+/// the union derives, and copies every finding of the union.
+#[test]
+fn an_answered_critique_prints_the_union_of_its_passes_then_the_verdict_it_derives() {
+    let dir = temp_project();
+    let root = dir.path();
+    scaffold(root, CRITIC_WORKFLOW);
+    let advisory = "C1 | NON-BLOCKING | Design | renders is vague | name the surface\n\
+         {\"verdict\":\"approve\"}";
+    let unit = critique_unit(SPEC_HASH);
+    let mut seeded = Vec::new();
+    for (attempt, output) in [
+        (0, advisory),
+        (1, "I could not decide."),
+        (2, REJECT),
+        (3, APPROVE),
+    ] {
+        let id = critique_spawn_id(SPEC_HASH, attempt);
+        seeded.push((
+            TYPE_SPAWN_REQUESTED,
+            json!({"id": id, "unit": unit, "stage": "critique", "prompt": "p"}),
+        ));
+        seeded.push((TYPE_SPAWN_RESULT, json!({"id": id, "output": output})));
+    }
+    seed_critique(root, &seeded);
+    let (work, path) = stub(APPROVE);
+    let (out, err, ok) = critique(root, SPEC_REL, &path, &root.join("scratch"));
+
+    assert!(ok, "an answered critique exits 0; stderr:\n{err}");
+    let advisory_summary = "NON-BLOCKING | Design | renders is vague | name the surface";
+    assert_eq!(
+        out,
+        format!(
+            "{} | {advisory_summary}\n{}",
+            critique_finding_id(SPEC, 0, 1),
+            reject_out(SPEC, 2)
+        ),
+        "attempt 0's finding, then attempt 2's two, then the union's BLOCKING line rejects"
+    );
+    assert!(
+        err.contains(&format!(
+            "rigger critique: {SPEC_REL} (hash {SPEC_HASH}): answered from the critique recorded \
+             over 3 passes"
+        )),
+        "the verb says how many passes it answered from:\n{err}"
+    );
+    assert_eq!(critique_stub_spawns(work.path()), 0, "zero spawns");
+    assert_eq!(
+        critique_events(root).len(),
+        8,
+        "nothing appended to the record"
+    );
+    let mut copies = vec![json!({
+        "id": critique_finding_id(SPEC, 0, 1),
+        "by": "spec-critic",
+        "summary": advisory_summary,
+        "about": [SPEC_REL],
+    })];
+    copies.extend(reject_copies(SPEC, 2, SPEC_REL));
+    assert_eq!(review_findings(root), copies, "every finding of the union");
 }
 
 #[test]
@@ -1188,9 +1253,10 @@ fn a_reject_needs_a_blocking_line_and_an_approve_beside_one_is_a_critique_that_s
     assert_eq!(
         out,
         format!(
-            "{} | {summary}\n{{\"verdict\":\"approve\"}}\n",
+            "{} | {summary}\n{{\"verdict\":\"reject\"}}\n",
             critique_finding_id(SPEC, 1, 1)
-        )
+        ),
+        "the verdict printed is the one the union derives: its BLOCKING line rejects"
     );
     assert_eq!(
         review_findings(root),

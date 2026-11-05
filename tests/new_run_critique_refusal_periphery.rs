@@ -561,8 +561,8 @@ fn every_cli_run_start_refuses_a_new_run_on_an_uncritiqued_spec_under_its_own_na
 }
 
 /// THE AUTHORITY, an approve beside a BLOCKING line: the line counts as blocking whatever the
-/// verdict, so a new run on a text whose only critique approves while holding one is refused on
-/// that finding's id alone.
+/// verdict, so the critique of a text whose only pass approves while holding one derives reject,
+/// and a new run on it is refused on that finding's id alone.
 #[test]
 fn an_approving_critique_holding_a_blocking_finding_refuses_a_new_run_on_that_finding() {
     let dir = temp_git_project_with_commit();
@@ -570,8 +570,8 @@ fn an_approving_critique_holding_a_blocking_finding_refuses_a_new_run_on_that_fi
     write_spec_project(root, &PERSONAS, SKEPTIC_WORKFLOW, SPEC_REL, SPEC);
     let out = record_critique(root, SPEC_REL, APPROVE_BESIDE_BLOCKING);
     assert!(
-        out.ends_with("\n{\"verdict\":\"approve\"}\n"),
-        "the recorded critique approves; stdout:\n{out}"
+        out.ends_with("\n{\"verdict\":\"reject\"}\n"),
+        "the critique's derived verdict rejects though its one pass approves; stdout:\n{out}"
     );
     assert_step_refused(
         root,

@@ -774,7 +774,7 @@ pub fn run_notes(events: &[Event]) -> Result<Vec<RunNote>, serde_json::Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::event_fixtures::ev_at;
+    use crate::event_fixtures::{ev_at, HandBuiltLog};
     use crate::spawn::TYPE_SPAWN_RESULT;
     use serde_json::json;
     use std::path::{Path, PathBuf};
@@ -958,7 +958,7 @@ mod tests {
             "C1 | BLOCKING | c | r | f\n{\"verdict\":\"approve\"}\nprose after the verdict";
         assert_eq!(
             critique_of(&result_at(7, &id, output, ""), HASH),
-            Ok(Critique {
+            Ok(CritiquePass {
                 position: 7,
                 attempt: 4,
                 verdict: "approve".to_string(),
@@ -974,7 +974,7 @@ mod tests {
                 &result_at(3, &id, "No defects.\n{\"verdict\":\"approve\"}", ""),
                 HASH
             ),
-            Ok(Critique {
+            Ok(CritiquePass {
                 position: 3,
                 attempt: 4,
                 verdict: "approve".to_string(),
@@ -984,32 +984,199 @@ mod tests {
         );
     }
 
+    /// `read_critique` over a store whose run stream holds `events`, stamped in this order from
+    /// log position 1.
+    fn read_logged(events: Vec<Event>) -> Option<Critique> {
+        read_critique(&HandBuiltLog::new(crate::run::STREAM, events), HASH).unwrap()
+    }
+
+    /// Spec 123, THE RECORD IS THE UNION: the critique of a hash is every pass of it in attempt
+    /// order - per critic spawn id of the hash its latest result, kept when the authority accepts
+    /// it - with each pass's findings under the ids it minted; `None` when the hash has no pass.
     #[test]
-    fn the_critique_of_a_hash_is_its_highest_position_critique() {
-        let reject = "C1 | BLOCKING | criterion 1 | r | f\n{\"verdict\":\"reject\"}";
-        let approve = "{\"verdict\":\"approve\"}";
+    fn the_critique_of_a_hash_is_the_union_of_its_passes_in_attempt_order() {
+        let blocking = "C1 | BLOCKING | criterion 2 | r1 | f1\n\
+            C2 | NON-BLOCKING | Design | r2 | f2\n{\"verdict\":\"reject\"}";
+        let advisory = "C1 | NON-BLOCKING | criterion 1 | r0 | f0\n{\"verdict\":\"approve\"}";
+        let store_blocking = "C1 | BLOCKING | THE STORE | r3 | f3\n{\"verdict\":\"reject\"}";
+        let clean = "No defects.\n{\"verdict\":\"approve\"}";
         let events = vec![
-            result_at(5, &critique_spawn_id(HASH, 0), reject, ""),
-            result_at(9, &critique_spawn_id(HASH, 1), approve, ""),
-            result_at(12, &critique_spawn_id("fedcba9876543210", 2), approve, ""),
-            result_at(14, &format!("critique-{HASH}/implementer#3"), approve, ""),
-            result_at(15, &format!("critique-{HASH}/adversary#04"), approve, ""),
-            result_at(16, &critique_spawn_id(HASH, 5), "", "the spawn failed"),
-            ev_at(17, "DecisionMade", json!({"id": "d", "summary": "s"})),
+            result_at(1, &critique_spawn_id(HASH, 1), blocking, ""),
+            result_at(2, &critique_spawn_id(HASH, 0), advisory, ""),
+            result_at(3, &critique_spawn_id(HASH, 2), "", "boom"),
+            result_at(4, &critique_spawn_id(HASH, 2), store_blocking, ""),
+            result_at(5, &critique_spawn_id(HASH, 3), clean, ""),
+            result_at(6, &critique_spawn_id(HASH, 3), "I could not decide.", ""),
+            result_at(7, &critique_spawn_id("fedcba9876543210", 4), clean, ""),
+            result_at(8, &format!("critique-{HASH}/implementer#5"), clean, ""),
+            result_at(9, &format!("critique-{HASH}/adversary#06"), clean, ""),
+            ev_at(10, TYPE_SPAWN_RESULT, json!({"output": "no id"})),
+            ev_at(11, "DecisionMade", json!({"id": "d", "summary": "s"})),
         ];
+        let critique = read_logged(events.clone()).expect("the hash has passes");
         assert_eq!(
-            latest_critique(&events, HASH),
-            Some(Critique {
-                position: 9,
-                attempt: 1,
-                verdict: "approve".to_string(),
-                findings: vec![],
-            })
+            critique,
+            Critique {
+                passes: vec![
+                    CritiquePass {
+                        position: 2,
+                        attempt: 0,
+                        verdict: "approve".to_string(),
+                        findings: vec![finding(
+                            "sc-0123456789abcdef-0-1",
+                            false,
+                            ["C1", "criterion 1", "r0", "f0"]
+                        )],
+                    },
+                    CritiquePass {
+                        position: 1,
+                        attempt: 1,
+                        verdict: "reject".to_string(),
+                        findings: vec![
+                            finding(
+                                "sc-0123456789abcdef-1-1",
+                                true,
+                                ["C1", "criterion 2", "r1", "f1"]
+                            ),
+                            finding(
+                                "sc-0123456789abcdef-1-2",
+                                false,
+                                ["C2", "Design", "r2", "f2"]
+                            ),
+                        ],
+                    },
+                    CritiquePass {
+                        position: 4,
+                        attempt: 2,
+                        verdict: "reject".to_string(),
+                        findings: vec![finding(
+                            "sc-0123456789abcdef-2-1",
+                            true,
+                            ["C1", "THE STORE", "r3", "f3"]
+                        )],
+                    },
+                ],
+            },
+            "attempt order over store order; a spawn's latest result is its one pass, so a failed \
+             result a later pass follows counts nothing and a pass a later non-critique follows is \
+             no pass; another hash, another role, a non-canonical attempt, an unreadable result \
+             and a non-result are no pass"
         );
         assert_eq!(
-            latest_critique(&events[..1], HASH),
-            Some(Critique {
-                position: 5,
+            critique
+                .findings()
+                .map(|f| f.id.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "sc-0123456789abcdef-0-1",
+                "sc-0123456789abcdef-1-1",
+                "sc-0123456789abcdef-1-2",
+                "sc-0123456789abcdef-2-1",
+            ],
+            "the union: every pass's findings in pass order, each in line order, ids unchanged"
+        );
+        assert_eq!((critique.passes.len(), critique.verdict()), (3, "reject"));
+        assert_eq!(
+            read_logged(events[..5].to_vec()).map(|c| c
+                .passes
+                .iter()
+                .map(|pass| (pass.attempt, pass.findings.len()))
+                .collect::<Vec<_>>()),
+            Some(vec![(0, 1), (1, 2), (2, 1), (3, 0)]),
+            "until a later result of its spawn follows it, attempt 3's zero-line result is a pass"
+        );
+        assert_eq!(
+            read_logged(events[5..].to_vec()),
+            None,
+            "a hash with no pass has no critique"
+        );
+        assert_eq!(read_logged(vec![]), None);
+    }
+
+    /// Spec 123, A PASS: a result with zero finding lines is a pass like any other, kept in the
+    /// union whatever pass follows it; and the derived verdict is reject when the union holds a
+    /// BLOCKING finding, else approve, whatever any pass wrote.
+    #[test]
+    fn a_zero_line_pass_is_a_pass_and_the_union_derives_the_verdict() {
+        let blocking = "C1 | BLOCKING | criterion 1 | r | f\n{\"verdict\":\"reject\"}";
+        let advisory = "C1 | NON-BLOCKING | Design | r | f\n{\"verdict\":\"approve\"}";
+        let clean = "No defects.\n{\"verdict\":\"approve\"}";
+        let approving_blocking = "C1 | BLOCKING | c | r | f\n{\"verdict\":\"approve\"}";
+        for (outputs, expected, why) in [
+            (&[blocking][..], (&[1][..], "reject"), "one BLOCKING pass"),
+            (
+                &[advisory],
+                (&[1], "approve"),
+                "a NON-BLOCKING pass approves",
+            ),
+            (
+                &[clean],
+                (&[0], "approve"),
+                "a zero-line pass is a pass and approves",
+            ),
+            (
+                &[blocking, clean],
+                (&[1, 0], "reject"),
+                "a zero-line pass beside a union holding a BLOCKING finding derives reject",
+            ),
+            (
+                &[clean, advisory],
+                (&[0, 1], "approve"),
+                "a pass after a zero-line pass is kept in the union",
+            ),
+            (
+                &[advisory, blocking],
+                (&[1, 1], "reject"),
+                "a BLOCKING finding at a later pass derives reject",
+            ),
+            (
+                &[approving_blocking],
+                (&[1], "reject"),
+                "an approve beside a BLOCKING line derives reject",
+            ),
+        ] {
+            let events = outputs
+                .iter()
+                .zip(0..)
+                .map(|(output, attempt)| {
+                    result_at(0, &critique_spawn_id(HASH, attempt), output, "")
+                })
+                .collect();
+            let critique = read_logged(events).expect("every output is a pass");
+            assert_eq!(
+                (
+                    critique
+                        .passes
+                        .iter()
+                        .map(|pass| pass.findings.len())
+                        .collect::<Vec<_>>(),
+                    critique.verdict()
+                ),
+                (expected.0.to_vec(), expected.1),
+                "{why}"
+            );
+        }
+    }
+
+    /// Spec 123: the critic's spawn at `attempt` is answered with its own pass, never the union nor
+    /// another attempt's, else why it brought none.
+    #[test]
+    fn a_spawned_critique_is_the_spawns_own_pass_else_why_it_brought_none() {
+        let reject = "C1 | BLOCKING | criterion 1 | r | f\n{\"verdict\":\"reject\"}";
+        let clean = "No defects.\n{\"verdict\":\"approve\"}";
+        let log = HandBuiltLog::new(
+            crate::run::STREAM,
+            vec![
+                result_at(1, &critique_spawn_id(HASH, 0), reject, ""),
+                result_at(2, &critique_spawn_id(HASH, 1), "I could not decide.", ""),
+                result_at(3, &critique_spawn_id(HASH, 2), clean, ""),
+            ],
+        );
+        let spawned = |attempt| read_spawned_critique(&log, HASH, attempt).unwrap();
+        assert_eq!(
+            spawned(0),
+            Ok(CritiquePass {
+                position: 1,
                 attempt: 0,
                 verdict: "reject".to_string(),
                 findings: vec![finding(
@@ -1017,13 +1184,30 @@ mod tests {
                     true,
                     ["C1", "criterion 1", "r", "f"]
                 )],
-            })
+            }),
+            "attempt 0's own pass, though a later pass is recorded"
         );
         assert_eq!(
-            latest_critique(&events[2..], HASH),
-            None,
-            "another hash, another role, a non-canonical attempt, an error and a non-result \
-             are no critique of the hash"
+            spawned(2),
+            Ok(CritiquePass {
+                position: 3,
+                attempt: 2,
+                verdict: "approve".to_string(),
+                findings: vec![],
+            }),
+            "attempt 2's own pass, never the union"
+        );
+        assert_eq!(
+            spawned(1),
+            Err(Some(
+                "the critic's output carries no verdict line".to_string()
+            )),
+            "a spawn whose result is no pass says why"
+        );
+        assert_eq!(
+            spawned(3),
+            Err(None),
+            "a spawn that recorded no result has no why"
         );
     }
 
@@ -1187,17 +1371,25 @@ mod tests {
         }
     }
 
-    /// A critique of [`HASH`] whose result sits at log position 10, holding `findings` as
-    /// `(id, blocking)` in finding order.
-    fn critique_at_ten(findings: &[(&str, bool)]) -> Critique {
-        Critique {
-            position: 10,
-            attempt: 0,
+    /// A rejecting pass at `attempt` whose result sits at log position `position`, holding
+    /// `findings` as `(id, blocking)` in finding order.
+    fn pass_at(position: u64, attempt: u32, findings: &[(&str, bool)]) -> CritiquePass {
+        CritiquePass {
+            position,
+            attempt,
             verdict: "reject".to_string(),
             findings: findings
                 .iter()
                 .map(|(id, blocking)| finding(id, *blocking, ["C", "criterion 1", "r", "f"]))
                 .collect(),
+        }
+    }
+
+    /// A critique of one pass, at attempt 0, whose result sits at log position 10, holding
+    /// `findings` as `(id, blocking)` in finding order.
+    fn critique_at_ten(findings: &[(&str, bool)]) -> Critique {
+        Critique {
+            passes: vec![pass_at(10, 0, findings)],
         }
     }
 
@@ -1271,10 +1463,8 @@ mod tests {
             Vec::<String>::new(),
             "a critique with no BLOCKING finding has none open"
         );
-        let approving = Critique {
-            verdict: VERDICT_APPROVE.to_string(),
-            ..critique_at_ten(&[("b1", true), ("n2", false)])
-        };
+        let mut approving = critique_at_ten(&[("b1", true), ("n2", false)]);
+        approving.passes[0].verdict = VERDICT_APPROVE.to_string();
         assert_eq!(
             open_findings(&approving, &[], spec, root),
             ["b1"],
@@ -1300,6 +1490,38 @@ mod tests {
             ["b3"],
             "a resolution citing lines of the spec, relative or absolute, closes its ids"
         );
+    }
+
+    /// Spec 123, readers of the union: the open findings are the union's BLOCKING ids, and a
+    /// resolution closes an id only when the store recorded it after the result of the pass that
+    /// minted that id.
+    #[test]
+    fn a_resolution_closes_an_id_only_after_the_result_of_the_pass_that_minted_it() {
+        let critique = Critique {
+            passes: vec![
+                pass_at(10, 0, &[("a", true), ("n", false)]),
+                pass_at(20, 1, &[("b", true)]),
+            ],
+        };
+        for (position, open) in [
+            (9, &["a", "b"][..]),
+            (10, &["a", "b"]),
+            (11, &["b"]),
+            (19, &["b"]),
+            (20, &["b"]),
+            (21, &[]),
+        ] {
+            assert_eq!(
+                open_findings(
+                    &critique,
+                    &[resolution(position, &["specs/a.md"], &["a", "n", "b"])],
+                    "specs/a.md",
+                    Path::new("/work/repo"),
+                ),
+                open,
+                "a resolution at {position} of pass 0's result at 10 and pass 1's at 20"
+            );
+        }
     }
 
     /// A `ReviewFinding` of `id` about `about` saying `summary`.
