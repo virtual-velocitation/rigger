@@ -316,6 +316,7 @@ sessions over the same text; the two do not conflict.
 | loop | cold start | no critique stream: pass 1 |
 | loop | existing data | a hash recorded before this spec with one non-empty pass (an approve carrying NON-BLOCKING lines, such as spec 121's committed approval, or a reject) is unexhausted: its next call continues at its next attempt with that pass's findings in the prompt; a recorded pass with zero lines is already exhausted |
 | loop | pass fails the authority | not a pass and not exhaustion: the verb errors as today, earlier passes stand, and the failed attempt counts toward the ceiling, so a critic that fails on every call reaches it |
+| loop | an unreadable request on the critique stream | the attempt count cannot be read: the call fails loud on it at its start and after every pass, exhausted or not, and prints no answer |
 | ceiling | zero passes | every attempt brought no pass: the verb is not answered, prints the CEILING NOTICE naming `no pass recorded` and exits non-zero; a new run is refused by arm (iii); raising the key or editing the text is the way out |
 | ceiling | union with zero BLOCKING | clean at the ceiling: the notice says so and a new run proceeds; a union with an open BLOCKING id at the ceiling is refused on those ids (arm ii) |
 | ceiling | key raised or lowered between calls | read on every call from the loaded workflow; raised, the next call continues; lowered to or below the attempt count, it reads as reached |
@@ -323,6 +324,7 @@ sessions over the same text; the two do not conflict.
 | union | existing copies | two calls on one hash can each append a `ReviewFinding` for the same id; duplicate copies are tolerated and harmless, since the graph fold's `TYPE_REVIEW_FINDING` arm (`crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:4656-4690`) upserts the finding node by (id, project) (`ensure_node`, :6354) and its ABOUT edges live-upsert (`add_edge`, :6596); a spawning call first copies the union read at its start, so a pass an earlier call recorded but never copied is copied before any spawn can fail; then each judged pass is copied right after it, by id: `ReviewFinding` copies already on the run stream are skipped, only that pass's new ids are appended, and a call that errors between passes leaves every judged pass copied |
 | refusal | adopted run | an adopted run is never refused, so runs live at the launch resume unaffected |
 | refusal | a critique call on the same hash in flight | the refusal reads the record as stored at its moment, the attempt count counting parked requests, so a new run begun while that call's last attempt is parked can be CLEAN before that pass's lines land; accepted, since beginning a run on a text while critiquing it is not a supported arrangement, as two calls on one hash are not |
+| refusal | an unreadable request on the critique stream | a text with a pass fails loud on it, exhausted or not, and no run begins; a text with no pass is refused as not critiqued to exhaustion before the count is read |
 
 ## Notes (non-criteria)
 
