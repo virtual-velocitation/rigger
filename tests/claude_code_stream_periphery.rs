@@ -3081,6 +3081,23 @@ fn held_ending_cases() -> Vec<HeldEnding> {
             ..HeldEnding::default()
         },
         HeldEnding {
+            name: "silence that sights the hold inside the stop grace",
+            ending: "silent-then-retried",
+            category: login,
+            agent: bounded(),
+            holds: vec![login_hold()],
+            left: Ending::Stopped,
+            ..HeldEnding::default()
+        },
+        HeldEnding {
+            name: "an unreadable line ahead of the retry that sights the hold",
+            ending: "unreadable-then-retried",
+            category: login,
+            holds: vec![login_hold()],
+            left: Ending::Unreadable,
+            ..HeldEnding::default()
+        },
+        HeldEnding {
             name: "a hold landing inside the stop grace",
             ending: "stuck",
             agent: bounded(),
@@ -3172,8 +3189,9 @@ fn held_ending_cases() -> Vec<HeldEnding> {
 /// `fault` ending on a held run, closes `interrupted`, records no result and keeps its scratch, a
 /// `--resume` launch with no `system/init` among them launching nothing fresh. On a run held at the
 /// launch's end the stop and the read error keep their endings and launch nothing fresh, a hold
-/// that lands while the launch ends among them, and on an unheld run they and a fault class take
-/// the fallback. A host with no sink reads no hold and keeps `fault` and the fallback.
+/// that lands while the launch ends among them, and one a line still on the stream sights, and on
+/// an unheld run they and a fault class take the fallback. A host with no sink reads no hold and
+/// keeps `fault` and the fallback.
 #[cfg(unix)]
 #[test]
 fn a_launch_ends_as_the_hold_and_its_class_decide() {

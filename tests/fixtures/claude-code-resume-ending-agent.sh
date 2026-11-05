@@ -10,13 +10,15 @@
 # stderr too, exit 1. `refused-eof` is the same refusal with nothing on stdout, the shape of
 # Claude Code 2.1.290. Each `retried-*` ending prints one `api_retry` line of
 # `$RIGGER_TEST_RETRY_CATEGORY` and no `system/init`, then ends as `refused-eof`, `silent` or
-# `unreadable` does. `stuck` is `silent` outliving the close of its input, the session THE STOP's
-# grace waits on. `unreadable-pipes-held` is `unreadable` with a descendant holding the output
-# pipes past the reap, which keeps the host's drain joins open; the end of its input is how the
-# descendant sees the reap, since the host's handle on that input drops with the child. Each stays
-# past that point until the test lands what it lands there ([`stay_until_released`]). A checked-in
-# executable fixture (never written at test time), for the same reason as every sibling fixture
-# here: no concurrent test's fork+exec can inherit a write fd to it.
+# `unreadable` does. `silent-then-retried` prints that line once its input closes, inside THE
+# STOP's grace, and `unreadable-then-retried` behind its unreadable line, in the one write that
+# puts both on the pipe. `stuck` is `silent` outliving the close of its input, the session THE
+# STOP's grace waits on. `unreadable-pipes-held` is `unreadable` with a descendant holding the
+# output pipes past the reap, which keeps the host's drain joins open; the end of its input is how
+# the descendant sees the reap, since the host's handle on that input drops with the child. Each
+# stays past that point until the test lands what it lands there ([`stay_until_released`]). A
+# checked-in executable fixture (never written at test time), for the same reason as every sibling
+# fixture here: no concurrent test's fork+exec can inherit a write fd to it.
 case " $* " in
 *" --resume "*) ending=${RIGGER_TEST_RESUME_ENDING:-answer} ;;
 *) ending=${RIGGER_TEST_FRESH_ENDING:-answer} ;;
@@ -124,6 +126,15 @@ retried-silent)
 retried-unreadable)
     retried
     printf '\377\376\n'
+    exec sleep 30
+    ;;
+silent-then-retried)
+    wait_for_input_to_close
+    retried
+    exit 1
+    ;;
+unreadable-then-retried)
+    printf '\377\376\n%s\n' "$(retried)"
     exec sleep 30
     ;;
 init-eof)
