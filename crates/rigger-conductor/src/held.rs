@@ -55,11 +55,23 @@ use crate::spawn_store;
 /// error passes through, whatever the error's class and whether or not the run is held.
 const RELAUNCH_BOUND: u32 = 2;
 
+/// Where the error a [`HeldDriver`] hands the conductor ends up: whether it is also recorded as
+/// the spawn's result.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Results {
+    /// `rigger run`: the error is recorded as the spawn's result, so a restarted run answers the
+    /// spawn from the log.
+    Recorded,
+    /// `rigger serve`: the shim hands each result back in process and none is logged.
+    HandedBack,
+}
+
 /// An [`AgentDriver`] that holds `inner`'s launches back while the run is held and relaunches a
 /// session a hold or a wait class ended, up to [`RELAUNCH_BOUND`].
 pub struct HeldDriver<'a> {
     inner: &'a dyn AgentDriver,
     store: &'a dyn EventStore,
+    results: Results,
     session_closed: Option<&'a AtomicBool>,
     pause: &'a (dyn Fn() + Sync),
     /// Each spawn id's relaunches since its last non-error outcome.
@@ -67,7 +79,9 @@ pub struct HeldDriver<'a> {
 }
 
 impl<'a> HeldDriver<'a> {
-    /// A decorator over `inner`, reading the run from `store`. A resume fallback launches inside
+    /// A decorator over `inner`, reading the run from `store` and, under [`Results::Recorded`],
+    /// recording the errors it hands the conductor there, so `store` is the one every other write
+    /// of the run goes through. A resume fallback launches inside
     /// `inner`'s spawn, past this gate, so an `inner` with one reads the run's hold itself
     /// ([`AgentDriver`]'s contract). `session_closed` is `rigger
     /// serve`'s flag, `None` on `rigger run`, which has no session to end a wait. `pause` runs
@@ -75,12 +89,14 @@ impl<'a> HeldDriver<'a> {
     pub fn new(
         inner: &'a dyn AgentDriver,
         store: &'a dyn EventStore,
+        results: Results,
         session_closed: Option<&'a AtomicBool>,
         pause: &'a (dyn Fn() + Sync),
     ) -> Self {
         HeldDriver {
             inner,
             store,
+            results,
             session_closed,
             pause,
             relaunch_counts: Mutex::new(HashMap::new()),
@@ -161,8 +177,9 @@ impl<'a> HeldDriver<'a> {
 
     /// THE ERROR WRITE (spec 105, RESUME BY SESSION): record `e`, the error this decorator hands
     /// the conductor for spawn `id`, as the spawn's result, so a restarted `rigger run` answers
-    /// the spawn from the log with that error instead of launching it again. Only on `rigger
-    /// run`: on `rigger serve` the shim hands each result back in process and none is logged. A
+    /// the spawn from the log with that error instead of launching it again. Only under
+    /// [`Results::Recorded`], `rigger run`'s mode: under [`Results::HandedBack`] nothing is
+    /// recorded. A
     /// park, an emit refusal and a store fault end no launched spawn, so their marked errors
     /// record nothing; neither does
     /// an interrupted error while `id` has a relaunch owed, nor a spawn the current run never
@@ -170,7 +187,7 @@ impl<'a> HeldDriver<'a> {
     /// ([`spawn_store::record_result_unless_ended`]), never beside a result that ended the spawn.
     /// Best-effort: a failed read or write leaves `e` to reach the conductor unchanged.
     fn record_error(&self, e: &Error, id: &str) {
-        if self.session_closed.is_some()
+        if self.results == Results::HandedBack
             || is_parked_or_refused(e, EMIT_REFUSED_MARKER)
             || is_store_fault(e)
         {
@@ -246,7 +263,7 @@ mod tests {
     };
     use serde_json::Value;
 
-    use super::HeldDriver;
+    use super::{HeldDriver, Results};
     use crate::config::AgentDef;
     use crate::eventstore::sqlite::Store;
     use crate::eventstore::{Direction, Event, EventStore, ExpectedRevision, Position};
@@ -572,7 +589,12 @@ mod tests {
                     }
                 }
             };
-            let held = HeldDriver::new(&host, &lands, session, &pause);
+            // Each command's mode: `rigger run`, with no session, records; `rigger serve` does not.
+            let results = match row.session {
+                Session::Absent => Results::Recorded,
+                Session::Open | Session::Closed => Results::HandedBack,
+            };
+            let held = HeldDriver::new(&host, &lands, results, session, &pause);
             for (call, (id, wants)) in row.calls.into_iter().enumerate() {
                 let answer = held
                     .spawn(

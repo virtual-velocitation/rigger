@@ -1803,7 +1803,15 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
         beat_source: Some(&progress),
         hold_sink: Some(&folding),
     };
-    let held = HeldDriver::new(&driver, &store, None, &pause_a_hold_poll);
+    // The decorator records the errors it hands the conductor on the folding store the host
+    // records results on, so the graph folds them as it folds the host's.
+    let held = HeldDriver::new(
+        &driver,
+        &folding,
+        rigger::held::Results::Recorded,
+        None,
+        &pause_a_hold_poll,
+    );
     let grounder = select_grounder(&cfg.workflow.defaults.grounder)?;
     let root = repo.clone();
     let hash_blob = hash_blob_in(&root);
@@ -2234,6 +2242,7 @@ fn run_workflow(parsed: &RunArgs, command: &str, sleep: &dyn SleepHold) -> Res {
             let held = HeldDriver::new(
                 &driver,
                 &store,
+                rigger::held::Results::HandedBack,
                 Some(&driver.session_closed),
                 &pause_a_hold_poll,
             );
