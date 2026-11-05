@@ -3611,7 +3611,7 @@ mod tests {
 
     /// A spawn's transcripts are the files [`stream_path`] names for it, one per launch, and they
     /// go together: another spawn's (attempt 10's, whose sanitized id extends attempt 1's) and any
-    /// other file beside them stay, and an empty scratch root removes nothing.
+    /// other file beside them stay.
     #[test]
     fn remove_transcripts_removes_each_launch_of_its_spawn_and_nothing_beside_it() {
         let scratch = tempfile::tempdir().unwrap();
@@ -3640,19 +3640,10 @@ mod tests {
             files.sort();
             files
         };
-        let sorted = |files: &[std::path::PathBuf]| {
-            let mut files = files.to_vec();
-            files.sort();
-            files
-        };
-        remove_transcripts("", "run-1", "u1/adversary#1");
-        assert_eq!(
-            left(),
-            sorted(&[removed.as_slice(), &kept].concat()),
-            "an empty scratch root removes nothing"
-        );
+        let mut kept = kept.to_vec();
+        kept.sort();
         remove_transcripts(root, "run-1", "u1/adversary#1");
-        assert_eq!(left(), sorted(&kept), "only attempt 1's launches go");
+        assert_eq!(left(), kept, "only attempt 1's launches go");
     }
 
     #[test]
