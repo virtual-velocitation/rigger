@@ -341,14 +341,38 @@ const CRITIQUE_OUTPUT_CONTRACT: &str = "The output contract: one finding per lin
      NON-BLOCKING; any other line is prose. `<critic id>` is your own short label for the \
      finding. The verdict is reject when any line is BLOCKING, else approve.\n\n";
 
+/// The clause that opens a pass's recorded findings (spec 123, THE PASS FRAMING IS CONTRACT):
+/// each line after it is a finding the critique already holds, which the critic does not report
+/// again.
+pub const CRITIQUE_RECORDED_FINDINGS: &str = "The findings already recorded for this text \
+     follow, one per line as <severity> | <location> | <reading> | <fix>. A finding among these \
+     lines is recorded and is not reported again: report only findings not among them, and when \
+     there is none to add, write no finding line and the verdict line {\"verdict\":\"approve\"}.";
+
 /// The spec critique prompt (spec 112): the task framing with the voided-duties clause, the
-/// output contract, and the spec text verbatim as its tail - in that order, from the spec path
-/// and text alone. The method stands in the critic's persona; a persona without it still
-/// critiques under the output contract.
-pub fn spec_critique_prompt(spec_path: &str, spec_text: &str) -> String {
+/// output contract, and the spec text verbatim as its tail - in that order. With `recorded`
+/// findings (spec 123), the [`CRITIQUE_RECORDED_FINDINGS`] clause and one line per finding, its
+/// [`summary`](CritiqueFinding::summary), in the order given, then a blank line, stand between
+/// the output contract and the spec text; with none, the prompt is the spec path and text alone.
+/// The method stands in the critic's persona; a persona without it still critiques under the
+/// output contract.
+pub fn spec_critique_prompt<'a>(
+    spec_path: &str,
+    spec_text: &str,
+    recorded: impl IntoIterator<Item = &'a CritiqueFinding>,
+) -> String {
+    let lines: String = recorded
+        .into_iter()
+        .map(|finding| format!("{}\n", finding.summary()))
+        .collect();
+    let recorded = if lines.is_empty() {
+        String::new()
+    } else {
+        format!("{CRITIQUE_RECORDED_FINDINGS}\n{lines}\n")
+    };
     format!(
-        "{CRITIQUE_FRAMING}{CRITIQUE_OUTPUT_CONTRACT}The spec under critique, `{spec_path}`, \
-         verbatim:\n\n{spec_text}"
+        "{CRITIQUE_FRAMING}{CRITIQUE_OUTPUT_CONTRACT}{recorded}The spec under critique, \
+         `{spec_path}`, verbatim:\n\n{spec_text}"
     )
 }
 
@@ -532,6 +556,12 @@ impl Critique {
         } else {
             VERDICT_APPROVE
         }
+    }
+
+    /// Whether the critique is EXHAUSTED (spec 123): some pass, at any position, carries no
+    /// finding line, so a pass found nothing to add. A critique with no pass is not.
+    pub fn exhausted(&self) -> bool {
+        self.passes.iter().any(|pass| pass.findings.is_empty())
     }
 }
 

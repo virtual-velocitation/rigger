@@ -28,6 +28,7 @@
 
 use serde::Deserialize;
 
+use crate::config::{Defaults, Stage};
 use crate::eventstore::Event;
 use crate::ledger::{self, RunState, Status};
 use crate::safety;
@@ -165,16 +166,46 @@ impl Blocker {
     }
 }
 
-/// Resolve the effective remediation bound the way the conductor does
-/// ([`crate::conductor`]'s `max_retries`): `defaults.max_retries`, or
-/// [`safety::MAX_RETRIES`] when unset (`0`). Single-sourced here so the
-/// `reject-recurrence #n/max` line's `max` matches the bound the run actually escalates
-/// at, on either surface.
+/// Resolve the effective remediation bound of a configured `defaults.max_retries`: the key, or
+/// [`safety::MAX_RETRIES`] when unset (`0`) ([`defaults_max_retries`]). The conductor reads the
+/// same resolution through [`stage_max_retries`], so the `reject-recurrence #n/max` line's `max`
+/// matches the bound the run actually escalates at, on either surface.
 pub fn effective_max_retries(configured: u32) -> u32 {
-    if configured == 0 {
-        safety::MAX_RETRIES
-    } else {
-        configured
+    defaults_max_retries(configured).0
+}
+
+/// A `max_retries` key as set: `None` when unset (`0`), which inherits.
+fn set_key(max_retries: u32) -> Option<u32> {
+    (max_retries != 0).then_some(max_retries)
+}
+
+/// The bound a configured `defaults.max_retries` gives with its source: the key when set, else
+/// the built-in [`safety::MAX_RETRIES`]. The one home of that fallback.
+fn defaults_max_retries(configured: u32) -> (u32, RetriesSource) {
+    match set_key(configured) {
+        Some(default) => (default, RetriesSource::Defaults),
+        None => (safety::MAX_RETRIES, RetriesSource::BuiltIn),
+    }
+}
+
+/// Where a stage's effective `max_retries` came from (spec 123, THE CEILING): its own key, the
+/// workflow's `defaults.max_retries`, or the built-in bound [`safety::MAX_RETRIES`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RetriesSource {
+    Stage,
+    Defaults,
+    BuiltIn,
+}
+
+/// The effective remediation bound of `stage` (spec 123, THE CEILING, and spec 91's stage
+/// override) with its source: the stage's own non-zero `max_retries`, else the non-zero
+/// `defaults.max_retries`, else [`safety::MAX_RETRIES`]. No stage reads the defaults alone. The
+/// conductor's per-unit bound and the spec critic's ceiling both read it, so a unit and a
+/// critique escalate at one bound.
+pub fn stage_max_retries(stage: Option<&Stage>, defaults: &Defaults) -> (u32, RetriesSource) {
+    match stage.and_then(|st| set_key(st.max_retries)) {
+        Some(own) => (own, RetriesSource::Stage),
+        None => defaults_max_retries(defaults.max_retries),
     }
 }
 

@@ -3144,8 +3144,9 @@ struct RunCtx<'a> {
     /// `UnitResumed` (spec 88, criterion 3: ESCALATION RESUMES) - the attempt count
     /// at the moment of that resume PLUS its granted attempts
     /// ([`ledger::Unit::resume_bound`]). A unit absent from this map (never
-    /// operator-resumed) has no override and reads the plain
-    /// [`max_retries`](RunCtx::max_retries). [`max_retries_for`](RunCtx::max_retries_for)
+    /// operator-resumed) has no override and reads the plain bound
+    /// ([`stage_max_retries`](crate::blocker::stage_max_retries)).
+    /// [`max_retries_for`](RunCtx::max_retries_for)
     /// is the sole reader; it is the per-unit bound `safety::remediate` uses in place
     /// of the global one, so a granted unit gets EXACTLY the extra attempts an
     /// operator's `rigger resume-unit` command gave it before it can re-escalate -
@@ -4054,38 +4055,21 @@ impl RunCtx<'_> {
         Ok(())
     }
 
-    /// The configured remediation depth: how many attempts a failed unit gets
-    /// before escalation (§4.4). Comes from `defaults.max_retries`; absent (`0`)
-    /// falls back to `safety::MAX_RETRIES` (3), the exact historical bound, so an
-    /// un-set workflow escalates exactly as before. A higher value gives a subtle
-    /// unit room to converge under the full strict review - it loosens the depth
-    /// limit, never the review bar.
-    fn max_retries(&self) -> u32 {
-        let configured = self.cfg.workflow.defaults.max_retries;
-        if configured == 0 {
-            safety::MAX_RETRIES
-        } else {
-            configured
-        }
-    }
-
     /// The remediation bound `safety::remediate` uses for exactly THIS unit (spec 88,
     /// criterion 3: ESCALATION RESUMES; spec 91, criterion 1, rule 2: STAGE OVERRIDE) -
-    /// `st`'s own `max_retries` when it sets one (unset, `0`, falls back to the plain
-    /// [`max_retries`](RunCtx::max_retries) run default - the same unset-means-inherit
-    /// convention `st.speculation_width` already uses), widened to a unit's
-    /// [`prior_resume_bound`](RunCtx::prior_resume_bound) ceiling when an operator's
-    /// `rigger resume-unit` grant raised it higher. The max of the two (never the resume
-    /// ceiling alone) so a pathologically small `--attempts` grant on a unit that
-    /// escalated early can never LOWER the bound every other unit already gets; a unit
+    /// `st`'s effective `max_retries` through
+    /// [`stage_max_retries`](crate::blocker::stage_max_retries) (its own key, else
+    /// `defaults.max_retries`, else `safety::MAX_RETRIES` (3) - the same unset-means-inherit
+    /// convention `st.speculation_width` already uses; a higher value gives a subtle unit room
+    /// to converge under the full strict review, loosening the depth limit, never the review
+    /// bar), widened to a unit's [`prior_resume_bound`](RunCtx::prior_resume_bound) ceiling
+    /// when an operator's `rigger resume-unit` grant raised it higher. The max of the two
+    /// (never the resume ceiling alone) so a pathologically small `--attempts` grant on a unit
+    /// that escalated early can never LOWER the bound every other unit already gets; a unit
     /// absent from the map (never resumed) reads the plain (stage-or-default) bound,
     /// byte-for-byte the historical behavior for a stage that sets no override.
     fn max_retries_for(&self, unit: &str, st: &Stage) -> u32 {
-        let plain = if st.max_retries == 0 {
-            self.max_retries()
-        } else {
-            st.max_retries
-        };
+        let (plain, _) = crate::blocker::stage_max_retries(Some(st), &self.cfg.workflow.defaults);
         self.prior_resume_bound
             .get(unit)
             .copied()

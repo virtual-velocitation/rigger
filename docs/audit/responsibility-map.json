@@ -817,19 +817,11 @@
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
-    "name": "max_retries",
-    "is_test": false,
-    "proposed_module": "conductor::run_ctx",
-    "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "9f57e25ec814d876"
-  },
-  {
-    "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "max_retries_for",
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "33148f3a1d24545f"
+    "content_hash": "38155564db2788da"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",

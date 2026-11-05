@@ -3,6 +3,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
+use crate::blocker::{stage_max_retries, RetriesSource};
 use crate::config::{ReviewStep, Stage, Workflow};
 use crate::playbooks::fnv1a_64;
 
@@ -207,25 +208,56 @@ pub fn critique_gate_name(stages: &BTreeMap<String, Stage>) -> Option<String> {
 pub const NO_CRITIC_CLAUSE: &str =
     "the workflow names neither the plan-critique gate's adversary nor an adversary step in defaults.review";
 
+/// The workflow's spec critic (spec 112) and the ceiling its critique runs to (spec 123): the
+/// persona, the plan-critique gate it was read from (`None` for `defaults.review`), and that
+/// stage's effective `max_retries` with its source.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Critic {
+    pub persona: String,
+    pub gate: Option<String>,
+    pub ceiling: u32,
+    pub source: RetriesSource,
+}
+
+impl Critic {
+    /// Whether a hash with `attempts` recorded critique attempts has reached the ceiling: at or
+    /// above it, so a ceiling lowered below the count reads as reached.
+    pub fn reached(&self, attempts: u32) -> bool {
+        attempts >= self.ceiling
+    }
+}
+
 /// The workflow's spec critic (spec 112): the adversary persona of the plan-critique gate
 /// ([`critique_gate_name`]), else the first adversary step of `defaults.review`, read in the
 /// order [`ReviewPanel::steps`](crate::config::ReviewPanel::steps) gives, else `None` - a
-/// workflow naming neither has no critic, and there is no built-in one.
-pub fn critic(workflow: &Workflow) -> Option<String> {
-    critique_gate_name(&workflow.stages)
-        .map(|gate| workflow.stages[&gate].adversary.clone())
-        .filter(|adversary| !adversary.is_empty())
-        .or_else(|| {
-            workflow
-                .defaults
-                .review
-                .steps()
-                .into_iter()
-                .find_map(|step| match step {
-                    ReviewStep::Adversary(id) => Some(id),
-                    _ => None,
-                })
-        })
+/// workflow naming neither has no critic, and there is no built-in one. Its ceiling is the
+/// [`stage_max_retries`] of the stage it was read from: the gate's, else no stage's (spec 123,
+/// THE CEILING).
+pub fn critic_of(workflow: &Workflow) -> Option<Critic> {
+    let gate = critique_gate_name(&workflow.stages)
+        .filter(|gate| !workflow.stages[gate].adversary.is_empty());
+    let persona = match &gate {
+        Some(gate) => workflow.stages[gate].adversary.clone(),
+        None => workflow
+            .defaults
+            .review
+            .steps()
+            .into_iter()
+            .find_map(|step| match step {
+                ReviewStep::Adversary(id) => Some(id),
+                _ => None,
+            })?,
+    };
+    let (ceiling, source) = stage_max_retries(
+        gate.as_ref().map(|gate| &workflow.stages[gate]),
+        &workflow.defaults,
+    );
+    Some(Critic {
+        persona,
+        gate,
+        ceiling,
+        source,
+    })
 }
 
 /// A stable, unique, human-legible unit id derived from a criterion's text plus its

@@ -1,17 +1,23 @@
 //! `rigger critique <spec>` (spec 112, criterion 1): the workflow's plan-critique adversary
 //! critiques a spec before any run, as a headless Claude Code session, and each pass is recorded
 //! keyed on the spec's content hash - on the critique's own stream, never the run stream a step
-//! folds into its wave - so unchanged text is answered from the store with no spawn, by the union
-//! of its passes and the verdict that union derives (spec 123), and any edit is critiqued afresh.
+//! folds into its wave. The critique passes to exhaustion (spec 123): the critic is spawned again,
+//! the recorded findings in its prompt, until a pass carries no finding or the critic's ceiling is
+//! reached; so unchanged text whose critique is exhausted or at its ceiling is answered from the
+//! store with no spawn, by the union of its passes and the verdict that union derives, and any
+//! edit is critiqued afresh.
 
 use super::*;
 
 use std::collections::HashSet;
 
+use rigger::blocker::RetriesSource;
 use rigger::conductor::{AgentDriver, SpawnOpts};
-use rigger::driver::claude_code;
+use rigger::driver::{claude_code, replay};
 use rigger::eventstore::TypeSelection;
-use rigger::review::{self, Critique, CritiquePass};
+use rigger::liveness;
+use rigger::review::{self, Critique};
+use rigger::wave::Critic;
 
 /// The command, as its refusals and notices name it.
 const COMMAND: &str = "rigger critique";
@@ -60,18 +66,26 @@ fn parse_critique_args(args: &[String]) -> Result<CritiqueArgs, Box<dyn std::err
 /// a workflow with no critic (whether or not the text was critiqued before), a root mismatch,
 /// a spec outside the repository, a spec with no Done-when criteria; then it selects, migrates
 /// and opens the store and opens the graph (a graph that owes its rebuild refuses here, naming
-/// `rigger setup`). When the spec's hash already has a critique - one pass or more - it spawns
-/// nothing and answers from the record of every pass, saying over how many ([`answered_from`]);
-/// otherwise it parks and spawns the critic, then answers with the one pass it reads back from
-/// the store. Either way it appends any missing `ReviewFinding` copy of the union's findings,
-/// prints the union and the verdict it derives ([`answer`]), and exits 0 whatever the findings
-/// say.
+/// `rigger setup`). Then it reads the hash's recorded union and attempt count:
+///
+/// - exhausted (a pass carries no finding), it spawns nothing and answers from the record of every
+///   pass, saying over how many ([`answered_from`]);
+/// - at the critic's ceiling ([`Critic::reached`]) with a pass recorded, it answers the same way,
+///   then prints the CEILING NOTICE ([`Ceiling::notice`]);
+/// - at the ceiling with no pass recorded, it is not answered: the notice is its error;
+/// - otherwise it copies the recorded union's findings, then spawns the critic pass after pass,
+///   the union's findings in each prompt, each spawn judged (one that records no pass fails the
+///   call) and the union's findings copied at once, until the re-read union is exhausted or the
+///   re-read attempt count is at the ceiling, when it prints the notice.
+///
+/// An answered call appends any missing `ReviewFinding` copy of the union's findings, prints the
+/// union and the verdict it derives ([`answer`]), and exits 0 whatever the findings say.
 pub(crate) fn cmd_critique(args: &[String]) -> Res {
     let parsed = parse_critique_args(args)?;
     let cwd = cwd();
     let repo = resolve_main_worktree_or_refuse(&cwd, COMMAND)?;
     let cfg = config_store::load(".")?;
-    let critic = rigger::wave::critic(&cfg.workflow).ok_or_else(|| {
+    let critic = rigger::wave::critic_of(&cfg.workflow).ok_or_else(|| {
         format!(
             "{COMMAND}: refusing to critique {}: {}",
             parsed.spec,
@@ -103,31 +117,72 @@ pub(crate) fn cmd_critique(args: &[String]) -> Res {
     let store = Namespaced::new(backend.as_ref(), &identity);
     let graph = open_graph(&db_path("graph.db"), &identity, &selection, "critique")?;
     let critiques = critique_store(backend.as_ref(), &identity);
+    let ceiling = Ceiling {
+        spec: &spec,
+        hash: &hash,
+        critic: &critic,
+        project: &store,
+        root: &root,
+    };
 
-    let critique = match review::read_critique(&critiques, &hash)? {
-        Some(recorded) => {
-            remove_critique_scratch(&scratch_root);
-            answered_from(&spec, &hash, &recorded);
-            recorded
-        }
-        None => {
-            let host = CriticHost {
-                cfg: &cfg,
-                critic: &critic,
-                critiques: &critiques,
-                store_env: selection.handed_env(),
-                identity: &identity,
-                scratch_root: &scratch_root,
-                root: &root,
-            };
-            Critique {
-                passes: vec![host.critique(&spec, &text, &hash)?],
+    let union = recorded_union(&critiques, &hash)?;
+    let attempts = review::next_critique_attempt(&critiques, &hash)?;
+    let critique = if !union.exhausted() && !critic.reached(attempts) {
+        // Every recorded pass is copied before any spawn can fail; then pass after pass, each
+        // judged and copied at once, until the re-read union is exhausted or its re-read attempt
+        // count is at the ceiling.
+        copy_findings(&store, &graph, &union, &spec)?;
+        let host = CriticHost {
+            cfg: &cfg,
+            critic: &critic,
+            critiques: &critiques,
+            store_env: selection.handed_env(),
+            identity: &identity,
+            scratch_root: &scratch_root,
+            root: &root,
+        };
+        let mut union = union;
+        loop {
+            host.critique(&spec, &text, &hash, &union)?;
+            union = recorded_union(&critiques, &hash)?;
+            copy_findings(&store, &graph, &union, &spec)?;
+            if union.exhausted() {
+                break union;
+            }
+            let attempts = review::next_critique_attempt(&critiques, &hash)?;
+            if critic.reached(attempts) {
+                eprintln!("{}", ceiling.notice(&union, attempts)?);
+                break union;
             }
         }
+    } else if union.passes.is_empty() {
+        // At the ceiling with no pass, which is never exhausted: not answered, and its notice is
+        // the error.
+        return Err(ceiling.notice(&union, attempts)?.into());
+    } else {
+        remove_critique_scratch(&scratch_root);
+        answered_from(&spec, &hash, &union);
+        if !union.exhausted() {
+            eprintln!("{}", ceiling.notice(&union, attempts)?);
+        }
+        copy_findings(&store, &graph, &union, &spec)?;
+        union
     };
-    copy_findings(&store, &graph, &critique, &spec)?;
     answer(&critique);
     Ok(())
+}
+
+/// The head of every line `rigger critique` writes about `spec`'s text of hash `hash`.
+fn head(spec: &str, hash: &str) -> String {
+    format!("{COMMAND}: {spec} (hash {hash}): ")
+}
+
+/// The union of every recorded pass of `hash`'s critique, with no pass when none is recorded.
+fn recorded_union(
+    critiques: &dyn EventStore,
+    hash: &str,
+) -> Result<Critique, Box<dyn std::error::Error>> {
+    Ok(review::read_critique(critiques, hash)?.unwrap_or(Critique { passes: Vec::new() }))
 }
 
 /// Say on stderr that `spec`'s critique is answered from the store, over how many passes of
@@ -137,7 +192,78 @@ fn answered_from(spec: &str, hash: &str, critique: &Critique) {
         1 => "1 pass".to_string(),
         n => format!("{n} passes"),
     };
-    eprintln!("{COMMAND}: {spec} (hash {hash}): answered from the critique recorded over {passes}");
+    eprintln!(
+        "{}answered from the critique recorded over {passes}",
+        head(spec, hash)
+    );
+}
+
+/// What one call's CEILING NOTICE (spec 123, THE CEILING) is composed from.
+struct Ceiling<'a> {
+    spec: &'a str,
+    hash: &'a str,
+    /// The critic, whose ceiling and its source bound the critique.
+    critic: &'a Critic,
+    /// The project store, whose run stream holds the `DecisionMade` events resolving a finding.
+    project: &'a dyn EventStore,
+    /// The root every `governs` entry is made relative to ([`review::spec_root`]).
+    root: &'a Path,
+}
+
+impl Ceiling<'_> {
+    /// The CEILING NOTICE for `union` after `attempts` attempts: not exhausted, the bound the
+    /// critic's ceiling came from, then the union's open BLOCKING findings
+    /// ([`open_blocking_ids`]), or that none is open and the critique is clean at the ceiling, or
+    /// that no pass is recorded.
+    fn notice(
+        &self,
+        union: &Critique,
+        attempts: u32,
+    ) -> Result<String, Box<dyn std::error::Error>> {
+        let bound = match self.critic.source {
+            RetriesSource::Stage => format!(
+                "the ceiling of stages.{}.max_retries",
+                self.critic.gate.as_deref().unwrap_or_default()
+            ),
+            RetriesSource::Defaults => "the ceiling of defaults.max_retries".to_string(),
+            RetriesSource::BuiltIn => format!("the built-in bound of {}", self.critic.ceiling),
+        };
+        let close = if union.passes.is_empty() {
+            "no pass recorded: raise the ceiling or edit the text".to_string()
+        } else {
+            let open = open_blocking_ids(self.project, union, self.spec, self.root)?;
+            if open.is_empty() {
+                "no open BLOCKING finding, the critique is clean at the ceiling".to_string()
+            } else {
+                format!(
+                    "open BLOCKING findings: {}: amend the spec or record a DecisionMade \
+                     resolving them",
+                    open.join(", ")
+                )
+            }
+        };
+        Ok(format!(
+            "{}not exhausted after {attempts} attempts, {bound}: {close}",
+            head(self.spec, self.hash)
+        ))
+    }
+}
+
+/// The open BLOCKING findings of `critique`, the critique of `spec` (repo-relative to `root`):
+/// its union's BLOCKING ids minus those a `DecisionMade` on the `project` run stream resolves
+/// ([`review::open_findings`]).
+pub(crate) fn open_blocking_ids(
+    project: &dyn EventStore,
+    critique: &Critique,
+    spec: &str,
+    root: &Path,
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    let decisions = project.read_stream_typed(
+        conductor::STREAM,
+        0,
+        TypeSelection::Only(&[contextgraph::TYPE_DECISION_MADE]),
+    )?;
+    Ok(review::open_findings(critique, &decisions, spec, root))
 }
 
 /// Print the union of `critique`'s findings, in pass order, one `<id> | <summary>` line each,
@@ -152,8 +278,8 @@ fn answer(critique: &Critique) {
 /// What a critique spawn is composed from.
 struct CriticHost<'a> {
     cfg: &'a config::Config,
-    /// The critic persona the workflow names.
-    critic: &'a str,
+    /// The critic the workflow names ([`rigger::wave::critic_of`]): its persona is spawned.
+    critic: &'a Critic,
     /// The critique's own store ([`critique_store`]).
     critiques: &'a dyn EventStore,
     /// The verb's store selection, handed to the critic so its bound rigger server resolves the
@@ -167,21 +293,18 @@ struct CriticHost<'a> {
 }
 
 impl CriticHost<'_> {
-    /// Park and spawn the critic on the spec text through the headless host, then answer with the
-    /// spawn's own pass the store holds for the hash ([`review::read_spawned_critique`]) - never
-    /// the session's own output nor another attempt's pass. A recorded result that is not a pass
-    /// is an error saying why.
-    fn critique(
-        &self,
-        spec: &str,
-        text: &str,
-        hash: &str,
-    ) -> Result<CritiquePass, Box<dyn std::error::Error>> {
-        let persona = self.cfg.agents.get(self.critic).ok_or_else(|| {
+    /// Park and spawn the critic at the hash's next attempt through the headless host, on the
+    /// spec text with `union`'s findings recorded in the prompt
+    /// ([`review::CRITIQUE_RECORDED_FINDINGS`]), then judge that spawn by its own result the store
+    /// holds for the hash ([`review::read_spawned_critique`]) - never the session's own output nor
+    /// another attempt's - and reap what the spawn left under the scratch root ([`reap_spawn`]),
+    /// pass or not. A recorded result that is not a pass is an error saying why.
+    fn critique(&self, spec: &str, text: &str, hash: &str, union: &Critique) -> Res {
+        let persona = self.cfg.agents.get(&self.critic.persona).ok_or_else(|| {
             format!(
                 "{COMMAND}: the critic {:?} the workflow names has no definition under \
                  .rigger/agents",
-                self.critic
+                self.critic.persona
             )
         })?;
         // The critic reads and looks things up; it can neither build nor record: its tools are
@@ -193,7 +316,7 @@ impl CriticHost<'_> {
         };
         let attempt = review::next_critique_attempt(self.critiques, hash)?;
         let unit = review::critique_unit(hash);
-        let prompt = review::spec_critique_prompt(spec, text);
+        let prompt = review::spec_critique_prompt(spec, text, union.findings());
         let opts = SpawnOpts {
             id: review::critique_spawn_id(hash, attempt),
             unit: unit.clone(),
@@ -229,25 +352,71 @@ impl CriticHost<'_> {
             hold_sink: None,
         };
         eprintln!(
-            "{COMMAND}: {spec} (hash {hash}): critiquing with {} at attempt {attempt}",
-            self.critic
+            "{}critiquing with {} at attempt {attempt}",
+            head(spec, hash),
+            self.critic.persona
         );
         let spawned = host.spawn(&critic, &prompt, &opts, &|_, _| Ok(()));
-        remove_critique_scratch(self.scratch_root);
-        review::read_spawned_critique(self.critiques, hash, attempt)?.map_err(|why| {
+        let judged = review::read_spawned_critique(self.critiques, hash, attempt);
+        reap_spawn(self.scratch_root, &opts.run_id, &opts.id);
+        judged?.map(|_| ()).map_err(|why| {
             let why = why
                 .or_else(|| spawned.err().map(|e| e.to_string()))
                 .unwrap_or_else(|| "the critic's session recorded no result".to_string());
-            format!("{COMMAND}: {spec} (hash {hash}): no critique was recorded - {why}").into()
+            format!("{}no critique was recorded - {why}", head(spec, hash)).into()
         })
     }
 }
 
-/// Remove the liveness, transcript and spawn-scratch directories of every critique run (`critique-<hash>`, any
-/// hash) under the scratch root, so whatever a crashed critique left goes with the next call; the
-/// log holds the output. A loop run's directories are never touched. Each goes through the same
-/// entry-by-entry removal as a done run's teardown ([`remove_agent_area_entries`]). Best-effort:
-/// a directory that cannot be read or removed stays for the next call.
+/// Remove what the critique spawn `spawn_id` of run `run_id` left under `scratch_root`: its
+/// liveness marker ([`rigger::liveness::marker_path`]), each of its transcripts (`<leaf>.<launch>.jsonl`
+/// beside its [`claude_code::AGENT_STREAM_SUBDIR`] leaf, the name the host writes) and its spawn
+/// scratch ([`replay::reclaim_spawn_registered_scratch`]), then each of those directories' run
+/// directory when it is left empty. Nothing else is touched: another spawn's entries, and a run
+/// directory that still holds them, stay. An empty scratch root reaps nothing. Best-effort: an
+/// entry that cannot be removed stays.
+fn reap_spawn(scratch_root: &str, run_id: &str, spawn_id: &str) {
+    let marker = liveness::marker_path(scratch_root, run_id, spawn_id);
+    if let Some(marker) = &marker {
+        let _ = std::fs::remove_file(marker);
+    }
+    let leaf = liveness::scratch_subpath(
+        scratch_root,
+        claude_code::AGENT_STREAM_SUBDIR,
+        run_id,
+        spawn_id,
+    );
+    if let Some((dir, name)) = leaf
+        .as_deref()
+        .and_then(|leaf| Some((leaf.parent()?, leaf.file_name()?.to_str()?)))
+    {
+        let prefix = format!("{name}.");
+        for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            let file = entry.file_name();
+            if file
+                .to_str()
+                .is_some_and(|file| file.starts_with(&prefix) && file.ends_with(".jsonl"))
+            {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
+    replay::reclaim_spawn_registered_scratch(scratch_root, run_id, spawn_id);
+    let scratch = replay::spawn_scratch_path(scratch_root, run_id, spawn_id);
+    for path in [marker, leaf, scratch].iter().flatten() {
+        if let Some(run_dir) = path.parent() {
+            let _ = std::fs::remove_dir(run_dir);
+        }
+    }
+}
+
+/// Remove the liveness, transcript and spawn-scratch directories of every critique run
+/// (`critique-<hash>`, any hash) under the scratch root, on a call answered from the store, so
+/// whatever a crashed critique left goes with it; the log holds the output. A spawning call never
+/// runs it: it reaps only the spawns it judged ([`reap_spawn`]). A loop run's directories are
+/// never touched. Each goes through the same entry-by-entry removal as a done run's teardown
+/// ([`remove_agent_area_entries`]). Best-effort: a directory that cannot be read or removed stays
+/// for the next call.
 fn remove_critique_scratch(scratch_root: &str) {
     if scratch_root.is_empty() {
         return;

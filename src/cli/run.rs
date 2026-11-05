@@ -1951,7 +1951,7 @@ struct RunStartCritique<'a> {
     backend: &'a dyn EventStore,
     /// The project identity both stores are namespaced by.
     identity: &'a str,
-    /// The loaded workflow, whose critic ([`rigger::wave::critic`]) decides whether the refusal
+    /// The loaded workflow, whose critic ([`rigger::wave::critic_of`]) decides whether the refusal
     /// applies.
     workflow: &'a config::Workflow,
     /// The root the spec path and every `governs` entry are made relative to
@@ -1988,7 +1988,7 @@ impl RunStartCritique<'_> {
         }
         let path = review::normalize_spec_path(self.root, spec);
         let named = path.as_deref().unwrap_or(spec);
-        if rigger::wave::critic(self.workflow).is_none() {
+        if rigger::wave::critic_of(self.workflow).is_none() {
             eprintln!(
                 "{}: no spec critique for {named}: {}",
                 self.command,
@@ -2008,7 +2008,7 @@ impl RunStartCritique<'_> {
 
     /// The open BLOCKING findings of the critique of this text, `spec` being its repo-relative
     /// path: read through the critique's own store, the resolutions from the project run stream's
-    /// `DecisionMade` events. `None` when the text has no critique.
+    /// `DecisionMade` events ([`open_blocking_ids`]). `None` when the text has no critique.
     fn open_ids(
         &self,
         project: &dyn EventStore,
@@ -2019,14 +2019,9 @@ impl RunStartCritique<'_> {
         else {
             return Ok(None);
         };
-        let decisions = project.read_stream_typed(
-            conductor::STREAM,
-            0,
-            TypeSelection::Only(&[contextgraph::TYPE_DECISION_MADE]),
-        )?;
-        Ok(Some(review::open_findings(
-            &critique, &decisions, spec, self.root,
-        )))
+        Ok(Some(open_blocking_ids(
+            project, &critique, spec, self.root,
+        )?))
     }
 }
 
