@@ -23,7 +23,7 @@ use common::cli::{
     read_run_events, recorded_progress, resolve, rigger_file, run_payloads, run_rigger,
     run_rigger_envs, run_rigger_ok, run_stream_identity, seed_a_run, seed_critique,
     seed_critique_spawn, seed_on_the_run, seed_run_events, seed_store, temp_project,
-    temp_repoless_project, write_spec_project, CLEAN_CRITIQUE,
+    temp_repoless_project, write_spec_project, ADVISORY, CLEAN_CRITIQUE, NO_VERDICT,
 };
 use common::fixtures::{composed_system_prompt, git_ok, held_event, temp_git_project_with_commit};
 use common::repo::{
@@ -73,10 +73,6 @@ const REJECT: &str = "I read the spec.\n\
      C2 | NON-BLOCKING | Design | renders names no surface | name the surface\n\
      {\"verdict\":\"reject\"}";
 const APPROVE: &str = "No defects.\n{\"verdict\":\"approve\"}";
-
-/// The critic's advisory answer: one NON-BLOCKING finding line and an approve.
-const ADVISORY: &str = "C1 | NON-BLOCKING | Design | renders is vague | name the surface\n\
-     {\"verdict\":\"approve\"}";
 
 /// [`ADVISORY`]'s one finding, as its summary.
 const ADVISORY_SUMMARY: &str = "NON-BLOCKING | Design | renders is vague | name the surface";
@@ -2239,9 +2235,6 @@ const NO_PASS_RECORDED: &str = "no pass recorded: raise the ceiling or edit the 
 
 /// The bound a ceiling read from the plan-critique gate's own `max_retries` names.
 const GATE_BOUND: &str = "the ceiling of stages.plan-critique.max_retries";
-
-/// The result a critic answering with no verdict line records: no pass.
-const NO_VERDICT: &str = "I could not decide.";
 
 /// [`CRITIC_WORKFLOW`] with its plan-critique gate's `max_retries` set to `max`.
 fn gate_ceiling(max: u32) -> String {

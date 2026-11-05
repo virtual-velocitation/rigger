@@ -675,6 +675,13 @@ pub fn critique_finding_id(text: &str, attempt: u32, k: u32) -> String {
 /// The critic's clean answer: prose, no finding line, an approve.
 pub const CLEAN_CRITIQUE: &str = "No defects.\n{\"verdict\":\"approve\"}";
 
+/// The critic's advisory answer: one NON-BLOCKING finding line and an approve.
+pub const ADVISORY: &str = "C1 | NON-BLOCKING | Design | renders is vague | name the surface\n\
+     {\"verdict\":\"approve\"}";
+
+/// The result a critic answering with no verdict line records: no pass.
+pub const NO_VERDICT: &str = "I could not decide.";
+
 /// Record a clean critique of `spec`'s current text in the project at `root` ([`record_critique`]
 /// answering [`CLEAN_CRITIQUE`]), so a new run on it under a workflow naming a critic is not
 /// refused (spec 112).
@@ -752,30 +759,59 @@ pub const CRITIQUE_ROUTE: &str = "amend the spec and critique it:";
 /// offers (spec 112, Notes).
 pub const RESOLUTION_ROUTE: &str = "or record a resolution:";
 
-/// The text the refusal of a new run on `spec` by `command` ends stderr with (spec 112, Notes):
-/// `open` the open BLOCKING finding ids, `None` when the spec's text has no critique. The route
-/// labels are padded to one column.
-pub fn refused_new_run(command: &str, spec: &str, open: Option<&[String]>) -> String {
-    let (why, route, resolves) = match open {
-        None => (
+/// The shape of the refusal of a new run (spec 123, CLEAN MEANS EXHAUSTED): the why it gives and
+/// the routes it prints after the critique route.
+#[derive(Clone, Copy, Debug)]
+pub enum Refusal<'a> {
+    /// The spec is outside the repository: not critiqued, then the route recording a resolution
+    /// once critiqued.
+    Outside,
+    /// The critique, exhausted or at its ceiling, holds these open BLOCKING finding ids: the ids,
+    /// then the route resolving them.
+    Settled(&'a [String]),
+    /// The critique, neither exhausted nor at its ceiling, holds these open BLOCKING finding ids:
+    /// the ids, and no other route.
+    BelowCeiling(&'a [String]),
+    /// The critique holds no open BLOCKING finding, and either no pass or neither is exhausted nor
+    /// at its ceiling: not critiqued to exhaustion, and no other route.
+    Unexhausted,
+}
+
+/// The text the refusal of a new run on `spec` by `command` ends stderr with (spec 112, Notes;
+/// spec 123, CLEAN MEANS EXHAUSTED), in the shape `refusal` names: the why, the route that
+/// critiques the spec, then the route that records a resolution when the shape offers one. The
+/// route labels are padded to one column.
+pub fn refused_new_run(command: &str, spec: &str, refusal: Refusal) -> String {
+    let open = |ids: &[String]| format!("open BLOCKING findings: {}", ids.join(", "));
+    let (why, resolution) = match refusal {
+        Refusal::Outside => (
             "not critiqued".to_string(),
-            "or, once critiqued, record a resolution:".to_string(),
-            "[<ids>]".to_string(),
+            Some((
+                "or, once critiqued, record a resolution:".to_string(),
+                "[<ids>]".to_string(),
+            )),
         ),
-        Some(ids) => (
-            format!("open BLOCKING findings: {}", ids.join(", ")),
-            format!("{RESOLUTION_ROUTE:<33}"),
-            serde_json::json!(ids).to_string(),
+        Refusal::Settled(ids) => (
+            open(ids),
+            Some((
+                format!("{RESOLUTION_ROUTE:<33}"),
+                serde_json::json!(ids).to_string(),
+            )),
         ),
+        Refusal::BelowCeiling(ids) => (open(ids), None),
+        Refusal::Unexhausted => ("not critiqued to exhaustion".to_string(), None),
     };
     let refused = refusal_line(&format!(
         "{command}: refusing to begin a new run on {spec}: {why}"
     ));
-    format!(
-        "{refused}\n  {CRITIQUE_ROUTE}   rigger critique {spec}\n  {route} rigger emit \
-         DecisionMade '{}'\n",
-        printed_decision(spec, &resolves)
-    )
+    let mut text = format!("{refused}\n  {CRITIQUE_ROUTE}   rigger critique {spec}\n");
+    if let Some((route, resolves)) = resolution {
+        text.push_str(&format!(
+            "  {route} rigger emit DecisionMade '{}'\n",
+            printed_decision(spec, &resolves)
+        ));
+    }
+    text
 }
 
 /// Create an empty `.rigger/` under `root`.
