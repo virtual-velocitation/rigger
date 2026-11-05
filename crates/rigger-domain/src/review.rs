@@ -552,7 +552,7 @@ impl Critique {
     /// The derived verdict: [`VERDICT_REJECT`] when the union holds a BLOCKING finding, else
     /// [`VERDICT_APPROVE`], whatever verdict any pass wrote.
     pub fn verdict(&self) -> &'static str {
-        if self.findings().any(|finding| finding.blocking) {
+        if holds_blocking(self.findings()) {
             VERDICT_REJECT
         } else {
             VERDICT_APPROVE
@@ -564,6 +564,12 @@ impl Critique {
     pub fn exhausted(&self) -> bool {
         self.passes.iter().any(|pass| pass.findings.is_empty())
     }
+}
+
+/// Whether `findings` hold a BLOCKING line: the one rule [`Critique::verdict`] derives a reject
+/// from, and the authority ([`judged`]) holds a pass that does not approve to.
+fn holds_blocking<'a>(findings: impl IntoIterator<Item = &'a CritiqueFinding>) -> bool {
+    findings.into_iter().any(|finding| finding.blocking)
 }
 
 /// THE AUTHORITY over one recorded `SpawnResult` event: it is a pass of `hash`'s critique when its
@@ -593,7 +599,7 @@ fn judged(result: &SpawnResult, hash: &str) -> Result<(u32, String, Vec<Critique
     let verdict = last_verdict(&result.output)
         .ok_or_else(|| "the critic's output carries no verdict line".to_string())?;
     let findings = critique_findings(&result.output, hash, attempt);
-    if !verdict_approves(&result.output) && !findings.iter().any(|f| f.blocking) {
+    if !verdict_approves(&result.output) && !holds_blocking(&findings) {
         return Err(format!(
             "the critic's verdict {verdict:?} does not approve, yet its output carries no \
              BLOCKING finding line"
