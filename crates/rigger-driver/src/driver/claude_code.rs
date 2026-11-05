@@ -186,9 +186,9 @@ pub struct Launch {
     /// The file the session reads its system prompt from (`--system-prompt-file`), held for
     /// as long as the launch is, so the session can read it whenever it starts.
     pub persona: SystemPromptFile,
-    /// The first user message, the task framed with the live-progress instruction (§4.1,
-    /// [`first_user_message`]): what [`Driver::read_stream`] writes to the session's input on a
-    /// thread of its own, so a session that never reads it still reaches THE STOP.
+    /// The first user message, the task framed with the live-progress instruction (section
+    /// 4.1, [`first_user_message`]): what [`Driver::read_stream`] writes to the session's input
+    /// on a thread of its own, so a session that never reads it still reaches THE STOP.
     message: String,
 }
 
@@ -384,8 +384,8 @@ impl Driver<'_> {
             args,
             persona,
             // The task, framed with the live-progress instruction, is the first user message on
-            // the input stream (§4.1), which [`Driver::read_stream`] writes. Every launch passes
-            // through here, so a resume and a relaunch are framed too.
+            // the input stream (section 4.1), which [`Driver::read_stream`] writes. Every launch
+            // passes through here, so a resume and a relaunch are framed too.
             message: first_user_message(&framed(task)),
         })
     }
