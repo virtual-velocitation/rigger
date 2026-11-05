@@ -1479,6 +1479,29 @@ mod tests {
         }
     }
 
+    /// The verdict words the critic is told to write are the ones the derived verdict and the
+    /// gate read: a prompt literal cannot interpolate the consts, so this holds them equal.
+    #[test]
+    fn the_critique_prompt_clauses_spell_their_verdict_words_as_the_verdict_constants() {
+        assert_eq!(
+            last_verdict(CRITIQUE_OUTPUT_CONTRACT).as_deref(),
+            Some(VERDICT_REJECT),
+            "the output contract's example verdict line"
+        );
+        let rule = format!(
+            "The verdict is {VERDICT_REJECT} when any line is BLOCKING, else {VERDICT_APPROVE}."
+        );
+        assert!(
+            CRITIQUE_OUTPUT_CONTRACT.contains(&rule),
+            "the output contract states the derived verdict's rule as {rule:?}"
+        );
+        let clean = json!({ "verdict": VERDICT_APPROVE }).to_string();
+        assert!(
+            CRITIQUE_RECORDED_FINDINGS.contains(&clean),
+            "the recorded-findings clause's verdict line for no new finding is {clean:?}"
+        );
+    }
+
     #[test]
     fn a_spec_path_is_made_repo_relative_lexically_and_refused_outside_the_root() {
         let root = Path::new("/work/repo");
