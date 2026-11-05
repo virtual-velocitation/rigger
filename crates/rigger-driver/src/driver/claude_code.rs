@@ -18,8 +18,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde_json::Value;
 
 use crate::agent::{
-    classify_failure, launch_interrupted, no_result_error, AgentDriver, AgentFailure, AgentResult,
-    Disposition, Error, SpawnOpts, API_UNSTABLE, SPAWN_BOUND_TOOLS, SPAWN_PROGRESS_TOOL,
+    classify_failure, launch_interrupted, no_result_error, store_fault, AgentDriver, AgentFailure,
+    AgentResult, Disposition, Error, SpawnOpts, API_UNSTABLE, SPAWN_BOUND_TOOLS,
+    SPAWN_PROGRESS_TOOL,
 };
 use crate::config::AgentDef;
 use crate::driver::replay::{
@@ -192,6 +193,23 @@ pub struct Launch {
     message: String,
 }
 
+/// What a spawn's first launch runs as ([`Driver::first_launch`]): its session, the task it is
+/// sent and the ordinal it takes on the record, each decided by store reads made before anything
+/// launches.
+struct FirstLaunch {
+    session: LaunchSession,
+    task: String,
+    ordinal: u32,
+}
+
+/// What a spawn's store reads decide before anything launches ([`Driver::before_launch`]).
+enum Prelaunch {
+    /// The run ended the spawn: it is answered from this result, with no launch.
+    Answered(SpawnResult),
+    /// The spawn launches as this.
+    Launch(FirstLaunch),
+}
+
 /// The threads [`Driver::read_stream`] works a launch's pipes on: the writer of its first message
 /// ([`write_first_message`]), which holds the session's input until the host closes it
 /// ([`Pipes::close_input`]), the stderr drain, whose tail a no-result ending carries, and the
@@ -302,8 +320,8 @@ impl Driver<'_> {
     /// [`Driver::launch`] as `session`, sending `task` as it stands, at `ordinal` when the caller
     /// already read it off the record and at [`progress_store::next_launch`] when `None`: the way
     /// in of the fallback, a fresh session for a spawn whose `opts` still name the one that is
-    /// gone, and of the relaunch ([`Driver::first_launch`]), a fork of the session a launch left
-    /// `interrupted`.
+    /// gone, and of a spawn's first launch ([`Driver::first_launch`]), the relaunch among them, a
+    /// fork of the session a launch left `interrupted`.
     fn launch_as(
         &self,
         session: LaunchSession,
@@ -390,30 +408,31 @@ impl Driver<'_> {
         })
     }
 
-    /// The spawn's first launch (spec 105, RESUME BY SESSION). When the latest launch of `opts.id`
-    /// among its records in this run ([`progress_store::launch_records`],
-    /// [`progress::latest_launch_of`]) ended `interrupted`, whichever site closed it, it is a
-    /// relaunch ([`LaunchSession::relaunch`]) at the next ordinal in `opts.dir`, a fork of that
-    /// launch's session under a minted id, charged no attempt, sent the
+    /// What the spawn's first launch runs as (spec 105, RESUME BY SESSION), decided by reads
+    /// alone, so a failed read launches nothing. It takes the next ordinal of `opts.id` among its
+    /// records in this run ([`progress_store::launch_records`], [`progress::latest_launch_of`],
+    /// [`progress::next_launch_after`]). When that latest launch ended `interrupted`, whichever
+    /// site closed it, it is a relaunch ([`LaunchSession::relaunch`]) in `opts.dir`, a fork of
+    /// that launch's session under a minted id, charged no attempt, sent the
     /// [`Driver::interruption_note`] in front of what [`LaunchSession::task`] sends, the
     /// [`SpawnOpts::resume_task`] when that launch carried it: its record, its open record unless
     /// it was lost, and the records its chain of sessions leads back through decide. Any other
-    /// spawn takes [`Driver::launch`]. A failed read of the records or of the hold sink launches
-    /// nothing.
-    fn first_launch(
-        &self,
-        agent: &AgentDef,
-        prompt: &str,
-        opts: &SpawnOpts,
-    ) -> Result<Launch, Error> {
-        let store = self.progress_store;
-        let chain = progress_store::launch_records(store, &opts.run_id, &opts.id)?;
+    /// spawn runs as [`Driver::launch`] would launch it, [`LaunchSession::of`] its `opts`.
+    fn first_launch(&self, prompt: &str, opts: &SpawnOpts) -> Result<FirstLaunch, Error> {
+        let chain = progress_store::launch_records(self.progress_store, &opts.run_id, &opts.id)?;
         let records = progress::latest_launch_of(&chain);
+        let ordinal = progress::next_launch_after(records.last());
         let Some(interrupted) = records
             .last()
             .filter(|latest| latest.ended.as_deref() == Some(progress::ENDED_INTERRUPTED))
         else {
-            return self.launch(agent, prompt, opts, store);
+            let session = LaunchSession::of(opts);
+            let task = session.task(prompt, opts).to_string();
+            return Ok(FirstLaunch {
+                session,
+                task,
+                ordinal,
+            });
         };
         let note = self.interruption_note(interrupted)?;
         let session = LaunchSession::relaunch(records.first().unwrap_or(interrupted), &chain, opts);
@@ -421,13 +440,29 @@ impl Driver<'_> {
             "" => note,
             carried => format!("{note}\n\n{carried}"),
         };
-        self.launch_as(
+        Ok(FirstLaunch {
             session,
-            agent,
-            &task,
-            opts,
-            store,
-            Some(interrupted.launch + 1),
+            task,
+            ordinal,
+        })
+    }
+
+    /// Every store read the spawn makes before anything launches: the current run's log
+    /// ([`read_or_park`]), then its launch records and the hold sink ([`Driver::first_launch`]).
+    /// Its error is the failed read's, which [`AgentDriver::spawn`] marks a store fault once.
+    fn before_launch(
+        &self,
+        agent: &AgentDef,
+        prompt: &str,
+        opts: &SpawnOpts,
+    ) -> Result<Prelaunch, Error> {
+        Ok(
+            match read_or_park(self.run_store, agent, prompt, opts, &self.scratch_root)? {
+                Logged::Ended(res) => Prelaunch::Answered(res),
+                Logged::Parked | Logged::Requested => {
+                    Prelaunch::Launch(self.first_launch(prompt, opts)?)
+                }
+            },
         )
     }
 
@@ -1643,7 +1678,9 @@ impl AgentDriver for Driver<'_> {
     /// (`rigger mcp --spawn <id>`, criterion 3) - there is nothing left to bridge here.
     ///
     /// RESUME BY SESSION (spec 105): before any launch the current run's log is read
-    /// ([`read_or_park`]). A spawn the run ended is answered from its result with no launch, an
+    /// ([`read_or_park`]), then the launch records and the hold sink ([`Driver::first_launch`]),
+    /// and a failed read among them returns its error marked a store fault ([`store_fault`]),
+    /// once, before the reclaim, so the spawn's scratch stands for the launch a restart makes. A spawn the run ended is answered from its result with no launch, an
     /// error result as that error, carrying the session and resolved model the result recorded
     /// and no `resumed_from`, so a restarted run does not run a finished agent again. A spawn
     /// whose only result is a liveness fault, or one only a prior run ended, is launched. A
@@ -1674,17 +1711,28 @@ impl AgentDriver for Driver<'_> {
         // 3, `AgentDef::max_wall_clock`, already folded from `defaults.max_wall_clock` at
         // config-load time) - 0 stays unbounded, the established convention this field's
         // own doc already sets.
-        if let Logged::Ended(res) =
-            read_or_park(self.run_store, agent, prompt, opts, &self.scratch_root)?
+        let first = match self
+            .before_launch(agent, prompt, opts)
+            .map_err(store_fault)?
         {
-            let session_id = res.meta_str(crate::spawn::META_SESSION_ID);
-            return answered(res).map(|answer| AgentResult {
-                session_id,
-                ..answer
-            });
-        }
+            Prelaunch::Answered(res) => {
+                let session_id = res.meta_str(crate::spawn::META_SESSION_ID);
+                return answered(res).map(|answer| AgentResult {
+                    session_id,
+                    ..answer
+                });
+            }
+            Prelaunch::Launch(first) => first,
+        };
         let bound = agent.max_wall_clock.unwrap_or(0);
-        let mut launched = self.first_launch(agent, prompt, opts);
+        let mut launched = self.launch_as(
+            first.session,
+            agent,
+            &first.task,
+            opts,
+            self.progress_store,
+            Some(first.ordinal),
+        );
         let result = loop {
             match launched.and_then(|launch| self.read_stream(launch, opts, bound)) {
                 Ok(StreamEnd::Result(result)) => break Ok(result),
@@ -3331,8 +3379,16 @@ mod tests {
             progress_store::record_launch(&store, &o.run_id, &record).unwrap();
         }
 
+        let first = driver.first_launch("the full task", &o).unwrap();
         let mut launch = driver
-            .first_launch(&AgentDef::default(), "the full task", &o)
+            .launch_as(
+                first.session,
+                &AgentDef::default(),
+                &first.task,
+                &o,
+                &store,
+                Some(first.ordinal),
+            )
             .unwrap();
         read_fixture_lines(&mut launch);
 

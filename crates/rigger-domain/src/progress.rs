@@ -359,6 +359,14 @@ pub fn latest_launch_of(records: &[SpawnLaunched]) -> Vec<SpawnLaunched> {
         .collect()
 }
 
+/// The ordinal of the launch after `latest`, the last record of one spawn's latest launch in one
+/// run ([`latest_launch_of`]): its ordinal plus one, or 0 when the run holds no launch of the
+/// spawn. PURE: the store crate's `next_launch` and the headless host's first launch number a
+/// launch here.
+pub fn next_launch_after(latest: Option<&SpawnLaunched>) -> u32 {
+    latest.map_or(0, |latest| latest.launch + 1)
+}
+
 /// Each [`SpawnLaunched`] record among `progress_events`, beside its event, in their order: a
 /// record that does not decode names no launch.
 fn decoded_launches(progress_events: &[Event]) -> impl Iterator<Item = (&Event, SpawnLaunched)> {

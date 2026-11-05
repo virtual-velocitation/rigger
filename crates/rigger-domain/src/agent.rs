@@ -284,7 +284,12 @@ pub const EMIT_REFUSED_MARKER: &str = "\u{1}rigger:emit-refused\u{1}";
 pub const INTERRUPTED_MARKER: &str = "\u{1}rigger:launch-interrupted\u{1}";
 
 /// Sentinel heading the [`Error`] of a store read that failed before a spawn launched
-/// ([`store_fault`]), in the [`PARKED_MARKER`] control-character idiom.
+/// ([`store_fault`]): an infra fault, never the outcome of a launched spawn. The host marks it
+/// once at its spawn boundary and the held-run decorator marks its own hold read, so the
+/// decorator records no result for it (a restart relaunches the spawn) and the conflict resolver
+/// retries it as an infra crash instead of spending a round. It crosses the `AgentDriver` port
+/// inside the spawn's error, in the [`PARKED_MARKER`] control-character idiom;
+/// [`strip_failure_marker`] drops it before the text reaches an agent's prompt or the operator.
 pub const STORE_FAULT_MARKER: &str = "\u{1}rigger:store-fault\u{1}";
 
 /// Mark `e`, the error of a store read that failed before a spawn launched, with
@@ -537,11 +542,12 @@ pub fn launch_interrupted(class: AgentFailure, message: String) -> Error {
 /// leaving only the human-readable text: the [`FAILURE_MARKER`]-bracketed class
 /// [`no_result_error`] embeds (adj-u104c5 REQUIRED FIX 2,
 /// sdet-u104c5-failure-marker-leaks-unstripped-into-operator-visible-text), with the
-/// [`INTERRUPTED_MARKER`] a [`launch_interrupted`] error carries behind it, or the
-/// [`EMIT_REFUSED_MARKER`] the conductor's agent emit puts ahead of an emit guard's refusal
-/// (each dropped here because its readers - the held-run decorator for the first, the
-/// implementer's attempt arm and the refused record's re-run for the second - match it before
-/// this strip runs, while `PARKED_MARKER` and `BUDGET_MARKER` pass through untouched, since
+/// [`INTERRUPTED_MARKER`] a [`launch_interrupted`] error carries behind it, the
+/// [`EMIT_REFUSED_MARKER`] the conductor's agent emit puts ahead of an emit guard's refusal, or
+/// the [`STORE_FAULT_MARKER`] heading a [`store_fault`] (each dropped here because its readers -
+/// the held-run decorator for the first, the implementer's attempt arm and the refused record's
+/// re-run for the second, the held-run decorator and the conflict resolver for the third - match
+/// it before this strip runs, while `PARKED_MARKER` and `BUDGET_MARKER` pass through untouched, since
 /// callers upstream still branch on them).
 /// Unlike `PARKED_MARKER`/`PLAN_LANDING_MARKER`/`LAND_REFUSED_MARKER` - bare prefixes a plain
 /// `.replace(MARKER, "")` cleans - [`FAILURE_MARKER`] brackets DATA (the class name) that
@@ -553,8 +559,11 @@ pub fn launch_interrupted(class: AgentFailure, message: String) -> Error {
 /// (every other driver's error, or text already stripped) passes through byte-for-byte
 /// unchanged.
 pub fn strip_failure_marker(e: &Error) -> String {
-    if let Some(refusal) = e.0.strip_prefix(EMIT_REFUSED_MARKER) {
-        return refusal.to_string();
+    if let Some(text) = [EMIT_REFUSED_MARKER, STORE_FAULT_MARKER]
+        .iter()
+        .find_map(|marker| e.0.strip_prefix(marker))
+    {
+        return text.to_string();
     }
     match failure_parts(e) {
         Some((_, message)) => message

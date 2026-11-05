@@ -469,6 +469,25 @@
     "disposition": "not-a-duplicate"
   },
   {
+    "id": "dup-b6030639057d",
+    "classification": "exact",
+    "sites": [
+      {
+        "file": "crates/rigger-conductor/src/conductor.rs",
+        "name": "is_interrupted",
+        "content_hash": "fa1140e6ee5719fa"
+      },
+      {
+        "file": "crates/rigger-conductor/src/conductor.rs",
+        "name": "is_store_fault",
+        "content_hash": "fa1140e6ee5719fa"
+      }
+    ],
+    "proposed_home": "conductor::support (consolidate these 2 sites into one function in this file)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
     "id": "dup-500f0a1aa6c2",
     "classification": "exact",
     "sites": [

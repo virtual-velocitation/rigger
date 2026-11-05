@@ -245,11 +245,13 @@ before them it closes every open `SpawnLaunched` of every run in the progress st
 as its authorized root; criterion 6 builds this start-up reconciliation. `SpawnLaunched` gains
 `dir`; an open record whose `dir` is absent, empty or outside the scratch root closes
 `interrupted` and reaps nothing. The host owns the relaunch, inside `spawn`, and the conductor
-changes at one site, the conflict resolver's (`spawn_conflict_resolution_implementer`,
-`crates/rigger-conductor/src/conductor.rs:11033`), which reads an unmarked error of its spawn,
-live or answered from the log, as a spent round, moving to the next `~retry` with no attempt
-charged and past `CONFLICT_RESOLVE_BOUND` returning `Integration {blocked}` as an unresolved
-conflict does: `spawn` answers a spawn id the current run's slice (`read_current_run`,
+changes at the conflict resolver (`spawn_conflict_resolution_implementer`,
+`crates/rigger-conductor/src/conductor.rs:11033`), which reads an unmarked error of a launched
+spawn, live or answered from the log, as a spent round, moving to the next `~retry` with no
+attempt charged and past `CONFLICT_RESOLVE_BOUND` returning `Integration {blocked}` as an
+unresolved conflict does, and a store read failing before the launch, which the host marks a
+store fault once at `spawn`'s boundary, as a spawn crash its integrate door reruns under the F3
+infra retry, recording no result and spending no round: `spawn` answers a spawn id the current run's slice (`read_current_run`,
 `crates/rigger-domain/src/run/read.rs:75`) has ended (`spawn::ended_by`,
 `crates/rigger-domain/src/spawn.rs:1050`, the replay driver's read) with its result and launches
 nothing, while a liveness fault, the stream-silence stop's, ends no spawn until the decorator's
