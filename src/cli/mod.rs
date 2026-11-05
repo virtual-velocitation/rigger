@@ -1829,6 +1829,43 @@ fn require_store_dir() -> Result<(StoreLocation, StoreSelection), Box<dyn std::e
     Ok((StoreLocation { dir }, sel))
 }
 
+/// `act` over this project's run store: the `events.db` log of the store [`require_store_dir`]
+/// resolves, scoped by that store's identity, handed with the location and selection it was
+/// resolved at. The store borrows its backend, so it is handed to `act` rather than returned.
+fn over_the_run_store<T>(
+    act: impl FnOnce(
+        &StoreLocation,
+        &StoreSelection,
+        &dyn EventStore,
+    ) -> Result<T, Box<dyn std::error::Error>>,
+) -> Result<T, Box<dyn std::error::Error>> {
+    let (loc, selection) = require_store_dir()?;
+    over_the_run_store_at(&loc, &selection, |store| act(&loc, &selection, store))
+}
+
+/// `act` over the run store at `loc`, opened as [`over_the_run_store`] opens it, for a caller that
+/// already holds the store's location and selection.
+fn over_the_run_store_at<T>(
+    loc: &StoreLocation,
+    selection: &StoreSelection,
+    act: impl FnOnce(&dyn EventStore) -> Result<T, Box<dyn std::error::Error>>,
+) -> Result<T, Box<dyn std::error::Error>> {
+    let backend = resolve_store(selection, &loc.file("events.db"))?;
+    act(&Namespaced::new(backend.as_ref(), &loc.identity()))
+}
+
+/// `act` over this project's run stream, opened as [`over_the_run_store`] opens it, read through
+/// untouched and appended through a folding store, whose graph is opened only after the append
+/// (spec 101).
+fn on_the_run(act: impl FnOnce(&StoreLocation, &dyn EventStore) -> Res) -> Res {
+    over_the_run_store(|loc, selection, store| {
+        act(
+            loc,
+            &rigger::ingest::FoldingStore::new(store, Some(|| loc.graph(selection)), &stderr_line),
+        )
+    })
+}
+
 /// The context graph a read-only graph verb (`rigger graph --around`/`--show`) answers from: the
 /// `graph.db` of the store [`require_store_dir`] resolves, under that store's identity. A read run
 /// from a linked worktree so answers from the owning repository's graph, and one run under the
@@ -3252,9 +3289,9 @@ fn watch_poll(
     selection: &StoreSelection,
     ci: watch::CiProbe,
 ) -> Result<Vec<watch::Anomaly>, Box<dyn std::error::Error>> {
-    let run_backend = resolve_store(selection, &loc.file("events.db"))?;
-    let run_store = Namespaced::new(run_backend.as_ref(), &loc.identity());
-    watch_poll_over(loc, &run_store, ci)
+    over_the_run_store_at(loc, selection, |run_store| {
+        watch_poll_over(loc, run_store, ci)
+    })
 }
 
 /// What CI says about the run branch's tip in `repo`: GitHub's check runs for that commit, read

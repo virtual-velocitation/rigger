@@ -16,7 +16,7 @@ pub(crate) fn cmd_hold(args: &[String]) -> Res {
         _ => return Err("hold: usage: rigger hold --reason <text>".into()),
     };
     on_the_run(
-        |store| match runscope_store::hold_by_operator(store, reason)? {
+        |_, store| match runscope_store::hold_by_operator(store, reason)? {
             Ok(run_id) => {
                 println!("held run {run_id} for the operator; `rigger release` ends the hold");
                 Ok(())
@@ -32,7 +32,7 @@ pub(crate) fn cmd_release(args: &[String]) -> Res {
     if !args.is_empty() {
         return Err("release: usage: rigger release".into());
     }
-    on_the_run(|store| {
+    on_the_run(|_, store| {
         let now = std::time::SystemTime::now();
         if runscope_store::release_hold(store, runscope::HOLD_BY_OPERATOR, now)? {
             println!("released the current run's hold");
@@ -41,17 +41,4 @@ pub(crate) fn cmd_release(args: &[String]) -> Res {
         }
         Ok(())
     })
-}
-
-/// `act` over this project's run stream, read through untouched and appended through a folding
-/// store, whose graph is opened only after the append (spec 101).
-fn on_the_run(act: impl FnOnce(&dyn EventStore) -> Res) -> Res {
-    let (loc, selection) = require_store_dir()?;
-    let backend = resolve_store(&selection, &loc.file("events.db"))?;
-    let store = Namespaced::new(backend.as_ref(), &loc.identity());
-    act(&rigger::ingest::FoldingStore::new(
-        &store,
-        Some(|| loc.graph(&selection)),
-        &stderr_line,
-    ))
 }

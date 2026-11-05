@@ -207,9 +207,9 @@ fn reset_menu(loc: &StoreLocation, selection: &StoreSelection) -> Res {
     // --runs: works over ANY backend, exactly like a real `--runs` does (the context graph is
     // always a local file; only the EVENT log may be server-backed) - so this reads the whole run
     // stream through the resolved backend precisely as `reset_runs` does.
-    let backend = resolve_store(selection, &loc.file("events.db"))?;
-    let store = Namespaced::new(backend.as_ref(), &loc.identity());
-    let events = store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
+    let events = over_the_run_store_at(loc, selection, |store| {
+        Ok(store.read_stream(conductor::STREAM, 0, Direction::Forward)?)
+    })?;
     let drop = superseded_graph_nodes(&events);
     let boundary = superseded_edge_boundary(&events);
     let graph = Projector::open(&loc.file("graph.db"), &loc.identity())?;
@@ -759,9 +759,9 @@ fn refuse_derived_reset_if_live(
     selection: &StoreSelection,
     env: &ResetEnv,
 ) -> Result<Option<HeldLock>, Box<dyn std::error::Error>> {
-    let backend = resolve_store(selection, &loc.file("events.db"))?;
-    let store = Namespaced::new(backend.as_ref(), &loc.identity());
-    refuse_if_live(loc, selection, env, &store, live_writer_refusal)
+    over_the_run_store_at(loc, selection, |store| {
+        refuse_if_live(loc, selection, env, store, live_writer_refusal)
+    })
 }
 
 /// Gather [`live_writer_reasons`]'s three facts over `log`'s run stream and refuse when any
@@ -951,9 +951,10 @@ fn live_driver_registrations(
 /// it, and it prints its own line when it fires - but "the event log is untouched" is not true of
 /// a `rigger reset --runs` on the one class of store the migration exists for, so the printed
 /// report says what IS true instead. The migration is deliberately not gated on `--derived`:
-/// `reset_runs` reads through `Namespaced::new(backend, &loc.identity())`, so skipping it on an
-/// unmigrated store would read an empty stream and report a confident prune of zero dead-run
-/// nodes - the silent no-op the migration is there to prevent, moved from one mode to the other.
+/// `reset_runs` reads the run store [`over_the_run_store_at`] opens, scoped by `loc.identity()`,
+/// so skipping it on an unmigrated store would read an empty stream and report a confident prune
+/// of zero dead-run nodes - the silent no-op the migration is there to prevent, moved from one
+/// mode to the other.
 ///
 /// This is pure orchestration over two single authorities: the disposition comes from the
 /// run-attribution primitive ([`superseded_graph_nodes`] over `run::run_attribution` +
@@ -977,42 +978,43 @@ fn reset_runs(loc: &StoreLocation, selection: &StoreSelection, env: &ResetEnv) -
             contextgraph::sqlite::REBUILD_IN_PROGRESS
         ),
     }
-    let backend = resolve_store(selection, &loc.file("events.db"))?;
-    let store = Namespaced::new(backend.as_ref(), &loc.identity());
-    // ONE whole-stream forward read: it feeds BOTH the attribution and the per-index node-id
-    // lookup inside `superseded_graph_nodes`, honoring run_attribution's whole-stream contract.
-    let events = store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
-    let drop = superseded_graph_nodes(&events);
-    // Spec 41: the retention cutoff for the superseded-edge reclamation - the active run's start,
-    // the SAME run boundary the node drop-set is derived against. `None` (a legacy store with no
-    // run) reclaims no edge, so LIVE and recent history are both untouched.
-    let boundary = superseded_edge_boundary(&events);
+    over_the_run_store_at(loc, selection, |store| {
+        // ONE whole-stream forward read: it feeds BOTH the attribution and the per-index node-id
+        // lookup inside `superseded_graph_nodes`, honoring run_attribution's whole-stream contract.
+        let events = store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
+        let drop = superseded_graph_nodes(&events);
+        // Spec 41: the retention cutoff for the superseded-edge reclamation - the active run's
+        // start, the SAME run boundary the node drop-set is derived against. `None` (a legacy store
+        // with no run) reclaims no edge, so LIVE and recent history are both untouched.
+        let boundary = superseded_edge_boundary(&events);
 
-    let graph = open_graph(&graph_db, &loc.identity(), selection, "reset --runs")?;
-    // The probe's step lock is held until the close returns, so no `rigger step` or `rigger run`
-    // starts against a run this reset is closing; the graph prune below takes no part in it.
-    let probe = live_writer_facts(loc, selection, env, &events)?;
-    close_landed_units(loc, &store, &graph, &events, &probe.facts)?;
-    std::mem::drop(probe);
-    let removed = graph.prune(&drop, boundary)?;
-    // Compact the projection file so the prune reclaims DISK, not just rows (spec 46, criterion 3):
-    // the deletes free pages inside graph.db that SQLite retains on a freelist, so without a VACUUM
-    // the file stays as LARGE on disk as before even though the dead rows are gone. VACUUM reclaims
-    // disk ONLY - it changes no query result and gives no query or fold speedup; it rebuilds only
-    // the rebuildable projection and the event log is untouched.
-    let reclaimed_bytes = graph.compact()?;
-    println!(
-        "reset --runs: {} from the context graph, then compacted the graph file (reclaimed {} \
-         byte(s) on disk) - every \
-         lesson, the active run, and every live edge are preserved; this prune deletes no event \
-         from the log. The one thing `rigger reset` writes there is the one-time identity \
-         migration it runs first: on a store still under the legacy basename namespace that \
-         renames its streams and records one DecisionMade, and it prints its own line when it \
-         does",
-        pruned_line(&removed),
-        reclaimed_bytes
-    );
-    Ok(())
+        let graph = open_graph(&graph_db, &loc.identity(), selection, "reset --runs")?;
+        // The probe's step lock is held until the close returns, so no `rigger step` or `rigger
+        // run` starts against a run this reset is closing; the graph prune below takes no part in
+        // it.
+        let probe = live_writer_facts(loc, selection, env, &events)?;
+        close_landed_units(loc, store, &graph, &events, &probe.facts)?;
+        std::mem::drop(probe);
+        let removed = graph.prune(&drop, boundary)?;
+        // Compact the projection file so the prune reclaims DISK, not just rows (spec 46, criterion
+        // 3): the deletes free pages inside graph.db that SQLite retains on a freelist, so without
+        // a VACUUM the file stays as LARGE on disk as before even though the dead rows are gone.
+        // VACUUM reclaims disk ONLY - it changes no query result and gives no query or fold
+        // speedup; it rebuilds only the rebuildable projection and the event log is untouched.
+        let reclaimed_bytes = graph.compact()?;
+        println!(
+            "reset --runs: {} from the context graph, then compacted the graph file (reclaimed {} \
+             byte(s) on disk) - every \
+             lesson, the active run, and every live edge are preserved; this prune deletes no event \
+             from the log. The one thing `rigger reset` writes there is the one-time identity \
+             migration it runs first: on a store still under the legacy basename namespace that \
+             renames its streams and records one DecisionMade, and it prints its own line when it \
+             does",
+            pruned_line(&removed),
+            reclaimed_bytes
+        );
+        Ok(())
+    })
 }
 
 /// What a run-closure prune removed, in the one set of words both of its reports use: `rigger

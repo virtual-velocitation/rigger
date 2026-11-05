@@ -579,9 +579,12 @@ fn cmd_hook_stop_failure(args: &[String]) -> Res {
 
     let (loc, selection) = require_store_dir()?;
     refresh_registry_entry(&loc, &selection);
-    let run_backend = resolve_store(&selection, &loc.file("events.db"))?;
-    let run_store = Namespaced::new(run_backend.as_ref(), &loc.identity());
-    let (_, run_id) = runscope::read::read_current_run(&run_store, conductor::STREAM)?;
+    let (_, run_id) = over_the_run_store_at(&loc, &selection, |run_store| {
+        Ok(runscope::read::read_current_run(
+            run_store,
+            conductor::STREAM,
+        )?)
+    })?;
     let prog_backend = Store::open(&loc.file("progress.db"))?;
     let prog_store = Namespaced::new(&prog_backend, &loc.identity());
     let pos = rigger::progress_store::record_stop_failure(

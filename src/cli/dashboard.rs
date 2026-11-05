@@ -814,56 +814,55 @@ fn parse_mcp_spawn_flag(args: &[String]) -> Result<Option<String>, Box<dyn std::
 /// never a second parallel one.
 pub(crate) fn cmd_mcp(args: &[String]) -> Res {
     let spawn = parse_mcp_spawn_flag(args)?;
-    let (loc, selection) = require_store_dir()?;
-    let backend = resolve_store(&selection, &loc.file("events.db"))?;
-    let store = Namespaced::new(backend.as_ref(), &loc.identity());
-    let grounder_name = config_store::load(".")
-        .map(|cfg| cfg.workflow.defaults.grounder)
-        .unwrap_or_default();
-    let grounder = select_grounder(&grounder_name);
-    // The resolved store's own graph, so a server started in a linked worktree serves and folds
-    // into the owning repository's graph, never one opened in the worktree. Opened as it stands:
-    // an emit this server serves appends whether or not the graph owes its rebuild (the fold
-    // refuses while it does), and the graph and grounding tools, which depend on the fold,
-    // refuse naming `rigger setup` until it is paid (spec 101).
-    let graph = loc.graph(&selection)?;
-    let driver = rigger::driver::workflow::Driver::new();
+    over_the_run_store(|loc, selection, store| {
+        let grounder_name = config_store::load(".")
+            .map(|cfg| cfg.workflow.defaults.grounder)
+            .unwrap_or_default();
+        let grounder = select_grounder(&grounder_name);
+        // The resolved store's own graph, so a server started in a linked worktree serves and folds
+        // into the owning repository's graph, never one opened in the worktree. Opened as it
+        // stands: an emit this server serves appends whether or not the graph owes its rebuild (the
+        // fold refuses while it does), and the graph and grounding tools, which depend on the fold,
+        // refuse naming `rigger setup` until it is paid (spec 101).
+        let graph = loc.graph(selection)?;
+        let driver = rigger::driver::workflow::Driver::new();
 
-    // Only opened/resolved when `--spawn` is given - a plain `rigger mcp` (the operator's
-    // lookup surface) must not conjure `.rigger/progress.db` or a scratch root it never uses.
-    let prog_backend: Option<Store> = spawn
-        .is_some()
-        .then(|| Store::open(&loc.file("progress.db")))
-        .transpose()?;
-    let prog_store = prog_backend
-        .as_ref()
-        .map(|b| Namespaced::new(b, &loc.identity()));
-    let scratch_root = if spawn.is_some() {
-        let repo = loc
-            .dir
-            .parent()
-            .and_then(|p| p.to_str())
-            .ok_or("mcp: could not resolve the project root")?;
-        let (workdir, _max_retries) = scratch_defaults(&loc);
-        rigger::worktree::scratch_root_path_from_env(repo, &workdir)
-    } else {
-        String::new()
-    };
+        // Only opened/resolved when `--spawn` is given - a plain `rigger mcp` (the operator's
+        // lookup surface) must not conjure `.rigger/progress.db` or a scratch root it never uses.
+        let prog_backend: Option<Store> = spawn
+            .is_some()
+            .then(|| Store::open(&loc.file("progress.db")))
+            .transpose()?;
+        let prog_store = prog_backend
+            .as_ref()
+            .map(|b| Namespaced::new(b, &loc.identity()));
+        let scratch_root = if spawn.is_some() {
+            let repo = loc
+                .dir
+                .parent()
+                .and_then(|p| p.to_str())
+                .ok_or("mcp: could not resolve the project root")?;
+            let (workdir, _max_retries) = scratch_defaults(loc);
+            rigger::worktree::scratch_root_path_from_env(repo, &workdir)
+        } else {
+            String::new()
+        };
 
-    let mut server =
-        mcpserver::Server::new(&driver, &store, conductor::STREAM).with_graph(graph.as_ref());
-    server = server.with_grounder(match &grounder {
-        Ok(g) => Ok(g.as_ref()),
-        Err(e) => Err(e.to_string()),
-    });
-    if let Some(ps) = &prog_store {
-        server = server.with_progress(ps, &scratch_root);
-    }
-    if let Some(id) = spawn {
-        server = server.with_spawn(id);
-    }
-    server.run(std::io::stdin().lock(), std::io::stdout().lock())?;
-    Ok(())
+        let mut server =
+            mcpserver::Server::new(&driver, store, conductor::STREAM).with_graph(graph.as_ref());
+        server = server.with_grounder(match &grounder {
+            Ok(g) => Ok(g.as_ref()),
+            Err(e) => Err(e.to_string()),
+        });
+        if let Some(ps) = &prog_store {
+            server = server.with_progress(ps, &scratch_root);
+        }
+        if let Some(id) = spawn {
+            server = server.with_spawn(id);
+        }
+        server.run(std::io::stdin().lock(), std::io::stdout().lock())?;
+        Ok(())
+    })
 }
 
 #[cfg(test)]

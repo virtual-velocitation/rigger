@@ -189,9 +189,12 @@ pub(crate) fn cmd_progress(args: &[String]) -> Res {
     // the only traffic in the run for a while. Best-effort/warn-only; never fails the report.
     refresh_registry_entry(&loc, &selection);
     // Resolve the current run READ-ONLY from the run store, only to scope the report.
-    let run_backend = resolve_store(&selection, &loc.file("events.db"))?;
-    let run_store = Namespaced::new(run_backend.as_ref(), &loc.identity());
-    let (_, run_id) = runscope::read::read_current_run(&run_store, conductor::STREAM)?;
+    let (_, run_id) = over_the_run_store_at(&loc, &selection, |run_store| {
+        Ok(runscope::read::read_current_run(
+            run_store,
+            conductor::STREAM,
+        )?)
+    })?;
     // Append to the SEPARATE progress store - never the run stream.
     let prog_backend = Store::open(&loc.file("progress.db"))?;
     let prog_store = Namespaced::new(&prog_backend, &loc.identity());
@@ -268,9 +271,12 @@ pub(crate) fn cmd_status(args: &[String]) -> Res {
     let now = std::time::SystemTime::now();
 
     // The current run's slice of the run stream, and its id.
-    let run_backend = resolve_store(&selection, &loc.file("events.db"))?;
-    let run_store = Namespaced::new(run_backend.as_ref(), &loc.identity());
-    let (run_slice, run_id) = runscope::read::read_current_run(&run_store, conductor::STREAM)?;
+    let (run_slice, run_id) = over_the_run_store_at(&loc, &selection, |run_store| {
+        Ok(runscope::read::read_current_run(
+            run_store,
+            conductor::STREAM,
+        )?)
+    })?;
     let run_events = run_slice.as_slice();
 
     // Spec 94, criterion 5: `--line` needs only the run's event slice and the configured
@@ -590,14 +596,10 @@ fn unread_ci_note(ci: &watch::CiProbe, last: &mut Option<String>) -> Option<Stri
 pub(crate) fn cmd_peers(args: &[String]) -> Res {
     let files: Vec<String> = args.to_vec();
 
-    let (loc, selection) = require_store_dir()?;
-    let backend = resolve_store(&selection, &loc.file("events.db"))?;
-    let store = Namespaced::new(backend.as_ref(), &loc.identity());
-
     // The side-car reads the run from its boundary and the carried-over decisions, lessons and
     // findings by type (spec 101) - every record committed before this call, never the whole
     // log.
-    let peers = Sidecar::read(&store, conductor::STREAM)?;
+    let peers = over_the_run_store(|_, _, store| Ok(Sidecar::read(store, conductor::STREAM)?))?;
 
     let result = mcpserver::peers_json(&peers, &files);
     let decisions = result["decisions"].as_array().cloned().unwrap_or_default();
