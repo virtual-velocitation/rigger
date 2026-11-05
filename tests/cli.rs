@@ -7499,7 +7499,8 @@ fn a_sighting_holds_the_run_and_a_done_run_releases_the_hold() {
 /// close's rerun launches a fresh session. A `fault` close hands its error to the conductor, and the
 /// decorator records it as the first spawn's result, so a restart answers that spawn from the log
 /// and the rerun's result follows it; an `interrupted` close records no `SpawnResult`, so the
-/// spawn's one result is the second launch's.
+/// spawn's one result is the second launch's. Every write of the run folds into the graph, the
+/// error the decorator records included: only the test's own hold and release stand unfolded.
 #[cfg(unix)]
 #[test]
 fn an_is_error_result_reruns_uncharged_and_holds_as_its_class_says() {
@@ -7728,6 +7729,23 @@ fn an_is_error_result_reruns_uncharged_and_holds_as_its_class_says() {
         );
         assert_eq!(run_holds(root), case.holds, "{name}: the holds");
         assert_eq!(run_releases(root), case.releases, "{name}: the releases");
+        let beside_writes: Vec<&str> = case
+            .operator_holds
+            .then_some(rigger::run::TYPE_RUN_HELD)
+            .into_iter()
+            .chain(
+                case.releases
+                    .iter()
+                    .filter(|by| **by == rigger::run::HOLD_BY_OPERATOR)
+                    .map(|_| rigger::run::TYPE_RUN_RELEASED),
+            )
+            .collect();
+        assert_eq!(
+            unfolded_types_past(root, 0),
+            beside_writes,
+            "{name}: every write of the run folds, the decorator's included, the test's own \
+             writes alone standing unfolded"
+        );
     }
 }
 
