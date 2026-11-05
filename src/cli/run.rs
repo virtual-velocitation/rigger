@@ -1453,8 +1453,8 @@ fn anchor_run_branch(repo: &str, cmd: &str, base: &str, base_explicit: bool) -> 
 
 /// One beat of the supervisor (spec 105 LIVENESS): a [`SupervisorBeat`] on the progress stream of
 /// the run current at this beat, re-read here so the beat follows whichever run is current. Only
-/// the run's boundaries are read, since a beat wants one id every interval for as long as the run
-/// lives. A run log that cannot be read, or that names no run, beats nothing, and a write the
+/// the current run's `RunStarted` is read, from its boundary, since a beat wants one id every
+/// interval for as long as the run lives. A run log that cannot be read, or that names no run, beats nothing, and a write the
 /// progress store refuses is ignored: the next tick is the retry either way.
 ///
 /// [`SupervisorBeat`]: rigger::progress::SupervisorBeat

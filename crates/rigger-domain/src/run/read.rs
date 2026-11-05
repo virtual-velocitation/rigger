@@ -104,20 +104,33 @@ pub fn read_current_run(
     Ok((super::current_run(&read).to_vec(), run_id))
 }
 
-/// THE CURRENT RUN'S ID, READ ALONE: [`crate::run::current_run_id`] of the run's `RunStarted`
-/// events, `None` when no run has started - the read a supervisor beat stamps its run by every
-/// interval, which wants one id and never the run's other events.
+/// THE CURRENT RUN'S ID, READ ALONE: [`crate::run::current_run_id`] of the run's `RunStarted`,
+/// read from its boundary by `read_from_boundary`, `None` when no run has started - the read a
+/// supervisor beat stamps its run by every interval, which wants one id and never the runs
+/// before it or the run's other events.
 pub fn read_current_run_id(store: &dyn EventStore, stream: &str) -> Result<Option<String>, Error> {
-    let boundaries =
-        store.read_stream_typed(stream, 0, TypeSelection::Only(&[TYPE_RUN_STARTED]))?;
-    Ok(super::current_run_id(&boundaries))
+    let boundary = read_from_boundary(store, stream, &[TYPE_RUN_STARTED])?;
+    Ok(super::current_run_id(&boundary))
+}
+
+/// THE ONE NARROW RUN READ: the events of `types` from the current run's boundary
+/// ([`EventStore::last_position`]'s answer for the run's `RunStarted`; the whole stream with no
+/// run started), which the hold read and the run-id read both take, so a read made every
+/// interval never materializes the runs before the current one or the types it does not fold.
+fn read_from_boundary(
+    store: &dyn EventStore,
+    stream: &str,
+    types: &[&str],
+) -> Result<Vec<Event>, Error> {
+    let boundary = store.last_position(stream, TYPE_RUN_STARTED)?.unwrap_or(0);
+    store.read_stream_typed(stream, boundary, TypeSelection::Only(types))
 }
 
 /// THE RUN'S HOLD, READ ONCE (spec 105): the hold the current run leaves open, the read every
 /// launch gate and every poll through a hold decides on; an ending, whose close carries the run
-/// stream's head, reads [`read_current_hold_at_head`] instead. It reads only [`HOLD_TYPES`], from the boundary [`read_run`] finds
-/// ([`EventStore::last_position`]'s answer for the run's `RunStarted`; the whole stream with no
-/// run started), and folds the hold from [`crate::run::current_run`] of that read, so a read made
+/// stream's head, reads [`read_current_hold_at_head`] instead. It reads only [`HOLD_TYPES`] from
+/// the run's boundary (`read_from_boundary`), and folds the hold from
+/// [`crate::run::current_run`] of that read, so a read made
 /// at every launch decision and through the whole of a hold never materializes the carried-over
 /// knowledge or the run's other events. `None` proves the run unheld; a read or a fold that fails
 /// answers its error, since a run not proved unheld launches nothing.
@@ -125,8 +138,7 @@ pub fn read_current_hold(
     store: &dyn EventStore,
     stream: &str,
 ) -> Result<Option<Hold>, crate::agent::Error> {
-    let boundary = store.last_position(stream, TYPE_RUN_STARTED)?.unwrap_or(0);
-    let events = store.read_stream_typed(stream, boundary, TypeSelection::Only(&HOLD_TYPES))?;
+    let events = read_from_boundary(store, stream, &HOLD_TYPES)?;
     Ok(ledger::project(super::current_run(&events))?.hold)
 }
 
