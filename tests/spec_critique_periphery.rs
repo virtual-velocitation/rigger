@@ -875,6 +875,17 @@ fn run_types(root: &Path) -> Vec<String> {
         .collect()
 }
 
+/// Whether `err` holds, as one whole line, the verb's answered-from line for [`SPEC_REL`] (hash
+/// [`SPEC_HASH`]) recorded over `passes`, `1 pass` or `<n> passes` (spec 123): matched whole, so a
+/// line that only begins with it is no match.
+fn answered_over(err: &str, passes: &str) -> bool {
+    let line = format!(
+        "rigger critique: {SPEC_REL} (hash {SPEC_HASH}): answered from the critique recorded over \
+         {passes}"
+    );
+    err.lines().any(|l| l == line)
+}
+
 #[test]
 fn the_critique_record_persists_under_the_literal_content_hash_with_the_critics_request() {
     let dir = temp_project();
@@ -1018,11 +1029,8 @@ fn a_text_reverted_to_a_critiqued_hash_is_answered_by_that_critique_with_zero_sp
     assert!(ok, "an answered critique exits 0; stderr:\n{err}");
     assert_eq!(out, reject_out(SPEC, 0), "the first text's own findings");
     assert!(
-        err.contains(&format!(
-            "rigger critique: {SPEC_REL} (hash {SPEC_HASH}): answered from the critique recorded \
-             over 1 pass"
-        )),
-        "the verb says it answered from the record:\n{err}"
+        answered_over(&err, "1 pass"),
+        "the verb says it answered from the record of the hash's one pass:\n{err}"
     );
     assert_eq!(critique_stub_spawns(third.path()), 0, "zero spawns");
     assert_eq!(
@@ -1123,8 +1131,8 @@ fn a_recorded_critique_whose_copies_were_never_appended_is_completed_with_zero_s
     assert!(ok, "an answered critique exits 0; stderr:\n{err}");
     assert_eq!(out, reject_out(SPEC, 0));
     assert!(
-        err.contains("answered from the critique recorded over 1 pass"),
-        "a later result that is no critique never displaces the critique:\n{err}"
+        answered_over(&err, "1 pass"),
+        "a later attempt's result that is no pass never displaces an earlier pass:\n{err}"
     );
     assert_eq!(critique_stub_spawns(work.path()), 0, "zero spawns");
     assert_eq!(
@@ -1170,10 +1178,7 @@ fn an_answered_critique_prints_the_union_of_its_passes_then_the_verdict_it_deriv
         "attempt 0's finding, then attempt 2's two, then the union's BLOCKING line rejects"
     );
     assert!(
-        err.contains(&format!(
-            "rigger critique: {SPEC_REL} (hash {SPEC_HASH}): answered from the critique recorded \
-             over 3 passes"
-        )),
+        answered_over(&err, "3 passes"),
         "the verb says how many passes it answered from:\n{err}"
     );
     assert_eq!(critique_stub_spawns(work.path()), 0, "zero spawns");
