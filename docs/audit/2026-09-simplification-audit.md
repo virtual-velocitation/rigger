@@ -4,7 +4,7 @@ The audit report spec 85 derives the follow-up refactoring specs from. Six secti
 
 ## 1. Responsibility Map
 
-Every function in `crates/rigger-conductor/src/conductor.rs`, `src/cli/mod.rs` and `crates/rigger-dash/src/dash.rs` (1732 functions total), assigned to a proposed module by `tests/simplification_audit.rs`'s deterministic scanner + rule-table classifier (never by hand). Instrument: the brace-matching scanner over the three named files.
+Every function in `crates/rigger-conductor/src/conductor.rs`, `src/cli/mod.rs` and `crates/rigger-dash/src/dash.rs` (1731 functions total), assigned to a proposed module by `tests/simplification_audit.rs`'s deterministic scanner + rule-table classifier (never by hand). Instrument: the brace-matching scanner over the three named files.
 
 ### Proposed module tree
 
@@ -1316,49 +1316,49 @@ Every function in `crates/rigger-conductor/src/conductor.rs`, `src/cli/mod.rs` a
   - `crates/rigger-dash/src/dash.rs:10021-10071` `the_seeded_route_carries_memory_without_adding_a_single_node_to_the_neighborhood` - defined inside `subject_view_c5`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).
   - `crates/rigger-dash/src/dash.rs:10077-10097` `a_cluster_drill_carries_no_memory_field` - defined inside `subject_view_c5`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).
 - `main::commands` (1 function)
-  - `src/cli/mod.rs:2762-2921` `cmd_replay` - name contains "cmd_" (CLI command handler); grouped under `main::commands`.
+  - `src/cli/mod.rs:2753-2912` `cmd_replay` - name contains "cmd_" (CLI command handler); grouped under `main::commands`.
 - `main::dash_glue` (1 function)
-  - `src/cli/mod.rs:3161-3165` `recorded_dash_url` - name contains "dash_" (dash registry/marker glue); grouped under `main::dash_glue`.
+  - `src/cli/mod.rs:3152-3156` `recorded_dash_url` - name contains "dash_" (dash registry/marker glue); grouped under `main::dash_glue`.
 - `main::docs_overlay` (1 function)
-  - `src/cli/mod.rs:4931-4938` `apply` - method inside `impl DocsOverlay`; grouped with its other `DocsOverlay` methods.
+  - `src/cli/mod.rs:4922-4929` `apply` - method inside `impl DocsOverlay`; grouped with its other `DocsOverlay` methods.
 - `main::liveness` (4 functions)
-  - `src/cli/mod.rs:2082-2092` `live_branches_for_sweep` - name contains "live" (liveness/heartbeat reporting); grouped under `main::liveness`.
-  - `src/cli/mod.rs:3188-3205` `liveness_ages_for_wave` - name contains "live" (liveness/heartbeat reporting); grouped under `main::liveness`.
-  - `src/cli/mod.rs:3771-3778` `live_slugs` - name contains "live" (liveness/heartbeat reporting); grouped under `main::liveness`.
-  - `src/cli/mod.rs:3981-3999` `worktree_belongs_to_live` - name contains "live" (liveness/heartbeat reporting); grouped under `main::liveness`.
+  - `src/cli/mod.rs:2073-2083` `live_branches_for_sweep` - name contains "live" (liveness/heartbeat reporting); grouped under `main::liveness`.
+  - `src/cli/mod.rs:3179-3196` `liveness_ages_for_wave` - name contains "live" (liveness/heartbeat reporting); grouped under `main::liveness`.
+  - `src/cli/mod.rs:3762-3769` `live_slugs` - name contains "live" (liveness/heartbeat reporting); grouped under `main::liveness`.
+  - `src/cli/mod.rs:3972-3990` `worktree_belongs_to_live` - name contains "live" (liveness/heartbeat reporting); grouped under `main::liveness`.
 - `main::provenance` (12 functions)
   - `src/cli/mod.rs:161-163` `workflow_path` - name contains "workflow" (workflow/spec loading); grouped under `main::provenance`.
   - `src/cli/mod.rs:296-309` `spec_positional` - name contains "spec_" (workflow/spec loading); grouped under `main::provenance`.
-  - `src/cli/mod.rs:2247-2289` `refuse_when_base_lacks_spec_paths` - name contains "spec_" (workflow/spec loading); grouped under `main::provenance`.
-  - `src/cli/mod.rs:3616-3621` `spec_lint_warning_lines` - name contains "spec_" (workflow/spec loading); grouped under `main::provenance`.
-  - `src/cli/mod.rs:3628-3630` `workflow_provenance_path` - name contains "workflow" (workflow/spec loading); grouped under `main::provenance`.
-  - `src/cli/mod.rs:3635-3643` `installed_workflow_provenance` - name contains "workflow" (workflow/spec loading); grouped under `main::provenance`.
-  - `src/cli/mod.rs:4866-4876` `install_workflow` - name contains "workflow" (workflow/spec loading); grouped under `main::provenance`.
-  - `src/cli/mod.rs:4946-4955` `read_docs_overlay` - name contains "docs_" (docs overlay); grouped under `main::provenance`.
-  - `src/cli/mod.rs:5325-5369` `docs_context` - name contains "docs_" (docs overlay); grouped under `main::provenance`.
-  - `src/cli/mod.rs:5428-5434` `spec_lint_next_step` - name contains "spec_" (workflow/spec loading); grouped under `main::provenance`.
-  - `src/cli/mod.rs:5465-5467` `git_repo` - name contains "git_" (git/version provenance); grouped under `main::provenance`.
-  - `src/cli/mod.rs:5475-5483` `git_repo_at` - name contains "git_" (git/version provenance); grouped under `main::provenance`.
+  - `src/cli/mod.rs:2238-2280` `refuse_when_base_lacks_spec_paths` - name contains "spec_" (workflow/spec loading); grouped under `main::provenance`.
+  - `src/cli/mod.rs:3607-3612` `spec_lint_warning_lines` - name contains "spec_" (workflow/spec loading); grouped under `main::provenance`.
+  - `src/cli/mod.rs:3619-3621` `workflow_provenance_path` - name contains "workflow" (workflow/spec loading); grouped under `main::provenance`.
+  - `src/cli/mod.rs:3626-3634` `installed_workflow_provenance` - name contains "workflow" (workflow/spec loading); grouped under `main::provenance`.
+  - `src/cli/mod.rs:4857-4867` `install_workflow` - name contains "workflow" (workflow/spec loading); grouped under `main::provenance`.
+  - `src/cli/mod.rs:4937-4946` `read_docs_overlay` - name contains "docs_" (docs overlay); grouped under `main::provenance`.
+  - `src/cli/mod.rs:5316-5360` `docs_context` - name contains "docs_" (docs overlay); grouped under `main::provenance`.
+  - `src/cli/mod.rs:5419-5425` `spec_lint_next_step` - name contains "spec_" (workflow/spec loading); grouped under `main::provenance`.
+  - `src/cli/mod.rs:5456-5458` `git_repo` - name contains "git_" (git/version provenance); grouped under `main::provenance`.
+  - `src/cli/mod.rs:5466-5474` `git_repo_at` - name contains "git_" (git/version provenance); grouped under `main::provenance`.
 - `main::render` (5 functions)
-  - `src/cli/mod.rs:2420-2462` `format_stats` - name contains "format_" (human-readable output); grouped under `main::render`.
-  - `src/cli/mod.rs:2615-2711` `format_canary_stats` - name contains "format_" (human-readable output); grouped under `main::render`.
-  - `src/cli/mod.rs:3113-3123` `format_stats_diff` - name contains "format_" (human-readable output); grouped under `main::render`.
-  - `src/cli/mod.rs:4216-4246` `format_residue` - name contains "format_" (human-readable output); grouped under `main::render`.
-  - `src/cli/mod.rs:5379-5389` `rendered_docs` - name contains "render" (human-readable output); grouped under `main::render`.
+  - `src/cli/mod.rs:2411-2453` `format_stats` - name contains "format_" (human-readable output); grouped under `main::render`.
+  - `src/cli/mod.rs:2606-2702` `format_canary_stats` - name contains "format_" (human-readable output); grouped under `main::render`.
+  - `src/cli/mod.rs:3104-3114` `format_stats_diff` - name contains "format_" (human-readable output); grouped under `main::render`.
+  - `src/cli/mod.rs:4207-4237` `format_residue` - name contains "format_" (human-readable output); grouped under `main::render`.
+  - `src/cli/mod.rs:5370-5380` `rendered_docs` - name contains "render" (human-readable output); grouped under `main::render`.
 - `main::replay_runner` (1 function)
-  - `src/cli/mod.rs:3134-3154` `run` - method inside `impl Runner for ReplayRunner`; grouped with its other `ReplayRunner` methods.
+  - `src/cli/mod.rs:3125-3145` `run` - method inside `impl Runner for ReplayRunner`; grouped with its other `ReplayRunner` methods.
 - `main::residue_report` (1 function)
-  - `src/cli/mod.rs:3669-3674` `is_empty` - method inside `impl ResidueReport`; grouped with its other `ResidueReport` methods.
+  - `src/cli/mod.rs:3660-3665` `is_empty` - method inside `impl ResidueReport`; grouped with its other `ResidueReport` methods.
 - `main::setup` (9 functions)
   - `src/cli/mod.rs:1717-1720` `scratch_defaults` - name contains "scratch" (project setup); grouped under `main::setup`.
-  - `src/cli/mod.rs:2304-2322` `locate_shim` - name contains "shim" (project setup); grouped under `main::setup`.
-  - `src/cli/mod.rs:4338-4358` `scratch_totals` - name contains "scratch" (project setup); grouped under `main::setup`.
-  - `src/cli/mod.rs:4534-4569` `classify_agent_scratch` - name contains "scratch" (project setup); grouped under `main::setup`.
-  - `src/cli/mod.rs:4835-4852` `install_file_if_changed` - name contains "install" (project setup); grouped under `main::setup`.
-  - `src/cli/mod.rs:4884-4886` `skill_source_rel` - name contains "skill" (project setup); grouped under `main::setup`.
-  - `src/cli/mod.rs:4895-4900` `skill_install_path` - name contains "install" (project setup); grouped under `main::setup`.
-  - `src/cli/mod.rs:4968-4981` `install_skills` - name contains "install" (project setup); grouped under `main::setup`.
-  - `src/cli/mod.rs:5308-5315` `write_shim_files` - name contains "shim" (project setup); grouped under `main::setup`.
+  - `src/cli/mod.rs:2295-2313` `locate_shim` - name contains "shim" (project setup); grouped under `main::setup`.
+  - `src/cli/mod.rs:4329-4349` `scratch_totals` - name contains "scratch" (project setup); grouped under `main::setup`.
+  - `src/cli/mod.rs:4525-4560` `classify_agent_scratch` - name contains "scratch" (project setup); grouped under `main::setup`.
+  - `src/cli/mod.rs:4826-4843` `install_file_if_changed` - name contains "install" (project setup); grouped under `main::setup`.
+  - `src/cli/mod.rs:4875-4877` `skill_source_rel` - name contains "skill" (project setup); grouped under `main::setup`.
+  - `src/cli/mod.rs:4886-4891` `skill_install_path` - name contains "install" (project setup); grouped under `main::setup`.
+  - `src/cli/mod.rs:4959-4972` `install_skills` - name contains "install" (project setup); grouped under `main::setup`.
+  - `src/cli/mod.rs:5299-5306` `write_shim_files` - name contains "shim" (project setup); grouped under `main::setup`.
 - `main::store` (24 functions)
   - `src/cli/mod.rs:272-283` `eventstore_flag` - name contains "store_" (store hygiene); grouped under `main::store`.
   - `src/cli/mod.rs:686-704` `store_conn_file` - name contains "store_" (store hygiene); grouped under `main::store`.
@@ -1376,14 +1376,14 @@ Every function in `crates/rigger-conductor/src/conductor.rs`, `src/cli/mod.rs` a
   - `src/cli/mod.rs:1765-1830` `require_store_dir` - name contains "store_" (store hygiene); grouped under `main::store`.
   - `src/cli/mod.rs:1848-1855` `over_the_run_store_at` - name contains "store_" (store hygiene); grouped under `main::store`.
   - `src/cli/mod.rs:1888-1890` `store_file` - name contains "store_" (store hygiene); grouped under `main::store`.
-  - `src/cli/mod.rs:3807-3898` `reclaim_orphan_scratch` - name contains "reclaim_" (store hygiene); grouped under `main::store`.
-  - `src/cli/mod.rs:4154-4195` `reclaim_shared_build_cache` - name contains "reclaim_" (store hygiene); grouped under `main::store`.
-  - `src/cli/mod.rs:4375-4427` `scratch_footprint` - name contains "footprint" (store hygiene); grouped under `main::store`.
-  - `src/cli/mod.rs:4437-4460` `store_and_backup_bytes` - name contains "store_" (store hygiene); grouped under `main::store`.
-  - `src/cli/mod.rs:4584-4667` `footprint_report` - name contains "footprint" (store hygiene); grouped under `main::store`.
-  - `src/cli/mod.rs:4676-4696` `footprint_advisories` - name contains "footprint" (store hygiene); grouped under `main::store`.
-  - `src/cli/mod.rs:4716-4747` `reclaim_dead_footprint` - name contains "reclaim_" (store hygiene); grouped under `main::store`.
-  - `src/cli/mod.rs:4751-4777` `footprint_reclaim_lines` - name contains "reclaim_" (store hygiene); grouped under `main::store`.
+  - `src/cli/mod.rs:3798-3889` `reclaim_orphan_scratch` - name contains "reclaim_" (store hygiene); grouped under `main::store`.
+  - `src/cli/mod.rs:4145-4186` `reclaim_shared_build_cache` - name contains "reclaim_" (store hygiene); grouped under `main::store`.
+  - `src/cli/mod.rs:4366-4418` `scratch_footprint` - name contains "footprint" (store hygiene); grouped under `main::store`.
+  - `src/cli/mod.rs:4428-4451` `store_and_backup_bytes` - name contains "store_" (store hygiene); grouped under `main::store`.
+  - `src/cli/mod.rs:4575-4658` `footprint_report` - name contains "footprint" (store hygiene); grouped under `main::store`.
+  - `src/cli/mod.rs:4667-4687` `footprint_advisories` - name contains "footprint" (store hygiene); grouped under `main::store`.
+  - `src/cli/mod.rs:4707-4738` `reclaim_dead_footprint` - name contains "reclaim_" (store hygiene); grouped under `main::store`.
+  - `src/cli/mod.rs:4742-4768` `footprint_reclaim_lines` - name contains "reclaim_" (store hygiene); grouped under `main::store`.
 - `main::store_location` (5 functions)
   - `src/cli/mod.rs:1641-1647` `graph` - method inside `impl StoreLocation`; grouped with its other `StoreLocation` methods.
   - `src/cli/mod.rs:1651-1653` `file` - method inside `impl StoreLocation`; grouped with its other `StoreLocation` methods.
@@ -1404,226 +1404,226 @@ Every function in `crates/rigger-conductor/src/conductor.rs`, `src/cli/mod.rs` a
   - `src/cli/mod.rs:916-926` `resolve_store` - name contains "resolve" (path/id resolution helper); grouped under `main::support`.
   - `src/cli/mod.rs:1107-1116` `read_project_id` - name contains "read_" (generic read helper); grouped under `main::support`.
   - `src/cli/mod.rs:1585-1608` `resolve_main_worktree_or_refuse` - name contains "resolve" (path/id resolution helper); grouped under `main::support`.
-  - `src/cli/mod.rs:2148-2150` `read_run_progress` - name contains "read_" (generic read helper); grouped under `main::support`.
-  - `src/cli/mod.rs:2158-2167` `read_project_stream` - name contains "read_" (generic read helper); grouped under `main::support`.
-  - `src/cli/mod.rs:2721-2729` `read_model_drift` - name contains "read_" (generic read helper); grouped under `main::support`.
-  - `src/cli/mod.rs:2998-3030` `parse_replay_args` - name contains "parse_" (argument/input parsing); grouped under `main::support`.
-  - `src/cli/mod.rs:3238-3268` `parse_watch_args` - name contains "parse_" (argument/input parsing); grouped under `main::support`.
-  - `src/cli/mod.rs:4003-4005` `is_uuid8` - name contains "is_" (predicate helper); grouped under `main::support`.
-  - `src/cli/mod.rs:4012-4043` `find_shadow_stores` - name contains "find_" (lookup helper); grouped under `main::support`.
-  - `src/cli/mod.rs:4106-4111` `is_build_cache_tombstone` - name contains "is_" (predicate helper); grouped under `main::support`.
-  - `src/cli/mod.rs:5211-5216` `find_bytes` - name contains "find_" (lookup helper); grouped under `main::support`.
-  - `src/cli/mod.rs:5395-5406` `write_docs` - name contains "write_" (generic write helper); grouped under `main::support`.
+  - `src/cli/mod.rs:2139-2141` `read_run_progress` - name contains "read_" (generic read helper); grouped under `main::support`.
+  - `src/cli/mod.rs:2149-2158` `read_project_stream` - name contains "read_" (generic read helper); grouped under `main::support`.
+  - `src/cli/mod.rs:2712-2720` `read_model_drift` - name contains "read_" (generic read helper); grouped under `main::support`.
+  - `src/cli/mod.rs:2989-3021` `parse_replay_args` - name contains "parse_" (argument/input parsing); grouped under `main::support`.
+  - `src/cli/mod.rs:3229-3259` `parse_watch_args` - name contains "parse_" (argument/input parsing); grouped under `main::support`.
+  - `src/cli/mod.rs:3994-3996` `is_uuid8` - name contains "is_" (predicate helper); grouped under `main::support`.
+  - `src/cli/mod.rs:4003-4034` `find_shadow_stores` - name contains "find_" (lookup helper); grouped under `main::support`.
+  - `src/cli/mod.rs:4097-4102` `is_build_cache_tombstone` - name contains "is_" (predicate helper); grouped under `main::support`.
+  - `src/cli/mod.rs:5202-5207` `find_bytes` - name contains "find_" (lookup helper); grouped under `main::support`.
+  - `src/cli/mod.rs:5386-5397` `write_docs` - name contains "write_" (generic write helper); grouped under `main::support`.
 - `main::tests` (204 functions)
-  - `src/cli/mod.rs:5298-5303` `compose_precommit` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:5549-5571` `the_hash_bound_to_no_tree_fails_naming_why_and_writes_into_no_repository` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:5576-5608` `the_rebuild_owed_note_speaks_only_for_a_graph_db_that_owes_it_and_creates_none` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:5615-5661` `the_passed_over_note_counts_by_cause_the_rows_graph_db_holds` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:5665-5679` `test_request` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:5688-5695` `spec_lint_next_step_names_rigger_validate_and_the_given_spec_path` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:5712-5734` `spec_lint_warning_lines_formats_every_advisory_with_the_spec_path` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:5739-5742` `spec_lint_warning_lines_is_empty_on_a_clean_spec` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:5753-5791` `compose_precommit_fresh_install_carries_the_managed_block` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:5804-5854` `precommit_block_refuses_on_drift_instead_of_staging` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:5868-5921` `precommit_block_finds_the_relocated_unit_target_with_the_binary_s_own_path_encoding` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:5924-5964` `shipped_workflow_driver_tells_a_worker_its_units_build_location` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:5967-6068` `precommit_block_resolves_a_tree_built_binary_before_path` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:6075-6087` `compose_precommit_is_idempotent` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:6098-6127` `compose_precommit_chains_without_clobbering_an_existing_hook` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:6137-6151` `compose_precommit_prepends_before_a_terminal_exit_existing_hook` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:6158-6181` `compose_precommit_refreshes_a_stale_block_in_place` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:6191-6209` `version_line_carries_the_derived_version_and_a_non_empty_build_provenance` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:6216-6260` `docs_context_reads_every_fact_from_code` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:6267-6308` `docs_render_surfaces_known_code_facts_verbatim` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:6314-6333` `commands_registry_is_well_formed_and_covers_dispatch` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:6339-6360` `usage_text_lists_the_docs_verb_on_its_own_line` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:6368-6398` `write_docs_writes_every_registry_skill_plus_the_handbook` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:6408-6445` `install_and_docs_each_cover_exactly_the_registry_no_more_no_less` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:6449-6472` `assert_skills_reference_only_real_subcommands` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:6536-6549` `committed_registry_docs_are_in_sync_with_a_fresh_render` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:6560-6629` `status_and_dashboard_render_the_same_current_blocker_lines` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:6632-6645` `install_workflow_records_the_build_provenance_beside_the_workflow` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:6651-6653` `slugs` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:6658-6670` `init_committed_repo` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:6688-6704` `resolve_main_worktree_or_refuse_returns_exactly_git_rev_parse_show_toplevel` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:6707-6731` `refuse_when_base_lacks_spec_paths_refuses_on_total_absence_and_names_a_path` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:6735-6753` `assert_base_path_check_proceeds` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:6793-6866` `refuse_when_base_unreachable_fails_loudly_only_when_no_reachable_base` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:6869-6876` `human_size_formats_bytes_through_gib` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:6879-6885` `is_uuid8_accepts_exactly_eight_hex_digits` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:6888-6933` `worktree_belongs_to_live_matches_both_naming_shapes_without_prefix_false_match` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:6936-6983` `current_run_units_scopes_to_the_current_run_and_splits_live_from_dead` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:6986-7023` `current_run_units_spares_a_terminal_units_branch_whose_latest_spawn_is_still_in_flight` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:7026-7052` `current_run_units_still_retires_a_terminal_unit_once_its_latest_spawn_answers` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:7055-7102` `current_run_units_splits_live_spawns_from_answered_ones_scoped_to_the_current_run` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:7114-7140` `live_branches_for_sweep_fails_closed_on_an_unreadable_stream_but_folds_a_readable_one` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:7143-7192` `find_shadow_stores_finds_nested_events_db_and_prunes_build_caches` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:7195-7206` `dir_size_bytes_sums_files_recursively` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:7211-7227` `reclaim_shared_build_cache_deletes_a_populated_cache_and_reports_its_bytes` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:7230-7248` `reclaim_shared_build_cache_is_idempotent_zero_report_when_absent` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:7251-7279` `reclaim_shared_build_cache_refuses_rather_than_waits_when_a_build_holds_the_guard` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:7282-7305` `reclaim_shared_build_cache_releases_the_guard_promptly_after_a_successful_reclaim` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:7308-7392` `scan_residue_reports_dead_worktrees_caches_shadows_and_branches` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:7395-7414` `scan_residue_is_empty_when_everything_is_live_and_no_shadow_stores` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:7417-7434` `format_residue_renders_a_sized_warning_block` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:7439-7458` `store_and_backup_bytes_splits_live_store_files_from_dot_bak_backups` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:7461-7465` `store_and_backup_bytes_is_zero_on_a_missing_directory` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:7468-7538` `scratch_footprint_totals_every_entry_and_dead_only_the_non_live_share` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:7541-7602` `footprint_report_measures_every_category_on_a_seeded_fixture_tree` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:7608-7624` `seed_agent_scratch_leaf` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:7628-7642` `spawn_scoped_footprint` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:7645-7647` `category` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:7653-7674` `registered_scratch_roots_with` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:7677-7704` `footprint_report_flags_registered_scratch_roots_dead_share_and_spares_a_live_spawn` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:7717-7725` `footprint_report_keys_agent_scratch_liveness_by_run_id_and_leaf_not_leaf_name_alone` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:7728-7733` `looks_like_run_container_true_when_every_direct_child_is_a_directory` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:7736-7744` `looks_like_run_container_false_when_a_direct_child_is_a_bare_file` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:7747-7755` `looks_like_run_container_is_true_on_an_empty_or_missing_dir` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:7758-7775` `classify_agent_scratch_separates_a_bare_top_level_file_from_a_well_formed_container` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:7778-7834` `footprint_report_reports_a_top_level_adhoc_agent_scratch_dir_as_its_own_category_never_folded_into_the_dead_run_bucket` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:7837-7849` `footprint_advisories_flags_a_category_whose_dead_share_reaches_the_threshold` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:7855-7892` `footprint_advisories_name_reset_build_cache_for_every_class_it_reclaims` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:7896-7905` `assert_hinted_category_is_silent` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:7913-7931` `footprint_advisories_flags_a_category_exactly_at_the_threshold_boundary` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:7934-7945` `footprint_advisories_never_flags_a_category_with_no_reclaim_command` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:7952-7974` `owning_repo_root_prefers_the_stores_own_root_over_the_git_toplevel` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:7979-8129` `reclaim_orphan_scratch_removes_non_live_owned_scratch_and_spares_live_and_shared_areas` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:8132-8187` `reclaim_orphan_scratch_spares_a_non_live_worktree_that_is_still_dirty` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:8190-8229` `reclaim_orphan_scratch_spares_only_a_declared_dirty_worktree` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:8232-8262` `reclaim_orphan_scratch_reaps_a_stray_build_cache_tombstone_unconditionally` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:8267-8272` `find_store_dir_from_returns_the_dir_that_holds_the_store` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:8275-8286` `find_store_dir_from_walks_up_from_a_subdirectory` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:8289-8292` `plant_store` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:8295-8307` `add_worktree` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:8310-8345` `find_store_dir_from_never_escapes_the_repo_into_a_parent_store` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:8348-8376` `reap_then_remove_dir_reaps_processes_rooted_inside_then_removes_the_dir` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:8379-8390` `find_store_dir_from_refuses_the_worktree_shape_with_no_events_db` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:8393-8421` `find_store_dir_from_walks_past_a_storeless_rigger_to_the_real_store_above` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:8424-8453` `find_store_dir_from_resolves_the_owning_repo_even_when_the_worktree_lives_outside_it` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:8456-8485` `find_store_dir_from_never_climbs_a_relocated_worktrees_own_unrelated_ancestors_into_a_foreign_store` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:8488-8513` `walk_stores_from_prefers_the_outermost_store_over_a_nearer_shadow` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:8516-8533` `walk_stores_from_reports_no_shadow_for_a_single_store` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:8542-8611` `require_store_dir_pins_to_the_fence_env_and_never_reaches_the_live_store_above_it` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:8545-8548` `drop` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:8615-8630` `require_store_dir_fence_is_off_by_default` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:8635-8641` `result_advisories_flags_an_orphan_id_with_no_spawn_request` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:8644-8669` `result_advisories_orphan_wording_is_plain_on_record_and_conditional_under_if_absent` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:8672-8682` `result_advisories_is_silent_for_a_parked_unanswered_spawn` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:8685-8696` `result_advisories_flags_a_supersede_with_the_prior_result_position` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:8699-8712` `result_advisories_suppresses_the_supersede_note_when_not_superseding` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:8715-8727` `result_advisories_flags_both_orphan_and_supersede` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:8735-8754` `result_refuses_a_second_result_without_supersede` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:8759-8770` `a_real_result_still_replaces_a_recorded_liveness_fault` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:8784-8801` `shipped_workflows_carry_a_non_zero_spawn_budget` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:8804-8833` `usage_text_gives_the_jobs_flag_its_own_description_line` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:8836-8853` `usage_text_names_the_build_cache_reset_mode` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:8859-8891` `an_unclaimed_argument_is_an_unknown_flag_the_spec_or_a_refused_second_positional` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:8894-8904` `parse_run_args_defaults_to_cli_and_an_unset_store` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:8907-8918` `parse_run_args_reads_fresh_alongside_a_spec` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:8921-8931` `parse_run_args_reads_rebase_definition` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:8934-8949` `parse_run_args_reads_driver_eventstore_conn_and_spec` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:8952-8960` `assert_every_arg_list_refused` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:8979-9005` `parse_run_args_accepts_base_alongside_a_spec` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:9013-9035` `resolve_run_base_precedence_flag_then_env_then_default` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:9041-9107` `definition_hash_is_stable_and_content_sensitive` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:9116-9143` `kurrentdb_is_always_available_and_needs_a_conn` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:9155-9186` `store_selection_preserves_a_credentialed_tls_conn_verbatim` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:9197-9374` `store_selection_precedence_flag_env_secret_file_config_then_default` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:9377-9379` `project_identity_is_never_empty` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:9382-9411` `decide_migration_covers_every_case` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:9414-9460` `migrate_project_identity_renames_legacy_history_and_records_a_decision` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:9463-9502` `migrate_project_identity_refuses_when_both_namespaces_hold_history` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:9507-9530` `pre_mint_deployment` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:9535-9542` `migrates_one_stream_folding_into` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:9545-9585` `migrate_project_identity_rekeys_graph_rows_so_pre_mint_history_is_not_orphaned` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:9588-9668` `migrate_project_identity_rekeys_the_graph_before_the_irreversible_stream_rename` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:9671-9741` `migrate_project_identity_recovers_from_a_crash_between_the_rekey_and_the_rename` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:9747-9779` `setup_provisions_the_shim_runtime_files` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:9788-9847` `setup_installs_refreshes_and_is_a_noop_on_the_native_rigger_workflow` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:9852-9861` `outcome_for` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:9865-9870` `registry_entry` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:9880-9950` `setup_installs_the_using_rigger_skill_distinct_from_the_workflow` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:9968-10052` `planning_a_spec_installs_and_renders_through_the_registry_with_no_planning_specific_code` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:10062-10098` `setup_skill_install_applies_the_project_overlay` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:10104-10134` `docs_overlay_overrides_only_declared_fields` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:10139-10153` `docs_overlay_malformed_is_a_loud_error` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:10162-10176` `a_group_or_other_readable_secret_file_mode_is_flagged_owner_only_is_not` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:10182-10201` `meta_object_body` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:10210-10224` `meta_description` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:10231-10239` `strip_line_comments` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:10253-10477` `workflow_is_a_thin_courier_driver_with_per_unit_phase_labels` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:10486-10497` `the_step_schema_admits_the_attention_array` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:10513-10569` `phase_of_maps_wave_items_to_the_meta_phase_by_role_and_stage` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:10576-10598` `the_driver_reads_every_step_token_through_its_bare_role` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:10611-10649` `meta_matches_reality_drops_integrate_and_the_unit_stage_construction` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:10669-10759` `the_driver_relays_each_attention_entry_as_a_narrator_log_line` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:10777-10825` `workflow_step_courier_prompt_is_foreground_and_honest` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:10835-10844` `step_courier_prompt` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:10862-10929` `workflow_step_courier_waits_on_an_auto_backgrounded_step` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:10944-10952` `workflow_driver_guards_a_null_step_before_dereferencing_it` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:10965-11022` `workflow_meta_description_is_a_user_facing_tagline_free_of_plumbing_terms` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:11028-11053` `workflow_locates_the_provisioned_shim_or_tells_you_to_run_setup` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:11064-11107` `format_stats_prints_all_four_metrics` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:11113-11129` `format_stats_handles_zeroed_metrics_without_nan` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:11132-11134` `canary_scorecard` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:11137-11153` `assert_findings_raised_render` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:11168-11173` `assert_empty_scorecard_omits` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:11192-11223` `format_canary_stats_renders_na_for_a_tier_with_unattributed_correct_rejects` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:11230-11249` `format_canary_stats_renders_the_real_zero_when_attribution_was_fully_measured` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:11253-11268` `assert_control_line` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:11293-11322` `format_canary_stats_reports_the_model_pinning_header_when_present` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:11343-11385` `format_stats_surfaces_parallelism_retention_and_warns_below_the_floor` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:11392-11432` `format_stats_surfaces_spawn_timing_and_reports_unpaired_separately` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:11438-11444` `format_stats_spawn_timing_reports_no_spawns_when_none_recorded` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:11451-11478` `format_stats_spawn_timing_no_spawns_line_requires_both_empty_and_zero_unpaired` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:11485-11500` `format_stats_spawn_timing_all_unpaired_is_not_reported_as_no_spawns` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:11508-11535` `parallelism_retention_line_is_single_sourced_and_warns_below_the_floor` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:11540-11562` `parallelism_retention_line_counts_the_units_whose_radius_is_empty` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:11566-11581` `sdet_review` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:11584-11586` `stats_text` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:11593-11606` `stats_discloses_when_no_verdict_was_recorded_on_this_driver` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:11617-11647` `stats_discloses_unfed_numerator_when_verdict_recorded_but_findings_unattributed` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:11655-11692` `stats_discloses_cause_split_remainder_when_fewer_causes_than_rejects` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:11695-11740` `baseline_run_slice_selects_a_run_by_id_including_a_middle_run` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:11743-11774` `format_stats_diff_flags_only_the_changed_rows` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:11781-11788` `defaults_max_parallel_units_is_unbounded_when_the_key_is_absent` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:11791-11808` `parse_replay_args_requires_a_run_and_a_rev_in_either_order` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:11816-11850` `a_second_concurrent_rigger_step_refuses_and_the_lock_frees_on_release` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:11856-11859` `no_runs_message_points_at_rigger_run` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:11865-11872` `seed_run` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:11877-11890` `assert_absent_db_reads_none` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:11908-11924` `stats_lines_existing_db_with_empty_run_stream_returns_none` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:11932-11961` `stats_lines_does_not_read_another_projects_namespaced_run` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:11968-11999` `stats_lines_existing_run_renders_metric_lines` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:12022-12091` `stats_lines_pairs_recorded_spawn_request_and_result_into_spawn_timing` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:12109-12118` `db_with_one_result` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:12124-12133` `result_of_at_unrecorded_spawn_reads_as_unreported` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:12141-12165` `result_of_at_reads_a_self_reported_result_so_it_is_not_clobbered` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:12171-12190` `result_of_at_is_namespace_scoped` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:12203-12228` `detach_process_group_places_the_child_in_its_own_process_group` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:12237-12258` `a_child_spawned_without_detachment_inherits_the_parent_process_group` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:12266-12275` `watch_test_store` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:12283-12354` `watch_reads_a_marker_on_wall_clock_so_a_dead_supervisor_behind_an_open_hold_is_seen` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:12364-12386` `status_progress_and_the_dash_snapshot_read_the_run_from_its_boundary` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:12393-12418` `status_and_the_dash_read_the_runs_progress_from_its_own_stream` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:12426-12476` `check_runs_parse_into_a_ci_probe_by_conclusion` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:12482-12491` `the_run_tip_ci_needs_a_run_branch_and_reads_unknown_when_gh_cannot_read_it` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:12497-12509` `a_watch_poll_reads_the_run_from_its_boundary_and_nothing_else` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:12532-12565` `store_location_repo_root_resolves_the_owning_root_not_the_process_cwd_so_a_real_marker_is_found` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:12579-12610` `scratch_defaults_reads_the_owning_roots_config_with_no_agents_fleet_present` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:12613-12639` `watch_once_on_a_clean_store_reports_no_anomalies` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:12642-12646` `parse_watch_args_defaults_to_streaming_with_the_default_interval` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:12653-12675` `parse_watch_args_accepts_once_and_interval_together_in_either_order` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:12691-12824` `watch_once_on_the_seeded_store_reports_one_line_per_anomaly` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:12831-12850` `the_watchdog_command_signal_set_covers_every_signal_the_watch_skill_names` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:12858-12887` `watch_once_reports_dash_not_serving_when_the_marker_names_a_dead_holder` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:12894-12925` `watch_once_reports_no_anomaly_when_the_dash_marker_names_a_real_serving_holder` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/cli/mod.rs:12931-12952` `tree_root_is_the_top_level_of_the_directory_holding_the_store_else_that_directory` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:5289-5294` `compose_precommit` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:5540-5562` `the_hash_bound_to_no_tree_fails_naming_why_and_writes_into_no_repository` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:5567-5599` `the_rebuild_owed_note_speaks_only_for_a_graph_db_that_owes_it_and_creates_none` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:5606-5652` `the_passed_over_note_counts_by_cause_the_rows_graph_db_holds` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:5656-5670` `test_request` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:5679-5686` `spec_lint_next_step_names_rigger_validate_and_the_given_spec_path` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:5703-5725` `spec_lint_warning_lines_formats_every_advisory_with_the_spec_path` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:5730-5733` `spec_lint_warning_lines_is_empty_on_a_clean_spec` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:5744-5782` `compose_precommit_fresh_install_carries_the_managed_block` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:5795-5845` `precommit_block_refuses_on_drift_instead_of_staging` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:5859-5912` `precommit_block_finds_the_relocated_unit_target_with_the_binary_s_own_path_encoding` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:5915-5955` `shipped_workflow_driver_tells_a_worker_its_units_build_location` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:5958-6059` `precommit_block_resolves_a_tree_built_binary_before_path` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:6066-6078` `compose_precommit_is_idempotent` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:6089-6118` `compose_precommit_chains_without_clobbering_an_existing_hook` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:6128-6142` `compose_precommit_prepends_before_a_terminal_exit_existing_hook` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:6149-6172` `compose_precommit_refreshes_a_stale_block_in_place` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:6182-6200` `version_line_carries_the_derived_version_and_a_non_empty_build_provenance` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:6207-6251` `docs_context_reads_every_fact_from_code` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:6258-6299` `docs_render_surfaces_known_code_facts_verbatim` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:6305-6324` `commands_registry_is_well_formed_and_covers_dispatch` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:6330-6351` `usage_text_lists_the_docs_verb_on_its_own_line` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:6359-6389` `write_docs_writes_every_registry_skill_plus_the_handbook` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:6399-6436` `install_and_docs_each_cover_exactly_the_registry_no_more_no_less` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:6440-6463` `assert_skills_reference_only_real_subcommands` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:6527-6540` `committed_registry_docs_are_in_sync_with_a_fresh_render` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:6551-6620` `status_and_dashboard_render_the_same_current_blocker_lines` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:6623-6636` `install_workflow_records_the_build_provenance_beside_the_workflow` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:6642-6644` `slugs` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:6649-6661` `init_committed_repo` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:6679-6695` `resolve_main_worktree_or_refuse_returns_exactly_git_rev_parse_show_toplevel` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:6698-6722` `refuse_when_base_lacks_spec_paths_refuses_on_total_absence_and_names_a_path` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:6726-6744` `assert_base_path_check_proceeds` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:6784-6857` `refuse_when_base_unreachable_fails_loudly_only_when_no_reachable_base` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:6860-6867` `human_size_formats_bytes_through_gib` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:6870-6876` `is_uuid8_accepts_exactly_eight_hex_digits` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:6879-6924` `worktree_belongs_to_live_matches_both_naming_shapes_without_prefix_false_match` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:6927-6974` `current_run_units_scopes_to_the_current_run_and_splits_live_from_dead` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:6977-7014` `current_run_units_spares_a_terminal_units_branch_whose_latest_spawn_is_still_in_flight` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:7017-7043` `current_run_units_still_retires_a_terminal_unit_once_its_latest_spawn_answers` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:7046-7093` `current_run_units_splits_live_spawns_from_answered_ones_scoped_to_the_current_run` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:7105-7131` `live_branches_for_sweep_fails_closed_on_an_unreadable_stream_but_folds_a_readable_one` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:7134-7183` `find_shadow_stores_finds_nested_events_db_and_prunes_build_caches` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:7186-7197` `dir_size_bytes_sums_files_recursively` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:7202-7218` `reclaim_shared_build_cache_deletes_a_populated_cache_and_reports_its_bytes` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:7221-7239` `reclaim_shared_build_cache_is_idempotent_zero_report_when_absent` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:7242-7270` `reclaim_shared_build_cache_refuses_rather_than_waits_when_a_build_holds_the_guard` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:7273-7296` `reclaim_shared_build_cache_releases_the_guard_promptly_after_a_successful_reclaim` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:7299-7383` `scan_residue_reports_dead_worktrees_caches_shadows_and_branches` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:7386-7405` `scan_residue_is_empty_when_everything_is_live_and_no_shadow_stores` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:7408-7425` `format_residue_renders_a_sized_warning_block` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:7430-7449` `store_and_backup_bytes_splits_live_store_files_from_dot_bak_backups` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:7452-7456` `store_and_backup_bytes_is_zero_on_a_missing_directory` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:7459-7529` `scratch_footprint_totals_every_entry_and_dead_only_the_non_live_share` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:7532-7593` `footprint_report_measures_every_category_on_a_seeded_fixture_tree` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:7599-7615` `seed_agent_scratch_leaf` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:7619-7633` `spawn_scoped_footprint` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:7636-7638` `category` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:7644-7665` `registered_scratch_roots_with` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:7668-7695` `footprint_report_flags_registered_scratch_roots_dead_share_and_spares_a_live_spawn` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:7708-7716` `footprint_report_keys_agent_scratch_liveness_by_run_id_and_leaf_not_leaf_name_alone` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:7719-7724` `looks_like_run_container_true_when_every_direct_child_is_a_directory` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:7727-7735` `looks_like_run_container_false_when_a_direct_child_is_a_bare_file` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:7738-7746` `looks_like_run_container_is_true_on_an_empty_or_missing_dir` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:7749-7766` `classify_agent_scratch_separates_a_bare_top_level_file_from_a_well_formed_container` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:7769-7825` `footprint_report_reports_a_top_level_adhoc_agent_scratch_dir_as_its_own_category_never_folded_into_the_dead_run_bucket` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:7828-7840` `footprint_advisories_flags_a_category_whose_dead_share_reaches_the_threshold` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:7846-7883` `footprint_advisories_name_reset_build_cache_for_every_class_it_reclaims` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:7887-7896` `assert_hinted_category_is_silent` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:7904-7922` `footprint_advisories_flags_a_category_exactly_at_the_threshold_boundary` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:7925-7936` `footprint_advisories_never_flags_a_category_with_no_reclaim_command` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:7943-7965` `owning_repo_root_prefers_the_stores_own_root_over_the_git_toplevel` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:7970-8120` `reclaim_orphan_scratch_removes_non_live_owned_scratch_and_spares_live_and_shared_areas` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:8123-8178` `reclaim_orphan_scratch_spares_a_non_live_worktree_that_is_still_dirty` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:8181-8220` `reclaim_orphan_scratch_spares_only_a_declared_dirty_worktree` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:8223-8253` `reclaim_orphan_scratch_reaps_a_stray_build_cache_tombstone_unconditionally` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:8258-8263` `find_store_dir_from_returns_the_dir_that_holds_the_store` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:8266-8277` `find_store_dir_from_walks_up_from_a_subdirectory` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:8280-8283` `plant_store` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:8286-8298` `add_worktree` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:8301-8336` `find_store_dir_from_never_escapes_the_repo_into_a_parent_store` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:8339-8367` `reap_then_remove_dir_reaps_processes_rooted_inside_then_removes_the_dir` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:8370-8381` `find_store_dir_from_refuses_the_worktree_shape_with_no_events_db` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:8384-8412` `find_store_dir_from_walks_past_a_storeless_rigger_to_the_real_store_above` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:8415-8444` `find_store_dir_from_resolves_the_owning_repo_even_when_the_worktree_lives_outside_it` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:8447-8476` `find_store_dir_from_never_climbs_a_relocated_worktrees_own_unrelated_ancestors_into_a_foreign_store` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:8479-8504` `walk_stores_from_prefers_the_outermost_store_over_a_nearer_shadow` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:8507-8524` `walk_stores_from_reports_no_shadow_for_a_single_store` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:8533-8602` `require_store_dir_pins_to_the_fence_env_and_never_reaches_the_live_store_above_it` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:8536-8539` `drop` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:8606-8621` `require_store_dir_fence_is_off_by_default` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:8626-8632` `result_advisories_flags_an_orphan_id_with_no_spawn_request` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:8635-8660` `result_advisories_orphan_wording_is_plain_on_record_and_conditional_under_if_absent` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:8663-8673` `result_advisories_is_silent_for_a_parked_unanswered_spawn` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:8676-8687` `result_advisories_flags_a_supersede_with_the_prior_result_position` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:8690-8703` `result_advisories_suppresses_the_supersede_note_when_not_superseding` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:8706-8718` `result_advisories_flags_both_orphan_and_supersede` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:8726-8745` `result_refuses_a_second_result_without_supersede` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:8750-8761` `a_real_result_still_replaces_a_recorded_liveness_fault` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:8775-8792` `shipped_workflows_carry_a_non_zero_spawn_budget` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:8795-8824` `usage_text_gives_the_jobs_flag_its_own_description_line` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:8827-8844` `usage_text_names_the_build_cache_reset_mode` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:8850-8882` `an_unclaimed_argument_is_an_unknown_flag_the_spec_or_a_refused_second_positional` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:8885-8895` `parse_run_args_defaults_to_cli_and_an_unset_store` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:8898-8909` `parse_run_args_reads_fresh_alongside_a_spec` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:8912-8922` `parse_run_args_reads_rebase_definition` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:8925-8940` `parse_run_args_reads_driver_eventstore_conn_and_spec` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:8943-8951` `assert_every_arg_list_refused` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:8970-8996` `parse_run_args_accepts_base_alongside_a_spec` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:9004-9026` `resolve_run_base_precedence_flag_then_env_then_default` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:9032-9098` `definition_hash_is_stable_and_content_sensitive` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:9107-9134` `kurrentdb_is_always_available_and_needs_a_conn` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:9146-9177` `store_selection_preserves_a_credentialed_tls_conn_verbatim` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:9188-9365` `store_selection_precedence_flag_env_secret_file_config_then_default` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:9368-9370` `project_identity_is_never_empty` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:9373-9402` `decide_migration_covers_every_case` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:9405-9451` `migrate_project_identity_renames_legacy_history_and_records_a_decision` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:9454-9493` `migrate_project_identity_refuses_when_both_namespaces_hold_history` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:9498-9521` `pre_mint_deployment` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:9526-9533` `migrates_one_stream_folding_into` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:9536-9576` `migrate_project_identity_rekeys_graph_rows_so_pre_mint_history_is_not_orphaned` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:9579-9659` `migrate_project_identity_rekeys_the_graph_before_the_irreversible_stream_rename` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:9662-9732` `migrate_project_identity_recovers_from_a_crash_between_the_rekey_and_the_rename` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:9738-9770` `setup_provisions_the_shim_runtime_files` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:9779-9838` `setup_installs_refreshes_and_is_a_noop_on_the_native_rigger_workflow` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:9843-9852` `outcome_for` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:9856-9861` `registry_entry` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:9871-9941` `setup_installs_the_using_rigger_skill_distinct_from_the_workflow` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:9959-10043` `planning_a_spec_installs_and_renders_through_the_registry_with_no_planning_specific_code` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:10053-10089` `setup_skill_install_applies_the_project_overlay` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:10095-10125` `docs_overlay_overrides_only_declared_fields` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:10130-10144` `docs_overlay_malformed_is_a_loud_error` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:10153-10167` `a_group_or_other_readable_secret_file_mode_is_flagged_owner_only_is_not` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:10173-10192` `meta_object_body` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:10201-10215` `meta_description` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:10222-10230` `strip_line_comments` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:10244-10468` `workflow_is_a_thin_courier_driver_with_per_unit_phase_labels` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:10477-10488` `the_step_schema_admits_the_attention_array` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:10504-10560` `phase_of_maps_wave_items_to_the_meta_phase_by_role_and_stage` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:10567-10589` `the_driver_reads_every_step_token_through_its_bare_role` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:10602-10640` `meta_matches_reality_drops_integrate_and_the_unit_stage_construction` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:10660-10750` `the_driver_relays_each_attention_entry_as_a_narrator_log_line` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:10768-10816` `workflow_step_courier_prompt_is_foreground_and_honest` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:10826-10835` `step_courier_prompt` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:10853-10920` `workflow_step_courier_waits_on_an_auto_backgrounded_step` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:10935-10943` `workflow_driver_guards_a_null_step_before_dereferencing_it` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:10956-11013` `workflow_meta_description_is_a_user_facing_tagline_free_of_plumbing_terms` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:11019-11044` `workflow_locates_the_provisioned_shim_or_tells_you_to_run_setup` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:11055-11098` `format_stats_prints_all_four_metrics` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:11104-11120` `format_stats_handles_zeroed_metrics_without_nan` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:11123-11125` `canary_scorecard` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:11128-11144` `assert_findings_raised_render` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:11159-11164` `assert_empty_scorecard_omits` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:11183-11214` `format_canary_stats_renders_na_for_a_tier_with_unattributed_correct_rejects` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:11221-11240` `format_canary_stats_renders_the_real_zero_when_attribution_was_fully_measured` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:11244-11259` `assert_control_line` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:11284-11313` `format_canary_stats_reports_the_model_pinning_header_when_present` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:11334-11376` `format_stats_surfaces_parallelism_retention_and_warns_below_the_floor` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:11383-11423` `format_stats_surfaces_spawn_timing_and_reports_unpaired_separately` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:11429-11435` `format_stats_spawn_timing_reports_no_spawns_when_none_recorded` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:11442-11469` `format_stats_spawn_timing_no_spawns_line_requires_both_empty_and_zero_unpaired` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:11476-11491` `format_stats_spawn_timing_all_unpaired_is_not_reported_as_no_spawns` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:11499-11526` `parallelism_retention_line_is_single_sourced_and_warns_below_the_floor` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:11531-11553` `parallelism_retention_line_counts_the_units_whose_radius_is_empty` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:11557-11572` `sdet_review` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:11575-11577` `stats_text` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:11584-11597` `stats_discloses_when_no_verdict_was_recorded_on_this_driver` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:11608-11638` `stats_discloses_unfed_numerator_when_verdict_recorded_but_findings_unattributed` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:11646-11683` `stats_discloses_cause_split_remainder_when_fewer_causes_than_rejects` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:11686-11731` `baseline_run_slice_selects_a_run_by_id_including_a_middle_run` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:11734-11765` `format_stats_diff_flags_only_the_changed_rows` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:11772-11779` `defaults_max_parallel_units_is_unbounded_when_the_key_is_absent` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:11782-11799` `parse_replay_args_requires_a_run_and_a_rev_in_either_order` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:11807-11841` `a_second_concurrent_rigger_step_refuses_and_the_lock_frees_on_release` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:11847-11850` `no_runs_message_points_at_rigger_run` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:11856-11863` `seed_run` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:11868-11881` `assert_absent_db_reads_none` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:11899-11915` `stats_lines_existing_db_with_empty_run_stream_returns_none` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:11923-11952` `stats_lines_does_not_read_another_projects_namespaced_run` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:11959-11990` `stats_lines_existing_run_renders_metric_lines` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:12013-12082` `stats_lines_pairs_recorded_spawn_request_and_result_into_spawn_timing` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:12100-12109` `db_with_one_result` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:12115-12124` `result_of_at_unrecorded_spawn_reads_as_unreported` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:12132-12156` `result_of_at_reads_a_self_reported_result_so_it_is_not_clobbered` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:12162-12181` `result_of_at_is_namespace_scoped` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:12194-12219` `detach_process_group_places_the_child_in_its_own_process_group` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:12228-12249` `a_child_spawned_without_detachment_inherits_the_parent_process_group` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:12257-12266` `watch_test_store` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:12274-12345` `watch_reads_a_marker_on_wall_clock_so_a_dead_supervisor_behind_an_open_hold_is_seen` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:12355-12377` `status_progress_and_the_dash_snapshot_read_the_run_from_its_boundary` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:12384-12409` `status_and_the_dash_read_the_runs_progress_from_its_own_stream` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:12417-12467` `check_runs_parse_into_a_ci_probe_by_conclusion` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:12473-12482` `the_run_tip_ci_needs_a_run_branch_and_reads_unknown_when_gh_cannot_read_it` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:12488-12500` `a_watch_poll_reads_the_run_from_its_boundary_and_nothing_else` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:12523-12556` `store_location_repo_root_resolves_the_owning_root_not_the_process_cwd_so_a_real_marker_is_found` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:12570-12601` `scratch_defaults_reads_the_owning_roots_config_with_no_agents_fleet_present` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:12604-12630` `watch_once_on_a_clean_store_reports_no_anomalies` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:12633-12637` `parse_watch_args_defaults_to_streaming_with_the_default_interval` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:12644-12666` `parse_watch_args_accepts_once_and_interval_together_in_either_order` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:12682-12815` `watch_once_on_the_seeded_store_reports_one_line_per_anomaly` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:12822-12841` `the_watchdog_command_signal_set_covers_every_signal_the_watch_skill_names` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:12849-12878` `watch_once_reports_dash_not_serving_when_the_marker_names_a_dead_holder` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:12885-12916` `watch_once_reports_no_anomaly_when_the_dash_marker_names_a_real_serving_holder` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/cli/mod.rs:12922-12943` `tree_root_is_the_top_level_of_the_directory_holding_the_store_else_that_directory` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
 - `main::tree_root` (2 functions)
-  - `src/cli/mod.rs:5509-5514` `of` - method inside `impl TreeRoot`; grouped with its other `TreeRoot` methods.
-  - `src/cli/mod.rs:5517-5519` `get` - method inside `impl TreeRoot`; grouped with its other `TreeRoot` methods.
+  - `src/cli/mod.rs:5500-5505` `of` - method inside `impl TreeRoot`; grouped with its other `TreeRoot` methods.
+  - `src/cli/mod.rs:5508-5510` `get` - method inside `impl TreeRoot`; grouped with its other `TreeRoot` methods.
 
-### Unassigned (174 functions)
+### Unassigned (173 functions)
 
 - `crates/rigger-conductor/src/conductor.rs:356-358` `failed_key` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
 - `crates/rigger-conductor/src/conductor.rs:363-365` `verified_key` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
@@ -1761,44 +1761,43 @@ Every function in `crates/rigger-conductor/src/conductor.rs`, `src/cli/mod.rs` a
 - `src/cli/mod.rs:1860-1867` `on_the_run` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
 - `src/cli/mod.rs:1876-1884` `owning_graph_to_read` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
 - `src/cli/mod.rs:1909-1941` `result_advisories` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/cli/mod.rs:1945-1950` `latest_result_event` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/cli/mod.rs:1958-1968` `ended_refusal` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/cli/mod.rs:1974-1984` `result_refusal` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/cli/mod.rs:2051-2063` `acquire_step_lock` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/cli/mod.rs:2103-2115` `reap_then_remove_worktree` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/cli/mod.rs:2130-2143` `result_of_at` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/cli/mod.rs:2172-2184` `with_project_store` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/cli/mod.rs:2208-2222` `refuse_when_base_unreachable` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/cli/mod.rs:2342-2365` `stats_lines` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/cli/mod.rs:2387-2407` `parallelism_retention_line` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/cli/mod.rs:2470-2491` `append_spawn_timing` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/cli/mod.rs:2496-2498` `fmt_duration` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/cli/mod.rs:2500-2610` `append_review_quality` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/cli/mod.rs:2929-2939` `started_units` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/cli/mod.rs:2960-2993` `candidate_reaches_gate` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/cli/mod.rs:3037-3051` `baseline_run_slice` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/cli/mod.rs:3054-3058` `run_started_id` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/cli/mod.rs:3065-3107` `materialize_config_at_rev` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/cli/mod.rs:3218-3223` `marker_root` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/cli/mod.rs:3287-3295` `watch_poll` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/cli/mod.rs:3302-3328` `run_tip_ci` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/cli/mod.rs:3334-3346` `ci_probe_from_gh_read` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/cli/mod.rs:3353-3389` `ci_probe_from_check_runs` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/cli/mod.rs:3394-3592` `watch_poll_over` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/cli/mod.rs:3596-3605` `json_type_name` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/cli/mod.rs:3721-3767` `current_run_units` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/cli/mod.rs:3906-3969` `scan_residue` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/cli/mod.rs:4048-4067` `dir_size_bytes` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/cli/mod.rs:4089-4099` `build_cache_tombstone_path` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/cli/mod.rs:4198-4211` `human_size` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/cli/mod.rs:4475-4488` `dead_spawn_leaves` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/cli/mod.rs:4498-4505` `looks_like_run_container` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/cli/mod.rs:4785-4797` `owning_repo_root` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/cli/mod.rs:4800-4802` `rigger_path` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/cli/mod.rs:5044-5205` `precommit_block` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/cli/mod.rs:5236-5288` `compose_precommit_bytes` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/cli/mod.rs:5448-5463` `select_grounder` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/cli/mod.rs:5490-5496` `tree_root` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/cli/mod.rs:1949-1959` `ended_refusal` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/cli/mod.rs:1965-1975` `result_refusal` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/cli/mod.rs:2042-2054` `acquire_step_lock` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/cli/mod.rs:2094-2106` `reap_then_remove_worktree` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/cli/mod.rs:2121-2134` `result_of_at` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/cli/mod.rs:2163-2175` `with_project_store` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/cli/mod.rs:2199-2213` `refuse_when_base_unreachable` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/cli/mod.rs:2333-2356` `stats_lines` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/cli/mod.rs:2378-2398` `parallelism_retention_line` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/cli/mod.rs:2461-2482` `append_spawn_timing` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/cli/mod.rs:2487-2489` `fmt_duration` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/cli/mod.rs:2491-2601` `append_review_quality` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/cli/mod.rs:2920-2930` `started_units` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/cli/mod.rs:2951-2984` `candidate_reaches_gate` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/cli/mod.rs:3028-3042` `baseline_run_slice` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/cli/mod.rs:3045-3049` `run_started_id` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/cli/mod.rs:3056-3098` `materialize_config_at_rev` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/cli/mod.rs:3209-3214` `marker_root` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/cli/mod.rs:3278-3286` `watch_poll` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/cli/mod.rs:3293-3319` `run_tip_ci` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/cli/mod.rs:3325-3337` `ci_probe_from_gh_read` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/cli/mod.rs:3344-3380` `ci_probe_from_check_runs` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/cli/mod.rs:3385-3583` `watch_poll_over` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/cli/mod.rs:3587-3596` `json_type_name` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/cli/mod.rs:3712-3758` `current_run_units` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/cli/mod.rs:3897-3960` `scan_residue` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/cli/mod.rs:4039-4058` `dir_size_bytes` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/cli/mod.rs:4080-4090` `build_cache_tombstone_path` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/cli/mod.rs:4189-4202` `human_size` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/cli/mod.rs:4466-4479` `dead_spawn_leaves` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/cli/mod.rs:4489-4496` `looks_like_run_container` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/cli/mod.rs:4776-4788` `owning_repo_root` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/cli/mod.rs:4791-4793` `rigger_path` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/cli/mod.rs:5035-5196` `precommit_block` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/cli/mod.rs:5227-5279` `compose_precommit_bytes` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/cli/mod.rs:5439-5454` `select_grounder` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/cli/mod.rs:5481-5487` `tree_root` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
 
 ## 2. Duplication Catalog
 
@@ -1836,7 +1835,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `crates/rigger-domain/src/contextgraph.rs:824-826` `not_folded`
 - `crates/rigger-domain/src/contextgraph.rs:900-902` `rebuild_owed_refusal`
 - `crates/rigger-domain/src/instructions.rs:226-228` `operator_path`
-- `crates/rigger-domain/src/review.rs:430-432` `critique_unit`
+- `crates/rigger-domain/src/review.rs:431-433` `critique_unit`
 - `crates/rigger-domain/src/spawn.rs:132-134` `lens_role`
 - `crates/rigger-domain/src/spawn.rs:348-350` `speculation_group_id`
 - `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:2208-2210` `pruned_copy`
@@ -1854,8 +1853,8 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `crates/rigger-store-sqlite/src/eventstore/namespace.rs:98-100` `prefix_for`
 - `crates/rigger-worktree-git/src/worktree.rs:1940-1942` `shared_build_cache_guard_path`
 - `src/cli/hygiene.rs:739-751` `live_writer_refusal`
-- `src/cli/mod.rs:4884-4886` `skill_source_rel`
-- `src/cli/mod.rs:5428-5434` `spec_lint_next_step`
+- `src/cli/mod.rs:4875-4877` `skill_source_rel`
+- `src/cli/mod.rs:5419-5425` `spec_lint_next_step`
 - `src/cli/setup.rs:1089-1094` `live_run_rebuild_refusal`
 - `tests/canary_model_drift_periphery.rs:113-115` `prose_claiming`
 - `tests/cli.rs:6998-7006` `fire_stop_failure_hook`
@@ -1877,7 +1876,7 @@ Proposed home: `a new shared module (sites span 2 files: crates/rigger-conductor
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-conductor/src/canary_store.rs:840-842` `any_finding_is_critical`
+- `crates/rigger-conductor/src/canary_store.rs:844-846` `any_finding_is_critical`
 - `crates/rigger-grounder/src/grounder/design/extract.rs:162-164` `is_handbook_path`
 
 #### `dup-f11d60ead37b` (near, 17 sites)
@@ -1896,7 +1895,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `crates/rigger-conductor/src/conductor.rs:1111-1113` `conflict_regenerate_key`
 - `crates/rigger-conductor/src/conductor.rs:13377-13379` `audit_id`
 - `crates/rigger-domain/src/spawn.rs:276-278` `spawn_id`
-- `crates/rigger-driver/src/driver/claude_code.rs:2031-2039` `stop_message`
+- `crates/rigger-driver/src/driver/claude_code.rs:2033-2041` `stop_message`
 - `tests/cli.rs:7915-7928` `rendezvous`
 - `tests/common/fixtures/fold.rs:757-759` `code_batch_key`
 - `tests/common/fixtures/graph.rs:204-206` `spoke_id`
@@ -1920,7 +1919,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:6663-6671` `declaration_sql`
 - `crates/rigger-store-sqlite/src/eventstore/kurrentdb.rs:329-331` `group_stream`
 - `crates/rigger-store-sqlite/src/spawn_store.rs:74-76` `what`
-- `src/cli/critique.rs:176-178` `head`
+- `src/cli/critique.rs:171-173` `head`
 - `tests/cli.rs:7328-7334` `api_error_session`
 - `tests/common/cli.rs:647-652` `no_result_failure`
 - `tests/common/fixtures/config.rs:429-431` `separator_refusal`
@@ -1999,10 +1998,10 @@ mandatory sweep: error-shaping helper functions - 22 site(s), collected mechanic
 - `crates/rigger-domain/src/agent.rs:530-532` `no_result_error`
 - `crates/rigger-domain/src/agent.rs:603-641` `an_error_answers_the_class_it_carries`
 - `crates/rigger-domain/src/ingest.rs:604-649` `a_walk_reaches_every_batch_past_a_failed_one_and_answers_the_first_error`
-- `crates/rigger-driver/src/driver/claude_code.rs:2044-2049` `read_agent_stream_error`
+- `crates/rigger-driver/src/driver/claude_code.rs:2046-2051` `read_agent_stream_error`
 - `crates/rigger-grounder/src/grounder/mod.rs:207-213` `retired_grounder_error`
-- `crates/rigger-worktree-git/src/worktree.rs:4050-4077` `land_reports_a_generic_error_for_a_refusal_that_is_neither_tip_moved_nor_blocked`
-- `crates/rigger-worktree-git/src/worktree.rs:5497-5551` `revert_on_base_aborts_and_errors_on_a_conflicting_revert`
+- `crates/rigger-worktree-git/src/worktree.rs:4038-4065` `land_reports_a_generic_error_for_a_refusal_that_is_neither_tip_moved_nor_blocked`
+- `crates/rigger-worktree-git/src/worktree.rs:5485-5539` `revert_on_base_aborts_and_errors_on_a_conflicting_revert`
 - `tests/adoption_keys_on_criterion_periphery.rs:2008-2148` `a_quarantine_record_whose_ref_was_since_deleted_hard_errors_instead_of_silently_starting_fresh`
 - `tests/batched_fold_cadence.rs:177-273` `append_and_fold_is_best_effort_on_fold_error_and_a_no_op_on_an_empty_batch`
 - `tests/canary_item_sharding_jobs_cap_periphery.rs:277-367` `run_canary_runs_every_item_to_completion_even_when_one_items_spawn_errors`
@@ -2116,12 +2115,12 @@ mandatory sweep: Command::new call sites - 94 site(s), collected mechanically re
 - `crates/rigger-process/src/budget.rs:236-236` `Command::new`
 - `crates/rigger-process/src/budget.rs:247-247` `Command::new`
 - `crates/rigger-process/src/subprocess.rs:19-19` `Command::new`
-- `crates/rigger-worktree-git/src/worktree.rs:4439-4439` `Command::new`
-- `src/cli/mod.rs:5907-5907` `Command::new`
-- `src/cli/mod.rs:8297-8297` `Command::new`
-- `src/cli/mod.rs:10466-10466` `Command::new`
-- `src/cli/mod.rs:12206-12206` `Command::new`
-- `src/cli/mod.rs:12240-12240` `Command::new`
+- `crates/rigger-worktree-git/src/worktree.rs:4427-4427` `Command::new`
+- `src/cli/mod.rs:5898-5898` `Command::new`
+- `src/cli/mod.rs:8288-8288` `Command::new`
+- `src/cli/mod.rs:10457-10457` `Command::new`
+- `src/cli/mod.rs:12197-12197` `Command::new`
+- `src/cli/mod.rs:12231-12231` `Command::new`
 - `src/cli/run.rs:3657-3657` `Command::new`
 - `src/cli/run.rs:3690-3690` `Command::new`
 - `src/cli/run.rs:3734-3734` `Command::new`
@@ -2159,8 +2158,8 @@ mandatory sweep: Command::new call sites - 94 site(s), collected mechanically re
 - `tests/common/layer_cli.rs:71-71` `Command::new`
 - `tests/common/mod.rs:175-175` `Command::new`
 - `tests/common/repo.rs:23-23` `Command::new`
-- `tests/common/repo.rs:171-171` `Command::new`
-- `tests/common/repo.rs:498-498` `Command::new`
+- `tests/common/repo.rs:198-198` `Command::new`
+- `tests/common/repo.rs:525-525` `Command::new`
 - `tests/common/served.rs:295-295` `Command::new`
 - `tests/compiler_pass_stage1_audit.rs:193-193` `Command::new`
 - `tests/compiler_pass_stage1_audit.rs:211-211` `Command::new`
@@ -2344,17 +2343,17 @@ mandatory sweep: .rigger-path string literals - 607 site(s), collected mechanica
 - `crates/rigger-store-sqlite/src/registry.rs:708-708` `r#"{"project":"proj","root":"/home/dev/proj","store":{"kind":"local","path":"/home/dev/proj/.rigger/events.db"},"heartbeat_ms":1000}"#`
 - `crates/rigger-store-sqlite/src/registry.rs:729-729` `"/home/dev/proj/.rigger/events.db"`
 - `crates/rigger-store-sqlite/src/registry.rs:789-789` `"/home/dev/proj/.rigger/events.db"`
-- `crates/rigger-worktree-git/src/worktree.rs:5825-5825` `"{repo_path}/.rigger/tmp"`
-- `crates/rigger-worktree-git/src/worktree.rs:5826-5826` `"the default must no longer nest inside the repo's own .rigger: {dflt:?}"`
-- `crates/rigger-worktree-git/src/worktree.rs:5829-5829` `"/.rigger/"`
-- `crates/rigger-worktree-git/src/worktree.rs:5829-5829` `"/.rigger"`
-- `crates/rigger-worktree-git/src/worktree.rs:5830-5830` `"the default must never live under any .rigger: {dflt:?}"`
-- `crates/rigger-worktree-git/src/worktree.rs:5849-5849` `"{repo_path}/.rigger/tmp"`
-- `crates/rigger-worktree-git/src/worktree.rs:5873-5873` `"~/.rigger-scratch-test"`
-- `crates/rigger-worktree-git/src/worktree.rs:5874-5874` `"{home}/.rigger-scratch-test"`
-- `crates/rigger-worktree-git/src/worktree.rs:7546-7546` `"{base}..rigger-run"`
-- `crates/rigger-worktree-git/src/worktree.rs:7576-7576` `".rigger"`
-- `src/cli/critique.rs:305-305` `"{COMMAND}: the critic {:?} the workflow names has no definition under \
+- `crates/rigger-worktree-git/src/worktree.rs:5813-5813` `"{repo_path}/.rigger/tmp"`
+- `crates/rigger-worktree-git/src/worktree.rs:5814-5814` `"the default must no longer nest inside the repo's own .rigger: {dflt:?}"`
+- `crates/rigger-worktree-git/src/worktree.rs:5817-5817` `"/.rigger/"`
+- `crates/rigger-worktree-git/src/worktree.rs:5817-5817` `"/.rigger"`
+- `crates/rigger-worktree-git/src/worktree.rs:5818-5818` `"the default must never live under any .rigger: {dflt:?}"`
+- `crates/rigger-worktree-git/src/worktree.rs:5837-5837` `"{repo_path}/.rigger/tmp"`
+- `crates/rigger-worktree-git/src/worktree.rs:5861-5861` `"~/.rigger-scratch-test"`
+- `crates/rigger-worktree-git/src/worktree.rs:5862-5862` `"{home}/.rigger-scratch-test"`
+- `crates/rigger-worktree-git/src/worktree.rs:7551-7551` `"{base}..rigger-run"`
+- `crates/rigger-worktree-git/src/worktree.rs:7581-7581` `".rigger"`
+- `src/cli/critique.rs:314-314` `"{COMMAND}: the critic {:?} the workflow names has no definition under \
                  .rigger/agents"`
 - `src/cli/hygiene.rs:689-689` `"a `rigger step` or `rigger run` is running right now (it holds .rigger/step.lock)"`
 - `src/cli/mod.rs:803-803` `"the server event store is selected but no connection string is set - provide one via \
@@ -2366,11 +2365,11 @@ mandatory sweep: .rigger-path string literals - 607 site(s), collected mechanica
 - `src/cli/mod.rs:1362-1362` `"rigger: migrated project identity - renamed {n} stream(s) from the legacy \
              namespace {legacy:?} to the minted identity {minted:?} (.rigger/{PROJECT_ID_FILE}); \
              recorded its decision (position {}){}"`
-- `src/cli/mod.rs:2316-2316` `"workflow: the per-project JS driver is not provisioned (looked for {}). \
+- `src/cli/mod.rs:2307-2307` `"workflow: the per-project JS driver is not provisioned (looked for {}). \
          Run `rigger setup` to write the shim into .rigger/shim/ and install its \
          dependencies, then re-run `rigger workflow`."`
-- `src/cli/mod.rs:3629-3629` `".rigger-workflow-provenance"`
-- `src/cli/mod.rs:5047-5047` `r#"__BEGIN__
+- `src/cli/mod.rs:3620-3620` `".rigger-workflow-provenance"`
+- `src/cli/mod.rs:5038-5038` `r#"__BEGIN__
 # Check rigger's code-derived docs before THIS commit lands: run `rigger docs --check`, which
 # renders every docs output in memory, writes nothing, and prints `fresh <path>` or
 # `drifted <path>` for each output on disk. Only the paths this repo TRACKS count, so with a
@@ -2525,31 +2524,31 @@ fi
 true
 __END__
 "#`
-- `src/cli/mod.rs:6035-6035` `"/.rigger/tmp/cargo-target/debug/rigger"`
-- `src/cli/mod.rs:6036-6036` `"/.rigger/tmp/cargo-target/release/rigger"`
-- `src/cli/mod.rs:7148-7148` `".rigger"`
-- `src/cli/mod.rs:7152-7152` `".rigger"`
-- `src/cli/mod.rs:7187-7187` `"probe/.rigger/events.db"`
-- `src/cli/mod.rs:7188-7188` `"rigger-wt-x/.rigger/events.db"`
-- `src/cli/mod.rs:7350-7350` `".rigger"`
-- `src/cli/mod.rs:7386-7386` `"rigger-wt-unit-99-ghost-12345678/.rigger/events.db"`
-- `src/cli/mod.rs:7421-7421` `"probe/.rigger/events.db"`
-- `src/cli/mod.rs:7432-7432` `"shadow store: probe/.rigger/events.db (6B)"`
-- `src/cli/mod.rs:7545-7545` `".rigger"`
-- `src/cli/mod.rs:7635-7635` `".rigger"`
-- `src/cli/mod.rs:7870-7870` `".rigger"`
-- `src/cli/mod.rs:8323-8323` `".rigger"`
-- `src/cli/mod.rs:8362-8362` `".rigger"`
-- `src/cli/mod.rs:8408-8408` `".rigger"`
-- `src/cli/mod.rs:8419-8419` `"must walk past the storeless worktree `.rigger/` to the repo's real store"`
-- `src/cli/mod.rs:9043-9043` `".rigger"`
-- `src/cli/mod.rs:9045-9045` `".rigger"`
-- `src/cli/mod.rs:9122-9122` `".rigger"`
-- `src/cli/mod.rs:9158-9158` `".rigger"`
-- `src/cli/mod.rs:9200-9200` `".rigger"`
-- `src/cli/mod.rs:9306-9306` `".rigger/store.conn beats the committed config"`
-- `src/cli/mod.rs:9754-9754` `"{name} must be written into .rigger/shim/"`
-- `src/cli/mod.rs:11047-11047` `"locate_shim must return the provisioned .rigger/shim/shim.mjs"`
+- `src/cli/mod.rs:6026-6026` `"/.rigger/tmp/cargo-target/debug/rigger"`
+- `src/cli/mod.rs:6027-6027` `"/.rigger/tmp/cargo-target/release/rigger"`
+- `src/cli/mod.rs:7139-7139` `".rigger"`
+- `src/cli/mod.rs:7143-7143` `".rigger"`
+- `src/cli/mod.rs:7178-7178` `"probe/.rigger/events.db"`
+- `src/cli/mod.rs:7179-7179` `"rigger-wt-x/.rigger/events.db"`
+- `src/cli/mod.rs:7341-7341` `".rigger"`
+- `src/cli/mod.rs:7377-7377` `"rigger-wt-unit-99-ghost-12345678/.rigger/events.db"`
+- `src/cli/mod.rs:7412-7412` `"probe/.rigger/events.db"`
+- `src/cli/mod.rs:7423-7423` `"shadow store: probe/.rigger/events.db (6B)"`
+- `src/cli/mod.rs:7536-7536` `".rigger"`
+- `src/cli/mod.rs:7626-7626` `".rigger"`
+- `src/cli/mod.rs:7861-7861` `".rigger"`
+- `src/cli/mod.rs:8314-8314` `".rigger"`
+- `src/cli/mod.rs:8353-8353` `".rigger"`
+- `src/cli/mod.rs:8399-8399` `".rigger"`
+- `src/cli/mod.rs:8410-8410` `"must walk past the storeless worktree `.rigger/` to the repo's real store"`
+- `src/cli/mod.rs:9034-9034` `".rigger"`
+- `src/cli/mod.rs:9036-9036` `".rigger"`
+- `src/cli/mod.rs:9113-9113` `".rigger"`
+- `src/cli/mod.rs:9149-9149` `".rigger"`
+- `src/cli/mod.rs:9191-9191` `".rigger"`
+- `src/cli/mod.rs:9297-9297` `".rigger/store.conn beats the committed config"`
+- `src/cli/mod.rs:9745-9745` `"{name} must be written into .rigger/shim/"`
+- `src/cli/mod.rs:11038-11038` `"locate_shim must return the provisioned .rigger/shim/shim.mjs"`
 - `src/cli/setup.rs:268-268` `".rigger/shim/"`
 - `src/cli/setup.rs:269-269` `".rigger/dash.url"`
 - `src/cli/setup.rs:270-270` `".rigger/dash.marker"`
@@ -3447,7 +3446,7 @@ Proposed home: `a new shared module (sites span 3 files: crates/rigger-conductor
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `crates/rigger-conductor/src/conductor.rs:50622-50624` `stop_halt`
-- `crates/rigger-domain/src/metrics.rs:2944-2946` `canary_run_marker`
+- `crates/rigger-domain/src/metrics.rs:2950-2952` `canary_run_marker`
 - `tests/plan_critique_spec_defect_stop_periphery.rs:65-67` `halt`
 
 #### `dup-5c13daf57f07` (near, 2 sites)
@@ -3484,7 +3483,7 @@ Proposed home: `a new shared module (sites span 3 files: crates/rigger-config-fi
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `crates/rigger-config-files/src/config_store.rs:752-785` `literal_is_emit_payload_binds_only_an_abutting_payload_or_emit_word`
-- `src/cli/mod.rs:6879-6885` `is_uuid8_accepts_exactly_eight_hex_digits`
+- `src/cli/mod.rs:6870-6876` `is_uuid8_accepts_exactly_eight_hex_digits`
 - `tests/simplification_audit.rs:8474-8482` `looks_error_shaping_matches_error_and_underscore_bounded_err_but_not_an_incidental_substring`
 
 #### `dup-5c52773cc009` (near, 2 sites)
@@ -3600,9 +3599,9 @@ mandatory sweep: /proc-path string literals - 60 site(s), collected mechanically
 - `crates/rigger-process/src/reap.rs:243-243` `"/proc/{pid}/status"`
 - `crates/rigger-process/src/reap.rs:303-303` `"/proc"`
 - `crates/rigger-process/src/reap.rs:380-380` `"/proc/{}/cwd"`
-- `crates/rigger-worktree-git/src/worktree.rs:3147-3147` `"/proc"`
-- `crates/rigger-worktree-git/src/worktree.rs:3151-3151` `"/proc/{pid}/cmdline"`
-- `crates/rigger-worktree-git/src/worktree.rs:3175-3175` `"/proc/{}"`
+- `crates/rigger-worktree-git/src/worktree.rs:3135-3135` `"/proc"`
+- `crates/rigger-worktree-git/src/worktree.rs:3139-3139` `"/proc/{pid}/cmdline"`
+- `crates/rigger-worktree-git/src/worktree.rs:3163-3163` `"/proc/{}"`
 - `src/cli/run.rs:3795-3795` `"/proc"`
 - `src/cli/run.rs:3899-3899` `"/proc"`
 - `tests/cli.rs:27938-27938` `"/proc"`
@@ -4023,7 +4022,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `crates/rigger-domain/src/failure.rs:170-172` `is_any`
 - `crates/rigger-driver/src/liveness.rs:800-802` `is_empty`
 - `crates/rigger-grounder/src/grounder/symbols/grounder.rs:181-183` `is_empty`
-- `src/cli/mod.rs:3669-3674` `is_empty`
+- `src/cli/mod.rs:3660-3665` `is_empty`
 
 #### `dup-e9220ec4784e` (near, 2 sites)
 
@@ -4053,9 +4052,9 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `crates/rigger-domain/src/metrics.rs:546-548` `lens_overlap_rate`
 - `crates/rigger-domain/src/metrics.rs:560-562` `first_pass_yield`
 - `crates/rigger-domain/src/metrics.rs:566-568` `escalation_rate`
-- `crates/rigger-domain/src/metrics.rs:1186-1188` `rate`
-- `crates/rigger-domain/src/metrics.rs:1251-1253` `adjudicator_accuracy`
-- `crates/rigger-domain/src/metrics.rs:1257-1259` `stability_rate`
+- `crates/rigger-domain/src/metrics.rs:1192-1194` `rate`
+- `crates/rigger-domain/src/metrics.rs:1257-1259` `adjudicator_accuracy`
+- `crates/rigger-domain/src/metrics.rs:1263-1265` `stability_rate`
 
 #### `dup-c16dbfd88b00` (exact, 2 sites)
 
@@ -4063,7 +4062,7 @@ Proposed home: `a new shared module (sites span 2 files: crates/rigger-domain/sr
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-domain/src/metrics.rs:1422-1424` `changed`
+- `crates/rigger-domain/src/metrics.rs:1428-1430` `changed`
 - `crates/rigger-domain/src/spawn.rs:784-786` `is_error`
 
 #### `dup-e7182e4e126f` (exact, 3 sites)
@@ -4072,9 +4071,9 @@ Proposed home: `metrics::support (consolidate these 3 sites into one function in
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-domain/src/metrics.rs:1501-1506` `started`
-- `crates/rigger-domain/src/metrics.rs:1508-1513` `status`
-- `crates/rigger-domain/src/metrics.rs:1540-1545` `artifact_verdict`
+- `crates/rigger-domain/src/metrics.rs:1507-1512` `started`
+- `crates/rigger-domain/src/metrics.rs:1514-1519` `status`
+- `crates/rigger-domain/src/metrics.rs:1546-1551` `artifact_verdict`
 
 #### `dup-df893b1b93d7` (near, 6 sites)
 
@@ -4082,9 +4081,9 @@ Proposed home: `a new shared module (sites span 2 files: crates/rigger-domain/sr
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-domain/src/metrics.rs:1515-1520` `failed`
-- `crates/rigger-domain/src/metrics.rs:1522-1527` `integrated`
-- `crates/rigger-domain/src/metrics.rs:1529-1531` `escalated`
+- `crates/rigger-domain/src/metrics.rs:1521-1526` `failed`
+- `crates/rigger-domain/src/metrics.rs:1528-1533` `integrated`
+- `crates/rigger-domain/src/metrics.rs:1535-1537` `escalated`
 - `crates/rigger-domain/src/run.rs:721-723` `decision`
 - `crates/rigger-domain/src/run.rs:724-726` `finding`
 - `crates/rigger-domain/src/run.rs:727-729` `lesson`
@@ -4095,8 +4094,8 @@ Proposed home: `metrics::support (consolidate these 2 sites into one function in
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-domain/src/metrics.rs:2395-2418` `finding_survival_is_upheld_over_raised_per_actor`
-- `crates/rigger-domain/src/metrics.rs:2723-2751` `cost_per_upheld_finding_is_spawns_over_upheld_per_tier`
+- `crates/rigger-domain/src/metrics.rs:2401-2424` `finding_survival_is_upheld_over_raised_per_actor`
+- `crates/rigger-domain/src/metrics.rs:2729-2757` `cost_per_upheld_finding_is_spawns_over_upheld_per_tier`
 
 #### `dup-6a304442d31e` (near, 2 sites)
 
@@ -4104,8 +4103,8 @@ Proposed home: `metrics::support (consolidate these 2 sites into one function in
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-domain/src/metrics.rs:3172-3191` `project_canary_counts_correctly_rejected_items_with_empty_attribution`
-- `crates/rigger-domain/src/metrics.rs:3200-3218` `project_canary_counts_controls_and_false_positives`
+- `crates/rigger-domain/src/metrics.rs:3178-3197` `project_canary_counts_correctly_rejected_items_with_empty_attribution`
+- `crates/rigger-domain/src/metrics.rs:3206-3224` `project_canary_counts_controls_and_false_positives`
 
 #### `dup-0bd924af75c5` (near, 2 sites)
 
@@ -4206,8 +4205,8 @@ Proposed home: `claude_code::failing_read_store`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-driver/src/driver/claude_code.rs:2342-2349` `read_stream`
-- `crates/rigger-driver/src/driver/claude_code.rs:2396-2403` `read_stream_typed`
+- `crates/rigger-driver/src/driver/claude_code.rs:2344-2351` `read_stream`
+- `crates/rigger-driver/src/driver/claude_code.rs:2398-2405` `read_stream_typed`
 
 #### `dup-4979c76ee36f` (near, 2 sites)
 
@@ -4215,8 +4214,8 @@ Proposed home: `claude_code::failing_read_store`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-driver/src/driver/claude_code.rs:2389-2395` `last_position`
-- `crates/rigger-driver/src/driver/claude_code.rs:2423-2429` `latest_in_group`
+- `crates/rigger-driver/src/driver/claude_code.rs:2391-2397` `last_position`
+- `crates/rigger-driver/src/driver/claude_code.rs:2425-2431` `latest_in_group`
 
 #### `dup-117928e59e0c` (near, 2 sites)
 
@@ -4224,8 +4223,8 @@ Proposed home: `claude_code::support (consolidate these 2 sites into one functio
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-driver/src/driver/claude_code.rs:2673-2694` `build_args_mcp_config_names_the_spawn_bound_server`
-- `crates/rigger-driver/src/driver/claude_code.rs:2697-2715` `build_args_mcp_config_uses_the_configured_rigger_bin`
+- `crates/rigger-driver/src/driver/claude_code.rs:2675-2696` `build_args_mcp_config_names_the_spawn_bound_server`
+- `crates/rigger-driver/src/driver/claude_code.rs:2699-2717` `build_args_mcp_config_uses_the_configured_rigger_bin`
 
 #### `dup-ccd4dd4d7b0d` (near, 2 sites)
 
@@ -4325,8 +4324,8 @@ mandatory sweep: sqlite Connection::open call sites - 66 site(s), collected mech
 - `crates/rigger-store-sqlite/src/eventstore/sqlite.rs:2629-2629` `Connection::open`
 - `crates/rigger-store-sqlite/src/run_store.rs:1363-1363` `Connection::open`
 - `crates/rigger-store-sqlite/src/sqlite.rs:13-13` `Connection::open`
-- `src/cli/mod.rs:5652-5652` `Connection::open`
-- `src/cli/mod.rs:12772-12772` `Connection::open`
+- `src/cli/mod.rs:5643-5643` `Connection::open`
+- `src/cli/mod.rs:12763-12763` `Connection::open`
 - `tests/cli.rs:841-841` `Connection::open`
 - `tests/cli.rs:944-944` `Connection::open`
 - `tests/cli.rs:1047-1047` `Connection::open`
@@ -4768,8 +4767,8 @@ Proposed home: `worktree::support (consolidate these 2 sites into one function i
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-worktree-git/src/worktree.rs:2769-2777` `scratch_root`
-- `crates/rigger-worktree-git/src/worktree.rs:2868-2876` `scratch_root_path`
+- `crates/rigger-worktree-git/src/worktree.rs:2757-2765` `scratch_root`
+- `crates/rigger-worktree-git/src/worktree.rs:2856-2864` `scratch_root_path`
 
 #### `dup-e08d5a3a5d94` (exact, 2 sites)
 
@@ -4777,8 +4776,8 @@ Proposed home: `worktree::support (consolidate these 2 sites into one function i
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-worktree-git/src/worktree.rs:2966-2969` `scratch_root_from_env`
-- `crates/rigger-worktree-git/src/worktree.rs:2973-2976` `scratch_root_path_from_env`
+- `crates/rigger-worktree-git/src/worktree.rs:2954-2957` `scratch_root_from_env`
+- `crates/rigger-worktree-git/src/worktree.rs:2961-2964` `scratch_root_path_from_env`
 
 #### `dup-5a3cb86b6dd7` (near, 2 sites)
 
@@ -4786,8 +4785,8 @@ Proposed home: `worktree::support (consolidate these 2 sites into one function i
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-worktree-git/src/worktree.rs:3614-3634` `integrate_lands_work_in_the_repo`
-- `crates/rigger-worktree-git/src/worktree.rs:5634-5657` `integrate_lands_a_pre_committed_artifact_unchanged`
+- `crates/rigger-worktree-git/src/worktree.rs:3602-3622` `integrate_lands_work_in_the_repo`
+- `crates/rigger-worktree-git/src/worktree.rs:5622-5645` `integrate_lands_a_pre_committed_artifact_unchanged`
 
 #### `dup-4e9eb933164b` (near, 2 sites)
 
@@ -4846,7 +4845,7 @@ Proposed home: `main::support (consolidate these 2 sites into one function in th
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `src/cli/mod.rs:1036-1038` `project_identity`
-- `src/cli/mod.rs:5465-5467` `git_repo`
+- `src/cli/mod.rs:5456-5458` `git_repo`
 
 #### `dup-b7ec46dde247` (near, 2 sites)
 
@@ -4863,7 +4862,7 @@ Proposed home: `a new shared module (sites span 2 files: src/cli/mod.rs, tests/r
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/cli/mod.rs:4048-4067` `dir_size_bytes`
+- `src/cli/mod.rs:4039-4058` `dir_size_bytes`
 - `tests/reset_build_cache_periphery.rs:55-72` `dir_bytes`
 
 #### `dup-41d8b1c33d44` (near, 3 sites)
@@ -4872,7 +4871,7 @@ Proposed home: `a new shared module (sites span 2 files: src/cli/mod.rs, tests/c
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/cli/mod.rs:5688-5695` `spec_lint_next_step_names_rigger_validate_and_the_given_spec_path`
+- `src/cli/mod.rs:5679-5686` `spec_lint_next_step_names_rigger_validate_and_the_given_spec_path`
 - `tests/cli.rs:4751-4774` `native_driver_fixpoint_requires_done_and_an_empty_in_flight_set`
 - `tests/cli.rs:4782-4795` `native_driver_drains_in_flight_workers_before_a_loud_stop`
 
@@ -4882,8 +4881,8 @@ Proposed home: `main::support (consolidate these 2 sites into one function in th
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/cli/mod.rs:8132-8187` `reclaim_orphan_scratch_spares_a_non_live_worktree_that_is_still_dirty`
-- `src/cli/mod.rs:8190-8229` `reclaim_orphan_scratch_spares_only_a_declared_dirty_worktree`
+- `src/cli/mod.rs:8123-8178` `reclaim_orphan_scratch_spares_a_non_live_worktree_that_is_still_dirty`
+- `src/cli/mod.rs:8181-8220` `reclaim_orphan_scratch_spares_only_a_declared_dirty_worktree`
 
 #### `dup-5e94519ad1f0` (exact, 2 sites)
 
@@ -4891,8 +4890,8 @@ Proposed home: `main::support (consolidate these 2 sites into one function in th
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/cli/mod.rs:10486-10497` `the_step_schema_admits_the_attention_array`
-- `src/cli/mod.rs:11856-11859` `no_runs_message_points_at_rigger_run`
+- `src/cli/mod.rs:10477-10488` `the_step_schema_admits_the_attention_array`
+- `src/cli/mod.rs:11847-11850` `no_runs_message_points_at_rigger_run`
 
 #### `dup-178d86dd6b19` (exact, 2 sites)
 
@@ -4900,7 +4899,7 @@ Proposed home: `a new shared module (sites span 2 files: src/cli/mod.rs, tests/c
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/cli/mod.rs:10835-10844` `step_courier_prompt`
+- `src/cli/mod.rs:10826-10835` `step_courier_prompt`
 - `tests/cli.rs:3802-3811` `cmd_step_source`
 
 #### `dup-03a673792149` (near, 2 sites)
@@ -4909,8 +4908,8 @@ Proposed home: `main::support (consolidate these 2 sites into one function in th
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/cli/mod.rs:12124-12133` `result_of_at_unrecorded_spawn_reads_as_unreported`
-- `src/cli/mod.rs:12171-12190` `result_of_at_is_namespace_scoped`
+- `src/cli/mod.rs:12115-12124` `result_of_at_unrecorded_spawn_reads_as_unreported`
+- `src/cli/mod.rs:12162-12181` `result_of_at_is_namespace_scoped`
 
 #### `dup-bd75ff76a467` (exact, 2 sites)
 
@@ -5169,7 +5168,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/common/cli.rs:1821-1823` `reclaimed_line`
 - `tests/common/fixtures/cursor.rs:173-175` `caught_up_line`
 - `tests/common/fixtures/spawn.rs:154-156` `sleeping`
-- `tests/spec_critique_periphery.rs:2255-2257` `gate_ceiling`
+- `tests/spec_critique_periphery.rs:2292-2294` `gate_ceiling`
 
 #### `dup-90e32eb50d95` (exact, 4 sites)
 
@@ -5506,7 +5505,7 @@ Proposed home: `a new shared module (sites span 2 files: tests/simplification_au
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `tests/simplification_audit.rs:1845-1847` `placeholder_section`
-- `tests/spec_critique_periphery.rs:2261-2263` `ceiling_notice`
+- `tests/spec_critique_periphery.rs:2298-2300` `ceiling_notice`
 
 #### `dup-e0f2896fa7de` (exact, 3 sites)
 
@@ -5587,7 +5586,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 ### Adversarial sample
 
-Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 11339 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
+Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 11343 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
 
 - `crates/rigger-conductor/src/conductor.rs:16031-16053` `branch_is_foreign_when_only_one_axis_differs` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-conductor/src/conductor.rs:17005-17012` `resume_of` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
@@ -5595,7 +5594,7 @@ Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85
 - `crates/rigger-conductor/src/conductor.rs:29029-29063` `route_review_tier_fails_safe_to_full_on_an_empty_blast_radius` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-conductor/src/conductor.rs:40570-40600` `a_budget_refused_standalone_review_spawn_keeps_its_worktree` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-domain/src/canary.rs:283-317` `latest_run_scopes_to_the_last_batch_marker` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
-- `crates/rigger-domain/src/review.rs:924-961` `a_finding_line_has_five_pipe_fields_with_the_severity_second` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
+- `crates/rigger-domain/src/review.rs:925-962` `a_finding_line_has_five_pipe_fields_with_the_severity_second` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-domain/src/spec.rs:2249-2256` `strip_inline_code_direct_exact_output_pins_a_zero_width_quote_pair` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-driver/src/liveness.rs:2629-2655` `classify_stale_weighs_the_silence_outside_the_hold_intervals` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:7142-7144` `locked` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
@@ -5605,8 +5604,8 @@ Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85
 - `crates/rigger-grounder/src/grounder/symbols/extract.rs:1702-1710` `go_receiver` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-grounder/src/ingest.rs:1918-1937` `answered` - duplicate found by reading and closed: its view of a sink answer's batch is `wire_owned`; the root sink suite's `Handed::answer` re-rolled that view as its own `typed` and now calls `wire_owned` too
 - `crates/rigger-worktree-git/src/worktree.rs:2042-2064` `reclaim_cache_sibling` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
-- `src/cli/mod.rs:4751-4777` `footprint_reclaim_lines` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
-- `src/cli/mod.rs:8921-8931` `parse_run_args_reads_rebase_definition` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
+- `src/cli/mod.rs:4742-4768` `footprint_reclaim_lines` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
+- `src/cli/mod.rs:8912-8922` `parse_run_args_reads_rebase_definition` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `src/cli/run.rs:1593-1595` `pause_a_hold_poll` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `src/cli/run.rs:2476-2500` `start_run_dashboard` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `tests/change_path_revert_periphery.rs:213-323` `a_revert_through_the_shipped_build_records_the_earlier_generations_entry_again` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
@@ -5656,12 +5655,12 @@ Also reaching `grounder::symbols::store::content_hash` from `crates/rigger-groun
 
 CHECKED AND CLEAN (four of five ports fully clean; the fifth, `Grounder`, is this section's violation above - each search recorded so a clean result is not merely assumed):
 - `conductor::AgentDriver` concretion reach (`crate::driver::*`): production `conductor.rs` depends only on the port (`crates/rigger-domain/src/agent.rs:233`), held as `dyn AgentDriver` (`crates/rigger-conductor/src/conductor.rs:1982`); every one of its 16 `crate::driver::` hits sits inside `#[cfg(test)] mod tests`, where the tests construct a concrete driver directly.
-- `eventstore::EventStore` concretion reach (`rusqlite::Connection::open` outside the SQLite adapters and `crates/rigger-store-sqlite/src/sqlite.rs`, the one opener every store connection goes through): in production, only doc-comment mentions (`src/cli/mod.rs:2154,2335`); the one call is a deliberate, explicitly-commented test-only raw-connection bypass (`src/cli/mod.rs:5652`, inside `#[cfg(test)] mod tests` opened at `src/cli/mod.rs:5530`) that reproduces a pre-append-guard corruption shape `Store::append` itself refuses to construct - a documented test technique, not a boundary violation.
+- `eventstore::EventStore` concretion reach (`rusqlite::Connection::open` outside the SQLite adapters and `crates/rigger-store-sqlite/src/sqlite.rs`, the one opener every store connection goes through): in production, only doc-comment mentions (`src/cli/mod.rs:2145,2326`); the one call is a deliberate, explicitly-commented test-only raw-connection bypass (`src/cli/mod.rs:5643`, inside `#[cfg(test)] mod tests` opened at `src/cli/mod.rs:5521`) that reproduces a pre-append-guard corruption shape `Store::append` itself refuses to construct - a documented test technique, not a boundary violation.
 - `contextgraph::Projection` concretion reach (`contextgraph::sqlite::*`): checked whole-tree, not only `crates/rigger-conductor/src/conductor.rs` - every one of `conductor.rs`'s 60 hits sits inside `#[cfg(test)] mod tests` (production `conductor.rs` only ever depends on `dyn Projection`), and the same is true wherever else `contextgraph::sqlite::Projector` is imported (`crates/rigger-graph-sqlite/src/concepts.rs`, `crates/rigger-dash/src/dash.rs`, `crates/rigger-grounder/src/grounder/symbols/events.rs`, `crates/rigger-grounder/src/grounder/design/events.rs` - every import sits after that file's own `#[cfg(test)]` boundary).
 - `gate::Runner` concretion reach (`gate::ExecRunner` / `RecordingRunner`): checked whole-tree, not only `crates/rigger-conductor/src/conductor.rs`. In `conductor.rs`, production depends only on `dyn gate::Runner` (`crates/rigger-conductor/src/conductor.rs:1983`); every production mention of a concrete runner is a doc comment (`crates/rigger-conductor/src/conductor.rs:9001,9131,9141,9148`), and the import of `ExecRunner` (`crates/rigger-conductor/src/conductor.rs:15165`) and every one of its 49 uses sit inside `#[cfg(test)] mod tests`. In `crates/rigger-driver/src/driver/replay.rs`, all 15 `ExecRunner` mentions sit inside that file's own `#[cfg(test)] mod tests` too.
 - Use cases importing infrastructure: searched the `use` statements of every domain-ish file this audit's own code neighborhood names (`crates/rigger-conductor/src/conductor.rs`, `crates/rigger-domain/src/blocker.rs`, `crates/rigger-domain/src/spec.rs`, `crates/rigger-domain/src/watch.rs`, `crates/rigger-domain/src/community.rs`) for `rusqlite`, `reqwest`, `tonic`, `tokio`, `kurrentdb` - zero hits anywhere. Empty category.
 
-A second mutation authority for one domain: the one previously-known instance in this codebase (`crates/rigger-dash/src/dash.rs` reimplementing `crates/rigger-process/src/reap.rs`'s `/proc` pid scan, spec 85's own Goal example, upheld at spec 62's capstone) is a duplicate READ-only reimplementation, not a bypassed MUTATION path - it is section 2's finding (`u85c2-proc-stat-worked-example`, `find_proc_stat_or_status_readers`), not re-counted here to avoid double-charging one defect to two sections. Checked process spawning as the one other plausible second-authority candidate: production code constructs every process through the one process-spawn port (`crates/rigger-process/src/subprocess.rs`), so production `conductor.rs` never builds a git command of its own. `crates/rigger-worktree-git/src/worktree.rs` is the sole git-worktree-mutation authority OUTSIDE the composition root. Inside it, `src/cli/mod.rs` (exempt from the port-concretion-reach check above, not from this one) holds two more git-worktree-mutation sites: `reap_then_remove_worktree` (`src/cli/mod.rs:2103-2115`), the sanctioned worktree half of the spec-34/spec-79 orphan-sweep and extensively reviewed across those specs - a deliberate design choice, not a gap; and `materialize_config_at_rev` (`src/cli/mod.rs:3065-3107`), a real, already-known, non-blocking gap (`arch-u13-config-checkout-bypasses-worktree-authority` / `arch-u2r-config-checkout-shells-git` / `arch-u2r2-replayrunner-and-config-checkout-persist-not-introduced`: the `Worktree` API is branch-creating and exposes no detach-at-rev checkout, so this is a gap in that authority rather than a competing abstraction). No second mutation authority found beyond the already-cited, already-catalogued `/proc` case and this already-dispositioned `materialize_config_at_rev` gap.
+A second mutation authority for one domain: the one previously-known instance in this codebase (`crates/rigger-dash/src/dash.rs` reimplementing `crates/rigger-process/src/reap.rs`'s `/proc` pid scan, spec 85's own Goal example, upheld at spec 62's capstone) is a duplicate READ-only reimplementation, not a bypassed MUTATION path - it is section 2's finding (`u85c2-proc-stat-worked-example`, `find_proc_stat_or_status_readers`), not re-counted here to avoid double-charging one defect to two sections. Checked process spawning as the one other plausible second-authority candidate: production code constructs every process through the one process-spawn port (`crates/rigger-process/src/subprocess.rs`), so production `conductor.rs` never builds a git command of its own. `crates/rigger-worktree-git/src/worktree.rs` is the sole git-worktree-mutation authority OUTSIDE the composition root. Inside it, `src/cli/mod.rs` (exempt from the port-concretion-reach check above, not from this one) holds two more git-worktree-mutation sites: `reap_then_remove_worktree` (`src/cli/mod.rs:2094-2106`), the sanctioned worktree half of the spec-34/spec-79 orphan-sweep and extensively reviewed across those specs - a deliberate design choice, not a gap; and `materialize_config_at_rev` (`src/cli/mod.rs:3056-3098`), a real, already-known, non-blocking gap (`arch-u13-config-checkout-bypasses-worktree-authority` / `arch-u2r-config-checkout-shells-git` / `arch-u2r2-replayrunner-and-config-checkout-persist-not-introduced`: the `Worktree` API is branch-creating and exposes no detach-at-rev checkout, so this is a gap in that authority rather than a competing abstraction). No second mutation authority found beyond the already-cited, already-catalogued `/proc` case and this already-dispositioned `materialize_config_at_rev` gap.
 
 ## 4. Dead and Vestigial Code
 
@@ -5814,7 +5813,7 @@ Each god file's inline test module is the set of its `is_test: true` entries in 
 
 #### 4. Extract `src/main.rs`'s inline test module
 
-- Scope: the file's `#[cfg(test)] mod tests` holds 204 of its 368 mapped functions (55%), roughly 6131 lines of test-function spans. Same partition approach as item 3, reusing section 1's own production bucket names (`store`, `support`, `render`, `provenance`, `commands`, ...).
+- Scope: the file's `#[cfg(test)] mod tests` holds 204 of its 367 mapped functions (55%), roughly 6131 lines of test-function spans. Same partition approach as item 3, reusing section 1's own production bucket names (`store`, `support`, `render`, `provenance`, `commands`, ...).
 - Files: `src/cli/mod.rs` -> `src/cli/mod.rs` (production only) + `src/main/tests/*.rs`.
 - Expected line delta: 0 net (repo-wide) - roughly 6131 lines relocated out of `src/cli/mod.rs`.
 - Risk: low, same rationale as item 3.
@@ -5843,9 +5842,9 @@ Each entry below applies section 1's own proposed module tree to a god file's pr
 
 #### 7. Split `src/main.rs`'s production code into `src/main/*.rs`
 
-- Scope: 88 mapped functions across 14 proposed modules (roughly 1809 lines of function bodies) plus 76 unassigned functions (1578 lines, each individually named in the committed map for manual placement, per section 1's own "unassignable functions are named as such, never omitted" rule). Headline buckets (functions/lines): `main::store` (24/709), `main::support` (18/303), `main::render` (5/193), `main::provenance` (12/163), `main::commands` (1/160).
+- Scope: 88 mapped functions across 14 proposed modules (roughly 1809 lines of function bodies) plus 75 unassigned functions (1572 lines, each individually named in the committed map for manual placement, per section 1's own "unassignable functions are named as such, never omitted" rule). Headline buckets (functions/lines): `main::store` (24/709), `main::support` (18/303), `main::render` (5/193), `main::provenance` (12/163), `main::commands` (1/160).
 - Files: `src/cli/mod.rs` -> `src/main.rs` (composition root, thinned) + `src/cli/{store,support,render,provenance,commands,setup,liveness,store_location,replay_runner,store_selection,tree_root,docs_overlay,residue_report,dash_glue}.rs`.
-- Expected line delta: 0 net - pure relocation of roughly 3387 lines of function bodies.
+- Expected line delta: 0 net - pure relocation of roughly 3381 lines of function bodies.
 - Risk: medium - `main.rs` is the composition root itself; the split must preserve which concretions get wired where, not merely move text.
 - Unblocks: shrinks `main.rs` to a genuine composition root plus a `cli/` module tree, matching the ports-and-adapters shape this project already mandates everywhere else.
 

@@ -1930,7 +1930,7 @@ fn result_advisories(events: &[Event], id: &str, will_supersede: bool) -> Vec<St
     if !will_supersede {
         return notes;
     }
-    if let Some(e) = latest_result_event(events, id) {
+    if let Some(e) = spawn::latest_results_lenient(events).get(id) {
         notes.push(format!(
             "result: note: {id:?} already has a recorded result at position {}; this \
              record supersedes it",
@@ -1938,15 +1938,6 @@ fn result_advisories(events: &[Event], id: &str, will_supersede: bool) -> Vec<St
         ));
     }
     notes
-}
-
-/// The LATEST recorded result event for spawn `id` (results fold last-write-wins), so a note or
-/// a refusal can name the log position it sits at.
-fn latest_result_event<'a>(events: &'a [Event], id: &str) -> Option<&'a Event> {
-    events.iter().rev().find(|e| {
-        e.type_ == spawn::TYPE_SPAWN_RESULT
-            && spawn::SpawnResult::from_event(e).is_ok_and(|r| r.id == id)
-    })
 }
 
 /// Why spawn `id` must not run or record again, once it has ENDED ([`spawn::ended_by`]: a real
@@ -1959,7 +1950,7 @@ fn ended_refusal(events: &[Event], id: &str) -> Result<Option<String>, serde_jso
     if spawn::ended_by(events, id)?.is_none() {
         return Ok(None);
     }
-    Ok(latest_result_event(events, id).map(|e| {
+    Ok(spawn::latest_result_event(events, id)?.map(|e| {
         format!(
             "spawn {id} already ended (result at position {})",
             e.position

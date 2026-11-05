@@ -1030,8 +1030,9 @@ pub fn recorded_lenient(events: &[Event]) -> BTreeMap<String, SpawnRequest> {
 /// The latest [`TYPE_SPAWN_RESULT`] event of each spawn id in `events`, and the first result
 /// body that cannot be read, if any. THE one later-wins pick of a spawn's result: a later result
 /// of an id displaces an earlier one, so a corrected re-record supersedes it, and an event of
-/// another type is no result. The strict [`result_of`] fails on the unreadable body; the
-/// degrade-tolerant [`latest_results_lenient`] skips it, since it carries no id to file it under.
+/// another type is no result. The strict [`latest_result_event`] (and [`result_of`] through it)
+/// fails on the unreadable body; the degrade-tolerant [`latest_results_lenient`] skips it, since
+/// it carries no id to file it under.
 fn latest_results(events: &[Event]) -> (BTreeMap<String, &Event>, Option<serde_json::Error>) {
     let mut latest = BTreeMap::new();
     let mut unreadable = None;
@@ -1048,6 +1049,19 @@ fn latest_results(events: &[Event]) -> (BTreeMap<String, &Event>, Option<serde_j
     (latest, unreadable)
 }
 
+/// The event of the LATEST recorded result for `id` ([`latest_results`]), for a reader that names
+/// the log position it sits at, or `None` if the spawn has no result yet. A malformed result body
+/// fails the read, as it fails [`result_of`], which reads this.
+pub fn latest_result_event<'a>(
+    events: &'a [Event],
+    id: &str,
+) -> Result<Option<&'a Event>, serde_json::Error> {
+    match latest_results(events) {
+        (_, Some(unreadable)) => Err(unreadable),
+        (latest, None) => Ok(latest.get(id).copied()),
+    }
+}
+
 /// The LATEST recorded result for `id` ([`latest_results`]), or `None` if the spawn has no
 /// result yet (it is still parked at the frontier, awaiting a courier's `rigger result`). This
 /// is how the replay driver decides answer-vs-park: `Some` answers the spawn, `None` parks it.
@@ -1055,13 +1069,9 @@ fn latest_results(events: &[Event]) -> (BTreeMap<String, &Event>, Option<serde_j
 /// Non-result events are ignored and a malformed result body fails the read, just like
 /// [`recorded`], so the same run stream feeds this and the ledger/graph projections.
 pub fn result_of(events: &[Event], id: &str) -> Result<Option<SpawnResult>, serde_json::Error> {
-    match latest_results(events) {
-        (_, Some(unreadable)) => Err(unreadable),
-        (latest, None) => latest
-            .get(id)
-            .map(|e| SpawnResult::from_event(e))
-            .transpose(),
-    }
+    latest_result_event(events, id)?
+        .map(SpawnResult::from_event)
+        .transpose()
 }
 
 /// Degrade-tolerant sibling of [`result_of`], as [`recorded_lenient`] is of [`recorded`]: the

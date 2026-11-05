@@ -710,7 +710,7 @@ pub fn project(events: &[Event]) -> Metrics {
     // duration (adv-u61c9-all-mode-cross-run-id-collision-synthesizes-bogus-duration).
     //
     // The window is derived STRUCTURALLY from `events`' own [`crate::run::TYPE_RUN_STARTED`]
-    // boundaries (`run_generation` below), mirroring [`crate::run::run_attribution`]'s window
+    // boundaries (`window_starts` below), mirroring [`crate::run::run_attribution`]'s window
     // fold - NOT from each event's own META_RUN_ID metadata. That distinction is load-bearing:
     // a TYPE_SPAWN_REQUESTED gets META_RUN_ID from TWO production writers (RunCtx's append
     // chokepoint, and `spawn_store::park_in_run`), but a TYPE_SPAWN_RESULT is recorded by `rigger
@@ -730,14 +730,15 @@ pub fn project(events: &[Event]) -> Metrics {
     //
     // Value semantics per key: the request's FIRST sighting wins (the true request moment; a
     // re-park is an idempotency violation the replay driver prevents) and the result's LATEST
-    // recorded time wins (mirroring spawn::result_of's last-write-wins semantics - a corrected
-    // re-record supersedes the earlier one). Paired by key after the pass.
+    // recorded time wins, read per window after the pass through spawn's one later-wins pick (a
+    // corrected re-record supersedes the earlier one). Paired by key after that.
     type SpawnKey = (u64, String); // (run generation/window, spawn id)
-    let mut run_generation: u64 = 0;
+                                   // The index in `events` each run window opens at: the first at 0, each later one at the
+                                   // `RunStarted` that opens it. A window's generation is its index in this list.
+    let mut window_starts: Vec<usize> = vec![0];
     let mut spawn_requested_at: BTreeMap<SpawnKey, SystemTime> = BTreeMap::new();
-    let mut spawn_result_at: BTreeMap<SpawnKey, SystemTime> = BTreeMap::new();
 
-    for e in events {
+    for (i, e) in events.iter().enumerate() {
         match e.type_.as_str() {
             TYPE_UNIT_STARTED => {
                 // The conductor emits UnitStarted with `id` and `agent`; on resume
@@ -927,7 +928,7 @@ pub fn project(events: &[Event]) -> Metrics {
                 // malformed/legacy body
                 // is simply ignored, like every other fold here, so the two derivations of
                 // "where one run ends and the next begins" can never silently disagree.
-                run_generation += 1;
+                window_starts.push(i);
             }
             TYPE_SPAWN_REQUESTED => {
                 // spec 61 SPAWN TIMING: the park time of a recorded spawn request. First
@@ -940,7 +941,7 @@ pub fn project(events: &[Event]) -> Metrics {
                     continue;
                 };
                 spawn_requested_at
-                    .entry((run_generation, req.id))
+                    .entry((window_starts.len() as u64 - 1, req.id))
                     .or_insert(e.recorded_at);
             }
             TYPE_SPAWN_RESULT => {
@@ -950,12 +951,6 @@ pub fn project(events: &[Event]) -> Metrics {
                 let Ok(res) = SpawnResult::from_event(e) else {
                     continue;
                 };
-                // spec 61 SPAWN TIMING: record every spawn's LATEST result time regardless of
-                // role, before the review-tier-only early continue below - SPAWN TIMING covers
-                // every recorded spawn (the implementer included), not just the review tiers.
-                // Keyed by (run window, spawn id) - see the declaration above - so this result
-                // can only ever pair with a request recorded in the SAME window.
-                spawn_result_at.insert((run_generation, res.id.clone()), e.recorded_at);
                 let Some(tier) = review_tier(&res.id) else {
                     continue;
                 };
@@ -1002,6 +997,17 @@ pub fn project(events: &[Event]) -> Metrics {
     metrics.parallelism_retention = parallelism_retention_of(&radii);
     metrics.grounded_units = radii.len() as u64;
     metrics.empty_radii = radii.iter().filter(|r| r.is_empty()).count() as u64;
+
+    // spec 61 SPAWN TIMING: every spawn's LATEST result time per run window, whatever its role
+    // (the implementer included, not just the review tiers), through spawn's one later-wins pick
+    // over the window's own events, so a result pairs only with a request of the SAME window.
+    let mut spawn_result_at: BTreeMap<SpawnKey, SystemTime> = BTreeMap::new();
+    let window_ends = window_starts.iter().skip(1).copied().chain([events.len()]);
+    for (window, (start, end)) in window_starts.iter().copied().zip(window_ends).enumerate() {
+        for (id, e) in crate::spawn::latest_results_lenient(&events[start..end]) {
+            spawn_result_at.insert((window as u64, id), e.recorded_at);
+        }
+    }
 
     // ---- Finalize the spec-61 SPAWN TIMING fold: pair each recorded request with its result by
     // (run window, spawn id), bucketed per spawn ROLE. Two cases fall through to `unpaired_spawns`
