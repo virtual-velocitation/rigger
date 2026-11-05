@@ -2105,8 +2105,8 @@ mandatory sweep: Command::new call sites - 94 site(s), collected mechanically re
 - `src/cli/run.rs:3680-3680` `Command::new`
 - `src/cli/run.rs:3724-3724` `Command::new`
 - `src/cli/run.rs:3793-3793` `Command::new`
-- `src/cli/setup.rs:3874-3874` `Command::new`
-- `src/cli/setup.rs:3903-3903` `Command::new`
+- `src/cli/setup.rs:3875-3875` `Command::new`
+- `src/cli/setup.rs:3904-3904` `Command::new`
 - `src/cli/validate.rs:1544-1544` `Command::new`
 - `src/cli/validate.rs:1823-1823` `Command::new`
 - `tests/adaptive_labels_periphery.rs:87-87` `Command::new`
@@ -2548,54 +2548,54 @@ __END__
              package-lock.json and ran npm install)"`
 - `src/cli/setup.rs:1498-1498` `"kept existing .rigger/agents/{name} (import never overwrites)"`
 - `src/cli/setup.rs:1526-1526` `"imported .rigger/agents/{name} (id: {id})"`
-- `src/cli/setup.rs:2543-2543` `"nothing is written - no .rigger, no .claude, no .gitignore"`
-- `src/cli/setup.rs:2610-2610` `"scaffolded .rigger/workflow.yml"`
-- `src/cli/setup.rs:2615-2615` `"no gate template set matches this project (rust: Cargo.toml at the project \
+- `src/cli/setup.rs:2544-2544` `"nothing is written - no .rigger, no .claude, no .gitignore"`
+- `src/cli/setup.rs:2611-2611` `"scaffolded .rigger/workflow.yml"`
+- `src/cli/setup.rs:2616-2616` `"no gate template set matches this project (rust: Cargo.toml at the project \
                   root), so .rigger/workflow.yml declares no gates - declare your own under gates:"`
-- `src/cli/setup.rs:2641-2641` `"scaffolded .rigger/workflow.yml (gate template set: demo)"`
-- `src/cli/setup.rs:2669-2669` `"scaffolded .rigger/workflow.yml"`
-- `src/cli/setup.rs:2670-2670` `"no gate template set matches this project (demo: a or b; other: c at the project \
+- `src/cli/setup.rs:2642-2642` `"scaffolded .rigger/workflow.yml (gate template set: demo)"`
+- `src/cli/setup.rs:2670-2670` `"scaffolded .rigger/workflow.yml"`
+- `src/cli/setup.rs:2671-2671` `"no gate template set matches this project (demo: a or b; other: c at the project \
                  root), so .rigger/workflow.yml declares no gates - declare your own under gates:"`
-- `src/cli/setup.rs:2687-2687` `".rigger/workflow.yml"`
-- `src/cli/setup.rs:3007-3007` `".rigger/agents/"`
-- `src/cli/setup.rs:3061-3061` `".rigger/dash.url"`
-- `src/cli/setup.rs:3062-3062` `".rigger/dash.marker"`
-- `src/cli/setup.rs:3063-3063` `".rigger/dash.attempt"`
-- `src/cli/setup.rs:3072-3072` `".rigger/store.conn"`
-- `src/cli/setup.rs:3089-3089` `".rigger/\n"`
-- `src/cli/setup.rs:3095-3095` `".rigger/dash.url"`
-- `src/cli/setup.rs:3098-3098` `".rigger/dash.marker"`
-- `src/cli/setup.rs:3101-3101` `".rigger/dash.attempt"`
-- `src/cli/setup.rs:3102-3102` `"setup appends the explicit dash lines (including the round-8 attempt breadcrumb) \
+- `src/cli/setup.rs:2688-2688` `".rigger/workflow.yml"`
+- `src/cli/setup.rs:3008-3008` `".rigger/agents/"`
+- `src/cli/setup.rs:3062-3062` `".rigger/dash.url"`
+- `src/cli/setup.rs:3063-3063` `".rigger/dash.marker"`
+- `src/cli/setup.rs:3064-3064` `".rigger/dash.attempt"`
+- `src/cli/setup.rs:3073-3073` `".rigger/store.conn"`
+- `src/cli/setup.rs:3090-3090` `".rigger/\n"`
+- `src/cli/setup.rs:3096-3096` `".rigger/dash.url"`
+- `src/cli/setup.rs:3099-3099` `".rigger/dash.marker"`
+- `src/cli/setup.rs:3102-3102` `".rigger/dash.attempt"`
+- `src/cli/setup.rs:3103-3103` `"setup appends the explicit dash lines (including the round-8 attempt breadcrumb) \
              even when .rigger/ broadly covers them, so the committed .gitignore stays \
              self-contained, got: {:?}"`
-- `src/cli/setup.rs:3110-3110` `".rigger/dash.url"`
-- `src/cli/setup.rs:3111-3111` `".rigger/dash.marker"`
-- `src/cli/setup.rs:3112-3112` `".rigger/dash.attempt"`
-- `src/cli/setup.rs:3113-3113` `"all three explicit per-file dash ignore lines are present in the committed \
+- `src/cli/setup.rs:3111-3111` `".rigger/dash.url"`
+- `src/cli/setup.rs:3112-3112` `".rigger/dash.marker"`
+- `src/cli/setup.rs:3113-3113` `".rigger/dash.attempt"`
+- `src/cli/setup.rs:3114-3114` `"all three explicit per-file dash ignore lines are present in the committed \
              .gitignore even though .rigger/ already covers them, got:\n{content}"`
-- `src/cli/setup.rs:3123-3123` `".rigger/dash.url"`
-- `src/cli/setup.rs:3126-3126` `".rigger/dash.marker"`
-- `src/cli/setup.rs:3129-3129` `".rigger/dash.attempt"`
-- `src/cli/setup.rs:3482-3482` `".rigger/agents/researcher.md"`
-- `src/cli/setup.rs:3511-3511` `".rigger/agents/planner.md"`
-- `src/cli/setup.rs:3541-3541` `".rigger/agents/newcomer.md"`
-- `src/cli/setup.rs:3619-3619` `".rigger/workflow.yml"`
-- `src/cli/setup.rs:3849-3849` `".rigger"`
-- `src/cli/setup.rs:4128-4128` `".rigger/agents/{persona}"`
-- `src/cli/setup.rs:4184-4184` `".rigger/agents/{f}"`
-- `src/cli/setup.rs:4398-4398` `"`sh .rigger/gates/audit.sh`, then `git status --porcelain` empty"`
-- `src/cli/setup.rs:4400-4400` `"`sh .rigger/gates/content.sh style`"`
-- `src/cli/setup.rs:4401-4401` `"`sh .rigger/gates/content.sh no-os-kill`"`
-- `src/cli/setup.rs:4402-4402` `"`sh .rigger/gates/red-before-green.sh`"`
-- `src/cli/setup.rs:4415-4415` `"Once these checks have run, a later commit or an amend re-runs only what its new \
+- `src/cli/setup.rs:3124-3124` `".rigger/dash.url"`
+- `src/cli/setup.rs:3127-3127` `".rigger/dash.marker"`
+- `src/cli/setup.rs:3130-3130` `".rigger/dash.attempt"`
+- `src/cli/setup.rs:3483-3483` `".rigger/agents/researcher.md"`
+- `src/cli/setup.rs:3512-3512` `".rigger/agents/planner.md"`
+- `src/cli/setup.rs:3542-3542` `".rigger/agents/newcomer.md"`
+- `src/cli/setup.rs:3620-3620` `".rigger/workflow.yml"`
+- `src/cli/setup.rs:3850-3850` `".rigger"`
+- `src/cli/setup.rs:4129-4129` `".rigger/agents/{persona}"`
+- `src/cli/setup.rs:4185-4185` `".rigger/agents/{f}"`
+- `src/cli/setup.rs:4399-4399` `"`sh .rigger/gates/audit.sh`, then `git status --porcelain` empty"`
+- `src/cli/setup.rs:4401-4401` `"`sh .rigger/gates/content.sh style`"`
+- `src/cli/setup.rs:4402-4402` `"`sh .rigger/gates/content.sh no-os-kill`"`
+- `src/cli/setup.rs:4403-4403` `"`sh .rigger/gates/red-before-green.sh`"`
+- `src/cli/setup.rs:4416-4416` `"Once these checks have run, a later commit or an amend re-runs only what its new \
              diff can change: a diff that touches only comments, doc comments or Markdown \
              re-runs `cargo fmt --all --check`, the default-lane clippy line, `sh \
              .rigger/gates/audit.sh` with `git status --porcelain` empty and the root tests that \
              read a checked-in file as text; any other hunk re-runs the full list."`
-- `src/cli/setup.rs:4428-4428` `"`src/`, `crates/`, `tests/`, `docs/`, `skills/`, `scaffold/` and `.rigger/`"`
-- `src/cli/setup.rs:4431-4431` `"`git ls-files src crates tests docs skills scaffold .rigger | xargs awk"`
-- `src/cli/setup.rs:4433-4433` `"`sh .rigger/gates/lanes.sh <lane>`"`
+- `src/cli/setup.rs:4429-4429` `"`src/`, `crates/`, `tests/`, `docs/`, `skills/`, `scaffold/` and `.rigger/`"`
+- `src/cli/setup.rs:4432-4432` `"`git ls-files src crates tests docs skills scaffold .rigger | xargs awk"`
+- `src/cli/setup.rs:4434-4434` `"`sh .rigger/gates/lanes.sh <lane>`"`
 - `src/cli/validate.rs:895-895` `"warning: tracked .rigger/ files have uncommitted modifications:"`
 - `src/cli/validate.rs:1384-1384` `" M .rigger/workflow.yml\n\
                          M  .rigger/agents/sdet.md\n\
@@ -4274,7 +4274,7 @@ Proposed home: `a new shared module (sites span 2 files: crates/rigger-driver/sr
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `crates/rigger-driver/src/liveness.rs:1079-1093` `marker_filename_is_injective_so_two_ids_that_collided_under_a_prior_placeholder_scheme_no_longer_do`
-- `src/cli/setup.rs:2832-2846` `normalize_origin_url_separates_distinct_repos_and_lowercases_only_the_host`
+- `src/cli/setup.rs:2833-2847` `normalize_origin_url_separates_distinct_repos_and_lowercases_only_the_host`
 
 #### `dup-880060c29e31` (semantic, 66 sites)
 
