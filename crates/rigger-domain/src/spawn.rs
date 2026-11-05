@@ -1839,6 +1839,74 @@ mod tests {
         assert_eq!(got.output, "recovered");
     }
 
+    /// THE later-wins pick of a spawn's result, read both ways over one stream: the latest result
+    /// of each spawn id wins and an event of another type is no result; the strict [`result_of`]
+    /// fails on the first unreadable result body, and [`latest_results_lenient`] skips it.
+    #[test]
+    fn a_spawns_result_is_its_latest_read_strictly_or_past_an_unreadable_body() {
+        let result = |id: &str, output: &str| SpawnResult::ok(id, output).to_event().unwrap();
+        let no_id = Event::new(TYPE_SPAWN_RESULT, br#"{"output":"no id"}"#.to_vec());
+        let not_json = Event::new(TYPE_SPAWN_RESULT, b"not json".to_vec());
+        let unreadable = |event: &Event| SpawnResult::from_event(event).unwrap_err().to_string();
+        // A request whose body reads as a result of `a`: only its type keeps it out.
+        let request = Event::new(TYPE_SPAWN_REQUESTED, result("a", "a request").data);
+        type Row<'a> = (
+            &'a str,
+            Vec<Event>,
+            Vec<(&'a str, &'a str)>,
+            Result<Option<&'a str>, String>,
+        );
+        let rows: [Row; 5] = [
+            ("no event", vec![], vec![], Ok(None)),
+            (
+                "a later result of an id displaces an earlier one",
+                vec![
+                    result("a", "first"),
+                    result("b", "other"),
+                    result("a", "second"),
+                ],
+                vec![("a", "second"), ("b", "other")],
+                Ok(Some("second")),
+            ),
+            (
+                "an event of another type is no result",
+                vec![request, result("b", "other")],
+                vec![("b", "other")],
+                Ok(None),
+            ),
+            (
+                "an unreadable body between two results of the id",
+                vec![result("a", "first"), no_id.clone(), result("a", "second")],
+                vec![("a", "second")],
+                Err(unreadable(&no_id)),
+            ),
+            (
+                "two unreadable bodies",
+                vec![no_id.clone(), not_json],
+                vec![],
+                Err(unreadable(&no_id)),
+            ),
+        ];
+        for (why, events, lenient, strict) in rows {
+            let read: Vec<(String, String)> = latest_results_lenient(&events)
+                .into_iter()
+                .map(|(id, event)| (id, SpawnResult::from_event(event).unwrap().output))
+                .collect();
+            let want: Vec<(String, String)> = lenient
+                .iter()
+                .map(|(id, output)| (id.to_string(), output.to_string()))
+                .collect();
+            assert_eq!(read, want, "{why}: every id's latest result");
+            assert_eq!(
+                result_of(&events, "a")
+                    .map(|res| res.map(|res| res.output))
+                    .map_err(|e| e.to_string()),
+                strict.map(|output| output.map(str::to_string)),
+                "{why}: the strict read of a"
+            );
+        }
+    }
+
     /// THE spawn-has-ended rule: a spawn has ended once its latest result is a real one - a
     /// worker's output or a recorded error - and never on the step's liveness fault, which a
     /// real result recorded later supersedes.

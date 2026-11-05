@@ -3567,6 +3567,52 @@ mod tests {
             assert_eq!(stream_path("", "run-1", "u1/implementer#0", 0), None);
     }
 
+    /// A spawn's transcripts are the files [`stream_path`] names for it, one per launch, and they
+    /// go together: another spawn's (attempt 10's, whose sanitized id extends attempt 1's) and any
+    /// other file beside them stay, and an empty scratch root removes nothing.
+    #[test]
+    fn remove_transcripts_removes_each_launch_of_its_spawn_and_nothing_beside_it() {
+        let scratch = tempfile::tempdir().unwrap();
+        let root = scratch.path().to_str().unwrap();
+        let transcript =
+            |spawn_id: &str, launch: u32| stream_path(root, "run-1", spawn_id, launch).unwrap();
+        let removed = [
+            transcript("u1/adversary#1", 0),
+            transcript("u1/adversary#1", 1),
+        ];
+        let dir = removed[0].parent().unwrap().to_path_buf();
+        let kept = [
+            transcript("u1/adversary#10", 0),
+            dir.join("u1_2fadversary_231.01.jsonl"),
+            dir.join("u1_2fadversary_231.notes"),
+        ];
+        std::fs::create_dir_all(&dir).unwrap();
+        for file in removed.iter().chain(&kept) {
+            std::fs::write(file, "{}").unwrap();
+        }
+        let left = || {
+            let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .collect();
+            files.sort();
+            files
+        };
+        let sorted = |files: &[std::path::PathBuf]| {
+            let mut files = files.to_vec();
+            files.sort();
+            files
+        };
+        remove_transcripts("", "run-1", "u1/adversary#1");
+        assert_eq!(
+            left(),
+            sorted(&[removed.as_slice(), &kept].concat()),
+            "an empty scratch root removes nothing"
+        );
+        remove_transcripts(root, "run-1", "u1/adversary#1");
+        assert_eq!(left(), sorted(&kept), "only attempt 1's launches go");
+    }
+
     #[test]
     fn api_retry_line_carries_category_attempt_and_delay() {
         // The exact shape a probe of the real CLI showed (spec 104 Problem section).

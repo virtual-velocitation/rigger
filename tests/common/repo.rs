@@ -90,12 +90,12 @@ pub const CRITIQUE_CONN: &str = "critique-conn";
 /// stream-json session whose `result` is `critique`: an init that reports the spawn's `rigger`
 /// server connected, then the result line, `critique` JSON-encoded so its finding lines and
 /// verdict line survive. On every later spawn it replays the same init and a result answering
-/// [`CLEAN_CRITIQUE`](super::cli::CLEAN_CRITIQUE), a zero-line approve, so a call whose first pass
+/// [`CLEAN_CRITIQUE`](super::fixtures::CLEAN_CRITIQUE), a zero-line approve, so a call whose first pass
 /// does not exhaust the critique stops at its next attempt (spec 123, THE SHARED STUB). Only data
 /// is written here, beside the stub's symlink in `<work>/bin`; the executable is the checked-in
 /// fixture. Each call takes a fresh `work` directory.
 pub fn write_critique_stub(work: &Path, critique: &str) -> String {
-    write_critique_stub_then(work, critique, super::cli::CLEAN_CRITIQUE)
+    write_critique_stub_then(work, critique, super::fixtures::CLEAN_CRITIQUE)
 }
 
 /// [`write_critique_stub`] whose later spawns answer `later` in place of the zero-line approve,
@@ -108,7 +108,12 @@ pub fn write_critique_stub_then(work: &Path, critique: &str, later: &str) -> Str
 /// `rigger_server` as its status, so a test can stand in for a launch whose server did not
 /// connect (any status but `connected`).
 pub fn write_critique_stub_reporting(work: &Path, critique: &str, rigger_server: &str) -> String {
-    write_critique_session(work, rigger_server, critique, super::cli::CLEAN_CRITIQUE)
+    write_critique_session(
+        work,
+        rigger_server,
+        critique,
+        super::fixtures::CLEAN_CRITIQUE,
+    )
 }
 
 /// The critique stub's PATH under `work`, its first spawn answering `first` and every later one

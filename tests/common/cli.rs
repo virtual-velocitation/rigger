@@ -14,7 +14,7 @@ use rigger::eventstore::{Direction, Event, EventStore, ExpectedRevision};
 use rigger::run::{RunHeld, RunReleased, TYPE_RUN_HELD, TYPE_RUN_RELEASED};
 
 pub use super::fixtures::keyed;
-use super::fixtures::{dated_ago, run_held_event};
+use super::fixtures::{dated_ago, run_held_event, CLEAN_CRITIQUE};
 
 /// A throwaway project directory that is its own (commit-less) git repo, so the project
 /// identity the binary resolves for it is its basename, stable across every call a test makes.
@@ -672,16 +672,6 @@ pub fn critique_finding_id(text: &str, attempt: u32, k: u32) -> String {
     format!("sc-{}-{attempt}-{k}", rigger::review::critique_hash(text))
 }
 
-/// The critic's clean answer: prose, no finding line, an approve.
-pub const CLEAN_CRITIQUE: &str = "No defects.\n{\"verdict\":\"approve\"}";
-
-/// The critic's advisory answer: one NON-BLOCKING finding line and an approve.
-pub const ADVISORY: &str = "C1 | NON-BLOCKING | Design | renders is vague | name the surface\n\
-     {\"verdict\":\"approve\"}";
-
-/// The result a critic answering with no verdict line records: no pass.
-pub const NO_VERDICT: &str = "I could not decide.";
-
 /// Record a clean critique of `spec`'s current text in the project at `root` ([`record_critique`]
 /// answering [`CLEAN_CRITIQUE`]), so a new run on it under a workflow naming a critic is not
 /// refused (spec 112).
@@ -711,25 +701,44 @@ pub fn seed_critique(root: &Path, events: &[(&str, serde_json::Value)]) {
     }
 }
 
+/// The request of the critic's spawn at `attempt` on the text hashed `hash`, as the critique's
+/// own stream records it.
+fn critique_request(hash: &str, attempt: u32) -> (&'static str, serde_json::Value) {
+    (
+        rigger::spawn::TYPE_SPAWN_REQUESTED,
+        serde_json::json!({
+            "id": rigger::review::critique_spawn_id(hash, attempt),
+            "unit": rigger::review::critique_unit(hash),
+            "stage": "critique",
+            "prompt": "p",
+        }),
+    )
+}
+
 /// Append the critic's spawn at `attempt` on the text hashed `hash` to the critique's own stream
 /// of the project at `root` ([`seed_critique`]): its request, then its result answering `output`,
 /// which is a pass of the critique when `output` is a critique (spec 123).
 pub fn seed_critique_spawn(root: &Path, hash: &str, attempt: u32, output: &str) {
-    let id = rigger::review::critique_spawn_id(hash, attempt);
-    let unit = rigger::review::critique_unit(hash);
     seed_critique(
         root,
         &[
-            (
-                rigger::spawn::TYPE_SPAWN_REQUESTED,
-                serde_json::json!({"id": id, "unit": unit, "stage": "critique", "prompt": "p"}),
-            ),
+            critique_request(hash, attempt),
             (
                 rigger::spawn::TYPE_SPAWN_RESULT,
-                serde_json::json!({"id": id, "output": output}),
+                serde_json::json!({
+                    "id": rigger::review::critique_spawn_id(hash, attempt),
+                    "output": output,
+                }),
             ),
         ],
     );
+}
+
+/// Append the request of the critic's spawn at `attempt` on the text hashed `hash` to the
+/// critique's own stream of the project at `root` ([`seed_critique`]), with no result: a spawn
+/// still in flight, which the attempt count counts (spec 123).
+pub fn seed_critique_request(root: &Path, hash: &str, attempt: u32) {
+    seed_critique(root, &[critique_request(hash, attempt)]);
 }
 
 /// A `DecisionMade` resolving `ids` and governing `governs`, through `rigger emit`.

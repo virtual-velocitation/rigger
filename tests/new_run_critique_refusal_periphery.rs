@@ -24,12 +24,13 @@ use common::cli::Refusal::{self, BelowCeiling, Outside, Settled, Unexhausted};
 use common::cli::{
     assert_stopped_at_the_grounder, critique_finding_id, emit, printed_decision, read_run_events,
     record_clean_critique, record_critique, refused_new_run, resolve, run_payloads, run_rigger,
-    run_rigger_envs, seed_a_hold_no_fold_applies, seed_critique_spawn, seed_on_the_run,
-    seed_run_events, stopping_at_the_grounder, temp_repoless_project, write_scaffold,
-    write_spec_project, ADVISORY, CLEAN_CRITIQUE, CRITIQUE_ROUTE, NO_VERDICT, RESOLUTION_ROUTE,
+    run_rigger_envs, seed_a_hold_no_fold_applies, seed_critique_request, seed_critique_spawn,
+    seed_on_the_run, seed_run_events, stopping_at_the_grounder, temp_repoless_project,
+    write_scaffold, write_spec_project, CRITIQUE_ROUTE, RESOLUTION_ROUTE,
 };
 use common::fixtures::{
-    git_ok, git_out, hold_naming, run_held_event, temp_git_project_with_commit,
+    git_ok, git_out, hold_naming, run_held_event, temp_git_project_with_commit, ADVISORY,
+    CLEAN_CRITIQUE, NO_VERDICT,
 };
 use common::repo::{critique_stub_spawns, stub_path, write_critique_stub_then};
 use rigger::review::critique_hash;
@@ -655,16 +656,25 @@ fn gate_two_workflow() -> String {
     gate_two
 }
 
+/// The answer of a critic spawn whose request is parked with no result recorded: a spawn still in
+/// flight ([`seed_critique_request`]).
+const PARKED: &str = "(parked: no result recorded)";
+
 /// A project carrying `workflow` and [`SPEC`] at [`SPEC_REL`], whose critic spawns on that text
-/// recorded `answers` in attempt order ([`seed_critique_spawn`]), followed - when `resolved` - by a
-/// resolution of attempt 0's BLOCKING ids ([`reject_ids`]): its directory, which keeps it alive.
+/// recorded `answers` in attempt order ([`seed_critique_spawn`]; a [`PARKED`] answer recording its
+/// request alone), followed - when `resolved` - by a resolution of attempt 0's BLOCKING ids
+/// ([`reject_ids`]): its directory, which keeps it alive.
 fn critiqued_project(workflow: &str, answers: &[&str], resolved: bool) -> tempfile::TempDir {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
     write_spec_project(root, &PERSONAS, workflow, SPEC_REL, SPEC);
     let hash = critique_hash(SPEC);
     for (attempt, answer) in (0..).zip(answers) {
-        seed_critique_spawn(root, &hash, attempt, answer);
+        if *answer == PARKED {
+            seed_critique_request(root, &hash, attempt);
+        } else {
+            seed_critique_spawn(root, &hash, attempt, answer);
+        }
     }
     if resolved {
         resolve(root, "r-all", SPEC_REL, &reject_ids());
@@ -681,15 +691,15 @@ type CeilingRow<'a> = (&'a str, &'a str, &'a [&'a str], bool, Option<Refusal<'a>
 /// attempt order, under the critic's built-in ceiling of 3 or its plan-critique gate's own ceiling
 /// of 2, and perhaps a resolution of attempt 0's BLOCKING ids recorded after them, when a step
 /// begins a new run on it, then the run begins only when the critique has a pass, is exhausted or
-/// has an attempt count at or above the ceiling - a spawn that recorded no pass counting as an
-/// attempt - and leaves no BLOCKING id open. Else it is refused on the open BLOCKING ids, offering
+/// has an attempt count at or above the ceiling - a spawn that recorded no pass, or whose request
+/// is parked with no result, counting as an attempt - and leaves no BLOCKING id open. Else it is refused on the open BLOCKING ids, offering
 /// their resolution only once the critique is exhausted or at its ceiling, and otherwise as not
 /// critiqued to exhaustion, offering the critique alone.
 #[test]
 fn a_new_run_needs_its_critique_exhausted_or_at_the_ceiling_and_offers_a_resolution_only_then() {
     let gate_two = gate_two_workflow();
     let open = reject_ids();
-    let rows: [CeilingRow; 18] = [
+    let rows: [CeilingRow; 20] = [
         (
             "one advisory pass, below the built-in ceiling",
             SKEPTIC_WORKFLOW,
@@ -759,6 +769,20 @@ fn a_new_run_needs_its_critique_exhausted_or_at_the_ceiling_and_offers_a_resolut
             &[NO_VERDICT; 3],
             false,
             Some(Unexhausted),
+        ),
+        (
+            "an advisory pass then a parked request, below the built-in ceiling",
+            SKEPTIC_WORKFLOW,
+            &[ADVISORY, PARKED],
+            false,
+            Some(Unexhausted),
+        ),
+        (
+            "two advisory passes then a parked request, at the built-in ceiling",
+            SKEPTIC_WORKFLOW,
+            &[ADVISORY, ADVISORY, PARKED],
+            false,
+            None,
         ),
         (
             "a reject, below the built-in ceiling",

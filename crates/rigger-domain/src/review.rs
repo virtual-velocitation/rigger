@@ -865,12 +865,16 @@ pub fn run_notes(events: &[Event]) -> Result<Vec<RunNote>, serde_json::Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::critique_fixtures::{finding, pass_at, CLEAN_CRITIQUE, NO_VERDICT};
     use crate::event_fixtures::{ev_at, HandBuiltLog};
     use crate::spawn::TYPE_SPAWN_RESULT;
     use serde_json::json;
     use std::path::{Path, PathBuf};
 
     const HASH: &str = "0123456789abcdef";
+
+    /// The critic's answer carrying one BLOCKING finding line and a reject.
+    const BLOCKING_REJECT: &str = "C1 | BLOCKING | criterion 1 | r | f\n{\"verdict\":\"reject\"}";
 
     /// A recorded `SpawnResult` for `id` at log position `position`.
     fn result_at(position: u64, id: &str, output: &str, error: &str) -> Event {
@@ -879,19 +883,6 @@ mod tests {
             TYPE_SPAWN_RESULT,
             json!({"id": id, "output": output, "error": error}),
         )
-    }
-
-    /// The finding a test expects, its fields in finding-line order.
-    fn finding(id: &str, blocking: bool, fields: [&str; 4]) -> CritiqueFinding {
-        let [critic, location, reading, fix] = fields;
-        CritiqueFinding {
-            id: id.to_string(),
-            blocking,
-            critic: critic.to_string(),
-            location: location.to_string(),
-            reading: reading.to_string(),
-            fix: fix.to_string(),
-        }
     }
 
     #[test]
@@ -1061,10 +1052,7 @@ mod tests {
             })
         );
         assert_eq!(
-            critique_of(
-                &result_at(3, &id, "No defects.\n{\"verdict\":\"approve\"}", ""),
-                HASH
-            ),
+            critique_of(&result_at(3, &id, CLEAN_CRITIQUE, ""), HASH),
             Ok(CritiquePass {
                 position: 3,
                 attempt: 4,
@@ -1090,17 +1078,31 @@ mod tests {
             C2 | NON-BLOCKING | Design | r2 | f2\n{\"verdict\":\"reject\"}";
         let advisory = "C1 | NON-BLOCKING | criterion 1 | r0 | f0\n{\"verdict\":\"approve\"}";
         let store_blocking = "C1 | BLOCKING | THE STORE | r3 | f3\n{\"verdict\":\"reject\"}";
-        let clean = "No defects.\n{\"verdict\":\"approve\"}";
         let events = vec![
             result_at(1, &critique_spawn_id(HASH, 1), blocking, ""),
             result_at(2, &critique_spawn_id(HASH, 0), advisory, ""),
             result_at(3, &critique_spawn_id(HASH, 2), "", "boom"),
             result_at(4, &critique_spawn_id(HASH, 2), store_blocking, ""),
-            result_at(5, &critique_spawn_id(HASH, 3), clean, ""),
-            result_at(6, &critique_spawn_id(HASH, 3), "I could not decide.", ""),
-            result_at(7, &critique_spawn_id("fedcba9876543210", 4), clean, ""),
-            result_at(8, &format!("critique-{HASH}/implementer#5"), clean, ""),
-            result_at(9, &format!("critique-{HASH}/adversary#06"), clean, ""),
+            result_at(5, &critique_spawn_id(HASH, 3), CLEAN_CRITIQUE, ""),
+            result_at(6, &critique_spawn_id(HASH, 3), NO_VERDICT, ""),
+            result_at(
+                7,
+                &critique_spawn_id("fedcba9876543210", 4),
+                CLEAN_CRITIQUE,
+                "",
+            ),
+            result_at(
+                8,
+                &format!("critique-{HASH}/implementer#5"),
+                CLEAN_CRITIQUE,
+                "",
+            ),
+            result_at(
+                9,
+                &format!("critique-{HASH}/adversary#06"),
+                CLEAN_CRITIQUE,
+                "",
+            ),
             ev_at(10, TYPE_SPAWN_RESULT, json!({"output": "no id"})),
             ev_at(11, "DecisionMade", json!({"id": "d", "summary": "s"})),
         ];
@@ -1190,13 +1192,11 @@ mod tests {
     /// some pass, at any position, carries no finding line.
     #[test]
     fn a_zero_line_pass_is_a_pass_and_the_union_derives_the_verdict() {
-        let blocking = "C1 | BLOCKING | criterion 1 | r | f\n{\"verdict\":\"reject\"}";
         let advisory = "C1 | NON-BLOCKING | Design | r | f\n{\"verdict\":\"approve\"}";
-        let clean = "No defects.\n{\"verdict\":\"approve\"}";
         let approving_blocking = "C1 | BLOCKING | c | r | f\n{\"verdict\":\"approve\"}";
         for (outputs, expected, why) in [
             (
-                &[blocking][..],
+                &[BLOCKING_REJECT][..],
                 (&[1][..], "reject", false),
                 "one BLOCKING pass",
             ),
@@ -1206,22 +1206,22 @@ mod tests {
                 "a NON-BLOCKING pass approves",
             ),
             (
-                &[clean],
+                &[CLEAN_CRITIQUE],
                 (&[0], "approve", true),
                 "a zero-line pass is a pass and approves",
             ),
             (
-                &[blocking, clean],
+                &[BLOCKING_REJECT, CLEAN_CRITIQUE],
                 (&[1, 0], "reject", true),
                 "a zero-line pass beside a union holding a BLOCKING finding derives reject",
             ),
             (
-                &[clean, advisory],
+                &[CLEAN_CRITIQUE, advisory],
                 (&[0, 1], "approve", true),
                 "a pass after a zero-line pass is kept in the union",
             ),
             (
-                &[advisory, blocking],
+                &[advisory, BLOCKING_REJECT],
                 (&[1, 1], "reject", false),
                 "a BLOCKING finding at a later pass derives reject",
             ),
@@ -1263,14 +1263,12 @@ mod tests {
     /// another attempt's, else why it brought none.
     #[test]
     fn a_spawned_critique_is_the_spawns_own_pass_else_why_it_brought_none() {
-        let reject = "C1 | BLOCKING | criterion 1 | r | f\n{\"verdict\":\"reject\"}";
-        let clean = "No defects.\n{\"verdict\":\"approve\"}";
         let log = HandBuiltLog::new(
             crate::run::STREAM,
             vec![
-                result_at(1, &critique_spawn_id(HASH, 0), reject, ""),
-                result_at(2, &critique_spawn_id(HASH, 1), "I could not decide.", ""),
-                result_at(3, &critique_spawn_id(HASH, 2), clean, ""),
+                result_at(1, &critique_spawn_id(HASH, 0), BLOCKING_REJECT, ""),
+                result_at(2, &critique_spawn_id(HASH, 1), NO_VERDICT, ""),
+                result_at(3, &critique_spawn_id(HASH, 2), CLEAN_CRITIQUE, ""),
             ],
         );
         let spawned = |attempt| read_spawned_critique(&log, HASH, attempt).unwrap();
@@ -1368,11 +1366,10 @@ mod tests {
     #[test]
     fn the_why_of_a_spawn_with_no_critique_is_its_own_latest_result_read_by_the_authority() {
         let attempt_1 = critique_spawn_id(HASH, 1);
-        let reject = "C1 | BLOCKING | criterion 1 | r | f\n{\"verdict\":\"reject\"}";
         let events = vec![
-            result_at(1, &critique_spawn_id(HASH, 0), reject, ""),
+            result_at(1, &critique_spawn_id(HASH, 0), BLOCKING_REJECT, ""),
             result_at(2, &attempt_1, "", "boom"),
-            result_at(3, &attempt_1, "I could not decide.", ""),
+            result_at(3, &attempt_1, NO_VERDICT, ""),
             ev_at(4, "DecisionMade", json!({"id": "d", "summary": "s"})),
         ];
         assert_eq!(
@@ -1504,20 +1501,6 @@ mod tests {
             "/../../a.md",
         ] {
             assert_eq!(norm(outside), None, "{outside:?} is outside {root:?}");
-        }
-    }
-
-    /// A rejecting pass at `attempt` whose result sits at log position `position`, holding
-    /// `findings` as `(id, blocking)` in finding order.
-    fn pass_at(position: u64, attempt: u32, findings: &[(&str, bool)]) -> CritiquePass {
-        CritiquePass {
-            position,
-            attempt,
-            verdict: "reject".to_string(),
-            findings: findings
-                .iter()
-                .map(|(id, blocking)| finding(id, *blocking, ["C", "criterion 1", "r", "f"]))
-                .collect(),
         }
     }
 

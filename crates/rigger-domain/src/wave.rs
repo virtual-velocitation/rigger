@@ -506,6 +506,8 @@ pub fn ready_stages(
 mod tests {
     use super::*;
     use crate::config::Workflow;
+    use crate::critique_fixtures::pass_at;
+    use crate::review::Critique;
 
     /// A workflow parsed from its YAML, as `workflow.yml` carries it.
     fn workflow(yaml: &str) -> Workflow {
@@ -784,6 +786,28 @@ mod tests {
                 want,
                 "{attempts} attempts against a ceiling of 3"
             );
+        }
+    }
+
+    /// Spec 123: a critique is settled once it is exhausted or its attempt count has reached the
+    /// ceiling, either alone sufficing.
+    #[test]
+    fn a_critique_settles_once_exhausted_or_at_the_ceiling() {
+        let critic = built_in_critic("critic", None);
+        let unexhausted = Critique {
+            passes: vec![pass_at(10, 0, &[("sc-h-0-1", false)])],
+        };
+        let exhausted = Critique {
+            passes: vec![pass_at(10, 0, &[("sc-h-0-1", false)]), pass_at(11, 1, &[])],
+        };
+        for (why, critique, attempts, want) in [
+            ("exhausted, below the ceiling", &exhausted, 2, true),
+            ("exhausted, at the ceiling", &exhausted, 3, true),
+            ("unexhausted, below the ceiling", &unexhausted, 2, false),
+            ("unexhausted, at the ceiling", &unexhausted, 3, true),
+            ("unexhausted, past the ceiling", &unexhausted, 4, true),
+        ] {
+            assert_eq!(critic.settles(critique, attempts), want, "{why}");
         }
     }
 }

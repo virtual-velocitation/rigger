@@ -23,9 +23,12 @@ use common::cli::{
     read_run_events, recorded_progress, resolve, rigger_file, run_payloads, run_rigger,
     run_rigger_envs, run_rigger_ok, run_stream_identity, seed_a_run, seed_critique,
     seed_critique_spawn, seed_on_the_run, seed_run_events, seed_store, temp_project,
-    temp_repoless_project, write_spec_project, ADVISORY, CLEAN_CRITIQUE, NO_VERDICT,
+    temp_repoless_project, write_spec_project,
 };
-use common::fixtures::{composed_system_prompt, git_ok, held_event, temp_git_project_with_commit};
+use common::fixtures::{
+    composed_system_prompt, git_ok, held_event, temp_git_project_with_commit, ADVISORY,
+    CLEAN_CRITIQUE, NO_VERDICT,
+};
 use common::repo::{
     assert_carries_spawn_hooks, collect_files, critique_stub_argv, critique_stub_record,
     critique_stub_spawns, critique_stub_task, flag_value, hook_words, stub_path,
@@ -72,7 +75,6 @@ const REJECT: &str = "I read the spec.\n\
      C1 | BLOCKING | criterion 2 | hides is undecided when empty | decide the empty corner in Design\n\
      C2 | NON-BLOCKING | Design | renders names no surface | name the surface\n\
      {\"verdict\":\"reject\"}";
-const APPROVE: &str = "No defects.\n{\"verdict\":\"approve\"}";
 
 /// [`ADVISORY`]'s one finding, as its summary.
 const ADVISORY_SUMMARY: &str = "NON-BLOCKING | Design | renders is vague | name the surface";
@@ -418,7 +420,7 @@ fn a_spec_is_critiqued_once_per_text_and_answered_from_the_store_after() {
     // When one line of the spec is deleted, the new text is critiqued afresh ...
     let edited = SPEC.replace("- [ ] a test proves the widget hides\n", "");
     std::fs::write(root.join(SPEC_REL), &edited).unwrap();
-    let (second, second_path) = stub(APPROVE);
+    let (second, second_path) = stub(CLEAN_CRITIQUE);
     let (fresh, err, ok) = critique(root, SPEC_REL, &second_path, &scratch);
     assert!(ok, "the edited text's critique exits 0; stderr:\n{err}");
     assert_eq!(
@@ -744,7 +746,7 @@ fn a_result_that_is_no_critique_exits_non_zero_saying_why_and_the_next_call_spaw
     let hash = critique_hash(SPEC);
 
     // When the critic answers with no verdict line ...
-    let (silent, silent_path) = stub("I could not decide.");
+    let (silent, silent_path) = stub(NO_VERDICT);
     let (out, err, ok) = critique(root, SPEC_REL, &silent_path, &scratch);
 
     // ... its result is no critique: the verb says why, exits non-zero and copies nothing.
@@ -765,6 +767,15 @@ fn a_result_that_is_no_critique_exits_non_zero_saying_why_and_the_next_call_spaw
             (TYPE_SPAWN_REQUESTED.to_string(), first.clone()),
             (TYPE_SPAWN_RESULT.to_string(), first),
         ]
+    );
+    let mut left = Vec::new();
+    for area in ["agent-live", "agent-scratch", "agent-stream"] {
+        collect_files(&scratch.join(area), &mut left);
+    }
+    assert_eq!(
+        left,
+        Vec::<std::path::PathBuf>::new(),
+        "the spawn that recorded no pass is reaped like one that did"
     );
 
     // When the unchanged text is critiqued again, the recorded request counts: attempt 1 runs.
@@ -1086,14 +1097,14 @@ fn a_text_reverted_to_a_critiqued_hash_is_answered_by_that_critique_with_zero_sp
     // Given the text was edited and the edit critiqued too ...
     let edited = SPEC.replace("The widget renders.", "The widget renders twice.");
     std::fs::write(root.join(SPEC_REL), &edited).unwrap();
-    let (_second, second_path) = stub(APPROVE);
+    let (_second, second_path) = stub(CLEAN_CRITIQUE);
     let (out, err, ok) = critique(root, SPEC_REL, &second_path, &scratch);
     assert!(ok, "the edited text is critiqued; stderr:\n{err}");
     assert_eq!(out, "{\"verdict\":\"approve\"}\n");
 
     // ... when the text is reverted to the first bytes ...
     std::fs::write(root.join(SPEC_REL), SPEC).unwrap();
-    let (third, third_path) = stub(APPROVE);
+    let (third, third_path) = stub(CLEAN_CRITIQUE);
     let (out, err, ok) = critique(root, SPEC_REL, &third_path, &scratch);
 
     // ... the first hash's critique answers it, with zero spawns and nothing appended.
@@ -1205,16 +1216,19 @@ fn a_recorded_critique_whose_copies_were_never_appended_is_completed_with_zero_s
             ),
             (
                 TYPE_SPAWN_RESULT,
-                json!({"id": second, "output": "I could not decide."}),
+                json!({"id": second, "output": NO_VERDICT}),
             ),
             (
                 TYPE_SPAWN_REQUESTED,
                 json!({"id": third, "unit": unit, "stage": "critique", "prompt": "p"}),
             ),
-            (TYPE_SPAWN_RESULT, json!({"id": third, "output": APPROVE})),
+            (
+                TYPE_SPAWN_RESULT,
+                json!({"id": third, "output": CLEAN_CRITIQUE}),
+            ),
         ],
     );
-    let (work, path) = stub(APPROVE);
+    let (work, path) = stub(CLEAN_CRITIQUE);
     let (out, err, ok) = critique(root, SPEC_REL, &path, &root.join("scratch"));
 
     // ... the next call answers from the hash's two passes, attempt 0's and attempt 2's, and
@@ -1246,13 +1260,13 @@ fn an_answered_critique_prints_the_union_of_its_passes_then_the_verdict_it_deriv
     scaffold(root, CRITIC_WORKFLOW);
     for (attempt, output) in [
         (0, ADVISORY),
-        (1, "I could not decide."),
+        (1, NO_VERDICT),
         (2, REJECT),
-        (3, APPROVE),
+        (3, CLEAN_CRITIQUE),
     ] {
         seed_critique_spawn(root, SPEC_HASH, attempt, output);
     }
-    let (work, path) = stub(APPROVE);
+    let (work, path) = stub(CLEAN_CRITIQUE);
     let (out, err, ok) = critique(root, SPEC_REL, &path, &root.join("scratch"));
 
     assert!(ok, "an answered critique exits 0; stderr:\n{err}");
@@ -1777,9 +1791,10 @@ rigger critique <spec>      critique the spec before any run: the workflow's cri
                               text's content hash, until a pass adds no finding or
                               its attempts reach the ceiling (the effective
                               max_retries of the stage it is read from); the union
-                              of the passes is printed, and a text exhausted or at
-                              the ceiling is answered from the record with no
-                              spawn; takes --eventstore/--conn as run does
+                              of the passes is printed, and a text exhausted, or at
+                              the ceiling with a pass recorded, is answered from
+                              the record with no spawn; takes --eventstore/--conn
+                              as run does
 ";
     let dir = temp_project();
     for spelling in ["help", "--help", "-h"] {
@@ -1904,7 +1919,7 @@ fn a_result_recorded_first_for_the_critics_spawn_id_is_read_back_never_the_sessi
     scaffold(root, CRITIC_WORKFLOW);
     let scratch = root.join("scratch");
     let first = critique_spawn_id(SPEC_HASH, 0);
-    let raced = json!({"id": first, "output": "I could not decide."});
+    let raced = json!({"id": first, "output": NO_VERDICT});
     seed_critique(root, &[(TYPE_SPAWN_RESULT, raced.clone())]);
 
     // When the spec is critiqued by a critic whose session would answer with a real reject ...
@@ -2372,52 +2387,80 @@ fn the_critic_runs_again_with_the_recorded_findings_until_a_pass_adds_none() {
     assert_eq!(review_findings(root), copies, "every finding of the union");
 }
 
-/// Spec 123, THE LOOP: given a hash whose one recorded pass was never copied, when its unchanged
-/// text is critiqued and the next spawn records no pass, then that pass was copied before the
-/// spawn: the verb exits non-zero saying why, prints nothing on stdout, and the run stream holds
-/// the recorded pass's copies.
+/// Spec 123, THE LOOP: given a hash whose recorded pass was never copied - recorded by an earlier
+/// call, or by this call's own first spawn - when the next spawn records no pass, then that pass
+/// was copied before the spawn: the verb exits non-zero saying why, prints nothing on stdout, and
+/// the run stream holds the recorded pass's copies.
 #[test]
 fn a_recorded_pass_is_copied_before_the_next_spawn_so_a_failing_spawn_leaves_it_copied() {
-    let dir = temp_project();
-    let root = dir.path();
-    scaffold(root, CRITIC_WORKFLOW);
-    seed_critique_spawn(root, SPEC_HASH, 0, REJECT);
-    let (work, path) = stub(NO_VERDICT);
-    let (out, err, ok) = critique(root, SPEC_REL, &path, &root.join("scratch"));
+    struct Row {
+        name: &'static str,
+        /// Whether an earlier call recorded attempt 0's [`REJECT`] pass.
+        seeded: bool,
+        /// The critic's answers: its first spawn's, then every later spawn's.
+        answers: (&'static str, &'static str),
+        spawns: usize,
+        verb_lines: &'static [&'static str],
+    }
+    for row in [
+        Row {
+            name: "a pass an earlier call recorded",
+            seeded: true,
+            answers: (NO_VERDICT, CLEAN_CRITIQUE),
+            spawns: 1,
+            verb_lines: &["critiquing with critic at attempt 1"],
+        },
+        Row {
+            name: "a pass this call recorded",
+            seeded: false,
+            answers: (REJECT, NO_VERDICT),
+            spawns: 2,
+            verb_lines: &[
+                "critiquing with critic at attempt 0",
+                "critiquing with critic at attempt 1",
+            ],
+        },
+    ] {
+        let name = row.name;
+        let dir = temp_project();
+        let root = dir.path();
+        scaffold(root, CRITIC_WORKFLOW);
+        if row.seeded {
+            seed_critique_spawn(root, SPEC_HASH, 0, REJECT);
+        }
+        let (work, path) = stub_then(row.answers.0, row.answers.1);
+        let (out, err, ok) = critique(root, SPEC_REL, &path, &root.join("scratch"));
 
-    assert!(!ok, "a spawn that records no pass fails the call");
-    assert_eq!(out, "", "nothing is printed on stdout");
-    assert_eq!(
-        verb_lines(&err),
-        ["critiquing with critic at attempt 1"],
-        "{err}"
-    );
-    assert_eq!(
-        last_line(&err),
-        format!(
-            "rigger: {}no critique was recorded - the critic's output carries no verdict line",
-            verb_head()
-        )
-    );
-    assert_eq!(critique_stub_spawns(work.path()), 1);
-    assert_eq!(
-        spawn_events(&critique_events(root))[2..],
-        [
-            (
-                TYPE_SPAWN_REQUESTED.to_string(),
-                critique_spawn_id(SPEC_HASH, 1)
+        assert!(!ok, "{name}: a spawn that records no pass fails the call");
+        assert_eq!(out, "", "{name}: nothing is printed on stdout");
+        assert_eq!(verb_lines(&err), row.verb_lines, "{name}: {err}");
+        assert_eq!(
+            last_line(&err),
+            format!(
+                "rigger: {}no critique was recorded - the critic's output carries no verdict line",
+                verb_head()
             ),
-            (
-                TYPE_SPAWN_RESULT.to_string(),
-                critique_spawn_id(SPEC_HASH, 1)
-            ),
-        ]
-    );
-    assert_eq!(
-        review_findings(root),
-        reject_copies(SPEC, 0, SPEC_REL),
-        "the recorded pass was copied before the spawn that failed"
-    );
+            "{name}"
+        );
+        assert_eq!(critique_stub_spawns(work.path()), row.spawns, "{name}");
+        assert_eq!(
+            spawn_events(&critique_events(root)),
+            [0, 1]
+                .map(|attempt| critique_spawn_id(SPEC_HASH, attempt))
+                .iter()
+                .flat_map(|id| [
+                    (TYPE_SPAWN_REQUESTED.to_string(), id.clone()),
+                    (TYPE_SPAWN_RESULT.to_string(), id.clone()),
+                ])
+                .collect::<Vec<_>>(),
+            "{name}"
+        );
+        assert_eq!(
+            review_findings(root),
+            reject_copies(SPEC, 0, SPEC_REL),
+            "{name}: the recorded pass was copied before the spawn that failed"
+        );
+    }
 }
 
 /// Spec 123, THE CEILING: given a critic whose ceiling is read from the plan-critique gate's own
@@ -2828,7 +2871,7 @@ fn an_exhausted_critique_is_answered_with_no_notice_wherever_its_attempts_stand(
         for attempt in row.silent {
             seed_critique_spawn(root, SPEC_HASH, *attempt, NO_VERDICT);
         }
-        seed_critique_spawn(root, SPEC_HASH, row.exhausting, APPROVE);
+        seed_critique_spawn(root, SPEC_HASH, row.exhausting, CLEAN_CRITIQUE);
         let events = critique_events(root).len();
 
         let (work, path) = stub(REJECT);
