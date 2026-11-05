@@ -1,18 +1,19 @@
 //! The store half of [`crate::progress`] (spec 93, criterion 1: THE CORE LANE IS PURE):
 //! recording one live progress report to a LIVE progress store. [`crate::progress`] keeps
 //! the model (`AgentProgress`, `AgentActivity`) and the pure folds (`consolidate`,
-//! `latest_launch_records_of`) -
+//! `launch_records_of`, `latest_launch_of`) -
 //! everything computable from already-read `&[Event]` slices, with no store at all. This
 //! module is the other half: `record`, the typed writers beside it and the [`append_stamped`]
-//! they share, the functions that append to a `&dyn EventStore`, with [`latest_launch_records`],
-//! [`latest_launch`] and [`next_launch`], the reads a launch decides on, split into their own file
+//! they share, the functions that append to a `&dyn EventStore`, with [`launch_records`],
+//! [`latest_launch_records`], [`latest_launch`] and [`next_launch`], the reads a launch decides
+//! on, split into their own file
 //! (never a function-by-function `#[cfg]` inside `progress.rs`) so the pure half can compile for
 //! `wasm32-unknown-unknown`.
 
 use crate::eventstore::{Error, EventStore, ExpectedRevision, Position, TypeSelection};
 use crate::progress::{
-    latest_launch_records_of, stream_of, AgentProgress, RunStamped, SpawnLaunched, StopFailure,
-    TYPE_SPAWN_LAUNCHED,
+    latest_launch_of, launch_records_of, stream_of, AgentProgress, RunStamped, SpawnLaunched,
+    StopFailure, TYPE_SPAWN_LAUNCHED,
 };
 
 /// Record one progress report to the progress `store`, stamped with `run_id`. Append-only
@@ -77,10 +78,20 @@ pub fn latest_launch(
     Ok(latest_launch_records(store, run_id, spawn)?.pop())
 }
 
-/// The [`SpawnLaunched`] records of the latest launch of `spawn` in the run `run_id`: the run's
-/// launch records, read from its progress stream, folded by [`latest_launch_records_of`] (spec
-/// 105, RESUME BY SESSION).
+/// The [`SpawnLaunched`] records of the latest launch of `spawn` in the run `run_id`: those of its
+/// [`launch_records`] [`latest_launch_of`] keeps (spec 105, RESUME BY SESSION).
 pub fn latest_launch_records(
+    store: &dyn EventStore,
+    run_id: &str,
+    spawn: &str,
+) -> Result<Vec<SpawnLaunched>, Error> {
+    Ok(latest_launch_of(&launch_records(store, run_id, spawn)?))
+}
+
+/// Every [`SpawnLaunched`] record of `spawn` in the run `run_id`, in stream order: the run's
+/// launch records, read from its progress stream, folded by [`launch_records_of`] (spec 105,
+/// RESUME BY SESSION).
+pub fn launch_records(
     store: &dyn EventStore,
     run_id: &str,
     spawn: &str,
@@ -90,7 +101,7 @@ pub fn latest_launch_records(
         0,
         TypeSelection::Only(&[TYPE_SPAWN_LAUNCHED]),
     )?;
-    Ok(latest_launch_records_of(&recorded, spawn))
+    Ok(launch_records_of(&recorded, spawn))
 }
 
 /// Record one [`StopFailure`] hook firing to the progress `store`, stamped with `run_id`

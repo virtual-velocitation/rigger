@@ -335,20 +335,28 @@ pub fn open_launches(progress_events: &[Event]) -> Vec<(String, SpawnLaunched)> 
         .collect()
 }
 
-/// The [`SpawnLaunched`] records of the latest launch of `spawn` among `progress_events`, one
-/// run's records (spec 105, RESUME BY SESSION), in stream order: those of the highest ordinal they
-/// hold for that id, its open record first unless it was lost, or none when they hold none. Opening
-/// and closing records both count, so a launch whose open record was lost still names its ordinal.
-/// A record that does not decode names nothing. PURE: the store crate's `latest_launch_records`
-/// reads the run's records and folds them here.
-pub fn latest_launch_records_of(progress_events: &[Event], spawn: &str) -> Vec<SpawnLaunched> {
-    let mut records: Vec<SpawnLaunched> = decoded_launches(progress_events)
+/// The [`SpawnLaunched`] records of `spawn` among `progress_events`, one run's records (spec 105,
+/// RESUME BY SESSION), in stream order, the opening and closing records of every launch alike. A
+/// record that does not decode names nothing. PURE: the store crate's `launch_records` reads the
+/// run's records and folds them here.
+pub fn launch_records_of(progress_events: &[Event], spawn: &str) -> Vec<SpawnLaunched> {
+    decoded_launches(progress_events)
         .map(|(_, record)| record)
         .filter(|record| record.spawn == spawn)
-        .collect();
+        .collect()
+}
+
+/// The records of the latest launch among `records`, one spawn's records in one run in stream
+/// order ([`launch_records_of`]): those of the highest ordinal they hold, its open record first
+/// unless it was lost, or none when they hold none. Opening and closing records both count, so a
+/// launch whose open record was lost still names its ordinal. PURE.
+pub fn latest_launch_of(records: &[SpawnLaunched]) -> Vec<SpawnLaunched> {
     let latest = records.iter().map(|record| record.launch).max();
-    records.retain(|record| Some(record.launch) == latest);
     records
+        .iter()
+        .filter(|record| Some(record.launch) == latest)
+        .cloned()
+        .collect()
 }
 
 /// Each [`SpawnLaunched`] record among `progress_events`, beside its event, in their order: a

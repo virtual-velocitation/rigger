@@ -272,10 +272,13 @@ session (the `resumed_from` path, `SpawnOpts`, `crates/rigger-domain/src/agent.r
 unwinding keeps that transcript to itself, its record carrying the minted id with `resumed_from`
 naming the interrupted session, in the same `dir`, its first user message stating the hold's
 cause and duration, or the supervisor's restart, followed by the `resume_task` when the
-interrupted launch carried it, read from that launch's record: its session or its `resumed_from`
-is the spawn's non-empty `resumed_from`; a `continue_prior_session` launch does not fork. Every
-relaunch of a spawn id, by this path, the decorator of HELD or the fallback, takes the ordinal
-after the highest the progress store records for that id, never `opts.launch`. When `read_stream`
+interrupted launch carried it, read from the spawn's launch records in the run: a record carried
+it when its session or its `resumed_from` is the spawn's non-empty `resumed_from`, or when its
+`resumed_from` names another session whose record carried it, so the task keeps travelling along
+a chain of relaunches, and a fresh launch's record, the fallback's among them, did not; a
+`continue_prior_session` launch does not fork. Every relaunch of a spawn id, by this path, the
+decorator of HELD or the fallback, takes the ordinal after the highest the progress store
+records for that id, never `opts.launch`. When `read_stream`
 sees no `system/init` from any `--resume` launch, the conductor's `continue_prior_session`
 (`crates/rigger-conductor/src/conductor.rs:4784`) included, the host closes that launch
 `interrupted` and launches the spawn fresh at the next ordinal with `resumed_from` empty,

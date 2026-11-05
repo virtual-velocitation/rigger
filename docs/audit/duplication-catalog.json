@@ -7528,6 +7528,25 @@
     "disposition": "not-a-duplicate"
   },
   {
+    "id": "dup-ad62aafad4f2",
+    "classification": "semantic",
+    "sites": [
+      {
+        "file": "crates/rigger-store-sqlite/src/progress_store.rs",
+        "name": "launch_records",
+        "content_hash": "a6c414d8203291f4"
+      },
+      {
+        "file": "tests/claude_code_stream_periphery.rs",
+        "name": "launch_records",
+        "content_hash": "dd87f2c85fd37946"
+      }
+    ],
+    "proposed_home": "one shared `launch_records` helper (e.g. relocated into `tests/common`) rather than each file defining its own",
+    "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "disposition": "not-a-duplicate"
+  },
+  {
     "id": "dup-10504155864a",
     "classification": "near",
     "sites": [

@@ -289,8 +289,8 @@
       },
       {
         "file": "crates/rigger-driver/src/driver/claude_code.rs",
-        "start_line": 1886,
-        "end_line": 1894
+        "start_line": 1889,
+        "end_line": 1897
       },
       {
         "file": "tests/cli.rs",
@@ -549,8 +549,8 @@
       },
       {
         "file": "crates/rigger-driver/src/driver/claude_code.rs",
-        "start_line": 1899,
-        "end_line": 1904
+        "start_line": 1902,
+        "end_line": 1907
       },
       {
         "file": "crates/rigger-grounder/src/grounder/mod.rs",
@@ -4599,8 +4599,8 @@
       },
       {
         "file": "crates/rigger-domain/src/progress.rs",
-        "start_line": 571,
-        "end_line": 574
+        "start_line": 579,
+        "end_line": 582
       },
       {
         "file": "tests/simplification_audit.rs",
@@ -5229,8 +5229,8 @@
       },
       {
         "file": "crates/rigger-driver/src/driver/mod.rs",
-        "start_line": 209,
-        "end_line": 211
+        "start_line": 237,
+        "end_line": 239
       },
       {
         "file": "crates/rigger-driver/src/reaped_child.rs",
@@ -5844,13 +5844,13 @@
     "sites": [
       {
         "file": "crates/rigger-driver/src/driver/claude_code.rs",
-        "start_line": 2197,
-        "end_line": 2204
+        "start_line": 2200,
+        "end_line": 2207
       },
       {
         "file": "crates/rigger-driver/src/driver/claude_code.rs",
-        "start_line": 2251,
-        "end_line": 2258
+        "start_line": 2254,
+        "end_line": 2261
       }
     ]
   },
@@ -5859,13 +5859,13 @@
     "sites": [
       {
         "file": "crates/rigger-driver/src/driver/claude_code.rs",
-        "start_line": 2244,
-        "end_line": 2250
+        "start_line": 2247,
+        "end_line": 2253
       },
       {
         "file": "crates/rigger-driver/src/driver/claude_code.rs",
-        "start_line": 2278,
-        "end_line": 2284
+        "start_line": 2281,
+        "end_line": 2287
       }
     ]
   },
@@ -5874,13 +5874,13 @@
     "sites": [
       {
         "file": "crates/rigger-driver/src/driver/claude_code.rs",
-        "start_line": 2528,
-        "end_line": 2549
+        "start_line": 2531,
+        "end_line": 2552
       },
       {
         "file": "crates/rigger-driver/src/driver/claude_code.rs",
-        "start_line": 2552,
-        "end_line": 2570
+        "start_line": 2555,
+        "end_line": 2573
       }
     ]
   },
@@ -5889,8 +5889,8 @@
     "sites": [
       {
         "file": "crates/rigger-driver/src/driver/mod.rs",
-        "start_line": 248,
-        "end_line": 250
+        "start_line": 276,
+        "end_line": 278
       },
       {
         "file": "tests/claude_code_stream_periphery.rs",
@@ -6989,13 +6989,28 @@
     "sites": [
       {
         "file": "crates/rigger-store-sqlite/src/progress_store.rs",
-        "start_line": 46,
-        "end_line": 60
+        "start_line": 47,
+        "end_line": 61
       },
       {
         "file": "crates/rigger-store-sqlite/src/progress_store.rs",
-        "start_line": 100,
-        "end_line": 111
+        "start_line": 111,
+        "end_line": 122
+      }
+    ]
+  },
+  {
+    "id": "dup-ad62aafad4f2",
+    "sites": [
+      {
+        "file": "crates/rigger-store-sqlite/src/progress_store.rs",
+        "start_line": 94,
+        "end_line": 105
+      },
+      {
+        "file": "tests/claude_code_stream_periphery.rs",
+        "start_line": 180,
+        "end_line": 186
       }
     ]
   },

@@ -390,13 +390,15 @@ impl Driver<'_> {
     }
 
     /// The spawn's first launch (spec 105, RESUME BY SESSION). When the latest launch of `opts.id`
-    /// in this run ([`progress_store::latest_launch_records`]) ended `interrupted`, whichever site
-    /// closed it, it is a relaunch ([`LaunchSession::relaunch`]) at the next ordinal in `opts.dir`,
-    /// a fork of that launch's session under a minted id, charged no attempt, sent the
+    /// among its records in this run ([`progress_store::launch_records`],
+    /// [`progress::latest_launch_of`]) ended `interrupted`, whichever site closed it, it is a
+    /// relaunch ([`LaunchSession::relaunch`]) at the next ordinal in `opts.dir`, a fork of that
+    /// launch's session under a minted id, charged no attempt, sent the
     /// [`Driver::interruption_note`] in front of what [`LaunchSession::task`] sends, the
-    /// [`SpawnOpts::resume_task`] when that launch's record, its open record unless it was lost,
-    /// says it carried it. Any other spawn takes [`Driver::launch`]. A failed read of the record
-    /// or of the hold sink launches nothing.
+    /// [`SpawnOpts::resume_task`] when that launch carried it: its record, its open record unless
+    /// it was lost, and the records its chain of sessions leads back through decide. Any other
+    /// spawn takes [`Driver::launch`]. A failed read of the records or of the hold sink launches
+    /// nothing.
     fn first_launch(
         &self,
         agent: &AgentDef,
@@ -404,7 +406,8 @@ impl Driver<'_> {
         opts: &SpawnOpts,
     ) -> Result<Launch, Error> {
         let store = self.progress_store;
-        let records = progress_store::latest_launch_records(store, &opts.run_id, &opts.id)?;
+        let chain = progress_store::launch_records(store, &opts.run_id, &opts.id)?;
+        let records = progress::latest_launch_of(&chain);
         let Some(interrupted) = records
             .last()
             .filter(|latest| latest.ended.as_deref() == Some(progress::ENDED_INTERRUPTED))
@@ -412,7 +415,7 @@ impl Driver<'_> {
             return self.launch(agent, prompt, opts, store);
         };
         let note = self.interruption_note(interrupted)?;
-        let session = LaunchSession::relaunch(records.first().unwrap_or(interrupted), opts);
+        let session = LaunchSession::relaunch(records.first().unwrap_or(interrupted), &chain, opts);
         let task = match session.task(prompt, opts) {
             "" => note,
             carried => format!("{note}\n\n{carried}"),
