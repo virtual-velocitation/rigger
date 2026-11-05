@@ -5577,6 +5577,46 @@
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "bare",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "7e6ca6442a8425f4"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "empty",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "d69c1a7126a0bb0e"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "named",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "b4895c2e0d189056"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "pathless_item",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "cec869aeeb9b8f66"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "a_conductor_lesson_that_names_no_file_names_the_runs_spec",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "f425226b99106d9e"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "per_unit_adjudicator_reject_blocks_integration_and_escalates",
     "is_test": true,
     "proposed_module": "conductor::tests",

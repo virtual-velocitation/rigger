@@ -32906,6 +32906,78 @@ mod tests {
         );
     }
 
+    /// EVERY CONDUCTOR LESSON CARRIES A LOCATION (op-105-conductor-lessons-carry-a-location): a
+    /// lesson the conductor records whose `about` names no file, through
+    /// [`RunCtx::emit_lesson`] with no worktree and no `about` or through a review's operator
+    /// lesson for an item with no path, names the run's spec file instead, so a file-seeded read
+    /// reaches it; one that names a file keeps it, and a run with no spec still records the
+    /// lesson, about nothing.
+    #[test]
+    fn a_conductor_lesson_that_names_no_file_names_the_runs_spec() {
+        const SPEC: &str = "specs/105-a-run.md";
+        fn bare(ctx: &RunCtx<'_>) {
+            ctx.emit_lesson(None, "u", "a lesson", None, None).unwrap();
+        }
+        fn empty(ctx: &RunCtx<'_>) {
+            ctx.emit_lesson(None, "u", "a lesson", None, Some(&[]))
+                .unwrap();
+        }
+        fn named(ctx: &RunCtx<'_>) {
+            let about = ["feature.rs".to_string()];
+            ctx.emit_lesson(None, "u", "a lesson", None, Some(&about))
+                .unwrap();
+        }
+        fn pathless_item(ctx: &RunCtx<'_>) {
+            let round = ReviewRound {
+                base: "base".into(),
+                delta: vec!["fix1.rs".into()],
+                required: Vec::new(),
+                audit: String::new(),
+            };
+            let reject = r#"{"verdict":"reject","required":[{"finding":"reword the doc comment","path":"","correctness":false}]}"#;
+            ctx.split_reject("implement", 1, 0, Some(&round), reject.to_string())
+                .unwrap();
+        }
+        let cases: [(&str, &str, fn(&RunCtx<'_>), &[&str]); 5] = [
+            (
+                "a lesson with no worktree and no about",
+                SPEC,
+                bare,
+                &[SPEC],
+            ),
+            ("a lesson with an empty about", SPEC, empty, &[SPEC]),
+            (
+                "an operator lesson for an item with no path",
+                SPEC,
+                pathless_item,
+                &[SPEC],
+            ),
+            ("a lesson that names a file", SPEC, named, &["feature.rs"]),
+            ("a lesson in a run with no spec", "", bare, &[]),
+        ];
+        for (name, spec, record, about) in cases {
+            let st = Store::open(":memory:").unwrap();
+            st.append(
+                STREAM,
+                crate::eventstore::ExpectedRevision::Any,
+                &[run_started_with_spec(spec)],
+            )
+            .unwrap();
+            let driver = Stub::new();
+            let deps = stub_deps(&st, &driver, Vec::new());
+            let cfg = Config::default();
+            let ctx = RunCtx::for_test(&cfg, &deps);
+            record(&ctx);
+            let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
+            let abouts: Vec<Value> = events
+                .iter()
+                .filter(|e| e.type_ == contextgraph::TYPE_LESSON_LEARNED)
+                .map(|e| serde_json::from_slice::<Value>(&e.data).unwrap()["about"].clone())
+                .collect();
+            assert_eq!(abouts, vec![json!(about)], "{name}: the lesson's location");
+        }
+    }
+
     #[test]
     fn per_unit_adjudicator_reject_blocks_integration_and_escalates() {
         // A rejecting adjudicator on the per-unit review (§3.2) is treated like a gate
