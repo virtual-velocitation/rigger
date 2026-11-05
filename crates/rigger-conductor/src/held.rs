@@ -105,7 +105,7 @@ impl<'a> HeldDriver<'a> {
             if (paused || matches!(held, Ok(true))) && closed {
                 return Err(parked_spawn(id));
             }
-            if !held.map_err(|read| relaunched.take().unwrap_or(read))? {
+            if !held.map_err(|read| relaunched.take().unwrap_or_else(|| Error::from(read)))? {
                 return Ok(());
             }
             (self.pause)();

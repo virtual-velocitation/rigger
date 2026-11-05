@@ -133,13 +133,13 @@ fn read_from_boundary(
 /// [`crate::run::current_run`] of that read, so a read made
 /// at every launch decision and through the whole of a hold never materializes the carried-over
 /// knowledge or the run's other events. `None` proves the run unheld; a read or a fold that fails
-/// answers its error, since a run not proved unheld launches nothing.
-pub fn read_current_hold(
-    store: &dyn EventStore,
-    stream: &str,
-) -> Result<Option<Hold>, crate::agent::Error> {
+/// answers the store's error, a fold's through [`fold_holds`] naming the run's hold, since a run
+/// not proved unheld launches nothing.
+pub fn read_current_hold(store: &dyn EventStore, stream: &str) -> Result<Option<Hold>, Error> {
     let events = read_from_boundary(store, stream, &HOLD_TYPES)?;
-    Ok(ledger::project(super::current_run(&events))?.hold)
+    let mut state = RunState::new();
+    fold_holds(&mut state, super::current_run(&events))?;
+    Ok(state.hold)
 }
 
 /// THE ONE HOLD FOLD: the [`HOLD_TYPES`] among `events` folded into `state` by
