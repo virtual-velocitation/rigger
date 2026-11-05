@@ -28,6 +28,7 @@
 
 mod common;
 
+use common::cli::Refusal::Unexhausted;
 use common::cli::{
     plan_the_widget, read_run_events, record_clean_critique, refused_new_run, run_payloads,
     run_rigger, run_rigger_ok, temp_repoless_project, with_run_store, write_scaffold,
@@ -440,12 +441,12 @@ fn every_critique_round_asks_its_adjudicator_for_the_cause_the_stop_reads() {
 }
 
 /// The relaunch the halt directs, over `root` whose stopped run's spec now holds its amended text:
-/// `rigger step --spec` [`SPEC`] plus `flags` is refused as not critiqued, on stderr alone, naming
-/// the spec repo-relative and appending nothing; once `rigger critique` has recorded a clean
-/// critique of the amended text, the same command begins the new run, whose first step parks the
-/// planner and the gate's round-0 adversary with no halt, no escalation and no attention, the
-/// stopped run's records standing once, all before the new run's boundary. `runs` is the spec and
-/// criteria of every run the store then holds.
+/// `rigger step --spec` [`SPEC`] plus `flags` is refused as not critiqued to exhaustion, on stderr
+/// alone, naming the spec repo-relative and appending nothing; once `rigger critique` has recorded
+/// a clean critique of the amended text, the same command begins the new run, whose first step
+/// parks the planner and the gate's round-0 adversary with no halt, no escalation and no attention,
+/// the stopped run's records standing once, all before the new run's boundary. `runs` is the spec
+/// and criteria of every run the store then holds.
 fn assert_the_relaunch_begins_a_clean_run_once_critiqued(
     root: &Path,
     flags: &[&str],
@@ -464,7 +465,7 @@ fn assert_the_relaunch_begins_a_clean_run_once_critiqued(
         (
             ok,
             out.as_str(),
-            err.ends_with(&refused_new_run("rigger step", "specs/widget.md", None)),
+            err.ends_with(&refused_new_run("rigger step", "specs/widget.md", Unexhausted)),
             read_run_events(root).len(),
         ),
         (false, "", true, stopped),

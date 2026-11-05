@@ -1888,8 +1888,11 @@ fn touch_liveness_marker(marker: Option<&Path>) {
 /// The scratch subdirectory a spawn's raw stream-json transcript lives under (spec 104
 /// criterion 2, architecture addendum §4.2) - a sibling of `agent-live`
 /// ([`crate::liveness::MARKER_SUBDIR`]) and `agent-scratch`
-/// ([`crate::driver::replay::spawn_scratch_path`]). Public so a command that runs this host
-/// outside a loop run (`rigger critique`, spec 112) removes the transcripts it leaves.
+/// ([`crate::driver::replay::spawn_scratch_path`]). Public for the binary's two readers of the
+/// layout: a done run's scratch teardown, which removes this area's per-run entries beside its
+/// siblings', and a command that runs this host outside a loop run (`rigger critique`, spec 112),
+/// which finds the run directory the transcripts [`remove_transcripts`] removes sit in, and
+/// removes it once it is left empty.
 pub const AGENT_STREAM_SUBDIR: &str = "agent-stream";
 
 /// The raw stream-json transcript path for one launch:
@@ -1905,6 +1908,47 @@ fn stream_path(scratch_root: &str, run_id: &str, spawn_id: &str, launch: u32) ->
     let leaf = liveness::scratch_subpath(scratch_root, AGENT_STREAM_SUBDIR, run_id, spawn_id)?;
     let name = leaf.file_name()?.to_str()?;
     Some(leaf.with_file_name(format!("{name}.{launch}.jsonl")))
+}
+
+/// The launch the file named `file` would be a transcript of, beside the stream leaf named
+/// `leaf`: the first run of digits after the leaf name. [`remove_transcripts`] holds the file to
+/// the path [`stream_path`] builds for that launch, so a file of another spawn whose leaf extends
+/// this one's (attempt 10's beside attempt 1's) never matches.
+fn transcript_launch(leaf: &str, file: &str) -> Option<u32> {
+    let digits: String = file
+        .strip_prefix(leaf)?
+        .chars()
+        .skip_while(|c| !c.is_ascii_digit())
+        .take_while(char::is_ascii_digit)
+        .collect();
+    digits.parse().ok()
+}
+
+/// Remove every transcript spawn `spawn_id` of run `run_id` left under `scratch_root`, one per
+/// launch: a file is removed only when it is the path [`stream_path`] builds for its launch, so
+/// nothing else beside them is touched - for a command that runs this host outside a loop run
+/// (`rigger critique`, spec 112), whose transcripts no run teardown removes. An empty scratch root
+/// or spawn id removes nothing. Best-effort, as the transcript itself is: a file that cannot be
+/// removed stays.
+pub fn remove_transcripts(scratch_root: &str, run_id: &str, spawn_id: &str) {
+    let Some(leaf) = liveness::scratch_subpath(scratch_root, AGENT_STREAM_SUBDIR, run_id, spawn_id)
+    else {
+        return;
+    };
+    let (Some(dir), Some(name)) = (leaf.parent(), leaf.file_name().and_then(|n| n.to_str())) else {
+        return;
+    };
+    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let path = entry.path();
+        let launch = entry
+            .file_name()
+            .to_str()
+            .and_then(|file| transcript_launch(name, file));
+        let named = launch.and_then(|launch| stream_path(scratch_root, run_id, spawn_id, launch));
+        if named.as_deref() == Some(path.as_path()) {
+            let _ = std::fs::remove_file(path);
+        }
+    }
 }
 
 /// Open (creating parent directories) the raw stream file at `path` for a fresh write -
@@ -3565,6 +3609,43 @@ mod tests {
         // unit-level proof of the same guard, now delegated to `liveness::scratch_subpath`).
         stream_path_is_none_rather_than_relative_for_an_empty_scratch_root:
             assert_eq!(stream_path("", "run-1", "u1/implementer#0", 0), None);
+    }
+
+    /// A spawn's transcripts are the files [`stream_path`] names for it, one per launch, and they
+    /// go together: another spawn's (attempt 10's, whose sanitized id extends attempt 1's) and any
+    /// other file beside them stay.
+    #[test]
+    fn remove_transcripts_removes_each_launch_of_its_spawn_and_nothing_beside_it() {
+        let scratch = tempfile::tempdir().unwrap();
+        let root = scratch.path().to_str().unwrap();
+        let transcript =
+            |spawn_id: &str, launch: u32| stream_path(root, "run-1", spawn_id, launch).unwrap();
+        let removed = [
+            transcript("u1/adversary#1", 0),
+            transcript("u1/adversary#1", 1),
+        ];
+        let dir = removed[0].parent().unwrap().to_path_buf();
+        let kept = [
+            transcript("u1/adversary#10", 0),
+            dir.join("u1_2fadversary_231.01.jsonl"),
+            dir.join("u1_2fadversary_231.notes"),
+        ];
+        std::fs::create_dir_all(&dir).unwrap();
+        for file in removed.iter().chain(&kept) {
+            std::fs::write(file, "{}").unwrap();
+        }
+        let left = || {
+            let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .collect();
+            files.sort();
+            files
+        };
+        let mut kept = kept.to_vec();
+        kept.sort();
+        remove_transcripts(root, "run-1", "u1/adversary#1");
+        assert_eq!(left(), kept, "only attempt 1's launches go");
     }
 
     #[test]

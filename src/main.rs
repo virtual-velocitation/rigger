@@ -379,9 +379,13 @@ the number of roots reclaimed; composes with the others\n  \
 rigger critique <spec>      critique the spec before any run: the workflow's critic\n                              \
 (the plan-critique gate's adversary, else\n                              \
 an adversary step in defaults.review) reads the spec\n                              \
-text and its findings and verdict are recorded keyed on\n                              \
-the text's content hash, so unchanged text is answered\n                              \
-from the record with no spawn; takes --eventstore/--conn\n                              \
+text pass after pass, each recorded keyed on the\n                              \
+text's content hash, until a pass adds no finding or\n                              \
+its attempts reach the ceiling (the effective\n                              \
+max_retries of the stage it is read from); the union\n                              \
+of the passes is printed, and a text exhausted, or at\n                              \
+the ceiling with a pass recorded, is answered from\n                              \
+the record with no spawn; takes --eventstore/--conn\n                              \
 as run does\n  \
 rigger validate             load and validate the workflow + agents\n  \
 rigger init                 set up a project: scaffold .rigger/ (workflow.yml +\n                              \

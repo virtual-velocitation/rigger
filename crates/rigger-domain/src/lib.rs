@@ -68,11 +68,15 @@ pub mod worktree;
 mod test_cases;
 
 /// The fixtures an inline `#[cfg(test)]` module shares with the root crate's tests: the event,
-/// graph and spawn fixtures of `tests/common/fixtures/`, compiled here from the same files. They name the
+/// graph, critique and spawn fixtures of `tests/common/fixtures/`, compiled here from the same files. They name the
 /// crate as `rigger::...`, which `extern crate self as rigger` makes resolve to this crate, whose
 /// modules sit at the same paths the root facade re-exports them under.
 #[cfg(test)]
 extern crate self as rigger;
+#[cfg(all(test, any(feature = "store", not(feature = "core"))))]
+#[allow(dead_code, unused_imports)]
+#[path = "../../../tests/common/fixtures/critique.rs"]
+mod critique_fixtures;
 #[cfg(test)]
 #[allow(dead_code, unused_imports)]
 #[path = "../../../tests/common/fixtures/events.rs"]

@@ -2027,7 +2027,7 @@ fn spec_lint_self_clean_over_the_committed_corpus() {
          or a regression in the heuristic"
     );
     assert_eq!(
-        shape_total, 136,
+        shape_total, 140,
         "F2 bundling / F6 copyability's corpus-wide total is pinned as a regression guard \
          (spot-checked legitimate by the round-5 adversary sweep), plus 8 hits added by \
          specs/80-criteria-survive-extraction.md, specs/81-deflake-held-port-contract.md and \
@@ -2040,7 +2040,9 @@ fn spec_lint_self_clean_over_the_committed_corpus() {
          specs/120-rigger-is-language-and-process-agnostic.md (8 F2, 15 F6) and \
          specs/121-every-prompt-the-binary-ships-is-contract-or-framing.md (12 F2, 19 F6) \
          (operator review 2026-10-20: multi-clause and over-long criteria, advisory output on \
-         the two specs' own text); a changed total otherwise means \
+         the two specs' own text), plus 4 hits added by \
+         specs/123-the-spec-critique-passes-to-exhaustion.md (0 F2, 4 F6: its four criteria \
+         are over-long, advisory output on the spec's own text); a changed total otherwise means \
          either a real spec edit (update this pin after reviewing the new/removed hits) or \
          a regression in the heuristic"
     );

@@ -3,6 +3,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
+use crate::blocker::{stage_max_retries, RetriesSource};
 use crate::config::{ReviewStep, Stage, Workflow};
 use crate::playbooks::fnv1a_64;
 
@@ -207,25 +208,65 @@ pub fn critique_gate_name(stages: &BTreeMap<String, Stage>) -> Option<String> {
 pub const NO_CRITIC_CLAUSE: &str =
     "the workflow names neither the plan-critique gate's adversary nor an adversary step in defaults.review";
 
+/// The workflow's spec critic (spec 112) and the ceiling its critique runs to (spec 123): the
+/// persona, the plan-critique gate it was read from (`None` for `defaults.review`), and that
+/// stage's effective `max_retries` with its source.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Critic {
+    pub persona: String,
+    pub gate: Option<String>,
+    pub ceiling: u32,
+    pub source: RetriesSource,
+}
+
+impl Critic {
+    /// Whether a hash with `attempts` recorded critique attempts has reached the ceiling: at or
+    /// above it, so a ceiling lowered below the count reads as reached.
+    pub fn reached(&self, attempts: u32) -> bool {
+        attempts >= self.ceiling
+    }
+
+    /// Whether `critique`, with `attempts` recorded critique attempts, is settled (spec 123, CLEAN
+    /// MEANS EXHAUSTED; ANSWERED FROM THE STORE): exhausted
+    /// ([`Critique::exhausted`](crate::review::Critique::exhausted)) or at the ceiling
+    /// ([`Critic::reached`]). THE one spelling of the rule: `rigger critique` spawns the critic only
+    /// while the critique is unsettled, and a new run's critique is CLEAN only once it is settled.
+    pub fn settles(&self, critique: &crate::review::Critique, attempts: u32) -> bool {
+        critique.exhausted() || self.reached(attempts)
+    }
+}
+
 /// The workflow's spec critic (spec 112): the adversary persona of the plan-critique gate
 /// ([`critique_gate_name`]), else the first adversary step of `defaults.review`, read in the
 /// order [`ReviewPanel::steps`](crate::config::ReviewPanel::steps) gives, else `None` - a
-/// workflow naming neither has no critic, and there is no built-in one.
-pub fn critic(workflow: &Workflow) -> Option<String> {
-    critique_gate_name(&workflow.stages)
-        .map(|gate| workflow.stages[&gate].adversary.clone())
-        .filter(|adversary| !adversary.is_empty())
-        .or_else(|| {
-            workflow
-                .defaults
-                .review
-                .steps()
-                .into_iter()
-                .find_map(|step| match step {
-                    ReviewStep::Adversary(id) => Some(id),
-                    _ => None,
-                })
-        })
+/// workflow naming neither has no critic, and there is no built-in one. Its ceiling is the
+/// [`stage_max_retries`] of the stage it was read from: the gate's, else no stage's (spec 123,
+/// THE CEILING).
+pub fn critic_of(workflow: &Workflow) -> Option<Critic> {
+    let gate = critique_gate_name(&workflow.stages)
+        .filter(|gate| !workflow.stages[gate].adversary.is_empty());
+    let persona = match &gate {
+        Some(gate) => workflow.stages[gate].adversary.clone(),
+        None => workflow
+            .defaults
+            .review
+            .steps()
+            .into_iter()
+            .find_map(|step| match step {
+                ReviewStep::Adversary(id) => Some(id),
+                _ => None,
+            })?,
+    };
+    let (ceiling, source) = stage_max_retries(
+        gate.as_ref().map(|gate| &workflow.stages[gate]),
+        &workflow.defaults,
+    );
+    Some(Critic {
+        persona,
+        gate,
+        ceiling,
+        source,
+    })
 }
 
 /// A stable, unique, human-legible unit id derived from a criterion's text plus its
@@ -474,6 +515,8 @@ pub fn ready_stages(
 mod tests {
     use super::*;
     use crate::config::Workflow;
+    use crate::critique_fixtures::pass_at;
+    use crate::review::Critique;
 
     /// A workflow parsed from its YAML, as `workflow.yml` carries it.
     fn workflow(yaml: &str) -> Workflow {
@@ -552,6 +595,18 @@ mod tests {
         }
     }
 
+    /// The critic a test expects: `persona`, read from the stage `gate` names (`None` for
+    /// `defaults.review`), bounded by the built-in bound, as under a workflow setting no
+    /// `max_retries`.
+    fn built_in_critic(persona: &str, gate: Option<&str>) -> Critic {
+        Critic {
+            persona: persona.to_string(),
+            gate: gate.map(str::to_string),
+            ceiling: 3,
+            source: RetriesSource::BuiltIn,
+        }
+    }
+
     #[test]
     fn the_critic_is_the_plan_critique_gates_adversary_first() {
         for review in [
@@ -562,7 +617,11 @@ mod tests {
                 "defaults:\n  review: {review}\nstages:\n{PLAN}  plan-critique:\n    \
                  needs: [plan]\n    adversary: critic\n    adjudicator: judge\n"
             ));
-            assert_eq!(critic(&wf).as_deref(), Some("critic"), "{review}");
+            assert_eq!(
+                critic_of(&wf),
+                Some(built_in_critic("critic", Some("plan-critique"))),
+                "{review}"
+            );
         }
     }
 
@@ -572,11 +631,14 @@ mod tests {
             "defaults:\n  review:\n    adversary: fallback\nstages:\n{PLAN}  plan-critique:\n    \
              needs: [plan]\n    adjudicator: judge\n"
         ));
-        assert_eq!(critic(&gate_without_adversary).as_deref(), Some("fallback"));
+        assert_eq!(
+            critic_of(&gate_without_adversary),
+            Some(built_in_critic("fallback", None))
+        );
         let no_gate = workflow(
             "defaults:\n  review:\n    adversary: fallback\nstages:\n  a:\n    agent: worker\n",
         );
-        assert_eq!(critic(&no_gate).as_deref(), Some("fallback"));
+        assert_eq!(critic_of(&no_gate), Some(built_in_critic("fallback", None)));
     }
 
     #[test]
@@ -586,12 +648,12 @@ mod tests {
              needs: [implement]\n    adversary: lens-adversary\n    adjudicator: judge\n"
         ));
         assert_eq!(
-            critic(&review_stage_only),
+            critic_of(&review_stage_only),
             None,
             "a review stage that does not need the producer is not the plan-critique gate"
         );
         assert_eq!(
-            critic(&workflow("stages:\n  a:\n    agent: worker\n")),
+            critic_of(&workflow("stages:\n  a:\n    agent: worker\n")),
             None
         );
         assert_eq!(
@@ -638,8 +700,123 @@ mod tests {
         for (why, review, want) in cases {
             for stages in [PLAN.to_string(), format!("{PLAN}{gate}")] {
                 let wf = workflow(&format!("defaults:\n  review: {review}\nstages:\n{stages}"));
-                assert_eq!(critic(&wf).as_deref(), want, "{why}: {stages}");
+                assert_eq!(
+                    critic_of(&wf),
+                    want.map(|persona| built_in_critic(persona, None)),
+                    "{why}: {stages}"
+                );
             }
+        }
+    }
+
+    /// Spec 123, THE CEILING: the critic's ceiling is the effective `max_retries` of the stage it
+    /// is read from, with its source - the plan-critique gate's own key, else
+    /// `defaults.max_retries`, else the built-in bound - and a critic read from `defaults.review`
+    /// never reads the gate's key.
+    #[test]
+    fn the_critics_ceiling_is_the_effective_max_retries_of_the_stage_it_is_read_from() {
+        let gate_critic = |ceiling, source| Critic {
+            persona: "critic".to_string(),
+            gate: Some("plan-critique".to_string()),
+            ceiling,
+            source,
+        };
+        let default_critic = |ceiling, source| Critic {
+            persona: "fallback".to_string(),
+            gate: None,
+            ceiling,
+            source,
+        };
+        let adversary = "    adversary: critic\n";
+        let defaults_key = "  max_retries: 4\n";
+        let gate_key = "    max_retries: 5\n";
+        let cases = [
+            (
+                "the gate's own key over the defaults' key",
+                defaults_key,
+                adversary,
+                gate_key,
+                gate_critic(5, RetriesSource::Stage),
+            ),
+            (
+                "the gate's own key under no defaults' key",
+                "",
+                adversary,
+                gate_key,
+                gate_critic(5, RetriesSource::Stage),
+            ),
+            (
+                "the defaults' key under a gate setting none",
+                defaults_key,
+                adversary,
+                "",
+                gate_critic(4, RetriesSource::Defaults),
+            ),
+            (
+                "the built-in bound under neither key",
+                "",
+                adversary,
+                "",
+                gate_critic(3, RetriesSource::BuiltIn),
+            ),
+            (
+                "a default-review critic reads the defaults' key, never the gate's",
+                defaults_key,
+                "",
+                gate_key,
+                default_critic(4, RetriesSource::Defaults),
+            ),
+            (
+                "a default-review critic under the gate's key alone takes the built-in bound",
+                "",
+                "",
+                gate_key,
+                default_critic(3, RetriesSource::BuiltIn),
+            ),
+        ];
+        for (why, defaults_max, gate_adversary, gate_max, want) in cases {
+            let wf = workflow(&format!(
+                "defaults:\n  review:\n    adversary: fallback\n{defaults_max}stages:\n{PLAN}  \
+                 plan-critique:\n    needs: [plan]\n{gate_adversary}    adjudicator: judge\n\
+                 {gate_max}"
+            ));
+            assert_eq!(critic_of(&wf), Some(want), "{why}");
+        }
+    }
+
+    /// Spec 123: the ceiling is reached once the attempt count is at or above it, a count past it
+    /// (a key lowered between calls) included.
+    #[test]
+    fn the_ceiling_is_reached_once_the_attempt_count_is_at_or_above_it() {
+        let critic = built_in_critic("critic", None);
+        for (attempts, want) in [(0, false), (2, false), (3, true), (4, true)] {
+            assert_eq!(
+                critic.reached(attempts),
+                want,
+                "{attempts} attempts against a ceiling of 3"
+            );
+        }
+    }
+
+    /// Spec 123: a critique is settled once it is exhausted or its attempt count has reached the
+    /// ceiling, either alone sufficing.
+    #[test]
+    fn a_critique_settles_once_exhausted_or_at_the_ceiling() {
+        let critic = built_in_critic("critic", None);
+        let unexhausted = Critique {
+            passes: vec![pass_at(10, 0, &[("sc-h-0-1", false)])],
+        };
+        let exhausted = Critique {
+            passes: vec![pass_at(10, 0, &[("sc-h-0-1", false)]), pass_at(11, 1, &[])],
+        };
+        for (why, critique, attempts, want) in [
+            ("exhausted, below the ceiling", &exhausted, 2, true),
+            ("exhausted, at the ceiling", &exhausted, 3, true),
+            ("unexhausted, below the ceiling", &unexhausted, 2, false),
+            ("unexhausted, at the ceiling", &unexhausted, 3, true),
+            ("unexhausted, past the ceiling", &unexhausted, 4, true),
+        ] {
+            assert_eq!(critic.settles(critique, attempts), want, "{why}");
         }
     }
 }

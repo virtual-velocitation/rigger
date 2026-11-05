@@ -1951,8 +1951,8 @@ struct RunStartCritique<'a> {
     backend: &'a dyn EventStore,
     /// The project identity both stores are namespaced by.
     identity: &'a str,
-    /// The loaded workflow, whose critic ([`rigger::wave::critic`]) decides whether the refusal
-    /// applies.
+    /// The loaded workflow, whose critic ([`rigger::wave::critic_of`]) decides whether the refusal
+    /// applies and holds the ceiling the critique's attempt count is held to.
     workflow: &'a config::Workflow,
     /// The root the spec path and every `governs` entry are made relative to
     /// ([`review::spec_root`]).
@@ -1969,10 +1969,10 @@ impl RunStartCritique<'_> {
     /// with no spec, and one that adopts the latest run ([`runscope::adopted_run`] over the run
     /// stream's [`runscope::MINT_DECISION_TYPES`] events, `criteria` and `fresh`, as a command
     /// naming its spec), proceeds. Under a workflow naming no
-    /// critic a new run proceeds after one line on stderr saying so. Otherwise the new run is
-    /// refused - with the text [`new_run_refusal`] renders - when the spec is outside the
-    /// repository, when its text has no critique, or while the critique holds an open BLOCKING
-    /// finding ([`review::open_findings`]). It writes nothing.
+    /// critic a new run proceeds after one line on stderr saying so. Otherwise a spec outside the
+    /// repository is refused as not critiqued, and one inside it proceeds only while its critique
+    /// is clean ([`Self::refusal`]); else the new run is refused in the shape that names, with the
+    /// text [`new_run_refusal`] renders. It writes nothing.
     fn refuse_unless_clean(&self, spec: Option<&str>, criteria: &[String], fresh: bool) -> Res {
         let Some(spec) = spec else {
             return Ok(());
@@ -1988,71 +1988,103 @@ impl RunStartCritique<'_> {
         }
         let path = review::normalize_spec_path(self.root, spec);
         let named = path.as_deref().unwrap_or(spec);
-        if rigger::wave::critic(self.workflow).is_none() {
+        let Some(critic) = rigger::wave::critic_of(self.workflow) else {
             eprintln!(
                 "{}: no spec critique for {named}: {}",
                 self.command,
                 rigger::wave::NO_CRITIC_CLAUSE
             );
             return Ok(());
-        }
-        let open = match &path {
-            Some(path) => self.open_ids(&project, path)?,
-            None => None,
         };
-        match open {
-            Some(ids) if ids.is_empty() => Ok(()),
-            open => Err(new_run_refusal(self.command, named, open.as_deref()).into()),
+        let refusal = match &path {
+            Some(path) => self.refusal(&project, path, &critic)?,
+            None => Some(NewRunRefusal::Outside),
+        };
+        match refusal {
+            None => Ok(()),
+            Some(refusal) => Err(new_run_refusal(self.command, named, refusal).into()),
         }
     }
 
-    /// The open BLOCKING findings of the critique of this text, `spec` being its repo-relative
-    /// path: read through the critique's own store, the resolutions from the project run stream's
-    /// `DecisionMade` events. `None` when the text has no critique.
-    fn open_ids(
+    /// Why the critique of this text refuses a new run, `spec` being its repo-relative path and
+    /// `critic` the workflow's, whose ceiling the attempt count is held to (spec 123, CLEAN MEANS
+    /// EXHAUSTED); `None` when it is CLEAN. The critique and its attempt count
+    /// ([`review::next_critique_attempt`]) are read through the critique's own store, the
+    /// resolutions from the project run stream's `DecisionMade` events ([`open_blocking_ids`]).
+    /// The critique is settled when it is exhausted or its attempt count has reached the ceiling
+    /// ([`rigger::wave::Critic::settles`]). An open BLOCKING
+    /// id refuses on the ids, settled or not; with none open a settled critique is CLEAN, and an
+    /// unsettled one, or a text with no pass, is not critiqued to exhaustion.
+    fn refusal(
         &self,
         project: &dyn EventStore,
         spec: &str,
-    ) -> Result<Option<Vec<String>>, Box<dyn std::error::Error>> {
+        critic: &rigger::wave::Critic,
+    ) -> Result<Option<NewRunRefusal>, Box<dyn std::error::Error>> {
         let critiques = critique_store(self.backend, self.identity);
-        let Some(critique) = review::read_critique(&critiques, &review::critique_hash(self.text))?
-        else {
-            return Ok(None);
+        let hash = review::critique_hash(self.text);
+        let Some(critique) = review::read_critique(&critiques, &hash)? else {
+            return Ok(Some(NewRunRefusal::Unexhausted));
         };
-        let decisions = project.read_stream_typed(
-            conductor::STREAM,
-            0,
-            TypeSelection::Only(&[contextgraph::TYPE_DECISION_MADE]),
-        )?;
-        Ok(Some(review::open_findings(
-            &critique, &decisions, spec, self.root,
-        )))
+        let ids = open_blocking_ids(project, &critique, spec, self.root)?;
+        let settled = critic.settles(&critique, review::next_critique_attempt(&critiques, &hash)?);
+        Ok(match (ids.is_empty(), settled) {
+            (false, settled) => Some(NewRunRefusal::Open { ids, settled }),
+            (true, true) => None,
+            (true, false) => Some(NewRunRefusal::Unexhausted),
+        })
     }
 }
 
-/// The refusal of a new run on `spec` by `command` (spec 112, Notes): why - `open` lists the
-/// critique's open BLOCKING finding ids, `None` when the text has no critique - then the two
-/// commands that clear it, their labels padded to one column.
-fn new_run_refusal(command: &str, spec: &str, open: Option<&[String]>) -> String {
-    let (why, route, resolves) = match open {
-        None => (
+/// Why a new run is refused (spec 123, CLEAN MEANS EXHAUSTED): each shape [`new_run_refusal`]
+/// renders.
+enum NewRunRefusal {
+    /// The spec is outside the repository, so its text cannot be critiqued.
+    Outside,
+    /// The critique holds these open BLOCKING finding ids; `settled` when it is exhausted or at
+    /// its ceiling, the only state in which their resolution is offered.
+    Open { ids: Vec<String>, settled: bool },
+    /// The critique holds no open BLOCKING id but has no pass, or is neither exhausted nor at its
+    /// ceiling.
+    Unexhausted,
+}
+
+/// The refusal of a new run on `spec` by `command` in the shape `refusal` (spec 112, Notes; spec
+/// 123, CLEAN MEANS EXHAUSTED): why, then the command that critiques the spec, then - for a spec
+/// outside the repository, or for open ids of a critique exhausted or at its ceiling - the
+/// command recording a resolution, the labels padded to one column.
+fn new_run_refusal(command: &str, spec: &str, refusal: NewRunRefusal) -> String {
+    let (why, resolution) = match refusal {
+        NewRunRefusal::Outside => (
             "not critiqued".to_string(),
-            "or, once critiqued, record a resolution:",
-            "[<ids>]".to_string(),
+            Some((
+                "or, once critiqued, record a resolution:",
+                "[<ids>]".to_string(),
+            )),
         ),
-        Some(ids) => (
+        NewRunRefusal::Open { ids, settled } => (
             format!("open BLOCKING findings: {}", ids.join(", ")),
-            "or record a resolution:",
-            serde_json::json!(ids).to_string(),
+            settled.then(|| {
+                (
+                    "or record a resolution:",
+                    serde_json::json!(ids).to_string(),
+                )
+            }),
         ),
+        NewRunRefusal::Unexhausted => ("not critiqued to exhaustion".to_string(), None),
     };
-    let governs = serde_json::json!([spec]);
-    format!(
-        "{command}: refusing to begin a new run on {spec}: {why}\n  {:<33} rigger critique \
-         {spec}\n  {route:<33} rigger emit DecisionMade '{{\"id\":\"...\",\"governs\":{governs},\
-         \"resolves\":{resolves},\"summary\":\"...\"}}'",
+    let mut refused = format!(
+        "{command}: refusing to begin a new run on {spec}: {why}\n  {:<33} rigger critique {spec}",
         "amend the spec and critique it:"
-    )
+    );
+    if let Some((route, resolves)) = resolution {
+        let governs = serde_json::json!([spec]);
+        refused.push_str(&format!(
+            "\n  {route:<33} rigger emit DecisionMade '{{\"id\":\"...\",\"governs\":{governs},\
+             \"resolves\":{resolves},\"summary\":\"...\"}}'"
+        ));
+    }
+    refused
 }
 
 /// The in-Claude-Code MCP-server path (`rigger serve` / `rigger run --driver

@@ -37,8 +37,9 @@ use rigger_domain::eventstore::Event;
 /// MEMBER CRATE's own design note - "a page's module is single-threaded" - so this needs no
 /// lock and no `Send`/`Sync` bound.
 ///
-/// This crate resolves nothing itself: `blocker::effective_max_retries` is the ONE place
-/// `0` maps to `safety::MAX_RETRIES`, so `max_retries` here is threaded straight through
+/// This crate resolves nothing itself: `blocker::effective_max_retries` maps `0` to
+/// `safety::MAX_RETRIES` by reading the one home of that fallback, the private
+/// `blocker::defaults_max_retries`, so `max_retries` here is threaded straight through
 /// verbatim, never shadowed by a second, independently-maintained copy of that constant.
 ///
 /// No ambient "current position" field lives here (spec 94 c4's own REQUIRED FIX,

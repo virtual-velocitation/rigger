@@ -1027,24 +1027,60 @@ pub fn recorded_lenient(events: &[Event]) -> BTreeMap<String, SpawnRequest> {
     out
 }
 
-/// The LATEST recorded result for `id`, or `None` if the spawn has no result yet (it is
-/// still parked at the frontier, awaiting a courier's `rigger result`). This is how the
-/// replay driver decides answer-vs-park: `Some` answers the spawn, `None` parks it.
-///
-/// Later results win, so a corrected re-record supersedes an earlier one. Non-result
-/// events (and malformed result bodies via the surfaced error) are handled just like
-/// [`recorded`], so the same run stream feeds this and the ledger/graph projections.
-pub fn result_of(events: &[Event], id: &str) -> Result<Option<SpawnResult>, serde_json::Error> {
-    let mut found = None;
-    for e in events {
-        if e.type_ == TYPE_SPAWN_RESULT {
-            let res = SpawnResult::from_event(e)?;
-            if res.id == id {
-                found = Some(res);
+/// The latest [`TYPE_SPAWN_RESULT`] event of each spawn id in `events`, and the first result
+/// body that cannot be read, if any. THE one later-wins pick of a spawn's result: a later result
+/// of an id displaces an earlier one, so a corrected re-record supersedes it, and an event of
+/// another type is no result. The strict [`latest_result_event`] (and [`result_of`] through it)
+/// fails on the unreadable body; the degrade-tolerant [`latest_results_lenient`] skips it, since
+/// it carries no id to file it under.
+fn latest_results(events: &[Event]) -> (BTreeMap<String, &Event>, Option<serde_json::Error>) {
+    let mut latest = BTreeMap::new();
+    let mut unreadable = None;
+    for event in events.iter().filter(|e| e.type_ == TYPE_SPAWN_RESULT) {
+        match SpawnResult::from_event(event) {
+            Ok(result) => {
+                latest.insert(result.id, event);
+            }
+            Err(e) => {
+                unreadable.get_or_insert(e);
             }
         }
     }
-    Ok(found)
+    (latest, unreadable)
+}
+
+/// The event of the LATEST recorded result for `id` ([`latest_results`]), for a reader that names
+/// the log position it sits at, or `None` if the spawn has no result yet. A malformed result body
+/// fails the read, as it fails [`result_of`], which reads this.
+pub fn latest_result_event<'a>(
+    events: &'a [Event],
+    id: &str,
+) -> Result<Option<&'a Event>, serde_json::Error> {
+    match latest_results(events) {
+        (_, Some(unreadable)) => Err(unreadable),
+        (latest, None) => Ok(latest.get(id).copied()),
+    }
+}
+
+/// The LATEST recorded result for `id` ([`latest_results`]), or `None` if the spawn has no
+/// result yet (it is still parked at the frontier, awaiting a courier's `rigger result`). This
+/// is how the replay driver decides answer-vs-park: `Some` answers the spawn, `None` parks it.
+///
+/// Non-result events are ignored and a malformed result body fails the read, just like
+/// [`recorded`], so the same run stream feeds this and the ledger/graph projections.
+pub fn result_of(events: &[Event], id: &str) -> Result<Option<SpawnResult>, serde_json::Error> {
+    latest_result_event(events, id)?
+        .map(SpawnResult::from_event)
+        .transpose()
+}
+
+/// Degrade-tolerant sibling of [`result_of`], as [`recorded_lenient`] is of [`recorded`]: the
+/// latest recorded result event of every spawn id in `events` ([`latest_results`]), keyed by
+/// the id, a result body that cannot be read SKIPPED rather than failing the read. For a reader
+/// one corrupt result must never blind to every other spawn's (the spec critique's union of
+/// passes, `review::read_critique`).
+pub fn latest_results_lenient(events: &[Event]) -> BTreeMap<String, &Event> {
+    latest_results(events).0
 }
 
 /// The real result that ENDED spawn `id`: its latest recorded result ([`result_of`]) when that is
@@ -1837,6 +1873,74 @@ mod tests {
             "the later success supersedes the earlier failure"
         );
         assert_eq!(got.output, "recovered");
+    }
+
+    /// THE later-wins pick of a spawn's result, read both ways over one stream: the latest result
+    /// of each spawn id wins and an event of another type is no result; the strict [`result_of`]
+    /// fails on the first unreadable result body, and [`latest_results_lenient`] skips it.
+    #[test]
+    fn a_spawns_result_is_its_latest_read_strictly_or_past_an_unreadable_body() {
+        let result = |id: &str, output: &str| SpawnResult::ok(id, output).to_event().unwrap();
+        let no_id = Event::new(TYPE_SPAWN_RESULT, br#"{"output":"no id"}"#.to_vec());
+        let not_json = Event::new(TYPE_SPAWN_RESULT, b"not json".to_vec());
+        let unreadable = |event: &Event| SpawnResult::from_event(event).unwrap_err().to_string();
+        // A request whose body reads as a result of `a`: only its type keeps it out.
+        let request = Event::new(TYPE_SPAWN_REQUESTED, result("a", "a request").data);
+        type Row<'a> = (
+            &'a str,
+            Vec<Event>,
+            Vec<(&'a str, &'a str)>,
+            Result<Option<&'a str>, String>,
+        );
+        let rows: [Row; 5] = [
+            ("no event", vec![], vec![], Ok(None)),
+            (
+                "a later result of an id displaces an earlier one",
+                vec![
+                    result("a", "first"),
+                    result("b", "other"),
+                    result("a", "second"),
+                ],
+                vec![("a", "second"), ("b", "other")],
+                Ok(Some("second")),
+            ),
+            (
+                "an event of another type is no result",
+                vec![request, result("b", "other")],
+                vec![("b", "other")],
+                Ok(None),
+            ),
+            (
+                "an unreadable body between two results of the id",
+                vec![result("a", "first"), no_id.clone(), result("a", "second")],
+                vec![("a", "second")],
+                Err(unreadable(&no_id)),
+            ),
+            (
+                "two unreadable bodies",
+                vec![no_id.clone(), not_json],
+                vec![],
+                Err(unreadable(&no_id)),
+            ),
+        ];
+        for (why, events, lenient, strict) in rows {
+            let read: Vec<(String, String)> = latest_results_lenient(&events)
+                .into_iter()
+                .map(|(id, event)| (id, SpawnResult::from_event(event).unwrap().output))
+                .collect();
+            let want: Vec<(String, String)> = lenient
+                .iter()
+                .map(|(id, output)| (id.to_string(), output.to_string()))
+                .collect();
+            assert_eq!(read, want, "{why}: every id's latest result");
+            assert_eq!(
+                result_of(&events, "a")
+                    .map(|res| res.map(|res| res.output))
+                    .map_err(|e| e.to_string()),
+                strict.map(|output| output.map(str::to_string)),
+                "{why}: the strict read of a"
+            );
+        }
     }
 
     /// THE spawn-has-ended rule: a spawn has ended once its latest result is a real one - a

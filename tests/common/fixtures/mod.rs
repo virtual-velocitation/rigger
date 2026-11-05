@@ -64,6 +64,8 @@ mod canary;
 #[cfg(any(feature = "store", not(feature = "core")))]
 mod conductor;
 #[cfg(any(feature = "store", not(feature = "core")))]
+mod critique;
+#[cfg(any(feature = "store", not(feature = "core")))]
 mod cursor;
 #[cfg(any(feature = "store", not(feature = "core")))]
 mod fold;
@@ -87,6 +89,8 @@ mod write_lock;
 pub use canary::*;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use conductor::*;
+#[cfg(any(feature = "store", not(feature = "core")))]
+pub use critique::*;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use cursor::*;
 #[cfg(any(feature = "store", not(feature = "core")))]

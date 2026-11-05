@@ -28,6 +28,7 @@
 
 use serde::Deserialize;
 
+use crate::config::{Defaults, Stage};
 use crate::eventstore::Event;
 use crate::ledger::{self, RunState, Status};
 use crate::safety;
@@ -165,16 +166,46 @@ impl Blocker {
     }
 }
 
-/// Resolve the effective remediation bound the way the conductor does
-/// ([`crate::conductor`]'s `max_retries`): `defaults.max_retries`, or
-/// [`safety::MAX_RETRIES`] when unset (`0`). Single-sourced here so the
-/// `reject-recurrence #n/max` line's `max` matches the bound the run actually escalates
-/// at, on either surface.
+/// Resolve the effective remediation bound of a configured `defaults.max_retries`: the key, or
+/// [`safety::MAX_RETRIES`] when unset (`0`) ([`defaults_max_retries`]). The conductor reads the
+/// same resolution through [`stage_max_retries`], so the `reject-recurrence #n/max` line's `max`
+/// matches the bound the run actually escalates at, on either surface.
 pub fn effective_max_retries(configured: u32) -> u32 {
-    if configured == 0 {
-        safety::MAX_RETRIES
-    } else {
-        configured
+    defaults_max_retries(configured).0
+}
+
+/// A `max_retries` key as set: `None` when unset (`0`), which inherits.
+fn set_key(max_retries: u32) -> Option<u32> {
+    (max_retries != 0).then_some(max_retries)
+}
+
+/// The bound a configured `defaults.max_retries` gives with its source: the key when set, else
+/// the built-in [`safety::MAX_RETRIES`]. The one home of that fallback.
+fn defaults_max_retries(configured: u32) -> (u32, RetriesSource) {
+    match set_key(configured) {
+        Some(default) => (default, RetriesSource::Defaults),
+        None => (safety::MAX_RETRIES, RetriesSource::BuiltIn),
+    }
+}
+
+/// Where a stage's effective `max_retries` came from (spec 123, THE CEILING): its own key, the
+/// workflow's `defaults.max_retries`, or the built-in bound [`safety::MAX_RETRIES`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RetriesSource {
+    Stage,
+    Defaults,
+    BuiltIn,
+}
+
+/// The effective remediation bound of `stage` (spec 123, THE CEILING, and spec 91's stage
+/// override) with its source: the stage's own non-zero `max_retries`, else the non-zero
+/// `defaults.max_retries`, else [`safety::MAX_RETRIES`]. No stage reads the defaults alone. The
+/// conductor's per-unit bound and the spec critic's ceiling both read it, so a unit and a
+/// critique escalate at one bound.
+pub fn stage_max_retries(stage: Option<&Stage>, defaults: &Defaults) -> (u32, RetriesSource) {
+    match stage.and_then(|st| set_key(st.max_retries)) {
+        Some(own) => (own, RetriesSource::Stage),
+        None => defaults_max_retries(defaults.max_retries),
     }
 }
 
@@ -338,6 +369,68 @@ mod tests {
     fn effective_max_retries_falls_back_when_unset() {
         assert_eq!(effective_max_retries(0), safety::MAX_RETRIES);
         assert_eq!(effective_max_retries(6), 6);
+    }
+
+    /// Spec 123, THE CEILING: a stage's effective `max_retries` is its own non-zero key, else
+    /// `defaults.max_retries` when non-zero, else the built-in bound, each with the source it came
+    /// from.
+    #[test]
+    fn a_stages_max_retries_is_its_own_else_the_defaults_else_the_built_in_bound() {
+        let stage = |max_retries| Stage {
+            max_retries,
+            ..Stage::default()
+        };
+        let defaults = |max_retries| Defaults {
+            max_retries,
+            ..Defaults::default()
+        };
+        let cases = [
+            (
+                "a stage's own key over a larger default",
+                Some(stage(5)),
+                defaults(4),
+                (5, RetriesSource::Stage),
+            ),
+            (
+                "a stage's own key under a larger default",
+                Some(stage(1)),
+                defaults(4),
+                (1, RetriesSource::Stage),
+            ),
+            (
+                "a stage's own key under unset defaults",
+                Some(stage(5)),
+                defaults(0),
+                (5, RetriesSource::Stage),
+            ),
+            (
+                "an unset stage inherits the defaults' key",
+                Some(stage(0)),
+                defaults(4),
+                (4, RetriesSource::Defaults),
+            ),
+            (
+                "no stage reads the defaults' key",
+                None,
+                defaults(4),
+                (4, RetriesSource::Defaults),
+            ),
+            (
+                "an unset stage under unset defaults takes the built-in bound",
+                Some(stage(0)),
+                defaults(0),
+                (3, RetriesSource::BuiltIn),
+            ),
+            (
+                "no stage under unset defaults takes the built-in bound",
+                None,
+                defaults(0),
+                (3, RetriesSource::BuiltIn),
+            ),
+        ];
+        for (why, stage, defaults, want) in cases {
+            assert_eq!(stage_max_retries(stage.as_ref(), &defaults), want, "{why}");
+        }
     }
 
     #[test]

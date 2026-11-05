@@ -2165,8 +2165,8 @@ impl SpawnFence {
 /// [`crate::run::current_run`]) - an unscoped slice risks matching a PRIOR run's
 /// identically-named unit's already-resolved spawn as "the latest", which would wrongly
 /// permit a reclaim this fence exists to prevent. Reuses [`crate::spawn::recorded`] /
-/// [`crate::spawn::result_of`] (the SAME spawn-request/result authority every other liveness
-/// reader folds) rather than re-deriving a second notion of "answered".
+/// [`crate::spawn::latest_result_event`] (the SAME spawn-request/result authority every other
+/// liveness reader folds) rather than re-deriving a second notion of "answered".
 pub fn spawn_fence(events: &[Event], unit: &str) -> SpawnFence {
     let mut latest: Option<crate::spawn::SpawnRequest> = None;
     for e in events {
@@ -2181,26 +2181,14 @@ pub fn spawn_fence(events: &[Event], unit: &str) -> SpawnFence {
     let Some(req) = latest else {
         return SpawnFence::NoSpawn;
     };
-    match crate::spawn::result_of(events, &req.id) {
-        Ok(Some(res)) => {
-            // The position of the LATEST result event for this id - mirrors `result_of`'s
-            // own "later results win" fold (last-write-wins), just walked in reverse to stop
-            // at the first (i.e. latest) match instead of folding every candidate.
-            let at = events
-                .iter()
-                .rev()
-                .find(|e| {
-                    e.type_ == crate::spawn::TYPE_SPAWN_RESULT
-                        && crate::spawn::SpawnResult::from_event(e).is_ok_and(|r| r.id == req.id)
-                })
-                .map(|e| e.position)
-                .unwrap_or_default();
-            SpawnFence::Terminal {
-                spawn: req.id,
-                at,
-                hung: res.is_liveness_fault(),
-            }
-        }
+    match crate::spawn::latest_result_event(events, &req.id) {
+        // The latest result event for this id, at the position it sits at - the one later-wins
+        // pick `result_of` reads too.
+        Ok(Some(event)) => SpawnFence::Terminal {
+            spawn: req.id,
+            at: event.position,
+            hung: crate::spawn::SpawnResult::from_event(event).is_ok_and(|r| r.is_liveness_fault()),
+        },
         // A malformed result body degrades identically to "no result yet" - the same
         // conservative direction `result_of`'s own callers already take on decode failure.
         _ => SpawnFence::InFlight { spawn: req.id },
@@ -6180,42 +6168,59 @@ mod tests {
     }
 
     #[test]
-    fn spawn_fence_finds_the_true_results_position_past_a_later_event_sharing_its_id() {
-        // A decoy event AFTER the real result reuses the SAME id in a DIFFERENT event type
-        // (a re-parked `SpawnRequested`, unrealistic in production but constructible directly
-        // on the log) - its JSON body still decodes successfully as a `SpawnResult` (both
-        // share the `id` field, and `SpawnResult`'s other fields all default), so the
-        // position lookup's `find` predicate must match on TYPE *and* id: a `||` in place of
-        // the `&&`, or a flipped `==`, would let this wrong-typed decoy's LATER position (or
-        // no position at all) leak into the evidence instead of the real result's.
-        let store = Store::open(":memory:").unwrap();
+    fn spawn_fence_is_terminal_at_the_position_of_its_spawns_latest_result() {
         let req = crate::spawn::test_request("u5", "u5", "implementer", 0, "task");
-        store
-            .append(STREAM, ExpectedRevision::Any, &[req.to_event().unwrap()])
-            .unwrap();
-        let res = SpawnResult::ok(&req.id, "done");
-        let real_pos = store
-            .append(STREAM, ExpectedRevision::Any, &[res.to_event().unwrap()])
-            .unwrap()
-            .one("result")
-            .unwrap();
-        // The decoy: a SECOND `SpawnRequested` reusing the identical id, appended AFTER the
-        // real result so it sits at a LATER position - reverse iteration reaches it FIRST.
-        store
-            .append(STREAM, ExpectedRevision::Any, &[req.to_event().unwrap()])
-            .unwrap();
-        let events = run_log(&store);
-
-        let fence = spawn_fence(&events, "u5");
-        assert_eq!(
-            fence,
-            SpawnFence::Terminal {
-                spawn: req.id.clone(),
-                at: real_pos,
-                hung: false,
-            },
-            "the position must be the REAL result's, never the later decoy's matching id"
-        );
+        let real = || SpawnResult::ok(&req.id, "done").to_event().unwrap();
+        // (case, the events appended after the request, the index among them of the result the
+        // fence reads as the one that ended the spawn)
+        let rows = [
+            // A decoy AFTER the real result reuses the SAME id in a DIFFERENT event type (a
+            // re-parked `SpawnRequested`, unrealistic in production but constructible directly
+            // on the log) - its JSON body still decodes successfully as a `SpawnResult` (both
+            // share the `id` field, and `SpawnResult`'s other fields all default), so the pick
+            // must match on TYPE *and* id, or the wrong-typed decoy's LATER position (or no
+            // position at all) would leak into the evidence instead of the real result's.
+            (
+                "a later request reusing the id is no result",
+                vec![real(), req.to_event().unwrap()],
+                0,
+            ),
+            (
+                "a real result recorded after a liveness fault supersedes it, hang and position",
+                vec![
+                    SpawnResult::liveness_fault(&req.id, "stale marker", "infra")
+                        .to_event()
+                        .unwrap(),
+                    real(),
+                ],
+                1,
+            ),
+        ];
+        for (case, after, ended_by) in rows {
+            let store = Store::open(":memory:").unwrap();
+            store
+                .append(STREAM, ExpectedRevision::Any, &[req.to_event().unwrap()])
+                .unwrap();
+            let positions: Vec<_> = after
+                .into_iter()
+                .map(|e| {
+                    store
+                        .append(STREAM, ExpectedRevision::Any, &[e])
+                        .unwrap()
+                        .one("event")
+                        .unwrap()
+                })
+                .collect();
+            assert_eq!(
+                spawn_fence(&run_log(&store), "u5"),
+                SpawnFence::Terminal {
+                    spawn: req.id.clone(),
+                    at: positions[ended_by],
+                    hung: false,
+                },
+                "{case}"
+            );
+        }
     }
 
     #[test]

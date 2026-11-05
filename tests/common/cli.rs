@@ -14,7 +14,7 @@ use rigger::eventstore::{Direction, Event, EventStore, ExpectedRevision};
 use rigger::run::{RunHeld, RunReleased, TYPE_RUN_HELD, TYPE_RUN_RELEASED};
 
 pub use super::fixtures::keyed;
-use super::fixtures::{dated_ago, run_held_event};
+use super::fixtures::{dated_ago, run_held_event, CLEAN_CRITIQUE};
 
 /// A throwaway project directory that is its own (commit-less) git repo, so the project
 /// identity the binary resolves for it is its basename, stable across every call a test makes.
@@ -672,14 +672,88 @@ pub fn critique_finding_id(text: &str, attempt: u32, k: u32) -> String {
     format!("sc-{}-{attempt}-{k}", rigger::review::critique_hash(text))
 }
 
-/// Record a clean critique of `spec`'s current text in the project at `root` ([`record_critique`]:
-/// prose, no finding line, an approve), so a new run on it under a workflow naming a critic is not
+/// Record a clean critique of `spec`'s current text in the project at `root` ([`record_critique`]
+/// answering [`CLEAN_CRITIQUE`]), so a new run on it under a workflow naming a critic is not
 /// refused (spec 112).
 pub fn record_clean_critique(root: &Path, spec: &str) {
-    let out = record_critique(root, spec, "No defects.\n{\"verdict\":\"approve\"}");
+    let out = record_critique(root, spec, CLEAN_CRITIQUE);
     assert_eq!(
         out, "{\"verdict\":\"approve\"}\n",
         "a clean critique of {spec}: no finding and an approve"
+    );
+}
+
+/// Append `(type, payload)` events to the critique's own stream of the project at `root`, in the
+/// wire form `rigger critique` records them in - standing in for a critique an earlier call
+/// recorded.
+pub fn seed_critique(root: &Path, events: &[(&str, serde_json::Value)]) {
+    std::fs::create_dir_all(root.join(".rigger")).unwrap();
+    let backend = Store::open(rigger_file(root, "events.db").to_str().unwrap()).unwrap();
+    let store = Namespaced::new(&backend, &format!("{}-critique", run_stream_identity(root)));
+    for (type_, payload) in events {
+        store
+            .append(
+                rigger::conductor::STREAM,
+                ExpectedRevision::Any,
+                &[Event::new(*type_, serde_json::to_vec(payload).unwrap())],
+            )
+            .unwrap();
+    }
+}
+
+/// The request of the critic's spawn at `attempt` on the text hashed `hash`, as the critique's
+/// own stream records it.
+fn critique_request(hash: &str, attempt: u32) -> (&'static str, serde_json::Value) {
+    (
+        rigger::spawn::TYPE_SPAWN_REQUESTED,
+        serde_json::json!({
+            "id": rigger::review::critique_spawn_id(hash, attempt),
+            "unit": rigger::review::critique_unit(hash),
+            "stage": "critique",
+            "prompt": "p",
+        }),
+    )
+}
+
+/// Append the critic's spawn at `attempt` on the text hashed `hash` to the critique's own stream
+/// of the project at `root` ([`seed_critique`]): its request, then its result answering `output`,
+/// which is a pass of the critique when `output` is a critique (spec 123).
+pub fn seed_critique_spawn(root: &Path, hash: &str, attempt: u32, output: &str) {
+    seed_critique(
+        root,
+        &[
+            critique_request(hash, attempt),
+            (
+                rigger::spawn::TYPE_SPAWN_RESULT,
+                serde_json::json!({
+                    "id": rigger::review::critique_spawn_id(hash, attempt),
+                    "output": output,
+                }),
+            ),
+        ],
+    );
+}
+
+/// Append the request of the critic's spawn at `attempt` on the text hashed `hash` to the
+/// critique's own stream of the project at `root` ([`seed_critique`]), with no result: a spawn
+/// still in flight, which the attempt count counts (spec 123).
+pub fn seed_critique_request(root: &Path, hash: &str, attempt: u32) {
+    seed_critique(root, &[critique_request(hash, attempt)]);
+}
+
+/// The error the attempt count of a critique fails on when the critique's own stream holds a
+/// spawn request it cannot read, ahead of the decode error that ends it: `rigger critique` and a
+/// new run's refusal both read the count (spec 123).
+pub const UNREADABLE_CRITIQUE_REQUEST: &str =
+    "event store: a spawn request recorded on the critique stream is unreadable: ";
+
+/// A `DecisionMade` resolving `ids` and governing `governs`, through `rigger emit`.
+pub fn resolve(root: &Path, id: &str, governs: &str, ids: &[String]) {
+    emit(
+        root,
+        "DecisionMade",
+        &serde_json::json!({"id": id, "summary": "closed", "governs": [governs], "resolves": ids})
+            .to_string(),
     );
 }
 
@@ -700,30 +774,59 @@ pub const CRITIQUE_ROUTE: &str = "amend the spec and critique it:";
 /// offers (spec 112, Notes).
 pub const RESOLUTION_ROUTE: &str = "or record a resolution:";
 
-/// The text the refusal of a new run on `spec` by `command` ends stderr with (spec 112, Notes):
-/// `open` the open BLOCKING finding ids, `None` when the spec's text has no critique. The route
-/// labels are padded to one column.
-pub fn refused_new_run(command: &str, spec: &str, open: Option<&[String]>) -> String {
-    let (why, route, resolves) = match open {
-        None => (
+/// The shape of the refusal of a new run (spec 123, CLEAN MEANS EXHAUSTED): the why it gives and
+/// the routes it prints after the critique route.
+#[derive(Clone, Copy, Debug)]
+pub enum Refusal<'a> {
+    /// The spec is outside the repository: not critiqued, then the route recording a resolution
+    /// once critiqued.
+    Outside,
+    /// The critique, exhausted or at its ceiling, holds these open BLOCKING finding ids: the ids,
+    /// then the route resolving them.
+    Settled(&'a [String]),
+    /// The critique, neither exhausted nor at its ceiling, holds these open BLOCKING finding ids:
+    /// the ids, and no other route.
+    BelowCeiling(&'a [String]),
+    /// The critique holds no open BLOCKING finding, and either no pass or neither is exhausted nor
+    /// at its ceiling: not critiqued to exhaustion, and no other route.
+    Unexhausted,
+}
+
+/// The text the refusal of a new run on `spec` by `command` ends stderr with (spec 112, Notes;
+/// spec 123, CLEAN MEANS EXHAUSTED), in the shape `refusal` names: the why, the route that
+/// critiques the spec, then the route that records a resolution when the shape offers one. The
+/// route labels are padded to one column.
+pub fn refused_new_run(command: &str, spec: &str, refusal: Refusal) -> String {
+    let open = |ids: &[String]| format!("open BLOCKING findings: {}", ids.join(", "));
+    let (why, resolution) = match refusal {
+        Refusal::Outside => (
             "not critiqued".to_string(),
-            "or, once critiqued, record a resolution:".to_string(),
-            "[<ids>]".to_string(),
+            Some((
+                "or, once critiqued, record a resolution:".to_string(),
+                "[<ids>]".to_string(),
+            )),
         ),
-        Some(ids) => (
-            format!("open BLOCKING findings: {}", ids.join(", ")),
-            format!("{RESOLUTION_ROUTE:<33}"),
-            serde_json::json!(ids).to_string(),
+        Refusal::Settled(ids) => (
+            open(ids),
+            Some((
+                format!("{RESOLUTION_ROUTE:<33}"),
+                serde_json::json!(ids).to_string(),
+            )),
         ),
+        Refusal::BelowCeiling(ids) => (open(ids), None),
+        Refusal::Unexhausted => ("not critiqued to exhaustion".to_string(), None),
     };
     let refused = refusal_line(&format!(
         "{command}: refusing to begin a new run on {spec}: {why}"
     ));
-    format!(
-        "{refused}\n  {CRITIQUE_ROUTE}   rigger critique {spec}\n  {route} rigger emit \
-         DecisionMade '{}'\n",
-        printed_decision(spec, &resolves)
-    )
+    let mut text = format!("{refused}\n  {CRITIQUE_ROUTE}   rigger critique {spec}\n");
+    if let Some((route, resolves)) = resolution {
+        text.push_str(&format!(
+            "  {route} rigger emit DecisionMade '{}'\n",
+            printed_decision(spec, &resolves)
+        ));
+    }
+    text
 }
 
 /// Create an empty `.rigger/` under `root`.

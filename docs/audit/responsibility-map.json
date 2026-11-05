@@ -817,19 +817,11 @@
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
-    "name": "max_retries",
-    "is_test": false,
-    "proposed_module": "conductor::run_ctx",
-    "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "9f57e25ec814d876"
-  },
-  {
-    "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "max_retries_for",
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "33148f3a1d24545f"
+    "content_hash": "38155564db2788da"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -9525,15 +9517,7 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "30513df8fb6903b4"
-  },
-  {
-    "file": "src/cli/mod.rs",
-    "name": "latest_result_event",
-    "is_test": false,
-    "proposed_module": null,
-    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "40a67fd4d560eae5"
+    "content_hash": "bb08a185e316e42e"
   },
   {
     "file": "src/cli/mod.rs",
@@ -9541,7 +9525,7 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "a993d5256ede9267"
+    "content_hash": "0cd76bb68a9c9e4f"
   },
   {
     "file": "src/cli/mod.rs",

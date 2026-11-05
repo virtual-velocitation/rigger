@@ -1,13 +1,19 @@
-//! Spec 112, criterion 2 (A NEW RUN NEEDS A CLEAN CRITIQUE) - periphery: the run entries driven
-//! as the compiled binary. Given a project whose workflow names a critic, when a command would
-//! begin a new run on a spec whose text has no critique, or whose critique holds a BLOCKING
-//! finding no later `DecisionMade` resolves, then it refuses on stderr - naming each open
-//! BLOCKING finding id and the two commands that clear it - and appends nothing; a step that
-//! adopts the spec's existing run proceeds whatever the critique; and under a workflow naming no
-//! critic a new run proceeds with one line saying so. Spec 105 stands ahead of the refusal: a
-//! plain step of a held run begins no run, so it prints the hold whatever the critique, and a
-//! plain step of a run not proved unheld fails on that read, while a `--fresh` step keeps the
-//! refusal ahead of its mint.
+//! Spec 112, criterion 2 (A NEW RUN NEEDS A CLEAN CRITIQUE), and spec 123, criterion 3 (A NEW RUN
+//! NEEDS AN EXHAUSTED CRITIQUE) - periphery: the run entries driven as the compiled binary. Given
+//! a project whose workflow names a critic, when a command would begin a new run on a spec, then
+//! it proceeds only when the critique of the spec's text - the union of every pass recorded for
+//! the text - is CLEAN: it has a pass, it is exhausted or its attempt count is at the critic's
+//! ceiling, and it holds no BLOCKING finding a `DecisionMade` recorded after that finding's pass
+//! leaves open. Otherwise it refuses on stderr and appends nothing: on the open BLOCKING ids,
+//! offering their resolution only once the critique is exhausted or at its ceiling; else as not
+//! critiqued to exhaustion, offering the critique alone; and a spec outside the repository as not
+//! critiqued. A critique with a pass whose attempt count cannot be read, a spawn request on its
+//! stream being unreadable, fails the command on the line `rigger critique` fails on, appending
+//! nothing. A step that adopts the spec's existing run proceeds whatever the critique; and under
+//! a workflow naming no critic a new run proceeds with one line saying so. Spec 105 stands ahead
+//! of the refusal: a plain step of a held run begins no run, so it prints the hold whatever the
+//! critique, and a plain step of a run not proved unheld fails on that read, while a `--fresh`
+//! step keeps the refusal ahead of its mint.
 //!
 //! NOT OWNED HERE: the critique verb and its record (criterion 1), and the plan-critique stop on
 //! a spec defect (criterion 5).
@@ -16,17 +22,23 @@ mod common;
 
 use std::path::Path;
 
+use common::cli::Refusal::{self, BelowCeiling, Outside, Settled, Unexhausted};
 use common::cli::{
-    assert_stopped_at_the_grounder, critique_finding_id, emit, printed_decision, read_run_events,
-    record_clean_critique, record_critique, refused_new_run, run_payloads, run_rigger,
-    run_rigger_envs, seed_a_hold_no_fold_applies, seed_on_the_run, seed_run_events,
+    assert_stopped_at_the_grounder, critique_finding_id, emit, failure_line, printed_decision,
+    read_run_events, record_clean_critique, record_critique, refusal_line, refused_new_run,
+    resolve, run_payloads, run_rigger, run_rigger_envs, seed_a_hold_no_fold_applies, seed_critique,
+    seed_critique_request, seed_critique_spawn, seed_on_the_run, seed_run_events,
     stopping_at_the_grounder, temp_repoless_project, write_scaffold, write_spec_project,
-    CRITIQUE_ROUTE, RESOLUTION_ROUTE,
+    CRITIQUE_ROUTE, RESOLUTION_ROUTE, UNREADABLE_CRITIQUE_REQUEST,
 };
 use common::fixtures::{
-    git_ok, git_out, hold_naming, run_held_event, temp_git_project_with_commit,
+    git_ok, git_out, hold_naming, run_held_event, temp_git_project_with_commit, ADVISORY,
+    CLEAN_CRITIQUE, NO_VERDICT,
 };
-use common::repo::{stub_path, write_critique_stub};
+use common::repo::{critique_stub_spawns, stub_path, write_critique_stub_then};
+use rigger::eventstore::Event;
+use rigger::review::{critique_hash, critique_unit};
+use rigger::spawn::{TYPE_SPAWN_REQUESTED, TYPE_SPAWN_RESULT};
 use rigger::wave::NO_CRITIC_CLAUSE;
 use serde_json::json;
 
@@ -160,17 +172,17 @@ fn assert_unrefused((command, named): (&str, &str), err: &str, no_critic: usize)
     );
 }
 
-/// `command` refused a new run on `spec` with `open`: stderr ends with the refusal, stdout carries
-/// no line of it, and the run stream still holds `runs_before` runs.
+/// `command` refused a new run on `spec` in the shape `refusal`: stderr ends with the refusal,
+/// stdout carries no line of it, and the run stream still holds `runs_before` runs.
 fn assert_refused(
     root: &Path,
     (out, err, ok): (String, String, bool),
-    (command, spec, open): (&str, &str, Option<&[String]>),
+    (command, spec, refusal): (&str, &str, Refusal),
     runs_before: usize,
 ) {
     assert!(!ok, "{command} refuses the new run; stdout:\n{out}");
     assert!(
-        err.ends_with(&refused_new_run(command, spec, open)),
+        err.ends_with(&refused_new_run(command, spec, refusal)),
         "{command} ends stderr with the refusal; stderr:\n{err}"
     );
     assert!(
@@ -185,32 +197,40 @@ fn assert_refused(
 }
 
 /// Each of the [`RUN_ENTRIES`] plus `extra`, in `root` with `path` as its `PATH`, refused a new
-/// run on [`SPEC_REL`] with `open` ([`assert_refused`]), the run stream still holding
+/// run on [`SPEC_REL`] in the shape `refusal` ([`assert_refused`]), the run stream still holding
 /// `runs_before` runs.
 fn assert_each_run_entry_refuses(
     root: &Path,
     path: &str,
     extra: &[&str],
-    open: Option<&[String]>,
+    refusal: Refusal,
+    runs_before: usize,
+) {
+    assert_each_run_entry_refuses_on(root, (path, SPEC_REL), extra, refusal, runs_before);
+}
+
+/// Each of the [`RUN_ENTRIES`] given `spec` in place of [`SPEC_REL`], plus `extra`, in `root` with
+/// `path` as its `PATH`, refused a new run on `spec` in the shape `refusal` ([`assert_refused`]),
+/// the run stream still holding `runs_before` runs.
+fn assert_each_run_entry_refuses_on(
+    root: &Path,
+    (path, spec): (&str, &str),
+    extra: &[&str],
+    refusal: Refusal,
     runs_before: usize,
 ) {
     for (args, command) in RUN_ENTRIES {
+        let args: Vec<&str> = args
+            .iter()
+            .map(|&arg| if arg == SPEC_REL { spec } else { arg })
+            .collect();
         assert_refused(
             root,
-            run_entry(root, path, args, extra),
-            (command, SPEC_REL, open),
+            run_entry(root, path, &args, extra),
+            (command, spec, refusal),
             runs_before,
         );
     }
-}
-
-/// A `DecisionMade` resolving `ids` and governing `governs`, through `rigger emit`.
-fn resolve(root: &Path, id: &str, governs: &str, ids: &[String]) {
-    emit(
-        root,
-        "DecisionMade",
-        &json!({"id": id, "summary": "closed", "governs": [governs], "resolves": ids}).to_string(),
-    );
 }
 
 /// The spec's run already in `root`'s store: a `RunStarted` on [`SPEC_REL`] and [`SPEC`]'s
@@ -233,7 +253,7 @@ fn a_new_step_refuses_until_every_blocking_finding_of_its_text_is_resolved() {
     // Not critiqued: refused, nothing minted, no JSON line on stdout.
     let refused = step(root, SPEC_REL, &[]);
     assert_eq!(refused.0, "", "a refused step prints no JSON line");
-    assert_refused(root, refused, ("rigger step", SPEC_REL, None), 0);
+    assert_refused(root, refused, ("rigger step", SPEC_REL, Unexhausted), 0);
 
     // A resolution recorded BEFORE the critique closes nothing; the critique's BLOCKING ids are
     // open, in finding order, and the NON-BLOCKING one is never listed.
@@ -242,7 +262,7 @@ fn a_new_step_refuses_until_every_blocking_finding_of_its_text_is_resolved() {
     assert_refused(
         root,
         step(root, SPEC_REL, &[]),
-        ("rigger step", SPEC_REL, Some(&open)),
+        ("rigger step", SPEC_REL, Settled(&open)),
         0,
     );
 
@@ -258,7 +278,11 @@ fn a_new_step_refuses_until_every_blocking_finding_of_its_text_is_resolved() {
     assert_refused(
         root,
         step(root, SPEC_REL, &[]),
-        ("rigger step", SPEC_REL, Some(std::slice::from_ref(three))),
+        (
+            "rigger step",
+            SPEC_REL,
+            Settled(std::slice::from_ref(three)),
+        ),
         0,
     );
 
@@ -301,14 +325,14 @@ fn a_step_adopting_the_specs_run_proceeds_while_one_beginning_a_new_run_refuses(
     assert_refused(
         root,
         step(root, SPEC_REL, &["--fresh"]),
-        ("rigger step", SPEC_REL, None),
+        ("rigger step", SPEC_REL, Unexhausted),
         2,
     );
     std::fs::write(root.join(SPEC_REL), SPEC_DROPPED).unwrap();
     assert_refused(
         root,
         step(root, SPEC_REL, &[]),
-        ("rigger step", SPEC_REL, None),
+        ("rigger step", SPEC_REL, Unexhausted),
         2,
     );
 }
@@ -414,7 +438,7 @@ fn a_plain_step_of_a_held_run_prints_the_hold_whatever_the_critique_and_fresh_ke
                     "{name}: a held step mints no run and records nothing"
                 );
             }
-            Refused => assert_step_refused(root, (SPEC_REL, extra), SPEC_REL, None, 1),
+            Refused => assert_step_refused(root, (SPEC_REL, extra), SPEC_REL, Unexhausted, 1),
             BeginsANewRun => assert_step_proceeds(root, (SPEC_REL, extra), SPEC_REL, (0, 2)),
         }
     }
@@ -429,7 +453,7 @@ fn a_plain_step_of_a_held_run_prints_the_hold_whatever_the_critique_and_fresh_ke
 #[test]
 fn a_step_of_a_run_not_proved_unheld_fails_ahead_of_any_mint_and_a_plain_one_ahead_of_its_refusal()
 {
-    let refused = refused_new_run("rigger step", SPEC_REL, None);
+    let refused = refused_new_run("rigger step", SPEC_REL, Unexhausted);
     let rows: [(&str, bool, &[&str], &str); 3] = [
         (
             "a plain step, the text not critiqued",
@@ -502,11 +526,11 @@ fn a_run_stopped_on_a_spec_defect_is_never_adopted_by_spec_and_its_new_run_is_ga
     assert_refused(
         root,
         step(root, SPEC_REL, &[]),
-        ("rigger step", SPEC_REL, None),
+        ("rigger step", SPEC_REL, Unexhausted),
         1,
     );
     let (_work, path) = stand_in_claude();
-    assert_each_run_entry_refuses(root, &path, &[], None, 1);
+    assert_each_run_entry_refuses(root, &path, &[], Unexhausted, 1);
 
     record_clean_critique(root, SPEC_REL);
     assert_step_proceeds(root, (SPEC_REL, &[]), SPEC_REL, (0, 2));
@@ -524,7 +548,7 @@ fn a_critique_answers_only_its_own_text_and_a_spec_outside_the_repository_is_nev
     assert_refused(
         root,
         step(root, SPEC_REL, &[]),
-        ("rigger step", SPEC_REL, None),
+        ("rigger step", SPEC_REL, Unexhausted),
         0,
     );
 
@@ -538,7 +562,7 @@ fn a_critique_answers_only_its_own_text_and_a_spec_outside_the_repository_is_nev
     assert_refused(
         root,
         step(root, &outside, &["--fresh"]),
-        ("rigger step", &outside, None),
+        ("rigger step", &outside, Outside),
         1,
     );
 }
@@ -554,15 +578,32 @@ fn every_cli_run_start_refuses_a_new_run_on_an_uncritiqued_spec_under_its_own_na
     let workflow = stopping_at_the_grounder(SKEPTIC_WORKFLOW);
     write_spec_project(root, &PERSONAS, &workflow, SPEC_REL, SPEC);
     let (_work, path) = stand_in_claude();
-    assert_each_run_entry_refuses(root, &path, &[], None, 0);
+    assert_each_run_entry_refuses(root, &path, &[], Unexhausted, 0);
 
     seed_the_specs_run(root);
-    assert_each_run_entry_refuses(root, &path, &["--fresh"], None, 1);
+    assert_each_run_entry_refuses(root, &path, &["--fresh"], Unexhausted, 1);
+}
+
+/// Given a clean critique of the spec's text inside the repository, when each run entry begins a
+/// new run on the same bytes outside it, then it refuses as not critiqued, under its own name and
+/// the spelling given, offering the critique and naming the resolution that follows one: the
+/// critique of a spec is read only for a path inside the repository.
+#[test]
+fn every_run_entry_refuses_a_new_run_on_a_spec_outside_the_repository_as_not_critiqued() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    let workflow = stopping_at_the_grounder(SKEPTIC_WORKFLOW);
+    write_spec_project(root, &PERSONAS, &workflow, SPEC_REL, SPEC);
+    record_clean_critique(root, SPEC_REL);
+    let (_work, path) = stand_in_claude();
+    let (_elsewhere, outside) = spec_outside_the_repository();
+
+    assert_each_run_entry_refuses_on(root, (&path, &outside), &[], Outside, 0);
 }
 
 /// THE AUTHORITY, an approve beside a BLOCKING line: the line counts as blocking whatever the
-/// verdict, so a new run on a text whose only critique approves while holding one is refused on
-/// that finding's id alone.
+/// verdict, so the critique of a text whose only pass approves while holding one derives reject,
+/// and a new run on it is refused on that finding's id alone.
 #[test]
 fn an_approving_critique_holding_a_blocking_finding_refuses_a_new_run_on_that_finding() {
     let dir = temp_git_project_with_commit();
@@ -570,16 +611,363 @@ fn an_approving_critique_holding_a_blocking_finding_refuses_a_new_run_on_that_fi
     write_spec_project(root, &PERSONAS, SKEPTIC_WORKFLOW, SPEC_REL, SPEC);
     let out = record_critique(root, SPEC_REL, APPROVE_BESIDE_BLOCKING);
     assert!(
-        out.ends_with("\n{\"verdict\":\"approve\"}\n"),
-        "the recorded critique approves; stdout:\n{out}"
+        out.ends_with("\n{\"verdict\":\"reject\"}\n"),
+        "the critique's derived verdict rejects though its one pass approves; stdout:\n{out}"
     );
     assert_step_refused(
         root,
         (SPEC_REL, &[]),
         SPEC_REL,
-        Some(&[critique_finding_id(SPEC, 0, 2)]),
+        Settled(&[critique_finding_id(SPEC, 0, 2)]),
         0,
     );
+}
+
+/// Spec 123, THE CRITIQUE IS THE UNION OF ITS PASSES, at the refusal: given a text whose critique
+/// holds attempt 0's reject, then a resolution naming one BLOCKING id of attempt 0 and one of
+/// attempt 1, then attempt 1's reject and attempt 2's pass with no finding line, when a step
+/// begins a new run on it, then the step is refused on the open BLOCKING ids of every pass in pass
+/// order, though the latest pass approves: the resolution closes the id of the pass recorded
+/// before it and never the one of the pass recorded after it, though it names that id. Once the
+/// rest are resolved, the step begins the run.
+#[test]
+fn a_new_run_is_refused_on_the_unions_open_ids_each_closed_only_after_its_pass() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_spec_project(root, &PERSONAS, SKEPTIC_WORKFLOW, SPEC_REL, SPEC);
+    let hash = critique_hash(SPEC);
+    let id = |attempt, k| critique_finding_id(SPEC, attempt, k);
+    record_critique(root, SPEC_REL, REJECT);
+    resolve(root, "r-between", SPEC_REL, &[id(0, 1), id(1, 1)]);
+    seed_critique_spawn(root, &hash, 1, REJECT);
+    seed_critique_spawn(root, &hash, 2, CLEAN_CRITIQUE);
+
+    let open = [id(0, 3), id(1, 1), id(1, 3)];
+    assert_step_refused(root, (SPEC_REL, &[]), SPEC_REL, Settled(&open), 0);
+
+    resolve(root, "r-after", SPEC_REL, &open);
+    assert_step_proceeds(root, (SPEC_REL, &[]), SPEC_REL, (0, 1));
+}
+
+/// [`SKEPTIC_WORKFLOW`] with its plan-critique gate naming its own `max_retries` of 2: the critic's
+/// ceiling, below the built-in 3.
+fn gate_two_workflow() -> String {
+    let gate_two = SKEPTIC_WORKFLOW.replacen(
+        "    adjudicator: arbiter\n",
+        "    adjudicator: arbiter\n    max_retries: 2\n",
+        1,
+    );
+    assert_ne!(gate_two, SKEPTIC_WORKFLOW, "the gate names its own ceiling");
+    gate_two
+}
+
+/// The answer of a critic spawn whose request is parked with no result recorded: a spawn still in
+/// flight ([`seed_critique_request`]).
+const PARKED: &str = "(parked: no result recorded)";
+
+/// In place of an answer, a result on the critique's own stream that cannot be read: a JSON
+/// string where a spawn result's object belongs, carrying no spawn id, so it is no attempt
+/// ([`seed_critique`]).
+const UNREADABLE_RESULT: &str = "(unreadable: no spawn result)";
+
+/// A project carrying `workflow` and [`SPEC`] at [`SPEC_REL`], whose critic spawns on that text
+/// recorded `answers` in attempt order ([`seed_critique_spawn`]; a [`PARKED`] answer recording its
+/// request alone, an [`UNREADABLE_RESULT`] its unreadable result between the attempts beside it),
+/// followed - when `resolved` - by a resolution of attempt 0's BLOCKING ids ([`reject_ids`]): its
+/// directory, which keeps it alive.
+fn critiqued_project(workflow: &str, answers: &[&str], resolved: bool) -> tempfile::TempDir {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_spec_project(root, &PERSONAS, workflow, SPEC_REL, SPEC);
+    let hash = critique_hash(SPEC);
+    let mut attempt = 0;
+    for answer in answers {
+        match *answer {
+            UNREADABLE_RESULT => {
+                seed_critique(root, &[(TYPE_SPAWN_RESULT, json!(UNREADABLE_RESULT))]);
+                continue;
+            }
+            PARKED => seed_critique_request(root, &hash, attempt),
+            answer => seed_critique_spawn(root, &hash, attempt, answer),
+        }
+        attempt += 1;
+    }
+    if resolved {
+        resolve(root, "r-all", SPEC_REL, &reject_ids());
+    }
+    dir
+}
+
+/// A row of the CLEAN MEANS EXHAUSTED table below: its name, the workflow, the critic's answers in
+/// attempt order, whether attempt 0's BLOCKING ids are resolved after them, and the refusal of the
+/// new run, `None` when it begins.
+type CeilingRow<'a> = (&'a str, &'a str, &'a [&'a str], bool, Option<Refusal<'a>>);
+
+/// Spec 123, CLEAN MEANS EXHAUSTED: given a text whose critic spawns recorded a row's answers in
+/// attempt order, under the critic's built-in ceiling of 3 or its plan-critique gate's own ceiling
+/// of 2, and perhaps a resolution of attempt 0's BLOCKING ids recorded after them, when a step
+/// begins a new run on it, then the run begins only when the critique has a pass, is exhausted or
+/// has an attempt count at or above the ceiling - a spawn that recorded no pass, or whose request
+/// is parked with no result, counting as an attempt, and a result the stream cannot read hiding
+/// no pass recorded before or after it - and leaves no BLOCKING id open. Else it is refused on the
+/// open BLOCKING ids, offering their resolution only once the critique is exhausted or at its
+/// ceiling, and otherwise as not critiqued to exhaustion, offering the critique alone.
+#[test]
+fn a_new_run_needs_its_critique_exhausted_or_at_the_ceiling_and_offers_a_resolution_only_then() {
+    let gate_two = gate_two_workflow();
+    let open = reject_ids();
+    let rows: [CeilingRow; 22] = [
+        (
+            "one advisory pass, below the built-in ceiling",
+            SKEPTIC_WORKFLOW,
+            &[ADVISORY],
+            false,
+            Some(Unexhausted),
+        ),
+        (
+            "two advisory passes, below the built-in ceiling",
+            SKEPTIC_WORKFLOW,
+            &[ADVISORY; 2],
+            false,
+            Some(Unexhausted),
+        ),
+        (
+            "three advisory passes, at the built-in ceiling",
+            SKEPTIC_WORKFLOW,
+            &[ADVISORY; 3],
+            false,
+            None,
+        ),
+        (
+            "four advisory passes, above the built-in ceiling",
+            SKEPTIC_WORKFLOW,
+            &[ADVISORY; 4],
+            false,
+            None,
+        ),
+        (
+            "an advisory pass then one with no finding line: exhausted below the ceiling",
+            SKEPTIC_WORKFLOW,
+            &[ADVISORY, CLEAN_CRITIQUE],
+            false,
+            None,
+        ),
+        (
+            "one advisory pass, below the gate's ceiling",
+            &gate_two,
+            &[ADVISORY],
+            false,
+            Some(Unexhausted),
+        ),
+        (
+            "two advisory passes, at the gate's ceiling",
+            &gate_two,
+            &[ADVISORY; 2],
+            false,
+            None,
+        ),
+        (
+            "three advisory passes, above the gate's ceiling",
+            &gate_two,
+            &[ADVISORY; 3],
+            false,
+            None,
+        ),
+        (
+            "two spawns with no verdict then an advisory pass, at the built-in ceiling",
+            SKEPTIC_WORKFLOW,
+            &[NO_VERDICT, NO_VERDICT, ADVISORY],
+            false,
+            None,
+        ),
+        (
+            "three spawns with no verdict: no pass, at the built-in ceiling",
+            SKEPTIC_WORKFLOW,
+            &[NO_VERDICT; 3],
+            false,
+            Some(Unexhausted),
+        ),
+        (
+            "an advisory pass then a parked request, below the built-in ceiling",
+            SKEPTIC_WORKFLOW,
+            &[ADVISORY, PARKED],
+            false,
+            Some(Unexhausted),
+        ),
+        (
+            "two advisory passes then a parked request, at the built-in ceiling",
+            SKEPTIC_WORKFLOW,
+            &[ADVISORY, ADVISORY, PARKED],
+            false,
+            None,
+        ),
+        (
+            "a reject, below the built-in ceiling",
+            SKEPTIC_WORKFLOW,
+            &[REJECT],
+            false,
+            Some(BelowCeiling(&open)),
+        ),
+        (
+            "a reject then an advisory pass, below the built-in ceiling",
+            SKEPTIC_WORKFLOW,
+            &[REJECT, ADVISORY],
+            false,
+            Some(BelowCeiling(&open)),
+        ),
+        (
+            "a reject then two advisory passes, at the built-in ceiling",
+            SKEPTIC_WORKFLOW,
+            &[REJECT, ADVISORY, ADVISORY],
+            false,
+            Some(Settled(&open)),
+        ),
+        (
+            "a reject then a pass with no finding line: exhausted below the ceiling",
+            SKEPTIC_WORKFLOW,
+            &[REJECT, CLEAN_CRITIQUE],
+            false,
+            Some(Settled(&open)),
+        ),
+        (
+            "a reject, below the gate's ceiling",
+            &gate_two,
+            &[REJECT],
+            false,
+            Some(BelowCeiling(&open)),
+        ),
+        (
+            "a reject then an advisory pass, at the gate's ceiling",
+            &gate_two,
+            &[REJECT, ADVISORY],
+            false,
+            Some(Settled(&open)),
+        ),
+        (
+            "a reject resolved, below the built-in ceiling",
+            SKEPTIC_WORKFLOW,
+            &[REJECT],
+            true,
+            Some(Unexhausted),
+        ),
+        (
+            "a reject then two advisory passes, resolved at the built-in ceiling",
+            SKEPTIC_WORKFLOW,
+            &[REJECT, ADVISORY, ADVISORY],
+            true,
+            None,
+        ),
+        (
+            "an advisory pass, an unreadable result, then a pass with no finding line: exhausted",
+            SKEPTIC_WORKFLOW,
+            &[ADVISORY, UNREADABLE_RESULT, CLEAN_CRITIQUE],
+            false,
+            None,
+        ),
+        (
+            "a reject, an unreadable result, then a pass with no finding line: exhausted",
+            SKEPTIC_WORKFLOW,
+            &[REJECT, UNREADABLE_RESULT, CLEAN_CRITIQUE],
+            false,
+            Some(Settled(&open)),
+        ),
+    ];
+    for (name, workflow, answers, resolved, refused) in rows {
+        let dir = critiqued_project(workflow, answers, resolved);
+        let root = dir.path();
+
+        println!("row: {name}");
+        match refused {
+            Some(refusal) => assert_step_refused(root, (SPEC_REL, &[]), SPEC_REL, refusal, 0),
+            None => assert_step_proceeds(root, (SPEC_REL, &[]), SPEC_REL, (0, 1)),
+        }
+    }
+}
+
+/// A row of the unreadable-request table below: its name, the critic's answers recorded before
+/// the unreadable request in attempt order ([`critiqued_project`]), and the refusal of the new
+/// run, `None` when it fails on that request with the line the critique fails on.
+type UnreadableRequestRow<'a> = (&'a str, &'a [&'a str], Option<Refusal<'a>>);
+
+/// Spec 123, CLEAN MEANS EXHAUSTED, the attempt count read alike: given a text whose critique
+/// stream holds, after the critic's answers, a spawn request that cannot be read - its attempt
+/// cannot be told apart - when the operator runs `rigger critique` on the text and then a step
+/// begins a new run on it, then both fail on that request with one line, spawning no critic and
+/// appending nothing to the run stream, whether the critique is exhausted, with or without a
+/// BLOCKING id open, short of its ceiling or at it: the refusal reads the attempt count on every
+/// check, as the critique does. A text with no pass is still refused as not critiqued to
+/// exhaustion, that refusal coming ahead of the count, while the critique fails on it.
+#[test]
+fn an_unreadable_request_on_the_critique_stream_fails_the_critique_and_a_new_run_alike() {
+    let unreadable = json!({"unit": critique_unit(&critique_hash(SPEC)), "stage": "critique",
+                            "prompt": "p"});
+    let decoded = rigger::spawn::requests(&[Event::new(
+        TYPE_SPAWN_REQUESTED,
+        serde_json::to_vec(&unreadable).unwrap(),
+    )])
+    .unwrap_err();
+    let failed = refusal_line(&format!("{UNREADABLE_CRITIQUE_REQUEST}{decoded}"));
+    let rows: [UnreadableRequestRow; 5] = [
+        (
+            "a pass with no finding line: exhausted below the built-in ceiling",
+            &[CLEAN_CRITIQUE],
+            None,
+        ),
+        (
+            "a reject then a pass with no finding line: exhausted, its BLOCKING ids open",
+            &[REJECT, CLEAN_CRITIQUE],
+            None,
+        ),
+        (
+            "an advisory pass, below the built-in ceiling",
+            &[ADVISORY],
+            None,
+        ),
+        (
+            "three advisory passes, at the built-in ceiling",
+            &[ADVISORY; 3],
+            None,
+        ),
+        ("no pass", &[], Some(Unexhausted)),
+    ];
+    for (name, answers, refused) in rows {
+        let dir = critiqued_project(SKEPTIC_WORKFLOW, answers, false);
+        let root = dir.path();
+        seed_critique(root, &[(TYPE_SPAWN_REQUESTED, unreadable.clone())]);
+        let events = read_run_events(root).len();
+
+        println!("row: {name}");
+        let work = tempfile::tempdir().unwrap();
+        let path = write_critique_stub_then(work.path(), CLEAN_CRITIQUE, CLEAN_CRITIQUE);
+        let (out, err, ok) = run_rigger_envs(root, &["critique", SPEC_REL], &[("PATH", &path)]);
+        assert_eq!(
+            (
+                out.as_str(),
+                failure_line(ok, &err),
+                critique_stub_spawns(work.path()),
+                read_run_events(root).len()
+            ),
+            ("", Some(failed.clone()), 0, events),
+            "the critique fails on the unreadable request, spawning and appending nothing; \
+             stderr:\n{err}"
+        );
+        match refused {
+            Some(refusal) => assert_step_refused(root, (SPEC_REL, &[]), SPEC_REL, refusal, 0),
+            None => {
+                let (out, err, ok) = step(root, SPEC_REL, &[]);
+                assert_eq!(
+                    (
+                        out.as_str(),
+                        failure_line(ok, &err),
+                        read_run_events(root).len()
+                    ),
+                    ("", Some(failed.clone()), events),
+                    "the step fails on the line the critique fails on, appending nothing; \
+                     stderr:\n{err}"
+                );
+            }
+        }
+    }
 }
 
 #[test]
@@ -588,7 +976,12 @@ fn a_repoless_project_resolves_its_spec_against_the_project_root() {
     let root = dir.path();
     write_spec_project(root, &PERSONAS, SKEPTIC_WORKFLOW, SPEC_REL, SPEC);
     let step_repoless = || run_rigger(root, &["step", "--spec", SPEC_REL]);
-    assert_refused(root, step_repoless(), ("rigger step", SPEC_REL, None), 0);
+    assert_refused(
+        root,
+        step_repoless(),
+        ("rigger step", SPEC_REL, Unexhausted),
+        0,
+    );
     record_clean_critique(root, SPEC_REL);
     let (_out, err, ok) = step_repoless();
     assert!(ok, "the clean critique lets the run begin; stderr:\n{err}");
@@ -644,20 +1037,20 @@ const DOUBTER: &str =
 /// [`SPEC`] at another path under the root.
 const RENAMED_REL: &str = "specs/7-gadget-renamed.md";
 
-/// `rigger step --spec <spec>` plus `extra` refused a new run on the spec it names `named`, with
-/// `open` ([`assert_refused`]), and appended no event of any type to the run stream.
+/// `rigger step --spec <spec>` plus `extra` refused a new run on the spec it names `named`, in the
+/// shape `refusal` ([`assert_refused`]), and appended no event of any type to the run stream.
 fn assert_step_refused(
     root: &Path,
     (spec, extra): (&str, &[&str]),
     named: &str,
-    open: Option<&[String]>,
+    refusal: Refusal,
     runs_before: usize,
 ) {
     let events_before = read_run_events(root).len();
     assert_refused(
         root,
         step(root, spec, extra),
-        ("rigger step", named, open),
+        ("rigger step", named, refusal),
         runs_before,
     );
     assert_eq!(
@@ -705,10 +1098,65 @@ fn printed_command(err: &str, label: &str) -> Vec<String> {
     args
 }
 
+/// The command the refusal of `rigger step --spec <given>` prints after the route label `label`
+/// ([`printed_command`]), asserted to be `printed`, then run as printed in `root` with extra
+/// environment `envs`: (stdout, stderr, success).
+fn run_printed_route(
+    root: &Path,
+    given: &str,
+    (label, printed): (&str, &[&str]),
+    envs: &[(&str, &str)],
+) -> (String, String, bool) {
+    let (_out, err, _ok) = step(root, given, &[]);
+    let command = printed_command(&err, label);
+    assert_eq!(command, printed, "the route printed after `{label}`");
+    let command: Vec<&str> = command.iter().map(String::as_str).collect();
+    run_rigger_envs(root, &command, envs)
+}
+
+/// The critique route of the refusal of a step on `given`, run as printed ([`run_printed_route`])
+/// with the critique stub first on `PATH`, its first spawn answering `first` and every later one
+/// `later`: the stub's work directory, which counts its spawns, and the verb's (stdout, stderr,
+/// success).
+fn run_printed_critique(
+    root: &Path,
+    given: &str,
+    (first, later): (&str, &str),
+) -> (tempfile::TempDir, (String, String, bool)) {
+    let work = tempfile::tempdir().unwrap();
+    let path = write_critique_stub_then(work.path(), first, later);
+    let output = run_printed_route(
+        root,
+        given,
+        (CRITIQUE_ROUTE, &["critique", SPEC_REL]),
+        &[("PATH", path.as_str())],
+    );
+    (work, output)
+}
+
+/// The resolution route of the refusal of a step on `given`, resolving the open BLOCKING `ids`,
+/// run as printed ([`run_printed_route`]) and recorded.
+fn run_printed_resolution(root: &Path, given: &str, ids: &[String]) {
+    let decision = printed_decision(SPEC_REL, &json!(ids).to_string());
+    let (_out, err, ok) = run_printed_route(
+        root,
+        given,
+        (
+            RESOLUTION_ROUTE,
+            &["emit", "DecisionMade", decision.as_str()],
+        ),
+        &[],
+    );
+    assert!(
+        ok,
+        "the printed resolution route records it; stderr:\n{err}"
+    );
+}
+
 /// Given a refusal, when the operator runs each command it prints exactly as printed, then the
-/// refusal moves from not critiqued to the open ids and the run begins. The refusal names the spec
-/// repo-relative under every spelling that normalizes to it, so its printed routes are the ones a
-/// later run start reads.
+/// refusal moves from not critiqued to exhaustion to the open ids and the run begins. The refusal
+/// names the spec repo-relative under every spelling that normalizes to it, so its printed routes
+/// are the ones a later run start reads.
 #[test]
 fn an_operator_clears_a_refusal_by_running_the_commands_it_prints_as_printed() {
     let dir = temp_git_project_with_commit();
@@ -717,48 +1165,160 @@ fn an_operator_clears_a_refusal_by_running_the_commands_it_prints_as_printed() {
     let dotted = format!("./{SPEC_REL}");
     let absolute = root.join(SPEC_REL).display().to_string();
     for given in [&dotted, &absolute] {
-        assert_step_refused(root, (given, &[]), SPEC_REL, None, 0);
+        assert_step_refused(root, (given, &[]), SPEC_REL, Unexhausted, 0);
     }
 
-    let (_out, err, _ok) = step(root, &dotted, &[]);
-    let critique = printed_command(&err, CRITIQUE_ROUTE);
-    assert_eq!(
-        critique,
-        ["critique", SPEC_REL],
-        "the printed critique route"
-    );
-    let work = tempfile::tempdir().unwrap();
-    let path = write_critique_stub(work.path(), REJECT);
-    let critique: Vec<&str> = critique.iter().map(String::as_str).collect();
-    let (_out, err, ok) = run_rigger_envs(root, &critique, &[("PATH", path.as_str())]);
+    let (_work, (_out, err, ok)) = run_printed_critique(root, &dotted, (REJECT, CLEAN_CRITIQUE));
     assert!(
         ok,
         "the printed critique route records a critique; stderr:\n{err}"
     );
 
     let open = reject_ids();
-    assert_step_refused(root, (&dotted, &[]), SPEC_REL, Some(&open), 0);
-    let (_out, err, _ok) = step(root, &absolute, &[]);
-    let resolution = printed_command(&err, RESOLUTION_ROUTE);
-    let decision = printed_decision(SPEC_REL, &json!(open).to_string());
-    assert_eq!(
-        resolution,
-        ["emit", "DecisionMade", decision.as_str()],
-        "the printed resolution route"
-    );
-    let resolution: Vec<&str> = resolution.iter().map(String::as_str).collect();
-    let (_out, err, ok) = run_rigger(root, &resolution);
-    assert!(
-        ok,
-        "the printed resolution route records it; stderr:\n{err}"
-    );
+    assert_step_refused(root, (&dotted, &[]), SPEC_REL, Settled(&open), 0);
+    run_printed_resolution(root, &absolute, &open);
 
     assert_step_proceeds(root, (&dotted, &[]), SPEC_REL, (0, 1));
 }
 
+/// A row of the walk table below: its name, the workflow, the critic's answers recorded before the
+/// walk in attempt order and whether attempt 0's BLOCKING ids are resolved after them
+/// ([`critiqued_project`]), the refusal the walk begins at, the critique stub's first and later
+/// answers, the printed critique route's success and spawn count, and the refusal of the next new
+/// run, `None` when it begins.
+type WalkRow<'a> = (
+    &'a str,
+    &'a str,
+    &'a [&'a str],
+    bool,
+    Refusal<'a>,
+    (&'a str, &'a str),
+    (bool, usize),
+    Option<Refusal<'a>>,
+);
+
+/// Spec 123, CLEAN MEANS EXHAUSTED: given a new run refused on a critique that is neither
+/// exhausted nor at its ceiling, or that has no pass at it, when the operator runs the critique
+/// route the refusal prints, as printed, on the unchanged text, then the critic is spawned from the
+/// critique's next attempt until a pass adds no finding line or the attempt count reaches the
+/// ceiling - a spawn that recorded no pass counting toward it in the loop as in the refusal - and
+/// the next new run begins, or is refused on the open BLOCKING ids with their resolution route,
+/// which run as printed lets it begin. With no pass at the ceiling the route spawns nothing and
+/// the refusal stands.
+#[test]
+fn an_operator_continues_a_critique_short_of_its_end_by_running_the_route_the_refusal_prints() {
+    let gate_two = gate_two_workflow();
+    let open = reject_ids();
+    let rows: [WalkRow; 8] = [
+        (
+            "an advisory pass below the built-in ceiling, the next pass adding no finding line",
+            SKEPTIC_WORKFLOW,
+            &[ADVISORY],
+            false,
+            Unexhausted,
+            (CLEAN_CRITIQUE, CLEAN_CRITIQUE),
+            (true, 1),
+            None,
+        ),
+        (
+            "an advisory pass below the built-in ceiling, the critic restating to the ceiling",
+            SKEPTIC_WORKFLOW,
+            &[ADVISORY],
+            false,
+            Unexhausted,
+            (ADVISORY, ADVISORY),
+            (true, 2),
+            None,
+        ),
+        (
+            "an advisory pass then a spawn with no verdict, the critic restating to the ceiling",
+            SKEPTIC_WORKFLOW,
+            &[ADVISORY, NO_VERDICT],
+            false,
+            Unexhausted,
+            (ADVISORY, ADVISORY),
+            (true, 1),
+            None,
+        ),
+        (
+            "an advisory pass below the gate's ceiling, the critic restating to it",
+            &gate_two,
+            &[ADVISORY],
+            false,
+            Unexhausted,
+            (ADVISORY, ADVISORY),
+            (true, 1),
+            None,
+        ),
+        (
+            "a reject below the built-in ceiling, the next pass adding no finding line",
+            SKEPTIC_WORKFLOW,
+            &[REJECT],
+            false,
+            BelowCeiling(&open),
+            (CLEAN_CRITIQUE, CLEAN_CRITIQUE),
+            (true, 1),
+            Some(Settled(&open)),
+        ),
+        (
+            "a reject below the gate's ceiling, the critic restating to it",
+            &gate_two,
+            &[REJECT],
+            false,
+            BelowCeiling(&open),
+            (ADVISORY, ADVISORY),
+            (true, 1),
+            Some(Settled(&open)),
+        ),
+        (
+            "a reject resolved below the built-in ceiling, the next pass adding no finding line",
+            SKEPTIC_WORKFLOW,
+            &[REJECT],
+            true,
+            Unexhausted,
+            (CLEAN_CRITIQUE, CLEAN_CRITIQUE),
+            (true, 1),
+            None,
+        ),
+        (
+            "three spawns with no verdict: no pass at the built-in ceiling",
+            SKEPTIC_WORKFLOW,
+            &[NO_VERDICT; 3],
+            false,
+            Unexhausted,
+            (CLEAN_CRITIQUE, CLEAN_CRITIQUE),
+            (false, 0),
+            Some(Unexhausted),
+        ),
+    ];
+    for (name, workflow, answers, resolved, refused, stub, verb, then) in rows {
+        let dir = critiqued_project(workflow, answers, resolved);
+        let root = dir.path();
+
+        println!("row: {name}");
+        assert_step_refused(root, (SPEC_REL, &[]), SPEC_REL, refused, 0);
+        let (work, (_out, err, ok)) = run_printed_critique(root, SPEC_REL, stub);
+        assert_eq!(
+            (ok, critique_stub_spawns(work.path())),
+            verb,
+            "the printed critique route's success and spawns; stderr:\n{err}"
+        );
+        match then {
+            None => assert_step_proceeds(root, (SPEC_REL, &[]), SPEC_REL, (0, 1)),
+            Some(Settled(ids)) => {
+                assert_step_refused(root, (SPEC_REL, &[]), SPEC_REL, Settled(ids), 0);
+                run_printed_resolution(root, SPEC_REL, ids);
+                assert_step_proceeds(root, (SPEC_REL, &[]), SPEC_REL, (0, 1));
+            }
+            Some(refusal) => assert_step_refused(root, (SPEC_REL, &[]), SPEC_REL, refusal, 0),
+        }
+    }
+}
+
 /// DROPPED, a renamed spec: the critique is keyed on the spec's bytes, so the same bytes at a new
-/// path are refused on the critique's open BLOCKING ids, never as not critiqued; the resolutions
-/// recorded under the old path close none of them until recorded again under the new one.
+/// path are refused on the critique's open BLOCKING ids, never as not critiqued to exhaustion; the
+/// resolutions recorded under the old path close none of them until recorded again under the new
+/// one.
 #[test]
 fn a_renamed_spec_keeps_the_critique_of_its_bytes_but_not_its_old_paths_resolutions() {
     let dir = temp_git_project_with_commit();
@@ -769,7 +1329,7 @@ fn a_renamed_spec_keeps_the_critique_of_its_bytes_but_not_its_old_paths_resoluti
     resolve(root, "r-old", SPEC_REL, &open);
 
     std::fs::rename(root.join(SPEC_REL), root.join(RENAMED_REL)).unwrap();
-    assert_step_refused(root, (RENAMED_REL, &[]), RENAMED_REL, Some(&open), 0);
+    assert_step_refused(root, (RENAMED_REL, &[]), RENAMED_REL, Settled(&open), 0);
 
     resolve(root, "r-new", RENAMED_REL, &open);
     assert_step_proceeds(root, (RENAMED_REL, &[]), RENAMED_REL, (0, 1));
@@ -823,7 +1383,7 @@ fn each_new_run_follows_the_workflows_critic_and_any_critic_reads_the_recorded_c
         LISTED_CRITIC_WORKFLOW,
     ] {
         write_scaffold(root, &personas, workflow);
-        assert_step_refused(root, (SPEC_REL, &["--fresh"]), SPEC_REL, Some(&open), 1);
+        assert_step_refused(root, (SPEC_REL, &["--fresh"]), SPEC_REL, Settled(&open), 1);
     }
     resolve(root, "r-all", SPEC_REL, &open);
     assert_step_proceeds(root, (SPEC_REL, &["--fresh"]), SPEC_REL, (0, 2));
@@ -842,7 +1402,7 @@ fn a_spec_returned_to_after_a_later_run_on_other_criteria_needs_a_clean_critique
                        "spec": "specs/8-other.md"})
     .to_string();
     seed_run_events(root, &[("RunStarted", later.as_str())]);
-    assert_step_refused(root, (SPEC_REL, &[]), SPEC_REL, None, 2);
+    assert_step_refused(root, (SPEC_REL, &[]), SPEC_REL, Unexhausted, 2);
     record_clean_critique(root, SPEC_REL);
     assert_step_proceeds(root, (SPEC_REL, &[]), SPEC_REL, (0, 3));
 }
@@ -850,7 +1410,7 @@ fn a_spec_returned_to_after_a_later_run_on_other_criteria_needs_a_clean_critique
 /// Existing data, a run branch holding another copy of the spec: the critique is judged on the
 /// bytes the step read before it anchored the run branch, so a clean critique of the checked-out
 /// text lets the run begin though the anchor puts the other copy in the tree; the next step reads
-/// that copy, whose other criteria begin a new run that is refused as not critiqued.
+/// that copy, whose other criteria begin a new run that is refused as not critiqued to exhaustion.
 #[test]
 fn a_run_branch_holding_another_copy_of_the_spec_cannot_change_the_critiqued_bytes() {
     let dir = temp_git_project_with_commit();
@@ -882,7 +1442,7 @@ fn a_run_branch_holding_another_copy_of_the_spec_cannot_change_the_critiqued_byt
         "the run is on the critiqued bytes' criteria"
     );
 
-    assert_step_refused(root, (SPEC_REL, &[]), SPEC_REL, None, 1);
+    assert_step_refused(root, (SPEC_REL, &[]), SPEC_REL, Unexhausted, 1);
 }
 
 /// The run entry `(args, command)` plus `extra` in `root`, with `path` as its `PATH`, got past its
@@ -942,10 +1502,58 @@ fn every_run_entry_adopts_the_specs_run_uncritiqued_and_begins_a_new_one_only_on
 
     record_critique(root, SPEC_REL, REJECT);
     let open = reject_ids();
-    assert_each_run_entry_refuses(root, &path, &["--fresh"], Some(&open), 1);
+    assert_each_run_entry_refuses(root, &path, &["--fresh"], Settled(&open), 1);
 
     resolve(root, "r-all", SPEC_REL, &open);
     for (minted, entry) in (2..).zip(RUN_ENTRIES) {
         assert_past_the_run_start(root, &path, entry, &["--fresh"], (0, minted));
+    }
+}
+
+/// Spec 123, CLEAN MEANS EXHAUSTED: given a workflow whose critique gate names its own
+/// `max_retries` of 2 and a critique of the spec's text no pass of which is free of finding lines,
+/// when each run entry begins a new run, then it is refused below that ceiling - on the open
+/// BLOCKING ids with the critique route alone, or as not critiqued to exhaustion - and at it is
+/// refused on the open ids with their resolution route, or proceeds to mint when none is open.
+#[test]
+fn every_run_entry_holds_a_new_run_to_the_ceiling_of_the_critique_it_reads() {
+    let workflow = stopping_at_the_grounder(&gate_two_workflow());
+    let (_work, path) = stand_in_claude();
+    let open = reject_ids();
+    let rows: [(&str, &[&str], Option<Refusal>); 4] = [
+        (
+            "a reject below the ceiling",
+            &[REJECT],
+            Some(BelowCeiling(&open)),
+        ),
+        (
+            "an advisory pass below the ceiling",
+            &[ADVISORY],
+            Some(Unexhausted),
+        ),
+        (
+            "a reject then an advisory pass at the ceiling",
+            &[REJECT, ADVISORY],
+            Some(Settled(&open)),
+        ),
+        (
+            "two advisory passes at the ceiling",
+            &[ADVISORY, ADVISORY],
+            None,
+        ),
+    ];
+    for (name, answers, refused) in rows {
+        let dir = critiqued_project(&workflow, answers, false);
+        let root = dir.path();
+
+        println!("row: {name}");
+        match refused {
+            Some(refusal) => assert_each_run_entry_refuses(root, &path, &[], refusal, 0),
+            None => {
+                for (minted, entry) in (1..).zip(RUN_ENTRIES) {
+                    assert_past_the_run_start(root, &path, entry, &["--fresh"], (0, minted));
+                }
+            }
+        }
     }
 }
