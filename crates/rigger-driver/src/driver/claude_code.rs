@@ -188,6 +188,14 @@ pub struct Launch {
     pub persona: SystemPromptFile,
 }
 
+/// The threads [`Driver::read_stream`] reads a launch's output pipes on: the stderr drain, whose
+/// tail a no-result ending carries, and the stdout reader feeding the stream's lines. Every
+/// ending joins them once the child is reaped ([`Driver::join_pipes`]).
+struct Pipes {
+    stderr_drain: Option<std::thread::JoinHandle<Vec<u8>>>,
+    stdout_reader: std::thread::JoinHandle<()>,
+}
+
 /// How [`Driver::read_stream`] ended a launch short of an `Err`, which ends this `spawn` call
 /// with its scratch reclaimed; on a held run the decorator can launch the same id again.
 enum StreamEnd {
@@ -593,6 +601,10 @@ impl Driver<'_> {
         // over a channel this loop drains with a timeout instead of `BufRead::lines`'s
         // own unbounded blocking iterator.
         let (line_rx, stdout_reader) = crate::reaped_child::line_channel(stdout);
+        let pipes = Pipes {
+            stderr_drain,
+            stdout_reader,
+        };
 
         let marker = liveness::marker_path(&self.scratch_root, &opts.run_id, &opts.id);
         let mut stream_file = open_stream_file(
@@ -673,13 +685,7 @@ impl Driver<'_> {
                             // chooses, the fallback answering a run proved unheld with no fault of
                             // its own.
                             if awaiting_session {
-                                self.stop_session(
-                                    reaper,
-                                    stderr_drain,
-                                    stdout_reader,
-                                    opts,
-                                    self.stop_grace,
-                                );
+                                self.stop_session(reaper, pipes, opts, self.stop_grace);
                                 self.drain_lines(&line_rx, &mut stream_file, opts, id);
                                 if self.run_held(opts) == HoldRead::Unheld {
                                     return Ok(self.session_gone(opts, id));
@@ -694,8 +700,7 @@ impl Driver<'_> {
                             }
                             return self.stop_for_wall_clock_silence(
                                 reaper,
-                                stderr_drain,
-                                stdout_reader,
+                                pipes,
                                 opts,
                                 id,
                                 max_wall_clock,
@@ -799,14 +804,7 @@ impl Driver<'_> {
                     // class. The tell of this defect class: a progress note where a failure
                     // class belongs.
                     if let Some(status) = rigger_server_fault(&v) {
-                        return self.stop_for_launch_fault(
-                            reaper,
-                            stderr_drain,
-                            stdout_reader,
-                            opts,
-                            id,
-                            &status,
-                        );
+                        return self.stop_for_launch_fault(reaper, pipes, opts, id, &status);
                     }
                 }
                 (Some("system"), Some("api_retry")) => {
@@ -925,10 +923,7 @@ impl Driver<'_> {
         // no-result path folds it into a classification below) - a handle that outruns
         // the bound, or whose thread panicked, degrades to an empty tail, same as no
         // stderr pipe at all.
-        let stderr_tail = stderr_drain
-            .and_then(|handle| self.join_within(opts, "stderr", handle, ORDINARY_DRAIN_JOIN_BOUND))
-            .unwrap_or_default();
-        self.join_within(opts, "stdout", stdout_reader, ORDINARY_DRAIN_JOIN_BOUND);
+        let stderr_tail = self.join_pipes(opts, pipes, ORDINARY_DRAIN_JOIN_BOUND);
 
         match (result, read_error) {
             (Some(result), _) => Ok(StreamEnd::Result(result)),
@@ -1240,8 +1235,7 @@ impl Driver<'_> {
     fn stop_for_launch_fault(
         &self,
         reaper: crate::reaped_child::ReapedChild,
-        stderr_drain: Option<std::thread::JoinHandle<Vec<u8>>>,
-        stdout_reader: std::thread::JoinHandle<()>,
+        pipes: Pipes,
         opts: &SpawnOpts,
         id: LaunchId,
         status: &str,
@@ -1255,13 +1249,7 @@ impl Driver<'_> {
             hooks::MCP_SERVER_NAME
         );
         self.record_progress(opts, &format!("stream: {message}"));
-        self.stop_session(
-            reaper,
-            stderr_drain,
-            stdout_reader,
-            opts,
-            std::time::Duration::ZERO,
-        );
+        self.stop_session(reaper, pipes, opts, std::time::Duration::ZERO);
         let read = self.ending_read(opts, class);
         self.fault(opts, id, class, message, read)
     }
@@ -1320,15 +1308,14 @@ impl Driver<'_> {
     fn stop_for_wall_clock_silence(
         &self,
         reaper: crate::reaped_child::ReapedChild,
-        stderr_drain: Option<std::thread::JoinHandle<Vec<u8>>>,
-        stdout_reader: std::thread::JoinHandle<()>,
+        pipes: Pipes,
         opts: &SpawnOpts,
         id: LaunchId,
         max_wall_clock: u64,
         assistant_error: Option<&str>,
     ) -> Result<StreamEnd, Error> {
         let message = self.announce_stop(opts, max_wall_clock);
-        self.stop_session(reaper, stderr_drain, stdout_reader, opts, self.stop_grace);
+        self.stop_session(reaper, pipes, opts, self.stop_grace);
         self.close_stopped(opts, id, message, assistant_error)
     }
 
@@ -1387,8 +1374,7 @@ impl Driver<'_> {
     fn stop_session(
         &self,
         mut reaper: crate::reaped_child::ReapedChild,
-        stderr_drain: Option<std::thread::JoinHandle<Vec<u8>>>,
-        stdout_reader: std::thread::JoinHandle<()>,
+        pipes: Pipes,
         opts: &SpawnOpts,
         grace: std::time::Duration,
     ) {
@@ -1460,10 +1446,18 @@ impl Driver<'_> {
         // Bounded by `self.stop_grace` here (THIS is THE STOP's own wait-for-a-graceful-
         // exit concern, unlike `read_stream`'s ORDINARY-exit joins just below, which use
         // the dedicated `ORDINARY_DRAIN_JOIN_BOUND` instead).
-        if let Some(handle) = stderr_drain {
-            self.join_within(opts, "stderr", handle, self.stop_grace);
-        }
-        self.join_within(opts, "stdout", stdout_reader, self.stop_grace);
+        self.join_pipes(opts, pipes, self.stop_grace);
+    }
+
+    /// Join a reaped launch's pipe threads, each within `bound` ([`Driver::join_within`]), and
+    /// return the stderr tail: empty when its drain outran the bound, panicked or had no pipe.
+    fn join_pipes(&self, opts: &SpawnOpts, pipes: Pipes, bound: std::time::Duration) -> Vec<u8> {
+        let tail = pipes
+            .stderr_drain
+            .and_then(|handle| self.join_within(opts, "stderr", handle, bound))
+            .unwrap_or_default();
+        self.join_within(opts, "stdout", pipes.stdout_reader, bound);
+        tail
     }
 
     /// Best-effort progress line (spec 14's mechanism, spec 104's own writer): a lost
