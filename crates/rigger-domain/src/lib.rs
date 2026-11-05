@@ -1,6 +1,6 @@
 //! Rigger's domain: the entities and use-case rules, ring 1 of the workspace. Nothing here
 //! touches a file, a process, the network, the clock, a store or the agent host; the root
-//! `rigger` crate re-exports every module under its historical path.
+//! `rigger` crate re-exports the modules it names under their historical path.
 
 /// The agent-host port: the `AgentDriver` trait, its options, result and error, and the park and
 /// failure-class sentinels that cross it.
@@ -26,6 +26,8 @@ pub mod gate;
 /// The grounding port: the `Grounder` trait and the plain values it returns.
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod grounder;
+#[cfg(any(feature = "store", not(feature = "core")))]
+pub mod hold_probe;
 /// The ingest fold rules (spec 45): the replay-key vocabulary and the project-scoped suppression
 /// predicate the live run and the standalone `rigger graph build` both seed from.
 #[cfg(any(feature = "store", not(feature = "core")))]
@@ -40,6 +42,7 @@ pub mod metrics;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod playbooks;
 pub mod progress;
+pub mod quoting;
 /// The classes of event (spec 107): the perception and episodic type lists and the ledger entry
 /// of perception. Under `ingest`'s gate, whose derived index it cites.
 #[cfg(any(feature = "store", not(feature = "core")))]
@@ -48,6 +51,8 @@ pub mod retention;
 pub mod review;
 pub mod run;
 pub mod safety;
+/// The keep-awake port (spec 105): the hold a run's driver takes so the machine does not sleep.
+pub mod sleep_hold;
 pub mod spawn;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod spec;
@@ -76,6 +81,10 @@ mod event_fixtures;
 #[allow(dead_code, unused_imports)]
 #[path = "../../../tests/common/fixtures/graph.rs"]
 mod graph_fixtures;
+#[cfg(all(test, any(feature = "store", not(feature = "core"))))]
+#[allow(dead_code, unused_imports)]
+#[path = "../../../tests/common/fixtures/hold_probe.rs"]
+mod hold_probe_fixtures;
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 #[allow(dead_code, unused_imports)]
 #[path = "../../../tests/common/fixtures/ingest.rs"]

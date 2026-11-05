@@ -51,6 +51,7 @@ mod dashboard;
 mod eval;
 mod graph;
 mod guard;
+mod hold;
 mod hygiene;
 mod observe;
 mod run;
@@ -61,6 +62,7 @@ pub(crate) use dashboard::*;
 pub(crate) use eval::*;
 pub(crate) use graph::*;
 pub(crate) use guard::*;
+pub(crate) use hold::*;
 pub(crate) use hygiene::*;
 pub(crate) use observe::*;
 pub(crate) use run::*;
@@ -1827,6 +1829,43 @@ fn require_store_dir() -> Result<(StoreLocation, StoreSelection), Box<dyn std::e
     Ok((StoreLocation { dir }, sel))
 }
 
+/// `act` over this project's run store: the `events.db` log of the store [`require_store_dir`]
+/// resolves, scoped by that store's identity, handed with the location and selection it was
+/// resolved at. The store borrows its backend, so it is handed to `act` rather than returned.
+fn over_the_run_store<T>(
+    act: impl FnOnce(
+        &StoreLocation,
+        &StoreSelection,
+        &dyn EventStore,
+    ) -> Result<T, Box<dyn std::error::Error>>,
+) -> Result<T, Box<dyn std::error::Error>> {
+    let (loc, selection) = require_store_dir()?;
+    over_the_run_store_at(&loc, &selection, |store| act(&loc, &selection, store))
+}
+
+/// `act` over the run store at `loc`, opened as [`over_the_run_store`] opens it, for a caller that
+/// already holds the store's location and selection.
+fn over_the_run_store_at<T>(
+    loc: &StoreLocation,
+    selection: &StoreSelection,
+    act: impl FnOnce(&dyn EventStore) -> Result<T, Box<dyn std::error::Error>>,
+) -> Result<T, Box<dyn std::error::Error>> {
+    let backend = resolve_store(selection, &loc.file("events.db"))?;
+    act(&Namespaced::new(backend.as_ref(), &loc.identity()))
+}
+
+/// `act` over this project's run stream, opened as [`over_the_run_store`] opens it, read through
+/// untouched and appended through a folding store, whose graph is opened only after the append
+/// (spec 101).
+fn on_the_run(act: impl FnOnce(&StoreLocation, &dyn EventStore) -> Res) -> Res {
+    over_the_run_store(|loc, selection, store| {
+        act(
+            loc,
+            &rigger::ingest::FoldingStore::new(store, Some(|| loc.graph(selection)), &stderr_line),
+        )
+    })
+}
+
 /// The context graph a read-only graph verb (`rigger graph --around`/`--show`) answers from: the
 /// `graph.db` of the store [`require_store_dir`] resolves, under that store's identity. A read run
 /// from a linked worktree so answers from the owning repository's graph, and one run under the
@@ -1985,20 +2024,21 @@ fn result_refusal(
 /// once [`RUN_BRANCH`] exists, an explicit `--base` is ignored (re-anchoring would orphan
 /// the integrated units), and the step says so on stderr rather than silently. A
 /// repo-less invocation skips run-branch setup entirely.
-/// The busy-refusal token a second concurrent `rigger step` prints (see
-/// [`acquire_step_lock`]). A DRIVER couriering steps keys on this exact substring to tell a
-/// benign "wait, another step holds the lock" from a real step failure - so it backs off
+/// The busy-refusal token a `rigger step` or a `rigger run` started beside a held step lock
+/// prints (see [`acquire_step_lock`]). A DRIVER couriering steps keys on this exact substring to
+/// tell a benign "wait, another step holds the lock" from a real step failure - so it backs off
 /// and retries `rigger step` instead of tearing the run down. Kept as a named constant so
 /// the conductor side and the driver prompt can never drift apart.
 const STEP_BUSY_TOKEN: &str = "another `rigger step` is already running";
 
-/// Acquire the exclusive advisory lock that SERIALIZES `rigger step`, returning it held as a
-/// [`HeldLock`] guard - released when it drops, explicitly, so a child forked meanwhile never keeps
-/// it held, and by the OS when the process dies, so a crashed step never wedges the run. A
-/// NON-blocking take: if another step already holds it, refuse fast
-/// and loudly ([`STEP_BUSY_TOKEN`]) rather than blocking - a driver whose courier gets the
-/// refusal backs off and retries, which keeps the run flowing without ever running two
-/// steps at once. See the call site for why concurrent steps corrupt the run.
+/// Acquire the exclusive advisory lock that SERIALIZES `rigger step` and `rigger run`, returning it
+/// held as a [`HeldLock`] guard - released when it drops, explicitly, so a child forked meanwhile
+/// never keeps it held, and by the OS when the process dies, so a crashed step or run never wedges
+/// the next. A step holds it for the step, a run for its whole life (spec 105). A NON-blocking
+/// take: if a step or a run already holds it, refuse fast and loudly ([`STEP_BUSY_TOKEN`]) rather
+/// than blocking - a driver whose courier gets a step's refusal backs off and retries, which keeps
+/// the run flowing without ever running two steps at once, while a run's refusal stands until the
+/// operator re-runs it. See the call sites for why two at once corrupt the run.
 ///
 /// `rigger_dir` is the `.rigger` directory the lock file (`step.lock`) lives under, so a caller
 /// resolves it exactly as it resolves every other store file: `cmd_step` always runs against the
@@ -2012,10 +2052,10 @@ fn acquire_step_lock(rigger_dir: &Path) -> Result<HeldLock, Box<dyn std::error::
     let path = rigger_dir.join("step.lock");
     HeldLock::try_take(&path)?.ok_or_else(|| {
         format!(
-            "rigger step: {STEP_BUSY_TOKEN} in this repo (lock {}). Refusing to run \
-             concurrently: two steps would race the run-branch checkout and the unit \
-             worktrees branched off HEAD, corrupting the run. \
-             Wait for the running step to finish (or kill it) and retry.",
+            "{STEP_BUSY_TOKEN} in this repo, or a `rigger run` is (lock {}). Refusing to run \
+             concurrently: two would race the run-branch checkout and the unit worktrees \
+             branched off HEAD, corrupting the run. Wait for the running one to finish and \
+             retry.",
             path.display()
         )
         .into()
@@ -2468,7 +2508,7 @@ fn append_review_quality(lines: &mut Vec<String>, m: &Metrics) {
     // disclose the UNFED case so a reader never misreads "0 upheld" as proven reviewer
     // failure. Two unfed shapes leave the folded upheld total at 0 while findings/spawns
     // exist:
-    //   - NO verdict recorded on this run's driver (the in-process cli path records none), or
+    //   - NO verdict recorded on this run's driver (the workflow driver records none), or
     //   - a verdict WAS recorded but the findings it upheld carry no attribution to fold onto
     //     (`upheld_unattributed > 0` - the empty-actor sentinel dropped them). This is the
     //     dominant case on a real aggregate store, which the adjudications==0 guard missed.
@@ -2481,7 +2521,7 @@ fn append_review_quality(lines: &mut Vec<String>, m: &Metrics) {
         && (rq.adjudications == 0 || rq.upheld_unattributed > 0)
     {
         let why = if rq.adjudications == 0 {
-            "no adjudicator verdict recorded on this run's driver - the upheld set rides the courier SpawnResult the in-process cli path never writes".to_string()
+            "no adjudicator verdict recorded on this run's driver - the upheld set rides the recorded SpawnResult the workflow driver never writes".to_string()
         } else {
             format!(
                 "a verdict WAS recorded, but {} upheld finding(s) carry no attribution to fold onto (unattributed on this log)",
@@ -2531,8 +2571,8 @@ fn append_review_quality(lines: &mut Vec<String>, m: &Metrics) {
             lines.push(format!("      {cause:<24} {n}"));
         }
     }
-    // A rejection's cause rides a RECORDED adjudicator reject verdict; the in-process cli
-    // path records none, so on that path - and on any aggregate store mixing the two - the
+    // A rejection's cause rides a RECORDED adjudicator reject verdict; the workflow driver
+    // records none, so on that path - and on any aggregate store mixing the two - the
     // folded causes account for FEWER rejects than review_reject. Disclose the unfed
     // remainder so the cause panel is never misread as the full reject breakdown (the count
     // never underflows: each cause fold is paired with a review_reject in the same arm).
@@ -3124,10 +3164,12 @@ fn recorded_dash_url(loc: &StoreLocation) -> Option<String> {
     (!url.is_empty()).then_some(url)
 }
 
-/// Every currently in-flight spawn's liveness-marker age (spec 14; spec 83 criterion 2): the
-/// ONE authority `cmd_status` and `watch_poll` both call, so the two surfaces can never
-/// disagree about who is still alive - no second, independently re-derived copy of this loop
-/// to drift out of step with the first.
+/// Every currently in-flight spawn's liveness-marker age (spec 14; spec 83 criterion 2), read
+/// through `holds`: the ONE age-map builder `cmd_status` and `watch_poll` both call - no second,
+/// independently re-derived copy of this loop to drift out of step with the first. The two do
+/// not share one reading: `cmd_status` passes its run's hold intervals, so a step after a
+/// released hold reads the time outside it, and `watch_poll` passes an empty slice, which reads
+/// wall-clock age, so an open hold cannot hide a dead supervisor from it.
 ///
 /// `repo` MUST be the store's resolved OWNING root ([`StoreLocation::repo_root`]), never a raw
 /// `git_repo()` cwd read: a courier invoked from a nested unit worktree (the documented,
@@ -3150,8 +3192,16 @@ fn liveness_ages_for_wave(
     run_id: &str,
     wave: &[spawn::WaveItem],
     now: std::time::SystemTime,
+    holds: &[rigger::liveness::Span],
 ) -> std::collections::BTreeMap<String, u64> {
-    rigger::liveness::marker_ages(events, &marker_root(repo, workdir), run_id, wave, now)
+    rigger::liveness::marker_ages(
+        events,
+        &marker_root(repo, workdir),
+        run_id,
+        wave,
+        now,
+        holds,
+    )
 }
 
 /// The scratch root a store's runs stamp their spawns' liveness markers under, for `repo` - the
@@ -3218,10 +3268,10 @@ fn parse_watch_args(args: &[String]) -> Result<WatchArgs, Box<dyn std::error::Er
 }
 
 /// One poll's worth of I/O for [`cmd_watch`]: reads the run's event slice (scoped
-/// exactly as `rigger status` scopes it) AND the whole log across every stream (the
-/// scope store-integrity needs, mirroring `rigger validate`'s own order-signature
-/// detector, spec 71), tries the step lock non-blocking (free = no `rigger step` is
-/// running right now), gathers each currently-parked spawn's heartbeat-marker age
+/// exactly as `rigger status` scopes it), which is also the scope store integrity is
+/// judged over (`rigger validate` keeps the whole-store order-signature
+/// detector, spec 71), tries the step lock non-blocking (free = no `rigger step` or
+/// `rigger run` holds it right now), gathers each currently-parked spawn's heartbeat-marker age
 /// exactly as `cmd_status` does, and probes the dash's liveness with a real serve check
 /// (the recorded marker's port when one exists, else the recorded `dash.url`'s own port;
 /// see the dash-probe comment inline below for why both breadcrumbs matter), then hands
@@ -3239,9 +3289,9 @@ fn watch_poll(
     selection: &StoreSelection,
     ci: watch::CiProbe,
 ) -> Result<Vec<watch::Anomaly>, Box<dyn std::error::Error>> {
-    let run_backend = resolve_store(selection, &loc.file("events.db"))?;
-    let run_store = Namespaced::new(run_backend.as_ref(), &loc.identity());
-    watch_poll_over(loc, &run_store, ci)
+    over_the_run_store_at(loc, selection, |run_store| {
+        watch_poll_over(loc, run_store, ci)
+    })
 }
 
 /// What CI says about the run branch's tip in `repo`: GitHub's check runs for that commit, read
@@ -3360,19 +3410,27 @@ fn watch_poll_over(
     // command reads the run, never the whole log): a disordered tail of the run stream is
     // reported here, and `rigger validate` keeps the whole-store detector (spec 71).
 
-    // No step process running right now: a non-blocking try-lock that succeeds means
-    // free. Dropped immediately either way, so this probe never holds the lock.
+    // No step and no run holds the step lock right now: a non-blocking try-lock that succeeds
+    // means free. Dropped immediately either way, so this probe never holds the lock.
     let step_lock_free = acquire_step_lock(&loc.dir).is_ok();
 
-    // Each currently-parked spawn's heartbeat-marker age, exactly as `cmd_status`
-    // computes `liveness_ages` (spec 19a) - the SAME "live agent processes" reading both
-    // surfaces show, so they can never disagree on who is still working. `watch_poll` never
-    // reads `max_retries` (only `cmd_status`'s blocker-line rendering needs it), so the
+    // Each currently-parked spawn's heartbeat-marker age (spec 19a), through the builder
+    // `cmd_status` calls but on wall clock, with no hold subtracted: `DeadDriver` needs every
+    // age past `DEAD_DRIVER_HEARTBEAT_BOUND`, and an age with an open hold subtracted never
+    // gets there, so reading the run's holds here would lose a dead supervisor. `watch_poll`
+    // never reads `max_retries` (only `cmd_status`'s blocker-line rendering needs it), so the
     // second half of the shared `scratch_defaults` pair is deliberately discarded here.
     let (workdir, _max_retries) = scratch_defaults(loc);
     let wave = spawn::step_result(&run_events)?.wave;
-    let wave_liveness_ages =
-        liveness_ages_for_wave(&run_events, &loc.repo_root(), &workdir, &run_id, &wave, now);
+    let wave_liveness_ages = liveness_ages_for_wave(
+        &run_events,
+        &loc.repo_root(),
+        &workdir,
+        &run_id,
+        &wave,
+        now,
+        &[],
+    );
 
     // Dash liveness: prefer the per-project MARKER (port + pid) when one exists,
     // verified with the same real serve probe `dash_serving_on` uses - a marker naming
@@ -10341,11 +10399,11 @@ mod tests {
             "anomalous exits must stop loudly via a throwing `stop()`, never a silent success return"
         );
 
-        // 6d. A HALT (the spawn-budget breaker's, Gap 13; a plan-critique spec-defect stop's; or
-        //     hung liveness) is a LOUD stop, never a clean completion: `rigger step` reports a
-        //     `halted` reason distinct from `done` convergence, and the driver routes a halted
-        //     step through the throwing `stop()` (so a starved run surfaces as a workflow failure
-        //     instead of the `done` fixpoint reading it as success). The STEP
+        // 6d. A HALT (a hold's; the spawn-budget breaker's, Gap 13; a plan-critique spec-defect
+        //     stop's; or hung liveness) is a LOUD stop, never a clean completion: `rigger step`
+        //     reports a `halted` reason distinct from `done` convergence, and the driver routes a
+        //     halted step through the throwing `stop()` (so a starved run surfaces as a workflow
+        //     failure instead of the `done` fixpoint reading it as success). The STEP
         //     schema must also ADMIT the optional `halted` field - the top level rejects unknown
         //     properties, so a halted step's JSON would otherwise fail validation and be lost.
         assert!(
@@ -10643,9 +10701,9 @@ mod tests {
             "each attention entry must render as a log() line naming its kind and detail"
         );
 
-        // The six wire kinds (ledger::ATTENTION_*, the closed vocabulary criterion 5 stamps)
-        // each resolve to a response - pinned against the SAME string constants the wire stamp
-        // uses, so a renamed kind breaks this test rather than silently going unmapped.
+        // The six wire kinds (ledger::ATTENTION_* minus HELD and RELEASED, the closed vocabulary
+        // criterion 5 stamps) each resolve to a response - pinned against the SAME constants the
+        // wire stamp uses, so a renamed kind breaks this test rather than silently going unmapped.
         for (kind, response) in [
             (ledger::ATTENTION_ESCALATED, "rigger-handle-an-escalation"),
             (ledger::ATTENTION_SPEC_DEFECT, "amend the spec and relaunch"),
@@ -11527,7 +11585,7 @@ mod tests {
         format_stats(m).join("\n")
     }
 
-    /// spec 11 remediation: an in-process (cli) run has findings but records NO adjudicator
+    /// spec 11 remediation: a workflow-driver run has findings but records NO adjudicator
     /// verdict (no SpawnResult), so the upheld-based folds are unfed. The render must
     /// DISCLOSE that honestly rather than let a reader misread the 0% survival as the
     /// adjudicator having discarded every finding.
@@ -12216,6 +12274,85 @@ mod tests {
         (dir, loc, identity)
     }
 
+    /// Spec 105's LIVENESS closing clause, at `rigger watch`: given an open hold standing since
+    /// before the wave's marker was last touched, a quiet store and a free step lock, the marker
+    /// past the heartbeat bound raises `DeadDriver`, one short of it does not. `watch` reads the
+    /// marker on wall clock: an age with the open hold subtracted stops growing at the hold's
+    /// start, never reaches the bound, and `rigger watch` would lose a dead supervisor.
+    #[test]
+    fn watch_reads_a_marker_on_wall_clock_so_a_dead_supervisor_behind_an_open_hold_is_seen() {
+        let (dir, loc, _identity) = watch_test_store();
+        let db = loc.file("events.db");
+        Store::open(&db).unwrap();
+        std::fs::write(
+            loc.file("workflow.yml"),
+            format!("defaults:\n  workdir: \"{}\"\n", dir.path().display()),
+        )
+        .unwrap();
+        let run_id = "r-held";
+        let spawn_id = "u-held/implementer#0";
+        let stamped_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as i64
+            - (watch::DEAD_DRIVER_QUIET_BOUND + watch::DEAD_DRIVER_HEARTBEAT_BOUND).as_nanos()
+                as i64;
+        crate::test_support::insert_aged_rows(
+            std::path::Path::new(&db),
+            &loc.run_stream(),
+            &[
+                (
+                    0,
+                    runscope::TYPE_RUN_STARTED,
+                    format!(r#"{{"run":"{run_id}","criteria":["held"]}}"#),
+                    stamped_at,
+                ),
+                (
+                    1,
+                    spawn::TYPE_SPAWN_REQUESTED,
+                    format!(
+                        r#"{{"id":"{spawn_id}","unit":"u-held","stage":"implementer","prompt":"do it"}}"#
+                    ),
+                    stamped_at,
+                ),
+                (
+                    2,
+                    runscope::TYPE_RUN_HELD,
+                    serde_json::to_string(&runscope::RunHeld::default()).unwrap(),
+                    stamped_at,
+                ),
+            ],
+        );
+        let marker = rigger::liveness::marker_path(
+            &marker_root(&loc.repo_root(), &scratch_defaults(&loc).0),
+            run_id,
+            spawn_id,
+        )
+        .unwrap();
+        std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
+        std::fs::write(&marker, b"heartbeat").unwrap();
+
+        let a_minute = std::time::Duration::from_secs(60);
+        for (marker_age, expected) in [
+            (watch::DEAD_DRIVER_HEARTBEAT_BOUND - a_minute, vec![]),
+            (
+                watch::DEAD_DRIVER_HEARTBEAT_BOUND + a_minute,
+                vec![watch::Signal::DeadDriver],
+            ),
+        ] {
+            std::fs::File::options()
+                .write(true)
+                .open(&marker)
+                .unwrap()
+                .set_modified(std::time::SystemTime::now() - marker_age)
+                .unwrap();
+            let anomalies =
+                watch_poll(&loc, &StoreSelection::Sqlite, watch::CiProbe::NoRunTip).unwrap();
+            let signals: Vec<watch::Signal> = anomalies.iter().map(|a| a.signal).collect();
+            assert_eq!(signals, expected, "at {marker_age:?}: {anomalies:?}");
+        }
+    }
+
     // --- Spec 101, criterion 2: ONE-SHOT COMMANDS READ FROM THE BOUNDARY ---
 
     /// `rigger status`, `rigger progress` and the dash snapshot (its local and attached arms
@@ -12417,7 +12554,7 @@ mod tests {
             ..Default::default()
         }];
         let now = touched_at + std::time::Duration::from_secs(5);
-        let ages = liveness_ages_for_wave(&[], &loc.repo_root(), "", run_id, &wave, now);
+        let ages = liveness_ages_for_wave(&[], &loc.repo_root(), "", run_id, &wave, now, &[]);
 
         assert_eq!(
             ages.get(spawn_id).copied(),

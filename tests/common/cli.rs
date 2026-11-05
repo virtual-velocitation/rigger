@@ -11,8 +11,10 @@ use rigger::contextgraph::sqlite::Projector;
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Direction, Event, EventStore, ExpectedRevision};
+use rigger::run::{RunHeld, RunReleased, TYPE_RUN_HELD, TYPE_RUN_RELEASED};
 
 pub use super::fixtures::keyed;
+use super::fixtures::{dated_ago, run_held_event};
 
 /// A throwaway project directory that is its own (commit-less) git repo, so the project
 /// identity the binary resolves for it is its basename, stable across every call a test makes.
@@ -90,6 +92,15 @@ pub fn temp_repoless_project() -> tempfile::TempDir {
 /// the state directory of a project rooted at `root`.
 pub fn rigger_file(root: &Path, name: &str) -> PathBuf {
     root.join(RIGGER_DIR).join(name)
+}
+
+/// Place a DIRECTORY where `<root>/.rigger/store.conn` should be a file, so reading it as the secret
+/// file yields an IO error DISTINCT from NotFound - the present-but-unreadable class. This mirrors
+/// the config rung's parity test exactly and is more portable than `chmod 000`, which a test running
+/// as root would bypass (root reads any file), silently defeating the guard under test.
+pub fn make_store_conn_unreadable(root: &Path) {
+    std::fs::create_dir(root.join(".rigger").join("store.conn"))
+        .expect("place a directory where store.conn goes");
 }
 
 /// A raw connection of its own to the store file `name` under `root`'s rigger dir, for reading or
@@ -303,6 +314,19 @@ pub fn run_around(cwd: &Path, seed: &str, depth: i64) -> (String, String, bool) 
     )
 }
 
+/// Every printed `node <id> <kind>` line of a `rigger graph --around` transcript, parsed into its
+/// id, so an assertion is exact (never a substring match against an edge line).
+pub fn graph_node_ids(out: &str) -> Vec<String> {
+    out.lines()
+        .filter_map(|l| {
+            l.trim_start()
+                .strip_prefix("node ")
+                .and_then(|rest| rest.split_whitespace().next())
+                .map(str::to_string)
+        })
+        .collect()
+}
+
 /// Every printed `edge <from> -<rel>-> <to>` line of a `rigger graph --around` transcript, parsed
 /// into its (from, rel, to) triple - never substring-matched, so an assertion about which edges
 /// printed is a claim about the parsed fields, not a text search a coincidental substring could
@@ -330,12 +354,120 @@ pub fn run_rigger_envs(cwd: &Path, args: &[&str], envs: &[(&str, &str)]) -> (Str
     rigger_outcome(child)
 }
 
+/// The first executable named `tool` on the ambient `PATH`, which the test needs there.
+pub fn ambient_tool(tool: &str) -> PathBuf {
+    std::env::var_os("PATH")
+        .into_iter()
+        .flat_map(|p| std::env::split_paths(&p).collect::<Vec<_>>())
+        .map(|d| d.join(tool))
+        .find(|p| p.is_file())
+        .unwrap_or_else(|| panic!("`{tool}` must be on PATH for this test"))
+}
+
+/// `dir` made a `PATH` directory holding each of `tools` as a symlink to its [`ambient_tool`], so a
+/// `PATH` of `dir` finds exactly those tools whatever else the machine has installed, and no test
+/// writes a file it then executes.
+#[cfg(unix)]
+pub fn ambient_tools_bin(dir: &Path, tools: &[&str]) -> PathBuf {
+    std::fs::create_dir_all(dir).unwrap();
+    for tool in tools {
+        std::os::unix::fs::symlink(ambient_tool(tool), dir.join(tool)).unwrap();
+    }
+    dir.to_path_buf()
+}
+
+/// The directory holding the stand-in agent binary [`rigger_command`] puts on every `PATH`: a
+/// `claude` linked to the ambient `false`, so whatever it is asked it prints nothing and fails. It
+/// lives in the test target's scratch directory, made by whichever test process reaches it first
+/// and shared by the rest.
+#[cfg(unix)]
+fn no_report_agent_dir() -> PathBuf {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("no-login-report");
+    std::fs::create_dir_all(&dir).unwrap();
+    match std::os::unix::fs::symlink(ambient_tool("false"), dir.join("claude")) {
+        Err(e) if e.kind() != std::io::ErrorKind::AlreadyExists => {
+            panic!(
+                "the stand-in agent binary links into {}: {e}",
+                dir.display()
+            )
+        }
+        _ => dir,
+    }
+}
+
+/// `path` with [`no_report_agent_dir`] ahead of its first entry the ambient `PATH` holds, so the
+/// rigger a test runs finds the stand-in agent binary before the machine's own, and a stand-in the
+/// test put ahead of those entries before both; a `path` holding no ambient entry, one a test built
+/// to hold only the tools it names, comes back whole.
+#[cfg(unix)]
+fn behind_the_no_report_agent(path: &str) -> std::ffi::OsString {
+    let ambient: Vec<PathBuf> = std::env::var_os("PATH")
+        .map(|p| std::env::split_paths(&p).collect())
+        .unwrap_or_default();
+    let mut entries: Vec<PathBuf> = std::env::split_paths(path).collect();
+    let first_ambient = entries
+        .iter()
+        .position(|entry| !entry.as_os_str().is_empty() && ambient.contains(entry));
+    if let Some(first_ambient) = first_ambient {
+        entries.insert(first_ambient, no_report_agent_dir());
+    }
+    std::env::join_paths(entries).expect("a PATH's own entries join back into one")
+}
+
+/// The ambient `PATH` with every directory holding a `tool` removed, so a lookup of `tool` fails
+/// whatever the machine running the test has installed; `git` and the coreutils stay found only
+/// where no directory holding them also holds `tool`.
+pub fn path_without(tool: &str) -> String {
+    std::env::var("PATH")
+        .unwrap_or_default()
+        .split(':')
+        .filter(|dir| !dir.is_empty() && !Path::new(dir).join(tool).exists())
+        .collect::<Vec<_>>()
+        .join(":")
+}
+
+/// A spawned child the test owns: dropping the owner, on any path out of its scope and a panic's
+/// unwind included, ends and reaps it through its handle ([`super::fixtures::cleanup`]), since a
+/// `Child` dropped bare leaves its process running. [`OwnedChild::into_child`] hands the handle
+/// back to a caller that reaps the child itself.
+pub struct OwnedChild(Option<Child>);
+
+impl OwnedChild {
+    /// Own `child`.
+    pub fn new(child: Child) -> Self {
+        Self(Some(child))
+    }
+
+    /// The owned handle.
+    pub fn child(&mut self) -> &mut Child {
+        self.0
+            .as_mut()
+            .expect("an owned child is held until it is handed back")
+    }
+
+    /// The handle, handed back: its caller reaps the child.
+    pub fn into_child(mut self) -> Child {
+        self.0
+            .take()
+            .expect("an owned child is held until it is handed back")
+    }
+}
+
+impl Drop for OwnedChild {
+    fn drop(&mut self) {
+        if let Some(child) = &mut self.0 {
+            super::fixtures::cleanup(child);
+        }
+    }
+}
+
 /// [`run_rigger_envs`] bounded in time: `rigger <args...>` in `cwd` with extra environment `envs`,
 /// spawned and polled up to `tries` times 25 ms apart ([`super::fixtures::wait_until_for`]),
 /// `meanwhile` handed its pid at each poll while it runs. Its (stdout, stderr, success) once it
-/// ends within them, or `None` once they are spent, the process ended and reaped through its handle
-/// ([`super::fixtures::cleanup`]) first. Its output is read once it has ended, so it suits a
-/// command whose output fits a pipe.
+/// ends within them, or `None` once they are spent. The process is owned ([`OwnedChild`]) until it
+/// ends, so once the tries are spent, or a panic in `meanwhile` unwinds out of this, it is ended
+/// and reaped through its handle. Its output is read once it has ended, so it suits a command
+/// whose output fits a pipe.
 pub fn run_rigger_within(
     cwd: &Path,
     args: &[&str],
@@ -343,17 +475,17 @@ pub fn run_rigger_within(
     tries: u32,
     mut meanwhile: impl FnMut(u32),
 ) -> Option<(String, String, bool)> {
-    let (_state, mut child) = spawn_rigger(cwd, args, envs);
+    let (_state, child) = spawn_rigger(cwd, args, envs);
     let pid = child.id();
+    let mut child = OwnedChild::new(child);
     let ended = super::fixtures::wait_until_for(tries, || {
         meanwhile(pid);
-        !matches!(child.try_wait(), Ok(None))
+        !matches!(child.child().try_wait(), Ok(None))
     });
     if !ended {
-        super::fixtures::cleanup(&mut child);
         return None;
     }
-    Some(rigger_outcome(child))
+    Some(rigger_outcome(child.into_child()))
 }
 
 /// `rigger <args...>` in `cwd` with extra environment `envs` ([`rigger_command`]) spawned under a
@@ -414,7 +546,9 @@ pub fn setup_ok(cwd: &Path, envs: &[(&str, &str)]) -> String {
 }
 
 /// `rigger <args...>` in `cwd` with extra environment `envs`, as [`run_rigger_envs`] runs it, for
-/// a caller that spawns it and acts while it runs; `state` must outlive the process.
+/// a caller that spawns it and acts while it runs; `state` must outlive the process. Its `PATH`
+/// finds the stand-in agent binary that gives no report ahead of the machine's own
+/// ([`behind_the_no_report_agent`]).
 pub fn rigger_command(cwd: &Path, args: &[&str], envs: &[(&str, &str)], state: &Path) -> Command {
     let mut cmd = super::rigger_courier();
     cmd.args(args).current_dir(cwd);
@@ -433,6 +567,16 @@ pub fn rigger_command(cwd: &Path, args: &[&str], envs: &[(&str, &str)], state: &
     cmd.env("XDG_STATE_HOME", state);
     for (k, v) in envs {
         cmd.env(k, v);
+    }
+    // No rigger a test runs reaches the machine's own agent binary: the caller's `PATH`, else the
+    // ambient one, goes behind the stand-in that gives no report.
+    #[cfg(unix)]
+    {
+        let path = envs.iter().rev().find(|(k, _)| *k == "PATH").map_or_else(
+            || std::env::var("PATH").unwrap_or_default(),
+            |(_, path)| path.to_string(),
+        );
+        cmd.env("PATH", behind_the_no_report_agent(&path));
     }
     cmd
 }
@@ -487,6 +631,24 @@ pub fn run_rigger_from_deleted(dir: &Path, args: &[&str], envs: &[(&str, &str)])
 pub fn emit(root: &Path, typ: &str, json: &str) {
     let (_o, err, ok) = run_rigger(root, &["emit", typ, json]);
     assert!(ok, "emit {typ} must succeed; stderr: {err}");
+}
+
+/// What the emit surface answers the type `typ`, which no agent may emit: the sentence of its
+/// refusal that names the type and the types an agent may emit.
+pub fn emit_refused(typ: &str) -> String {
+    format!(
+        "refusing to emit {typ:?}: only agent context events (DecisionMade, ReviewFinding, \
+         LessonLearned, UnitProposed) may be emitted this way."
+    )
+}
+
+/// The error the headless host hands back for spawn `id` when its session ended with no result
+/// under `class`, `tail` the stderr tail it kept, the class marked as the conductor reads it.
+pub fn no_result_failure(id: &str, class: &str, tail: &str) -> String {
+    format!(
+        "\u{2}{class}\u{2}claude_code driver: {id:?}: the agent stream ended with no result \
+         (class {class}; stderr tail: {tail})"
+    )
 }
 
 /// Record the critic's `answer` as the critique of `spec`'s current text in the project at `root`
@@ -673,6 +835,27 @@ pub fn append_run_events<B: AsRef<str>>(store: &dyn EventStore, events: &[(&str,
     }
 }
 
+/// Seed one released hold into `root`'s namespaced run stream, raised `held_ago` seconds ago and
+/// released `released_ago` seconds ago, dated by `valid_from` as a run's hold intervals read it.
+pub fn seed_released_hold(root: &Path, held_ago: u64, released_ago: u64) {
+    let released = Event::new(
+        TYPE_RUN_RELEASED,
+        serde_json::to_vec(&RunReleased::default()).unwrap(),
+    );
+    with_run_store(root, |store| {
+        store
+            .append(
+                rigger::conductor::STREAM,
+                ExpectedRevision::Any,
+                &[
+                    dated_ago(run_held_event(&RunHeld::default()), held_ago),
+                    dated_ago(released, released_ago),
+                ],
+            )
+            .unwrap();
+    });
+}
+
 /// The spawn [`one_unanswered_spawn`] requests and never answers.
 pub const SPAWN: &str = "a/implementer#0";
 
@@ -774,9 +957,71 @@ pub fn idle_window_secs() -> u64 {
 /// `f` over `root`'s own project namespace of its on-disk `.rigger/events.db` - the store the
 /// binary writes, opened through the same composition the binary opens it through.
 pub fn with_run_store<R>(root: &Path, f: impl FnOnce(&dyn EventStore) -> R) -> R {
-    let backend = Store::open(rigger_file(root, "events.db").to_str().unwrap()).unwrap();
+    with_store_file(root, "events.db", f)
+}
+
+/// `f` over `root`'s own project namespace of its on-disk `.rigger/<file>` (`progress.db` the
+/// progress log), opened as [`with_run_store`] opens the event log.
+pub fn with_store_file<R>(root: &Path, file: &str, f: impl FnOnce(&dyn EventStore) -> R) -> R {
+    let backend = Store::open(rigger_file(root, file).to_str().unwrap()).unwrap();
     let store = Namespaced::new(&backend, &run_stream_identity(root));
     f(&store)
+}
+
+/// Land one supervisor beat, now, on the progress stream of `root`'s current run: the beat
+/// `rigger status` reads to tell whether a supervisor still watches a held run.
+pub fn seed_a_supervisor_beat(root: &Path) {
+    let run_id = current_run_id_of(root).expect("a started run to beat on");
+    with_store_file(root, "progress.db", |store| {
+        rigger::progress_store::append_stamped(
+            store,
+            &run_id,
+            &rigger::progress::SupervisorBeat::default(),
+            "a supervisor beat",
+        )
+        .unwrap();
+    });
+}
+
+/// The duration text and the rest of `line` when it is `rigger status`'s HELD line, `HELD
+/// <duration>s - <reason>; <what ends it>`, else `None`: how a binary test reads the one part of
+/// the line the wall clock decides apart from the part it pins.
+pub fn held_line_parts(line: &str) -> Option<(&str, &str)> {
+    line.strip_prefix("HELD ")?.split_once("s - ")
+}
+
+/// Every `SpawnLaunched` record among `events`, each with the run it is stamped with ("" for
+/// none), in their order.
+pub fn spawn_launches(events: &[Event]) -> Vec<(String, rigger::progress::SpawnLaunched)> {
+    events
+        .iter()
+        .filter(|e| e.type_ == rigger::progress::TYPE_SPAWN_LAUNCHED)
+        .map(|e| {
+            let run = e.meta.get(rigger::run::META_RUN_ID).cloned();
+            (
+                run.unwrap_or_default(),
+                serde_json::from_slice(&e.data).unwrap(),
+            )
+        })
+        .collect()
+}
+
+/// Append `event` to `root`'s run stream through a bare store, a hand beside the run.
+pub fn seed_on_the_run(root: &Path, event: Event) {
+    with_run_store(root, |store| {
+        store
+            .append(
+                rigger::conductor::STREAM,
+                rigger::eventstore::ExpectedRevision::Any,
+                &[event],
+            )
+            .unwrap();
+    });
+}
+
+/// Append a `RunHeld` to `root`'s run that no fold applies, so no read proves the run unheld.
+pub fn seed_a_hold_no_fold_applies(root: &Path) {
+    seed_on_the_run(root, Event::new(TYPE_RUN_HELD, b"not a hold".to_vec()));
 }
 
 /// `f` over `root`'s own project namespace of its `.rigger/events.db` as a binary before the
@@ -821,6 +1066,52 @@ pub fn run_log_head(root: &Path) -> u64 {
 /// ([`read_run_events`]), `None` before any run started.
 pub fn current_run_id_of(root: &Path) -> Option<String> {
     rigger::run::current_run_id(&read_run_events(root))
+}
+
+/// Seeds a REAL run in `root`'s own `.rigger/events.db`, through the SAME production
+/// authority `RunCtx` itself calls before threading the result onto every spawn's
+/// `opts.run_id` (`conductor.rs`'s `crate::run_store::ensure_started`) - returns the id it
+/// mints. Namespaced identically to [`current_run_progress_events`]'s own
+/// [`run_stream_identity`], so this writes into the exact stream `rigger hook stop-failure`'s own
+/// cold `runscope::current_run_id` read (`cli/guard.rs::cmd_hook_stop_failure`) will independently
+/// see.
+pub fn seed_a_run(root: &Path) -> String {
+    let backend = Store::open(
+        root.join(".rigger/events.db")
+            .to_str()
+            .expect("a utf-8 store path"),
+    )
+    .expect("the event log opens");
+    let store = Namespaced::new(&backend, &run_stream_identity(root));
+    rigger::run_store::ensure_started(&store, &["a criterion".to_string()])
+        .expect("a fresh run mints")
+}
+
+/// Every event of `type_` of the current run in `root`'s own `.rigger/progress.db`, read directly
+/// (never through a command under test) so an assertion is independent of it: the run's id
+/// cold-read from `events.db` (empty before any run), then that run's progress stream, under the
+/// same [`Namespaced`] scoping the binary writes through ([`with_store_file`]).
+pub fn current_run_progress_events(root: &Path, type_: &str) -> Vec<Event> {
+    let run_id = current_run_id_of(root).unwrap_or_default();
+    with_store_file(root, "progress.db", |store| {
+        rigger::progress::read_run(store, &run_id)
+    })
+    .expect("the progress stream reads")
+    .into_iter()
+    .filter(|e| e.type_ == type_)
+    .collect()
+}
+
+/// Every record of type `T` of the current run in `root`'s own `.rigger/progress.db`
+/// ([`current_run_progress_events`]), in append order.
+pub fn recorded_progress<T>(root: &Path) -> Vec<T>
+where
+    T: rigger::progress::RunStamped + serde::de::DeserializeOwned,
+{
+    current_run_progress_events(root, T::EVENT_TYPE)
+        .iter()
+        .map(|e| serde_json::from_slice(&e.data).expect("a well-formed progress record"))
+        .collect()
 }
 
 /// `root`'s run stream as `(position, revision, type)`, oldest first.
@@ -1139,7 +1430,14 @@ pub fn backdate_the_log(root: &Path) {
 /// connection of its own (spec 124, HORIZON IN TESTS): how a binary test ages the events whose
 /// store stamps `rigger setup`'s seeding reads.
 pub fn backdate_the_log_by(root: &Path, age: Duration) {
-    rigger_db(root, "events.db")
+    backdate_store_file_by(root, "events.db", age);
+}
+
+/// Record every event `root`'s `.rigger/<file>` holds `age` earlier than it was, through a
+/// connection of its own: how a binary test ages the store stamps a command reads, the event log's
+/// ([`backdate_the_log_by`]) or the progress log's supervisor beats.
+pub fn backdate_store_file_by(root: &Path, file: &str, age: Duration) {
+    rigger_db(root, file)
         .execute(
             "UPDATE events SET recorded_at = recorded_at - ?1",
             [age.as_nanos() as i64],

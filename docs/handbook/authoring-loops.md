@@ -24,7 +24,7 @@ Those two sentences are the rule the binary is held to. The rest of this section
 - `DOC_ONLY_ROUND`'s rule sentence
 - `PLAN_PROTOCOL`'s guidance sentences
 - `MAX_UNIT_ADDED_LINES` and the second sentence of `unit_size_cap`
-- the progress cadence in its four host homes: the cli host's framing, the workflow script's and the shim's progress notes, and the `rigger_progress` description
+- the progress cadence in its four host homes: the process hosts' shared framing, the workflow script's and the shim's progress notes, and the `rigger_progress` description
 - the REQUIRED PATTERN audit sentences: the `PATTERN:` lines an implementer and a reviewer read under a REQUIRED list
 - the method sentences of the lookup pointer (`write_lookup_pointer`)
 - the toolchain words in `workflows/rigger.js` and the `rigger_scratch` description
@@ -125,7 +125,7 @@ Upgrading an older workflow: the top-level `name:` key is retired, and `rigger v
 
 ### The knobs that matter
 
-**`budget`** is the hard cap on agent spawns for one unattended run. When spawns reach it, the breaker records `BudgetExhausted` and aborts. Keep it non-zero always: `0` means unlimited, and unlimited is how a unit a reviewer keeps rejecting churns for five hours. Raise it for a big spec; never disable it for an unattended run.
+**`budget`** is the hard cap on agent spawns for one unattended run. When spawns reach it, the breaker records `BudgetExhausted` and aborts. Under `rigger run` the count belongs to the run, not the process: a restarted run keeps counting from where the last one stopped, so a run halted on `BudgetExhausted` continues only once `budget` is raised. Keep it non-zero always: `0` means unlimited, and unlimited is how a unit a reviewer keeps rejecting churns for five hours. Raise it for a big spec; never disable it for an unattended run.
 
 **`max_retries`** is remediation *depth*, not review rigor. It bounds how many attempts a failed unit gets before escalating to a human. Raise it when a unit's defects are genuine but diminishing across iterations - it buys convergence room under the full-strength review; it never loosens the review bar. It is itself bounded by `budget`, so it can never spin unboundedly.
 

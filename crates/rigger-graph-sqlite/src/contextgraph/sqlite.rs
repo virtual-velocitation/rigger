@@ -122,12 +122,14 @@ CREATE TABLE IF NOT EXISTS passed_over (position INTEGER PRIMARY KEY, cause TEXT
 /// Rule 4 is a record's reference read as the id it names
 /// ([`referenced_id`](super::query::referenced_id)): a file folded before it holds a record citing
 /// lines of a file (`path:line`) ABOUT or GOVERNING an artifact at the citation rather than the
-/// file. A file at an older version that folded anything owes one cold rebuild from the log
-/// ([`Projector::rebuild`], which only `rigger setup` runs) and nothing folds into it
-/// incrementally until then. A rebuild's shadow records the rule it is folded under the same
-/// way, from the moment it is opened, so one a binary of another rule left is never resumed
-/// ([`open_shadow`]).
-pub const PROJECTION_VERSION: i64 = 4;
+/// file. Rule 5 is a lesson's or finding's `file` read as one more location
+/// ([`locations`](super::locations)): a file folded before it holds a record naming its location
+/// by `file` with no ABOUT edge to that file. A file at an older version that folded anything owes
+/// one cold rebuild from the log ([`Projector::rebuild`], which only `rigger setup` runs) and
+/// nothing folds into it incrementally until then. A rebuild's shadow records the rule it is
+/// folded under the same way, from the moment it is opened, so one a binary of another rule left
+/// is never resumed ([`open_shadow`]).
+pub const PROJECTION_VERSION: i64 = 5;
 
 /// The generation ledgers and their views, dropped from a file at an older [`PROJECTION_VERSION`]
 /// so [`SCHEMA`] recreates them in their current shape.
@@ -4636,7 +4638,7 @@ fn fold_event(tx: &Transaction, e: &Event, project: &str, by: &Asserter) -> Resu
                 &[("summary", &l.summary)],
                 project,
             )?;
-            for path in &l.about {
+            for path in super::locations(&l.about, &l.file) {
                 let canonical = resolve_in_tx(tx, path);
                 ensure_node(tx, by, &canonical, KIND_ARTIFACT, &[], project)?;
                 add_edge(
@@ -4655,9 +4657,9 @@ fn fold_event(tx: &Transaction, e: &Event, project: &str, by: &Asserter) -> Resu
             // A review finding the lenses / adversary raise about a unit's files:
             // the cross-agent memory the three tiers communicate THROUGH. The finding
             // node carries the summary, the reviewer (`by`), and the unit; an ABOUT
-            // edge ties it to each file it concerns (so a later reviewer grounded on
-            // those files reaches it the same way it reaches the decisions that GOVERN
-            // them). De-noise (spec 43): the reviewer's provenance is NOT projected as a
+            // edge ties it to each file it concerns, its `about` list and its `file`
+            // (so a later reviewer grounded on those files reaches it the same way it
+            // reaches the decisions that GOVERN them). De-noise (spec 43): the reviewer's provenance is NOT projected as a
             // KIND_AGENT node or a REL_RAISED edge - that agent attribution is run
             // machinery, not the target project. The `by` reviewer stays as a node
             // ATTRIBUTE on the finding (read by consumers off the content node), and the
@@ -4671,7 +4673,7 @@ fn fold_event(tx: &Transaction, e: &Event, project: &str, by: &Asserter) -> Resu
                 &[("summary", &f.summary), ("by", &f.by), ("unit", &f.unit)],
                 project,
             )?;
-            for path in &f.about {
+            for path in super::locations(&f.about, &f.file) {
                 let canonical = resolve_in_tx(tx, path);
                 ensure_node(tx, by, &canonical, KIND_ARTIFACT, &[], project)?;
                 add_edge(
@@ -7245,6 +7247,72 @@ mod tests {
             ),
             (Some(PruneStats::default()), 0),
             "a rebuild that rejects nothing passes nothing over"
+        );
+    }
+
+    /// A rebuild folds every lesson and finding the log holds as a node, one naming no location
+    /// among them - the emit guard refuses such a record at emit only - and a finding naming its
+    /// file is reached from that file (op-105-every-finding-reaches-the-graph).
+    #[test]
+    fn a_rebuild_folds_a_location_free_record_as_a_node() {
+        let log = [
+            event_at(
+                TYPE_REVIEW_FINDING,
+                br#"{"id":"f-nowhere","summary":"s"}"#,
+                1,
+            ),
+            event_at(
+                TYPE_LESSON_LEARNED,
+                br#"{"id":"l-nowhere","summary":"s","about":[]}"#,
+                2,
+            ),
+            event_at(
+                TYPE_REVIEW_FINDING,
+                br#"{"id":"f-file","summary":"s","file":"src/a.rs","line":3}"#,
+                3,
+            ),
+        ];
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("graph.db");
+        let path = path.to_str().unwrap();
+        drop(Projector::open(path, "test").unwrap());
+
+        let rebuilt = rebuild_in_batches(path, &log, 10, &mut Vec::new()).unwrap();
+        let p = Projector::open(path, "test").unwrap();
+        let g = p.whole().unwrap();
+        let mut nodes: Vec<(&str, &str)> = g
+            .nodes
+            .iter()
+            .map(|n| (n.id.as_str(), n.kind.as_str()))
+            .collect();
+        nodes.sort_unstable();
+        let about: Vec<(&str, &str)> = g
+            .edges
+            .iter()
+            .filter(|x| x.rel == REL_ABOUT)
+            .map(|x| (x.from.as_str(), x.to.as_str()))
+            .collect();
+        assert_eq!(
+            (
+                rebuilt.map(|r| r.pruned),
+                applied_through(&p, 3),
+                crate::test_support::passed_over_rows(path),
+                nodes,
+                about,
+            ),
+            (
+                Some(PruneStats::default()),
+                vec![true; 3],
+                vec![],
+                vec![
+                    ("f-file", KIND_FINDING),
+                    ("f-nowhere", KIND_FINDING),
+                    ("l-nowhere", KIND_LESSON),
+                    ("src/a.rs", KIND_ARTIFACT),
+                ],
+                vec![("f-file", "src/a.rs")],
+            ),
+            "every record folds as a node, none passed over, and the file a finding names is ABOUT it"
         );
     }
 
@@ -10499,15 +10567,16 @@ mod tests {
             );
     }
 
-    /// The shared-node rule (spec 116) is fold rule 2, the path-addressed node (spec 119) rule 3
-    /// and a record's reference read as the id it names rule 4: a file that folded under rule 1
-    /// took a shared node's kind and line from the last definition folded, one that folded under
-    /// rule 2 holds a nested definition at its flat id, and one that folded under rule 3 holds a
-    /// record citing lines of a file ABOUT an artifact at the citation rather than the file, so
-    /// each owes its rebuild, and one at rule 4 owes none.
+    /// The shared-node rule (spec 116) is fold rule 2, the path-addressed node (spec 119) rule 3,
+    /// a record's reference read as the id it names rule 4 and a lesson's or finding's `file`
+    /// read as one more location rule 5: a file that folded under rule 1 took a shared node's kind
+    /// and line from the last definition folded, one that folded under rule 2 holds a nested
+    /// definition at its flat id, one that folded under rule 3 holds a record citing lines of a
+    /// file ABOUT an artifact at the citation rather than the file, and one that folded under
+    /// rule 4 holds a record naming its file by `file` with no ABOUT edge to it, so each owes its
+    /// rebuild, and one at rule 5 owes none.
     #[test]
-    fn a_graph_file_folded_at_projection_version_1_2_or_3_owes_its_rebuild_and_one_at_4_owes_none()
-    {
+    fn a_graph_file_folded_at_projection_version_1_to_4_owes_its_rebuild_and_one_at_5_owes_none() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("graph.db");
         let p = Projector::open(path.to_str().unwrap(), "test").unwrap();
@@ -10523,7 +10592,8 @@ mod tests {
         assert_eq!(owed_at(1), vec![OWED_OLDER_RULE]);
         assert_eq!(owed_at(2), vec![OWED_OLDER_RULE]);
         assert_eq!(owed_at(3), vec![OWED_OLDER_RULE]);
-        assert_eq!(owed_at(4), Vec::<&str>::new());
+        assert_eq!(owed_at(4), vec![OWED_OLDER_RULE]);
+        assert_eq!(owed_at(5), Vec::<&str>::new());
     }
 
     /// The owed mark an older binary's lost fold left belongs to the graph file beside it: once
@@ -14446,6 +14516,46 @@ mod tests {
         assert!(
             !g.edges.iter().any(|x| x.rel == REL_RAISED),
             "no REL_RAISED agent-attribution edge is projected"
+        );
+    }
+
+    /// A finding or lesson naming its location by `file`, with a line or without, is reached from
+    /// that file's node as one naming it in `about` is (op-105-every-finding-reaches-the-graph):
+    /// the fold reads the file as one more `about` reference, a cited line folding onto the file.
+    #[test]
+    fn a_record_naming_its_file_is_reached_from_that_files_node() {
+        let p = Projector::open(":memory:", "test").unwrap();
+        let events = [
+            event_at(
+                TYPE_REVIEW_FINDING,
+                br#"{"id":"f-line","summary":"s","file":"src/combat.rs","line":12}"#,
+                1,
+            ),
+            event_at(
+                TYPE_REVIEW_FINDING,
+                br#"{"id":"f-cited","summary":"s","file":"src/combat.rs:40-44"}"#,
+                2,
+            ),
+            event_at(
+                TYPE_LESSON_LEARNED,
+                br#"{"id":"l-file","summary":"s","file":"src/combat.rs"}"#,
+                3,
+            ),
+        ];
+        crate::test_support::folds(&p, &events);
+
+        let g = p.subgraph(&["src/combat.rs".to_string()], 2).unwrap();
+        let mut about: Vec<&str> = g
+            .edges
+            .iter()
+            .filter(|x| x.rel == REL_ABOUT && x.to == "src/combat.rs")
+            .map(|x| x.from.as_str())
+            .collect();
+        about.sort_unstable();
+        assert_eq!(
+            about,
+            ["f-cited", "f-line", "l-file"],
+            "each record is ABOUT the file it names, reached from that file's node"
         );
     }
 

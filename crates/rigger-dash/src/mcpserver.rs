@@ -57,7 +57,7 @@ impl From<&str> for ToolError {
 /// The MCP bridge over the workflow driver, event store, side-car, and (optionally)
 /// the context-graph projector.
 pub struct Server<'a> {
-    driver: &'a Driver,
+    driver: &'a Driver<'a>,
     store: &'a dyn EventStore,
     stream: String,
     /// The live context-graph projector. When set, an emitted event is folded into
@@ -142,7 +142,7 @@ enum Surface {
 }
 
 impl<'a> Server<'a> {
-    pub fn new(driver: &'a Driver, store: &'a dyn EventStore, stream: &str) -> Self {
+    pub fn new(driver: &'a Driver<'a>, store: &'a dyn EventStore, stream: &str) -> Self {
         Server {
             driver,
             store,
@@ -378,10 +378,10 @@ impl<'a> Server<'a> {
             // An empty id means "no spawn right now". `done` disambiguates the two
             // cases the shim cannot otherwise tell apart: `done:true` means the
             // conductor has finished and the shim should exit; `done:false` means the
-            // conductor is still running (grounding, or between waves) and the shim
-            // must poll again rather than exit. Without `done`, an early empty `next`
-            // looks identical to a finished run and the shim exits before the first
-            // spawn is even enqueued.
+            // conductor is still running (grounding, between waves, or with a queued spawn a
+            // hold keeps back) and the shim must poll again rather than exit. Without `done`,
+            // an early empty `next` looks identical to a finished run and the shim exits
+            // before the first spawn is even enqueued.
             None => Ok(json!({"id": "", "done": self.driver.is_finished()})),
         }
     }
@@ -753,10 +753,16 @@ impl<'a> Server<'a> {
         let frontier = crate::spawn::step_result(run_events)
             .map_err(|e| ToolError::new(INTERNAL_ERROR, e.to_string()))?
             .wave;
-        let liveness_ages: std::collections::HashMap<String, u64> =
-            crate::liveness::marker_ages(run_events, &self.scratch_root, &run_id, &frontier, now)
-                .into_iter()
-                .collect();
+        let liveness_ages: std::collections::HashMap<String, u64> = crate::liveness::marker_ages(
+            run_events,
+            &self.scratch_root,
+            &run_id,
+            &frontier,
+            now,
+            &[],
+        )
+        .into_iter()
+        .collect();
 
         let view = crate::progress::consolidate(run_events, &prog_events, &liveness_ages, now)
             .map_err(|e| ToolError::new(INTERNAL_ERROR, e.to_string()))?;
@@ -1758,15 +1764,16 @@ mod tests {
         );
     }
 
-    /// Emit the `typ` record `id` through the one emit core, stamped with `spawn` as its
-    /// `meta.spawn` (unstamped when `None`): the position the store issued it.
+    /// Emit the `typ` record `id`, about one file (the location a finding or lesson must name),
+    /// through the one emit core, stamped with `spawn` as its `meta.spawn` (unstamped when
+    /// `None`): the position the store issued it.
     fn emit_record(
         store: &Store,
         typ: &str,
         id: &str,
         spawn: Option<&str>,
     ) -> Result<crate::eventstore::Position, String> {
-        let mut args = json!({"type": typ, "data": {"id": id, "summary": "s"}});
+        let mut args = json!({"type": typ, "data": {"id": id, "summary": "s", "about": ["a.rs"]}});
         if let Some(spawn) = spawn {
             args["meta"][crate::conductor::META_SPAWN] = json!(spawn);
         }
@@ -2755,6 +2762,18 @@ mod tests {
                 "rigger_scratch",
             ]
         );
+        // Every tool a headless launch pre-approves as the bound server's is one this server
+        // registers: the launch spells the names in `SPAWN_BOUND_TOOLS`, the server here.
+        let prefix = format!("mcp__{}__", rigger_driver::hooks::MCP_SERVER_NAME);
+        let unregistered: Vec<&str> = rigger_domain::agent::SPAWN_BOUND_TOOLS
+            .iter()
+            .copied()
+            .filter(|t| {
+                !t.strip_prefix(&prefix)
+                    .is_some_and(|n| names.iter().any(|r| r == n))
+            })
+            .collect();
+        assert_eq!(unregistered, Vec::<&str>::new());
     }
 
     crate::test_cases! {
@@ -2874,6 +2893,7 @@ mod tests {
             vec![AgentProgress {
                 id: "u104-spawn-mcp/implementer#0".to_string(),
                 activity: "ran the gates".to_string(),
+                revision: None,
             }],
             "the progress report must be attributed to the BOUND spawn with the given activity"
         );

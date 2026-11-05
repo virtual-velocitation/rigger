@@ -14,8 +14,8 @@
 //!    graph opener the audit names: a new site fails the suite until it is listed, and a listed
 //!    site that vanished fails it until it is deleted. An appender that holds the stream by
 //!    reference is reached through its graph open instead: the MCP server's emit
-//!    (`crates/rigger-dash/src/mcpserver.rs:431`), handed `conductor::STREAM` at
-//!    `src/cli/dashboard.rs:853`, is reached through `cmd_mcp`'s graph open.
+//!    (`crates/rigger-dash/src/mcpserver.rs:449`), handed `conductor::STREAM` at
+//!    `src/cli/dashboard.rs:852`, is reached through `cmd_mcp`'s graph open.
 //! 3. THE PRINCIPLE LINTS CARRY NO EXEMPTION. No item opts out of a lint the root manifest
 //!    denies.
 //! 4. THE CORE NAMES NO GATE. A gate is a command a project's workflow wires into a stage, so no
@@ -593,6 +593,11 @@ const ADAPTERS: &[Adapter] = &[
         constructor: r"\b(ReplayDriver::new|Driver::new|Driver::default)\(|\bDriver \{",
         home: &["crates/rigger-driver/"],
     },
+    Adapter {
+        family: "keep-awake",
+        constructor: r"\bOsSleepHold\b",
+        home: &["crates/rigger-process/"],
+    },
 ];
 
 /// Production adapter construction outside the composition root, `file:item` (`item` is the
@@ -770,16 +775,16 @@ fn a_constructor_outside_the_root_is_reported_by_file_and_item() {
 /// read to its matching `)`, holds `STREAM` right after a [`STREAM_MODULES`] segment
 /// (`run::STREAM`, `conductor::STREAM`) or a bare `STREAM` in a file that imports it from one of
 /// them. An appender that holds the stream by reference is no entry: the MCP server's emit
-/// (`crates/rigger-dash/src/mcpserver.rs:431`), handed `conductor::STREAM` at
-/// `src/cli/dashboard.rs:853`, is reached through its graph open, `src/cli/dashboard.rs:cmd_mcp`
+/// (`crates/rigger-dash/src/mcpserver.rs:449`), handed `conductor::STREAM` at
+/// `src/cli/dashboard.rs:852`, is reached through its graph open, `src/cli/dashboard.rs:cmd_mcp`
 /// in [`GRAPH_OPENS`]. Spec 124's THE APPENDER AUDIT names the store each one's call reaches.
 const PROJECT_STREAM_APPENDS: &[&str] = &[
     "crates/rigger-conductor/src/conductor.rs:append_and_fold_batch",
     "crates/rigger-conductor/src/conductor.rs:emit_keyed_batch",
+    "crates/rigger-store-sqlite/src/run_store.rs:append_at_head",
     "crates/rigger-store-sqlite/src/run_store.rs:record_rebase",
     "crates/rigger-store-sqlite/src/run_store.rs:start_fresh",
     "crates/rigger-store-sqlite/src/spawn_store.rs:one_position",
-    "crates/rigger-store-sqlite/src/spawn_store.rs:record_result_if_absent",
     "src/cli/critique.rs:copy_findings",
     "src/cli/graph.rs:cmd_emit",
     "src/cli/graph.rs:record_batch",
@@ -806,11 +811,11 @@ const GRAPH_OPENS: &[&str] = &[
     "src/cli/hygiene.rs:reset_runs",
     "src/cli/mod.rs:graph",
     "src/cli/mod.rs:migrate_identity_at",
+    "src/cli/mod.rs:on_the_run",
     "src/cli/mod.rs:open_graph",
     "src/cli/mod.rs:open_graph_for_write",
     "src/cli/mod.rs:open_graph_to_read",
     "src/cli/mod.rs:standing_graph",
-    "src/cli/run.rs:cmd_resume_unit",
     "src/cli/run.rs:cmd_step",
     "src/cli/run.rs:fold_recorded_result",
     "src/cli/run.rs:run_cli",

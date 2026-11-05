@@ -9,8 +9,8 @@
 //! `src/main.rs`) read `tests/common`'s functions by; and the token readers the simplification and
 //! boundary audits read its tokens with ([`ref_punct`], [`ref_token`], [`lone_colon_at`],
 //! [`qualifier_before`], [`follows_keyword`], [`is_definition_site`], [`close_of`],
-//! [`imported_names`]). Each suite uses the subset it needs (hence the module-wide `dead_code`
-//! allowance, as in `tests/common/mod.rs`).
+//! [`imported_names`], [`renamed_imports`]). Each suite uses the subset it needs (hence the
+//! module-wide `dead_code` allowance, as in `tests/common/mod.rs`).
 
 #![allow(dead_code)]
 
@@ -626,19 +626,13 @@ pub fn close_of(toks: &[RawTok], open: usize, close: &str) -> usize {
     toks.len()
 }
 
-/// The names read from the `use` declarations among `toks`, each paired with its owner, in source
-/// order. A declaration runs from any `use` keyword to the next `;`, so a precise-capturing bound
-/// (`impl Sized + use<'a>`) opens one too. A name is an identifier that ends a path: a `,`, `}`
-/// or `;` follows it and no `as` precedes it. Its owner is the identifier or keyword in front of
-/// the `::` before it (`use a::b::c;` imports `c` owned by `b`). A name with no such owner of its
-/// own is owned by the innermost open group, whose owner is read the same way in front of its
-/// `{`, the empty string when there is none (`use a::{b, c::{d}};` imports `b` owned by `a` and
-/// `d` owned by `c`; `use {a, b::c};` imports `a` owned by `""` and `c` owned by `b`). These
-/// imports are read for no name: a glob (`a::*`), a renamed import (`b as c`), a path ending in a
-/// keyword (a `self` group member, which imports the `a` of `use a::{self, b};`) and a name with
-/// no owner outside any group (a one-segment path, `use serde;`).
-pub fn imported_names(toks: &[RawTok]) -> Vec<(String, String)> {
-    let mut names = Vec::new();
+/// Calls `visit` with the index of each token inside a `use` declaration among `toks`, other than
+/// a group's braces and the closing `;`, and the owners of the groups open at it, innermost last.
+/// A declaration runs from any `use` keyword to the next `;`, so a precise-capturing bound
+/// (`impl Sized + use<'a>`) opens one too. A group's owner is the identifier or keyword in front of
+/// the `::` before its `{`, the empty string when there is none. The one walk [`imported_names`]
+/// and [`renamed_imports`] read declarations by.
+fn each_use_token(toks: &[RawTok], mut visit: impl FnMut(usize, &[String])) {
     // Inside a `use` declaration, each open group's owner, innermost last.
     let mut owners: Option<Vec<String>> = None;
     for (at, tok) in toks.iter().enumerate() {
@@ -654,12 +648,55 @@ pub fn imported_names(toks: &[RawTok]) -> Vec<(String, String)> {
             groups.push(qualifier_before(toks, at).unwrap_or_default());
         } else if ref_punct(Some(tok), "}") {
             groups.pop();
-        } else if tok.kind == RawKind::Ident && ends_a_use_path(toks, at) {
+        } else {
+            visit(at, groups);
+        }
+    }
+}
+
+/// The names read from the `use` declarations among `toks` ([`each_use_token`]), each paired with
+/// its owner, in source order. A name is an identifier that ends a path: a `,`, `}` or `;`
+/// follows it and no `as` precedes it. Its owner is the identifier or keyword in front of the
+/// `::` before it (`use a::b::c;` imports `c` owned by `b`). A name with no such owner of its own
+/// is owned by the innermost open group (`use a::{b, c::{d}};` imports `b` owned by `a` and `d`
+/// owned by `c`; `use {a, b::c};` imports `a` owned by `""` and `c` owned by `b`). These imports
+/// are read for no name: a glob (`a::*`), a renamed import (`b as c`, which [`renamed_imports`]
+/// reads), a path ending in a keyword (a `self` group member, which imports the `a` of
+/// `use a::{self, b};`) and a name with no owner outside any group (a one-segment path,
+/// `use serde;`).
+pub fn imported_names(toks: &[RawTok]) -> Vec<(String, String)> {
+    let mut names = Vec::new();
+    each_use_token(toks, |at, groups| {
+        let tok = &toks[at];
+        if tok.kind == RawKind::Ident && ends_a_use_path(toks, at) {
             let owner = qualifier_before(toks, at).or_else(|| groups.last().cloned());
             names.extend(owner.map(|owner| (tok.text.clone(), owner)));
         }
-    }
+    });
     names
+}
+
+/// The renames read from the `use` declarations among `toks` ([`each_use_token`]), each alias
+/// paired with the name it renames, in source order: the identifier after an `as` renames the
+/// identifier in front of it (`use a::b as c;` renames `b` to `c`), and a `self` in front of it
+/// renames the innermost open group's owner (`use a::{self as c};` renames `a` to `c`).
+pub fn renamed_imports(toks: &[RawTok]) -> Vec<(String, String)> {
+    let mut renames = Vec::new();
+    each_use_token(toks, |at, groups| {
+        if !ref_token(toks.get(at), RawKind::Keyword, "as") {
+            return;
+        }
+        let Some(alias) = toks.get(at + 1).filter(|t| t.kind == RawKind::Ident) else {
+            return;
+        };
+        let renamed = match at.checked_sub(1).and_then(|i| toks.get(i)) {
+            Some(t) if t.kind == RawKind::Ident => Some(t.text.clone()),
+            Some(t) if ref_token(Some(t), RawKind::Keyword, "self") => groups.last().cloned(),
+            _ => None,
+        };
+        renames.extend(renamed.map(|renamed| (alias.text.clone(), renamed)));
+    });
+    renames
 }
 
 /// Whether the identifier at `toks[at]` is the last segment of a `use` path that imports it by

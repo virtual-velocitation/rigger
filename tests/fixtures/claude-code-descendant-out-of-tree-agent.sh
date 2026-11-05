@@ -11,8 +11,11 @@
 # at all by the time that walk happens - while it still holds a copy of the stdout pipe's
 # write end open. Winds down on its own the moment its own stdin closes, exactly like the
 # in-tree sibling fixture.
+self=$(readlink "$0") || self=$0
+. "$(dirname "$self")/launch-args.sh"
+sid=$(launched_session 77777777-7777-4777-8777-777777777777 "$@")
 IFS= read -r line
-echo '{"type":"system","subtype":"init","session_id":"77777777-7777-4777-8777-777777777777","model":"claude-haiku-4-5","mcp_servers":[]}'
+echo '{"type":"system","subtype":"init","session_id":"'"$sid"'","model":"claude-haiku-4-5","mcp_servers":[]}'
 (
     sleep 60 &
     if [ -n "$RIGGER_TEST_DESCENDANT_PID_FILE" ]; then

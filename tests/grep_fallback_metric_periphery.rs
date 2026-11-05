@@ -57,6 +57,7 @@ fn progress_ev(id: &str, activity: &str) -> Event {
     let ap = AgentProgress {
         id: id.to_string(),
         activity: activity.to_string(),
+        revision: None,
     };
     Event::new(
         progress::TYPE_AGENT_PROGRESS,
@@ -83,6 +84,7 @@ fn is_grep_fallback_is_bound_to_the_public_prefix_const_and_tolerates_leading_sp
     let fallback = AgentProgress {
         id: "u1/implementer#0".into(),
         activity: format!("{GREP_FALLBACK_PREFIX} no --show for effective_max_retries"),
+        revision: None,
     };
     assert!(
         fallback.is_grep_fallback(),
@@ -92,6 +94,7 @@ fn is_grep_fallback_is_bound_to_the_public_prefix_const_and_tolerates_leading_sp
     let padded = AgentProgress {
         id: "u1/adversary#0".into(),
         activity: format!("   {GREP_FALLBACK_PREFIX} quoting Blocker body"),
+        revision: None,
     };
     assert!(
         padded.is_grep_fallback(),
@@ -101,6 +104,7 @@ fn is_grep_fallback_is_bound_to_the_public_prefix_const_and_tolerates_leading_sp
     let ordinary = AgentProgress {
         id: "u1/implementer#0".into(),
         activity: "cargo build green".into(),
+        revision: None,
     };
     assert!(
         !ordinary.is_grep_fallback(),
@@ -110,6 +114,7 @@ fn is_grep_fallback_is_bound_to_the_public_prefix_const_and_tolerates_leading_sp
     let mid_line = AgentProgress {
         id: "u1/implementer#0".into(),
         activity: format!("did a {GREP_FALLBACK_PREFIX} thing later"),
+        revision: None,
     };
     assert!(
         !mid_line.is_grep_fallback(),

@@ -107,11 +107,8 @@ pub fn sleeper_in(dir: &Path) -> Child {
         .expect("spawn a sleeping fixture process")
 }
 
-/// The teardown reap's proof (spec 23): a SIGTERM-ignoring child rooted at `inside` - and, with
-/// `outside`, a plain sleeper rooted there; once the inside child is seen rooted under `inside`,
-/// `teardown` runs, and the inside child must have been reaped (only the SIGKILL escalation can
-/// end it) while any outside one survives - the safety boundary. Every child is cleaned up before
-/// the assertions, so a failure never leaks a process. `what` names the teardown in the messages.
+/// The teardown reap's proof (spec 23): [`assert_teardown_reaps_only_what_is_rooted_inside`]
+/// with at most one process rooted `outside`.
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub fn assert_teardown_reaps_what_is_rooted_inside(
     inside: &Path,
@@ -119,8 +116,23 @@ pub fn assert_teardown_reaps_what_is_rooted_inside(
     teardown: impl FnOnce(),
     what: &str,
 ) {
+    assert_teardown_reaps_only_what_is_rooted_inside(inside, outside.as_slice(), teardown, what);
+}
+
+/// A reap's proof: a SIGTERM-ignoring child rooted at `inside` and a plain sleeper rooted at each
+/// of `outside`; once the inside child is seen rooted under `inside`, `teardown` runs, and the
+/// inside child must have been reaped (only the SIGKILL escalation can end it) while every
+/// outside one survives - the safety boundary. Every child is cleaned up before the assertions,
+/// so a failure never leaks a process. `what` names the teardown in the messages.
+#[cfg(any(feature = "store", not(feature = "core")))]
+pub fn assert_teardown_reaps_only_what_is_rooted_inside(
+    inside: &Path,
+    outside: &[&Path],
+    teardown: impl FnOnce(),
+    what: &str,
+) {
     let mut inside_child = sigterm_ignorer_in(inside);
-    let mut outside_child = outside.map(sleeper_in);
+    let mut outside_children: Vec<Child> = outside.iter().map(|dir| sleeper_in(dir)).collect();
     assert!(
         wait_until(|| rigger::reap::processes_rooted_under(inside)
             .iter()
@@ -132,25 +144,24 @@ pub fn assert_teardown_reaps_what_is_rooted_inside(
     teardown();
 
     let inside_died = wait_until(|| matches!(inside_child.try_wait(), Ok(Some(_))));
-    let outside_alive = outside_child
-        .as_mut()
-        .map(|c| matches!(c.try_wait(), Ok(None)));
-    if let Some(c) = outside_child.as_mut() {
-        cleanup(c);
-    }
+    let outside_alive: Vec<bool> = outside_children
+        .iter_mut()
+        .map(|c| matches!(c.try_wait(), Ok(None)))
+        .collect();
+    outside_children.iter_mut().for_each(cleanup);
     if !inside_died {
         cleanup(&mut inside_child);
     }
     assert!(
         inside_died,
-        "a process rooted inside {} must be reaped by {what} (SIGTERM then SIGKILL) before \
-         its dir is removed",
+        "a process rooted inside {} must be reaped by {what} (SIGTERM then SIGKILL)",
         inside.display()
     );
-    assert_ne!(
+    assert_eq!(
         outside_alive,
-        Some(false),
-        "a process rooted OUTSIDE must survive {what} - the safety boundary"
+        vec![true; outside.len()],
+        "a process rooted OUTSIDE, at each of {outside:?}, must survive {what} - the safety \
+         boundary"
     );
 }
 
@@ -171,6 +182,20 @@ pub fn wait_until_for(tries: u32, mut pred: impl FnMut() -> bool) -> bool {
 /// [`wait_until_for`] over the default 5 seconds.
 pub fn wait_until(pred: impl FnMut() -> bool) -> bool {
     wait_until_for(200, pred)
+}
+
+/// The ids of every thread this process holds right now, as `/proc/self/task` lists them.
+pub fn thread_ids() -> std::collections::BTreeSet<u32> {
+    std::fs::read_dir("/proc/self/task")
+        .expect("this process's thread list")
+        .map(|task| {
+            task.expect("a thread entry")
+                .file_name()
+                .to_str()
+                .and_then(|id| id.parse().ok())
+                .expect("a numeric thread id")
+        })
+        .collect()
 }
 
 /// How many of the open files of process `pid` ([`rigger::holders::open_files`]) name the file at

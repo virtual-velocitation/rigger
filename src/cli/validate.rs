@@ -1,4 +1,5 @@
 use super::*;
+use std::time::{Duration, Instant};
 
 /// Whether the tracked `.rigger/project.id` is present (and non-blank) for the project at
 /// `root`, resolved relative to the git top-level (else `root`) - the same anchoring
@@ -12,6 +13,39 @@ fn has_tracked_project_id(root: &Path) -> bool {
         Path::new(&toplevel)
     };
     read_project_id(base).is_some()
+}
+
+/// How long `rigger validate` waits on `claude auth status --json` for the login it reports.
+const CLAUDE_LOGIN_BOUND: Duration = Duration::from_secs(5);
+
+/// The `rigger validate` CLAUDE LOGIN report (spec 105, WHAT A PERSON SEES): the auth method the
+/// one login reader ([`rigger::claude_auth::auth_method`]) reads from the `claude` on PATH within
+/// [`CLAUDE_LOGIN_BOUND`], on stdout, and a warning on stderr naming the long-lived token when it
+/// is the subscription login, which can expire under a long run; when no report came, one warning
+/// in its place. Neither changes the exit status.
+fn print_claude_login() {
+    match rigger::claude_auth::auth_method(
+        rigger::claude_auth::DEFAULT_BIN,
+        Instant::now() + CLAUDE_LOGIN_BOUND,
+    ) {
+        Some(method) => {
+            println!("claude login: {method}");
+            if method == rigger::claude_auth::SUBSCRIPTION_LOGIN {
+                eprintln!(
+                    "warning: claude login: {method} is an interactive subscription login, which \
+                     can expire under a long run; run `claude setup-token` and set the long-lived \
+                     token it prints as CLAUDE_CODE_OAUTH_TOKEN where rigger runs."
+                );
+            }
+        }
+        None => eprintln!(
+            "warning: claude login: `claude auth status --json` gave no report within {} s \
+             (claude is not on PATH, its status failed or gave no answer by the bound, or its \
+             report is not one JSON object naming an authMethod string); a run launches `claude` \
+             from PATH, logged in.",
+            CLAUDE_LOGIN_BOUND.as_secs()
+        ),
+    }
 }
 
 /// The `rigger validate` GRAPH INDEX LAG sample (spec 107, THE LEDGER ANSWERS THE INDEX-LAG
@@ -216,6 +250,7 @@ pub(crate) fn cmd_validate(args: &[String]) -> Res {
     {
         println!("{line}");
     }
+    print_claude_login();
     // Non-fatal advisories (spec 05:55): surface config/install drift so it is seen,
     // not discovered by accident. Each is a stderr warning that never changes the exit
     // status - `rigger validate` still succeeds so long as the config itself is valid.

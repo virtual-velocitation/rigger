@@ -104,8 +104,8 @@ impl AgentDriver for PanicOnAnySpawn {
 /// simulating a process crash strictly BETWEEN one already-landed mutation's own after-record
 /// and whatever the next store write would have been (spec 103, criterion 3's exact crash
 /// window: "a crash between that append and the post-merge re-gate which must follow it").
-/// Unlike `tests/integrate_conflict_merge_periphery.rs`'s own `FailAppendContaining` (which
-/// refuses the triggering append ITSELF, proving a record survives crash-before-its-own-write),
+/// Unlike the shared `FailAppendContaining` (which refuses the triggering append ITSELF, proving
+/// a record survives crash-before-its-own-write),
 /// this proves the OPPOSITE half: the trigger succeeds for real, on disk and in the log, and
 /// everything durable that was SUPPOSED to follow it is exactly what never arrives - the one
 /// window this criterion's fix closes. Never a production hook: `EventStore` is the crate's own

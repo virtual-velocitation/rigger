@@ -35,10 +35,15 @@
 //! already-tested pieces would compute actually gets READ from where the REAL write landed,
 //! through the real binary, from the real nested-worktree cwd the bug's own doc comment
 //! names.
+//!
+//! Spec 105's LIVENESS reads through the same seam: `rigger status --json`'s `liveness_age_s`, the
+//! age the workflow's marker race reads, leaves the run's hold intervals out of a marker's age,
+//! while `rigger dash --export` and `rigger_activity` read the same marker on wall clock.
 
 mod common;
 use common::git::run_git;
 
+use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::process::Output;
 
@@ -46,10 +51,13 @@ use common::cli::now_nanos;
 use common::cli::run_stream_identity;
 use common::cli::seed_run_events;
 use common::cli::seed_store;
+use common::cli::with_run_store;
 use common::git::git_out;
 use common::git::nested_worktree;
+use rigger::driver::workflow::Driver;
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::Store;
+use rigger::mcpserver::Server;
 
 const RUN_ID: &str = "r-heartbeat-seam";
 const SPAWN_ID: &str = "seam-unit/implementer#0";
@@ -114,6 +122,10 @@ fn seed_in_flight_spawn(root: &Path) {
 /// wait, so the marker-heartbeat axis can be isolated and varied independently.
 fn seed_stale_in_flight_spawn(root: &Path, age_secs: i64) {
     seed_store(root);
+    let run_started = format!(r#"{{"run":"{RUN_ID}","criteria":["seam"]}}"#);
+    let spawn_requested = format!(
+        r#"{{"id":"{SPAWN_ID}","unit":"seam-unit","stage":"implementer","prompt":"do the seam work"}}"#
+    );
     let db = root.join(".rigger").join("events.db");
     // Opened through the real store first, so the schema is laid down exactly as the binary
     // itself would lay it down (mirrors `seed_order_signature`'s own precondition).
@@ -123,23 +135,15 @@ fn seed_stale_in_flight_spawn(root: &Path, age_secs: i64) {
         Namespaced::prefix_for(&run_stream_identity(root)),
         rigger::conductor::STREAM
     );
-    let conn = rusqlite::Connection::open(&db).unwrap();
-    let ts = now_nanos() - age_secs * 1_000_000_000;
-    let run_started = format!(r#"{{"run":"{RUN_ID}","criteria":["seam"]}}"#);
-    let spawn_requested = format!(
-        r#"{{"id":"{SPAWN_ID}","unit":"seam-unit","stage":"implementer","prompt":"do the seam work"}}"#
+    let recorded_at = now_nanos() - age_secs * 1_000_000_000;
+    common::fixtures::insert_aged_rows(
+        &db,
+        &stream,
+        &[
+            (1, "RunStarted", run_started, recorded_at),
+            (2, "SpawnRequested", spawn_requested, recorded_at),
+        ],
     );
-    for (revision, ty, row_id, body) in [
-        (1i64, "RunStarted", "e1", run_started),
-        (2i64, "SpawnRequested", "e2", spawn_requested),
-    ] {
-        conn.execute(
-            "INSERT INTO events (stream, type, id, data, meta, valid_from, recorded_at, revision)
-             VALUES (?1, ?2, ?3, ?4, '{}', ?5, ?5, ?6)",
-            rusqlite::params![stream, ty, row_id, body.as_bytes(), ts, revision],
-        )
-        .unwrap();
-    }
 }
 
 /// Run `rigger <args>` with cwd `dir`. `RIGGER_TMPDIR` is explicitly cleared (never merely
@@ -346,9 +350,15 @@ fn status_human_output_from_a_nested_worktree_never_prints_a_dash_heartbeat_for_
         "a working spawn's heartbeat must render an age, never the absent-marker dash that is \
          spec 83's own Problem-statement symptom of write/read disagreement; got: {stdout:?}"
     );
+    // The age is the marker's silence outside the run's holds (spec 105 LIVENESS), and the line
+    // says so rather than reading as wall-clock time.
+    let heartbeat = stdout
+        .split(" | ")
+        .find_map(|field| field.strip_prefix("heartbeat "));
     assert!(
-        stdout.contains("heartbeat ") && stdout.contains("s ago"),
-        "expected a rendered heartbeat age line (\"heartbeat <n>s ago\"); got: {stdout:?}"
+        heartbeat.is_some_and(|age| age.ends_with("s ago outside holds")),
+        "expected a rendered heartbeat age line (\"heartbeat <n>s ago outside holds\"); got: \
+         {stdout:?}"
     );
 }
 
@@ -404,6 +414,112 @@ fn status_resolves_a_configured_workdir_from_the_owning_root_with_no_agents_flee
         "the reported heartbeat age must reflect the marker just touched under the \
          CONFIGURED workdir, not a mis-scoped read: got {age:?}"
     );
+}
+
+/// How long ago the marker of [`seed_a_marker_silent_across_a_released_17_h_hold`] was last touched.
+const MARKER_AGE: i64 = 17 * 3600 + 10 * 60;
+
+/// Seed `root` with one in-flight spawn whose real marker was last touched [`MARKER_AGE`] ago, 5
+/// min before a 17 h hold that released 5 min ago.
+fn seed_a_marker_silent_across_a_released_17_h_hold(root: &Path) {
+    const HOLD_STARTED_AGO: u64 = 17 * 3600 + 5 * 60;
+    const HOLD_RELEASED_AGO: u64 = 5 * 60;
+
+    seed_stale_in_flight_spawn(root, MARKER_AGE);
+    common::cli::seed_released_hold(root, HOLD_STARTED_AGO, HOLD_RELEASED_AGO);
+    let marker = write_real_marker(root, "");
+    common::cli::plant_marker(&marker, MARKER_AGE as u64);
+}
+
+/// Spec 105's LIVENESS at the read the workflow's marker race makes: a marker last touched 17 h 10
+/// min ago, 5 min before a 17 h hold that released 5 min ago, reads the 10 min outside the hold,
+/// never the 17 h 10 min of wall clock.
+#[test]
+fn status_reads_a_marker_silent_across_a_released_17_h_hold_as_minutes() {
+    const OUTSIDE_THE_HOLD: u64 = 10 * 60;
+
+    let project = main_repo_with_commit();
+    let root = project.path();
+    seed_a_marker_silent_across_a_released_17_h_hold(root);
+
+    let out = run_rigger(root, &["status", "--json"]);
+    assert!(
+        out.status.success(),
+        "rigger status --json must succeed; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let agents: Vec<serde_json::Value> =
+        serde_json::from_str(stdout.lines().next().unwrap_or_default()).unwrap();
+    let ages: Vec<Option<u64>> = agents
+        .iter()
+        .filter(|agent| agent["id"] == SPAWN_ID)
+        .map(|agent| agent["liveness_age_s"].as_u64())
+        .collect();
+    // Only this test's own wall-clock overhead sits above the 10 min, as the heartbeat bound of
+    // the first test here.
+    assert!(
+        matches!(ages[..], [Some(age)] if (OUTSIDE_THE_HOLD..OUTSIDE_THE_HOLD + 120).contains(&age)),
+        "the marker's age outside the hold: {ages:?}"
+    );
+}
+
+/// Spec 105's LIVENESS keeps every marker-age reader but `rigger status` on wall clock: the marker
+/// `rigger status --json` reads as the 10 min outside a 17 h hold reads its whole age through
+/// `rigger dash --export` and through `rigger_activity`, with that hold in the log they read.
+#[test]
+fn the_dash_and_rigger_activity_read_a_marker_silent_across_a_released_hold_on_wall_clock() {
+    let project = main_repo_with_commit();
+    let root = project.path();
+    seed_a_marker_silent_across_a_released_17_h_hold(root);
+
+    for (surface, age) in [
+        ("rigger dash --export", exported_liveness_age(root)),
+        ("rigger_activity", activity_liveness_age(root)),
+    ] {
+        // Only this test's own wall-clock overhead sits above the marker's age.
+        let wall_clock = MARKER_AGE as u64..MARKER_AGE as u64 + 120;
+        assert!(
+            age.is_some_and(|age| wall_clock.contains(&age)),
+            "{surface} reads the marker's whole age: {age:?}"
+        );
+    }
+}
+
+/// The `liveness_age_s` of [`SPAWN_ID`], the one in-flight spawn, in `root`'s `rigger dash --export`
+/// snapshot.
+fn exported_liveness_age(root: &Path) -> Option<u64> {
+    let export_path = root.join("dash-snapshot.html");
+    let out = run_rigger(root, &["dash", "--export", export_path.to_str().unwrap()]);
+    assert!(
+        out.status.success(),
+        "rigger dash --export must succeed; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let html = std::fs::read_to_string(&export_path).unwrap();
+    let (_, age) = html.split_once("\"liveness_age_s\":")?;
+    let digits = age.find(|c: char| !c.is_ascii_digit())?;
+    age[..digits].parse().ok()
+}
+
+/// The `liveness_age_s` of [`SPAWN_ID`] in the `rigger_activity` view of `root`'s run, over its real
+/// run log and scratch root.
+fn activity_liveness_age(root: &Path) -> Option<u64> {
+    let progress = Store::open(":memory:").unwrap();
+    let driver = Driver::new();
+    let scratch_root = real_scratch_root(root, "");
+    let input = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"rigger_activity","arguments":{}}}"#;
+    let mut output = Vec::new();
+    with_run_store(root, |store| {
+        Server::new(&driver, store, "run")
+            .with_progress(&progress, &scratch_root)
+            .run(Cursor::new(input), &mut output)
+            .unwrap();
+    });
+    let response: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    let view = &response["result"]["structuredContent"];
+    assert_eq!(view[0]["id"], SPAWN_ID, "the in-flight spawn: {view}");
+    view[0]["liveness_age_s"].as_u64()
 }
 
 /// The SAME round-2 seam as `status_resolves_a_configured_workdir_from_the_owning_root_with_

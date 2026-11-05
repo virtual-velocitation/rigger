@@ -95,9 +95,11 @@
 //! REVERTED afterward, never committed - so nothing on this branch actually holds the line. This
 //! makes that proof permanent: a real two-call drive (not hand-seeded events) against the SAME
 //! store and repo. Call 1's driver resolves the mixed conflict's SOURCE path for real (a genuine
-//! git commit, landed on disk regardless of what the function returns) and then returns an
-//! ordinary `Err` - a real process crash after the commit, before `regenerate_conflicted_paths`
-//! ever runs, leaves exactly this on-disk state. Call 2 drives a FRESH `run()` against the same
+//! git commit, landed on disk regardless of what the function returns) and then parks - the
+//! unit unwinds with nothing recorded past the commit, as a real process crash after the
+//! commit, before `regenerate_conflicted_paths` ever runs, leaves it (an unmarked `Err` would
+//! only spend the resolver's round, and call 1 would re-attempt the merge instead of ending
+//! there). Call 2 drives a FRESH `run()` against the same
 //! store+repo with a driver that panics if the conflict-resolution role (a `~retry` implementer
 //! id) is ever spawned again, proving `integrate_and_emit`'s `Merged` arm re-derives the still-
 //! owed regeneration from the durable log marker (never re-entering conflict resolution) and the
@@ -286,12 +288,13 @@ use common::fixtures::mk_stage;
 use common::fixtures::payloads_of_type;
 use common::fixtures::review_or_adjudicate;
 use common::fixtures::scratch_cfg;
+use common::fixtures::FailAppendContaining;
 use common::fixtures::FifoAtLandingDriver;
 use common::fixtures::A_WORK_DRIVER;
 use common::git::git_commit_all;
 use common::git::temp_git_project_with_commit;
 use common::git::trimmed_stdout;
-use rigger::conductor::{run, AgentDriver, AgentResult, Error, SpawnOpts, STREAM};
+use rigger::conductor::{parked_spawn, run, AgentDriver, AgentResult, Error, SpawnOpts, STREAM};
 use rigger::config::{AgentDef, Config, RegenerateRule};
 use rigger::config_store;
 use rigger::eventstore::sqlite::Store;
@@ -1441,9 +1444,11 @@ fn regenerate_never_holds_integrate_mu_letting_an_unrelated_unit_land_meanwhile(
 /// Call 1's driver for the crash test: identical fixture shape to `MixedConflictDriver` (two
 /// batch-mates conflicting on both `c.rs`, a source path, and `docs/audit/report.md`, a
 /// registered regenerable path), but the ONE conflict-resolution re-park it ever answers
-/// resolves the source conflict for real (a genuine, durable git commit) and then returns an
-/// ordinary `Err` - simulating the process dying right there, after the commit lands on disk but
-/// before `RunCtx::integrate_and_emit` ever reaches the follow-up regeneration.
+/// resolves the source conflict for real (a genuine, durable git commit) and then parks -
+/// simulating the process dying right there, after the commit lands on disk but before
+/// `RunCtx::integrate_and_emit` ever reaches the follow-up regeneration. A park, never an
+/// unmarked `Err`: the resolver spends its round on an unmarked error and re-attempts the merge,
+/// so call 1 would never end at the crash point, while a park unwinds the unit recording nothing.
 struct CrashBeforeRegenerateDriver {
     repo: String,
     /// Which of unit-a/unit-b actually lost the integrate-lock race and hit the conflict -
@@ -1475,13 +1480,9 @@ impl AgentDriver for CrashBeforeRegenerateDriver {
                 // `accept_incoming` before this spawn ran - the same load-bearing proof
                 // `MixedConflictDriver`'s own `~retry2` arm relies on. This commit is the REAL,
                 // durable crash boundary: everything up to and including it is genuinely on
-                // disk when the `Err` below unwinds the whole `run()` call.
+                // disk when the park below unwinds the unit.
                 git_commit_paths(&opts.dir, &["c.rs"], "resolve source conflict");
-                return Err(Error(
-                    "simulated crash: process dies right after the source commit, before \
-                     regeneration ever runs"
-                        .into(),
-                ));
+                return Err(parked_spawn(&opts.id));
             }
             if !opts.dir.is_empty() {
                 // Barrier: both branches must exist before either writes (mirrors
@@ -1572,21 +1573,20 @@ fn a_crash_between_the_source_commit_and_regeneration_still_regenerates_on_resum
     let store = Store::open(":memory:").unwrap();
 
     // Call 1: a mixed conflict's source side resolves for real, then the process "crashes"
-    // (an ordinary Err, not a park) before the follow-up regeneration ever runs. The repo on
-    // disk keeps every commit made up to that point regardless of what this call returns.
+    // (a park, recording nothing past the commit) before the follow-up regeneration ever runs.
+    // The repo on disk keeps every commit made up to that point regardless of what this call
+    // returns.
     let loser = {
         let driver = CrashBeforeRegenerateDriver {
             repo: repo_path.clone(),
             loser: Mutex::new(None),
         };
         let deps = bare_deps(&store, &driver, &rigger::gate::ExecRunner, &repo_path);
-        let err = run(&cfg, &deps).err().expect(
-            "call 1 must end in an Err - the simulated crash right after the source commit",
-        );
+        let rs = run(&cfg, &deps)
+            .expect("call 1 must unwind its parked loser cleanly, not fail some other way");
         assert!(
-            err.0.contains("simulated crash"),
-            "call 1 must fail for the SIMULATED reason, not some other defect; got: {}",
-            err.0
+            rs.parked,
+            "call 1 must end parked - the simulated crash right after the source commit"
         );
         let loser = driver
             .loser
@@ -1984,39 +1984,6 @@ fn a_resumed_run_after_accept_incoming_fails_never_double_records_the_regenerate
 // Gap 9 (round 4, `op-u88c1-round-4-definition-of-done`): the record -> mutate -> record TABLE.
 // See the file header for the full boundary-to-fixture mapping.
 // ============================================================================================
-
-/// An `EventStore` decorator (spec 88, criterion 1 round 4): forwards every call to `inner`
-/// UNCHANGED except `append`, which refuses (a real `Backend` error, indistinguishable from a
-/// genuine disk/backend fault) if any event in the batch's `data` contains `needle` - simulating
-/// a process crash between a mutation that already ran for real (on disk, or a real subprocess)
-/// and the SINGLE store append that would durably record it. Never a production hook: `EventStore`
-/// is the crate's own injected port ([`Deps::store`]), the SAME seam a genuine backend failure
-/// would surface through.
-struct FailAppendContaining<'a> {
-    inner: &'a dyn EventStore,
-    needle: &'static str,
-}
-
-impl EventStore for FailAppendContaining<'_> {
-    fn append(
-        &self,
-        stream: &str,
-        expected: ExpectedRevision,
-        events: &[rigger::eventstore::Event],
-    ) -> Result<Appended, EsError> {
-        if events
-            .iter()
-            .any(|e| String::from_utf8_lossy(&e.data).contains(self.needle))
-        {
-            return Err(EsError::Backend(format!(
-                "simulated crash: append containing {:?} refused",
-                self.needle
-            )));
-        }
-        self.inner.append(stream, expected, events)
-    }
-    crate::delegate_event_store_reads!();
-}
 
 /// Call 1's driver for the row-1 fixture: plants a NEW path directly on the bare run branch
 /// (mirrors `PermanentModifyDeleteConflictDriver`'s "mutate the bare repo directly" technique

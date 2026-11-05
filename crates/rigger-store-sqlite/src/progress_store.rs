@@ -1,13 +1,20 @@
-//! The write half of [`crate::progress`] (spec 93, criterion 1: THE CORE LANE IS PURE):
+//! The store half of [`crate::progress`] (spec 93, criterion 1: THE CORE LANE IS PURE):
 //! recording one live progress report to a LIVE progress store. [`crate::progress`] keeps
-//! the model (`AgentProgress`, `AgentActivity`) and the pure fold (`consolidate`) -
+//! the model (`AgentProgress`, `AgentActivity`) and the pure folds (`consolidate`,
+//! `launch_records_of`, `latest_launch_of`) -
 //! everything computable from already-read `&[Event]` slices, with no store at all. This
-//! module is the other half: `record`, the one function that appends to a
-//! `&dyn EventStore`, split into its own file (never a function-by-function `#[cfg]`
-//! inside `progress.rs`) so the pure half can compile for `wasm32-unknown-unknown`.
+//! module is the other half: `record`, the typed writers beside it and the [`append_stamped`]
+//! they share, the functions that append to a `&dyn EventStore`, with [`launch_records`],
+//! [`latest_launch_records`], [`latest_launch`] and [`next_launch`], the reads a launch decides
+//! on, split into their own file
+//! (never a function-by-function `#[cfg]` inside `progress.rs`) so the pure half can compile for
+//! `wasm32-unknown-unknown`.
 
-use crate::eventstore::{Error, EventStore, ExpectedRevision, Position};
-use crate::progress::{stream_of, AgentProgress, RunStamped, SpawnLaunched, StopFailure};
+use crate::eventstore::{Error, EventStore, ExpectedRevision, Position, TypeSelection};
+use crate::progress::{
+    latest_launch_of, launch_records_of, next_launch_after, stream_of, AgentProgress, RunStamped,
+    SpawnLaunched, StopFailure, TYPE_SPAWN_LAUNCHED,
+};
 
 /// Record one progress report to the progress `store`, stamped with `run_id`. Append-only
 /// and side-effect-free beyond the one event: a pure write, cheap to call after every
@@ -22,6 +29,7 @@ pub fn record(
     let progress = AgentProgress {
         id: id.to_string(),
         activity: activity.to_string(),
+        revision: None,
     };
     append_stamped(
         store,
@@ -52,6 +60,52 @@ pub fn record_launch(
     )
 }
 
+/// The ordinal the next launch of `spawn` takes (spec 105 criterion 1): the ordinal of its
+/// [`latest_launch`] plus one, or 0 when the run holds no record of it. A failed read is the caller's to surface, since a launch that cannot name its
+/// ordinal could overwrite a prior launch's transcript.
+pub fn next_launch(store: &dyn EventStore, run_id: &str, spawn: &str) -> Result<u32, Error> {
+    Ok(next_launch_after(
+        latest_launch(store, run_id, spawn)?.as_ref(),
+    ))
+}
+
+/// The latest [`SpawnLaunched`] record of `spawn` in the run `run_id` (spec 105, RESUME BY
+/// SESSION): the last of its [`latest_launch_records`], so its close once that launch closed and
+/// its open record until then, or `None` when the run holds none.
+pub fn latest_launch(
+    store: &dyn EventStore,
+    run_id: &str,
+    spawn: &str,
+) -> Result<Option<SpawnLaunched>, Error> {
+    Ok(latest_launch_records(store, run_id, spawn)?.pop())
+}
+
+/// The [`SpawnLaunched`] records of the latest launch of `spawn` in the run `run_id`: those of its
+/// [`launch_records`] [`latest_launch_of`] keeps (spec 105, RESUME BY SESSION).
+pub fn latest_launch_records(
+    store: &dyn EventStore,
+    run_id: &str,
+    spawn: &str,
+) -> Result<Vec<SpawnLaunched>, Error> {
+    Ok(latest_launch_of(&launch_records(store, run_id, spawn)?))
+}
+
+/// Every [`SpawnLaunched`] record of `spawn` in the run `run_id`, in stream order: the run's
+/// launch records, read from its progress stream, folded by [`launch_records_of`] (spec 105,
+/// RESUME BY SESSION).
+pub fn launch_records(
+    store: &dyn EventStore,
+    run_id: &str,
+    spawn: &str,
+) -> Result<Vec<SpawnLaunched>, Error> {
+    let recorded = store.read_stream_typed(
+        &stream_of(run_id),
+        0,
+        TypeSelection::Only(&[TYPE_SPAWN_LAUNCHED]),
+    )?;
+    Ok(launch_records_of(&recorded, spawn))
+}
+
 /// Record one [`StopFailure`] hook firing to the progress `store`, stamped with `run_id`
 /// (spec 104 criterion 5: A FAILURE HAS A CLASS - THE HOOKS' "record" half). Called by
 /// `rigger hook stop-failure --spawn <id> --class <category>`, the installed hook command
@@ -71,9 +125,10 @@ pub fn record_stop_failure(
 
 /// Append `report`, stamped with `run_id`, as the one event of its run's progress stream
 /// ([`stream_of`]):
-/// the append contract every record above shares. `what` names the record if the store wrote
-/// nothing ([`crate::eventstore::Appended::one`]).
-fn append_stamped<R: RunStamped>(
+/// the append contract every record above shares, and the writer a record with no wrapper of its
+/// own calls directly, as the Claude Code host does for [`crate::progress::ApiRetry`]. `what`
+/// names the record if the store wrote nothing ([`crate::eventstore::Appended::one`]).
+pub fn append_stamped<R: RunStamped>(
     store: &dyn EventStore,
     run_id: &str,
     report: &R,
@@ -221,10 +276,8 @@ mod tests {
                 spawn: "u104-launch/implementer#0".into(),
                 launch: 0,
                 session_id: "sess-1".into(),
-                resumed_from: None,
                 started: 1_700_000_000,
-                ended: None,
-                class: None,
+                ..Default::default()
             },
         )
         .unwrap();
@@ -258,10 +311,8 @@ mod tests {
                 spawn: "u1/implementer#0".into(),
                 launch: 0,
                 session_id: "s".into(),
-                resumed_from: None,
                 started: 1,
-                ended: None,
-                class: None,
+                ..Default::default()
             },
         )
         .expect_err("a launch record nobody can find was not recorded");
@@ -319,5 +370,162 @@ mod tests {
         .expect_err("a stop-failure record nobody can find was not recorded");
         let message = err.to_string();
         assert!(message.contains("u1/implementer#0"), "message: {message}");
+    }
+
+    #[test]
+    fn append_stamped_appends_the_one_stamped_record_of_its_run() {
+        // spec 105 LIVENESS: ApiRetry is a progress-store record with no writer of its own,
+        // the one event this append adds to the run's own progress stream.
+        let progress = Store::open(":memory:").unwrap();
+        let retry = crate::progress::ApiRetry {
+            spawn: "u105/implementer#0".into(),
+            delay_ms: 618,
+            category: "rate_limit".into(),
+        };
+
+        append_stamped(&progress, "run-1", &retry, "the api-retry record").unwrap();
+
+        let p = crate::progress::read_run(&progress, "run-1").unwrap();
+        assert_eq!(p.len(), 1);
+        assert_eq!(p[0].type_, crate::progress::TYPE_API_RETRY);
+        assert_eq!(
+            p[0].meta.get(META_RUN_ID).map(String::as_str),
+            Some("run-1")
+        );
+        assert_eq!(
+            serde_json::from_slice::<crate::progress::ApiRetry>(&p[0].data).unwrap(),
+            retry
+        );
+    }
+
+    /// A record that does not decode names no ordinal, so it moves nothing and stops nothing:
+    /// a store holding one would otherwise refuse every later launch of its run.
+    fn an_undecodable_launch_record_is_skipped(seeded: &[u32], next: u32) {
+        let progress = Store::open(":memory:").unwrap();
+        for launch in seeded {
+            let record = SpawnLaunched::closed("u/implementer#0", *launch, "s", "fault", "");
+            record_launch(&progress, "run-1", &record).unwrap();
+        }
+        progress
+            .append(
+                &stream_of("run-1"),
+                ExpectedRevision::Any,
+                &[Event::new(
+                    crate::progress::TYPE_SPAWN_LAUNCHED,
+                    b"not a record".to_vec(),
+                )],
+            )
+            .unwrap();
+
+        assert_eq!(
+            next_launch(&progress, "run-1", "u/implementer#0").unwrap(),
+            next
+        );
+    }
+
+    crate::test_cases! {
+        an_undecodable_record_alone_leaves_the_first_ordinal:
+            an_undecodable_launch_record_is_skipped(&[], 0);
+        an_undecodable_record_leaves_the_decoded_ones_deciding:
+            an_undecodable_launch_record_is_skipped(&[2], 3);
+    }
+
+    /// One seeded launch record: its run, its spawn, its ordinal and its `ended`, an open record
+    /// when `None`.
+    type Seed = (&'static str, &'static str, u32, Option<&'static str>);
+
+    /// The record `seed` appends, its session naming its place so an open and a close differ.
+    fn seeded_launch(&(_, spawn, launch, ended): &Seed, place: usize) -> SpawnLaunched {
+        let session = format!("s{place}");
+        match ended {
+            Some(ended) => SpawnLaunched::closed(spawn, launch, session, ended, ""),
+            None => SpawnLaunched {
+                spawn: spawn.into(),
+                launch,
+                session_id: session,
+                started: 1,
+                ..Default::default()
+            },
+        }
+    }
+
+    /// The latest record of `u/implementer#0`'s highest ordinal in `run-1`: the last record of
+    /// that ordinal in stream order, its close once it closed, whatever the records of a lower
+    /// ordinal, another spawn or another run say. `latest` is the seed's place, `None` when the
+    /// run holds no record of the spawn.
+    fn the_latest_launch_is_the_last_record_of_its_highest_ordinal(
+        seeded: &[Seed],
+        latest: Option<usize>,
+    ) {
+        let progress = Store::open(":memory:").unwrap();
+        for (place, seed) in seeded.iter().enumerate() {
+            record_launch(&progress, seed.0, &seeded_launch(seed, place)).unwrap();
+        }
+
+        assert_eq!(
+            latest_launch(&progress, "run-1", "u/implementer#0").unwrap(),
+            latest.map(|place| seeded_launch(&seeded[place], place))
+        );
+    }
+
+    const SPAWN: &str = "u/implementer#0";
+
+    crate::test_cases! {
+        no_record_names_no_latest_launch:
+            the_latest_launch_is_the_last_record_of_its_highest_ordinal(
+                &[("run-0", SPAWN, 4, Some("interrupted"))],
+                None,
+            );
+        another_spawns_records_name_no_latest_launch:
+            the_latest_launch_is_the_last_record_of_its_highest_ordinal(
+                &[("run-1", "u/reviewer#0", 0, None), ("run-1", "u/implementer#1", 1, None)],
+                None,
+            );
+        an_open_launch_is_its_open_record:
+            the_latest_launch_is_the_last_record_of_its_highest_ordinal(
+                &[("run-1", SPAWN, 0, None)],
+                Some(0),
+            );
+        a_closed_launch_is_its_close:
+            the_latest_launch_is_the_last_record_of_its_highest_ordinal(
+                &[("run-1", SPAWN, 0, None), ("run-1", SPAWN, 0, Some("interrupted"))],
+                Some(1),
+            );
+        a_lower_ordinals_later_close_leaves_the_highest_deciding:
+            the_latest_launch_is_the_last_record_of_its_highest_ordinal(
+                &[
+                    ("run-1", SPAWN, 1, None),
+                    ("run-1", SPAWN, 1, Some("interrupted")),
+                    ("run-1", SPAWN, 0, Some("fault")),
+                ],
+                Some(1),
+            );
+        a_higher_ordinal_opened_past_a_close_is_open:
+            the_latest_launch_is_the_last_record_of_its_highest_ordinal(
+                &[
+                    ("run-1", SPAWN, 0, None),
+                    ("run-1", SPAWN, 0, Some("interrupted")),
+                    ("run-1", "u/reviewer#0", 3, Some("fault")),
+                    ("run-1", SPAWN, 1, None),
+                    ("run-0", SPAWN, 1, Some("interrupted")),
+                    ("run-1", "u/reviewer#0", 3, Some("completed")),
+                ],
+                Some(3),
+            );
+    }
+
+    #[test]
+    fn append_stamped_a_report_the_store_did_not_write_is_reported_as_lost() {
+        let err = append_stamped(
+            &crate::eventstore::SilentStore,
+            "run-1",
+            &crate::progress::ApiRetry::default(),
+            "the api-retry record",
+        )
+        .expect_err("a retry record nobody can find was not recorded");
+        assert_eq!(
+            err.to_string(),
+            "event store: reported writing nothing for the api-retry record"
+        );
     }
 }

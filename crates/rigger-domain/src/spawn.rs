@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::eventstore::Event;
-use crate::ledger::{AttentionEntry, RequiredItem, RunState};
+use crate::ledger::{AttentionEntry, Hold, RequiredItem, RunState};
 
 /// Filesystem prefix of a unit's DETERMINISTIC worktree dir under the scratch root
 /// (`rigger-wt-<slug>`); the conductor's `unit_worktree_dir` is the single authority that
@@ -598,8 +598,9 @@ pub struct SpawnRequest {
     pub blast_radius: Vec<String>,
     /// The per-spawn wall-clock bound in SECONDS (spec 10, unit 3), resolved from the
     /// agent's `max_wall_clock` (its own, or the inherited `defaults.max_wall_clock`).
-    /// `rigger step` treats this spawn as a hung/infra fault once its liveness marker is
-    /// stale longer than this, and the driver frames the worker's heartbeat around it.
+    /// `rigger step` treats this spawn as a hung/infra fault once its liveness marker has
+    /// stayed silent longer than this outside any hold of the run, and the driver frames
+    /// the worker's heartbeat around it.
     /// `None` (the common back-compatible case) means unbounded - never timed out - and
     /// is omitted from the wire.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -693,6 +694,11 @@ pub const TYPE_SPAWN_RESULT: &str = "SpawnResult";
 /// the spawn's unit events (see `conductor::META_MODEL_RESOLVED`), so the recorded events
 /// name the concrete model that ran, not only the requested alias on the spawn request.
 pub const META_RESOLVED_MODEL: &str = "resolved_model";
+
+/// The [`SpawnResult::meta`] key the headless host records the Claude Code session a spawn ran
+/// as under, beside [`META_RESOLVED_MODEL`] on the result it wrote. A spawn answered from that
+/// result carries the session back to the conductor, which records it as the spawn's session.
+pub const META_SESSION_ID: &str = "session_id";
 
 /// The [`SpawnResult::meta`] key `rigger step` stamps on a spawn it recorded as a LIVENESS
 /// fault (spec 10, unit 3): its value is the failure CLASS the taxonomy assigned the hung
@@ -788,7 +794,7 @@ impl SpawnResult {
     }
 
     /// The string value of the `key` entry of [`meta`](SpawnResult::meta), or empty when the
-    /// worker reported none (or reported a non-string value). The two keys it serves:
+    /// worker reported none (or reported a non-string value). The three keys it serves:
     ///
     /// - [`META_LIVENESS_CLASS`]: the liveness class recorded on a fault (empty when it is not
     ///   a liveness fault).
@@ -796,6 +802,7 @@ impl SpawnResult {
     ///   This is the concrete model that actually ran the spawn - distinct from the requested
     ///   alias on the spawn REQUEST - which the conductor copies onto the spawn's unit events
     ///   (spec 05 line 52).
+    /// - [`META_SESSION_ID`]: the session the headless host recorded the spawn ran as.
     pub fn meta_str(&self, key: &str) -> String {
         self.meta
             .get(key)
@@ -1073,21 +1080,22 @@ pub struct Step {
     /// pass to have parked nothing ([`step_of_pass`]), since a result can land after the
     /// pass parked its spawn and before the step reads the log back.
     pub done: bool,
-    /// The halt reason when the run STOPPED rather than converging, from one of three sources in
+    /// The halt reason when the run STOPPED rather than converging: on a held run the hold, which
+    /// `rigger step` prints ahead of any pass ([`step_of_hold`]), else one of three sources in
     /// this precedence: the spawn-budget breaker (Gap 13: e.g. `"budget exhausted: 200/200
     /// spawns"`), else a plan-critique gate's spec-defect stop (spec 112, criterion 5: `"amend
     /// the spec and relaunch: ..."`), both stamped by `rigger step` (`cmd_step`) from the
     /// conductor's `RunState::budget_halt` - the breaker's from its live state, the stop's from
     /// the fold of the run, so every step of a stopped run reports it - else hung liveness (spec
-    /// 10, unit 3), which `cmd_step` fills only when the conductor stamped none. `None` on a clean fixpoint, and OMITTED from the wire
-    /// then, so a converged run still prints `{"wave":[],"done":true}` unchanged and a halted one
-    /// adds `"halted":"..."` - the `done`/`halted` split the spec (06, Gap 13) calls for. The
-    /// thin driver treats a present `halted` as a LOUD stop (a workflow failure carrying the
-    /// reason), never a clean completion, so a starved or stopped run is never reported as
-    /// success. [`step_result`] leaves it `None` because this pure seam folds only the spawn
-    /// stream, and a budget halt is a runtime condition of the current run process - a resume
-    /// with a raised budget clears it, yet the earlier halt's `BudgetExhausted` event stays in
-    /// the log.
+    /// 10, unit 3), which `cmd_step` fills only when the conductor stamped none. `None` on a clean
+    /// fixpoint, and OMITTED from the wire then, so a converged run still prints
+    /// `{"wave":[],"done":true}` unchanged and a halted one adds `"halted":"..."` - the
+    /// `done`/`halted` split the spec (06, Gap 13) calls for. The thin driver treats a present
+    /// `halted` as a LOUD stop (a workflow failure carrying the reason), never a clean completion,
+    /// so a starved or stopped run is never reported as success. [`step_result`] leaves it `None`
+    /// because this pure seam folds only the spawn stream, and a budget halt is a runtime condition
+    /// of the current run process - a resume with a raised budget clears it, yet the earlier
+    /// halt's `BudgetExhausted` event stays in the log.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub halted: Option<String>,
     /// The units that ESCALATED - each exhausted remediation and went terminal WITHOUT
@@ -1149,7 +1157,7 @@ pub fn step_result(events: &[Event]) -> Result<Step, serde_json::Error> {
         .map(WaveItem::from)
         .collect();
     let done = recorded.keys().all(|id| answered.contains(id));
-    // A halt is the conductor's to stamp: its budget breaker's from its in-process state (a
+    // A pass's halt is the conductor's to stamp: its budget breaker's from its in-process state (a
     // resume with a raised budget clears it while the earlier `BudgetExhausted` event remains
     // recorded), else a plan-critique spec-defect stop's from the fold of the run. So this pure
     // spawn-stream seam never sets it; `rigger step` stamps `halted` from the conductor's
@@ -1190,6 +1198,16 @@ pub fn step_of_pass(events: &[Event], rs: RunState) -> Result<Step, serde_json::
     Ok(step)
 }
 
+/// The [`Step`] `rigger step` prints on a held run (spec 105), which runs no pass: an empty wave,
+/// not done, and a `halted` naming the hold by its [`Hold::reason`], the cause and action of its
+/// latest `RunHeld`.
+pub fn step_of_hold(hold: &Hold) -> Step {
+    Step {
+        halted: Some(format!("run held - {}", hold.reason())),
+        ..Step::default()
+    }
+}
+
 /// The full prompt a worker fetches for its parked spawn: the persona (when the spawn
 /// carries one) followed by the task, separated by a `---` line - exactly what the
 /// thin driver used to inline into the worker's agent prompt before waves went
@@ -1214,6 +1232,7 @@ mod tests {
     use super::*;
     use crate::eventstore::Event;
     use crate::ledger::{AttentionEntry, RequiredItem};
+    use crate::run::RunHeld;
 
     /// Every scratch walk classifies a per-unit cache by one predicate (spec 113, THE GATE
     /// SCRATCH ROOT HAS ONE LIFECYCLE): the text after a `cargo-target-` or `rigger-gate-`
@@ -2341,6 +2360,27 @@ mod tests {
             .to_event()
             .unwrap()];
         assert_eq!(step_result(&events).unwrap().halted, None);
+    }
+
+    /// Spec 105: a held run's step launches nothing, and its `halted` names the hold by the cause
+    /// and action of its latest `RunHeld`.
+    #[test]
+    fn a_held_step_has_an_empty_wave_and_names_the_holds_cause_and_action() {
+        let hold = Hold {
+            since: std::time::UNIX_EPOCH,
+            operator: false,
+            latest: RunHeld {
+                cause: "rate_limit".to_string(),
+                action: "waits for the limit to reset".to_string(),
+                detail: "the detail stays off the step line".to_string(),
+                ..Default::default()
+            },
+            revision: 0,
+        };
+        assert_eq!(
+            serde_json::to_string(&step_of_hold(&hold)).unwrap(),
+            r#"{"wave":[],"done":false,"halted":"run held - rate_limit - waits for the limit to reset"}"#
+        );
     }
 
     #[test]

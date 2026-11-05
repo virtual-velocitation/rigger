@@ -10,6 +10,7 @@
 //! waited on, and a child is only ever ended through its own spawning handle.
 
 use std::ffi::OsStr;
+use std::path::Path;
 use std::process::Command;
 
 /// A fresh command for `program`, inheriting this process's environment, working directory
@@ -18,13 +19,16 @@ pub fn command(program: impl AsRef<OsStr>) -> Command {
     Command::new(program)
 }
 
-/// A fresh command for `program` that runs in `dir`, or in this process's own working
-/// directory when `dir` is empty (the caller-supplied "no directory" convention).
+/// The directory a child given `dir` runs in: `dir` itself, or this process's own working
+/// directory, `.`, when `dir` is empty (the caller-supplied "no directory" convention).
+pub fn session_dir(dir: &str) -> &Path {
+    Path::new(if dir.is_empty() { "." } else { dir })
+}
+
+/// A fresh command for `program` that runs in [`session_dir`] of `dir`.
 pub fn command_in(program: impl AsRef<OsStr>, dir: &str) -> Command {
     let mut cmd = command(program);
-    if !dir.is_empty() {
-        cmd.current_dir(dir);
-    }
+    cmd.current_dir(session_dir(dir));
     cmd
 }
 
@@ -85,9 +89,9 @@ mod tests {
     }
 
     crate::test_cases! {
-        /// An empty directory leaves the child in this process's own working directory.
-        command_in_an_empty_dir_sets_no_working_directory:
-            assert_eq!(cwd_of(&command_in("sh", "")), None);
+        /// An empty directory runs the child in this process's own working directory, `.`.
+        command_in_an_empty_dir_runs_the_child_in_this_processs_own:
+            assert_eq!(cwd_of(&command_in("sh", "")), Some(std::path::Path::new(".")));
         /// A non-empty directory becomes the child's working directory.
         command_in_a_dir_runs_the_child_there:
             assert_eq!(cwd_of(&command_in("sh", "/x")), Some(std::path::Path::new("/x")));

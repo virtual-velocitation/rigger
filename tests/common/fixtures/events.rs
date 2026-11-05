@@ -5,6 +5,19 @@ use rigger::eventstore::{
     GroupHead, Position, Revision, Subscription, TypeSelection,
 };
 
+/// An arbitrary but fixed instant `secs` after `SystemTime::UNIX_EPOCH`, for building events with
+/// a CONTROLLED `recorded_at` or `valid_from` (fields a store stamps on ingest; a pure fold's test
+/// sets them directly, never touching a real store).
+pub fn at(secs: u64) -> std::time::SystemTime {
+    std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(secs)
+}
+
+/// `event` dated `ago` seconds before now by its `valid_from`, as a store keeps a hand's
+/// backdated append.
+pub fn dated_ago(event: Event, ago: u64) -> Event {
+    event.with_valid_from(std::time::SystemTime::now() - std::time::Duration::from_secs(ago))
+}
+
 /// An event of type `type_` whose payload is the UTF-8 bytes of `json`.
 pub fn ev(type_: &str, json: &str) -> Event {
     Event::new(type_, json.as_bytes().to_vec())
@@ -16,6 +29,9 @@ pub fn ev_at(pos: u64, type_: &str, payload: serde_json::Value) -> Event {
     e.position = pos;
     e
 }
+
+/// A live `RunHeld`'s action on a category the session retries by itself.
+pub const RETRIES_BY_ITSELF: &str = "none, the run retries by itself";
 
 /// THE REFUSAL ORACLE, its reading half: the type a refused append names and the text the
 /// store says of it, or a panic naming what the append answered in its place.
@@ -129,9 +145,21 @@ pub fn positioned(mut events: Vec<Event>) -> Vec<Event> {
 /// The read, subscribe and boundary-lookup methods of an `EventStore` decorator that intercepts only
 /// `append`, each forwarded unchanged to the decorator's `inner` store - expanded inside that
 /// decorator's `impl EventStore` block. `(stream)` expands every one of them but the group lookup,
-/// for a decorator that also intercepts `latest_in_group`.
+/// for a decorator that also intercepts `latest_in_group`; `(append)` expands the append alone,
+/// forwarded the same way, for a decorator that intercepts reads instead; `(typed)` expands the
+/// typed stream read alone, for a decorator that intercepts the boundary lookup ahead of it.
 #[macro_export]
 macro_rules! delegate_event_store_reads {
+    (append) => {
+        fn append(
+            &self,
+            stream: &str,
+            expected: rigger::eventstore::ExpectedRevision,
+            events: &[rigger::eventstore::Event],
+        ) -> Result<rigger::eventstore::Appended, rigger::eventstore::Error> {
+            self.inner.append(stream, expected, events)
+        }
+    };
     () => {
         $crate::delegate_event_store_reads!(stream);
         fn latest_in_group(
@@ -140,6 +168,16 @@ macro_rules! delegate_event_store_reads {
             group: &str,
         ) -> Result<Option<rigger::eventstore::GroupHead>, rigger::eventstore::Error> {
             self.inner.latest_in_group(stream, group)
+        }
+    };
+    (typed) => {
+        fn read_stream_typed(
+            &self,
+            stream: &str,
+            from: rigger::eventstore::Revision,
+            selection: rigger::eventstore::TypeSelection,
+        ) -> Result<Vec<rigger::eventstore::Event>, rigger::eventstore::Error> {
+            self.inner.read_stream_typed(stream, from, selection)
         }
     };
     (stream) => {
@@ -193,14 +231,7 @@ macro_rules! delegate_event_store_reads {
         ) -> Result<Option<rigger::eventstore::Revision>, rigger::eventstore::Error> {
             self.inner.last_position(stream, event_type)
         }
-        fn read_stream_typed(
-            &self,
-            stream: &str,
-            from: rigger::eventstore::Revision,
-            selection: rigger::eventstore::TypeSelection,
-        ) -> Result<Vec<rigger::eventstore::Event>, rigger::eventstore::Error> {
-            self.inner.read_stream_typed(stream, from, selection)
-        }
+        $crate::delegate_event_store_reads!(typed);
         fn read_stream_positions(
             &self,
             stream: &str,
@@ -449,6 +480,85 @@ impl EventStore for GroupLookupOnly {
     }
 }
 
+/// A store whose run read fails from the moment `armed` is set, for a reader tested on the read
+/// it could not make. The run read's two calls reach `inner` until then, and an append always
+/// does; every other method panics.
+pub struct ReadsFailWhenArmed<'a> {
+    pub inner: &'a dyn EventStore,
+    pub armed: &'a std::sync::atomic::AtomicBool,
+}
+
+impl ReadsFailWhenArmed<'_> {
+    /// What a read answers: the failure once `armed` is set.
+    fn read_allowed(&self) -> Result<(), Error> {
+        match self.armed.load(std::sync::atomic::Ordering::SeqCst) {
+            true => Err(Error::Backend("the run read failed".into())),
+            false => Ok(()),
+        }
+    }
+}
+
+impl EventStore for ReadsFailWhenArmed<'_> {
+    refuse_event_store_calls!(
+        "only the run read and an append are reachable":
+        read_stream,
+        read_all,
+        read_all_page,
+        log_head,
+        subscribe_all,
+        subscribe_stream,
+        read_stream_positions,
+        read_stream_batched,
+        latest_in_group,
+    );
+    crate::delegate_event_store_reads!(append);
+    fn last_position(&self, stream: &str, event_type: &str) -> Result<Option<Revision>, Error> {
+        self.read_allowed()?;
+        self.inner.last_position(stream, event_type)
+    }
+    fn read_stream_typed(
+        &self,
+        stream: &str,
+        from: Revision,
+        selection: TypeSelection,
+    ) -> Result<Vec<Event>, Error> {
+        self.read_allowed()?;
+        self.inner.read_stream_typed(stream, from, selection)
+    }
+}
+
+/// A store that runs `land` inside its next run read once `armed` is set, ahead of that read's
+/// first call, then disarms: the world moving inside a reader's read rather than between two of
+/// its reads. The run read's two calls and an append reach `inner`; every other method panics.
+pub struct LandsInTheNextRead<'a> {
+    pub inner: &'a dyn EventStore,
+    pub armed: &'a std::sync::atomic::AtomicBool,
+    pub land: &'a (dyn Fn() + Sync),
+}
+
+impl EventStore for LandsInTheNextRead<'_> {
+    refuse_event_store_calls!(
+        "only the run read and an append are reachable":
+        read_stream,
+        read_all,
+        read_all_page,
+        log_head,
+        subscribe_all,
+        subscribe_stream,
+        read_stream_positions,
+        read_stream_batched,
+        latest_in_group,
+    );
+    crate::delegate_event_store_reads!(append);
+    fn last_position(&self, stream: &str, event_type: &str) -> Result<Option<Revision>, Error> {
+        if self.armed.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            (self.land)();
+        }
+        self.inner.last_position(stream, event_type)
+    }
+    crate::delegate_event_store_reads!(typed);
+}
+
 /// A read-only store over ONE hand-built stream, for a use case tested where no backend is in
 /// reach: its events are stamped in the order given as the sqlite store stamps an append to an
 /// empty log, per-stream revisions from 0 and log positions from 1, and only the boundary lookup
@@ -552,6 +662,82 @@ impl EventStore for FailAppendMetaContaining<'_> {
             )));
         }
         self.inner.append(stream, expected, events)
+    }
+    crate::delegate_event_store_reads!();
+}
+
+/// An `EventStore` decorator that forwards every call to `inner` unchanged except `append`, which
+/// refuses (a real `Backend` error, indistinguishable from a genuine disk or backend fault) any
+/// batch holding an event whose `data` contains `needle`: a process crash between a mutation that
+/// already ran for real and the single append that would durably record it, or a record lost
+/// while the work around it carries on. It matches the payload, where
+/// [`FailAppendMetaContaining`] matches metadata. Never a production hook: `EventStore` is the
+/// injected port, the same seam a genuine backend failure surfaces through.
+pub struct FailAppendContaining<'a> {
+    pub inner: &'a dyn EventStore,
+    pub needle: &'static str,
+}
+
+impl EventStore for FailAppendContaining<'_> {
+    fn append(
+        &self,
+        stream: &str,
+        expected: ExpectedRevision,
+        events: &[Event],
+    ) -> Result<Appended, Error> {
+        if events
+            .iter()
+            .any(|e| String::from_utf8_lossy(&e.data).contains(self.needle))
+        {
+            return Err(Error::Backend(format!(
+                "simulated crash: append containing {:?} refused",
+                self.needle
+            )));
+        }
+        self.inner.append(stream, expected, events)
+    }
+    crate::delegate_event_store_reads!();
+}
+
+/// A store that runs `land` once, against `inner`, right behind the first append of a batch
+/// holding an event of type `after` - the seam a test needs for a write landing between two
+/// appends of one call, where [`ReadCountingStore::after_call`] sees reads alone.
+pub struct LandsBehind<'a> {
+    pub inner: &'a dyn EventStore,
+    pub after: &'static str,
+    land: std::sync::Mutex<Option<AfterCall<'a>>>,
+}
+
+impl<'a> LandsBehind<'a> {
+    /// [`LandsBehind`] over `inner`, running `land` behind the first `after` append.
+    pub fn new(
+        inner: &'a dyn EventStore,
+        after: &'static str,
+        land: impl FnOnce(&dyn EventStore) + Send + 'a,
+    ) -> Self {
+        LandsBehind {
+            inner,
+            after,
+            land: std::sync::Mutex::new(Some(Box::new(land))),
+        }
+    }
+}
+
+impl EventStore for LandsBehind<'_> {
+    fn append(
+        &self,
+        stream: &str,
+        expected: ExpectedRevision,
+        events: &[Event],
+    ) -> Result<Appended, Error> {
+        let appended = self.inner.append(stream, expected, events)?;
+        if events.iter().any(|e| e.type_ == self.after) {
+            let land = self.land.lock().unwrap().take();
+            if let Some(land) = land {
+                land(self.inner);
+            }
+        }
+        Ok(appended)
     }
     crate::delegate_event_store_reads!();
 }
@@ -822,14 +1008,7 @@ impl<'a> ReadCountingStore<'a> {
 }
 
 impl EventStore for ReadCountingStore<'_> {
-    fn append(
-        &self,
-        stream: &str,
-        expected: ExpectedRevision,
-        events: &[Event],
-    ) -> Result<Appended, Error> {
-        self.inner.append(stream, expected, events)
-    }
+    crate::delegate_event_store_reads!(append);
     fn read_stream(
         &self,
         stream: &str,

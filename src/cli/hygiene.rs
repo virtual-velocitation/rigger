@@ -107,8 +107,8 @@ pub(crate) fn cmd_reset(args: &[String]) -> Res {
         // verifies nothing - the operator owns that risk once they pass it).
         //
         // The step lock the guard took is held until the migration returns, so its verdict that
-        // no `rigger step` is running stays true while the log is rewritten: a step started
-        // meanwhile refuses on the held lock, and its courier retries once the reset is done.
+        // no `rigger step` or `rigger run` is running stays true while the log is rewritten: a
+        // step or run started meanwhile refuses on the held lock; only a step's courier retries.
         let _step_lock = if modes.force_live {
             None
         } else {
@@ -207,9 +207,9 @@ fn reset_menu(loc: &StoreLocation, selection: &StoreSelection) -> Res {
     // --runs: works over ANY backend, exactly like a real `--runs` does (the context graph is
     // always a local file; only the EVENT log may be server-backed) - so this reads the whole run
     // stream through the resolved backend precisely as `reset_runs` does.
-    let backend = resolve_store(selection, &loc.file("events.db"))?;
-    let store = Namespaced::new(backend.as_ref(), &loc.identity());
-    let events = store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
+    let events = over_the_run_store_at(loc, selection, |store| {
+        Ok(store.read_stream(conductor::STREAM, 0, Direction::Forward)?)
+    })?;
     let drop = superseded_graph_nodes(&events);
     let boundary = superseded_edge_boundary(&events);
     let graph = Projector::open(&loc.file("graph.db"), &loc.identity())?;
@@ -654,8 +654,9 @@ fn reclamation_lines(reclamation: &rigger::eventstore::sqlite::Reclamation) -> V
 /// refusal itself is spec 71, criterion 2's). The recorded incident this guard exists to prevent
 /// is a compaction that ran WHILE a writer was still appending, and each fact is a writer proving
 /// it is alive right now:
-///   - `step_lock_held`: a `rigger step` is running right now, possibly mid-wave before it has
-///     even parked a spawn (see [`acquire_step_lock`]).
+///   - `step_lock_held`: a `rigger step` or a `rigger run` is running right now, a step possibly
+///     mid-wave before it has even parked a spawn, a run for its whole life, hung or not (see
+///     [`acquire_step_lock`]).
 ///   - `live_spawns`: an in-flight spawn of the current run - no recorded result, or only the
 ///     step's liveness fault, which a resumed worker outlives - whose liveness marker is younger
 ///     than its own wall-clock bound ([`rigger::liveness::live_spawns`]): a worker still running
@@ -664,9 +665,10 @@ fn reclamation_lines(reclamation: &rigger::eventstore::sqlite::Reclamation) -> V
 ///   - `driver_registrations`: entries in the machine-global instance registry (spec 50) for THIS
 ///     project's exact store whose DRIVER heartbeat is younger than
 ///     [`rigger::registry::DEFAULT_IDLE_MS`] ([`live_driver_registrations`]): an in-process
-///     `rigger run`/`serve` (which never touches `step.lock`), or a driver between two of its
-///     `rigger step`s (every step registers as the run's driver, so its last stamp counts for the
-///     idle window), elsewhere on this machine. A courier's discovery refresh is not one.
+///     `rigger run` (which holds `step.lock` too) or `rigger serve` (which never touches it), or a
+///     driver between two of its `rigger step`s (every step registers as the run's driver, so its
+///     last stamp counts for the idle window), elsewhere on this machine. A courier's discovery
+///     refresh is not one.
 ///
 /// Unit terminality is NOT a liveness signal, and neither is an in-flight spawn on its own,
 /// without a marker inside its bound: a run whose driver died leaves both behind forever, and
@@ -683,8 +685,10 @@ fn live_writer_reasons(
 ) -> Vec<String> {
     let mut reasons = Vec::new();
     if step_lock_held {
-        reasons
-            .push("a `rigger step` is running right now (it holds .rigger/step.lock)".to_string());
+        reasons.push(
+            "a `rigger step` or `rigger run` is running right now (it holds .rigger/step.lock)"
+                .to_string(),
+        );
     }
     if !live_spawns.is_empty() {
         let named: Vec<String> = live_spawns.iter().map(live_spawn_named).collect();
@@ -755,9 +759,9 @@ fn refuse_derived_reset_if_live(
     selection: &StoreSelection,
     env: &ResetEnv,
 ) -> Result<Option<HeldLock>, Box<dyn std::error::Error>> {
-    let backend = resolve_store(selection, &loc.file("events.db"))?;
-    let store = Namespaced::new(backend.as_ref(), &loc.identity());
-    refuse_if_live(loc, selection, env, &store, live_writer_refusal)
+    over_the_run_store_at(loc, selection, |store| {
+        refuse_if_live(loc, selection, env, store, live_writer_refusal)
+    })
 }
 
 /// Gather [`live_writer_reasons`]'s three facts over `log`'s run stream and refuse when any
@@ -790,10 +794,11 @@ fn refuse_derived_reset_if_live(
 ///     actually verify was safe (mirrors [`rigger::liveness::terminal_and_no_live_worker`]'s
 ///     convention on the opposite rail: an unreadable stream is never read as "nobody is here").
 ///   - a step-lock probe error that is NOT the lock actually being held (e.g. a permission
-///     fault) also propagates as a command error rather than being misread as "a step is
-///     running": only [`STEP_BUSY_TOKEN`] in the probe's own error names a genuinely held lock,
-///     so an operator troubleshooting an unrelated IO fault gets that fault's own message
-///     instead of a misdiagnosis pointing them at a `rigger step` that is not actually running.
+///     fault) also propagates as a command error rather than being misread as "a step or a run
+///     is running": only [`STEP_BUSY_TOKEN`] in the probe's own error names a genuinely held
+///     lock, so an operator troubleshooting an unrelated IO fault gets that fault's own message
+///     instead of a misdiagnosis pointing them at a `rigger step` or `rigger run` that is not
+///     actually running.
 pub(super) fn refuse_if_live(
     loc: &StoreLocation,
     selection: &StoreSelection,
@@ -839,13 +844,14 @@ impl LiveWriterFacts {
 
 /// [`LiveWriterFacts`] as [`live_writer_facts`] probed them, with the step lock the probe took.
 /// The lock is HELD for as long as the probe lives, so the probe's verdict that no `rigger step`
-/// is running stays true while the caller acts on it: a step started meanwhile refuses with
-/// [`STEP_BUSY_TOKEN`] and its courier retries, never running against the close, the compaction or
-/// the rebuild the caller makes under the probe.
+/// and no `rigger run` is running stays true while the caller acts on it: a step started meanwhile
+/// refuses with [`STEP_BUSY_TOKEN`] and its courier retries, and a run started meanwhile refuses
+/// with it until the operator re-runs it, so neither runs against the close, the compaction or the
+/// rebuild the caller makes under the probe.
 struct LiveWriterProbe {
     facts: LiveWriterFacts,
-    /// The step lock this probe holds; `None` exactly when a `rigger step` already held it
-    /// (`facts.step_lock_held`).
+    /// The step lock this probe holds; `None` exactly when a `rigger step` or a `rigger run`
+    /// already held it (`facts.step_lock_held`).
     step_lock: Option<HeldLock>,
 }
 
@@ -860,14 +866,15 @@ fn live_writer_facts(
     env: &ResetEnv,
     events: &[Event],
 ) -> Result<LiveWriterProbe, Box<dyn std::error::Error>> {
-    // A non-blocking probe of the SAME advisory lock `rigger step` holds for its whole duration,
-    // resolved at THIS STORE's own directory (never the process cwd) - `reset --derived` is run
-    // from a nested worktree just as every other courier is (see `require_store_dir`), and a
-    // cwd-relative probe would open a `.rigger/step.lock` under the WRONG (or nonexistent)
-    // directory there. Acquiring it proves nobody else holds it, and the probe keeps holding it
-    // so that stays true while the caller acts. A failure whose message names the busy token
-    // proves a step IS running; any OTHER failure (a permission fault, a read-only filesystem) is
-    // a real fault this command cannot silently misdiagnose as "held", so it propagates instead.
+    // A non-blocking probe of the SAME advisory lock `rigger step` holds for its whole duration
+    // and `rigger run` for its whole life, resolved at THIS STORE's own directory (never the
+    // process cwd) - `reset --derived` is run from a nested worktree just as every other courier
+    // is (see `require_store_dir`), and a cwd-relative probe would open a `.rigger/step.lock`
+    // under the WRONG (or nonexistent) directory there. Acquiring it proves nobody else holds it,
+    // and the probe keeps holding it so that stays true while the caller acts. A failure whose
+    // message names the busy token proves a step or a run IS running; any OTHER failure (a
+    // permission fault, a read-only filesystem) is a real fault this command cannot silently
+    // misdiagnose as "held", so it propagates instead.
     let step_lock = match acquire_step_lock(&loc.dir) {
         Ok(lock) => Some(lock),
         Err(e) if e.to_string().contains(STEP_BUSY_TOKEN) => None,
@@ -944,9 +951,10 @@ fn live_driver_registrations(
 /// it, and it prints its own line when it fires - but "the event log is untouched" is not true of
 /// a `rigger reset --runs` on the one class of store the migration exists for, so the printed
 /// report says what IS true instead. The migration is deliberately not gated on `--derived`:
-/// `reset_runs` reads through `Namespaced::new(backend, &loc.identity())`, so skipping it on an
-/// unmigrated store would read an empty stream and report a confident prune of zero dead-run
-/// nodes - the silent no-op the migration is there to prevent, moved from one mode to the other.
+/// `reset_runs` reads the run store [`over_the_run_store_at`] opens, scoped by `loc.identity()`,
+/// so skipping it on an unmigrated store would read an empty stream and report a confident prune
+/// of zero dead-run nodes - the silent no-op the migration is there to prevent, moved from one
+/// mode to the other.
 ///
 /// This is pure orchestration over two single authorities: the disposition comes from the
 /// run-attribution primitive ([`superseded_graph_nodes`] over `run::run_attribution` +
@@ -970,42 +978,43 @@ fn reset_runs(loc: &StoreLocation, selection: &StoreSelection, env: &ResetEnv) -
             contextgraph::sqlite::REBUILD_IN_PROGRESS
         ),
     }
-    let backend = resolve_store(selection, &loc.file("events.db"))?;
-    let store = Namespaced::new(backend.as_ref(), &loc.identity());
-    // ONE whole-stream forward read: it feeds BOTH the attribution and the per-index node-id
-    // lookup inside `superseded_graph_nodes`, honoring run_attribution's whole-stream contract.
-    let events = store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
-    let drop = superseded_graph_nodes(&events);
-    // Spec 41: the retention cutoff for the superseded-edge reclamation - the active run's start,
-    // the SAME run boundary the node drop-set is derived against. `None` (a legacy store with no
-    // run) reclaims no edge, so LIVE and recent history are both untouched.
-    let boundary = superseded_edge_boundary(&events);
+    over_the_run_store_at(loc, selection, |store| {
+        // ONE whole-stream forward read: it feeds BOTH the attribution and the per-index node-id
+        // lookup inside `superseded_graph_nodes`, honoring run_attribution's whole-stream contract.
+        let events = store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
+        let drop = superseded_graph_nodes(&events);
+        // Spec 41: the retention cutoff for the superseded-edge reclamation - the active run's
+        // start, the SAME run boundary the node drop-set is derived against. `None` (a legacy store
+        // with no run) reclaims no edge, so LIVE and recent history are both untouched.
+        let boundary = superseded_edge_boundary(&events);
 
-    let graph = open_graph(&graph_db, &loc.identity(), selection, "reset --runs")?;
-    // The probe's step lock is held until the close returns, so no `rigger step` starts against a
-    // run this reset is closing; the graph prune below takes no part in it.
-    let probe = live_writer_facts(loc, selection, env, &events)?;
-    close_landed_units(loc, &store, &graph, &events, &probe.facts)?;
-    std::mem::drop(probe);
-    let removed = graph.prune(&drop, boundary)?;
-    // Compact the projection file so the prune reclaims DISK, not just rows (spec 46, criterion 3):
-    // the deletes free pages inside graph.db that SQLite retains on a freelist, so without a VACUUM
-    // the file stays as LARGE on disk as before even though the dead rows are gone. VACUUM reclaims
-    // disk ONLY - it changes no query result and gives no query or fold speedup; it rebuilds only
-    // the rebuildable projection and the event log is untouched.
-    let reclaimed_bytes = graph.compact()?;
-    println!(
-        "reset --runs: {} from the context graph, then compacted the graph file (reclaimed {} \
-         byte(s) on disk) - every \
-         lesson, the active run, and every live edge are preserved; this prune deletes no event \
-         from the log. The one thing `rigger reset` writes there is the one-time identity \
-         migration it runs first: on a store still under the legacy basename namespace that \
-         renames its streams and records one DecisionMade, and it prints its own line when it \
-         does",
-        pruned_line(&removed),
-        reclaimed_bytes
-    );
-    Ok(())
+        let graph = open_graph(&graph_db, &loc.identity(), selection, "reset --runs")?;
+        // The probe's step lock is held until the close returns, so no `rigger step` or `rigger
+        // run` starts against a run this reset is closing; the graph prune below takes no part in
+        // it.
+        let probe = live_writer_facts(loc, selection, env, &events)?;
+        close_landed_units(loc, store, &graph, &events, &probe.facts)?;
+        std::mem::drop(probe);
+        let removed = graph.prune(&drop, boundary)?;
+        // Compact the projection file so the prune reclaims DISK, not just rows (spec 46, criterion
+        // 3): the deletes free pages inside graph.db that SQLite retains on a freelist, so without
+        // a VACUUM the file stays as LARGE on disk as before even though the dead rows are gone.
+        // VACUUM reclaims disk ONLY - it changes no query result and gives no query or fold
+        // speedup; it rebuilds only the rebuildable projection and the event log is untouched.
+        let reclaimed_bytes = graph.compact()?;
+        println!(
+            "reset --runs: {} from the context graph, then compacted the graph file (reclaimed {} \
+             byte(s) on disk) - every \
+             lesson, the active run, and every live edge are preserved; this prune deletes no event \
+             from the log. The one thing `rigger reset` writes there is the one-time identity \
+             migration it runs first: on a store still under the legacy basename namespace that \
+             renames its streams and records one DecisionMade, and it prints its own line when it \
+             does",
+            pruned_line(&removed),
+            reclaimed_bytes
+        );
+        Ok(())
+    })
 }
 
 /// What a run-closure prune removed, in the one set of words both of its reports use: `rigger

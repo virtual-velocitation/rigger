@@ -330,11 +330,11 @@ pub struct WatchInputs<'a> {
     pub now: SystemTime,
     /// When the run's last event was recorded, or `None` for an empty run.
     pub last_event_at: Option<SystemTime>,
-    /// Whether NO `rigger step` currently holds the step lock (true = free = no
-    /// step process is running right now).
+    /// Whether the step lock is free: true when no `rigger step` holds it and no `rigger run`
+    /// does, which holds it for its whole life, so a hung run keeps the alert silent.
     pub step_lock_free: bool,
-    /// Heartbeat-marker AGE in seconds, keyed by spawn id, for the run's CURRENTLY
-    /// PARKED frontier (mirrors `rigger status`'s own liveness-age fold). Empty when
+    /// Heartbeat-marker AGE in seconds, keyed by spawn id, for the run's CURRENTLY PARKED
+    /// frontier, on wall clock: unlike `rigger status`'s, no open hold is subtracted. Empty when
     /// nothing is parked, which reads as "every heartbeat stale" vacuously.
     pub wave_liveness_ages: &'a BTreeMap<String, u64>,
     /// The dash liveness probe's already-classified outcome.
@@ -540,7 +540,8 @@ pub fn detect(inputs: &WatchInputs) -> Vec<Anomaly> {
                 signal: Signal::DeadDriver,
                 subject: "run".to_string(),
                 magnitude: 0,
-                detail: "store quiet an hour, no step process, every heartbeat stale past 30m"
+                detail: "store quiet an hour, no step or run holds the step lock, every \
+                         heartbeat stale past 30m"
                     .to_string(),
             });
         }
@@ -918,7 +919,7 @@ mod tests {
     // --- Signal 2: dead driver (the conjunction) ---
 
     #[test]
-    fn a_quiet_store_with_no_step_process_and_every_heartbeat_stale_is_a_dead_driver() {
+    fn a_quiet_store_with_the_step_lock_free_and_every_heartbeat_stale_is_a_dead_driver() {
         let events = positioned(vec![ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"u"}"#)]);
         let now = SystemTime::now();
         let ages: BTreeMap<String, u64> = [("u/implementer#0".to_string(), 3600u64)]
@@ -940,17 +941,21 @@ mod tests {
         assert_eq!(anomalies.len(), 1);
         assert_eq!(anomalies[0].signal, Signal::DeadDriver);
         assert_eq!(anomalies[0].subject, "run");
+        assert_eq!(
+            anomalies[0].detail,
+            "store quiet an hour, no step or run holds the step lock, every heartbeat stale past 30m"
+        );
     }
 
     #[test]
-    fn a_running_step_process_suppresses_the_dead_driver_alert() {
+    fn a_held_step_lock_suppresses_the_dead_driver_alert() {
         let events = positioned(vec![ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"u"}"#)]);
         let now = SystemTime::now();
         let inputs = WatchInputs {
             run_events: &events,
             now,
             last_event_at: Some(now - Duration::from_secs(4000)),
-            // A step IS running - not dead, just slow.
+            // A step or a run holds the lock - not dead, just slow.
             step_lock_free: false,
             wave_liveness_ages: &BTreeMap::new(),
             dash: DashProbe::NotRecorded,

@@ -6,6 +6,9 @@
 # only thing that notices the session is gone is the wake-up re-checking the child: it must
 # end the read as a session with no result, never wait on the stranger's pipe forever.
 # Reads and discards the host's first stdin message like every sibling fixture.
+self=$(readlink "$0") || self=$0
+. "$(dirname "$self")/launch-args.sh"
+sid=$(launched_session aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa "$@")
 IFS= read -r line
-echo '{"type":"system","subtype":"init","session_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","model":"claude-haiku-4-5","mcp_servers":[{"name":"rigger","status":"connected"}]}'
+echo '{"type":"system","subtype":"init","session_id":"'"$sid"'","model":"claude-haiku-4-5","mcp_servers":[{"name":"rigger","status":"connected"}]}'
 sleep 60 &

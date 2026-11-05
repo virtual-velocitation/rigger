@@ -121,10 +121,10 @@ The task and any later operator note travel as user messages on the input stream
 | `system/init` | records the resolved model, tools and MCP status; a `rigger` server whose status is not `connected` stops the session and fails the launch as a fault of class `unknown` |
 | any line | touches the spawn's liveness marker - the host proves life, the agent is never asked to |
 | `assistant`, `user` | appends transcript turns and running usage |
-| `system/api_retry` | records a waiting line (category, attempt, delay); hands the category to the hold controller (5) |
+| `system/api_retry` | records a waiting line (category, attempt, delay) and an `ApiRetry` progress record (spawn, delay, category); hands the category to the hold controller (5) |
 | `system/permission_denied` | records a progress line; the denial count is the `result` message's own `permission_denials` list, which also carries hook-blocked calls that emit no event |
 | `result` | records `SpawnResult`: output or `structured_output`, usage, cost, turns, session id |
-| exit without `result` | ends the launch as `interrupted` or `fault` by the last category seen (5.1); `unknown` when none |
+| exit without `result` | ends the launch as `interrupted` or `fault` by the last category seen (5.1), `unknown` when none; on a run held at its end, `interrupted` whatever the class, a FAULT class and `unknown` included |
 
 The raw stream is written beside the spawn's scratch and deleted once its turns are
 recorded. No agent self-reports a result, a model or a heartbeat.
@@ -140,9 +140,9 @@ result.
 
 Per-spawn, through `--settings`:
 
-- `PreToolUse` on `Edit|Write|NotebookEdit` runs `rigger guard-write --spawn <id>`. A
-  target outside the spawn's worktree and scratch is denied with a reason naming the
-  right root. A reviewer persona's roots are its scratch only.
+- `PreToolUse` on `Edit|MultiEdit|Write|NotebookEdit` runs `rigger guard-write --root <dir>...`,
+  rooted at the spawn's `dir` (the session's cwd when `dir` is empty) and its scratch
+  container. A target outside every root is denied with a reason naming the first root.
 - `StopFailure`, one entry per error category, runs `rigger hook stop-failure --spawn <id>
   --class <category>`: the category that ended a turn is recorded even when the stream's
   last line is lost.
@@ -171,10 +171,10 @@ itself.
 | Category | Disposition | Released when |
 |---|---|---|
 | `authentication_failed`, `oauth_org_not_allowed`, `cloud_credential_error` | HOLD on first sight | `claude auth status` reports logged in, then a canary turn succeeds |
-| `billing_error`, `account_on_hold` | HOLD on first sight | a canary turn succeeds |
+| `billing_error`, `account_on_hold`, `verification_required` | HOLD on first sight | a canary turn succeeds |
 | `model_not_found` | HOLD on first sight, naming the model | a canary turn on that model succeeds |
 | `rate_limit`, `overloaded`, `server_error` | WAIT while Claude Code retries; HOLD when a session dies of it | a canary turn succeeds; a known reset time is honored |
-| `invalid_request`, `max_output_tokens`, `unknown` | FAULT: the spawn is relaunched, at most twice, no attempt charged; then the unit fails as infra | - |
+| `invalid_request`, `max_output_tokens`, `unknown` | FAULT: the error takes its spawn site's existing error path unchanged, so at the implementer it reruns uncharged under the infra limit and a spawn past that limit halts the run naming its class | - |
 | three consecutive FAULTs across the run | HOLD `api-unstable` | a canary turn succeeds |
 | host suspended, supervisor absent | an implicit hold interval (5.3) | the supervisor is alive |
 | operator | `rigger hold --reason <text>` | `rigger release` |
@@ -184,9 +184,9 @@ itself.
 ```
              first hold-class category | session death by a wait-class | 3 FAULTs | rigger hold
   RUNNING ----------------------------------------------------------------------------> HELD
-     ^                          RunHeld {cause, detail, action, by}                      |
+     ^                RunHeld {cause, detail, action, needs_person, by, model}           |
      |                                                                                   |
-     +--------------- RunReleased {by: probe | operator, held_for} <-- probe ladder -----+
+     +------ RunReleased {by: host | probe | operator, held_for_s} <-- probe ladder -----+
 
   HELD:  no launch is requested
          live sessions are left alone: each finishes, or ends by itself
@@ -195,8 +195,8 @@ itself.
 ```
 
 `RunHeld` and `RunReleased` are run-stream events; held is the fold "a `RunHeld` with no
-later `RunReleased`". `SpawnLaunched {spawn, launch, session_id, resumed_from, ended}` and
-`SupervisorBeat` are progress-store records.
+later `RunReleased`". `SpawnLaunched {spawn, launch, session_id, resumed_from, ended}`,
+`SupervisorBeat` and `ApiRetry {spawn, delay_ms, category}` are progress-store records.
 
 ### 5.3 Liveness counts supervised, unheld seconds
 
@@ -262,7 +262,7 @@ step runs in-process for as long as it needs.
  18:03     the adversary session exhausts its retries and exits: launch ended `interrupted`
  18:00 ->  probe every 60 s, doubling to 15 min: auth status says logged out
  11:12     the operator logs in
- 11:13     probe: logged in; canary turn succeeds; RunReleased {by: probe, held_for: 17h13m}
+ 11:13     probe: logged in; canary turn succeeds; RunReleased {by: probe, held_for_s: 61980}
  11:13     the adversary launch resumes its session with "held 17h13m for authentication_failed"
  11:31     result recorded; the adjudicator launches
 ```

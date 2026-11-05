@@ -3,7 +3,7 @@ name = "rigger-process"
 version = "0.1.0"
 edition = "2021"
 publish = false
-description = "Rigger's process adapters: the one process-spawn port, the directory-rooted reaper, the machine-wide build-slot budget and the ordered parallel map."
+description = "Rigger's process adapters: the one process-spawn port, the directory-rooted reaper, the machine-wide build-slot budget, the ordered parallel map and the keep-awake adapter."
 
 [lib]
 name = "rigger_process"
@@ -14,8 +14,12 @@ path = "src/lib.rs"
 # `any(feature = "store", not(feature = "core"))` there carries the same gate here, and the
 # root forwards both features, so every lane compiles exactly the surface it did before.
 default = ["store"]
-store = []
+store = ["rigger-domain/store"]
 core = ["rigger-domain/core"]
+
+[dependencies]
+# The keep-awake adapter implements the domain's `SleepHold` port (spec 105).
+rigger-domain = { path = "../rigger-domain", default-features = false }
 
 # The native-only adapter dependencies, target-gated exactly as in the root manifest: the
 # `wasm32` core lane never builds them.
@@ -26,11 +30,28 @@ rustix = { version = "1.1", default-features = false, features = ["std", "proces
 # The build budget's cross-process advisory slot lock (`flock` under the hood).
 fs2 = "0.4"
 
+# The Linux keep-awake adapter's logind client (spec 105): zbus's async API on its tokio
+# integration, driven by a current-thread tokio runtime each acquire builds and shuts down before
+# it returns, so the adapter adds no executor sized by core count. `tokio` is a direct edge to the
+# tokio the store already links.
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus = { version = "5.15", default-features = false, features = ["tokio"] }
+tokio = { version = "1", features = ["rt", "time"] }
+
+# The Windows keep-awake adapter's power request (spec 105), at the 0.61 line the lock already
+# resolves for rustix, tempfile and zbus: `PowerCreateRequest` takes its `REASON_CONTEXT` from
+# Threading and its context version from SystemServices. The macOS adapter declares no crate: it
+# reaches IOKit and CoreFoundation through `extern` declarations.
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Power", "Win32_System_SystemServices", "Win32_System_Threading"] }
+
 [dev-dependencies]
 tempfile = "3"
-# The parameterised-test macro the moved unit tests expand. `core` above forwards to it, so this
-# crate's core-lane tests build it in the same lane as every other dependency.
-rigger-domain = { path = "../rigger-domain", default-features = false }
+
+# The Linux keep-awake adapter's tests: the live test's own calls to logind, over zbus's blocking
+# API, and the fake logind a private bus serves, built as a bus implementation.
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+zbus = { version = "5.15", default-features = false, features = ["blocking-api", "bus-impl", "tokio"] }
 
 [lints]
 workspace = true

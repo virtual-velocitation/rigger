@@ -189,9 +189,12 @@ pub(crate) fn cmd_progress(args: &[String]) -> Res {
     // the only traffic in the run for a while. Best-effort/warn-only; never fails the report.
     refresh_registry_entry(&loc, &selection);
     // Resolve the current run READ-ONLY from the run store, only to scope the report.
-    let run_backend = resolve_store(&selection, &loc.file("events.db"))?;
-    let run_store = Namespaced::new(run_backend.as_ref(), &loc.identity());
-    let (_, run_id) = runscope::read::read_current_run(&run_store, conductor::STREAM)?;
+    let (_, run_id) = over_the_run_store_at(&loc, &selection, |run_store| {
+        Ok(runscope::read::read_current_run(
+            run_store,
+            conductor::STREAM,
+        )?)
+    })?;
     // Append to the SEPARATE progress store - never the run stream.
     let prog_backend = Store::open(&loc.file("progress.db"))?;
     let prog_store = Namespaced::new(&prog_backend, &loc.identity());
@@ -221,8 +224,8 @@ const NO_RUN_RECORDED_LINE: &str = "no run recorded; start one with `rigger run 
 pub(crate) fn cmd_status(args: &[String]) -> Res {
     let mut json = false;
     // Spec 94, criterion 5 (THE STATUSLINE COMMAND): `--line` prints ONLY the core's
-    // `console::statusline` text - the same line the human-readable path below prints as its
-    // own first line - for an editor's status bar (`rigger setup` registers this exact
+    // `console::statusline` text - the same line the human-readable path below prints over its
+    // table - for an editor's status bar (`rigger setup` registers this exact
     // command; see `install_status_line`). Mutually exclusive with `--json`: the two are
     // different output modes for the same command, never composed.
     let mut line = false;
@@ -268,9 +271,12 @@ pub(crate) fn cmd_status(args: &[String]) -> Res {
     let now = std::time::SystemTime::now();
 
     // The current run's slice of the run stream, and its id.
-    let run_backend = resolve_store(&selection, &loc.file("events.db"))?;
-    let run_store = Namespaced::new(run_backend.as_ref(), &loc.identity());
-    let (run_slice, run_id) = runscope::read::read_current_run(&run_store, conductor::STREAM)?;
+    let (run_slice, run_id) = over_the_run_store_at(&loc, &selection, |run_store| {
+        Ok(runscope::read::read_current_run(
+            run_store,
+            conductor::STREAM,
+        )?)
+    })?;
     let run_events = run_slice.as_slice();
 
     // Spec 94, criterion 5: `--line` needs only the run's event slice and the configured
@@ -279,7 +285,7 @@ pub(crate) fn cmd_status(args: &[String]) -> Res {
     // marker stat and the dash-server probe below, none of which the statusline text depends
     // on. An editor polling this command on every render stays cheap. `console::fold`, not a
     // second independently-composed copy, so a repeated poll can never drift from `rigger
-    // status`'s own first line.
+    // status`'s own statusline.
     if line {
         let (_, max_retries) = scratch_defaults(&loc);
         let console_state = console::fold(run_events, max_retries)?;
@@ -298,13 +304,23 @@ pub(crate) fn cmd_status(args: &[String]) -> Res {
     // the JS driver's haiku probe was reconstructing by proxy - unit 3 retires it). The
     // configured remediation bound is read from the SAME config (via the shared
     // `scratch_defaults`, spec 83 criterion 2 round 2) so the current-blocker classifier's
-    // `#n/max` line matches the depth the run actually escalates at.
+    // `#n/max` line matches the depth the run actually escalates at. An age reads through the
+    // run's hold intervals, so a step after a released hold reads the time outside it; the
+    // workflow's marker race reads `liveness_age_s` and would otherwise take a held step for a
+    // dead one (spec 105 LIVENESS).
     let (workdir, max_retries) = scratch_defaults(&loc);
     let wave = spawn::step_result(run_events)?.wave;
-    let liveness_ages: std::collections::HashMap<String, u64> =
-        liveness_ages_for_wave(run_events, &loc.repo_root(), &workdir, &run_id, &wave, now)
-            .into_iter()
-            .collect();
+    let liveness_ages: std::collections::HashMap<String, u64> = liveness_ages_for_wave(
+        run_events,
+        &loc.repo_root(),
+        &workdir,
+        &run_id,
+        &wave,
+        now,
+        &rigger::liveness::hold_intervals(run_events, now),
+    )
+    .into_iter()
+    .collect();
 
     let view = progress::consolidate(run_events, &prog_events, &liveness_ages, now)?;
 
@@ -344,11 +360,11 @@ pub(crate) fn cmd_status(args: &[String]) -> Res {
 
     // ONE FOLD (spec 93, criterion 4): the console's own fold over the run's event slice -
     // unit statuses, the current-blocker lines (the SAME shared classifier the dashboard also
-    // renders, spec 19a), the needs-you dock and the statusline - so `rigger status` prints
-    // exactly what the future console page will render from the identical stream, never a
-    // second, independently-composed copy of any of the four. Computed even when no agent is
-    // parked, so an escalated unit or a budget halt (which have no live spawn) is still
-    // surfaced.
+    // renders, spec 19a), the needs-you dock, the statusline and the run's open hold (spec 105) -
+    // so `rigger status` prints exactly what the future console page will render from the
+    // identical stream, never a second, independently-composed copy of any of the five. Computed
+    // even when no agent is parked, so an escalated unit or a budget halt (which have no live
+    // spawn) is still surfaced.
     let console_state = console::fold(run_events, max_retries)?;
 
     // The ready-to-release handoff (spec 38, criterion 3): surfaced on this status surface
@@ -364,6 +380,13 @@ pub(crate) fn cmd_status(args: &[String]) -> Res {
     let release_base = runscope::current_run_base(run_events)
         .unwrap_or_else(|| resolve_run_base(None, std::env::var("RIGGER_BASE").ok().as_deref()).0);
     let release_lines = release_ready_lines(run_events, RUN_BRANCH, &release_base);
+
+    // WHAT A PERSON SEES (spec 105): a held run's status opens with its HELD line, ahead of
+    // every other line, so the hold is the first thing an operator reads.
+    if let Some(hold) = &console_state.hold {
+        let latest_beat = rigger::liveness::beat_times(&prog_events).last().copied();
+        println!("{}", held_line(hold, latest_beat, now));
+    }
 
     // The auto-started dash's URL for this run (spec 19b, unit 1 discoverability): shown
     // whenever a driver recorded one, even for an otherwise-quiet run, so an operator can
@@ -383,15 +406,17 @@ pub(crate) fn cmd_status(args: &[String]) -> Res {
         println!("run {}", ledger::short_run_id(&run_id));
     }
 
-    // The statusline (spec 93, criterion 4): the console's own one-line summary, THE first
-    // line `rigger status` prints - the same text a later criterion's `rigger status --line`
-    // prints alone for an editor status bar, so the terminal table and that one-liner are
-    // never two derivations. Printed unconditionally, even for a run holding no units at all,
-    // so the line is always there to anchor the table under it.
+    // The statusline (spec 93, criterion 4): the console's own one-line summary, the line
+    // over the table `rigger status` prints - the same text a later criterion's `rigger status
+    // --line` prints alone for an editor status bar, so the terminal table and that one-liner
+    // are never two derivations. Printed unconditionally, even for a run holding no units at
+    // all, so the line is always there to anchor the table under it.
     println!("{}", console_state.statusline);
 
     // The per-agent "doing" detail, unchanged from before this criterion: one block per
-    // in-flight spawn. The blackout is visible as `last store event` age >> activity age.
+    // in-flight spawn. The blackout is visible as `last store event` age >> activity age. The
+    // heartbeat age is the marker's silence counted outside the run's holds (spec 105
+    // LIVENESS), so the line says so rather than reading as wall-clock time.
     if !view.is_empty() {
         let age = |s: Option<u64>| s.map(|s| format!("{s}s ago")).unwrap_or_else(|| "-".into());
         for a in &view {
@@ -403,7 +428,7 @@ pub(crate) fn cmd_status(args: &[String]) -> Res {
                     .unwrap_or("(none reported yet)"),
                 age(a.activity_age_s),
                 a.liveness_age_s
-                    .map(|s| format!("{s}s ago"))
+                    .map(|s| format!("{s}s ago outside holds"))
                     .unwrap_or_else(|| "-".into()),
                 a.last_milestone.as_deref().unwrap_or("-"),
                 age(a.milestone_age_s),
@@ -435,6 +460,32 @@ pub(crate) fn cmd_status(args: &[String]) -> Res {
         println!("{line}");
     }
     Ok(())
+}
+
+/// The HELD line `rigger status` opens with on a held run (spec 105, WHAT A PERSON SEES): how
+/// long the run has been held at `now`, the hold's [`ledger::Hold::reason`] and what ends the
+/// hold. The run resumes by itself while a probe can release the hold
+/// ([`rigger::hold_probe::is_probed`]) and the supervisor's `latest_beat` is no older than the
+/// 90 s of LIVENESS ([`rigger::liveness::unwatched`]); otherwise `rigger release` ends it. A
+/// hold a clock set backwards dates after `now` reads as held no time.
+fn held_line(
+    hold: &ledger::Hold,
+    latest_beat: Option<std::time::SystemTime>,
+    now: std::time::SystemTime,
+) -> String {
+    let resumes = rigger::hold_probe::is_probed(hold)
+        && latest_beat.is_some_and(|beat| !rigger::liveness::unwatched(beat, now));
+    let ends = if resumes {
+        "the run resumes by itself"
+    } else {
+        "rigger release ends it"
+    };
+    let held_for = now.duration_since(hold.since).unwrap_or_default();
+    format!(
+        "HELD {} - {}; {ends}",
+        fmt_duration(held_for),
+        hold.reason()
+    )
 }
 
 /// The ready-to-release handoff lines `rigger status` prints (spec 38, criterion 3): empty
@@ -545,14 +596,10 @@ fn unread_ci_note(ci: &watch::CiProbe, last: &mut Option<String>) -> Option<Stri
 pub(crate) fn cmd_peers(args: &[String]) -> Res {
     let files: Vec<String> = args.to_vec();
 
-    let (loc, selection) = require_store_dir()?;
-    let backend = resolve_store(&selection, &loc.file("events.db"))?;
-    let store = Namespaced::new(backend.as_ref(), &loc.identity());
-
     // The side-car reads the run from its boundary and the carried-over decisions, lessons and
     // findings by type (spec 101) - every record committed before this call, never the whole
     // log.
-    let peers = Sidecar::read(&store, conductor::STREAM)?;
+    let peers = over_the_run_store(|_, _, store| Ok(Sidecar::read(store, conductor::STREAM)?))?;
 
     let result = mcpserver::peers_json(&peers, &files);
     let decisions = result["decisions"].as_array().cloned().unwrap_or_default();
@@ -616,6 +663,85 @@ fn json_str_array(v: &serde_json::Value) -> String {
 mod tests {
     use super::*;
     use crate::test_support::CwdGuard;
+
+    /// WHAT A PERSON SEES: the HELD line names how long the run has been held, its cause and its
+    /// action, and says the run resumes by itself only while the latest supervisor beat is no
+    /// older than 90 s and the hold is neither an operator hold nor a `model_not_found` hold;
+    /// every other hold reads that `rigger release` ends it.
+    #[test]
+    fn held_line_says_the_run_resumes_by_itself_only_for_a_probed_hold_under_a_fresh_beat() {
+        use std::time::{Duration, SystemTime, UNIX_EPOCH};
+        let now = UNIX_EPOCH + Duration::from_secs(10_000);
+        let ago = |millis: u64| now - Duration::from_millis(millis);
+        let hold = |cause: &str, operator: bool, since: SystemTime| ledger::Hold {
+            since,
+            operator,
+            latest: runscope::RunHeld {
+                cause: cause.to_string(),
+                action: "wait it out".to_string(),
+                ..Default::default()
+            },
+            revision: 7,
+        };
+        let host = |cause: &str| hold(cause, false, ago(600_000));
+        let resumes = "HELD 600.0s - rate_limit - wait it out; the run resumes by itself";
+        let release = "HELD 600.0s - rate_limit - wait it out; rigger release ends it";
+        let cases = vec![
+            ("a beat now", host("rate_limit"), Some(now), resumes),
+            (
+                "a beat 89 s old",
+                host("rate_limit"),
+                Some(ago(89_000)),
+                resumes,
+            ),
+            (
+                "a beat 90 s old",
+                host("rate_limit"),
+                Some(ago(90_000)),
+                resumes,
+            ),
+            (
+                "a beat 91 s old",
+                host("rate_limit"),
+                Some(ago(91_000)),
+                release,
+            ),
+            ("no beat", host("rate_limit"), None, release),
+            (
+                "a beat a clock set backwards dates after now",
+                host("rate_limit"),
+                Some(now + Duration::from_secs(5)),
+                resumes,
+            ),
+            (
+                "an operator hold under a fresh beat",
+                hold("operator", true, ago(600_000)),
+                Some(now),
+                "HELD 600.0s - operator - wait it out; rigger release ends it",
+            ),
+            (
+                "a model_not_found hold under a fresh beat",
+                host("model_not_found"),
+                Some(now),
+                "HELD 600.0s - model_not_found - wait it out; rigger release ends it",
+            ),
+            (
+                "a hold 1.5 s old",
+                hold("rate_limit", false, ago(1_500)),
+                Some(now),
+                "HELD 1.5s - rate_limit - wait it out; the run resumes by itself",
+            ),
+            (
+                "a hold a clock set backwards dates after now",
+                hold("rate_limit", false, now + Duration::from_secs(30)),
+                Some(now),
+                "HELD 0.0s - rate_limit - wait it out; the run resumes by itself",
+            ),
+        ];
+        for (name, hold, latest_beat, want) in cases {
+            assert_eq!(held_line(&hold, latest_beat, now), want, "{name}");
+        }
+    }
 
     /// `rigger watch` notes an unread CI on stderr once per distinct reason, never on every
     /// poll: the same reason again notes nothing, a new reason notes, and a CI that reads again

@@ -18,8 +18,11 @@
 # of its process tree, and exercising the SAME TERM-then-grace-then-KILL escalation on
 # the parent that `spawn_escalates_to_the_sanctioned_reap_when_a_silent_child_ignores_its_input_closing`
 # already proves for a childless fixture.
+self=$(readlink "$0") || self=$0
+. "$(dirname "$self")/launch-args.sh"
+sid=$(launched_session 66666666-6666-4666-8666-666666666666 "$@")
 IFS= read -r line
-echo '{"type":"system","subtype":"init","session_id":"66666666-6666-4666-8666-666666666666","model":"claude-haiku-4-5","mcp_servers":[]}'
+echo '{"type":"system","subtype":"init","session_id":"'"$sid"'","model":"claude-haiku-4-5","mcp_servers":[]}'
 sleep 60 &
 if [ -n "$RIGGER_TEST_DESCENDANT_PID_FILE" ]; then
     echo "$!" >"$RIGGER_TEST_DESCENDANT_PID_FILE"

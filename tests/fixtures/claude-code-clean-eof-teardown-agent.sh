@@ -12,8 +12,11 @@
 # instant its stdout pipe reads EOF (the round-4 regression) reaps it mid-teardown, so
 # the marker is never written; a host that instead waits for the process to exit on its
 # own (the round-5 fix) always finds it there.
+self=$(readlink "$0") || self=$0
+. "$(dirname "$self")/launch-args.sh"
+sid=$(launched_session "" "$@")
 IFS= read -r line
-cat "$(dirname "$0")/claude-code-stream-success.jsonl"
+as_launched "$sid" <"$(dirname "$0")/claude-code-stream-success.jsonl"
 exec >&-
 sleep "${RIGGER_TEST_TEARDOWN_SLEEP:-1}"
 if [ -n "$RIGGER_TEST_TEARDOWN_MARKER" ]; then

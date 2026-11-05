@@ -38,6 +38,23 @@ const RIGGER_BIN: &str = "/fixture/bin/rigger";
 fn launch_capturing(dir: &Path, settings_json: &str) -> Vec<String> {
     let capture_dir = tempfile::tempdir().expect("a throwaway dir for the argv capture");
     let capture = capture_dir.path().join("argv");
+    launch_handing(dir, settings_json, &capture, Vec::new());
+    let raw = std::fs::read(&capture).expect("the fixture recorded its argv");
+    raw.split(|b| *b == 0)
+        .filter(|field| !field.is_empty())
+        .map(|field| String::from_utf8(field.to_vec()).expect("a utf-8 argument"))
+        .collect()
+}
+
+/// Launch one headless spawn in `dir` through the argv-capture fixture, the spawn's own
+/// environment naming `capture` as the capture file and the host handing `handed_env`, and wait
+/// for it to end.
+fn launch_handing(
+    dir: &Path,
+    settings_json: &str,
+    capture: &Path,
+    handed_env: Vec<(String, String)>,
+) {
     let progress = Store::open(":memory:").expect("in-memory progress store");
     let run = Store::open(":memory:").expect("in-memory run store");
     let driver = Driver {
@@ -50,6 +67,9 @@ fn launch_capturing(dir: &Path, settings_json: &str) -> Vec<String> {
         run_store: &run,
         scratch_root: String::new(),
         stop_grace: std::time::Duration::from_secs(30),
+        handed_env,
+        beat_source: None,
+        hold_sink: None,
     };
     let mut opts = implementer_opts(SPAWN_ID);
     opts.dir = dir.to_string_lossy().into_owned();
@@ -69,11 +89,31 @@ fn launch_capturing(dir: &Path, settings_json: &str) -> Vec<String> {
         status.success(),
         "the argv-capture fixture failed: {status}"
     );
-    let raw = std::fs::read(&capture).expect("the fixture recorded its argv");
-    raw.split(|b| *b == 0)
-        .filter(|field| !field.is_empty())
-        .map(|field| String::from_utf8(field.to_vec()).expect("a utf-8 argument"))
-        .collect()
+}
+
+/// The store selection's handed environment is set after the spawn's own: where both name a
+/// variable the launch carries the handed value, so the fixture writes the handed capture file
+/// and never the one the spawn's own environment named.
+#[test]
+fn the_host_sets_its_handed_environment_after_the_spawns_own() {
+    let dir = tempfile::tempdir().expect("a throwaway working directory");
+    let captures = tempfile::tempdir().expect("a throwaway dir for the argv captures");
+    let own = captures.path().join("own");
+    let handed = captures.path().join("handed");
+    launch_handing(
+        dir.path(),
+        "",
+        &own,
+        vec![(
+            "RIGGER_ARGV_CAPTURE".to_string(),
+            handed.to_string_lossy().into_owned(),
+        )],
+    );
+    assert_eq!(
+        (handed.exists(), own.exists()),
+        (true, false),
+        "the handed value wins over the spawn's own"
+    );
 }
 
 /// The JSON value that follows `flag` in `argv`, failing loudly (naming the argv) when the flag
@@ -100,20 +140,31 @@ fn installed_session_settings(base: &[u8]) -> Value {
     serde_json::from_slice(&with_line).unwrap()
 }
 
-/// `argv` carries the session settings, the spawn-bound MCP server alone, and both helper agents.
-fn assert_spawn_is_configured(argv: &[String]) {
-    assert_settings_are_the_installed_ones(argv);
+/// What a spawn launched in `dir` carries as `--settings`: its per-spawn hooks merged onto `base`
+/// by the same `hooks` installer, under [`installed_session_settings`].
+fn installed_spawn_settings(base: &[u8], dir: &Path) -> Value {
+    let roots = [dir.to_str().expect("a utf-8 path").to_string()];
+    let hooked = hooks::install_spawn_hooks(base, RIGGER_BIN, SPAWN_ID, &roots).unwrap();
+    installed_session_settings(&hooked)
+}
+
+/// `argv`, launched in `dir`, carries the spawn's settings, the spawn-bound MCP server alone, and
+/// both helper agents.
+fn assert_spawn_is_configured(argv: &[String], dir: &Path) {
+    assert_settings_are_the_installed_ones(argv, dir);
     assert_mcp_config_is_the_installed_server(argv);
     assert_helper_agents_reach_the_spawn(argv);
 }
 
-/// `argv`'s `--settings` is exactly what the hooks installers build: the SessionStart prime
-/// hook, the PreToolUse grep-guard and the status line.
-fn assert_settings_are_the_installed_ones(argv: &[String]) {
+/// `argv`'s `--settings`, launched in `dir`, is exactly what the hooks installers build: the
+/// spawn's write guard and `StopFailure` hooks, the SessionStart prime hook, the PreToolUse
+/// grep-guard and the status line.
+fn assert_settings_are_the_installed_ones(argv: &[String], dir: &Path) {
     assert_eq!(
         flag_json(argv, "--settings"),
-        installed_session_settings(b""),
-        "the spawn's settings are exactly the hooks and status line `rigger setup` installs"
+        installed_spawn_settings(b"", dir),
+        "the spawn's settings are exactly its own hooks and the hooks and status line `rigger \
+         setup` installs"
     );
 }
 
@@ -206,18 +257,18 @@ fn porcelain(dir: &Path) -> String {
 }
 
 /// Launch one spawn in a fresh committed worktree and hand the argv it received to `check`.
-fn spawn_in_a_fresh_worktree(check: fn(&[String])) {
+fn spawn_in_a_fresh_worktree(check: impl Fn(&[String], &Path)) {
     let dir = committed_worktree();
-    check(&launch_capturing(dir.path(), ""));
+    check(&launch_capturing(dir.path(), ""), dir.path());
 }
 
 rigger::test_cases! {
     a_headless_spawn_carries_the_hooks_and_status_line_rigger_setup_installs:
         spawn_in_a_fresh_worktree(assert_settings_are_the_installed_ones);
     a_headless_spawn_carries_the_installer_built_mcp_server:
-        spawn_in_a_fresh_worktree(assert_mcp_config_is_the_installed_server);
+        spawn_in_a_fresh_worktree(|argv, _| assert_mcp_config_is_the_installed_server(argv));
     a_headless_spawn_carries_both_helper_agents_as_committed:
-        spawn_in_a_fresh_worktree(assert_helper_agents_reach_the_spawn);
+        spawn_in_a_fresh_worktree(|argv, _| assert_helper_agents_reach_the_spawn(argv));
 }
 
 #[test]
@@ -227,7 +278,7 @@ fn a_headless_spawn_merges_the_hooks_onto_its_own_settings() {
     let argv = launch_capturing(dir.path(), own);
     assert_eq!(
         flag_json(&argv, "--settings"),
-        installed_session_settings(own.as_bytes()),
+        installed_spawn_settings(own.as_bytes(), dir.path()),
         "the spawn's own settings survive and the hooks are merged onto them"
     );
 }
@@ -237,7 +288,7 @@ fn a_headless_spawn_writes_nothing_into_its_worktree() {
     let dir = committed_worktree();
     let before = porcelain(dir.path());
     let argv = launch_capturing(dir.path(), "");
-    assert_spawn_is_configured(&argv);
+    assert_spawn_is_configured(&argv, dir.path());
     assert_eq!(
         porcelain(dir.path()),
         before,
@@ -255,7 +306,7 @@ fn a_worktree_that_ignores_dot_claude_still_gets_the_full_configuration() {
     std::fs::write(dir.path().join(".gitignore"), ".claude/\n").unwrap();
     git_commit_all(dir.path(), "ignore the machine-local installs");
     let argv = launch_capturing(dir.path(), "");
-    assert_spawn_is_configured(&argv);
+    assert_spawn_is_configured(&argv, dir.path());
 }
 
 #[test]

@@ -4,7 +4,10 @@
 //! critiques a spec, then the plan-critique adversary runs once on the spec text through the
 //! headless host, its findings and verdict are recorded keyed on the spec's content hash and
 //! copied into the graph, and a second call on unchanged text answers from the store with zero
-//! spawns; an edited text is critiqued afresh and inherits none of the earlier findings.
+//! spawns; an edited text is critiqued afresh and inherits none of the earlier findings. A session
+//! silent past its bound is stopped, since this verb's host is the one wired with no beat source
+//! (spec 105 LIVENESS), and a session ending API-side closes `fault` whatever its class, since it
+//! is the one wired with no hold sink (spec 105 HELD).
 //!
 //! NOT OWNED HERE: the refusal a new run meets without a clean critique (criterion 2), and the
 //! plan-critique stop on a spec defect (criterion 5).
@@ -14,20 +17,27 @@ mod common;
 use std::path::Path;
 
 use common::cli::{
-    assert_selected_server, critique_finding_id, emit, pin_identity, read_run_events, rigger_file,
-    run_payloads, run_rigger, run_rigger_envs, run_rigger_ok, run_stream_identity, seed_run_events,
-    seed_store, temp_project, temp_repoless_project, write_spec_project,
+    assert_selected_server, critique_finding_id, emit, no_result_failure, pin_identity,
+    read_run_events, recorded_progress, rigger_file, run_payloads, run_rigger, run_rigger_envs,
+    run_rigger_ok, run_stream_identity, seed_a_run, seed_on_the_run, seed_run_events, seed_store,
+    temp_project, temp_repoless_project, write_spec_project,
 };
-use common::fixtures::{composed_system_prompt, git_ok, temp_git_project_with_commit};
+use common::fixtures::{composed_system_prompt, git_ok, held_event, temp_git_project_with_commit};
 use common::repo::{
-    critique_stub_argv, critique_stub_record, critique_stub_spawns, critique_stub_task,
-    write_critique_stub, write_critique_stub_reporting, CRITIQUE_CONN, CRITIQUE_SYSTEM_PROMPT,
+    assert_carries_spawn_hooks, critique_stub_argv, critique_stub_record, critique_stub_spawns,
+    critique_stub_task, flag_value, hook_words, stub_path, write_critique_stub,
+    write_critique_stub_reporting, CRITIQUE_CONN, CRITIQUE_SYSTEM_PROMPT, SILENT_PAST_THE_POLL,
 };
+use rigger::driver::claude_code::framed;
+use rigger::driver::replay::spawn_scratch_path;
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Direction, Event, EventStore, ExpectedRevision, Filter};
-use rigger::review::{critique_hash, critique_spawn_id, spec_critique_prompt};
-use rigger::spawn::{TYPE_SPAWN_REQUESTED, TYPE_SPAWN_RESULT};
+use rigger::progress::{RunStamped, SpawnLaunched, StopFailure};
+use rigger::review::{
+    critique_hash, critique_spawn_id, critique_unit, spec_critique_prompt, CRITIC_DENIED_TOOLS,
+};
+use rigger::spawn::{SpawnEvent, SpawnResult, TYPE_SPAWN_REQUESTED, TYPE_SPAWN_RESULT};
 use rigger::wave::NO_CRITIC_CLAUSE;
 use serde_json::{json, Value};
 
@@ -142,21 +152,83 @@ fn every_event(root: &Path) -> usize {
         .len()
 }
 
-/// The value the argv carries right after `flag`.
-fn flag_value<'a>(argv: &'a [String], flag: &str) -> &'a str {
-    let at = argv
-        .iter()
-        .position(|a| a == flag)
-        .unwrap_or_else(|| panic!("the critic's argv carries {flag}: {argv:?}"));
-    &argv[at + 1]
-}
-
 /// A fresh critique stub answering `critique`: its work directory, which keeps it alive, and the
 /// PATH that runs it.
 fn stub(critique: &str) -> (tempfile::TempDir, String) {
     let work = tempfile::tempdir().unwrap();
     let path = write_critique_stub(work.path(), critique);
     (work, path)
+}
+
+/// Given a critique, when its critic launches, then its spawn-bound server runs the running
+/// executable, and the launch carries the write guard rooted at the critic's working directory and
+/// its spawn scratch container, and one `StopFailure` entry per category for its own spawn id, all
+/// on that same executable, beside the deny the spawn's own settings hold.
+#[test]
+fn a_critique_launch_carries_the_spawn_hooks_on_its_own_settings() {
+    let dir = temp_project();
+    let root = std::fs::canonicalize(dir.path()).unwrap();
+    scaffold(&root, CRITIC_WORKFLOW);
+    let scratch = root.join("scratch");
+    let (work, path) = stub(REJECT);
+    let (_, err, ok) = critique(&root, SPEC_REL, &path, &scratch);
+    assert!(ok, "the critique is recorded; stderr:\n{err}");
+
+    let hash = critique_hash(SPEC);
+    let spawn = critique_spawn_id(&hash, 0);
+    let container =
+        spawn_scratch_path(scratch.to_str().unwrap(), &critique_unit(&hash), &spawn).unwrap();
+    let roots = [root, container].map(|root| root.to_str().unwrap().to_string());
+    let argv = critique_stub_argv(work.path());
+    let bin = std::fs::canonicalize(common::rigger_bin()).unwrap();
+    let mcp: Value = serde_json::from_str(flag_value(&argv, "--mcp-config")).unwrap();
+    assert_eq!(
+        mcp["mcpServers"]["rigger"],
+        serde_json::json!({"command": bin, "args": ["mcp", "--spawn", spawn]}),
+        "the critic's spawn-bound server runs the running executable"
+    );
+    let settings: Value = serde_json::from_str(flag_value(&argv, "--settings")).unwrap();
+    assert_carries_spawn_hooks(&settings, bin.to_str().unwrap(), &spawn, &roots);
+    assert_eq!(
+        settings["permissions"]["deny"].as_array().map(Vec::len),
+        Some(CRITIC_DENIED_TOOLS.len()),
+        "the spawn's own settings survive the merge: {settings}"
+    );
+}
+
+/// Spec 105's stray record: given a project with a run, when a critic's session ends on an API
+/// error and fires the `StopFailure` command its launch's settings carry, then the record stands
+/// on the project's run under the critic's own spawn id, which is what leaves every other launch's
+/// class alone.
+#[test]
+fn a_critics_stop_failure_hook_leaves_its_record_on_the_run_under_its_own_spawn() {
+    let dir = temp_project();
+    let root = std::fs::canonicalize(dir.path()).unwrap();
+    scaffold(&root, CRITIC_WORKFLOW);
+    seed_store(&root);
+    seed_a_run(&root);
+    let scratch = root.join("scratch");
+    let (work, path) = stub(REJECT);
+    let (_, err, ok) = critique(&root, SPEC_REL, &path, &scratch);
+    assert!(ok, "the critique is recorded; stderr:\n{err}");
+
+    let argv = critique_stub_argv(work.path());
+    let settings: Value = serde_json::from_str(flag_value(&argv, "--settings")).unwrap();
+    let (class, words) = hook_words(&settings, "StopFailure")
+        .into_iter()
+        .find(|(class, _)| class == "rate_limit")
+        .expect("the launch carries an entry per category");
+    let command: Vec<&str> = words[1..].iter().map(String::as_str).collect();
+    run_rigger_ok(&root, &command);
+
+    assert_eq!(
+        recorded_progress::<StopFailure>(&root),
+        vec![StopFailure {
+            spawn: critique_spawn_id(&critique_hash(SPEC), 0),
+            class,
+        }],
+        "the one record, on the project's run, naming the critic"
+    );
 }
 
 #[test]
@@ -183,14 +255,16 @@ fn a_spec_is_critiqued_once_per_text_and_answered_from_the_store_after() {
     // ... the plan-critique adversary ran once, on the spec text, through the headless host.
     assert_eq!(critique_stub_spawns(first.path()), 1, "one critic spawn");
     let task = critique_stub_task(first.path());
+    let prompt = spec_critique_prompt(SPEC_REL, SPEC);
     assert!(
-        task.ends_with(SPEC),
-        "the critique prompt ends with the spec text verbatim:\n{task}"
+        prompt.ends_with(SPEC),
+        "the critique prompt ends with the spec text verbatim:\n{prompt}"
     );
     assert_eq!(
         task,
-        spec_critique_prompt(SPEC_REL, SPEC),
-        "the task is the critique prompt and nothing else: the method is the persona's"
+        framed(&prompt),
+        "the task is the critique prompt under the host's frame and nothing else: the method is \
+         the persona's"
     );
     assert!(
         task.contains("`specs/9-demo.md`"),
@@ -199,8 +273,10 @@ fn a_spec_is_critiqued_once_per_text_and_answered_from_the_store_after() {
     let argv = critique_stub_argv(first.path());
     assert_eq!(
         flag_value(&argv, "--allowed-tools"),
-        "Read,Glob,mcp__rigger__rigger_graph,mcp__rigger__rigger_ground,mcp__rigger__rigger_peers",
-        "the critic's tools are replaced: no Bash, Agent, Grep or emit"
+        "Read,Glob,mcp__rigger__rigger_graph,mcp__rigger__rigger_ground,mcp__rigger__rigger_peers,\
+         mcp__rigger__rigger_emit,mcp__rigger__rigger_progress,mcp__rigger__rigger_scratch",
+        "the critic's tools are replaced: no Bash, Agent or Grep, and the host's own grant, which \
+         the deny below wins over"
     );
     let settings: Value = serde_json::from_str(flag_value(&argv, "--settings")).unwrap();
     assert_eq!(
@@ -326,8 +402,9 @@ fn a_spec_is_critiqued_once_per_text_and_answered_from_the_store_after() {
     // ... and inherits none of the earlier findings.
     assert_eq!(fresh, "{\"verdict\":\"approve\"}\n");
     assert!(!fresh.contains(&hash), "no earlier finding is printed");
-    assert!(
-        critique_stub_task(second.path()).ends_with(&edited),
+    assert_eq!(
+        critique_stub_task(second.path()),
+        framed(&spec_critique_prompt(SPEC_REL, &edited)),
         "the critic read the edited text"
     );
     let edited_spawn = critique_spawn_id(&critique_hash(&edited), 0);
@@ -438,6 +515,184 @@ fn a_project_with_no_git_repository_critiques_its_spec_against_the_project_root(
         "a project with no git repository has no scratch root: the session writes no liveness \
          marker or transcript, even with RIGGER_TMPDIR set"
     );
+}
+
+/// Given a critic bounded to one second, when its session goes silent past the bound, then the
+/// host stops it: no beat ever lands on a critique, so this verb wires no beat source and counts
+/// from the session's last line, and a source here would read the whole silence as unsupervised
+/// and let a hung critic run on. The verb fails on the stop, never on the answer the session would
+/// have gone on to give.
+#[test]
+fn a_critique_session_silent_past_its_bound_is_stopped_since_no_beat_source_is_wired() {
+    let dir = temp_project();
+    let root = dir.path();
+    let bounded = BOUNDED_CRITIC_WORKFLOW.replace("max_wall_clock: 900", "max_wall_clock: 1");
+    scaffold(root, &bounded);
+    let work = tempfile::tempdir().unwrap();
+    let path = stub_path(work.path(), "claude", Some(SILENT_PAST_THE_POLL));
+
+    let (out, err, ok) = critique(root, SPEC_REL, &path, &root.join("scratch"));
+
+    assert!(!ok, "a stopped critique exits non-zero");
+    assert_eq!(out, "", "no finding or verdict is printed");
+    let id = critique_spawn_id(SPEC_HASH, 0);
+    let stopped = format!(
+        "rigger: rigger critique: {SPEC_REL} (hash {SPEC_HASH}): no critique was recorded - the \
+         critic's spawn failed: spawn {id:?} stopped: its agent stream stayed silent for 1s (its \
+         max_wall_clock bound) with no result"
+    );
+    assert_eq!(
+        err.lines()
+            .last()
+            .and_then(|line| line.split_once(" - no remediation"))
+            .map(|(head, _)| head),
+        Some(stopped.as_str()),
+        "stderr:\n{err}"
+    );
+    let events = critique_events(root);
+    assert_eq!(
+        spawn_events(&events),
+        [
+            (TYPE_SPAWN_REQUESTED.to_string(), id.clone()),
+            (TYPE_SPAWN_RESULT.to_string(), id),
+        ]
+    );
+    assert!(
+        SpawnResult::from_event(&events[1])
+            .unwrap()
+            .is_liveness_fault(),
+        "the session's one result is the stop's liveness fault: {:?}",
+        events[1]
+    );
+}
+
+/// How each launch of the critique of `hash` closed, in log order: its ordinal, ending and class.
+fn critique_closes(root: &Path, hash: &str) -> Vec<(u32, String, Option<String>)> {
+    let backend = Store::open(rigger_file(root, "progress.db").to_str().unwrap()).unwrap();
+    let store = Namespaced::new(&backend, &run_stream_identity(root));
+    rigger::progress::read_run(&store, &critique_unit(hash))
+        .unwrap()
+        .iter()
+        .filter(|e| e.type_ == SpawnLaunched::EVENT_TYPE)
+        .filter_map(|e| {
+            let launch: SpawnLaunched = serde_json::from_slice(&e.data).unwrap();
+            let ended = launch.ended?;
+            Some((launch.launch, ended, launch.class))
+        })
+        .collect()
+}
+
+/// Spec 105, the host's `interrupted` close behind its hold sink: given a critic session that ends
+/// API-side, when `rigger critique` hosts it, then the launch closes `fault` under its class, a
+/// hold or wait class and a run standing held on the project included, the session's error is the
+/// verb's and no hold lands: this verb's host is wired with no hold sink, since nothing decorates
+/// it to wait out a hold or to launch again.
+#[test]
+fn a_critique_session_ending_api_side_closes_fault_since_no_hold_sink_is_wired() {
+    struct Case {
+        name: &'static str,
+        ending: &'static str,
+        retried: &'static str,
+        class: &'static str,
+        /// What the session left on its stderr, the tail of the verb's error.
+        tail: &'static str,
+        run_held: bool,
+    }
+    let cases = [
+        Case {
+            name: "a wait class",
+            ending: "retried-eof",
+            retried: "rate_limit",
+            class: "rate_limit",
+            tail: "",
+            run_held: false,
+        },
+        Case {
+            name: "a hold class",
+            ending: "retried-eof",
+            retried: "billing_error",
+            class: "billing_error",
+            tail: "",
+            run_held: false,
+        },
+        Case {
+            name: "an unclassed ending",
+            ending: "refused-eof",
+            retried: "",
+            class: "unknown",
+            tail: "No conversation found with session ID: sess-prior",
+            run_held: false,
+        },
+        Case {
+            name: "a FAULT class on a held run",
+            ending: "retried-eof",
+            retried: "invalid_request",
+            class: "invalid_request",
+            tail: "",
+            run_held: true,
+        },
+    ];
+    for case in cases {
+        let Case { name, class, .. } = case;
+        let dir = temp_project();
+        let root = dir.path();
+        scaffold(root, CRITIC_WORKFLOW);
+        if case.run_held {
+            seed_store(root);
+            seed_a_run(root);
+            seed_on_the_run(
+                root,
+                held_event("rate_limit", rigger::run::HOLD_BY_OPERATOR),
+            );
+        }
+        let work = tempfile::tempdir().unwrap();
+        let path = stub_path(
+            work.path(),
+            "claude",
+            Some("claude-code-resume-ending-agent.sh"),
+        );
+        let scratch = root.join("scratch");
+
+        let (out, err, ok) = run_rigger_envs(
+            root,
+            &["critique", SPEC_REL],
+            &[
+                ("PATH", path.as_str()),
+                ("RIGGER_TMPDIR", scratch.to_str().unwrap()),
+                ("RIGGER_TEST_FRESH_ENDING", case.ending),
+                ("RIGGER_TEST_RETRY_CATEGORY", case.retried),
+            ],
+        );
+
+        assert!(!ok, "{name}: the verb fails on the session's error");
+        assert_eq!(out, "", "{name}: no finding or verdict is printed");
+        assert_eq!(
+            critique_closes(root, SPEC_HASH),
+            [(0, "fault".to_string(), Some(class.to_string()))],
+            "{name}: the one close; stderr:\n{err}"
+        );
+        let id = critique_spawn_id(SPEC_HASH, 0);
+        let failed = format!(
+            "rigger: rigger critique: {SPEC_REL} (hash {SPEC_HASH}): no critique was recorded - \
+             conductor: {}",
+            no_result_failure(&id, class, case.tail)
+        );
+        assert_eq!(
+            err.lines().last(),
+            Some(failed.as_str()),
+            "{name}: the error the verb leaves with"
+        );
+        assert_eq!(
+            spawn_events(&critique_events(root)),
+            [(TYPE_SPAWN_REQUESTED.to_string(), id)],
+            "{name}: the close records no result"
+        );
+        assert_eq!(
+            run_payloads(root, rigger::run::TYPE_RUN_HELD).len(),
+            usize::from(case.run_held),
+            "{name}: no hold lands on the project's run"
+        );
+    }
 }
 
 #[test]
@@ -654,9 +909,9 @@ fn the_critique_record_persists_under_the_literal_content_hash_with_the_critics_
     let prompt = spec_critique_prompt(SPEC_REL, SPEC);
     assert_eq!(
         critique_stub_task(work.path()),
-        prompt,
+        framed(&prompt),
         "the critic's task is the critique prompt of the repo-relative path and the raw text, \
-         byte for byte"
+         byte for byte, under the host's frame"
     );
 
     // The request and the result are persisted on the critique's own stream in their wire form.
@@ -1501,10 +1756,10 @@ fn every_spec_taking_verb_refuses_a_second_spec_and_an_unknown_flag_through_the_
 
 /// Given the critique stream already holds a result for the critic's attempt-0 spawn that is no
 /// critique - a concurrent call that minted the same spawn id recorded it first - when the spec is
-/// critiqued, then the critic's session runs at attempt 0 but the first recorded result stands,
-/// and the verb judges what it reads back from the store, never its own session's output: it says
-/// why that result is no critique, exits non-zero and copies nothing. The next call counts the
-/// parked request and critiques at attempt 1.
+/// critiqued, then the headless host answers the critic's attempt-0 spawn from that result and
+/// runs no session, and the verb judges what it reads back from the store: it says why that result
+/// is no critique, exits non-zero and copies nothing. The next call counts the parked request and
+/// critiques at attempt 1.
 #[test]
 fn a_result_recorded_first_for_the_critics_spawn_id_is_read_back_never_the_sessions_own() {
     let dir = temp_project();
@@ -1515,12 +1770,16 @@ fn a_result_recorded_first_for_the_critics_spawn_id_is_read_back_never_the_sessi
     let raced = json!({"id": first, "output": "I could not decide."});
     seed_critique(root, &[(TYPE_SPAWN_RESULT, raced.clone())]);
 
-    // When the spec is critiqued and the critic's own session answers with a real reject ...
+    // When the spec is critiqued by a critic whose session would answer with a real reject ...
     let (session, session_path) = stub(REJECT);
     let (out, err, ok) = critique(root, SPEC_REL, &session_path, &scratch);
 
-    // ... the session ran at attempt 0, yet the verb answers from the result recorded first.
-    assert_eq!(critique_stub_spawns(session.path()), 1, "the session ran");
+    // ... the result recorded first answers attempt 0, so no session runs.
+    assert_eq!(
+        critique_stub_spawns(session.path()),
+        0,
+        "the recorded result answers the spawn"
+    );
     assert!(
         err.contains(&format!(
             "rigger critique: {SPEC_REL} (hash {SPEC_HASH}): critiquing with critic at attempt 0"

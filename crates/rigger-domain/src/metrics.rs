@@ -67,16 +67,16 @@
 //! reach the log by different mechanisms on the two drivers, so attribution is carried
 //! the SAME way on both:
 //!
-//! - **In-process (`rigger run`, cli driver):** the conductor stamps `META_ACTOR` on
-//!   each finding as the reviewer emits it, but the live drivers record **no**
+//! - **In-process (the `rigger serve` workflow driver):** that driver records **no**
 //!   adjudicator `SpawnResult` (the verdict gates the stage in-memory). So `upheld` is
 //!   0 on this path - the `raised` and overlap signals are exact, but a finding's
 //!   survival cannot be computed without a recorded verdict. This is a real per-driver
 //!   limitation, not a defect: the render discloses it (an all-zero-upheld panel over a
-//!   run with findings but no recorded verdicts is the cli path, not reviewer failure).
-//! - **Out-of-process (the courier / workflow path):** the reviewer runs as its own
-//!   process and emits its finding through `rigger emit`, which stamps no `META_ACTOR`;
-//!   the adjudicator's verdict IS recorded, as the `SpawnResult` the courier writes with
+//!   run with findings but no recorded verdicts is this path, not reviewer failure).
+//! - **Out-of-process (`rigger run`'s headless host, the courier / workflow path):** the
+//!   reviewer runs as its own process and emits its finding through `rigger_emit` or
+//!   `rigger emit`, which stamp no `META_ACTOR`; the adjudicator's verdict IS recorded, as
+//!   the `SpawnResult` the host records from the session's stream or the courier writes with
 //!   `rigger result`. So the finding's own **`by`** field is the attribution, and the
 //!   conductor's `review_protocol` makes every out-of-process reviewer carry its ROLE
 //!   token there. On THIS path attribution and the verdict co-occur, so all three folds
@@ -85,7 +85,7 @@
 //!
 //! Carrying the reviewer's **role token** (`lens:<agent-id>` / `adversary`, with a `@k` suffix
 //! from a kind's second step on, the same [`crate::spawn::spawn_id`] role the per-tier
-//! `SpawnResult` cost fold reads) as BOTH the in-process `META_ACTOR` and the out-of-process
+//! `SpawnResult` cost fold reads) as BOTH the emit callback's `META_ACTOR` and the out-of-process
 //! `by` means a finding is attributed one single way regardless of which driver recorded it -
 //! not two reconciled schemes.
 //!
@@ -495,8 +495,8 @@ pub struct ReviewQuality {
     /// `SpawnResult` (which carries `upheld`) land on the SAME log: the out-of-process
     /// courier path records the `SpawnResult` but stamps no `META_ACTOR`, so the reviewer's
     /// `by`-carried role token (the conductor's `review_protocol` puts it there) is what
-    /// supplies attribution on THAT path; the in-process cli path stamps
-    /// `META_ACTOR` but records no adjudicator `SpawnResult`, so its `upheld` stays 0 (no
+    /// supplies attribution on THAT path and on the headless host's; the workflow driver
+    /// records no adjudicator `SpawnResult`, so its `upheld` stays 0 (no
     /// verdict to fold) - a genuine per-driver limitation, disclosed here and rendered as
     /// such, not a silent always-zero.
     pub finding_survival: BTreeMap<String, FindingCounts>,
@@ -522,8 +522,8 @@ pub struct ReviewQuality {
     /// upheld findings, every step of a kind under its tier, sorted by tier.
     pub tier_cost: BTreeMap<String, TierCost>,
     /// Adjudicator verdicts RECORDED as a `SpawnResult` and parsed for their upheld/cause
-    /// (the courier path records these; the in-process cli path does not). This is the
-    /// numerator source for every upheld-based fold, so when it is `0` there simply is no
+    /// (the headless host and the courier path record these; the workflow driver does not).
+    /// This is the numerator source for every upheld-based fold, so when it is `0` there simply is no
     /// verdict on this run's driver to compute survival/precision/cost-per-upheld from -
     /// the render discloses that rather than showing a misleading `0%` survival.
     pub adjudications: u64,
@@ -1156,15 +1156,13 @@ fn field_str_vec(e: &Event, key: &str) -> Vec<String> {
 /// A read over the SEPARATE progress store, NOT the run stream: it takes the progress slice
 /// the caller already scoped to the run (the same slice [`crate::progress::consolidate`]
 /// reads), so [`project`] and the replay-authoritative run-stream folds stay byte-identical
-/// whether or not any progress was emitted. Non-`AgentProgress` events on the slice are
-/// ignored; the fallback predicate is [`crate::progress::AgentProgress::is_grep_fallback`],
-/// the one definition shared with the writer.
+/// whether or not any progress was emitted. It reads the lines through
+/// [`crate::progress::decoded_progress`], so the slice's other records are ignored; the
+/// fallback predicate is [`crate::progress::AgentProgress::is_grep_fallback`], the one
+/// definition shared with the writer.
 pub fn grep_fallbacks(progress_events: &[Event]) -> u64 {
-    progress_events
-        .iter()
-        .filter(|e| e.type_ == crate::progress::TYPE_AGENT_PROGRESS)
-        .filter_map(|e| serde_json::from_slice::<crate::progress::AgentProgress>(&e.data).ok())
-        .filter(crate::progress::AgentProgress::is_grep_fallback)
+    crate::progress::decoded_progress(progress_events)
+        .filter(|(_, line)| line.is_grep_fallback())
         .count() as u64
 }
 
@@ -1441,7 +1439,7 @@ impl ModelDrift {
 /// the resolved model the spawn ran as ([`META_MODEL_RESOLVED`], reported by the worker via
 /// `rigger result --meta`). This fold groups the resolved-model stamps by run, keyed by
 /// alias (last stamp wins within a run), then compares the two most recent runs that stamped
-/// ANY resolved model - so a run that recorded none (e.g. an in-process cli-driver run, which
+/// ANY resolved model - so a run that recorded none (e.g. a workflow-driver run, which
 /// never learns the resolved id) is transparent to the comparison rather than masking a
 /// re-point across the runs that DID record one. An alias present in BOTH with a different
 /// resolved id is a re-point; a tier only the current run recorded (no prior baseline) is a
@@ -1497,6 +1495,7 @@ pub fn model_drift(events: &[Event]) -> ModelDrift {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::at;
     use crate::test_support::ev;
 
     fn started(id: &str, agent: &str) -> Event {
@@ -2105,13 +2104,6 @@ mod tests {
     }
 
     // ---- spec-61 SPAWN TIMING helpers ----
-
-    /// An arbitrary but fixed instant `secs` after `SystemTime::UNIX_EPOCH`, for building
-    /// spawn events with a CONTROLLED `recorded_at` (the field the store stamps on ingest;
-    /// these pure-fold tests set it directly, never touching a real store).
-    fn at(secs: u64) -> SystemTime {
-        SystemTime::UNIX_EPOCH + Duration::from_secs(secs)
-    }
 
     /// A well-formed `SpawnRequested` event for `id`, recorded at `secs`. Rebuilds `id`'s
     /// unit/role/attempt coordinates via `crate::spawn::test_request` (the same deterministic
@@ -3382,7 +3374,7 @@ mod tests {
 
     #[test]
     fn model_drift_compares_against_the_most_recent_prior_run_that_stamped_a_model() {
-        // A run that recorded NO resolved model (e.g. a cli-driver run) is transparent to
+        // A run that recorded NO resolved model (e.g. a workflow-driver run) is transparent to
         // the comparison: r3's "opus" is measured against r1's, skipping the empty r2, so a
         // real re-point across the two model-bearing runs is still caught.
         let events = vec![
@@ -3476,6 +3468,7 @@ mod tests {
         let ap = crate::progress::AgentProgress {
             id: id.to_string(),
             activity: activity.to_string(),
+            revision: None,
         };
         Event::new(
             crate::progress::TYPE_AGENT_PROGRESS,

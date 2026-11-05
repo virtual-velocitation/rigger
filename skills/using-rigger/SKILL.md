@@ -45,6 +45,10 @@ A run anchors its branch on the working ref (default origin/main) and reuses tha
 
 If a unit will not pass, the fix belongs in the loop - the spec, the gate, the agent, or the config - never a manual edit that sidesteps it. A by-hand fix leaves the loop broken for the next unit and splits the code from the log, so the run can no longer be trusted to replay. Correct the underlying cause and let the loop re-run the unit.
 
+## Holding a run
+
+`rigger hold --reason <text>` holds the current run for you, the text recorded as the hold's reason: a run driven by `rigger run` or `rigger serve` launches no agent while a hold stands, a session already running finishes, and no probe ends your hold. It refuses, recording nothing, when no run is live: none has started, or the current run is done. `rigger release` ends the current run's hold, whichever writer declared it, an outage hold included, so the next launch goes at once instead of after the next probe, which only `rigger run` runs: under `rigger serve` a hold stands until a release or the start of a new run ends it. With no hold open it records nothing and says so.
+
 ## Auto-integration on approve
 
 An approved unit integrates itself onto the run branch. A human reviews the whole run by opening a pull request FROM the run branch, never by cherry-picking approved units by hand - cherry-picking drops the run's accumulated context and its ordering. A failing unit is retried under a bounded budget (up to 3 attempts) and then escalated to a human rather than spinning forever.
@@ -55,7 +59,7 @@ Every gating agent ends its output with its verdict line: a JSON line carrying {
 
 ## Self-serve
 
-Run `rigger version` to see the exact binary and its build provenance and to diagnose drift between the installed /rigger workflow and the binary that would run it. This repo keeps its specs in specs/. The full command surface is: run, step, resume-unit, reported, prompt, scratch, serve, workflow, graph, stats, canary, playbooks, replay, status, dash, watch, ground, reindex, symbols-index, emit, progress, result, peers, reset, critique, validate, init, setup, docs, prime, instructions, mcp, grep-guard, guard-write, hook, version, help.
+Run `rigger version` to see the exact binary and its build provenance and to diagnose drift between the installed /rigger workflow and the binary that would run it. This repo keeps its specs in specs/. The full command surface is: run, step, resume-unit, hold, release, reported, prompt, scratch, serve, workflow, graph, stats, canary, playbooks, replay, status, dash, watch, ground, reindex, symbols-index, emit, progress, result, peers, reset, critique, validate, init, setup, docs, prime, instructions, mcp, grep-guard, guard-write, hook, version, help.
 
 ## The load-bearing decisions
 

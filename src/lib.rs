@@ -20,6 +20,10 @@
 pub use rigger_conductor::canary_store;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use rigger_conductor::conductor;
+#[cfg(any(feature = "store", not(feature = "core")))]
+pub use rigger_conductor::held;
+#[cfg(any(feature = "store", not(feature = "core")))]
+pub use rigger_conductor::hold_controller;
 pub use rigger_config_files::config;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use rigger_config_files::config_store;
@@ -33,6 +37,10 @@ pub use rigger_domain::blocker;
 pub use rigger_domain::canary;
 pub use rigger_domain::community;
 pub use rigger_domain::concepts;
+/// The one reader of `claude auth status --json` (spec 105): the login the hold probe reads and
+/// the auth method `rigger validate` reports.
+#[cfg(any(feature = "store", not(feature = "core")))]
+pub use rigger_driver::claude_auth;
 /// The machine-wide build concurrency budget (spec 65): a flock-based slot directory that
 /// caps how many actual compiler invocations run at once, across every rigger process on
 /// the machine. Wired at the gate-build call site ([`crate::gate::ExecRunner::run`]) only -
@@ -59,6 +67,9 @@ pub mod grounder;
 pub use rigger_config_files::playbooks;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use rigger_dash::mcpserver;
+/// The hold probe's delay and its progress line (spec 105 RELEASE).
+#[cfg(any(feature = "store", not(feature = "core")))]
+pub use rigger_domain::hold_probe;
 pub use rigger_domain::instructions;
 pub use rigger_domain::ledger;
 pub use rigger_domain::metrics;
@@ -71,16 +82,22 @@ pub use rigger_domain::retention;
 pub use rigger_domain::review;
 pub use rigger_domain::run;
 pub use rigger_domain::safety;
+pub use rigger_domain::sleep_hold;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use rigger_driver::hooks;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use rigger_driver::liveness;
+/// The supervised child guard and the one timed line reader over a child's stream.
+#[cfg(any(feature = "store", not(feature = "core")))]
+pub use rigger_driver::reaped_child;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use rigger_driver::sidecar;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use rigger_grounder::ingest;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use rigger_process::holders;
+#[cfg(any(feature = "store", not(feature = "core")))]
+pub use rigger_process::keep_awake;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use rigger_process::parallel;
 #[cfg(any(feature = "store", not(feature = "core")))]

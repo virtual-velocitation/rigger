@@ -61,6 +61,8 @@ struct LessonLearned {
     summary: String,
     #[serde(default, deserialize_with = "referenced_ids")]
     about: Vec<String>,
+    #[serde(default, deserialize_with = "referenced_file")]
+    file: Option<String>,
 }
 #[cfg(any(feature = "store", not(feature = "core")))]
 #[derive(Deserialize)]
@@ -74,6 +76,8 @@ struct ReviewFinding {
     summary: String,
     #[serde(default, deserialize_with = "referenced_ids")]
     about: Vec<String>,
+    #[serde(default, deserialize_with = "referenced_file")]
+    file: Option<String>,
 }
 
 /// A record's references - a decision's `governs`, a lesson's or finding's `about` - each read as
@@ -85,6 +89,27 @@ fn referenced_ids<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<String>,
         .iter()
         .map(|r| query::referenced_id(r).to_string())
         .collect())
+}
+
+/// A lesson's or finding's `file`, the location it names beside or in place of `about`, read as
+/// the node id it names as each `about` reference is ([`referenced_ids`]), so a file cited with a
+/// line (`path:line`) folds onto that file's node; an empty one names nothing.
+#[cfg(any(feature = "store", not(feature = "core")))]
+fn referenced_file<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    Ok(Option::<String>::deserialize(d)?
+        .filter(|f| !f.is_empty())
+        .map(|f| query::referenced_id(&f).to_string()))
+}
+
+/// Every location a lesson or finding names: each `about` reference, then its `file`. The fold
+/// ties the record ABOUT each one ([`sqlite`]), and the emit guard refuses a record naming none
+/// ([`check_emit`]).
+#[cfg(any(feature = "store", not(feature = "core")))]
+fn locations<'a>(
+    about: &'a [String],
+    file: &'a Option<String>,
+) -> impl Iterator<Item = &'a String> {
+    about.iter().chain(file)
 }
 
 /// Checks that `data` has the payload shape the fold reads for an event of type `type_`, by
@@ -142,16 +167,43 @@ pub fn check_fold_payload(type_: &str, data: &[u8]) -> Result<(), String> {
 
 /// THE EMIT GUARD: what every emit surface runs on an event, built with its stamps, before
 /// appending it to `stream` - `rigger emit` and the `rigger_emit` tool, the conductor's
-/// in-process emit that a cli host replays an agent's printed lines through, and the findings
+/// in-process emit callback, and the findings
 /// `rigger critique` copies - so no surface lands what another refuses. It refuses a payload the
 /// fold cannot apply ([`check_fold_payload`]), which would sit in the log passed over by every
-/// fold, then a record whose id another author's kept record holds
-/// ([`refuse_another_authors_id`]). The error reads "refusing to emit ..."; each surface prefixes
-/// its own name.
+/// fold, then a lesson or finding naming no location ([`refuse_a_record_naming_no_location`]),
+/// then a record whose id another author's kept record holds ([`refuse_another_authors_id`]).
+/// The error reads "refusing to emit ..."; each surface prefixes its own name.
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub fn check_emit(store: &dyn EventStore, stream: &str, event: &Event) -> Result<(), String> {
     check_fold_payload(&event.type_, &event.data).map_err(|e| format!("refusing to emit: {e}"))?;
+    refuse_a_record_naming_no_location(event)?;
     refuse_another_authors_id(store, stream, event)
+}
+
+/// Refuse a lesson or finding that names no location - an empty `about` and no `file`
+/// ([`locations`]) - since no read of the graph, each seeded by a file or a node, reaches it. The
+/// refusal is the emit guard's alone: [`check_fold_payload`] accepts such a payload, so a rebuild
+/// still folds every one the log already holds as a node. It runs on a payload
+/// [`check_fold_payload`] has just accepted, so its parse of the fold's own type succeeds.
+#[cfg(any(feature = "store", not(feature = "core")))]
+fn refuse_a_record_naming_no_location(event: &Event) -> Result<(), String> {
+    let record =
+        match event.type_.as_str() {
+            TYPE_LESSON_LEARNED => serde_json::from_slice::<LessonLearned>(&event.data)
+                .map(|l| (l.id, l.about, l.file)),
+            TYPE_REVIEW_FINDING => serde_json::from_slice::<ReviewFinding>(&event.data)
+                .map(|f| (f.id, f.about, f.file)),
+            _ => return Ok(()),
+        };
+    let (id, about, file) = record.map_err(|e| format!("refusing to emit: {e}"))?;
+    if locations(&about, &file).any(|at| !at.is_empty()) {
+        return Ok(());
+    }
+    Err(format!(
+        "refusing to emit {typ} {id:?}: it names no location, so no read of the graph reaches it \
+         - list the files or node ids it is about in `about`",
+        typ = event.type_,
+    ))
 }
 
 /// Refuse a record whose id a kept record of ANOTHER author holds ([`run::kept_holder`]): the
@@ -266,6 +318,67 @@ mod tests {
             [Ok(()), Ok(()), Ok(())],
             "a type whose payload the fold does not read passes unchecked"
         );
+    }
+
+    /// The emit guard refuses a lesson or finding naming no location - an empty `about` and no
+    /// `file` - in words naming `about`, and passes one naming either; a decision, judged by its
+    /// own shape only, passes without one (op-105-every-finding-reaches-the-graph).
+    #[test]
+    fn an_emit_naming_no_location_is_refused_naming_about() {
+        let log = crate::test_support::HandBuiltLog::new("run", vec![]);
+        let refused = |type_: &str, id: &str| {
+            Err(format!(
+                "refusing to emit {type_} {id:?}: it names no location, so no read of the graph \
+                 reaches it - list the files or node ids it is about in `about`"
+            ))
+        };
+        for (row, type_, payload, outcome) in [
+            (
+                "a finding with no about and no file",
+                TYPE_REVIEW_FINDING,
+                r#"{"id":"f1","summary":"s"}"#,
+                refused(TYPE_REVIEW_FINDING, "f1"),
+            ),
+            (
+                "a finding with an empty about and an empty file",
+                TYPE_REVIEW_FINDING,
+                r#"{"id":"f2","summary":"s","about":[],"file":""}"#,
+                refused(TYPE_REVIEW_FINDING, "f2"),
+            ),
+            (
+                "a lesson with an empty about",
+                TYPE_LESSON_LEARNED,
+                r#"{"id":"l1","summary":"s","about":[]}"#,
+                refused(TYPE_LESSON_LEARNED, "l1"),
+            ),
+            (
+                "a finding about a file",
+                TYPE_REVIEW_FINDING,
+                r#"{"id":"f3","summary":"s","about":["src/a.rs"]}"#,
+                Ok(()),
+            ),
+            (
+                "a finding naming its file and line",
+                TYPE_REVIEW_FINDING,
+                r#"{"id":"f4","summary":"s","file":"src/a.rs","line":3}"#,
+                Ok(()),
+            ),
+            (
+                "a lesson naming a cited file",
+                TYPE_LESSON_LEARNED,
+                r#"{"id":"l2","summary":"s","file":"src/a.rs:3"}"#,
+                Ok(()),
+            ),
+            (
+                "a decision governing nothing",
+                TYPE_DECISION_MADE,
+                r#"{"id":"d1","summary":"s"}"#,
+                Ok(()),
+            ),
+        ] {
+            let event = Event::new(type_, payload.as_bytes().to_vec());
+            assert_eq!(check_emit(&log, "run", &event), outcome, "{row}");
+        }
     }
 
     /// A ledger entry is judged by the parse its fold reads it with: a payload missing a field is

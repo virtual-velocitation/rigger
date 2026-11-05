@@ -10,6 +10,7 @@
 
 #![allow(dead_code)]
 
+use rigger::keep_awake::KEEP_AWAKE_ENV;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -163,6 +164,13 @@ pub fn rigger_bin() -> PathBuf {
 /// session inherits that session's spawn id, which would stamp every fixture `rigger emit` as
 /// that spawn's and subject it to the emit core's id-ownership check. A test that drives the
 /// stamp re-sets it with `.env(...)` on the returned `Command`, which wins.
+///
+/// Also pins [`KEEP_AWAKE_ENV`] to a recording fake writing under [`test_cache_home`] (spec
+/// 105, KEEP-AWAKE): a `rigger run` or `rigger serve` left on the OS adapter would hold the
+/// operator's real machine awake, or print the keep-awake unavailable line on a host lacking the
+/// facility, so no test outside the adapter's own rows depends on the host's power facility. A
+/// test that drives the knob re-sets it with `.env(...)` or clears it with `.env_remove(...)`,
+/// either of which wins.
 pub fn rigger_courier() -> Command {
     let mut cmd = Command::new(rigger_bin());
     unfenced(&mut cmd);
@@ -170,8 +178,8 @@ pub fn rigger_courier() -> Command {
 }
 
 /// Applies [`rigger_courier`]'s own env hygiene (the `STORE_FENCE_ENV`/`KURRENTDB_CONN`/
-/// `SPAWN_ENV` strip and the `XDG_CACHE_HOME` pin - see that function's doc comment for the
-/// full WHY)
+/// `SPAWN_ENV` strip and the `XDG_CACHE_HOME` and keep-awake pins - see that function's doc
+/// comment for the full WHY)
 /// to an ALREADY-CONSTRUCTED `Command`, for the one class of call site `rigger_courier`
 /// itself cannot cover: a suite that drives the product binary through an intermediate
 /// shell (`sh -c "<installed hook command>"`) rather than invoking it directly. That
@@ -195,6 +203,8 @@ pub fn unfenced(cmd: &mut Command) -> &mut Command {
     cmd.env_remove("KURRENTDB_CONN");
     cmd.env_remove(rigger::driver::SPAWN_ENV);
     cmd.env("XDG_CACHE_HOME", test_cache_home());
+    let record = test_cache_home().join("keep-awake");
+    cmd.env(KEEP_AWAKE_ENV, format!("record:{}", record.display()));
     cmd
 }
 
@@ -393,6 +403,46 @@ pub fn stop_pid(pid: u32) -> bool {
         return false;
     };
     rustix::process::kill_process(rpid, rustix::process::Signal::STOP).is_ok()
+}
+
+/// A process this test did not spawn and holds no [`std::process::Child`] handle to, owned from
+/// the moment its pid is read: dropping the owner, on any path out of its scope and a panic's
+/// unwind included, ends it through [`terminate_pid`], but only while the pid still carries the
+/// start time it was read with ([`rigger::reap::still_started`], the witness check the production
+/// reap runs before it signals). A pid that had already ended when it was read, or that was
+/// recycled onto another process since, is never signalled.
+pub struct OwnedPid {
+    pid: u32,
+    started: Option<u64>,
+}
+
+impl OwnedPid {
+    /// Own `pid`, its start time read now.
+    pub fn new(pid: u32) -> Self {
+        Self::owning(pid, rigger::reap::pid_starttime(pid))
+    }
+
+    /// Own `pid` as read with the start time `started`, so a row can hand the owner a witness the
+    /// pid no longer carries, as a recycled pid reads.
+    pub fn with_witness(pid: u32, started: u64) -> Self {
+        Self::owning(pid, Some(started))
+    }
+
+    /// Own `pid` as read with the start time `started`, `None` when it was not read.
+    fn owning(pid: u32, started: Option<u64>) -> Self {
+        Self { pid, started }
+    }
+}
+
+impl Drop for OwnedPid {
+    fn drop(&mut self) {
+        if self
+            .started
+            .is_some_and(|started| rigger::reap::still_started(self.pid, started))
+        {
+            terminate_pid(self.pid);
+        }
+    }
 }
 
 /// Whether `pid` is still running - alive and not a zombie (state `Z` in `/proc/<pid>/stat`, read

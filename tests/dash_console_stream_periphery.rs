@@ -500,6 +500,55 @@ fn a_new_progress_line_arrives_as_a_progress_frame() {
     );
 }
 
+/// The progress stream's other records - a retry, a launch, a stop failure, a supervisor beat -
+/// send no `progress` frame: the first frame past them is the one progress line behind them,
+/// never a blank row per record.
+#[test]
+#[serial(dash_console_stream_periphery)]
+fn a_record_of_another_type_on_the_progress_stream_sends_no_progress_frame() {
+    use rigger::progress::{
+        TYPE_AGENT_PROGRESS, TYPE_API_RETRY, TYPE_SPAWN_LAUNCHED, TYPE_STOP_FAILURE,
+        TYPE_SUPERVISOR_BEAT,
+    };
+    let store = FakeStore::default();
+    for (type_, body) in [
+        (
+            TYPE_API_RETRY,
+            r#"{"spawn":"u1/implementer#0","delay_ms":618,"category":"rate_limit"}"#,
+        ),
+        (
+            TYPE_SPAWN_LAUNCHED,
+            r#"{"spawn":"u1/implementer#0","launch":0,"session_id":"s0","started":1}"#,
+        ),
+        (
+            TYPE_STOP_FAILURE,
+            r#"{"spawn":"u1/implementer#0","class":"rate_limit"}"#,
+        ),
+        (TYPE_SUPERVISOR_BEAT, "{}"),
+        (
+            TYPE_AGENT_PROGRESS,
+            r#"{"id":"u1/implementer#0","activity":"reading spec"}"#,
+        ),
+    ] {
+        append_at_next_position(&store.progress, ev(type_, body));
+    }
+    let addr = serve_test_dash(store.clone());
+    let mut stream = open_stream(addr, 0);
+
+    let frame = read_frame(&mut stream).expect("a progress frame must arrive");
+    assert_eq!(frame.event, "progress");
+    let data: serde_json::Value = serde_json::from_str(&frame.data).unwrap();
+    assert_eq!(
+        (&data["id"], &data["activity"], &data["position"]),
+        (
+            &serde_json::json!("u1/implementer#0"),
+            &serde_json::json!("reading spec"),
+            &serde_json::json!(5)
+        ),
+        "the first progress frame is the progress line: {data:?}"
+    );
+}
+
 /// Regression for the progress-floor race (`adj-u94c2-verdict-reject-progress-floor-race`):
 /// a progress line recorded in the gap between a client's snapshot fetch and that same
 /// client's subsequent stream connect must still be delivered, not silently dropped. The
@@ -769,6 +818,88 @@ fn console_snapshot_is_served_over_a_real_socket_with_the_filtered_feed_and_defi
     assert_eq!(v["liveness"]["u1/implementer#0"], 12);
     assert_eq!(v["definition"]["stages"], serde_json::json!(["implement"]));
     assert_eq!(v["definition"]["gates"], serde_json::json!(["cargo test"]));
+}
+
+/// The page's console stream carries the hold (spec 105): a `RunHeld` and the `RunReleased` that
+/// ends it, appended once a console tab is connected, reach it over the real socket as `event`
+/// frames in the console wire shape, each body whole and at its own position, with the graph type
+/// appended between them skipped; and a tab that bootstraps after both reads exactly the two in
+/// the snapshot's feed.
+#[test]
+#[serial(dash_console_stream_periphery)]
+fn a_hold_and_its_release_reach_the_console_as_event_frames_and_in_the_snapshot_feed() {
+    let held = rigger::run::RunHeld {
+        detail: "401 from the host".to_string(),
+        needs_person: true,
+        model: "a-model".to_string(),
+        ..common::fixtures::hold_naming("auth", "log in again", rigger::run::HOLD_BY_HOST)
+    };
+    let released = rigger::run::RunReleased {
+        by: rigger::run::HOLD_BY_PROBE.to_string(),
+        held_for_s: 42,
+    };
+    let store = FakeStore::default();
+    let addr = serve_test_dash(store.clone());
+    let mut stream = open_stream(addr, 0);
+
+    append_at_next_position(&store.events, common::fixtures::run_held_event(&held));
+    append_at_next_position(
+        &store.events,
+        ev(
+            "GenerationIngested",
+            r#"{"prefix":"gc","file":"src/dash.rs","generation":"h1","blob":"","excluded":false}"#,
+        ),
+    );
+    append_at_next_position(&store.events, released.to_event().unwrap());
+
+    let wire =
+        |type_: &str, body: serde_json::Value, position: u64| (type_.to_string(), body, position);
+    let of = |data: &serde_json::Value| {
+        (
+            data["type"].as_str().unwrap_or_default().to_string(),
+            data["data"].clone(),
+            data["position"].as_u64().unwrap_or_default(),
+        )
+    };
+    let want = vec![
+        wire(
+            rigger::run::TYPE_RUN_HELD,
+            serde_json::to_value(&held).unwrap(),
+            1,
+        ),
+        wire(
+            rigger::run::TYPE_RUN_RELEASED,
+            serde_json::to_value(&released).unwrap(),
+            3,
+        ),
+    ];
+    let mut streamed = Vec::new();
+    for _ in 0..2 {
+        let frame = read_frame(&mut stream).expect("a frame must arrive");
+        let data: serde_json::Value =
+            serde_json::from_str(&frame.data).expect("frame data is JSON");
+        streamed.push((frame.event, of(&data)));
+    }
+    assert_eq!(
+        streamed,
+        want.iter()
+            .map(|event| ("event".to_string(), event.clone()))
+            .collect::<Vec<_>>(),
+        "the stream's two frames are the hold and its release"
+    );
+
+    let (status, _, v) = get_json(addr, "/api/console/snapshot");
+    assert_eq!(status, 200);
+    let feed: Vec<_> = v["events"]
+        .as_array()
+        .expect("events is an array")
+        .iter()
+        .map(of)
+        .collect();
+    assert_eq!(
+        feed, want,
+        "the snapshot's feed is the hold and its release"
+    );
 }
 
 /// THE SNAPSHOT's `base` field (`console_snapshot_json`'s own doc comment: "the run's

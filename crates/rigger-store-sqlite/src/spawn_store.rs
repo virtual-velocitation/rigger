@@ -13,6 +13,7 @@
 // The run stream (the conductor re-exports the same constant as `conductor::STREAM`).
 use crate::eventstore::{Error, Event, EventStore, ExpectedRevision, Position, TypeSelection};
 use crate::run::STREAM;
+use crate::run_store::append_at_head;
 use crate::spawn::SpawnEvent;
 use crate::spawn::{SpawnRequest, SpawnResult};
 
@@ -115,47 +116,50 @@ pub fn record_result_if_absent(
     store: &dyn EventStore,
     res: &SpawnResult,
 ) -> Result<Option<Position>, Error> {
+    record_result_unless(store, res, crate::spawn::result_of)
+}
+
+/// Record `res` to the run's event log unless the current run already ENDED the spawn: a
+/// standing result that is no liveness fault ([`crate::spawn::ended_by`]). Returns
+/// `Some(position)` when it recorded, `None` when a real result already stood.
+///
+/// A relaunched session's real result calls this, so it supersedes the liveness fault the
+/// stall or crash courier recorded for the session it replaced, while the same result again,
+/// or one a racing writer landed first, lands nothing. Every liveness-fault write keeps
+/// [`record_result_if_absent`], which a fault already standing also stops. The atomicity is
+/// that function's: the same compare-and-append, deciding over the real results alone.
+pub fn record_result_unless_ended(
+    store: &dyn EventStore,
+    res: &SpawnResult,
+) -> Result<Option<Position>, Error> {
+    record_result_unless(store, res, crate::spawn::ended_by)
+}
+
+/// The one compare-and-append both conditional result writes share, through
+/// [`append_at_head`]: append `res` unless `standing` finds a result of its id in the current
+/// run, re-deciding over the results that landed past the pinned revision whenever a concurrent
+/// append moves the stream, so a racing writer that recorded THIS id is never clobbered. `None`
+/// means a result already stood; a store that wrote nothing is a different answer, raised as the
+/// failure it is by [`append_at_head`]'s report.
+fn record_result_unless(
+    store: &dyn EventStore,
+    res: &SpawnResult,
+    standing: fn(&[Event], &str) -> Result<Option<SpawnResult>, serde_json::Error>,
+) -> Result<Option<Position>, Error> {
     let ev = res
         .to_event()
         .map_err(|e| Error::Backend(format!("serialize spawn result {}: {e}", res.id)))?;
     let answered = |events: &[Event]| -> Result<bool, Error> {
-        Ok(crate::spawn::result_of(events, &res.id)
+        Ok(standing(events, &res.id)
             .map_err(|e| Error::Backend(format!("decode results for {}: {e}", res.id)))?
             .is_some())
     };
-    let run = crate::run::read::read_run(store, STREAM)?;
-    if answered(&run)? {
-        // A result already exists - leave it untouched (the no-op the courier wants).
-        return Ok(None);
-    }
-    let mut head = run.iter().map(|e| e.revision).max();
-    loop {
-        let expected = match head {
-            Some(revision) => ExpectedRevision::Exact(revision),
-            None => ExpectedRevision::NoStream,
-        };
-        match store.append(STREAM, expected, std::slice::from_ref(&ev)) {
-            // `Ok(None)` from THIS function means "a result already stood, so I chose to
-            // write nothing" - the idempotent no-op. A store that wrote nothing is a
-            // different answer entirely, and the shared authority raises it as the failure
-            // it is rather than letting it collapse into the no-op.
-            Ok(appended) => return appended.one(&what(&ev.type_, &res.id)).map(Some),
-            // The stream moved under us: re-decide over the results recorded from the pinned
-            // revision on. If the racing writer recorded THIS id, nothing is clobbered.
-            Err(Error::Conflict { actual, .. }) => {
-                let landed = store.read_stream_typed(
-                    STREAM,
-                    head.unwrap_or(0),
-                    TypeSelection::Only(&[crate::spawn::TYPE_SPAWN_RESULT]),
-                )?;
-                if answered(&landed)? {
-                    return Ok(None);
-                }
-                head = Some(actual);
-            }
-            Err(e) => return Err(e),
-        }
-    }
+    append_at_head(
+        store,
+        TypeSelection::Only(&[crate::spawn::TYPE_SPAWN_RESULT]),
+        &what(&ev.type_, &res.id),
+        |read| Ok((!answered(read)?).then(|| ev.clone())),
+    )
 }
 
 #[cfg(test)]
@@ -292,7 +296,7 @@ mod tests {
     }
 
     /// A store wrapper that simulates a CONCURRENT writer committing in the window
-    /// between `record_result_if_absent`'s `read_stream` and its compare-and-append:
+    /// between a result write's read of the run and its compare-and-append:
     /// on the FIRST append it slips `racing` onto the stream (under `Any`, so it always
     /// lands and advances the head), which makes the caller's revision-pinned append
     /// CONFLICT. This drives the `Err(Error::Conflict) => continue` retry arm
@@ -550,6 +554,165 @@ mod tests {
                 got.output, "self-reported",
                 "the self-report must stand for {id}"
             );
+        }
+    }
+
+    /// What a result write finds and leaves for spawn `u/implementer#0`, by writer.
+    /// `record_result_unless_ended` records over no result and over a liveness fault alone,
+    /// which its result supersedes. It lands nothing beside a real result: one standing before
+    /// it, the same result again, or one a racing writer landed between its read and its
+    /// append. `record_result_if_absent`, every liveness-fault write's call, keeps any standing
+    /// result, a fault included. A result a prior run recorded stands against neither.
+    #[test]
+    fn a_result_write_lands_once_and_only_a_real_result_of_the_run_stands_against_it() {
+        type Write = fn(&dyn EventStore, &SpawnResult) -> Result<Option<Position>, Error>;
+        const ID: &str = "u/implementer#0";
+        let fault = || SpawnResult::liveness_fault(ID, "silent past its bound", "stalled");
+        let relaunched = || SpawnResult::ok(ID, "relaunched");
+        let first = || SpawnResult::ok(ID, "first");
+        let stopped = || SpawnResult::failed(ID, "the session stopped");
+        struct Row {
+            name: &'static str,
+            write: Write,
+            written: SpawnResult,
+            /// Recorded under a run the write's run superseded.
+            prior_run: Vec<SpawnResult>,
+            /// Recorded in the write's own run before the write reads it.
+            standing: Vec<SpawnResult>,
+            /// Landed between the write's read and its append.
+            racing: Option<SpawnResult>,
+            position: Option<Position>,
+            /// Every result of the id on the stream, in order, after the write.
+            results: Vec<SpawnResult>,
+        }
+        let unless_ended: Write = record_result_unless_ended;
+        let if_absent: Write = record_result_if_absent;
+        let rows = [
+            Row {
+                name: "unless ended, over no result",
+                write: unless_ended,
+                written: relaunched(),
+                prior_run: vec![],
+                standing: vec![],
+                racing: None,
+                position: Some(3),
+                results: vec![relaunched()],
+            },
+            Row {
+                name: "unless ended, over a liveness fault",
+                write: unless_ended,
+                written: relaunched(),
+                prior_run: vec![],
+                standing: vec![fault()],
+                racing: None,
+                position: Some(4),
+                results: vec![fault(), relaunched()],
+            },
+            Row {
+                name: "unless ended, beside a real result",
+                write: unless_ended,
+                written: relaunched(),
+                prior_run: vec![],
+                standing: vec![first()],
+                racing: None,
+                position: None,
+                results: vec![first()],
+            },
+            Row {
+                name: "unless ended, beside a recorded error",
+                write: unless_ended,
+                written: relaunched(),
+                prior_run: vec![],
+                standing: vec![stopped()],
+                racing: None,
+                position: None,
+                results: vec![stopped()],
+            },
+            Row {
+                name: "unless ended, the same result again",
+                write: unless_ended,
+                written: relaunched(),
+                prior_run: vec![],
+                standing: vec![relaunched()],
+                racing: None,
+                position: None,
+                results: vec![relaunched()],
+            },
+            Row {
+                name: "unless ended, over a result of a prior run",
+                write: unless_ended,
+                written: relaunched(),
+                prior_run: vec![first()],
+                standing: vec![],
+                racing: None,
+                position: Some(4),
+                results: vec![first(), relaunched()],
+            },
+            Row {
+                name: "unless ended, over a racing liveness fault",
+                write: unless_ended,
+                written: relaunched(),
+                prior_run: vec![],
+                standing: vec![],
+                racing: Some(fault()),
+                position: Some(4),
+                results: vec![fault(), relaunched()],
+            },
+            Row {
+                name: "unless ended, beside a racing real result",
+                write: unless_ended,
+                written: relaunched(),
+                prior_run: vec![],
+                standing: vec![],
+                racing: Some(first()),
+                position: None,
+                results: vec![first()],
+            },
+            Row {
+                name: "if absent, beside a liveness fault",
+                write: if_absent,
+                written: stopped(),
+                prior_run: vec![],
+                standing: vec![fault()],
+                racing: None,
+                position: None,
+                results: vec![fault()],
+            },
+            Row {
+                name: "if absent, beside a racing liveness fault",
+                write: if_absent,
+                written: stopped(),
+                prior_run: vec![],
+                standing: vec![],
+                racing: Some(fault()),
+                position: None,
+                results: vec![fault()],
+            },
+        ];
+        for row in rows {
+            let inner = Store::open(":memory:").unwrap();
+            crate::run_store::ensure_started(&inner, &["prior".to_string()]).unwrap();
+            for res in &row.prior_run {
+                record_result(&inner, res).unwrap();
+            }
+            crate::run_store::ensure_started(&inner, &["current".to_string()]).unwrap();
+            for res in &row.standing {
+                record_result(&inner, res).unwrap();
+            }
+            let store = RaceOnFirstAppend {
+                inner,
+                racing: std::sync::Mutex::new(row.racing.map(|res| res.to_event().unwrap())),
+            };
+            let position = (row.write)(&store, &row.written).unwrap();
+            assert_eq!(position, row.position, "{}: the position written", row.name);
+            let results: Vec<SpawnResult> = store
+                .read_stream(STREAM, 0, Direction::Forward)
+                .unwrap()
+                .iter()
+                .filter(|e| e.type_ == TYPE_SPAWN_RESULT)
+                .map(|e| SpawnResult::from_event(e).unwrap())
+                .collect();
+            assert_eq!(results, row.results, "{}: the results after it", row.name);
         }
     }
 

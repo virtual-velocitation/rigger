@@ -10,8 +10,11 @@
 # stdout pipe fd open after the signalled process exits, which would otherwise strand
 # the host's reader thread blocked on EOF for the sleep's own full duration regardless
 # of the signal succeeding (a real `claude` binary has no such shell-wrapper layer).
+self=$(readlink "$0") || self=$0
+. "$(dirname "$self")/launch-args.sh"
+sid=$(launched_session 44444444-4444-4444-8444-444444444444 "$@")
 IFS= read -r line
-echo '{"type":"system","subtype":"init","session_id":"44444444-4444-4444-8444-444444444444","model":"claude-haiku-4-5","mcp_servers":[]}'
+echo '{"type":"system","subtype":"init","session_id":"'"$sid"'","model":"claude-haiku-4-5","mcp_servers":[]}'
 if [ -n "$RIGGER_TEST_IGNORES_EOF_PID_FILE" ]; then
     echo "$$" >"$RIGGER_TEST_IGNORES_EOF_PID_FILE"
 fi

@@ -1,11 +1,31 @@
-//! Fixtures that read this repository's own checked-in files: sources, docs, manifests and the
-//! committed audit ledgers.
+//! Fixtures that read this repository's own checked-in files: sources, docs, manifests (as text,
+//! or with the lock through cargo's resolver) and the committed audit ledgers.
 
 use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
+
+pub use super::fixtures::table_lines;
+use super::fixtures::{recorded_argv, recorded_task};
 
 /// The repository root (the package's manifest directory).
 pub fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+}
+
+/// `cargo tree --prefix none` with `args`, run from [`repo_root`] so the resolver reads this
+/// repository's committed manifests and lock whatever the process CWD. The cargo binary is the
+/// one that built this suite - `env!("CARGO")` is set by cargo at build time and always points
+/// at a real cargo - so the suite needs nothing on `PATH`. `--prefix none` prints bare
+/// `name vX.Y.Z` lines instead of tree glyphs, the one rendering that is stable across cargo
+/// versions: PR #27's CI ran a newer stable whose glyph rendering broke a glyph-stripping parse.
+pub fn cargo_tree(args: &[&str]) -> Output {
+    let cargo_bin = env!("CARGO");
+    Command::new(cargo_bin)
+        .current_dir(repo_root())
+        .args(["tree", "--prefix", "none"])
+        .args(args)
+        .output()
+        .unwrap_or_else(|e| panic!("failed to spawn `{cargo_bin} tree {args:?}`: {e}"))
 }
 
 /// The committed simplification audit report, relative to [`repo_root`].
@@ -39,6 +59,10 @@ pub fn stub_path(work: &Path, tool: &str, stub: Option<&str>) -> String {
         std::env::var("PATH").unwrap_or_default()
     )
 }
+
+/// The checked-in session silent 7 s, past the host's unbounded wake-up interval, then ending in a
+/// result.
+pub const SILENT_PAST_THE_POLL: &str = "claude-code-silent-past-the-poll-then-result-agent.sh";
 
 /// The checked-in stand-in for the critic's `claude`, which [`write_critique_stub`] puts first on
 /// PATH.
@@ -110,15 +134,95 @@ pub fn critique_stub_spawns(work: &Path) -> usize {
         .map_or(0, |count| count.lines().count())
 }
 
+/// The words the shell a hook runs under reads out of the hook `command`: the argv the command
+/// starts, whatever quoting spells it.
+pub fn shell_words(command: &str) -> Vec<String> {
+    let dir = tempfile::tempdir().unwrap();
+    let recorded = dir.path().join("words");
+    let out = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(format!("printf '%s\\0' {command} > \"$0\""))
+        .arg(&recorded)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "the shell reads {command:?}: {out:?}");
+    recorded_argv(&recorded)
+}
+
+/// Each hook `settings` carries under `event`, in order: its matcher and the [`shell_words`] of
+/// its one command.
+pub fn hook_words(settings: &serde_json::Value, event: &str) -> Vec<(String, Vec<String>)> {
+    settings["hooks"][event]
+        .as_array()
+        .unwrap_or_else(|| panic!("no {event} hooks in {settings}"))
+        .iter()
+        .map(|entry| {
+            (
+                entry["matcher"].as_str().unwrap().to_string(),
+                shell_words(entry["hooks"][0]["command"].as_str().unwrap()),
+            )
+        })
+        .collect()
+}
+
+/// A launch's `settings` carry its per-spawn hooks: under `PreToolUse` the write guard running
+/// `bin` with `roots` in order, then the session's grep guard, and under `StopFailure` one entry
+/// per category running `bin` for `spawn`, in category order.
+pub fn assert_carries_spawn_hooks(
+    settings: &serde_json::Value,
+    bin: &str,
+    spawn: &str,
+    roots: &[String],
+) {
+    let words = |text: &[&str]| -> Vec<String> { text.iter().map(|w| w.to_string()).collect() };
+    let mut guard = words(&[bin, "guard-write"]);
+    for root in roots {
+        guard.extend(words(&["--root", root]));
+    }
+    assert_eq!(
+        hook_words(settings, "PreToolUse"),
+        [
+            ("Edit|MultiEdit|Write|NotebookEdit".to_string(), guard),
+            ("Grep|Bash".to_string(), words(&["rigger", "grep-guard"])),
+        ],
+        "the write guard, then the session's grep guard: {settings}"
+    );
+    let stop_failures: Vec<(String, Vec<String>)> = rigger::conductor::AgentFailure::CATEGORIES
+        .iter()
+        .map(|category| {
+            let class = category.as_str();
+            let command = [
+                bin,
+                "hook",
+                "stop-failure",
+                "--spawn",
+                spawn,
+                "--class",
+                class,
+            ];
+            (class.to_string(), words(&command))
+        })
+        .collect();
+    assert_eq!(
+        hook_words(settings, "StopFailure"),
+        stop_failures,
+        "one entry per category: {settings}"
+    );
+}
+
+/// The value `argv` carries right after `flag`.
+pub fn flag_value<'a>(argv: &'a [String], flag: &str) -> &'a str {
+    let at = argv
+        .iter()
+        .position(|a| a == flag)
+        .unwrap_or_else(|| panic!("the argv carries {flag}: {argv:?}"));
+    &argv[at + 1]
+}
+
 /// The task the critique stub under `work` was last handed: the `content` of the host's first
 /// stream-json user message.
 pub fn critique_stub_task(work: &Path) -> String {
-    let line = std::fs::read_to_string(work.join("bin").join(CRITIQUE_TASK)).unwrap();
-    let message: serde_json::Value = serde_json::from_str(line.trim_end()).unwrap();
-    message["message"]["content"]
-        .as_str()
-        .expect("the first user message carries its task as text")
-        .to_string()
+    recorded_task(&work.join("bin").join(CRITIQUE_TASK))
 }
 
 /// What the critique stub under `work` recorded of its last start under `record`
@@ -129,11 +233,7 @@ pub fn critique_stub_record(work: &Path, record: &str) -> String {
 
 /// The argv the critique stub under `work` was last started with.
 pub fn critique_stub_argv(work: &Path) -> Vec<String> {
-    std::fs::read_to_string(work.join("bin").join(CRITIQUE_ARGV))
-        .unwrap()
-        .split_terminator('\0')
-        .map(str::to_string)
-        .collect()
+    recorded_argv(&work.join("bin").join(CRITIQUE_ARGV))
 }
 
 /// The committed JSON file at `rel`, decoded as the documented `contract` a downstream
@@ -187,24 +287,6 @@ pub fn assert_doc_carries_none_of(rel: &str, phrasings: &[&str], why: &str) {
         present.is_empty(),
         "{rel} {why}. Phrasings still present in the document: {present:#?}"
     );
-}
-
-/// The lines of the TOML table `[header]` in `manifest`, up to the next table header.
-pub fn table_lines(manifest: &str, header: &str) -> Vec<String> {
-    let want = format!("[{header}]");
-    let mut in_table = false;
-    let mut out = Vec::new();
-    for raw in manifest.lines() {
-        let line = raw.trim();
-        if line.starts_with('[') && line.ends_with(']') {
-            in_table = line == want;
-            continue;
-        }
-        if in_table {
-            out.push(raw.to_string());
-        }
-    }
-    out
 }
 
 /// Whether the TOML table `[header]` in `manifest` declares `key` (as `key = ..`, `key=..` or a

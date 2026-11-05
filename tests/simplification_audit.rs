@@ -100,8 +100,8 @@ use common::repo::repo_root;
 mod source_audit;
 use source_audit::{
     char_literal_len, close_of, follows_keyword, imported_names, is_definition_site, is_ident_char,
-    is_keyword, lone_colon_at, qualifier_before, ref_punct, ref_token, skip_string_literal,
-    tokenize, RawKind, RawTok,
+    is_keyword, lone_colon_at, qualifier_before, ref_punct, ref_token, renamed_imports,
+    skip_string_literal, tokenize, RawKind, RawTok,
 };
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -6512,6 +6512,16 @@ fn build_dead_code_candidates(
             )
         })
         .collect();
+    // Each file's `use .. as ..` renames, alias to the name it renames ([`renamed_imports`]).
+    let renames: HashMap<&str, HashMap<String, String>> = files
+        .iter()
+        .map(|fsc| {
+            (
+                fsc.rel.as_str(),
+                renamed_imports(&fsc.tokens).into_iter().collect(),
+            )
+        })
+        .collect();
 
     let categories: HashMap<(&str, usize), DispatchCategory> = candidates
         .iter()
@@ -6571,11 +6581,14 @@ fn build_dead_code_candidates(
         // one specific sharer, so every reference counts for every sharer alike. `Free`/
         // `ImplAssoc` get real per-definition ATTRIBUTION when the name is shared, tried in
         // order: (1) a `::`-qualified call site whose qualifier textually matches this
-        // definition's own (a type name for `ImplAssoc`, a module name for `Free`); (2) a bare
-        // call resolved through the REFERENCING file's own `use` import of it, a path
-        // `use module::name;` or a member of a `module::{..}` group ([`imported_names`]), where an
-        // import owned by a keyword such as `crate`, `self` or `super` names no module this
-        // comparison reads and so resolves nothing, as if the file had no such import; (3) for
+        // definition's own (a type name for `ImplAssoc`, a module name for `Free`), a qualifier
+        // the REFERENCING file's `use .. as ..` binds read as the name it renames
+        // ([`renamed_imports`]: `use self::linux as native;` makes `native::acquire` name
+        // `linux`'s `acquire`); (2) a bare call resolved through the REFERENCING file's own
+        // `use` import of it, a path `use module::name;` or a member of a `module::{..}` group
+        // ([`imported_names`]), where an import owned by a keyword such as `crate`, `self` or
+        // `super` names no module this comparison reads and so resolves nothing, as if the file
+        // had no such import; (3) for
         // `Free` only, a bare call sitting in the SAME FILE as this definition - Rust's own
         // lexical scoping resolves an unqualified sibling call with no `use` needed at all (the
         // extremely common case: two files each defining and bare-calling their own same-named
@@ -6630,6 +6643,13 @@ fn build_dead_code_candidates(
                 let resolved = s
                     .qualifier
                     .clone()
+                    .map(|q| {
+                        renames
+                            .get(s.file.as_str())
+                            .and_then(|aliases| aliases.get(&q))
+                            .cloned()
+                            .unwrap_or(q)
+                    })
                     .or_else(|| use_imports.get(s.file.as_str())?.get(&f.name).cloned())
                     .or_else(|| {
                         (cat == DispatchCategory::Free && s.file == f.file)
@@ -10586,6 +10606,43 @@ mod tests {
                 PLAYBOOKS_REBUILD.0,
             )
         };
+        /// A `use` binding a module under another name resolves the alias: `books::rebuild()`
+        /// through `use crate::playbooks as books;` attributes to `playbooks`'s definition.
+        a_call_through_a_module_alias_attributes_to_the_aliased_module: the_one_flagged_rebuild(
+            &[
+                DISTILLER_REBUILD,
+                PLAYBOOKS_REBUILD,
+                ("src/main.rs", "use crate::playbooks as books;\nfn main() {\n    let _ = books::rebuild();\n}\n"),
+            ],
+            DISTILLER_REBUILD.0,
+        );
+        /// The same alias bound by a group's `self` member: `use crate::{playbooks::{self as
+        /// books}};` names `playbooks`, the module of the group that holds it.
+        a_call_through_a_group_self_alias_attributes_to_the_group_module: the_one_flagged_rebuild(
+            &[
+                DISTILLER_REBUILD,
+                PLAYBOOKS_REBUILD,
+                ("src/main.rs", "use crate::{distiller::Report, playbooks::{self as books}};\nfn main() {\n    let _ = books::rebuild();\n}\n"),
+            ],
+            DISTILLER_REBUILD.0,
+        );
+    }
+
+    rigger::test_cases! {
+        /// An inline module aliased by `use self::linux as native;` credits `linux::acquire`
+        /// with `native::acquire()`, so only the uncalled `macos` sharer (line 7) is flagged.
+        a_call_through_an_inline_module_alias_attributes_to_that_module: assert_eq!(
+            ambiguous_sharers(
+                &[(
+                    "src/hold.rs",
+                    "mod linux {\n    pub fn acquire() -> u32 {\n        1\n    }\n}\nmod macos {\n    pub fn acquire() -> u32 {\n        2\n    }\n}\nuse self::linux as native;\npub fn hold() -> u32 {\n    native::acquire()\n}\n",
+                )],
+                "acquire",
+                1,
+            )[0]
+            .line,
+            7
+        );
     }
 
     rigger::test_cases! {

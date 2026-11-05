@@ -1,5 +1,5 @@
 //! The process half of [`crate::run`] (spec 93, criterion 1: THE CORE LANE IS PURE):
-//! starting, adopting and re-pinning a LIVE run against a real event store.
+//! starting, adopting, re-pinning and holding a LIVE run against a real event store.
 //! [`crate::run`] keeps the model (`RunStarted`, `RunOf`, `RunStart`) and the pure folds
 //! (`current_run`, `current_run_id`, `current_run_base`, `current_run_base_tip`,
 //! `run_attribution`, `effective_definition`) - everything computable from an
@@ -11,12 +11,21 @@
 //! the `RunStarted`/`RunStart` shapes); this module only ever appends what `run` already
 //! knows how to serialize.
 
+use std::time::SystemTime;
+
+use rigger_domain::agent::{cause_row, OPERATOR};
+use rigger_domain::ledger::{project, Hold, RunState};
+
 use crate::contextgraph::TYPE_DECISION_MADE;
-use crate::eventstore::{Error, Event, EventStore, ExpectedRevision};
-use crate::run::read::read_run;
+use crate::eventstore::{
+    Error, Event, EventStore, ExpectedRevision, Position, Revision, TypeSelection,
+};
+use crate::retention::PERCEPTION_TYPES;
+use crate::run::read::{fold_holds, read_run, read_run_at_head, HOLD_TYPES};
 use crate::run::{
-    adopted_run, current_run, effective_definition, RunStart, RunStarted, META_DEFINITION,
-    META_DEFINITION_PRIOR, META_RUN_ID, STREAM, TYPE_RUN_STARTED,
+    adopted_run, current_run, current_run_id, effective_definition, RunHeld, RunReleased, RunStart,
+    RunStarted, HOLD_BY_HOST, HOLD_BY_OPERATOR, HOLD_BY_PROBE, META_DEFINITION,
+    META_DEFINITION_PRIOR, META_RUN_ID, STREAM, TYPE_RUN_HELD, TYPE_RUN_RELEASED, TYPE_RUN_STARTED,
 };
 
 /// Record a `--rebase-definition` supersession on the current run (spec 13, unit 1): the
@@ -196,6 +205,11 @@ pub fn ensure_started_pinned(
 /// argv - can derive this run's per-run-unique PR head name. Pass `""` from a path with no
 /// spec (an offline replay, a no-spec workflow run); the head-name derivation then degrades to
 /// the run-short-id alone.
+///
+/// A hold open on the run it ends, an operator hold included, is released first, by the host
+/// (spec 105): every mint path comes through here, and the release and the `RunStarted` stay two
+/// appends, so a `rigger hold` landing between them stands in the slice it landed in, never swept
+/// by the release.
 pub fn start_fresh(
     store: &dyn EventStore,
     criteria: &[String],
@@ -204,6 +218,7 @@ pub fn start_fresh(
     base_tip: &str,
     spec_path: &str,
 ) -> Result<String, Error> {
+    release_hold(store, HOLD_BY_HOST, SystemTime::now())?;
     let started = RunStarted {
         run: uuid::Uuid::new_v4().to_string(),
         criteria: criteria.to_vec(),
@@ -212,13 +227,244 @@ pub fn start_fresh(
         base_tip: base_tip.to_string(),
         spec: spec_path.to_string(),
     };
-    let ev = started
-        .to_event()
-        .map_err(|e| Error::Backend(format!("serialize RunStarted: {e}")))?;
+    let ev = serialized(TYPE_RUN_STARTED, started.to_event())?;
     store
         .append(STREAM, ExpectedRevision::Any, std::slice::from_ref(&ev))?
         .one(&format!("the {TYPE_RUN_STARTED} of run {}", started.run))?;
     Ok(started.run)
+}
+
+/// One sighting of a hold-class cause by a live launch (spec 105).
+pub struct HoldSighting<'a> {
+    /// The category sighted, or `api-unstable`.
+    pub cause: &'a str,
+    /// The sighting line's error text, empty when no line sighted it.
+    pub detail: &'a str,
+    /// The model the launch ran on, empty for the default model.
+    pub model: &'a str,
+}
+
+/// Record `sighting` as a `RunHeld {by: host}`, its action and need for a person read from the
+/// cause's row, when the hold it reads leaves it something to say: with no hold open, it holds
+/// the run; on an operator hold, it appends nothing; on a hold of the same cause, or on a
+/// sighting whose category needs no person, it appends nothing; otherwise the run's cause moves
+/// to the new person-needing category.
+pub fn record_hold_sighting(store: &dyn EventStore, sighting: &HoldSighting) -> Result<(), Error> {
+    let body = held_by(
+        sighting.cause,
+        sighting.detail,
+        HOLD_BY_HOST,
+        sighting.model,
+    );
+    let held = serialized(TYPE_RUN_HELD, body.to_event())?;
+    append_on_hold(store, TYPE_RUN_HELD, |hold| {
+        Ok(Hold::moved_by(hold, &body).then(|| held.clone()))
+    })
+    .map(drop)
+}
+
+/// Record a failed probe's `category` (the last `api_retry` category of the canary's stream) as a
+/// `RunHeld {by: probe}` whose detail is the category, carrying the hold's latest model forward,
+/// when it moves the open hold's cause: on a hold of the same cause, on a category that needs no
+/// person, on an operator hold and on an unheld run it appends nothing (spec 105 RELEASE).
+pub fn record_failed_probe(store: &dyn EventStore, category: &str) -> Result<(), Error> {
+    append_on_hold(store, TYPE_RUN_HELD, |hold| {
+        hold.map(|hold| {
+            let body = held_by(category, category, HOLD_BY_PROBE, &hold.latest.model);
+            (hold, body)
+        })
+        .filter(|(hold, body)| Hold::moved_by(Some(hold), body))
+        .map(|(_, body)| serialized(TYPE_RUN_HELD, body.to_event()))
+        .transpose()
+    })
+    .map(drop)
+}
+
+/// The `RunHeld` of `cause` written by `by`, its action and need for a person read from the
+/// cause's row of the disposition table.
+fn held_by(cause: &str, detail: &str, by: &str, model: &str) -> RunHeld {
+    let row = cause_row(cause);
+    RunHeld {
+        cause: cause.to_string(),
+        detail: detail.to_string(),
+        action: row.action.to_string(),
+        needs_person: row.needs_person,
+        by: by.to_string(),
+        model: model.to_string(),
+    }
+}
+
+/// Why `rigger hold` holds nothing (spec 105): the current run is not live.
+#[derive(Debug, PartialEq, Eq)]
+pub enum NotLive {
+    /// No run has started, an empty store included.
+    NoRun,
+    /// The current run, named by its id, is done.
+    Done(String),
+}
+
+impl std::fmt::Display for NotLive {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            NotLive::NoRun => f.write_str("no run has started"),
+            NotLive::Done(run) => write!(f, "run {run} is done"),
+        }
+    }
+}
+
+/// Hold the current run for the operator (`rigger hold`, spec 105): one `RunHeld {by: operator}`
+/// of cause `operator`, its action the operator's `reason`, carrying the open hold's latest model
+/// forward, empty when no hold is open. A live run, a started run not done, takes it on every
+/// call, a held run too, and the hold answers the run's id; a run not live takes nothing and is
+/// answered [`NotLive`]. Liveness is decided inside the compare-and-append ([`append_at_head`]),
+/// over the run's slice it pins and every type but perception's landing behind it, since a
+/// unit's events decide done: a run minted or turning done between the read and the append is
+/// re-decided, and the answer names the run the hold landed on.
+pub fn hold_by_operator(
+    store: &dyn EventStore,
+    reason: &str,
+) -> Result<Result<String, NotLive>, Error> {
+    let mut read_so_far: Vec<Event> = Vec::new();
+    let mut live = Err(NotLive::NoRun);
+    append_at_head(
+        store,
+        TypeSelection::Except(&PERCEPTION_TYPES),
+        TYPE_RUN_HELD,
+        |read| {
+            // A re-read starts at the pinned revision, already read.
+            let seen = read_so_far.last().map(|e| e.revision);
+            let landed = read
+                .iter()
+                .filter(|e| seen.is_none_or(|seen| e.revision > seen));
+            read_so_far.extend(landed.cloned());
+            let events = current_run(&read_so_far);
+            let run = project(events).map_err(|e| Error::Backend(format!("fold the run: {e}")))?;
+            live = match current_run_id(events) {
+                None => Err(NotLive::NoRun),
+                Some(run_id) if run.done() => Err(NotLive::Done(run_id)),
+                Some(run_id) => Ok(run_id),
+            };
+            if live.is_err() {
+                return Ok(None);
+            }
+            let model = run
+                .hold
+                .as_ref()
+                .map_or("", |hold| hold.latest.model.as_str());
+            let body = RunHeld {
+                action: reason.to_string(),
+                ..held_by(OPERATOR, "", HOLD_BY_OPERATOR, model)
+            };
+            serialized(TYPE_RUN_HELD, body.to_event()).map(Some)
+        },
+    )?;
+    Ok(live)
+}
+
+/// Release the current run's open hold, an operator hold included, as `RunReleased` by `by`,
+/// carrying how long it stood at the caller's `now`: the done run's and the mint's release by the
+/// host, `rigger release`'s by the operator (spec 105). With no hold open it appends nothing.
+/// Answers whether it appended.
+pub fn release_hold(store: &dyn EventStore, by: &str, now: SystemTime) -> Result<bool, Error> {
+    append_on_hold(store, TYPE_RUN_RELEASED, |hold| {
+        hold.map(|hold| released_by(by, hold, now)).transpose()
+    })
+}
+
+/// Release the hold a passing probe read, as `RunReleased {by: probe}` carrying how long it stood
+/// at the controller's `now`, only while the hold's latest `RunHeld` is the one at `probed`: a
+/// hold re-declared since, by any writer and of any cause, a released hold and an unheld run take
+/// nothing (spec 105 RELEASE).
+pub fn release_probed_hold(
+    store: &dyn EventStore,
+    probed: Revision,
+    now: SystemTime,
+) -> Result<(), Error> {
+    append_on_hold(store, TYPE_RUN_RELEASED, |hold| {
+        hold.filter(|hold| hold.revision == probed)
+            .map(|hold| released_by(HOLD_BY_PROBE, hold, now))
+            .transpose()
+    })
+    .map(drop)
+}
+
+/// The `RunReleased` by `by` of `hold`, carrying how long it stood at `now`.
+fn released_by(by: &str, hold: &Hold, now: SystemTime) -> Result<Event, Error> {
+    let body = RunReleased {
+        by: by.to_string(),
+        held_for_s: held_for_s(hold.since, now),
+    };
+    serialized(TYPE_RUN_RELEASED, body.to_event())
+}
+
+/// The revision a launch close stamps: the newest of the current run's slice, the head a hold
+/// writer pins to, `None` on an empty stream. Perception events stay out of the read, so it can
+/// lag the stream's true head, and a close orders against `RunHeld` and `RunReleased` alone.
+pub fn run_stream_head(store: &dyn EventStore) -> Result<Option<Revision>, Error> {
+    Ok(read_run_at_head(store, STREAM)?.1)
+}
+
+/// THE ONE COMPARE-AND-APPEND every conditional run-stream writer goes through: append what
+/// `decide` makes of the current run's slice ([`read_run_at_head`]) at the revision that slice
+/// was read at. A conflict sends `decide` back over what landed from the pinned revision on, read
+/// by `landed` alone, re-pinned to the conflict's actual revision, so a concurrent writer's event
+/// of those types is never missed and an event of any other type landing behind the read costs
+/// one retry. `what` names the append for the store's report of an append it did not write.
+/// Answers the appended event's position, `None` when `decide` left it nothing to say.
+pub(crate) fn append_at_head(
+    store: &dyn EventStore,
+    landed: TypeSelection<'_>,
+    what: &str,
+    mut decide: impl FnMut(&[Event]) -> Result<Option<Event>, Error>,
+) -> Result<Option<Position>, Error> {
+    let (mut read, mut head) = read_run_at_head(store, STREAM)?;
+    loop {
+        let Some(ev) = decide(&read)? else {
+            return Ok(None);
+        };
+        let expected = match head {
+            Some(revision) => ExpectedRevision::Exact(revision),
+            None => ExpectedRevision::NoStream,
+        };
+        match store.append(STREAM, expected, std::slice::from_ref(&ev)) {
+            Ok(appended) => return appended.one(what).map(Some),
+            Err(Error::Conflict { actual, .. }) => {
+                read = store.read_stream_typed(STREAM, head.unwrap_or(0), landed)?;
+                head = Some(actual);
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+/// Append what `decide` makes of the current run's hold through [`append_at_head`], the hold
+/// folded by [`fold_holds`] from the run's slice and forward through the [`HOLD_TYPES`] that
+/// land behind it: every `RunHeld` and `RunReleased` but the operator's hold goes through here
+/// (spec 105), so a concurrent writer's hold or release is never missed; [`hold_by_operator`]
+/// folds the whole run behind its read through [`append_at_head`] itself, to decide liveness
+/// too. `what` names the event type for the store's report of an append it did not write.
+/// Answers whether it appended: `false` when `decide` left it nothing to say.
+fn append_on_hold(
+    store: &dyn EventStore,
+    what: &str,
+    decide: impl Fn(Option<&Hold>) -> Result<Option<Event>, Error>,
+) -> Result<bool, Error> {
+    let mut state = RunState::new();
+    append_at_head(store, TypeSelection::Only(&HOLD_TYPES), what, |read| {
+        fold_holds(&mut state, read)?;
+        decide(state.hold.as_ref())
+    })
+    .map(|appended| appended.is_some())
+}
+
+/// The event a run vocabulary type built of `type_`, its serialization failure the store's error.
+fn serialized(type_: &str, event: Result<Event, serde_json::Error>) -> Result<Event, Error> {
+    event.map_err(|e| Error::Backend(format!("serialize {type_}: {e}")))
+}
+
+/// The whole seconds from `since` to `now`, `0` for a clock that went backwards.
+fn held_for_s(since: SystemTime, now: SystemTime) -> u64 {
+    now.duration_since(since).map_or(0, |held| held.as_secs())
 }
 
 #[cfg(test)]
@@ -227,11 +473,709 @@ mod tests {
     use crate::eventstore::sqlite::Store;
     use crate::eventstore::Direction;
     use crate::run::read::CARRY_OVER_TYPES;
+    use crate::run::TYPE_RUN_RELEASED;
     use crate::run::{current_run_base, current_run_base_tip, current_run_id};
-    use crate::test_support::{
-        ev, insert_pre_ledger_rows, seed_one_shot_fixture, ReadCountingStore,
+    use crate::run::{
+        RunHeld, RunReleased, HOLD_BY_HOST, HOLD_BY_OPERATOR, HOLD_BY_PROBE, TYPE_RUN_HELD,
     };
+    use crate::test_support::{
+        ev, insert_pre_ledger_rows, payloads_of_type, seed_one_shot_fixture, types_of, LandsBehind,
+        ReadCountingStore,
+    };
+    use rigger_domain::agent::API_UNSTABLE;
     use rigger_domain::retention::PERCEPTION_TYPES;
+    use std::time::{Duration, UNIX_EPOCH};
+
+    const LOGIN: &str = "run claude auth login";
+    const RETRIES: &str = "none, the run retries by itself";
+
+    /// A `RunHeld` event of `cause` by `by` naming `model`, as a writer of the hold left it on the
+    /// stream.
+    fn held(cause: &str, by: &str, model: &str) -> Event {
+        let body = RunHeld {
+            cause: cause.to_string(),
+            by: by.to_string(),
+            model: model.to_string(),
+            ..RunHeld::default()
+        };
+        body.to_event().unwrap()
+    }
+
+    /// A `RunReleased` event by the operator, as a writer of the release left it on the stream.
+    fn released() -> Event {
+        let body = RunReleased {
+            by: HOLD_BY_OPERATOR.to_string(),
+            held_for_s: 0,
+        };
+        body.to_event().unwrap()
+    }
+
+    /// A store whose run stream holds a started run and then `log`.
+    fn run_holding(log: Vec<Event>) -> Store {
+        let store = Store::open(":memory:").unwrap();
+        ensure_started(&store, &[]).unwrap();
+        if !log.is_empty() {
+            store.append(STREAM, ExpectedRevision::Any, &log).unwrap();
+        }
+        store
+    }
+
+    /// The run stream, oldest first.
+    fn stream(store: &dyn EventStore) -> Vec<Event> {
+        store.read_stream(STREAM, 0, Direction::Forward).unwrap()
+    }
+
+    /// Every `RunHeld` body on the stream, oldest first.
+    fn holds(store: &dyn EventStore) -> Vec<RunHeld> {
+        payloads_of_type(&stream(store), TYPE_RUN_HELD)
+            .into_iter()
+            .map(|body| serde_json::from_value(body).unwrap())
+            .collect()
+    }
+
+    /// The `RunHeld` the host appends for a sighting of `cause`, with `action` and `needs_person`
+    /// from the table, the detail and the model of [`sighting`].
+    fn host_hold(cause: &str, action: &str, needs_person: bool) -> RunHeld {
+        RunHeld {
+            cause: cause.to_string(),
+            detail: "the line's text".to_string(),
+            action: action.to_string(),
+            needs_person,
+            by: HOLD_BY_HOST.to_string(),
+            model: "opus".to_string(),
+        }
+    }
+
+    /// A sighting of `cause`, with the detail and the model [`host_hold`] expects.
+    fn sighting(cause: &str) -> HoldSighting<'_> {
+        HoldSighting {
+            cause,
+            detail: "the line's text",
+            model: "opus",
+        }
+    }
+
+    /// THE SIGHTINGS' TRANSITIONS (spec 105): a first sighting appends one `RunHeld` carrying the
+    /// table's action and person, its detail and its model; a repeated one appends nothing; a
+    /// differing person-needing one appends one; a differing one that needs no person appends
+    /// nothing; an operator hold, however late a host hold landed on it, takes none; and a
+    /// released hold, or one standing before the current run's boundary, is no hold.
+    #[test]
+    fn a_sighting_appends_only_what_the_open_hold_leaves_it_to_say() {
+        let login = || host_hold("authentication_failed", LOGIN, true);
+        let billing = || host_hold("billing_error", "fix the account's billing", true);
+        let rows: [(&str, Vec<Event>, &str, Option<RunHeld>); 11] = [
+            (
+                "a first sighting of a hold class",
+                vec![],
+                "authentication_failed",
+                Some(login()),
+            ),
+            (
+                "a first sighting of a wait class",
+                vec![],
+                "rate_limit",
+                Some(host_hold("rate_limit", RETRIES, false)),
+            ),
+            (
+                "a first sighting of api-unstable",
+                vec![],
+                API_UNSTABLE,
+                Some(host_hold(API_UNSTABLE, RETRIES, false)),
+            ),
+            (
+                "a repeated sighting",
+                vec![held("authentication_failed", HOLD_BY_HOST, "")],
+                "authentication_failed",
+                None,
+            ),
+            (
+                "a differing person-needing category",
+                vec![held("authentication_failed", HOLD_BY_HOST, "")],
+                "billing_error",
+                Some(billing()),
+            ),
+            (
+                "the cause the latest hold moved off, sighted again",
+                vec![
+                    held("authentication_failed", HOLD_BY_HOST, ""),
+                    held("billing_error", HOLD_BY_HOST, ""),
+                ],
+                "authentication_failed",
+                Some(login()),
+            ),
+            (
+                "a differing category that needs no person",
+                vec![held("authentication_failed", HOLD_BY_HOST, "")],
+                "rate_limit",
+                None,
+            ),
+            (
+                "api-unstable on an open hold",
+                vec![held("rate_limit", HOLD_BY_HOST, "")],
+                API_UNSTABLE,
+                None,
+            ),
+            (
+                "an operator hold",
+                vec![held("operator", HOLD_BY_OPERATOR, "")],
+                "authentication_failed",
+                None,
+            ),
+            (
+                "an operator hold a host hold landed on",
+                vec![
+                    held("operator", HOLD_BY_OPERATOR, ""),
+                    held("rate_limit", HOLD_BY_HOST, ""),
+                ],
+                "authentication_failed",
+                None,
+            ),
+            (
+                "a released hold",
+                vec![held("authentication_failed", HOLD_BY_HOST, ""), released()],
+                "authentication_failed",
+                Some(login()),
+            ),
+        ];
+        for (name, log, cause, expected) in rows {
+            let store = run_holding(log);
+            let before = holds(&store);
+            record_hold_sighting(&store, &sighting(cause)).unwrap();
+            let mut after = holds(&store);
+            let appended = after.split_off(before.len());
+            assert_eq!(after, before, "{name}: the holds already on the stream");
+            assert_eq!(appended, Vec::from_iter(expected), "{name}");
+        }
+    }
+
+    /// A hold left open by the run before the boundary is not this run's: the sighting holds it.
+    #[test]
+    fn a_hold_ahead_of_the_runs_boundary_is_no_hold_of_this_run() {
+        let store = run_holding(vec![held("authentication_failed", HOLD_BY_HOST, "")]);
+        let boundary = RunStarted::default().to_event().unwrap();
+        store
+            .append(
+                STREAM,
+                ExpectedRevision::Any,
+                std::slice::from_ref(&boundary),
+            )
+            .unwrap();
+        record_hold_sighting(&store, &sighting("authentication_failed")).unwrap();
+        assert_eq!(
+            holds(&store)[1..],
+            [host_hold("authentication_failed", LOGIN, true)]
+        );
+    }
+
+    /// The compare-and-append (spec 105 EVENTS): a writer that lands between a sighting's read
+    /// and its append sends it back to read the hold types from its pinned revision, re-decide
+    /// and re-pin, once per landing.
+    #[test]
+    fn a_concurrent_writer_sends_a_sighting_back_to_re_decide() {
+        let same = || held("authentication_failed", HOLD_BY_HOST, "");
+        let note = || ev("RunNote", "{}");
+        let login = || "authentication_failed";
+        type Landings = Vec<(usize, Vec<Event>)>;
+        let rows: [(&str, Landings, Vec<&str>); 6] = [
+            ("an unrelated event", vec![(2, vec![note()])], vec![login()]),
+            ("the same sighting", vec![(2, vec![same()])], vec![login()]),
+            (
+                "an operator hold",
+                vec![(2, vec![held("operator", HOLD_BY_OPERATOR, "")])],
+                vec!["operator"],
+            ),
+            (
+                "a differing person-needing hold",
+                vec![(2, vec![held("billing_error", HOLD_BY_HOST, "")])],
+                vec!["billing_error", login()],
+            ),
+            (
+                "a hold and its release",
+                vec![(2, vec![same(), released()])],
+                vec![login(), login()],
+            ),
+            (
+                "a second writer behind the conflict's own read",
+                vec![(2, vec![note()]), (3, vec![same()])],
+                vec![login()],
+            ),
+        ];
+        for (name, landings, expected) in rows {
+            let inner = run_holding(vec![]);
+            // The read of a started run is three calls; the conflict's typed read is the fourth.
+            let store = landings
+                .into_iter()
+                .fold(ReadCountingStore::new(&inner), |store, (at, landing)| {
+                    store.interleaving(at, STREAM, landing)
+                });
+            record_hold_sighting(&store, &sighting("authentication_failed")).unwrap();
+            let causes: Vec<String> = holds(&inner).into_iter().map(|h| h.cause).collect();
+            assert_eq!(causes, expected, "{name}");
+        }
+    }
+
+    /// A hold-writer's lost append is an error the caller sees, never a hold it reports recorded.
+    #[test]
+    fn a_sighting_the_store_did_not_write_is_reported() {
+        let err = record_hold_sighting(
+            &crate::eventstore::SilentStore,
+            &sighting("authentication_failed"),
+        )
+        .expect_err("a hold the store never wrote is not recorded");
+        assert_eq!(
+            err.to_string(),
+            "event store: reported writing nothing for RunHeld"
+        );
+    }
+
+    /// THE RELEASE (spec 105): a hold open, an operator hold included, takes one `RunReleased` by
+    /// its writer, the host's or the operator's, carrying how long it stood at the caller's `now`,
+    /// from its earliest `RunHeld`, and the release answers that it appended; no open hold takes
+    /// nothing and the release answers so.
+    #[test]
+    fn a_release_appends_only_on_an_open_hold() {
+        let now = UNIX_EPOCH + Duration::from_secs(1_000_000);
+        let held_at = |cause: &str, by: &str, ago: u64| {
+            held(cause, by, "").with_valid_from(now - Duration::from_secs(ago))
+        };
+        let rows: [(&str, Vec<Event>, Option<u64>); 5] = [
+            ("no hold", vec![], None),
+            (
+                "a released hold",
+                vec![held_at("rate_limit", HOLD_BY_HOST, 900), released()],
+                None,
+            ),
+            (
+                "a host hold",
+                vec![held_at("rate_limit", HOLD_BY_HOST, 900)],
+                Some(900),
+            ),
+            (
+                "an operator hold",
+                vec![held_at("operator", HOLD_BY_OPERATOR, 500)],
+                Some(500),
+            ),
+            (
+                "a hold whose cause moved, timed from its earliest",
+                vec![
+                    held_at("rate_limit", HOLD_BY_HOST, 900),
+                    held_at("billing_error", HOLD_BY_HOST, 100),
+                ],
+                Some(900),
+            ),
+        ];
+        for by in [HOLD_BY_HOST, HOLD_BY_OPERATOR] {
+            for (name, log, expected) in rows.clone() {
+                let store = run_holding(log);
+                let appended_before = stream(&store).len();
+                let appended = release_hold(&store, by, now).unwrap();
+                assert_eq!(appended, expected.is_some(), "{name} by {by}: the answer");
+                let events = stream(&store);
+                let mut landed = events[appended_before..].to_vec();
+                match expected {
+                    None => assert_eq!(types_of(&landed), Vec::<&str>::new(), "{name} by {by}"),
+                    Some(ago) => {
+                        let event = landed.pop().unwrap();
+                        assert_eq!(event.type_, TYPE_RUN_RELEASED, "{name} by {by}");
+                        let only = types_of(&landed);
+                        assert_eq!(only, Vec::<&str>::new(), "{name} by {by}: one event");
+                        let body: RunReleased = serde_json::from_slice(&event.data).unwrap();
+                        assert_eq!(body.by, by, "{name} by {by}");
+                        assert_eq!(body.held_for_s, ago, "{name} by {by}: seconds held");
+                    }
+                }
+            }
+        }
+    }
+
+    /// `held_for_s` is the whole seconds between its two times, 0 when the second is not behind
+    /// the first, whichever clock wrote the hold.
+    #[test]
+    fn a_holds_length_is_the_whole_seconds_it_stood() {
+        let since = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
+        let rows = [
+            ("a hold fifty seconds old", 50_500, 50),
+            ("a hold a second old", 1_000, 1),
+            ("a hold under a second old", 999, 0),
+            ("the same instant", 0, 0),
+        ];
+        for (name, millis, expected) in rows {
+            let now = since + Duration::from_millis(millis);
+            assert_eq!(held_for_s(since, now), expected, "{name}");
+        }
+        assert_eq!(
+            held_for_s(since, since - Duration::from_secs(5)),
+            0,
+            "a clock behind the hold's own stamp"
+        );
+    }
+
+    /// The release compares and appends too: a concurrent release leaves nothing to release, and
+    /// the release answers that it appended none; a hold landing behind its read leaves one
+    /// release, later.
+    #[test]
+    fn a_concurrent_writer_sends_a_release_back_to_re_decide() {
+        let open = || held("rate_limit", HOLD_BY_HOST, "");
+        let rows: [(&str, Vec<Event>, Vec<&str>, bool); 3] = [
+            (
+                "another release",
+                vec![released()],
+                vec!["RunStarted", "RunHeld", "RunReleased"],
+                false,
+            ),
+            (
+                "a second hold",
+                vec![held("billing_error", HOLD_BY_HOST, "")],
+                vec!["RunStarted", "RunHeld", "RunHeld", "RunReleased"],
+                true,
+            ),
+            (
+                "an unrelated event",
+                vec![ev("RunNote", "{}")],
+                vec!["RunStarted", "RunHeld", "RunNote", "RunReleased"],
+                true,
+            ),
+        ];
+        for (name, landing, expected, appends) in rows {
+            let inner = run_holding(vec![open()]);
+            let store = ReadCountingStore::new(&inner).interleaving(2, STREAM, landing);
+            let appended = release_hold(&store, HOLD_BY_HOST, SystemTime::now()).unwrap();
+            assert_eq!(types_of(&stream(&inner)), expected, "{name}");
+            assert_eq!(appended, appends, "{name}: the answer");
+        }
+    }
+
+    /// A FAILED PROBE UPGRADES (spec 105 RELEASE, THE EVENTS): a failed canary's category that
+    /// needs a person and differs from the open hold's cause appends one `RunHeld {by: probe}`,
+    /// its detail the category, carrying the hold's latest model forward; any other category, an
+    /// operator hold and a run no hold stands on take nothing.
+    #[test]
+    fn a_failed_probe_upgrades_only_a_differing_person_needing_cause() {
+        let billing = |model: &str| RunHeld {
+            cause: "billing_error".to_string(),
+            detail: "billing_error".to_string(),
+            action: "fix the account's billing".to_string(),
+            needs_person: true,
+            by: HOLD_BY_PROBE.to_string(),
+            model: model.to_string(),
+        };
+        let cloud = || held("cloud_credential_error", HOLD_BY_HOST, "opus");
+        let rows: [(&str, Vec<Event>, &str, Option<RunHeld>); 9] = [
+            ("no hold", vec![], "billing_error", None),
+            (
+                "a released hold",
+                vec![cloud(), released()],
+                "billing_error",
+                None,
+            ),
+            (
+                "an operator hold",
+                vec![held("operator", HOLD_BY_OPERATOR, "")],
+                "billing_error",
+                None,
+            ),
+            (
+                "the hold's own cause",
+                vec![cloud()],
+                "cloud_credential_error",
+                None,
+            ),
+            ("a wait-class category", vec![cloud()], "rate_limit", None),
+            (
+                "no category the stream named",
+                vec![cloud()],
+                "unknown",
+                None,
+            ),
+            (
+                "a differing person-needing category",
+                vec![cloud()],
+                "billing_error",
+                Some(billing("opus")),
+            ),
+            (
+                "the latest RunHeld's model is the one carried",
+                vec![cloud(), held("account_on_hold", HOLD_BY_HOST, "sonnet")],
+                "billing_error",
+                Some(billing("sonnet")),
+            ),
+            (
+                "a hold naming no model carries none",
+                vec![held("cloud_credential_error", HOLD_BY_HOST, "")],
+                "billing_error",
+                Some(billing("")),
+            ),
+        ];
+        for (name, log, category, expected) in rows {
+            let store = run_holding(log);
+            let before = holds(&store);
+            record_failed_probe(&store, category).unwrap();
+            let mut after = holds(&store);
+            let appended = after.split_off(before.len());
+            assert_eq!(after, before, "{name}: the holds already on the stream");
+            assert_eq!(appended, Vec::from_iter(expected), "{name}");
+        }
+    }
+
+    /// A PASSING PROBE RELEASES (spec 105 RELEASE): `RunReleased {by: probe}`, carrying how long
+    /// the hold stood at the controller's `now`, lands only while the hold's latest `RunHeld` is
+    /// the one the probe read; a hold re-declared since, a released hold and an unheld run take
+    /// nothing.
+    #[test]
+    fn a_passing_probe_releases_only_the_hold_it_probed() {
+        let now = UNIX_EPOCH + Duration::from_secs(1_000_000);
+        let held_ago = |cause: &str| {
+            held(cause, HOLD_BY_HOST, "").with_valid_from(now - Duration::from_secs(300))
+        };
+        // (name, log, which event of the log the probe read (`None`: the head), released)
+        let rows: [(&str, Vec<Event>, Option<usize>, bool); 5] = [
+            (
+                "the probed hold",
+                vec![held_ago("rate_limit")],
+                Some(0),
+                true,
+            ),
+            (
+                "a hold whose cause moved after the probe read it",
+                vec![
+                    held_ago("rate_limit"),
+                    held("billing_error", HOLD_BY_HOST, ""),
+                ],
+                Some(0),
+                false,
+            ),
+            (
+                "a hold re-declared with the same cause after the probe read it",
+                vec![held_ago("rate_limit"), held("rate_limit", HOLD_BY_HOST, "")],
+                Some(0),
+                false,
+            ),
+            (
+                "a released hold",
+                vec![held_ago("rate_limit"), released()],
+                Some(0),
+                false,
+            ),
+            ("an unheld run", vec![], None, false),
+        ];
+        for (name, log, probed, expected) in rows {
+            let store = run_holding(log);
+            let events = stream(&store);
+            // The run stream holds the run's `RunStarted` ahead of the log.
+            let probed = probed.map_or(events.last().unwrap().revision, |at| {
+                events[at + 1].revision
+            });
+            release_probed_hold(&store, probed, now).unwrap();
+            let mut landed = stream(&store).split_off(events.len());
+            if !expected {
+                assert_eq!(types_of(&landed), Vec::<&str>::new(), "{name}");
+                continue;
+            }
+            let event = landed.pop().unwrap();
+            assert_eq!(types_of(&landed), Vec::<&str>::new(), "{name}: one event");
+            assert_eq!(event.type_, TYPE_RUN_RELEASED, "{name}");
+            let body: RunReleased = serde_json::from_slice(&event.data).unwrap();
+            assert_eq!(body.by, HOLD_BY_PROBE, "{name}");
+            assert_eq!(body.held_for_s, 300, "{name}: seconds held");
+        }
+    }
+
+    /// The probe's release compares and appends too: a hold re-declared between its read and its
+    /// append sends it back to re-read, and it then releases nothing; an unrelated event lands
+    /// beside it and the release still lands.
+    #[test]
+    fn a_hold_re_declared_behind_the_probes_read_is_not_released() {
+        let rows: [(&str, Vec<Event>, Vec<&str>); 3] = [
+            (
+                "a re-declared hold",
+                vec![held("rate_limit", HOLD_BY_HOST, "")],
+                vec!["RunStarted", "RunHeld", "RunHeld"],
+            ),
+            (
+                "another release",
+                vec![released()],
+                vec!["RunStarted", "RunHeld", "RunReleased"],
+            ),
+            (
+                "an unrelated event",
+                vec![ev("RunNote", "{}")],
+                vec!["RunStarted", "RunHeld", "RunNote", "RunReleased"],
+            ),
+        ];
+        for (name, landing, expected) in rows {
+            let inner = run_holding(vec![held("rate_limit", HOLD_BY_HOST, "")]);
+            let probed = stream(&inner).last().unwrap().revision;
+            let store = ReadCountingStore::new(&inner).interleaving(2, STREAM, landing);
+            release_probed_hold(&store, probed, SystemTime::now()).unwrap();
+            assert_eq!(types_of(&stream(&inner)), expected, "{name}");
+        }
+    }
+
+    /// `rigger hold` compares and appends too: a hold or a release landing between its read and
+    /// its append sends it back to re-decide, so its `RunHeld` carries the model of the hold that
+    /// landed, and none behind a release; an unrelated event leaves the model it read.
+    #[test]
+    fn a_hold_or_release_behind_the_operators_read_re_decides_the_carried_model() {
+        let operator = |model: &str| RunHeld {
+            cause: OPERATOR.to_string(),
+            detail: String::new(),
+            action: "pausing".to_string(),
+            needs_person: true,
+            by: HOLD_BY_OPERATOR.to_string(),
+            model: model.to_string(),
+        };
+        let rows: [(&str, Vec<Event>, Vec<&str>, &str); 3] = [
+            (
+                "a host hold naming another model",
+                vec![held("billing_error", HOLD_BY_HOST, "sonnet")],
+                vec!["RunStarted", "RunHeld", "RunHeld", "RunHeld"],
+                "sonnet",
+            ),
+            (
+                "a release",
+                vec![released()],
+                vec!["RunStarted", "RunHeld", "RunReleased", "RunHeld"],
+                "",
+            ),
+            (
+                "an unrelated event",
+                vec![ev("RunNote", "{}")],
+                vec!["RunStarted", "RunHeld", "RunNote", "RunHeld"],
+                "opus",
+            ),
+        ];
+        for (name, landing, expected, model) in rows {
+            let inner = run_holding(vec![held("rate_limit", HOLD_BY_HOST, "opus")]);
+            let store = ReadCountingStore::new(&inner).interleaving(2, STREAM, landing);
+            hold_by_operator(&store, "pausing")
+                .unwrap()
+                .expect("the run is live");
+            assert_eq!(types_of(&stream(&inner)), expected, "{name}");
+            assert_eq!(holds(&inner).pop(), Some(operator(model)), "{name}");
+        }
+    }
+
+    /// `rigger hold` decides liveness on the run its hold lands on: a mint landing between its
+    /// read and its append sends it back to hold the minted run and answer that run's id, and the
+    /// run turning done there takes nothing and is answered done.
+    #[test]
+    fn a_mint_or_a_done_run_behind_the_operators_read_re_decides_liveness() {
+        type Answer = fn(String) -> Result<String, NotLive>;
+        let rows: [(&str, Vec<Event>, Vec<&str>, Answer); 2] = [
+            (
+                "a mint",
+                vec![ev(TYPE_RUN_STARTED, r#"{"run":"r2"}"#)],
+                vec!["RunStarted", "RunStarted", "RunHeld"],
+                |_| Ok("r2".to_string()),
+            ),
+            (
+                "the run turning done",
+                vec![
+                    ev("UnitStarted", r#"{"id":"u1","agent":"worker"}"#),
+                    ev("UnitIntegrated", r#"{"id":"u1","commit":"aaa"}"#),
+                ],
+                vec!["RunStarted", "UnitStarted", "UnitIntegrated"],
+                |run| Err(NotLive::Done(run)),
+            ),
+        ];
+        for (name, landing, expected, answer) in rows {
+            let inner = run_holding(vec![]);
+            let run = current_run_id(&stream(&inner)).unwrap();
+            let store = ReadCountingStore::new(&inner).interleaving(2, STREAM, landing);
+            let held = hold_by_operator(&store, "pausing").unwrap();
+            assert_eq!(held, answer(run), "{name}");
+            assert_eq!(types_of(&stream(&inner)), expected, "{name}");
+        }
+    }
+
+    /// The head a launch close stamps: the newest revision of the run stream, none on an empty
+    /// one.
+    #[test]
+    fn the_run_streams_head_is_its_newest_revision() {
+        assert_eq!(
+            run_stream_head(&Store::open(":memory:").unwrap()).unwrap(),
+            None
+        );
+        let store = run_holding(vec![ev("RunNote", "{}"), ev("RunNote", "{}")]);
+        let newest = stream(&store).last().unwrap().revision;
+        assert_eq!(run_stream_head(&store).unwrap(), Some(newest));
+        assert_eq!(
+            stream(&store).len(),
+            3,
+            "and the head moved past the first two"
+        );
+        assert_ne!(newest, stream(&store)[0].revision);
+    }
+
+    /// A MINT RELEASES (spec 105): with a hold open, an operator hold included, `start_fresh`
+    /// appends one `RunReleased {by: host}` ahead of its `RunStarted`; with none, its `RunStarted`
+    /// alone.
+    #[test]
+    fn a_mint_releases_an_open_hold_ahead_of_its_run_started() {
+        let rows: [(&str, Vec<Event>, Vec<&str>); 3] = [
+            ("no hold", vec![], vec!["RunStarted", "RunStarted"]),
+            (
+                "a host hold",
+                vec![held("rate_limit", HOLD_BY_HOST, "")],
+                vec!["RunStarted", "RunHeld", "RunReleased", "RunStarted"],
+            ),
+            (
+                "an operator hold",
+                vec![held("operator", HOLD_BY_OPERATOR, "")],
+                vec!["RunStarted", "RunHeld", "RunReleased", "RunStarted"],
+            ),
+        ];
+        for (name, log, expected) in rows {
+            let store = run_holding(log);
+            start_fresh(&store, &[], "", "", "", "").unwrap();
+            let events = stream(&store);
+            assert_eq!(types_of(&events), expected, "{name}");
+            for body in payloads_of_type(&events, TYPE_RUN_RELEASED) {
+                assert_eq!(body["by"], HOLD_BY_HOST, "{name}");
+            }
+        }
+    }
+
+    /// A `rigger hold` landing between a mint's release and its `RunStarted` stands: the mint
+    /// neither refuses it nor releases it, its two appends keep their order around it, and the
+    /// hold stays on the log ahead of the new run's boundary, in the run it landed on.
+    #[test]
+    fn an_operator_hold_landing_inside_a_mint_stands() {
+        let inner = run_holding(vec![held("rate_limit", HOLD_BY_HOST, "")]);
+        let store = LandsBehind::new(&inner, TYPE_RUN_RELEASED, |store: &dyn EventStore| {
+            store
+                .append(
+                    STREAM,
+                    ExpectedRevision::Any,
+                    &[held("operator", HOLD_BY_OPERATOR, "")],
+                )
+                .unwrap();
+        });
+
+        start_fresh(&store, &[], "", "", "", "").expect("the mint lands");
+
+        let events = stream(&inner);
+        assert_eq!(
+            types_of(&events),
+            [
+                "RunStarted",
+                "RunHeld",
+                "RunReleased",
+                "RunHeld",
+                "RunStarted"
+            ]
+        );
+        assert_eq!(
+            payloads_of_type(&events, TYPE_RUN_HELD)[1]["by"],
+            "operator"
+        );
+        let new_run = rigger_domain::ledger::project(current_run(&events)).unwrap();
+        assert_eq!(
+            new_run.hold, None,
+            "the hold stands in the slice it landed in"
+        );
+    }
 
     /// ONE-SHOT COMMANDS READ FROM THE BOUNDARY (spec 101): over a log holding 200,000 ledger
     /// entries and two superseded runs before the boundary, one read of the run costs exactly the

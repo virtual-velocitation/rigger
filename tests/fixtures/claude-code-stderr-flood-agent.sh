@@ -10,7 +10,10 @@
 # once that write completes does it replay the same recorded stream
 # claude-code-stream-agent.sh does, so a host that DOES drain stderr concurrently still
 # gets a normal, real result rather than this fixture existing purely to hang.
+self=$(readlink "$0") || self=$0
+. "$(dirname "$self")/launch-args.sh"
+sid=$(launched_session "" "$@")
 IFS= read -r line
 yes x | head -c 1048576 >&2
 echo >&2
-cat "$(dirname "$0")/claude-code-stream-success.jsonl"
+as_launched "$sid" <"$(dirname "$0")/claude-code-stream-success.jsonl"

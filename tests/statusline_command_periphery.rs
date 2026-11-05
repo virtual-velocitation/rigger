@@ -1,7 +1,9 @@
 //! Periphery for spec 94, criterion 5 ("THE STATUSLINE COMMAND"): `rigger status --line`
 //! prints exactly the core's `console::statusline` text - the SAME line `rigger status`
-//! itself prints as its own first line - and nothing else, and `rigger setup` registers that
-//! command as the editor's status line in `.claude/settings.json`.
+//! itself prints, as its own first line for a run that is neither held nor started and records
+//! no dash URL - and nothing else, and `rigger setup` registers that command as the editor's status line in
+//! `.claude/settings.json`. `tests/console_status_periphery.rs` drives the same line under a
+//! held run's HELD line and a started run's run header.
 //!
 //! WHY THIS FILE. `cmd_status`/`cmd_setup` are PRIVATE free functions in the `rigger` BINARY
 //! crate (`src/main.rs`), unreachable from an integration-test crate under `tests/` other than
@@ -55,7 +57,9 @@ fn status_line_prints_exactly_the_consoles_own_statusline_and_nothing_else() {
 }
 
 /// The line `rigger status --line` prints is IDENTICAL to `rigger status`'s own first line
-/// for the same recorded stream - "the console's bottom line for the same position" - proven
+/// for the same recorded stream of a run neither held nor started that records no dash URL, the
+/// line it opens with -
+/// "the console's bottom line for the same position" - proven
 /// by running both against the same seeded store rather than trusting two independent
 /// derivations to agree.
 #[test]

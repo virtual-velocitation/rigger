@@ -17,6 +17,10 @@ mod blast_radius_eval;
 pub mod canary_store;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod conductor;
+#[cfg(any(feature = "store", not(feature = "core")))]
+pub mod held;
+#[cfg(any(feature = "store", not(feature = "core")))]
+pub mod hold_controller;
 #[cfg(all(feature = "symbols", any(feature = "store", not(feature = "core"))))]
 mod logged_generations;
 #[cfg(any(feature = "store", not(feature = "core")))]
@@ -45,7 +49,7 @@ use rigger_grounder::{grounder, ingest};
 use rigger_process::{budget, parallel};
 #[cfg(any(feature = "store", not(feature = "core")))]
 use rigger_store_sqlite::run_store;
-#[cfg(all(test, any(feature = "store", not(feature = "core"))))]
+#[cfg(any(feature = "store", not(feature = "core")))]
 use rigger_store_sqlite::spawn_store;
 #[cfg(any(feature = "store", not(feature = "core")))]
 use rigger_worktree_git::worktree;

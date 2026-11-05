@@ -200,8 +200,9 @@ pub struct AgentDef {
     #[serde(default)]
     pub recurse: bool,
     /// The per-spawn wall-clock bound in SECONDS (spec 10, unit 3): a spawn of this
-    /// agent whose liveness marker goes stale for longer than this is treated by
-    /// `rigger step` as a hung/infra fault. `None` (unset in the agent's frontmatter)
+    /// agent whose liveness marker stays silent, outside any hold of the run, for longer
+    /// than this is treated by `rigger step` as a hung/infra fault, and its host stops a
+    /// session silent past it the same way. `None` (unset in the agent's frontmatter)
     /// inherits `defaults.max_wall_clock`, folded in at [`load`] time; a resolved `0`
     /// (or absent default) means unbounded - the agent is never timed out. Per-role by
     /// construction: each agent's own value overrides the workflow default.
@@ -1060,7 +1061,7 @@ pub struct StoreConfig {
 /// ([`crate::gate::BuildEnv::resolve`]) derives the actual env vars from these three
 /// fields (`wrapper`/`cache_dir` as one facet, `jobs` as an independent one - see
 /// below) and applies them to gate builds (run via [`crate::gate::Runner::run`] by
-/// [`crate::gate::ExecRunner`]) and the blocking `driver::cli` agent driver - the
+/// [`crate::gate::ExecRunner`]) and the process hosts' agent launches - the
 /// two sites wired so far (see [`crate::gate::BuildEnv`] for the disclosed gap on
 /// the remaining agent-spawn paths). Plain config-shape data only - the resolution
 /// logic itself (verbatim wrapper passthrough today; `auto` PATH-probing and the
@@ -1153,7 +1154,7 @@ pub struct Workflow {
     pub dash: String,
     /// The shared build-environment config (spec 65): `wrapper` / `cache_dir`, read
     /// by the ONE resolver ([`crate::gate::BuildEnv::resolve`]) that derives the env
-    /// applied to gate builds and the blocking `driver::cli` agent driver - the two
+    /// applied to gate builds and the process hosts' agent launches - the two
     /// sites wired so far, not yet every agent-spawn path in the crate (see
     /// [`crate::gate::BuildEnv`]). Absent (the common case) resolves to no wrapper -
     /// today's ambient-environment behavior, unchanged - but `max_concurrent` still

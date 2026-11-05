@@ -303,6 +303,20 @@ fn discipline_body(ctx: &DocsContext) -> String {
          the unit.\n"
     );
 
+    let _ = writeln!(s, "## Holding a run\n");
+    let _ = writeln!(
+        s,
+        "`rigger hold --reason <text>` holds the current run for you, the text recorded as the \
+         hold's reason: a run driven by `rigger run` or `rigger serve` launches no agent while a \
+         hold stands, a session already running finishes, and no probe ends your hold. It \
+         refuses, recording nothing, when no run is live: none has started, or the current run \
+         is done. `rigger release` ends the current run's hold, whichever \
+         writer declared it, an outage hold included, so the next launch goes at once instead of \
+         after the next probe, which only `rigger run` runs: under `rigger serve` a hold stands \
+         until a release or the start of a new run ends it. With no hold open it records \
+         nothing and says so.\n"
+    );
+
     let _ = writeln!(s, "## Auto-integration on approve\n");
     let _ = writeln!(
         s,
@@ -859,9 +873,11 @@ fn render_reset_store_skill(_ctx: &DocsContext) -> String {
             "- `graph.db` - the context graph. A REBUILDABLE projection of the event log and \
              the tree: rigger-build-graph regenerates it from `events.db` and the project's \
              files, so losing it loses time, never truth.",
-            "- `progress.db` - live per-agent progress telemetry. Never replayed into a run's \
-             state; it is a side channel `rigger status` and the dashboard read to show what an \
-             agent is doing right now, not a record anything else depends on.\n",
+            "- `progress.db` - live progress telemetry: each agent's reports and the \
+             supervisor's beats. Never replayed into a run's state; it is a side channel `rigger \
+             status` and the dashboard read to show what an agent is doing right now, `rigger \
+             status` reads to say whether a held run resumes by itself, and a live session's \
+             host reads to class a failed session and time its silence.\n",
         ],
         &[
             "`rigger reset` with no flags is the MENU, not an error: it exits 0 and prints one \
@@ -870,19 +886,20 @@ fn render_reset_store_skill(_ctx: &DocsContext) -> String {
             "- `rigger reset --runs` prunes dead-run rows and superseded edges out of \
              `graph.db`. It works over ANY event-store backend (the graph is always a local \
              file); rerun it any time, especially before a large run. When no driver is alive \
-             (no `rigger step` holds the lock, no in-flight spawn's liveness marker is younger \
-             than its wall-clock bound, no driver registration for the store has a heartbeat \
-             inside the idle window) and every spawn of the run has ended on a real result, it \
-             also closes the current run's units whose branch work is already landed on \
-             `rigger-run`: a unit landed by hand gets the `UnitIntegrated` only the conductor \
-             mints, so `rigger status` stops reporting the finished run as working. It only \
-             appends; a live run is left untouched. A spawn answered only by the step's liveness \
-             fault has not ended - the step halts on it and a relaunched driver re-parks it - so \
-             a dead run with a hung spawn stays open and the reset names it: record its real \
-             result with `rigger result <id>`, then rerun `rigger reset --runs`. A `rigger \
+             (no `rigger step` or `rigger run` holds the lock, no in-flight spawn's liveness \
+             marker is younger than its wall-clock bound, no driver registration for the store \
+             has a heartbeat inside the idle window) and every spawn of the run has ended on a \
+             real result, it also closes the current run's units whose branch work is already \
+             landed on `rigger-run`: a unit landed by hand gets the `UnitIntegrated` only the \
+             conductor mints, so `rigger status` stops reporting the finished run as working. It \
+             only appends; a live run is left untouched. A spawn answered only by the step's \
+             liveness fault has not ended - the step halts on it and a relaunched driver re-parks \
+             it - so a dead run with a hung spawn stays open and the reset names it: record its \
+             real result with `rigger result <id>`, then rerun `rigger reset --runs`. A `rigger \
              step` registers as the run's driver just as `run` and `serve` do, so a hand-landed \
-             unit closes once the last step's stamp is older than the idle window; a courier's (`emit`, `result`, `progress`) discovery refresh never \
-             counts as a driver, so your own courier just before the reset never holds it back.",
+             unit closes once the last step's stamp is older than the idle window; a courier's \
+             (`emit`, `result`, `progress`) discovery refresh never counts as a driver, so your \
+             own courier just before the reset never holds it back.",
             "- `rigger reset --derived` migrates `events.db`, once: for each file it rewrites the \
              first row of the file's latest derived batch into that generation's ledger entry, \
              in place, deletes every other derived event, and vacuums so the file shrinks on \
@@ -991,7 +1008,10 @@ fn render_resume_a_run_skill(_ctx: &DocsContext) -> String {
              last progress report and heartbeat age. A stale heartbeat with no recent store \
              event means the DRIVER died mid-run (quota ran out, the process crashed, the \
              machine slept) - it does not mean the run itself is broken; the event log already \
-             holds every decision and gate verdict the run made before the driver stopped.\n",
+             holds every decision and gate verdict the run made before the driver stopped. \
+             Under an open hold the heartbeat age stops at the hold's start, so a driver that \
+             dies inside a hold never reads stale there: `rigger watch` reads the heartbeat on \
+             wall clock and names it.\n",
             "Relaunch the same blessed driver on the same spec WITHOUT `--fresh` - `rigger run \
              <spec>`, `rigger serve <spec>` / `rigger workflow <spec>`, or the native `/rigger \
              <spec>` workflow with its `fresh` argument left unset. Because the run lives in the \
@@ -1007,6 +1027,17 @@ fn render_resume_a_run_skill(_ctx: &DocsContext) -> String {
              spec and relaunch`) is never adopted by a command naming its spec: amend the spec, \
              critique it with `rigger critique <spec>`, then relaunch on it, which begins a new \
              run with no `--fresh`.\n",
+            "A run that is HELD, not dead, launches nothing until the hold ends, and its driver \
+             decides what ends it. A `rigger run` driver stays alive through the hold, and a \
+             passing probe ends an outage hold by itself, save a `model_not_found` hold, which \
+             runs none. `rigger serve` runs no probe, so its hold stands until `rigger release` \
+             or the start of a new run ends it, and a wait still open when its session closes \
+             parks the spawn; a relaunch then continues the run. A `rigger workflow` driver \
+             drains its live workers and stops on a held run, and `rigger release` and a new \
+             `rigger workflow` resume it. `rigger release` ends any hold at once. No probe ends \
+             one you declared with `rigger hold --reason <text>`: `rigger release` does, as do \
+             the start of a new run and a `rigger run` run reaching done. A release with no hold \
+             open records nothing and says so.\n",
         ],
         "Never hand-drive `rigger step` yourself in a shell to \"help it along\" - the \
          driver owns stepping, and a hand step races it, which can double-spawn a unit or \

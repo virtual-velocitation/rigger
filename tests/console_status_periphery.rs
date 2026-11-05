@@ -1,6 +1,9 @@
 //! Periphery for spec 93, criterion 4 ("ONE FOLD"): `rigger status` (`cmd_status` in the
-//! binary) prints its first line and its needs-you lines through `rigger::console`'s
-//! [`console::fold`], never a second, independently-composed copy of either.
+//! binary) prints its statusline and its needs-you lines through `rigger::console`'s
+//! [`console::fold`], never a second, independently-composed copy of either. The statusline is
+//! the first line of a run that is neither held nor started and records no dash URL; a started
+//! run's goes under its run header, and a held run's status opens with its HELD line (spec 105,
+//! WHAT A PERSON SEES), which this file drives through the real hold verbs.
 //!
 //! WHY THIS FILE. `cmd_status` is a PRIVATE free function in the `rigger` BINARY crate
 //! (`src/main.rs`), unreachable from an integration-test crate under `tests/` other than by
@@ -14,10 +17,43 @@
 
 mod common;
 
+use std::path::Path;
+use std::time::Duration;
+
 use common::cli::read_run_events;
 use common::cli::run_rigger;
 use common::cli::seed_run_events;
 use common::cli::temp_store_project;
+use common::cli::{
+    backdate_store_file_by, held_line_parts, seed_a_run, seed_a_supervisor_beat, seed_on_the_run,
+};
+use common::fixtures::{dated_ago, hold_naming, run_held_event};
+use rigger::ledger::{AttentionEntry, ATTENTION_HELD, ATTENTION_RELEASED};
+use rigger::run::HOLD_BY_HOST;
+
+/// The reason the operator holds a run with in this file.
+const REASON: &str = "a deploy is landing";
+
+/// The operator's `rigger hold` on the current run, for [`REASON`].
+const HOLD: &[&str] = &["hold", "--reason", REASON];
+
+/// The operator's `rigger release` of the current run's hold.
+const RELEASE: &[&str] = &["release"];
+
+/// Hold `root`'s current run as the host does on a rate limit, needing no person.
+fn seed_a_host_hold(root: &Path) {
+    let hold = hold_naming("rate_limit", "wait it out", HOLD_BY_HOST);
+    seed_on_the_run(root, run_held_event(&hold));
+}
+
+/// Hold `root`'s current run as the host does on a failed login, needing a person.
+fn seed_a_login_hold(root: &Path) {
+    let hold = rigger::run::RunHeld {
+        needs_person: true,
+        ..hold_naming("auth", "log in again", HOLD_BY_HOST)
+    };
+    seed_on_the_run(root, run_held_event(&hold));
+}
 
 /// ONE FOLD, the CLI's use of the core: for a run with an escalated unit, `rigger status`'s
 /// FIRST printed line is exactly `console::fold`'s `statusline` computed independently by this
@@ -257,4 +293,226 @@ fn console_dock_and_statusline_are_reachable_directly_over_a_real_store_round_tr
     assert_eq!(state.blockers, rigger::blocker::lines(&blockers));
     assert_eq!(state.dock, dock);
     assert_eq!(state.statusline, line);
+}
+
+/// Spec 105's WHAT A PERSON SEES through the compiled `rigger status`: given a started run the host
+/// or the operator (through `rigger hold`) holds, when the operator asks for its status, then it
+/// opens with the HELD line, ending that the run resumes by itself only for a host hold a
+/// supervisor beat watched within 90 s; the statusline under the run header reads `held` while
+/// the dock lists nothing but the hold, and `needs-you` beside any other entry; and the needs-you
+/// section lists the open hold first, under its own cause and never an earlier released hold's,
+/// for a hold whose latest `RunHeld` needs a person, and nothing for one that needs none. A hold
+/// the operator released prints no HELD line and lists nothing.
+/// `rigger status --line` prints that same statusline alone, and the statusline, the needs-you and
+/// the current-blocker lines are `console::fold`'s own.
+#[test]
+fn rigger_status_shows_a_person_the_hold_in_its_held_line_statusline_and_needs_you_section() {
+    struct Case {
+        name: &'static str,
+        /// The run's history past its start, before the operator acts.
+        seed: fn(&Path),
+        /// The verbs the operator runs, in order, before asking for the status.
+        verbs: &'static [&'static [&'static str]],
+        /// How long before the status the one supervisor beat landed, `None` for no beat.
+        beat: Option<Duration>,
+        /// The HELD line past its duration, `None` for no HELD line.
+        held: Option<String>,
+        statusline: &'static str,
+        needs_you: Vec<String>,
+    }
+    let nothing: fn(&Path) = |_| {};
+    let operator_held = format!("operator - {REASON}; rigger release ends it");
+    let operator_entry = format!("run: held - operator - {REASON}");
+    let host_released = "rate_limit - wait it out; rigger release ends it".to_string();
+    let threshold = rigger::blocker::REJECT_RECURRENCE_DIAGNOSE_THRESHOLD;
+    let cases = vec![
+        Case {
+            name: "a host hold needing no person, under a beat just landed",
+            seed: seed_a_host_hold,
+            verbs: &[],
+            beat: Some(Duration::ZERO),
+            held: Some("rate_limit - wait it out; the run resumes by itself".to_string()),
+            statusline: "- . 0/0 units . held",
+            needs_you: vec![],
+        },
+        Case {
+            name: "a host hold needing no person, under a beat two minutes old",
+            seed: seed_a_host_hold,
+            verbs: &[],
+            beat: Some(Duration::from_secs(120)),
+            held: Some(host_released.clone()),
+            statusline: "- . 0/0 units . held",
+            needs_you: vec![],
+        },
+        Case {
+            name: "an operator hold",
+            seed: nothing,
+            verbs: &[HOLD],
+            beat: None,
+            held: Some(operator_held.clone()),
+            statusline: "- . 0/0 units . held",
+            needs_you: vec![operator_entry.clone()],
+        },
+        Case {
+            name: "a host hold the operator holds over",
+            seed: seed_a_host_hold,
+            verbs: &[HOLD],
+            beat: None,
+            held: Some(operator_held.clone()),
+            statusline: "- . 0/0 units . held",
+            needs_you: vec![operator_entry.clone()],
+        },
+        Case {
+            name: "an operator hold after a released hold of another cause that needed a person",
+            seed: seed_a_login_hold,
+            verbs: &[RELEASE, HOLD],
+            beat: None,
+            held: Some(operator_held.clone()),
+            statusline: "- . 0/0 units . held",
+            needs_you: vec![operator_entry.clone()],
+        },
+        Case {
+            name: "a hold needing a person the host holds over needing none",
+            seed: |root| {
+                seed_a_login_hold(root);
+                seed_a_host_hold(root);
+            },
+            verbs: &[],
+            beat: None,
+            held: Some(host_released),
+            statusline: "- . 0/0 units . held",
+            needs_you: vec![],
+        },
+        Case {
+            name: "an operator hold beside a unit failing past the recurrence threshold",
+            seed: |root| {
+                let attempts = rigger::blocker::REJECT_RECURRENCE_DIAGNOSE_THRESHOLD;
+                let failed = format!(r#"{{"id":"u-fail","attempts":{attempts},"cause":"reject"}}"#);
+                let started = r#"{"id":"u-fail"}"#;
+                seed_run_events(
+                    root,
+                    &[("UnitStarted", started), ("UnitFailed", failed.as_str())],
+                );
+            },
+            verbs: &[HOLD],
+            beat: None,
+            held: Some(operator_held),
+            statusline: "u-fail . 0/1 units . needs-you",
+            needs_you: vec![
+                operator_entry,
+                AttentionEntry::reject_recurrence("u-fail", threshold).line(),
+            ],
+        },
+        Case {
+            name: "an operator hold the operator released",
+            seed: nothing,
+            verbs: &[HOLD, RELEASE],
+            beat: None,
+            held: None,
+            statusline: "- . 0/0 units . healthy",
+            needs_you: vec![],
+        },
+    ];
+    for case in cases {
+        let name = case.name;
+        let dir = temp_store_project();
+        let root = dir.path();
+        let run_id = seed_a_run(root);
+        (case.seed)(root);
+        for verb in case.verbs {
+            let (_, err, ok) = run_rigger(root, verb);
+            assert_eq!((ok, err.as_str()), (true, ""), "{name}: rigger {verb:?}");
+        }
+        if let Some(ago) = case.beat {
+            seed_a_supervisor_beat(root);
+            backdate_store_file_by(root, "progress.db", ago);
+        }
+
+        let want = rigger::console::fold(&read_run_events(root), 3).unwrap();
+        assert_eq!(
+            (want.statusline.as_str(), want.dock.lines()),
+            (case.statusline, case.needs_you.clone()),
+            "{name}: the console's own fold"
+        );
+
+        let (out, err, ok) = run_rigger(root, &["status"]);
+        assert_eq!((ok, err.as_str()), (true, ""), "{name}: rigger status");
+        let mut expected = Vec::new();
+        if let Some(held) = &case.held {
+            // The HELD line's duration is the wall clock's, every hold here raised moments ago.
+            let first = out.lines().next().unwrap_or_default();
+            let (held_for, _) = held_line_parts(first)
+                .unwrap_or_else(|| panic!("{name}: the status opens with the HELD line:\n{out}"));
+            let secs: f64 = held_for.parse().unwrap();
+            assert!(
+                (0.0..60.0).contains(&secs),
+                "{name}: held since the hold was raised; got {held_for}s"
+            );
+            expected.push(format!("HELD {held_for}s - {held}"));
+        }
+        expected.push(format!("run {}", rigger::ledger::short_run_id(&run_id)));
+        expected.push(case.statusline.to_string());
+        expected.push("needs you:".to_string());
+        if case.needs_you.is_empty() {
+            expected.push(
+                "  Nothing needs a human right now. Walk away - you will be tapped.".to_string(),
+            );
+        }
+        expected.extend(case.needs_you.iter().map(|line| format!("  {line}")));
+        if !want.blockers.is_empty() {
+            expected.push("current blockers:".to_string());
+            expected.extend(want.blockers.iter().map(|line| format!("  {line}")));
+        }
+        assert_eq!(
+            out.lines().collect::<Vec<_>>(),
+            expected,
+            "{name}: rigger status"
+        );
+        assert_eq!(
+            run_rigger(root, &["status", "--line"]),
+            (format!("{}\n", case.statusline), String::new(), true),
+            "{name}: rigger status --line"
+        );
+    }
+}
+
+/// The attention fold the dock lists a hold from, `ledger::hold_attention`, over what the hold
+/// verbs write to a real store: given a host hold raised ten minutes back that the operator holds
+/// over with `rigger hold` and ends with `rigger release`, then a second hold the operator raises
+/// and releases at once, the fold yields one `held` entry per hold, naming the reason of its
+/// latest `RunHeld`, and one `released` entry per release, naming the `held_for_s` that release
+/// recorded.
+#[test]
+fn hold_attention_folds_what_the_hold_verbs_write_into_one_held_and_one_released_entry_per_hold() {
+    let dir = temp_store_project();
+    let root = dir.path();
+    seed_a_run(root);
+    let host = hold_naming("rate_limit", "wait it out", HOLD_BY_HOST);
+    seed_on_the_run(root, dated_ago(run_held_event(&host), 600));
+    for verb in [HOLD, RELEASE, HOLD, RELEASE] {
+        let (_, err, ok) = run_rigger(root, verb);
+        assert_eq!((ok, err.as_str()), (true, ""), "rigger {verb:?}");
+    }
+
+    let held_for: Vec<u64> = common::cli::run_payloads(root, rigger::run::TYPE_RUN_RELEASED)
+        .iter()
+        .map(|release| release["held_for_s"].as_u64().unwrap())
+        .collect();
+    assert!(
+        matches!(held_for[..], [first, second] if (600..660).contains(&first) && second < 60),
+        "each release records how long its own hold stood, the first ten minutes: {held_for:?}"
+    );
+    let held = || AttentionEntry::run_scoped(ATTENTION_HELD, format!("held - operator - {REASON}"));
+    let released = |secs: u64| {
+        AttentionEntry::run_scoped(ATTENTION_RELEASED, format!("released after {secs}s"))
+    };
+    assert_eq!(
+        rigger::ledger::hold_attention(&rigger::ledger::holds(&read_run_events(root))),
+        Some(vec![
+            held(),
+            released(held_for[0]),
+            held(),
+            released(held_for[1])
+        ])
+    );
 }

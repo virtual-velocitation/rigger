@@ -6,9 +6,14 @@
 //! commands, the MCP server name and the fan-out helper agents. `rigger setup` writes them into
 //! the operator's checkout; the headless host hands the same values to every spawn on its
 //! command line (a fresh unit worktree carries no `.claude/` of its own), so the two cannot
-//! drift.
+//! drift. The hooks bound to one spawn are composed here too, by [`install_spawn_hooks`]: only
+//! the headless host hands those over, and `rigger setup` never writes them.
 
+use rigger_domain::quoting::single_quoted;
+use rigger_domain::review::EDITING_TOOLS;
 use serde_json::{json, Map, Value};
+
+use crate::agent::AgentFailure;
 
 #[derive(Debug, thiserror::Error)]
 #[error("hooks: {0}")]
@@ -25,6 +30,12 @@ pub const PRIME_COMMAND: &str = "rigger prime";
 pub const GREP_GUARD_MATCHER: &str = "Grep|Bash";
 /// See [`GREP_GUARD_MATCHER`].
 pub const GREP_GUARD_COMMAND: &str = "rigger grep-guard";
+
+/// The tools the write guard judges, every one of [`EDITING_TOOLS`], as the matcher it installs
+/// under `PreToolUse`.
+fn write_guard_matcher() -> String {
+    EDITING_TOOLS.map(|(tool, _)| tool).join("|")
+}
 
 /// The editor's status line command (spec 94, criterion 5): the same one-line summary
 /// `rigger status` prints first.
@@ -55,6 +66,38 @@ pub fn install_session_settings(existing: &[u8]) -> Result<Vec<u8>, Error> {
     let primed = install_session_start(existing, PRIME_COMMAND)?;
     let guarded = install_pretooluse_hook(&primed, GREP_GUARD_MATCHER, GREP_GUARD_COMMAND)?;
     install_status_line(&guarded, STATUS_LINE_COMMAND)
+}
+
+/// Merge the hooks bound to one spawn into `existing` settings JSON, preserving every other
+/// setting: under `PreToolUse` the write guard, `guard-write` rooted at `roots` in order, and
+/// under `StopFailure` one entry per [`AgentFailure::CATEGORIES`], `hook stop-failure` recording
+/// that category for `spawn`. Both run `rigger_bin`, and the shell a hook command runs under reads
+/// `rigger_bin`, `spawn` and each root as one word whatever they hold ([`shell_quote`]). `existing`
+/// may be empty.
+pub fn install_spawn_hooks(
+    existing: &[u8],
+    rigger_bin: &str,
+    spawn: &str,
+    roots: &[String],
+) -> Result<Vec<u8>, Error> {
+    let bin = shell_quote(rigger_bin);
+    let spawn = shell_quote(spawn);
+    let mut guard = format!("{bin} guard-write");
+    for root in roots {
+        guard.push_str(&format!(" --root {}", shell_quote(root)));
+    }
+    let mut merged = install_pretooluse_hook(existing, &write_guard_matcher(), &guard)?;
+    for category in AgentFailure::CATEGORIES {
+        let class = category.as_str();
+        let command = format!("{bin} hook stop-failure --spawn {spawn} --class {class}");
+        merged = merge_hook_block(&merged, "StopFailure", class, &command)?;
+    }
+    Ok(merged)
+}
+
+/// `arg` as one POSIX shell word: each `'` it holds closes the quote, is escaped and reopens it.
+fn shell_quote(arg: &str) -> String {
+    single_quoted(arg, r"'\''")
 }
 
 /// Whether the settings JSON `existing` already carries every session setting
@@ -136,17 +179,18 @@ pub fn install_session_start(existing: &[u8], command: &str) -> Result<Vec<u8>, 
 }
 
 /// Merge one hook block that runs `command` into `existing` settings JSON, under the
-/// named top-level hook `event_key` (`"SessionStart"`, `"PreToolUse"`, ...), matched
-/// against tool calls by `matcher` (empty for an event `rigger` never matcher-filters,
-/// e.g. `SessionStart`). Idempotent (installing the same `command` under the same
-/// `event_key` twice does not duplicate the block) and preserves every other setting,
-/// every other event key, and every other block already present under THIS event key -
-/// a general-purpose event (`PreToolUse`) may already carry entries for a different
-/// tool, matcher, or command a person or another tool installed, so this always APPENDS
-/// a new block rather than ever replacing the array wholesale, and touches nothing under
-/// any matcher/command this call did not itself install. `existing` may be empty. The
-/// one mutation authority both [`install_session_start`] and [`install_pretooluse_hook`]
-/// build on, so the two event kinds can never diverge on what "merge a hook block" means.
+/// named top-level hook `event_key` (`"SessionStart"`, `"PreToolUse"`, ...), filtered by
+/// `matcher` (tool names under `PreToolUse`, a failure class under `StopFailure`, empty for
+/// an event `rigger` never matcher-filters, e.g. `SessionStart`). Idempotent (installing the
+/// same `command` under the same `event_key` twice does not duplicate the block) and preserves
+/// every other setting, every other event key, and every other block already present under
+/// THIS event key - a general-purpose event (`PreToolUse`) may already carry entries for a
+/// different tool, matcher, or command a person or another tool installed, so this always
+/// APPENDS a new block rather than ever replacing the array wholesale, and touches nothing
+/// under any matcher/command this call did not itself install. `existing` may be empty. The
+/// one mutation authority [`install_session_start`], [`install_pretooluse_hook`] and
+/// [`install_spawn_hooks`] build on, so no event kind can diverge on what "merge a hook block"
+/// means.
 fn merge_hook_block(
     existing: &[u8],
     event_key: &str,
@@ -276,11 +320,11 @@ mod tests {
     use super::*;
 
     /// `install` onto an empty settings file writes every one of `needles`, and installing again
-    /// onto its own output does not duplicate `command`.
+    /// onto its own output leaves each command of `counted` exactly as many times as it names.
     fn assert_installs_idempotently(
         install: impl Fn(&[u8]) -> Result<Vec<u8>, Error>,
         needles: &[&str],
-        command: &str,
+        counted: &[(&str, usize)],
     ) {
         let first = install(b"").unwrap();
         let s = String::from_utf8(first.clone()).unwrap();
@@ -288,23 +332,114 @@ mod tests {
             assert!(s.contains(needle), "{needle} is installed: {s}");
         }
         let s2 = String::from_utf8(install(&first).unwrap()).unwrap();
-        assert_eq!(
-            s2.matches(command).count(),
-            1,
-            "installing twice must not duplicate"
-        );
+        let installed: Vec<(&str, usize)> = counted
+            .iter()
+            .map(|&(command, _)| (command, s2.matches(command).count()))
+            .collect();
+        assert_eq!(installed, counted, "installing twice must not duplicate");
     }
 
     crate::test_cases! {
         installs_and_is_idempotent: assert_installs_idempotently(
             |existing| install_session_start(existing, "rigger prime"),
             &["SessionStart", "rigger prime"],
-            "rigger prime",
+            &[("rigger prime", 1)],
         );
         pretooluse_hook_installs_and_is_idempotent: assert_installs_idempotently(
             |existing| install_pretooluse_hook(existing, "Grep|Bash", "rigger grep-guard"),
             &["PreToolUse", "rigger grep-guard", "\"matcher\": \"Grep|Bash\""],
-            "rigger grep-guard",
+            &[("rigger grep-guard", 1)],
+        );
+        spawn_hooks_install_and_are_idempotent: assert_installs_idempotently(
+            |existing| install_spawn_hooks(existing, "rigger", "u/i#0", &["/wt".to_string()]),
+            &["PreToolUse", "StopFailure", "'rigger' guard-write --root '/wt'"],
+            &[
+                ("guard-write", 1),
+                ("hook stop-failure", AgentFailure::CATEGORIES.len()),
+            ],
+        );
+    }
+
+    /// An argument of a hook command stays one word whatever it holds.
+    #[test]
+    fn shell_quote_keeps_an_argument_one_word() {
+        let rows = [
+            ("rigger", "'rigger'"),
+            ("/a b/rigger", "'/a b/rigger'"),
+            ("it's", r"'it'\''s'"),
+            ("a'b'c", r"'a'\''b'\''c'"),
+            ("u/implementer#0", "'u/implementer#0'"),
+            ("$HOME;`ls`", "'$HOME;`ls`'"),
+            ("", "''"),
+        ];
+        assert_eq!(
+            rows.map(|(arg, _)| shell_quote(arg)),
+            rows.map(|(_, quoted)| quoted)
+        );
+    }
+
+    /// A spawn's hooks over a bare and a hostile `rigger_bin`, one and two roots: the whole
+    /// `PreToolUse` and `StopFailure` arrays, every category in order, on the settings kept.
+    #[test]
+    fn spawn_hooks_are_the_write_guard_and_one_stop_failure_entry_per_category() {
+        let rows = [
+            (
+                "rigger",
+                "u/implementer#0",
+                vec!["/wt"],
+                "'rigger' guard-write --root '/wt'",
+                "'rigger' hook stop-failure --spawn 'u/implementer#0' --class",
+            ),
+            (
+                "/opt/it's here/rigger",
+                "u/reviewer#1",
+                vec!["/wt tree", "/scratch/s"],
+                r"'/opt/it'\''s here/rigger' guard-write --root '/wt tree' --root '/scratch/s'",
+                r"'/opt/it'\''s here/rigger' hook stop-failure --spawn 'u/reviewer#1' --class",
+            ),
+        ];
+        for (bin, spawn, roots, guard, stop_failure) in rows {
+            let roots: Vec<String> = roots.into_iter().map(str::to_string).collect();
+            let entry = |matcher: &str, command: &str| json!({"matcher": matcher, "hooks": [{"type": "command", "command": command}]});
+            let stop_failures: Vec<Value> = crate::agent::AgentFailure::CATEGORIES
+                .iter()
+                .map(|category| {
+                    let class = category.as_str();
+                    entry(class, &format!("{stop_failure} {class}"))
+                })
+                .collect();
+            assert_settings(
+                install_spawn_hooks(br#"{"model":"opus"}"#, bin, spawn, &roots).unwrap(),
+                &[
+                    ("/model", Value::from("opus")),
+                    (
+                        "/hooks/PreToolUse",
+                        json!([entry("Edit|MultiEdit|Write|NotebookEdit", guard)]),
+                    ),
+                    ("/hooks/StopFailure", Value::Array(stop_failures)),
+                ],
+            );
+        }
+    }
+
+    /// The write guard's matcher is every editing tool, each named once, in the list's order.
+    #[test]
+    fn the_write_guard_matcher_is_the_editing_tools_joined() {
+        let matcher = write_guard_matcher();
+        assert_eq!(
+            matcher.split('|').collect::<Vec<_>>(),
+            EDITING_TOOLS.map(|(tool, _)| tool),
+            "the write guard matches every editing tool and no other: {matcher}"
+        );
+    }
+
+    /// Spawn settings that are not a JSON object refuse the merge.
+    #[test]
+    fn spawn_hooks_refuse_settings_that_are_not_an_object() {
+        let refused = install_spawn_hooks(b"[]", "rigger", "u/implementer#0", &[]).unwrap_err();
+        assert_eq!(
+            refused.to_string(),
+            "hooks: settings.json is not a JSON object"
         );
     }
 

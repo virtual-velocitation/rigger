@@ -123,11 +123,23 @@ pub enum MergeOutcome {
     /// branch and ready to land via [`Worktree::land`]. Empty for a true no-op stage (nothing
     /// to merge or land at all) - the caller must not call `land` in that case.
     Ready(String),
-    /// The merge CONFLICTED: the sorted, deduplicated list of conflicting paths, read
-    /// directly from the worktree (never the event log) so a crash-resumed re-check of an
-    /// already-in-progress merge answers identically without re-invoking `git merge` (which
-    /// git would refuse).
+    /// The merge CONFLICTED: the sorted, deduplicated list of conflicting paths - the
+    /// unmerged ones, or, once none is unmerged, the staged ones whose content still carries
+    /// conflict-marker text the merge introduced - read directly from the worktree (never the
+    /// event log) so a crash-resumed re-check of an already-in-progress merge answers
+    /// identically without re-invoking `git merge` (which git would refuse).
     Conflict(Vec<String>),
+}
+
+/// Where [`Worktree::conflict_markers_present`] reads a path's content.
+#[derive(Clone, Copy)]
+enum ScanAt<'a> {
+    /// The worktree copy, staged or not.
+    Worktree,
+    /// The index: what the next `git commit` takes.
+    Index,
+    /// The tree of a commit, named by any revision git resolves.
+    Commit(&'a str),
 }
 
 /// The outcome of [`Worktree::cherry_pick_onto_run_branch`] (spec 88, criterion 4 - PLAN
@@ -664,7 +676,10 @@ impl Worktree {
         scope.extend(self.conflicting_paths()?);
         scope.sort();
         scope.dedup();
-        if self.conflict_markers_present(&scope)? {
+        if !self
+            .conflict_markers_present(ScanAt::Worktree, &scope)?
+            .is_empty()
+        {
             return Err(Error(format!(
                 "refusing to commit in {}: conflict-marker text is present in tracked \
                  file content - resolve it before committing",
@@ -685,62 +700,125 @@ impl Worktree {
         Ok(git(&self.dir, &["rev-parse", "HEAD"])?.trim().to_string())
     }
 
-    /// Whether any of `scope`'s TRACKED files' current content (staged or not - `git grep`
-    /// without `--cached` reads the worktree copy) still carries literal git conflict-marker
-    /// lines (`<<<<<<<`, `=======`, `>>>>>>>`, each anchored at line-start so ordinary prose
-    /// mentioning the symbols in passing cannot match). This is [`Self::commit`]'s ENTIRE
-    /// guard (spec 89, criterion 1: A CHECKPOINT NEVER COMMITS A HALF-MERGE) - deliberately a
-    /// CONTENT check, not an index-state one: `commit`'s own `git add -A` is what clears a
-    /// conflicted path's UNMERGED index flag the instant it is staged, REGARDLESS of whether
-    /// the staged content is a genuine resolution or still the raw marker text (exactly what
-    /// let the 2026-09-12 incident's checkpoint treat a conflicted file as "resolved") - so an
-    /// index-state check taken right before that same `add` cannot tell a still-broken path
-    /// from one a caller (an implementer's edit, or [`crate::conductor`]'s
-    /// `regenerate_conflicted_paths` overwriting a registered-regenerable path) has ALREADY
-    /// fixed on disk but not yet staged; both look identically "unmerged" at that instant.
-    /// Content is the one signal that is true regardless of staging order.
+    /// The literal git conflict-marker lines (`<<<<<<<`, `=======`, `>>>>>>>`, each anchored at
+    /// line-start so ordinary prose mentioning the symbols in passing cannot match) that
+    /// `scope`'s TRACKED files carry at `at`, as `(path, line)` pairs: the marker scan's one
+    /// home. [`ScanAt::Worktree`] reads the worktree copy (staged or not), [`ScanAt::Index`]
+    /// what the next `git commit` takes, and [`ScanAt::Commit`] a commit's tree. Read at the
+    /// worktree, a non-empty answer is [`Self::commit`]'s refusal; read at the index and at
+    /// both parents, it is [`Self::merge_into_worktree`]'s finalize refusal, through
+    /// [`Self::markers_the_merge_introduced`].
+    ///
+    /// At the worktree this is [`Self::commit`]'s ENTIRE guard (spec 89, criterion 1: A
+    /// CHECKPOINT NEVER COMMITS A HALF-MERGE) - deliberately a CONTENT check, not an
+    /// index-state one: `commit`'s own `git add -A` is what clears a conflicted path's
+    /// UNMERGED index flag the instant it is staged, REGARDLESS of whether the staged content
+    /// is a genuine resolution or still the raw marker text (exactly what let the 2026-09-12
+    /// incident's checkpoint treat a conflicted file as "resolved") - so an index-state check
+    /// taken right before that same `add` cannot tell a still-broken path from one a caller
+    /// (an implementer's edit, or [`crate::conductor`]'s `regenerate_conflicted_paths`
+    /// overwriting a registered-regenerable path) has ALREADY fixed on disk but not yet
+    /// staged; both look identically "unmerged" at that instant. Content is the one signal
+    /// that is true regardless of staging order.
     ///
     /// `scope` (round 2 fix, spec 89 criterion 1 -
     /// `adv-u89c1-conflict-marker-scan-is-repo-wide-content-not-diff-scoped-false-positive`) is
-    /// the CALLER's own touched-or-unmerged path list (`commit`'s `changed_files` union
-    /// `conflicting_paths`, both read before `git add -A` can clear either signal) - never an
-    /// unconditional whole-tracked-tree scan: a pre-existing, untouched file ELSEWHERE in the
-    /// repo that merely happens to contain a line matching one of these patterns (a Markdown
-    /// Setext heading's `=======` underline, say) must never block a commit that never touches
-    /// it. An empty `scope` (nothing pending) is a no-op - never even shells out - matching the
-    /// unconditional call's own no-op on a genuinely clean tree. `git grep` exits 1 (not an
-    /// error) when nothing matches, distinct from a real invocation failure.
-    fn conflict_markers_present(&self, scope: &[String]) -> Result<bool, Error> {
+    /// the CALLER's own path list (`commit`'s `changed_files` union `conflicting_paths`, both
+    /// read before `git add -A` can clear either signal; the finalize's staged paths) - never
+    /// an unconditional whole-tracked-tree scan: a pre-existing, untouched file ELSEWHERE in
+    /// the repo that merely happens to contain a line matching one of these patterns (a
+    /// Markdown Setext heading's `=======` underline, say) must never block a commit that never
+    /// touches it. An empty `scope` (nothing pending) is a no-op - never even shells out -
+    /// matching the unconditional call's own no-op on a genuinely clean tree. `git grep` exits
+    /// 1 (not an error) when nothing matches, distinct from a real invocation failure.
+    fn conflict_markers_present(
+        &self,
+        at: ScanAt<'_>,
+        scope: &[String],
+    ) -> Result<std::collections::BTreeSet<(String, String)>, Error> {
+        let mut lines = std::collections::BTreeSet::new();
         if scope.is_empty() {
-            return Ok(false);
+            return Ok(lines);
         }
-        // The pathspec separator is folded into this SAME multi-flag call, never passed via
-        // its own single-argument call, so the no-os-kill audit's whole-tree argv-separator
-        // shape - aimed at a negative-pid kill target, not a git pathspec - never matches here.
+        // `-z` ends each path with a NUL, so a path is read whole whatever it spells; the
+        // line-number and column flags are pinned off so no git config adds either to a line.
+        let mut args = vec![
+            "grep",
+            "-I",
+            "-z",
+            "--no-line-number",
+            "--no-column",
+            "-e",
+            "^<<<<<<< ",
+            "-e",
+            "^=======$",
+            "-e",
+            "^>>>>>>> ",
+        ];
+        match at {
+            ScanAt::Worktree => {}
+            ScanAt::Index => args.push("--cached"),
+            ScanAt::Commit(rev) => args.push(rev),
+        }
+        // The pathspec separator joins the SAME argument list, never its own single-argument
+        // call, so the no-os-kill audit's whole-tree argv-separator shape - aimed at a
+        // negative-pid kill target, not a git pathspec - never matches here.
+        args.push("--");
         let out = crate::subprocess::git_in(&self.dir)
-            .args([
-                "grep",
-                "-I",
-                "-q",
-                "-e",
-                "^<<<<<<< ",
-                "-e",
-                "^=======$",
-                "-e",
-                "^>>>>>>> ",
-                "--",
-            ])
+            .args(&args)
             .args(scope)
             .output()
             .map_err(|e| Error(format!("git grep conflict markers: {e}")))?;
         match out.status.code() {
-            Some(0) => Ok(true),
-            Some(1) => Ok(false),
-            _ => Err(Error(format!(
-                "git grep conflict markers: {}",
-                String::from_utf8_lossy(&out.stderr)
-            ))),
+            Some(0) => {}
+            Some(1) => return Ok(lines),
+            _ => {
+                return Err(Error(format!(
+                    "git grep conflict markers: {}",
+                    String::from_utf8_lossy(&out.stderr)
+                )));
+            }
         }
+        // A commit's hits name `<rev>:<path>`; the worktree's and the index's name the path.
+        let prefix = match at {
+            ScanAt::Commit(rev) => format!("{rev}:"),
+            ScanAt::Worktree | ScanAt::Index => String::new(),
+        };
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let mut rest: &str = &stdout;
+        while let Some((name, tail)) = rest.split_once('\0') {
+            let (line, next) = tail.split_once('\n').unwrap_or((tail, ""));
+            let path = name.strip_prefix(prefix.as_str()).unwrap_or(name);
+            lines.insert((path.to_string(), line.to_string()));
+            rest = next;
+        }
+        Ok(lines)
+    }
+
+    /// The staged paths whose index content carries conflict-marker text the in-progress merge
+    /// introduced, sorted (op-105-merge-finalize-refuses-markers): a marker line
+    /// [`Self::conflict_markers_present`] reads in the index at a staged path counts unless
+    /// either parent - `HEAD`, the unit's own side, or `MERGE_HEAD`, the run branch's tip -
+    /// already carries that same line at that path, so a Setext underline a parent holds never
+    /// refuses while a resolution staged with the merge's markers still in it does. The index
+    /// is read, not the worktree, because it is what the finalize commit takes.
+    fn markers_the_merge_introduced(&self) -> Result<Vec<String>, Error> {
+        let staged: Vec<String> = git(&self.dir, &["diff", "--cached", "--name-only", "-z"])?
+            .split('\0')
+            .filter(|path| !path.is_empty())
+            .map(str::to_string)
+            .collect();
+        let in_index = self.conflict_markers_present(ScanAt::Index, &staged)?;
+        let mut hit: Vec<String> = in_index.iter().map(|(path, _)| path.clone()).collect();
+        hit.dedup();
+        let mut carried = self.conflict_markers_present(ScanAt::Commit("HEAD"), &hit)?;
+        carried.extend(self.conflict_markers_present(ScanAt::Commit("MERGE_HEAD"), &hit)?);
+        let mut introduced: Vec<String> = in_index
+            .difference(&carried)
+            .map(|(path, _)| path.clone())
+            .collect();
+        introduced.dedup();
+        Ok(introduced)
     }
 
     /// Every path this unit changed relative to the base the worktree branched
@@ -951,6 +1029,14 @@ impl Worktree {
             return Ok(MergeOutcome::Conflict(conflicts));
         }
         if self.merge_in_progress() {
+            // A staged resolution still carrying marker text the merge introduced is no
+            // resolution (op-105-merge-finalize-refuses-markers): the paths go back to the
+            // caller's conflict route, the merge left in progress and nothing committed. A
+            // marker-shaped line either parent already carries at that path never refuses.
+            let introduced = self.markers_the_merge_introduced()?;
+            if !introduced.is_empty() {
+                return Ok(MergeOutcome::Conflict(introduced));
+            }
             // Every conflict (if any arose) is resolved and staged: finalize the merge
             // commit on the unit's OWN branch before landing it on the run branch. Same
             // bypass as the pre-merge commit just above (d-checkin-rigger-own-commits-
@@ -4219,6 +4305,95 @@ mod tests {
             b.merge_in_progress(),
             "the in-progress merge survives the idempotent re-entry untouched"
         );
+    }
+
+    /// A merge's finalize commit takes no conflict-marker text the merge introduced
+    /// (op-105-merge-finalize-refuses-markers): a resolution staged with markers still in it,
+    /// or staged with them and cleared only in the worktree (the commit takes the index), is a
+    /// `Conflict` naming the path, the merge left in progress and the unit branch unmoved; a
+    /// resolution keeping the Setext underline both parents carry at that path finalizes clean.
+    #[test]
+    fn a_merge_finalize_refuses_marker_text_the_merge_introduced_and_no_line_a_parent_carries() {
+        const RESOLVED: &str = "Title\n=======\nA and B\n";
+        // (row, what the resolver stages - `None` is the file as the merge left it - what it
+        // then leaves in the worktree unstaged, the conflict the finalize answers)
+        let rows = [
+            (
+                "a resolution still carrying the markers",
+                None,
+                None,
+                Some(&["notes.md"]),
+            ),
+            (
+                "markers staged and cleared only in the worktree",
+                None,
+                Some(RESOLVED),
+                Some(&["notes.md"]),
+            ),
+            (
+                "a resolution keeping the underline both parents carry",
+                Some(RESOLVED),
+                None,
+                None,
+            ),
+        ];
+        for (row, staged, unstaged, conflict) in rows {
+            let repo = init_repo();
+            let repo_path = repo.path().to_str().unwrap().to_string();
+            std::fs::write(repo.path().join("notes.md"), "Title\n=======\nbase\n").unwrap();
+            run_git(&repo_path, &["add", "notes.md"]).unwrap();
+            run_git(&repo_path, &["commit", "-q", "-m", "seed notes"]).unwrap();
+            // Each side commits its edit directly: `Worktree::commit`'s own marker scan reads
+            // the Setext underline in a touched file as marker text.
+            let edit = |dir: &std::path::Path, body: &str| {
+                std::fs::write(dir.join("notes.md"), format!("Title\n=======\n{body}\n")).unwrap();
+                git(dir.to_str().unwrap(), &["commit", "-q", "-am", body]).unwrap();
+            };
+            let (wa, a) = temp_wt(&repo_path, "rigger/u/a");
+            let (wb, b) = temp_wt(&repo_path, "rigger/u/b");
+            edit(&wa, "A");
+            a.integrate("rigger: integrate a").unwrap().expect_merged();
+            edit(&wb, "B");
+            let Ok(MergeOutcome::Conflict(first)) = b.merge_into_worktree("rigger: integrate b")
+            else {
+                panic!("{row}: the divergent edit must conflict first");
+            };
+            assert_eq!(first, ["notes.md"], "{row}");
+            let wb_dir = wb.to_str().unwrap();
+            if let Some(content) = staged {
+                std::fs::write(wb.join("notes.md"), content).unwrap();
+            }
+            git(wb_dir, &["add", "notes.md"]).unwrap();
+            if let Some(content) = unstaged {
+                std::fs::write(wb.join("notes.md"), content).unwrap();
+            }
+            let tip = || branch_tip(&repo_path, "rigger/u/b").unwrap();
+            let tip_before = tip();
+
+            let outcome = b.merge_into_worktree("rigger: integrate b").unwrap();
+            let tip_after = tip();
+            match (outcome, conflict) {
+                (MergeOutcome::Conflict(paths), Some(expected)) => {
+                    assert_eq!(paths, expected, "{row}: the conflict names the path");
+                    assert_eq!(tip_after, tip_before, "{row}: no marker commit lands");
+                    assert!(b.merge_in_progress(), "{row}: the merge stays in progress");
+                }
+                (MergeOutcome::Ready(commit), None) => {
+                    assert_eq!(commit, tip_after, "{row}: the merge commits");
+                    assert_eq!(
+                        git(&repo_path, &["show", "rigger/u/b:notes.md"]).unwrap(),
+                        RESOLVED,
+                        "{row}: the unit branch holds the resolution"
+                    );
+                }
+                (MergeOutcome::Conflict(paths), None) => {
+                    panic!("{row}: expected a clean finalize, got a conflict in {paths:?}")
+                }
+                (MergeOutcome::Ready(commit), Some(_)) => {
+                    panic!("{row}: expected a conflict, the merge committed {commit}")
+                }
+            }
+        }
     }
 
     #[test]

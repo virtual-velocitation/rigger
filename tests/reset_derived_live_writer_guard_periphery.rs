@@ -1211,10 +1211,10 @@ fn the_help_and_the_rendered_skills_state_that_the_guard_reads_liveness() {
     let reset_store = skill("rigger-reset-store");
     assert!(
         reset_store.contains(
-            "When no driver is alive (no `rigger step` holds the lock, no in-flight spawn's \
-             liveness marker is younger than its wall-clock bound, no driver registration for the \
-             store has a heartbeat inside the idle window) and every spawn of the run has ended \
-             on a real result, it also closes the current run's units"
+            "When no driver is alive (no `rigger step` or `rigger run` holds the lock, no \
+             in-flight spawn's liveness marker is younger than its wall-clock bound, no driver \
+             registration for the store has a heartbeat inside the idle window) and every spawn \
+             of the run has ended on a real result, it also closes the current run's units"
         ) && reset_store.contains(
             "a dead run with a hung spawn stays open and the reset names it: record its real \
              result with `rigger result <id>`, then rerun `rigger reset --runs`"

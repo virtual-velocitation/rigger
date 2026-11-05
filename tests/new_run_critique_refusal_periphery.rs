@@ -4,7 +4,10 @@
 //! finding no later `DecisionMade` resolves, then it refuses on stderr - naming each open
 //! BLOCKING finding id and the two commands that clear it - and appends nothing; a step that
 //! adopts the spec's existing run proceeds whatever the critique; and under a workflow naming no
-//! critic a new run proceeds with one line saying so.
+//! critic a new run proceeds with one line saying so. Spec 105 stands ahead of the refusal: a
+//! plain step of a held run begins no run, so it prints the hold whatever the critique, and a
+//! plain step of a run not proved unheld fails on that read, while a `--fresh` step keeps the
+//! refusal ahead of its mint.
 //!
 //! NOT OWNED HERE: the critique verb and its record (criterion 1), and the plan-critique stop on
 //! a spec defect (criterion 5).
@@ -16,10 +19,13 @@ use std::path::Path;
 use common::cli::{
     assert_stopped_at_the_grounder, critique_finding_id, emit, printed_decision, read_run_events,
     record_clean_critique, record_critique, refused_new_run, run_payloads, run_rigger,
-    run_rigger_envs, seed_run_events, stopping_at_the_grounder, temp_repoless_project,
-    write_scaffold, write_spec_project, CRITIQUE_ROUTE, RESOLUTION_ROUTE,
+    run_rigger_envs, seed_a_hold_no_fold_applies, seed_on_the_run, seed_run_events,
+    stopping_at_the_grounder, temp_repoless_project, write_scaffold, write_spec_project,
+    CRITIQUE_ROUTE, RESOLUTION_ROUTE,
 };
-use common::fixtures::{git_ok, git_out, temp_git_project_with_commit};
+use common::fixtures::{
+    git_ok, git_out, hold_naming, run_held_event, temp_git_project_with_commit,
+};
 use common::repo::{stub_path, write_critique_stub};
 use rigger::wave::NO_CRITIC_CLAUSE;
 use serde_json::json;
@@ -305,6 +311,171 @@ fn a_step_adopting_the_specs_run_proceeds_while_one_beginning_a_new_run_refuses(
         ("rigger step", SPEC_REL, None),
         2,
     );
+}
+
+/// How a step of a held run ends.
+enum HeldRunStep {
+    /// It prints the held line, exits 0 and leaves the run stream as it stood.
+    PrintsTheHold,
+    /// It refuses the new run ([`assert_step_refused`]).
+    Refused,
+    /// It begins the new run and goes on ([`assert_step_proceeds`]).
+    BeginsANewRun,
+}
+
+/// Spec 105, HELD MEANS NO LAUNCH AND NO CHARGE: given a held run on the spec, when a plain step
+/// names the spec it prints the hold and exits 0 whatever the critique of the spec's text, since
+/// a held step begins no run for the refusal to guard; when a `--fresh` step names it the refusal
+/// still stands ahead of its mint, and a text critiqued clean lets that step mint the new run,
+/// which released the hold it ended, and go on.
+#[test]
+fn a_plain_step_of_a_held_run_prints_the_hold_whatever_the_critique_and_fresh_keeps_its_refusal() {
+    use HeldRunStep::{BeginsANewRun, PrintsTheHold, Refused};
+    const HELD: &str = "{\"wave\":[],\"done\":false,\"halted\":\
+                        \"run held - operator - the quota is being moved\"}\n";
+    let uncritiqued: fn(&Path) = |_| {};
+    let critiqued_clean: fn(&Path) = |root| record_clean_critique(root, SPEC_REL);
+    let finding_open: fn(&Path) = |root| {
+        record_critique(root, SPEC_REL, REJECT);
+    };
+    let plain: &[&str] = &[];
+    let fresh: &[&str] = &["--fresh"];
+    for (name, text, critique, extra, ends) in [
+        (
+            "the spec unchanged",
+            SPEC,
+            uncritiqued,
+            plain,
+            PrintsTheHold,
+        ),
+        (
+            "the spec amended, not critiqued",
+            SPEC_DROPPED,
+            uncritiqued,
+            plain,
+            PrintsTheHold,
+        ),
+        (
+            "the spec amended, a BLOCKING finding open",
+            SPEC_DROPPED,
+            finding_open,
+            plain,
+            PrintsTheHold,
+        ),
+        (
+            "the spec amended, critiqued clean",
+            SPEC_DROPPED,
+            critiqued_clean,
+            plain,
+            PrintsTheHold,
+        ),
+        (
+            "--fresh on the amended spec, not critiqued",
+            SPEC_DROPPED,
+            uncritiqued,
+            fresh,
+            Refused,
+        ),
+        (
+            "--fresh on the amended spec, critiqued clean",
+            SPEC_DROPPED,
+            critiqued_clean,
+            fresh,
+            BeginsANewRun,
+        ),
+    ] {
+        let dir = temp_git_project_with_commit();
+        let root = dir.path();
+        write_spec_project(root, &PERSONAS, SKEPTIC_WORKFLOW, SPEC_REL, SPEC);
+        seed_the_specs_run(root);
+        seed_on_the_run(
+            root,
+            run_held_event(&hold_naming(
+                "operator",
+                "the quota is being moved",
+                rigger::run::HOLD_BY_OPERATOR,
+            )),
+        );
+        std::fs::write(root.join(SPEC_REL), text).unwrap();
+        critique(root);
+
+        match ends {
+            PrintsTheHold => {
+                let events_before = read_run_events(root).len();
+                let (out, err, ok) = step(root, SPEC_REL, extra);
+                assert_eq!((out.as_str(), ok), (HELD, true), "{name}; stderr:\n{err}");
+                assert_unrefused(("rigger step", SPEC_REL), &err, 0);
+                assert_eq!(
+                    (
+                        run_payloads(root, "RunStarted").len(),
+                        read_run_events(root).len()
+                    ),
+                    (1, events_before),
+                    "{name}: a held step mints no run and records nothing"
+                );
+            }
+            Refused => assert_step_refused(root, (SPEC_REL, extra), SPEC_REL, None, 1),
+            BeginsANewRun => assert_step_proceeds(root, (SPEC_REL, extra), SPEC_REL, (0, 2)),
+        }
+    }
+}
+
+/// Spec 105, a run not proved unheld launches nothing, on the shape a courier steps with: given a
+/// `RunHeld` no fold applies on a spec amended since its run began, when a plain step names the
+/// spec it fails on that read ahead of the refusal, whose routes would clear nothing the step
+/// stopped on; when a `--fresh` step names it the refusal still stands ahead of its mint; and a
+/// text critiqued clean lets that step reach its mint, which fails on the hold it cannot release.
+/// Each leaves stdout empty, so a courier reports an error and never a wave, and appends nothing.
+#[test]
+fn a_step_of_a_run_not_proved_unheld_fails_ahead_of_any_mint_and_a_plain_one_ahead_of_its_refusal()
+{
+    let refused = refused_new_run("rigger step", SPEC_REL, None);
+    let rows: [(&str, bool, &[&str], &str); 3] = [
+        (
+            "a plain step, the text not critiqued",
+            false,
+            &[],
+            "rigger: event store: fold the run's hold: expected ident at line 1 column 2\n",
+        ),
+        (
+            "--fresh, the text not critiqued",
+            false,
+            &["--fresh"],
+            &refused,
+        ),
+        (
+            "--fresh, the text critiqued clean",
+            true,
+            &["--fresh"],
+            "rigger: event store: fold the run's hold: expected ident at line 1 column 2\n",
+        ),
+    ];
+    for (name, critiqued_clean, extra, failed_on) in rows {
+        let dir = temp_git_project_with_commit();
+        let root = dir.path();
+        write_spec_project(root, &PERSONAS, SKEPTIC_WORKFLOW, SPEC_REL, SPEC);
+        seed_the_specs_run(root);
+        seed_a_hold_no_fold_applies(root);
+        std::fs::write(root.join(SPEC_REL), SPEC_DROPPED).unwrap();
+        if critiqued_clean {
+            record_clean_critique(root, SPEC_REL);
+        }
+        let events_before = read_run_events(root).len();
+
+        let (out, err, ok) = step(root, SPEC_REL, extra);
+
+        assert_eq!((out.as_str(), ok), ("", false), "{name}; stderr:\n{err}");
+        assert_eq!(
+            err.split_once('\n').map(|(_, past_the_hint)| past_the_hint),
+            Some(failed_on),
+            "{name}: what the step failed on"
+        );
+        assert_eq!(
+            read_run_events(root).len(),
+            events_before,
+            "{name}: the step appends nothing"
+        );
+    }
 }
 
 /// A run its plan-critique gate stopped on a spec defect (an escalation carrying the stop's

@@ -8,9 +8,9 @@
 //! Three read-models fold run state from the one stream - the [`crate::ledger`]
 //! (durable run state), the [`crate::spawn`] frontier (the stepwise wave), and the
 //! [`crate::metrics`] (`rigger stats`) - and all three scope through [`current_run`].
-//! The run vocabulary (the `RunStarted` event type and the `run_id` metadata key every
-//! conductor-emitted event carries) lives here so those modules share one source of
-//! truth rather than re-declaring it.
+//! The run vocabulary (the `RunStarted` event type, the `RunHeld` and `RunReleased` hold
+//! events, and the `run_id` metadata key every conductor-emitted event carries) lives here so
+//! those modules share one source of truth rather than re-declaring it.
 
 use std::collections::BTreeMap;
 
@@ -37,6 +37,23 @@ pub const STREAM: &str = "run";
 /// helpers here read it, exactly as [`crate::spawn::TYPE_SPAWN_REQUESTED`] is read only
 /// by the spawn fold.
 pub const TYPE_RUN_STARTED: &str = "RunStarted";
+
+/// The event that holds a run, its body a [`RunHeld`]. A run is held while a `RunHeld` has no
+/// later [`TYPE_RUN_RELEASED`]; [`crate::ledger::project`] folds the open hold onto
+/// [`crate::ledger::RunState::hold`].
+pub const TYPE_RUN_HELD: &str = "RunHeld";
+
+/// The event that ends a run's hold, its body a [`RunReleased`].
+pub const TYPE_RUN_RELEASED: &str = "RunReleased";
+
+/// The [`RunHeld::by`] of the operator: a hold with any such `RunHeld` is an operator hold.
+pub const HOLD_BY_OPERATOR: &str = "operator";
+
+/// The `by` of a hold the host wrote, and of a release a done run or a mint wrote.
+pub const HOLD_BY_HOST: &str = "host";
+
+/// The `by` of a hold a failed probe wrote, and of the release a passing probe wrote.
+pub const HOLD_BY_PROBE: &str = "probe";
 
 /// The metadata key that stamps every conductor-emitted event with the id of the run it
 /// belongs to (spec 06, unit 1). Its value is the current run's uuid; a pre-run-id
@@ -138,6 +155,38 @@ impl RunStarted {
         }
         Ok(ev)
     }
+}
+
+/// The body of a [`TYPE_RUN_HELD`] event. `#[serde(default)]`, so a sparse body folds as a hold
+/// with empty fields rather than failing every reader of the run. `action` and `needs_person`
+/// are set by the writer from the cause's row, so the fold and the console, which the core lane
+/// builds without `agent`, read them without the table.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RunHeld {
+    /// The hold's cause: an error category, `api-unstable` or `operator`.
+    pub cause: String,
+    /// The error text of the line that sighted the hold, else empty.
+    pub detail: String,
+    /// The action text of the cause's row.
+    pub action: String,
+    /// Whether the cause's row needs a person.
+    pub needs_person: bool,
+    /// Who held the run: [`HOLD_BY_HOST`], [`HOLD_BY_PROBE`] or [`HOLD_BY_OPERATOR`].
+    pub by: String,
+    /// The model the hold's probes ask, empty for the default model: a host hold names its
+    /// launch's model.
+    pub model: String,
+}
+
+/// The body of a [`TYPE_RUN_RELEASED`] event. `#[serde(default)]`, as [`RunHeld`] is.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RunReleased {
+    /// Who released the run: [`HOLD_BY_HOST`], [`HOLD_BY_PROBE`] or [`HOLD_BY_OPERATOR`].
+    pub by: String,
+    /// How long the hold lasted, in seconds.
+    pub held_for_s: u64,
 }
 
 /// The latest [`RunStarted`] in `events`, decoded, or `None` when no run has started.
@@ -514,6 +563,25 @@ pub fn graph_node_id(e: &Event) -> Option<String> {
     let body: serde_json::Value = serde_json::from_slice(&e.data).ok()?;
     let id = body.get("id")?.as_str()?;
     (!id.is_empty()).then(|| id.to_string())
+}
+
+impl RunHeld {
+    /// Build the appendable [`TYPE_RUN_HELD`] event carrying this body. `pub` because its writers
+    /// outside this module, the hold writers of `run_store`, live in the `rigger-store-sqlite`
+    /// adapter crate.
+    #[cfg_attr(all(feature = "core", not(feature = "store")), allow(dead_code))] // only called from the *_store sibling under core-only
+    pub fn to_event(&self) -> Result<Event, serde_json::Error> {
+        Ok(Event::new(TYPE_RUN_HELD, serde_json::to_vec(self)?))
+    }
+}
+
+impl RunReleased {
+    /// Build the appendable [`TYPE_RUN_RELEASED`] event carrying this body, `pub` for the same
+    /// adapter-crate writers [`RunHeld::to_event`] serves.
+    #[cfg_attr(all(feature = "core", not(feature = "store")), allow(dead_code))] // only called from the *_store sibling under core-only
+    pub fn to_event(&self) -> Result<Event, serde_json::Error> {
+        Ok(Event::new(TYPE_RUN_RELEASED, serde_json::to_vec(self)?))
+    }
 }
 
 #[cfg(test)]
@@ -900,6 +968,40 @@ mod tests {
             ],
             [true, false, true, false, false, false, false],
             "live before any run, historical once one is active"
+        );
+    }
+
+    /// `body` is written as exactly `json`, every field by its decided name and in the decided
+    /// order, reads back from it unchanged, and a body naming no field reads as the empty one.
+    fn assert_wire<T>(body: T, json: &str)
+    where
+        T: Serialize + serde::de::DeserializeOwned + PartialEq + Default + std::fmt::Debug,
+    {
+        assert_eq!(serde_json::to_string(&body).unwrap(), json);
+        assert_eq!(serde_json::from_str::<T>(json).unwrap(), body);
+        assert_eq!(serde_json::from_str::<T>("{}").unwrap(), T::default());
+    }
+
+    /// THE EVENTS decides each hold event's fields, and a sparse body degrades to the empty one.
+    #[test]
+    fn each_hold_event_keeps_the_body_the_spec_decides() {
+        assert_wire(
+            RunHeld {
+                cause: "api-unstable".to_string(),
+                detail: "overloaded".to_string(),
+                action: "wait for the canary".to_string(),
+                needs_person: true,
+                by: "host".to_string(),
+                model: "m1".to_string(),
+            },
+            r#"{"cause":"api-unstable","detail":"overloaded","action":"wait for the canary","needs_person":true,"by":"host","model":"m1"}"#,
+        );
+        assert_wire(
+            RunReleased {
+                by: "probe".to_string(),
+                held_for_s: 90,
+            },
+            r#"{"by":"probe","held_for_s":90}"#,
         );
     }
 }

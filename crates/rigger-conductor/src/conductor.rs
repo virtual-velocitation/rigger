@@ -51,10 +51,11 @@ pub use rigger_domain::wave::{blast_radius_conflicts, normalize_ws, ungated_fan_
 // The agent-host port, moved inward to `rigger-domain` (workspace split) so the driver adapters
 // implement it without naming the conductor; re-exported so every `conductor::` path holds.
 pub use rigger_domain::agent::{
-    classify_failure, no_result_error, parked_spawn, spawn_request, strip_failure_marker,
-    AgentDriver, AgentFailure, AgentResult, Error, SpawnOpts, TYPE_UNIT_PROPOSED,
+    classify_failure, no_result_error, parked_spawn, spawn_request, store_fault,
+    strip_failure_marker, AgentDriver, AgentFailure, AgentResult, Error, SpawnOpts,
+    STORE_FAULT_MARKER, TYPE_UNIT_PROPOSED,
 };
-use rigger_domain::agent::{EMIT_REFUSED_MARKER, PARKED_MARKER};
+use rigger_domain::agent::{EMIT_REFUSED_MARKER, INTERRUPTED_MARKER, PARKED_MARKER};
 #[cfg(test)]
 use rigger_domain::wave::{ready_stages, unit_slug};
 
@@ -140,8 +141,8 @@ pub use crate::metrics::META_MODEL_RESOLVED;
 /// distinct from the shared ROLE token [`contextgraph::META_ACTOR`] stamps (two concurrent
 /// sibling adjudicators carry the SAME actor, so the actor cannot tell their emits apart).
 /// The per-spawn `emit` callback in [`run_reviewer`](RunCtx::run_reviewer) stamps it, so an
-/// approve-shaped verdict a GATING spawn records via `rigger_emit` on the in-process (cli)
-/// path is attributable to THAT spawn EXACTLY - the correlation the store-sourced
+/// approve-shaped verdict a GATING spawn hands through that callback is attributable to
+/// THAT spawn EXACTLY - the correlation the store-sourced
 /// verdict-channel-mismatch backstop needs to exclude a CONCURRENT sibling's approve under
 /// the `run_wave` fan-out. Audit metadata on events that already exist, never a new event
 /// type (spec 18's Global constraints); folds and projections ignore it, exactly like
@@ -323,14 +324,19 @@ const META_SESSION_ID: &str = "session_id";
 
 /// The metadata key a [`STATUS_SPAWN_SESSION`] mark carries the session the spawn was ASKED to
 /// continue under ([`SpawnOpts::resumed_from`]); absent on a spawn asked for a fresh session.
-/// Beside [`META_RESUMED_FROM`] it records a host's fallback in the log: a requested session
-/// with no continued one is a resume the host could not honour (its transcript was gone), so
-/// the spawn ran fresh.
+/// Beside [`META_SESSION_ID`] it records a host's fallback in the log: on a spawn the host
+/// launched, a requested session it did not run as, with no relaunch behind it
+/// ([`META_RESUMED_FROM`] absent), is a resume the host could not honour (its transcript was
+/// gone), so the spawn ran fresh; a relaunch runs as a fork under a minted id, which is no
+/// fallback.
 const META_RESUME_REQUESTED: &str = "resume_requested";
 
-/// The metadata key a [`STATUS_SPAWN_SESSION`] mark carries the session the spawn CONTINUED
-/// under; absent on a fresh spawn, including the fresh fallback a host takes when the session
-/// it was asked to resume is gone.
+/// The metadata key a [`STATUS_SPAWN_SESSION`] mark carries the session the spawn's last launch
+/// CONTINUED ([`AgentResult::resumed_from`]): the one it resumed, which it ran as, or the session
+/// of the interrupted launch a relaunch forked into the [`META_SESSION_ID`] it ran as. Absent on a
+/// fresh launch no relaunch followed, including the fresh fallback a host takes when the session
+/// it was asked to resume is gone, and on a spawn the headless host answers from the run log,
+/// which continues no session.
 const META_RESUMED_FROM: &str = "resumed_from";
 
 /// The replay key for a durable [`STATUS_REVIEW_ROUND_START`] mark, keyed by the exact
@@ -349,6 +355,13 @@ fn review_round_start_key(unit: &str, attempt: u32) -> String {
 /// ([`spec_defect_stop`]) reads each reject back by it.
 fn failed_key(unit: &str, attempt: u32) -> String {
     format!("{unit}/failed#{attempt}")
+}
+
+/// The replay key of the `verified` status `unit` records once its gates at `attempt` pass (a
+/// speculation winner's at its lane), which [`RunCtx::attempt_gates_started`] reads back for an
+/// attempt whose gate selection ran no gate.
+fn verified_key(unit: &str, attempt: u32) -> String {
+    format!("{unit}/verified#{attempt}")
 }
 
 /// The replay key of the lesson a plan-critique `gate`'s spec-defect stop records for its reject
@@ -1453,10 +1466,13 @@ enum ResumePhase {
     /// implementer spawn, recreate the worktree from the unit's branch, and continue
     /// the lifecycle from gates + the three-tier review on the committed code.
     Implemented,
-    /// The unit's review was APPROVED in a prior window (last status `reviewed`) and
-    /// its branch carries committed work, but the merge was interrupted (no
-    /// UnitIntegrated). SKIP both implement and review and go straight to integrate -
-    /// the work was approved, only the merge did not land.
+    /// The unit was APPROVED in a prior window and its branch carries committed work,
+    /// but the merge was interrupted (no UnitIntegrated): its adjudicator approved (last
+    /// status `reviewed`), or its stage carries no review and its log records an
+    /// integrate attempt at its current attempt (last status `green`/`verified`, since
+    /// an empty panel's trivial approve records no `reviewed`). SKIP both implement and
+    /// review and go straight to integrate - the work was approved, only the merge did
+    /// not land.
     Reviewed,
 }
 
@@ -1467,10 +1483,25 @@ pub fn is_parked(e: &Error) -> bool {
     carries_marker(e, PARKED_MARKER)
 }
 
+/// Whether `e` carries the host's [`INTERRUPTED_MARKER`]: a launch the host closed `interrupted`,
+/// which the held-run decorator relaunches on the mark alone.
+pub(crate) fn is_interrupted(e: &Error) -> bool {
+    carries_marker(e, INTERRUPTED_MARKER)
+}
+
+/// Whether `e` carries [`STORE_FAULT_MARKER`]: a store read that failed before the spawn
+/// launched, an infra fault the held-run decorator records no result for and the conflict
+/// resolver retries as a [`spawn_crash`] on the mark alone.
+pub(crate) fn is_store_fault(e: &Error) -> bool {
+    carries_marker(e, STORE_FAULT_MARKER)
+}
+
 /// Whether `e` carries the sentinel `marker` ([`PARKED_MARKER`], [`BUDGET_MARKER`],
 /// [`DEGENERATE_MARKER`], [`MISMATCH_MARKER`], [`PLAN_LANDING_MARKER`] or
-/// [`LAND_REFUSED_MARKER`], each a halt's signal, or [`EMIT_REFUSED_MARKER`], the emit guard's
-/// refusal of a record the spawn emitted) rather than a plain spawn or stage failure. Robust to
+/// [`LAND_REFUSED_MARKER`], each a halt's signal, [`EMIT_REFUSED_MARKER`], the emit guard's
+/// refusal of a record the spawn emitted, [`INTERRUPTED_MARKER`], the host's interrupted
+/// close, or [`STORE_FAULT_MARKER`], a store read failing before the launch) rather than a plain
+/// spawn or stage failure. Robust to
 /// the conductor's own `format!("... {}", e.0)` wrapping at every call site, since each marker
 /// survives as a substring.
 fn carries_marker(e: &Error, marker: &str) -> bool {
@@ -1594,20 +1625,27 @@ fn spawn_halt(kind: SpawnHalt, stage: &str, tier: &str, agent: &str) -> Error {
     }
 }
 
-/// Whether `e` is a NON-TERMINAL unwind - a park (the stepwise/replay frontier) OR a
-/// review-tier budget refusal - as opposed to a genuine terminal failure (spec 64
-/// criterion 1). Both dispositions get the SAME treatment everywhere a worktree-keep
-/// decision reads them: a park hands work to an out-of-process agent that resumes in
-/// this exact tree, and a budget refusal is symmetric with the implementer's `Ok(false)`
-/// refusal (also worktree-preserving) - neither is a crash a caller should tear a
-/// worktree down over. One predicate for both, so every site that answers "should this
-/// unwind KEEP the worktree" (or, negated, "is this the genuine error to prioritize over
-/// a co-chunked park/refusal") reads it from ONE place instead of hand-spelling the
-/// `is_parked(e) || carries_marker(e, BUDGET_MARKER)` disjunct (or its De Morgan negation) at each
-/// call site - the exact duplication that let round 2 and round 3's masking defects hide
+/// Whether `e` is a park (the stepwise/replay frontier) OR the refusal `refusal` marks, as
+/// opposed to any other spawn failure: with [`BUDGET_MARKER`] a NON-TERMINAL unwind (spec 64
+/// criterion 1), with [`EMIT_REFUSED_MARKER`] an error its site hands on unchanged.
+///
+/// With [`BUDGET_MARKER`], a review-tier budget refusal, both dispositions get the SAME treatment
+/// everywhere a worktree-keep decision reads them: a park hands work to an out-of-process agent
+/// that resumes in this exact tree, and a budget refusal is symmetric with the implementer's
+/// `Ok(false)` refusal (also worktree-preserving) - neither is a crash a caller should tear a
+/// worktree down over. With [`EMIT_REFUSED_MARKER`], the emit guard's refusal of a record the
+/// spawn emitted, both are what the SDET author's spawn site surfaces and the held-run decorator
+/// hands to the conductor unchanged with no result recorded, and two of the three errors the
+/// conflict resolver propagates where any other spends its round (the third, a store fault, as a
+/// [`spawn_crash`]).
+///
+/// One predicate, so every site that answers "should this unwind KEEP the worktree" (or, negated,
+/// "is this the genuine error to prioritize over a co-chunked park/refusal") reads it from ONE
+/// place instead of hand-spelling the disjunct (or its De Morgan negation) at each call site - the
+/// exact duplication that let round 2 and round 3's masking defects hide
 /// (arch-u1c1-r3-predicate-now-also-negated).
-fn is_parked_or_budget_refused(e: &Error) -> bool {
-    is_parked(e) || carries_marker(e, BUDGET_MARKER)
+pub(crate) fn is_parked_or_refused(e: &Error, refusal: &str) -> bool {
+    is_parked(e) || carries_marker(e, refusal)
 }
 
 /// The number of times a reviewer whose result is DEGENERATE (empty or whitespace-only)
@@ -1616,7 +1654,9 @@ fn is_parked_or_budget_refused(e: &Error) -> bool {
 /// under a fresh deterministic id ([`spawn_retry_id`]); bounded here so a persistently
 /// broken reviewer agent/driver cannot loop the conductor forever. The reviewer runs at
 /// most `1 + REVIEWER_RESPAWN_BOUND` times (its original spawn plus this many respawns)
-/// before [`degenerate_reviewer`] halts the run. A reviewer, sdet author or re-planner whose
+/// in one review round, after which [`degenerate_reviewer`] halts the run, or, when a spawn
+/// of the round recorded an error, the round reruns under the F3 infra retry
+/// ([`SPAWN_CRASH_MARKER`]). A reviewer, sdet author or re-planner whose
 /// record the emit guard refused re-runs once inside the same window
 /// ([`rerun_once_on_refusal`]).
 const REVIEWER_RESPAWN_BOUND: u32 = 2;
@@ -1823,6 +1863,37 @@ const HALT_MARKERS: [&str; 5] = [
 /// ([`failure::Taxonomy::infra_limit`]), so the step halts loudly instead of charging the
 /// unit an attempt for an outage it did not cause.
 const INFRA_MARKER: &str = "\u{1}rigger:infra-halt\u{1}";
+
+/// The sentinel a sdet-author or review-tier spawn crash embeds in its error: a spawn error that
+/// is no park, no budget refusal and no refused record (and, for the sdet-author, its opts
+/// guard's error too), or a review round whose window ends with a recorded spawn error among its
+/// spawns ([`RunCtx::run_reviewer`]). The single lane ([`RunCtx::run_single_stage`]) reads it through
+/// [`infra_crash`] as an outage of the unit's stage and reruns the stage uncharged under the F3
+/// infra retry ([`CAUSE_INFRA_SPAWN`]), as it does an implementer crash. A conflict-resolver round
+/// a store fault ended before its launch returns it too, and the single lane's integrate doors
+/// ([`RunCtx::integrate_under_infra_retry`]) rerun the merge under the same retry. It is no halt: every
+/// other caller (a standalone review stage, the plan-critique gate, a speculation candidate)
+/// keeps its own crash handling, and the wave's generic arm and the plan-critique gate strip it
+/// from the operator's message.
+const SPAWN_CRASH_MARKER: &str = "\u{1}rigger:spawn-crashed\u{1}";
+
+/// The error a sdet-author or review-tier spawn crash returns: `message` marked with
+/// [`SPAWN_CRASH_MARKER`].
+fn spawn_crash(message: String) -> Error {
+    Error(format!("{SPAWN_CRASH_MARKER}{message}"))
+}
+
+/// A sdet seam or review result split for the single lane: `Ok(Err(crash))` when it carries the
+/// [`SPAWN_CRASH_MARKER`], `crash` its message with the marker stripped so the F3 evidence names
+/// it, and every other result as it was.
+fn infra_crash<T>(r: Result<T, Error>) -> Result<Result<T, String>, Error> {
+    match r {
+        Err(e) if carries_marker(&e, SPAWN_CRASH_MARKER) => {
+            Ok(Err(e.0.replace(SPAWN_CRASH_MARKER, "")))
+        }
+        r => r.map(Ok),
+    }
+}
 
 /// The `UnitStatus` token of an infra RERUN mark (F3): a unit's stage failed on
 /// infrastructure at `(attempt, ordinal)` and was not charged. Keyed by [`infra_mark_key`].
@@ -2090,9 +2161,12 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
     // and `defaults.budget` binds no matter how many `rigger step` processes the run spans.
     // Their ids seed `recorded_spawn_ids` so `reserve_spawn` can tell a REPLAY of an
     // already-recorded spawn (admit free) from a genuinely new one, without re-reading the
-    // whole stream per spawn. The blocking drivers never park a request, so both are empty
-    // for them and their in-process spawns are the whole count - historical behavior,
-    // unchanged.
+    // whole stream per spawn. The headless host parks each spawn before its first launch
+    // too, so a restarted `rigger run` folds every spawn an earlier process parked, the
+    // budget binding across `rigger run` processes as across steps, and admits each one it
+    // answers from the log free; a spawn whose result the log holds with no request is
+    // charged as new when answered. The cli and workflow drivers record no spawn
+    // request, so both are empty for them and their in-process spawns are the whole count.
     let recorded_spawns = spawn::recorded(prior_events).map_err(|e| Error(e.to_string()))?;
     let base_spawns = recorded_spawns.len() as u32;
     let recorded_spawn_ids: HashSet<String> = recorded_spawns.into_keys().collect();
@@ -2463,9 +2537,9 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
                         fan_out_released = end == GateEnd::Released;
                         gate_stopped = end == GateEnd::Stopped;
                     }
-                    // A parked reviewer/re-plan spawn (stepwise/replay) ends the step
-                    // cleanly; a later step replays the recorded result and re-reaches
-                    // the gate.
+                    // A parked reviewer/re-plan spawn (stepwise/replay, or a closed session
+                    // left it unserved) ends the step cleanly; a later step replays the
+                    // recorded result, or a relaunch serves it, and re-reaches the gate.
                     Err(e) if is_parked(&e) => {
                         ctx.parked.store(true, Ordering::SeqCst);
                         fan_out_released = false;
@@ -2486,7 +2560,9 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
                     Err(e) if carries_marker(&e, MISMATCH_MARKER) => {
                         return Err(Error(e.0.replace(MISMATCH_MARKER, "")))
                     }
-                    Err(e) => return Err(e),
+                    // Any other error propagates as before; a gate reviewer's crash
+                    // ([`SPAWN_CRASH_MARKER`]) has no infra retry here and loses its marker.
+                    Err(e) => return Err(Error(e.0.replace(SPAWN_CRASH_MARKER, ""))),
                 }
             }
         }
@@ -2639,11 +2715,16 @@ fn settle_run_state(
     // `base_spawns` is the already-folded distinct-spawn count from BEFORE this call (seeded
     // at its start for the budget breaker itself); the after-count reads the SAME in-process
     // `ctx.spawns` counter `budget_tripped`/`halt_reason` read - the single source of truth
-    // for "spawns made", which (unlike `spawn::recorded` over the event log) counts a
-    // BLOCKING driver's spawns too: only a stepwise/replay driver ever PARKS a
+    // for "spawns made", which (unlike `spawn::recorded` over the event log) counts the cli
+    // and workflow drivers' spawns too: only the replay driver and the headless host PARK a
     // `SpawnRequested` for the log to hold, so scanning the log would silently read zero
-    // for every other driver. The still-parked wave IS read from the log (a blocking
-    // driver leaves it empty, correctly never stalling the frontier).
+    // for every other driver. The still-parked wave IS read from the log (the cli and
+    // workflow drivers leave it empty). On `rigger run` a spawn the headless host parks ends
+    // the call with its result recorded, by the host or by the decorator's error write, save
+    // two: a spawn a store fault ended before its launch, and one whose error write did not
+    // land (the write is best-effort, and a relaunch whose hold read failed hands its error
+    // back unwritten). Each keeps no result, so it stays in this wave and a restart relaunches
+    // it.
     let after_spawns = ctx.spawns.load(Ordering::SeqCst) as usize;
     let parked_units: BTreeSet<String> = spawn::step_result(current_events)
         .map_err(|e| Error(e.to_string()))?
@@ -2883,11 +2964,12 @@ fn has_producer(stages: &BTreeMap<String, Stage>) -> bool {
 /// parsed verdict is a spec ambiguity ([`spawn::Adjudication::is_spec_ambiguity`]), the re-plan
 /// `spawn_id(plan, replan, s - 1)` between them is recorded, the re-plan at `s` is not, and no
 /// event carries the stop's completion key ([`spec_defect_escalated_key`] at `s - 1`). A re-plan
-/// is recorded by its `SpawnRequested` or `SpawnResult` (the stepwise driver records both) or by
-/// an event it emitted, stamped with its id as [`META_SPAWN`] (a blocking driver records no spawn
-/// event), under its own id or the `~retry` id it re-ran as after a refused record
-/// ([`RunCtx::re_plan`]). So a first `spec-ambiguity` reject re-plans as before, and the stop
-/// fires on one that follows a re-plan which did not clear the previous one.
+/// is recorded by its `SpawnRequested` or `SpawnResult` (the stepwise driver records both, the
+/// headless host at least the request) or by an event it emitted, stamped with its id as
+/// [`META_SPAWN`] (the cli and workflow drivers record no spawn event), under its own id or the
+/// `~retry` id it re-ran as after a refused record ([`RunCtx::re_plan`]). So a first
+/// `spec-ambiguity` reject re-plans as before, and the stop fires on one that follows a re-plan
+/// which did not clear the previous one.
 fn spec_defect_stop(run: &[Event], gate: &str, plan: &str, s: u32) -> Option<spawn::Adjudication> {
     let earlier = s.checked_sub(2)?;
     let stopping = s - 1;
@@ -2963,8 +3045,10 @@ struct RunCtx<'a> {
     /// `defaults.budget` binds across the many `rigger step` processes a stepwise run
     /// spans (spec 04, criterion 5 / finding adv-budget-per-step-resets). A replayed
     /// spawn (an id already recorded) never increments this - its budget was spent when
-    /// it was first parked. The blocking drivers never park, so `base_spawns` is 0 for
-    /// them and this counts their in-process spawns exactly as before.
+    /// it was first parked. The cli and workflow drivers record no spawn request, so
+    /// `base_spawns` is 0 for them and this counts their in-process spawns; the headless host
+    /// parks each spawn before its launch, so a restarted `rigger run` starts from every spawn
+    /// its earlier processes ran.
     spawns: AtomicU32,
     /// The spawn count already recorded in the log when this process started - the value
     /// `spawns` is seeded to. The pre-wave breaker only halts a process that has itself
@@ -2980,20 +3064,21 @@ struct RunCtx<'a> {
     /// already recorded by an earlier step - admit free, its budget was already spent) or
     /// a genuinely NEW spawn (count it against the cumulative budget) with an O(1) lookup,
     /// rather than re-reading and re-folding the whole stream on every spawn. A spawn this
-    /// process parks is not added here: it is reached only once per process (a parked unit
-    /// unwinds and every spawn site has a distinct id), so the prior-only set is sufficient.
+    /// process parks is not added here: it is reached only once per process (every spawn
+    /// site has a distinct id, and a unit the replay driver parked unwinds), so the
+    /// prior-only set is sufficient.
     recorded_spawn_ids: HashSet<String>,
     /// Set the moment a spawn is REFUSED because the budget is spent (item 9): the
     /// breaker now trips at spawn granularity, mid-wave, not only at wave boundaries.
     /// The run loop checks this after each wave to record the breaker and stop.
     budget_broke: std::sync::atomic::AtomicBool,
     /// Set the moment any in-flight spawn PARKS (the stepwise/replay driver hit an
-    /// unrecorded frontier). A parked wave loop empties with units still un-integrated,
-    /// so the run has NOT genuinely converged: a later step will drain the park and
-    /// integrate more units. The phase boundary consults this so the DEFERRED gate is
-    /// held until the step that fully assembles the tree - never recording a verdict
-    /// against the partial/base tree a parked frontier leaves behind (finding
-    /// adv-deferred-replay-locks-partial-tree).
+    /// unrecorded frontier, or a closed session left a spawn unserved). A parked wave loop
+    /// empties with units still un-integrated, so the run has NOT genuinely converged: a
+    /// later step, or the relaunch that serves the spawn, will drain the park and integrate
+    /// more units. The phase boundary consults this so the DEFERRED gate is held until the
+    /// step that fully assembles the tree - never recording a verdict against the
+    /// partial/base tree a parked frontier leaves behind (adv-deferred-replay-locks-partial-tree).
     parked: std::sync::atomic::AtomicBool,
     /// Set the moment a stage PAUSES for human review (§4.3, its effective autonomy is
     /// Manual): the unit emitted ManualReview and returned pending WITHOUT parking, so
@@ -3080,10 +3165,13 @@ struct RunCtx<'a> {
     /// lost") from "this branch's work already fast-forward-landed into base" (GAP 9's row-4
     /// after-record fixture: a crash between `Worktree::land` and the durable
     /// `UnitIntegrated`/[`STATUS_INTEGRATE_LANDED`] record leaves EXACTLY this git state) -
-    /// both make `tip == base` true. A `Reviewed` unit whose log already shows a genuine
-    /// integrate attempt is never the lost-branch case, so `resume_phase` trusts THIS durable
-    /// evidence over `branch_has_work`'s git-state-only answer, exactly the principle the
-    /// whole round 4 table exists to establish. Seeded once from `prior_events` at run start
+    /// both make `tip == base` true. A unit routed to `Reviewed` whose log already shows a
+    /// genuine integrate attempt is never the lost-branch case, so `resume_phase` trusts THIS
+    /// durable evidence over `branch_has_work`'s git-state-only answer, exactly the principle
+    /// the whole round 4 table exists to establish. It is also what routes a unit whose
+    /// stage carries no review to `Reviewed`: an empty panel's trivial approve records no
+    /// `reviewed`, so an integrate attempt at the unit's current attempt is the log's proof
+    /// that its approval reached the merge. Seeded once from `prior_events` at run start
     /// ([`integrate_attempted_from_log`]), mirroring [`RunCtx::conflict_regenerate_pending`]'s
     /// own seeded-once-at-start pattern - never mutated afterward. Sufficient because
     /// `resume_phase` for a given unit is only ever consulted BEFORE this process's own first
@@ -3395,8 +3483,7 @@ impl RunCtx<'_> {
     }
 
     /// THE AGENT EMIT: an event an agent's spawn emits through the driver's in-process emit
-    /// callback - on a cli host, each record line the agent printed, which the driver's bridge
-    /// replays through it - built like [`emit_meta`](RunCtx::emit_meta) with the spawn's `stamps`,
+    /// callback - built like [`emit_meta`](RunCtx::emit_meta) with the spawn's `stamps`,
     /// then judged by the one emit guard every emit surface runs ([`Deps::check_emit`]) before it
     /// is appended. A payload the fold cannot apply, or a record whose id another seat holds,
     /// lands nothing, and the refusal is the callback's error, so it is the spawn's, marked
@@ -3672,6 +3759,19 @@ impl RunCtx<'_> {
             .filter(|k| unit_of_gate_key(k) == Some(unit))
             .filter_map(|k| gate_key_attempt(k))
             .max()
+    }
+
+    /// Whether `unit`'s gates already started at `attempt`, read from existing records only
+    /// (op-105-sdet-seam-joins-the-infra-retry): a gate verdict at this attempt
+    /// ([`gate_verdict_high_water`](RunCtx::gate_verdict_high_water), every `~retry{n}` rerun
+    /// included), or this attempt's [`verified_key`] stamp replayed or emitted, which a
+    /// gate-free selection records with no verdict. Gates start only once the sdet seam has
+    /// returned, so a re-entered attempt (an adopting relaunch, an F3 review rerun) for which this
+    /// holds never re-runs the seam over a tip its gates, `verified` and review-round start all
+    /// replay from the log.
+    fn attempt_gates_started(&self, unit: &str, attempt: u32) -> bool {
+        self.gate_verdict_high_water(unit) == Some(attempt)
+            || self.replayed_keys.contains(&verified_key(unit, attempt))
     }
 
     /// Drain the queued post-integration COMPENSATIONS (spec 12, unit 4), single-threaded
@@ -4025,11 +4125,12 @@ impl RunCtx<'_> {
             && safety::budget_exhausted(budget as i64, spawns as i64)
     }
 
-    /// Whether `spawn_id` was already parked in the run log by an EARLIER step process -
-    /// i.e. this spawn is a REPLAY whose budget was spent when it was first parked. An
-    /// O(1) lookup into `recorded_spawn_ids`, seeded once at run start; the blocking
-    /// drivers never park, so this is always `false` for them and every one of their
-    /// spawns counts against the budget, unchanged.
+    /// Whether `spawn_id` was already parked in the run log by an EARLIER process of the run
+    /// (a `rigger step`, or a `rigger run` whose headless host parked it) - i.e. this spawn
+    /// is a REPLAY whose budget was spent when it was first parked. An O(1) lookup into
+    /// `recorded_spawn_ids`, seeded once at run start; the cli and workflow drivers record no
+    /// spawn request, so this is always `false` for them and every one of their spawns counts
+    /// against the budget.
     fn spawn_is_recorded(&self, spawn_id: &str) -> bool {
         self.recorded_spawn_ids.contains(spawn_id)
     }
@@ -4306,13 +4407,14 @@ impl RunCtx<'_> {
             }
             Ok(false) => {}
             // A PARKED unit (the stepwise/replay driver hit an unrecorded
-            // frontier) is neither integrated nor failed: it left a
-            // SpawnRequested for the courier and unwound cleanly. Record no
-            // lesson and do not collapse the wave to an error - the run loop
-            // finds no newly-ready units and returns, so the step process ends
-            // once every in-flight spawn in the wave is parked. Flag the park so
-            // the phase boundary holds the deferred gate until a later step
-            // drains the frontier and the tree is fully assembled.
+            // frontier, or a closed session left a spawn unserved) is neither
+            // integrated nor failed: it unwound cleanly, its spawn left for the
+            // courier or a relaunch. Record no lesson and do not collapse the
+            // wave to an error - the run loop finds no newly-ready units and
+            // returns, so the step process ends once every in-flight spawn in
+            // the wave is parked. Flag the park so the phase boundary holds the
+            // deferred gate until a later step drains the frontier and the tree
+            // is fully assembled.
             Err(e) if is_parked(&e) => {
                 in_flight.insert(name);
                 self.parked.store(true, Ordering::SeqCst);
@@ -4370,8 +4472,10 @@ impl RunCtx<'_> {
                 // wraps), so no current or future call site that lets an `Err`
                 // reach this generic fallback unformatted can leak the raw marker.
                 // A no-op for every marker-free error (every other driver, or text
-                // a leaf site already cleaned).
-                let msg = strip_failure_marker(&e);
+                // a leaf site already cleaned). A spawn crash's own marker
+                // ([`SPAWN_CRASH_MARKER`]) reaches here from a review stage outside
+                // the single lane, and is stripped with it.
+                let msg = strip_failure_marker(&e).replace(SPAWN_CRASH_MARKER, "");
                 let _ = self.emit_lesson(
                     None,
                     &name,
@@ -4557,7 +4661,7 @@ impl RunCtx<'_> {
         // `run_single_stage` propagates - a chunk with a genuine error AND a park answers
         // this independently of which one the swap prioritized (see the comment above).
         let parked_unwind = any_parked.load(Ordering::SeqCst)
-            || matches!(&result, Err(e) if is_parked_or_budget_refused(e));
+            || matches!(&result, Err(e) if is_parked_or_refused(e, BUDGET_MARKER));
         if let Some(w) = &wt {
             if !parked_unwind {
                 let _ = w.remove();
@@ -4658,7 +4762,7 @@ impl RunCtx<'_> {
 
     /// The cwd-isolation invariant for EVERY spawned agent (the worktree-isolation
     /// fix): an agent NEVER runs in the live main-repo checkout. A spawn's `dir`
-    /// becomes the agent's working directory (the cli driver's `current_dir`, the
+    /// becomes the agent's working directory (a process host's `current_dir`, the
     /// Agent SDK's `cwd`); an EMPTY `dir` makes the agent inherit the driver's own
     /// cwd, which - for `rigger workflow`, run from the repo root - IS the main
     /// checkout. With `bypassPermissions` on, the agent can then edit the live repo,
@@ -4764,10 +4868,9 @@ impl RunCtx<'_> {
             // the cache the unit's gates use.
             env: Self::spawn_env(&build_env, dir, cache),
             reviews: reviews.to_vec(),
-            // The existing blocking drivers (cli/workflow) ignore these two; spec 104's host
-            // is not wired in here yet.
+            // The headless host and the cli driver read `settings_json`; the other drivers
+            // ignore it.
             settings_json: String::new(),
-            launch: 0,
             // A fresh session; `continue_prior_session` points a later round's spawn at the
             // session to continue.
             resumed_from: String::new(),
@@ -4803,12 +4906,15 @@ impl RunCtx<'_> {
     /// spawn id, with the session it was asked to continue and the one it did continue, so a
     /// later attempt reads it back from the log and the log tells a fallback (asked, but none
     /// continued: the session was gone, so it ran fresh) from an ordinary fresh spawn. A result
-    /// naming no session records nothing. A fallback is also said on the operator's log.
+    /// naming no session records nothing. A fallback is also said on the operator's log, when
+    /// the spawn ran as a session other than the one it was asked to continue: a spawn the
+    /// headless host answers from the run log continued none yet names the session its recorded
+    /// result ran as, the requested one when that launch continued it.
     fn record_session(&self, opts: &SpawnOpts, result: &AgentResult) -> Result<(), Error> {
         if result.session_id.is_empty() {
             return Ok(());
         }
-        if !opts.resumed_from.is_empty() && result.resumed_from.is_empty() {
+        if !opts.resumed_from.is_empty() && result.session_id != opts.resumed_from {
             (self.deps.log)(&format!(
                 "spawn {}: session {} to resume is gone; it ran as a fresh session {}",
                 opts.id, opts.resumed_from, result.session_id
@@ -5224,19 +5330,16 @@ impl RunCtx<'_> {
             // Replay-keyed on unit + attempt + infra retry ordinal + item: a re-run review over
             // the recorded verdict records each lesson once, and an infra rerun's fresh review
             // records its own.
-            self.emit_keyed(
-                &format!("{unit}/operator-lesson#{attempt}~{ordinal}.{n}"),
-                contextgraph::TYPE_LESSON_LEARNED,
-                json!({
-                    "id": format!("lesson-{unit}-{attempt}-{ordinal}-operator-{n}"),
-                    "summary": format!(
-                        "For the operator: review of unit {unit:?} at attempt {attempt} found, \
-                         outside the delta it reviewed, an item that is no correctness defect, \
-                         so it no longer holds the unit back - {}: {}",
-                        item.path, item.finding
-                    ),
-                    "about": [item.path],
-                }),
+            self.record_lesson(
+                Some(&format!("{unit}/operator-lesson#{attempt}~{ordinal}.{n}")),
+                &format!("lesson-{unit}-{attempt}-{ordinal}-operator-{n}"),
+                &format!(
+                    "For the operator: review of unit {unit:?} at attempt {attempt} found, \
+                     outside the delta it reviewed, an item that is no correctness defect, so \
+                     it no longer holds the unit back - {}: {}",
+                    item.path, item.finding
+                ),
+                vec![item.path.clone()],
             )?;
         }
         if kept.is_empty() && !dropped.is_empty() {
@@ -5394,10 +5497,12 @@ impl RunCtx<'_> {
     /// The fixed `sdet-author` id is a convention resolved through the SAME
     /// `AgentDef` / `build_system_prompt` agent-loading path as every other role (no
     /// `workflow.yml` change, which would drift the pinned definition). The deterministic
-    /// spawn id (`spawn_id(stage, ROLE_SDET_AUTHOR, attempt)` - `attempt` is the single-lane
-    /// remediation attempt or the speculation lane) lets a stepwise/replay driver answer or
-    /// park it exactly like the implementer; a spawn whose record the emit guard refused re-runs
-    /// once under the next [`review_retry_window`] id with the refusal after its prompt
+    /// spawn id (`spawn_retry_id(stage, ROLE_SDET_AUTHOR, attempt, retry)` - `attempt` is the
+    /// single-lane remediation attempt or the speculation lane, and `retry` the first of the
+    /// stage run's infra `ordinal`'s [`review_retry_window`], as the reviewers are keyed, so an
+    /// F3 rerun's sdet-author is a fresh spawn) lets a stepwise/replay driver answer or park it
+    /// exactly like the implementer; a spawn whose record the emit guard refused re-runs once
+    /// under the next id of that window with the refusal after its prompt
     /// ([`rerun_once_on_refusal`]). The spawn is gated on a real worktree (an empty
     /// `dir` is a repo-less or `isolation: none` unit with no tree to author into, and an
     /// Edit/Write agent must never run in the live main checkout) and on the agent being
@@ -5409,15 +5514,18 @@ impl RunCtx<'_> {
     /// worktree of its own).
     ///
     /// Returns `Ok(())` when the caller may proceed to its commit: a normal result (files
-    /// authored), a crash (the non-parked spawn/opts error whose disposition is the next
-    /// unit's - never propagated past this unit), an absent agent, or a budget refusal. Returns
-    /// the PARK signal `Err(parked)` when the spawn parked (an unrecorded stepwise/replay
-    /// frontier); the caller unwinds per its own discipline - the single lane propagates it
-    /// (holding the unit, no commit), a speculation lane collects it into `any_parked` and does
-    /// NOT commit that candidate, so a later step replays the sdet and its periphery tests land.
-    /// Returns the stage error naming the refusal when the emit guard refused the re-run's record
-    /// too: a refusal is a defect in what the sdet printed, never a crash to proceed past, so the
-    /// single lane fails its stage with it and a speculation candidate loses.
+    /// authored), an absent agent, or a budget refusal. Returns the PARK signal `Err(parked)`
+    /// when the spawn parked (an unrecorded stepwise/replay frontier); the caller unwinds per its
+    /// own discipline - the single lane propagates it (holding the unit, no commit), a
+    /// speculation lane collects it into `any_parked` and does NOT commit that candidate, so a
+    /// later step replays the sdet and its periphery tests land. Returns the stage error naming
+    /// the crash, marked [`SPAWN_CRASH_MARKER`], when the spawn or its opts guard failed any
+    /// other way: no gate may run on a tree the seam never touched, so the single lane reruns
+    /// the stage uncharged under the F3 infra retry and halts loudly past the infra limit, and a
+    /// speculation candidate loses. Returns the stage error naming the refusal when the emit
+    /// guard refused the re-run's record too: a refusal is a defect in what the sdet printed,
+    /// never an outage to rerun, so the single lane fails its stage with it and a speculation
+    /// candidate loses.
     ///
     /// A round whose [`round_delta`](RunCtx::round_delta) in `wt` changed documentation only
     /// appends [`DOC_ONLY_ROUND`] to the prompt, so a wording round moves an existing pin's
@@ -5428,6 +5536,10 @@ impl RunCtx<'_> {
         wt: Option<&Worktree>,
         dir: &str,
         attempt: u32,
+        // The stage run's infra retry ordinal (F3): the sdet-author spawns over the round's
+        // [`review_retry_window`], so an infra rerun's seam is fresh work. 0 for a speculation
+        // candidate, which never reruns.
+        ordinal: u32,
         // The gates the previous attempt failed (its `PriorFailure` gate evidence, the same the
         // implementer is handed): what a later attempt's resumed session is told changed when
         // no review round sent the unit back. Empty on a first attempt.
@@ -5476,7 +5588,18 @@ impl RunCtx<'_> {
         let sdet_emit = |t: &str, v: Value| {
             self.emit_agent(t, v, &[(contextgraph::META_ACTOR, ROLE_SDET_AUTHOR)])
         };
-        rerun_once_on_refusal(review_retry_window(0), |retry, refused| {
+        let window = review_retry_window(ordinal);
+        let first_retry = *window.start();
+        // A crash names the stage and the seam, its failure class stripped, as a review tier's
+        // crash does.
+        let crashed = |e: &Error| {
+            spawn_crash(format!(
+                "stage {:?} sdet author: {}",
+                st.name,
+                strip_failure_marker(e)
+            ))
+        };
+        rerun_once_on_refusal(window, |retry, refused| {
             let sdet_id = spawn_retry_id(&st.name, ROLE_SDET_AUTHOR, attempt, retry);
             // Budget breaker at spawn granularity: reserve the sdet spawn against the run budget
             // FIRST, exactly like the implementer and every reviewer tier, so it funnels through
@@ -5504,13 +5627,12 @@ impl RunCtx<'_> {
                 // A log that cannot be read is a fault, propagated - never a cold start. A
                 // re-run after a refusal starts fresh rather than continuing the session that
                 // printed the refused record.
-                Ok(opts) if retry == 0 => {
+                Ok(opts) if retry == first_retry => {
                     self.continue_prior_session(opts, ROLE_SDET_AUTHOR, resume_task.clone())?
                 }
                 Ok(opts) => opts,
-                // An opts-guard error takes the crash disposition below: the unit proceeds to
-                // the commit.
-                Err(_) => return Ok(()),
+                // An opts-guard error is a crash of the seam: the spawn cannot run.
+                Err(e) => return Err(crashed(&e)),
             };
             match self
                 .deps
@@ -5521,15 +5643,16 @@ impl RunCtx<'_> {
                 // caller falls through to the commit that sweeps them in. The session it ran as
                 // is recorded for its next attempt to continue.
                 Ok(result) => self.record_session(&opts, &result),
-                // A PARKED spawn (the stepwise/replay driver reached an unrecorded frontier):
-                // surface the park so the caller unwinds cleanly - no UnitFailed, no
-                // remediation - and a later step replays the result. A refused record surfaces
-                // too: the first re-runs above, a second fails the stage below.
-                Err(e) if is_parked(&e) || carries_marker(&e, EMIT_REFUSED_MARKER) => Err(e),
-                // The crash disposition (a non-parked spawn/opts-guard error) is the next
-                // unit's to decide; this unit places the spawn and its parked arm, so a crash
-                // proceeds to the commit rather than propagating past the unit.
-                Err(_) => Ok(()),
+                // A PARKED spawn (the stepwise/replay driver reached an unrecorded frontier, or
+                // a closed session left it unserved): surface the park so the caller unwinds
+                // cleanly - no UnitFailed, no remediation - and a later step replays the result
+                // or a relaunch serves it. A refused record surfaces too: the first re-runs
+                // above, a second fails the stage below.
+                Err(e) if is_parked_or_refused(&e, EMIT_REFUSED_MARKER) => Err(e),
+                // A crash (a non-zero exit, a live host's wall-clock stop) is an outage of the
+                // seam, never a tree to gate: it surfaces marked for the caller's crash
+                // disposition.
+                Err(e) => Err(crashed(&e)),
             }
         })
         .map_err(|e| {
@@ -5601,6 +5724,35 @@ impl RunCtx<'_> {
         Err(infra_halt(unit, attempt, cause, evidence))
     }
 
+    /// Integrate `st` at `attempts` under `approval`, rerunning the merge uncharged on a
+    /// [`spawn_crash`] its conflict resolver returned (a store fault before a round's launch):
+    /// each crash records an infra-retry mark under `infra`'s ordinal ([`CAUSE_INFRA_SPAWN`]),
+    /// spends no resolver round and blocks nothing, and past the taxonomy's infra limit the
+    /// [`infra_halt`] error halts the step. Every other result returns as it was.
+    fn integrate_under_infra_retry(
+        &self,
+        wt: Option<&Worktree>,
+        st: &Stage,
+        attempts: u32,
+        approval: IntegrationApproval,
+        infra: &mut InfraRetries,
+    ) -> Result<Integration, Error> {
+        loop {
+            match infra_crash(self.integrate_and_emit(wt, st, attempts, approval))? {
+                Ok(integration) => return Ok(integration),
+                Err(crash) => {
+                    *infra = self.retry_infra_failure(
+                        &st.name,
+                        attempts,
+                        *infra,
+                        CAUSE_INFRA_SPAWN,
+                        &crash,
+                    )?
+                }
+            }
+        }
+    }
+
     /// Append one infra mark ([`STATUS_INFRA_RETRY`] / [`STATUS_INFRA_HALT`]) for `unit`'s run
     /// at `(attempt, ordinal)`, its `detail` riding as the unit's evidence under the status.
     fn emit_infra_mark(
@@ -5663,8 +5815,10 @@ impl RunCtx<'_> {
         // state belongs entirely to `merge_into_worktree`'s OWN crash-resume idempotency (spec
         // 88, criterion 1): it reads the worktree's already-recorded conflict list back
         // (`conflicting_paths`) rather than re-attempting the merge command, reachable ONLY
-        // through the `ResumePhase::Reviewed` branch just below (the sole phase whose ledger
-        // status means "already approved - only the merge could still be running"). Calling
+        // through the `ResumePhase::Reviewed` branch just below (the sole phase that means
+        // "already approved - only the merge could still be running": an adjudicator's
+        // `reviewed`, or a stage carrying no review whose log records an integrate attempt at
+        // its current attempt). Calling
         // `commit` unconditionally here first - BEFORE that branch ever runs - trips its
         // conflict-marker refusal on the merge's own still-unresolved marker text (correct
         // for an abandoned edit, but a false alarm for a legitimate in-progress merge) and
@@ -5724,20 +5878,20 @@ impl RunCtx<'_> {
             }
             _ => String::new(),
         };
-        // Resume-continuity, Reviewed phase: the unit's review was APPROVED in a prior
-        // window and its branch carries the committed, approved code - only the merge
-        // was interrupted. Skip BOTH implement and review and integrate the existing
-        // work directly. No implementer, no lenses/adversary/adjudicator spawn: the
-        // adjudicator already approved, re-reviewing would re-litigate a settled
-        // verdict and re-spend the budget. A `none`-on_pass unit (verified-but-never-
-        // merged by design) still does not merge.
+        // Resume-continuity, Reviewed phase: the unit was APPROVED in a prior window (its
+        // adjudicator's `reviewed`, or the trivial approve of a stage carrying no review whose
+        // log records an integrate attempt) and its branch carries the committed, approved
+        // code - only the merge was interrupted. Skip BOTH implement and review and integrate
+        // the existing work directly. No implementer, no lenses/adversary/adjudicator spawn:
+        // the approval is settled, re-reviewing would re-litigate it and re-spend the budget.
+        // A `none`-on_pass unit (verified-but-never-merged by design) still does not merge.
         if phase == ResumePhase::Reviewed {
             if !integrates(st) {
                 return Ok(false);
             }
             // The exhaustive integrate door still gates a RESUMED merge (spec 12, unit 3): a
-            // prior window recorded `reviewed` after its blast-radius-narrowed inner loop and
-            // the approve, but may have crashed BEFORE the integrate-time exhaustive suite ran.
+            // prior window approved the unit after its blast-radius-narrowed inner loop, but
+            // may have crashed BEFORE the integrate-time exhaustive suite ran.
             // So re-assert the FULL library here before merging - "done" is measured against the
             // exhaustive suite, never the narrowed subset (R6). Cheap: every gate the prior
             // window already ran replays its recorded verdict; only gates it skipped run now.
@@ -5763,8 +5917,8 @@ impl RunCtx<'_> {
             if !full.pass {
                 // The exhaustive suite is red on a resumed approve (a skipped gate fails):
                 // do NOT integrate a failing tree. Record the failure so the unit re-enters
-                // its lifecycle next step rather than wedging forever on a `reviewed` status
-                // it can never safely merge.
+                // its lifecycle next step rather than wedging forever on a resumed merge it
+                // can never safely land.
                 //
                 // Ensure-on-park, defense in depth (spec 64 criterion 3, round 6,
                 // sdet-u3c3r5-resumed-reviewed-gate-failure-failed-sha-still-empty-sentinel,
@@ -5792,18 +5946,25 @@ impl RunCtx<'_> {
                 )?;
                 return Ok(false);
             }
-            // The prior window recorded `reviewed` - which is emitted ONLY on an
-            // explicit adjudicator approve (`review_unit` / the fan-out review stage) -
-            // so this resumed merge carries a real approval.
-            let integration =
-                self.integrate_and_emit(wt, st, attempts, IntegrationApproval::approved())?;
+            // The prior window approved the unit: a `reviewed` is emitted ONLY on an explicit
+            // adjudicator approve (`review_unit` / the fan-out review stage), and a stage
+            // carrying no review records an integrate attempt only past its passed gates and
+            // its empty panel's trivial approve - so this resumed merge carries a real
+            // approval.
+            let integration = self.integrate_under_infra_retry(
+                wt,
+                st,
+                attempts,
+                IntegrationApproval::approved(),
+                &mut infra,
+            )?;
             if let Some(evidence) = integration.blocked {
                 // spec 12, unit 5: the MERGED tree failed the post-merge re-gate on a RESUMED
                 // merge (a batch-mate integrated onto the run branch since this unit was
-                // reviewed, and the two auto-merged into a broken tree). The merge was rolled
+                // approved, and the two auto-merged into a broken tree). The merge was rolled
                 // back; record the failure so the unit re-enters its lifecycle next step and
-                // re-implements against the changed world, rather than wedging on a `reviewed`
-                // status it can never safely merge.
+                // re-implements against the changed world, rather than wedging on a resumed
+                // merge it can never safely land.
                 //
                 // Ensure-on-park, defense in depth (spec 64 criterion 3, round 6,
                 // adv-u3c3r5-two-more-unguarded-empty-sha-siblings, UPHELD): the post-merge
@@ -5888,6 +6049,10 @@ impl RunCtx<'_> {
             let radius = self.grounded_blast_radius(st);
             self.record_blast_radius(st, attempts, &blast_radius, &radius)?;
             let mut spawn_err: Option<String> = None;
+            // The crash of a spawn after the implementer's (the sdet seam's or a review tier's,
+            // [`SPAWN_CRASH_MARKER`]) that failed this attempt as an outage: the F3 evidence
+            // names it, and the rerun keeps the committed implementation.
+            let mut tier_crash: Option<String> = None;
             // The cause wire (spec 69, criterion 3): set at whichever branch below
             // actually fails this attempt, so the single convergent `UnitFailed` emit
             // near the bottom of this loop stamps the REAL cause rather than inferring
@@ -5972,10 +6137,9 @@ impl RunCtx<'_> {
                 // its supersede order from (see the matching comment there). The live
                 // MCP/workflow driver path already gets this for free (`stamp_current_spawn`
                 // stamps every emit while a spawn is being served); this `emit` callback is
-                // the ONLY channel the cli subprocess driver (`crates/rigger-driver/src/driver/cli.rs`, wired at
-                // main.rs:2770/4323) has to bridge a bridged UnitProposed's attribution, so
-                // it must stamp it itself here. Harmless (and consistent with
-                // `run_reviewer`'s identical pattern) for a plain implementer's own
+                // the ONLY channel a driver that hands a record through it has for a
+                // UnitProposed's attribution, so it must stamp it itself here. Harmless (and
+                // consistent with `run_reviewer`'s identical pattern) for a plain implementer's own
                 // DecisionMade emits, which carry no episode significance.
                 let emit = |t: &str, v: Value| {
                     self.emit_agent(
@@ -6035,10 +6199,9 @@ impl RunCtx<'_> {
                         // An implementer is never a review tier: no roster to render
                         // (spec 67, criterion 4).
                         reviews: Vec::new(),
-                        // The existing blocking drivers (cli/workflow) ignore these two;
-                        // spec 104's host is not wired in here yet.
+                        // The headless host and the cli driver read `settings_json`; the
+                        // other drivers ignore it.
                         settings_json: String::new(),
-                        launch: 0,
                         // Set by `continue_prior_session` below when there is a session
                         // to continue.
                         resumed_from: String::new(),
@@ -6078,9 +6241,10 @@ impl RunCtx<'_> {
                         )?;
                     }
                     // A PARKED spawn (the stepwise/replay driver reached an unrecorded
-                    // frontier) is NOT a failure: unwind this unit cleanly, with no
-                    // UnitFailed and no remediation, so the step ends once every
-                    // in-flight spawn is parked and a later step replays the result.
+                    // frontier, or a closed session left it unserved) is NOT a failure:
+                    // unwind this unit cleanly, with no UnitFailed and no remediation, so
+                    // the step ends once every in-flight spawn is parked and a later step
+                    // replays the result or a relaunch serves it.
                     Err(e) if is_parked(&e) => return Err(e),
                     // A record this spawn emitted that the emit guard refused (a payload the
                     // fold cannot apply, an id another seat holds) is a defect in what the
@@ -6113,14 +6277,46 @@ impl RunCtx<'_> {
                 }
             }
 
+            // The SDET-author spawn (spec 33): author periphery tests into the implementer's OWN
+            // worktree (`dir`) at the build seam - AFTER the implementer's green status and BEFORE
+            // the pre-gate commit below - so on every unit the SDET authors its periphery tests
+            // into the same tree that commit sweeps in and the unscoped gates and the reviewers
+            // judge. ONE shared seam authority (`spawn_sdet_author`), so the single-lane path and
+            // the speculation path place the spawn identically; a producer writes no code, so it
+            // has no seam. A park propagates through `?`, holding the unit with no commit until a
+            // later step replays the sdet and its periphery tests land in the committed tree. A
+            // crash is an outage (op-105-sdet-seam-joins-the-infra-retry): no gate may run on a
+            // tree the seam never touched, so the stage reruns uncharged under the F3 retry below
+            // with the crash as its evidence. An attempt whose gates already started never re-runs
+            // the seam: an adopting relaunch or an F3 review rerun re-enters with the seam's work
+            // committed and gated, and a fresh sdet-author would move a tip whose gate verdicts,
+            // `verified` stamp and review-round start all replay from the log.
+            if cause.is_empty()
+                && !is_producer(st)
+                && !self.attempt_gates_started(&st.name, attempts)
+            {
+                let seam = self.spawn_sdet_author(
+                    st,
+                    wt,
+                    dir,
+                    attempts,
+                    infra.ordinal,
+                    &prior.gate_evidence,
+                );
+                if let Err(crash) = infra_crash(seam)? {
+                    tier_crash = Some(crash);
+                    cause = CAUSE_INFRA_SPAWN.to_string();
+                }
+            }
+
             // The unit's own lifecycle (§3.2): implement -> the unit's gates -> the
             // three-tier review OF THIS UNIT -> integrate. The gates and the
             // adjudicator's verdict BOTH gate integration: a gate failure OR a reject
             // feeds back into this same loop (re-ground via build_prompt, re-implement
             // WITH THE FEEDBACK, re-review) and escalates after the retry bound. Review
             // runs only once the implementer's own gates are green, so the lenses never
-            // review a red diff. None of it runs once the spawn itself failed this attempt
-            // (a crash or a refused emit, each setting `cause` above).
+            // review a red diff. None of it runs once the implementer or the sdet seam failed
+            // this attempt (a crash or a refused emit, each setting `cause` above).
             if cause.is_empty() {
                 // A `produces` (planner) stage emits a DAG, NOT code: its agent has
                 // just proposed the units (UnitProposed events). It wrote no diff, so
@@ -6194,19 +6390,8 @@ impl RunCtx<'_> {
                         }
                     }
                 } else {
-                    // The SDET-author spawn (spec 33): author periphery tests into the
-                    // implementer's OWN worktree (`dir`) at the build seam - AFTER the
-                    // implementer's green status and BEFORE the pre-gate commit below - so on
-                    // every unit the SDET authors its periphery tests into the same tree the
-                    // existing commit sweeps in and the unscoped gates and the reviewers judge.
-                    // ONE shared seam authority (`spawn_sdet_author`), so the single-lane path
-                    // and the speculation path place the spawn identically. This unit OWNS the
-                    // spawn placement and its role token; result-advancement, absent-agent, and
-                    // crash disposition are the next unit's - so only the replay-safe parked arm
-                    // acts here: `?` propagates it, holding the unit with no commit until a later
-                    // step replays the sdet and its periphery tests land in the committed tree.
-                    self.spawn_sdet_author(st, wt, dir, attempts, &prior.gate_evidence)?;
-                    // Commit the implementer's worktree BEFORE running the gates (§3.2),
+                    // Commit the implementer's worktree, with the sdet seam's periphery tests,
+                    // BEFORE running the gates (§3.2),
                     // so the gate measures EXACTLY the committed artifact that the
                     // subsequent integrate merges - never a dirty worktree. A unit could
                     // otherwise pass `cargo test` on uncommitted files (e.g. three new
@@ -6261,7 +6446,7 @@ impl RunCtx<'_> {
                         // (omitted) on a repo-less unit with no worktree.
                         let reviewed_sha = worktree::head_sha_of(dir);
                         self.emit_keyed_meta(
-                            &format!("{}/verified#{attempts}", st.name),
+                            &verified_key(&st.name, attempts),
                             ledger::TYPE_UNIT_STATUS,
                             json!({
                                 "id": st.name,
@@ -6279,7 +6464,7 @@ impl RunCtx<'_> {
                         // structural width forces the full panel for a beyond-cap high-risk file, and a
                         // wide structural change earns the full panel by size. On the non-symbols
                         // default `radius.safe == radius.precise`, so routing is byte-for-byte unchanged.
-                        let mut review = self.review_unit(
+                        let review = self.review_unit(
                             st,
                             dir,
                             attempts,
@@ -6290,132 +6475,157 @@ impl RunCtx<'_> {
                             any_parked,
                             wt,
                             &prior.required,
-                        )?;
-                        // The round has ruled on the REQUIRED list: what stays open is what
-                        // its verdict requires (nothing, on an approve).
-                        next.required = std::mem::take(&mut review.required);
-                        // A contradiction against a PRIOR integrated unit (spec 12, unit 4): the
-                        // adjudicator named another, already-integrated unit as the real defect
-                        // source. QUEUE the rollback for the run loop to drain after this wave
-                        // (single-threaded, so the git revert never races a concurrent merge). A
-                        // unit never compensates ITSELF (that is ordinary remediation below).
-                        if let Some(target) = &review.compensate {
-                            if target != &st.name {
-                                // DURABLY record the compensation INTENT here, the MOMENT the
-                                // review names the target - BEFORE this unit integrates and before
-                                // the post-wave drain reverts anything - so a crash between now and
-                                // the drain does not silently drop the rollback. A resume
-                                // re-derives this un-drained mark (`pending_compensations_from_log`)
-                                // and the pre-loop drain re-drives it. Rides the existing
-                                // `UnitStatus` vocabulary as a fold-neutral marker (no new event
-                                // type, spec 12 G2): `META_COMPENSATE_TARGET` names the unit to roll
-                                // back and `META_CONTRADICTION` the reason; keyed so a stepwise
-                                // resume re-appends it exactly once. The mark's `id` is the TARGET
-                                // and its status token is not a real lifecycle status, so folding it
-                                // leaves the target `Integrated` until the drain reverts it.
-                                self.emit_keyed_meta(
-                                    &compensation_queued_key(&st.name, target, attempts),
-                                    ledger::TYPE_UNIT_STATUS,
-                                    json!({
-                                        "id": target,
-                                        "status": STATUS_COMPENSATION_QUEUED,
-                                        "evidence": {
-                                            "compensation-queued": review.reason.trim(),
-                                        },
-                                    }),
-                                    &[
-                                        (META_COMPENSATE_TARGET, target),
-                                        (META_CONTRADICTION, review.reason.trim()),
-                                    ],
-                                )?;
-                                self.compensations.lock().unwrap().push(Compensation {
-                                    target: target.clone(),
-                                    reason: review.reason.clone(),
-                                });
+                        );
+                        match infra_crash(review)? {
+                            // A review tier's spawn crashed: an outage of the round, never a
+                            // verdict (op-105-sdet-seam-joins-the-infra-retry). The stage reruns
+                            // uncharged under the F3 retry below while the committed
+                            // implementation stands, the rerun's reviewers fresh spawns under the
+                            // next infra ordinal's [`review_retry_window`].
+                            Err(crash) => {
+                                tier_crash = Some(crash);
+                                cause = CAUSE_INFRA_SPAWN.to_string();
                             }
-                        }
-                        if review.approved {
-                            // on_pass governs integration (§3.2): empty or `merge` lands
-                            // the work; any other value (e.g. `none`) runs the gates but
-                            // never integrates - the verified, reviewed work stays
-                            // un-merged.
-                            if !integrates(st) {
-                                return Ok(false);
-                            }
-                            // The integrate door's EXHAUSTIVE gate (spec 12, unit 3): "done" is
-                            // asserted against the FULL gate library, never the blast-radius-narrowed
-                            // inner-loop subset, so a unit never lands on a partial suite (R6). Cheap
-                            // via unit-1's content cache - the gates the inner loop already ran replay
-                            // from the log, so only the gates it SKIPPED actually run here. A red here
-                            // (a skipped gate the merged-to-be tree fails) BLOCKS the merge and feeds
-                            // remediation, exactly like an inner-loop gate failure. `integrate_and_emit`
-                            // itself is untouched - the exhaustive suite gates whether it is CALLED.
-                            let full = self.run_gates_at(
-                                st,
-                                dir,
-                                attempts,
-                                infra.ordinal,
-                                GateSelection::Exhaustive,
-                            )?;
-                            if full.pass {
-                                // The gates passed AND the review explicitly approved: the only
-                                // path that mints an `IntegrationApproval`, so the only path that
-                                // can merge. The reject branch below has no approval to hand to
-                                // `integrate_and_emit`, so it cannot land the unit's code.
-                                //
-                                // Gap 16 invariant (spec 06 unit 3): the verdict is folded and
-                                // acted on HERE, and an approve returns before the `remediate`
-                                // terminal check below ever runs. So an approval on a unit's
-                                // FINAL permitted attempt integrates - `max_retries` gates only
-                                // STARTING another attempt, it never overrides an approval. This
-                                // ordering (verdict-fold before attempt-counter) is load-bearing;
-                                // reversing it re-opens the bug where unit-2's approved-on-
-                                // attempt-6 review was recorded as UnitFailed/UnitEscalated.
-                                let integration = self.integrate_and_emit(
-                                    wt,
-                                    st,
-                                    attempts,
-                                    IntegrationApproval::approved(),
-                                )?;
-                                match integration.blocked {
-                                    None => {
-                                        self.emit(
-                                            ledger::TYPE_UNIT_INTEGRATED,
-                                            json!({"id": st.name, "commit": integration.commit}),
+                            Ok(mut review) => {
+                                // The round has ruled on the REQUIRED list: what stays open is what
+                                // its verdict requires (nothing, on an approve).
+                                next.required = std::mem::take(&mut review.required);
+                                // A contradiction against a PRIOR integrated unit (spec 12, unit
+                                // 4): the adjudicator named another, already-integrated unit as the
+                                // real defect source. QUEUE the rollback for the run loop to drain
+                                // after this wave (single-threaded, so the git revert never races a
+                                // concurrent merge). A unit never compensates ITSELF (that is
+                                // ordinary remediation below).
+                                if let Some(target) = &review.compensate {
+                                    if target != &st.name {
+                                        // DURABLY record the compensation INTENT here, the MOMENT
+                                        // the review names the target - BEFORE this unit integrates
+                                        // and before the post-wave drain reverts anything - so a
+                                        // crash between now and the drain does not silently drop
+                                        // the rollback. A resume re-derives this un-drained mark
+                                        // (`pending_compensations_from_log`) and the pre-loop drain
+                                        // re-drives it. Rides the existing `UnitStatus` vocabulary
+                                        // as a fold-neutral marker (no new event type, spec 12 G2):
+                                        // `META_COMPENSATE_TARGET` names the unit to roll back and
+                                        // `META_CONTRADICTION` the reason; keyed so a stepwise
+                                        // resume re-appends it exactly once. The mark's `id` is the
+                                        // TARGET and its status token is not a real lifecycle
+                                        // status, so folding it leaves the target `Integrated`
+                                        // until the drain reverts it.
+                                        self.emit_keyed_meta(
+                                            &compensation_queued_key(&st.name, target, attempts),
+                                            ledger::TYPE_UNIT_STATUS,
+                                            json!({
+                                                "id": target,
+                                                "status": STATUS_COMPENSATION_QUEUED,
+                                                "evidence": {
+                                                    "compensation-queued": review.reason.trim(),
+                                                },
+                                            }),
+                                            &[
+                                                (META_COMPENSATE_TARGET, target),
+                                                (META_CONTRADICTION, review.reason.trim()),
+                                            ],
                                         )?;
-                                        return Ok(true);
-                                    }
-                                    // The post-merge re-gate went RED (spec 12, unit 5): the pre-
-                                    // merge gates passed in this unit's OWN worktree, but the MERGED
-                                    // tree failed - an unpredicted batch-mate overlap auto-merged
-                                    // into a broken tree. The merge was ROLLED BACK (nothing
-                                    // landed), so capture the merge-break evidence and fall through
-                                    // to remediation, exactly like the exhaustive pre-merge red
-                                    // below - never integrate a broken merged tree.
-                                    Some(evidence) => {
-                                        // spec 69, criterion 3: a post-merge break is a merge
-                                        // conflict, never a plain gate cause - set it HERE, at
-                                        // the branch that detected it, not inferred later from
-                                        // the evidence this shares with a plain gate failure.
-                                        cause = CAUSE_INTEGRATE_CONFLICT.to_string();
-                                        next.gate_evidence = evidence;
+                                        self.compensations.lock().unwrap().push(Compensation {
+                                            target: target.clone(),
+                                            reason: review.reason.clone(),
+                                        });
                                     }
                                 }
-                            } else {
-                                // The exhaustive suite went red on an approved unit (a gate the
-                                // inner loop had skipped fails against the merged-to-be tree): treat
-                                // it like any gate failure - capture the evidence and fall through
-                                // to remediation, do NOT integrate a tree that fails the full suite.
-                                cause = full.cause();
-                                next.gate_evidence = full.evidence;
+                                if review.approved {
+                                    // on_pass governs integration (§3.2): empty or `merge` lands
+                                    // the work; any other value (e.g. `none`) runs the gates but
+                                    // never integrates - the verified, reviewed work stays
+                                    // un-merged.
+                                    if !integrates(st) {
+                                        return Ok(false);
+                                    }
+                                    // The integrate door's EXHAUSTIVE gate (spec 12, unit 3):
+                                    // "done" is asserted against the FULL gate library, never the
+                                    // blast-radius-narrowed inner-loop subset, so a unit never
+                                    // lands on a partial suite (R6). Cheap via unit-1's content
+                                    // cache - the gates the inner loop already ran replay from the
+                                    // log, so only the gates it SKIPPED actually run here. A red
+                                    // here (a skipped gate the merged-to-be tree fails) BLOCKS the
+                                    // merge and feeds remediation, exactly like an inner-loop gate
+                                    // failure. `integrate_and_emit` itself is untouched - the
+                                    // exhaustive suite gates whether it is CALLED.
+                                    let full = self.run_gates_at(
+                                        st,
+                                        dir,
+                                        attempts,
+                                        infra.ordinal,
+                                        GateSelection::Exhaustive,
+                                    )?;
+                                    if full.pass {
+                                        // The gates passed AND the review explicitly approved: the
+                                        // only path that mints an `IntegrationApproval`, so the
+                                        // only path that can merge. The reject branch below has no
+                                        // approval to hand to `integrate_and_emit`, so it cannot
+                                        // land the unit's code.
+                                        //
+                                        // Gap 16 invariant (spec 06 unit 3): the verdict is folded
+                                        // and acted on HERE, and an approve returns before the
+                                        // `remediate` terminal check below ever runs. So an
+                                        // approval on a unit's FINAL permitted attempt integrates -
+                                        // `max_retries` gates only STARTING another attempt, it
+                                        // never overrides an approval. This ordering (verdict-fold
+                                        // before attempt-counter) is load-bearing; reversing it
+                                        // re-opens the bug where unit-2's approved-on-attempt-6
+                                        // review was recorded as UnitFailed/UnitEscalated.
+                                        let integration = self.integrate_under_infra_retry(
+                                            wt,
+                                            st,
+                                            attempts,
+                                            IntegrationApproval::approved(),
+                                            &mut infra,
+                                        )?;
+                                        match integration.blocked {
+                                            None => {
+                                                self.emit(
+                                                ledger::TYPE_UNIT_INTEGRATED,
+                                                json!({"id": st.name, "commit": integration.commit}),
+                                            )?;
+                                                return Ok(true);
+                                            }
+                                            // The post-merge re-gate went RED (spec 12, unit 5):
+                                            // the pre-merge gates passed in this unit's OWN
+                                            // worktree, but the MERGED tree failed - an unpredicted
+                                            // batch-mate overlap auto-merged into a broken tree.
+                                            // The merge was ROLLED BACK (nothing landed), so
+                                            // capture the merge-break evidence and fall through to
+                                            // remediation, exactly like the exhaustive pre-merge
+                                            // red below - never integrate a broken merged tree.
+                                            Some(evidence) => {
+                                                // spec 69, criterion 3: a post-merge break is a
+                                                // merge conflict, never a plain gate cause - set it
+                                                // HERE, at the branch that detected it, not
+                                                // inferred later from the evidence this shares with
+                                                // a plain gate failure.
+                                                cause = CAUSE_INTEGRATE_CONFLICT.to_string();
+                                                next.gate_evidence = evidence;
+                                            }
+                                        }
+                                    } else {
+                                        // The exhaustive suite went red on an approved unit (a gate
+                                        // the inner loop had skipped fails against the merged-to-be
+                                        // tree): treat it like any gate failure - capture the
+                                        // evidence and fall through to remediation, do NOT
+                                        // integrate a tree that fails the full suite.
+                                        cause = full.cause();
+                                        next.gate_evidence = full.evidence;
+                                    }
+                                } else {
+                                    // A rejecting adjudicator is treated exactly like a gate
+                                    // failure: capture its reasoning for the next attempt's prompt
+                                    // (item 5) and fall through to remediation, do NOT integrate. A
+                                    // reject blaming infrastructure reruns the stage uncharged
+                                    // instead (F3).
+                                    cause = review_failure_cause(&review.reason);
+                                    next.review_reason = review.reason;
+                                }
                             }
-                        } else {
-                            // A rejecting adjudicator is treated exactly like a gate failure:
-                            // capture its reasoning for the next attempt's prompt (item 5) and
-                            // fall through to remediation, do NOT integrate. A reject blaming
-                            // infrastructure reruns the stage uncharged instead (F3).
-                            cause = review_failure_cause(&review.reason);
-                            next.review_reason = review.reason;
                         }
                     } else {
                         // Capture the failing gates' evidence for the next attempt's
@@ -6428,13 +6638,21 @@ impl RunCtx<'_> {
 
             // An infrastructure failure (F3) is never the author's: no `remediate`, no
             // `UnitFailed`. The stage reruns at the SAME attempt under the next retry ordinal -
-            // re-implementing only when the implementer itself crashed, otherwise re-gating and
-            // re-reviewing the committed tree - until the taxonomy's infra limit halts the
-            // step. `prior` is left as it was: an outage is no feedback for the author.
+            // re-implementing only when the implementer itself crashed, otherwise re-running the
+            // seam (when it crashed before any gate), re-gating and re-reviewing the committed
+            // tree - until the taxonomy's infra limit halts the step. `prior` is left as it was:
+            // an outage is no feedback for the author.
             if is_infra_cause(&cause) {
-                let evidence = spawn_err.clone().unwrap_or_else(|| next.summary());
+                let evidence = spawn_err
+                    .clone()
+                    .or_else(|| tier_crash.clone())
+                    .unwrap_or_else(|| next.summary());
                 infra = self.retry_infra_failure(&st.name, attempts, infra, &cause, &evidence)?;
                 skip_implement = spawn_err.is_none();
+                // The rerun spawns every review tier afresh under its own window, so a park of
+                // the round the outage spoiled no longer holds this unit's worktree; a park of
+                // the rerun sets it again.
+                any_parked.store(false, Ordering::SeqCst);
                 continue;
             }
             let rem = safety::remediate(attempts, self.max_retries_for(&st.name, st));
@@ -6665,10 +6883,9 @@ impl RunCtx<'_> {
                             // A speculation candidate is an implementer lane, never a review
                             // tier: no roster to render (spec 67, criterion 4).
                             reviews: Vec::new(),
-                            // The existing blocking drivers (cli/workflow) ignore these;
-                            // spec 104's host is not wired in here yet.
+                            // The headless host and the cli driver read these; the other
+                            // drivers ignore them.
                             settings_json: String::new(),
-                            launch: 0,
                             resumed_from: String::new(),
                             resume_task: String::new(),
                         },
@@ -6689,12 +6906,12 @@ impl RunCtx<'_> {
                 // like the implementer park - and this candidate is NOT committed, so all K park
                 // together this step and a later step replays the sdet and commits the candidate
                 // WITH its periphery. The lane dir persists across the park (dropping `wt` does not
-                // remove it - `Worktree` has no `Drop`), so the worker finds it. An sdet whose record
-                // the emit guard refused again after its one re-run takes the crash arm: the
-                // candidate loses, as a losing candidate has no later attempt to carry the refusal
-                // into.
+                // remove it - `Worktree` has no `Drop`), so the worker finds it. An sdet that
+                // crashed, or whose record the emit guard refused again after its one re-run,
+                // takes the crash arm: the candidate loses, as a losing candidate has no later
+                // attempt or infra rerun to carry the crash or the refusal into (infra ordinal 0).
                 .and_then(|result| {
-                    self.spawn_sdet_author(st, Some(&wt), &dir, lane, &[])
+                    self.spawn_sdet_author(st, Some(&wt), &dir, lane, 0, &[])
                         .map(|()| result)
                 }) {
                 Ok(result) => {
@@ -6720,11 +6937,11 @@ impl RunCtx<'_> {
                 // A candidate parked (stepwise/replay frontier): collect it and keep going so
                 // ALL K candidates park this step. The dir persists for the worker.
                 Err(e) if is_parked(&e) => any_parked = true,
-                // A candidate CRASHED (usage limit, non-zero exit, or an sdet record refused
-                // past its re-run): it is simply absent from the group - a losing candidate
-                // whose diff never commits. The remaining
-                // candidates still race; if none survives, the escalation tail fires. Its lane
-                // worktree AND branch were already created (above), and NO terminal path below
+                // A candidate CRASHED (usage limit, non-zero exit, an sdet crash, or an sdet
+                // record refused past its re-run): it is simply absent from the group - a losing
+                // candidate whose diff never commits. The remaining candidates still race; if
+                // none survives, the escalation tail fires. Its lane worktree AND branch were
+                // already created (above), and NO terminal path below
                 // tears them down - winner cleanup, `cancel_speculation_candidates`, and the
                 // escalation tail all iterate `candidates`, which EXCLUDES this never-pushed
                 // lane, and `Worktree` has no `Drop`. So remove them HERE, or the conductor
@@ -6985,7 +7202,7 @@ impl RunCtx<'_> {
         candidate.wt.ensure_present()?;
         let winner_sha = worktree::head_sha_of(dir);
         self.emit_keyed_meta(
-            &format!("{}/verified#{lane}", st.name),
+            &verified_key(&st.name, lane),
             ledger::TYPE_UNIT_STATUS,
             json!({
                 "id": st.name,
@@ -7178,7 +7395,7 @@ impl RunCtx<'_> {
         // chunk to mask), so a park/budget-refusal from either of THEM still shows up
         // directly on `result` - the `matches!` disjunct below still catches those.
         let parked_unwind = any_lens_parked.load(Ordering::SeqCst)
-            || matches!(&result, Err(e) if is_parked_or_budget_refused(e));
+            || matches!(&result, Err(e) if is_parked_or_refused(e, BUDGET_MARKER));
         if let Some(w) = &review_wt {
             // A read-only review worktree carries no work to checkpoint, so a TERMINAL
             // return removes the transient dir AND its throwaway branch unconditionally,
@@ -7489,7 +7706,7 @@ impl RunCtx<'_> {
             // being the one propagated (see the doc comment above).
             if chunk_results
                 .iter()
-                .any(|r| matches!(r, Err(e) if is_parked_or_budget_refused(e)))
+                .any(|r| matches!(r, Err(e) if is_parked_or_refused(e, BUDGET_MARKER)))
             {
                 any_parked.store(true, Ordering::SeqCst);
             }
@@ -7507,7 +7724,7 @@ impl RunCtx<'_> {
             // unaffected.
             if let Some(pos) = chunk_results
                 .iter()
-                .position(|r| matches!(r, Err(e) if !is_parked_or_budget_refused(e)))
+                .position(|r| matches!(r, Err(e) if !is_parked_or_refused(e, BUDGET_MARKER)))
             {
                 chunk_results.swap(0, pos);
             }
@@ -7615,6 +7832,12 @@ impl RunCtx<'_> {
     /// a substantive result for a retry id lets the next step replay it and fold normally
     /// (see [`degenerate_reviewer`]).
     ///
+    /// A spawn whose RECORDED result is an error re-drives the same way, but a window that
+    /// ends with a recorded error among its spawns is an outage of the round, not a dead
+    /// reviewer: it returns the [`spawn_crash`] error naming the last such error, so the single
+    /// lane reruns the review uncharged under its F3 infra retry in the next ordinal's window
+    /// and halts on infrastructure past the taxonomy's infra limit.
+    ///
     /// A spawn whose record the emit guard refused (a line the fold cannot apply, or an id
     /// another seat holds) is the reviewer's own defect, not infra: it re-runs once at the
     /// window's next id with the refusal after its prompt ([`RefusedRecord`]), so the reviewer
@@ -7677,6 +7900,16 @@ impl RunCtx<'_> {
         // first re-drives the review, a second halts (one bounded re-drive, never a loop).
         let mut verdictless = false;
         let mut refused = RefusedRecord::default();
+        // The stage error a spawn error of this reviewer reads as, its failure class stripped.
+        let failed = |e: &Error| {
+            format!(
+                "stage {:?} {tier} {agent_id:?}: {}",
+                st.name,
+                strip_failure_marker(e)
+            )
+        };
+        // The last recorded spawn error of this round, which makes the round an outage.
+        let mut errored: Option<String> = None;
         for retry in window {
             let id = spawn_retry_id(&st.name, role, attempt, retry);
             let opts =
@@ -7726,8 +7959,8 @@ impl RunCtx<'_> {
                 // driver paths, which is what lets the review-quality folds key an upheld
                 // finding to its tier regardless of which driver recorded it. ALSO stamp
                 // this spawn's deterministic id ([`META_SPAWN`]) so an approve-shaped verdict
-                // a GATING adjudicator records via `rigger_emit` on the in-process (cli) path
-                // is attributable to THAT spawn EXACTLY - not just its shared role token,
+                // a GATING adjudicator hands through this callback is attributable to
+                // THAT spawn EXACTLY - not just its shared role token,
                 // which a concurrent sibling adjudicator (`run_wave` fan-out) carries too -
                 // the per-spawn correlation the mismatch backstop (`gating_spawn_emitted_approve`)
                 // keys on to exclude a sibling's approve.
@@ -7754,30 +7987,47 @@ impl RunCtx<'_> {
                         // (the work was never judged) and RE-PARKS a FRESH attempt of the SAME review by
                         // looping to the next `spawn_retry_id`. That id is unrecorded, so the replay
                         // driver parks it and the next `rigger step` returns it in the wave; a completed
-                        // real verdict then folds through the NORMAL adjudication path below. This is
-                        // bounded by `REVIEWER_RESPAWN_BOUND` exactly like the degenerate loop, so a
-                        // persistently-erroring review spawn escalates through the halt below rather
-                        // than re-parking forever (spec 51, criterion 2 owns that bound).
+                        // real verdict then folds through the NORMAL adjudication path below. The
+                        // round's window bounds it exactly like the degenerate loop: a round whose
+                        // window ends with a recorded error among its spawns is an outage of the
+                        // round, so it returns the crash below the loop, and the single lane reruns
+                        // the review uncharged under its F3 infra retry in the next ordinal's window
+                        // until the taxonomy's infra limit halts the step
+                        // (op-105-errored-review-window-joins-the-infra-retry).
                         //
                         // A driver PARK (the replay frontier) or a BUDGET refusal unwinds the unit
                         // cleanly and PROPAGATES unchanged (its marker survives the `format!` wrapping,
-                        // so `is_parked`/`carries_marker(.., BUDGET_MARKER)` still recognize it upstream). And the LIVE
-                        // drivers (cli / workflow) never RECORD a spawn result, so `review_spawn_errored`
-                        // is false there and a genuine in-process review failure still propagates as
-                        // the stage's error exactly as before - only a REPLAYED recorded error re-parks.
-                        if !is_parked_or_budget_refused(&e) && self.review_spawn_errored(&id)? {
+                        // so `is_parked`/`carries_marker(.., BUDGET_MARKER)` still recognize it upstream).
+                        // The headless host RECORDS its result as the replay path does, and on
+                        // `rigger run` the decorator records an unmarked error the host hands back
+                        // for a spawn the run has not ended, so a failed hosted review re-drives
+                        // through this same bound. Where no result is recorded (the workflow
+                        // driver records none), `review_spawn_errored` is false and the genuine
+                        // crash surfaces marked ([`SPAWN_CRASH_MARKER`]), so the single lane
+                        // reruns the whole review uncharged under its F3 infra retry
+                        // (op-105-sdet-seam-joins-the-infra-retry) while every other caller keeps
+                        // its own handling of a failed review.
+                        if !is_parked_or_refused(&e, BUDGET_MARKER)
+                            && self.review_spawn_errored(&id)?
+                        {
+                            errored = Some(failed(&e));
                             continue;
                         }
                         // adj-u104c5 REQUIRED FIX 2: `strip_failure_marker` drops only its own
                         // `\u{2}`-bracketed class and the emit guard's refusal marker, so a
                         // PARKED_MARKER/BUDGET_MARKER error still passes through byte-for-byte
                         // unchanged here - `is_parked`/`carries_marker(.., BUDGET_MARKER)` upstream
-                        // are unaffected.
-                        return Err(Error(format!(
-                            "stage {:?} {tier} {agent_id:?}: {}",
-                            st.name,
-                            strip_failure_marker(&e)
-                        )));
+                        // are unaffected. A park, a budget refusal or a refused record is no crash.
+                        let message = failed(&e);
+                        return Err(
+                            if is_parked_or_refused(&e, BUDGET_MARKER)
+                                || carries_marker(&e, EMIT_REFUSED_MARKER)
+                            {
+                                Error(message)
+                            } else {
+                                spawn_crash(message)
+                            },
+                        );
                     }
                 };
             // A substantive result folds into the review; a degenerate one loops to respawn
@@ -7793,15 +8043,16 @@ impl RunCtx<'_> {
                 // events (they explain the failure) while the result channel still decides.
                 // The emitted approve is read from the STORE and CORRELATED to THIS spawn's
                 // own emit (`gating_spawn_emitted_approve`) by its [`META_SPAWN`] stamp: the
-                // cli emit callback stamps it in-process, the workflow MCP server stamps it for
-                // the spawn it is serving, and a NATIVE courier's `rigger emit --spawn <id>`
+                // headless host's spawn-bound MCP server stamps it with its bound id, the
+                // workflow MCP server stamps it for the spawn it is serving, and a NATIVE
+                // courier's `rigger emit --spawn <id>`
                 // stamps it at record time - so on EVERY driver the approve names its emitting
                 // spawn and a CONCURRENT sibling adjudicator's approve (which carries the
                 // SIBLING's id) is excluded by identity, not by a shared-stream position window
-                // a sibling could fall inside (addendum 2.2). So the backstop fires on
-                // ReplayDriver (rigger step) and workflow::Driver (rigger serve) too, not only
-                // the cli stdout bridge. The result-channel check is FIRST, so the store read
-                // is taken only for a genuinely empty verdict.
+                // a sibling could fall inside (addendum 2.2). So the backstop fires on every
+                // driver a conductor run takes: the headless host (rigger run), ReplayDriver
+                // (rigger step) and workflow::Driver (rigger serve). The result-channel check is
+                // FIRST, so the store read is taken only for a genuinely empty verdict.
                 if output != ReviewerOutput::Findings
                     && !has_verdict_line(&result.output)
                     && self.gating_spawn_emitted_approve(&id)?
@@ -7845,15 +8096,19 @@ impl RunCtx<'_> {
                 return Ok(result);
             }
         }
-        Err(degenerate_reviewer(
-            &st.name, tier, agent_id, role, attempt, ordinal,
-        ))
+        // A window spent with a recorded spawn error among its spawns is an outage, the crash the
+        // single lane reruns under its infra retry; one spent on empty outputs alone is the
+        // degenerate halt.
+        Err(match errored {
+            Some(message) => spawn_crash(message),
+            None => degenerate_reviewer(&st.name, tier, agent_id, role, attempt, ordinal),
+        })
     }
 
     /// Whether the GATING spawn `id` emitted an approve-shaped verdict via `rigger_emit`
     /// DURING its run (spec 18, unit 3), read from the STORE so the backstop fires on
-    /// EVERY driver - the in-process cli callback, the out-of-process workflow MCP server,
-    /// AND the replay driver (rigger step) - not only the cli stdout bridge. The emitted
+    /// EVERY driver - the emit callback, the headless host's spawn-bound `rigger` server,
+    /// the out-of-process workflow MCP server AND the replay driver (rigger step). The emitted
     /// approve is the DIAGNOSTIC signal of a persona that recorded its verdict as an event
     /// instead of on the result channel the gate reads; the result channel still DECIDES
     /// (the caller pairs this with `!has_verdict_line`), honoring addendum 2.2.
@@ -7863,7 +8118,8 @@ impl RunCtx<'_> {
     /// `MAX_CONCURRENCY` units run in parallel in [`run_wave`](RunCtx::run_wave), all emitting
     /// to the ONE store) could fall inside. Every driver stamps the emit with the emitting
     /// spawn's id at RECORD time, so the same one identity check works on all three:
-    /// - the cli emit callback stamps it in-process;
+    /// - the headless host's spawn-bound MCP server (`rigger mcp --spawn <id>`) stamps it with
+    ///   its bound id;
     /// - the workflow MCP server stamps it with the id of the spawn it is currently serving
     ///   (the shim serves agents serially, so every `rigger_emit` between a spawn's
     ///   `rigger_next` and its `rigger_result` is that spawn's);
@@ -7914,10 +8170,13 @@ impl RunCtx<'_> {
     /// excluded - it is a real verdict that folds normally.
     ///
     /// Scoped to the CURRENT run (like every execution-replay lookup, spec 06 unit 1), so a
-    /// prior run's recorded review error never re-parks a fresh run's same-id review spawn. On
-    /// the LIVE drivers (cli / workflow) no spawn result is ever recorded, so this is always
-    /// `false` there and a genuine in-process review failure still propagates to remediation
-    /// unchanged - only a REPLAYED recorded error re-parks.
+    /// prior run's recorded review error never re-parks a fresh run's same-id review spawn. The
+    /// headless host records its result as the replay path does, and on `rigger run` the
+    /// decorator records an unmarked error the host hands back for a spawn the run has not
+    /// ended, so this reads a failed hosted review as it reads a replayed one. The workflow
+    /// driver records no spawn result, so this is always `false` there and
+    /// [`run_reviewer`](RunCtx::run_reviewer) returns a genuine in-process review failure marked
+    /// as a spawn crash ([`SPAWN_CRASH_MARKER`]).
     fn review_spawn_errored(&self, id: &str) -> Result<bool, Error> {
         let events = self.read_current_run()?;
         Ok(spawn::result_of(&events, id)
@@ -7941,10 +8200,10 @@ impl RunCtx<'_> {
     ///   an empty stdout is the NORMAL outcome, never degeneracy by itself. It is
     ///   degenerate only when the conductor OBSERVED it produce nothing at all: zero
     ///   ReviewFindings from this spawn's emit callback AND an empty stdout. That
-    ///   observation is possible only while the agent runs IN-PROCESS (the live drivers);
-    ///   on the stepwise path the agent ran out-of-process and its findings, if any, are
-    ///   already in the graph, so a REPLAYED result (one whose outcome is already recorded
-    ///   in the log) is a VALID outcome, never degeneracy. This is why a healthy
+    ///   observation is possible only while the agent runs IN-PROCESS (the workflow driver);
+    ///   on the stepwise and the hosted path the agent ran out-of-process and its findings,
+    ///   if any, are already in the graph, so a result whose outcome is already recorded
+    ///   in the log is a VALID outcome, never degeneracy. This is why a healthy
     ///   lens/adversary that correctly emitted its findings and self-reported an empty
     ///   success is NOT misread as degenerate on the production replay driver
     ///   (adv-u2gap18-empty-success-is-a-valid-outcome-misread-as-degenerate), with no
@@ -7974,10 +8233,11 @@ impl RunCtx<'_> {
             return Ok(false);
         }
         // Empty stdout, zero observed findings: degenerate only if the agent actually ran
-        // in-process (live). A spawn whose result is ALREADY recorded was REPLAYED - the
-        // agent ran out-of-process and its findings went to the graph, so its empty stdout
-        // is a valid outcome, not degeneracy. The live drivers never record a spawn
-        // result, so this read is `None` there and the in-process observation stands.
+        // in-process. A spawn whose result is ALREADY recorded ran out-of-process - replayed,
+        // or hosted as a headless session, whose host records the result - and its findings
+        // went to the graph, so its empty stdout is a valid outcome, not degeneracy. The
+        // workflow driver records no spawn result, so this read is `None` there and the
+        // in-process observation stands.
         let events = self.read_current_run()?;
         let replayed = spawn::result_of(&events, id)
             .map_err(|e| Error(e.to_string()))?
@@ -8299,10 +8559,9 @@ impl RunCtx<'_> {
                         // The planner/re-planner is never a review tier: no roster to render
                         // (spec 67, criterion 4).
                         reviews: Vec::new(),
-                        // The existing blocking drivers (cli/workflow) ignore these; spec
-                        // 104's host is not wired in here yet.
+                        // The headless host and the cli driver read these; the other drivers
+                        // ignore them.
                         settings_json: String::new(),
-                        launch: 0,
                         resumed_from: String::new(),
                         resume_task: String::new(),
                     },
@@ -8359,7 +8618,7 @@ impl RunCtx<'_> {
         // stepwise/replay frontier) and resumes in a LATER conductor process, in this
         // exact throwaway worktree - the identical defect class `run_fan_out_stage` and
         // `run_stage` both fix with the same `parked_unwind` guard, mirrored here.
-        let parked_unwind = matches!(&result, Err(e) if is_parked_or_budget_refused(e));
+        let parked_unwind = matches!(&result, Err(e) if is_parked_or_refused(e, BUDGET_MARKER));
         if let Some(w) = &review_wt {
             if !parked_unwind {
                 let _ = w.remove();
@@ -8603,11 +8862,6 @@ impl RunCtx<'_> {
         let k = s - 1;
         let spec = crate::run::current_run_spec_path(&run);
         let halt = spec_defect_halt(&spec, &stopping.upheld);
-        let about: Vec<String> = if spec.is_empty() {
-            Vec::new()
-        } else {
-            vec![spec]
-        };
         self.emit_lesson(
             None,
             gate,
@@ -8617,7 +8871,7 @@ impl RunCtx<'_> {
                 spawn::CAUSE_SPEC_AMBIGUITY
             ),
             Some(&spec_defect_lesson_key(gate, k)),
-            Some(&about),
+            Some(std::slice::from_ref(&spec)),
         )?;
         self.emit_keyed(
             &spec_defect_key(gate, k),
@@ -10107,11 +10361,13 @@ impl RunCtx<'_> {
                         self.record_placeholder_staged(&st.name, attempt, retry, &regenerable)?;
                         // integrate_mu is released HERE, before the spawn, so siblings
                         // integrate meanwhile (the ruling's own words: "returns the unit to
-                        // building"). A park propagates straight through the `?` below with
-                        // no lock held at all; a real (non-parked) result - a replay hit, or a
-                        // synchronous/blocking driver - re-acquires `lock` and loops back to
-                        // re-attempt the merge from scratch, never trusting anything this
-                        // iteration observed before the spawn. A resolver whose record the emit
+                        // building"). A park, or a store fault before the round's launch (the
+                        // spawn crash the integrate door retries), propagates straight through
+                        // the `?` below with no lock held at all; any other round's end - a
+                        // result or an unmarked error of a launched spawn, from a live session
+                        // or the log - re-acquires `lock` and loops
+                        // back to re-attempt the merge from scratch, never trusting anything
+                        // this iteration observed before the spawn. A resolver whose record the emit
                         // guard refused re-runs once at the next round's id, told why, so the
                         // re-run spends one of the episode's `CONFLICT_RESOLVE_BOUND` rounds.
                         drop(lock);
@@ -11031,9 +11287,18 @@ impl RunCtx<'_> {
     ///
     /// Operator ruling op-u88c1-round-1-conflict-resolution-is-a-parked-spawn-not-an-inline-
     /// loop (round 1 REJECT): the caller ([`Self::integrate_and_emit`]) drops `integrate_mu`
-    /// BEFORE calling this - never held across it - so a park propagates through the `?`
-    /// below with no lock held at all, and a real (non-parked) result never blocks a
-    /// sibling's concurrent integration behind an open-ended agent turnaround.
+    /// BEFORE calling this - never held across it - so a park propagates with no lock held at
+    /// all, and a real (non-parked) result never blocks a sibling's concurrent integration
+    /// behind an open-ended agent turnaround.
+    ///
+    /// RESUME BY SESSION (spec 105): only a marked error returns `Err` - a park, an emit
+    /// refusal [`rerun_once_on_refusal`] re-runs, or a store fault ([`is_store_fault`]): a store
+    /// read failing before the round launched, returned as a [`spawn_crash`] the integrate door
+    /// retries under the infra limit, so it spends no round and blocks nothing. An unmarked error
+    /// of a launched spawn, from a live session or answered from the log, spends the round like
+    /// one that resolved nothing: the caller re-merges and, still conflicting, moves to the next
+    /// `~retry` with no attempt charged, blocking past [`CONFLICT_RESOLVE_BOUND`]. The budget's
+    /// refusal is returned before the spawn and propagates as ever.
     fn spawn_conflict_resolution_implementer(
         &self,
         st: &Stage,
@@ -11074,7 +11339,7 @@ impl RunCtx<'_> {
                 ],
             )
         };
-        self.deps.driver.spawn(
+        let spawned = self.deps.driver.spawn(
             agent_def,
             &prompt,
             &SpawnOpts {
@@ -11092,13 +11357,21 @@ impl RunCtx<'_> {
                 env: Self::spawn_env(&build_env, &wt.dir, crate::worktree::UNIT_CACHE_PREFIX),
                 reviews: Vec::new(),
                 settings_json: String::new(),
-                launch: 0,
                 resumed_from: String::new(),
                 resume_task: String::new(),
             },
             &emit,
-        )?;
-        Ok(())
+        );
+        // The merge the caller re-attempts, never this round's outcome, decides what follows.
+        match spawned {
+            Err(e) if is_parked_or_refused(&e, EMIT_REFUSED_MARKER) => Err(e),
+            Err(e) if is_store_fault(&e) => Err(spawn_crash(format!(
+                "stage {:?} conflict resolver: {}",
+                st.name,
+                strip_failure_marker(&e)
+            ))),
+            _ => Ok(()),
+        }
     }
 
     /// Build the SYSTEM prompt the conductor threads into every spawn: the agent's
@@ -11630,7 +11903,8 @@ impl RunCtx<'_> {
 
     /// Record a `LessonLearned` about `unit_name`, answering its append's outcome. `about` names
     /// what the lesson is about when given (the spec-defect stop names the spec, spec 112
-    /// criterion 5); without it the lesson is about the files `wt` touched. `key`, when given,
+    /// criterion 5); without it the lesson is about the files `wt` touched, and about the run's
+    /// spec file when neither names one ([`Self::record_lesson`]). `key`, when given,
     /// records it under that replay key, so a step re-reaching the same lesson appends nothing.
     /// Every caller but the spec-defect stop records its lesson best-effort and discards the
     /// outcome; the stop propagates it, since its later records must never stand over a lesson
@@ -11656,6 +11930,30 @@ impl RunCtx<'_> {
         };
         let uid = uuid::Uuid::new_v4().to_string();
         let id = format!("lesson-{unit_name}-{}", &uid[..8]);
+        self.record_lesson(key, &id, summary, about)
+    }
+
+    /// Record the `LessonLearned` `id` saying `summary` about `about`, under the replay key `key`
+    /// when given: the one place every lesson the conductor records takes its location
+    /// (op-105-conductor-lessons-carry-a-location). An `about` that names no file names the run's
+    /// spec file instead, so a file-seeded read reaches the lesson; the lesson is recorded either
+    /// way, about nothing when the run's spec cannot be read, since a lost lesson costs more than
+    /// a coarse location.
+    fn record_lesson(
+        &self,
+        key: Option<&str>,
+        id: &str,
+        summary: &str,
+        about: Vec<String>,
+    ) -> Result<(), Error> {
+        let mut about: Vec<String> = about.into_iter().filter(|path| !path.is_empty()).collect();
+        if about.is_empty() {
+            let spec = self
+                .read_current_run()
+                .map(|run| crate::run::current_run_spec_path(&run))
+                .unwrap_or_default();
+            about.extend(Some(spec).filter(|spec| !spec.is_empty()));
+        }
         let payload = json!({"id": id, "summary": summary, "about": about});
         match key {
             Some(key) => self.emit_keyed(key, contextgraph::TYPE_LESSON_LEARNED, payload),
@@ -12076,10 +12374,16 @@ impl RunCtx<'_> {
     /// recorded status proves how far it got CONTINUES from that phase instead of
     /// restarting from implement:
     /// - last status `reviewed` (the adjudicator approved, only the merge was
-    ///   interrupted) -> [`ResumePhase::Reviewed`]: skip implement AND review, integrate.
-    /// - last status `green`/`verified` (implemented + maybe gated, not yet approved)
-    ///   -> [`ResumePhase::Implemented`]: skip the implementer spawn, re-run gates +
-    ///   the three-tier review on the committed code.
+    ///   interrupted), or last status `green`/`verified` on a stage carrying no review whose
+    ///   log records an integrate attempt at the unit's current attempt
+    ///   ([`RunCtx::integrate_attempted`]: its gates passed, its empty panel approved
+    ///   trivially, and only the merge was interrupted) -> [`ResumePhase::Reviewed`]: skip
+    ///   implement AND review, integrate.
+    /// - last status `green`/`verified` otherwise (implemented + maybe gated, not yet
+    ///   approved) -> [`ResumePhase::Implemented`]: skip the implementer spawn, re-run the sdet seam
+    ///   only when this attempt's gates never started
+    ///   ([`RunCtx::attempt_gates_started`]), then gates + the three-tier review on the
+    ///   committed code.
     /// - anything below `green`, or no committed work on the branch, or a non-isolated
     ///   / repo-less run -> [`ResumePhase::Fresh`]: the full lifecycle, unchanged.
     ///
@@ -12089,7 +12393,7 @@ impl RunCtx<'_> {
     /// log itself already proves the integrate door was reached (round 4 fix,
     /// [`RunCtx::integrate_attempted`]'s own doc): `branch_has_work`'s `tip == base` check
     /// alone cannot tell "never had work" apart from "already fast-forward-landed", and a
-    /// `Reviewed` unit with a durably-recorded integrate attempt is never the former.
+    /// unit routed to `Reviewed` with a durably-recorded integrate attempt is never the former.
     fn resume_phase(&self, st: &Stage) -> ResumePhase {
         // A repo-less or non-isolated unit has no branch to checkpoint on, so there is
         // never reusable prior work - it always runs fresh.
@@ -12101,18 +12405,39 @@ impl RunCtx<'_> {
             None => return ResumePhase::Fresh,
         };
         let attempts = self.prior_attempts.get(&st.name).copied().unwrap_or(0);
-        // Round 4 fix: a `Reviewed` unit whose log already durably proves an integrate
-        // attempt was made for THIS attempt is never the "prior worktree's commits were
+        // Whether the log durably records an integrate attempt at THIS attempt: the merge
+        // door was reached, past the unit's approve.
+        let integrating = self
+            .integrate_attempted
+            .contains(&conflict_regenerate_key(&st.name, attempts));
+        let phase = match prior {
+            // Approved last window; only the merge was interrupted -> integrate.
+            ledger::Status::Reviewed => ResumePhase::Reviewed,
+            // A stage carrying no review approves trivially and records no `reviewed`, so
+            // its last status stays `verified` through the merge: an integrate attempt at
+            // this attempt is its approval reaching the merge -> integrate, never back
+            // through gates on a tree the merge left mid-conflict.
+            ledger::Status::Green | ledger::Status::Verified
+                if integrating && self.cfg.workflow.effective_review_panel(st).is_empty() =>
+            {
+                ResumePhase::Reviewed
+            }
+            // Implemented (and possibly gated) last window, not yet approved -> re-run
+            // gates + review on the committed code, skip the implementer.
+            ledger::Status::Green | ledger::Status::Verified => ResumePhase::Implemented,
+            // Below green (pending/grounding/red), or a terminal status that should not
+            // have reached the lifecycle: run fresh.
+            _ => return ResumePhase::Fresh,
+        };
+        // Round 4 fix: a unit routed to `Reviewed` whose log already durably proves an
+        // integrate attempt was made for THIS attempt is never the "prior worktree's commits were
         // lost" case `branch_has_work` exists to catch - it is the OTHER git state that
         // check cannot tell apart from that: the unit's own merge already fast-forward-
         // landed onto the run branch (GAP 9's row-4 after-record fixture: a crash between
         // `Worktree::land` and the durable landed/`UnitIntegrated` record leaves exactly
         // `tip == base` behind), so the integrate door must still run to finish recording
         // and reporting it - never restart the whole unit from implement.
-        let already_integrating = prior == ledger::Status::Reviewed
-            && self
-                .integrate_attempted
-                .contains(&conflict_regenerate_key(&st.name, attempts));
+        let already_integrating = phase == ResumePhase::Reviewed && integrating;
         // The unit's branch must actually carry committed work to build on; a recorded
         // status with an empty/missing branch (the prior worktree's commits were lost)
         // falls back to a fresh run rather than skipping a non-existent implementation.
@@ -12121,16 +12446,7 @@ impl RunCtx<'_> {
         {
             return ResumePhase::Fresh;
         }
-        match prior {
-            // Approved last window; only the merge was interrupted -> integrate.
-            ledger::Status::Reviewed => ResumePhase::Reviewed,
-            // Implemented (and possibly gated) last window, not yet approved -> re-run
-            // gates + review on the committed code, skip the implementer.
-            ledger::Status::Green | ledger::Status::Verified => ResumePhase::Implemented,
-            // Below green (pending/grounding/red), or a terminal status that should not
-            // have reached the lifecycle: run fresh.
-            _ => ResumePhase::Fresh,
-        }
+        phase
     }
 
     fn stage_worktree(&self, st: &Stage) -> Result<Option<Worktree>, Error> {
@@ -12830,7 +13146,8 @@ fn review_evidence(reason: &str) -> BTreeMap<String, String> {
 ///   unit's stage, which is never charged (F3): the stage reruns at the same attempt and
 ///   records the cause on an [`STATUS_INFRA_RETRY`] mark, never on a `UnitFailed`.
 ///   [`CAUSE_INFRA_SPAWN`] is a mid-spawn driver crash (a non-zero exit, a non-usage-limit
-///   error, a live host's wall-clock stop) - the usage-limit case never reaches here at all
+///   error, a live host's wall-clock stop) of the implementer, the sdet-author or a review
+///   tier ([`SPAWN_CRASH_MARKER`]) - the usage-limit case never reaches here at all
 ///   (spec 06 unit 6: wait-until-reset + re-spawn); [`CAUSE_INFRA_GATE`] a gate red whose
 ///   every failing gate is of the taxonomy's `infra` class ([`GateOutcome::infra`]);
 ///   [`CAUSE_INFRA_REVIEW`] an adjudicator reject blaming infrastructure
@@ -12910,10 +13227,11 @@ const PLAN_PROTOCOL: &str = "You are the planner. The conductor has ALREADY crea
 /// `actor` is the reviewer's ROLE token, its step's [`review_step_role`] (`lens:<agent>` or
 /// `adversary`, with `@<k>` from a kind's second step on), that the finding's `by` field carries.
 /// This is what makes finding attribution reach the SAME log the adjudicator's `SpawnResult` lands
-/// on: the in-process (cli) driver stamps [`contextgraph::META_ACTOR`] on the finding for us, but
-/// an OUT-OF-PROCESS reviewer (the courier / workflow path) emits its finding through
-/// `rigger emit`, which stamps no actor - so on THAT path, where the adjudicator's upheld/cause
-/// `SpawnResult` is the only place the verdict is recorded, the `by` field is the sole attribution
+/// on: the emit callback stamps [`contextgraph::META_ACTOR`] on the finding for us, but
+/// an OUT-OF-PROCESS reviewer (a hosted session, the courier / workflow path) emits its finding
+/// through `rigger_emit` or `rigger emit`, which stamp no actor - so on THAT path, where the
+/// adjudicator's upheld/cause `SpawnResult` is the only place the verdict is recorded, the `by`
+/// field is the sole attribution
 /// the review-quality folds (finding survival, adversary precision, per-tier cost) can key an
 /// upheld finding on. Carrying the role token (not the raw agent id) keeps it consistent with the
 /// [`spawn_id`] role the per-tier `SpawnResult` cost fold reads, so both driver paths attribute a
@@ -16627,18 +16945,31 @@ mod tests {
         /// Absent when the agent never ran, its file was never landed, or `opts.dir`
         /// was empty.
         read_results: Mutex<HashMap<String, String>>,
-        /// Whether every spawn runs as a resumable session, the way the cli host's do: its
+        /// Whether every spawn runs as a resumable session, the way a process host's do: its
         /// result names the session it ran as - the one [`SpawnOpts::resumed_from`] asked it
         /// to continue, or `sess-<spawn id>` for a fresh one - so the conductor records it and
         /// a later attempt continues it. Off, a spawn reports no session (the workflow and
         /// replay drivers' shape) and every spawn stays fresh.
         sessions: bool,
-        /// With [`sessions`](Self::sessions): every requested resume finds its session gone,
-        /// so the spawn answers as a fresh `sess-<spawn id>` session that continued nothing -
-        /// the fallback a session host takes when the transcript to resume no longer exists.
-        sessions_gone: bool,
+        /// With [`sessions`](Self::sessions): how every spawn asked to continue a session
+        /// answers.
+        resume_answer: ResumeAnswer,
         /// Every spawn's `(id, resumed_from, resume_task)`, in spawn order.
         resumes: Mutex<Vec<(String, String, String)>>,
+    }
+    /// How a [`Stub::sessions`] spawn asked to continue a session answers.
+    #[derive(Clone, Copy, Debug)]
+    enum ResumeAnswer {
+        /// The session continues: the result names it as the session it ran as and continued.
+        Continued,
+        /// The session is gone, so the spawn answers as a fresh `sess-<spawn id>` session that
+        /// continued nothing - the fallback a session host takes when the transcript to resume
+        /// no longer exists.
+        Gone,
+        /// The run log answers the spawn: the result names the session its recorded result ran
+        /// as, the requested one, and continued none - the headless host's answer to a spawn
+        /// the run already ended, which launches nothing.
+        Logged,
     }
     impl Stub {
         /// A stub whose every spawn answers `output`, otherwise [`Stub::new`].
@@ -16681,7 +17012,7 @@ mod tests {
                 read_file_by_agent: HashMap::new(),
                 read_results: Mutex::new(HashMap::new()),
                 sessions: false,
-                sessions_gone: false,
+                resume_answer: ResumeAnswer::Continued,
                 resumes: Mutex::new(Vec::new()),
             }
         }
@@ -16939,8 +17270,13 @@ mod tests {
             let (session_id, resumed_from) = match (self.sessions, opts.resumed_from.is_empty()) {
                 (false, _) => (String::new(), String::new()),
                 (true, true) => (format!("sess-{}", opts.id), String::new()),
-                (true, false) if self.sessions_gone => (format!("sess-{}", opts.id), String::new()),
-                (true, false) => (opts.resumed_from.clone(), opts.resumed_from.clone()),
+                (true, false) => match self.resume_answer {
+                    ResumeAnswer::Continued => {
+                        (opts.resumed_from.clone(), opts.resumed_from.clone())
+                    }
+                    ResumeAnswer::Gone => (format!("sess-{}", opts.id), String::new()),
+                    ResumeAnswer::Logged => (opts.resumed_from.clone(), String::new()),
+                },
             };
             Ok(AgentResult {
                 output,
@@ -27288,144 +27624,201 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_review_spawn_that_errors_on_every_re_parked_attempt_escalates_through_the_bound() {
-        // Spec 51, criterion 2 (ESCALATION BOUND): the reviewer-error RE-PARK (criterion 1) is
-        // BOUNDED - it can never re-park forever. When the SAME review spawn's RECORDED result is a
-        // plain ERROR on its ORIGINAL spawn AND on every re-parked `~retry{n}` attempt up to
-        // [`REVIEWER_RESPAWN_BOUND`], the conductor does NOT keep minting a fresh review spawn: it
-        // escalates through the SAME bounded path the degenerate-output loop uses, halting the run
-        // LOUDLY (naming the dead reviewer) rather than looping. Like that degenerate halt it is an
-        // INFRASTRUCTURE fault - the unit is charged NO attempt (no `UnitFailed`/`UnitEscalated`),
-        // because the work was never judged. Driven under the PRODUCTION stepwise/replay driver
-        // (each `replay_step` is one `rigger step`), so the bound is exercised exactly as a live run
-        // replays a CHAIN of recorded review errors - the multi-error path criterion 1's
-        // single-error re-park test cannot reach. This criterion OWNS the bound; it does NOT own the
-        // re-park (criterion 1).
+    /// How an adjudicator spawn of [`per_unit_panel_cfg`]'s unit ends in a [`ReviewWindowRun`].
+    #[derive(Clone, Copy)]
+    enum AdjudicatorEnds {
+        /// A recorded error, as a reviewer killed mid-run leaves on its id.
+        Errors,
+        /// A recorded whitespace-only output.
+        Empty,
+        /// A recorded approve.
+        Approves,
+    }
+
+    /// A run of [`per_unit_panel_cfg`]'s unit whose adjudicator spawns end as `ends` says, and
+    /// what the run comes to.
+    struct ReviewWindowRun {
+        /// How the adjudicator spawn of retry id `retry` ends.
+        ends: fn(u32) -> AdjudicatorEnds,
+        /// The run's `infra-retry` marks, in log order.
+        infra_retries: &'static [&'static str],
+        /// The run's `infra-halt` marks.
+        infra_halts: &'static [&'static str],
+        /// The infra ordinal whose [`review_retry_window`] the run's last review spawned in.
+        last_window: u32,
+        /// The opening of the error the run halts with, or `None` when the unit integrates.
+        halt: Option<&'static str>,
+    }
+
+    /// The whole degenerate halt of [`per_unit_panel_cfg`]'s adjudicator at attempt 0 and infra
+    /// ordinal 0, spelled out so a change to its text is a red row.
+    const DEGENERATE_ADJUDICATOR_HALT: &str = r#"stage "implement" adjudicator "adj" returned empty/whitespace-only output on all 3 spawns (its original spawn plus 2 respawns): a degenerate reviewer result is an infrastructure failure, not a verdict - the run halts and the unit is NOT charged a remediation attempt. Recover by re-driving the reviewer and recording a SUBSTANTIVE result for one of its spawn ids over the empty one with `--supersede` (results are last-write-wins, and a plain record refuses to replace an ended spawn's result), e.g. `rigger result "implement/adjudicator#0~retry2" --supersede <substantive output>`; then re-run. Re-running WITHOUT a corrected result replays the recorded empties and halts here again."#;
+
+    /// op-105-errored-review-window-joins-the-infra-retry, under the production replay driver in
+    /// a real repository: drives `run`'s unit one `rigger step` at a time, recording each parked
+    /// spawn's result as a courier would (an adjudicator's as `run.ends` says, every other
+    /// spawn's as prose), until the unit integrates or a step halts. A review window that ends
+    /// with a recorded error among its spawns takes the F3 infra retry, so the next step reviews
+    /// in the next ordinal's window and the infra limit bounds the reruns with the infra halt; a
+    /// window of empty outputs alone halts degenerate. Neither charges the unit or records a
+    /// lesson, and no spawn past the last window is ever parked.
+    fn assert_a_review_window_run(run: ReviewWindowRun) {
+        let repo = temp_git_project_with_commit();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let cfg = per_unit_panel_cfg(None);
         let store = Store::open(":memory:").unwrap();
-        let cfg = degenerate_reviewer_cfg();
-        let replay_step = |store: &Store| -> Result<(), Error> {
-            let driver = crate::driver::replay::ReplayDriver::new(store, "");
-            let deps = Deps {
-                store,
-                driver: &driver,
-                gates: &ExecRunner,
-                repo: String::new(),
-                grounder: None,
-                graph: None,
-                criteria: Vec::new(),
-                log: &|_| {},
-                hash_blob: &|_| Ok(String::new()),
-                check_emit: &crate::contextgraph::check_emit,
-            };
-            run_isolated(&cfg, &deps).map(|_| ())
-        };
-
-        let impl0 = spawn_id("u", ROLE_IMPLEMENTER, 0);
-        let lens0 = spawn_id("u", &lens_role("sdet"), 0);
-        // The adjudicator's ORIGINAL spawn plus its bounded respawns: at most `1 +
-        // REVIEWER_RESPAWN_BOUND` attempts before the bound trips. All of them will error.
-        let adj_attempts: Vec<String> = (0..=REVIEWER_RESPAWN_BOUND)
-            .map(|retry| spawn_retry_id("u", ROLE_ADJUDICATOR, 0, retry))
+        let adjudicator: HashMap<String, u32> = (0..=*review_retry_window(3).end())
+            .map(|retry| (adjudicator_at(0, retry), retry))
             .collect();
-        // The FOURTH attempt (one past the bound): it must NEVER be parked - the bound holds.
-        let adj_past_bound = spawn_retry_id("u", ROLE_ADJUDICATOR, 0, REVIEWER_RESPAWN_BOUND + 1);
-
-        // Step 1: the implementer parks; record its success.
-        replay_step(&store).expect("the implementer step is a clean unwind");
-        crate::spawn_store::record_result(
-            &store,
-            &crate::spawn::SpawnResult::ok(&impl0, "the diff"),
-        )
-        .unwrap();
-
-        // Step 2: the review LENS parks; record a substantive lens review so only the ADJUDICATOR
-        // exercises the errored-re-park bound under test.
-        replay_step(&store).expect("the lens step is a clean unwind");
-        crate::spawn_store::record_result(
-            &store,
-            &crate::spawn::SpawnResult::ok(&lens0, "lens: no blocker"),
-        )
-        .unwrap();
-
-        // Steps 3..=(3 + REVIEWER_RESPAWN_BOUND): the adjudicator's original spawn and each
-        // re-parked `~retry{n}` attempt parks in turn; the death courier records a PLAIN ERROR (a
-        // reviewer killed mid-run: usage-limit exhaustion) on each, re-parking the NEXT attempt.
-        // EVERY re-park is a clean unwind (never a run failure) right up to the bound.
-        for id in &adj_attempts {
-            replay_step(&store)
-                .expect("each errored re-park within the bound is a clean unwind, never a failure");
-            let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
-            assert!(
-                crate::spawn::is_recorded(&events, id),
-                "the adjudicator attempt {id} parked before the bound tripped"
+        let mut outcome = None;
+        for _ in 0..30 {
+            let driver = crate::driver::replay::ReplayDriver::new(&store, "");
+            let step = run_isolated(
+                &cfg,
+                &Deps {
+                    repo: repo_path.clone(),
+                    ..stub_deps(&store, &driver, Vec::new())
+                },
             );
-            crate::spawn_store::record_result(
-                &store,
-                &crate::spawn::SpawnResult::failed(id, "agent killed mid-run: usage limit reached"),
-            )
-            .unwrap();
+            match step {
+                Ok(rs) if rs.units["implement"].status != ledger::Status::Integrated => {}
+                ended => {
+                    outcome = Some(ended);
+                    break;
+                }
+            }
+            let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+            for id in crate::spawn::recorded(&events).unwrap().into_keys() {
+                let result = match adjudicator.get(&id).map(|retry| (run.ends)(*retry)) {
+                    Some(AdjudicatorEnds::Errors) => crate::spawn::SpawnResult::failed(
+                        &id,
+                        "agent killed mid-run: usage limit reached",
+                    ),
+                    Some(AdjudicatorEnds::Empty) => crate::spawn::SpawnResult::ok(&id, " \n"),
+                    Some(AdjudicatorEnds::Approves) => {
+                        crate::spawn::SpawnResult::ok(&id, r#"{"verdict":"approve"}"#)
+                    }
+                    None => crate::spawn::SpawnResult::ok(&id, "reviewed the diff"),
+                };
+                crate::spawn_store::record_result_if_absent(&store, &result).unwrap();
+            }
         }
-
-        // The NEXT step EXHAUSTS the bound: the original plus all REVIEWER_RESPAWN_BOUND respawns
-        // have each errored, so the conductor does NOT re-park a further attempt - it escalates
-        // through the bounded path, halting the run LOUDLY instead of re-parking forever.
-        let err = match replay_step(&store) {
-            Ok(()) => panic!(
-                "a review spawn that errors on every attempt up to the bound must HALT the run, \
-                 not re-park a further attempt forever"
+        match (outcome.expect("the run integrates or halts"), run.halt) {
+            (Ok(rs), None) => assert_eq!(rs.units["implement"].attempts, 0, "nothing is charged"),
+            (Err(Error(halt)), Some(opening)) => {
+                assert!(halt.starts_with(opening), "the halt: {halt}");
+                assert!(
+                    !halt.contains('\u{1}'),
+                    "no sentinel reaches the operator: {halt:?}"
+                );
+            }
+            (ended, halt) => panic!(
+                "the run was to halt with {halt:?} (None: to integrate), and came to {:?}",
+                ended.map(|rs| rs.units["implement"].status)
             ),
-            Err(e) => e,
-        };
-        // The bounded halt NAMES the dead reviewer (its agent id, the tier, and the unit) so the
-        // operator sees WHICH spawn is failing - the same loud surface the degenerate bound uses.
-        assert!(
-            err.0.contains("\"judge\"") && err.0.contains("adjudicator") && err.0.contains("\"u\""),
-            "the bounded escalation must name the dead reviewer, its tier, and the unit: {}",
-            err.0
-        );
-        // The internal recognition marker is stripped before the halt reaches the operator.
-        assert!(
-            !err.0.contains(DEGENERATE_MARKER),
-            "the operator-facing halt must not carry the internal sentinel marker: {:?}",
-            err.0
-        );
-
+        }
         let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
-        // THE BOUND HOLDS: no attempt PAST the bound is ever parked. A missing `SpawnRequested` for
-        // the fourth id proves the re-park did not loop forever - it stopped at exactly `1 +
-        // REVIEWER_RESPAWN_BOUND` spawns and escalated instead.
-        assert!(
-            !crate::spawn::is_recorded(&events, &adj_past_bound),
-            "the bound holds: the attempt past REVIEWER_RESPAWN_BOUND ({adj_past_bound}) is never parked"
+        assert_eq!(
+            status_mark_keys(&events, "infra-retry"),
+            run.infra_retries,
+            "the infra reruns"
         );
-        // The unit was charged NO attempt: like the degenerate halt, a persistently-erroring
-        // reviewer is the operator's infrastructure problem, NOT code for remediation.
-        assert!(
-            !events.iter().any(|e| e.type_ == ledger::TYPE_UNIT_FAILED),
-            "a bounded reviewer-error escalation must not charge the unit an attempt (no UnitFailed)"
+        assert_eq!(
+            status_mark_keys(&events, "infra-halt"),
+            run.infra_halts,
+            "the infra halts"
         );
-        assert!(
-            !events
-                .iter()
-                .any(|e| e.type_ == ledger::TYPE_UNIT_ESCALATED),
-            "a bounded reviewer-error escalation is not a code defect for remediation (no UnitEscalated)"
-        );
-        // And it emits NO per-unit lesson - routing the halt through run_wave's dedicated
-        // degenerate arm keeps the operator's broken reviewer from being misattributed to the unit
-        // under review as a LESSON_LEARNED.
-        assert!(
-            !events
-                .iter()
-                .any(|e| e.type_ == contextgraph::TYPE_LESSON_LEARNED),
-            "a bounded reviewer-error escalation must emit no per-unit lesson (no misattribution)"
-        );
-        // The `reviewed` status is NEVER emitted: an error is not a verdict, and an exhausted bound
-        // is a halt, not an approval or a rejection - review integrity is preserved.
-        assert!(
-            !has_status(&events, "reviewed"),
-            "an all-errored, bound-exhausted review never yields a verdict (no `reviewed` status)"
-        );
+        for charged in [
+            ledger::TYPE_UNIT_FAILED,
+            ledger::TYPE_UNIT_ESCALATED,
+            contextgraph::TYPE_LESSON_LEARNED,
+        ] {
+            assert_eq!(
+                count_of_type(&events, charged),
+                0,
+                "an errored or empty review window charges the unit nothing: no {charged}"
+            );
+        }
+        let window = review_retry_window(run.last_window);
+        for (role, retry, parked) in [
+            (lens_role("lens"), *window.start(), true),
+            (ROLE_ADJUDICATOR.to_string(), *window.start(), true),
+            (ROLE_ADJUDICATOR.to_string(), window.end() + 1, false),
+        ] {
+            let id = spawn_retry_id("implement", &role, 0, retry);
+            assert_eq!(
+                crate::spawn::is_recorded(&events, &id),
+                parked,
+                "whether {id} was parked"
+            );
+        }
+    }
+
+    crate::test_cases! {
+        /// Every spawn of the first review window ends in a recorded error: the step takes the
+        /// F3 infra retry, and the next step reviews in the window of infra ordinal 1 and
+        /// integrates. NON-VACUOUS: RED while an errored window halts degenerate.
+        every_spawn_of_an_errored_review_window_takes_the_infra_retry_and_the_next_window_integrates:
+            assert_a_review_window_run(ReviewWindowRun {
+                ends: |retry| {
+                    if review_retry_window(0).contains(&retry) {
+                        AdjudicatorEnds::Errors
+                    } else {
+                        AdjudicatorEnds::Approves
+                    }
+                },
+                infra_retries: &["implement/infra-retry#0~0"],
+                infra_halts: &[],
+                last_window: 1,
+                halt: None,
+            });
+        /// A recorded error among a window's empty outputs is the window's outage too: the step
+        /// takes the infra retry, never the degenerate halt. NON-VACUOUS: RED while it halts
+        /// degenerate.
+        an_error_among_a_review_windows_empty_spawns_takes_the_infra_retry:
+            assert_a_review_window_run(ReviewWindowRun {
+                ends: |retry| match retry {
+                    1 => AdjudicatorEnds::Errors,
+                    0 | 2 => AdjudicatorEnds::Empty,
+                    _ => AdjudicatorEnds::Approves,
+                },
+                infra_retries: &["implement/infra-retry#0~0"],
+                infra_halts: &[],
+                last_window: 1,
+                halt: None,
+            });
+        /// Spec 51's bound, under the infra retry: a review whose every window errors reruns
+        /// uncharged up to the infra limit, then halts on infrastructure naming the dead
+        /// reviewer, and no spawn past its last window is ever parked. NON-VACUOUS: RED while
+        /// the first errored window halts degenerate.
+        a_review_whose_every_window_errors_halts_on_infrastructure_past_the_infra_limit:
+            assert_a_review_window_run(ReviewWindowRun {
+                ends: |_| AdjudicatorEnds::Errors,
+                infra_retries: &[
+                    "implement/infra-retry#0~0",
+                    "implement/infra-retry#0~1",
+                    "implement/infra-retry#0~2",
+                ],
+                infra_halts: &["implement/infra-halt#0~2"],
+                last_window: 2,
+                halt: Some(r#"infra: stage "implement" adjudicator "adj": "#),
+            });
+        /// A window whose every spawn returned empty output still halts degenerate, its text
+        /// unchanged, with no infra retry.
+        a_review_window_of_empty_spawns_still_halts_degenerate_with_its_text_unchanged:
+            assert_a_review_window_run(ReviewWindowRun {
+                ends: |retry| {
+                    if review_retry_window(0).contains(&retry) {
+                        AdjudicatorEnds::Empty
+                    } else {
+                        AdjudicatorEnds::Approves
+                    }
+                },
+                infra_retries: &[],
+                infra_halts: &[],
+                last_window: 0,
+                halt: Some(DEGENERATE_ADJUDICATOR_HALT),
+            });
     }
 
     #[test]
@@ -31901,6 +32294,152 @@ mod tests {
         );
     }
 
+    /// How a [`assert_a_gated_attempt_never_re_runs_the_sdet_seam`] row re-enters attempt 0
+    /// after its gates ran and its review round began.
+    #[derive(Clone, Copy)]
+    enum GatedReentry {
+        /// The first process's lens parks, and an adopting relaunch finishes the unit.
+        ParkedLens,
+        /// The first process's lens crashes on every infra rerun until the step halts, and an
+        /// adopting relaunch finishes the unit.
+        CrashedLens,
+        /// One process: the adjudicator's infra-fault reject reruns the review in place (F3).
+        InfraFaultReview,
+    }
+
+    /// The [`session_stub`] whose every review spawn approves and whose sdet-author's first spawn
+    /// authors `sdet_file`, so a seam that re-ran on a relaunch would move the gated tip.
+    fn gated_seam_stub(sdet_file: &str) -> Stub {
+        let mut driver = Stub {
+            output: r#"{"verdict":"approve"}"#.into(),
+            ..session_stub(&[])
+        };
+        driver.write_files_by_spawn_id.insert(
+            spawn_id("implement", ROLE_SDET_AUTHOR, 0),
+            vec![sdet_file.to_string()],
+        );
+        driver
+    }
+
+    /// The `META_WORKTREE_SHA` the replay-keyed status `key` carries in `events`, if recorded.
+    fn keyed_worktree_sha(events: &[Event], key: &str) -> Option<String> {
+        events
+            .iter()
+            .find(|e| e.meta.get(META_REPLAY_KEY).is_some_and(|k| k == key))
+            .and_then(|e| e.meta.get(META_WORKTREE_SHA).cloned())
+    }
+
+    /// op-105-sdet-seam-joins-the-infra-retry (2): a re-entered attempt whose gates already ran
+    /// never re-runs the sdet seam, read from the gate verdicts and the `verified` status the log
+    /// already holds. Over [`session_cfg`] in a real repo, attempt 0 gates, is verified and
+    /// begins its review round in the first run; `reentry` then re-enters it. The sdet-author is
+    /// spawned exactly once in all, so nothing moves the gated tip: the round records no
+    /// "residue after judging" lesson, no stage "failed in its wave", and the approved sha is the
+    /// sha the gates verified. NON-VACUOUS: RED while the seam re-runs unconditionally - the
+    /// re-entry spawns the sdet-author a second time.
+    fn assert_a_gated_attempt_never_re_runs_the_sdet_seam(reentry: GatedReentry) {
+        let repo = temp_git_project_with_commit();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let st = Store::open(":memory:").unwrap();
+        let run = |driver: &Stub| {
+            run_isolated(
+                &session_cfg(),
+                &Deps {
+                    repo: repo_path.clone(),
+                    ..stub_deps(&st, driver, Vec::new())
+                },
+            )
+        };
+        let lens = lens_role("lens");
+        let mut first = gated_seam_stub("periphery.rs");
+        match reentry {
+            GatedReentry::ParkedLens => {
+                first.park_spawn_ids = [spawn_id("implement", &lens, 0)].into_iter().collect();
+            }
+            GatedReentry::CrashedLens => {
+                first.fail_spawn_ids = (0..3)
+                    .map(|n| spawn_retry_id("implement", &lens, 0, *review_retry_window(n).start()))
+                    .collect();
+            }
+            GatedReentry::InfraFaultReview => {
+                first.output_by_spawn_id.insert(
+                    adjudicator_at(0, 0),
+                    r#"{"verdict":"reject","upheld":[],"discarded":[],"cause":"infra-fault"}"#
+                        .to_string(),
+                );
+            }
+        }
+        let outcome = run(&first);
+        let relaunched = gated_seam_stub("periphery-relaunch.rs");
+        let rs = match reentry {
+            GatedReentry::ParkedLens => {
+                assert!(
+                    outcome.is_ok(),
+                    "premise: a parked lens ends the step cleanly"
+                );
+                run(&relaunched)
+            }
+            GatedReentry::CrashedLens => {
+                let err = outcome.err().map(|e| e.0).unwrap_or_default();
+                assert!(
+                    err.contains("infra: "),
+                    "a lens crashing on every rerun halts the step as an outage: {err:?}"
+                );
+                run(&relaunched)
+            }
+            GatedReentry::InfraFaultReview => outcome,
+        }
+        .expect("the re-entered attempt completes");
+        assert_eq!(rs.units["implement"].status, ledger::Status::Integrated);
+        let sdet_spawns = first.prompts_for(ROLE_SDET_AUTHOR).len()
+            + relaunched.prompts_for(ROLE_SDET_AUTHOR).len();
+        assert_eq!(
+            sdet_spawns, 1,
+            "the sdet-author runs once, ahead of the gates, and never on a gated attempt: {:?} {:?}",
+            first.spawn_ids(),
+            relaunched.spawn_ids()
+        );
+        let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let lessons: Vec<String> = payloads_of_type(&events, contextgraph::TYPE_LESSON_LEARNED)
+            .iter()
+            .filter_map(|lesson| lesson["summary"].as_str().map(str::to_string))
+            .filter(|summary| summary.contains("as residue after judging"))
+            .collect();
+        assert_eq!(
+            lessons,
+            Vec::<String>::new(),
+            "nothing moves the tip the round judges"
+        );
+        assert_eq!(
+            wave_lessons(&events),
+            Vec::<String>::new(),
+            "no stage fails in its wave"
+        );
+        let verified = keyed_worktree_sha(&events, "implement/verified#0");
+        assert!(verified.is_some(), "premise: attempt 0 was verified");
+        assert_eq!(
+            keyed_worktree_sha(&events, "implement/reviewed#0"),
+            verified,
+            "the approved sha is the sha the gates verified"
+        );
+    }
+
+    crate::test_cases! {
+        /// An adopting relaunch after a parked lens picks attempt 0 up at its gates and review,
+        /// with the seam behind it.
+        an_adopting_relaunch_after_a_parked_lens_never_re_runs_the_sdet_seam:
+            assert_a_gated_attempt_never_re_runs_the_sdet_seam(GatedReentry::ParkedLens);
+        /// An adopting relaunch after a lens outage halted the step picks attempt 0 up at its
+        /// gates and review, with the seam behind it; the in-process reruns before the halt
+        /// never re-ran it either.
+        an_adopting_relaunch_after_a_crashed_lens_never_re_runs_the_sdet_seam:
+            assert_a_gated_attempt_never_re_runs_the_sdet_seam(GatedReentry::CrashedLens);
+        /// An infra-fault reject reruns the review at the same attempt; the rerun re-gates under
+        /// its own keys and never re-runs the seam.
+        an_infra_fault_review_rerun_never_re_runs_the_sdet_seam:
+            assert_a_gated_attempt_never_re_runs_the_sdet_seam(GatedReentry::InfraFaultReview);
+    }
+
     /// A RE-ATTEMPT CONTINUES EACH ROLE'S SESSION: every spawn of the first round starts fresh,
     /// and after the reject every role's spawn on the next round resumes the session its
     /// round-0 spawn ran as, sent only what changed - the implementer the prior-failure block
@@ -32123,7 +32662,7 @@ mod tests {
     fn a_step_token_is_the_by_of_its_protocol_and_the_actor_of_its_findings() {
         let finding = |id: &str| {
             let finding_type = contextgraph::TYPE_REVIEW_FINDING.to_string();
-            (finding_type, json!({"id": id}))
+            (finding_type, json!({"id": id, "about": ["src/a.rs"]}))
         };
         let driver = Stub {
             emits_by_spawn_id: HashMap::from([
@@ -32277,7 +32816,7 @@ mod tests {
     fn a_fallen_back_resume_is_recorded_as_requested_but_not_continued() {
         let repo = temp_git_project_with_commit();
         let driver = Stub {
-            sessions_gone: true,
+            resume_answer: ResumeAnswer::Gone,
             ..session_stub(&[
                 (adjudicator_at(0, 0), REJECT_FEATURE),
                 (adjudicator_at(1, 0), r#"{"verdict":"approve"}"#),
@@ -32318,6 +32857,102 @@ mod tests {
             mark.meta.get(META_SESSION_ID),
             Some(&format!("sess-{second}"))
         );
+    }
+
+    /// The operator's log tells a fallen-back resume, and only that: given a review round's
+    /// spawns each asked to continue the session its role ran as in round 0, when a spawn
+    /// answers as another, fresh session, then the conductor says the session to resume is
+    /// gone; when it answers as the session it was asked to continue, whether its host
+    /// continued it or the run log answered it with the session its recorded result ran as,
+    /// then the log says nothing of a fallback.
+    #[test]
+    fn only_a_spawn_answering_as_another_session_is_logged_as_a_fallback() {
+        struct Row {
+            answer: ResumeAnswer,
+            fell_back: bool,
+        }
+        let rows = [
+            Row {
+                answer: ResumeAnswer::Continued,
+                fell_back: false,
+            },
+            Row {
+                answer: ResumeAnswer::Gone,
+                fell_back: true,
+            },
+            Row {
+                answer: ResumeAnswer::Logged,
+                fell_back: false,
+            },
+        ];
+        for row in rows {
+            let repo = temp_git_project_with_commit();
+            let driver = Stub {
+                resume_answer: row.answer,
+                ..session_stub(&[
+                    (adjudicator_at(0, 0), REJECT_FEATURE),
+                    (adjudicator_at(1, 0), r#"{"verdict":"approve"}"#),
+                ])
+            };
+            let st = Store::open(":memory:").unwrap();
+            let lines = Mutex::new(Vec::<String>::new());
+            let log = |line: &str| lines.lock().unwrap().push(line.to_string());
+            let deps = Deps {
+                repo: repo.path().to_str().unwrap().to_string(),
+                log: &log,
+                ..stub_deps(&st, &driver, Vec::new())
+            };
+            run_isolated(&session_cfg(), &deps).unwrap();
+            let mut asked: Vec<(String, String)> = snapshot(&driver.resumes)
+                .into_iter()
+                .filter(|(_, from, _)| !from.is_empty())
+                .map(|(id, from, _)| (id, from))
+                .collect();
+            asked.sort();
+            let mut roles = [
+                ROLE_IMPLEMENTER,
+                ROLE_SDET_AUTHOR,
+                "lens:lens",
+                ROLE_ADVERSARY,
+                ROLE_ADJUDICATOR,
+            ]
+            .map(|role| {
+                (
+                    spawn_id("implement", role, 1),
+                    format!("sess-{}", spawn_id("implement", role, 0)),
+                )
+            });
+            roles.sort();
+            assert_eq!(
+                asked, roles,
+                "{:?}: premise: each role's round-1 spawn is asked to continue its round-0 session",
+                row.answer
+            );
+            let mut expected: Vec<String> = if row.fell_back {
+                asked
+                    .iter()
+                    .map(|(id, from)| {
+                        format!(
+                            "spawn {id}: session {from} to resume is gone; it ran as a fresh \
+                             session sess-{id}"
+                        )
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            expected.sort();
+            let mut said: Vec<String> = snapshot(&lines)
+                .into_iter()
+                .filter(|l| l.contains("to resume is gone"))
+                .collect();
+            said.sort();
+            assert_eq!(
+                said, expected,
+                "{:?}: the fallback lines on the operator's log",
+                row.answer
+            );
+        }
     }
 
     /// A RESPAWN WINS: when a round's first spawn of a role came back degenerate and its
@@ -32637,6 +33272,80 @@ mod tests {
         );
     }
 
+    /// EVERY CONDUCTOR LESSON CARRIES A LOCATION (op-105-conductor-lessons-carry-a-location): a
+    /// lesson the conductor records whose `about` names no file, through
+    /// [`RunCtx::emit_lesson`] with no worktree and no `about` or through a review's operator
+    /// lesson for an item with no path, names the run's spec file instead, so a file-seeded read
+    /// reaches it; one that names a file keeps it, and a run with no spec still records the
+    /// lesson, about nothing.
+    #[test]
+    fn a_conductor_lesson_that_names_no_file_names_the_runs_spec() {
+        const SPEC: &str = "specs/105-a-run.md";
+        fn bare(ctx: &RunCtx<'_>) {
+            ctx.emit_lesson(None, "u", "a lesson", None, None).unwrap();
+        }
+        fn empty(ctx: &RunCtx<'_>) {
+            ctx.emit_lesson(None, "u", "a lesson", None, Some(&[]))
+                .unwrap();
+        }
+        fn named(ctx: &RunCtx<'_>) {
+            let about = ["feature.rs".to_string()];
+            ctx.emit_lesson(None, "u", "a lesson", None, Some(&about))
+                .unwrap();
+        }
+        fn pathless_item(ctx: &RunCtx<'_>) {
+            let round = ReviewRound {
+                base: "base".into(),
+                delta: vec!["fix1.rs".into()],
+                required: Vec::new(),
+                audit: String::new(),
+            };
+            let reject = r#"{"verdict":"reject","required":[{"finding":"reword the doc comment","path":"","correctness":false}]}"#;
+            ctx.split_reject("implement", 1, 0, Some(&round), reject.to_string())
+                .unwrap();
+        }
+        /// How a row records its one lesson.
+        type Records = fn(&RunCtx<'_>);
+        let cases: [(&str, &str, Records, &[&str]); 5] = [
+            (
+                "a lesson with no worktree and no about",
+                SPEC,
+                bare,
+                &[SPEC],
+            ),
+            ("a lesson with an empty about", SPEC, empty, &[SPEC]),
+            (
+                "an operator lesson for an item with no path",
+                SPEC,
+                pathless_item,
+                &[SPEC],
+            ),
+            ("a lesson that names a file", SPEC, named, &["feature.rs"]),
+            ("a lesson in a run with no spec", "", bare, &[]),
+        ];
+        for (name, spec, record, about) in cases {
+            let st = Store::open(":memory:").unwrap();
+            st.append(
+                STREAM,
+                crate::eventstore::ExpectedRevision::Any,
+                &[run_started_with_spec(spec)],
+            )
+            .unwrap();
+            let driver = Stub::new();
+            let deps = stub_deps(&st, &driver, Vec::new());
+            let cfg = Config::default();
+            let ctx = RunCtx::for_test(&cfg, &deps);
+            record(&ctx);
+            let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
+            let abouts: Vec<Value> = events
+                .iter()
+                .filter(|e| e.type_ == contextgraph::TYPE_LESSON_LEARNED)
+                .map(|e| serde_json::from_slice::<Value>(&e.data).unwrap()["about"].clone())
+                .collect();
+            assert_eq!(abouts, vec![json!(about)], "{name}: the lesson's location");
+        }
+    }
+
     #[test]
     fn per_unit_adjudicator_reject_blocks_integration_and_escalates() {
         // A rejecting adjudicator on the per-unit review (§3.2) is treated like a gate
@@ -32722,6 +33431,173 @@ mod tests {
             "the retry names its infra cause: {:?}",
             rs.units["implement"].evidence
         );
+    }
+
+    /// One live review-tier crash of [`assert_a_live_review_crash_reruns_the_review_uncharged`]:
+    /// the run's config and its one unit, whether it runs in a real repo, the driver that crashes
+    /// a reviewer's first spawn, and the id that reviewer takes on the rerun.
+    struct ReviewCrash {
+        cfg: Config,
+        unit: &'static str,
+        in_repo: bool,
+        driver: Stub,
+        rerun: String,
+    }
+
+    /// The `solo` unit of `worker` (writing `work.rs`) gated by `ok`, reviewed by two lenses `a`
+    /// and `b` run in one concurrent chunk and no adjudicator, so the panel approves once both
+    /// lenses finish.
+    fn two_lens_solo_cfg() -> Config {
+        let mut cfg = Config::default();
+        for id in ["worker", "a", "b"] {
+            cfg.agents.insert(id.into(), agent(id));
+        }
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "solo".into(),
+            Stage {
+                name: "solo".into(),
+                agent: "worker".into(),
+                gates: vec!["ok".into()],
+                on_pass: "merge".into(),
+                review: crate::config::ReviewPanel {
+                    lenses: vec!["a".into(), "b".into()],
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        cfg
+    }
+
+    /// op-105-sdet-seam-joins-the-infra-retry (3): a live lens or adjudicator spawn crash on the
+    /// single lane is an outage, the same F3 infra retry as the implementer's: the unit is
+    /// charged nothing, the crash is recorded as one `infra-retry` mark naming `infra:spawn`
+    /// and never as a stage that "failed in its wave", the review round reruns under the next
+    /// [`review_retry_window`] while the committed implementation stands, and the unit
+    /// integrates. On a real repo the integrated unit's worktree is torn down even when a
+    /// sibling lens of the crashed round had parked, since the rerun spawned every tier afresh.
+    /// NON-VACUOUS: RED while the crash takes `settle_stage`'s generic arm - the run fails with
+    /// the stage error and a "failed in its wave" lesson.
+    fn assert_a_live_review_crash_reruns_the_review_uncharged(case: ReviewCrash) {
+        let ReviewCrash {
+            cfg,
+            unit,
+            in_repo,
+            driver,
+            rerun,
+        } = case;
+        let repo = temp_git_project_with_commit();
+        let repo_path = if in_repo {
+            repo.path().to_str().unwrap().to_string()
+        } else {
+            String::new()
+        };
+        let st = Store::open(":memory:").unwrap();
+        let outcome = run_isolated(
+            &cfg,
+            &Deps {
+                repo: repo_path.clone(),
+                ..stub_deps(&st, &driver, Vec::new())
+            },
+        );
+        let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert_eq!(
+            wave_lessons(&events),
+            Vec::<String>::new(),
+            "a review spawn crash is an outage, never a stage failed in its wave"
+        );
+        let rs = match outcome {
+            Ok(rs) => rs,
+            Err(e) => panic!("a review spawn crash reruns the review, got {:?}", e.0),
+        };
+        assert_eq!(
+            rs.units[unit].status,
+            ledger::Status::Integrated,
+            "the rerun's review approves, so the unit integrates"
+        );
+        assert_eq!(rs.units[unit].attempts, 0, "a crash charges no attempt");
+        assert_eq!(
+            count_of_type(&events, ledger::TYPE_UNIT_FAILED),
+            0,
+            "a review spawn crash writes no UnitFailed"
+        );
+        assert_eq!(
+            status_mark_keys(&events, "infra-retry"),
+            [format!("{unit}/infra-retry#0~0")],
+            "the crashed round is recorded once, keyed by attempt and ordinal"
+        );
+        assert!(
+            rs.units[unit]
+                .evidence
+                .get("infra-retry")
+                .is_some_and(|ev| ev.starts_with(CAUSE_INFRA_SPAWN)),
+            "the retry names its infra cause: {:?}",
+            rs.units[unit].evidence
+        );
+        assert!(
+            driver.spawn_ids().contains(&rerun),
+            "the rerun's reviewer spawns under the next window's id {rerun:?}: {:?}",
+            driver.spawn_ids()
+        );
+        assert_eq!(
+            driver.prompts_for("worker").len(),
+            1,
+            "the rerun reviews the committed work again; the implementer is not respawned"
+        );
+        if in_repo {
+            let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
+            let worktree = unit_worktree_dir(&scratch, unit);
+            assert!(
+                !std::path::Path::new(&worktree).exists(),
+                "an integrated unit keeps no worktree for a park the rerun superseded: {worktree}"
+            );
+        }
+    }
+
+    crate::test_cases! {
+        /// The panel's lens crashes on its first spawn, in a repo-less run.
+        a_live_lens_crash_reruns_the_review_uncharged_under_a_fresh_window:
+            assert_a_live_review_crash_reruns_the_review_uncharged(ReviewCrash {
+                cfg: per_unit_panel_cfg(None),
+                unit: "implement",
+                in_repo: false,
+                driver: Stub {
+                    fail_spawn_ids: [spawn_id("implement", &lens_role("lens"), 0)]
+                        .into_iter()
+                        .collect(),
+                    ..Stub::answering(r#"{"verdict":"approve"}"#)
+                },
+                rerun: spawn_retry_id("implement", &lens_role("lens"), 0, REVIEWER_RESPAWN_BOUND + 1),
+            });
+        /// The panel's adjudicator crashes on its first spawn, in a repo-less run.
+        a_live_adjudicator_crash_reruns_the_review_uncharged_under_a_fresh_window:
+            assert_a_live_review_crash_reruns_the_review_uncharged(ReviewCrash {
+                cfg: per_unit_panel_cfg(None),
+                unit: "implement",
+                in_repo: false,
+                driver: Stub {
+                    fail_spawn_ids: [adjudicator_at(0, 0)].into_iter().collect(),
+                    ..Stub::answering(r#"{"verdict":"approve"}"#)
+                },
+                rerun: adjudicator_at(0, REVIEWER_RESPAWN_BOUND + 1),
+            });
+        /// Lens `b` crashes while its co-chunked sibling `a` parks, in a real repo: the rerun
+        /// spawns both afresh, so the integrated unit keeps no worktree for `a`'s park.
+        a_lens_crash_beside_a_parked_sibling_reruns_the_review_and_keeps_no_worktree:
+            assert_a_live_review_crash_reruns_the_review_uncharged(ReviewCrash {
+                cfg: two_lens_solo_cfg(),
+                unit: "solo",
+                in_repo: true,
+                driver: Stub {
+                    write_file: Some("work.rs".into()),
+                    output: "reviewed it".into(),
+                    park_spawn_ids: [spawn_id("solo", &lens_role("a"), 0)].into_iter().collect(),
+                    fail_spawn_ids: [spawn_id("solo", &lens_role("b"), 0)].into_iter().collect(),
+                    ..Stub::new()
+                },
+                rerun: spawn_retry_id("solo", &lens_role("b"), 0, REVIEWER_RESPAWN_BOUND + 1),
+            });
     }
 
     #[test]
@@ -33406,28 +34282,56 @@ mod tests {
         );
     }
 
-    #[test]
-    fn infra_retries_past_the_bound_halt_the_step_and_a_relaunch_gets_a_fresh_bound() {
-        // F3: an outage that outlasts the taxonomy's infra limit (the shipped rule reruns twice)
-        // must not loop and must not charge the unit either: the third consecutive crash halts
-        // the step LOUDLY with `infra: <evidence>`, recording an `infra-halt` mark - no
-        // UnitFailed, no escalation, no per-unit lesson. The retry count is read from the log
-        // since the attempt's latest `infra-halt`, so a relaunch after the outage starts a
-        // FRESH bound: one more crash there is retried, not halted again.
-        let cfg = one_gated_stage_cfg("s");
+    /// One stage spawn an outage crashes in [`assert_an_outage_past_the_infra_limit_halts`]: the
+    /// run's config, whether it needs a real repo (a sdet seam is reached only in a worktree),
+    /// the driver the crashes are added to, and the id the crashed spawn takes on the stage run
+    /// at infra ordinal `n`.
+    struct InfraOutage {
+        cfg: Config,
+        in_repo: bool,
+        driver: fn() -> Stub,
+        rerun_id: fn(u32) -> String,
+    }
+
+    /// F3: an outage that outlasts the taxonomy's infra limit (the shipped rule reruns twice)
+    /// must not loop and must not charge the unit either: the third consecutive crash of
+    /// `outage`'s spawn halts the step LOUDLY with `infra: <evidence>`, recording an
+    /// `infra-halt` mark - no UnitFailed, no escalation, no per-unit lesson, and no gate run or
+    /// `verified` status, since the spawn that crashed runs before the gates. The retry count is
+    /// read from the log since the attempt's latest `infra-halt`, so a relaunch after the outage
+    /// starts a FRESH bound: one more crash there is retried, not halted again, and the rerun's
+    /// gates are the first to run, under the ordinal that recovered.
+    fn assert_an_outage_past_the_infra_limit_halts(outage: InfraOutage) {
+        let InfraOutage {
+            cfg,
+            in_repo,
+            driver,
+            rerun_id,
+        } = outage;
+        let repo = temp_git_project_with_commit();
+        let repo_path = if in_repo {
+            repo.path().to_str().unwrap().to_string()
+        } else {
+            String::new()
+        };
         let st = Store::open(":memory:").unwrap();
-        // The implementer of the stage run at infra ordinal `n` spawns under retry id
-        // `n * (CONFLICT_RESOLVE_BOUND + 1)`, past the attempt's conflict-resolution ids.
-        let rerun_id =
-            |n: u32| spawn_retry_id("s", ROLE_IMPLEMENTER, 0, n * (CONFLICT_RESOLVE_BOUND + 1));
         let crashing = |ordinals: std::ops::Range<u32>| Stub {
             fail_spawn_ids: ordinals.map(rerun_id).collect(),
-            ..Stub::new()
+            ..driver()
+        };
+        let run = |stub: &Stub| {
+            run_isolated(
+                &cfg,
+                &Deps {
+                    repo: repo_path.clone(),
+                    ..stub_deps(&st, stub, Vec::new())
+                },
+            )
         };
 
         // The outage: the original spawn and both of its retries crash.
         let outage = crashing(0..3);
-        let err = match run_isolated(&cfg, &stub_deps(&st, &outage, Vec::new())) {
+        let err = match run(&outage) {
             Ok(rs) => panic!(
                 "an outage past the infra bound must halt the step, got {:?}",
                 rs.units["s"].status
@@ -33470,10 +34374,20 @@ mod tests {
             ["s/infra-halt#0~2"],
             "the halt is recorded at the ordinal that reached the bound"
         );
+        assert_eq!(
+            unit_gate_verdict_keys(&events, "s"),
+            Vec::<String>::new(),
+            "no gate runs while the spawn ahead of the gates keeps crashing"
+        );
+        assert_eq!(
+            status_mark_keys(&events, "verified"),
+            Vec::<String>::new(),
+            "no attempt is verified on a tree the crashed spawn never finished"
+        );
 
         // The relaunch after the outage: the next ordinal crashes once more, then recovers.
         let recovering = crashing(3..4);
-        let rs = run_isolated(&cfg, &stub_deps(&st, &recovering, Vec::new())).unwrap();
+        let rs = run(&recovering).unwrap();
         assert_eq!(
             rs.units["s"].status,
             ledger::Status::Integrated,
@@ -33488,6 +34402,44 @@ mod tests {
             "the relaunch continues the retry ordinals, never reusing a crashed id: {:?}",
             recovering.spawn_ids()
         );
+        let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let gate_keys = unit_gate_verdict_keys(&events, "s");
+        assert!(
+            gate_keys
+                .first()
+                .is_some_and(|key| key.ends_with("~retry4")),
+            "the first gates to run are the recovered ordinal's: {gate_keys:?}"
+        );
+    }
+
+    crate::test_cases! {
+        /// The implementer's outage: the implementer of the stage run at infra ordinal `n`
+        /// spawns under retry id `n * (CONFLICT_RESOLVE_BOUND + 1)`, past the attempt's
+        /// conflict-resolution ids, in a repo-less run.
+        infra_retries_past_the_bound_halt_the_step_and_a_relaunch_gets_a_fresh_bound:
+            assert_an_outage_past_the_infra_limit_halts(InfraOutage {
+                cfg: one_gated_stage_cfg("s"),
+                in_repo: false,
+                driver: Stub::new,
+                rerun_id: |n| {
+                    spawn_retry_id("s", ROLE_IMPLEMENTER, 0, n * (CONFLICT_RESOLVE_BOUND + 1))
+                },
+            });
+        /// op-105-sdet-seam-joins-the-infra-retry: the sdet-author's outage. The sdet of the
+        /// stage run at infra ordinal `n` spawns under the first id of that round's
+        /// [`review_retry_window`], as a reviewer does, so each rerun is a fresh spawn; the
+        /// implementer's work stands across the in-process reruns. NON-VACUOUS: RED while the
+        /// seam swallows a crash as a proceed - the first run gates, verifies and integrates
+        /// instead of halting.
+        a_sdet_author_outage_past_the_infra_limit_halts_before_any_gate_and_a_relaunch_runs_the_seam_first:
+            assert_an_outage_past_the_infra_limit_halts(InfraOutage {
+                cfg: sdet_lane_cfg(true),
+                in_repo: true,
+                driver: sdet_lane_driver,
+                rerun_id: |n| {
+                    spawn_retry_id("s", ROLE_SDET_AUTHOR, 0, *review_retry_window(n).start())
+                },
+            });
     }
 
     /// A stage `name` run by agent `a`, gated by `ok`, needing `needs`.
@@ -36602,7 +37554,10 @@ mod tests {
         // proves `guard_review_round_tree_on_tier_err` closes it: the crash still halts
         // the run loudly (spec 19c), but the branch is restored to the sha the round
         // actually started from and the residue is named in a lesson, never silently
-        // inherited by whatever attempt resumes next.
+        // inherited by whatever attempt resumes next. The adversary crashes on its first
+        // spawn of every infra rerun's window (op-105-sdet-seam-joins-the-infra-retry: a
+        // review spawn crash is an outage the F3 retry reruns), so the loud halt is the
+        // infra halt past the limit, still naming the crash.
         let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let mut cfg = Config::default();
@@ -36639,9 +37594,11 @@ mod tests {
                 "lens".to_string(),
                 vec![("lens-residue.rs".to_string(), "leftover\n".to_string())],
             )]),
-            // TIER 2 (adversary): a genuine (non-parked) crash on its OWN spawn, AFTER
-            // the lens already committed residue and returned Ok.
-            fail_spawn_ids: [spawn_id("solo", ROLE_ADVERSARY, 0)].into_iter().collect(),
+            // TIER 2 (adversary): a genuine (non-parked) crash on its OWN spawn of every
+            // infra rerun, AFTER the lens already committed residue and returned Ok.
+            fail_spawn_ids: (0..3)
+                .map(|n| spawn_retry_id("solo", ROLE_ADVERSARY, 0, *review_retry_window(n).start()))
+                .collect(),
             ..Stub::new()
         };
         let deps = Deps {
@@ -36657,8 +37614,8 @@ mod tests {
             Err(e) => e,
         };
         assert!(
-            err.0.contains("simulated mid-spawn crash"),
-            "the propagated error must still be the adversary's own genuine crash: {}",
+            err.0.contains("infra: ") && err.0.contains("simulated mid-spawn crash"),
+            "the propagated error must be the infra halt naming the adversary's own crash: {}",
             err.0
         );
         assert!(
@@ -38068,33 +39025,26 @@ mod tests {
         //      `any_parked` AtomicBool `run_stage` now threads through `run_single_stage`
         //      into `review_unit`'s lens tier, read independently of whichever single
         //      `Result` `run_single_stage` propagates.
+        // A review spawn crash is an outage the F3 retry reruns
+        // (op-105-sdet-seam-joins-the-infra-retry), so "a" parks and "b" crashes on the first
+        // spawn of every rerun's window: the loud halt is the infra halt past the limit, and
+        // the last round's park is what keeps the worktree.
         let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
-        let mut cfg = Config::default();
-        cfg.agents.insert("worker".into(), agent("worker"));
-        cfg.agents.insert("a".into(), agent("a"));
-        cfg.agents.insert("b".into(), agent("b"));
-        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
-        cfg.workflow.stages.insert(
-            "solo".into(),
-            Stage {
-                name: "solo".into(),
-                agent: "worker".into(),
-                gates: vec!["ok".into()],
-                on_pass: "merge".into(),
-                review: crate::config::ReviewPanel {
-                    lenses: vec!["a".into(), "b".into()],
-                    ..Default::default()
-                },
-                ..Default::default()
-            },
-        );
+        let cfg = two_lens_solo_cfg();
         let store = Store::open(":memory:").unwrap();
+        let every_window = |lens: &str| -> std::collections::HashSet<String> {
+            (0..3)
+                .map(|n| {
+                    spawn_retry_id("solo", &lens_role(lens), 0, *review_retry_window(n).start())
+                })
+                .collect()
+        };
         let driver = Stub {
             write_file: Some("work.rs".into()),
             output: "reviewed it".into(),
-            park_spawn_ids: [spawn_id("solo", &lens_role("a"), 0)].into_iter().collect(),
-            fail_spawn_ids: [spawn_id("solo", &lens_role("b"), 0)].into_iter().collect(),
+            park_spawn_ids: every_window("a"),
+            fail_spawn_ids: every_window("b"),
             ..Stub::new()
         };
         let deps = Deps {
@@ -40134,7 +41084,7 @@ mod tests {
             assert_eq!(
                 driver.targets_for(agent_id),
                 vec![(want.clone(), want.clone())],
-                "{agent_id} builds into {want} under both the cli driver's environment and the \
+                "{agent_id} builds into {want} under both a process host's environment and the \
                  workflow driver's wave"
             );
         }
@@ -44612,7 +45562,25 @@ mod tests {
         refused_retry: Option<u32>,
         /// The prompt each spawn id was launched with.
         prompts: Mutex<HashMap<String, String>>,
+        /// Each conflict-resolution round of attempt 0 that ends without resolving, and how;
+        /// empty in every test but the ones that read how a round ends.
+        unresolved: Vec<(u32, Unresolved)>,
     }
+
+    /// How a conflict-resolution round ends when it resolves nothing.
+    #[derive(Clone, Copy, Debug)]
+    enum Unresolved {
+        /// It returns having committed nothing.
+        Nothing,
+        /// It returns an error carrying no conductor marker.
+        Errs,
+        /// It parks.
+        Parks,
+        /// Its first `n` launches return a store fault ([`store_fault`]); a later launch of
+        /// the same round id resolves.
+        StoreFaults(usize),
+    }
+
     impl AgentDriver for ConflictDriver {
         fn spawn(
             &self,
@@ -44633,6 +45601,28 @@ mod tests {
                         !opts.dir.is_empty(),
                         "a conflict re-park must still run in the unit's own worktree"
                     );
+                    let unresolved = self
+                        .unresolved
+                        .iter()
+                        .find(|(round, _)| opts.id.ends_with(&format!("#0~retry{round}")));
+                    match unresolved.map(|&(_, how)| how) {
+                        Some(Unresolved::Nothing) => return Ok(AgentResult::default()),
+                        Some(Unresolved::Errs) => return Err(Error(RESOLVER_ERROR.into())),
+                        Some(Unresolved::Parks) => return Err(parked_spawn(&opts.id)),
+                        Some(Unresolved::StoreFaults(n))
+                            if self
+                                .calls
+                                .lock()
+                                .unwrap()
+                                .iter()
+                                .filter(|id| **id == opts.id)
+                                .count()
+                                <= n =>
+                        {
+                            return Err(store_fault(Error(RESOLVER_STORE_FAULT.into())))
+                        }
+                        Some(Unresolved::StoreFaults(_)) | None => {}
+                    }
                     if !self.resolve_on_retry {
                         // Simulates a real implementer that fails to resolve it: leave the
                         // conflict markers exactly as they are, commit nothing. Every
@@ -45466,25 +46456,37 @@ mod tests {
             resolve_on_retry,
             refused_retry: None,
             prompts: Mutex::new(HashMap::new()),
+            unresolved: Vec::new(),
         };
         let _ = regenerate;
         (repo, repo_path, store, driver)
     }
 
-    /// Two batch-mates `unit-a`/`unit-b` edit the SAME line of `c.rs` off the same base (the
-    /// [`conflict_fixture`], `regenerate` registering regenerable paths): the first to win the
-    /// integrate lock merges cleanly and the second's merge CONFLICTS. BOTH units must integrate -
-    /// the loser's textual conflict is resolved within the SAME integration call, never escalated -
-    /// with no remediation attempt charged to either and no UnitFailed ever recorded (a conflict is
-    /// not a defect). The resolver's `~retry{n}` re-park emits a record the emit guard refuses
-    /// when `refused_retry` names it. Returns every spawn id the driver was called with, the run
-    /// branch's merged `c.rs` and the prompt each spawn id was launched with.
-    fn assert_both_conflicting_units_land(
-        regenerate: Vec<crate::config::RegenerateRule>,
-        refused_retry: Option<u32>,
-    ) -> (Vec<String>, String, HashMap<String, String>) {
-        let (repo, repo_path, store, mut driver) = conflict_fixture(regenerate.clone(), true);
-        driver.refused_retry = refused_retry;
+    /// What a conflict-resolution round that errors says.
+    const RESOLVER_ERROR: &str = "the resolver's session stopped";
+
+    /// What a store read failing before a conflict-resolution round's launch says.
+    const RESOLVER_STORE_FAULT: &str = "event store: the run read failed";
+
+    /// Run the [`conflict_fixture`]'s two batch-mates `unit-a`/`unit-b` in `repo_path` through
+    /// `driver` on `store` under `cfg` ([`conflicting_units_cfg`]'s shape).
+    fn run_conflicting_units(
+        repo_path: &str,
+        store: &Store,
+        driver: &ConflictDriver,
+        cfg: &Config,
+    ) -> Result<RunState, Error> {
+        let deps = Deps {
+            repo: repo_path.to_string(),
+            ..stub_deps(store, driver, Vec::new())
+        };
+        run_isolated(cfg, &deps)
+    }
+
+    /// The [`conflict_fixture`]'s two batch-mates `unit-a`/`unit-b`, each gated, reviewed by
+    /// one lens and an adjudicator and merged, with three remediation attempts allowed and
+    /// `regenerate` registering regenerable paths.
+    fn conflicting_units_cfg(regenerate: Vec<crate::config::RegenerateRule>) -> Config {
         let mut cfg = Config::default();
         cfg.workflow.defaults.max_retries = 3;
         cfg.workflow.regenerate = regenerate;
@@ -45509,11 +46511,30 @@ mod tests {
                 },
             );
         }
-        let deps = Deps {
-            repo: repo_path.clone(),
-            ..stub_deps(&store, &driver, Vec::new())
-        };
-        let rs = run_isolated(&cfg, &deps).unwrap();
+        cfg
+    }
+
+    /// Two batch-mates `unit-a`/`unit-b` edit the SAME line of `c.rs` off the same base (the
+    /// [`conflict_fixture`], `regenerate` registering regenerable paths): the first to win the
+    /// integrate lock merges cleanly and the second's merge CONFLICTS. BOTH units must integrate -
+    /// the loser's textual conflict is resolved within the SAME integration call, never escalated -
+    /// with no remediation attempt charged to either and no UnitFailed ever recorded (a conflict is
+    /// not a defect). The resolver's `~retry{n}` re-park emits a record the emit guard refuses
+    /// when `refused_retry` names it. Returns every spawn id the driver was called with, the run
+    /// branch's merged `c.rs` and the prompt each spawn id was launched with.
+    fn assert_both_conflicting_units_land(
+        regenerate: Vec<crate::config::RegenerateRule>,
+        refused_retry: Option<u32>,
+    ) -> (Vec<String>, String, HashMap<String, String>) {
+        let (repo, repo_path, store, mut driver) = conflict_fixture(regenerate.clone(), true);
+        driver.refused_retry = refused_retry;
+        let rs = run_conflicting_units(
+            &repo_path,
+            &store,
+            &driver,
+            &conflicting_units_cfg(regenerate),
+        )
+        .unwrap();
         for unit in ["unit-a", "unit-b"] {
             assert_eq!(
                 rs.units[unit].status,
@@ -45579,6 +46600,289 @@ mod tests {
             prompts[rerun]
         );
         assert_eq!(merged, "RESOLVED\n", "the resolution lands");
+    }
+
+    #[test]
+    fn a_resolver_round_ending_on_an_unmarked_error_is_spent_like_one_resolving_nothing() {
+        // A conflict-resolution round whose resolver returns an error carrying no conductor
+        // marker - a live one, or one a restart answers from the log - is spent as a round that
+        // resolved nothing: the episode moves to its next `~retry` with no attempt charged, past
+        // `CONFLICT_RESOLVE_BOUND` the integration blocks, and a park still ends the episode at
+        // its round. Each row: the attempt-0 rounds that resolve nothing and how, then the
+        // conflicting unit's status, attempts, `UnitFailed` causes and the attempt-0 resolver ids
+        // the driver was called with, in order; every other round resolves.
+        use Unresolved::{Errs, Nothing, Parks};
+        type Outcome = (ledger::Status, u32, Vec<String>, Vec<u32>);
+        let integrated = |attempts: u32, causes: &[&str], rounds: &[u32]| -> Outcome {
+            (
+                ledger::Status::Integrated,
+                attempts,
+                causes.iter().map(|c| c.to_string()).collect(),
+                rounds.to_vec(),
+            )
+        };
+        let rows = [
+            (
+                "a round resolving nothing",
+                vec![(1, Nothing)],
+                integrated(0, &[], &[1, 2]),
+            ),
+            (
+                "every round resolving nothing",
+                vec![(1, Nothing), (2, Nothing), (3, Nothing)],
+                integrated(1, &["integrate-conflict"], &[1, 2, 3]),
+            ),
+            (
+                "a round that parks",
+                vec![(1, Parks)],
+                (ledger::Status::Reviewed, 0, Vec::new(), vec![1]),
+            ),
+            (
+                "a round ending on an unmarked error",
+                vec![(1, Errs)],
+                integrated(0, &[], &[1, 2]),
+            ),
+            (
+                "two rounds ending on an unmarked error",
+                vec![(1, Errs), (2, Errs)],
+                integrated(0, &[], &[1, 2, 3]),
+            ),
+            (
+                "every round ending on an unmarked error",
+                vec![(1, Errs), (2, Errs), (3, Errs)],
+                integrated(1, &["integrate-conflict"], &[1, 2, 3]),
+            ),
+        ];
+        for (name, unresolved, want) in rows {
+            let (repo, repo_path, store, mut driver) = conflict_fixture(Vec::new(), true);
+            driver.unresolved = unresolved;
+            let cfg = conflicting_units_cfg(Vec::new());
+            let got = run_conflicting_units(&repo_path, &store, &driver, &cfg).map(|rs| {
+                let calls = driver.calls.lock().unwrap().clone();
+                let loser = calls
+                    .iter()
+                    .find_map(|id| id.strip_suffix("/implementer#0~retry1"))
+                    .unwrap_or_else(|| panic!("{name}: no unit was re-parked: {calls:?}"))
+                    .to_string();
+                let prefix = format!("{loser}/implementer#0~retry");
+                let rounds: Vec<u32> = calls
+                    .iter()
+                    .filter_map(|id| id.strip_prefix(&prefix)?.parse().ok())
+                    .collect();
+                for round in &rounds {
+                    assert!(
+                        calls.contains(&spawn_retry_id(&loser, ROLE_IMPLEMENTER, 0, *round)),
+                        "{name}: round {round} is the resolver id the conductor mints"
+                    );
+                }
+                let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+                let causes: Vec<String> = events
+                    .iter()
+                    .filter(|e| e.type_ == ledger::TYPE_UNIT_FAILED)
+                    .filter_map(|e| {
+                        let v: Value = serde_json::from_slice(&e.data).ok()?;
+                        (v.get("id")?.as_str()? == loser)
+                            .then(|| v.get("cause")?.as_str().map(str::to_string))?
+                    })
+                    .collect();
+                let unit = &rs.units[&loser];
+                (unit.status, unit.attempts, causes, rounds)
+            });
+            assert_eq!(got.map_err(|e| e.0), Ok(want), "{name}");
+            drop(repo);
+        }
+    }
+
+    #[test]
+    fn consecutive_store_faults_at_the_resolvers_spawn_record_an_infra_retry_mark_charge_nothing_and_return_no_blocked_integration(
+    ) {
+        // A store read failing before a conflict-resolution round's launch is an outage, never
+        // the round's outcome: it spends no round, charges no attempt and blocks no integration.
+        // The integration reruns under the F3 infra retry, an infra-retry mark per fault, until
+        // the taxonomy's infra limit halts the step. Each row: the attempt-0 rounds and how they
+        // end, then the run's end (the conflicting unit's status and attempts, or the halt the
+        // operator reads), its `UnitFailed` causes, the attempt-0 resolver rounds the driver was
+        // called with in order, and its infra-retry and infra-halt marks; every other round
+        // resolves.
+        use Unresolved::StoreFaults;
+        type Outcome = (
+            Result<(ledger::Status, u32), String>,
+            Vec<String>,
+            Vec<u32>,
+            Vec<String>,
+            Vec<String>,
+        );
+        let marks = |loser: &str, status: &str, ordinals: &[u32]| -> Vec<String> {
+            ordinals
+                .iter()
+                .map(|ordinal| format!("{loser}/{status}#0~{ordinal}"))
+                .collect()
+        };
+        let integrated = |loser: &str, rounds: &[u32], retries: &[u32]| -> Outcome {
+            (
+                Ok((ledger::Status::Integrated, 0)),
+                Vec::new(),
+                rounds.to_vec(),
+                marks(loser, "infra-retry", retries),
+                Vec::new(),
+            )
+        };
+        let halted = |loser: &str| -> Outcome {
+            let evidence = format!("stage {loser:?} conflict resolver: {RESOLVER_STORE_FAULT}");
+            (
+                Err(infra_halt(loser, 0, CAUSE_INFRA_SPAWN, &evidence)
+                    .0
+                    .replace(INFRA_MARKER, "")),
+                Vec::new(),
+                vec![1, 1, 1],
+                marks(loser, "infra-retry", &[0, 1, 2]),
+                marks(loser, "infra-halt", &[2]),
+            )
+        };
+        // `Some((rounds, infra-retry ordinals))` for a run that integrates, `None` for the halt.
+        type Want = Option<(&'static [u32], &'static [u32])>;
+        type Row = (&'static str, Vec<(u32, Unresolved)>, Want);
+        let rows: [Row; 4] = [
+            (
+                "one store fault",
+                vec![(1, StoreFaults(1))],
+                Some((&[1, 1], &[0])),
+            ),
+            (
+                "a store fault at each round's first launch",
+                vec![
+                    (1, StoreFaults(1)),
+                    (2, StoreFaults(1)),
+                    (3, StoreFaults(1)),
+                ],
+                Some((&[1, 1], &[0])),
+            ),
+            (
+                "two consecutive store faults",
+                vec![(1, StoreFaults(2))],
+                Some((&[1, 1, 1], &[0, 1])),
+            ),
+            (
+                "store faults past the infra limit halt the step",
+                vec![(1, StoreFaults(3))],
+                None,
+            ),
+        ];
+        for (name, unresolved, want) in rows {
+            let (repo, repo_path, store, mut driver) = conflict_fixture(Vec::new(), true);
+            driver.unresolved = unresolved;
+            let cfg = conflicting_units_cfg(Vec::new());
+            let ended = run_conflicting_units(&repo_path, &store, &driver, &cfg);
+            let calls = driver.calls.lock().unwrap().clone();
+            let loser = calls
+                .iter()
+                .find_map(|id| id.strip_suffix("/implementer#0~retry1"))
+                .unwrap_or_else(|| panic!("{name}: no unit was re-parked: {calls:?}"))
+                .to_string();
+            let prefix = format!("{loser}/implementer#0~retry");
+            let rounds: Vec<u32> = calls
+                .iter()
+                .filter_map(|id| id.strip_prefix(&prefix)?.parse().ok())
+                .collect();
+            let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+            let causes: Vec<String> = events
+                .iter()
+                .filter(|e| e.type_ == ledger::TYPE_UNIT_FAILED)
+                .filter_map(|e| {
+                    let v: Value = serde_json::from_slice(&e.data).ok()?;
+                    (v.get("id")?.as_str()? == loser)
+                        .then(|| v.get("cause")?.as_str().map(str::to_string))?
+                })
+                .collect();
+            let got: Outcome = (
+                ended
+                    .map(|rs| (rs.units[&loser].status, rs.units[&loser].attempts))
+                    .map_err(|e| e.0),
+                causes,
+                rounds,
+                status_mark_keys(&events, "infra-retry"),
+                status_mark_keys(&events, "infra-halt"),
+            );
+            let want = match want {
+                Some((rounds, retries)) => integrated(&loser, rounds, retries),
+                None => halted(&loser),
+            };
+            assert_eq!(got, want, "{name}");
+            drop(repo);
+        }
+    }
+
+    #[test]
+    fn an_unreviewed_unit_halted_mid_merge_resumes_at_the_resolver_and_integrates() {
+        // op-105-unreviewed-mid-merge-resumes-at-integrate, the reproduction of lesson
+        // u105r2c6park-sdet-verified-unit-mid-merge-resume-refuses: two batch-mates with no
+        // review conflict, and the spawn budget halts the run at the loser's second resolver
+        // round, its merge left in progress and its last status `verified`. A resume with the
+        // budget lifted reaches the resolver from the log and both units integrate, uncharged,
+        // with no conflict-marker refusal. Each row: how the first resolver round ends.
+        // NON-VACUOUS: RED while the resume routes the loser to `ResumePhase::Implemented`,
+        // whose pre-gate checkpoint refuses the merge's own conflict markers.
+        for (name, first_round) in [
+            ("a first round resolving nothing", Unresolved::Nothing),
+            (
+                "a first round ending on an unmarked error",
+                Unresolved::Errs,
+            ),
+        ] {
+            let (repo, repo_path, store, mut driver) = conflict_fixture(Vec::new(), true);
+            driver.unresolved = vec![(1, first_round)];
+            let mut cfg = conflicting_units_cfg(Vec::new());
+            for stage in cfg.workflow.stages.values_mut() {
+                stage.review = crate::config::ReviewPanel::default();
+            }
+            // Both implementers and the first resolver round: the second round is refused.
+            cfg.workflow.defaults.budget = 3;
+            let halted = run_conflicting_units(&repo_path, &store, &driver, &cfg).unwrap();
+            let calls = driver.calls.lock().unwrap().clone();
+            let loser = calls
+                .iter()
+                .find_map(|id| id.strip_suffix("/implementer#0~retry1"))
+                .unwrap_or_else(|| panic!("{name}: no unit was re-parked: {calls:?}"))
+                .to_string();
+            let second_round = spawn_retry_id(&loser, ROLE_IMPLEMENTER, 0, 2);
+            assert!(
+                halted.budget_halt.is_some() && !calls.contains(&second_round),
+                "{name}: the budget halts the run at the second resolver round: {calls:?}"
+            );
+            assert_eq!(
+                halted.units[&loser].status,
+                ledger::Status::Verified,
+                "{name}: the loser halts mid-merge with no review recorded"
+            );
+            cfg.workflow.defaults.budget = 0;
+            let resumed = run_conflicting_units(&repo_path, &store, &driver, &cfg)
+                .unwrap_or_else(|e| panic!("{name}: the resume refused: {}", e.0));
+            for unit in ["unit-a", "unit-b"] {
+                assert_eq!(
+                    (resumed.units[unit].status, resumed.units[unit].attempts),
+                    (ledger::Status::Integrated, 0),
+                    "{name}: {unit} integrates, uncharged"
+                );
+            }
+            assert!(
+                driver.calls.lock().unwrap().contains(&second_round),
+                "{name}: the resume reaches the resolver's second round"
+            );
+            let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+            for charged in [ledger::TYPE_UNIT_FAILED, contextgraph::TYPE_LESSON_LEARNED] {
+                assert_eq!(
+                    count_of_type(&events, charged),
+                    0,
+                    "{name}: the resume records no {charged}"
+                );
+            }
+            assert_eq!(
+                std::fs::read_to_string(Path::new(&repo_path).join("c.rs")).unwrap(),
+                "RESOLVED\n",
+                "{name}: the resolution lands"
+            );
+            drop(repo);
+        }
     }
 
     #[test]
@@ -47678,10 +48982,20 @@ mod tests {
     /// A run's own result and its whole log.
     type RunAndLog = (Result<RunState, Error>, Vec<Event>);
 
-    /// Run one merging, gated unit `s` under `driver` in a real repo, with an `sdet-author` agent
-    /// configured when `with_sdet`: the run's own result and the whole log.
-    fn run_sdet_lane(with_sdet: bool, driver: &Stub) -> RunAndLog {
+    /// Run `cfg` under `driver` in a real repo: the run's own result and the whole log.
+    fn run_in_repo(cfg: &Config, driver: &Stub) -> RunAndLog {
         let repo = temp_git_project_with_commit();
+        let st = Store::open(":memory:").unwrap();
+        let deps = Deps {
+            repo: repo.path().to_str().unwrap().to_string(),
+            ..stub_deps(&st, driver, Vec::new())
+        };
+        (run_isolated(cfg, &deps), run_log(&st))
+    }
+
+    /// One merging unit `s` of `worker`, gated by `ok` (which passes), with an `sdet-author`
+    /// agent configured when `with_sdet`.
+    fn sdet_lane_cfg(with_sdet: bool) -> Config {
         let mut cfg = Config::default();
         cfg.agents.insert("worker".into(), agent("worker"));
         if with_sdet {
@@ -47699,32 +49013,92 @@ mod tests {
                 ..Default::default()
             },
         );
-        let st = Store::open(":memory:").unwrap();
-        let deps = Deps {
-            repo: repo.path().to_str().unwrap().to_string(),
-            ..stub_deps(&st, driver, Vec::new())
-        };
-        (run_isolated(&cfg, &deps), run_log(&st))
+        cfg
+    }
+
+    /// Run one merging, gated unit `s` under `driver` in a real repo, with an `sdet-author` agent
+    /// configured when `with_sdet`: the run's own result and the whole log.
+    fn run_sdet_lane(with_sdet: bool, driver: &Stub) -> RunAndLog {
+        run_in_repo(&sdet_lane_cfg(with_sdet), driver)
+    }
+
+    /// The replay keys of `unit`'s inline gate verdicts in `events`, in log order.
+    fn unit_gate_verdict_keys(events: &[Event], unit: &str) -> Vec<String> {
+        let prefix = format!("{unit}/gate:");
+        events
+            .iter()
+            .filter(|e| e.type_ == contextgraph::TYPE_GATE_VERDICT)
+            .filter_map(|e| e.meta.get(META_REPLAY_KEY).cloned())
+            .filter(|key| key.starts_with(&prefix))
+            .collect()
     }
 
     /// Run a [`run_sdet_lane`] whose sdet-author (configured when `with_sdet`) authors NOTHING,
-    /// and whose deterministic spawn CRASHES with a non-parked Err when `crash_sdet`
-    /// (`fail_spawn_ids` crashes ONLY the sdet spawn). The sdet-author is spawned at the seam
-    /// exactly when configured (`spawn_why`), and the unit still integrates (`why`): the build
-    /// is never blocked by the sdet seam.
+    /// and whose first spawn CRASHES with a non-parked Err when `crash_sdet` (`fail_spawn_ids`
+    /// crashes ONLY that sdet spawn). The sdet-author is spawned at the seam exactly when
+    /// configured (`spawn_why`), and the unit integrates charged nothing (`why`). A crashed seam
+    /// is one uncharged infra rerun (F3) of the seam alone: it is recorded as an `infra-retry`
+    /// mark naming `infra:spawn`, the sdet re-spawns under the next round's
+    /// [`review_retry_window`] id, the implementer is not re-spawned, and no gate runs before
+    /// the rerun - every gate verdict is keyed `~retry1`. Every other seam result records no
+    /// infra mark and gates under the attempt's bare key.
     fn assert_sdet_seam_integrates(with_sdet: bool, crash_sdet: bool, spawn_why: &str, why: &str) {
         let mut driver = sdet_lane_driver();
         if crash_sdet {
             driver.fail_spawn_ids =
                 std::collections::HashSet::from([spawn_id("s", ROLE_SDET_AUTHOR, 0)]);
         }
-        let (rs, _) = run_sdet_lane(with_sdet, &driver);
+        let (rs, events) = run_sdet_lane(with_sdet, &driver);
         assert_eq!(driver.spawned(ROLE_SDET_AUTHOR), with_sdet, "{spawn_why}");
+        let rs = rs.expect("the sdet seam never fails the run");
+        assert_eq!(rs.units["s"].status, ledger::Status::Integrated, "{why}");
+        assert_eq!(rs.units["s"].attempts, 0, "the seam charges nothing: {why}");
         assert_eq!(
-            rs.unwrap().units["s"].status,
-            ledger::Status::Integrated,
-            "{why}"
+            count_of_type(&events, ledger::TYPE_UNIT_FAILED),
+            0,
+            "the seam writes no UnitFailed: {why}"
         );
+        assert_eq!(
+            driver.prompts_for("worker").len(),
+            1,
+            "the implementer runs once: {why}"
+        );
+        let gate_keys = unit_gate_verdict_keys(&events, "s");
+        assert!(!gate_keys.is_empty(), "premise: the unit's gates ran");
+        if crash_sdet {
+            assert_eq!(
+                status_mark_keys(&events, "infra-retry"),
+                ["s/infra-retry#0~0"],
+                "the crashed seam is one uncharged infra rerun"
+            );
+            assert!(
+                rs.units["s"]
+                    .evidence
+                    .get("infra-retry")
+                    .is_some_and(|ev| ev.starts_with(CAUSE_INFRA_SPAWN)),
+                "the rerun names its infra cause: {:?}",
+                rs.units["s"].evidence
+            );
+            let rerun = spawn_retry_id("s", ROLE_SDET_AUTHOR, 0, *review_retry_window(1).start());
+            assert!(
+                driver.spawn_ids().contains(&rerun),
+                "the rerun's sdet-author is a fresh spawn {rerun:?}: {:?}",
+                driver.spawn_ids()
+            );
+            assert!(
+                gate_keys.iter().all(|key| key.ends_with("~retry1")),
+                "no gate runs on the tree the crashed seam never touched: {gate_keys:?}"
+            );
+        } else {
+            assert!(
+                status_mark_keys(&events, "infra-retry").is_empty(),
+                "a seam that did not crash reruns nothing"
+            );
+            assert!(
+                gate_keys.iter().all(|key| key == "s/gate:ok#0"),
+                "the gates run once under the attempt's bare key: {gate_keys:?}"
+            );
+        }
     }
 
     crate::test_cases! {
@@ -47775,33 +49149,27 @@ mod tests {
                 "no sdet-author is configured, so the conductor must not spawn one",
                 "an operator without the sdet-author persona must never be blocked: the unit still integrates",
             );
-        /// spec 33 result handling, crash disposition (routed to this criterion by c1: d33-c1 defers
-        /// the crash arm to c2, and adv-u33c1r2-crash-arm-budget-accounting-c2 +
-        /// adv-u33c1-crash-arm-commits-partial-writes ask c2 to STATE and pin it). A sdet-author
-        /// spawn that CRASHES (a non-parked spawn/opts error - a usage-limit / non-zero exit,
-        /// distinct from a replay PARK) must NOT block the build: the periphery tests are
-        /// best-effort, so a crashed sdet is tolerated exactly like an absent one - the conductor
-        /// proceeds to the pre-gate commit, gates, review, and integrates the implementer's unit.
-        /// The alternative (propagate the crash) would let one operator's flaky sdet agent wedge
-        /// every unit; the tolerant proceed keeps the build resilient. Under the real
-        /// stepwise/replay driver the sdet spawn only PARKS or replays and never returns a
-        /// crash-Err, so this arm is a defensive disposition, unreachable in-loop - which is why
-        /// proceeding (not a bespoke remediation path) is the minimal correct choice. The
-        /// crash-without-park budget count divergence flagged for c2 is SHARED with the implementer
-        /// reserve (conductor.rs), not sdet-specific, so no separate accounting is owed here.
+        /// op-105-sdet-seam-joins-the-infra-retry, the crash disposition. A sdet-author spawn
+        /// that CRASHES (a non-parked, non-refused spawn error: a non-zero exit, a live host's
+        /// wall-clock stop - distinct from a replay PARK) is an outage, and a blocking driver
+        /// does return one in-loop. It joins the implementer's F3 infra retry: the unit is
+        /// charged nothing, the seam alone reruns under the next round's sdet id while the
+        /// implementer's work stands, and only then do the pre-gate commit, the gates, the
+        /// review and the integrate run - so no gate ever runs on a tree the seam never
+        /// touched. Past the infra limit the step halts loudly (the outage row beside the
+        /// implementer's below).
         ///
         /// ANCHOR: the sdet-author spawn WAS attempted at the seam - the driver recorded the call
         /// before crashing it - so it is the CRASH disposition, not an absent-agent skip, that this
-        /// drives. NON-VACUOUS: GREEN on shipped code (crash swallowed, `Err(_) => Ok(())`, unit
-        /// integrates); RED when the crash is propagated instead - change `Err(_) => Ok(())` to
-        /// `Err(e) => Err(e)` and a crashed sdet errors out of the seam (`spawn_sdet_author(..)?`),
-        /// so the unit never integrates.
-        a_crashed_sdet_author_spawn_does_not_block_the_build_the_lifecycle_proceeds:
+        /// drives. NON-VACUOUS: RED when the crash is swallowed as a proceed (`Err(_) => Ok(())`
+        /// at the seam): no `infra-retry` mark is recorded and the gates run once under the bare
+        /// `s/gate:ok#0` key on the tree the crashed sdet never touched.
+        a_crashed_sdet_author_spawn_reruns_the_seam_uncharged_before_any_gate:
             assert_sdet_seam_integrates(
                 true,
                 true,
                 "the sdet-author spawn must be attempted at the seam (it then crashes)",
-                "a crashed sdet-author must not block the build: the lifecycle proceeds and the unit integrates",
+                "a crashed sdet-author is an uncharged infra rerun of the seam, then the unit integrates",
             );
     }
 
@@ -48935,27 +50303,42 @@ mod tests {
         )]
     }
 
-    /// `driver` with the spawns `ids` each emitting [`refused_decision`].
-    fn refusing_at(driver: Stub, ids: &[String]) -> Stub {
-        Stub {
-            emits_by_spawn_id: ids
-                .iter()
-                .map(|id| (id.clone(), refused_decision()))
-                .collect(),
-            ..driver
-        }
+    /// `driver` with the spawns `ids` each emitting `record`, beside what it already emits.
+    fn refusing_at(mut driver: Stub, ids: &[String], record: &[(String, Value)]) -> Stub {
+        driver
+            .emits_by_spawn_id
+            .extend(ids.iter().map(|id| (id.clone(), record.to_vec())));
+        driver
+    }
+
+    /// The `{unit}/{role}` seat stamped on each logged `DecisionMade` whose id is `id`, in log
+    /// order.
+    fn decision_seats(events: &[Event], id: &str) -> Vec<String> {
+        events
+            .iter()
+            .filter(|e| e.type_ == contextgraph::TYPE_DECISION_MADE)
+            .filter(|e| serde_json::from_slice::<Value>(&e.data).unwrap()["id"] == id)
+            .map(|e| {
+                let spawn = e.meta.get(META_SPAWN);
+                crate::spawn::unit_role_of(spawn.map_or("", String::as_str)).to_string()
+            })
+            .collect()
     }
 
     /// An author other than the implementer whose emitted record the guard refuses: the driver
     /// its run starts from, the run (its result and its log), the `(unit, role, attempt)` its
-    /// refused spawn runs under, the agent whose prompts it reads, and whether, past its re-run,
-    /// the role's failure is its wave's lesson.
+    /// refused spawn runs under, the agent whose prompts it reads, whether, past its re-run, the
+    /// role's failure is its wave's lesson, the record its refused spawns emit, what the guard
+    /// says of that record, and the seats holding the record's id once the run is over.
     struct RefusedAuthor {
         driver: fn() -> Stub,
         run: fn(&Stub) -> RunAndLog,
         seat: (&'static str, &'static str, u32),
         agent: &'static str,
         wave_lesson: bool,
+        record: fn() -> Vec<(String, Value)>,
+        refusal: &'static str,
+        holders: &'static [&'static str],
     }
 
     /// The sdet author of a single-lane unit: past its re-run, its stage fails in its wave.
@@ -48966,6 +50349,9 @@ mod tests {
             seat: ("s", ROLE_SDET_AUTHOR, 0),
             agent: ROLE_SDET_AUTHOR,
             wave_lesson: true,
+            record: refused_decision,
+            refusal: REFUSAL,
+            holders: &[],
         }
     }
 
@@ -48982,24 +50368,72 @@ mod tests {
             seat: ("plan", ROLE_REPLAN, 1),
             agent: "planner",
             wave_lesson: false,
+            record: refused_decision,
+            refusal: REFUSAL,
+            holders: &[],
+        }
+    }
+
+    /// A `DecisionMade` under the id `d-x`, the id [`adjudicator_refused`]'s implementer holds.
+    fn decision_d_x(summary: &str) -> Vec<(String, Value)> {
+        vec![(
+            contextgraph::TYPE_DECISION_MADE.to_string(),
+            json!({"id": "d-x", "summary": summary}),
+        )]
+    }
+
+    /// The adjudicator of a reviewed unit whose record takes the id its implementer's holds, so
+    /// the guard refuses it before the append, naming the holder - the agent emit stamps each
+    /// record with its spawn, whose `{unit}/{role}` seat is the author the guard compares - and
+    /// the implementer's record stays the one the graph keeps. The verdict rides the same spawn,
+    /// so the refusal costs it the verdict: past its re-run, its stage fails in its wave.
+    fn adjudicator_refused() -> RefusedAuthor {
+        RefusedAuthor {
+            driver: || Stub {
+                write_file: Some("feature.rs".into()),
+                output: r#"{"verdict":"approve"}"#.into(),
+                emits_by_spawn_id: HashMap::from([(
+                    spawn_id("s", ROLE_IMPLEMENTER, 0),
+                    decision_d_x("the worker's"),
+                )]),
+                ..Stub::new()
+            },
+            run: |driver| run_in_repo(&spec_cfg(1), driver),
+            seat: ("s", ROLE_ADJUDICATOR, 0),
+            agent: "adj",
+            wave_lesson: true,
+            record: || decision_d_x("the judge's"),
+            refusal: r#"refusing to emit DecisionMade "d-x""#,
+            holders: &["s/implementer"],
         }
     }
 
     /// `author`'s spawns refuse a record on their first `refused` runs: the refused spawn re-runs
-    /// once, under its next `~retry` id, with a prompt naming the refusal, and never again. One
-    /// refusal is cleared by that re-run, so the run carries on; a second reaches the role's own
-    /// failure handling with the refusal text, unmarked. The refused record never lands.
+    /// once, under its next `~retry` id, with a prompt naming the refusal and the seats holding
+    /// its id, and never again. One refusal is cleared by that re-run, so the run carries on; a
+    /// second reaches the role's own failure handling with the refusal text, unmarked. The
+    /// refused record never lands.
     fn assert_a_refused_record_reruns_its_spawn_once(author: RefusedAuthor, refused: usize) {
         let (unit, role, attempt) = author.seat;
         let ids: Vec<String> = (0..=2)
             .map(|retry| spawn_retry_id(unit, role, attempt, retry))
             .collect();
-        let driver = refusing_at((author.driver)(), &ids[..refused]);
+        let record = (author.record)();
+        let driver = refusing_at((author.driver)(), &ids[..refused], &record);
         let (rs, events) = (author.run)(&driver);
         let spawned = driver.spawn_ids();
+        let refusal = author.refusal;
         assert!(
             spawned.contains(&ids[1]) && !spawned.contains(&ids[2]),
             "the refused spawn re-runs once, under its next retry id: {spawned:?}"
+        );
+        assert_eq!(
+            spawned
+                .iter()
+                .filter(|id| crate::spawn::unit_role_of(id) == format!("{unit}/{role}"))
+                .count(),
+            2,
+            "the seat spawns twice in the whole run, never again: {spawned:?}"
         );
         let rerun = driver
             .prompts_for(author.agent)
@@ -49008,31 +50442,45 @@ mod tests {
             .unwrap_or_default();
         assert!(
             rerun.contains(&format!(
-                "Your previous run's record was refused: {REFUSAL}"
+                "Your previous run's record was refused: {refusal}"
             )) && !rerun.contains('\u{1}'),
             "the re-run's prompt names the refusal, unmarked: {rerun}"
         );
-        assert!(
-            !payloads_of_type(&events, contextgraph::TYPE_DECISION_MADE)
-                .iter()
-                .any(|d| d["id"] == "d-bad"),
-            "the refused record lands nothing"
+        for holder in author.holders {
+            assert!(
+                rerun.contains(&format!("recorded by {holder}")),
+                "the re-run's prompt names the seat holding the id, {holder}: {rerun}"
+            );
+        }
+        assert_eq!(
+            decision_seats(&events, record[0].1["id"].as_str().unwrap()),
+            author.holders,
+            "the refused record lands nothing, so only the holders keep its id"
         );
         let lessons = wave_lessons(&events);
         match rs {
-            Ok(_) => assert!(
-                refused == 1 && lessons.is_empty(),
-                "only a refusal its re-run cleared carries the run on: {lessons:?}"
-            ),
+            Ok(rs) => {
+                assert!(
+                    refused == 1 && lessons.is_empty(),
+                    "only a refusal its re-run cleared carries the run on: {lessons:?}"
+                );
+                assert_eq!(
+                    rs.units[unit].status,
+                    ledger::Status::Integrated,
+                    "the re-run carries {unit:?} on"
+                );
+            }
             Err(e) => {
                 assert!(
-                    refused == 2 && e.0.contains(REFUSAL) && !e.0.contains('\u{1}'),
+                    refused == 2 && e.0.contains(refusal) && !e.0.contains('\u{1}'),
                     "past its re-run, the refusal reaches the role's failure, unmarked: {e:?}"
                 );
                 assert_eq!(
-                    lessons.iter().any(|l| l.contains(REFUSAL)),
+                    lessons
+                        .iter()
+                        .any(|l| l.contains(refusal) && !l.contains('\u{1}')),
                     author.wave_lesson,
-                    "the stage's wave lesson carries the refusal: {lessons:?}"
+                    "the stage's wave lesson carries the refusal, unmarked: {lessons:?}"
                 );
             }
         }
@@ -49047,6 +50495,98 @@ mod tests {
             assert_a_refused_record_reruns_its_spawn_once(re_planner_refused(), 1);
         a_re_planner_refused_again_halts_the_gate_with_the_refusal:
             assert_a_refused_record_reruns_its_spawn_once(re_planner_refused(), 2);
+        an_adjudicator_whose_record_another_seat_holds_re_runs_once_told_why:
+            assert_a_refused_record_reruns_its_spawn_once(adjudicator_refused(), 1);
+        an_adjudicator_refused_again_fails_its_stage_with_the_refusal:
+            assert_a_refused_record_reruns_its_spawn_once(adjudicator_refused(), 2);
+    }
+
+    /// A record an implementer's spawn emits that the fold cannot apply - `governs` given as a
+    /// string, not an array - is refused by the same guard `rigger emit` runs, before the append,
+    /// so the log holds no record the fold would pass over. The refusal is a defect in what the
+    /// attempt emitted, not an outage: it is charged to that attempt like a review reject, never
+    /// rerun uncharged as infra, and the next attempt's prompt names it, so the agent learns why
+    /// and the unit converges. The attempt's edits are committed as its checkpoint, as a gate
+    /// failure's are, so its `UnitFailed` carries that sha and an escalation's teardown never
+    /// discards them.
+    #[test]
+    fn an_implementer_s_refused_record_is_charged_to_the_attempt_that_emitted_it() {
+        let repo = temp_git_project_with_commit();
+        let mut cfg = spec_cfg(1);
+        cfg.workflow.defaults.max_retries = 2;
+        cfg.workflow.stages.get_mut("s").unwrap().on_pass = "none".into();
+        let driver = refusing_at(
+            Stub {
+                write_file: Some("feature.rs".into()),
+                output: r#"{"verdict":"approve"}"#.into(),
+                ..Stub::new()
+            },
+            &[spawn_id("s", ROLE_IMPLEMENTER, 0)],
+            &refused_decision(),
+        );
+        let st = Store::open(":memory:").unwrap();
+        let deps = Deps {
+            repo: repo.path().to_str().unwrap().to_string(),
+            ..stub_deps(&st, &driver, Vec::new())
+        };
+        run_isolated(&cfg, &deps).unwrap();
+        let events = run_log(&st);
+        assert_eq!(
+            decision_seats(&events, "d-bad"),
+            Vec::<String>::new(),
+            "the refused record landed nothing"
+        );
+        let failed = payloads_of_type(&events, ledger::TYPE_UNIT_FAILED);
+        assert_eq!(
+            failed
+                .iter()
+                .map(|f| (f["attempts"].as_u64(), f["cause"].as_str()))
+                .collect::<Vec<_>>(),
+            [(Some(1), Some("reject"))],
+            "the refusal is charged one attempt, as a reject: {failed:?}"
+        );
+        let reason = failed[0]["review_reason"].as_str().unwrap_or_default();
+        assert!(
+            reason.contains(REFUSAL) && !reason.contains('\u{1}'),
+            "the charged failure carries the refusal, unmarked: {reason:?}"
+        );
+        let failed_sha = events
+            .iter()
+            .find(|e| e.type_ == ledger::TYPE_UNIT_FAILED)
+            .and_then(|e| e.meta.get(META_WORKTREE_SHA))
+            .cloned()
+            .unwrap_or_default();
+        let commits = trimmed_stdout(&run_git(
+            repo.path().to_str().unwrap(),
+            &["log", "--all", "--format=%H %s"],
+        ));
+        assert!(
+            commits
+                .lines()
+                .any(|line| line == format!("{failed_sha} rigger: s attempt 1")),
+            "the refused attempt's edits are committed as its checkpoint, the sha its UnitFailed \
+             carries, as a gate failure's are: {failed_sha:?} in {commits}"
+        );
+        assert!(
+            !events.iter().any(|e| {
+                e.type_ == ledger::TYPE_UNIT_STATUS
+                    && String::from_utf8_lossy(&e.data).contains(r#""status":"infra-retry""#)
+            }),
+            "a refusal is never rerun uncharged as infra"
+        );
+        let prompts = driver.prompts_for("worker");
+        assert_eq!(prompts.len(), 2, "the worker spawned once per attempt");
+        assert!(
+            !prompts[0].contains(REFUSAL) && prompts[1].contains(REFUSAL),
+            "the next attempt's prompt names the refusal: {:?}",
+            prompts[1]
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|e| e.type_ == ledger::TYPE_UNIT_ESCALATED),
+            "the next attempt, emitting nothing refused, carries the unit on"
+        );
     }
 
     /// A speculation candidate's sdet author refused on its run and on its re-run loses the
@@ -49066,6 +50606,7 @@ mod tests {
                 ..Stub::new()
             },
             &[0, 1].map(|retry| spawn_retry_id("s", ROLE_SDET_AUTHOR, 0, retry)),
+            &refused_decision(),
         );
         let deps = Deps {
             repo: repo.path().to_str().unwrap().to_string(),

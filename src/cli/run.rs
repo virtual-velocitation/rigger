@@ -1,7 +1,11 @@
 use super::*;
 
+use rigger::driver::claude_code;
 use rigger::eventstore::TypeSelection;
+use rigger::held::HeldDriver;
+use rigger::keep_awake::{OsSleepHold, KEEP_AWAKE_ENV};
 use rigger::review;
+use rigger::sleep_hold::{SleepGuard, SleepHold, Unavailable};
 
 /// Record that THIS run's own step path just attempted a dash ensure (spec 69, round-8 fix; see
 /// [`DASH_ATTEMPT_FILE`]'s doc for the full rationale). Best-effort like every other dash
@@ -118,19 +122,19 @@ fn register_run_instance(repo: &str, selection: &StoreSelection) -> RunRegistrat
         eprintln!("rigger: instance registry write skipped ({e}); discovery is unaffected");
         return RunRegistration::inert();
     }
-    // The heartbeat thread re-stamps `inst` every interval until the guard drops. `recv_timeout`
-    // makes the sleep interruptible: each `Timeout` refreshes the entry; a `Disconnected` (the guard
-    // dropped) ends the `while let` at once, so teardown never waits out a full interval.
+    // The heartbeat thread re-stamps `inst` every interval until the guard drops
+    // ([`tick_until_stopped`]): the guard's drop ends the wait at once, so teardown never waits
+    // out a full interval.
     let (tx, rx) = std::sync::mpsc::channel::<()>();
     let interval = registry_heartbeat_interval();
     let handle = std::thread::spawn(move || {
-        while let Err(std::sync::mpsc::RecvTimeoutError::Timeout) = rx.recv_timeout(interval) {
+        tick_until_stopped(&rx, interval, || {
             let refreshed = rigger::registry::Instance {
                 heartbeat_ms: rigger::registry::now_ms(),
                 ..inst.clone()
             };
             let _ = rigger::registry::write(&dir, &refreshed); // best-effort refresh
-        }
+        })
     });
     RunRegistration {
         tx: Some(tx),
@@ -201,10 +205,10 @@ fn enforce_definition_pin(
 /// EXACTLY ONE ROOT (spec 89, criterion 4): refuses BEFORE any terminal sweep or scratch write
 /// when the store the invoking `command` is about to open, the repository `git` resolved for the
 /// same `cwd`, and the scratch root it is about to use disagree on their owning root - a
-/// three-way check, not two. `rigger step` (which sweeps the scratch root) and `rigger critique`
+/// three-way check, not two. `rigger step` (which sweeps the scratch root), `rigger critique`
 /// (which writes a critique's transcript and liveness marker into it and removes them, spec 112)
-/// call it; `command` names the invoking command in the refusal, as
-/// [`resolve_main_worktree_or_refuse`] takes it.
+/// and `rigger run` (whose teardown reclaims it) call it; `command` names the invoking command in
+/// the refusal, as [`resolve_main_worktree_or_refuse`] takes it.
 ///
 /// LEG ONE (`cwd` vs `repo`): `RIGGER_DIR` is opened cwd-relative (never walked up), while
 /// `repo` can walk PAST a `.git`-less `cwd` to an ENCLOSING repository - the two diverge
@@ -284,15 +288,29 @@ pub(crate) fn refuse_unless_one_root(
     Ok(())
 }
 
-/// The project scratch root a run entry (`rigger step`, `rigger serve`) and `rigger critique`
-/// work under: `None` in a project with no git repository, where nothing keys a scratch root and
+/// The project scratch root a run entry (`rigger step`, `rigger run`, `rigger serve`) and
+/// `rigger critique` work under: `None` in a project with no git repository, where nothing keys a scratch root and
 /// no liveness marker or transcript is written; else the root `scratch_root_from_env` resolves
 /// for the repository and `defaults.workdir`. The one home of that rule, so the roots a step
-/// sweeps, a served run hands its MCP server and a critique writes under, and that
-/// [`refuse_unless_one_root`] checks, can never disagree.
+/// sweeps, a hosted run writes under, a served run hands its MCP server and a critique writes
+/// under, and that [`refuse_unless_one_root`] checks, can never disagree.
 pub(crate) fn project_scratch_root(repo: &str, cfg: &config::Config) -> Option<String> {
     (!repo.is_empty())
         .then(|| rigger::worktree::scratch_root_from_env(repo, &cfg.workflow.defaults.workdir))
+}
+
+/// This project's progress store (`.rigger/progress.db`), the separate log a headless host
+/// records a spawn's launch and live activity to, never the run stream.
+pub(crate) fn open_progress_backend() -> Result<Store, Box<dyn std::error::Error>> {
+    Ok(Store::open(&db_path("progress.db"))?)
+}
+
+/// This binary's own path, so a child rigger process is always the same build as its parent (no
+/// PATH ambiguity); `rigger` on `$PATH` when the path cannot be read.
+pub(crate) fn running_executable() -> String {
+    std::env::current_exe()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| "rigger".to_string())
 }
 
 /// Load the config a RUN will drive, refusing to start when a gating persona guarantees an
@@ -316,11 +334,12 @@ fn load_run_config(dir: &str) -> Result<config::Config, Box<dyn std::error::Erro
 
 pub(crate) fn cmd_run(args: &[String]) -> Res {
     let parsed = parse_run_args(args)?;
+    let sleep = sleep_hold();
     // `--driver workflow` is the equivalent of `rigger serve`: the in-Claude-Code
-    // MCP-server path. `cli` (the default) keeps the standalone subprocess path.
+    // MCP-server path. `cli` (the default) is the standalone path, hosting its agents itself.
     match parsed.driver {
-        DriverKind::Workflow => run_workflow(&parsed, "rigger run --driver workflow"),
-        DriverKind::Cli => run_cli(&parsed),
+        DriverKind::Workflow => run_workflow(&parsed, "rigger run --driver workflow", &*sleep),
+        DriverKind::Cli => run_cli(&parsed, &*sleep),
     }
 }
 
@@ -372,58 +391,57 @@ pub(crate) fn cmd_resume_unit(args: &[String]) -> Res {
     let unit_id = unit_id
         .ok_or("resume-unit: expected a unit id: rigger resume-unit <unit> [--attempts N]")?;
 
-    let (loc, selection) = require_store_dir()?;
-    let backend = resolve_store(&selection, &loc.file("events.db"))?;
-    let store = Namespaced::new(backend.as_ref(), &loc.identity());
-    let (run_events, run_id) = runscope::read::read_current_run(&store, conductor::STREAM)?;
-    let rs = ledger::project(&run_events)?;
+    on_the_run(|loc, store| {
+        let (run_events, run_id) = runscope::read::read_current_run(store, conductor::STREAM)?;
+        let rs = ledger::project(&run_events)?;
 
-    let unit = rs
-        .units
-        .get(unit_id)
-        .ok_or_else(|| format!("resume-unit: no unit {unit_id:?} in the current run"))?;
-    if unit.status != ledger::Status::Escalated {
-        return Err(format!(
-            "resume-unit: unit {unit_id:?} is not escalated (status: {:?}) - only a unit \
-             that has genuinely given up (\"escalated (awaiting a human)\") can be resumed",
-            unit.status.as_str()
-        )
-        .into());
-    }
-    let branch = unit.branch.clone();
-    if !branch.is_empty() && !rigger::worktree::branch_exists(&loc.repo_root(), &branch) {
-        return Err(format!(
-            "resume-unit: unit {unit_id:?}'s durable branch {branch:?} is gone (deleted or \
-             reclaimed) - refusing to resume with nothing to re-park the implementer on. \
-             Check `git reflog` for its last commit and recreate the branch at that sha \
-             before retrying."
-        )
-        .into());
-    }
+        let unit = rs
+            .units
+            .get(unit_id)
+            .ok_or_else(|| format!("resume-unit: no unit {unit_id:?} in the current run"))?;
+        if unit.status != ledger::Status::Escalated {
+            return Err(format!(
+                "resume-unit: unit {unit_id:?} is not escalated (status: {:?}) - only a unit \
+                 that has genuinely given up (\"escalated (awaiting a human)\") can be resumed",
+                unit.status.as_str()
+            )
+            .into());
+        }
+        let branch = unit.branch.clone();
+        if !branch.is_empty() && !rigger::worktree::branch_exists(&loc.repo_root(), &branch) {
+            return Err(format!(
+                "resume-unit: unit {unit_id:?}'s durable branch {branch:?} is gone (deleted or \
+                 reclaimed) - refusing to resume with nothing to re-park the implementer on. \
+                 Check `git reflog` for its last commit and recreate the branch at that sha \
+                 before retrying."
+            )
+            .into());
+        }
 
-    let mut ev = Event::new(
-        ledger::TYPE_UNIT_RESUMED,
-        serde_json::to_vec(
-            &serde_json::json!({"unit": unit_id, "attempts_granted": attempts_granted, "by": "operator"}),
-        )?,
-    );
-    if !run_id.is_empty() {
-        ev = ev.with_meta(runscope::META_RUN_ID, &run_id);
-    }
-    // The resume goes on the log first; `graph.db` is opened only after (spec 101), so a graph
-    // that cannot be had costs the operator's recovery verb only the fold, which it says.
-    rigger::ingest::FoldingStore::new(&store, Some(|| loc.graph(&selection)), &stderr_line)
-        .append(
+        let mut ev = Event::new(
+            ledger::TYPE_UNIT_RESUMED,
+            serde_json::to_vec(
+                &serde_json::json!({"unit": unit_id, "attempts_granted": attempts_granted, "by": "operator"}),
+            )?,
+        );
+        if !run_id.is_empty() {
+            ev = ev.with_meta(runscope::META_RUN_ID, &run_id);
+        }
+        // The folding store puts the resume on the log first and opens `graph.db` only after (spec
+        // 101), so a graph that cannot be had costs the operator's recovery verb only the fold,
+        // which it says.
+        store.append(
             conductor::STREAM,
             ExpectedRevision::Any,
             std::slice::from_ref(&ev),
         )?;
 
-    println!(
-        "resumed unit {unit_id:?}: {attempts_granted} attempt(s) granted (by operator) - the \
-         next `rigger step` re-parks its implementer on {branch:?}"
-    );
-    Ok(())
+        println!(
+            "resumed unit {unit_id:?}: {attempts_granted} attempt(s) granted (by operator) - the \
+             next `rigger step` re-parks its implementer on {branch:?}"
+        );
+        Ok(())
+    })
 }
 
 pub(crate) fn cmd_step(args: &[String]) -> Res {
@@ -564,16 +582,20 @@ pub(crate) fn cmd_step(args: &[String]) -> Res {
     let definition = definition_hash(".")?;
 
     // A NEW RUN NEEDS A CLEAN CRITIQUE (spec 112): decided before this step appends anything, so
-    // a refused step mints no run and prints no JSON line.
-    RunStartCritique {
-        command: "rigger step",
-        backend: backend.as_ref(),
-        identity: &project_identity(),
-        workflow: &cfg.workflow,
-        root: &review::spec_root(&cwd, &repo),
-        text: &text,
-    }
-    .refuse_unless_clean(args.spec.as_deref(), &criteria, args.fresh)?;
+    // a refused step mints no run and prints no JSON line. A `--fresh` step decides it ahead of
+    // its mint and a plain step behind the hold read, since a held step begins no run for it to
+    // guard.
+    let refuse_a_new_run = || {
+        RunStartCritique {
+            command: "rigger step",
+            backend: backend.as_ref(),
+            identity: &project_identity(),
+            workflow: &cfg.workflow,
+            root: &review::spec_root(&cwd, &repo),
+            text: &text,
+        }
+        .refuse_unless_clean(args.spec.as_deref(), &criteria, args.fresh)
+    };
 
     // `--fresh`: begin a NEW run BEFORE this step (and before the liveness sweep reads the
     // current run), so the conductor's own `ensure_started` adopts this just-minted
@@ -582,6 +604,7 @@ pub(crate) fn cmd_step(args: &[String]) -> Res {
     // began. The notice goes to STDERR - stdout carries only the `{wave,done}` JSON the
     // driver parses. See `runscope_store::start_fresh`.
     if args.fresh {
+        refuse_a_new_run()?;
         // Persist the resolved run-branch base, and the launching spec path (spec 82,
         // criterion 1), on the fresh boundary (spec 38, criterion 3): `args.base` is the base
         // this step anchored the run branch on, so `rigger status`/dash name the same base
@@ -595,6 +618,19 @@ pub(crate) fn cmd_step(args: &[String]) -> Res {
             args.spec.as_deref().unwrap_or(""),
         )?;
         eprintln!("rigger step: --fresh: began a new run {run} (the prior run stays in the log)");
+    }
+
+    // A HELD RUN LAUNCHES NOTHING (spec 105): the hold is read behind `--fresh`, whose mint
+    // released the hold it ended, and on a plain step ahead of the critique refusal, so a held
+    // plain step prints the hold whatever the critique. It is read ahead of the scratch sweep, the
+    // definition pin and the liveness sweep, so a held step leaves all three to the release. A
+    // read that fails ends the step, since a run not proved unheld launches nothing.
+    if let Some(hold) = runscope::read::read_current_hold(&store, conductor::STREAM)? {
+        println!("{}", serde_json::to_string(&spawn::step_of_hold(&hold))?);
+        return Ok(());
+    }
+    if !args.fresh {
+        refuse_a_new_run()?;
     }
 
     // The currently loaded workflow's own declared unit branches (spec 89, criterion 1, round
@@ -614,13 +650,13 @@ pub(crate) fn cmd_step(args: &[String]) -> Res {
         .map(|slug| conductor::unit_branch(slug))
         .collect();
 
-    // The maintenance half of Gap 14, made liveness-aware (spec 64, criterion 4): every step
+    // The maintenance half of Gap 14, made liveness-aware (spec 64, criterion 4): every unheld step
     // starts by sweeping the scratch root's terminal worktrees (integrated units, review
     // scaffolding), so leaks from crashed or superseded step processes are reclaimed by the
     // loop itself instead of accumulating until a human notices a full disk. Placed here (after
     // the store opens and any `--fresh` boundary is settled, but still BEFORE the
-    // definition-pin HALT below) so it keeps running at step start on every step, including one
-    // that goes on to halt on drift - exactly as before this criterion. The merged-only git
+    // definition-pin HALT below) so it keeps running at step start on every unheld step, including
+    // one that goes on to halt on drift - exactly as before this criterion. The merged-only git
     // ancestry rule alone is not sufficient: a PARKED unit whose attempt produced an EMPTY diff
     // has a branch tip that IS an ancestor of the run branch (trivially - it never advanced past
     // it) while the unit is still live in review, so `sweep_terminal` is handed the CURRENT
@@ -1034,18 +1070,24 @@ fn merge_hung_attention(
     attention
 }
 
-/// Reclaim the run's run-level shared scratch at a terminal run state (spec 34, criterion 3):
+/// Reclaim the run's run-level shared scratch at a terminal run state (spec 34, criterion 3), at
+/// `rigger step`'s terminal sites and once `rigger run`'s conductor loop returns done:
 /// `agent-scratch` (probe repos + verify builds a worker parks there), `agent-live` (per-spawn
-/// liveness markers), and the SHARED build cache - `cargo-target` and `target` directly under
-/// the scratch root, the driver's `CARGO_TARGET_DIR`, the unbounded multi-GB leak. These are the
+/// liveness markers), `agent-stream` (a headless host's raw transcripts), and the SHARED build
+/// cache - `cargo-target` and `target` directly under the scratch root, the driver's
+/// `CARGO_TARGET_DIR`, the unbounded multi-GB leak. These are the
 /// run-level areas the orphan-sweep backstop deliberately spares while the run is stepping (a
 /// live spawn may still be building into them); once the run is terminal and no spawn is live
 /// they are pure residue, so this teardown - and only this teardown - reclaims them. The two
 /// build-cache names mirror exactly what `rigger validate`'s residue report flags as a shared
 /// cache (`scan_residue`), so validate-reports and step-reclaims stay in lockstep.
 ///
-/// Each area is reaped-then-removed (spec 23): any process still rooted in it is reaped BEFORE
-/// the dir is removed so nothing outlives a dir holding a now-deleted cwd. Scoped to the EXACT
+/// The three agent areas are reclaimed entry by entry ([`remove_agent_area_entries`]), each area
+/// then removed once empty: a critique run's entries (`critique-<hash>`) share those areas and
+/// are left to that critique's own next call, so a critique still running as the run ends keeps
+/// its scratch and its processes. Each reclaimed entry and the bare `target` are
+/// reaped-then-removed (spec 23): any process still rooted in one is reaped BEFORE the dir is
+/// removed so nothing outlives a dir holding a now-deleted cwd. Scoped to the EXACT
 /// dir removed under the resolved scratch `root` (`RIGGER_TMPDIR` > `defaults.workdir` > repo
 /// default), never a hardcoded `.rigger/tmp`, so a relocated scratch root stays safe and only
 /// rigger's own scratch is ever reaped. Every half is best-effort - a missing area is a graceful
@@ -1080,10 +1122,43 @@ fn merge_hung_attention(
 /// rigger-directed build actually targets; `target` stays a bare reap as before.
 fn reclaim_run_scratch(root: &str) {
     let base = std::path::Path::new(root);
-    reap_then_remove_dir(&base.join("agent-scratch"), base);
-    reap_then_remove_dir(&base.join(rigger::liveness::MARKER_SUBDIR), base);
+    remove_agent_area_entries(base, |name| !review::is_critique_run(name));
+    for area in AGENT_AREAS {
+        let _ = std::fs::remove_dir(base.join(area));
+    }
     let _ = reclaim_shared_build_cache(&base.join(rigger::worktree::SHARED_BUILD_CACHE_NAME), base);
     reap_then_remove_dir(&base.join("target"), base);
+}
+
+/// The agent areas under a scratch root, each holding one entry per run: the scratch a worker
+/// parks probe repos and verify builds in, per-spawn liveness markers, and a headless host's raw
+/// transcripts.
+const AGENT_AREAS: [&str; 3] = [
+    rigger::driver::replay::SPAWN_SCRATCH_SUBDIR,
+    rigger::liveness::MARKER_SUBDIR,
+    claude_code::AGENT_STREAM_SUBDIR,
+];
+
+/// Remove every entry of the [`AGENT_AREAS`] under `scratch_root` whose name `takes` accepts: a
+/// directory through the reap-then-remove every scratch removal shares, scoped to
+/// `scratch_root`, anything else as a file. Best-effort: an area or entry that cannot be read or
+/// removed stays for a later call.
+pub(crate) fn remove_agent_area_entries(scratch_root: &Path, takes: impl Fn(&str) -> bool) {
+    for area in AGENT_AREAS {
+        let Ok(entries) = std::fs::read_dir(scratch_root.join(area)) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            if !takes(&entry.file_name().to_string_lossy()) {
+                continue;
+            }
+            if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                reap_then_remove_dir(&entry.path(), scratch_root);
+            } else {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
 }
 
 /// `rigger reported <id>` - exit 0 iff spawn `<id>` already has a recorded result in this
@@ -1165,10 +1240,9 @@ pub(crate) fn cmd_prompt(args: &[String]) -> Res {
         [id] => id.as_str(),
         _ => return Err("prompt: expected exactly one spawn id: rigger prompt <id>".into()),
     };
-    let (loc, selection) = require_store_dir()?;
-    let backend = resolve_store(&selection, &loc.file("events.db"))?;
-    let store = Namespaced::new(backend.as_ref(), &loc.identity());
-    let (events, _) = runscope::read::read_current_run(&store, conductor::STREAM)?;
+    let (events, _) = over_the_run_store(|_, _, store| {
+        Ok(runscope::read::read_current_run(store, conductor::STREAM)?)
+    })?;
     println!("{}", prompt_reply(&events, id)?);
     Ok(())
 }
@@ -1213,31 +1287,30 @@ pub(crate) fn cmd_scratch(args: &[String]) -> Res {
         [id] => id.as_str(),
         _ => return Err("scratch: expected exactly one spawn id: rigger scratch <id>".into()),
     };
-    let (loc, selection) = require_store_dir()?;
-    let backend = resolve_store(&selection, &loc.file("events.db"))?;
-    let store = Namespaced::new(backend.as_ref(), &loc.identity());
-    let (_, run_id) = runscope::read::read_current_run(&store, conductor::STREAM)?;
-    let repo = loc
-        .dir
-        .parent()
-        .and_then(|p| p.to_str())
-        .ok_or("scratch: could not resolve the project root")?;
-    // `workdir` via the SAME shared, validate-independent `scratch_defaults` resolver
-    // `reclaim_spawn_scratch` uses (spec 83 criterion 2, round 3) - never `config::load`,
-    // which additionally requires a fully loadable `.rigger/agents/` fleet AND a passing
-    // `Config::validate` just to learn this one string field, and previously left this
-    // function diverging from the reaper it must stay byte-identical to (see this
-    // function's own doc comment) whenever `Config::validate` failed for an unrelated
-    // reason (arch-u83c3-cmd-scratch-diverges-from-reclaim-after-asymmetric-fix).
-    let (workdir, _max_retries) = scratch_defaults(&loc);
-    let scratch_root = rigger::worktree::scratch_root_path_from_env(repo, &workdir);
-    match spawn_scratch_path(&scratch_root, &run_id, id) {
-        Some(path) => {
-            println!("{}", path.display());
-            Ok(())
+    over_the_run_store(|loc, _, store| {
+        let (_, run_id) = runscope::read::read_current_run(store, conductor::STREAM)?;
+        let repo = loc
+            .dir
+            .parent()
+            .and_then(|p| p.to_str())
+            .ok_or("scratch: could not resolve the project root")?;
+        // `workdir` via the SAME shared, validate-independent `scratch_defaults` resolver
+        // `reclaim_spawn_scratch` uses (spec 83 criterion 2, round 3) - never `config::load`,
+        // which additionally requires a fully loadable `.rigger/agents/` fleet AND a passing
+        // `Config::validate` just to learn this one string field, and previously left this
+        // function diverging from the reaper it must stay byte-identical to (see this
+        // function's own doc comment) whenever `Config::validate` failed for an unrelated
+        // reason (arch-u83c3-cmd-scratch-diverges-from-reclaim-after-asymmetric-fix).
+        let (workdir, _max_retries) = scratch_defaults(loc);
+        let scratch_root = rigger::worktree::scratch_root_path_from_env(repo, &workdir);
+        match spawn_scratch_path(&scratch_root, &run_id, id) {
+            Some(path) => {
+                println!("{}", path.display());
+                Ok(())
+            }
+            None => Err(format!("scratch: {id:?} does not name a usable scratch path").into()),
         }
-        None => Err(format!("scratch: {id:?} does not name a usable scratch path").into()),
-    }
+    })
 }
 
 /// The parsed flags of a `rigger step` invocation.
@@ -1375,10 +1448,199 @@ fn anchor_run_branch(repo: &str, cmd: &str, base: &str, base_explicit: bool) -> 
     Ok(())
 }
 
-/// The standalone CLI path: ground, spawn agents as `claude` subprocesses, drive
-/// the DAG to integration. The store is selected by flag and wrapped in the
-/// per-project namespace decorator before it is injected (§5.1.1, R9).
-fn run_cli(parsed: &RunArgs) -> Res {
+/// One beat of the supervisor (spec 105 LIVENESS): a [`SupervisorBeat`] on the progress stream of
+/// the run current at this beat, re-read here so the beat follows whichever run is current. Only
+/// the current run's `RunStarted` is read, from its boundary, since a beat wants one id every
+/// interval for as long as the run lives. A run log that cannot be read, or that names no run, beats nothing, and a write the
+/// progress store refuses is ignored: the next tick is the retry either way.
+///
+/// [`SupervisorBeat`]: rigger::progress::SupervisorBeat
+fn beat(run_store: &dyn EventStore, progress: &dyn EventStore) {
+    if let Ok(Some(run)) = runscope::read::read_current_run_id(run_store, conductor::STREAM) {
+        let _ = rigger::progress_store::append_stamped(
+            progress,
+            &run,
+            &rigger::progress::SupervisorBeat::default(),
+            "the supervisor beat",
+        );
+    }
+}
+
+/// Hand back what `drive` returns, with the supervisor beating beside it ([`ticking`] a [`beat`]
+/// each `interval`): a beat as `drive` starts, so an adopting supervisor is on record at once, and
+/// none once `drive` returns. A failed beat freezes silent time and no host state hangs on it, but
+/// a beat still running as `drive` returns is waited out, and one that panics is re-raised then.
+fn beating<T>(
+    run_store: &dyn EventStore,
+    progress: &dyn EventStore,
+    interval: std::time::Duration,
+    drive: impl FnOnce() -> T,
+) -> T {
+    ticking(interval, || beat(run_store, progress), drive)
+}
+
+/// Hand back what `drive` returns, with `tick` running beside it on a thread of its own: once as
+/// `drive` starts, then once each `interval` after the last tick ends. The thread sleeps on a
+/// channel whose one sender lives only as long as `drive`, so `drive`'s return wakes it at once and
+/// it ticks no further; the scope joins it, so a tick still running when `drive` returns is waited
+/// out, never cut short.
+fn ticking<T>(
+    interval: std::time::Duration,
+    tick: impl Fn() + Send,
+    drive: impl FnOnce() -> T,
+) -> T {
+    use std::sync::mpsc::channel;
+
+    std::thread::scope(|scope| {
+        let (_driving, driven) = channel::<()>();
+        scope.spawn(move || {
+            tick();
+            tick_until_stopped(&driven, interval, &tick);
+        });
+        drive()
+    })
+}
+
+/// Call `tick` once each `interval` until `stop` receives or its sender drops. The wait is a
+/// `recv_timeout` on `stop`, so the sender's drop ends it at once, never after a full interval.
+fn tick_until_stopped(
+    stop: &std::sync::mpsc::Receiver<()>,
+    interval: std::time::Duration,
+    tick: impl Fn(),
+) {
+    while let Err(std::sync::mpsc::RecvTimeoutError::Timeout) = stop.recv_timeout(interval) {
+        tick();
+    }
+}
+
+/// The keep-awake adapter [`KEEP_AWAKE_ENV`] selects: unset, the host's [`OsSleepHold`];
+/// `record:<path>`, a [`RecordingSleepHold`] appending to `<path>`; `unavailable:<reason>`, an
+/// adapter answering `<reason>`; any other value, an adapter answering that the value names no
+/// adapter, so a mistyped knob never takes the host's hold unasked.
+fn sleep_hold() -> Box<dyn SleepHold> {
+    let Some(knob) = std::env::var_os(KEEP_AWAKE_ENV) else {
+        return Box::new(OsSleepHold);
+    };
+    let knob = knob.to_string_lossy();
+    if let Some(path) = knob.strip_prefix("record:") {
+        return Box::new(RecordingSleepHold(PathBuf::from(path)));
+    }
+    Box::new(UnavailableSleepHold(
+        match knob.strip_prefix("unavailable:") {
+            Some(why) => why.to_string(),
+            None => format!("{KEEP_AWAKE_ENV}={knob} names no keep-awake adapter"),
+        },
+    ))
+}
+
+/// The keep-awake fake [`KEEP_AWAKE_ENV`]'s `record:<path>` selects: an acquire appends the line
+/// `acquire <reason>` to the file at `<path>` and its guard's drop appends `release`, so a test
+/// reads when a driver held the machine awake. An acquire it cannot record answers unavailable.
+struct RecordingSleepHold(PathBuf);
+
+impl SleepHold for RecordingSleepHold {
+    fn acquire(&self, reason: &str) -> Result<SleepGuard, Unavailable> {
+        append_line(&self.0, &format!("acquire {reason}"))
+            .map_err(|e| Unavailable(format!("cannot record to {}: {e}", self.0.display())))?;
+        let record = self.0.clone();
+        // A release the record cannot take leaves its acquire standing alone, which a test reads
+        // as a hold never released.
+        Ok(SleepGuard::new(move || {
+            let _ = append_line(&record, "release");
+        }))
+    }
+}
+
+/// Append `line` and a newline to the file at `path`, creating the file when absent.
+fn append_line(path: &Path, line: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?
+        .write_all(format!("{line}\n").as_bytes())
+}
+
+/// The keep-awake fake whose every acquire answers unavailable with its reason: what
+/// [`KEEP_AWAKE_ENV`]'s `unavailable:<reason>` selects, and what a value naming no adapter gets.
+struct UnavailableSleepHold(String);
+
+impl SleepHold for UnavailableSleepHold {
+    fn acquire(&self, _reason: &str) -> Result<SleepGuard, Unavailable> {
+        Err(Unavailable(self.0.clone()))
+    }
+}
+
+/// The keep-awake hold `command` takes from `sleep` as it starts driving a run (spec 105), held
+/// until the caller drops it as it stops driving; or, when the facility is unavailable, none, after
+/// the one line on stderr saying so, since an unavailable facility never fails the run.
+fn keep_awake(sleep: &dyn SleepHold, command: &str) -> Option<SleepGuard> {
+    sleep
+        .acquire(&format!("{command} is driving a run"))
+        .map_err(|Unavailable(why)| {
+            stderr_line(&format!(
+                "rigger: keep-awake unavailable: {why}; a sleep pauses the run and it resumes by itself"
+            ))
+        })
+        .ok()
+}
+
+/// How often a launch waiting on a held run reads the run again (spec 105), and how often the hold
+/// controller polls for a probe its open hold is owed.
+const HOLD_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// The pause between two reads of a standing hold, each run path's [`HeldDriver`] sleeping it.
+fn pause_a_hold_poll() {
+    std::thread::sleep(HOLD_POLL_INTERVAL);
+}
+
+/// A supervisor start's reconciliation (spec 105, RESUME BY SESSION): every launch the progress
+/// `store` holds open, of any run ([`progress::open_launches`]), is closed
+/// [`progress::ENDED_INTERRUPTED`] with no class on its own run's stream, so the close enters no
+/// fault count. The start holds the step lock, so no step or run of its own is driving them; a live
+/// `rigger critique`'s launch is closed too, and that false close stands until its own close lands.
+/// Each launch is reaped before its close, so a crash between the two re-reaps at the next start:
+/// what is still rooted under its `dir`, when the project has a `scratch` root and the record names
+/// a dir, through `reap` called with that dir and the root; the composition root passes
+/// [`rigger::reap::reap_processes_rooted_under`], whose containment check refuses a dir outside
+/// the scratch root by name and reaps nothing there. A read or an append that fails ends the start
+/// with its error.
+fn reconcile_open_launches(
+    store: &dyn EventStore,
+    scratch: Option<&str>,
+    reap: &dyn Fn(&Path, &Path),
+) -> Res {
+    let every_run = Filter {
+        stream_prefix: Some(progress::STREAM.to_string()),
+    };
+    let events = store.read_all(0, Direction::Forward, &every_run)?;
+    for (run, open) in progress::open_launches(&events) {
+        if let Some(root) = scratch.filter(|_| !open.dir.is_empty()) {
+            reap(Path::new(&open.dir), Path::new(root));
+        }
+        let close = progress::SpawnLaunched::closed(
+            open.spawn,
+            open.launch,
+            open.session_id,
+            progress::ENDED_INTERRUPTED,
+            "",
+        );
+        rigger::progress_store::record_launch(store, &run, &close)?;
+    }
+    Ok(())
+}
+
+/// The standalone CLI path: ground, host the agents as headless `claude` sessions
+/// ([`claude_code::Driver`]) behind the [`HeldDriver`] that launches nothing while the run is
+/// held, drive the DAG to integration with the supervisor [`beating`] and the hold controller
+/// ([`rigger::hold_controller::probe_an_owed_hold`] each [`HOLD_POLL_INTERVAL`]) [`ticking`] beside it, and reclaim a done
+/// run's scratch. The store is selected by flag and wrapped in the per-project namespace
+/// decorator before it is injected (§5.1.1, R9). It holds the step lock from right after its root
+/// check and spec read until it returns, and before its base gates closes and reaps every launch
+/// the progress store holds open ([`reconcile_open_launches`]). The machine stays awake through
+/// `sleep` from the moment the loop starts driving until this returns ([`keep_awake`]).
+fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
+    let command = "rigger run";
     // DISCOVERABILITY (spec 66, criterion 5): `rigger run <spec>` is a REAL pre-launch
     // surface that genuinely holds the spec path in production (unlike the SessionStart-only
     // `rigger prime` hook, which the installed hook always invokes with zero args - see
@@ -1396,12 +1658,39 @@ fn run_cli(parsed: &RunArgs) -> Res {
     // FIRST, mirroring `cmd_step`'s own placement - see `resolve_main_worktree_or_refuse`'s
     // doc comment.
     let cwd = cwd();
-    let repo = resolve_main_worktree_or_refuse(&cwd, "rigger run")?;
+    let repo = resolve_main_worktree_or_refuse(&cwd, command)?;
     // Refuse before starting if a gating persona would stall the integration gate (spec 18,
     // unit 2); `load_run_config` reuses unit 1's lint at this run's config-load seam.
     let cfg = load_run_config(".")?;
+    // EXACTLY ONE ROOT: this run's teardown reclaims the scratch root and its hosted agents write
+    // into it, so it is refused here, before anything is reclaimed, reaped or anchored.
+    let scratch = project_scratch_root(&repo, &cfg);
+    refuse_unless_one_root(&cwd, &repo, scratch.as_deref(), command)?;
     let (criteria, text) = load_criteria(parsed.spec.as_deref())?;
     std::fs::create_dir_all(RIGGER_DIR)?;
+    // ONE DRIVER AT A TIME (spec 105, RESUME BY SESSION): the step lock is held from here until
+    // this run returns, before any store is opened, any launch closed or any run branch anchored,
+    // so a second `rigger run` or a `rigger step` beside this one refuses with the busy refusal
+    // first, and a run that hangs keeps it, which keeps `rigger watch`'s dead-driver alert silent.
+    let _step_lock = acquire_step_lock(Path::new(RIGGER_DIR))?;
+    // Migrate a pre-spec-09 store's legacy-namespace history to the minted identity once,
+    // before opening the run backend (spec 09). Local-sqlite only - the migration renames
+    // streams in the local `.rigger/events.db`; a shared KurrentDB backend is out of scope.
+    let selection = store_selection(parsed.store, parsed.conn.as_deref())?;
+    if selection.is_sqlite() {
+        migrate_local_identity(None)?;
+    }
+    let progress_backend = open_progress_backend()?;
+    let progress = Namespaced::new(&progress_backend, &project_identity());
+    // No launch the progress store holds open has a live driver now that this run holds the
+    // step lock: each is reaped and closed before the base gates, so a start they refuse has
+    // already reconciled. The reconciliation reads the progress store alone, so the run store
+    // still opens after the anchor, behind this instance's registration.
+    reconcile_open_launches(
+        &progress,
+        scratch.as_deref(),
+        &rigger::reap::reap_processes_rooted_under,
+    )?;
     // Anchor + check out the run branch off `--base` (spec 18, criterion 6) BEFORE the
     // conductor branches any unit worktree off HEAD, so machine-generated units never
     // branch/merge onto the operator's own branch. `--base` threads here exactly as it does
@@ -1425,20 +1714,10 @@ fn run_cli(parsed: &RunArgs) -> Res {
         // Loop-readiness gate (spec 38, criterion 2): refuse a run with no reachable base (an
         // unresolvable base AND no HEAD to fall back to) loudly rather than minting a run branch
         // that branches from nowhere.
-        refuse_when_base_unreachable(&repo, "rigger run", &base, planned)?;
-        refuse_when_base_lacks_spec_paths(&repo, "rigger run", &base, planned, &criteria)?;
-        anchor_run_branch(&repo, "rigger run", &base, base_explicit)?;
+        refuse_when_base_unreachable(&repo, command, &base, planned)?;
+        refuse_when_base_lacks_spec_paths(&repo, command, &base, planned, &criteria)?;
+        anchor_run_branch(&repo, command, &base, base_explicit)?;
         base_tip = rigger::worktree::branch_tip(&repo, RUN_BRANCH).unwrap_or_default();
-    }
-    // The boxed backend and its namespaced wrapper both live here, in this stack
-    // frame, for the whole run: the decorator borrows the concrete store, and both
-    // outlive the `conductor::run` call below.
-    // Migrate a pre-spec-09 store's legacy-namespace history to the minted identity once,
-    // before opening the run backend (spec 09). Local-sqlite only - the migration renames
-    // streams in the local `.rigger/events.db`; a shared KurrentDB backend is out of scope.
-    let selection = store_selection(parsed.store, parsed.conn.as_deref())?;
-    if selection.is_sqlite() {
-        migrate_local_identity(None)?;
     }
     // Register this instance in the machine-global discovery registry (spec 50, criterion 2).
     // `rigger run` drives the WHOLE run in-process through a single `conductor::run` below, so the
@@ -1447,9 +1726,15 @@ fn run_cli(parsed: &RunArgs) -> Res {
     // run. Registered here, off the same resolved `selection` `rigger step` uses, so a native
     // `rigger run` is as discoverable as the stepwise loop path.
     let _registration = register_run_instance(&repo, &selection);
+    // The boxed backend and its namespaced wrapper both live here, in this stack
+    // frame, for the whole run: the decorator borrows the concrete store, and both
+    // outlive the `conductor::run` call below.
     let backend = resolve_store(&selection, &db_path("events.db"))?;
     let store = Namespaced::new(backend.as_ref(), &project_identity());
     let graph = open_graph(&db_path("graph.db"), &project_identity(), &selection, "run")?;
+    // Every appended event is folded into the graph as it lands, on `--fresh`'s mint and on the
+    // results the host records alike.
+    let folding = rigger::ingest::folding_into(&store, Some(&graph), &stderr_line);
     // `--fresh`: begin a NEW run before driving, so the conductor's own `ensure_started`
     // adopts this just-minted boundary instead of the (possibly wedged) latest run. See
     // `runscope_store::start_fresh` - the evented restart for a terminal escalation on an
@@ -1457,12 +1742,12 @@ fn run_cli(parsed: &RunArgs) -> Res {
     // human-facing channel and the `--fresh` notice belongs there, unchanged.
     fresh_run_if_requested(
         parsed,
-        &rigger::ingest::folding_into(&store, Some(&graph), &stderr_line),
+        &folding,
         &criteria,
         false,
         &base_tip,
         &RunStartCritique {
-            command: "rigger run",
+            command,
             backend: backend.as_ref(),
             identity: &project_identity(),
             workflow: &cfg.workflow,
@@ -1470,24 +1755,32 @@ fn run_cli(parsed: &RunArgs) -> Res {
             text: &text,
         },
     )?;
-    // NOT YET the agent host (spec 104 criterion 2 decision d-u104-stream-defer-composition-
-    // swap): `driver::claude_code::Driver` now conforms to `AgentDriver` (this criterion),
-    // but flipping THIS composition root breaks the argv/stdio CONTRACT `tests/cli.rs`'s own
-    // fake-`claude`-on-PATH fixtures assume (`cli::Driver`'s task on stdin plus plain-text
-    // stdout) across dozens of existing, real-subprocess, end-to-end tests - empirically
-    // confirmed by running them against this swap. Migrating every such fixture to the
-    // stream-json protocol is a real body of work of its own, out of this criterion's blast
-    // radius ("OWNS the reader and the result mapping", nothing in `tests/cli.rs`), and this
-    // host cannot usefully run unattended yet regardless (no failure-class relaunch or hold -
-    // criterion 5 / spec 105 - so a bare `api_retry` would end the run instead of riding it
-    // out). The swap stays `cli::Driver::default()` until that migration + spec 105 land.
-    let driver = cli::Driver::default();
+    let driver = claude_code::Driver {
+        bin: String::new(),
+        rigger_bin: running_executable(),
+        progress_store: &progress,
+        run_store: &folding,
+        scratch_root: scratch.clone().unwrap_or_default(),
+        stop_grace: claude_code::STOP_GRACE,
+        handed_env: selection.handed_env(),
+        beat_source: Some(&progress),
+        hold_sink: Some(&folding),
+    };
+    // The decorator records the errors it hands the conductor on the folding store the host
+    // records results on, so the graph folds them as it folds the host's.
+    let held = HeldDriver::new(
+        &driver,
+        &folding,
+        rigger::held::Results::Recorded,
+        None,
+        &pause_a_hold_poll,
+    );
     let grounder = select_grounder(&cfg.workflow.defaults.grounder)?;
     let root = repo.clone();
     let hash_blob = hash_blob_in(&root);
     let deps = Deps {
         store: &store,
-        driver: &driver,
+        driver: &held,
         gates: &ExecRunner,
         repo,
         grounder: Some(grounder.as_ref()),
@@ -1501,7 +1794,43 @@ fn run_cli(parsed: &RunArgs) -> Res {
     // the loop begins, so an active harness is never invisible. Held for the whole run - the
     // guard reaps the dash when this scope ends (unit 3's reaping mechanism).
     let _dash = start_run_dashboard(cfg.workflow.dash_enabled(), &store);
-    let rs = conductor::run(&cfg, &deps)?;
+    let _awake = keep_awake(sleep, command);
+    // The hold controller polls beside the drive, on the folding store the host holds the run on.
+    let control_holds = || {
+        let now = std::time::SystemTime::now();
+        if let Err(e) =
+            rigger::hold_controller::probe_an_owed_hold(&folding, &progress, &driver, &root, now)
+        {
+            stderr_line(&format!("rigger run: the hold probe: {e}"));
+        }
+    };
+    let rs = beating(
+        &store,
+        &progress,
+        rigger::progress::SUPERVISOR_BEAT_INTERVAL,
+        || {
+            ticking(HOLD_POLL_INTERVAL, control_holds, || {
+                conductor::run(&cfg, &deps)
+            })
+        },
+    )?;
+    // A done run releases its open hold, an operator hold included (spec 105); any other exit
+    // leaves it to the next supervisor's probes. A failed release never fails a run that already
+    // succeeded: the hold stays open for `rigger release` or the next mint.
+    if rs.done() {
+        let now = std::time::SystemTime::now();
+        if let Err(e) = runscope_store::release_hold(&folding, runscope::HOLD_BY_HOST, now) {
+            stderr_line(&format!(
+                "rigger run: the done run's hold was not released: {e}"
+            ));
+        }
+    }
+    // The conductor returned, so no spawn of this run is live: a done run's scratch is residue. A
+    // run that stopped short of done keeps it for the resume, and a project with no scratch root
+    // has none to reclaim.
+    if let Some(root) = scratch.as_deref().filter(|_| rs.done()) {
+        reclaim_run_scratch(root);
+    }
     // The release-target base the ready-to-release handoff names (spec 38, criterion 3): read
     // the base PERSISTED on this run's RunStarted, so the end-of-run summary, `rigger status`,
     // and `rigger dash` all name the ONE base the run anchored on. A run started before base
@@ -1635,7 +1964,8 @@ struct RunStartCritique<'a> {
 
 impl RunStartCritique<'_> {
     /// Refuse a command that would begin a new run on `spec` unless the critique of its text is
-    /// clean - the one decision every CLI run start makes before it appends anything. A command
+    /// clean - the one decision every CLI run start makes before it appends anything. A held plain
+    /// `rigger step` never asks it, since a held step begins no run (spec 105). A command
     /// with no spec, and one that adopts the latest run ([`runscope::adopted_run`] over the run
     /// stream's [`runscope::MINT_DECISION_TYPES`] events, `criteria` and `fresh`, as a command
     /// naming its spec), proceeds. Under a workflow naming no
@@ -1726,10 +2056,11 @@ fn new_run_refusal(command: &str, spec: &str, open: Option<&[String]>) -> String
 }
 
 /// The in-Claude-Code MCP-server path (`rigger serve` / `rigger run --driver
-/// workflow`): the conductor orchestrates on a background thread and this thread
-/// serves the MCP bridge over stdio. The store is selected by flag and wrapped in
-/// the per-project namespace decorator before it is injected into BOTH the
-/// conductor and the side-car (§5.1.1, R9).
+/// workflow`): the conductor orchestrates on a background thread, behind the
+/// [`HeldDriver`] that launches nothing while the run is held and ends its wait
+/// when the session closes, and this thread serves the MCP bridge over stdio. The
+/// store is selected by flag and wrapped in the per-project namespace decorator
+/// before it is injected into BOTH the conductor and the side-car (§5.1.1, R9).
 ///
 /// `command` is the ACTUALLY-INVOKED command line (`"rigger serve"` from [`cmd_serve`],
 /// `"rigger run --driver workflow"` from [`cmd_run`]) - threaded through rather than a
@@ -1737,7 +2068,10 @@ fn new_run_refusal(command: &str, spec: &str, open: Option<&[String]>) -> String
 /// the command the operator actually typed instead of always naming `rigger serve` even
 /// when reached via `rigger run --driver workflow` (spec 89 criterion 4, round 2
 /// adjudication `adv-u89c4-r2-serve-command-name-hardcoded-for-both-entry-points`).
-fn run_workflow(parsed: &RunArgs, command: &str) -> Res {
+///
+/// The machine stays awake through `sleep` from the moment the conductor starts until the MCP
+/// session ends, past a run already done while its session stays open ([`keep_awake`]).
+fn run_workflow(parsed: &RunArgs, command: &str, sleep: &dyn SleepHold) -> Res {
     // DISCOVERABILITY (spec 66, criterion 5): `rigger serve <spec>` / the shim-driven
     // workflow path is a REAL pre-launch surface holding the spec path - the one the
     // /rigger workflow itself runs through, and the omission this unit was rejected for
@@ -1835,7 +2169,12 @@ fn run_workflow(parsed: &RunArgs, command: &str) -> Res {
             text: &text,
         },
     )?;
-    let driver = rigger::driver::workflow::Driver::new();
+    // On this surface the launch is the handout, so the driver reads the hold the decorator reads.
+    let hold_stands = || {
+        runscope::read::hold_stands(&store, conductor::STREAM)
+            .map_err(rigger::conductor::Error::from)
+    };
+    let driver = rigger::driver::workflow::Driver::new().with_hold_read(&hold_stands);
     let grounder = select_grounder(&cfg.workflow.defaults.grounder)?;
 
     // Spec 14: the SEPARATE progress store + scratch root, so the MCP `rigger_activity` tool
@@ -1843,7 +2182,7 @@ fn run_workflow(parsed: &RunArgs, command: &str) -> Res {
     // liveness-marker ages rigger reads in Rust) to the shim over its existing connection -
     // the shim never touches the filesystem. Progress is always the local sqlite sibling of
     // the run store, regardless of the run store's backend.
-    let prog_backend = Store::open(&db_path("progress.db"))?;
+    let prog_backend = open_progress_backend()?;
     let prog_store = Namespaced::new(&prog_backend, &project_identity());
     // Reuses the `repo` resolved once at this function's entry (see its own comment) rather
     // than a second `git_repo()` re-read.
@@ -1856,14 +2195,26 @@ fn run_workflow(parsed: &RunArgs, command: &str) -> Res {
     let _dash = start_run_dashboard(cfg.workflow.dash_enabled(), &store);
 
     let hash_blob = hash_blob_in(&repo);
+    let awake = keep_awake(sleep, command);
     // The conductor orchestrates in the background; this thread serves the MCP
     // bridge over stdio. The shim drains spawns via rigger_next/result; closing
     // stdin ends the session.
     std::thread::scope(|s| {
         s.spawn(|| {
+            // Signal the run is over as this thread ends, so an empty rigger_next reports
+            // done:true and the shim exits cleanly. Set on success, error and panic alike: a
+            // conductor that fails still ends the run, and the shim must not poll forever.
+            let _finishing = driver.finishing();
+            let held = HeldDriver::new(
+                &driver,
+                &store,
+                rigger::held::Results::HandedBack,
+                Some(&driver.session_closed),
+                &pause_a_hold_poll,
+            );
             let deps = Deps {
                 store: &store,
-                driver: &driver,
+                driver: &held,
                 gates: &ExecRunner,
                 // Reuses the `repo` this function resolved once at entry via
                 // `resolve_main_worktree_or_refuse`, rather than a second `git_repo()` re-read.
@@ -1884,10 +2235,6 @@ fn run_workflow(parsed: &RunArgs, command: &str) -> Res {
                 }
                 Err(e) => eprintln!("rigger: conductor: {e}"),
             }
-            // Signal the run is over so an empty rigger_next reports done:true and the
-            // shim exits cleanly. Set on BOTH success and error: a conductor error
-            // still ends the run, and the shim must not poll forever.
-            driver.finish();
         });
         // Wire the graph into the MCP server too, so a ReviewFinding (or DecisionMade)
         // an agent emits via rigger_emit folds into the graph as it lands - the
@@ -1898,6 +2245,11 @@ fn run_workflow(parsed: &RunArgs, command: &str) -> Res {
             .with_graph(&graph)
             .with_progress(&prog_store, &scratch_root);
         let _ = server.run(std::io::stdin().lock(), std::io::stdout().lock());
+        // The session is over, so the hold ends here; a gate or merge still running ends unheld.
+        drop(awake);
+        // Nothing serves a spawn past the close, so each one parks and the scope joins the
+        // conductor.
+        driver.close_session();
     });
     Ok(())
 }
@@ -1908,7 +2260,7 @@ pub(crate) fn cmd_serve(args: &[String]) -> Res {
     // the same composition path - it just forces the workflow driver.
     let mut parsed = parse_run_args(args)?;
     parsed.driver = DriverKind::Workflow;
-    run_workflow(&parsed, "rigger serve")
+    run_workflow(&parsed, "rigger serve", &*sleep_hold())
 }
 
 /// Parse `rigger workflow`'s arguments: an optional positional spec path and an optional
@@ -1974,9 +2326,7 @@ pub(crate) fn cmd_workflow(args: &[String]) -> Res {
     let shim = locate_shim(&shim_root)?;
     // The shim spawns `rigger serve` itself; point it at THIS binary so the driver
     // and the served conductor are always the same build (no PATH ambiguity).
-    let rigger_bin = std::env::current_exe()
-        .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_else(|_| "rigger".to_string());
+    let rigger_bin = running_executable();
 
     let node = std::env::var("RIGGER_NODE").unwrap_or_else(|_| "node".to_string());
     let mut cmd = subprocess::command(&node);
@@ -2789,100 +3139,99 @@ pub(crate) fn cmd_result(args: &[String]) -> Res {
     // the real work below, so the instance stays discoverable even if this result is the only
     // traffic in the run for a while. Best-effort/warn-only; never fails the result.
     refresh_registry_entry(&loc, &selection);
-    let backend = resolve_store(&selection, &loc.file("events.db"))?;
-    let store = Namespaced::new(backend.as_ref(), &loc.identity());
-
-    // One cheap pre-write read of the run stream. A plain record over the result of a spawn
-    // that already ended is refused (gap 108: a driver resume re-spawns the workers of a
-    // replayed wave, and a stale one must never overwrite the result that stands) unless
-    // `--supersede` names the repair; `--if-absent` never replaces anything, so it is left
-    // to its CAS. A record that goes ahead is then advised (on stderr) about an orphan id or
-    // about superseding an existing result (see [`result_advisories`]). Weave with unit-10:
-    // under `--if-absent` nothing can supersede (the CAS refuses), so the supersede note is
-    // suppressed - the "left it untouched" line below reports that case honestly.
-    let (prior, _) = runscope::read::read_current_run(&store, conductor::STREAM)?;
-    if !parsed.if_absent {
-        if let Some(refusal) = result_refusal(&prior, &res.id, parsed.supersede)? {
-            return Err(refusal.into());
-        }
-    }
-    for note in result_advisories(&prior, &res.id, !parsed.if_absent) {
-        eprintln!("{note}");
-    }
-
-    let kind = if res.is_error() {
-        "error result"
-    } else {
-        "result"
-    };
-    // The position an append actually landed at, or `None` when `--if-absent` was a no-op
-    // (a result already stood, so a prior `rigger result` already folded it - see the fold
-    // below). Only a real append is folded into the graph.
-    let recorded = if parsed.if_absent {
-        // Conditional atomic record: write only if the spawn is still unanswered, never
-        // overwriting an existing result. A no-op (a result already stood) is a success,
-        // so the courier's `|| ...`-free single command always exits 0.
-        match spawn_store::record_result_if_absent(&store, &res)? {
-            Some(pos) => {
-                println!("recorded {kind} for {} (position {pos})", res.id);
-                Some(pos)
-            }
-            None => {
-                println!(
-                    "{} already has a result; --if-absent left it untouched",
-                    res.id
-                );
-                None
+    over_the_run_store_at(&loc, &selection, |store| {
+        // One cheap pre-write read of the run stream. A plain record over the result of a spawn
+        // that already ended is refused (gap 108: a driver resume re-spawns the workers of a
+        // replayed wave, and a stale one must never overwrite the result that stands) unless
+        // `--supersede` names the repair; `--if-absent` never replaces anything, so it is left
+        // to its CAS. A record that goes ahead is then advised (on stderr) about an orphan id or
+        // about superseding an existing result (see [`result_advisories`]). Weave with unit-10:
+        // under `--if-absent` nothing can supersede (the CAS refuses), so the supersede note is
+        // suppressed - the "left it untouched" line below reports that case honestly.
+        let (prior, _) = runscope::read::read_current_run(store, conductor::STREAM)?;
+        if !parsed.if_absent {
+            if let Some(refusal) = result_refusal(&prior, &res.id, parsed.supersede)? {
+                return Err(refusal.into());
             }
         }
-    } else {
-        let pos = spawn_store::record_result(&store, &res)?;
-        println!("recorded {kind} for {} (position {pos})", res.id);
-        Some(pos)
-    };
-
-    // Disposition-expiry (spec 25, criterion 1): fold the just-recorded result into this run's
-    // context graph through the same fold outcome `rigger emit` reports (see [`cmd_emit`] /
-    // [`mcpserver::emit_event`]). The adjudicator's recorded `SpawnResult` is the ONLY place a
-    // review's findings are disposed: the `TYPE_SPAWN_RESULT` fold arm reads its verdict line's
-    // `discarded` ids (through the single [`spawn::SpawnResult::adjudication`] authority) and
-    // invalidates those findings' graph edges, so grounding stops surfacing them. Without this
-    // fold the arm is inert in production - the courier appends the verdict to `events.db` but
-    // nothing ever folds a `SpawnResult` into the persistent `graph.db`, so a discarded finding
-    // is never pruned. Only an adjudicator result disposes anything (`adjudication` self-gates
-    // on the adjudicator role and returns `None` otherwise), so folding EVERY recorded result
-    // is safe: a plain worker/courier result folds to nothing.
-    //
-    // AFTER the durable append, as `emit_event` does: the record already landed in the log, so a
-    // fold that cannot happen (a graph that owes its rebuild, or one whose write lock or catch-up
-    // held the fold past the appender's ceiling) never fails a result the log holds - but it is
-    // SAID, with the reason, because a
-    // current graph that missed the fold keeps the result out of grounding until a later `rigger
-    // setup` folds it (a graph that owes its rebuild re-derives it from the live selection a
-    // `SpawnResult` is in, and so does a file not yet carrying the cursor whose seeding finds the
-    // hole the result left in its applied ledger old; setup's catch-up folds any other such hole
-    // forward from the file's cursor), and until then a lost adjudicator verdict keeps its
-    // discarded findings in grounding. A `--if-absent` no-op appended nothing, so there is nothing
-    // new to fold (the prior record already did).
-    if let Some(pos) = recorded {
-        if let contextgraph::Fold::NotFolded(why) =
-            fold_recorded_result(&loc, &selection, &res, pos)
-        {
-            println!("{}", not_folded(&why));
+        for note in result_advisories(&prior, &res.id, !parsed.if_absent) {
+            eprintln!("{note}");
         }
-    }
 
-    // Per-spawn scratch reclamation (spec 34, criterion 1): the moment this spawn's result is
-    // recorded - for ANY outcome (a success, a reject verdict, an `--error`, or a
-    // liveness/infra fault, all of which reach the store through THIS courier) - reclaim the
-    // dedicated scratch dir rigger assigned it under `.rigger/tmp`. `cmd_result` only ever
-    // runs for the spawn being reported, so a spawn with no recorded result is never touched
-    // (the "keeps its scratch" half of the criterion, by construction). Reclaimed even on a
-    // `--if-absent` no-op: a result already stood, so a prior `rigger result` already
-    // reclaimed it and reclaiming an already-gone path is a graceful no-op. Best-effort - the
-    // record already landed durably, so scratch reclamation may never fail a recorded result.
-    reclaim_spawn_scratch(&loc, &prior, &res.id);
-    Ok(())
+        let kind = if res.is_error() {
+            "error result"
+        } else {
+            "result"
+        };
+        // The position an append actually landed at, or `None` when `--if-absent` was a no-op
+        // (a result already stood, so a prior `rigger result` already folded it - see the fold
+        // below). Only a real append is folded into the graph.
+        let recorded = if parsed.if_absent {
+            // Conditional atomic record: write only if the spawn is still unanswered, never
+            // overwriting an existing result. A no-op (a result already stood) is a success,
+            // so the courier's `|| ...`-free single command always exits 0.
+            match spawn_store::record_result_if_absent(store, &res)? {
+                Some(pos) => {
+                    println!("recorded {kind} for {} (position {pos})", res.id);
+                    Some(pos)
+                }
+                None => {
+                    println!(
+                        "{} already has a result; --if-absent left it untouched",
+                        res.id
+                    );
+                    None
+                }
+            }
+        } else {
+            let pos = spawn_store::record_result(store, &res)?;
+            println!("recorded {kind} for {} (position {pos})", res.id);
+            Some(pos)
+        };
+
+        // Disposition-expiry (spec 25, criterion 1): fold the just-recorded result into this run's
+        // context graph through the same fold outcome `rigger emit` reports (see [`cmd_emit`] /
+        // [`mcpserver::emit_event`]). The adjudicator's recorded `SpawnResult` is the ONLY place a
+        // review's findings are disposed: the `TYPE_SPAWN_RESULT` fold arm reads its verdict line's
+        // `discarded` ids (through the single [`spawn::SpawnResult::adjudication`] authority) and
+        // invalidates those findings' graph edges, so grounding stops surfacing them. Without this
+        // fold the arm is inert in production - the courier appends the verdict to `events.db` but
+        // nothing ever folds a `SpawnResult` into the persistent `graph.db`, so a discarded finding
+        // is never pruned. Only an adjudicator result disposes anything (`adjudication` self-gates
+        // on the adjudicator role and returns `None` otherwise), so folding EVERY recorded result
+        // is safe: a plain worker/courier result folds to nothing.
+        //
+        // AFTER the durable append, as `emit_event` does: the record already landed in the log, so
+        // a fold that cannot happen (a graph that owes its rebuild, or one whose write lock or
+        // catch-up held the fold past the appender's ceiling) never fails a result the log holds -
+        // but it is SAID, with the reason, because a current graph that missed the fold keeps the
+        // result out of grounding until a later `rigger setup` folds it (a graph that owes its
+        // rebuild re-derives it from the live selection a `SpawnResult` is in, and so does a file
+        // not yet carrying the cursor whose seeding finds the hole the result left in its applied
+        // ledger old; setup's catch-up folds any other such hole forward from the file's cursor),
+        // and until then a lost adjudicator verdict keeps its discarded findings in grounding. A
+        // `--if-absent` no-op appended nothing, so there is nothing new to fold (the prior record
+        // already did).
+        if let Some(pos) = recorded {
+            if let contextgraph::Fold::NotFolded(why) =
+                fold_recorded_result(&loc, &selection, &res, pos)
+            {
+                println!("{}", not_folded(&why));
+            }
+        }
+
+        // Per-spawn scratch reclamation (spec 34, criterion 1): the moment this spawn's result is
+        // recorded - for ANY outcome (a success, a reject verdict, an `--error`, or a
+        // liveness/infra fault, all of which reach the store through THIS courier) - reclaim the
+        // dedicated scratch dir rigger assigned it under `.rigger/tmp`. `cmd_result` only ever
+        // runs for the spawn being reported, so a spawn with no recorded result is never touched
+        // (the "keeps its scratch" half of the criterion, by construction). Reclaimed even on a
+        // `--if-absent` no-op: a result already stood, so a prior `rigger result` already
+        // reclaimed it and reclaiming an already-gone path is a graceful no-op. Best-effort - the
+        // record already landed durably, so scratch reclamation may never fail a recorded result.
+        reclaim_spawn_scratch(&loc, &prior, &res.id);
+        Ok(())
+    })
 }
 
 /// Reclaim the per-spawn scratch dir [`spawn_scratch_path`] assigned spawn `spawn_id`,
@@ -3022,7 +3371,8 @@ fn print_run_state(rs: &RunState, base: &str) {
 
 /// The halt line a run entry prints after its run state (spec 115): `halted: <reason>` when the
 /// conductor returned a halt reason (the budget breaker's, else a plan-critique spec-defect
-/// stop's), `None` on any other stop. The text form of `rigger step`'s `halted` key.
+/// stop's), `None` on any other stop. The text form of the `halted` key a `rigger step` pass
+/// stamps; a held step runs no pass.
 fn halted_line(rs: &RunState) -> Option<String> {
     rs.budget_halt
         .as_ref()
@@ -3824,17 +4174,24 @@ mod tests {
     #[test]
     fn reclaim_run_scratch_removes_the_run_level_areas_and_spares_per_unit_scratch() {
         // spec 34, criterion 3: the terminal-state run teardown reclaims EXACTLY the run-level
-        // shared areas - `agent-scratch`, `agent-live`, and the SHARED build cache
+        // shared areas - `agent-scratch`, `agent-live`, `agent-stream`, and the SHARED build cache
         // (`cargo-target` + `target` directly under the root, the driver's `CARGO_TARGET_DIR`) -
         // and NOTHING else. Per-unit worktrees (`rigger-wt-<slug>`) and per-unit build caches
         // (`cargo-target-<slug>`) are owned by their unit's own terminal reclamation (Worktree::
         // remove / sweep_terminal / the orphan-sweep), never this run-level teardown, so they are
         // SPARED here even though `cargo-target-<slug>` shares the build-cache prefix.
+        const AREAS: [&str; 5] = [
+            "agent-scratch",
+            "agent-live",
+            "agent-stream",
+            "cargo-target",
+            "target",
+        ];
         let root = tempfile::tempdir().unwrap();
         let base = root.path();
 
-        // The four run-level areas the teardown OWNS.
-        for area in ["agent-scratch", "agent-live", "cargo-target", "target"] {
+        // The run-level areas the teardown OWNS.
+        for area in AREAS {
             let dir = base.join(area);
             std::fs::create_dir_all(&dir).unwrap();
             std::fs::write(dir.join("residue.bin"), [0u8; 32]).unwrap();
@@ -3852,7 +4209,7 @@ mod tests {
 
         reclaim_run_scratch(base.to_str().unwrap());
 
-        for area in ["agent-scratch", "agent-live", "cargo-target", "target"] {
+        for area in AREAS {
             assert!(
                 !base.join(area).exists(),
                 "the run teardown must reclaim the run-level {area}"
@@ -3871,6 +4228,43 @@ mod tests {
         // Idempotent + platform-tolerant: a second call over the now-empty root is a graceful
         // no-op (the areas are already gone), never a panic or error.
         reclaim_run_scratch(base.to_str().unwrap());
+    }
+
+    #[test]
+    fn reclaim_run_scratch_leaves_a_critique_runs_entries_in_every_agent_area() {
+        // A critique run shares the scratch root's agent areas with the loop run and reclaims its
+        // own entries on its next call, so a done run's teardown reclaims only the loop run's
+        // entries: a critique still running as the run ends keeps its marker, transcript and
+        // scratch, and no process rooted in them is reaped.
+        const CRITIQUE: &str = "critique-0123456789abcdef";
+        let root = tempfile::tempdir().unwrap();
+        let base = root.path();
+        let areas = [
+            rigger::driver::replay::SPAWN_SCRATCH_SUBDIR,
+            rigger::liveness::MARKER_SUBDIR,
+            claude_code::AGENT_STREAM_SUBDIR,
+        ];
+        for area in areas {
+            for run in ["run-1", CRITIQUE] {
+                let dir = base.join(area).join(run);
+                std::fs::create_dir_all(&dir).unwrap();
+                std::fs::write(dir.join("residue.bin"), [0u8; 32]).unwrap();
+            }
+        }
+
+        reclaim_run_scratch(base.to_str().unwrap());
+
+        for area in areas {
+            let area_dir = base.join(area);
+            assert_eq!(
+                (
+                    area_dir.join("run-1").exists(),
+                    area_dir.join(CRITIQUE).join("residue.bin").exists()
+                ),
+                (false, true),
+                "{area}: the run's entry is reclaimed and the critique's is left to its own next call"
+            );
+        }
     }
 
     #[test]
@@ -4405,5 +4799,187 @@ mod tests {
         // Deliberately un-reaped: `Child`'s Drop neither waits nor kills, matching production -
         // being un-reaped across steps is the whole point of "detached".
         drop(child);
+    }
+
+    // --- Spec 105, LIVENESS: the supervisor beat ---
+
+    /// Mint `run` on `run_log`'s run stream.
+    fn mint_run(run_log: &Store, run: &str) {
+        run_log
+            .append(
+                conductor::STREAM,
+                rigger::eventstore::ExpectedRevision::Any,
+                &[crate::test_support::run_started(run, &[])],
+            )
+            .unwrap();
+    }
+
+    /// The stream of every supervisor beat `progress` holds, oldest first.
+    fn beat_streams(progress: &Store) -> Vec<String> {
+        let everything = rigger::eventstore::Filter {
+            stream_prefix: None,
+        };
+        progress
+            .read_all(0, Direction::Forward, &everything)
+            .unwrap()
+            .into_iter()
+            .filter(|event| event.type_ == rigger::progress::TYPE_SUPERVISOR_BEAT)
+            .map(|event| event.stream)
+            .collect()
+    }
+
+    /// Each beat re-reads the current run: it lands on the run current at that beat, again on a
+    /// run that stands, and nowhere when no run has started. A row mints its run, then beats once;
+    /// its list is every beat on record after that.
+    #[test]
+    fn a_beat_lands_on_the_run_current_at_that_beat() {
+        let run_log = Store::open(":memory:").unwrap();
+        let progress = Store::open(":memory:").unwrap();
+        let (first, newer) = ("progress/run-a", "progress/run-b");
+        for (case, minted, streams) in [
+            ("no run yet", None, vec![]),
+            ("a first run", Some("run-a"), vec![first]),
+            ("the same run again", None, vec![first, first]),
+            ("a newer run", Some("run-b"), vec![first, first, newer]),
+        ] {
+            if let Some(run) = minted {
+                mint_run(&run_log, run);
+            }
+            beat(&run_log, &progress);
+            assert_eq!(beat_streams(&progress), streams, "{case}");
+        }
+    }
+
+    /// A run log that cannot be read names no run to beat on: the beat writes nothing and the
+    /// supervisor stands.
+    #[test]
+    fn a_failed_read_of_the_current_run_writes_no_beat() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("events.db");
+        let run_log = Store::open(db.to_str().unwrap()).unwrap();
+        mint_run(&run_log, "run-a");
+        crate::test_support::drop_the_log(&db);
+        let progress = Store::open(":memory:").unwrap();
+        beat(&run_log, &progress);
+        assert_eq!(beat_streams(&progress), Vec::<String>::new());
+    }
+
+    /// A beat whose write the progress store refuses is ignored: the first tick meets another
+    /// writer's lock past its busy timeout and fails, the thread stands, and the next tick lands
+    /// the one beat on record. The interval outlasts what remains of the lock, and the driven work
+    /// returns on that beat, so no third tick comes.
+    #[test]
+    fn a_failed_beat_write_is_ignored_and_the_next_tick_lands_its_beat() {
+        use crate::test_support::{wait_until_for, with_graph_locked_for};
+
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("progress.db");
+        let progress = Store::open(db.to_str().unwrap()).unwrap();
+        let run_log = Store::open(":memory:").unwrap();
+        mint_run(&run_log, "run-a");
+        let landed = with_graph_locked_for(&db, || {
+            beating(
+                &run_log,
+                &progress,
+                std::time::Duration::from_secs(3),
+                || wait_until_for(800, || !beat_streams(&progress).is_empty()),
+            )
+        });
+        assert!(landed, "the tick after the refused one lands its beat");
+        assert_eq!(beat_streams(&progress), vec!["progress/run-a"]);
+    }
+
+    /// spec 105, RESUME BY SESSION: a start's reconciliation reaps the dir of each open launch that
+    /// names one, under the project's scratch root and while that launch still stands open, so a
+    /// crash ahead of the close re-reaps at the next start, then closes every open launch
+    /// `interrupted` with no class. A project with no scratch root (a repo-less run) has no root to
+    /// authorize a reap against, and a launch naming no dir has nothing to reap, so neither reaches
+    /// the reaper.
+    #[test]
+    fn a_reconciliation_reaps_each_named_dir_under_the_scratch_root_ahead_of_its_close() {
+        use rigger::progress::{SpawnLaunched, ENDED_INTERRUPTED};
+        use std::cell::RefCell;
+        const ROOT: &str = "/scratch";
+        const DIR: &str = "/scratch/agent-scratch/run-a/u1";
+        let launches = [
+            ("run-a", "u1/implementer#0", DIR),
+            ("run-b", "u2/implementer#0", ""),
+        ];
+        for (name, scratch, reaped) in [
+            (
+                "a scratch root",
+                Some(ROOT),
+                vec![(DIR.to_string(), ROOT.to_string(), true)],
+            ),
+            ("no scratch root", None, Vec::new()),
+        ] {
+            let progress = Store::open(":memory:").unwrap();
+            let opened: Vec<SpawnLaunched> = launches
+                .iter()
+                .map(|&(run, spawn, dir)| {
+                    let open = SpawnLaunched {
+                        spawn: spawn.into(),
+                        launch: 0,
+                        session_id: format!("s-{run}"),
+                        started: 1,
+                        dir: dir.into(),
+                        ..SpawnLaunched::default()
+                    };
+                    rigger::progress_store::record_launch(&progress, run, &open).unwrap();
+                    open
+                })
+                .collect();
+            // The fake reaper records each call with whether the launch naming its dir still
+            // stands open in the store as it is called.
+            let reaps = RefCell::new(Vec::new());
+            let reap = |dir: &Path, root: &Path| {
+                let every_run = Filter {
+                    stream_prefix: Some(progress::STREAM.to_string()),
+                };
+                let events = progress
+                    .read_all(0, Direction::Forward, &every_run)
+                    .unwrap();
+                let open = progress::open_launches(&events)
+                    .iter()
+                    .any(|(_, launch)| Path::new(&launch.dir) == dir);
+                reaps.borrow_mut().push((
+                    dir.display().to_string(),
+                    root.display().to_string(),
+                    open,
+                ));
+            };
+
+            let reconciled =
+                reconcile_open_launches(&progress, scratch, &reap).map_err(|e| e.to_string());
+
+            let records = |run: &str| -> Vec<SpawnLaunched> {
+                progress::read_run(&progress, run)
+                    .unwrap()
+                    .iter()
+                    .map(|e| serde_json::from_slice(&e.data).unwrap())
+                    .collect()
+            };
+            let ran = |open: &SpawnLaunched| {
+                let closed = SpawnLaunched::closed(
+                    open.spawn.clone(),
+                    0,
+                    open.session_id.clone(),
+                    ENDED_INTERRUPTED,
+                    "",
+                );
+                vec![open.clone(), closed]
+            };
+            assert_eq!(
+                (
+                    reconciled,
+                    reaps.into_inner(),
+                    records("run-a"),
+                    records("run-b")
+                ),
+                (Ok(()), reaped, ran(&opened[0]), ran(&opened[1])),
+                "{name}: each named dir is reaped while its launch stands open, then every launch \
+                 closes interrupted"
+            );
+        }
     }
 }

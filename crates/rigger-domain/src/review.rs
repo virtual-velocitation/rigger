@@ -7,6 +7,7 @@ use std::path::{Component, Path, PathBuf};
 
 use serde_json::Value;
 
+use crate::agent::SPAWN_BOUND_TOOLS;
 use crate::config::{ReviewPanel, ReviewStep};
 use crate::contextgraph::query::referenced_id;
 use crate::contextgraph::{TYPE_DECISION_MADE, TYPE_REVIEW_FINDING};
@@ -356,6 +357,15 @@ pub const CRITIC_TOOLS: [&str; 5] = [
     "mcp__rigger__rigger_peers",
 ];
 
+/// Every editing tool, each with the `tool_input` field naming the path it writes: the tools a
+/// spawn's write guard matches and judges by that path, and the critic is denied.
+pub const EDITING_TOOLS: [(&str, &str); 4] = [
+    ("Edit", "file_path"),
+    ("MultiEdit", "file_path"),
+    ("Write", "file_path"),
+    ("NotebookEdit", "notebook_path"),
+];
+
 /// The tools the critic is denied, whatever the operator's own settings allow (a deny wins over
 /// every allow source): every tool that builds, records or edits - the shell, the fan-out tools,
 /// the search tool the critic reads through the graph instead, every editing tool, and the
@@ -365,13 +375,13 @@ pub const CRITIC_DENIED_TOOLS: [&str; 11] = [
     "Agent",
     "Task",
     "Grep",
-    "Edit",
-    "MultiEdit",
-    "Write",
-    "NotebookEdit",
-    "mcp__rigger__rigger_emit",
-    "mcp__rigger__rigger_progress",
-    "mcp__rigger__rigger_scratch",
+    EDITING_TOOLS[0].0,
+    EDITING_TOOLS[1].0,
+    EDITING_TOOLS[2].0,
+    EDITING_TOOLS[3].0,
+    SPAWN_BOUND_TOOLS[0],
+    SPAWN_BOUND_TOOLS[1],
+    SPAWN_BOUND_TOOLS[2],
 ];
 
 /// The `by` a critique finding's graph copy carries.
@@ -1606,5 +1616,18 @@ mod tests {
                 "adjudicator_roster({lenses:?}, {adversary:?})"
             );
         }
+    }
+
+    /// Every recording tool of the spawn's own server is on the critic's deny list: the list
+    /// names them by position, so a tool [`SPAWN_BOUND_TOOLS`] gains past those positions turns
+    /// this red until the list names it too.
+    #[test]
+    fn every_spawn_bound_tool_is_denied_to_the_critic() {
+        let allowed: Vec<&str> = SPAWN_BOUND_TOOLS
+            .iter()
+            .copied()
+            .filter(|t| !CRITIC_DENIED_TOOLS.contains(t))
+            .collect();
+        assert_eq!(allowed, Vec::<&str>::new());
     }
 }

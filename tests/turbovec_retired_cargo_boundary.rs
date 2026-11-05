@@ -29,37 +29,24 @@
 //! so it compiles and runs identically in the default and the `--no-default-features`
 //! lanes, and is a real member of each lane's test battery.
 
+mod common;
+
 use std::collections::BTreeSet;
-use std::path::Path;
-use std::process::{Command, Output};
+use std::process::Output;
 
 /// Crate names that existed ONLY to serve the retired embedding grounder: the embedding
 /// engine (`turbovec`, `fastembed`) and the ONNX Runtime stack (`ort`, `ort-sys`). After
 /// the diet none of these may appear in the resolved dependency tree of either lane.
 const RETIRED_CRATES: &[&str] = &["turbovec", "fastembed", "ort", "ort-sys"];
 
-/// Run `cargo <args>` with the crate root as the working directory so the resolver reads
-/// THIS crate's committed manifest regardless of the process CWD (integration tests may run
-/// from anywhere). The cargo binary is the one that built this test - `env!("CARGO")` is set
-/// by cargo at build time and always points at a real cargo - so the test needs nothing on
-/// `PATH`. `--offline` keeps it hermetic: the resolver reads the warm local cache the build
-/// already populated and never reaches the network.
+/// `cargo tree <args>` through [`common::repo::cargo_tree`], which reads THIS crate's
+/// committed manifest regardless of the process CWD (integration tests may run from
+/// anywhere). `--offline` keeps it hermetic: the resolver reads the warm local cache the build
+/// already populated and never reaches the network. Its `--prefix none` rendering is the one
+/// `crate_names` parses: PR #27's CI broke a glyph parse down to 4 tokens, and only the
+/// anti-vacuous guard caught it.
 fn cargo(args: &[&str]) -> Output {
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let cargo_bin = env!("CARGO");
-    Command::new(cargo_bin)
-        .current_dir(Path::new(manifest_dir))
-        .arg("tree")
-        .arg("--offline")
-        // `--prefix none` prints bare `name vX.Y.Z` lines instead of tree glyphs, the one
-        // rendering that is stable across cargo versions: PR #27's CI ran a newer stable
-        // whose glyph rendering broke `crate_names` down to 4 tokens, and only the
-        // anti-vacuous guard caught it. Parse the format made for parsing.
-        .arg("--prefix")
-        .arg("none")
-        .args(args)
-        .output()
-        .unwrap_or_else(|e| panic!("failed to spawn `{cargo_bin} tree {args:?}`: {e}"))
+    common::repo::cargo_tree(&[&["--offline"], args].concat())
 }
 
 /// The set of crate names in a `cargo tree` listing. Each line is optional tree-drawing

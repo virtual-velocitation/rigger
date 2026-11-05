@@ -169,8 +169,9 @@ const OUTER_WALL_CLOCK_SEC = Number(A.outer_wall_clock) > 0 ? Number(A.outer_wal
 // dropped `marker_path` and `cargo_target_dir` on 2026-09-15, costing a worker its heartbeat
 // and its build location). Other optional fields are omitted when empty and tolerated.
 // `halted` is the run's HALT reason: present (distinct from a clean `done`) when the run stopped
-// with work undone - the spawn-budget breaker (Gap 13), else a plan-critique spec-defect stop
-// (amend the spec and relaunch), else a hung agent - so the driver stops LOUDLY on it.
+// with work undone - a hold (`rigger step` launched nothing), else the spawn-budget breaker
+// (Gap 13), else a plan-critique spec-defect stop (amend the spec and relaunch), else a hung
+// agent - so the driver stops LOUDLY on it.
 // `error` is the courier's own out-of-band channel: if `rigger step` itself fails, the
 // courier reports the message here rather than fabricating a wave.
 // Top level rejects unknown fields (additionalProperties: false): a courier that
@@ -516,8 +517,8 @@ function workerLabel(req) {
 // runWorker and its liveness helpers are defined below (the helpers first, so runWorker can
 // reference them).
 
-// livenessAgeSeconds asks RIGGER for a spawn's liveness age - the whole seconds since it last
-// touched its marker - by COURIERING `rigger status --json` (spec 14) and reading this spawn's
+// livenessAgeSeconds asks RIGGER for a spawn's liveness age - the whole seconds its marker sat
+// untouched outside any hold - by COURIERING `rigger status --json` (spec 14) and reading its
 // `liveness_age_s` from the presented view. rigger stats the marker in Rust and PRESENTS the
 // age, so the driver consumes rigger's consolidated view instead of reconstructing one file's
 // mtime with a raw `stat` (the RETIRED haiku probe). Returns the integer age, or null when the
@@ -980,7 +981,8 @@ for (;;) {
   }
 
   // 3. A HALT is a LOUD stop, never a clean completion (Gap 13). `rigger step` reports it as a
-  //    `halted` reason distinct from `done` convergence: the budget breaker stopped the run with
+  //    `halted` reason distinct from `done` convergence: the run is held and the step launched
+  //    nothing (a release and a relaunch resume it), else the budget breaker stopped the run with
   //    ready work unscheduled (a resume needs a raised budget), else a plan-critique gate stopped
   //    it on a spec defect (amend the spec and relaunch), else an agent hung. Drain whatever
   //    this (or an earlier) step already parked - never abandon a worker mid-session - then

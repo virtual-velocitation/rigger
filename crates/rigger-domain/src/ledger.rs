@@ -4,11 +4,14 @@
 //! this projection and the context graph.
 
 use std::collections::BTreeMap;
+use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
 
-use crate::eventstore::Event;
-use crate::run::TYPE_RUN_STARTED;
+use crate::eventstore::{Event, Revision};
+use crate::run::{
+    RunHeld, RunReleased, HOLD_BY_OPERATOR, TYPE_RUN_HELD, TYPE_RUN_RELEASED, TYPE_RUN_STARTED,
+};
 
 /// Status of a unit of work, over its lifecycle
 /// pending -> grounding -> red -> green -> verified -> reviewed -> integrated.
@@ -216,14 +219,146 @@ pub struct RunState {
     /// same `RunStarted` body. Empty on a legacy run (predates this field) or a no-spec
     /// workflow run; the head-name derivation then degrades to the run-short-id alone.
     pub spec_path: String,
+    /// The run's open hold: `Some` while a [`TYPE_RUN_HELD`] has no later
+    /// [`TYPE_RUN_RELEASED`] in the slice [`project`] was handed.
+    pub hold: Option<Hold>,
 }
 
-/// One of the watching-discipline signals `AttentionEntry::kind` carries: spec 69's five, and
-/// spec 112's spec-defect stop ([`ATTENTION_SPEC_DEFECT`]). Closed vocabulary (never inferred
+/// A run's open hold, folded from the `RunHeld` events since its last `RunReleased`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Hold {
+    /// When the hold started: the valid time of its first `RunHeld` in log order.
+    pub since: SystemTime,
+    /// Whether this is an operator hold: any of its `RunHeld` events is by the operator.
+    pub operator: bool,
+    /// Its latest `RunHeld`, whose cause is the hold's cause.
+    pub latest: RunHeld,
+    /// The run-stream revision of [`Hold::latest`]: a probe of the hold releases it only while
+    /// its latest `RunHeld` is still the one at this revision.
+    pub revision: Revision,
+}
+
+impl Hold {
+    /// The hold `open` (`None` when the run is unheld) becomes on the [`TYPE_RUN_HELD`] `e`: the
+    /// one fold of a `RunHeld` onto a hold, which [`project`] and [`holds`] both read a hold by.
+    pub fn on_held(open: Option<Hold>, e: &Event) -> Result<Hold, serde_json::Error> {
+        let latest: RunHeld = serde_json::from_slice(&e.data)?;
+        Ok(Hold {
+            since: open.as_ref().map_or(e.valid_from, |hold| hold.since),
+            operator: open.is_some_and(|hold| hold.operator) || latest.by == HOLD_BY_OPERATOR,
+            latest,
+            revision: e.revision,
+        })
+    }
+
+    /// Whether the host or probe `RunHeld` `body` says anything to the hold `open` (`None` when
+    /// the run is unheld): the one transition rule a sighting and a failed probe append by. On an
+    /// unheld run it holds the run, whatever its cause; on an operator hold, on a hold of its own
+    /// cause and as a cause needing no person it says nothing; otherwise it moves the hold's cause.
+    pub fn moved_by(open: Option<&Hold>, body: &RunHeld) -> bool {
+        open.is_none_or(|hold| {
+            !hold.operator && body.needs_person && hold.latest.cause != body.cause
+        })
+    }
+
+    /// What the hold reads as to a person, `<cause> - <action>` of its latest `RunHeld`, or its
+    /// cause alone when that action is empty, as an operator hold held with an empty reason has:
+    /// the one text the HELD line of `rigger status`, the [`ATTENTION_HELD`] entry, the step a
+    /// held run prints (`spawn::step_of_hold`) and the note a relaunched session reads name a
+    /// hold by.
+    pub fn reason(&self) -> String {
+        let latest = &self.latest;
+        if latest.action.is_empty() {
+            latest.cause.clone()
+        } else {
+            format!("{} - {}", latest.cause, latest.action)
+        }
+    }
+}
+
+/// One hold of a run as [`holds`] walks it, from the `RunHeld` that opened it to the
+/// `RunReleased` that ended it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HoldSpan {
+    /// The hold as [`Hold::on_held`] folds its `RunHeld` events, `None` when one of them does not
+    /// decode: each reader of the walk decides what a hold it cannot read means to it.
+    pub hold: Option<Hold>,
+    /// When the hold started: the valid time of its first `RunHeld`, whether or not it decodes.
+    pub since: SystemTime,
+    /// The run-stream revision of its first `RunHeld`.
+    pub first: Revision,
+    /// The valid time of its latest `RunHeld`.
+    pub latest_at: SystemTime,
+    /// The `RunReleased` that ended it, `None` while the hold is open.
+    pub release: Option<HoldRelease>,
+}
+
+/// The `RunReleased` that ended a [`HoldSpan`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HoldRelease {
+    /// Its valid time.
+    pub at: SystemTime,
+    /// Its run-stream revision.
+    pub revision: Revision,
+    /// The `held_for_s` it carries, `None` when its body does not decode.
+    pub held_for_s: Option<u64>,
+}
+
+/// A run's holds in log order, from one run's slice of the run stream (spec 105 THE EVENTS): a
+/// hold opens at a `RunHeld` while none is open, takes each later `RunHeld` through
+/// [`Hold::on_held`] and ends at the next `RunReleased`; a `RunReleased` with no hold open ends
+/// nothing and is never read. The one walk of when a hold starts and ends, which the probe's delay
+/// ([`crate::hold_probe::owed_probe`]), the hold intervals liveness leaves out of a spawn's
+/// silence, [`hold_attention`] and the console's dock read; [`RunState::apply`] steps the open
+/// hold through the same two arms one event at a time.
+pub fn holds(run_events: &[Event]) -> Vec<HoldSpan> {
+    let mut spans: Vec<HoldSpan> = Vec::new();
+    for e in run_events {
+        let open = spans.last_mut().filter(|span| span.release.is_none());
+        match (e.type_.as_str(), open) {
+            (TYPE_RUN_HELD, Some(open)) => {
+                open.hold = open
+                    .hold
+                    .take()
+                    .and_then(|hold| Hold::on_held(Some(hold), e).ok());
+                open.latest_at = e.valid_from;
+            }
+            (TYPE_RUN_HELD, None) => spans.push(HoldSpan {
+                hold: Hold::on_held(None, e).ok(),
+                since: e.valid_from,
+                first: e.revision,
+                latest_at: e.valid_from,
+                release: None,
+            }),
+            (TYPE_RUN_RELEASED, Some(open)) => {
+                open.release = Some(HoldRelease {
+                    at: e.valid_from,
+                    revision: e.revision,
+                    held_for_s: e
+                        .decode::<RunReleased>()
+                        .map(|released| released.held_for_s),
+                });
+            }
+            _ => {}
+        }
+    }
+    spans
+}
+
+/// One of the watching-discipline signals `AttentionEntry::kind` carries: spec 69's five,
+/// spec 112's spec-defect stop ([`ATTENTION_SPEC_DEFECT`]) and spec 105's hold and release
+/// ([`ATTENTION_HELD`], [`ATTENTION_RELEASED`]). Closed vocabulary (never inferred
 /// downstream) - kept as `&str` constants rather than an enum so the wire value and the Rust
 /// match arm are the same literal, with no separate `as_str`/`parse` translation to drift out
 /// of sync.
 pub const ATTENTION_ESCALATED: &str = "escalated";
+/// The run is held (spec 105): run-scoped, its detail the hold's [`Hold::reason`], one per hold
+/// ([`hold_attention`]); the console's dock lists it for a hold whose latest `RunHeld` needs a
+/// person.
+pub const ATTENTION_HELD: &str = "held";
+/// A hold ended (spec 105): run-scoped, its detail how long the hold stood, one per released hold
+/// ([`hold_attention`]).
+pub const ATTENTION_RELEASED: &str = "released";
 /// A plan-critique gate stopped the run on a spec defect (spec 112, criterion 5): listed for
 /// the stopped unit in place of its [`ATTENTION_ESCALATED`] entry, its detail the stop's reason
 /// ([`AttentionEntry::escalation`]).
@@ -233,30 +368,53 @@ pub const ATTENTION_REJECT_RECURRENCE: &str = "reject-recurrence";
 pub const ATTENTION_BUDGET_FINAL_TENTH: &str = "budget-final-tenth";
 pub const ATTENTION_STALLED_FRONTIER: &str = "stalled-frontier";
 
-/// The canonical kind order (spec 69, criterion 5; spec 112, criterion 5): escalated,
-/// spec-defect, halted, reject-recurrence, budget-final-tenth, stalled-frontier.
-/// `conductor::compute_attention` and the console's dock sort their entries by it (a STABLE
-/// sort, so entries of the SAME kind keep their lexical unit order); `rigger step` (main.rs)
-/// re-sorts `attention` by it after appending the hung-liveness half of signal 2, which
+/// The canonical kind order (spec 69, criterion 5; spec 112, criterion 5; spec 105): held,
+/// escalated, spec-defect, halted, reject-recurrence, budget-final-tenth, stalled-frontier,
+/// released. `conductor::compute_attention` and the console's dock sort their entries by it (a
+/// STABLE sort, so entries of the SAME kind keep their lexical unit order); `rigger step`
+/// (main.rs) re-sorts `attention` by it after appending the hung-liveness half of signal 2, which
 /// `main.rs` computes separately and merges in - see `compute_attention`'s own doc comment for
 /// why. An unknown kind (never produced today) sorts last rather than panicking.
 pub fn attention_kind_rank(kind: &str) -> usize {
-    const ORDER: [&str; 6] = [
+    const ORDER: [&str; 8] = [
+        ATTENTION_HELD,
         ATTENTION_ESCALATED,
         ATTENTION_SPEC_DEFECT,
         ATTENTION_HALTED,
         ATTENTION_REJECT_RECURRENCE,
         ATTENTION_BUDGET_FINAL_TENTH,
         ATTENTION_STALLED_FRONTIER,
+        ATTENTION_RELEASED,
     ];
     ORDER.iter().position(|k| *k == kind).unwrap_or(usize::MAX)
+}
+
+/// The attention a run's holds yield (spec 105, WHAT A PERSON SEES), in log order, from the holds
+/// [`holds`] walks in one run's slice of the run stream: one [`ATTENTION_HELD`] entry per hold,
+/// keyed by its first `RunHeld` and naming the [`Hold::reason`] of its latest, so a repeated or
+/// upgraded `RunHeld` adds none; and one [`ATTENTION_RELEASED`] entry per release of an open
+/// hold, reading the `held_for_s` its `RunReleased` carries. A `RunReleased` with no open hold
+/// ends nothing and adds nothing. Each hold is one span, so an open hold's entry is the last.
+/// `None` when a `RunHeld`, or the `RunReleased` of an open hold, does not decode. The console's
+/// dock reads it from the same walk it reads the open hold from.
+pub fn hold_attention(spans: &[HoldSpan]) -> Option<Vec<AttentionEntry>> {
+    let mut entries = Vec::new();
+    for span in spans {
+        let detail = format!("held - {}", span.hold.as_ref()?.reason());
+        entries.push(AttentionEntry::run_scoped(ATTENTION_HELD, detail));
+        if let Some(release) = &span.release {
+            let detail = format!("released after {}s", release.held_for_s?);
+            entries.push(AttentionEntry::run_scoped(ATTENTION_RELEASED, detail));
+        }
+    }
+    Some(entries)
 }
 
 /// One push-side anomaly a step surfaced (spec 69): the wire carries what an unattended
 /// run needs read, so an orchestrator never has to poll the log for it. `kind` is one of
 /// the `ATTENTION_*` constants above; `unit` names the subject for a unit-scoped kind
-/// and is empty (omitted from the wire) for a run-scoped one (`halted`,
-/// `budget-final-tenth`); `detail` is the human-readable why, so a later criterion's
+/// and is empty (omitted from the wire) for a run-scoped one (`held`, `halted`,
+/// `budget-final-tenth`, `released`); `detail` is the human-readable why, so a later criterion's
 /// narrator line needs no further log lookup to render one line naming event + unit.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct AttentionEntry {
@@ -280,7 +438,8 @@ impl AttentionEntry {
         }
     }
 
-    /// A run-scoped entry (halted / budget-final-tenth) - no single unit is the subject.
+    /// A run-scoped entry (held / halted / budget-final-tenth / released) - no single unit is the
+    /// subject.
     pub fn run_scoped(kind: &'static str, detail: impl Into<String>) -> Self {
         Self::unit_scoped(kind, String::new(), detail)
     }
@@ -597,13 +756,17 @@ impl RunState {
                 // SAME body every other lifecycle event decodes from - no metadata read, no
                 // second traversal. `events` callers already pass here is the run-scoped
                 // slice (`runscope::current_run`), so exactly one RunStarted is present; a
-                // caller that instead hands the whole unscoped stream still folds correctly
-                // (last RunStarted wins, matching `runscope::current_run_id`'s own "latest"
-                // rule).
+                // caller that instead hands the whole unscoped stream still folds the run id
+                // and spec correctly (last RunStarted wins, matching
+                // `runscope::current_run_id`'s own "latest" rule), but not the hold: a
+                // RunStarted leaves `hold` standing, so a hold an earlier run left open
+                // carries into the new run.
                 let p: RunStartedFold = serde_json::from_slice(&e.data)?;
                 self.run_id = p.run;
                 self.spec_path = p.spec;
             }
+            TYPE_RUN_HELD => self.hold = Some(Hold::on_held(self.hold.take(), e)?),
+            TYPE_RUN_RELEASED => self.hold = None,
             TYPE_UNIT_STARTED => {
                 let p: UnitStarted = serde_json::from_slice(&e.data)?;
                 let u = self.unit(&p.id);
@@ -822,7 +985,10 @@ pub fn project(events: &[Event]) -> Result<RunState, serde_json::Error> {
 
 #[cfg(test)]
 mod tests {
+    use std::time::{Duration, UNIX_EPOCH};
+
     use super::*;
+    use crate::run::current_run;
     use crate::test_support::ev;
 
     #[test]
@@ -1253,5 +1419,336 @@ mod tests {
         ])
         .unwrap();
         assert!(r.manual_review.is_empty());
+    }
+
+    /// THE EVENTS: a run is held while a `RunHeld` has no later `RunReleased`, over the current
+    /// run's slice. The hold starts at its earliest `RunHeld` since the last `RunReleased`, its
+    /// cause and its revision are its latest's, and it is an operator hold when any of its
+    /// `RunHeld` events is by the operator. Each row folds as every production reader does,
+    /// `project` over the slice, each event at its index's revision.
+    #[test]
+    fn the_open_hold_folds_from_the_current_run_by_the_rules_of_the_events() {
+        let host = RunHeld {
+            cause: "api-unstable".to_string(),
+            detail: "overloaded".to_string(),
+            action: "wait for the canary".to_string(),
+            needs_person: false,
+            by: "host".to_string(),
+            model: "m1".to_string(),
+        };
+        let probe = RunHeld {
+            detail: "still overloaded".to_string(),
+            needs_person: true,
+            by: "probe".to_string(),
+            model: "m2".to_string(),
+            ..host.clone()
+        };
+        let operator = RunHeld {
+            cause: "operator".to_string(),
+            detail: "paused by hand".to_string(),
+            action: "rigger release".to_string(),
+            needs_person: true,
+            by: "operator".to_string(),
+            model: String::new(),
+        };
+        let held =
+            |body: &RunHeld, secs: u64| (TYPE_RUN_HELD, serde_json::to_string(body).unwrap(), secs);
+        let released = |secs: u64| {
+            let body = r#"{"by":"probe","held_for_s":60}"#.to_string();
+            (TYPE_RUN_RELEASED, body, secs)
+        };
+        let started = |secs: u64| (TYPE_RUN_STARTED, r#"{"run":"r2"}"#.to_string(), secs);
+        let open = |secs: u64, operator: bool, latest: &RunHeld, revision: i64| {
+            Some(Hold {
+                since: UNIX_EPOCH + Duration::from_secs(secs),
+                operator,
+                latest: latest.clone(),
+                revision,
+            })
+        };
+
+        let cases = vec![
+            ("no event leaves the run unheld", vec![], None),
+            ("a release alone holds nothing", vec![released(1)], None),
+            (
+                "the first RunHeld opens the hold at its own time",
+                vec![held(&host, 5)],
+                open(5, false, &host, 0),
+            ),
+            (
+                "a later RunHeld keeps the start and takes the cause",
+                vec![held(&host, 5), held(&probe, 9)],
+                open(5, false, &probe, 1),
+            ),
+            (
+                "an unrelated event leaves the hold as it stood",
+                vec![
+                    held(&host, 5),
+                    (TYPE_UNIT_STARTED, r#"{"id":"u"}"#.to_string(), 7),
+                ],
+                open(5, false, &host, 0),
+            ),
+            (
+                "a sparse body is still a hold",
+                vec![(TYPE_RUN_HELD, "{}".to_string(), 5)],
+                open(5, false, &RunHeld::default(), 0),
+            ),
+            (
+                "an operator RunHeld alone is an operator hold",
+                vec![held(&operator, 5)],
+                open(5, true, &operator, 0),
+            ),
+            (
+                "an operator RunHeld upgrades a host hold, keeping its start",
+                vec![held(&host, 5), held(&operator, 9)],
+                open(5, true, &operator, 1),
+            ),
+            (
+                "a host RunHeld after an operator one stays an operator hold",
+                vec![held(&operator, 5), held(&host, 9)],
+                open(5, true, &host, 1),
+            ),
+            (
+                "two operator RunHeld events stay an operator hold",
+                vec![held(&operator, 5), held(&operator, 9)],
+                open(5, true, &operator, 1),
+            ),
+            (
+                "a release ends the hold",
+                vec![held(&host, 5), released(9)],
+                None,
+            ),
+            (
+                "a release ends every RunHeld of the hold, an operator's too",
+                vec![held(&operator, 5), held(&host, 7), released(9)],
+                None,
+            ),
+            (
+                "a RunHeld after a release starts a new hold at its own time",
+                vec![held(&host, 5), released(7), held(&probe, 9)],
+                open(9, false, &probe, 2),
+            ),
+            (
+                "an operator hold does not outlive its release",
+                vec![held(&operator, 5), released(7), held(&host, 9)],
+                open(9, false, &host, 2),
+            ),
+            (
+                "the mint's release leaves the new run unheld",
+                vec![held(&host, 3), released(5), started(6)],
+                None,
+            ),
+            (
+                "a RunHeld ahead of the mint's RunStarted stays in the old slice",
+                vec![held(&host, 3), released(5), held(&probe, 6), started(7)],
+                None,
+            ),
+            (
+                "the new run's own RunHeld holds it, carrying nothing from the old slice",
+                vec![held(&operator, 3), started(5), held(&host, 7)],
+                open(7, false, &host, 2),
+            ),
+        ];
+        let log_of = |log: Vec<(&str, String, u64)>| -> Vec<Event> {
+            log.into_iter()
+                .enumerate()
+                .map(|(revision, (type_, body, secs))| {
+                    let mut event =
+                        ev(type_, &body).with_valid_from(UNIX_EPOCH + Duration::from_secs(secs));
+                    event.revision = revision as i64;
+                    event
+                })
+                .collect()
+        };
+        for (name, log, want) in cases {
+            assert_eq!(
+                project(current_run(&log_of(log))).unwrap().hold,
+                want,
+                "{name}"
+            );
+        }
+        // Unsliced, a RunStarted leaves the hold standing: an earlier run's open hold carries
+        // into the new run unless the reader slices with `current_run`, as every production
+        // reader does.
+        let unsliced = log_of(vec![held(&operator, 3), started(5)]);
+        assert_eq!(
+            project(&unsliced).unwrap().hold,
+            open(3, true, &operator, 0)
+        );
+    }
+
+    /// A `RunHeld` whose body is the wrong shape fails the fold, as every event whose body the
+    /// fold decodes does, never a silently dropped hold (a `RunReleased`'s body is never read).
+    #[test]
+    fn a_run_held_of_the_wrong_shape_fails_the_fold() {
+        let said = project(&[ev(TYPE_RUN_HELD, r#"{"by":1}"#)])
+            .err()
+            .map(|e| e.to_string());
+        assert_eq!(
+            said.as_deref(),
+            Some("invalid type: integer `1`, expected a string at line 1 column 7")
+        );
+    }
+
+    /// WHAT A PERSON SEES: the attention a run's holds yield is one `held` entry per hold, keyed
+    /// by its first `RunHeld` and naming its latest cause and action, and one `released` entry
+    /// reading its release's `held_for_s`, in log order; a repeated or upgraded `RunHeld` adds no
+    /// entry, a release with no open hold adds nothing, and a hold event the fold must read and
+    /// cannot decode yields no attention at all.
+    #[test]
+    fn hold_attention_yields_one_held_and_one_released_per_hold() {
+        let held = |cause: &str, action: &str| {
+            let body = format!(r#"{{"cause":"{cause}","action":"{action}","by":"host"}}"#);
+            ev(TYPE_RUN_HELD, &body)
+        };
+        let released = |held_for_s: u64| {
+            let body = format!(r#"{{"by":"probe","held_for_s":{held_for_s}}}"#);
+            ev(TYPE_RUN_RELEASED, &body)
+        };
+        let held_entry =
+            |detail: &str| AttentionEntry::run_scoped(ATTENTION_HELD, format!("held - {detail}"));
+        let released_entry = |detail: &str| AttentionEntry::run_scoped(ATTENTION_RELEASED, detail);
+        let unstable = || held("api-unstable", "wait for the canary");
+        let unstable_entry = || held_entry("api-unstable - wait for the canary");
+        let auth = || held("auth", "log in again");
+        let auth_entry = || held_entry("auth - log in again");
+
+        let cases = vec![
+            ("no hold event yields nothing", vec![], Some(vec![])),
+            (
+                "an open hold yields held alone",
+                vec![unstable()],
+                Some(vec![unstable_entry()]),
+            ),
+            (
+                "a repeated RunHeld adds no entry",
+                vec![unstable(), unstable()],
+                Some(vec![unstable_entry()]),
+            ),
+            (
+                "an upgraded RunHeld adds no entry, the hold's one entry naming its latest cause",
+                vec![unstable(), auth()],
+                Some(vec![auth_entry()]),
+            ),
+            (
+                "a released hold yields held then released",
+                vec![unstable(), released(60)],
+                Some(vec![unstable_entry(), released_entry("released after 60s")]),
+            ),
+            (
+                "two holds yield two of each, each keyed by its first RunHeld",
+                vec![
+                    unstable(),
+                    auth(),
+                    released(60),
+                    ev(TYPE_UNIT_STARTED, r#"{"id":"u"}"#),
+                    unstable(),
+                    released(120),
+                ],
+                Some(vec![
+                    auth_entry(),
+                    released_entry("released after 60s"),
+                    unstable_entry(),
+                    released_entry("released after 120s"),
+                ]),
+            ),
+            (
+                "a release with no open hold adds nothing",
+                vec![released(5), unstable(), released(60), released(90)],
+                Some(vec![unstable_entry(), released_entry("released after 60s")]),
+            ),
+            (
+                "a release with no open hold is never read",
+                vec![ev(TYPE_RUN_RELEASED, r#"{"held_for_s":"x"}"#)],
+                Some(vec![]),
+            ),
+            (
+                "a RunHeld that does not decode yields no attention",
+                vec![unstable(), ev(TYPE_RUN_HELD, r#"{"by":1}"#)],
+                None,
+            ),
+            (
+                "an open hold's release that does not decode yields no attention",
+                vec![unstable(), ev(TYPE_RUN_RELEASED, r#"{"held_for_s":"x"}"#)],
+                None,
+            ),
+        ];
+        for (name, log, want) in cases {
+            assert_eq!(hold_attention(&holds(&log)), want, "{name}");
+        }
+    }
+
+    /// WHAT A PERSON SEES: a hold reads as `<cause> - <action>` of its latest `RunHeld`, and as its
+    /// cause alone when that action is empty, as an operator hold held with an empty reason is.
+    #[test]
+    fn a_hold_reads_as_its_cause_and_action_or_its_cause_alone() {
+        for (cause, action, want) in [
+            ("auth", "log in again", "auth - log in again"),
+            ("operator", "moving quota", "operator - moving quota"),
+            ("operator", "", "operator"),
+        ] {
+            let hold = Hold {
+                since: UNIX_EPOCH,
+                operator: cause == "operator",
+                latest: RunHeld {
+                    cause: cause.to_string(),
+                    action: action.to_string(),
+                    ..RunHeld::default()
+                },
+                revision: 0,
+            };
+            assert_eq!(hold.reason(), want, "{cause} with action {action:?}");
+        }
+    }
+
+    /// THE HOLD TRANSITION RULE: a host or probe `RunHeld` holds an unheld run whatever its cause,
+    /// says nothing to an operator hold, to a hold of its own cause or as a cause needing no
+    /// person, and otherwise moves the hold's cause.
+    #[test]
+    fn a_held_moves_an_open_hold_only_to_another_person_needing_cause() {
+        let open = |cause: &str, operator: bool| Hold {
+            since: UNIX_EPOCH,
+            operator,
+            latest: RunHeld {
+                cause: cause.to_string(),
+                needs_person: true,
+                ..RunHeld::default()
+            },
+            revision: 0,
+        };
+        let held = |cause: &str, needs_person: bool| RunHeld {
+            cause: cause.to_string(),
+            needs_person,
+            ..RunHeld::default()
+        };
+        for (hold, body, moves, case) in [
+            (None, held("rate_limit", false), true, "no hold"),
+            (
+                Some(open("operator", true)),
+                held("auth", true),
+                false,
+                "an operator hold",
+            ),
+            (
+                Some(open("auth", false)),
+                held("auth", true),
+                false,
+                "the same cause",
+            ),
+            (
+                Some(open("auth", false)),
+                held("billing", true),
+                true,
+                "a differing person-needing cause",
+            ),
+            (
+                Some(open("auth", false)),
+                held("rate_limit", false),
+                false,
+                "a differing cause needing no person",
+            ),
+        ] {
+            assert_eq!(Hold::moved_by(hold.as_ref(), &body), moves, "{case}");
+        }
     }
 }

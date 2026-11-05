@@ -13,6 +13,18 @@ use crate::spawn::SpawnRequest;
 /// runtime (the living-DAG / spawnUnit mechanic).
 pub const TYPE_UNIT_PROPOSED: &str = "UnitProposed";
 
+/// The name a headless session sees its live-progress tool under: the spawn-bound `rigger`
+/// server's `rigger_progress`.
+pub const SPAWN_PROGRESS_TOOL: &str = "mcp__rigger__rigger_progress";
+
+/// The recording tools of a spawn's own bound `rigger` server, as a headless session names them:
+/// the tools it records its decisions, its progress and its scratch through.
+pub const SPAWN_BOUND_TOOLS: [&str; 3] = [
+    "mcp__rigger__rigger_emit",
+    SPAWN_PROGRESS_TOOL,
+    "mcp__rigger__rigger_scratch",
+];
+
 #[derive(Debug, thiserror::Error)]
 #[error("conductor: {0}")]
 pub struct Error(pub String);
@@ -43,19 +55,26 @@ pub struct AgentResult {
     /// unknown. The replay driver surfaces it from the worker's `rigger result --meta`
     /// report ([`SpawnResult::meta_str`](crate::spawn::SpawnResult::meta_str));
     /// the conductor copies it onto the spawn's unit events via [`META_MODEL_RESOLVED`].
-    /// The blocking drivers (cli/workflow) do not learn it and leave it empty.
+    /// The headless host reads it off the session's stream; the cli and workflow drivers do not
+    /// learn it and leave it empty.
     pub resolved_model: String,
     /// The Claude Code session this spawn ran as - the id a later attempt or review round of
     /// the same role on the same unit continues with `--resume` ([`SpawnOpts::resumed_from`]).
-    /// The cli host mints it for a fresh launch and keeps the continued one on a resume; the
-    /// conductor records it in the run log beside the spawn. Empty from a driver that runs no
-    /// resumable session (the workflow and replay drivers, a test double), which then leaves
-    /// every later spawn of that role a fresh one.
+    /// A process host mints it for a fresh launch and for the fork a relaunch continues an
+    /// interrupted session as, keeping the continued one on a resume; the headless host answering
+    /// a spawn from the run log carries the session its recorded result names, and the conductor
+    /// records it in the run log beside the spawn. Empty from a driver that runs no resumable
+    /// session (the workflow and replay drivers, a test double), which then leaves every later
+    /// spawn of that role a fresh one.
     pub session_id: String,
-    /// The session this spawn CONTINUED: [`SpawnOpts::resumed_from`] when the host resumed it,
-    /// empty for a fresh launch - including the fallback a host takes when the session it was
-    /// asked to resume no longer exists, so a requested resume that came back empty here is the
-    /// record that the host fell back to a fresh spawn.
+    /// The session the spawn's last launch CONTINUED, a relaunch of an interrupted launch
+    /// included: [`SpawnOpts::resumed_from`] when the host resumed it, and the session the
+    /// interrupted launch ran as when the host relaunched one, forking it into
+    /// [`AgentResult::session_id`], so behind a chain of relaunches, or a relaunch of the
+    /// fallback's fresh launch, it names a session the spawn never asked for. Empty for a fresh
+    /// launch no relaunch followed - including the fallback a host takes when the session it was
+    /// asked to resume no longer exists - and for a spawn the headless host answers from the run
+    /// log, which launches nothing.
     pub resumed_from: String,
 }
 
@@ -64,9 +83,8 @@ pub struct AgentResult {
 pub struct SpawnOpts {
     /// The spawn's DETERMINISTIC id (`{unit}/{role}#{attempt}`, see
     /// [`spawn_id`](crate::spawn::spawn_id)). A stepwise/replay driver keys on it to
-    /// answer an already-recorded spawn from the log or to park an unrecorded one; the
-    /// blocking drivers (cli/workflow) ignore it. Empty for a caller that does not use
-    /// stepwise replay.
+    /// answer an already-recorded spawn from the log or to park an unrecorded one; every other
+    /// driver names the spawn by it. Empty for a caller that does not use stepwise replay.
     pub id: String,
     /// The unit this spawn belongs to - the parked request's `unit` (and the display
     /// label's unit half). Empty when the caller does not park.
@@ -140,16 +158,11 @@ pub struct SpawnOpts {
     /// [`SpawnRequest::reviews`](crate::spawn::SpawnRequest::reviews) for the thin
     /// driver to render inside the action phrase.
     pub reviews: Vec<String>,
-    /// The per-spawn settings JSON (spec 104 criterion 1): the headless host merges rigger's
-    /// session hooks and status line onto it and passes the result as `--settings`. Empty
-    /// means no settings of the spawn's own; the cli/workflow drivers ignore this field.
+    /// The per-spawn settings JSON (spec 104 criterion 1): the stream-json host merges the
+    /// hooks bound to the spawn and rigger's session hooks and status line onto it, the cli
+    /// host the session ones alone, and each passes the result as `--settings`. Empty means no
+    /// settings of the spawn's own; the workflow driver ignores this field.
     pub settings_json: String,
-    /// The 0-based ordinal of this launch within the spawn's current attempt (spec 104
-    /// criterion 1): 0 for the first launch, N for the Nth relaunch after an API-side
-    /// fault (spec 104's own FAULT class) or a hold-release resume (spec 105). Distinct
-    /// from `attempt`, the remediation counter the deterministic id encodes. 0 for the
-    /// cli/workflow drivers, which never relaunch a live session.
-    pub launch: u32,
     /// The session id this launch CONTINUES (`claude -p --resume <session_id>`), empty
     /// for a fresh launch. The conductor sets it on a later attempt or review round of a
     /// role whose earlier spawn on the same unit recorded its session
@@ -207,8 +220,16 @@ pub fn spawn_request(agent: &AgentDef, prompt: &str, opts: &SpawnOpts) -> SpawnR
 }
 
 /// AgentDriver spawns an agent to completion. The agent records events it emits
-/// during its run by calling `emit`, so its decisions reach the log live (the
-/// workflow driver wires emit to an in-process tool the agent calls).
+/// during its run: the workflow and headless drivers' agents record through the `rigger`
+/// MCP server while the spawn runs, so both leave `emit` unused, and the blocking cli
+/// driver replays the emit lines of its agent's stdout through `emit` after the run.
+///
+/// A driver that launches more than once inside one spawn (a resume fallback) launches fresh
+/// only on a run it has proved unheld, reading the hold after the ending. A driver handed no
+/// hold reads none and its fallback stands, so a driver with a fallback sits behind the
+/// held-run decorator (`HeldDriver`) only when it is handed the run's hold. The blocking cli
+/// driver `rigger canary` probes with and the critique host, which is handed no hold sink, are
+/// that no-hold case, and neither sits behind the decorator.
 pub trait AgentDriver: Send + Sync {
     fn spawn(
         &self,
@@ -219,28 +240,29 @@ pub trait AgentDriver: Send + Sync {
     ) -> Result<AgentResult, Error>;
 }
 
-/// The sentinel a stepwise/replay [`AgentDriver`] embeds in its spawn error to signal
-/// that a spawn was PARKED - persisted to the log and awaiting an out-of-process
-/// result - rather than run to completion or genuinely failed. It uses control
+/// The sentinel a parking [`AgentDriver`] embeds in its spawn error to signal
+/// that a spawn was PARKED - left for an out-of-process result or a relaunch
+/// ([`parked_spawn`]) - rather than run to completion or genuinely failed. It uses control
 /// characters no real error text carries, so [`is_parked`] recognizes it even after
 /// the conductor wraps the driver error with stage/agent context (`format!("... {}",
 /// e.0)` keeps the marker as a substring).
 ///
 /// Parking is part of the `AgentDriver` PORT contract, so it lives here beside the
-/// trait: the replay adapter constructs the signal via [`parked_spawn`] and the
+/// trait: a parking adapter constructs the signal via [`parked_spawn`] and the
 /// conductor recognizes it via [`is_parked`], and the use case never has to name the
 /// adapter to tell a park from a failure.
 pub const PARKED_MARKER: &str = "\u{1}rigger:spawn-parked\u{1}";
 
-/// Construct the PARK signal a stepwise driver returns for spawn `id`: it persisted the
-/// unrecorded spawn request and cannot answer it in-process. On this signal the
-/// conductor unwinds the unit CLEANLY - no `UnitFailed`, no remediation - and the step
-/// ends once every in-flight spawn is parked at the frontier; a later step, after the
-/// courier records the result, replays it. This is a normal failure, so a non-stepwise
-/// driver (which never parks) is entirely unaffected.
+/// Construct the PARK signal a driver returns for spawn `id` it cannot answer in-process: a
+/// stepwise/replay driver persisted the unrecorded spawn request, and the workflow driver and
+/// the held-run decorator found the serving session closed. On this signal the conductor
+/// unwinds the unit CLEANLY - no `UnitFailed`, no remediation - and the step ends once every
+/// in-flight spawn is parked; a later step replays the result the courier records, or a
+/// relaunch serves the spawn again. This is a normal failure, so a spawn that never parks is
+/// entirely unaffected.
 pub fn parked_spawn(id: &str) -> Error {
     Error(format!(
-        "{PARKED_MARKER} spawn {id:?} parked at the unrecorded frontier"
+        "{PARKED_MARKER} spawn {id:?} parked: nothing serves it in-process"
     ))
 }
 
@@ -252,6 +274,29 @@ pub fn parked_spawn(id: &str) -> Error {
 /// does, in the same control-character idiom; [`strip_failure_marker`] drops it before the
 /// text reaches an agent's prompt or the operator.
 pub const EMIT_REFUSED_MARKER: &str = "\u{1}rigger:emit-refused\u{1}";
+
+/// Sentinel heading the message of the [`Error`] a spawn returns for a launch the host closed
+/// `interrupted` ([`launch_interrupted`]): the host decides interrupted once, and the decision
+/// crosses the `AgentDriver` port with its error, in the [`PARKED_MARKER`] idiom, so the held-run
+/// decorator relaunches on it without reading the hold again. It sits behind the class bracket,
+/// which stays at the head for [`failure_class`]; [`strip_failure_marker`] drops both before the
+/// text reaches an agent's prompt or the operator.
+pub const INTERRUPTED_MARKER: &str = "\u{1}rigger:launch-interrupted\u{1}";
+
+/// Sentinel heading the [`Error`] of a store read that failed before a spawn launched
+/// ([`store_fault`]): an infra fault, never the outcome of a launched spawn. The host marks it
+/// once at its spawn boundary and the held-run decorator marks its own hold read, so the
+/// decorator records no result for it (a restart relaunches the spawn) and the conflict resolver
+/// retries it as an infra crash instead of spending a round. It crosses the `AgentDriver` port
+/// inside the spawn's error, in the [`PARKED_MARKER`] control-character idiom;
+/// [`strip_failure_marker`] drops it before the text reaches an agent's prompt or the operator.
+pub const STORE_FAULT_MARKER: &str = "\u{1}rigger:store-fault\u{1}";
+
+/// Mark `e`, the error of a store read that failed before a spawn launched, with
+/// [`STORE_FAULT_MARKER`].
+pub fn store_fault(e: Error) -> Error {
+    Error(format!("{STORE_FAULT_MARKER}{}", e.0))
+}
 
 // ---- FAILURE CLASS (spec 104 criterion 5: A FAILURE HAS A CLASS) ----
 //
@@ -275,6 +320,7 @@ pub enum AgentFailure {
     CloudCredentialError,
     BillingError,
     AccountOnHold,
+    VerificationRequired,
     ModelNotFound,
     InvalidRequest,
     MaxOutputTokens,
@@ -282,10 +328,94 @@ pub enum AgentFailure {
     Unknown,
 }
 
+/// What a failure category does to the run: spec 105's disposition table, the verbs its rows
+/// read. [`AgentFailure::row`] is the one table; the host reads it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Disposition {
+    /// The run holds on the first `api_retry` or `StopFailure` carrying the category.
+    Hold,
+    /// The session retries by itself; the run holds only when a session ends of the category.
+    Wait,
+    /// The category never holds: the error takes its spawn site's existing path.
+    Fault,
+}
+
+/// One row of the disposition table: what a category does to the run, the action a hold of it
+/// names, whether that action needs a person and whether it is a credential category.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DispositionRow {
+    pub disposition: Disposition,
+    /// The `RunHeld.action` of a hold of this cause, empty for a category that never holds.
+    pub action: &'static str,
+    /// The `RunHeld.needs_person` of a hold of this cause.
+    pub needs_person: bool,
+    /// Whether a probe of a hold of this cause reads the login (`claude auth status`) before
+    /// its canary: a logged-out answer is the cause itself, so no canary runs.
+    pub credential: bool,
+}
+
+impl DispositionRow {
+    /// Whether a session that ended of this category waits on the run, a hold or a wait row,
+    /// rather than failing its spawn as a fault row does.
+    pub fn waits(&self) -> bool {
+        self.disposition != Disposition::Fault
+    }
+}
+
+/// The cause of the hold three consecutive failed launches set: the API is failing with no
+/// category that names a person's action.
+pub const API_UNSTABLE: &str = "api-unstable";
+
+/// The cause of the hold `rigger hold` appends: the operator holds the run, giving a reason.
+pub const OPERATOR: &str = "operator";
+
+/// The action of a hold that clears without anyone: a wait-class category's and `api-unstable`'s.
+const RETRIES_BY_ITSELF: &str = "none, the run retries by itself";
+
+const WAITS: DispositionRow = DispositionRow {
+    disposition: Disposition::Wait,
+    action: RETRIES_BY_ITSELF,
+    needs_person: false,
+    credential: false,
+};
+
+const FAULTS: DispositionRow = DispositionRow {
+    disposition: Disposition::Fault,
+    action: "",
+    needs_person: false,
+    credential: false,
+};
+
+/// The row a hold of `action` reads, every category that holds on sight needing a person.
+const fn holds(action: &'static str) -> DispositionRow {
+    DispositionRow {
+        disposition: Disposition::Hold,
+        action,
+        needs_person: true,
+        credential: false,
+    }
+}
+
+/// The disposition table's row for a hold's `cause`: `api-unstable`'s, `operator`'s, or the
+/// category's. The `operator` row needs a person and names no action: no row can hold a per-hold
+/// reason, so `rigger hold`'s append puts its reason in the action over the row's.
+pub fn cause_row(cause: &str) -> DispositionRow {
+    match cause {
+        API_UNSTABLE => DispositionRow {
+            disposition: Disposition::Hold,
+            action: RETRIES_BY_ITSELF,
+            needs_person: false,
+            credential: false,
+        },
+        OPERATOR => holds(""),
+        category => AgentFailure::from_category(category).row(),
+    }
+}
+
 impl AgentFailure {
     /// Every error category, in a fixed order: the exhaustive set [`from_category`] and the
     /// CLI's own `--class` validation both check membership against.
-    pub const CATEGORIES: [AgentFailure; 12] = [
+    pub const CATEGORIES: [AgentFailure; 13] = [
         AgentFailure::RateLimit,
         AgentFailure::Overloaded,
         AgentFailure::ServerError,
@@ -294,6 +424,7 @@ impl AgentFailure {
         AgentFailure::CloudCredentialError,
         AgentFailure::BillingError,
         AgentFailure::AccountOnHold,
+        AgentFailure::VerificationRequired,
         AgentFailure::ModelNotFound,
         AgentFailure::InvalidRequest,
         AgentFailure::MaxOutputTokens,
@@ -313,6 +444,7 @@ impl AgentFailure {
             AgentFailure::CloudCredentialError => "cloud_credential_error",
             AgentFailure::BillingError => "billing_error",
             AgentFailure::AccountOnHold => "account_on_hold",
+            AgentFailure::VerificationRequired => "verification_required",
             AgentFailure::ModelNotFound => "model_not_found",
             AgentFailure::InvalidRequest => "invalid_request",
             AgentFailure::MaxOutputTokens => "max_output_tokens",
@@ -333,6 +465,31 @@ impl AgentFailure {
             .find(|c| c.as_str() == category)
             .unwrap_or(AgentFailure::Unknown)
     }
+
+    /// This category's row of the disposition table (spec 105): THE one table, beside the enum
+    /// so a new category cannot compile without one.
+    pub fn row(self) -> DispositionRow {
+        match self {
+            AgentFailure::AuthenticationFailed | AgentFailure::OauthOrgNotAllowed => {
+                DispositionRow {
+                    credential: true,
+                    ..holds("run claude auth login")
+                }
+            }
+            AgentFailure::CloudCredentialError => holds("refresh the cloud provider's credentials"),
+            AgentFailure::BillingError => holds("fix the account's billing"),
+            AgentFailure::AccountOnHold => holds("resolve the account's hold"),
+            AgentFailure::VerificationRequired => holds("complete the account's verification"),
+            AgentFailure::ModelNotFound => holds(
+                "fix the agent's configured model, restart rigger run with --rebase-definition, \
+                 then run rigger release",
+            ),
+            AgentFailure::RateLimit | AgentFailure::Overloaded | AgentFailure::ServerError => WAITS,
+            AgentFailure::InvalidRequest
+            | AgentFailure::MaxOutputTokens
+            | AgentFailure::Unknown => FAULTS,
+        }
+    }
 }
 
 impl std::fmt::Display for AgentFailure {
@@ -344,15 +501,16 @@ impl std::fmt::Display for AgentFailure {
 /// A FAILURE HAS A CLASS (spec 104 criterion 5, Design): "a session that ends without a
 /// `result` takes its class from, in order: the record written by the `StopFailure` hook,
 /// ... the last `api_retry.error`, else `unknown`." PURE: both sources are already-resolved
-/// strings - the `StopFailure` record's class (`None` when no hook fired for this spawn,
-/// [`crate::progress::latest_stop_failure_class`]) and the last `system/api_retry` line's
-/// `error` THIS launch's own reader saw (`None` when none arrived) - so the priority order
-/// itself is testable with no store, no stream, no process.
+/// strings - the class the session itself reported (the `error` of the last assistant line,
+/// else the launch's `StopFailure` record, [`crate::progress::latest_stop_failure_class`];
+/// `None` when neither did) and the last `system/api_retry` line's `error` THIS launch's own
+/// reader saw (`None` when none arrived) - so the priority order itself is testable with no
+/// store, no stream, no process.
 pub fn classify_failure(
-    stop_failure_class: Option<&str>,
+    reported_class: Option<&str>,
     last_api_retry_category: Option<&str>,
 ) -> AgentFailure {
-    stop_failure_class
+    reported_class
         .or(last_api_retry_category)
         .map(AgentFailure::from_category)
         .unwrap_or(AgentFailure::Unknown)
@@ -373,14 +531,24 @@ pub fn no_result_error(class: AgentFailure, message: String) -> Error {
     Error(format!("{FAILURE_MARKER}{class}{FAILURE_MARKER}{message}"))
 }
 
+/// The `Error` a spawn returns for a launch the host closed `interrupted` on `class`: the
+/// [`no_result_error`] of `class` with [`INTERRUPTED_MARKER`] heading its `message`, so the class
+/// stays at the head of the error for [`failure_class`].
+pub fn launch_interrupted(class: AgentFailure, message: String) -> Error {
+    no_result_error(class, format!("{INTERRUPTED_MARKER}{message}"))
+}
+
 /// Drop the class marker a driver spawn [`Error`] carries ahead of its message, if present,
 /// leaving only the human-readable text: the [`FAILURE_MARKER`]-bracketed class
 /// [`no_result_error`] embeds (adj-u104c5 REQUIRED FIX 2,
-/// sdet-u104c5-failure-marker-leaks-unstripped-into-operator-visible-text), or the
-/// [`EMIT_REFUSED_MARKER`] the conductor's agent emit puts ahead of an emit guard's refusal
-/// (dropped here because its readers - the implementer's attempt arm and the refused record's
-/// re-run - match it before this strip runs, while `PARKED_MARKER` and `BUDGET_MARKER` pass
-/// through untouched, since callers upstream still branch on them).
+/// sdet-u104c5-failure-marker-leaks-unstripped-into-operator-visible-text), with the
+/// [`INTERRUPTED_MARKER`] a [`launch_interrupted`] error carries behind it, the
+/// [`EMIT_REFUSED_MARKER`] the conductor's agent emit puts ahead of an emit guard's refusal, or
+/// the [`STORE_FAULT_MARKER`] heading a [`store_fault`] (each dropped here because its readers -
+/// the held-run decorator for the first, the implementer's attempt arm and the refused record's
+/// re-run for the second, the held-run decorator and the conflict resolver for the third - match
+/// it before this strip runs, while `PARKED_MARKER` and `BUDGET_MARKER` pass through untouched, since
+/// callers upstream still branch on them).
 /// Unlike `PARKED_MARKER`/`PLAN_LANDING_MARKER`/`LAND_REFUSED_MARKER` - bare prefixes a plain
 /// `.replace(MARKER, "")` cleans - [`FAILURE_MARKER`] brackets DATA (the class name) that
 /// the message ALSO repeats in prose (`no_result_error`'s own "class {class}"), so a bare
@@ -391,25 +559,219 @@ pub fn no_result_error(class: AgentFailure, message: String) -> Error {
 /// (every other driver's error, or text already stripped) passes through byte-for-byte
 /// unchanged.
 pub fn strip_failure_marker(e: &Error) -> String {
-    if let Some(refusal) = e.0.strip_prefix(EMIT_REFUSED_MARKER) {
-        return refusal.to_string();
+    if let Some(text) = [EMIT_REFUSED_MARKER, STORE_FAULT_MARKER]
+        .iter()
+        .find_map(|marker| e.0.strip_prefix(marker))
+    {
+        return text.to_string();
     }
-    let Some(rest) = e.0.strip_prefix(FAILURE_MARKER) else {
-        return e.0.clone();
-    };
-    match rest.find(FAILURE_MARKER) {
-        Some(end) => rest[end + FAILURE_MARKER.len_utf8()..].to_string(),
+    match failure_parts(e) {
+        Some((_, message)) => message
+            .strip_prefix(INTERRUPTED_MARKER)
+            .unwrap_or(message)
+            .to_string(),
         None => e.0.clone(),
     }
+}
+
+/// The class `e` carries in a whole [`FAILURE_MARKER`] bracket at its head, a name no binary
+/// knows reading as [`AgentFailure::from_category`] reads it; `None` for an error with no such
+/// bracket, wrapped errors included, since only a driver's own return carries one there.
+pub fn failure_class(e: &Error) -> Option<AgentFailure> {
+    failure_parts(e).map(|(class, _)| AgentFailure::from_category(class))
+}
+
+/// The class and the message of an error [`no_result_error`] built, the one reading of its
+/// bracket; `None` for any error with no whole bracket at its head.
+fn failure_parts(e: &Error) -> Option<(&str, &str)> {
+    e.0.strip_prefix(FAILURE_MARKER)?.split_once(FAILURE_MARKER)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    const RETRIES: &str = "none, the run retries by itself";
+    const LOGIN: &str = "run claude auth login";
+    const MODEL: &str = "fix the agent's configured model, restart rigger run with \
+                         --rebase-definition, then run rigger release";
+
+    /// THE CLASS AN ERROR CARRIES: the class [`no_result_error`] bracketed at the head of the
+    /// error, a name no binary knows reading as `unknown` as [`AgentFailure::from_category`] has
+    /// it, and none for an error with no whole bracket at its head.
+    #[test]
+    fn an_error_answers_the_class_it_carries() {
+        let bracketed = no_result_error(AgentFailure::RateLimit, "class rate_limit".into());
+        let rows: [(&str, Error, Option<AgentFailure>); 7] = [
+            (
+                "a class at the head",
+                Error(bracketed.0.clone()),
+                Some(AgentFailure::RateLimit),
+            ),
+            (
+                "the unknown class",
+                no_result_error(AgentFailure::Unknown, "no class".into()),
+                Some(AgentFailure::Unknown),
+            ),
+            (
+                "a name no binary knows",
+                Error(format!("{FAILURE_MARKER}new_category{FAILURE_MARKER}text")),
+                Some(AgentFailure::Unknown),
+            ),
+            ("no marker", Error("the session stopped".into()), None),
+            (
+                "a bracket never closed",
+                Error(format!("{FAILURE_MARKER}rate_limit")),
+                None,
+            ),
+            (
+                "a bracket behind wrapping context",
+                Error(format!("stage: {}", bracketed.0)),
+                None,
+            ),
+            (
+                "an emit refusal",
+                Error(format!("{EMIT_REFUSED_MARKER}refused")),
+                None,
+            ),
+        ];
+        for (name, error, want) in rows {
+            assert_eq!(failure_class(&error), want, "{name}");
+        }
+    }
+
+    /// THE INTERRUPTED MARK (spec 105): the error a launch the host closed `interrupted` returns
+    /// keeps its class at the head, and stripped it reads as its message alone.
+    #[test]
+    fn an_interrupted_launchs_error_answers_its_class_and_strips_to_its_message() {
+        let e = launch_interrupted(
+            AgentFailure::Unknown,
+            "the stream ended with no result".into(),
+        );
+        assert_eq!(
+            (failure_class(&e), strip_failure_marker(&e)),
+            (
+                Some(AgentFailure::Unknown),
+                "the stream ended with no result".to_string()
+            )
+        );
+    }
+
+    /// THE STORE FAULT MARK (spec 105): the error of a store read that failed before a spawn
+    /// launched carries no class, and stripped it reads as the read's own error.
+    #[test]
+    fn a_store_faults_error_carries_no_class_and_strips_to_the_reads_error() {
+        let e = store_fault(Error("event store: the run read failed".into()));
+        assert_eq!(
+            (failure_class(&e), strip_failure_marker(&e)),
+            (None, "event store: the run read failed".to_string())
+        );
+    }
+
+    /// THE DISPOSITION TABLE (spec 105): every category, by its wire name, maps to the disposition,
+    /// the action and the need for a person decided for it, and whether it is a credential
+    /// category whose probe reads the login first; a name no binary knows faults as `unknown` does.
+    #[test]
+    fn every_category_maps_to_its_decided_disposition_action_and_person() {
+        use Disposition::{Fault, Hold, Wait};
+        let rows: [(&str, Disposition, &str, bool, bool); 14] = [
+            ("rate_limit", Wait, RETRIES, false, false),
+            ("overloaded", Wait, RETRIES, false, false),
+            ("server_error", Wait, RETRIES, false, false),
+            ("authentication_failed", Hold, LOGIN, true, true),
+            ("oauth_org_not_allowed", Hold, LOGIN, true, true),
+            (
+                "cloud_credential_error",
+                Hold,
+                "refresh the cloud provider's credentials",
+                true,
+                false,
+            ),
+            (
+                "billing_error",
+                Hold,
+                "fix the account's billing",
+                true,
+                false,
+            ),
+            (
+                "account_on_hold",
+                Hold,
+                "resolve the account's hold",
+                true,
+                false,
+            ),
+            (
+                "verification_required",
+                Hold,
+                "complete the account's verification",
+                true,
+                false,
+            ),
+            ("model_not_found", Hold, MODEL, true, false),
+            ("invalid_request", Fault, "", false, false),
+            ("max_output_tokens", Fault, "", false, false),
+            ("unknown", Fault, "", false, false),
+            ("a_category_no_binary_knows", Fault, "", false, false),
+        ];
+        for (category, disposition, action, needs_person, credential) in rows {
+            let row = DispositionRow {
+                disposition,
+                action,
+                needs_person,
+                credential,
+            };
+            assert_eq!(
+                AgentFailure::from_category(category).row(),
+                row,
+                "{category}"
+            );
+        }
+        for category in AgentFailure::CATEGORIES {
+            let named = rows.iter().filter(|row| row.0 == category.as_str());
+            assert_eq!(named.count(), 1, "{category} has one row here");
+        }
+    }
+
+    /// A hold's `cause` reads its row from the one table, the two causes no category names
+    /// included: `api-unstable` needs no person and the run retries by itself; `operator` needs a
+    /// person and names no action, `rigger hold`'s reason standing in for it.
+    #[test]
+    fn a_holds_cause_reads_the_table_api_unstable_and_operator_included() {
+        let rows = [
+            (
+                API_UNSTABLE,
+                DispositionRow {
+                    disposition: Disposition::Hold,
+                    action: RETRIES,
+                    needs_person: false,
+                    credential: false,
+                },
+            ),
+            (
+                "operator",
+                DispositionRow {
+                    disposition: Disposition::Hold,
+                    action: "",
+                    needs_person: true,
+                    credential: false,
+                },
+            ),
+            (
+                "authentication_failed",
+                AgentFailure::AuthenticationFailed.row(),
+            ),
+            ("rate_limit", AgentFailure::RateLimit.row()),
+        ];
+        for (cause, row) in rows {
+            assert_eq!(cause_row(cause), row, "{cause}");
+        }
+        assert_eq!(API_UNSTABLE, "api-unstable");
+    }
+
     /// The request a spawn parks is derived from its options and its agent alone: every field the
     /// options carry, the agent's model rung for the attempt, its fan-out-stripped tools and its
-    /// wall-clock bound - and nothing else of the options (isolation, env, settings, launch).
+    /// wall-clock bound - and nothing else of the options (isolation, env, settings).
     #[test]
     fn a_parked_request_is_derived_from_its_spawn_options_and_its_agent() {
         let agent = AgentDef {
@@ -437,7 +799,6 @@ mod tests {
             ],
             reviews: vec!["lens:sdet".into()],
             settings_json: "{}".into(),
-            launch: 2,
             ..SpawnOpts::default()
         };
         assert_eq!(

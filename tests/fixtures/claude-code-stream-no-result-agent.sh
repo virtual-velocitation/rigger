@@ -5,5 +5,8 @@
 # still behave sanely against it: no result, no silent success. Reads and discards the
 # host's first stdin message like every sibling fixture, prints one `system/init` line,
 # then exits.
+self=$(readlink "$0") || self=$0
+. "$(dirname "$self")/launch-args.sh"
+sid=$(launched_session 22222222-2222-4222-8222-222222222222 "$@")
 IFS= read -r line
-echo '{"type":"system","subtype":"init","session_id":"22222222-2222-4222-8222-222222222222","model":"claude-haiku-4-5","mcp_servers":[]}'
+echo '{"type":"system","subtype":"init","session_id":"'"$sid"'","model":"claude-haiku-4-5","mcp_servers":[]}'

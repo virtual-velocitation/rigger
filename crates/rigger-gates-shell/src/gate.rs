@@ -83,8 +83,8 @@ pub trait Runner: Send + Sync {
 /// BuildEnv is the ONE build-environment authority (spec 65): a single resolver
 /// derives the env vars from committed config and applies them everywhere a caller
 /// threads it through. Wired so far: inline/deferred gate builds ([`ExecRunner::run`])
-/// and the blocking `driver::cli` agent driver's spawned process (via
-/// `conductor::SpawnOpts`), so a gate build and that driver's own `cargo test`
+/// and the process hosts' spawned agent process (via
+/// `conductor::SpawnOpts`), so a gate build and that agent's own `cargo test`
 /// invocation hit the same compilation cache under the same settings, at the same
 /// jobs cap. The turn-key `rigger workflow` Node-shim driver and `driver::replay`'s
 /// wire contract do not carry these vars yet - a disclosed, tracked gap for a

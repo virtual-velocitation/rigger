@@ -99,8 +99,8 @@ next agent is never blind to what the last one decided.** It is the *producing* 
   *exactly* its blast-radius and makes concurrent agents aware of each other's decisions.
 
 **It is NOT:**
-- Tied to any one editor or agent runtime. The default agent driver shells out to the
-  `claude` CLI as a subprocess; running *inside* an editor's workflow tool (over an MCP
+- Tied to any one editor or agent runtime. The default agent driver hosts the `claude`
+  CLI as a headless subprocess session; running *inside* an editor's workflow tool (over an MCP
   server) is an *optional* driver, not a requirement.
 - Tied to a database server. The default event store is embedded SQLite (zero-dependency,
   single file). A shared server backend is compiled into every build behind the same trait
@@ -156,7 +156,7 @@ flowchart TB
   subgraph SEAMS["PLUGGABLE SEAMS (traits, chosen by config / feature)"]
     direction LR
     ES["EventStore<br/>sqlite (default) | kurrentdb (server)<br/>selected by store resolution"]
-    DR["AgentDriver<br/>cli (claude subprocess, default) | workflow (MCP)"]
+    DR["AgentDriver<br/>claude_code (headless claude sessions, default) | workflow (MCP)"]
     GR["Grounder<br/>symbols (default) | grep | nop (explicit opt-out)"]
   end
 
@@ -183,7 +183,7 @@ chosen by config or cargo feature:*
 | Seam | Trait | Default impl | Optional impl | Chosen by |
 |---|---|---|---|---|
 | **EventStore** | `append` / `read_stream` / `read_all` / `subscribe_all` | `sqlite` (embedded, 1 file) | `kurrentdb` (server backend) | **store resolution** (section 5.1.1): a flag, an env var, a secret file, or the committed `store:` selection - never a recompile |
-| **AgentDriver** | `spawn(agent, prompt, opts, emit) -> result` | `cli` (`claude` subprocess) | `workflow` (MCP shim) | the `--driver` flag / config |
+| **AgentDriver** | `spawn(agent, prompt, opts, emit) -> result` | `claude_code` (headless `claude` sessions) | `workflow` (MCP shim) | the `--driver` flag / config |
 | **Grounder** | `ground(query, k) -> Vec<Ref>` | `symbols` (structural; the unset default, shipped in the default build) | `grep` (self-contained substring search) and `nop` (the explicit, named-only opt-outs) | cargo feature + config |
 
 ---
@@ -417,7 +417,8 @@ continues mid-stream:
 | Recorded status + branch          | Resume behavior                                         |
 | --------------------------------- | ------------------------------------------------------- |
 | `reviewed` (approved) + has work  | skip implement AND review; integrate directly           |
-| `green` / `verified` + has work   | skip the implementer spawn; re-run gates + the review panel on the committed code |
+| `green` / `verified` on a stage carrying no review, with an integrate attempt logged at its attempt | skip implement AND review; integrate directly (its empty panel's trivial approve records no `reviewed`) |
+| `green` / `verified` + has work otherwise | skip the implementer spawn; re-run gates + the review panel on the committed code |
 | below `green`, or branch empty/missing | the full lifecycle (implement -> gates -> review -> integrate), unchanged |
 
 A unit's branch is deleted **only after a successful integrate**. An **interrupted** unit
@@ -953,9 +954,9 @@ measurement and the push/pull split.
 ```rust
 // crates/rigger-conductor/src/conductor.rs
 pub trait AgentDriver: Send + Sync {
-    /// Spawn one agent to completion. The agent records events it emits during its run by
-    /// calling `emit` (the workflow driver wires it to an in-process tool; the cli driver,
-    /// a subprocess, cannot call back and ignores it).
+    /// Spawn one agent to completion. A driver may hand an event the agent emits during its
+    /// run through `emit`; the headless and workflow drivers leave it unused, because their
+    /// agents record through the `rigger` MCP server while the spawn runs.
     fn spawn(
         &self,
         agent: &AgentDef,
@@ -975,12 +976,16 @@ pub struct SpawnOpts {
 The conductor fills `blast_radius` from the same grounding it seeds the prompt with, so the
 side-car filters peer decisions against exactly the files the agent was grounded on.
 
-- **`cli` (default, self-contained).** `driver::cli::Driver` spawns the `claude` CLI as a
-  subprocess and reads its output. Worktree isolation is Rigger's own (`worktree::Worktree`):
+- **`claude_code` (default, self-contained).** `rigger run` builds
+  `driver::claude_code::Driver` at its composition root (`--driver cli`, the default, selects
+  it). It hosts each agent as a headless `claude` session over the stream-json protocol and
+  records the spawn's result itself. Worktree isolation is Rigger's own (`worktree::Worktree`):
   `git worktree add` before, harvest the branch + remove after. **No editor-runtime
   assumption: works for any `cargo install` user with the `claude` CLI on PATH.** Fan-out is a
-  bounded pool of scoped OS threads over disjoint units. A subprocess agent cannot call the
-  in-process `emit`, so this driver ignores it.
+  bounded pool of scoped OS threads over disjoint units. A session cannot call the in-process
+  `emit`: it records through its spawn-bound `rigger mcp --spawn <id>` server, whose tools each
+  launch pre-approves, so this driver leaves `emit` unused. `driver::cli::Driver`, the blocking
+  subprocess host, stays as the host `rigger canary` probes with.
 - **`workflow` (optional).** `driver::workflow::Driver` runs inside an editor's workflow tool
   to keep its built-in parallelism / journaling / resume. The sandbox cannot shell out to a
   binary, so the bridge is **MCP, not a subprocess**: `rigger serve` runs the conductor on a
@@ -1106,7 +1111,7 @@ structurally.
 | A discovered unit has no `spec_criterion` | `spawnUnit` refuses + emits a `scope_creep` event (anti-fragmentation) |
 | A conceptual criterion covered only by a mechanical gate | `coverage` proxy-gap guard => NOT covered; demands a real (LLM-judge) verifier |
 | Two concurrent units edit the same file | Wave admission starts a unit only while its blast radius shares no file with a unit in flight; they never share a worktree |
-| Agent crashes / hits usage limit mid-spawn | `cli` driver: non-zero exit -> `remediate` (bounded retry, re-grounded) -> escalate |
+| Agent crashes / hits usage limit mid-spawn | headless host: a session that ends without a result is never a `remediate` charge. The host records no `SpawnResult` for it; on `rigger run` the held-run decorator (`HeldDriver`) records the error as the spawn's result, so a restarted run answers that spawn from the log instead of launching it again. A HOLD- or WAIT-class category holds the run: the launch ends `interrupted` and resumes uncharged once the hold ends. Any other failed launch reruns the stage uncharged as infra, up to the failure taxonomy's infra limit, where the step halts, with two exceptions: an unmarked error of a launched conflict-resolver spawn spends a conflict round, bounded by `CONFLICT_RESOLVE_BOUND`, and a crashed speculation candidate is never rerun: it loses its lane, and the remaining candidates race on |
 | A reviewer spawn is killed externally (no verdict) | Reviewer re-park (section 4.4): discard the dead spawn, re-park a fresh attempt, bounded - never a bogus remediation charge on the reviewed unit |
 | A leftover / stale worktree dir blocks a fresh one | Self-healing worktree (section 4.4): reconcile from the deterministic branch, never wedge the next window |
 | Stale base (a peer landed while I ran) | Integrate does `pull --rebase` + re-runs gates; the graph's `TOUCHES` edges flag the overlap pre-merge |
@@ -1164,7 +1169,7 @@ github.com/virtual-velocitation/rigger
 |   |-- community.rs concepts.rs the offline derivations (coupling communities, intent concepts)
 |   |-- ingest.rs                the one parallel, incremental, project-scoped ingest authority
 |   |-- dash.rs registry.rs      the fixed-address dashboard singleton + the instance registry
-|   |-- driver/                  cli.rs (claude subprocess) + workflow.rs (MCP shim)
+|   |-- driver/                  claude_code.rs (headless sessions) + cli.rs (canary) + workflow.rs (MCP shim)
 |   |-- grounder/                symbols (structural; the default) + grep + nop (opt-out)
 |   |-- gate.rs safety.rs ledger.rs config.rs spec.rs worktree.rs sidecar.rs mcpserver.rs
 |-- examples/demo/               a worked example: a fictional project's .rigger config
@@ -1215,7 +1220,7 @@ Where each responsibility lives, and the design move that keeps it project-agnos
 | `contextgraph` + `community` + `concepts` | the knowledge graph: code + design + decisions, its derivations, and the directed-call traversal | a rebuildable bi-temporal projection of the log; derivations are event-sourced |
 | `ingest` | the one parallel, incremental, project-scoped source fold | one walk-and-key authority the run and `graph build` share |
 | `dash` + `registry` | the fixed-address dashboard singleton + machine-global discovery | a singleton over a credential-free registry, not a per-run dash-to-dash protocol |
-| `driver/` | spawns and awaits agents | a pluggable seam: `cli` (claude subprocess) or `workflow` (MCP bridge) |
+| `driver/` | spawns and awaits agents | a pluggable seam: `claude_code` (headless sessions) or `workflow` (MCP bridge) |
 | `examples/demo/` | a complete worked config | the proof that the crate itself ships knowing no project |
 
 ---
@@ -1241,8 +1246,8 @@ Where each responsibility lives, and the design move that keeps it project-agnos
   - R3 BI-TEMPORAL KNOWLEDGE GRAPH: decisions are first-class nodes with validity intervals;
     superseded facts are invalidated, never deleted; retrieval returns a connected subgraph,
     not a chunk dump.
-  - R4 PLUGGABLE SEAMS: EventStore (sqlite default | kurrentdb server), AgentDriver (cli
-    default | workflow), Grounder (symbols default | grep | nop) are traits chosen by
+  - R4 PLUGGABLE SEAMS: EventStore (sqlite default | kurrentdb server), AgentDriver
+    (claude_code default | workflow), Grounder (symbols default | grep | nop) are traits chosen by
     configuration / cargo feature; the core depends only on the traits.
   - R5 ORTHOGONAL ISOLATION: worktree isolation guards FILES; the event stream is the shared
     DECISION channel; live cross-agent awareness never crosses the file boundary.
@@ -1283,7 +1288,7 @@ Where each responsibility lives, and the design move that keeps it project-agnos
 | **Knowledge graph** | the projected, bi-temporal read model of a project's code, design intent, and decisions |
 | **Lens** | one of three altitudes the inspector reads the graph at (`concepts`, `code`, `files`) |
 | **Store resolution** | the single authority that selects the event-store backend from config |
-| **Driver** | the pluggable agent-spawning backend (`cli` \| `workflow`) |
+| **Driver** | the pluggable agent-spawning backend (`claude_code` \| `workflow`) |
 | **Side-car** | the per-agent subscription that delivers in-flight cross-agent decisions |
 
 ---

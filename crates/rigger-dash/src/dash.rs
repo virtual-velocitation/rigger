@@ -1465,7 +1465,8 @@ pub struct ConsoleSnapshotView {
     /// The highest position among `events` (0 for an empty run) - the cursor a client
     /// passes straight to `GET /api/console/stream?since=` to resume with no gap.
     pub head: Position,
-    /// The highest position among `progress` (0 for an empty run) - the cursor a client
+    /// The highest position on the run's progress stream, its records of other types than a
+    /// `progress` line included (0 for an empty run) - the cursor a client
     /// passes straight to `GET /api/console/stream?progress_since=` to resume with no gap,
     /// mirroring `head`/`since=` (`adj-u94c2-verdict-reject-progress-floor-race`: the
     /// stream's own floor MUST come from this cursor, never from whatever its first live
@@ -2764,7 +2765,7 @@ pub fn repoint_seed(events: &[Event], graph: &Graph, seed: &str) -> Vec<String> 
 }
 
 /// The run-lifecycle event types the console recognizes (spec 94, criterion 2; the addendum
-/// `docs/architecture-addendum-mission-control.md` §2's own list, verbatim) - the ONLY types
+/// `docs/architecture-addendum-mission-control.md` section 2's own list, verbatim) - the ONLY types
 /// that count toward the console's position N, and the ONLY types `/api/console/snapshot`'s
 /// `events` and `/api/console/stream`'s `event` frame ever carry. An ALLOW-list, so the
 /// graph-extraction types sharing the same run stream (`CodeEntityExtracted`, `EdgeInferred`,
@@ -2777,7 +2778,8 @@ pub fn repoint_seed(events: &[Event], graph: &Graph, seed: &str) -> Vec<String> 
 /// not a distinct type anywhere in this codebase today - a `--rebase-definition` supersession
 /// rides the existing `DecisionMade` vocabulary instead (`run_store::record_rebase`'s own doc:
 /// "no new event type - the spec-13 global constraint"), so it is already covered by
-/// `TYPE_DECISION_MADE` below and this literal entry is a forward-compatible no-op.
+/// `TYPE_DECISION_MADE` below and this literal entry is a forward-compatible no-op. Spec 105's
+/// `RunHeld` and `RunReleased` are on the list, so the page's fold sees the run's hold.
 const CONSOLE_EVENT_TYPES: &[&str] = &[
     run::TYPE_RUN_STARTED,
     crate::conductor::TYPE_UNIT_PROPOSED,
@@ -2798,6 +2800,8 @@ const CONSOLE_EVENT_TYPES: &[&str] = &[
     crate::contextgraph::TYPE_FILE_TOUCHED,
     "DefinitionSuperseded",
     blocker::TYPE_BUDGET_EXHAUSTED,
+    run::TYPE_RUN_HELD,
+    run::TYPE_RUN_RELEASED,
 ];
 
 /// Whether `e` is one of [`CONSOLE_EVENT_TYPES`] - the one membership test both
@@ -2828,8 +2832,9 @@ fn console_event_wire(e: &Event) -> serde_json::Value {
     })
 }
 
-/// One progress-store event as the stream's `progress` frame / the snapshot's `progress`
-/// list render it - the [`AgentProgress`](progress::AgentProgress) payload plus this event's
+/// One progress line, an event [`progress::agent_progress_events`] yields, as the stream's
+/// `progress` frame / the snapshot's `progress` list render it - the
+/// [`AgentProgress`](progress::AgentProgress) payload plus this event's
 /// own position (the progress store's own ordering, distinct from a console event's
 /// position) and recorded time. A malformed body degrades to an empty id/activity rather
 /// than dropping the line or failing the feed.
@@ -2956,7 +2961,9 @@ pub fn console_snapshot_json(
         .map(|e| e.position)
         .max()
         .unwrap_or(0);
-    let progress = progress_events.iter().map(console_progress_wire).collect();
+    let progress = progress::agent_progress_events(progress_events)
+        .map(console_progress_wire)
+        .collect();
 
     // Definition names (Design's "the definition's stage and gate names"): read from THIS
     // run's own recorded events, never from a loaded `workflow.yml` Config - see
@@ -3826,8 +3833,7 @@ fn serve_console_stream<F>(
                 last_event = e.position;
             }
 
-            let mut new_progress: Vec<&Event> = progress_events
-                .iter()
+            let mut new_progress: Vec<&Event> = progress::agent_progress_events(&progress_events)
                 .filter(|e| e.position > progress_floor)
                 .collect();
             new_progress.sort_by_key(|e| e.position);
@@ -5073,9 +5079,9 @@ mod tests {
     }
 
     /// Spec 94, criterion 2 (THE SNAPSHOT AND THE STREAM): the console-event allow-list
-    /// admits exactly the run-lifecycle types the addendum §2 names, and excludes the
-    /// graph-extraction types that share the same stream plus this project's own
-    /// `AgentProgress` (a separate store regardless).
+    /// admits exactly the run-lifecycle types the addendum §2 names and spec 105's `RunHeld`
+    /// and `RunReleased`, and excludes the graph-extraction types that share the same stream
+    /// plus this project's own `AgentProgress` (a separate store regardless).
     #[test]
     fn console_event_filter_admits_only_the_named_run_lifecycle_types() {
         for t in [
@@ -5098,6 +5104,8 @@ mod tests {
             "FileTouched",
             "DefinitionSuperseded",
             "BudgetExhausted",
+            "RunHeld",
+            "RunReleased",
         ] {
             assert!(
                 is_console_event(&ev(t, "{}")),
@@ -5201,10 +5209,17 @@ mod tests {
             }
         }
 
-        let progress = positioned(vec![ev(
-            "AgentProgress",
-            r#"{"id":"u1/implementer#0","activity":"reading spec"}"#,
-        )]);
+        let progress = positioned(vec![
+            ev(
+                "AgentProgress",
+                r#"{"id":"u1/implementer#0","activity":"reading spec"}"#,
+            ),
+            // A retry record sharing the progress stream: never a progress row.
+            ev(
+                crate::progress::TYPE_API_RETRY,
+                r#"{"spawn":"u1/implementer#0","delay_ms":618,"category":"rate_limit"}"#,
+            ),
+        ]);
         let liveness = HashMap::from([("u1/implementer#0".to_string(), 12u64)]);
 
         let r = route(
@@ -5245,8 +5260,8 @@ mod tests {
         assert_eq!(progress_out[0]["id"], "u1/implementer#0");
         assert_eq!(progress_out[0]["activity"], "reading spec");
         // `progress_head` mirrors `head`, but over the separate progress store: the cursor a
-        // client threads into `?progress_since=` to resume with no gap.
-        assert_eq!(v["progress_head"], 1);
+        // client threads into `?progress_since=` to resume with no gap, past the retry record.
+        assert_eq!(v["progress_head"], 2);
 
         assert_eq!(v["liveness"]["u1/implementer#0"], 12);
 
@@ -5269,6 +5284,7 @@ mod tests {
         let ap = progress::AgentProgress {
             id: req.id.clone(),
             activity: "grep #12: conductor.rs".into(),
+            revision: None,
         };
         let mut prog = Event::new(
             progress::TYPE_AGENT_PROGRESS,
@@ -5333,6 +5349,7 @@ mod tests {
             let ap = progress::AgentProgress {
                 id: id.into(),
                 activity: activity.into(),
+                revision: None,
             };
             Event::new(
                 progress::TYPE_AGENT_PROGRESS,
@@ -5452,6 +5469,7 @@ mod tests {
         let bp = progress::AgentProgress {
             id: b_impl.id.clone(),
             activity: "grep #7: dash.rs".into(),
+            revision: None,
         };
         let mut bprog = Event::new(
             progress::TYPE_AGENT_PROGRESS,

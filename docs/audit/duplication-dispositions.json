@@ -10,9 +10,14 @@
     "reason": "`hooks::install_status_line` is the pure settings.json merge of the `statusLine` key, while `main::install_status_line` is the setup step that reads and writes `.claude/settings.json` through it and reports the install outcome."
   },
   {
-    "id": "dup-0a7aeeeffe48",
+    "id": "dup-f11d60ead37b",
     "disposition": "not-a-duplicate",
-    "reason": "Each function formats a different durable key or message from different fields (review-round start, a review reject's failed record, the plan-critique spec-defect stop's lesson, SpecDefect and completion records, compensation queue, conflict regeneration, stop message, spawn id, adversarial-sample identity, a whole-tree audit record id, a test fold's code-batch replay key); the shared token shape is a one-line `format!`, and each replay key is the one named key fn its writers and readers share."
+    "reason": "Each function formats a different durable key, message or shell fragment from different fields (review-round start, a review reject's failed record, the verified stamp, the plan-critique spec-defect stop's lesson, SpecDefect and completion records, compensation queue, conflict regeneration, stop message, spawn id, adversarial-sample identity, a whole-tree audit record id, a test fold's code-batch replay key, the fake host's shell fragment holding a wave's sessions at one gate until all of them stand there); the shared token shape is a one-line `format!`, and each replay key is the one named key fn its writers and readers share."
+  },
+  {
+    "id": "dup-500f0a1aa6c2",
+    "disposition": "not-a-duplicate",
+    "reason": "`spawn_crash` marks a conductor spawn crash's message with its sentinel so the single lane reruns the stage under the infra retry, while `unread_entry` builds the graph store's fold failure for an entry that asked a batch it was not handed; they share only the one-line `Error(format!(..))` shape, not a concern."
   },
   {
     "id": "dup-4b3a37bb0a60",
@@ -75,9 +80,14 @@
     "reason": "`any_finding_is_critical` checks a canary prompt for its critical-defect marker while `is_handbook_path` classifies a design-doc path: one `contains` call each, on different inputs for different decisions."
   },
   {
-    "id": "dup-0a701eb6cf8d",
+    "id": "dup-352c2984faa0",
     "disposition": "not-a-duplicate",
-    "reason": "Six one-line accessors on six different types, each reading a different field (community nodes, a child process id, store placements, failure rules, the adversary's survival)."
+    "reason": "Nine one-line accessors on eight different types, each reading a different field (community nodes, a child process id, a test session's process id, store placements, failure rules, the adversary's survival, a launch record's `ended`, whether a launch session continues one)."
+  },
+  {
+    "id": "dup-ccd4dd4d7b0d",
+    "disposition": "not-a-duplicate",
+    "reason": "Two one-line accessors on two different types reading different fields: the session a launch continues, and a test fixture's launch directory."
   },
   {
     "id": "dup-a9ed3e0e9d47",
@@ -280,9 +290,9 @@
     "reason": "Different concerns sharing a lookup shape: one reaches a decision's summary through GOVERNS, the other proves recording a proof merges into and never wipes an entity's attrs."
   },
   {
-    "id": "dup-8743cc5db2b4",
+    "id": "dup-fbfd8846ef05",
     "disposition": "not-a-duplicate",
-    "reason": "The two conflict drivers share only the shared barrier and side-write helpers; their retry arms run different recovery protocols (two re-park rounds that stage a placeholder first, versus one round that commits the source and then simulates a crash)."
+    "reason": "The two conflict drivers share only the shared barrier and side-write helpers; their retry arms run different recovery protocols (two re-park rounds that stage a placeholder first, versus one round that commits the source and then parks to simulate a crash)."
   },
   {
     "id": "dup-333ec555460f",
@@ -330,7 +340,7 @@
     "reason": "`render_using_rigger_skill` renders the installable skill (frontmatter plus a front-door intro) while `render_handbook_discipline` renders the handbook chapter (a chapter title plus an operator-manual intro); the body they share already lives once in `discipline_body`."
   },
   {
-    "id": "dup-0c6e804c2770",
+    "id": "dup-cbeb7fee0352",
     "disposition": "not-a-duplicate",
     "reason": "Four per-operation skill renders that each pass their own skill's name, description and paragraphs to the one shared `render_operation_skill` skeleton; only the content differs."
   },
@@ -450,7 +460,7 @@
     "reason": "Five predicates that each test membership in a different fixed vocabulary (intent-doc kinds, label-doc kinds, derived-index event types, Rust standard-library roots, Rust keywords); only the `matches!`/slice-contains shape is shared."
   },
   {
-    "id": "dup-2a5626cb9627",
+    "id": "dup-74b161ef523c",
     "disposition": "not-a-duplicate",
     "reason": "`as_str` and `name` map two different enums to their own wire strings; only the exhaustive `match` shape is shared."
   },
@@ -855,9 +865,9 @@
     "reason": "Builder setters for two different declarations of the content-identity policy (how a key names its generation versus how a recording names its fact); the shared token shape is a one-field assignment."
   },
   {
-    "id": "dup-f6fda65801a5",
+    "id": "dup-c63400fe9b8e",
     "disposition": "not-a-duplicate",
-    "reason": "One-line key, path, message and harness builders for different concerns (deferred-gate verdict and failure keys, review protocol text, namespace prefixes, workflow node ids, a critique run's unit name, a path's `gc` identity, retired-grounder error, the not-folded report line, the owed-rebuild refusal, the live-run refusals of `reset --derived` and of a new rebuild in `rigger setup`, a rebuild's shadow and pruned-copy file names, the edge text expression after a target column's first `::`, an id's file half before it, a staged reference row's liveness term, the proof rows' selection by one key column, the driver test's worker-prompts harness completed by its check, the blast-radius eval's code-span wrapper, a planted refusing trigger's text, a built-in instruction entry's checked-in source path, an operator instruction file's path as the instruction reports name it, the appender's write-lock-held and short-catch-up cause texts for a ceiling); they share only the `format!` shape."
+    "reason": "One-line key, path, message and harness builders for different concerns (deferred-gate verdict and failure keys, review protocol text, namespace prefixes, workflow node ids, a critique run's unit name, a path's `gc` identity, retired-grounder error, the not-folded report line, the owed-rebuild refusal, the live-run refusals of `reset --derived` and of a new rebuild in `rigger setup`, a rebuild's shadow and pruned-copy file names, the edge text expression after a target column's first `::`, an id's file half before it, a staged reference row's liveness term, the proof rows' selection by one key column, the driver test's worker-prompts harness completed by its check, the blast-radius eval's code-span wrapper, a planted refusing trigger's text, a built-in instruction entry's checked-in source path, an operator instruction file's path as the instruction reports name it, the appender's write-lock-held and short-catch-up cause texts for a ceiling, the emit surface's refusal sentence as the periphery expects it, the fake host's shell fragments that fire a launch's `StopFailure` hook and that print a hold-probe arm's text as it stands, the line the recording keep-awake fake appends on a driver's acquire and the keep-awake-unavailable line a driver's stderr is expected to carry); they share only the `format!` shape."
   },
   {
     "id": "dup-db3e199dd312",
@@ -905,9 +915,9 @@
     "reason": "Two port methods of the counting store double, each recording its own `CountedRead` variant before forwarding its own inner call; the shared work (recording, running the hooks waiting on the call) is already the one `record`/`returned` pair both call."
   },
   {
-    "id": "dup-40a2fbf5983e",
+    "id": "dup-53994f0e802d",
     "disposition": "not-a-duplicate",
-    "reason": "One-line `format!` compositions of different keys and labels (adoption provenance, quarantine record, code-entity id, a KurrentDB group stream name, spawn-store subject, audit join, the closed-unit report line a `reset --runs` periphery case expects, the spec-critique prompt joining its fixed sections to the spec text, the no-critic line a run-start refusal periphery case expects, the halt a spec-defect stop's tests expect, the `<file>::` id-range SQL predicate the graph store's file-range readers embed, the history prune's superseded-edges statement its count and its delete each build over their own verb, the module-declaration predicate the label degree and the relabel debt read, the change-only retarget of a `refs` row both settlements read, the refusal the panel rule tables expect for an agent id holding `@`) over different inputs."
+    "reason": "One-line `format!` compositions of different keys and labels (adoption provenance, quarantine record, code-entity id, a KurrentDB group stream name, spawn-store subject, audit join, the closed-unit report line a `reset --runs` periphery case expects, the spec-critique prompt joining its fixed sections to the spec text, the no-critic line a run-start refusal periphery case expects, the halt a spec-defect stop's tests expect, the `<file>::` id-range SQL predicate the graph store's file-range readers embed, the history prune's superseded-edges statement its count and its delete each build over their own verb, the module-declaration predicate the label degree and the relabel debt read, the change-only retarget of a `refs` row both settlements read, the refusal the panel rule tables expect for an agent id holding `@`, the live-progress frame both process hosts close a task with, the fake host's session that reports a failed result and ends only on its input's close, the fake host's hold-probe arm recording the status read's and the canary's launch, the headless host's marked no-result failure the class-hold and critique periphery cases expect) over different inputs."
   },
   {
     "id": "dup-da45cd3da239",
@@ -985,14 +995,9 @@
     "reason": "Two `spawn` doubles scripting different review-round scenarios (log-derived resume versus non-ancestor residue)."
   },
   {
-    "id": "dup-d082d63b45dc",
+    "id": "dup-117928e59e0c",
     "disposition": "not-a-duplicate",
     "reason": "Two argv tests of different facts about the spawn-bound MCP server (the server is bound to the spawn's id versus it runs the configured rigger binary); they share only the build-and-parse preamble."
-  },
-  {
-    "id": "dup-bada7e276fc1",
-    "disposition": "not-a-duplicate",
-    "reason": "`LaunchSession::of` already delegates its fresh case to `LaunchSession::fresh`; the remaining arm builds the resumed session, a different value."
   },
   {
     "id": "dup-3eae43945289",
@@ -1020,9 +1025,9 @@
     "reason": "`f11` renders the plan critique's F11 advisory for one criterion, `graph_build_line` renders the line `rigger graph build` prints for an event count and a fold-loss clause, and the cursor fixtures' `catch_up_stopped` renders the head both of `rigger setup`'s catch-up stop lines share for a position and a reason: three test-side spellings of different product lines, each defined once, sharing only the shape of one `format!` over a number and a string."
   },
   {
-    "id": "dup-cb013976dcf4",
+    "id": "dup-38d9b33987ea",
     "disposition": "not-a-duplicate",
-    "reason": "`reclaimed_line` is the line `rigger reset --derived` prints for the bytes its compaction reclaimed, `caught_up_line` the line `rigger setup` prints for the events its catch-up folded and `emit_folded_line` the line `rigger emit` prints for the decision it appended and folded at a position: three test-side expected lines of different commands, each defined once, sharing only the shape of one `format!` over one number."
+    "reason": "`reclaimed_line` is the line `rigger reset --derived` prints for the bytes its compaction reclaimed, `caught_up_line` the line `rigger setup` prints for the events its catch-up folded and `emit_folded_line` the line `rigger emit` prints for the decision it appended and folded at a position: three test-side expected lines of different commands; `sleeping` is the fake host's hold-probe arm shell that records its own pid and becomes a sleep of some seconds. Each is defined once, and they share only the shape of one `format!` over one number."
   },
   {
     "id": "dup-3f04af8603ff",
@@ -1068,5 +1073,30 @@
     "id": "dup-aa4a3a0dfc34",
     "disposition": "not-a-duplicate",
     "reason": "`alias_json` and `ref_json` build two different on-log payloads, an `AliasDefined` alias and canonical against an `EdgeInferred` file, name and lang, sharing only the one-line `json!` literal shape."
+  },
+  {
+    "id": "dup-2c13c330b0e0",
+    "disposition": "not-a-duplicate",
+    "reason": "`record_result_if_absent` and `record_result_unless_ended` are the two named entry points to the one compare-and-append `record_result_unless`, each passing the standing-result reader its callers need: `spawn::result_of`, which any standing result stops (every liveness-fault write), or `spawn::ended_by`, which a liveness fault does not stop (a relaunched session's real result and the held-run decorator's error); the loop itself exists once."
+  },
+  {
+    "id": "dup-0bd924af75c5",
+    "disposition": "not-a-duplicate",
+    "reason": "`agent_progress_events` and `spawn_requested_events` are the one type prefilter of two different logs (the progress store's `AgentProgress` lines, the run stream's `SpawnRequested` events), each the single place its own folds skip another record type; they share only the one-line filter-by-type-constant shape."
+  },
+  {
+    "id": "dup-e04bda77465d",
+    "disposition": "not-a-duplicate",
+    "reason": "`RunHeld::to_event` and `RunReleased::to_event` build two different run-stream event types (`RunHeld`, `RunReleased`) from two different bodies, each beside its own vocabulary type as `RunStarted::to_event` is; they share only the one-line `Event::new` of a serialized body."
+  },
+  {
+    "id": "dup-ad62aafad4f2",
+    "disposition": "not-a-duplicate",
+    "reason": "`progress_store::launch_records` is the production read of one spawn's launch records in a run while the stream periphery `launch_records` is the test's independent oracle, every spawn's records of the run through `progress::read_run` and the shared test decoder, that must not reuse it."
+  },
+  {
+    "id": "dup-b6030639057d",
+    "disposition": "not-a-duplicate",
+    "reason": "`is_interrupted` and `is_store_fault` both delegate to the shared `carries_marker`; each names a different port marker (the host's interrupted close, a store read failing before the launch) that the held-run decorator and the conflict resolver act on differently."
   }
 ]
