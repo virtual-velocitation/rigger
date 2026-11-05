@@ -19,7 +19,7 @@ use std::path::Path;
 
 use common::cli::{
     assert_stopped_at_the_grounder, critique_finding_id, emit, printed_decision, read_run_events,
-    record_clean_critique, record_critique, refused_new_run, run_payloads, run_rigger,
+    record_clean_critique, record_critique, refused_new_run, resolve, run_payloads, run_rigger,
     run_rigger_envs, seed_a_hold_no_fold_applies, seed_critique_spawn, seed_on_the_run,
     seed_run_events, stopping_at_the_grounder, temp_repoless_project, write_scaffold,
     write_spec_project, CLEAN_CRITIQUE, CRITIQUE_ROUTE, RESOLUTION_ROUTE,
@@ -204,15 +204,6 @@ fn assert_each_run_entry_refuses(
             runs_before,
         );
     }
-}
-
-/// A `DecisionMade` resolving `ids` and governing `governs`, through `rigger emit`.
-fn resolve(root: &Path, id: &str, governs: &str, ids: &[String]) {
-    emit(
-        root,
-        "DecisionMade",
-        &json!({"id": id, "summary": "closed", "governs": [governs], "resolves": ids}).to_string(),
-    );
 }
 
 /// The spec's run already in `root`'s store: a `RunStarted` on [`SPEC_REL`] and [`SPEC`]'s

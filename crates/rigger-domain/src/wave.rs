@@ -552,6 +552,18 @@ mod tests {
         }
     }
 
+    /// The critic a test expects: `persona`, read from the stage `gate` names (`None` for
+    /// `defaults.review`), bounded by the built-in bound, as under a workflow setting no
+    /// `max_retries`.
+    fn built_in_critic(persona: &str, gate: Option<&str>) -> Critic {
+        Critic {
+            persona: persona.to_string(),
+            gate: gate.map(str::to_string),
+            ceiling: 3,
+            source: RetriesSource::BuiltIn,
+        }
+    }
+
     #[test]
     fn the_critic_is_the_plan_critique_gates_adversary_first() {
         for review in [
@@ -562,7 +574,11 @@ mod tests {
                 "defaults:\n  review: {review}\nstages:\n{PLAN}  plan-critique:\n    \
                  needs: [plan]\n    adversary: critic\n    adjudicator: judge\n"
             ));
-            assert_eq!(critic(&wf).as_deref(), Some("critic"), "{review}");
+            assert_eq!(
+                critic_of(&wf),
+                Some(built_in_critic("critic", Some("plan-critique"))),
+                "{review}"
+            );
         }
     }
 
@@ -572,11 +588,14 @@ mod tests {
             "defaults:\n  review:\n    adversary: fallback\nstages:\n{PLAN}  plan-critique:\n    \
              needs: [plan]\n    adjudicator: judge\n"
         ));
-        assert_eq!(critic(&gate_without_adversary).as_deref(), Some("fallback"));
+        assert_eq!(
+            critic_of(&gate_without_adversary),
+            Some(built_in_critic("fallback", None))
+        );
         let no_gate = workflow(
             "defaults:\n  review:\n    adversary: fallback\nstages:\n  a:\n    agent: worker\n",
         );
-        assert_eq!(critic(&no_gate).as_deref(), Some("fallback"));
+        assert_eq!(critic_of(&no_gate), Some(built_in_critic("fallback", None)));
     }
 
     #[test]
@@ -586,12 +605,12 @@ mod tests {
              needs: [implement]\n    adversary: lens-adversary\n    adjudicator: judge\n"
         ));
         assert_eq!(
-            critic(&review_stage_only),
+            critic_of(&review_stage_only),
             None,
             "a review stage that does not need the producer is not the plan-critique gate"
         );
         assert_eq!(
-            critic(&workflow("stages:\n  a:\n    agent: worker\n")),
+            critic_of(&workflow("stages:\n  a:\n    agent: worker\n")),
             None
         );
         assert_eq!(
@@ -638,8 +657,101 @@ mod tests {
         for (why, review, want) in cases {
             for stages in [PLAN.to_string(), format!("{PLAN}{gate}")] {
                 let wf = workflow(&format!("defaults:\n  review: {review}\nstages:\n{stages}"));
-                assert_eq!(critic(&wf).as_deref(), want, "{why}: {stages}");
+                assert_eq!(
+                    critic_of(&wf),
+                    want.map(|persona| built_in_critic(persona, None)),
+                    "{why}: {stages}"
+                );
             }
+        }
+    }
+
+    /// Spec 123, THE CEILING: the critic's ceiling is the effective `max_retries` of the stage it
+    /// is read from, with its source - the plan-critique gate's own key, else
+    /// `defaults.max_retries`, else the built-in bound - and a critic read from `defaults.review`
+    /// never reads the gate's key.
+    #[test]
+    fn the_critics_ceiling_is_the_effective_max_retries_of_the_stage_it_is_read_from() {
+        let gate_critic = |ceiling, source| Critic {
+            persona: "critic".to_string(),
+            gate: Some("plan-critique".to_string()),
+            ceiling,
+            source,
+        };
+        let default_critic = |ceiling, source| Critic {
+            persona: "fallback".to_string(),
+            gate: None,
+            ceiling,
+            source,
+        };
+        let adversary = "    adversary: critic\n";
+        let defaults_key = "  max_retries: 4\n";
+        let gate_key = "    max_retries: 5\n";
+        let cases = [
+            (
+                "the gate's own key over the defaults' key",
+                defaults_key,
+                adversary,
+                gate_key,
+                gate_critic(5, RetriesSource::Stage),
+            ),
+            (
+                "the gate's own key under no defaults' key",
+                "",
+                adversary,
+                gate_key,
+                gate_critic(5, RetriesSource::Stage),
+            ),
+            (
+                "the defaults' key under a gate setting none",
+                defaults_key,
+                adversary,
+                "",
+                gate_critic(4, RetriesSource::Defaults),
+            ),
+            (
+                "the built-in bound under neither key",
+                "",
+                adversary,
+                "",
+                gate_critic(3, RetriesSource::BuiltIn),
+            ),
+            (
+                "a default-review critic reads the defaults' key, never the gate's",
+                defaults_key,
+                "",
+                gate_key,
+                default_critic(4, RetriesSource::Defaults),
+            ),
+            (
+                "a default-review critic under the gate's key alone takes the built-in bound",
+                "",
+                "",
+                gate_key,
+                default_critic(3, RetriesSource::BuiltIn),
+            ),
+        ];
+        for (why, defaults_max, gate_adversary, gate_max, want) in cases {
+            let wf = workflow(&format!(
+                "defaults:\n  review:\n    adversary: fallback\n{defaults_max}stages:\n{PLAN}  \
+                 plan-critique:\n    needs: [plan]\n{gate_adversary}    adjudicator: judge\n\
+                 {gate_max}"
+            ));
+            assert_eq!(critic_of(&wf), Some(want), "{why}");
+        }
+    }
+
+    /// Spec 123: the ceiling is reached once the attempt count is at or above it, a count past it
+    /// (a key lowered between calls) included.
+    #[test]
+    fn the_ceiling_is_reached_once_the_attempt_count_is_at_or_above_it() {
+        let critic = built_in_critic("critic", None);
+        for (attempts, want) in [(0, false), (2, false), (3, true), (4, true)] {
+            assert_eq!(
+                critic.reached(attempts),
+                want,
+                "{attempts} attempts against a ceiling of 3"
+            );
         }
     }
 }

@@ -19,7 +19,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-c63400fe9b8e",
+    "id": "dup-8622c5aefa5d",
     "classification": "near",
     "sites": [
       {
@@ -221,9 +221,14 @@
         "file": "tests/regate_landed_on_resume_periphery.rs",
         "name": "unit_branch",
         "content_hash": "6fd90a8c2eed6379"
+      },
+      {
+        "file": "tests/spec_critique_periphery.rs",
+        "name": "answered",
+        "content_hash": "6fd90a8c2eed6379"
       }
     ],
-    "proposed_home": "a new shared module (sites span 24 files: crates/rigger-conductor/src/blast_radius_eval.rs, crates/rigger-conductor/src/conductor.rs, crates/rigger-domain/src/contextgraph.rs, crates/rigger-domain/src/instructions.rs, crates/rigger-domain/src/review.rs, crates/rigger-domain/src/spawn.rs, crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs, crates/rigger-grounder/src/grounder/mod.rs, crates/rigger-grounder/src/grounder/workflowdef.rs, crates/rigger-grounder/src/ingest.rs, crates/rigger-store-sqlite/src/eventstore/namespace.rs, crates/rigger-worktree-git/src/worktree.rs, src/cli/hygiene.rs, src/cli/mod.rs, src/cli/setup.rs, tests/canary_model_drift_periphery.rs, tests/cli.rs, tests/common/cli.rs, tests/common/fixtures/fold.rs, tests/common/fixtures/instructions.rs, tests/common/fixtures/spawn.rs, tests/halted_spawn_wip_recovery_periphery.rs, tests/native_driver_pipelining_behavior.rs, tests/regate_landed_on_resume_periphery.rs)",
+    "proposed_home": "a new shared module (sites span 25 files: crates/rigger-conductor/src/blast_radius_eval.rs, crates/rigger-conductor/src/conductor.rs, crates/rigger-domain/src/contextgraph.rs, crates/rigger-domain/src/instructions.rs, crates/rigger-domain/src/review.rs, crates/rigger-domain/src/spawn.rs, crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs, crates/rigger-grounder/src/grounder/mod.rs, crates/rigger-grounder/src/grounder/workflowdef.rs, crates/rigger-grounder/src/ingest.rs, crates/rigger-store-sqlite/src/eventstore/namespace.rs, crates/rigger-worktree-git/src/worktree.rs, src/cli/hygiene.rs, src/cli/mod.rs, src/cli/setup.rs, tests/canary_model_drift_periphery.rs, tests/cli.rs, tests/common/cli.rs, tests/common/fixtures/fold.rs, tests/common/fixtures/instructions.rs, tests/common/fixtures/spawn.rs, tests/halted_spawn_wip_recovery_periphery.rs, tests/native_driver_pipelining_behavior.rs, tests/regate_landed_on_resume_periphery.rs, tests/spec_critique_periphery.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
@@ -707,7 +712,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-57930b804935",
+    "id": "dup-a6427ffb5410",
     "classification": "exact",
     "sites": [
       {
@@ -724,9 +729,14 @@
         "file": "tests/gate_scratch_root_periphery.rs",
         "name": "recording_gate",
         "content_hash": "c28c81e0bdeb1759"
+      },
+      {
+        "file": "tests/spec_critique_periphery.rs",
+        "name": "verb_head",
+        "content_hash": "c28c81e0bdeb1759"
       }
     ],
-    "proposed_home": "a new shared module (sites span 3 files: crates/rigger-conductor/src/conductor.rs, tests/cli.rs, tests/gate_scratch_root_periphery.rs)",
+    "proposed_home": "a new shared module (sites span 4 files: crates/rigger-conductor/src/conductor.rs, tests/cli.rs, tests/gate_scratch_root_periphery.rs, tests/spec_critique_periphery.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
@@ -8613,8 +8623,8 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-38d9b33987ea",
-    "classification": "exact",
+    "id": "dup-30d8bd7871ae",
+    "classification": "near",
     "sites": [
       {
         "file": "tests/common/cli.rs",
@@ -8635,9 +8645,14 @@
         "file": "tests/common/fixtures/spawn.rs",
         "name": "sleeping",
         "content_hash": "b051a6d6f4b01ca2"
+      },
+      {
+        "file": "tests/spec_critique_periphery.rs",
+        "name": "gate_ceiling",
+        "content_hash": "8b0e1dc335016878"
       }
     ],
-    "proposed_home": "a new shared module (sites span 3 files: tests/common/cli.rs, tests/common/fixtures/cursor.rs, tests/common/fixtures/spawn.rs)",
+    "proposed_home": "a new shared module (sites span 4 files: tests/common/cli.rs, tests/common/fixtures/cursor.rs, tests/common/fixtures/spawn.rs, tests/spec_critique_periphery.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
@@ -9394,6 +9409,25 @@
       }
     ],
     "proposed_home": "a new shared module (sites span 2 files: tests/review_round_lenses_only_log_derived_resume_periphery.rs, tests/review_round_non_ancestor_residue_names_true_diff_periphery.rs)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-cef19c011c6b",
+    "classification": "exact",
+    "sites": [
+      {
+        "file": "tests/simplification_audit.rs",
+        "name": "placeholder_section",
+        "content_hash": "4f07f9c34e926678"
+      },
+      {
+        "file": "tests/spec_critique_periphery.rs",
+        "name": "ceiling_notice",
+        "content_hash": "4f07f9c34e926678"
+      }
+    ],
+    "proposed_home": "a new shared module (sites span 2 files: tests/simplification_audit.rs, tests/spec_critique_periphery.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },

@@ -725,6 +725,16 @@ pub fn seed_critique_spawn(root: &Path, hash: &str, attempt: u32, output: &str) 
     );
 }
 
+/// A `DecisionMade` resolving `ids` and governing `governs`, through `rigger emit`.
+pub fn resolve(root: &Path, id: &str, governs: &str, ids: &[String]) {
+    emit(
+        root,
+        "DecisionMade",
+        &serde_json::json!({"id": id, "summary": "closed", "governs": [governs], "resolves": ids})
+            .to_string(),
+    );
+}
+
 /// The `DecisionMade` a refusal of a new run on `spec` prints for the operator to record (spec
 /// 112, Notes), resolving `resolves`.
 pub fn printed_decision(spec: &str, resolves: &str) -> String {

@@ -69,9 +69,11 @@ pub const SILENT_PAST_THE_POLL: &str = "claude-code-silent-past-the-poll-then-re
 const CRITIQUE_STUB: &str = "claude-code-critique-agent.sh";
 
 /// The files the critique stub reads and writes beside its PATH symlink (`<work>/bin`): the
-/// transcript it replays, its spawn count, its first stdin line, its argv, the system prompt its
-/// `--system-prompt-file` named and the `KURRENTDB_CONN` it was started with.
+/// transcript it replays on its first spawn, the one it replays on every later spawn, its spawn
+/// count, and its first spawn's stdin line, argv, the system prompt its `--system-prompt-file`
+/// named and the `KURRENTDB_CONN` it was started with.
 const CRITIQUE_TRANSCRIPT: &str = "critique-transcript.jsonl";
+const CRITIQUE_APPROVE_TRANSCRIPT: &str = "critique-approve-transcript.jsonl";
 const CRITIQUE_SPAWNS: &str = "critique-spawns";
 const CRITIQUE_TASK: &str = "critique-task.jsonl";
 const CRITIQUE_ARGV: &str = "critique-argv";
@@ -84,11 +86,14 @@ pub const CRITIQUE_SYSTEM_PROMPT: &str = "critique-system-prompt";
 pub const CRITIQUE_CONN: &str = "critique-conn";
 
 /// A PATH that runs the checked-in critique stub as `claude`, ahead of the ambient PATH, set on
-/// the one `rigger critique` command that should reach it. The stub replays a stream-json session
-/// whose `result` is `critique`: an init that reports the spawn's `rigger` server connected, then
-/// the result line, `critique` JSON-encoded so its finding lines and verdict line survive. Only
-/// data is written here, beside the stub's symlink in `<work>/bin`; the executable is the
-/// checked-in fixture. Each call takes a fresh `work` directory.
+/// the one `rigger critique` command that should reach it. On its first spawn the stub replays a
+/// stream-json session whose `result` is `critique`: an init that reports the spawn's `rigger`
+/// server connected, then the result line, `critique` JSON-encoded so its finding lines and
+/// verdict line survive. On every later spawn it replays the same init and a result answering
+/// [`CLEAN_CRITIQUE`](super::cli::CLEAN_CRITIQUE), a zero-line approve, so a call whose first pass
+/// does not exhaust the critique stops at its next attempt (spec 123, THE SHARED STUB). Only data
+/// is written here, beside the stub's symlink in `<work>/bin`; the executable is the checked-in
+/// fixture. Each call takes a fresh `work` directory.
 pub fn write_critique_stub(work: &Path, critique: &str) -> String {
     write_critique_stub_reporting(work, critique, "connected")
 }
@@ -109,22 +114,29 @@ pub fn write_critique_stub_reporting(work: &Path, critique: &str, rigger_server:
         "permissionMode": "default",
         "apiKeySource": "none",
     });
-    let result = serde_json::json!({
-        "type": "result",
-        "subtype": "success",
-        "is_error": false,
-        "num_turns": 1,
-        "result": critique,
-        "session_id": session,
-        "total_cost_usd": 0.0,
-        "usage": {"input_tokens": 1, "output_tokens": 1},
-        "permission_denials": [],
-    });
-    std::fs::write(
-        work.join("bin").join(CRITIQUE_TRANSCRIPT),
-        format!("{init}\n{result}\n"),
-    )
-    .unwrap();
+    let result = |answer: &str| {
+        serde_json::json!({
+            "type": "result",
+            "subtype": "success",
+            "is_error": false,
+            "num_turns": 1,
+            "result": answer,
+            "session_id": session,
+            "total_cost_usd": 0.0,
+            "usage": {"input_tokens": 1, "output_tokens": 1},
+            "permission_denials": [],
+        })
+    };
+    for (transcript, answer) in [
+        (CRITIQUE_TRANSCRIPT, critique),
+        (CRITIQUE_APPROVE_TRANSCRIPT, super::cli::CLEAN_CRITIQUE),
+    ] {
+        std::fs::write(
+            work.join("bin").join(transcript),
+            format!("{init}\n{}\n", result(answer)),
+        )
+        .unwrap();
+    }
     path
 }
 
@@ -219,19 +231,20 @@ pub fn flag_value<'a>(argv: &'a [String], flag: &str) -> &'a str {
     &argv[at + 1]
 }
 
-/// The task the critique stub under `work` was last handed: the `content` of the host's first
-/// stream-json user message.
+/// The task the critique stub under `work` was handed on its first spawn: the `content` of the
+/// host's first stream-json user message. A later spawn's task is its `SpawnRequested` `prompt`
+/// on the critique stream.
 pub fn critique_stub_task(work: &Path) -> String {
     recorded_task(&work.join("bin").join(CRITIQUE_TASK))
 }
 
-/// What the critique stub under `work` recorded of its last start under `record`
+/// What the critique stub under `work` recorded of its first start under `record`
 /// ([`CRITIQUE_CONN`] or [`CRITIQUE_SYSTEM_PROMPT`]).
 pub fn critique_stub_record(work: &Path, record: &str) -> String {
     std::fs::read_to_string(work.join("bin").join(record)).unwrap()
 }
 
-/// The argv the critique stub under `work` was last started with.
+/// The argv the critique stub under `work` was started with on its first spawn.
 pub fn critique_stub_argv(work: &Path) -> Vec<String> {
     recorded_argv(&work.join("bin").join(CRITIQUE_ARGV))
 }

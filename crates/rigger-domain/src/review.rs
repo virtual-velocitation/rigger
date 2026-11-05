@@ -1155,8 +1155,9 @@ mod tests {
     }
 
     /// Spec 123, A PASS: a result with zero finding lines is a pass like any other, kept in the
-    /// union whatever pass follows it; and the derived verdict is reject when the union holds a
-    /// BLOCKING finding, else approve, whatever any pass wrote.
+    /// union whatever pass follows it; the derived verdict is reject when the union holds a
+    /// BLOCKING finding, else approve, whatever any pass wrote; and the critique is EXHAUSTED once
+    /// some pass, at any position, carries no finding line.
     #[test]
     fn a_zero_line_pass_is_a_pass_and_the_union_derives_the_verdict() {
         let blocking = "C1 | BLOCKING | criterion 1 | r | f\n{\"verdict\":\"reject\"}";
@@ -1164,35 +1165,39 @@ mod tests {
         let clean = "No defects.\n{\"verdict\":\"approve\"}";
         let approving_blocking = "C1 | BLOCKING | c | r | f\n{\"verdict\":\"approve\"}";
         for (outputs, expected, why) in [
-            (&[blocking][..], (&[1][..], "reject"), "one BLOCKING pass"),
+            (
+                &[blocking][..],
+                (&[1][..], "reject", false),
+                "one BLOCKING pass",
+            ),
             (
                 &[advisory],
-                (&[1], "approve"),
+                (&[1], "approve", false),
                 "a NON-BLOCKING pass approves",
             ),
             (
                 &[clean],
-                (&[0], "approve"),
+                (&[0], "approve", true),
                 "a zero-line pass is a pass and approves",
             ),
             (
                 &[blocking, clean],
-                (&[1, 0], "reject"),
+                (&[1, 0], "reject", true),
                 "a zero-line pass beside a union holding a BLOCKING finding derives reject",
             ),
             (
                 &[clean, advisory],
-                (&[0, 1], "approve"),
+                (&[0, 1], "approve", true),
                 "a pass after a zero-line pass is kept in the union",
             ),
             (
                 &[advisory, blocking],
-                (&[1, 1], "reject"),
+                (&[1, 1], "reject", false),
                 "a BLOCKING finding at a later pass derives reject",
             ),
             (
                 &[approving_blocking],
-                (&[1], "reject"),
+                (&[1], "reject", false),
                 "an approve beside a BLOCKING line derives reject",
             ),
         ] {
@@ -1211,12 +1216,17 @@ mod tests {
                         .iter()
                         .map(|pass| pass.findings.len())
                         .collect::<Vec<_>>(),
-                    critique.verdict()
+                    critique.verdict(),
+                    critique.exhausted()
                 ),
-                (expected.0.to_vec(), expected.1),
+                (expected.0.to_vec(), expected.1, expected.2),
                 "{why}"
             );
         }
+        assert!(
+            !Critique { passes: vec![] }.exhausted(),
+            "a critique with no pass is not exhausted"
+        );
     }
 
     /// Spec 123: the critic's spawn at `attempt` is answered with its own pass, never the union nor
@@ -1369,7 +1379,7 @@ mod tests {
     fn the_spec_critique_prompt_is_only_its_framing_voided_duties_and_output_contract() {
         let text = "# 9 - A spec\n\n## Done when\n\n- [ ] a test proves X\n";
         assert_eq!(
-            spec_critique_prompt("specs/9-a.md", text),
+            spec_critique_prompt("specs/9-a.md", text, []),
             format!(
                 "This is a critique of a SPEC, not code: the text below is a design and its \
                  Done-when criteria, written before any run builds them. In your persona's \
@@ -1389,6 +1399,41 @@ mod tests {
                  NON-BLOCKING; any other line is prose. `<critic id>` is your own short label for \
                  the finding. The verdict is reject when any line is BLOCKING, else \
                  approve.\n\nThe spec under critique, `specs/9-a.md`, verbatim:\n\n{text}"
+            )
+        );
+    }
+
+    /// Spec 123, THE PASS FRAMING IS CONTRACT: with recorded findings, the prompt carries the
+    /// recorded-findings clause and one line per finding, its summary, in the order given, then a
+    /// blank line, after the output contract and before the spec text, which stays the verbatim
+    /// tail.
+    #[test]
+    fn the_spec_critique_prompt_carries_the_recorded_findings_before_the_spec_text() {
+        let text = "# 9 - A spec\n\n## Done when\n\n- [ ] a test proves X\n";
+        let recorded = [
+            finding(
+                "sc-0123456789abcdef-0-1",
+                true,
+                ["C1", "criterion 1", "reads two ways", "say which"],
+            ),
+            finding(
+                "sc-0123456789abcdef-1-1",
+                false,
+                ["C9", "Design", "never says when", "say when"],
+            ),
+        ];
+        assert_eq!(
+            spec_critique_prompt("specs/9-a.md", text, &recorded),
+            format!(
+                "{CRITIQUE_FRAMING}{CRITIQUE_OUTPUT_CONTRACT}The findings already recorded for \
+                 this text follow, one per line as <severity> | <location> | <reading> | <fix>. A \
+                 finding among these lines is recorded and is not reported again: report only \
+                 findings not among them, and when there is none to add, write no finding line and \
+                 the verdict line {{\"verdict\":\"approve\"}}.\n\
+                 BLOCKING | criterion 1 | reads two ways | say which\n\
+                 NON-BLOCKING | Design | never says when | say when\n\
+                 \n\
+                 The spec under critique, `specs/9-a.md`, verbatim:\n\n{text}"
             )
         );
     }

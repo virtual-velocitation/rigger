@@ -340,6 +340,68 @@ mod tests {
         assert_eq!(effective_max_retries(6), 6);
     }
 
+    /// Spec 123, THE CEILING: a stage's effective `max_retries` is its own non-zero key, else
+    /// `defaults.max_retries` when non-zero, else the built-in bound, each with the source it came
+    /// from.
+    #[test]
+    fn a_stages_max_retries_is_its_own_else_the_defaults_else_the_built_in_bound() {
+        let stage = |max_retries| Stage {
+            max_retries,
+            ..Stage::default()
+        };
+        let defaults = |max_retries| Defaults {
+            max_retries,
+            ..Defaults::default()
+        };
+        let cases = [
+            (
+                "a stage's own key over a larger default",
+                Some(stage(5)),
+                defaults(4),
+                (5, RetriesSource::Stage),
+            ),
+            (
+                "a stage's own key under a larger default",
+                Some(stage(1)),
+                defaults(4),
+                (1, RetriesSource::Stage),
+            ),
+            (
+                "a stage's own key under unset defaults",
+                Some(stage(5)),
+                defaults(0),
+                (5, RetriesSource::Stage),
+            ),
+            (
+                "an unset stage inherits the defaults' key",
+                Some(stage(0)),
+                defaults(4),
+                (4, RetriesSource::Defaults),
+            ),
+            (
+                "no stage reads the defaults' key",
+                None,
+                defaults(4),
+                (4, RetriesSource::Defaults),
+            ),
+            (
+                "an unset stage under unset defaults takes the built-in bound",
+                Some(stage(0)),
+                defaults(0),
+                (3, RetriesSource::BuiltIn),
+            ),
+            (
+                "no stage under unset defaults takes the built-in bound",
+                None,
+                defaults(0),
+                (3, RetriesSource::BuiltIn),
+            ),
+        ];
+        for (why, stage, defaults, want) in cases {
+            assert_eq!(stage_max_retries(stage.as_ref(), &defaults), want, "{why}");
+        }
+    }
+
     #[test]
     fn each_status_maps_to_its_kind_and_integrated_is_not_a_blocker() {
         // One run holding a unit in every non-terminal-plus-escalated state, so the
