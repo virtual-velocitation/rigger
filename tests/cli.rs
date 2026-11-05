@@ -7309,14 +7309,7 @@ fn worker_hold(
     action: &str,
     needs_person: bool,
 ) -> rigger::run::RunHeld {
-    rigger::run::RunHeld {
-        cause: cause.to_string(),
-        detail: detail.to_string(),
-        action: action.to_string(),
-        needs_person,
-        by: rigger::run::HOLD_BY_HOST.to_string(),
-        model: "sonnet".to_string(),
-    }
+    common::fixtures::host_hold(cause, detail, action, needs_person, "sonnet")
 }
 
 /// An arm of [`install_fake_claude`] for the `Do the unit.` workers: the session runs `opening`,

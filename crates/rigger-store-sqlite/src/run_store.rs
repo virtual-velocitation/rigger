@@ -669,7 +669,10 @@ mod tests {
             &sighting("authentication_failed"),
         )
         .expect_err("a hold the store never wrote is not recorded");
-        assert!(err.to_string().contains(TYPE_RUN_HELD), "{err}");
+        assert_eq!(
+            err.to_string(),
+            "event store: reported writing nothing for RunHeld"
+        );
     }
 
     /// THE RELEASE (spec 105): a hold open, an operator hold included, takes one `RunReleased` by

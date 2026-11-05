@@ -25,6 +25,23 @@ pub fn hold_naming(cause: &str, action: &str, by: &str) -> rigger::run::RunHeld 
     }
 }
 
+/// A hold of `cause` the host appended for a launch on `model`, with the `detail`, the `action`
+/// and the need for a person its sighting carried.
+pub fn host_hold(
+    cause: &str,
+    detail: &str,
+    action: &str,
+    needs_person: bool,
+    model: &str,
+) -> rigger::run::RunHeld {
+    rigger::run::RunHeld {
+        detail: detail.to_string(),
+        needs_person,
+        model: model.to_string(),
+        ..hold_naming(cause, action, rigger::run::HOLD_BY_HOST)
+    }
+}
+
 /// A `RunHeld` event of `cause` by `by`, every other field at its default.
 pub fn held_event(cause: &str, by: &str) -> Event {
     run_held_event(&hold_naming(cause, "", by))
