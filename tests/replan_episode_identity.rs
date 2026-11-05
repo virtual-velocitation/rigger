@@ -96,6 +96,11 @@
 //! split right at once. Asserts the identical surviving set the internal seam test
 //! asserts: the two-episode criterion's earlier unit gone, its later unit alone serving
 //! that criterion, and both split siblings surviving together.
+//!
+//! The last rows prove the re-plan prompt's promise that a same-id refine UPDATES its unit in
+//! place, text included, through the same real write path: each re-plan re-emits the first
+//! spawn's unit under its EXACT id with a new ownership sentence, and the latest refine's text
+//! is the contract the implementer is handed and the ledger records.
 
 mod common;
 use common::fixtures::{critique_stage, fan_out_stage, plan_stage, workflow_cfg};
@@ -1151,5 +1156,170 @@ fn a_two_episode_supersession_beside_a_same_episode_split_is_recovered_by_resume
         serving_y,
         vec!["u-split-1", "u-split-2"],
         "both split siblings must serve crit_y after the resume fold; got {serving_y:?}"
+    );
+}
+
+/// The unit [`RefineTextDriver`]'s planner proposes and then refines under its own id.
+const REFINED_UNIT: &str = "u-gadget";
+
+/// Drives the plan-critique reject-then-replan cycle where every re-plan REFINES the first
+/// spawn's unit under its EXACT id with new unit text: the first planner spawn proposes
+/// [`REFINED_UNIT`] for `criterion` verbatim, and re-plan `n` re-emits that same id with the
+/// criterion followed by `refines[n - 1]`, the ownership sentence a refine adds. The
+/// adjudicator rejects `refines.len()` DAGs, then approves; every other agent records the
+/// prompt it is handed, by unit.
+struct RefineTextDriver {
+    criterion: String,
+    refines: Vec<String>,
+    planner_spawns: Mutex<usize>,
+    adjudicator_calls: Mutex<usize>,
+    worker_prompts: Mutex<Vec<(String, String)>>,
+}
+
+impl RefineTextDriver {
+    fn new(criterion: &str, refines: &[&str]) -> Self {
+        RefineTextDriver {
+            criterion: criterion.to_string(),
+            refines: refines.iter().map(|r| r.to_string()).collect(),
+            planner_spawns: Mutex::new(0),
+            adjudicator_calls: Mutex::new(0),
+            worker_prompts: Mutex::new(Vec::new()),
+        }
+    }
+}
+
+/// Bumps `counter` and returns its new value.
+fn bump(counter: &Mutex<usize>) -> usize {
+    let mut n = counter.lock().unwrap();
+    *n += 1;
+    *n
+}
+
+impl AgentDriver for RefineTextDriver {
+    fn spawn(
+        &self,
+        a: &AgentDef,
+        prompt: &str,
+        opts: &SpawnOpts,
+        emit: &dyn Fn(&str, Value) -> Result<(), Error>,
+    ) -> Result<AgentResult, Error> {
+        let output = match a.id.as_str() {
+            "planner" => {
+                let text = match bump(&self.planner_spawns) {
+                    1 => self.criterion.clone(),
+                    spawn => {
+                        let owns = self
+                            .refines
+                            .get(spawn - 2)
+                            .expect("one re-plan per rejected DAG");
+                        format!("{} {owns}", self.criterion)
+                    }
+                };
+                emit(
+                    TYPE_UNIT_PROPOSED,
+                    json!({
+                        "id": REFINED_UNIT,
+                        "agent": "worker",
+                        "criterion": text,
+                        "gates": ["ok"],
+                    }),
+                )?;
+                "proposed the DAG".to_string()
+            }
+            "judge" => {
+                let verdict = if bump(&self.adjudicator_calls) > self.refines.len() {
+                    "approve"
+                } else {
+                    "reject"
+                };
+                format!("{{\"verdict\":\"{verdict}\"}}")
+            }
+            _ => {
+                self.worker_prompts
+                    .lock()
+                    .unwrap()
+                    .push((opts.unit.clone(), prompt.to_string()));
+                format!("{} ok", a.id)
+            }
+        };
+        Ok(AgentResult {
+            output,
+            resolved_model: String::new(),
+            ..Default::default()
+        })
+    }
+}
+
+/// [`RefineTextDriver`] refines its unit once per entry of `refines`: the LAST refine's text
+/// must be the unit's whole contract - in the task block its implementer is handed and in the
+/// criterion the ledger records for it - and no earlier refine's text reaches the implementer.
+fn assert_the_latest_refine_text_is_the_units_contract(refines: &[&str]) {
+    let criterion = "the gadget module is implemented";
+    let driver = RefineTextDriver::new(criterion, refines);
+    let store = Store::open(":memory:").unwrap();
+    let rs = run_over(
+        &two_episode_cfg(),
+        &store,
+        &driver,
+        &[criterion.to_string()],
+    );
+    let (latest, earlier) = refines.split_last().expect("at least one refine");
+    let contract = format!("{criterion}\n\n{latest}");
+
+    assert_eq!(
+        *driver.planner_spawns.lock().unwrap(),
+        refines.len() + 1,
+        "one re-plan per rejected DAG"
+    );
+    assert_eq!(
+        rs.units[REFINED_UNIT].status,
+        ledger::Status::Integrated,
+        "the refined unit runs and integrates; units: {:?}",
+        rs.units.keys().collect::<Vec<_>>()
+    );
+    assert_eq!(
+        rs.units[REFINED_UNIT].spec_criterion, contract,
+        "the ledger records the latest refine's text as the unit's criterion"
+    );
+    assert_eq!(
+        serving(&rs, &contract),
+        vec![REFINED_UNIT],
+        "the refined unit alone serves its contract"
+    );
+    let prompts: Vec<String> = driver
+        .worker_prompts
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(unit, _)| unit == REFINED_UNIT)
+        .map(|(_, prompt)| prompt.clone())
+        .collect();
+    assert_eq!(prompts.len(), 1, "one implementer spawn for the unit");
+    assert!(
+        prompts[0].contains(&format!(":\n{contract}\n\n")),
+        "the implementer's task block carries the latest refine's text; prompt: {}",
+        prompts[0]
+    );
+    for stale in earlier {
+        assert!(
+            !prompts[0].contains(stale),
+            "an earlier refine's text {stale:?} must not reach the implementer; prompt: {}",
+            prompts[0]
+        );
+    }
+}
+
+rigger::test_cases! {
+    /// One reject, one re-plan: the refine's ownership sentence replaces the first
+    /// proposal's bare criterion as the unit's contract.
+    a_same_id_refine_through_the_real_re_plan_hands_the_implementer_its_text: assert_the_latest_refine_text_is_the_units_contract(
+        &["THIS UNIT OWNS the gadget parser only."],
+    );
+    /// Two rejects, two re-plans refining the same id: the later refine wins.
+    the_later_same_id_refine_through_the_real_re_plan_wins: assert_the_latest_refine_text_is_the_units_contract(
+        &[
+            "THIS UNIT OWNS the gadget parser only.",
+            "THIS UNIT OWNS the gadget parser and its error type.",
+        ],
     );
 }
