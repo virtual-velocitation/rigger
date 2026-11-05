@@ -322,16 +322,19 @@ const META_SESSION_ID: &str = "session_id";
 
 /// The metadata key a [`STATUS_SPAWN_SESSION`] mark carries the session the spawn was ASKED to
 /// continue under ([`SpawnOpts::resumed_from`]); absent on a spawn asked for a fresh session.
-/// Beside [`META_SESSION_ID`] it records a host's fallback in the log: a requested session the
-/// spawn did not run as is a resume the host could not honour (its transcript was gone), so the
-/// spawn ran fresh.
+/// Beside [`META_SESSION_ID`] it records a host's fallback in the log: on a spawn the host
+/// launched, a requested session it did not run as, with no relaunch behind it
+/// ([`META_RESUMED_FROM`] absent), is a resume the host could not honour (its transcript was
+/// gone), so the spawn ran fresh; a relaunch runs as a fork under a minted id, which is no
+/// fallback.
 const META_RESUME_REQUESTED: &str = "resume_requested";
 
 /// The metadata key a [`STATUS_SPAWN_SESSION`] mark carries the session the spawn's last launch
-/// CONTINUED under, a relaunch of an interrupted launch included; absent on a fresh launch no
-/// relaunch followed, including the fresh fallback a host takes when the session it was asked to
-/// resume is gone, and on a spawn the headless host answers from the run log, which continues no
-/// session.
+/// CONTINUED ([`AgentResult::resumed_from`]): the one it resumed, which it ran as, or the session
+/// of the interrupted launch a relaunch forked into the [`META_SESSION_ID`] it ran as. Absent on a
+/// fresh launch no relaunch followed, including the fresh fallback a host takes when the session
+/// it was asked to resume is gone, and on a spawn the headless host answers from the run log,
+/// which continues no session.
 const META_RESUMED_FROM: &str = "resumed_from";
 
 /// The replay key for a durable [`STATUS_REVIEW_ROUND_START`] mark, keyed by the exact

@@ -60,18 +60,21 @@ pub struct AgentResult {
     pub resolved_model: String,
     /// The Claude Code session this spawn ran as - the id a later attempt or review round of
     /// the same role on the same unit continues with `--resume` ([`SpawnOpts::resumed_from`]).
-    /// A process host mints it for a fresh launch and keeps the continued one on a resume, and
-    /// the headless host answering a spawn from the run log carries the session its recorded
-    /// result names; the conductor records it in the run log beside the spawn. Empty from a
-    /// driver that runs no
-    /// resumable session (the workflow and replay drivers, a test double), which then leaves
-    /// every later spawn of that role a fresh one.
+    /// A process host mints it for a fresh launch and for the fork a relaunch continues an
+    /// interrupted session as, keeping the continued one on a resume; the headless host answering
+    /// a spawn from the run log carries the session its recorded result names, and the conductor
+    /// records it in the run log beside the spawn. Empty from a driver that runs no resumable
+    /// session (the workflow and replay drivers, a test double), which then leaves every later
+    /// spawn of that role a fresh one.
     pub session_id: String,
     /// The session the spawn's last launch CONTINUED, a relaunch of an interrupted launch
-    /// included: [`SpawnOpts::resumed_from`] when the host resumed it, the interrupted session
-    /// when the host relaunched one, and empty for a fresh launch no relaunch followed - including
-    /// the fallback a host takes when the session it was asked to resume no longer exists. Empty
-    /// too for a spawn the headless host answers from the run log, which launches nothing.
+    /// included: [`SpawnOpts::resumed_from`] when the host resumed it, and the session the
+    /// interrupted launch ran as when the host relaunched one, forking it into
+    /// [`AgentResult::session_id`], so behind a chain of relaunches, or a relaunch of the
+    /// fallback's fresh launch, it names a session the spawn never asked for. Empty for a fresh
+    /// launch no relaunch followed - including the fallback a host takes when the session it was
+    /// asked to resume no longer exists - and for a spawn the headless host answers from the run
+    /// log, which launches nothing.
     pub resumed_from: String,
 }
 
