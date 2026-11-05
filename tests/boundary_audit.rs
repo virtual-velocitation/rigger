@@ -14,8 +14,8 @@
 //!    graph opener the audit names: a new site fails the suite until it is listed, and a listed
 //!    site that vanished fails it until it is deleted. An appender that holds the stream by
 //!    reference is reached through its graph open instead: the MCP server's emit
-//!    (`crates/rigger-dash/src/mcpserver.rs:431`), handed `conductor::STREAM` at
-//!    `src/cli/dashboard.rs:853`, is reached through `cmd_mcp`'s graph open.
+//!    (`crates/rigger-dash/src/mcpserver.rs:449`), handed `conductor::STREAM` at
+//!    `src/cli/dashboard.rs:852`, is reached through `cmd_mcp`'s graph open.
 //! 3. THE PRINCIPLE LINTS CARRY NO EXEMPTION. No item opts out of a lint the root manifest
 //!    denies.
 //! 4. THE CORE NAMES NO GATE. A gate is a command a project's workflow wires into a stage, so no
@@ -775,8 +775,8 @@ fn a_constructor_outside_the_root_is_reported_by_file_and_item() {
 /// read to its matching `)`, holds `STREAM` right after a [`STREAM_MODULES`] segment
 /// (`run::STREAM`, `conductor::STREAM`) or a bare `STREAM` in a file that imports it from one of
 /// them. An appender that holds the stream by reference is no entry: the MCP server's emit
-/// (`crates/rigger-dash/src/mcpserver.rs:431`), handed `conductor::STREAM` at
-/// `src/cli/dashboard.rs:853`, is reached through its graph open, `src/cli/dashboard.rs:cmd_mcp`
+/// (`crates/rigger-dash/src/mcpserver.rs:449`), handed `conductor::STREAM` at
+/// `src/cli/dashboard.rs:852`, is reached through its graph open, `src/cli/dashboard.rs:cmd_mcp`
 /// in [`GRAPH_OPENS`]. Spec 124's THE APPENDER AUDIT names the store each one's call reaches.
 const PROJECT_STREAM_APPENDS: &[&str] = &[
     "crates/rigger-conductor/src/conductor.rs:append_and_fold_batch",

@@ -3289,9 +3289,9 @@ fn watch_poll(
     selection: &StoreSelection,
     ci: watch::CiProbe,
 ) -> Result<Vec<watch::Anomaly>, Box<dyn std::error::Error>> {
-    let run_backend = resolve_store(selection, &loc.file("events.db"))?;
-    let run_store = Namespaced::new(run_backend.as_ref(), &loc.identity());
-    watch_poll_over(loc, &run_store, ci)
+    over_the_run_store_at(loc, selection, |run_store| {
+        watch_poll_over(loc, run_store, ci)
+    })
 }
 
 /// What CI says about the run branch's tip in `repo`: GitHub's check runs for that commit, read
