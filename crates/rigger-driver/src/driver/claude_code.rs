@@ -393,8 +393,8 @@ impl Driver<'_> {
     /// The spawn's first launch (spec 105, RESUME BY SESSION). When the latest launch of `opts.id`
     /// among its records in this run ([`progress_store::launch_records`],
     /// [`progress::latest_launch_of`]) ended `interrupted`, whichever site closed it, it is a
-    /// relaunch ([`LaunchSession::relaunch`]) at the next ordinal in `opts.dir`, a fork of that
-    /// launch's session under a minted id, charged no attempt, sent the
+    /// relaunch ([`LaunchSession::relaunch`]) at the next ordinal in `opts.dir`, a fork of the
+    /// session that launch's close names under a minted id, charged no attempt, sent the
     /// [`Driver::interruption_note`] in front of what [`LaunchSession::task`] sends, the
     /// [`SpawnOpts::resume_task`] when that launch carried it: its record, its open record unless
     /// it was lost, and the records its chain of sessions leads back through decide. Any other
@@ -416,7 +416,8 @@ impl Driver<'_> {
             return self.launch(agent, prompt, opts, store);
         };
         let note = self.interruption_note(interrupted)?;
-        let session = LaunchSession::relaunch(records.first().unwrap_or(interrupted), &chain, opts);
+        let launched = records.first().unwrap_or(interrupted);
+        let session = LaunchSession::relaunch(launched, interrupted, &chain, opts);
         let task = match session.task(prompt, opts) {
             "" => note,
             carried => format!("{note}\n\n{carried}"),
@@ -577,7 +578,10 @@ impl Driver<'_> {
         opts: &SpawnOpts,
         max_wall_clock: u64,
     ) -> Result<StreamEnd, Error> {
-        let id = LaunchId {
+        // The session the first `system/init` names when it is not the one the launch named: the
+        // launch runs as it from that line on (the `system/init` arm below).
+        let ran_as = std::cell::OnceCell::<String>::new();
+        let mut id = LaunchId {
             ordinal: launch.ordinal,
             session_id: &launch.session_id,
             resumed_from: &launch.resumed_from,
@@ -795,6 +799,30 @@ impl Driver<'_> {
             match line_kind(&v) {
                 (Some("system"), Some("init")) => {
                     awaiting_session = false;
+                    // The session the binary runs is the one its `system/init` names: one other
+                    // than the launch named is noted, naming both, and every close and the answer
+                    // of the launch carry it from here on, so the next attempt resumes and a
+                    // relaunch forks the session that ran. The launch's open record keeps the
+                    // session it launched as. Only the first such line takes.
+                    if let Some(named) = v.get("session_id").and_then(Value::as_str) {
+                        if !named.is_empty()
+                            && named != id.session_id
+                            && ran_as.set(named.to_string()).is_ok()
+                        {
+                            self.record_progress(
+                                opts,
+                                &format!(
+                                    "stream: launched as session {}, system/init named session \
+                                     {named}, which the launch runs as",
+                                    launch.session_id
+                                ),
+                            );
+                            id = LaunchId {
+                                session_id: ran_as.get().map_or(id.session_id, String::as_str),
+                                ..id
+                            };
+                        }
+                    }
                     resolved_model = v
                         .get("model")
                         .and_then(Value::as_str)
@@ -868,12 +896,13 @@ impl Driver<'_> {
                         self.close(opts, id, progress::ENDED_COMPLETED, "");
                         // The session this launch ran as rides back for the conductor to record:
                         // a resume reaches this arm only once its `system/init` showed the
-                        // session, so a resumed launch continued exactly the session its spawn
-                        // named, and the fallback's fresh launch records an empty `resumed_from`.
+                        // session, which is the one the launch ran as, the session its spawn
+                        // named unless that line named another, and the fallback's fresh launch
+                        // records an empty `resumed_from`.
                         result = Some(AgentResult {
                             output: res.output,
                             resolved_model: resolved_model.clone(),
-                            session_id: launch.session_id.clone(),
+                            session_id: id.session_id.to_string(),
                             resumed_from: launch.resumed_from.clone(),
                         });
                     }

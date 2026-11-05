@@ -285,7 +285,12 @@ sees no `system/init` from any `--resume` launch, the conductor's `continue_prio
 logging the fallback as a progress line, except that a launch HELD closes `interrupted` for its
 class or a held run takes no fallback and returns its error to the decorator; criterion 1 owns
 the fallback and the ordinal rule, since its swap drops `cli::Driver`'s fallback, and criterion
-3 that exception. Neither charges an attempt.
+3 that exception. Neither charges an attempt. A launch whose first `system/init` names a session
+other than the one it launched as records a progress line naming both and runs as the session
+the init named: its closes and its result carry that id, so a relaunch forks it, the next attempt
+resumes it and the chain of sessions reads through it, while its open record keeps the id it
+launched as; a start-up reconciliation's close names the open record's id, and a relaunch of a
+session that is gone takes the fallback.
 
 WHAT A PERSON SEES, decided: `rigger status` opens with `HELD <duration> - <cause> - <action>`,
 ending `; the run resumes by itself` while the latest `SupervisorBeat` is no older than the 90 s

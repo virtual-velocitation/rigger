@@ -1885,7 +1885,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `crates/rigger-conductor/src/conductor.rs:1109-1111` `conflict_regenerate_key`
 - `crates/rigger-conductor/src/conductor.rs:13286-13288` `audit_id`
 - `crates/rigger-domain/src/spawn.rs:276-278` `spawn_id`
-- `crates/rigger-driver/src/driver/claude_code.rs:1924-1932` `stop_message`
+- `crates/rigger-driver/src/driver/claude_code.rs:1953-1961` `stop_message`
 - `tests/cli.rs:7897-7910` `rendezvous`
 - `tests/common/fixtures/fold.rs:757-759` `code_batch_key`
 - `tests/common/fixtures/graph.rs:204-206` `spoke_id`
@@ -1979,7 +1979,7 @@ mandatory sweep: error-shaping helper functions - 22 site(s), collected mechanic
 - `crates/rigger-domain/src/agent.rs:515-517` `no_result_error`
 - `crates/rigger-domain/src/agent.rs:584-622` `an_error_answers_the_class_it_carries`
 - `crates/rigger-domain/src/ingest.rs:604-649` `a_walk_reaches_every_batch_past_a_failed_one_and_answers_the_first_error`
-- `crates/rigger-driver/src/driver/claude_code.rs:1937-1942` `read_agent_stream_error`
+- `crates/rigger-driver/src/driver/claude_code.rs:1966-1971` `read_agent_stream_error`
 - `crates/rigger-grounder/src/grounder/mod.rs:207-213` `retired_grounder_error`
 - `crates/rigger-worktree-git/src/worktree.rs:4050-4077` `land_reports_a_generic_error_for_a_refusal_that_is_neither_tip_moved_nor_blocked`
 - `crates/rigger-worktree-git/src/worktree.rs:5497-5551` `revert_on_base_aborts_and_errors_on_a_conflicting_revert`
@@ -3857,7 +3857,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `crates/rigger-domain/src/failure.rs:227-229` `is_empty`
 - `crates/rigger-domain/src/metrics.rs:552-554` `adversary_precision`
 - `crates/rigger-domain/src/progress.rs:255-257` `is_open`
-- `crates/rigger-driver/src/driver/mod.rs:237-239` `resumed`
+- `crates/rigger-driver/src/driver/mod.rs:244-246` `resumed`
 - `crates/rigger-driver/src/reaped_child.rs:44-46` `id`
 - `tests/common/mcp.rs:51-53` `id`
 
@@ -4181,8 +4181,8 @@ Proposed home: `claude_code::failing_read_store`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-driver/src/driver/claude_code.rs:2235-2242` `read_stream`
-- `crates/rigger-driver/src/driver/claude_code.rs:2289-2296` `read_stream_typed`
+- `crates/rigger-driver/src/driver/claude_code.rs:2264-2271` `read_stream`
+- `crates/rigger-driver/src/driver/claude_code.rs:2318-2325` `read_stream_typed`
 
 #### `dup-4979c76ee36f` (near, 2 sites)
 
@@ -4190,8 +4190,8 @@ Proposed home: `claude_code::failing_read_store`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-driver/src/driver/claude_code.rs:2282-2288` `last_position`
-- `crates/rigger-driver/src/driver/claude_code.rs:2316-2322` `latest_in_group`
+- `crates/rigger-driver/src/driver/claude_code.rs:2311-2317` `last_position`
+- `crates/rigger-driver/src/driver/claude_code.rs:2345-2351` `latest_in_group`
 
 #### `dup-117928e59e0c` (near, 2 sites)
 
@@ -4199,8 +4199,8 @@ Proposed home: `claude_code::support (consolidate these 2 sites into one functio
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-driver/src/driver/claude_code.rs:2566-2587` `build_args_mcp_config_names_the_spawn_bound_server`
-- `crates/rigger-driver/src/driver/claude_code.rs:2590-2608` `build_args_mcp_config_uses_the_configured_rigger_bin`
+- `crates/rigger-driver/src/driver/claude_code.rs:2595-2616` `build_args_mcp_config_names_the_spawn_bound_server`
+- `crates/rigger-driver/src/driver/claude_code.rs:2619-2637` `build_args_mcp_config_uses_the_configured_rigger_bin`
 
 #### `dup-ccd4dd4d7b0d` (near, 2 sites)
 
@@ -4208,7 +4208,7 @@ Proposed home: `a new shared module (sites span 2 files: crates/rigger-driver/sr
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-driver/src/driver/mod.rs:276-278` `resumed_from`
+- `crates/rigger-driver/src/driver/mod.rs:283-285` `resumed_from`
 - `tests/claude_code_stream_periphery.rs:2786-2788` `launch_dir`
 
 #### `dup-282069e7109f` (near, 3 sites)

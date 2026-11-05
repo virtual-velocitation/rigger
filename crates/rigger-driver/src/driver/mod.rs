@@ -157,8 +157,8 @@ pub(crate) const MISSING_SESSION: &str = "No conversation found with session ID"
 pub struct LaunchSession {
     /// The session id this launch runs as.
     pub id: String,
-    /// The session this launch continues: `id` on a resume, the interrupted launch's session on
-    /// a relaunch, which forks it into `id`, and `None` on a fresh launch.
+    /// The session this launch continues: `id` on a resume, the session the interrupted launch
+    /// ran as on a relaunch, which forks it into `id`, and `None` on a fresh launch.
     continues: Option<String>,
     /// Whether the launch sends [`SpawnOpts::resume_task`]: a resume of the session the spawn
     /// names does, and a relaunch does when the launch it continues carried it.
@@ -169,19 +169,24 @@ pub struct LaunchSession {
 /// (spec 105, RESUME BY SESSION), read along its chain of sessions over `records`, the spawn's
 /// launch records in this run. A record whose session or `resumed_from` is a non-empty `named`
 /// carried it. One whose `resumed_from` names another session carried it when the open record of
-/// that session did, since each record names only the session it continued, so a third relaunch
-/// reads back through two. A fresh launch's record, the fallback's among them, and one whose
-/// `resumed_from` names a session no open record holds did not. The walk takes at most one step a
-/// record, so a cycle among them ends it uncarried.
+/// the launch that ran as that session did, since each record names only the session it
+/// continued, so a third relaunch reads back through two; a launch runs as the session its open
+/// record names, or as the one its close names when its `system/init` named another. A fresh
+/// launch's record, the fallback's among them, and one whose `resumed_from` names a session no
+/// launch ran as did not. The walk takes at most one step a record, so a cycle among them ends it
+/// uncarried.
 fn carried_resume_task(launched: &SpawnLaunched, records: &[SpawnLaunched], named: &str) -> bool {
     let continued = |record: &SpawnLaunched| {
         let session = record
             .resumed_from
             .as_deref()
             .filter(|session| !session.is_empty())?;
+        let ran = records
+            .iter()
+            .find(|earlier| earlier.session_id == session)?;
         records
             .iter()
-            .find(|earlier| earlier.is_open() && earlier.session_id == session)
+            .find(|earlier| earlier.is_open() && earlier.launch == ran.launch)
     };
     !named.is_empty()
         && std::iter::successors(Some(launched), |record| continued(record))
@@ -218,19 +223,21 @@ impl LaunchSession {
         }
     }
 
-    /// The relaunch of the interrupted launch `launched` records, for the spawn `opts` whose
-    /// launch records in this run are `records`: a fork of the session that launch ran as under a
-    /// newly minted id, sending [`SpawnOpts::resume_task`] when that launch carried it
-    /// ([`carried_resume_task`]), so the task keeps travelling along a chain of relaunches, each
-    /// itself interrupted and relaunched.
+    /// The relaunch of the interrupted launch `launched` records, closed by `interrupted`, for
+    /// the spawn `opts` whose launch records in this run are `records`: a fork of the session that
+    /// launch ran as, the one `interrupted` names (another than `launched` names when its
+    /// `system/init` named another), under a newly minted id, sending [`SpawnOpts::resume_task`]
+    /// when that launch carried it ([`carried_resume_task`]), so the task keeps travelling along a
+    /// chain of relaunches, each itself interrupted and relaunched.
     pub fn relaunch(
         launched: &SpawnLaunched,
+        interrupted: &SpawnLaunched,
         records: &[SpawnLaunched],
         opts: &SpawnOpts,
     ) -> LaunchSession {
         let carried = carried_resume_task(launched, records, &opts.resumed_from);
         let minted = LaunchSession::fresh().id;
-        LaunchSession::new(minted, Some(launched.session_id.clone()), carried)
+        LaunchSession::new(minted, Some(interrupted.session_id.clone()), carried)
     }
 
     /// Whether the launch continues a session rather than starting one: a resume or a relaunch.
