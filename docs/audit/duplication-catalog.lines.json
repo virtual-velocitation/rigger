@@ -54,8 +54,8 @@
       },
       {
         "file": "crates/rigger-domain/src/review.rs",
-        "start_line": 400,
-        "end_line": 402
+        "start_line": 405,
+        "end_line": 407
       },
       {
         "file": "crates/rigger-domain/src/spawn.rs",
@@ -344,8 +344,8 @@
       },
       {
         "file": "crates/rigger-domain/src/review.rs",
-        "start_line": 343,
-        "end_line": 348
+        "start_line": 348,
+        "end_line": 353
       },
       {
         "file": "crates/rigger-driver/src/driver/mod.rs",
@@ -1709,8 +1709,8 @@
       },
       {
         "file": "src/cli/critique.rs",
-        "start_line": 164,
-        "end_line": 164
+        "start_line": 182,
+        "end_line": 182
       },
       {
         "file": "src/cli/hygiene.rs",

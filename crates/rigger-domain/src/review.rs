@@ -1,6 +1,7 @@
 //! The review-verdict logic: the fail-closed verdict-line reading on the result channel, the
 //! risk-tiered review-depth routing, the review rosters, and the spec critique (spec 112): its
-//! prompt, its finding lines and the record keyed on a spec's content hash.
+//! prompt, its finding lines and the record keyed on a spec's content hash, the union of every
+//! pass recorded for the hash (spec 123).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
@@ -193,6 +194,10 @@ pub fn verdict_approves(output: &str) -> bool {
 /// 20) - reads the SAME definition the gate reads, instead of hand-copying the word and
 /// letting it silently drift from the gate.
 pub const VERDICT_APPROVE: &str = "approve";
+
+/// The verdict value that rejects: the one a spec critique derives when its union holds a
+/// BLOCKING finding ([`Critique::verdict`]).
+pub const VERDICT_REJECT: &str = "reject";
 
 /// The verdict value on the LAST JSON line of `output` that carries a top-level
 /// `verdict` string field, or `None` when `output` has NO parseable verdict line (no
@@ -488,28 +493,57 @@ pub fn critique_findings(output: &str, hash: &str, attempt: u32) -> Vec<Critique
     findings
 }
 
-/// A spec's critique: a recorded critic result that passed the authority ([`critique_of`]).
+/// One pass of a spec's critique (spec 123): a critic spawn's recorded result that passed the
+/// authority ([`critique_of`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Critique {
+pub struct CritiquePass {
     /// The global log position of its `SpawnResult`.
     pub position: Position,
     /// The attempt the critic ran at.
     pub attempt: u32,
-    /// The verdict value as the critic wrote it.
+    /// The verdict value as the critic wrote it, which the authority ([`judged`]) checked against
+    /// the findings; the critique's verdict is derived from the union ([`Critique::verdict`]),
+    /// never read from a pass.
     pub verdict: String,
     /// Its finding lines, in order.
     pub findings: Vec<CritiqueFinding>,
 }
 
-/// THE AUTHORITY over one recorded `SpawnResult` event: it is a critique of `hash` when its id is
-/// the hash's critic spawn at some attempt, its error is empty, its output carries a verdict line,
-/// and a verdict that does not approve comes with at least one BLOCKING finding. `Err` says why
-/// it is not one.
-pub fn critique_of(event: &Event, hash: &str) -> Result<Critique, String> {
+/// A spec's critique (spec 123, THE RECORD IS THE UNION): the record of every pass of its hash,
+/// read from the store on every read ([`read_critique`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Critique {
+    /// Every pass, in pass order: ascending attempt, one pass per attempt.
+    pub passes: Vec<CritiquePass>,
+}
+
+impl Critique {
+    /// The union of the passes' findings: every pass's finding lines, in pass order and each
+    /// pass's in line order, under the ids that pass minted.
+    pub fn findings(&self) -> impl Iterator<Item = &CritiqueFinding> {
+        self.passes.iter().flat_map(|pass| &pass.findings)
+    }
+
+    /// The derived verdict: [`VERDICT_REJECT`] when the union holds a BLOCKING finding, else
+    /// [`VERDICT_APPROVE`], whatever verdict any pass wrote.
+    pub fn verdict(&self) -> &'static str {
+        if self.findings().any(|finding| finding.blocking) {
+            VERDICT_REJECT
+        } else {
+            VERDICT_APPROVE
+        }
+    }
+}
+
+/// THE AUTHORITY over one recorded `SpawnResult` event: it is a pass of `hash`'s critique when its
+/// id is the hash's critic spawn at some attempt, its error is empty, its output carries a verdict
+/// line, and a verdict that does not approve comes with at least one BLOCKING finding. `Err` says
+/// why it is not one.
+pub fn critique_of(event: &Event, hash: &str) -> Result<CritiquePass, String> {
     let result = SpawnResult::from_event(event)
         .map_err(|e| format!("the recorded result is unreadable: {e}"))?;
     let (attempt, verdict, findings) = judged(&result, hash)?;
-    Ok(Critique {
+    Ok(CritiquePass {
         position: event.position,
         attempt,
         verdict,
@@ -537,13 +571,25 @@ fn judged(result: &SpawnResult, hash: &str) -> Result<(u32, String, Vec<Critique
     Ok((attempt, verdict, findings))
 }
 
-/// The critique of `hash` among `events`: its latest critique (highest position), or `None`.
-pub fn latest_critique(events: &[Event], hash: &str) -> Option<Critique> {
-    events
-        .iter()
-        .filter(|e| e.type_ == TYPE_SPAWN_RESULT)
-        .filter_map(|e| critique_of(e, hash).ok())
-        .max_by_key(|c| c.position)
+/// The passes of `hash` among `results` (spec 123, A PASS AND EXHAUSTION), keyed and so ordered by
+/// attempt: for each critic spawn id of the hash, its latest result in `results` - the one
+/// [`result_of`] picks, a later result of the id displacing an earlier one - when the authority
+/// ([`critique_of`]) accepts it. A result that cannot be read is skipped, since no spawn id can be
+/// read from it.
+fn passes(results: &[Event], hash: &str) -> BTreeMap<u32, CritiquePass> {
+    let mut latest: BTreeMap<u32, &Event> = BTreeMap::new();
+    for event in results.iter().filter(|e| e.type_ == TYPE_SPAWN_RESULT) {
+        let attempt = SpawnResult::from_event(event)
+            .ok()
+            .and_then(|result| critique_attempt(&result.id, hash));
+        if let Some(attempt) = attempt {
+            latest.insert(attempt, event);
+        }
+    }
+    latest
+        .into_iter()
+        .filter_map(|(attempt, event)| Some((attempt, critique_of(event, hash).ok()?)))
+        .collect()
 }
 
 /// The `SpawnResult` events of `store`'s run stream (the critique's own store): one typed read,
@@ -556,26 +602,32 @@ fn critique_results(store: &dyn EventStore) -> Result<Vec<Event>, StoreError> {
     )
 }
 
-/// Read the critique of `hash` from `store` (the critique's own store): one typed read of the
-/// `SpawnResult` events of its run stream, materializing no other event.
+/// Read the critique of `hash` from `store` (the critique's own store): the record of every pass
+/// of the hash ([`passes`]), from one typed read of the `SpawnResult` events of its run stream,
+/// materializing no other event; `None` when the hash has no pass.
 pub fn read_critique(store: &dyn EventStore, hash: &str) -> Result<Option<Critique>, StoreError> {
-    Ok(latest_critique(&critique_results(store)?, hash))
+    let recorded: Vec<CritiquePass> = passes(&critique_results(store)?, hash)
+        .into_values()
+        .collect();
+    Ok((!recorded.is_empty()).then_some(Critique { passes: recorded }))
 }
 
-/// What `store` (the critique's own store) answers for `hash` once the critic's spawn at
-/// `attempt` returned, from one typed read: the hash's critique ([`latest_critique`]) when one is
-/// recorded, else why there is none - the spawn's own latest result read by the authority, or
-/// `None` when the spawn recorded no result.
+/// What `store` (the critique's own store) answers for the critic's spawn of `hash` at `attempt`
+/// once it returned, from one typed read: the spawn's own pass ([`passes`]), never the union nor
+/// another attempt's, else why it brought none ([`why_no_critique`]), `None` when the spawn
+/// recorded no result.
 pub fn read_spawned_critique(
     store: &dyn EventStore,
     hash: &str,
     attempt: u32,
-) -> Result<Result<Critique, Option<String>>, StoreError> {
+) -> Result<Result<CritiquePass, Option<String>>, StoreError> {
     let results = critique_results(store)?;
-    Ok(latest_critique(&results, hash).ok_or_else(|| why_no_critique(&results, hash, attempt)))
+    Ok(passes(&results, hash)
+        .remove(&attempt)
+        .ok_or_else(|| why_no_critique(&results, hash, attempt)))
 }
 
-/// Why the critic's spawn of `hash` at `attempt` is no critique: its latest result among
+/// Why the critic's spawn of `hash` at `attempt` brought no pass: its latest result among
 /// `results` ([`result_of`]) judged by the authority, `None` when it recorded none. A result on
 /// the stream that cannot be read is the why, since the spawn's own result cannot be told apart.
 fn why_no_critique(results: &[Event], hash: &str, attempt: u32) -> Option<String> {
@@ -679,39 +731,48 @@ fn string_entries(value: &Value) -> impl Iterator<Item = &str> {
 }
 
 /// The open BLOCKING findings of `critique` (spec 112, A NEW RUN IS REFUSED UNTIL ITS CRITIQUE IS
-/// CLEAN): the ids of its BLOCKING findings, in finding order, minus every id named in the
-/// `resolves` of a `DecisionMade` among `decisions` that the store recorded after the critique's
-/// result (a greater position) and whose `governs` names `spec` - the spec path already made
-/// repo-relative - once each entry is read as the id it names ([`referenced_id`], so a citation of
-/// lines of the spec names the spec) and normalized against `root` like the spec path
-/// ([`normalize_spec_path`]). An id the critique does not hold is ignored, and supersession is not
-/// read: a recorded resolution stands until the text changes.
+/// CLEAN): the ids of the union's BLOCKING findings, in pass and finding order, minus every id
+/// named in the `resolves` of a `DecisionMade` among `decisions` that the store recorded after the
+/// result of the pass that minted the id (a greater position) and whose `governs` names `spec` -
+/// the spec path already made repo-relative - once each entry is read as the id it names
+/// ([`referenced_id`], so a citation of lines of the spec names the spec) and normalized against
+/// `root` like the spec path ([`normalize_spec_path`]). An id the critique does not hold is
+/// ignored, and supersession is not read: a recorded resolution stands until the text changes.
 pub fn open_findings(
     critique: &Critique,
     decisions: &[Event],
     spec: &str,
     root: &Path,
 ) -> Vec<String> {
-    let resolved: Vec<String> = decisions
+    let resolutions: Vec<(Position, String)> = decisions
         .iter()
-        .filter(|event| event.type_ == TYPE_DECISION_MADE && event.position > critique.position)
-        .filter_map(Event::decode::<Value>)
-        .filter(|decision| {
+        .filter(|event| event.type_ == TYPE_DECISION_MADE)
+        .filter_map(|event| Some((event.position, event.decode::<Value>()?)))
+        .filter(|(_, decision)| {
             string_entries(&decision["governs"]).any(|governed| {
                 normalize_spec_path(root, referenced_id(governed)).as_deref() == Some(spec)
             })
         })
-        .flat_map(|decision| {
+        .flat_map(|(position, decision)| {
             string_entries(&decision["resolves"])
-                .map(str::to_string)
+                .map(|id| (position, id.to_string()))
                 .collect::<Vec<_>>()
         })
         .collect();
     critique
-        .findings
+        .passes
         .iter()
-        .filter(|finding| finding.blocking && !resolved.contains(&finding.id))
-        .map(|finding| finding.id.clone())
+        .flat_map(|pass| {
+            pass.findings
+                .iter()
+                .filter(|finding| {
+                    finding.blocking
+                        && !resolutions
+                            .iter()
+                            .any(|(position, id)| *position > pass.position && *id == finding.id)
+                })
+                .map(|finding| finding.id.clone())
+        })
         .collect()
 }
 

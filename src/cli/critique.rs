@@ -1,8 +1,8 @@
 //! `rigger critique <spec>` (spec 112, criterion 1): the workflow's plan-critique adversary
-//! critiques a spec before any run, as a headless Claude Code session, and its findings and
-//! verdict are recorded keyed on the spec's content hash - on the critique's own stream, never
-//! the run stream a step folds into its wave - so unchanged text is answered from the store with
-//! no spawn, and any edit is critiqued afresh.
+//! critiques a spec before any run, as a headless Claude Code session, and each pass is recorded
+//! keyed on the spec's content hash - on the critique's own stream, never the run stream a step
+//! folds into its wave - so unchanged text is answered from the store with no spawn, by the union
+//! of its passes and the verdict that union derives (spec 123), and any edit is critiqued afresh.
 
 use super::*;
 
@@ -11,7 +11,7 @@ use std::collections::HashSet;
 use rigger::conductor::{AgentDriver, SpawnOpts};
 use rigger::driver::claude_code;
 use rigger::eventstore::TypeSelection;
-use rigger::review::{self, Critique};
+use rigger::review::{self, Critique, CritiquePass};
 
 /// The command, as its refusals and notices name it.
 const COMMAND: &str = "rigger critique";
@@ -60,10 +60,12 @@ fn parse_critique_args(args: &[String]) -> Result<CritiqueArgs, Box<dyn std::err
 /// a workflow with no critic (whether or not the text was critiqued before), a root mismatch,
 /// a spec outside the repository, a spec with no Done-when criteria; then it selects, migrates
 /// and opens the store and opens the graph (a graph that owes its rebuild refuses here, naming
-/// `rigger setup`). When the spec's hash already has a critique it spawns nothing; otherwise it
-/// parks and spawns the critic, then answers with the critique it reads back from the store.
-/// Either way it appends any missing `ReviewFinding` copy, prints the findings and the verdict,
-/// and exits 0 whatever the findings say.
+/// `rigger setup`). When the spec's hash already has a critique - one pass or more - it spawns
+/// nothing and answers from the record of every pass, saying over how many ([`answered_from`]);
+/// otherwise it parks and spawns the critic, then answers with the one pass it reads back from
+/// the store. Either way it appends any missing `ReviewFinding` copy of the union's findings,
+/// prints the union and the verdict it derives ([`answer`]), and exits 0 whatever the findings
+/// say.
 pub(crate) fn cmd_critique(args: &[String]) -> Res {
     let parsed = parse_critique_args(args)?;
     let cwd = cwd();
@@ -105,10 +107,7 @@ pub(crate) fn cmd_critique(args: &[String]) -> Res {
     let critique = match review::read_critique(&critiques, &hash)? {
         Some(recorded) => {
             remove_critique_scratch(&scratch_root);
-            eprintln!(
-                "{COMMAND}: {spec} (hash {hash}): answered from the critique recorded at attempt {}",
-                recorded.attempt
-            );
+            answered_from(&spec, &hash, &recorded);
             recorded
         }
         None => {
@@ -121,15 +120,33 @@ pub(crate) fn cmd_critique(args: &[String]) -> Res {
                 scratch_root: &scratch_root,
                 root: &root,
             };
-            host.critique(&spec, &text, &hash)?
+            Critique {
+                passes: vec![host.critique(&spec, &text, &hash)?],
+            }
         }
     };
     copy_findings(&store, &graph, &critique, &spec)?;
-    for finding in &critique.findings {
+    answer(&critique);
+    Ok(())
+}
+
+/// Say on stderr that `spec`'s critique is answered from the store, over how many passes of
+/// `hash` it was recorded: `1 pass` or `<n> passes`.
+fn answered_from(spec: &str, hash: &str, critique: &Critique) {
+    let passes = match critique.passes.len() {
+        1 => "1 pass".to_string(),
+        n => format!("{n} passes"),
+    };
+    eprintln!("{COMMAND}: {spec} (hash {hash}): answered from the critique recorded over {passes}");
+}
+
+/// Print the union of `critique`'s findings, in pass order, one `<id> | <summary>` line each,
+/// then the verdict the union derives as one JSON line.
+fn answer(critique: &Critique) {
+    for finding in critique.findings() {
         println!("{} | {}", finding.id, finding.summary());
     }
-    println!("{}", serde_json::json!({ "verdict": critique.verdict }));
-    Ok(())
+    println!("{}", serde_json::json!({ "verdict": critique.verdict() }));
 }
 
 /// What a critique spawn is composed from.
@@ -151,14 +168,15 @@ struct CriticHost<'a> {
 
 impl CriticHost<'_> {
     /// Park and spawn the critic on the spec text through the headless host, then answer with the
-    /// critique the store holds for the hash - never the session's own output. A recorded result
-    /// that is not a critique is an error saying why.
+    /// spawn's own pass the store holds for the hash ([`review::read_spawned_critique`]) - never
+    /// the session's own output nor another attempt's pass. A recorded result that is not a pass
+    /// is an error saying why.
     fn critique(
         &self,
         spec: &str,
         text: &str,
         hash: &str,
-    ) -> Result<Critique, Box<dyn std::error::Error>> {
+    ) -> Result<CritiquePass, Box<dyn std::error::Error>> {
         let persona = self.cfg.agents.get(self.critic).ok_or_else(|| {
             format!(
                 "{COMMAND}: the critic {:?} the workflow names has no definition under \
@@ -237,8 +255,8 @@ fn remove_critique_scratch(scratch_root: &str) {
     remove_agent_area_entries(Path::new(scratch_root), review::is_critique_run);
 }
 
-/// Append one `ReviewFinding` to the project run stream for each finding of `critique` that the
-/// stream does not already hold by id, folding them into the graph as they land, so `rigger
+/// Append one `ReviewFinding` to the project run stream for each finding of `critique`'s union that
+/// the stream does not already hold by id, folding them into the graph as they land, so `rigger
 /// peers <spec>` shows them. Each copy passes the one emit guard first.
 fn copy_findings(
     store: &dyn EventStore,
@@ -257,7 +275,7 @@ fn copy_findings(
         .filter_map(|finding| finding["id"].as_str().map(str::to_string))
         .collect();
     let mut copies = Vec::new();
-    for finding in critique.findings.iter().filter(|f| !held.contains(&f.id)) {
+    for finding in critique.findings().filter(|f| !held.contains(&f.id)) {
         let data = serde_json::to_vec(&review::finding_copy(finding, spec))?;
         let copy = Event::new(contextgraph::TYPE_REVIEW_FINDING, data);
         contextgraph::check_emit(store, conductor::STREAM, &copy)?;
