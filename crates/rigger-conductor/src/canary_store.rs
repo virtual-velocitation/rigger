@@ -35,7 +35,7 @@ use crate::eventstore::{Event, EventStore, ExpectedRevision};
 use crate::instructions::Instruction;
 use crate::ledger::TYPE_UNIT_STATUS;
 use crate::spawn::{review_step_role, ReviewKind, ROLE_ADJUDICATOR};
-use rigger_domain::review::{step_adjudicator, step_ordinal};
+use rigger_domain::review::{step_adjudicator, step_ordinal, VERDICT_APPROVE, VERDICT_REJECT};
 
 /// A single canary corpus item: a micro-unit under review with its GROUND TRUTH. Parsed
 /// from a `canaries/<id>.md` file - YAML frontmatter (these fields) plus a markdown body
@@ -75,7 +75,7 @@ impl CanaryItem {
     /// Whether the adjudicator SHOULD reject this item (a planted defect); the complement
     /// is an expected approve. Case-insensitive on `expected_verdict`.
     pub fn expect_reject(&self) -> bool {
-        self.expected_verdict.eq_ignore_ascii_case("reject")
+        self.expected_verdict.eq_ignore_ascii_case(VERDICT_REJECT)
     }
 }
 
@@ -116,9 +116,9 @@ fn parse_item(s: &str) -> Result<CanaryItem, Error> {
         return Err(Error("canary item is missing an id".into()));
     }
     let v = item.expected_verdict.to_ascii_lowercase();
-    if v != "approve" && v != "reject" {
+    if v != VERDICT_APPROVE && v != VERDICT_REJECT {
         return Err(Error(format!(
-            "canary item {:?}: expected_verdict must be \"approve\" or \"reject\", got {:?}",
+            "canary item {:?}: expected_verdict must be \"{VERDICT_APPROVE}\" or \"{VERDICT_REJECT}\", got {:?}",
             item.id, item.expected_verdict
         )));
     }
@@ -801,7 +801,11 @@ mod tests {
                 } else {
                     any_finding_is_critical(prompt)
                 };
-                let verdict = if reject { "reject" } else { "approve" };
+                let verdict = if reject {
+                    VERDICT_REJECT
+                } else {
+                    VERDICT_APPROVE
+                };
                 return Ok(AgentResult {
                     output: format!("{{\"verdict\":\"{verdict}\"}}"),
                     resolved_model: self.resolved_model.clone(),

@@ -197,7 +197,8 @@ pub fn verdict_approves(output: &str) -> bool {
 pub const VERDICT_APPROVE: &str = "approve";
 
 /// The verdict value that rejects: the one a spec critique derives when its union holds a
-/// BLOCKING finding ([`Critique::verdict`]).
+/// BLOCKING finding ([`Critique::verdict`]). Like [`VERDICT_APPROVE`], every surface that names
+/// the word reads this const instead of spelling it.
 pub const VERDICT_REJECT: &str = "reject";
 
 /// The verdict value on the LAST JSON line of `output` that carries a top-level
