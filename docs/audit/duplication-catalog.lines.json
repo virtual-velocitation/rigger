@@ -219,8 +219,8 @@
       },
       {
         "file": "tests/spec_critique_periphery.rs",
-        "start_line": 949,
-        "end_line": 951
+        "start_line": 954,
+        "end_line": 956
       }
     ]
   },
@@ -679,8 +679,8 @@
       },
       {
         "file": "tests/spec_critique_periphery.rs",
-        "start_line": 935,
-        "end_line": 937
+        "start_line": 940,
+        "end_line": 942
       }
     ]
   },
@@ -1129,13 +1129,13 @@
       },
       {
         "file": "tests/common/repo.rs",
-        "start_line": 154,
-        "end_line": 154
+        "start_line": 166,
+        "end_line": 166
       },
       {
         "file": "tests/common/repo.rs",
-        "start_line": 481,
-        "end_line": 481
+        "start_line": 493,
+        "end_line": 493
       },
       {
         "file": "tests/common/served.rs",
@@ -4139,8 +4139,8 @@
       },
       {
         "file": "tests/spec_critique_periphery.rs",
-        "start_line": 468,
-        "end_line": 468
+        "start_line": 473,
+        "end_line": 473
       },
       {
         "file": "tests/statusline_command_periphery.rs",
@@ -7939,8 +7939,8 @@
       },
       {
         "file": "tests/spec_critique_periphery.rs",
-        "start_line": 2242,
-        "end_line": 2244
+        "start_line": 2247,
+        "end_line": 2249
       }
     ]
   },
@@ -8574,8 +8574,8 @@
       },
       {
         "file": "tests/spec_critique_periphery.rs",
-        "start_line": 2248,
-        "end_line": 2250
+        "start_line": 2253,
+        "end_line": 2255
       }
     ]
   },

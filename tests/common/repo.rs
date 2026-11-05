@@ -73,7 +73,7 @@ const CRITIQUE_STUB: &str = "claude-code-critique-agent.sh";
 /// count, and its first spawn's stdin line, argv, the system prompt its `--system-prompt-file`
 /// named and the `KURRENTDB_CONN` it was started with.
 const CRITIQUE_TRANSCRIPT: &str = "critique-transcript.jsonl";
-const CRITIQUE_APPROVE_TRANSCRIPT: &str = "critique-approve-transcript.jsonl";
+const CRITIQUE_LATER_TRANSCRIPT: &str = "critique-later-transcript.jsonl";
 const CRITIQUE_SPAWNS: &str = "critique-spawns";
 const CRITIQUE_TASK: &str = "critique-task.jsonl";
 const CRITIQUE_ARGV: &str = "critique-argv";
@@ -95,13 +95,25 @@ pub const CRITIQUE_CONN: &str = "critique-conn";
 /// is written here, beside the stub's symlink in `<work>/bin`; the executable is the checked-in
 /// fixture. Each call takes a fresh `work` directory.
 pub fn write_critique_stub(work: &Path, critique: &str) -> String {
-    write_critique_stub_reporting(work, critique, "connected")
+    write_critique_stub_then(work, critique, super::cli::CLEAN_CRITIQUE)
+}
+
+/// [`write_critique_stub`] whose later spawns answer `later` in place of the zero-line approve,
+/// so a test can stand in for a critic whose later passes keep adding finding lines.
+pub fn write_critique_stub_then(work: &Path, critique: &str, later: &str) -> String {
+    write_critique_session(work, "connected", critique, later)
 }
 
 /// [`write_critique_stub`] whose replayed init reports the spawn's `rigger` server with
 /// `rigger_server` as its status, so a test can stand in for a launch whose server did not
 /// connect (any status but `connected`).
 pub fn write_critique_stub_reporting(work: &Path, critique: &str, rigger_server: &str) -> String {
+    write_critique_session(work, rigger_server, critique, super::cli::CLEAN_CRITIQUE)
+}
+
+/// The critique stub's PATH under `work`, its first spawn answering `first` and every later one
+/// answering `later`, each replayed init reporting the spawn's `rigger` server as `rigger_server`.
+fn write_critique_session(work: &Path, rigger_server: &str, first: &str, later: &str) -> String {
     let path = stub_path(work, "claude", Some(CRITIQUE_STUB));
     let session = "77777777-7777-4777-8777-777777777777";
     let init = serde_json::json!({
@@ -128,8 +140,8 @@ pub fn write_critique_stub_reporting(work: &Path, critique: &str, rigger_server:
         })
     };
     for (transcript, answer) in [
-        (CRITIQUE_TRANSCRIPT, critique),
-        (CRITIQUE_APPROVE_TRANSCRIPT, super::cli::CLEAN_CRITIQUE),
+        (CRITIQUE_TRANSCRIPT, first),
+        (CRITIQUE_LATER_TRANSCRIPT, later),
     ] {
         std::fs::write(
             work.join("bin").join(transcript),

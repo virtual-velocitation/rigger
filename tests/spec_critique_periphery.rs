@@ -23,13 +23,13 @@ use common::cli::{
     read_run_events, recorded_progress, resolve, rigger_file, run_payloads, run_rigger,
     run_rigger_envs, run_rigger_ok, run_stream_identity, seed_a_run, seed_critique,
     seed_critique_spawn, seed_on_the_run, seed_run_events, seed_store, temp_project,
-    temp_repoless_project, write_spec_project,
+    temp_repoless_project, write_spec_project, CLEAN_CRITIQUE,
 };
 use common::fixtures::{composed_system_prompt, git_ok, held_event, temp_git_project_with_commit};
 use common::repo::{
     assert_carries_spawn_hooks, collect_files, critique_stub_argv, critique_stub_record,
     critique_stub_spawns, critique_stub_task, flag_value, hook_words, stub_path,
-    write_critique_stub, write_critique_stub_reporting, CRITIQUE_CONN, CRITIQUE_SYSTEM_PROMPT,
+    write_critique_stub_reporting, write_critique_stub_then, CRITIQUE_CONN, CRITIQUE_SYSTEM_PROMPT,
     SILENT_PAST_THE_POLL,
 };
 use rigger::driver::claude_code::{framed, AGENT_STREAM_SUBDIR};
@@ -178,8 +178,13 @@ fn every_event(root: &Path) -> usize {
 /// A fresh critique stub answering `critique`: its work directory, which keeps it alive, and the
 /// PATH that runs it.
 fn stub(critique: &str) -> (tempfile::TempDir, String) {
+    stub_then(critique, CLEAN_CRITIQUE)
+}
+
+/// [`stub`] whose later spawns answer `later`.
+fn stub_then(critique: &str, later: &str) -> (tempfile::TempDir, String) {
     let work = tempfile::tempdir().unwrap();
-    let path = write_critique_stub(work.path(), critique);
+    let path = write_critique_stub_then(work.path(), critique, later);
     (work, path)
 }
 
@@ -2705,4 +2710,156 @@ fn a_spawning_call_reaps_only_the_spawns_it_judged() {
         left, planted,
         "only the judged spawns' entries go; another spawn's and another hash's stay"
     );
+}
+
+/// Spec 123, THE LOOP and THE CEILING: given a fresh hash under the built-in bound of 3 and a
+/// critic that restates its findings on every pass, when the text is critiqued, then the one call
+/// spawns the critic pass after pass, each on the persona's rung for its attempt with the union
+/// read just before it in its prompt, each restated line kept under a new id, until the attempt
+/// count reaches the ceiling: the loop stops after the third pass with the notice naming every
+/// open BLOCKING id, and prints the union with the reject it derives.
+#[test]
+fn a_critic_restating_its_findings_runs_pass_after_pass_until_the_ceiling() {
+    let dir = temp_project();
+    let root = dir.path();
+    scaffold(root, CRITIC_WORKFLOW);
+    let (work, path) = stub_then(REJECT, REJECT);
+    let (out, err, ok) = critique(root, SPEC_REL, &path, &root.join("scratch"));
+
+    assert!(ok, "a pass at the ceiling exits 0; stderr:\n{err}");
+    assert_eq!(
+        critique_stub_spawns(work.path()),
+        3,
+        "one pass per attempt, up to the ceiling"
+    );
+    let open: Vec<String> = (0..3)
+        .map(|attempt| critique_finding_id(SPEC, attempt, 1))
+        .collect();
+    assert_eq!(
+        verb_lines(&err),
+        [
+            "critiquing with critic at attempt 0".to_string(),
+            "critiquing with critic at attempt 1".to_string(),
+            "critiquing with critic at attempt 2".to_string(),
+            ceiling_notice(3, "the built-in bound of 3", &open_blocking(&open)),
+        ],
+        "every pass in the one call, then the notice at the ceiling:\n{err}"
+    );
+    let copies: Vec<Value> = (0..3)
+        .flat_map(|attempt| reject_copies(SPEC, attempt, SPEC_REL))
+        .collect();
+    let summaries: Vec<&str> = copies
+        .iter()
+        .map(|copy| copy["summary"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        requests(root),
+        [
+            (
+                critique_spawn_id(SPEC_HASH, 0),
+                json!(spec_critique_prompt(SPEC_REL, SPEC, [])),
+                json!("sonnet")
+            ),
+            (
+                critique_spawn_id(SPEC_HASH, 1),
+                json!(prompt_recording(&summaries[..2])),
+                json!("opus")
+            ),
+            (
+                critique_spawn_id(SPEC_HASH, 2),
+                json!(prompt_recording(&summaries[..4])),
+                json!("opus")
+            ),
+        ],
+        "each pass carries the union read just before it, restated lines included, on the \
+         persona's rung for its attempt"
+    );
+    let verdict = "{\"verdict\":\"reject\"}\n";
+    let lines: String = (0..3)
+        .map(|attempt| {
+            reject_out(SPEC, attempt)
+                .strip_suffix(verdict)
+                .unwrap()
+                .to_string()
+        })
+        .collect();
+    assert_eq!(
+        out,
+        format!("{lines}{verdict}"),
+        "the union in pass order, then the reject its BLOCKING lines derive"
+    );
+    assert_eq!(
+        review_findings(root),
+        copies,
+        "every finding of the union, each restated one under its own id"
+    );
+}
+
+/// Spec 123, THE CEILING: given an exhausted hash whose attempt count is below, at or above the
+/// ceiling, when its unchanged text is critiqued, then the verb answers from the record: it spawns
+/// nothing, its one line says it answered, with no CEILING NOTICE, it prints the empty union with
+/// its approve, and it appends and copies nothing.
+#[test]
+fn an_exhausted_critique_is_answered_with_no_notice_wherever_its_attempts_stand() {
+    struct Row {
+        name: &'static str,
+        max_retries: u32,
+        /// The attempts seeded with a result that is no pass, before the exhausting one.
+        silent: &'static [u32],
+        exhausting: u32,
+    }
+    for row in [
+        Row {
+            name: "below the ceiling",
+            max_retries: 2,
+            silent: &[],
+            exhausting: 0,
+        },
+        Row {
+            name: "at the ceiling",
+            max_retries: 1,
+            silent: &[],
+            exhausting: 0,
+        },
+        Row {
+            name: "above the ceiling",
+            max_retries: 1,
+            silent: &[0],
+            exhausting: 1,
+        },
+    ] {
+        let name = row.name;
+        let dir = temp_project();
+        let root = dir.path();
+        scaffold(root, &gate_ceiling(row.max_retries));
+        for attempt in row.silent {
+            seed_critique_spawn(root, SPEC_HASH, *attempt, NO_VERDICT);
+        }
+        seed_critique_spawn(root, SPEC_HASH, row.exhausting, APPROVE);
+        let events = critique_events(root).len();
+
+        let (work, path) = stub(REJECT);
+        let (out, err, ok) = critique(root, SPEC_REL, &path, &root.join("scratch"));
+        assert!(ok, "{name}: an answered call exits 0; stderr:\n{err}");
+        assert_eq!(critique_stub_spawns(work.path()), 0, "{name}: zero spawns");
+        assert_eq!(
+            verb_lines(&err),
+            [answered("1 pass")],
+            "{name}: answered from the record, with no notice:\n{err}"
+        );
+        assert_eq!(
+            out, "{\"verdict\":\"approve\"}\n",
+            "{name}: the empty union and its approve"
+        );
+        assert_eq!(
+            critique_events(root).len(),
+            events,
+            "{name}: nothing appended"
+        );
+        assert_eq!(
+            review_findings(root),
+            Vec::<Value>::new(),
+            "{name}: nothing copied"
+        );
+    }
 }
