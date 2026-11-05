@@ -168,8 +168,10 @@ sibling stage still running asks for after a release that trails the close inclu
 so no spawn blocks on a session nothing serves and the `run_workflow` scope joins.
 Live sessions are left alone. A host with a hold sink closes a launch `interrupted`
 in place of `fault` when its class is HOLD or WAIT or the run is held at its end: no
-`SpawnResult`, no attempt charged, the spawn's scratch kept. Gates and merges already running
-continue.
+`SpawnResult`, no attempt charged, the spawn's scratch kept. Before it reads the hold at a
+launch's end, the host drains the lines already on its stream and sights each `api_retry` among
+them as its read does, acting on nothing else, so a hold the launch's own last line sights holds
+the run before that read. Gates and merges already running continue.
 
 LANDING ORDER, decided: criterion 2 lands `RunHeld`, `RunReleased` and the fold, and criteria 3
 to 8 build on them; criterion 5 lands after criterion 3, whose wait keeps a held run alive to be

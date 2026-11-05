@@ -531,14 +531,14 @@ impl Driver<'_> {
     /// takes (round-2 precedent), letting the existing reap decide the child's fate.
     ///
     /// HOLD (spec 105): a `system/api_retry` line of a category whose row holds is a sighting
-    /// ([`Driver::sight`]). The first `result` closes the session's input whatever it says. Past
-    /// a resume's refusal (THE RESUME FALLBACK below), a non-error one is recorded and closes the
-    /// launch `completed`, and one with `is_error: true` records nothing: no later `result` acts,
-    /// and the launch takes its class after the child exits, as a no-result launch does
-    /// ([`Driver::classify_no_result`]), or takes THE STOP when a bounded session never does. On
-    /// an unbounded launch a live child that ignores its input close keeps the turn until it
-    /// exits, as a no-result child does, and a read error behind that `result` fails the launch
-    /// unclassed, as a read error before any result does.
+    /// ([`Driver::sight_retry`]). The first `result` closes the session's input whatever it says.
+    /// Past a resume's refusal (THE RESUME FALLBACK below), a non-error one is recorded and closes
+    /// the launch `completed`, and one with `is_error: true` records nothing: no later `result`
+    /// acts, and the launch takes its class after the child exits, as a no-result launch does
+    /// ([`Driver::classify_no_result`]), or takes THE STOP when a bounded session never does. On an
+    /// unbounded launch a live child that ignores its input close keeps the turn until it exits, as
+    /// a no-result child does, and a read error behind that `result` fails the launch unclassed, as
+    /// a read error before any result does.
     ///
     /// THE RESUME FALLBACK (spec 105 criterion 1): a `--resume` launch awaits its session until
     /// the first `system/init`. Ending while it still awaits one - at the end of the stream,
@@ -549,15 +549,16 @@ impl Driver<'_> {
     /// launch [`AgentDriver::spawn`] lands. A launch that saw `system/init` takes no fallback,
     /// whatever its ending, and a fresh launch has nothing to await.
     ///
-    /// HELD MEANS NO LAUNCH (spec 105) outranks that fallback, since a fresh launch is a launch
-    /// and runs past the decorator's gate: the fallback takes a run proved unheld
+    /// HELD MEANS NO LAUNCH (spec 105) outranks that fallback, since a fresh launch is a launch and
+    /// runs past the decorator's gate: the fallback takes a run proved unheld
     /// ([`Driver::run_held`]), read once the launch has ended, the stop's grace, the reap and the
-    /// drain joins behind it, so a hold that lands while it ends counts. An ending that closes
-    /// `interrupted` for its class or a held run ([`Driver::fault`]) returns
-    /// [`StreamEnd::Interrupted`], and on a run not proved unheld the stop and the read error keep
-    /// their own endings, each returning its error. Off that path a resume with no `system/init`
-    /// falls back whatever its class, and a host with no hold sink reads no hold and always falls
-    /// back.
+    /// drain joins behind it, and once the lines already on its stream are drained and sighted
+    /// ([`Driver::drain_lines`]), so a hold that lands while it ends counts, one its own last line
+    /// sights among them. An ending that closes `interrupted` for its class or a held run
+    /// ([`Driver::fault`]) returns [`StreamEnd::Interrupted`], and on a run not proved unheld the
+    /// stop and the read error keep their own endings, each returning its error. Off that path a
+    /// resume with no `system/init` falls back whatever its class, and a host with no hold sink
+    /// reads no hold and always falls back.
     fn read_stream(
         &self,
         launch: Launch,
@@ -675,6 +676,7 @@ impl Driver<'_> {
                                     opts,
                                     self.stop_grace,
                                 );
+                                self.drain_lines(&line_rx, &mut stream_file, opts, id);
                                 if self.run_held(opts) == HoldRead::Unheld {
                                     return Ok(self.session_gone(opts, id));
                                 }
@@ -757,12 +759,7 @@ impl Driver<'_> {
             // "every line touches the spawn's liveness marker - the host proves life,
             // the agent is never asked to" (architecture addendum §4.2).
             touch_liveness_marker(marker.as_deref());
-            if let Some(f) = stream_file.as_mut() {
-                // Best-effort: the transcript is a diagnostic/audit artifact, never the
-                // record of truth (the progress store and the run store are), so a full
-                // disk here must not fail an otherwise-healthy spawn.
-                let _ = writeln!(f, "{line}");
-            }
+            write_stream_line(&mut stream_file, &line);
 
             let Ok(v) = serde_json::from_str::<Value>(&line) else {
                 // "a line that is not JSON is recorded as a progress line and skipped."
@@ -808,12 +805,8 @@ impl Driver<'_> {
                     // FAILURE CLASS's second-priority source (criterion 5): the LATEST
                     // category wins, a later line overwriting an earlier one exactly like
                     // `resolved_model` does as the stream plays.
-                    if let Some(category) = message_error(&v) {
+                    if let Some(category) = self.sight_retry(opts, id, &v) {
                         last_api_retry_category = Some(category.to_string());
-                        let row = AgentFailure::from_category(category).row();
-                        if row.disposition == Disposition::Hold {
-                            self.sight(opts, id, category, category);
-                        }
                     }
                 }
                 (Some("assistant"), _) => {
@@ -929,10 +922,14 @@ impl Driver<'_> {
 
         match (result, read_error) {
             (Some(result), _) => Ok(StreamEnd::Result(result)),
-            (None, Some(_)) if self.run_held(opts) == HoldRead::Unheld => {
-                Ok(self.session_gone(opts, id))
+            (None, Some(e)) => {
+                self.drain_lines(&line_rx, &mut stream_file, opts, id);
+                if self.run_held(opts) == HoldRead::Unheld {
+                    Ok(self.session_gone(opts, id))
+                } else {
+                    Err(read_agent_stream_error(opts, &e))
+                }
             }
-            (None, Some(e)) => Err(read_agent_stream_error(opts, &e)),
             (None, None) => {
                 let (class, message) = self.classify_no_result(
                     opts,
@@ -1138,6 +1135,45 @@ impl Driver<'_> {
         };
         if let Err(e) = run_store::record_hold_sighting(sink, &sighting) {
             self.record_progress(opts, &format!("hold sighting {cause} not recorded: {e}"));
+        }
+    }
+
+    /// Sight the category an `api_retry` line `v` carries, that line's one sighting: a category
+    /// whose row holds holds the run ([`Driver::sight`], the category its detail). Returns the
+    /// category, `None` for a line that carries none. The read loop and the drain at a launch's
+    /// end ([`Driver::drain_lines`]) both sight a line through it.
+    fn sight_retry<'v>(&self, opts: &SpawnOpts, id: LaunchId, v: &'v Value) -> Option<&'v str> {
+        let category = message_error(v)?;
+        if AgentFailure::from_category(category).row().disposition == Disposition::Hold {
+            self.sight(opts, id, category, category);
+        }
+        Some(category)
+    }
+
+    /// Drain the lines already on a launch's stream, ahead of the hold read at its end (spec 105
+    /// HELD): until `line_rx` is empty or closed, each line is written to `stream_file` and an
+    /// `api_retry` among them sighted as the read loop sights one ([`Driver::sight_retry`]), so a
+    /// hold the launch's last lines sighted holds the run before that read. It acts on nothing
+    /// else: a drained `result` stays unread, the ending takes no class from a drained line and no
+    /// close changes. A line that does not read is skipped.
+    fn drain_lines(
+        &self,
+        line_rx: &std::sync::mpsc::Receiver<std::io::Result<String>>,
+        stream_file: &mut Option<std::fs::File>,
+        opts: &SpawnOpts,
+        id: LaunchId,
+    ) {
+        while let Ok(read) = line_rx.try_recv() {
+            let Ok(line) = read else {
+                continue;
+            };
+            write_stream_line(stream_file, &line);
+            let Ok(v) = serde_json::from_str::<Value>(&line) else {
+                continue;
+            };
+            if line_kind(&v) == (Some("system"), Some("api_retry")) {
+                self.sight_retry(opts, id, &v);
+            }
         }
     }
 
@@ -1750,6 +1786,16 @@ fn open_stream_file(path: Option<&Path>) -> Option<std::fs::File> {
         let _ = std::fs::create_dir_all(parent);
     }
     std::fs::File::create(path).ok()
+}
+
+/// Append one stream `line` to the launch's raw stream file, when [`open_stream_file`] opened
+/// one. Best-effort: the transcript is a diagnostic/audit artifact, never the record of truth
+/// (the progress store and the run store are), so a full disk here must not fail an
+/// otherwise-healthy spawn.
+fn write_stream_line(stream_file: &mut Option<std::fs::File>, line: &str) {
+    if let Some(f) = stream_file.as_mut() {
+        let _ = writeln!(f, "{line}");
+    }
 }
 
 /// The announced delay and the category of a `system/api_retry` message: the one reading of
