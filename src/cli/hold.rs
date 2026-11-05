@@ -6,10 +6,10 @@ use super::*;
 
 /// `rigger hold --reason <text>`: hold the current run for the operator, the text the hold's
 /// action, an empty text included, carrying the open hold's latest model forward, and name the
-/// run the hold answers. Refuses, appending nothing, a malformed argv and a run the hold answers
-/// not live: none started, an empty store included, or one that is done. The run is read before
-/// the append, so a run turning done between the two takes the hold, which a done-run release
-/// still to come or the next mint ends.
+/// run the hold landed on. Refuses, appending nothing, a malformed argv and a run the hold answers
+/// not live: none started, an empty store included, or one that is done. Liveness is decided on
+/// the run the hold lands on, so a run minted or turning done behind the verb's read is
+/// re-decided rather than read stale.
 pub(crate) fn cmd_hold(args: &[String]) -> Res {
     let reason = match args {
         [flag, reason] if flag == "--reason" => reason,

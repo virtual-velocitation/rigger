@@ -20,11 +20,12 @@ use crate::contextgraph::TYPE_DECISION_MADE;
 use crate::eventstore::{
     Error, Event, EventStore, ExpectedRevision, Position, Revision, TypeSelection,
 };
-use crate::run::read::{fold_holds, read_current_run, read_run, read_run_at_head, HOLD_TYPES};
+use crate::retention::PERCEPTION_TYPES;
+use crate::run::read::{fold_holds, read_run, read_run_at_head, HOLD_TYPES};
 use crate::run::{
-    adopted_run, current_run, effective_definition, RunHeld, RunReleased, RunStart, RunStarted,
-    HOLD_BY_HOST, HOLD_BY_OPERATOR, HOLD_BY_PROBE, META_DEFINITION, META_DEFINITION_PRIOR,
-    META_RUN_ID, STREAM, TYPE_RUN_HELD, TYPE_RUN_RELEASED, TYPE_RUN_STARTED,
+    adopted_run, current_run, current_run_id, effective_definition, RunHeld, RunReleased, RunStart,
+    RunStarted, HOLD_BY_HOST, HOLD_BY_OPERATOR, HOLD_BY_PROBE, META_DEFINITION,
+    META_DEFINITION_PRIOR, META_RUN_ID, STREAM, TYPE_RUN_HELD, TYPE_RUN_RELEASED, TYPE_RUN_STARTED,
 };
 
 /// Record a `--rebase-definition` supersession on the current run (spec 13, unit 1): the
@@ -315,29 +316,49 @@ impl std::fmt::Display for NotLive {
 /// of cause `operator`, its action the operator's `reason`, carrying the open hold's latest model
 /// forward, empty when no hold is open. A live run, a started run not done, takes it on every
 /// call, a held run too, and the hold answers the run's id; a run not live takes nothing and is
-/// answered [`NotLive`]. The run is read before the append, so a run turning done between the
-/// two takes the hold.
+/// answered [`NotLive`]. Liveness is decided inside the compare-and-append ([`append_at_head`]),
+/// over the run's slice it pins and every type but perception's landing behind it, since a
+/// unit's events decide done: a run minted or turning done between the read and the append is
+/// re-decided, and the answer names the run the hold landed on.
 pub fn hold_by_operator(
     store: &dyn EventStore,
     reason: &str,
 ) -> Result<Result<String, NotLive>, Error> {
-    let (events, run_id) = read_current_run(store, STREAM)?;
-    if run_id.is_empty() {
-        return Ok(Err(NotLive::NoRun));
-    }
-    let run = project(&events).map_err(|e| Error::Backend(format!("fold the run: {e}")))?;
-    if run.done() {
-        return Ok(Err(NotLive::Done(run_id)));
-    }
-    append_on_hold(store, TYPE_RUN_HELD, |hold| {
-        let model = hold.map_or("", |hold| hold.latest.model.as_str());
-        let body = RunHeld {
-            action: reason.to_string(),
-            ..held_by(OPERATOR, "", HOLD_BY_OPERATOR, model)
-        };
-        serialized(TYPE_RUN_HELD, body.to_event()).map(Some)
-    })?;
-    Ok(Ok(run_id))
+    let mut read_so_far: Vec<Event> = Vec::new();
+    let mut live = Err(NotLive::NoRun);
+    append_at_head(
+        store,
+        TypeSelection::Except(&PERCEPTION_TYPES),
+        TYPE_RUN_HELD,
+        |read| {
+            // A re-read starts at the pinned revision, already read.
+            let seen = read_so_far.last().map(|e| e.revision);
+            let landed = read
+                .iter()
+                .filter(|e| seen.is_none_or(|seen| e.revision > seen));
+            read_so_far.extend(landed.cloned());
+            let events = current_run(&read_so_far);
+            let run = project(events).map_err(|e| Error::Backend(format!("fold the run: {e}")))?;
+            live = match current_run_id(events) {
+                None => Err(NotLive::NoRun),
+                Some(run_id) if run.done() => Err(NotLive::Done(run_id)),
+                Some(run_id) => Ok(run_id),
+            };
+            if live.is_err() {
+                return Ok(None);
+            }
+            let model = run
+                .hold
+                .as_ref()
+                .map_or("", |hold| hold.latest.model.as_str());
+            let body = RunHeld {
+                action: reason.to_string(),
+                ..held_by(OPERATOR, "", HOLD_BY_OPERATOR, model)
+            };
+            serialized(TYPE_RUN_HELD, body.to_event()).map(Some)
+        },
+    )?;
+    Ok(live)
 }
 
 /// Release the current run's open hold, an operator hold included, as `RunReleased` by `by`,
@@ -418,8 +439,9 @@ pub(crate) fn append_at_head(
 
 /// Append what `decide` makes of the current run's hold through [`append_at_head`], the hold
 /// folded by [`fold_holds`] from the run's slice and forward through the [`HOLD_TYPES`] that
-/// land behind it: every `RunHeld` and `RunReleased` goes through here (spec 105), so a
-/// concurrent writer's hold or release is never missed. `what` names the event type for the
+/// land behind it: every `RunHeld` and `RunReleased` but the operator's hold goes through here
+/// (spec 105), so a concurrent writer's hold or release is never missed; [`hold_by_operator`]
+/// folds the whole run behind its read through [`append_at_head`] itself, to decide liveness too. `what` names the event type for the
 /// store's report of an append it did not write. Answers whether it appended: `false` when
 /// `decide` left it nothing to say.
 fn append_on_hold(
