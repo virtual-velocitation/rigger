@@ -4197,7 +4197,7 @@ Proposed home: `a new shared module (sites span 2 files: crates/rigger-driver/sr
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `crates/rigger-driver/src/driver/mod.rs:248-250` `resumed_from`
-- `tests/claude_code_stream_periphery.rs:2778-2780` `launch_dir`
+- `tests/claude_code_stream_periphery.rs:2787-2789` `launch_dir`
 
 #### `dup-282069e7109f` (near, 3 sites)
 

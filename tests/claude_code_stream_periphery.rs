@@ -1592,6 +1592,15 @@ fn the_stream_silence_stop_fires_on_silent_time() {
             None,
             None,
         ),
+        (
+            "a wake the delay partly excused re-arms for the rest of the bound, not a whole bound",
+            HUNG_PAST_ITS_DELAY,
+            11,
+            false,
+            Beats::Fresh,
+            None,
+            Some(2),
+        ),
     ] {
         let fx = Fixture::new();
         if held {
