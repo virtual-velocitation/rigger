@@ -535,10 +535,11 @@ impl Driver<'_> {
     /// Past a resume's refusal (THE RESUME FALLBACK below), a non-error one is recorded and closes
     /// the launch `completed`, and one with `is_error: true` records nothing: no later `result`
     /// acts, and the launch takes its class after the child exits, as a no-result launch does
-    /// ([`Driver::classify_no_result`]), or takes THE STOP when a bounded session never does. On an
-    /// unbounded launch a live child that ignores its input close keeps the turn until it exits, as
-    /// a no-result child does, and a read error behind that `result` fails the launch unclassed, as
-    /// a read error before any result does.
+    /// ([`Driver::classify_no_result`]), or takes THE STOP when a bounded session never does,
+    /// sighting the class its session reported while its close stays `stopped` with no class
+    /// ([`Driver::close_stopped`]). On an unbounded launch a live child that ignores its input
+    /// close keeps the turn until it exits, as a no-result child does, and a read error behind that
+    /// `result` fails the launch unclassed, as a read error before any result does.
     ///
     /// THE RESUME FALLBACK (spec 105 criterion 1): a `--resume` launch awaits its session until
     /// the first `system/init`. Ending while it still awaits one - at the end of the stream,
@@ -681,7 +682,12 @@ impl Driver<'_> {
                                     return Ok(self.session_gone(opts, id));
                                 }
                                 let message = self.announce_stop(opts, max_wall_clock);
-                                return self.close_stopped(opts, id, message);
+                                return self.close_stopped(
+                                    opts,
+                                    id,
+                                    message,
+                                    assistant_error.as_deref(),
+                                );
                             }
                             return self.stop_for_wall_clock_silence(
                                 reaper,
@@ -690,6 +696,7 @@ impl Driver<'_> {
                                 opts,
                                 id,
                                 max_wall_clock,
+                                assistant_error.as_deref(),
                             );
                         }
                         armed_at = std::time::Instant::now();
@@ -967,23 +974,9 @@ impl Driver<'_> {
     /// [`read_stream`](Self::read_stream)'s bottom falls through to, exactly the
     /// CONSTRAINTS WALK shape ("the child exits before `system/init` ... a fault of class
     /// `unknown` carrying the stderr tail, never a hang"), whether or not an `is_error`
-    /// `result` came first - into the class and the message its ending carries
-    /// ([`Driver::fault`]). `assistant_error` is the FIRST-priority source, the class the
-    /// session printed on its last assistant line. Next comes the `StopFailure` hook's record
-    /// (keyed on `opts.id` AND scoped to `opts.run_id` -
-    /// adj-u104c5 REQUIRED FIX 1, adv-u104c5-stopfailure-crosses-run-boundary: a stale
-    /// record from an old or unrelated run must never outrank the live session's own
-    /// `api_retry` category, matching `rigger status`'s own established progress-event
-    /// run-scoping convention at `src/main.rs`), read from THIS driver's own progress store
-    /// and scoped to this launch by stream order
-    /// ([`progress::latest_stop_failure_class`]). The two fold against
-    /// `last_api_retry_category` via [`classify_failure`], and the message carries the class and
-    /// `stderr_tail` (lossily decoded, trimmed). A progress-store read failure degrades to "no `StopFailure` record found"
-    /// (`None`) rather than failing the whole classification - the second source
-    /// (`last_api_retry_category`) and the `unknown` floor both still apply, so a store
-    /// hiccup here never turns a classifiable failure into an opaque one
-    /// (`classify_no_result_degrades_to_the_api_retry_floor_when_the_progress_store_read_fails`
-    /// below proves this branch is reachable).
+    /// `result` came first - into the class its sources give ([`Driver::no_result_class`]) and
+    /// the message its ending carries ([`Driver::fault`]), which carries the class and
+    /// `stderr_tail` (lossily decoded, trimmed).
     fn classify_no_result(
         &self,
         opts: &SpawnOpts,
@@ -991,15 +984,7 @@ impl Driver<'_> {
         last_api_retry_category: &Option<String>,
         stderr_tail: &[u8],
     ) -> (AgentFailure, String) {
-        // THIS spawn's run's progress alone - its own stream, the one read `rigger status`
-        // folds too (spec 101).
-        let stop_failure_class = progress::read_run(self.progress_store, &opts.run_id)
-            .ok()
-            .and_then(|events| progress::latest_stop_failure_class(&events, &opts.id));
-        let class = classify_failure(
-            assistant_error.or(stop_failure_class.as_deref()),
-            last_api_retry_category.as_deref(),
-        );
+        let class = self.no_result_class(opts, assistant_error, last_api_retry_category.as_deref());
         let tail = String::from_utf8_lossy(stderr_tail);
         let message = format!(
             "claude_code driver: {:?}: the agent stream ended with no result (class {class}; \
@@ -1008,6 +993,37 @@ impl Driver<'_> {
             tail.trim()
         );
         (class, message)
+    }
+
+    /// The class a launch with no usable `result` takes from its sources (spec 104 criterion 5).
+    /// `assistant_error` is the FIRST-priority source, the class the session printed on its last
+    /// assistant line. Next comes the `StopFailure` hook's record (keyed on `opts.id` AND scoped
+    /// to `opts.run_id` - adj-u104c5 REQUIRED FIX 1, adv-u104c5-stopfailure-crosses-run-boundary:
+    /// a stale record from an old or unrelated run must never outrank the live session's own
+    /// `api_retry` category, matching `rigger status`'s own established progress-event
+    /// run-scoping convention at `src/main.rs`), read from THIS driver's own progress store and
+    /// scoped to this launch by stream order ([`progress::latest_stop_failure_class`]). The two
+    /// fold against `last_api_retry_category` via [`classify_failure`]. A progress-store read
+    /// failure degrades to "no `StopFailure` record found" (`None`) rather than failing the whole
+    /// classification - the second source (`last_api_retry_category`) and the `unknown` floor
+    /// both still apply, so a store hiccup here never turns a classifiable failure into an opaque
+    /// one (`classify_no_result_degrades_to_the_api_retry_floor_when_the_progress_store_read_fails`
+    /// below proves this branch is reachable).
+    fn no_result_class(
+        &self,
+        opts: &SpawnOpts,
+        assistant_error: Option<&str>,
+        last_api_retry_category: Option<&str>,
+    ) -> AgentFailure {
+        // THIS spawn's run's progress alone - its own stream, the one read `rigger status`
+        // folds too (spec 101).
+        let stop_failure_class = progress::read_run(self.progress_store, &opts.run_id)
+            .ok()
+            .and_then(|events| progress::latest_stop_failure_class(&events, &opts.id));
+        classify_failure(
+            assistant_error.or(stop_failure_class.as_deref()),
+            last_api_retry_category,
+        )
     }
 
     /// End a launch as a FAULT (spec 104 THE LAUNCH: "at exit it closes the record with
@@ -1026,10 +1042,9 @@ impl Driver<'_> {
     /// run proved unheld and a read that fails, proving neither, close `fault`.
     ///
     /// The holds follow the close and come before the `Error` returns: an ending of a class whose
-    /// row holds or waits sights that class, with no `detail` since an ending is no sighting line,
-    /// then a `fault` close counts the failed closes ([`Driver::sight_unstable`]), which an
-    /// `interrupted` close never enters. A class whose row faults holds nothing on its own, so it
-    /// takes its spawn site's existing path.
+    /// row holds or waits sights that class ([`Driver::sight_ending`]), then a `fault` close counts
+    /// the failed closes ([`Driver::sight_unstable`]), which an `interrupted` close never enters. A
+    /// class whose row faults holds nothing on its own, so it takes its spawn site's existing path.
     fn fault(
         &self,
         opts: &SpawnOpts,
@@ -1048,14 +1063,21 @@ impl Driver<'_> {
             Some(HoldRead::Held(head)) => self.close_at(opts, id, ended, class.as_str(), head),
             _ => self.close(opts, id, ended, class.as_str()),
         }
-        if class.row().waits() {
-            self.sight(opts, id, class.as_str(), "");
-        }
+        self.sight_ending(opts, id, class);
         if interrupted {
             return Ok(StreamEnd::Interrupted(launch_interrupted(class, message)));
         }
         self.sight_unstable(opts, id);
         Err(no_result_error(class, message))
+    }
+
+    /// Sight the `class` a launch ended under when its row holds or waits, with no `detail` since
+    /// an ending is no sighting line ([`Driver::sight`]): the one sighting [`Driver::fault`] and
+    /// [`Driver::close_stopped`] take for an ending.
+    fn sight_ending(&self, opts: &SpawnOpts, id: LaunchId, class: AgentFailure) {
+        if class.row().waits() {
+            self.sight(opts, id, class.as_str(), "");
+        }
     }
 
     /// The hold read a classed ending takes, what [`Driver::fault`] closes on and the no-result
@@ -1272,7 +1294,8 @@ impl Driver<'_> {
     /// factored out of
     /// [`Driver::read_stream`]'s loop so its one call site there reads as a single named step:
     /// runs THE STOP sequence ([`Driver::stop_session`], with the full [`Driver::stop_grace`]),
-    /// then ends the launch ([`Driver::close_stopped`]).
+    /// then ends the launch under the class `assistant_error` reported
+    /// ([`Driver::close_stopped`]).
     /// THE STOP
     /// sweeps nothing beyond that one child's own PID TREE - a running spawn's worktree can be shared concurrently by sibling spawns in the same unit (the review
     /// fan-out's own lenses, `run_review_agents_concurrently`), and a cwd-scanned match has no
@@ -1299,10 +1322,11 @@ impl Driver<'_> {
         opts: &SpawnOpts,
         id: LaunchId,
         max_wall_clock: u64,
+        assistant_error: Option<&str>,
     ) -> Result<StreamEnd, Error> {
         let message = self.announce_stop(opts, max_wall_clock);
         self.stop_session(reaper, stderr_drain, stdout_reader, opts, self.stop_grace);
-        self.close_stopped(opts, id, message)
+        self.close_stopped(opts, id, message, assistant_error)
     }
 
     /// Say on the spawn's progress why it was stopped: the stop's `message`.
@@ -1313,13 +1337,17 @@ impl Driver<'_> {
     }
 
     /// End a launch THE STOP's sequence has ended, `message` naming why: records the EXISTING
-    /// liveness-fault shape, closes the launch record `stopped` and counts the failed closes
-    /// ([`Driver::sight_unstable`]) before the `Err` returns.
+    /// liveness-fault shape and closes the launch record `stopped` with no class. Its child gone,
+    /// it takes the class its session reported, `assistant_error` or its `StopFailure` record
+    /// ([`Driver::no_result_class`]), and sights it as any ending does ([`Driver::sight_ending`]);
+    /// its `api_retry` lines take no part, each sighted when it was read, one sighting a line.
+    /// Then it counts the failed closes ([`Driver::sight_unstable`]) before the `Err` returns.
     fn close_stopped(
         &self,
         opts: &SpawnOpts,
         id: LaunchId,
         message: String,
+        assistant_error: Option<&str>,
     ) -> Result<StreamEnd, Error> {
         // "the existing liveness-fault result is recorded" - the SAME [`SpawnResult`]
         // shape `liveness::sweep` already records for the stepwise driver's own hung
@@ -1334,6 +1362,7 @@ impl Driver<'_> {
 
         // "the launch ends `stopped`", the liveness-fault result above being the truth of it.
         self.close(opts, id, progress::ENDED_STOPPED, "");
+        self.sight_ending(opts, id, self.no_result_class(opts, assistant_error, None));
         self.sight_unstable(opts, id);
 
         Err(Error(format!(
