@@ -365,7 +365,9 @@ rendered with the tree's own binary, never the installed one):
   into one variant per refusal shape: outside the repository; arm (ii) exhausted or at the ceiling;
   arm (ii) below the ceiling; arm (iii).
 
-`docs/audit/` holds dated audit snapshots and is not edited.
+`docs/audit/` holds dated audit snapshots: their text is not edited, and their line anchors move
+only through the audit's registered regeneration (`RIGGER_AUDIT_WRITE=1 cargo test --test
+simplification_audit`), committed with the moved sites.
 
 UNIT ORDER (the needs chain): 1, then 2 (needs 1), then 3 (needs 1 and 2: its CLEAN reads the
 ceiling from `wave::critic_of`, criterion 2's), then 4.
