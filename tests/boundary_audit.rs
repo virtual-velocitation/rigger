@@ -781,11 +781,10 @@ fn a_constructor_outside_the_root_is_reported_by_file_and_item() {
 const PROJECT_STREAM_APPENDS: &[&str] = &[
     "crates/rigger-conductor/src/conductor.rs:append_and_fold_batch",
     "crates/rigger-conductor/src/conductor.rs:emit_keyed_batch",
-    "crates/rigger-store-sqlite/src/run_store.rs:append_on_hold",
+    "crates/rigger-store-sqlite/src/run_store.rs:append_at_head",
     "crates/rigger-store-sqlite/src/run_store.rs:record_rebase",
     "crates/rigger-store-sqlite/src/run_store.rs:start_fresh",
     "crates/rigger-store-sqlite/src/spawn_store.rs:one_position",
-    "crates/rigger-store-sqlite/src/spawn_store.rs:record_result_unless",
     "src/cli/critique.rs:copy_findings",
     "src/cli/graph.rs:cmd_emit",
     "src/cli/graph.rs:record_batch",
