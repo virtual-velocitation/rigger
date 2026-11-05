@@ -1034,6 +1034,39 @@ mod tests {
         }
     }
 
+    /// `rigger hold` decides liveness on the run its hold lands on: a mint landing between its
+    /// read and its append sends it back to hold the minted run and answer that run's id, and the
+    /// run turning done there takes nothing and is answered done.
+    #[test]
+    fn a_mint_or_a_done_run_behind_the_operators_read_re_decides_liveness() {
+        type Answer = fn(String) -> Result<String, NotLive>;
+        let rows: [(&str, Vec<Event>, Vec<&str>, Answer); 2] = [
+            (
+                "a mint",
+                vec![ev(TYPE_RUN_STARTED, r#"{"run":"r2"}"#)],
+                vec!["RunStarted", "RunStarted", "RunHeld"],
+                |_| Ok("r2".to_string()),
+            ),
+            (
+                "the run turning done",
+                vec![
+                    ev("UnitStarted", r#"{"id":"u1","agent":"worker"}"#),
+                    ev("UnitIntegrated", r#"{"id":"u1","commit":"aaa"}"#),
+                ],
+                vec!["RunStarted", "UnitStarted", "UnitIntegrated"],
+                |run| Err(NotLive::Done(run)),
+            ),
+        ];
+        for (name, landing, expected, answer) in rows {
+            let inner = run_holding(vec![]);
+            let run = current_run_id(&stream(&inner)).unwrap();
+            let store = ReadCountingStore::new(&inner).interleaving(2, STREAM, landing);
+            let held = hold_by_operator(&store, "pausing").unwrap();
+            assert_eq!(held, answer(run), "{name}");
+            assert_eq!(types_of(&stream(&inner)), expected, "{name}");
+        }
+    }
+
     /// The head a launch close stamps: the newest revision of the run stream, none on an empty
     /// one.
     #[test]
