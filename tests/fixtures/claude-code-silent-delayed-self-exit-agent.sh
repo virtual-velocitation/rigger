@@ -11,8 +11,11 @@
 # killing it mid-sleep; only a host that actually POLLS across the grace window observes
 # the exit on its own and lets it finish. The marker is written only once that sleep
 # completes, so a live host's own `try_wait` timing decides its fate.
+self=$(readlink "$0") || self=$0
+. "$(dirname "$self")/launch-args.sh"
+sid=$(launched_session 66666666-6666-4666-8666-666666666666 "$@")
 IFS= read -r line
-echo '{"type":"system","subtype":"init","session_id":"66666666-6666-4666-8666-666666666666","model":"claude-haiku-4-5","mcp_servers":[]}'
+echo '{"type":"system","subtype":"init","session_id":"'"$sid"'","model":"claude-haiku-4-5","mcp_servers":[]}'
 while IFS= read -r _unused; do :; done
 sleep 0.15
 if [ -n "$RIGGER_TEST_SELF_EXIT_MARKER" ]; then

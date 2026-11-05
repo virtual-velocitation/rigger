@@ -14,8 +14,11 @@
 # stop_grace - adj-u104stop-r4-verdict-reject REQUIRED FIX,
 # op-104-stop-ordinary-path-drain-bound) rather than stall on either reader/drain thread's
 # join waiting for an EOF only the descendant can still withhold.
+self=$(readlink "$0") || self=$0
+. "$(dirname "$self")/launch-args.sh"
+sid=$(launched_session 88888888-8888-4888-8888-888888888888 "$@")
 IFS= read -r line
-echo '{"type":"system","subtype":"init","session_id":"88888888-8888-4888-8888-888888888888","model":"claude-haiku-4-5","mcp_servers":[]}'
+echo '{"type":"system","subtype":"init","session_id":"'"$sid"'","model":"claude-haiku-4-5","mcp_servers":[]}'
 sleep 60 &
 if [ -n "$RIGGER_TEST_DESCENDANT_PID_FILE" ]; then
     echo "$!" >"$RIGGER_TEST_DESCENDANT_PID_FILE"

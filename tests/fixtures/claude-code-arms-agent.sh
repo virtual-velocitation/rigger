@@ -18,12 +18,13 @@
 # launch whose first argument is `auth` (the `claude auth status --json` read) prints the arm's
 # answer as it stands, with no stream framing. A launch naming no `--system-prompt-file` (the
 # hold probe's canary) reaches the arm for the empty prompt, `""`; the stand-in finds that file
-# through `system-prompt-file.sh`, sourced from beside this fixture's own path. A checked-in
+# through `launch-args.sh`, sourced from beside this fixture's own path. A checked-in
 # executable fixture (never written at test time), for the same reason as every sibling fixture
 # here: no concurrent test's fork+exec can inherit a write fd to it.
 here=$(dirname "$0")
 self=$(readlink "$0") || self=$0
-. "$(dirname "$self")/system-prompt-file.sh"
+. "$(dirname "$self")/launch-args.sh"
+sid=$(launched_session arms "$@")
 sp_file=$(system_prompt_file "$@")
 sp=""
 if [ -n "$sp_file" ]; then
@@ -45,7 +46,7 @@ frame() {
     tab=$(printf '\t')
     json=$(printf '%s' "$answer" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e "s/$tab/\\\\t/g" |
         awk 'NR > 1 { printf "%s", "\\n" } { printf "%s", $0 }')
-    printf '%s\n' '{"type":"system","subtype":"init","session_id":"arms","mcp_servers":[{"name":"rigger","status":"connected"}]}' >&3
+    printf '%s\n' '{"type":"system","subtype":"init","session_id":"'"$sid"'","mcp_servers":[{"name":"rigger","status":"connected"}]}' >&3
     printf '{"type":"result","subtype":"success","is_error":false,"num_turns":1,"session_id":"arms","result":"%s"}\n' "$json" >&3
 }
 trap frame EXIT

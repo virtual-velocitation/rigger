@@ -8,5 +8,8 @@
 # executable fixture (never written at test time), matching every sibling fixture's own
 # rationale in this directory: no concurrent test's fork+exec can inherit a write fd to
 # it.
+self=$(readlink "$0") || self=$0
+. "$(dirname "$self")/launch-args.sh"
+sid=$(launched_session "" "$@")
 IFS= read -r line
-cat "$(dirname "$0")/claude-code-stream-success.jsonl"
+as_launched "$sid" <"$(dirname "$0")/claude-code-stream-success.jsonl"

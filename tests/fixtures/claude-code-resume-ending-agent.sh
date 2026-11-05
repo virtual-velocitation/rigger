@@ -22,6 +22,9 @@
 # until the test lands what it lands there ([`stay_until_released`]). A checked-in executable
 # fixture (never written at test time), for the same reason as every sibling fixture here: no
 # concurrent test's fork+exec can inherit a write fd to it.
+self=$(readlink "$0") || self=$0
+. "$(dirname "$self")/launch-args.sh"
+sid=$(launched_session 99999999-9999-4999-8999-999999999999 "$@")
 case " $* " in
 *" --resume "*) ending=${RIGGER_TEST_RESUME_ENDING:-answer} ;;
 *) ending=${RIGGER_TEST_FRESH_ENDING:-answer} ;;
@@ -48,7 +51,7 @@ stay_until_released() {
 }
 
 init() {
-    printf '%s\n' "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"99999999-9999-4999-8999-999999999999\",\"model\":\"claude-haiku-4-5\",\"mcp_servers\":[$1]}"
+    printf '%s\n' "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"$sid\",\"model\":\"claude-haiku-4-5\",\"mcp_servers\":[$1]}"
 }
 
 retried() {

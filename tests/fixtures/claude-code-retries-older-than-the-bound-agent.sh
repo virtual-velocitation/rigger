@@ -4,8 +4,11 @@
 # delay and ends in a `result`. The silent seconds count from its last line, so every one of
 # them is excused; counted from its launch, the 4 s it spoke would pass the bound.
 # Reads and discards the host's first stdin message like every sibling fixture.
+self=$(readlink "$0") || self=$0
+. "$(dirname "$self")/launch-args.sh"
+sid=$(launched_session cccccccc-cccc-4ccc-8ccc-cccccccccccc "$@")
 IFS= read -r line
-echo '{"type":"system","subtype":"init","session_id":"cccccccc-cccc-4ccc-8ccc-cccccccccccc","model":"claude-haiku-4-5","mcp_servers":[{"name":"rigger","status":"connected"}]}'
+echo '{"type":"system","subtype":"init","session_id":"'"$sid"'","model":"claude-haiku-4-5","mcp_servers":[{"name":"rigger","status":"connected"}]}'
 spoken=0
 while [ "$spoken" -lt 4 ]; do
   sleep 1

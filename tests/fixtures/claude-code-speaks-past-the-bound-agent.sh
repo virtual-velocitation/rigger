@@ -3,8 +3,11 @@
 # and ends in a `result`. Its age passes a 3 s bound while the time since its last line never
 # does, so a host with no beat source, which counts from the last line, reads it through.
 # Reads and discards the host's first stdin message like every sibling fixture.
+self=$(readlink "$0") || self=$0
+. "$(dirname "$self")/launch-args.sh"
+sid=$(launched_session bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb "$@")
 IFS= read -r line
-echo '{"type":"system","subtype":"init","session_id":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb","model":"claude-haiku-4-5","mcp_servers":[{"name":"rigger","status":"connected"}]}'
+echo '{"type":"system","subtype":"init","session_id":"'"$sid"'","model":"claude-haiku-4-5","mcp_servers":[{"name":"rigger","status":"connected"}]}'
 spoken=0
 while [ "$spoken" -lt 5 ]; do
   sleep 1

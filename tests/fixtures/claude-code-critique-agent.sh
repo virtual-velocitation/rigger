@@ -3,7 +3,7 @@
 # `claude` binary, put first on PATH as a symlink named `claude` by
 # `tests/common/repo.rs::write_critique_stub`. Everything it records or replays lives beside that
 # symlink, in the directory of `$0`: it records its argv (one NUL-terminated field per argument),
-# the system prompt its `--system-prompt-file` names (found through `system-prompt-file.sh`,
+# the system prompt its `--system-prompt-file` names (found through `launch-args.sh`,
 # sourced from beside this fixture's own path, and read now, since the host removes that file
 # once the spawn ends), the KURRENTDB_CONN it was started with (`unset` when none) and the host's
 # first stream-json user message, appends one line to its spawn count, then replays the stream-json transcript the
@@ -15,7 +15,8 @@ for arg in "$@"; do
     printf '%s\0' "$arg"
 done > "$here/critique-argv"
 self=$(readlink "$0") || self=$0
-. "$(dirname "$self")/system-prompt-file.sh"
+. "$(dirname "$self")/launch-args.sh"
+sid=$(launched_session "" "$@")
 sp=$(system_prompt_file "$@")
 if [ -n "$sp" ]; then
     cat "$sp" > "$here/critique-system-prompt"
@@ -24,4 +25,4 @@ printf '%s' "${KURRENTDB_CONN-unset}" > "$here/critique-conn"
 IFS= read -r line
 printf '%s\n' "$line" > "$here/critique-task.jsonl"
 echo spawned >> "$here/critique-spawns"
-cat "$here/critique-transcript.jsonl"
+as_launched "$sid" <"$here/critique-transcript.jsonl"
