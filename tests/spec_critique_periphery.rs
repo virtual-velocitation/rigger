@@ -2018,7 +2018,7 @@ fn an_unreadable_request_on_the_critique_stream_fails_the_attempt_count_and_spaw
     assert!(!ok, "an unreadable request fails the count");
     assert!(
         err.contains(&common::cli::refusal_line(
-            "event store: a spawn request recorded on the critique stream is unreadable: "
+            common::cli::UNREADABLE_CRITIQUE_REQUEST
         )),
         "the verb names the unreadable request:\n{err}"
     );

@@ -741,6 +741,12 @@ pub fn seed_critique_request(root: &Path, hash: &str, attempt: u32) {
     seed_critique(root, &[critique_request(hash, attempt)]);
 }
 
+/// The error the attempt count of a critique fails on when the critique's own stream holds a
+/// spawn request it cannot read, ahead of the decode error that ends it: `rigger critique` and a
+/// new run's refusal both read the count (spec 123).
+pub const UNREADABLE_CRITIQUE_REQUEST: &str =
+    "event store: a spawn request recorded on the critique stream is unreadable: ";
+
 /// A `DecisionMade` resolving `ids` and governing `governs`, through `rigger emit`.
 pub fn resolve(root: &Path, id: &str, governs: &str, ids: &[String]) {
     emit(

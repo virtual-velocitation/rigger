@@ -7,7 +7,9 @@
 //! leaves open. Otherwise it refuses on stderr and appends nothing: on the open BLOCKING ids,
 //! offering their resolution only once the critique is exhausted or at its ceiling; else as not
 //! critiqued to exhaustion, offering the critique alone; and a spec outside the repository as not
-//! critiqued. A step that adopts the spec's existing run proceeds whatever the critique; and under
+//! critiqued. A critique with a pass whose attempt count cannot be read, a spawn request on its
+//! stream being unreadable, fails the command on the line `rigger critique` fails on, appending
+//! nothing. A step that adopts the spec's existing run proceeds whatever the critique; and under
 //! a workflow naming no critic a new run proceeds with one line saying so. Spec 105 stands ahead
 //! of the refusal: a plain step of a held run begins no run, so it prints the hold whatever the
 //! critique, and a plain step of a run not proved unheld fails on that read, while a `--fresh`
@@ -22,18 +24,21 @@ use std::path::Path;
 
 use common::cli::Refusal::{self, BelowCeiling, Outside, Settled, Unexhausted};
 use common::cli::{
-    assert_stopped_at_the_grounder, critique_finding_id, emit, printed_decision, read_run_events,
-    record_clean_critique, record_critique, refused_new_run, resolve, run_payloads, run_rigger,
-    run_rigger_envs, seed_a_hold_no_fold_applies, seed_critique_request, seed_critique_spawn,
-    seed_on_the_run, seed_run_events, stopping_at_the_grounder, temp_repoless_project,
-    write_scaffold, write_spec_project, CRITIQUE_ROUTE, RESOLUTION_ROUTE,
+    assert_stopped_at_the_grounder, critique_finding_id, emit, failure_line, printed_decision,
+    read_run_events, record_clean_critique, record_critique, refusal_line, refused_new_run,
+    resolve, run_payloads, run_rigger, run_rigger_envs, seed_a_hold_no_fold_applies, seed_critique,
+    seed_critique_request, seed_critique_spawn, seed_on_the_run, seed_run_events,
+    stopping_at_the_grounder, temp_repoless_project, write_scaffold, write_spec_project,
+    CRITIQUE_ROUTE, RESOLUTION_ROUTE, UNREADABLE_CRITIQUE_REQUEST,
 };
 use common::fixtures::{
     git_ok, git_out, hold_naming, run_held_event, temp_git_project_with_commit, ADVISORY,
     CLEAN_CRITIQUE, NO_VERDICT,
 };
 use common::repo::{critique_stub_spawns, stub_path, write_critique_stub_then};
-use rigger::review::critique_hash;
+use rigger::eventstore::Event;
+use rigger::review::{critique_hash, critique_unit};
+use rigger::spawn::{TYPE_SPAWN_REQUESTED, TYPE_SPAWN_RESULT};
 use rigger::wave::NO_CRITIC_CLAUSE;
 use serde_json::json;
 
@@ -660,21 +665,32 @@ fn gate_two_workflow() -> String {
 /// flight ([`seed_critique_request`]).
 const PARKED: &str = "(parked: no result recorded)";
 
+/// In place of an answer, a result on the critique's own stream that cannot be read: a JSON
+/// string where a spawn result's object belongs, carrying no spawn id, so it is no attempt
+/// ([`seed_critique`]).
+const UNREADABLE_RESULT: &str = "(unreadable: no spawn result)";
+
 /// A project carrying `workflow` and [`SPEC`] at [`SPEC_REL`], whose critic spawns on that text
 /// recorded `answers` in attempt order ([`seed_critique_spawn`]; a [`PARKED`] answer recording its
-/// request alone), followed - when `resolved` - by a resolution of attempt 0's BLOCKING ids
-/// ([`reject_ids`]): its directory, which keeps it alive.
+/// request alone, an [`UNREADABLE_RESULT`] its unreadable result between the attempts beside it),
+/// followed - when `resolved` - by a resolution of attempt 0's BLOCKING ids ([`reject_ids`]): its
+/// directory, which keeps it alive.
 fn critiqued_project(workflow: &str, answers: &[&str], resolved: bool) -> tempfile::TempDir {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
     write_spec_project(root, &PERSONAS, workflow, SPEC_REL, SPEC);
     let hash = critique_hash(SPEC);
-    for (attempt, answer) in (0..).zip(answers) {
-        if *answer == PARKED {
-            seed_critique_request(root, &hash, attempt);
-        } else {
-            seed_critique_spawn(root, &hash, attempt, answer);
+    let mut attempt = 0;
+    for answer in answers {
+        match *answer {
+            UNREADABLE_RESULT => {
+                seed_critique(root, &[(TYPE_SPAWN_RESULT, json!(UNREADABLE_RESULT))]);
+                continue;
+            }
+            PARKED => seed_critique_request(root, &hash, attempt),
+            answer => seed_critique_spawn(root, &hash, attempt, answer),
         }
+        attempt += 1;
     }
     if resolved {
         resolve(root, "r-all", SPEC_REL, &reject_ids());
@@ -692,14 +708,15 @@ type CeilingRow<'a> = (&'a str, &'a str, &'a [&'a str], bool, Option<Refusal<'a>
 /// of 2, and perhaps a resolution of attempt 0's BLOCKING ids recorded after them, when a step
 /// begins a new run on it, then the run begins only when the critique has a pass, is exhausted or
 /// has an attempt count at or above the ceiling - a spawn that recorded no pass, or whose request
-/// is parked with no result, counting as an attempt - and leaves no BLOCKING id open. Else it is refused on the open BLOCKING ids, offering
-/// their resolution only once the critique is exhausted or at its ceiling, and otherwise as not
-/// critiqued to exhaustion, offering the critique alone.
+/// is parked with no result, counting as an attempt, and a result the stream cannot read hiding
+/// no pass recorded before or after it - and leaves no BLOCKING id open. Else it is refused on the
+/// open BLOCKING ids, offering their resolution only once the critique is exhausted or at its
+/// ceiling, and otherwise as not critiqued to exhaustion, offering the critique alone.
 #[test]
 fn a_new_run_needs_its_critique_exhausted_or_at_the_ceiling_and_offers_a_resolution_only_then() {
     let gate_two = gate_two_workflow();
     let open = reject_ids();
-    let rows: [CeilingRow; 20] = [
+    let rows: [CeilingRow; 22] = [
         (
             "one advisory pass, below the built-in ceiling",
             SKEPTIC_WORKFLOW,
@@ -840,6 +857,20 @@ fn a_new_run_needs_its_critique_exhausted_or_at_the_ceiling_and_offers_a_resolut
             true,
             None,
         ),
+        (
+            "an advisory pass, an unreadable result, then a pass with no finding line: exhausted",
+            SKEPTIC_WORKFLOW,
+            &[ADVISORY, UNREADABLE_RESULT, CLEAN_CRITIQUE],
+            false,
+            None,
+        ),
+        (
+            "a reject, an unreadable result, then a pass with no finding line: exhausted",
+            SKEPTIC_WORKFLOW,
+            &[REJECT, UNREADABLE_RESULT, CLEAN_CRITIQUE],
+            false,
+            Some(Settled(&open)),
+        ),
     ];
     for (name, workflow, answers, resolved, refused) in rows {
         let dir = critiqued_project(workflow, answers, resolved);
@@ -849,6 +880,92 @@ fn a_new_run_needs_its_critique_exhausted_or_at_the_ceiling_and_offers_a_resolut
         match refused {
             Some(refusal) => assert_step_refused(root, (SPEC_REL, &[]), SPEC_REL, refusal, 0),
             None => assert_step_proceeds(root, (SPEC_REL, &[]), SPEC_REL, (0, 1)),
+        }
+    }
+}
+
+/// A row of the unreadable-request table below: its name, the critic's answers recorded before
+/// the unreadable request in attempt order ([`critiqued_project`]), and the refusal of the new
+/// run, `None` when it fails on that request with the line the critique fails on.
+type UnreadableRequestRow<'a> = (&'a str, &'a [&'a str], Option<Refusal<'a>>);
+
+/// Spec 123, CLEAN MEANS EXHAUSTED, the attempt count read alike: given a text whose critique
+/// stream holds, after the critic's answers, a spawn request that cannot be read - its attempt
+/// cannot be told apart - when the operator runs `rigger critique` on the text and then a step
+/// begins a new run on it, then both fail on that request with one line, spawning no critic and
+/// appending nothing to the run stream, whether the critique is exhausted, with or without a
+/// BLOCKING id open, short of its ceiling or at it: the refusal reads the attempt count on every
+/// check, as the critique does. A text with no pass is still refused as not critiqued to
+/// exhaustion, that refusal coming ahead of the count, while the critique fails on it.
+#[test]
+fn an_unreadable_request_on_the_critique_stream_fails_the_critique_and_a_new_run_alike() {
+    let unreadable = json!({"unit": critique_unit(&critique_hash(SPEC)), "stage": "critique",
+                            "prompt": "p"});
+    let decoded = rigger::spawn::requests(&[Event::new(
+        TYPE_SPAWN_REQUESTED,
+        serde_json::to_vec(&unreadable).unwrap(),
+    )])
+    .unwrap_err();
+    let failed = refusal_line(&format!("{UNREADABLE_CRITIQUE_REQUEST}{decoded}"));
+    let rows: [UnreadableRequestRow; 5] = [
+        (
+            "a pass with no finding line: exhausted below the built-in ceiling",
+            &[CLEAN_CRITIQUE],
+            None,
+        ),
+        (
+            "a reject then a pass with no finding line: exhausted, its BLOCKING ids open",
+            &[REJECT, CLEAN_CRITIQUE],
+            None,
+        ),
+        (
+            "an advisory pass, below the built-in ceiling",
+            &[ADVISORY],
+            None,
+        ),
+        (
+            "three advisory passes, at the built-in ceiling",
+            &[ADVISORY; 3],
+            None,
+        ),
+        ("no pass", &[], Some(Unexhausted)),
+    ];
+    for (name, answers, refused) in rows {
+        let dir = critiqued_project(SKEPTIC_WORKFLOW, answers, false);
+        let root = dir.path();
+        seed_critique(root, &[(TYPE_SPAWN_REQUESTED, unreadable.clone())]);
+        let events = read_run_events(root).len();
+
+        println!("row: {name}");
+        let work = tempfile::tempdir().unwrap();
+        let path = write_critique_stub_then(work.path(), CLEAN_CRITIQUE, CLEAN_CRITIQUE);
+        let (out, err, ok) = run_rigger_envs(root, &["critique", SPEC_REL], &[("PATH", &path)]);
+        assert_eq!(
+            (
+                out.as_str(),
+                failure_line(ok, &err),
+                critique_stub_spawns(work.path()),
+                read_run_events(root).len()
+            ),
+            ("", Some(failed.clone()), 0, events),
+            "the critique fails on the unreadable request, spawning and appending nothing; \
+             stderr:\n{err}"
+        );
+        match refused {
+            Some(refusal) => assert_step_refused(root, (SPEC_REL, &[]), SPEC_REL, refusal, 0),
+            None => {
+                let (out, err, ok) = step(root, SPEC_REL, &[]);
+                assert_eq!(
+                    (
+                        out.as_str(),
+                        failure_line(ok, &err),
+                        read_run_events(root).len()
+                    ),
+                    ("", Some(failed.clone()), events),
+                    "the step fails on the line the critique fails on, appending nothing; \
+                     stderr:\n{err}"
+                );
+            }
         }
     }
 }
