@@ -7309,14 +7309,7 @@ fn worker_hold(
     action: &str,
     needs_person: bool,
 ) -> rigger::run::RunHeld {
-    rigger::run::RunHeld {
-        cause: cause.to_string(),
-        detail: detail.to_string(),
-        action: action.to_string(),
-        needs_person,
-        by: rigger::run::HOLD_BY_HOST.to_string(),
-        model: "sonnet".to_string(),
-    }
+    common::fixtures::host_hold(cause, detail, action, needs_person, "sonnet")
 }
 
 /// An arm of [`install_fake_claude`] for the `Do the unit.` workers: the session runs `opening`,
@@ -8264,7 +8257,7 @@ fn a_served_run_not_proved_unheld_hands_out_no_queued_spawn() {
     assert_eq!(
         String::from_utf8_lossy(&out.stderr),
         "rigger: the hold read failed, so no spawn is handed out until a read proves the run \
-         unheld: conductor: expected ident at line 1 column 2\n\
+         unheld: conductor: event store: fold the run's hold: expected ident at line 1 column 2\n\
          rigger: conductor: conductor: expected ident at line 1 column 2\n",
         "{NAME}: the failed read, named once by the handout and then by the conductor"
     );
@@ -9848,7 +9841,9 @@ fn a_probe_releases_a_held_run_only_on_a_passing_canary_of_the_hold_it_read() {
         ProbeCase {
             redeclare: |root| {
                 common::cli::with_run_store(root, |store| {
-                    rigger::run_store::hold_by_operator(store, HOLD_REASON).unwrap()
+                    rigger::run_store::hold_by_operator(store, HOLD_REASON)
+                        .unwrap()
+                        .expect("the run is live")
                 });
             },
             ..released_row(
@@ -14104,7 +14099,7 @@ fn a_step_of_a_run_not_proved_unheld_fails_on_its_read_ahead_of_its_sweep() {
     assert!(!ok, "a run not proved unheld fails the step; stdout: {out}");
     assert_eq!(out, "", "no step line for a courier to read");
     assert_eq!(
-        err, "rigger: conductor: expected ident at line 1 column 2\n",
+        err, "rigger: event store: fold the run's hold: expected ident at line 1 column 2\n",
         "the failed read"
     );
     assert_eq!(

@@ -251,6 +251,16 @@ impl Hold {
         })
     }
 
+    /// Whether the host or probe `RunHeld` `body` says anything to the hold `open` (`None` when
+    /// the run is unheld): the one transition rule a sighting and a failed probe append by. On an
+    /// unheld run it holds the run, whatever its cause; on an operator hold, on a hold of its own
+    /// cause and as a cause needing no person it says nothing; otherwise it moves the hold's cause.
+    pub fn moved_by(open: Option<&Hold>, body: &RunHeld) -> bool {
+        open.is_none_or(|hold| {
+            !hold.operator && body.needs_person && hold.latest.cause != body.cause
+        })
+    }
+
     /// What the hold reads as to a person, `<cause> - <action>` of its latest `RunHeld`, or its
     /// cause alone when that action is empty, as an operator hold held with an empty reason has:
     /// the one text the HELD line of `rigger status`, the [`ATTENTION_HELD`] entry, the step a
@@ -1687,6 +1697,57 @@ mod tests {
                 revision: 0,
             };
             assert_eq!(hold.reason(), want, "{cause} with action {action:?}");
+        }
+    }
+
+    /// THE HOLD TRANSITION RULE: a host or probe `RunHeld` holds an unheld run whatever its cause,
+    /// says nothing to an operator hold, to a hold of its own cause or as a cause needing no
+    /// person, and otherwise moves the hold's cause.
+    #[test]
+    fn a_held_moves_an_open_hold_only_to_another_person_needing_cause() {
+        let open = |cause: &str, operator: bool| Hold {
+            since: UNIX_EPOCH,
+            operator,
+            latest: RunHeld {
+                cause: cause.to_string(),
+                needs_person: true,
+                ..RunHeld::default()
+            },
+            revision: 0,
+        };
+        let held = |cause: &str, needs_person: bool| RunHeld {
+            cause: cause.to_string(),
+            needs_person,
+            ..RunHeld::default()
+        };
+        for (hold, body, moves, case) in [
+            (None, held("rate_limit", false), true, "no hold"),
+            (
+                Some(open("operator", true)),
+                held("auth", true),
+                false,
+                "an operator hold",
+            ),
+            (
+                Some(open("auth", false)),
+                held("auth", true),
+                false,
+                "the same cause",
+            ),
+            (
+                Some(open("auth", false)),
+                held("billing", true),
+                true,
+                "a differing person-needing cause",
+            ),
+            (
+                Some(open("auth", false)),
+                held("rate_limit", false),
+                false,
+                "a differing cause needing no person",
+            ),
+        ] {
+            assert_eq!(Hold::moved_by(hold.as_ref(), &body), moves, "{case}");
         }
     }
 }

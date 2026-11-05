@@ -1083,5 +1083,10 @@
     "id": "dup-0bd924af75c5",
     "disposition": "not-a-duplicate",
     "reason": "`agent_progress_events` and `spawn_requested_events` are the one type prefilter of two different logs (the progress store's `AgentProgress` lines, the run stream's `SpawnRequested` events), each the single place its own folds skip another record type; they share only the one-line filter-by-type-constant shape."
+  },
+  {
+    "id": "dup-e04bda77465d",
+    "disposition": "not-a-duplicate",
+    "reason": "`RunHeld::to_event` and `RunReleased::to_event` build two different run-stream event types (`RunHeld`, `RunReleased`) from two different bodies, each beside its own vocabulary type as `RunStarted::to_event` is; they share only the one-line `Event::new` of a serialized body."
   }
 ]

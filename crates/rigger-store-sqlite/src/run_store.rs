@@ -14,15 +14,18 @@
 use std::time::SystemTime;
 
 use rigger_domain::agent::{cause_row, OPERATOR};
-use rigger_domain::ledger::{Hold, RunState};
+use rigger_domain::ledger::{project, Hold, RunState};
 
 use crate::contextgraph::TYPE_DECISION_MADE;
-use crate::eventstore::{Error, Event, EventStore, ExpectedRevision, Revision, TypeSelection};
-use crate::run::read::{read_run, read_run_at_head};
+use crate::eventstore::{
+    Error, Event, EventStore, ExpectedRevision, Position, Revision, TypeSelection,
+};
+use crate::retention::PERCEPTION_TYPES;
+use crate::run::read::{fold_holds, read_run, read_run_at_head, HOLD_TYPES};
 use crate::run::{
-    adopted_run, current_run, effective_definition, RunHeld, RunReleased, RunStart, RunStarted,
-    HOLD_BY_HOST, HOLD_BY_OPERATOR, HOLD_BY_PROBE, META_DEFINITION, META_DEFINITION_PRIOR,
-    META_RUN_ID, STREAM, TYPE_RUN_HELD, TYPE_RUN_RELEASED, TYPE_RUN_STARTED,
+    adopted_run, current_run, current_run_id, effective_definition, RunHeld, RunReleased, RunStart,
+    RunStarted, HOLD_BY_HOST, HOLD_BY_OPERATOR, HOLD_BY_PROBE, META_DEFINITION,
+    META_DEFINITION_PRIOR, META_RUN_ID, STREAM, TYPE_RUN_HELD, TYPE_RUN_RELEASED, TYPE_RUN_STARTED,
 };
 
 /// Record a `--rebase-definition` supersession on the current run (spec 13, unit 1): the
@@ -215,7 +218,7 @@ pub fn start_fresh(
     base_tip: &str,
     spec_path: &str,
 ) -> Result<String, Error> {
-    release_hold(store, HOLD_BY_HOST)?;
+    release_hold(store, HOLD_BY_HOST, SystemTime::now())?;
     let started = RunStarted {
         run: uuid::Uuid::new_v4().to_string(),
         criteria: criteria.to_vec(),
@@ -224,9 +227,7 @@ pub fn start_fresh(
         base_tip: base_tip.to_string(),
         spec: spec_path.to_string(),
     };
-    let ev = started
-        .to_event()
-        .map_err(|e| Error::Backend(format!("serialize RunStarted: {e}")))?;
+    let ev = serialized(TYPE_RUN_STARTED, started.to_event())?;
     store
         .append(STREAM, ExpectedRevision::Any, std::slice::from_ref(&ev))?
         .one(&format!("the {TYPE_RUN_STARTED} of run {}", started.run))?;
@@ -255,10 +256,9 @@ pub fn record_hold_sighting(store: &dyn EventStore, sighting: &HoldSighting) -> 
         HOLD_BY_HOST,
         sighting.model,
     );
-    let held = hold_event(TYPE_RUN_HELD, &body)?;
+    let held = serialized(TYPE_RUN_HELD, body.to_event())?;
     append_on_hold(store, TYPE_RUN_HELD, |hold| {
-        let appends = hold.is_none_or(|hold| moves_the_cause(hold, &body));
-        Ok(appends.then(|| held.clone()))
+        Ok(Hold::moved_by(hold, &body).then(|| held.clone()))
     })
     .map(drop)
 }
@@ -273,8 +273,8 @@ pub fn record_failed_probe(store: &dyn EventStore, category: &str) -> Result<(),
             let body = held_by(category, category, HOLD_BY_PROBE, &hold.latest.model);
             (hold, body)
         })
-        .filter(|(hold, body)| moves_the_cause(hold, body))
-        .map(|(_, body)| hold_event(TYPE_RUN_HELD, &body))
+        .filter(|(hold, body)| Hold::moved_by(Some(hold), body))
+        .map(|(_, body)| serialized(TYPE_RUN_HELD, body.to_event()))
         .transpose()
     })
     .map(drop)
@@ -294,55 +294,107 @@ fn held_by(cause: &str, detail: &str, by: &str, model: &str) -> RunHeld {
     }
 }
 
-/// Whether `body` moves the open `hold`'s cause: on no operator hold, to a person-needing cause
-/// other than the hold's own.
-fn moves_the_cause(hold: &Hold, body: &RunHeld) -> bool {
-    !hold.operator && body.needs_person && hold.latest.cause != body.cause
+/// Why `rigger hold` holds nothing (spec 105): the current run is not live.
+#[derive(Debug, PartialEq, Eq)]
+pub enum NotLive {
+    /// No run has started, an empty store included.
+    NoRun,
+    /// The current run, named by its id, is done.
+    Done(String),
+}
+
+impl std::fmt::Display for NotLive {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            NotLive::NoRun => f.write_str("no run has started"),
+            NotLive::Done(run) => write!(f, "run {run} is done"),
+        }
+    }
 }
 
 /// Hold the current run for the operator (`rigger hold`, spec 105): one `RunHeld {by: operator}`
 /// of cause `operator`, its action the operator's `reason`, carrying the open hold's latest model
-/// forward, empty when no hold is open. It appends on every call, on a held run too.
-pub fn hold_by_operator(store: &dyn EventStore, reason: &str) -> Result<(), Error> {
-    append_on_hold(store, TYPE_RUN_HELD, |hold| {
-        let model = hold.map_or("", |hold| hold.latest.model.as_str());
-        let body = RunHeld {
-            action: reason.to_string(),
-            ..held_by(OPERATOR, "", HOLD_BY_OPERATOR, model)
-        };
-        hold_event(TYPE_RUN_HELD, &body).map(Some)
-    })
-    .map(drop)
+/// forward, empty when no hold is open. A live run, a started run not done, takes it on every
+/// call, a held run too, and the hold answers the run's id; a run not live takes nothing and is
+/// answered [`NotLive`]. Liveness is decided inside the compare-and-append ([`append_at_head`]),
+/// over the run's slice it pins and every type but perception's landing behind it, since a
+/// unit's events decide done: a run minted or turning done between the read and the append is
+/// re-decided, and the answer names the run the hold landed on.
+pub fn hold_by_operator(
+    store: &dyn EventStore,
+    reason: &str,
+) -> Result<Result<String, NotLive>, Error> {
+    let mut read_so_far: Vec<Event> = Vec::new();
+    let mut live = Err(NotLive::NoRun);
+    append_at_head(
+        store,
+        TypeSelection::Except(&PERCEPTION_TYPES),
+        TYPE_RUN_HELD,
+        |read| {
+            // A re-read starts at the pinned revision, already read.
+            let seen = read_so_far.last().map(|e| e.revision);
+            let landed = read
+                .iter()
+                .filter(|e| seen.is_none_or(|seen| e.revision > seen));
+            read_so_far.extend(landed.cloned());
+            let events = current_run(&read_so_far);
+            let run = project(events).map_err(|e| Error::Backend(format!("fold the run: {e}")))?;
+            live = match current_run_id(events) {
+                None => Err(NotLive::NoRun),
+                Some(run_id) if run.done() => Err(NotLive::Done(run_id)),
+                Some(run_id) => Ok(run_id),
+            };
+            if live.is_err() {
+                return Ok(None);
+            }
+            let model = run
+                .hold
+                .as_ref()
+                .map_or("", |hold| hold.latest.model.as_str());
+            let body = RunHeld {
+                action: reason.to_string(),
+                ..held_by(OPERATOR, "", HOLD_BY_OPERATOR, model)
+            };
+            serialized(TYPE_RUN_HELD, body.to_event()).map(Some)
+        },
+    )?;
+    Ok(live)
 }
 
-/// Release the current run's open hold, an operator hold included, as `RunReleased` by `by`: the
-/// done run's and the mint's release by the host, `rigger release`'s by the operator (spec 105).
-/// With no hold open it appends nothing. Answers whether it appended.
-pub fn release_hold(store: &dyn EventStore, by: &str) -> Result<bool, Error> {
+/// Release the current run's open hold, an operator hold included, as `RunReleased` by `by`,
+/// carrying how long it stood at the caller's `now`: the done run's and the mint's release by the
+/// host, `rigger release`'s by the operator (spec 105). With no hold open it appends nothing.
+/// Answers whether it appended.
+pub fn release_hold(store: &dyn EventStore, by: &str, now: SystemTime) -> Result<bool, Error> {
     append_on_hold(store, TYPE_RUN_RELEASED, |hold| {
-        hold.map(|hold| released_by(by, hold)).transpose()
+        hold.map(|hold| released_by(by, hold, now)).transpose()
     })
 }
 
-/// Release the hold a passing probe read, as `RunReleased {by: probe}`, only while the hold's
-/// latest `RunHeld` is the one at `probed`: a hold re-declared since, by any writer and of any
-/// cause, a released hold and an unheld run take nothing (spec 105 RELEASE).
-pub fn release_probed_hold(store: &dyn EventStore, probed: Revision) -> Result<(), Error> {
+/// Release the hold a passing probe read, as `RunReleased {by: probe}` carrying how long it stood
+/// at the controller's `now`, only while the hold's latest `RunHeld` is the one at `probed`: a
+/// hold re-declared since, by any writer and of any cause, a released hold and an unheld run take
+/// nothing (spec 105 RELEASE).
+pub fn release_probed_hold(
+    store: &dyn EventStore,
+    probed: Revision,
+    now: SystemTime,
+) -> Result<(), Error> {
     append_on_hold(store, TYPE_RUN_RELEASED, |hold| {
         hold.filter(|hold| hold.revision == probed)
-            .map(|hold| released_by(HOLD_BY_PROBE, hold))
+            .map(|hold| released_by(HOLD_BY_PROBE, hold, now))
             .transpose()
     })
     .map(drop)
 }
 
-/// The `RunReleased` by `by` of `hold`, carrying how long it stood.
-fn released_by(by: &str, hold: &Hold) -> Result<Event, Error> {
+/// The `RunReleased` by `by` of `hold`, carrying how long it stood at `now`.
+fn released_by(by: &str, hold: &Hold, now: SystemTime) -> Result<Event, Error> {
     let body = RunReleased {
         by: by.to_string(),
-        held_for_s: held_for_s(hold.since, SystemTime::now()),
+        held_for_s: held_for_s(hold.since, now),
     };
-    hold_event(TYPE_RUN_RELEASED, &body)
+    serialized(TYPE_RUN_RELEASED, body.to_event())
 }
 
 /// The revision a launch close stamps: the newest of the current run's slice, the head a hold
@@ -352,38 +404,32 @@ pub fn run_stream_head(store: &dyn EventStore) -> Result<Option<Revision>, Error
     Ok(read_run_at_head(store, STREAM)?.1)
 }
 
-/// Append what `decide` makes of the current run's hold, at the revision that hold was read at:
-/// every `RunHeld` and `RunReleased` goes through here (spec 105). A conflict sends `decide` back
-/// over the hold folded forward through what landed, by type from the pinned revision, re-pinned
-/// to the conflict's actual revision, so a concurrent writer's hold or release is never missed
-/// and a perception event landing behind the read costs one retry. `what` names the event type
-/// for the store's report of an append it did not write. Answers whether it appended: `false`
-/// when `decide` left it nothing to say.
-fn append_on_hold(
+/// THE ONE COMPARE-AND-APPEND every conditional run-stream writer goes through: append what
+/// `decide` makes of the current run's slice ([`read_run_at_head`]) at the revision that slice
+/// was read at. A conflict sends `decide` back over what landed from the pinned revision on, read
+/// by `landed` alone, re-pinned to the conflict's actual revision, so a concurrent writer's event
+/// of those types is never missed and an event of any other type landing behind the read costs
+/// one retry. `what` names the append for the store's report of an append it did not write.
+/// Answers the appended event's position, `None` when `decide` left it nothing to say.
+pub(crate) fn append_at_head(
     store: &dyn EventStore,
+    landed: TypeSelection<'_>,
     what: &str,
-    decide: impl Fn(Option<&Hold>) -> Result<Option<Event>, Error>,
-) -> Result<bool, Error> {
-    let (run, mut head) = read_run_at_head(store, STREAM)?;
-    let mut state = RunState::new();
-    fold_holds(&mut state, &run)?;
+    mut decide: impl FnMut(&[Event]) -> Result<Option<Event>, Error>,
+) -> Result<Option<Position>, Error> {
+    let (mut read, mut head) = read_run_at_head(store, STREAM)?;
     loop {
-        let Some(ev) = decide(state.hold.as_ref())? else {
-            return Ok(false);
+        let Some(ev) = decide(&read)? else {
+            return Ok(None);
         };
         let expected = match head {
             Some(revision) => ExpectedRevision::Exact(revision),
             None => ExpectedRevision::NoStream,
         };
         match store.append(STREAM, expected, std::slice::from_ref(&ev)) {
-            Ok(appended) => return appended.one(what).map(|_| true),
+            Ok(appended) => return appended.one(what).map(Some),
             Err(Error::Conflict { actual, .. }) => {
-                let landed = store.read_stream_typed(
-                    STREAM,
-                    head.unwrap_or(0),
-                    TypeSelection::Only(&[TYPE_RUN_HELD, TYPE_RUN_RELEASED]),
-                )?;
-                fold_holds(&mut state, &landed)?;
+                read = store.read_stream_typed(STREAM, head.unwrap_or(0), landed)?;
                 head = Some(actual);
             }
             Err(e) => return Err(e),
@@ -391,21 +437,29 @@ fn append_on_hold(
     }
 }
 
-/// Fold the hold events among `events` into `state`, part 1's fold applied to them alone, since a
-/// hold reads nothing else.
-fn fold_holds(state: &mut RunState, events: &[Event]) -> Result<(), Error> {
-    events
-        .iter()
-        .filter(|e| e.type_ == TYPE_RUN_HELD || e.type_ == TYPE_RUN_RELEASED)
-        .try_for_each(|e| state.apply(e))
-        .map_err(|e| Error::Backend(format!("fold the run's hold: {e}")))
+/// Append what `decide` makes of the current run's hold through [`append_at_head`], the hold
+/// folded by [`fold_holds`] from the run's slice and forward through the [`HOLD_TYPES`] that
+/// land behind it: every `RunHeld` and `RunReleased` but the operator's hold goes through here
+/// (spec 105), so a concurrent writer's hold or release is never missed; [`hold_by_operator`]
+/// folds the whole run behind its read through [`append_at_head`] itself, to decide liveness
+/// too. `what` names the event type for the store's report of an append it did not write.
+/// Answers whether it appended: `false` when `decide` left it nothing to say.
+fn append_on_hold(
+    store: &dyn EventStore,
+    what: &str,
+    decide: impl Fn(Option<&Hold>) -> Result<Option<Event>, Error>,
+) -> Result<bool, Error> {
+    let mut state = RunState::new();
+    append_at_head(store, TypeSelection::Only(&HOLD_TYPES), what, |read| {
+        fold_holds(&mut state, read)?;
+        decide(state.hold.as_ref())
+    })
+    .map(|appended| appended.is_some())
 }
 
-/// A hold event of `type_` carrying `body`.
-fn hold_event(type_: &str, body: &impl serde::Serialize) -> Result<Event, Error> {
-    let data =
-        serde_json::to_vec(body).map_err(|e| Error::Backend(format!("serialize {type_}: {e}")))?;
-    Ok(Event::new(type_, data))
+/// The event a run vocabulary type built of `type_`, its serialization failure the store's error.
+fn serialized(type_: &str, event: Result<Event, serde_json::Error>) -> Result<Event, Error> {
+    event.map_err(|e| Error::Backend(format!("serialize {type_}: {e}")))
 }
 
 /// The whole seconds from `since` to `now`, `0` for a clock that went backwards.
@@ -430,7 +484,7 @@ mod tests {
     };
     use rigger_domain::agent::API_UNSTABLE;
     use rigger_domain::retention::PERCEPTION_TYPES;
-    use std::time::Duration;
+    use std::time::{Duration, UNIX_EPOCH};
 
     const LOGIN: &str = "run claude auth login";
     const RETRIES: &str = "none, the run retries by itself";
@@ -444,7 +498,7 @@ mod tests {
             model: model.to_string(),
             ..RunHeld::default()
         };
-        Event::new(TYPE_RUN_HELD, serde_json::to_vec(&body).unwrap())
+        body.to_event().unwrap()
     }
 
     /// A `RunReleased` event by the operator, as a writer of the release left it on the stream.
@@ -453,7 +507,7 @@ mod tests {
             by: HOLD_BY_OPERATOR.to_string(),
             held_for_s: 0,
         };
-        Event::new(TYPE_RUN_RELEASED, serde_json::to_vec(&body).unwrap())
+        body.to_event().unwrap()
     }
 
     /// A store whose run stream holds a started run and then `log`.
@@ -669,17 +723,21 @@ mod tests {
             &sighting("authentication_failed"),
         )
         .expect_err("a hold the store never wrote is not recorded");
-        assert!(err.to_string().contains(TYPE_RUN_HELD), "{err}");
+        assert_eq!(
+            err.to_string(),
+            "event store: reported writing nothing for RunHeld"
+        );
     }
 
     /// THE RELEASE (spec 105): a hold open, an operator hold included, takes one `RunReleased` by
-    /// its writer, the host's or the operator's, carrying how long it stood, from its earliest
-    /// `RunHeld`, and the release answers that it appended; no open hold takes nothing and the
-    /// release answers so.
+    /// its writer, the host's or the operator's, carrying how long it stood at the caller's `now`,
+    /// from its earliest `RunHeld`, and the release answers that it appended; no open hold takes
+    /// nothing and the release answers so.
     #[test]
     fn a_release_appends_only_on_an_open_hold() {
+        let now = UNIX_EPOCH + Duration::from_secs(1_000_000);
         let held_at = |cause: &str, by: &str, ago: u64| {
-            held(cause, by, "").with_valid_from(SystemTime::now() - Duration::from_secs(ago))
+            held(cause, by, "").with_valid_from(now - Duration::from_secs(ago))
         };
         let rows: [(&str, Vec<Event>, Option<u64>); 5] = [
             ("no hold", vec![], None),
@@ -711,9 +769,7 @@ mod tests {
             for (name, log, expected) in rows.clone() {
                 let store = run_holding(log);
                 let appended_before = stream(&store).len();
-                let before = SystemTime::now();
-                let appended = release_hold(&store, by).unwrap();
-                let after = SystemTime::now();
+                let appended = release_hold(&store, by, now).unwrap();
                 assert_eq!(appended, expected.is_some(), "{name} by {by}: the answer");
                 let events = stream(&store);
                 let mut landed = events[appended_before..].to_vec();
@@ -726,12 +782,7 @@ mod tests {
                         assert_eq!(only, Vec::<&str>::new(), "{name} by {by}: one event");
                         let body: RunReleased = serde_json::from_slice(&event.data).unwrap();
                         assert_eq!(body.by, by, "{name} by {by}");
-                        let span = after.duration_since(before).unwrap().as_secs();
-                        assert!(
-                            (ago..=ago + span + 1).contains(&body.held_for_s),
-                            "{name} by {by}: {} seconds",
-                            body.held_for_s
-                        );
+                        assert_eq!(body.held_for_s, ago, "{name} by {by}: seconds held");
                     }
                 }
             }
@@ -789,7 +840,7 @@ mod tests {
         for (name, landing, expected, appends) in rows {
             let inner = run_holding(vec![open()]);
             let store = ReadCountingStore::new(&inner).interleaving(2, STREAM, landing);
-            let appended = release_hold(&store, HOLD_BY_HOST).unwrap();
+            let appended = release_hold(&store, HOLD_BY_HOST, SystemTime::now()).unwrap();
             assert_eq!(types_of(&stream(&inner)), expected, "{name}");
             assert_eq!(appended, appends, "{name}: the answer");
         }
@@ -868,13 +919,14 @@ mod tests {
     }
 
     /// A PASSING PROBE RELEASES (spec 105 RELEASE): `RunReleased {by: probe}`, carrying how long
-    /// the hold stood, lands only while the hold's latest `RunHeld` is the one the probe read; a
-    /// hold re-declared since, a released hold and an unheld run take nothing.
+    /// the hold stood at the controller's `now`, lands only while the hold's latest `RunHeld` is
+    /// the one the probe read; a hold re-declared since, a released hold and an unheld run take
+    /// nothing.
     #[test]
     fn a_passing_probe_releases_only_the_hold_it_probed() {
+        let now = UNIX_EPOCH + Duration::from_secs(1_000_000);
         let held_ago = |cause: &str| {
-            held(cause, HOLD_BY_HOST, "")
-                .with_valid_from(SystemTime::now() - Duration::from_secs(300))
+            held(cause, HOLD_BY_HOST, "").with_valid_from(now - Duration::from_secs(300))
         };
         // (name, log, which event of the log the probe read (`None`: the head), released)
         let rows: [(&str, Vec<Event>, Option<usize>, bool); 5] = [
@@ -914,9 +966,7 @@ mod tests {
             let probed = probed.map_or(events.last().unwrap().revision, |at| {
                 events[at + 1].revision
             });
-            let before = SystemTime::now();
-            release_probed_hold(&store, probed).unwrap();
-            let after = SystemTime::now();
+            release_probed_hold(&store, probed, now).unwrap();
             let mut landed = stream(&store).split_off(events.len());
             if !expected {
                 assert_eq!(types_of(&landed), Vec::<&str>::new(), "{name}");
@@ -927,12 +977,7 @@ mod tests {
             assert_eq!(event.type_, TYPE_RUN_RELEASED, "{name}");
             let body: RunReleased = serde_json::from_slice(&event.data).unwrap();
             assert_eq!(body.by, HOLD_BY_PROBE, "{name}");
-            let span = after.duration_since(before).unwrap().as_secs();
-            assert!(
-                (300..=300 + span + 1).contains(&body.held_for_s),
-                "{name}: {} seconds",
-                body.held_for_s
-            );
+            assert_eq!(body.held_for_s, 300, "{name}: seconds held");
         }
     }
 
@@ -962,7 +1007,7 @@ mod tests {
             let inner = run_holding(vec![held("rate_limit", HOLD_BY_HOST, "")]);
             let probed = stream(&inner).last().unwrap().revision;
             let store = ReadCountingStore::new(&inner).interleaving(2, STREAM, landing);
-            release_probed_hold(&store, probed).unwrap();
+            release_probed_hold(&store, probed, SystemTime::now()).unwrap();
             assert_eq!(types_of(&stream(&inner)), expected, "{name}");
         }
     }
@@ -1003,9 +1048,44 @@ mod tests {
         for (name, landing, expected, model) in rows {
             let inner = run_holding(vec![held("rate_limit", HOLD_BY_HOST, "opus")]);
             let store = ReadCountingStore::new(&inner).interleaving(2, STREAM, landing);
-            hold_by_operator(&store, "pausing").unwrap();
+            hold_by_operator(&store, "pausing")
+                .unwrap()
+                .expect("the run is live");
             assert_eq!(types_of(&stream(&inner)), expected, "{name}");
             assert_eq!(holds(&inner).pop(), Some(operator(model)), "{name}");
+        }
+    }
+
+    /// `rigger hold` decides liveness on the run its hold lands on: a mint landing between its
+    /// read and its append sends it back to hold the minted run and answer that run's id, and the
+    /// run turning done there takes nothing and is answered done.
+    #[test]
+    fn a_mint_or_a_done_run_behind_the_operators_read_re_decides_liveness() {
+        type Answer = fn(String) -> Result<String, NotLive>;
+        let rows: [(&str, Vec<Event>, Vec<&str>, Answer); 2] = [
+            (
+                "a mint",
+                vec![ev(TYPE_RUN_STARTED, r#"{"run":"r2"}"#)],
+                vec!["RunStarted", "RunStarted", "RunHeld"],
+                |_| Ok("r2".to_string()),
+            ),
+            (
+                "the run turning done",
+                vec![
+                    ev("UnitStarted", r#"{"id":"u1","agent":"worker"}"#),
+                    ev("UnitIntegrated", r#"{"id":"u1","commit":"aaa"}"#),
+                ],
+                vec!["RunStarted", "UnitStarted", "UnitIntegrated"],
+                |run| Err(NotLive::Done(run)),
+            ),
+        ];
+        for (name, landing, expected, answer) in rows {
+            let inner = run_holding(vec![]);
+            let run = current_run_id(&stream(&inner)).unwrap();
+            let store = ReadCountingStore::new(&inner).interleaving(2, STREAM, landing);
+            let held = hold_by_operator(&store, "pausing").unwrap();
+            assert_eq!(held, answer(run), "{name}");
+            assert_eq!(types_of(&stream(&inner)), expected, "{name}");
         }
     }
 

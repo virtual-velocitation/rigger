@@ -1453,19 +1453,13 @@ fn anchor_run_branch(repo: &str, cmd: &str, base: &str, base_explicit: bool) -> 
 
 /// One beat of the supervisor (spec 105 LIVENESS): a [`SupervisorBeat`] on the progress stream of
 /// the run current at this beat, re-read here so the beat follows whichever run is current. Only
-/// the run's boundaries are read, since a beat wants one id every interval for as long as the run
-/// lives. A run log that cannot be read, or that names no run, beats nothing, and a write the
+/// the current run's `RunStarted` is read, from its boundary, since a beat wants one id every
+/// interval for as long as the run lives. A run log that cannot be read, or that names no run, beats nothing, and a write the
 /// progress store refuses is ignored: the next tick is the retry either way.
 ///
 /// [`SupervisorBeat`]: rigger::progress::SupervisorBeat
 fn beat(run_store: &dyn EventStore, progress: &dyn EventStore) {
-    let boundaries = run_store.read_stream_typed(
-        conductor::STREAM,
-        0,
-        TypeSelection::Only(&[runscope::TYPE_RUN_STARTED]),
-    );
-    let run = boundaries.map(|events| runscope::current_run_id(&events));
-    if let Ok(Some(run)) = run {
+    if let Ok(Some(run)) = runscope::read::read_current_run_id(run_store, conductor::STREAM) {
         let _ = rigger::progress_store::append_stamped(
             progress,
             &run,
@@ -1595,7 +1589,7 @@ fn keep_awake(sleep: &dyn SleepHold, command: &str) -> Option<SleepGuard> {
 }
 
 /// One poll of the HOLD CONTROLLER (spec 105 RELEASE): the probe the current run's open hold is
-/// owed ([`rigger::hold_probe::owed_probe`]), made by `host` in `root` once it falls due, its
+/// owed ([`runscope::read::read_owed_probe`]), made by `host` in `root` once it falls due, its
 /// `hold-probe` line recorded on the run's progress stream first so every later poll counts it. A
 /// passing canary releases the hold by probe while its latest `RunHeld` is still the one probed, a
 /// failed canary's person-needing category moves the cause, and a logged-out session leaves the
@@ -1608,20 +1602,17 @@ fn probe_an_owed_hold(
     host: &claude_code::Driver<'_>,
     root: &str,
 ) -> Result<(), String> {
-    let (run_events, run) = runscope::read::read_current_run(run_store, conductor::STREAM)
-        .map_err(|e| e.to_string())?;
-    let progress_events = rigger::progress::read_run(progress, &run).map_err(|e| e.to_string())?;
     let now = std::time::SystemTime::now();
-    let Some(owed) = rigger::hold_probe::owed_probe(&run_events, &progress_events, now)
-        .filter(|owed| owed.due <= now)
-    else {
+    let owed = runscope::read::read_owed_probe(run_store, conductor::STREAM, progress, now)
+        .map_err(|e| e.to_string())?;
+    let Some((owed, run)) = owed.filter(|(owed, _)| owed.due <= now) else {
         return Ok(());
     };
     rigger::progress_store::append_stamped(progress, &run, &owed.line(), "the hold probe's line")
         .map_err(|e| e.to_string())?;
     match host.probe(root, &owed) {
         claude_code::ProbeOutcome::Passed => {
-            runscope_store::release_probed_hold(run_store, owed.revision)
+            runscope_store::release_probed_hold(run_store, owed.revision, now)
         }
         claude_code::ProbeOutcome::Failed(category) => {
             runscope_store::record_failed_probe(run_store, &category)
@@ -1853,7 +1844,8 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
     // leaves it to the next supervisor's probes. A failed release never fails a run that already
     // succeeded: the hold stays open for `rigger release` or the next mint.
     if rs.done() {
-        if let Err(e) = runscope_store::release_hold(&folding, runscope::HOLD_BY_HOST) {
+        let now = std::time::SystemTime::now();
+        if let Err(e) = runscope_store::release_hold(&folding, runscope::HOLD_BY_HOST, now) {
             stderr_line(&format!(
                 "rigger run: the done run's hold was not released: {e}"
             ));
@@ -2204,8 +2196,10 @@ fn run_workflow(parsed: &RunArgs, command: &str, sleep: &dyn SleepHold) -> Res {
         },
     )?;
     // On this surface the launch is the handout, so the driver reads the hold the decorator reads.
-    let hold_stands =
-        || runscope::read::read_current_hold(&store, conductor::STREAM).map(|hold| hold.is_some());
+    let hold_stands = || {
+        runscope::read::hold_stands(&store, conductor::STREAM)
+            .map_err(rigger::conductor::Error::from)
+    };
     let driver = rigger::driver::workflow::Driver::new().with_hold_read(&hold_stands);
     let grounder = select_grounder(&cfg.workflow.defaults.grounder)?;
 

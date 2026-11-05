@@ -850,13 +850,7 @@ fn a_hold_and_its_release_reach_the_console_as_event_frames_and_in_the_snapshot_
             r#"{"prefix":"gc","file":"src/dash.rs","generation":"h1","blob":"","excluded":false}"#,
         ),
     );
-    append_at_next_position(
-        &store.events,
-        Event::new(
-            rigger::run::TYPE_RUN_RELEASED,
-            serde_json::to_vec(&released).unwrap(),
-        ),
-    );
+    append_at_next_position(&store.events, released.to_event().unwrap());
 
     let wire =
         |type_: &str, body: serde_json::Value, position: u64| (type_.to_string(), body, position);

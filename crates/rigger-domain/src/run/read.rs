@@ -4,12 +4,16 @@
 //! the slice this hands back ([`crate::run::current_run`] and friends); this module decides which
 //! events reach it. A use case over the port only: it names no adapter and touches no file.
 
+use std::time::SystemTime;
+
 use crate::contextgraph::{TYPE_DECISION_MADE, TYPE_LESSON_LEARNED, TYPE_REVIEW_FINDING};
 use crate::eventstore::{Error, Event, EventStore, Revision, TypeSelection};
+use crate::hold_probe::{owed_probe, OwedProbe};
 use crate::ledger::{
-    self, Hold, TYPE_UNIT_FAILED, TYPE_UNIT_INTEGRATED, TYPE_UNIT_STARTED, TYPE_UNIT_STATUS,
+    self, Hold, RunState, TYPE_UNIT_FAILED, TYPE_UNIT_INTEGRATED, TYPE_UNIT_STARTED,
+    TYPE_UNIT_STATUS,
 };
-use crate::progress::closed_after_release;
+use crate::progress::{self, closed_after_release};
 use crate::retention::PERCEPTION_TYPES;
 
 use super::{TYPE_RUN_HELD, TYPE_RUN_RELEASED, TYPE_RUN_STARTED};
@@ -34,10 +38,11 @@ pub const ADOPTION_TYPES: [&str; 5] = [
     TYPE_UNIT_STATUS,
 ];
 
-/// The types a run's HOLD folds from ([`read_current_hold`]): the hold events, and the run
-/// boundaries, so a run started between the hold read's two store calls still slices the read to
-/// the newest run.
-const HOLD_TYPES: [&str; 3] = [TYPE_RUN_STARTED, TYPE_RUN_HELD, TYPE_RUN_RELEASED];
+/// The types a run's HOLD folds from ([`read_current_hold`], and every hold writer's re-read of
+/// what landed behind it): the hold events, and the run boundaries, so a run started between the
+/// hold read's two store calls still slices the read to the newest run. A boundary leaves the
+/// hold a fold carries untouched.
+pub const HOLD_TYPES: [&str; 3] = [TYPE_RUN_STARTED, TYPE_RUN_HELD, TYPE_RUN_RELEASED];
 
 /// The current run's own events, from its boundary forward, with perception
 /// ([`PERCEPTION_TYPES`]: the derived index types and the ledger entry that stands for them)
@@ -102,21 +107,67 @@ pub fn read_current_run(
     Ok((super::current_run(&read).to_vec(), run_id))
 }
 
-/// THE RUN'S HOLD, READ ONCE (spec 105): the hold the current run leaves open, the read every
-/// launch gate and every poll through a hold decides on; an ending, whose close carries the run
-/// stream's head, reads [`read_current_hold_at_head`] instead. It reads only [`HOLD_TYPES`], from the boundary [`read_run`] finds
+/// THE CURRENT RUN'S ID, READ ALONE: [`crate::run::current_run_id`] of the run's `RunStarted`,
+/// read from its boundary by `read_from_boundary`, `None` when no run has started - the read a
+/// supervisor beat stamps its run by every interval, which wants one id and never the runs
+/// before it or the run's other events.
+pub fn read_current_run_id(store: &dyn EventStore, stream: &str) -> Result<Option<String>, Error> {
+    let boundary = read_from_boundary(store, stream, &[TYPE_RUN_STARTED])?;
+    Ok(super::current_run_id(&boundary))
+}
+
+/// THE ONE NARROW RUN READ: the events of `types` from the current run's boundary
 /// ([`EventStore::last_position`]'s answer for the run's `RunStarted`; the whole stream with no
-/// run started), and folds the hold from [`crate::run::current_run`] of that read, so a read made
-/// at every launch decision and through the whole of a hold never materializes the carried-over
-/// knowledge or the run's other events. `None` proves the run unheld; a read or a fold that fails
-/// answers its error, since a run not proved unheld launches nothing.
-pub fn read_current_hold(
+/// run started), which the hold read and the run-id read both take, so a read made every
+/// interval never materializes the runs before the current one or the types it does not fold.
+fn read_from_boundary(
     store: &dyn EventStore,
     stream: &str,
-) -> Result<Option<Hold>, crate::agent::Error> {
+    types: &[&str],
+) -> Result<Vec<Event>, Error> {
     let boundary = store.last_position(stream, TYPE_RUN_STARTED)?.unwrap_or(0);
-    let events = store.read_stream_typed(stream, boundary, TypeSelection::Only(&HOLD_TYPES))?;
-    Ok(ledger::project(super::current_run(&events))?.hold)
+    store.read_stream_typed(stream, boundary, TypeSelection::Only(types))
+}
+
+/// THE RUN'S HOLD, READ ONCE (spec 105): the hold the current run leaves open, the read every
+/// launch gate and every poll through a hold decides on; an ending, whose close carries the run
+/// stream's head, reads [`read_current_hold_at_head`] instead. It reads only [`HOLD_TYPES`] from
+/// the run's boundary (`read_from_boundary`), and folds the hold from
+/// [`crate::run::current_run`] of that read, so a read made
+/// at every launch decision and through the whole of a hold never materializes the carried-over
+/// knowledge or the run's other events. `None` proves the run unheld; a read or a fold that fails
+/// answers the store's error, a fold's through [`fold_holds`] naming the run's hold, since a run
+/// not proved unheld launches nothing.
+pub fn read_current_hold(store: &dyn EventStore, stream: &str) -> Result<Option<Hold>, Error> {
+    let mut state = RunState::new();
+    fold_holds(&mut state, &read_current_hold_events(store, stream)?)?;
+    Ok(state.hold)
+}
+
+/// The current run's [`HOLD_TYPES`] events, read from its boundary (`read_from_boundary`) and
+/// sliced to the newest run by [`crate::run::current_run`]: what the hold read folds and what the
+/// hold controller finds the open hold and its run in.
+fn read_current_hold_events(store: &dyn EventStore, stream: &str) -> Result<Vec<Event>, Error> {
+    let events = read_from_boundary(store, stream, &HOLD_TYPES)?;
+    Ok(super::current_run(&events).to_vec())
+}
+
+/// THE ONE HOLD FOLD: the [`HOLD_TYPES`] among `events` folded into `state` by
+/// [`RunState::apply`], since a hold reads nothing else, which every hold writer folds the run it
+/// read and what landed behind it through. A body no fold applies answers the store's error,
+/// naming the run's hold.
+pub fn fold_holds(state: &mut RunState, events: &[Event]) -> Result<(), Error> {
+    events
+        .iter()
+        .filter(|e| HOLD_TYPES.contains(&e.type_.as_str()))
+        .try_for_each(|e| state.apply(e))
+        .map_err(|e| Error::Backend(format!("fold the run's hold: {e}")))
+}
+
+/// Whether the current run is held: [`read_current_hold`] answering an open hold, the one question
+/// a launch's wait and a launch gate ask of it on every poll.
+pub fn hold_stands(store: &dyn EventStore, stream: &str) -> Result<bool, Error> {
+    Ok(read_current_hold(store, stream)?.is_some())
 }
 
 /// The hold [`read_current_hold`] answers and the head of the one read that answered it: the
@@ -130,6 +181,30 @@ pub fn read_current_hold_at_head(
 ) -> Result<(Option<Hold>, Option<Revision>), crate::agent::Error> {
     let (read, head) = read_run_at_head(store, stream)?;
     Ok((ledger::project(super::current_run(&read))?.hold, head))
+}
+
+/// THE PROBE THE CURRENT RUN'S OPEN HOLD IS OWED (spec 105 RELEASE), read for every poll of the
+/// hold controller: [`owed_probe`] at `now` of the current run's [`HOLD_TYPES`] events on
+/// `stream`, read from its boundary, and, only when they end on an open hold, the run's progress
+/// lines on `progress`, beside the run's id the probe's line is stamped with (empty when no run
+/// has started); `None` when no probe is owed. An unheld run and a released hold read no
+/// progress, and no poll materializes the carried-over knowledge or the run's other events.
+pub fn read_owed_probe(
+    store: &dyn EventStore,
+    stream: &str,
+    progress: &dyn EventStore,
+    now: SystemTime,
+) -> Result<Option<(OwedProbe, String)>, Error> {
+    let run_events = read_current_hold_events(store, stream)?;
+    if ledger::holds(&run_events)
+        .last()
+        .is_none_or(|span| span.release.is_some())
+    {
+        return Ok(None);
+    }
+    let run = super::current_run_id(&run_events).unwrap_or_default();
+    let progress_events = progress::read_run(progress, &run)?;
+    Ok(owed_probe(&run_events, &progress_events, now).map(|owed| (owed, run)))
 }
 
 /// The hold the first `RunReleased` of the run on `store`'s `stream` past revision `stamp`
@@ -160,7 +235,7 @@ mod tests {
     use crate::retention::{GenerationIngested, TYPE_GENERATION_INGESTED};
     use crate::test_support::{
         ev, positions_of, types_of, CountedRead, HandBuiltLog, ReadCountingStore,
-        ReadsFailWhenArmed, ONE_SHOT_PERCEPTION_TYPES,
+        ReadsFailWhenArmed, SilentStore, ONE_SHOT_PERCEPTION_TYPES,
     };
     use std::sync::atomic::AtomicBool;
 
@@ -311,6 +386,50 @@ mod tests {
         }
     }
 
+    /// A run-id read, a supervisor beat's every interval, asks the store for the run's
+    /// `RunStarted` alone, from the boundary [`EventStore::last_position`] finds, the whole stream
+    /// with no run started: the runs before the current one are never walked, and the answer is
+    /// the current run's id.
+    #[test]
+    fn a_run_id_read_asks_only_the_runs_started_from_its_boundary() {
+        let started = |run: &str| ev("RunStarted", &format!(r#"{{"run":"{run}"}}"#));
+        let unit = || ev("UnitStarted", r#"{"id":"u1"}"#);
+        // (row, the log, the boundary the read starts from, the events it materializes, the id)
+        for (name, events, from, materialized, run) in [
+            (
+                "a run after an earlier one",
+                vec![started("r1"), unit(), started("r2"), unit()],
+                2,
+                1,
+                Some("r2"),
+            ),
+            ("a stream with no run started", vec![unit()], 0, 0, None),
+        ] {
+            let log = HandBuiltLog::new(STREAM, events);
+            let store = ReadCountingStore::new(&log);
+
+            let id = read_current_run_id(&store, STREAM).unwrap();
+            assert_eq!(id.as_deref(), run, "{name}");
+            assert_eq!(
+                store.reads(),
+                [
+                    CountedRead::LastPosition {
+                        stream: STREAM.to_string(),
+                        event_type: "RunStarted".to_string(),
+                    },
+                    CountedRead::Typed {
+                        stream: STREAM.to_string(),
+                        from,
+                        only: true,
+                        types: vec!["RunStarted".to_string()],
+                        materialized,
+                    },
+                ],
+                "{name}"
+            );
+        }
+    }
+
     /// A hold read asks the store for the run's `RunStarted`, `RunHeld` and `RunReleased` from
     /// the boundary [`EventStore::last_position`] finds, the whole stream with no run started,
     /// and nothing else (op-105-hold-read-reads-only-the-hold): no carried-over decision,
@@ -380,6 +499,81 @@ mod tests {
         }
     }
 
+    /// The hold controller's poll asks the run store for the run's `RunStarted`, `RunHeld` and
+    /// `RunReleased` alone, from the boundary [`EventStore::last_position`] finds, and the
+    /// progress store for the run's lines only when that read ends on an open hold: an unheld
+    /// run and a released hold read no progress, and no poll materializes the carried-over
+    /// knowledge or the run's other events.
+    #[test]
+    fn an_owed_probe_read_asks_the_hold_types_and_the_progress_of_an_open_hold_alone() {
+        let started = |run: &str| ev("RunStarted", &format!(r#"{{"run":"{run}"}}"#));
+        let held = || ev(TYPE_RUN_HELD, r#"{"cause":"rate_limit","by":"host"}"#);
+        let released = || ev(TYPE_RUN_RELEASED, r#"{"by":"host"}"#);
+        let unit = || ev("UnitStarted", r#"{"id":"u1"}"#);
+        // (row, the log, the boundary the read starts from, the events it materializes, whether
+        // a probe is owed and the progress read)
+        for (name, events, from, materialized, owed) in [
+            (
+                "an unheld run after a held one",
+                vec![started("r0"), held(), started("r1"), unit()],
+                2,
+                1,
+                false,
+            ),
+            (
+                "a released hold",
+                vec![started("r1"), unit(), held(), released()],
+                0,
+                3,
+                false,
+            ),
+            (
+                "an open hold",
+                vec![started("r1"), unit(), held()],
+                0,
+                2,
+                true,
+            ),
+        ] {
+            let log = HandBuiltLog::new(STREAM, events);
+            let store = ReadCountingStore::new(&log);
+            let progress_store = ReadCountingStore::new(&SilentStore);
+
+            let probe = read_owed_probe(&store, STREAM, &progress_store, SystemTime::now());
+            let run = probe.unwrap().map(|(_, run)| run);
+            assert_eq!(run, owed.then(|| "r1".to_string()), "{name}");
+            assert_eq!(
+                store.reads(),
+                [
+                    CountedRead::LastPosition {
+                        stream: STREAM.to_string(),
+                        event_type: "RunStarted".to_string(),
+                    },
+                    CountedRead::Typed {
+                        stream: STREAM.to_string(),
+                        from,
+                        only: true,
+                        types: HOLD_TYPES.map(String::from).to_vec(),
+                        materialized,
+                    },
+                ],
+                "{name}"
+            );
+            let progress_read = CountedRead::Stream {
+                stream: progress::stream_of("r1"),
+                from: 0,
+                forward: true,
+                materialized: 0,
+            };
+            let expected = if owed { vec![progress_read] } else { vec![] };
+            assert_eq!(
+                progress_store.reads(),
+                expected,
+                "{name}: the progress read"
+            );
+        }
+    }
+
     /// A run [`read_current_hold`] cannot prove unheld answers an error, never `None`: a failed
     /// read and a hold event no fold can apply each name their own failure.
     #[test]
@@ -400,11 +594,11 @@ mod tests {
             (
                 "a hold no fold applies",
                 &unfoldable as &dyn EventStore,
-                "expected ident at line 1 column 2",
+                "event store: fold the run's hold: expected ident at line 1 column 2",
             ),
         ] {
             assert_eq!(
-                read_current_hold(store, STREAM).unwrap_err().0,
+                read_current_hold(store, STREAM).unwrap_err().to_string(),
                 error,
                 "{name}"
             );

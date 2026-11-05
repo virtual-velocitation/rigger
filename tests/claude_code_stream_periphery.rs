@@ -57,8 +57,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
 use common::fixtures::{
-    drop_the_log, fixture_script, no_emit, payloads_of_type, types_of, wait_until_for, CwdGuard,
-    FailAppendContaining, LandsBehind, RETRIES_BY_ITSELF,
+    drop_the_log, fixture_script, host_hold, no_emit, payloads_of_type, types_of, wait_until_for,
+    CwdGuard, FailAppendContaining, LandsBehind, RETRIES_BY_ITSELF,
 };
 use common::is_running;
 use common::repo::SILENT_PAST_THE_POLL;
@@ -73,7 +73,7 @@ use rigger::progress::{
     AgentProgress, ApiRetry, SpawnLaunched, SupervisorBeat, TYPE_AGENT_PROGRESS, TYPE_API_RETRY,
     TYPE_SPAWN_LAUNCHED,
 };
-use rigger::run::{RunHeld, HOLD_BY_HOST, TYPE_RUN_HELD};
+use rigger::run::{RunHeld, TYPE_RUN_HELD};
 use rigger::spawn::{self, TYPE_SPAWN_RESULT};
 use serde_json::{json, Value};
 
@@ -139,12 +139,11 @@ impl Fixture {
 
     /// Open a hold on the run this fixture's run store carries.
     fn hold_the_run(&self) {
-        let held = serde_json::to_vec(&RunHeld::default()).unwrap();
         self.run_store
             .append(
                 rigger::conductor::STREAM,
                 ExpectedRevision::Any,
-                &[Event::new(TYPE_RUN_HELD, held)],
+                &[RunHeld::default().to_event().unwrap()],
             )
             .unwrap();
     }
@@ -1901,27 +1900,15 @@ fn result_line(is_error: bool) -> String {
     .to_string()
 }
 
-/// A hold of `cause` by the host, on the launch's `model`.
-fn hold(cause: &str, detail: &str, action: &str, needs_person: bool, model: &str) -> RunHeld {
-    RunHeld {
-        cause: cause.to_string(),
-        detail: detail.to_string(),
-        action: action.to_string(),
-        needs_person,
-        by: HOLD_BY_HOST.to_string(),
-        model: model.to_string(),
-    }
-}
-
 /// A hold of `authentication_failed`, sighted on an `api_retry` of the default model.
 fn login_hold() -> RunHeld {
     let cause = "authentication_failed";
-    hold(cause, cause, "run claude auth login", true, "")
+    host_hold(cause, cause, "run claude auth login", true, "")
 }
 
 /// The third-consecutive hold: no line sighted it and nobody needs to act.
 fn unstable_hold() -> RunHeld {
-    hold("api-unstable", "", RETRIES_BY_ITSELF, false, "")
+    host_hold("api-unstable", "", RETRIES_BY_ITSELF, false, "")
 }
 
 /// A `RunHeld` event by the operator.
@@ -2042,8 +2029,8 @@ fn hold_cases() -> Vec<HoldCase> {
     let model_action =
         "fix the agent's configured model, restart rigger run with --rebase-definition, then run \
          rigger release";
-    let model_ending = hold("model_not_found", "", model_action, true, "");
-    let wait_ending = hold("rate_limit", "", RETRIES_BY_ITSELF, false, "");
+    let model_ending = host_hold("model_not_found", "", model_action, true, "");
+    let wait_ending = host_hold("rate_limit", "", RETRIES_BY_ITSELF, false, "");
     vec![
         HoldCase {
             name: "a hold-class retry the session recovers from",
@@ -2078,7 +2065,7 @@ fn hold_cases() -> Vec<HoldCase> {
             ],
             holds: vec![
                 login_hold(),
-                hold("billing_error", "billing_error", billing, true, ""),
+                host_hold("billing_error", "billing_error", billing, true, ""),
             ],
             results: 1,
             close: ("completed", None),
@@ -2092,7 +2079,7 @@ fn hold_cases() -> Vec<HoldCase> {
                 retry_line("verification_required"),
                 result_line(false),
             ],
-            holds: vec![hold(
+            holds: vec![host_hold(
                 "verification_required",
                 "verification_required",
                 "complete the account's verification",
@@ -2212,7 +2199,10 @@ fn hold_cases() -> Vec<HoldCase> {
             name: "a StopFailure record outranks the retry it follows",
             lines: vec![init_line(), retry_line(login)],
             stop_failure: Some("billing_error"),
-            holds: vec![login_hold(), hold("billing_error", "", billing, true, "")],
+            holds: vec![
+                login_hold(),
+                host_hold("billing_error", "", billing, true, ""),
+            ],
             close: ("interrupted", Some("billing_error")),
             stamp: Some(2),
             ..HoldCase::default()
@@ -2465,11 +2455,13 @@ impl Fixture {
                 );
                 spawned.expect("a session with a result answers its spawn");
             }
-            Step::Release => {
-                rigger::run_store::release_hold(&self.run_store, rigger::run::HOLD_BY_HOST)
-                    .map(drop)
-                    .unwrap()
-            }
+            Step::Release => rigger::run_store::release_hold(
+                &self.run_store,
+                rigger::run::HOLD_BY_HOST,
+                std::time::SystemTime::now(),
+            )
+            .map(drop)
+            .unwrap(),
         }
     }
 }
@@ -2947,7 +2939,7 @@ fn held_ending_cases() -> Vec<HeldEnding> {
             name: "a wait class on an unheld run",
             ending: "retried-eof",
             category: "rate_limit",
-            holds: vec![hold("rate_limit", "", RETRIES_BY_ITSELF, false, "")],
+            holds: vec![host_hold("rate_limit", "", RETRIES_BY_ITSELF, false, "")],
             left: Ending::Interrupted("rate_limit", classed_failure("rate_limit")),
             ..HeldEnding::default()
         },
@@ -3984,7 +3976,7 @@ fn relaunch_cases() -> Vec<Relaunch> {
         Relaunch {
             name: "an upgraded hold names its latest cause",
             log: vec![
-                run_held_event(&hold("rate_limit", "", RETRIES_BY_ITSELF, false, "")),
+                run_held_event(&host_hold("rate_limit", "", RETRIES_BY_ITSELF, false, "")),
                 run_held_event(&login_hold()),
                 released(7),
             ],

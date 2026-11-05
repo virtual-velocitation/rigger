@@ -25,6 +25,23 @@ pub fn hold_naming(cause: &str, action: &str, by: &str) -> rigger::run::RunHeld 
     }
 }
 
+/// A hold of `cause` the host appended for a launch on `model`, with the `detail`, the `action`
+/// and the need for a person its sighting carried.
+pub fn host_hold(
+    cause: &str,
+    detail: &str,
+    action: &str,
+    needs_person: bool,
+    model: &str,
+) -> rigger::run::RunHeld {
+    rigger::run::RunHeld {
+        detail: detail.to_string(),
+        needs_person,
+        model: model.to_string(),
+        ..hold_naming(cause, action, rigger::run::HOLD_BY_HOST)
+    }
+}
+
 /// A `RunHeld` event of `cause` by `by`, every other field at its default.
 pub fn held_event(cause: &str, by: &str) -> Event {
     run_held_event(&hold_naming(cause, "", by))
@@ -32,22 +49,17 @@ pub fn held_event(cause: &str, by: &str) -> Event {
 
 /// A `RunHeld` event carrying `body`.
 pub fn run_held_event(body: &rigger::run::RunHeld) -> Event {
-    Event::new(
-        rigger::run::TYPE_RUN_HELD,
-        serde_json::to_vec(body).unwrap(),
-    )
+    body.to_event().unwrap()
 }
 
 /// A `RunReleased` event by `by`, the hold having stood `held_for_s` seconds.
 pub fn released_event(by: &str, held_for_s: u64) -> Event {
-    let body = rigger::run::RunReleased {
+    rigger::run::RunReleased {
         by: by.to_string(),
         held_for_s,
-    };
-    Event::new(
-        rigger::run::TYPE_RUN_RELEASED,
-        serde_json::to_vec(&body).unwrap(),
-    )
+    }
+    .to_event()
+    .unwrap()
 }
 
 /// The spawn options of an attempt-0 implementer spawn `id` carrying a fixed persona prompt.

@@ -42,7 +42,7 @@ use crate::config::AgentDef;
 use crate::eventstore::{Event, EventStore};
 use crate::ledger;
 use crate::run::{
-    read::{read_current_hold, read_current_run},
+    read::{hold_stands, read_current_run},
     STREAM,
 };
 use crate::spawn;
@@ -98,14 +98,14 @@ impl<'a> HeldDriver<'a> {
     fn wait_out_the_hold(&self, id: &str, mut relaunched: Option<Error>) -> Result<(), Error> {
         let mut paused = false;
         loop {
-            let held = read_current_hold(self.store, STREAM).map(|hold| hold.is_some());
+            let held = hold_stands(self.store, STREAM);
             let closed = self
                 .session_closed
                 .is_some_and(|closed| closed.load(Ordering::SeqCst));
             if (paused || matches!(held, Ok(true))) && closed {
                 return Err(parked_spawn(id));
             }
-            if !held.map_err(|read| relaunched.take().unwrap_or(read))? {
+            if !held.map_err(|read| relaunched.take().unwrap_or_else(|| Error::from(read)))? {
                 return Ok(());
             }
             (self.pause)();
@@ -252,10 +252,10 @@ mod tests {
     const OUTPUT: &str = "the worker's output";
     /// What the store says when its reads are broken: [`ReadsFailWhenArmed`]'s backend error.
     const READ_FAILED: &str = "event store: the run read failed";
-    /// A `RunHeld` body the fold refuses, and what the fold says of it.
+    /// A `RunHeld` body the fold refuses, and what the hold read says of it.
     const MALFORMED_HOLD: &str = r#"{"by":1}"#;
-    const MALFORMED_HOLD_SAID: &str =
-        "invalid type: integer `1`, expected a string at line 1 column 7";
+    const MALFORMED_HOLD_SAID: &str = "event store: fold the run's hold: \
+        invalid type: integer `1`, expected a string at line 1 column 7";
 
     /// A category of each disposition.
     const FAULT: AgentFailure = AgentFailure::InvalidRequest;
