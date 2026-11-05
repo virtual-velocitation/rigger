@@ -441,9 +441,9 @@ pub(crate) fn append_at_head(
 /// folded by [`fold_holds`] from the run's slice and forward through the [`HOLD_TYPES`] that
 /// land behind it: every `RunHeld` and `RunReleased` but the operator's hold goes through here
 /// (spec 105), so a concurrent writer's hold or release is never missed; [`hold_by_operator`]
-/// folds the whole run behind its read through [`append_at_head`] itself, to decide liveness too. `what` names the event type for the
-/// store's report of an append it did not write. Answers whether it appended: `false` when
-/// `decide` left it nothing to say.
+/// folds the whole run behind its read through [`append_at_head`] itself, to decide liveness
+/// too. `what` names the event type for the store's report of an append it did not write.
+/// Answers whether it appended: `false` when `decide` left it nothing to say.
 fn append_on_hold(
     store: &dyn EventStore,
     what: &str,
