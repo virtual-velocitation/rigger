@@ -1889,7 +1889,8 @@ fn touch_liveness_marker(marker: Option<&Path>) {
 /// criterion 2, architecture addendum §4.2) - a sibling of `agent-live`
 /// ([`crate::liveness::MARKER_SUBDIR`]) and `agent-scratch`
 /// ([`crate::driver::replay::spawn_scratch_path`]). Public so a command that runs this host
-/// outside a loop run (`rigger critique`, spec 112) removes the transcripts it leaves.
+/// outside a loop run (`rigger critique`, spec 112) finds the run directory the transcripts
+/// [`remove_transcripts`] removes sit in, and removes it once it is left empty.
 pub const AGENT_STREAM_SUBDIR: &str = "agent-stream";
 
 /// The raw stream-json transcript path for one launch:
@@ -1905,6 +1906,47 @@ fn stream_path(scratch_root: &str, run_id: &str, spawn_id: &str, launch: u32) ->
     let leaf = liveness::scratch_subpath(scratch_root, AGENT_STREAM_SUBDIR, run_id, spawn_id)?;
     let name = leaf.file_name()?.to_str()?;
     Some(leaf.with_file_name(format!("{name}.{launch}.jsonl")))
+}
+
+/// The launch the file named `file` would be a transcript of, beside the stream leaf named
+/// `leaf`: the first run of digits after the leaf name. [`remove_transcripts`] holds the file to
+/// the path [`stream_path`] builds for that launch, so a file of another spawn whose leaf extends
+/// this one's (attempt 10's beside attempt 1's) never matches.
+fn transcript_launch(leaf: &str, file: &str) -> Option<u32> {
+    let digits: String = file
+        .strip_prefix(leaf)?
+        .chars()
+        .skip_while(|c| !c.is_ascii_digit())
+        .take_while(char::is_ascii_digit)
+        .collect();
+    digits.parse().ok()
+}
+
+/// Remove every transcript spawn `spawn_id` of run `run_id` left under `scratch_root`, one per
+/// launch: a file is removed only when it is the path [`stream_path`] builds for its launch, so
+/// nothing else beside them is touched - for a command that runs this host outside a loop run
+/// (`rigger critique`, spec 112), whose transcripts no run teardown removes. An empty scratch root
+/// or spawn id removes nothing. Best-effort, as the transcript itself is: a file that cannot be
+/// removed stays.
+pub fn remove_transcripts(scratch_root: &str, run_id: &str, spawn_id: &str) {
+    let Some(leaf) = liveness::scratch_subpath(scratch_root, AGENT_STREAM_SUBDIR, run_id, spawn_id)
+    else {
+        return;
+    };
+    let (Some(dir), Some(name)) = (leaf.parent(), leaf.file_name().and_then(|n| n.to_str())) else {
+        return;
+    };
+    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let path = entry.path();
+        let launch = entry
+            .file_name()
+            .to_str()
+            .and_then(|file| transcript_launch(name, file));
+        let named = launch.and_then(|launch| stream_path(scratch_root, run_id, spawn_id, launch));
+        if named.as_deref() == Some(path.as_path()) {
+            let _ = std::fs::remove_file(path);
+        }
+    }
 }
 
 /// Open (creating parent directories) the raw stream file at `path` for a fresh write -

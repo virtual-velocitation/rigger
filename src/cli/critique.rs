@@ -369,10 +369,10 @@ impl CriticHost<'_> {
 }
 
 /// Remove what the critique spawn `spawn_id` of run `run_id` left under `scratch_root`: its
-/// liveness marker ([`rigger::liveness::marker_path`]), each of its transcripts (`<leaf>.<launch>.jsonl`
-/// beside its [`claude_code::AGENT_STREAM_SUBDIR`] leaf, the name the host writes) and its spawn
-/// scratch ([`replay::reclaim_spawn_registered_scratch`]), then each of those directories' run
-/// directory when it is left empty. Nothing else is touched: another spawn's entries, and a run
+/// liveness marker ([`rigger::liveness::marker_path`]), each of its transcripts
+/// ([`claude_code::remove_transcripts`], the host naming its own files) and its spawn scratch
+/// ([`replay::reclaim_spawn_registered_scratch`]), then each of those directories' run directory
+/// when it is left empty. Nothing else is touched: another spawn's entries, and a run
 /// directory that still holds them, stay. An empty scratch root reaps nothing. Best-effort: an
 /// entry that cannot be removed stays.
 fn reap_spawn(scratch_root: &str, run_id: &str, spawn_id: &str) {
@@ -380,27 +380,13 @@ fn reap_spawn(scratch_root: &str, run_id: &str, spawn_id: &str) {
     if let Some(marker) = &marker {
         let _ = std::fs::remove_file(marker);
     }
+    claude_code::remove_transcripts(scratch_root, run_id, spawn_id);
     let leaf = liveness::scratch_subpath(
         scratch_root,
         claude_code::AGENT_STREAM_SUBDIR,
         run_id,
         spawn_id,
     );
-    if let Some((dir, name)) = leaf
-        .as_deref()
-        .and_then(|leaf| Some((leaf.parent()?, leaf.file_name()?.to_str()?)))
-    {
-        let prefix = format!("{name}.");
-        for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
-            let file = entry.file_name();
-            if file
-                .to_str()
-                .is_some_and(|file| file.starts_with(&prefix) && file.ends_with(".jsonl"))
-            {
-                let _ = std::fs::remove_file(entry.path());
-            }
-        }
-    }
     replay::reclaim_spawn_registered_scratch(scratch_root, run_id, spawn_id);
     let scratch = replay::spawn_scratch_path(scratch_root, run_id, spawn_id);
     for path in [marker, leaf, scratch].iter().flatten() {
