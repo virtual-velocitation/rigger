@@ -1,3 +1,48 @@
+//! THE HOLD CONTROLLER (spec 105 RELEASE): the poll that ends a host's hold once a probe finds the
+//! account answering again, beside the decorator ([`crate::held`]) that launches nothing while the
+//! run is held. The probe is a port ([`HoldProbe`]), so the policy here names no host: what a
+//! probe answers decides what the run stream is told, and the composition root only runs the
+//! poll on its thread.
+
+use std::time::SystemTime;
+
+use rigger_domain::hold_probe::{HoldProbe, ProbeOutcome};
+use rigger_store_sqlite::progress_store::append_stamped;
+
+use crate::eventstore::EventStore;
+use crate::run::{read::read_owed_probe, STREAM};
+use crate::run_store::{record_failed_probe, release_probed_hold};
+
+/// One poll of the hold controller: the probe the current run's open hold is owed at `now`
+/// ([`read_owed_probe`]), made by `probe` in `root` once it falls due, its `hold-probe` line
+/// recorded on the run's progress stream first so every later poll counts it. A passing probe
+/// releases the hold by probe while its latest `RunHeld` is still the one probed, a failed
+/// probe's person-needing category moves the cause, and a logged-out session leaves the hold as
+/// it stands, its cause already naming the login a person makes. `run_store` is the store the
+/// run's hold is read from and written to, the one every other write of the run goes through. A
+/// read or a write that fails ends the poll with its error, the line unwritten making no probe,
+/// and the next poll is the retry.
+pub fn probe_an_owed_hold(
+    run_store: &dyn EventStore,
+    progress: &dyn EventStore,
+    probe: &dyn HoldProbe,
+    root: &str,
+    now: SystemTime,
+) -> Result<(), String> {
+    let owed = read_owed_probe(run_store, STREAM, progress, now).map_err(|e| e.to_string())?;
+    let Some((owed, run)) = owed.filter(|(owed, _)| owed.due <= now) else {
+        return Ok(());
+    };
+    append_stamped(progress, &run, &owed.line(), "the hold probe's line")
+        .map_err(|e| e.to_string())?;
+    match probe.probe(root, &owed) {
+        ProbeOutcome::Passed => release_probed_hold(run_store, owed.revision, now),
+        ProbeOutcome::Failed(category) => record_failed_probe(run_store, &category),
+        ProbeOutcome::LoggedOut => Ok(()),
+    }
+    .map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::AtomicBool;

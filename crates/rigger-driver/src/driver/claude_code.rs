@@ -31,6 +31,7 @@ use crate::driver::{
     spawn_config_args, system_prompt_file, LaunchSession, SystemPromptFile,
 };
 use crate::eventstore::EventStore;
+use crate::hold_probe::{HoldProbe, OwedProbe, ProbeOutcome};
 use crate::hooks;
 use crate::liveness;
 use crate::progress::{self, ApiRetry, SpawnLaunched};
@@ -1761,20 +1762,7 @@ pub const CANARY_TASK: &str = "Reply with the single word: ok";
 /// The canary's `--settings`: every hook off, the operator's own included.
 const CANARY_SETTINGS: &str = r#"{"disableAllHooks":true}"#;
 
-/// What a hold probe ([`Driver::probe`]) found.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ProbeOutcome {
-    /// The canary's first result carried no error: a launch on the hold's model answers again.
-    Passed,
-    /// The login read found the session logged out, or answered nothing within the delay, so no
-    /// canary ran: a person must log in.
-    LoggedOut,
-    /// The canary did not answer, or its first result carried an error: the category of the
-    /// last `api_retry` line ahead of its first result, [`AgentFailure::Unknown`]'s with none.
-    Failed(String),
-}
-
-impl Driver<'_> {
+impl HoldProbe for Driver<'_> {
     /// THE HOLD PROBE (spec 105 RELEASE): whether a launch on the hold `owed` probes would answer
     /// now, within `owed.delay`. A hold whose cause a login fixes reads the login first
     /// ([`crate::claude_auth::logged_in`]), and a session logged out runs no canary. The canary is
@@ -1785,7 +1773,7 @@ impl Driver<'_> {
     /// one that never comes by the delay, or a canary that does not start, fails. The login read
     /// and the canary share the one deadline. It writes no store: the caller records what the
     /// outcome decides.
-    pub fn probe(&self, root: &str, owed: &crate::hold_probe::OwedProbe) -> ProbeOutcome {
+    fn probe(&self, root: &str, owed: &OwedProbe) -> ProbeOutcome {
         let deadline = std::time::Instant::now() + owed.delay;
         let bin = bin_or_path_default(&self.bin, crate::claude_auth::DEFAULT_BIN);
         if owed.checks_login() && !crate::claude_auth::logged_in(bin, deadline) {

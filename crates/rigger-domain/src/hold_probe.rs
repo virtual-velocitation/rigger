@@ -9,6 +9,9 @@
 //! released it does not start over at 60 s. An operator hold breaks the chain, since the operator
 //! ended it, and is never probed itself; a `model_not_found` hold is never probed either, its
 //! action being a configuration a probe cannot change.
+//!
+//! The probe itself is a port, [`HoldProbe`], which the agent host implements: what a probe
+//! answers ([`ProbeOutcome`]) is all the hold controller reads of it.
 
 use std::time::{Duration, SystemTime};
 
@@ -135,6 +138,26 @@ fn delay_after(probes: usize) -> Duration {
     let doublings = u32::try_from(probes).unwrap_or(u32::MAX);
     let factor = 1u32.checked_shl(doublings).unwrap_or(u32::MAX);
     FIRST_DELAY.saturating_mul(factor).min(MAX_DELAY)
+}
+
+/// What a hold probe ([`HoldProbe::probe`]) found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProbeOutcome {
+    /// The canary's first result carried no error: a launch on the hold's model answers again.
+    Passed,
+    /// The login read found the session logged out, or answered nothing within the delay, so no
+    /// canary ran: a person must log in.
+    LoggedOut,
+    /// The canary did not answer, or its first result carried an error: the category of the
+    /// last `api_retry` line ahead of its first result, [`AgentFailure::Unknown`]'s with none.
+    Failed(String),
+}
+
+/// THE HOLD PROBE PORT (spec 105 RELEASE): whether a launch on the hold a probe is owed would
+/// answer now. It writes no store: the hold controller records what the outcome decides.
+pub trait HoldProbe {
+    /// Probe the hold `owed` names in the project at `root`, within `owed.delay`.
+    fn probe(&self, root: &str, owed: &OwedProbe) -> ProbeOutcome;
 }
 
 #[cfg(test)]
