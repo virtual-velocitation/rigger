@@ -479,11 +479,11 @@ mod tests {
             (
                 "a hold no fold applies",
                 &unfoldable as &dyn EventStore,
-                "expected ident at line 1 column 2",
+                "event store: fold the run's hold: expected ident at line 1 column 2",
             ),
         ] {
             assert_eq!(
-                read_current_hold(store, STREAM).unwrap_err().0,
+                read_current_hold(store, STREAM).unwrap_err().to_string(),
                 error,
                 "{name}"
             );

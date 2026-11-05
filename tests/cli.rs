@@ -8257,7 +8257,7 @@ fn a_served_run_not_proved_unheld_hands_out_no_queued_spawn() {
     assert_eq!(
         String::from_utf8_lossy(&out.stderr),
         "rigger: the hold read failed, so no spawn is handed out until a read proves the run \
-         unheld: conductor: expected ident at line 1 column 2\n\
+         unheld: conductor: event store: fold the run's hold: expected ident at line 1 column 2\n\
          rigger: conductor: conductor: expected ident at line 1 column 2\n",
         "{NAME}: the failed read, named once by the handout and then by the conductor"
     );
@@ -14097,7 +14097,7 @@ fn a_step_of_a_run_not_proved_unheld_fails_on_its_read_ahead_of_its_sweep() {
     assert!(!ok, "a run not proved unheld fails the step; stdout: {out}");
     assert_eq!(out, "", "no step line for a courier to read");
     assert_eq!(
-        err, "rigger: conductor: expected ident at line 1 column 2\n",
+        err, "rigger: event store: fold the run's hold: expected ident at line 1 column 2\n",
         "the failed read"
     );
     assert_eq!(

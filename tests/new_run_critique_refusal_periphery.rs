@@ -435,7 +435,7 @@ fn a_step_of_a_run_not_proved_unheld_fails_ahead_of_any_mint_and_a_plain_one_ahe
             "a plain step, the text not critiqued",
             false,
             &[],
-            "rigger: conductor: expected ident at line 1 column 2\n",
+            "rigger: event store: fold the run's hold: expected ident at line 1 column 2\n",
         ),
         (
             "--fresh, the text not critiqued",

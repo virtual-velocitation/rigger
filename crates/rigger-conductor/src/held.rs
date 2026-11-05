@@ -252,10 +252,10 @@ mod tests {
     const OUTPUT: &str = "the worker's output";
     /// What the store says when its reads are broken: [`ReadsFailWhenArmed`]'s backend error.
     const READ_FAILED: &str = "event store: the run read failed";
-    /// A `RunHeld` body the fold refuses, and what the fold says of it.
+    /// A `RunHeld` body the fold refuses, and what the hold read says of it.
     const MALFORMED_HOLD: &str = r#"{"by":1}"#;
-    const MALFORMED_HOLD_SAID: &str =
-        "invalid type: integer `1`, expected a string at line 1 column 7";
+    const MALFORMED_HOLD_SAID: &str = "event store: fold the run's hold: \
+        invalid type: integer `1`, expected a string at line 1 column 7";
 
     /// A category of each disposition.
     const FAULT: AgentFailure = AgentFailure::InvalidRequest;
