@@ -200,11 +200,28 @@ fn assert_each_run_entry_refuses(
     refusal: Refusal,
     runs_before: usize,
 ) {
+    assert_each_run_entry_refuses_on(root, (path, SPEC_REL), extra, refusal, runs_before);
+}
+
+/// Each of the [`RUN_ENTRIES`] given `spec` in place of [`SPEC_REL`], plus `extra`, in `root` with
+/// `path` as its `PATH`, refused a new run on `spec` in the shape `refusal` ([`assert_refused`]),
+/// the run stream still holding `runs_before` runs.
+fn assert_each_run_entry_refuses_on(
+    root: &Path,
+    (path, spec): (&str, &str),
+    extra: &[&str],
+    refusal: Refusal,
+    runs_before: usize,
+) {
     for (args, command) in RUN_ENTRIES {
+        let args: Vec<&str> = args
+            .iter()
+            .map(|&arg| if arg == SPEC_REL { spec } else { arg })
+            .collect();
         assert_refused(
             root,
-            run_entry(root, path, args, extra),
-            (command, SPEC_REL, refusal),
+            run_entry(root, path, &args, extra),
+            (command, spec, refusal),
             runs_before,
         );
     }
@@ -559,6 +576,23 @@ fn every_cli_run_start_refuses_a_new_run_on_an_uncritiqued_spec_under_its_own_na
 
     seed_the_specs_run(root);
     assert_each_run_entry_refuses(root, &path, &["--fresh"], Unexhausted, 1);
+}
+
+/// Given a clean critique of the spec's text inside the repository, when each run entry begins a
+/// new run on the same bytes outside it, then it refuses as not critiqued, under its own name and
+/// the spelling given, offering the critique and naming the resolution that follows one: the
+/// critique of a spec is read only for a path inside the repository.
+#[test]
+fn every_run_entry_refuses_a_new_run_on_a_spec_outside_the_repository_as_not_critiqued() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    let workflow = stopping_at_the_grounder(SKEPTIC_WORKFLOW);
+    write_spec_project(root, &PERSONAS, &workflow, SPEC_REL, SPEC);
+    record_clean_critique(root, SPEC_REL);
+    let (_work, path) = stand_in_claude();
+    let (_elsewhere, outside) = spec_outside_the_repository();
+
+    assert_each_run_entry_refuses_on(root, (&path, &outside), &[], Outside, 0);
 }
 
 /// THE AUTHORITY, an approve beside a BLOCKING line: the line counts as blocking whatever the
