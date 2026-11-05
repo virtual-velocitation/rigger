@@ -391,58 +391,57 @@ pub(crate) fn cmd_resume_unit(args: &[String]) -> Res {
     let unit_id = unit_id
         .ok_or("resume-unit: expected a unit id: rigger resume-unit <unit> [--attempts N]")?;
 
-    let (loc, selection) = require_store_dir()?;
-    let backend = resolve_store(&selection, &loc.file("events.db"))?;
-    let store = Namespaced::new(backend.as_ref(), &loc.identity());
-    let (run_events, run_id) = runscope::read::read_current_run(&store, conductor::STREAM)?;
-    let rs = ledger::project(&run_events)?;
+    on_the_run(|loc, store| {
+        let (run_events, run_id) = runscope::read::read_current_run(store, conductor::STREAM)?;
+        let rs = ledger::project(&run_events)?;
 
-    let unit = rs
-        .units
-        .get(unit_id)
-        .ok_or_else(|| format!("resume-unit: no unit {unit_id:?} in the current run"))?;
-    if unit.status != ledger::Status::Escalated {
-        return Err(format!(
-            "resume-unit: unit {unit_id:?} is not escalated (status: {:?}) - only a unit \
-             that has genuinely given up (\"escalated (awaiting a human)\") can be resumed",
-            unit.status.as_str()
-        )
-        .into());
-    }
-    let branch = unit.branch.clone();
-    if !branch.is_empty() && !rigger::worktree::branch_exists(&loc.repo_root(), &branch) {
-        return Err(format!(
-            "resume-unit: unit {unit_id:?}'s durable branch {branch:?} is gone (deleted or \
-             reclaimed) - refusing to resume with nothing to re-park the implementer on. \
-             Check `git reflog` for its last commit and recreate the branch at that sha \
-             before retrying."
-        )
-        .into());
-    }
+        let unit = rs
+            .units
+            .get(unit_id)
+            .ok_or_else(|| format!("resume-unit: no unit {unit_id:?} in the current run"))?;
+        if unit.status != ledger::Status::Escalated {
+            return Err(format!(
+                "resume-unit: unit {unit_id:?} is not escalated (status: {:?}) - only a unit \
+                 that has genuinely given up (\"escalated (awaiting a human)\") can be resumed",
+                unit.status.as_str()
+            )
+            .into());
+        }
+        let branch = unit.branch.clone();
+        if !branch.is_empty() && !rigger::worktree::branch_exists(&loc.repo_root(), &branch) {
+            return Err(format!(
+                "resume-unit: unit {unit_id:?}'s durable branch {branch:?} is gone (deleted or \
+                 reclaimed) - refusing to resume with nothing to re-park the implementer on. \
+                 Check `git reflog` for its last commit and recreate the branch at that sha \
+                 before retrying."
+            )
+            .into());
+        }
 
-    let mut ev = Event::new(
-        ledger::TYPE_UNIT_RESUMED,
-        serde_json::to_vec(
-            &serde_json::json!({"unit": unit_id, "attempts_granted": attempts_granted, "by": "operator"}),
-        )?,
-    );
-    if !run_id.is_empty() {
-        ev = ev.with_meta(runscope::META_RUN_ID, &run_id);
-    }
-    // The resume goes on the log first; `graph.db` is opened only after (spec 101), so a graph
-    // that cannot be had costs the operator's recovery verb only the fold, which it says.
-    rigger::ingest::FoldingStore::new(&store, Some(|| loc.graph(&selection)), &stderr_line)
-        .append(
+        let mut ev = Event::new(
+            ledger::TYPE_UNIT_RESUMED,
+            serde_json::to_vec(
+                &serde_json::json!({"unit": unit_id, "attempts_granted": attempts_granted, "by": "operator"}),
+            )?,
+        );
+        if !run_id.is_empty() {
+            ev = ev.with_meta(runscope::META_RUN_ID, &run_id);
+        }
+        // The folding store puts the resume on the log first and opens `graph.db` only after (spec
+        // 101), so a graph that cannot be had costs the operator's recovery verb only the fold,
+        // which it says.
+        store.append(
             conductor::STREAM,
             ExpectedRevision::Any,
             std::slice::from_ref(&ev),
         )?;
 
-    println!(
-        "resumed unit {unit_id:?}: {attempts_granted} attempt(s) granted (by operator) - the \
-         next `rigger step` re-parks its implementer on {branch:?}"
-    );
-    Ok(())
+        println!(
+            "resumed unit {unit_id:?}: {attempts_granted} attempt(s) granted (by operator) - the \
+             next `rigger step` re-parks its implementer on {branch:?}"
+        );
+        Ok(())
+    })
 }
 
 pub(crate) fn cmd_step(args: &[String]) -> Res {

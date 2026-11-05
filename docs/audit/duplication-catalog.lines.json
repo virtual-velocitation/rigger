@@ -919,23 +919,23 @@
       },
       {
         "file": "src/cli/run.rs",
-        "start_line": 3651,
-        "end_line": 3651
+        "start_line": 3650,
+        "end_line": 3650
       },
       {
         "file": "src/cli/run.rs",
-        "start_line": 3684,
-        "end_line": 3684
+        "start_line": 3683,
+        "end_line": 3683
       },
       {
         "file": "src/cli/run.rs",
-        "start_line": 3728,
-        "end_line": 3728
+        "start_line": 3727,
+        "end_line": 3727
       },
       {
         "file": "src/cli/run.rs",
-        "start_line": 3797,
-        "end_line": 3797
+        "start_line": 3796,
+        "end_line": 3796
       },
       {
         "file": "src/cli/setup.rs",
@@ -2189,8 +2189,8 @@
       },
       {
         "file": "tests/boundary_audit.rs",
-        "start_line": 1305,
-        "end_line": 1305
+        "start_line": 1304,
+        "end_line": 1304
       },
       {
         "file": "tests/canary_model_drift_periphery.rs",
@@ -4784,13 +4784,13 @@
       },
       {
         "file": "src/cli/run.rs",
-        "start_line": 3789,
-        "end_line": 3789
+        "start_line": 3788,
+        "end_line": 3788
       },
       {
         "file": "src/cli/run.rs",
-        "start_line": 3893,
-        "end_line": 3893
+        "start_line": 3892,
+        "end_line": 3892
       },
       {
         "file": "tests/cli.rs",
