@@ -5144,8 +5144,8 @@
       },
       {
         "file": "crates/rigger-domain/src/run.rs",
-        "start_line": 276,
-        "end_line": 278
+        "start_line": 257,
+        "end_line": 259
       }
     ]
   },
@@ -5709,13 +5709,13 @@
     "sites": [
       {
         "file": "crates/rigger-domain/src/run.rs",
-        "start_line": 187,
-        "end_line": 189
+        "start_line": 573,
+        "end_line": 575
       },
       {
         "file": "crates/rigger-domain/src/run.rs",
-        "start_line": 206,
-        "end_line": 208
+        "start_line": 582,
+        "end_line": 584
       }
     ]
   },

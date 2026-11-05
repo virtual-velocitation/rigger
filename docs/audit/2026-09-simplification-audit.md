@@ -3813,7 +3813,7 @@ Proposed home: `one shared `current_run_id` helper (e.g. relocated into `tests/c
 mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
 
 - `crates/rigger-dash/src/mcpserver.rs:562-564` `current_run_id`
-- `crates/rigger-domain/src/run.rs:276-278` `current_run_id`
+- `crates/rigger-domain/src/run.rs:257-259` `current_run_id`
 
 #### `dup-468c9f4fc26f` (semantic, 2 sites)
 
@@ -4094,8 +4094,8 @@ Proposed home: `run::support (consolidate these 2 sites into one function in thi
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-domain/src/run.rs:187-189` `to_event`
-- `crates/rigger-domain/src/run.rs:206-208` `to_event`
+- `crates/rigger-domain/src/run.rs:573-575` `to_event`
+- `crates/rigger-domain/src/run.rs:582-584` `to_event`
 
 #### `dup-4b3a37bb0a60` (exact, 2 sites)
 
