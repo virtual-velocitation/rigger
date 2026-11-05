@@ -16,8 +16,9 @@ use crate::eventstore::{Error as StoreError, Event, EventStore, Position, TypeSe
 use crate::ledger;
 use crate::playbooks::fnv1a_64;
 use crate::spawn::{
-    attempt_of, requests, result_of, review_step_role, spawn_id, Adjudication, ReviewKind,
-    SpawnEvent, SpawnResult, ROLE_ADVERSARY, TYPE_SPAWN_REQUESTED, TYPE_SPAWN_RESULT,
+    attempt_of, latest_results_lenient, requests, result_of, review_step_role, spawn_id,
+    Adjudication, ReviewKind, SpawnEvent, SpawnResult, ROLE_ADVERSARY, TYPE_SPAWN_REQUESTED,
+    TYPE_SPAWN_RESULT,
 };
 
 /// The two review-depth tiers a unit routes to: `TIER_LIGHT` runs the reduced roster,
@@ -602,23 +603,15 @@ fn judged(result: &SpawnResult, hash: &str) -> Result<(u32, String, Vec<Critique
 }
 
 /// The passes of `hash` among `results` (spec 123, A PASS AND EXHAUSTION), keyed and so ordered by
-/// attempt: for each critic spawn id of the hash, its latest result in `results` - the one
-/// [`result_of`] picks, a later result of the id displacing an earlier one - when the authority
-/// ([`critique_of`]) accepts it. A result that cannot be read is skipped, since no spawn id can be
-/// read from it.
+/// attempt: each spawn id's latest result in `results` ([`latest_results_lenient`], a later result
+/// of the id displacing an earlier one) that the authority ([`critique_of`]) accepts as a pass of
+/// the hash, one spawn id per attempt. A result that cannot be read is skipped, since no spawn id
+/// can be read from it.
 fn passes(results: &[Event], hash: &str) -> BTreeMap<u32, CritiquePass> {
-    let mut latest: BTreeMap<u32, &Event> = BTreeMap::new();
-    for event in results.iter().filter(|e| e.type_ == TYPE_SPAWN_RESULT) {
-        let attempt = SpawnResult::from_event(event)
-            .ok()
-            .and_then(|result| critique_attempt(&result.id, hash));
-        if let Some(attempt) = attempt {
-            latest.insert(attempt, event);
-        }
-    }
-    latest
-        .into_iter()
-        .filter_map(|(attempt, event)| Some((attempt, critique_of(event, hash).ok()?)))
+    latest_results_lenient(results)
+        .into_values()
+        .filter_map(|event| critique_of(event, hash).ok())
+        .map(|pass| (pass.attempt, pass))
         .collect()
 }
 

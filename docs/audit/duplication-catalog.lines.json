@@ -54,8 +54,8 @@
       },
       {
         "file": "crates/rigger-domain/src/review.rs",
-        "start_line": 429,
-        "end_line": 431
+        "start_line": 430,
+        "end_line": 432
       },
       {
         "file": "crates/rigger-domain/src/spawn.rs",
