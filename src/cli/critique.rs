@@ -129,8 +129,8 @@ pub(crate) fn cmd_critique(args: &[String]) -> Res {
     let attempts = review::next_critique_attempt(&critiques, &hash)?;
     let critique = if !critic.settles(&union, attempts) {
         // Every recorded pass is copied before any spawn can fail; then pass after pass, each
-        // judged and copied at once, until the re-read union is exhausted or its re-read attempt
-        // count is at the ceiling.
+        // judged and copied at once, until the re-read union and its re-read attempt count settle
+        // the critique.
         copy_findings(&store, &graph, &union, &spec)?;
         let host = CriticHost {
             cfg: &cfg,
@@ -146,12 +146,9 @@ pub(crate) fn cmd_critique(args: &[String]) -> Res {
             host.critique(&spec, &text, &hash, &union)?;
             union = recorded_union(&critiques, &hash)?;
             copy_findings(&store, &graph, &union, &spec)?;
-            if union.exhausted() {
-                break union;
-            }
             let attempts = review::next_critique_attempt(&critiques, &hash)?;
-            if critic.reached(attempts) {
-                eprintln!("{}", ceiling.notice(&union, attempts)?);
+            if critic.settles(&union, attempts) {
+                ceiling.say_unless_exhausted(&union, attempts)?;
                 break union;
             }
         }
@@ -162,9 +159,7 @@ pub(crate) fn cmd_critique(args: &[String]) -> Res {
     } else {
         remove_critique_scratch(&scratch_root);
         answered_from(&spec, &hash, &union);
-        if !union.exhausted() {
-            eprintln!("{}", ceiling.notice(&union, attempts)?);
-        }
+        ceiling.say_unless_exhausted(&union, attempts)?;
         copy_findings(&store, &graph, &union, &spec)?;
         union
     };
@@ -211,6 +206,20 @@ struct Ceiling<'a> {
 }
 
 impl Ceiling<'_> {
+    /// Say the CEILING NOTICE ([`Ceiling::notice`]) on stderr for `union`, settled after
+    /// `attempts` attempts, unless it is exhausted: a settled critique that is not exhausted
+    /// settled at its ceiling.
+    fn say_unless_exhausted(
+        &self,
+        union: &Critique,
+        attempts: u32,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        if !union.exhausted() {
+            eprintln!("{}", self.notice(union, attempts)?);
+        }
+        Ok(())
+    }
+
     /// The CEILING NOTICE for `union` after `attempts` attempts: not exhausted, the bound the
     /// critic's ceiling came from, then the union's open BLOCKING findings
     /// ([`open_blocking_ids`]), or that none is open and the critique is clean at the ceiling, or
