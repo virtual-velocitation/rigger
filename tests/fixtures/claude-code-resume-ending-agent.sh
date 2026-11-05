@@ -13,12 +13,14 @@
 # `unreadable` does. `silent-then-retried` prints that line once its input closes, inside THE
 # STOP's grace, and `unreadable-then-retried` behind its unreadable line, in the one write that
 # puts both on the pipe. `stuck` is `silent` outliving the close of its input, the session THE
-# STOP's grace waits on. `unreadable-pipes-held` is `unreadable` with a descendant holding the
-# output pipes past the reap, which keeps the host's drain joins open; the end of its input is how
-# the descendant sees the reap, since the host's handle on that input drops with the child. Each
-# stays past that point until the test lands what it lands there ([`stay_until_released`]). A
-# checked-in executable fixture (never written at test time), for the same reason as every sibling
-# fixture here: no concurrent test's fork+exec can inherit a write fd to it.
+# STOP's grace waits on. `errored-stuck` shows its session, prints an assistant line of the
+# `authentication_failed` class and an `is_error` `result`, and outlives the close of its input.
+# `unreadable-pipes-held` is `unreadable` with a descendant holding the output pipes past the reap,
+# which keeps the host's drain joins open; the end of its input is how the descendant sees the
+# reap, since the host's handle on that input drops with the child. Each stays past that point
+# until the test lands what it lands there ([`stay_until_released`]). A checked-in executable
+# fixture (never written at test time), for the same reason as every sibling fixture here: no
+# concurrent test's fork+exec can inherit a write fd to it.
 case " $* " in
 *" --resume "*) ending=${RIGGER_TEST_RESUME_ENDING:-answer} ;;
 *) ending=${RIGGER_TEST_FRESH_ENDING:-answer} ;;
@@ -58,6 +60,11 @@ refused_result() {
 
 answer() {
     printf '%s\n' "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"num_turns\":1,\"result\":\"${RIGGER_TEST_ANSWER:-the answer}\",\"session_id\":\"99999999-9999-4999-8999-999999999999\",\"total_cost_usd\":0.01,\"usage\":{\"input_tokens\":10,\"output_tokens\":5},\"permission_denials\":[]}"
+}
+
+errored() {
+    echo '{"type":"assistant","message":{"content":[]},"error":"authentication_failed"}'
+    echo '{"type":"result","subtype":"success","is_error":true,"num_turns":1,"result":"Not logged in","session_id":"99999999-9999-4999-8999-999999999999","total_cost_usd":0,"usage":{"input_tokens":0,"output_tokens":0},"permission_denials":[]}'
 }
 
 if [ "$ending" = refused-unread ]; then
@@ -155,6 +162,11 @@ init-server-failed)
     init '{"name":"rigger","status":"failed"}'
     wait_for_input_to_close
     exit 1
+    ;;
+errored-stuck)
+    init
+    errored
+    exec sleep 30
     ;;
 *)
     echo "claude-code-resume-ending-agent: unknown ending: $ending" >&2

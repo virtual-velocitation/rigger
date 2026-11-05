@@ -3098,6 +3098,15 @@ fn held_ending_cases() -> Vec<HeldEnding> {
             ..HeldEnding::default()
         },
         HeldEnding {
+            name: "a stop behind an error result of a hold class",
+            fresh: true,
+            ending: "errored-stuck",
+            agent: bounded(),
+            holds: vec![hold(login, "", "run claude auth login", true, "")],
+            left: Ending::Stopped,
+            ..HeldEnding::default()
+        },
+        HeldEnding {
             name: "a hold landing inside the stop grace",
             ending: "stuck",
             agent: bounded(),
@@ -3190,7 +3199,8 @@ fn held_ending_cases() -> Vec<HeldEnding> {
 /// `--resume` launch with no `system/init` among them launching nothing fresh. On a run held at the
 /// launch's end the stop and the read error keep their endings and launch nothing fresh, a hold
 /// that lands while the launch ends among them, and one a line still on the stream sights, and on
-/// an unheld run they and a fault class take the fallback. A host with no sink reads no hold and
+/// an unheld run they and a fault class take the fallback. A stop sights the class its session
+/// reported, as any ending does. A host with no sink reads no hold and
 /// keeps `fault` and the fallback.
 #[cfg(unix)]
 #[test]
