@@ -5522,8 +5522,8 @@ impl RunCtx<'_> {
     /// candidate loses.
     ///
     /// A round whose [`round_delta`](RunCtx::round_delta) in `wt` changed documentation only
-    /// appends [`DOC_ONLY_ROUND`] to the prompt, so a wording round moves an existing pin's
-    /// needle instead of growing the suite.
+    /// appends [`DOC_ONLY_ROUND`], that round's fact, to the prompt and to a resumed session's
+    /// task.
     fn spawn_sdet_author(
         &self,
         st: &Stage,
@@ -5561,7 +5561,7 @@ impl RunCtx<'_> {
             attempt,
             GroundingSlice::Implement,
         )?;
-        // The doc-only rule is guidance, never a gate: a delta that cannot be read leaves the
+        // The doc-only fact is framing, never a gate: a delta that cannot be read leaves the
         // prompt without it, so this seam still errs only on a park.
         let delta = self.round_delta(wt, &st.name, attempt);
         let doc_only = delta
@@ -5573,7 +5573,7 @@ impl RunCtx<'_> {
         }
         // A later attempt continues the sdet-author's own session, sent what sent the unit back
         // - the review round's delta, the gates the last attempt failed, or both - to bring the
-        // periphery tests in line with (and the doc-only rule when it applies).
+        // periphery tests in line with (and the doc-only fact when it holds).
         let mut resume_task = later_attempt_block(delta.as_ref(), gate_evidence);
         if doc_only {
             resume_task.push_str(DOC_ONLY_ROUND);
@@ -14747,11 +14747,11 @@ fn later_attempt_block(delta: Option<&(String, Vec<String>)>, gate_evidence: &[S
     )
 }
 
-/// The rule the sdet-author's prompt carries on a round whose delta changed documentation
-/// only ([`is_documentation_only`]): a reworded sentence moves an existing pin's needle at
-/// most, and a fresh test for every wording round only grows the suite the next round must
-/// keep green. The rule lives here alone, never copied into a persona.
-const DOC_ONLY_ROUND: &str = "This round changed documentation only: extend the existing owner test's needle for the changed sentence, or add no pin; never a new test.";
+/// The fact the sdet-author's fresh prompt and a resumed session's task state, last, on a
+/// round whose delta changed documentation only ([`is_documentation_only`]). It is the
+/// round's fact alone: what such a round asks of the periphery tests is the sdet-author
+/// persona's guidance, never this prompt's.
+const DOC_ONLY_ROUND: &str = "This round changed documentation only.";
 
 /// The adoption decision [`RunCtx::adopt_prior_criterion_branch`] already recorded for
 /// the EXACT `(unit, criterion_id, spec)` triple, if any (spec 88 round 4, rescoped

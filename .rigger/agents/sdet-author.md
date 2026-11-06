@@ -160,3 +160,8 @@ the code under test turns it red:
   the empty, zero, absent or repeated input.
 - For a bounded buffer, a retry count or a timeout, test the exact bound: the element that
   fits and the one that does not; the attempt that is allowed and the one that is refused.
+
+## A documentation-only round
+
+Extend the existing owner test's needle for the changed sentence, or add no pin; never a new
+test.
