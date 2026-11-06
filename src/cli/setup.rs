@@ -1943,7 +1943,13 @@ serving one acceptance criterion. Emit each as a UnitProposed decision. Do not w
 Add a `needs` edge only for a real dependency: a file one unit edits that another\n\
 reads or edits, or an API one unit adds that another calls. Units with no such\n\
 dependency carry no edge between them and run in parallel; never chain units in\n\
-order by default.\n",
+order by default.\n\
+\n\
+Split a criterion whose one unit would be too large into ordered units (each `needs`\n\
+the one before it), each owning a named part. If you discover a NECESSARY sub-unit or\n\
+an ordering dependency the baseline missed, propose it. NEVER propose a unit that maps\n\
+to no acceptance criterion - that is scope creep. Propose each refinement the moment\n\
+you decide it. Only omit the id when you truly intend a new sub-unit.\n",
     ),
     (
         "rust-engineer.md",
