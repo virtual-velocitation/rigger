@@ -351,7 +351,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-e095ca500e2a",
+    "id": "dup-261fedbfbd66",
     "classification": "near",
     "sites": [
       {
@@ -422,6 +422,11 @@
       {
         "file": "tests/common/fixtures/config.rs",
         "name": "separator_refusal",
+        "content_hash": "7963312db697b9f4"
+      },
+      {
+        "file": "tests/common/fixtures/plan_critique.rs",
+        "name": "plan_protocol_text",
         "content_hash": "7963312db697b9f4"
       },
       {
@@ -1400,7 +1405,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-cf36d89c8c27",
+    "id": "dup-0269ebd4018d",
     "classification": "semantic",
     "sites": [
       {
@@ -3594,6 +3599,11 @@
         "content_hash": "edbddea214457e40"
       },
       {
+        "file": "tests/critique_method_persona_periphery.rs",
+        "name": "\".rigger/agents/planner.md\"",
+        "content_hash": "fdbe24f9e23fee7f"
+      },
+      {
         "file": "tests/dedup_seeding_periphery.rs",
         "name": "\".rigger\"",
         "content_hash": "090bbeba5641ea09"
@@ -4450,7 +4460,7 @@
       }
     ],
     "proposed_home": "one .rigger-relative path-composition helper",
-    "note": "mandatory sweep: .rigger-path string literals - 609 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: .rigger-path string literals - 610 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {

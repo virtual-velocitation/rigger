@@ -335,7 +335,7 @@
     ]
   },
   {
-    "id": "dup-e095ca500e2a",
+    "id": "dup-261fedbfbd66",
     "sites": [
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
@@ -409,8 +409,13 @@
       },
       {
         "file": "tests/common/fixtures/plan_critique.rs",
-        "start_line": 80,
-        "end_line": 85
+        "start_line": 35,
+        "end_line": 67
+      },
+      {
+        "file": "tests/common/fixtures/plan_critique.rs",
+        "start_line": 118,
+        "end_line": 123
       },
       {
         "file": "tests/common/fixtures/spawn.rs",
@@ -1320,7 +1325,7 @@
     ]
   },
   {
-    "id": "dup-cf36d89c8c27",
+    "id": "dup-0269ebd4018d",
     "sites": [
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
@@ -3513,6 +3518,11 @@
         "end_line": 51
       },
       {
+        "file": "tests/critique_method_persona_periphery.rs",
+        "start_line": 205,
+        "end_line": 205
+      },
+      {
         "file": "tests/dedup_seeding_periphery.rs",
         "start_line": 342,
         "end_line": 342
@@ -4459,8 +4469,8 @@
     "sites": [
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 50872,
-        "end_line": 50874
+        "start_line": 50842,
+        "end_line": 50844
       },
       {
         "file": "crates/rigger-domain/src/metrics.rs",

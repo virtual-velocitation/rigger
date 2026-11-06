@@ -1,8 +1,8 @@
 //! Plan-critique fixtures: the widget unit a scripted planner proposes, the planning policy the
-//! planner persona states in place of the plan protocol, the whole DAG critique prompt, with the
-//! unit size cap sentence, the disjoint overlap text, the line a re-plan round opens with and the
-//! verdict paragraph it is spelled from, the adjudicator's reject line and the records a
-//! spec-defect stop appends (spec 112, criterion 5).
+//! planner persona states in place of the plan protocol, the plan protocol a planner's task closes
+//! with, the whole DAG critique prompt, with the unit size cap sentence, the disjoint overlap text,
+//! the line a re-plan round opens with and the verdict paragraph it is spelled from, the
+//! adjudicator's reject line and the records a spec-defect stop appends (spec 112, criterion 5).
 
 use rigger::conductor::{META_REPLAY_KEY, TYPE_SPEC_DEFECT};
 use rigger::contextgraph::TYPE_LESSON_LEARNED;
@@ -27,6 +27,44 @@ pub const PLANNING_POLICY: [&str; 6] = [
     "Do not write code.",
     "Only omit the id when you truly intend a new sub-unit.",
 ];
+
+/// The plan protocol that closes a planner's task, as the planner is served it: the framing and
+/// contract sentences, the [`UNIT_SIZE_CAP_SENTENCE`] in its slot, `implementer` as the agent of
+/// the `UnitProposed` shape and `criteria` as the criteria block, with none of the
+/// [`PLANNING_POLICY`].
+pub fn plan_protocol_text(implementer: &str, criteria: &str) -> String {
+    format!(
+        "\n\nYou are the planner. The conductor has ALREADY created one baseline implement \
+         unit per acceptance criterion below - the spec is decomposed by construction. Your \
+         job is to REFINE that baseline, not to re-decompose it. {UNIT_SIZE_CAP_SENTENCE} \
+         Each part of a split echoes the split criterion's id and ends its `criterion` text \
+         with an OWNS sentence naming its part (the conductor keeps that sentence after the \
+         criterion's exact text as that unit's contract).\n\
+         Each criterion below is shown with a STABLE id in [brackets]. When your unit serves \
+         a criterion, your unit SUPERSEDES (replaces) that criterion's baseline - it does NOT \
+         run alongside it - so identify the criterion you serve by ECHOING its id: copy the \
+         id shown in brackets next to that criterion into the `criterion_id` field (the \
+         brackets are display delimiters - the conductor accepts the id with or without \
+         them). The conductor pairs your unit with its baseline by that id, so even if you \
+         reword or truncate the criterion text in `criterion`, the correct id still \
+         supersedes the one baseline (no duplicate). A wrong or missing `criterion_id` is \
+         what makes your unit run as an EXTRA unit on top of the baseline (duplicated work). \
+         Still copy the criterion text into `criterion` (verbatim is safest). Several units \
+         echoing the SAME id (a real split) all run and replace the one baseline.\n\
+         Propose each refinement by calling the rigger_emit tool with type \"UnitProposed\" \
+         and data:\n\
+         {{\"id\":\"<short-id>\",\"agent\":\"{implementer}\",\"criterion\":\"<the spec criterion \
+         it serves>\",\"criterion_id\":\"<the id shown in [brackets] next to that \
+         criterion>\",\"needs\":[\"<unit ids it depends on>\"]}}\n\
+         A unit whose `criterion_id` is none of the ids below still runs, but as a \
+         genuinely-new sub-unit that the conductor flags as unmatched. Every unit you propose \
+         - a refinement, a split, or a new sub-unit - automatically runs the fan-out \
+         template's own gates; you never need to name them.\n\n\
+         The acceptance criteria to refine against (echo the [id] shown next to each \
+         criterion into that unit's `criterion_id`, and copy the text into `criterion`):\n\
+         {criteria}\n"
+    )
+}
 
 /// The verdict paragraph every round of the DAG critique prompt closes with: its cause contract
 /// asks for `spec-ambiguity` - the cause the spec-defect stop reads, spelled here as the
