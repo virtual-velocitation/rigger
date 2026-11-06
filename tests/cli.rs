@@ -10791,6 +10791,89 @@ fn every_launch_of_a_reviewed_unit_carries_the_hooks_for_its_own_spawn() {
     }
 }
 
+/// Spec 121's THE OPERATOR'S HELPER COPY IS THE DEFINITION, end to end: given a reviewed unit
+/// whose checkout holds the operator's own copy of no helper, of `lookup` alone, of `verify`
+/// alone or of both, when `rigger run` drives it, then every launch, the implementer's and each
+/// reviewer's, defines each helper from the operator's copy where the checkout holds one and from
+/// the embedded text where it does not, and pre-approves the rigger tools those definitions
+/// declare, between its own tools and the host's bound ones. The copies stay untracked, so the
+/// unit's worktree, where every launch runs, holds none: what each launch carries is what the run
+/// resolved at the checkout.
+#[cfg(unix)]
+#[test]
+fn every_launch_of_a_run_defines_the_helpers_from_the_operators_copies() {
+    use common::fixtures::{write_helper_copy, OPERATOR_HELPER_COPIES};
+    use common::repo::handed_helpers_agents_json;
+    const EMBEDDED_HELPER_TOOLS: &str =
+        "mcp__rigger__rigger_graph,mcp__rigger__rigger_ground,mcp__rigger__rigger_peers";
+    const OPERATOR_HELPER_TOOLS: &str = "mcp__rigger__rigger_peers,mcp__rigger__rigger_graph";
+    const BOUND_TOOLS: &str =
+        "mcp__rigger__rigger_emit,mcp__rigger__rigger_progress,mcp__rigger__rigger_scratch";
+    let arms = format!(
+        r#"  *)
+{RECORD_EACH_LAUNCH}    if [ -e .claude/agents ]; then : > "$here/worktree-holds-copies"; fi
+    case "$RIGGER_SPAWN" in
+    solo/implementer*) echo "pub fn work() {{}}" >> work.rs ;;
+    solo/adjudicator*) echo '{{"verdict":"approve"}}' ;;
+    *) echo "$RIGGER_SPAWN answered" ;;
+    esac
+    ;;
+"#
+    );
+    let [lookup, verify] = OPERATOR_HELPER_COPIES;
+    let rows: [(&str, &[(&str, &str)], &str); 4] = [
+        ("no copy", &[], EMBEDDED_HELPER_TOOLS),
+        ("a lookup copy alone", &[lookup], OPERATOR_HELPER_TOOLS),
+        ("a verify copy alone", &[verify], EMBEDDED_HELPER_TOOLS),
+        ("both copies", &[lookup, verify], OPERATOR_HELPER_TOOLS),
+    ];
+    for (name, copies, helper_tools) in rows {
+        let dir = temp_git_project_with_commit();
+        let root = dir.path();
+        write_reviewed_unit(root);
+        for (file, text) in copies {
+            write_helper_copy(root, file, text);
+        }
+        let scratch = tempfile::tempdir().unwrap();
+        let (out, err, ok, fake) = run_on_arms(root, &["run"], scratch.path(), &arms);
+        assert!(ok, "{name}: the run succeeds; stderr: {err}\nstdout: {out}");
+        assert!(
+            !fake.path().join("bin/worktree-holds-copies").exists(),
+            "{name}: no launch's worktree holds a helper copy"
+        );
+
+        let launches: Vec<(String, serde_json::Value, String)> =
+            stand_in_launches(&fake.path().join("bin/launches"))
+                .into_iter()
+                .map(|launch| {
+                    let agents = serde_json::from_str(flag_value(&launch.argv, "--agents"))
+                        .expect("the helpers are JSON");
+                    let tools = flag_value(&launch.argv, "--allowed-tools").to_string();
+                    (launch.spawn, agents, tools)
+                })
+                .collect();
+        let expected: Vec<(String, serde_json::Value, String)> = [
+            ("solo/adjudicator#0", "Read"),
+            ("solo/adversary#0", "Read"),
+            ("solo/implementer#0", "Read,Edit"),
+            ("solo/lens:lens#0", "Read"),
+        ]
+        .into_iter()
+        .map(|(spawn, own)| {
+            (
+                spawn.to_string(),
+                handed_helpers_agents_json(copies),
+                format!("{own},{helper_tools},{BOUND_TOOLS}"),
+            )
+        })
+        .collect();
+        assert_eq!(
+            launches, expected,
+            "{name}: each launch's helpers and pre-approval"
+        );
+    }
+}
+
 /// The live-progress frame closing a launch's first user message: the progress verb and its
 /// argument only, since when to report is the communication built-in's.
 const LIVE_PROGRESS_FRAME: &str = "\n\n--- rigger driver ---\nLIVE PROGRESS: record a progress \

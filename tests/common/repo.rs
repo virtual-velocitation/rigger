@@ -276,6 +276,30 @@ pub fn assert_carries_spawn_hooks(
     );
 }
 
+/// The `--agents` value a launch carries over a checkout whose `.claude/agents/` holds exactly
+/// `copies`, each one of the [`super::fixtures::OPERATOR_HELPER_COPIES`]: a copied helper is
+/// defined by its [`super::fixtures::operator_helpers_agents_json`] entry, every other one by its
+/// embedded text, this repository's own committed `.claude/agents/` helper.
+pub fn handed_helpers_agents_json(copies: &[(&str, &str)]) -> serde_json::Value {
+    let operator = super::fixtures::operator_helpers_agents_json();
+    let mut agents = serde_json::Map::new();
+    for (file, embedded) in rigger::hooks::HELPER_AGENTS {
+        let name = file.trim_end_matches(".md");
+        let def = if copies.iter().any(|(copied, _)| copied == file) {
+            operator[name].clone()
+        } else {
+            let copy = rigger_domain::agent::HelperCopy {
+                name: file.to_string(),
+                text: embedded.to_string(),
+                present: false,
+            };
+            rigger::hooks::helper_agents_json(&[copy]).unwrap()[name].clone()
+        };
+        agents.insert(name.to_string(), def);
+    }
+    serde_json::Value::Object(agents)
+}
+
 /// The value `argv` carries right after `flag`.
 pub fn flag_value<'a>(argv: &'a [String], flag: &str) -> &'a str {
     let at = argv
