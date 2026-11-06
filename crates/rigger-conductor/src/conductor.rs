@@ -35973,8 +35973,8 @@ mod tests {
 
     // The golden lines [`review_identity`] read on the tree before the review panel ran as a
     // sequence of steps (spec 120, criterion 6), each review prompt's hash re-taken once spec 121
-    // cut the cadence clauses out of the decision and finding protocols: each review spawn, then
-    // each status stamp.
+    // cut the cadence and method clauses out of the decision and finding protocols: each review
+    // spawn, then each status stamp.
     const ARCHITECTURE_LENS_SPAWN: &str = r#"s/lens:architecture-reviewer#0 [] 205b096ff6577155"#;
     const SDET_LENS_SPAWN: &str = r#"s/lens:sdet#0 [] 96476a31e07beb09"#;
     const ADVERSARY_SPAWN: &str =
