@@ -8241,19 +8241,19 @@
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
-    "name": "sdet_prompts_around_a_rejected_round",
+    "name": "sdet_turns_around_a_rejected_round",
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "0fcae6a372005987"
+    "content_hash": "5a67d78e45b3bb38"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
-    "name": "a_doc_only_round_tells_the_sdet_author_to_extend_the_owner_needle",
+    "name": "a_doc_only_round_states_only_the_fact_to_the_sdet_author",
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "5475effc6d2bd72b"
+    "content_hash": "c88455e6cb44f932"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",

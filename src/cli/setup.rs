@@ -2122,9 +2122,9 @@ mod tests {
     use crate::test_support::AUTHORING_AGENTS_HANDBOOK;
     use crate::test_support::{
         assert_holds_its_critique_method, critique_method_by_persona, markdown_section,
-        ADJUDICATOR_JUDGING_RULE, ADVERSARY_CRITIQUE_METHOD, CRITIQUE_METHOD, FAN_OUT_HEADING,
-        GROUNDING_METHOD, HAND_OVER_HEADING, LOOKUP_METHOD, ONE_PASS_HEADING, WHEN_YOU_REVIEW,
-        WHEN_YOU_REVIEW_HEADING,
+        ADJUDICATOR_JUDGING_RULE, ADVERSARY_CRITIQUE_METHOD, CRITIQUE_METHOD, DOC_ONLY_ROUND_RULE,
+        FAN_OUT_HEADING, GROUNDING_METHOD, HAND_OVER_HEADING, LOOKUP_METHOD, ONE_PASS_HEADING,
+        WHEN_YOU_REVIEW, WHEN_YOU_REVIEW_HEADING,
     };
     use crate::test_support::{production_boundary, production_files};
 
@@ -5202,6 +5202,37 @@ mod tests {
                 "sdet-author.md owes no accounting record of its probes: {retired:?}"
             );
         }
+    }
+
+    /// A documentation-only round's rule is the sdet-author persona's, the binary's prompt
+    /// stating only the round's fact: the persona's last section, after `## Every test asserts
+    /// exactly`, is `## A documentation-only round`, holding the rule's sentence verbatim and
+    /// nothing else, and no other committed persona carries that section.
+    #[test]
+    fn the_sdet_author_persona_ends_with_the_documentation_only_round_rule() {
+        const HEADING: &str = "## A documentation-only round";
+        for (file, text) in committed_personas() {
+            assert_eq!(
+                text.matches(HEADING).count(),
+                usize::from(file == "sdet-author.md"),
+                "{file}: the documentation-only round rule belongs to the sdet-author persona alone"
+            );
+        }
+        let text = committed_persona("sdet-author.md");
+        let headings: Vec<&str> = text
+            .lines()
+            .filter(|line| line.starts_with("## "))
+            .collect();
+        assert_eq!(
+            headings[headings.len().saturating_sub(2)..],
+            ["## Every test asserts exactly", HEADING],
+            "sdet-author.md's last section is the rule's, after the exact-assertion section"
+        );
+        assert_eq!(
+            rigger::wave::normalize_ws(markdown_section(&text, HEADING)),
+            format!("{HEADING} {DOC_ONLY_ROUND_RULE}"),
+            "sdet-author.md's last section holds the rule's sentence verbatim and nothing else"
+        );
     }
 
     /// The fan-out helpers the working discipline names live at `.claude/agents/`: committed

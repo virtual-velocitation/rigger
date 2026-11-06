@@ -15193,6 +15193,7 @@ mod tests {
     use crate::test_support::temp_git_project_with_commit;
     use crate::test_support::test_spawn_host;
     use crate::test_support::trimmed_stdout;
+    use crate::test_support::DOC_ONLY_ROUND_RULE;
     use crate::test_support::{assert_communication_once, COMMUNICATION_SECTION};
     use crate::test_support::{
         assert_winner_reviewed_sha_is_round_start, speculation_regen_door_cfg,
@@ -48597,26 +48598,20 @@ mod tests {
         );
     }
 
-    /// The prompts the sdet-author gets, in attempt order, on a `per_unit_panel_cfg` unit
-    /// in a real repository whose adjudicator rejects round 0 and approves round 1: round 0's
-    /// implementer writes `feature.rs`, round 1's writes `second_round` (worktree-relative
-    /// paths).
-    fn sdet_prompts_around_a_rejected_round(second_round: &[&str]) -> Vec<String> {
+    /// What the sdet-author is sent each round, in attempt order, with whether it was a resumed
+    /// session's task (else the full prompt), on the [`session_cfg`] unit in a real repository
+    /// whose adjudicator rejects round 0 and approves round 1: round 0's implementer writes
+    /// `feature.rs`, round 1's writes `second_round` (worktree-relative paths). With `sessions`
+    /// the driver reports each spawn's session, so round 1 continues round 0's; without, every
+    /// round starts fresh.
+    fn sdet_turns_around_a_rejected_round(
+        second_round: &[&str],
+        sessions: bool,
+    ) -> Vec<(bool, String)> {
         let repo = temp_git_project_with_commit();
-        let mut cfg = per_unit_panel_cfg(None);
-        cfg.agents
-            .insert(ROLE_SDET_AUTHOR.into(), agent(ROLE_SDET_AUTHOR));
         let implementer = |attempt| spawn_id("implement", ROLE_IMPLEMENTER, attempt);
-        let adjudicator = |attempt| spawn_id("implement", ROLE_ADJUDICATOR, attempt);
         let driver = Stub {
-            output: "reviewed the diff".into(),
-            output_by_spawn_id: HashMap::from([
-                (
-                    adjudicator(0),
-                    r#"{"verdict":"reject","issues":[]}"#.to_string(),
-                ),
-                (adjudicator(1), r#"{"verdict":"approve"}"#.to_string()),
-            ]),
+            sessions,
             write_files_by_spawn_id: HashMap::from([
                 (implementer(0), vec!["feature.rs".to_string()]),
                 (
@@ -48624,26 +48619,43 @@ mod tests {
                     second_round.iter().map(|p| p.to_string()).collect(),
                 ),
             ]),
-            ..Stub::new()
+            ..session_stub(&[
+                (adjudicator_at(0, 0), r#"{"verdict":"reject","issues":[]}"#),
+                (adjudicator_at(1, 0), r#"{"verdict":"approve"}"#),
+            ])
         };
         let st = Store::open(":memory:").unwrap();
         let deps = Deps {
             repo: repo.path().to_str().unwrap().to_string(),
             ..stub_deps(&st, &driver, Vec::new())
         };
-        run_isolated(&cfg, &deps).unwrap();
-        driver.prompts_for(ROLE_SDET_AUTHOR)
+        run_isolated(&session_cfg(), &deps).unwrap();
+        driver
+            .prompts_for(ROLE_SDET_AUTHOR)
+            .into_iter()
+            .zip(0..)
+            .map(|(prompt, attempt)| {
+                let (from, task) = driver
+                    .resume_of(&spawn_id("implement", ROLE_SDET_AUTHOR, attempt))
+                    .expect("every sdet-author prompt is a spawn");
+                if from.is_empty() {
+                    (false, prompt)
+                } else {
+                    (true, task)
+                }
+            })
+            .collect()
     }
 
-    /// A round that changed documentation only - `*.md` files and paths under `docs/` -
-    /// since its reviewers rejected the unit tells the sdet-author to extend the existing
-    /// owner test's needle or add no pin, never a new test. The first round (no review has
-    /// judged the unit yet), a round that changed code beside its docs, and a round that
-    /// changed nothing are not told.
+    /// A round that changed documentation only - `*.md` files and paths under `docs/` - since
+    /// its reviewers rejected the unit states that fact to the sdet-author, last and once, in a
+    /// fresh spawn's prompt and in a resumed session's task alike, and no turn carries the rule
+    /// such a round asks of the periphery tests: the rule is the sdet-author persona's. The
+    /// first round (no review has judged the unit yet), a round that changed code beside its
+    /// docs, and a round that changed nothing state no such fact.
     #[test]
-    fn a_doc_only_round_tells_the_sdet_author_to_extend_the_owner_needle() {
-        const NEEDLE: &str = "This round changed documentation only: extend the existing owner \
-                              test's needle for the changed sentence, or add no pin; never a new test.";
+    fn a_doc_only_round_states_only_the_fact_to_the_sdet_author() {
+        const FACT: &str = "This round changed documentation only.";
         for (second_round, told, why) in [
             (
                 &["docs/diagram.svg", "README.md"][..],
@@ -48657,23 +48669,39 @@ mod tests {
             ),
             (&[][..], false, "a round that changed nothing"),
         ] {
-            let prompts = sdet_prompts_around_a_rejected_round(second_round);
-            assert_eq!(
-                prompts.len(),
-                2,
-                "{why}: the sdet-author runs once per round"
-            );
-            assert!(
-                !prompts[0].contains(NEEDLE),
-                "{why}: the first round has no reviewed base, so no doc-only rule:\n{}",
-                prompts[0]
-            );
-            assert_eq!(
-                prompts[1].contains(NEEDLE),
-                told,
-                "{why}: told the doc-only rule must be {told}:\n{}",
-                prompts[1]
-            );
+            for sessions in [false, true] {
+                let turns = sdet_turns_around_a_rejected_round(second_round, sessions);
+                assert_eq!(
+                    turns
+                        .iter()
+                        .map(|(resumed, _)| *resumed)
+                        .collect::<Vec<_>>(),
+                    [false, sessions],
+                    "{why}: the sdet-author runs once per round, round 1 resuming round 0's \
+                     session exactly when the driver reports sessions"
+                );
+                for (round, (resumed, turn)) in turns.iter().enumerate() {
+                    let stated = told && round == 1;
+                    let tail = if *resumed {
+                        format!("Bring the periphery tests in line with that change.\n{FACT}")
+                    } else {
+                        format!("\n\n{FACT}")
+                    };
+                    assert_eq!(
+                        (turn.matches(FACT).count(), turn.ends_with(&tail)),
+                        (usize::from(stated), stated),
+                        "{why}, round {round} (resumed: {resumed}): the turn states the fact once \
+                         and last exactly when the round changed documentation only:\n{turn}"
+                    );
+                    assert!(
+                        !turn
+                            .to_lowercase()
+                            .contains(&DOC_ONLY_ROUND_RULE.to_lowercase()),
+                        "{why}, round {round} (resumed: {resumed}): no sdet-author turn carries \
+                         the documentation-only round rule, the persona's:\n{turn}"
+                    );
+                }
+            }
         }
     }
 
