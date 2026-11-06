@@ -23,10 +23,21 @@ pub fn test_request(
 }
 
 /// The spawn host a test's spawns carry: the one test-side spelling of the struct the production
-/// resolver `hooks::resolve_spawn_host` returns, with the grep-guard off. A test that needs the
-/// flag set builds its own literal.
+/// resolver `hooks::resolve_spawn_host` returns, with the grep-guard off, over a checkout holding
+/// exactly the [`OPERATOR_HELPER_COPIES`], so a spawn that reads its helpers anywhere but the
+/// host carries the embedded text and shows. A test that needs the flag set spreads this one.
 pub fn test_spawn_host() -> rigger_domain::agent::SpawnHost {
-    rigger_domain::agent::SpawnHost { grep_guard: false }
+    rigger_domain::agent::SpawnHost {
+        grep_guard: false,
+        helpers: OPERATOR_HELPER_COPIES
+            .iter()
+            .map(|(file, text)| rigger_domain::agent::HelperCopy {
+                name: file.to_string(),
+                text: text.to_string(),
+                present: true,
+            })
+            .collect(),
+    }
 }
 
 /// An operator's own copies of the two fan-out helpers, as `(file, text)` under

@@ -267,11 +267,12 @@ fn bridge_emits(
 /// agent runs on the rung it escalated to for this remediation attempt.
 ///
 /// The spawn configuration follows (see [`spawn_config_args`]: permissions, then the
-/// operator's read-only `<rigger_bin> mcp` server, the session settings and the helpers),
-/// so this argv and the headless host's agree on everything but the protocol flags. This
-/// host keeps the operator's server rather than a spawn-bound one because its emits travel
-/// on stdout ([`bridge_emits`]), not through the server. Fails only when
-/// `opts.settings_json` is not a JSON object the session settings can merge into.
+/// operator's read-only `<rigger_bin> mcp` server, the session settings and the helpers
+/// `opts.host` carries), so this argv and the headless host's agree on everything but the
+/// protocol flags. This host keeps the operator's server rather than a spawn-bound one because
+/// its emits travel on stdout ([`bridge_emits`]), not through the server. Fails when
+/// `opts.settings_json` is not a JSON object the session settings can merge into, or a helper
+/// `opts.host` carries does not parse.
 pub fn build_args(
     agent: &AgentDef,
     persona: &SystemPromptFile,
@@ -287,7 +288,7 @@ pub fn build_args(
         args.push("--model".to_string());
         args.push(model);
     }
-    args.extend(allowed_tools_args(agent, &[])?);
+    args.extend(allowed_tools_args(agent, &opts.host, &[])?);
     args.extend(spawn_config_args(
         rigger_bin,
         &["mcp"],

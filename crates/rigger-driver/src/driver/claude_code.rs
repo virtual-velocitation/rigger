@@ -2197,8 +2197,9 @@ fn model_args(model: &str) -> Vec<String> {
 /// (the Done-when text names session id, stream-json, persona, model, tools, permission
 /// flags, MCP config and settings only) and is not built here; a later criterion adds it
 /// alongside whichever caller knows a persona is a verdict role, through this same
-/// function rather than a second argv authority. Fails only when the spawn's own
-/// `settings_json` is not a JSON object the spawn's hooks and the session settings can merge into.
+/// function rather than a second argv authority. Fails when the spawn's own `settings_json` is
+/// not a JSON object the spawn's hooks and the session settings can merge into, or a helper
+/// `opts.host` carries does not parse.
 pub fn build_args(
     agent: &AgentDef,
     persona: &SystemPromptFile,
@@ -2215,7 +2216,7 @@ pub fn build_args(
         args.push("--fallback-model".to_string());
         args.push(agent.fallback_model.clone());
     }
-    args.extend(allowed_tools_args(agent, &SPAWN_BOUND_TOOLS)?);
+    args.extend(allowed_tools_args(agent, &opts.host, &SPAWN_BOUND_TOOLS)?);
     let settings = json_arg(
         hooks::install_spawn_hooks(
             opts.settings_json.as_bytes(),

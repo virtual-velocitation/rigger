@@ -37,13 +37,18 @@ pub(crate) fn bin_or_path_default<'s>(configured: &'s str, default: &'s str) -> 
 
 /// The `--allowed-tools` pair every headless spawn passes: the tools `agent` is granted
 /// ([`AgentDef::allowed_tools`]: `recurse: false` strips any fan-out tool, runaway-proof by
-/// construction, §3.1, §6), then the helpers' rigger MCP tools ([`hooks::helper_mcp_tools`]),
-/// then the `bound` tools the launching host's own server serves, each name once. The helpers'
-/// tools are pre-approved because under `--permission-prompts none` nothing answers a prompt, so
-/// a `lookup` would otherwise be denied every graph call it makes, and a host's `bound` tools for
-/// the same reason. Always present, since the helpers declare their tools.
-pub(crate) fn allowed_tools_args(agent: &AgentDef, bound: &[&str]) -> Result<Vec<String>, Error> {
-    let helpers = hooks::helper_mcp_tools()
+/// construction, §3.1, §6), then the rigger MCP tools of the helpers `host` carries
+/// ([`hooks::helper_mcp_tools`]), then the `bound` tools the launching host's own server serves,
+/// each name once. The helpers' tools are pre-approved because under `--permission-prompts none`
+/// nothing answers a prompt, so a `lookup` would otherwise be denied every graph call it makes,
+/// and a host's `bound` tools for the same reason. Always present; fails when a helper `host`
+/// carries does not parse.
+pub(crate) fn allowed_tools_args(
+    agent: &AgentDef,
+    host: &SpawnHost,
+    bound: &[&str],
+) -> Result<Vec<String>, Error> {
+    let helpers = hooks::helper_mcp_tools(&host.helpers)
         .map_err(|e| Error(format!("driver: compose the spawn's allowed tools: {e}")))?;
     let mut tools = agent.allowed_tools();
     for tool in helpers
@@ -382,16 +387,18 @@ pub(crate) fn system_prompt_file(
 ///   ([`hooks::install_session_settings`]). The host hands in what its spawn runs on: the
 ///   stream-json host the spawn's own settings with the hooks bound to it already merged
 ///   ([`hooks::install_spawn_hooks`]), the cli host the spawn's own settings alone;
-/// - `--agents` defines the `lookup` and `verify` fan-out helpers.
+/// - `--agents` defines the `lookup` and `verify` fan-out helpers `host` carries
+///   ([`hooks::helper_agents_json`]): the operator's copy of each where the checkout holds one.
 ///
-/// Fails only when `settings_json` is not a JSON object the session settings can merge into.
+/// Fails when `settings_json` is not a JSON object the session settings can merge into, or a
+/// helper `host` carries does not parse.
 pub(crate) fn spawn_config_args(
     rigger_bin: &str,
     mcp_args: &[&str],
     settings_json: &str,
     host: &SpawnHost,
 ) -> Result<Vec<String>, Error> {
-    let helpers = hooks::helper_agents_json()
+    let helpers = hooks::helper_agents_json(&host.helpers)
         .map_err(|e| Error(format!("driver: compose the spawn's agents: {e}")))?;
     Ok(vec![
         "--permission-mode".to_string(),

@@ -195,6 +195,9 @@ pub(crate) fn cmd_validate(args: &[String]) -> Res {
         config: cfg,
         gate_requirements,
     } = config_store::load_with_gate_requirements(".")?;
+    // The operator's helper copies are the definition every spawn carries, so a copy that cannot
+    // be read or does not parse fails here, naming its file, as every spawning command would.
+    hooks::resolved_helpers(root)?;
     // Static verdict-line lint (spec 18, unit 1): a gating adjudicator whose persona only
     // records its verdict via `rigger_emit` - never on its result output - is a guaranteed
     // stall, because the integration gate reads the result channel, not emitted events. This

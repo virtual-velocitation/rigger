@@ -209,7 +209,7 @@ pub(crate) fn cmd_canary(args: &[String]) -> Res {
     // an un-pinned tier's agent is byte-for-byte what the config declared.
     let cfg = canary_store::apply_model_pins(&cfg, &panel, &args.model_pins);
     // The host values every canary spawn carries, resolved once at the canary's start.
-    let spawn_host = rigger::hooks::resolve_spawn_host(&cfg.workflow.defaults);
+    let spawn_host = rigger::hooks::resolve_spawn_host(&cfg.workflow.defaults, Path::new("."))?;
 
     std::fs::create_dir_all(RIGGER_DIR)?;
     // Sqlite is the canary's local measurement store; migrate a pre-spec-09 namespace once

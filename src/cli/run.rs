@@ -576,10 +576,13 @@ pub(crate) fn cmd_step(args: &[String]) -> Res {
     )?;
     let folding = rigger::ingest::folding_into(&store, Some(&graph), &stderr_line);
 
+    // The host values every spawn this step parks or runs carries, resolved once, ahead of the
+    // definition pin, which folds the helper copies it read.
+    let spawn_host = rigger::hooks::resolve_spawn_host(&cfg.workflow.defaults, Path::new(&repo))?;
     // The definition hash this step pins / re-checks (spec 13, unit 1): the digest of the
-    // on-disk workflow.yml + agent-prompt set. Computed once and used for both the `--fresh`
-    // pinned boundary and the drift check below.
-    let definition = definition_hash(".")?;
+    // on-disk workflow.yml + agent-prompt set + the operator's helper copies. Computed once and
+    // used for both the `--fresh` pinned boundary and the drift check below.
+    let definition = definition_hash(".", &spawn_host.helpers)?;
 
     // A NEW RUN NEEDS A CLEAN CRITIQUE (spec 112): decided before this step appends anything, so
     // a refused step mints no run and prints no JSON line. A `--fresh` step decides it ahead of
@@ -704,9 +707,6 @@ pub(crate) fn cmd_step(args: &[String]) -> Res {
         }
     }
 
-    // The host values every spawn this step parks or runs carries, resolved once, ahead of the
-    // definition pin.
-    let spawn_host = rigger::hooks::resolve_spawn_host(&cfg.workflow.defaults);
     // Definition pinning (spec 13, unit 1): pin this run's definition (a fresh run) or enforce
     // it (a live run). A drifted live-run definition WITHOUT `--rebase-definition` HALTS here,
     // loudly and before any worktree work, so a mid-campaign prompt edit can never silently
@@ -1667,7 +1667,7 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
     // unit 2); `load_run_config` reuses unit 1's lint at this run's config-load seam.
     let cfg = load_run_config(".")?;
     // The host values every spawn of this run carries, resolved once.
-    let spawn_host = rigger::hooks::resolve_spawn_host(&cfg.workflow.defaults);
+    let spawn_host = rigger::hooks::resolve_spawn_host(&cfg.workflow.defaults, Path::new(&repo))?;
     // EXACTLY ONE ROOT: this run's teardown reclaims the scratch root and its hosted agents write
     // into it, so it is refused here, before anything is reclaimed, reaped or anchored.
     let scratch = project_scratch_root(&repo, &cfg);
@@ -1752,6 +1752,7 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
         &criteria,
         false,
         &base_tip,
+        &spawn_host.helpers,
         &RunStartCritique {
             command,
             backend: backend.as_ref(),
@@ -1899,16 +1900,20 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
 /// (or anything else) advances that branch - so this always names the tip AT run start, never a
 /// live re-resolution. Persisted only on a mint, exactly like `base`; `""` from a repo-less path
 /// leaves the checkin stage (which never runs without a real repo anyway) nothing to diff.
+///
+/// `helpers` are the fan-out helpers the caller's spawn host resolved, so the definition the run
+/// pins folds the same helper copies its spawns carry ([`definition_hash`]).
 fn fresh_run_if_requested(
     parsed: &RunArgs,
     store: &dyn EventStore,
     criteria: &[String],
     fresh_notice_to_stderr: bool,
     base_tip: &str,
+    helpers: &[conductor::HelperCopy],
     critique: &RunStartCritique,
 ) -> Result<(), Box<dyn std::error::Error>> {
     critique.refuse_unless_clean(parsed.spec.as_deref(), criteria, parsed.fresh)?;
-    let definition = definition_hash(".")?;
+    let definition = definition_hash(".", helpers)?;
     // The resolved run-branch base to persist on the RunStarted this mints (spec 38, criterion
     // 3), resolved from the SAME precedence the run branch is anchored with (the `--base` flag,
     // then the `RIGGER_BASE` env override, then the default) so the persisted base matches the
@@ -2146,7 +2151,7 @@ fn run_workflow(parsed: &RunArgs, command: &str, sleep: &dyn SleepHold) -> Res {
     // unit 2); `load_run_config` reuses unit 1's lint at this run's config-load seam.
     let cfg = load_run_config(".")?;
     // The host values every spawn of this run carries, resolved once.
-    let spawn_host = rigger::hooks::resolve_spawn_host(&cfg.workflow.defaults);
+    let spawn_host = rigger::hooks::resolve_spawn_host(&cfg.workflow.defaults, Path::new(&repo))?;
     let (criteria, text) = load_criteria(parsed.spec.as_deref())?;
     std::fs::create_dir_all(RIGGER_DIR)?;
     // Anchor + check out the run branch off `--base` (spec 18, criterion 6) before the
@@ -2201,6 +2206,7 @@ fn run_workflow(parsed: &RunArgs, command: &str, sleep: &dyn SleepHold) -> Res {
         &criteria,
         true,
         &base_tip,
+        &spawn_host.helpers,
         &RunStartCritique {
             command,
             backend: backend.as_ref(),

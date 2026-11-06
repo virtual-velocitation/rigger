@@ -6,17 +6,22 @@
 //! commands, the MCP server name and the fan-out helper agents. `rigger setup` writes them into
 //! the operator's checkout; the headless host hands the same values to every spawn on its
 //! command line (a fresh unit worktree carries no `.claude/` of its own), so the two cannot
-//! drift. The hooks bound to one spawn are composed here too, by [`install_spawn_hooks`]: only
-//! the headless host hands those over, and `rigger setup` never writes them. The PreToolUse
-//! grep-guard is the workflow's to declare (`defaults.grep_guard`): [`resolve_spawn_host`] reads
-//! the key once per command for every spawn, and `rigger setup` installs the guard
-//! ([`install_grep_guard`]) or removes rigger's own entry ([`remove_grep_guard`]) to match.
+//! drift. The fan-out helpers are the operator's to tune: setup writes each only where the
+//! checkout holds no copy, and [`resolve_spawn_host`] reads the checkout's copies back
+//! ([`resolved_helpers`]), so the copy is the definition every spawn carries. The hooks bound to
+//! one spawn are composed here too, by [`install_spawn_hooks`]: only the headless host hands
+//! those over, and `rigger setup` never writes them. The PreToolUse grep-guard is the workflow's
+//! to declare (`defaults.grep_guard`): [`resolve_spawn_host`] reads the key once per command for
+//! every spawn, and `rigger setup` installs the guard ([`install_grep_guard`]) or removes
+//! rigger's own entry ([`remove_grep_guard`]) to match.
+
+use std::path::Path;
 
 use rigger_domain::quoting::single_quoted;
 use rigger_domain::review::EDITING_TOOLS;
 use serde_json::{json, Map, Value};
 
-use crate::agent::{AgentFailure, SpawnHost};
+use crate::agent::{AgentFailure, HelperCopy, SpawnHost};
 
 #[derive(Debug, thiserror::Error)]
 #[error("hooks: {0}")]
@@ -49,8 +54,9 @@ pub const MCP_SERVER_NAME: &str = "rigger";
 
 /// The fan-out helpers every persona dispatches (the built-in working discipline names them):
 /// `lookup`, one Haiku instance per graph node, and `verify`, one Sonnet instance for builds
-/// and test runs. The text is this repository's own committed `.claude/agents/` helpers, so
-/// what `rigger init` scaffolds and what a headless spawn receives cannot drift from them.
+/// and test runs. The text is this repository's own committed `.claude/agents/` helpers: what
+/// `rigger init` scaffolds where a checkout holds no copy, and what a spawn carries for a helper
+/// whose copy the checkout lacks ([`resolved_helpers`]).
 pub const HELPER_AGENTS: &[(&str, &str)] = &[
     (
         "lookup.md",
@@ -62,12 +68,97 @@ pub const HELPER_AGENTS: &[(&str, &str)] = &[
     ),
 ];
 
+/// The directory, relative to a checkout's root, holding the operator's copies of the
+/// [`HELPER_AGENTS`]: where `rigger setup` scaffolds them and [`resolved_helpers`] reads them.
+pub const HELPER_AGENTS_DIR: &str = ".claude/agents";
+
 /// The host values every spawn of one command carries, resolved once from the workflow's
-/// `defaults`: the PreToolUse grep-guard exactly when `defaults.grep_guard` declares it.
-pub fn resolve_spawn_host(defaults: &rigger_domain::config::Defaults) -> SpawnHost {
-    SpawnHost {
+/// `defaults` and the checkout at `repo_root`: the PreToolUse grep-guard exactly when
+/// `defaults.grep_guard` declares it, and the fan-out helpers [`resolved_helpers`] reads there.
+/// Fails as [`resolved_helpers`] does.
+pub fn resolve_spawn_host(
+    defaults: &rigger_domain::config::Defaults,
+    repo_root: &Path,
+) -> Result<SpawnHost, Error> {
+    Ok(SpawnHost {
         grep_guard: defaults.grep_guard,
+        helpers: resolved_helpers(repo_root)?,
+    })
+}
+
+/// The fan-out helpers a spawn of the checkout at `root` carries, one per [`HELPER_AGENTS`] entry
+/// in its order: the operator's copy under [`HELPER_AGENTS_DIR`] where the checkout holds one,
+/// whatever its text, else the embedded text. A missing file, or an agents path that is no
+/// directory, holds no copy; a copy that cannot be read, or does not parse as a helper
+/// definition, fails naming its path and never falls back to the embedded text.
+pub fn resolved_helpers(root: &Path) -> Result<Vec<HelperCopy>, Error> {
+    HELPER_AGENTS
+        .iter()
+        .map(|(file, embedded)| {
+            let path = root.join(HELPER_AGENTS_DIR).join(file);
+            let (text, present) = match std::fs::read_to_string(&path) {
+                Ok(text) => {
+                    parse_helper(path.display(), &text)?;
+                    (text, true)
+                }
+                Err(e) if is_absent(&e) => (embedded.to_string(), false),
+                Err(e) => return Err(helper_error(path.display(), e)),
+            };
+            Ok(HelperCopy {
+                name: file.to_string(),
+                text,
+                present,
+            })
+        })
+        .collect()
+}
+
+/// Whether the failed read `e` found no file at the path: nothing there, or a path component
+/// that is no directory.
+fn is_absent(e: &std::io::Error) -> bool {
+    matches!(
+        e.kind(),
+        std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+    )
+}
+
+/// The error a helper definition fails with: the helper `label` names, then its `reason`.
+fn helper_error(label: impl std::fmt::Display, reason: impl std::fmt::Display) -> Error {
+    Error(format!("helper agent {label}: {reason}"))
+}
+
+/// The helper definition `text` holds, as `--agents` keys it: its name and its fields, each
+/// frontmatter field verbatim (`tools` as the list its comma-separated value spells) and its
+/// body as the prompt. A text that does not parse fails naming `label`.
+fn parse_helper(
+    label: impl std::fmt::Display,
+    text: &str,
+) -> Result<(String, Map<String, Value>), Error> {
+    let (front, body) =
+        rigger_domain::config::split_frontmatter(text).map_err(|e| helper_error(&label, e))?;
+    let mut def = Map::new();
+    let mut name = None;
+    for line in front.lines() {
+        let (key, value) = line
+            .split_once(':')
+            .ok_or_else(|| helper_error(&label, format!("frontmatter line {line:?}")))?;
+        let value = value.trim();
+        match key {
+            "name" => name = Some(value),
+            "tools" => {
+                def.insert(
+                    key.to_string(),
+                    value.split(',').map(str::trim).collect::<Vec<_>>().into(),
+                );
+            }
+            _ => {
+                def.insert(key.to_string(), value.into());
+            }
+        }
     }
+    def.insert("prompt".to_string(), body.into());
+    let name = name.ok_or_else(|| helper_error(&label, "no name"))?;
+    Ok((name.to_string(), def))
 }
 
 /// Merge the session settings rigger installs - the SessionStart prime hook and the status line,
@@ -214,54 +305,35 @@ pub fn carries_session_settings(existing: &[u8], grep_guard: bool) -> bool {
     }
 }
 
-/// The [`HELPER_AGENTS`] as the JSON object Claude Code's `--agents` flag takes:
+/// The `helpers` as the JSON object Claude Code's `--agents` flag takes:
 /// `{name: {description, model, tools: [..], prompt}}`, each field read from the helper's own
-/// frontmatter and the prompt its body, verbatim.
-pub fn helper_agents_json() -> Result<Value, Error> {
+/// frontmatter and the prompt its body, verbatim. A helper that does not parse fails naming its
+/// file.
+pub fn helper_agents_json(helpers: &[HelperCopy]) -> Result<Value, Error> {
     let mut agents = Map::new();
-    for (file, text) in HELPER_AGENTS {
-        let (front, body) = rigger_domain::config::split_frontmatter(text)
-            .map_err(|e| Error(format!("helper agent {file}: {e}")))?;
-        let mut def = Map::new();
-        let mut name = None;
-        for line in front.lines() {
-            let (key, value) = line
-                .split_once(':')
-                .ok_or_else(|| Error(format!("helper agent {file}: frontmatter line {line:?}")))?;
-            let value = value.trim();
-            match key {
-                "name" => name = Some(value),
-                "tools" => {
-                    def.insert(
-                        key.to_string(),
-                        value.split(',').map(str::trim).collect::<Vec<_>>().into(),
-                    );
-                }
-                _ => {
-                    def.insert(key.to_string(), value.into());
-                }
-            }
-        }
-        def.insert("prompt".to_string(), body.into());
-        let name = name.ok_or_else(|| Error(format!("helper agent {file}: no name")))?;
-        agents.insert(name.to_string(), Value::Object(def));
+    for helper in helpers {
+        let (name, def) = parse_helper(&helper.name, &helper.text)?;
+        agents.insert(name, Value::Object(def));
     }
     Ok(Value::Object(agents))
 }
 
-/// The rigger MCP tools ([`MCP_SERVER_NAME`]'s `mcp__rigger__*`) the [`HELPER_AGENTS`] declare
-/// in their frontmatter, in declaration order and each once: what a headless spawn must
+/// The rigger MCP tools ([`MCP_SERVER_NAME`]'s `mcp__rigger__*`) the `helpers` declare in their
+/// frontmatter, in helper then declaration order and each once: what a headless spawn must
 /// pre-approve for its `lookup` helper to reach the graph, since under
-/// `--permission-prompts none` a tool nobody pre-approved is denied.
-pub fn helper_mcp_tools() -> Result<Vec<String>, Error> {
+/// `--permission-prompts none` a tool nobody pre-approved is denied. A helper that does not
+/// parse fails naming its file.
+pub fn helper_mcp_tools(helpers: &[HelperCopy]) -> Result<Vec<String>, Error> {
     let prefix = format!("mcp__{MCP_SERVER_NAME}__");
     let mut tools: Vec<String> = Vec::new();
-    for def in helper_agents_json()?
-        .as_object()
-        .into_iter()
-        .flat_map(|a| a.values())
-    {
-        for tool in def["tools"].as_array().into_iter().flatten() {
+    for helper in helpers {
+        let (_, def) = parse_helper(&helper.name, &helper.text)?;
+        for tool in def
+            .get("tools")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
             if let Some(tool) = tool.as_str().filter(|t| t.starts_with(&prefix)) {
                 if !tools.iter().any(|t| t == tool) {
                     tools.push(tool.to_string());

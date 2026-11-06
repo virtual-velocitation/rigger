@@ -140,7 +140,7 @@ pub(crate) fn cmd_critique(args: &[String]) -> Res {
             identity: &identity,
             scratch_root: &scratch_root,
             root: &root,
-            spawn_host: rigger::hooks::resolve_spawn_host(&cfg.workflow.defaults),
+            spawn_host: rigger::hooks::resolve_spawn_host(&cfg.workflow.defaults, &root)?,
         };
         let mut union = union;
         loop {
@@ -301,7 +301,8 @@ struct CriticHost<'a> {
     /// The root the spec path is relative to: the critic's working directory.
     root: &'a Path,
     /// The host values every pass's spawn carries, resolved once from the workflow's defaults
-    /// when the critique starts ([`rigger::hooks::resolve_spawn_host`]).
+    /// and the helper copies at `root` when the critique starts
+    /// ([`rigger::hooks::resolve_spawn_host`]).
     spawn_host: SpawnHost,
 }
 

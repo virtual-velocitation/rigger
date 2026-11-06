@@ -1128,7 +1128,9 @@ fn canonical_definition_text(s: &str) -> String {
 
 /// The definition hash a run PINS (spec 13, unit 1): a stable FNV-1a digest over the on-disk
 /// definition - the `.rigger/workflow.yml`, the FULL agent-prompt set (every
-/// `.rigger/agents/*.md`, which carries each agent's prompt and frontmatter) and the operator
+/// `.rigger/agents/*.md`, which carries each agent's prompt and frontmatter), the operator's
+/// copy of each fan-out helper among `helpers` (the ones [`hooks::resolved_helpers`] found
+/// present, tagged by file name in helper order; an absent helper folds nothing) and the operator
 /// instruction layer (every `.rigger/instructions/*.md`, absent means empty) - canonicalized
 /// ([`canonical_definition_text`]) and folded in sorted-filename order. So the same definition
 /// hashes identically across machines and checkouts (the [`fnv1a_64`] idiom is fixed-seed and
@@ -1139,7 +1141,10 @@ fn canonical_definition_text(s: &str) -> String {
 /// parsed `Config`) is faithful to the design's "workflow.yml + the full agent-prompt set" and
 /// conservative: it needs no serialization of the config and errs toward halting, and the
 /// `--rebase-definition` escape makes an intended edit a one-flag continue.
-fn definition_hash(dir: &str) -> Result<String, Box<dyn std::error::Error>> {
+fn definition_hash(
+    dir: &str,
+    helpers: &[conductor::HelperCopy],
+) -> Result<String, Box<dyn std::error::Error>> {
     let base = Path::new(dir).join(RIGGER_DIR);
     let mut buf = String::new();
     // workflow.yml first, tagged so an (impossible-here) empty agents set is still distinct
@@ -1170,6 +1175,9 @@ fn definition_hash(dir: &str) -> Result<String, Box<dyn std::error::Error>> {
     agents.sort();
     for (name, content) in agents {
         push_definition_section(&mut buf, &format!("agent:{name}"), &content);
+    }
+    for helper in helpers.iter().filter(|h| h.present) {
+        push_definition_section(&mut buf, &format!("helper:{}", helper.name), &helper.text);
     }
     // The operator instruction layer, through the ONE loader that decides which files are
     // instructions (filename order); an absent directory contributes nothing.
@@ -3050,9 +3058,9 @@ fn run_started_id(e: &Event) -> Option<String> {
 }
 
 /// Load the candidate [`Config`](config), its definition hash and the spawn host its defaults
-/// resolve ([`hooks::resolve_spawn_host`], the replay's one resolution point) from git `<rev>`
-/// via a throwaway DETACHED worktree under `scratch_root`, removed once loaded. Reading the
-/// config through a real checkout (rather than piping `git show`) reuses the exact
+/// and helper copies resolve ([`hooks::resolve_spawn_host`], the replay's one resolution point)
+/// from git `<rev>` via a throwaway DETACHED worktree under `scratch_root`, removed once loaded.
+/// Reading the config through a real checkout (rather than piping `git show`) reuses the exact
 /// [`config::load`] / [`definition_hash`] readers the live path uses, so a replay evaluates
 /// precisely the config a run at `<rev>` would.
 fn materialize_config_at_rev(
@@ -3084,15 +3092,17 @@ fn materialize_config_at_rev(
     let loaded = config_store::load(checkout_str)
         .map_err(|e| format!("rigger replay: candidate config at {rev:?} is invalid: {e}"))
         .and_then(|cfg| {
-            let host = hooks::resolve_spawn_host(&cfg.workflow.defaults);
-            definition_hash(checkout_str)
+            let host = hooks::resolve_spawn_host(&cfg.workflow.defaults, &checkout)
+                .map_err(|e| format!("rigger replay: candidate helpers at {rev:?}: {e}"))?;
+            definition_hash(checkout_str, &host.helpers)
                 .map(|def| (cfg, def, host))
                 .map_err(|e| format!("rigger replay: candidate definition hash at {rev:?}: {e}"))
         });
     // reap-exempt (spec 79, criterion 2): `checkout_str` is created and removed entirely
     // within this one function, and the ONLY things ever run against it in between are
-    // `config::load` and `definition_hash` (just above) - both pure `std::fs` readers with
-    // no subprocess spawned inside the checkout - so nothing can be rooted there to reap.
+    // `config::load`, `resolve_spawn_host` and `definition_hash` (just above) - each a pure
+    // `std::fs` reader with no subprocess spawned inside the checkout - so nothing can be rooted
+    // there to reap.
     let _ = subprocess::git_in(repo)
         .args(["worktree", "remove", "--force"])
         .arg(checkout_str)
