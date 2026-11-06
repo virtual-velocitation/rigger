@@ -2193,10 +2193,10 @@ mandatory sweep: Command::new call sites - 94 site(s), collected mechanically re
 - `tests/principle_gates_wiring.rs:113-113` `Command::new`
 - `tests/principle_gates_wiring.rs:456-456` `Command::new`
 - `tests/product_binary_authority_periphery.rs:155-155` `Command::new`
-- `tests/reset_build_cache_periphery.rs:254-254` `Command::new`
-- `tests/reset_build_cache_periphery.rs:266-266` `Command::new`
-- `tests/reset_build_cache_periphery.rs:343-343` `Command::new`
-- `tests/reset_build_cache_periphery.rs:361-361` `Command::new`
+- `tests/reset_build_cache_periphery.rs:257-257` `Command::new`
+- `tests/reset_build_cache_periphery.rs:269-269` `Command::new`
+- `tests/reset_build_cache_periphery.rs:346-346` `Command::new`
+- `tests/reset_build_cache_periphery.rs:364-364` `Command::new`
 - `tests/revert_on_base_hook_bypass_periphery.rs:168-168` `Command::new`
 - `tests/scaffold_grounder_resolves.rs:96-96` `Command::new`
 - `tests/step_attention_periphery.rs:544-544` `Command::new`
@@ -3284,7 +3284,7 @@ project identity so one backend can hold many projects without their data mixing
 - `tests/relocated_worktree_store_resolution_periphery.rs:176-176` `".rigger"`
 - `tests/relocated_worktree_store_resolution_periphery.rs:219-219` `".rigger"`
 - `tests/relocated_worktree_store_resolution_periphery.rs:269-269` `".rigger"`
-- `tests/reset_build_cache_periphery.rs:437-437` `".rigger"`
+- `tests/reset_build_cache_periphery.rs:440-440` `".rigger"`
 - `tests/reset_derived_compaction_periphery.rs:609-609` `"the partition holding .rigger/ needs about the compacted size of the log free"`
 - `tests/reset_derived_compaction_periphery.rs:1021-1021` `".rigger"`
 - `tests/reset_derived_compaction_periphery.rs:1021-1021` `"create .rigger"`
@@ -4875,7 +4875,7 @@ Proposed home: `a new shared module (sites span 2 files: src/cli/mod.rs, tests/r
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `src/cli/mod.rs:4043-4062` `dir_size_bytes`
-- `tests/reset_build_cache_periphery.rs:67-84` `dir_bytes`
+- `tests/reset_build_cache_periphery.rs:70-87` `dir_bytes`
 
 #### `dup-41d8b1c33d44` (near, 3 sites)
 
@@ -5031,8 +5031,8 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/cli.rs:31896-31918` `prime_given_a_spec_path_names_the_spec_lint_alongside_recent_decisions`
 - `tests/cli.rs:33492-33524` `mcp_rejects_a_malformed_spawn_flag_or_unexpected_arguments`
 - `tests/graph_show_periphery.rs:112-129` `graph_show_and_around_with_no_store_print_the_not_found_note`
-- `tests/reset_build_cache_periphery.rs:115-141` `reset_build_cache_is_idempotent_zero_report_on_a_project_that_never_built_anything`
-- `tests/reset_build_cache_periphery.rs:179-189` `reset_build_cache_flag_is_registered_and_rejects_a_duplicate`
+- `tests/reset_build_cache_periphery.rs:118-144` `reset_build_cache_is_idempotent_zero_report_on_a_project_that_never_built_anything`
+- `tests/reset_build_cache_periphery.rs:182-192` `reset_build_cache_flag_is_registered_and_rejects_a_duplicate`
 - `tests/reset_derived_live_writer_guard_periphery.rs:1664-1674` `reset_force_live_alone_is_refused_as_no_mode`
 - `tests/statusline_command_periphery.rs:95-105` `status_line_on_a_clean_run`
 - `tests/statusline_command_periphery.rs:141-151` `status_line_and_json_are_mutually_exclusive`

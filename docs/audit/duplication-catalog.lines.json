@@ -1269,23 +1269,23 @@
       },
       {
         "file": "tests/reset_build_cache_periphery.rs",
-        "start_line": 254,
-        "end_line": 254
+        "start_line": 257,
+        "end_line": 257
       },
       {
         "file": "tests/reset_build_cache_periphery.rs",
-        "start_line": 266,
-        "end_line": 266
+        "start_line": 269,
+        "end_line": 269
       },
       {
         "file": "tests/reset_build_cache_periphery.rs",
-        "start_line": 343,
-        "end_line": 343
+        "start_line": 346,
+        "end_line": 346
       },
       {
         "file": "tests/reset_build_cache_periphery.rs",
-        "start_line": 361,
-        "end_line": 361
+        "start_line": 364,
+        "end_line": 364
       },
       {
         "file": "tests/revert_on_base_hook_bypass_periphery.rs",
@@ -4054,8 +4054,8 @@
       },
       {
         "file": "tests/reset_build_cache_periphery.rs",
-        "start_line": 437,
-        "end_line": 437
+        "start_line": 440,
+        "end_line": 440
       },
       {
         "file": "tests/reset_derived_compaction_periphery.rs",
@@ -7309,8 +7309,8 @@
       },
       {
         "file": "tests/reset_build_cache_periphery.rs",
-        "start_line": 67,
-        "end_line": 84
+        "start_line": 70,
+        "end_line": 87
       }
     ]
   },
@@ -7669,13 +7669,13 @@
       },
       {
         "file": "tests/reset_build_cache_periphery.rs",
-        "start_line": 115,
-        "end_line": 141
+        "start_line": 118,
+        "end_line": 144
       },
       {
         "file": "tests/reset_build_cache_periphery.rs",
-        "start_line": 179,
-        "end_line": 189
+        "start_line": 182,
+        "end_line": 192
       },
       {
         "file": "tests/reset_derived_live_writer_guard_periphery.rs",

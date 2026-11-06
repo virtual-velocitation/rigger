@@ -22,11 +22,14 @@
 //!     criterion 19).
 //!   - NOT OWNED: the exclusion PRIMITIVE's own unit-level contract
 //!     (`reclaim_shared_build_cache`'s rename/idempotent-zero/busy/prompt-release behavior) -
-//!     pinned in-crate beside its definition in `src/main.rs`; the PRODUCER half's OWN
+//!     pinned in-crate beside its definition in `src/cli/mod.rs`; the PRODUCER half's OWN
 //!     internal shape (the flock-wrap construction, the guard probe's fault decision, holding
-//!     the guard SHARED for a genuinely guarded cargo invocation) - pinned in `src/gate.rs` and
-//!     `src/conductor.rs`; and `rigger validate`'s FOOTPRINT ACCOUNTING category for this
-//!     cache - spec 77 criterion 5's own surface.
+//!     the guard SHARED for a genuinely guarded cargo invocation) - pinned in
+//!     `crates/rigger-gates-shell/src/gate.rs` and `crates/rigger-conductor/src/conductor.rs`;
+//!     the probe fault's literal message - pinned in `crates/rigger-conductor/src/conductor.rs`'s
+//!     `assert_probe_fault_halts_the_step`, which this file's step test prints through; and
+//!     `rigger validate`'s FOOTPRINT ACCOUNTING category for this cache - spec 77 criterion 5's
+//!     own surface.
 
 mod common;
 
@@ -554,10 +557,13 @@ const DEFERRED_GATE_RAN: &str = "late-ran";
 /// Spec 121 criterion 19, THE FAILED GUARD PROBE HALTS THE STEP, through the operator's own
 /// surface: given a run whose one unit passed its inline gate and whose shared build cache's
 /// guard is a directory, when the operator runs `rigger step`, then the step exits non-zero
-/// printing the probe fault naming the guard path and the OS error, the deferred gate neither
-/// runs nor records a verdict, nothing is charged or misattributed to the unit and the inline
-/// verdict stands; once the guard is fixed, the next step runs the deferred gate and finishes.
-/// The scratch root is the test's own, never the ambient one a gate run may carry.
+/// printing exactly the probe fault for this guard path and OS error as the conductor's error,
+/// the deferred gate neither runs nor records a verdict, nothing is charged or misattributed to
+/// the unit and the inline verdict stands; once the guard is fixed, the next step runs the
+/// deferred gate and finishes. The guard path and OS error are derived here, independently of
+/// the probe; the fault's literal message naming both is pinned by the conductor's
+/// `assert_probe_fault_halts_the_step`, so this test pins that the step prints that message
+/// unchanged. The scratch root is the test's own, never the ambient one a gate run may carry.
 #[test]
 fn a_step_whose_deferred_gate_guard_probe_fails_halts_naming_the_guard_and_the_next_step_finishes()
 {
