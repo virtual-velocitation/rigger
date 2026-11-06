@@ -15201,8 +15201,8 @@ mod tests {
         critique_reject, dag_critique_prompt, keyed_index, keyed_payload, payloads_of_type,
         run_log, spec_defect_halt_text, stop_records, the_stop_records, wave_lessons,
         DAG_CRITIQUE_VERDICT_PARAGRAPH, DAG_DISJOINT_OVERLAP, DAG_PRIOR_REJECT_HEADER,
-        STOP_ESCALATED_KEY, STOP_LESSON_KEY, STOP_SPEC_DEFECT_KEY, UNIT_SIZE_CAP_SENTENCE,
-        WIDGET_CRITERION,
+        PLANNING_POLICY, STOP_ESCALATED_KEY, STOP_LESSON_KEY, STOP_SPEC_DEFECT_KEY,
+        UNIT_SIZE_CAP_SENTENCE, WIDGET_CRITERION,
     };
     use crate::test_support::{
         critique_stage, fan_out_stage, plan_stage, review_stage_cfg, workflow_cfg,
@@ -49921,8 +49921,7 @@ mod tests {
     }
 
     /// One unit size cap, measuring review scope and never code shape, reaches both the
-    /// planner and the plan critique: the plan protocol splits a criterion whose unit would
-    /// exceed it into ordered units, and the critique rejects a unit over it with the
+    /// planner and the plan critique, and the critique rejects a unit over it with the
     /// `decomposition-conflict` cause that sends the DAG back to the planner.
     #[test]
     fn the_plan_protocol_and_the_dag_critique_carry_one_unit_size_cap() {
@@ -49936,13 +49935,63 @@ mod tests {
             );
         }
         assert!(
-            planner.contains("ordered units") && planner.contains("OWNS"),
-            "the planner splits an oversize criterion into ordered units, each owning a part:\n{planner}"
-        );
-        assert!(
             critique.contains(r#""cause":"decomposition-conflict""#),
             "the critique rejects an oversize unit as a decomposition conflict:\n{critique}"
         );
+    }
+
+    /// The planner protocol carries no planning policy: after the emit protocol, the planner's
+    /// task is exactly the protocol's framing and contract sentences, the unit size cap sentence
+    /// in their slot, and the run's criteria, and it states none of the planning policy the
+    /// planner persona holds.
+    #[test]
+    fn the_planner_protocol_carries_no_planning_policy() {
+        let driver = one_unit_critique();
+        let planner = driver.planner_prompts.lock().unwrap()[0].clone();
+        let id = criterion_stable_id(1, WIDGET_CRITERION);
+        let protocol = format!(
+            "\n\nYou are the planner. The conductor has ALREADY created one baseline implement \
+             unit per acceptance criterion below - the spec is decomposed by construction. Your \
+             job is to REFINE that baseline, not to re-decompose it. {UNIT_SIZE_CAP_SENTENCE} \
+             Each part of a split echoes the split criterion's id and ends its `criterion` text \
+             with an OWNS sentence naming its part (the conductor keeps that sentence after the \
+             criterion's exact text as that unit's contract).\n\
+             Each criterion below is shown with a STABLE id in [brackets]. When your unit serves \
+             a criterion, your unit SUPERSEDES (replaces) that criterion's baseline - it does NOT \
+             run alongside it - so identify the criterion you serve by ECHOING its id: copy the \
+             id shown in brackets next to that criterion into the `criterion_id` field (the \
+             brackets are display delimiters - the conductor accepts the id with or without \
+             them). The conductor pairs your unit with its baseline by that id, so even if you \
+             reword or truncate the criterion text in `criterion`, the correct id still \
+             supersedes the one baseline (no duplicate). A wrong or missing `criterion_id` is \
+             what makes your unit run as an EXTRA unit on top of the baseline (duplicated work). \
+             Still copy the criterion text into `criterion` (verbatim is safest). Several units \
+             echoing the SAME id (a real split) all run and replace the one baseline.\n\
+             Propose each refinement by calling the rigger_emit tool with type \"UnitProposed\" \
+             and data:\n\
+             {{\"id\":\"<short-id>\",\"agent\":\"worker\",\"criterion\":\"<the spec criterion it \
+             serves>\",\"criterion_id\":\"<the id shown in [brackets] next to that \
+             criterion>\",\"needs\":[\"<unit ids it depends on>\"]}}\n\
+             A unit whose `criterion_id` is none of the ids below still runs, but as a \
+             genuinely-new sub-unit that the conductor flags as unmatched. Every unit you propose \
+             - a refinement, a split, or a new sub-unit - automatically runs the fan-out \
+             template's own gates; you never need to name them.\n\n\
+             The acceptance criteria to refine against (echo the [id] shown next to each \
+             criterion into that unit's `criterion_id`, and copy the text into `criterion`):\n\
+             - [{id}] {WIDGET_CRITERION}\n"
+        );
+        assert_eq!(
+            planner.rsplit_once(EMIT_PROTOCOL).map(|(_, tail)| tail),
+            Some(protocol.as_str()),
+            "the planner's task ends with the emit protocol and then the plan protocol alone"
+        );
+        for sentence in PLANNING_POLICY {
+            assert_eq!(
+                planner.matches(sentence).count(),
+                0,
+                "the planner's task states the planning policy {sentence:?}:\n{planner}"
+            );
+        }
     }
 
     #[test]

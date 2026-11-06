@@ -4407,6 +4407,25 @@ mod tests {
         }
     }
 
+    /// The committed planner and its scaffold seed, each labelled with where it lives and its
+    /// whitespace normalized.
+    fn shipped_planners() -> Vec<(String, String)> {
+        let planners: Vec<(String, String)> = every_shipped_persona()
+            .into_iter()
+            .filter(|(at, _)| at.ends_with("planner.md"))
+            .map(|(at, text)| (at, rigger::wave::normalize_ws(&text)))
+            .collect();
+        assert_eq!(
+            planners
+                .iter()
+                .map(|(at, _)| at.as_str())
+                .collect::<Vec<_>>(),
+            [".rigger/agents/planner.md", "SCAFFOLD_AGENTS planner.md"],
+            "the committed planner and its scaffold seed"
+        );
+        planners
+    }
+
     /// Units run in parallel unless one depends on another: the committed planner and its scaffold
     /// seed add a `needs` edge only for a real dependency - a file one unit edits that another
     /// reads or edits, or an API one unit adds that another calls - and never chain units by
@@ -4417,52 +4436,22 @@ mod tests {
                             that another reads or edits, or an API one unit adds that another \
                             calls. Units with no such dependency carry no edge between them and \
                             run in parallel; never chain units in order by default.";
-        let planners: Vec<(String, String)> = every_shipped_persona()
-            .into_iter()
-            .filter(|(at, _)| at.ends_with("planner.md"))
-            .collect();
-        assert_eq!(
-            planners.len(),
-            2,
-            "the committed planner and its scaffold seed"
-        );
-        for (at, text) in planners {
-            assert!(
-                rigger::wave::normalize_ws(&text).contains(RULE),
-                "{at} must say {RULE:?}"
-            );
+        for (at, text) in shipped_planners() {
+            assert!(text.contains(RULE), "{at} must say {RULE:?}");
         }
     }
 
-    /// The plan protocol in the binary is the one source of the rule that splits a criterion too
-    /// large for one unit into ordered units: no shipped planner persona restates the rule or
-    /// forbids the split.
+    /// The planning policy the plan protocol no longer carries lives in the planner's persona:
+    /// the committed planner and its scaffold seed each state every policy sentence exactly once,
+    /// each sentence checked on its own, never the block's order or contiguity.
     #[test]
-    fn the_planner_persona_never_contradicts_the_plan_protocol_split_rule() {
-        let planners: Vec<(String, String)> = every_shipped_persona()
-            .into_iter()
-            .filter(|(at, _)| at.ends_with("planner.md"))
-            .collect();
-        assert_eq!(
-            planners.len(),
-            2,
-            "the committed planner and its scaffold seed"
-        );
-        for (at, text) in planners {
-            let text = text
-                .to_lowercase()
-                .split_whitespace()
-                .collect::<Vec<_>>()
-                .join(" ");
-            for claim in [
-                "split",
-                "exactly one unit",
-                "one unit per criterion",
-                "one per acceptance criterion",
-            ] {
-                assert!(
-                    !text.contains(claim),
-                    "{at} restates the split rule the plan protocol owns: {claim:?}"
+    fn the_planner_persona_and_its_seed_state_the_planning_policy() {
+        for (at, text) in shipped_planners() {
+            for sentence in crate::test_support::PLANNING_POLICY {
+                assert_eq!(
+                    text.matches(sentence).count(),
+                    1,
+                    "{at} states the planning policy sentence {sentence:?} once"
                 );
             }
         }

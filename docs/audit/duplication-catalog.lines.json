@@ -409,8 +409,8 @@
       },
       {
         "file": "tests/common/fixtures/plan_critique.rs",
-        "start_line": 66,
-        "end_line": 71
+        "start_line": 80,
+        "end_line": 85
       },
       {
         "file": "tests/common/fixtures/spawn.rs",
@@ -1320,7 +1320,7 @@
     ]
   },
   {
-    "id": "dup-4fc123991a17",
+    "id": "dup-cf36d89c8c27",
     "sites": [
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
@@ -2119,43 +2119,48 @@
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 4553,
-        "end_line": 4553
+        "start_line": 4423,
+        "end_line": 4423
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 4555,
-        "end_line": 4555
+        "start_line": 4542,
+        "end_line": 4542
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 4556,
-        "end_line": 4556
+        "start_line": 4544,
+        "end_line": 4544
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 4557,
-        "end_line": 4557
+        "start_line": 4545,
+        "end_line": 4545
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 4570,
-        "end_line": 4570
+        "start_line": 4546,
+        "end_line": 4546
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 4583,
-        "end_line": 4583
+        "start_line": 4559,
+        "end_line": 4559
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 4586,
-        "end_line": 4586
+        "start_line": 4572,
+        "end_line": 4572
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 4588,
-        "end_line": 4588
+        "start_line": 4575,
+        "end_line": 4575
+      },
+      {
+        "file": "src/cli/setup.rs",
+        "start_line": 4577,
+        "end_line": 4577
       },
       {
         "file": "src/cli/validate.rs",
@@ -4454,8 +4459,8 @@
     "sites": [
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 50825,
-        "end_line": 50827
+        "start_line": 50874,
+        "end_line": 50876
       },
       {
         "file": "crates/rigger-domain/src/metrics.rs",

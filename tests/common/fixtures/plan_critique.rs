@@ -1,7 +1,8 @@
-//! Plan-critique fixtures: the widget unit a scripted planner proposes, the whole DAG critique
-//! prompt, with the unit size cap sentence, the disjoint overlap text, the line a re-plan round
-//! opens with and the verdict paragraph it is spelled from, the adjudicator's reject line and the
-//! records a spec-defect stop appends (spec 112, criterion 5).
+//! Plan-critique fixtures: the widget unit a scripted planner proposes, the planning policy the
+//! planner persona states in place of the plan protocol, the whole DAG critique prompt, with the
+//! unit size cap sentence, the disjoint overlap text, the line a re-plan round opens with and the
+//! verdict paragraph it is spelled from, the adjudicator's reject line and the records a
+//! spec-defect stop appends (spec 112, criterion 5).
 
 use rigger::conductor::{META_REPLAY_KEY, TYPE_SPEC_DEFECT};
 use rigger::contextgraph::TYPE_LESSON_LEARNED;
@@ -13,6 +14,19 @@ pub const WIDGET_UNIT: &str = "u-widget";
 
 /// The criterion [`WIDGET_UNIT`] serves, which the plan-critique fixtures plan against.
 pub const WIDGET_CRITERION: &str = "the widget renderer is implemented";
+
+/// The planning policy, in order: the sentences telling the planner how to plan, which the
+/// planner persona and its scaffold seed state and the plan protocol never does.
+pub const PLANNING_POLICY: [&str; 6] = [
+    "Split a criterion whose one unit would be too large into ordered units (each `needs` the one \
+     before it), each owning a named part.",
+    "If you discover a NECESSARY sub-unit or an ordering dependency the baseline missed, propose \
+     it.",
+    "NEVER propose a unit that maps to no acceptance criterion - that is scope creep.",
+    "Propose each refinement the moment you decide it.",
+    "Do not write code.",
+    "Only omit the id when you truly intend a new sub-unit.",
+];
 
 /// The verdict paragraph every round of the DAG critique prompt closes with: its cause contract
 /// asks for `spec-ambiguity` - the cause the spec-defect stop reads, spelled here as the
