@@ -5,7 +5,8 @@
 //! communication body's sentences that state the cadence the task prompts leave to it; the
 //! critique method the adversary and adjudicator personas
 //! hold under their `## When you critique a spec or a plan` section and each persona's share of
-//! it; the
+//! it; the rule the sdet-author persona states for a documentation-only round and the fact its
+//! prompt states instead; the
 //! headings a composed system prompt carries, the handbook chapter that lists the built-in entries
 //! and their checked-in sources, each entry's body by name, a near name that shadows no
 //! built-in, the non-empty bodies that still switch a built-in off, two operator files that shadow
@@ -155,6 +156,15 @@ pub fn critique_method_by_persona(
         ),
     ]
 }
+
+/// The rule the sdet-author persona's last section states for a round that changed documentation
+/// only, and no sdet-author prompt carries: the prompt states only the round's fact.
+pub const DOC_ONLY_ROUND_RULE: &str = "Extend the existing owner test's needle for the changed \
+     sentence, or add no pin; never a new test.";
+
+/// The fact the sdet-author's prompt, and a resumed sdet-author session's task, state on a round
+/// that changed documentation only.
+pub const DOC_ONLY_ROUND_FACT: &str = "This round changed documentation only.";
 
 /// The section of `text` that `heading` opens, up to the next `## ` heading or the end of `text`.
 pub fn markdown_section<'a>(text: &'a str, heading: &str) -> &'a str {
