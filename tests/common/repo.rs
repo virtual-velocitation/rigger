@@ -285,7 +285,7 @@ pub const EMBEDDED_HELPER_TOOLS: &str =
 /// `copies`, each one of the [`super::fixtures::OPERATOR_HELPER_COPIES`]: a copied helper is
 /// defined by its [`super::fixtures::operator_helpers_agents_json`] entry, every other one by its
 /// embedded text, this repository's own committed `.claude/agents/` helper.
-pub fn handed_helpers_agents_json(copies: &[(&str, &str)]) -> serde_json::Value {
+pub fn handed_helpers_agents_json(copies: &[super::fixtures::HelperFile]) -> serde_json::Value {
     let operator = super::fixtures::operator_helpers_agents_json();
     let mut agents = serde_json::Map::new();
     for (file, embedded) in rigger::hooks::HELPER_AGENTS {

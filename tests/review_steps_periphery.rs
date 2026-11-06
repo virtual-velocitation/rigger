@@ -56,8 +56,8 @@ use common::fixtures::{
 };
 #[cfg(unix)]
 use common::fixtures::{
-    read_text, stand_in_launches, write_helper_copies, CONTROL_ITEM, OPERATOR_HELPER_COPIES,
-    OPERATOR_HELPER_TOOLS, PROMPT_CAPTURE_DIR,
+    read_text, stand_in_launches, write_helper_copies, HelperFile, CONTROL_ITEM,
+    OPERATOR_HELPER_COPIES, OPERATOR_HELPER_TOOLS, PROMPT_CAPTURE_DIR,
 };
 use common::git::{commit_files, temp_git_project_with_commit};
 use common::repo::repo_root;
@@ -361,7 +361,7 @@ fn repeated_kind_canary_spawns() -> Vec<String> {
 #[cfg(unix)]
 #[test]
 fn rigger_canary_hands_every_panel_spawn_the_operators_helper_copies() {
-    let rows: [(&str, &[(&str, &str)], &str); 2] = [
+    let rows: [(&str, &[HelperFile], &str); 2] = [
         ("no copy", &[], EMBEDDED_HELPER_TOOLS),
         (
             "both copies",

@@ -10802,7 +10802,9 @@ fn every_launch_of_a_reviewed_unit_carries_the_hooks_for_its_own_spawn() {
 #[cfg(unix)]
 #[test]
 fn every_launch_of_a_run_defines_the_helpers_from_the_operators_copies() {
-    use common::fixtures::{write_helper_copies, OPERATOR_HELPER_COPIES, OPERATOR_HELPER_TOOLS};
+    use common::fixtures::{
+        write_helper_copies, HelperFile, OPERATOR_HELPER_COPIES, OPERATOR_HELPER_TOOLS,
+    };
     use common::repo::{handed_helpers_agents_json, EMBEDDED_HELPER_TOOLS};
     const BOUND_TOOLS: &str =
         "mcp__rigger__rigger_emit,mcp__rigger__rigger_progress,mcp__rigger__rigger_scratch";
@@ -10818,7 +10820,7 @@ fn every_launch_of_a_run_defines_the_helpers_from_the_operators_copies() {
 "#
     );
     let [lookup, verify] = OPERATOR_HELPER_COPIES;
-    let rows: [(&str, &[(&str, &str)], &str); 4] = [
+    let rows: [(&str, &[HelperFile], &str); 4] = [
         ("no copy", &[], EMBEDDED_HELPER_TOOLS),
         ("a lookup copy alone", &[lookup], OPERATOR_HELPER_TOOLS),
         ("a verify copy alone", &[verify], EMBEDDED_HELPER_TOOLS),
@@ -21510,7 +21512,8 @@ fn step_halts_on_definition_drift_and_rebase_definition_continues() {
 fn a_step_halts_on_a_helper_copy_changed_mid_run() {
     use common::cli::{failure_line, nameless_copy_refusal};
     use common::fixtures::{
-        write_helper_copies, write_helper_copy, NAMELESS_HELPER_COPY, OPERATOR_HELPER_COPIES,
+        write_helper_copies, write_helper_copy, HelperFile, NAMELESS_HELPER_COPY,
+        OPERATOR_HELPER_COPIES,
     };
     const DRIFT_OPENS: &str =
         "rigger: definition drift - the on-disk workflow/agent definition (hash ";
@@ -21525,7 +21528,7 @@ fn a_step_halts_on_a_helper_copy_changed_mid_run() {
     let [lookup, verify] = OPERATOR_HELPER_COPIES;
     // Each row: the copies the checkout holds at the pin, the change after it, and the next
     // step's outcome, a refusal naming the copy file it is refused on.
-    let rows: [(&str, &[(&str, &str)], fn(&Path), Next); 6] = [
+    let rows: [(&str, &[HelperFile], common::DirStep, Next); 6] = [
         (
             "a copy added",
             &[],

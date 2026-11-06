@@ -41,10 +41,13 @@ pub fn test_spawn_host() -> rigger_domain::agent::SpawnHost {
     }
 }
 
-/// An operator's own copies of the two fan-out helpers, as `(file, text)` under
-/// `.claude/agents/`: each differs from the embedded helper in every field, and the `lookup` copy
-/// declares two of the three rigger tools the embedded one does, in another order.
-pub const OPERATOR_HELPER_COPIES: [(&str, &str); 2] = [
+/// An operator's helper copy as its `(file, text)` under `.claude/agents/`.
+pub type HelperFile<'a> = (&'a str, &'a str);
+
+/// An operator's own copies of the two fan-out helpers: each differs from the embedded helper in
+/// every field, and the `lookup` copy declares two of the three rigger tools the embedded one
+/// does, in another order.
+pub const OPERATOR_HELPER_COPIES: [HelperFile; 2] = [
     (
         "lookup.md",
         "---\nname: lookup\ndescription: The operator's own lookup helper.\nmodel: sonnet\n\
@@ -72,9 +75,8 @@ pub fn write_helper_copy(root: &std::path::Path, file: &str, text: impl AsRef<[u
     std::fs::write(agents.join(file), text).unwrap();
 }
 
-/// Write each of `copies`, a `(file, text)` pair, as an operator's helper copy under `root`
-/// ([`write_helper_copy`]).
-pub fn write_helper_copies(root: &std::path::Path, copies: &[(&str, &str)]) {
+/// Write each of `copies` as an operator's helper copy under `root` ([`write_helper_copy`]).
+pub fn write_helper_copies(root: &std::path::Path, copies: &[HelperFile]) {
     for (file, text) in copies {
         write_helper_copy(root, file, text);
     }
