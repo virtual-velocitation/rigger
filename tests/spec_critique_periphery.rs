@@ -27,7 +27,7 @@ use common::cli::{
 };
 use common::fixtures::{
     composed_system_prompt, git_ok, held_event, operator_helpers_agents_json,
-    temp_git_project_with_commit, write_helper_copy, ADVISORY, CLEAN_CRITIQUE, NO_VERDICT,
+    temp_git_project_with_commit, write_helper_copies, ADVISORY, CLEAN_CRITIQUE, NO_VERDICT,
     OPERATOR_HELPER_COPIES,
 };
 use common::repo::{
@@ -244,9 +244,7 @@ fn a_critique_launch_carries_the_operators_helper_copies() {
     let dir = temp_project();
     let root = std::fs::canonicalize(dir.path()).unwrap();
     scaffold(&root, CRITIC_WORKFLOW);
-    for (file, text) in OPERATOR_HELPER_COPIES {
-        write_helper_copy(&root, file, text);
-    }
+    write_helper_copies(&root, &OPERATOR_HELPER_COPIES);
     let (work, path) = stub(REJECT);
     let (_, err, ok) = critique(&root, SPEC_REL, &path, &root.join("scratch"));
     assert!(ok, "the critique is recorded; stderr:\n{err}");

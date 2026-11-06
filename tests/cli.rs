@@ -10802,11 +10802,8 @@ fn every_launch_of_a_reviewed_unit_carries_the_hooks_for_its_own_spawn() {
 #[cfg(unix)]
 #[test]
 fn every_launch_of_a_run_defines_the_helpers_from_the_operators_copies() {
-    use common::fixtures::{write_helper_copy, OPERATOR_HELPER_COPIES};
-    use common::repo::handed_helpers_agents_json;
-    const EMBEDDED_HELPER_TOOLS: &str =
-        "mcp__rigger__rigger_graph,mcp__rigger__rigger_ground,mcp__rigger__rigger_peers";
-    const OPERATOR_HELPER_TOOLS: &str = "mcp__rigger__rigger_peers,mcp__rigger__rigger_graph";
+    use common::fixtures::{write_helper_copies, OPERATOR_HELPER_COPIES, OPERATOR_HELPER_TOOLS};
+    use common::repo::{handed_helpers_agents_json, EMBEDDED_HELPER_TOOLS};
     const BOUND_TOOLS: &str =
         "mcp__rigger__rigger_emit,mcp__rigger__rigger_progress,mcp__rigger__rigger_scratch";
     let arms = format!(
@@ -10831,9 +10828,7 @@ fn every_launch_of_a_run_defines_the_helpers_from_the_operators_copies() {
         let dir = temp_git_project_with_commit();
         let root = dir.path();
         write_reviewed_unit(root);
-        for (file, text) in copies {
-            write_helper_copy(root, file, text);
-        }
+        write_helper_copies(root, copies);
         let scratch = tempfile::tempdir().unwrap();
         let (out, err, ok, fake) = run_on_arms(root, &["run"], scratch.path(), &arms);
         assert!(ok, "{name}: the run succeeds; stderr: {err}\nstdout: {out}");

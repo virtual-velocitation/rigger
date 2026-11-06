@@ -518,7 +518,7 @@ pub fn install_status_line(existing: &[u8], command: &str) -> Result<Vec<u8>, Er
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{write_helper_copy, OPERATOR_HELPER_COPIES};
+    use crate::test_support::{write_helper_copies, write_helper_copy, OPERATOR_HELPER_COPIES};
 
     /// `install` onto an empty settings file writes every one of `needles`, and installing again
     /// onto its own output leaves each command of `counted` exactly as many times as it names.
@@ -687,13 +687,6 @@ mod tests {
         }
     }
 
-    /// Write every one of [`OPERATOR_HELPER_COPIES`] under `root`.
-    fn write_operator_copies(root: &std::path::Path) {
-        for (file, text) in OPERATOR_HELPER_COPIES {
-            write_helper_copy(root, file, text);
-        }
-    }
-
     /// The spawn host carries the grep-guard exactly when the workflow's defaults declare it, and
     /// each helper as the operator's copy under `<root>/.claude/agents/` when that file exists,
     /// else as the embedded text: a file of another name, or an agents path that is no directory,
@@ -740,7 +733,7 @@ mod tests {
             Row {
                 name: "both operator copies replace both helpers",
                 grep_guard: true,
-                setup: write_operator_copies,
+                setup: |root| write_helper_copies(root, &OPERATOR_HELPER_COPIES),
                 helpers: vec![resolved("lookup.md", true), resolved("verify.md", true)],
             },
             Row {

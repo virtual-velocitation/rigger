@@ -32,7 +32,9 @@
 //! corpus item into the tier of the step that caught it, and refuses a list with no adjudicator
 //! step. The same canary carries spec 121's criterion 2 (THE GREP GUARD IS DECLARED): every spawn
 //! of the panel starts with the session's grep guard exactly when the workflow declares
-//! `defaults.grep_guard`.
+//! `defaults.grep_guard`. It carries spec 121's criterion 3 (THE OPERATOR'S HELPER COPY IS THE
+//! DEFINITION) too: every spawn of the panel defines the helpers from the operator's copies the
+//! checkout holds, else from the embedded text, and pre-approves the rigger tools they declare.
 
 mod common;
 
@@ -53,11 +55,17 @@ use common::fixtures::{
     PANEL_SCOPES, REJECT_FEATURE, REPEATED_KIND_LIST,
 };
 #[cfg(unix)]
-use common::fixtures::{read_text, stand_in_launches, CONTROL_ITEM, PROMPT_CAPTURE_DIR};
+use common::fixtures::{
+    read_text, stand_in_launches, write_helper_copies, CONTROL_ITEM, OPERATOR_HELPER_COPIES,
+    OPERATOR_HELPER_TOOLS, PROMPT_CAPTURE_DIR,
+};
 use common::git::{commit_files, temp_git_project_with_commit};
 use common::repo::repo_root;
 #[cfg(unix)]
-use common::repo::{flag_value, grep_guard_hook, hook_words, stub_path};
+use common::repo::{
+    flag_value, grep_guard_hook, handed_helpers_agents_json, hook_words, stub_path,
+    EMBEDDED_HELPER_TOOLS,
+};
 use rigger::conductor::{run, Deps, META_REPLAY_KEY, STREAM};
 use rigger::config::ReviewPanel;
 use rigger::config::ReviewStep::{self, Adjudicator, Adversary};
@@ -319,18 +327,73 @@ fn rigger_canary_starts_every_panel_spawn_with_the_grep_guard_exactly_when_decla
                 (launch.spawn, hooks)
             })
             .collect();
-        let mut roles: Vec<&str> = REPEATED_KIND_REVIEWERS
-            .iter()
-            .map(|(role, _)| *role)
-            .collect();
-        roles.push("adjudicator:a");
-        roles.sort();
         let hooks = grep_guard.then(|| vec![grep_guard_hook()]);
-        let expected: Vec<_> = roles
-            .iter()
-            .map(|role| (format!("canary:control:{role}"), hooks.clone()))
+        let expected: Vec<_> = repeated_kind_canary_spawns()
+            .into_iter()
+            .map(|spawn| (spawn, hooks.clone()))
             .collect();
         assert_eq!(spawns, expected, "grep_guard {grep_guard}");
+    }
+}
+
+/// The spawn of each step of [`REPEATED_KIND_LIST`] the canary launches over its control item,
+/// each reviewer's and the adjudicator's, in spawn order.
+#[cfg(unix)]
+fn repeated_kind_canary_spawns() -> Vec<String> {
+    let mut roles: Vec<&str> = REPEATED_KIND_REVIEWERS
+        .iter()
+        .map(|(role, _)| *role)
+        .collect();
+    roles.push("adjudicator:a");
+    roles.sort();
+    roles
+        .iter()
+        .map(|role| format!("canary:control:{role}"))
+        .collect()
+}
+
+/// Spec 121's THE OPERATOR'S HELPER COPY IS THE DEFINITION, through the canary: given a panel
+/// repeating a kind and a one-item corpus, the checkout holding the operator's own copies of both
+/// helpers or of neither, when the operator runs `rigger canary`, then every spawn of the panel,
+/// each reviewer and the adjudicator, defines the helpers from those copies, else from the
+/// embedded text, and pre-approves exactly the rigger tools those definitions declare: the panel's
+/// agents grant none of their own, and this host serves no bound tool.
+#[cfg(unix)]
+#[test]
+fn rigger_canary_hands_every_panel_spawn_the_operators_helper_copies() {
+    let rows: [(&str, &[(&str, &str)], &str); 2] = [
+        ("no copy", &[], EMBEDDED_HELPER_TOOLS),
+        (
+            "both copies",
+            &OPERATOR_HELPER_COPIES,
+            OPERATOR_HELPER_TOOLS,
+        ),
+    ];
+    for (name, copies, tools) in rows {
+        let dir = temp_project();
+        let root = dir.path();
+        write_canary_project(root, REPEATED_KIND_LIST, CONTROL_ITEM);
+        write_helper_copies(root, copies);
+        let (_out, err, ok, capture) = canary_capturing(root);
+        assert!(ok, "{name}: the canary scores; stderr:\n{err}");
+        let spawns: Vec<(String, Value, String)> =
+            stand_in_launches(&capture.path().join("launches"))
+                .into_iter()
+                .map(|launch| {
+                    let agents = serde_json::from_str(flag_value(&launch.argv, "--agents"))
+                        .expect("the helpers are JSON");
+                    let allowed = flag_value(&launch.argv, "--allowed-tools").to_string();
+                    (launch.spawn, agents, allowed)
+                })
+                .collect();
+        let expected: Vec<(String, Value, String)> = repeated_kind_canary_spawns()
+            .into_iter()
+            .map(|spawn| (spawn, handed_helpers_agents_json(copies), tools.to_string()))
+            .collect();
+        assert_eq!(
+            spawns, expected,
+            "{name}: each panel spawn's helpers and pre-approval"
+        );
     }
 }
 

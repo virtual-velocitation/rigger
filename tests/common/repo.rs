@@ -276,6 +276,11 @@ pub fn assert_carries_spawn_hooks(
     );
 }
 
+/// The rigger tools the embedded helpers declare, once each in helper then declaration order,
+/// comma-joined as a launch's pre-approval lists them.
+pub const EMBEDDED_HELPER_TOOLS: &str =
+    "mcp__rigger__rigger_graph,mcp__rigger__rigger_ground,mcp__rigger__rigger_peers";
+
 /// The `--agents` value a launch carries over a checkout whose `.claude/agents/` holds exactly
 /// `copies`, each one of the [`super::fixtures::OPERATOR_HELPER_COPIES`]: a copied helper is
 /// defined by its [`super::fixtures::operator_helpers_agents_json`] entry, every other one by its

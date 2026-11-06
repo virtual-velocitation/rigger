@@ -58,11 +58,23 @@ pub const OPERATOR_HELPER_COPIES: [(&str, &str); 2] = [
     ),
 ];
 
+/// The rigger tools [`OPERATOR_HELPER_COPIES`] declare, once each in helper then declaration
+/// order, comma-joined as a launch's pre-approval lists them.
+pub const OPERATOR_HELPER_TOOLS: &str = "mcp__rigger__rigger_peers,mcp__rigger__rigger_graph";
+
 /// Write `text` as the operator's helper copy `file` under `root`'s `.claude/agents/`.
 pub fn write_helper_copy(root: &std::path::Path, file: &str, text: impl AsRef<[u8]>) {
     let agents = root.join(".claude/agents");
     std::fs::create_dir_all(&agents).unwrap();
     std::fs::write(agents.join(file), text).unwrap();
+}
+
+/// Write each of `copies`, a `(file, text)` pair, as an operator's helper copy under `root`
+/// ([`write_helper_copy`]).
+pub fn write_helper_copies(root: &std::path::Path, copies: &[(&str, &str)]) {
+    for (file, text) in copies {
+        write_helper_copy(root, file, text);
+    }
 }
 
 /// The `--agents` value [`OPERATOR_HELPER_COPIES`] define: each helper keyed by its name, its
