@@ -22,7 +22,6 @@ Those two sentences are the rule the binary is held to. The rest of this section
 
 - `PLAN_PROTOCOL`'s guidance sentences
 - `MAX_UNIT_ADDED_LINES` and the second sentence of `unit_size_cap`
-- the REQUIRED PATTERN audit sentences: the `PATTERN:` lines an implementer and a reviewer read under a REQUIRED list
 - the toolchain words in `workflows/rigger.js` and the `rigger_scratch` description
 
 ### The review ceremony

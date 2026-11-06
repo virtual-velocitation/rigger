@@ -349,7 +349,7 @@
     "is_test": false,
     "proposed_module": "conductor::prior_failure",
     "reason": "method inside `impl PriorFailure`; grouped with its other `PriorFailure` methods.",
-    "content_hash": "ccf991a5aa5939e8"
+    "content_hash": "e1170a3c0defacac"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -1941,7 +1941,7 @@
     "is_test": false,
     "proposed_module": "conductor::review_round",
     "reason": "method inside `impl ReviewRound`; grouped with its other `ReviewRound` methods.",
-    "content_hash": "335ec6f92ac0d8f7"
+    "content_hash": "b6ca251712005351"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",

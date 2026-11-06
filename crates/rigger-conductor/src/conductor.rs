@@ -1375,8 +1375,9 @@ impl PriorFailure {
 
     /// The first-class, clearly-delimited prior-failure block prepended to a retry
     /// prompt. Empty when there is no prior failure, so the first attempt's prompt is
-    /// byte-identical to the historical prompt. A REQUIRED pattern item asks unit `unit`'s
-    /// attempt `attempt` for one whole-tree audit, recorded under [`audit_id`].
+    /// byte-identical to the historical prompt. A REQUIRED pattern item's line names its shape
+    /// and asks unit `unit`'s attempt `attempt` to record its audit under [`audit_id`]; how that
+    /// audit is done and bounded is the `working-discipline` built-in's, never this line's.
     fn block(&self, unit: &str, attempt: u32) -> String {
         if self.is_empty() {
             return String::new();
@@ -1416,10 +1417,7 @@ impl PriorFailure {
             let audit = audit_id(unit, attempt);
             b.push_str("REQUIRED - review holds the next round to each of these:\n");
             b.push_str(&required_lines(&self.required, |shape| {
-                format!(
-                    "  PATTERN: {shape}. Audit the whole tree, fix every site, and record \
-                     DecisionMade `{audit}` listing every site checked.\n"
-                )
+                format!("  PATTERN: {shape}. Record DecisionMade `{audit}` for it.\n")
             }));
         }
         if !self.contradiction.trim().is_empty() {
@@ -13310,8 +13308,8 @@ struct ReviewRound {
     base: String,
     delta: Vec<String>,
     required: Vec<RequiredItem>,
-    /// The DecisionMade id ([`audit_id`]) this attempt's implementer was asked to record a
-    /// whole-tree audit under, for each REQUIRED pattern item.
+    /// The DecisionMade id ([`audit_id`]) each REQUIRED pattern item's line names as this
+    /// attempt's implementer's audit record.
     audit: String,
 }
 
@@ -13337,11 +13335,11 @@ impl ReviewRound {
             let audit = &self.audit;
             format!(
                 "The items that round REQUIRED:\n{}",
-                required_lines(&self.required, |shape| format!(
-                    "  PATTERN: {shape}. The implementer was asked to audit the whole tree and \
-                     record DecisionMade `{audit}` listing every site checked; check it names \
-                     every site.\n"
-                ))
+                required_lines(&self.required, |shape| {
+                    format!(
+                    "  PATTERN: {shape}. The implementer's audit record is DecisionMade `{audit}`.\n"
+                )
+                })
             )
         };
         format!(
@@ -13387,8 +13385,8 @@ fn required_lines(items: &[RequiredItem], pattern: impl Fn(&str) -> String) -> S
 }
 
 /// The DecisionMade id unit `unit`'s attempt `attempt` records its whole-tree audit of a
-/// REQUIRED pattern item under: the one id the implementer is asked for and the next review
-/// round checks.
+/// REQUIRED pattern item under: the one id the implementer's `PATTERN:` line asks for and the
+/// next review round's names.
 fn audit_id(unit: &str, attempt: u32) -> String {
     format!("audit-{unit}-{attempt}")
 }
