@@ -184,7 +184,7 @@ Setup is two commands in any repo: `rigger init` (config-only: writes `.rigger/`
 
 1. `rigger setup` in the repo root.
 2. Check the gates in `.rigger/workflow.yml`: `rigger init` takes them from the gate template set matching your language, and declares none when no set matches - declare your own under `gates:`. The gates must be the same checks CI runs, or the loop green-lights what CI rejects.
-3. Adapt the starter agents: your language's engineer instead of `rust-engineer`, your project's defect classes in the reviewer prompts.
+3. Adapt the starter agents: the implement and checkin stages run the implementer the matching gate template set brings (`rust-engineer` from the Rust set), or the language-neutral `implementer` when no set matches - tune it to your language and project - and put your project's defect classes in the reviewer prompts.
 4. Write a small spec (one or two criteria) and run it end-to-end at `autonomy: auto_notify` with a low `budget`.
 5. Read the run: the decisions emitted, the review verdicts, what integrated. Calibrate prompts and gates against what you see.
 6. Scale up: bigger specs, ratcheted autonomy, raised budget.

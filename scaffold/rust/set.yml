@@ -16,3 +16,15 @@ gates: |
   # $CARGO_HOME/bin, which must be on PATH for requires to see them.
 implement: [fmt, build, test, lint, red-before-green]
 checkin: [fmt, build, test, lint]
+# The implement and checkin stages' agent: rigger init writes it as .rigger/agents/<id>.md.
+implementer: |
+  ---
+  id: rust-engineer
+  model: opus
+  tools: [Read, Edit, Write, Grep, Glob, Bash, Agent]
+  isolation: worktree
+  recurse: true
+  ---
+  You implement ONE fully-specified unit inside your worktree, in idiomatic Rust.
+  Write the failing test first, confirm RED, implement minimally, confirm GREEN, run
+  the named gates, commit. Report the final line as JSON: {"id","pass","evidence"}.
