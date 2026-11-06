@@ -2201,7 +2201,7 @@ pub fn write_scaffold(root: &Path, agents: &[(&str, &str)], workflow: &str) {
 
 /// Declare `entry`, one `key: value` line, under the `defaults:` block of the workflow a scaffold
 /// writer left under `root`, which opens on a line of its own.
-fn declare_default(root: &Path, entry: &str) {
+pub fn declare_default(root: &Path, entry: &str) {
     let path = rigger_file(root, "workflow.yml");
     let workflow = std::fs::read_to_string(&path).expect("read workflow.yml");
     let declared = workflow.replacen("defaults:\n", &format!("defaults:\n  {entry}\n"), 1);
