@@ -2330,11 +2330,14 @@ mod tests {
     }
 
     /// Every reviewer spawn of a canary run carries the spawn host its caller resolved, the
-    /// guard flag set or not.
+    /// guard flag set or not, and the helper copies with it.
     #[test]
     fn every_canary_spawn_carries_the_host_its_caller_resolved() {
         for grep_guard in [false, true] {
-            let host = SpawnHost { grep_guard };
+            let host = SpawnHost {
+                grep_guard,
+                ..test_spawn_host()
+            };
             let store = Store::open(":memory:").unwrap();
             let driver = RecordingPanel::catching_at(&[]);
             run_canary(

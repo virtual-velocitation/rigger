@@ -417,12 +417,16 @@ pub(crate) fn spawn_config_args(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::HelperCopy;
+    use crate::test_support::{operator_helpers_agents_json, test_spawn_host};
 
     /// `allowed_tools_args` over every order and repeat a grant can arrive in: the agent's own
-    /// tools, then the helpers', then the host's bound ones, each name once where it first came.
+    /// tools, then the host's helpers', then the host's bound ones, each name once where it first
+    /// came.
     #[test]
     fn allowed_tools_chain_the_agent_the_helpers_and_the_bound_tools_each_name_once() {
-        let helpers = hooks::helper_mcp_tools().unwrap();
+        let host = test_spawn_host();
+        let helpers = hooks::helper_mcp_tools(&host.helpers).unwrap();
         struct Case<'a> {
             name: &'a str,
             tools: Vec<&'a str>,
@@ -474,10 +478,78 @@ mod tests {
                 .chain(case.after_the_helpers.iter().copied())
                 .collect();
             assert_eq!(
-                allowed_tools_args(&agent, &case.bound).unwrap(),
+                allowed_tools_args(&agent, &host, &case.bound).unwrap(),
                 ["--allowed-tools".to_string(), expected.join(",")],
                 "{}",
                 case.name
+            );
+        }
+    }
+
+    /// Both readers of the spawn host's helpers read the copies the host carries and nothing
+    /// else: `spawn_config_args` builds `--agents` from them and `allowed_tools_args` pre-approves
+    /// the rigger tools they declare, and a copy that does not parse fails both, naming it.
+    #[test]
+    fn the_agents_and_the_pre_approval_are_the_helpers_the_host_carries() {
+        let operator = test_spawn_host().helpers;
+        let operator_json = operator_helpers_agents_json();
+        struct Row {
+            name: &'static str,
+            helpers: Vec<HelperCopy>,
+            agents: Result<serde_json::Value, &'static str>,
+            allowed: Result<&'static str, &'static str>,
+        }
+        let rows = [
+            Row {
+                name: "both operator copies",
+                helpers: operator.clone(),
+                agents: Ok(operator_json.clone()),
+                allowed: Ok("Read,mcp__rigger__rigger_peers,mcp__rigger__rigger_graph"),
+            },
+            Row {
+                name: "the verify copy alone declares no rigger tool",
+                helpers: vec![operator[1].clone()],
+                agents: Ok(serde_json::json!({ "verify": operator_json["verify"].clone() })),
+                allowed: Ok("Read"),
+            },
+            Row {
+                name: "a copy with no name",
+                helpers: vec![HelperCopy {
+                    text: "---\nmodel: haiku\n---\nbody\n".to_string(),
+                    ..operator[0].clone()
+                }],
+                agents: Err("conductor: driver: compose the spawn's agents: \
+                             hooks: helper agent lookup.md: no name"),
+                allowed: Err("conductor: driver: compose the spawn's allowed tools: \
+                              hooks: helper agent lookup.md: no name"),
+            },
+        ];
+        let agent = AgentDef {
+            tools: vec!["Read".to_string()],
+            ..AgentDef::default()
+        };
+        for row in rows {
+            let host = SpawnHost {
+                helpers: row.helpers,
+                ..test_spawn_host()
+            };
+            let agents = spawn_config_args("rigger", &["mcp"], "", &host).map(|args| {
+                let at = args.iter().position(|a| a == "--agents").unwrap();
+                serde_json::from_str::<serde_json::Value>(&args[at + 1]).unwrap()
+            });
+            assert_eq!(
+                agents.map_err(|e| e.to_string()),
+                row.agents.map_err(str::to_string),
+                "{}",
+                row.name
+            );
+            assert_eq!(
+                allowed_tools_args(&agent, &host, &[]).map_err(|e| e.to_string()),
+                row.allowed
+                    .map(|tools| vec!["--allowed-tools".to_string(), tools.to_string()])
+                    .map_err(str::to_string),
+                "{}",
+                row.name
             );
         }
     }

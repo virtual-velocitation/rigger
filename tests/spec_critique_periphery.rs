@@ -26,8 +26,9 @@ use common::cli::{
     temp_repoless_project, write_spec_project,
 };
 use common::fixtures::{
-    composed_system_prompt, git_ok, held_event, temp_git_project_with_commit, ADVISORY,
-    CLEAN_CRITIQUE, NO_VERDICT,
+    composed_system_prompt, git_ok, held_event, operator_helpers_agents_json,
+    temp_git_project_with_commit, write_helper_copy, ADVISORY, CLEAN_CRITIQUE, NO_VERDICT,
+    OPERATOR_HELPER_COPIES,
 };
 use common::repo::{
     assert_carries_spawn_hooks, collect_files, critique_stub_argv, critique_stub_record,
@@ -226,6 +227,35 @@ fn a_critique_launch_carries_the_spawn_hooks_on_its_own_settings() {
             "the spawn's own settings survive the merge: {settings}"
         );
     }
+}
+
+/// Given a project holding the operator's own copies of the fan-out helpers, when its critic
+/// launches, then the launch defines exactly those helpers and pre-approves exactly the rigger
+/// tools they declare: the operator's copy is the definition, resolved at the critique's root.
+#[test]
+fn a_critique_launch_carries_the_operators_helper_copies() {
+    let dir = temp_project();
+    let root = std::fs::canonicalize(dir.path()).unwrap();
+    scaffold(&root, CRITIC_WORKFLOW);
+    for (file, text) in OPERATOR_HELPER_COPIES {
+        write_helper_copy(&root, file, text);
+    }
+    let (work, path) = stub(REJECT);
+    let (_, err, ok) = critique(&root, SPEC_REL, &path, &root.join("scratch"));
+    assert!(ok, "the critique is recorded; stderr:\n{err}");
+
+    let argv = critique_stub_argv(work.path());
+    assert_eq!(
+        serde_json::from_str::<Value>(flag_value(&argv, "--agents")).unwrap(),
+        operator_helpers_agents_json(),
+        "the critic's helpers are the operator's copies"
+    );
+    assert_eq!(
+        flag_value(&argv, "--allowed-tools"),
+        "Read,Glob,mcp__rigger__rigger_peers,mcp__rigger__rigger_graph,\
+         mcp__rigger__rigger_emit,mcp__rigger__rigger_progress,mcp__rigger__rigger_scratch",
+        "the critic's tools, the rigger tools the operator's copies declare, then the host's own"
+    );
 }
 
 /// Spec 105's stray record: given a project with a run, when a critic's session ends on an API

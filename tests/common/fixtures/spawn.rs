@@ -29,6 +29,49 @@ pub fn test_spawn_host() -> rigger_domain::agent::SpawnHost {
     rigger_domain::agent::SpawnHost { grep_guard: false }
 }
 
+/// An operator's own copies of the two fan-out helpers, as `(file, text)` under
+/// `.claude/agents/`: each differs from the embedded helper in every field, and the `lookup` copy
+/// declares two of the three rigger tools the embedded one does, in another order.
+pub const OPERATOR_HELPER_COPIES: [(&str, &str); 2] = [
+    (
+        "lookup.md",
+        "---\nname: lookup\ndescription: The operator's own lookup helper.\nmodel: sonnet\n\
+         tools: mcp__rigger__rigger_peers, mcp__rigger__rigger_graph, Read\n---\n\
+         Answer one question about one node, the operator's way.\n",
+    ),
+    (
+        "verify.md",
+        "---\nname: verify\ndescription: The operator's own verify helper.\nmodel: haiku\n\
+         tools: Read, Bash\n---\nRun one check, the operator's way.\n",
+    ),
+];
+
+/// Write `text` as the operator's helper copy `file` under `root`'s `.claude/agents/`.
+pub fn write_helper_copy(root: &std::path::Path, file: &str, text: impl AsRef<[u8]>) {
+    let agents = root.join(".claude/agents");
+    std::fs::create_dir_all(&agents).unwrap();
+    std::fs::write(agents.join(file), text).unwrap();
+}
+
+/// The `--agents` value [`OPERATOR_HELPER_COPIES`] define: each helper keyed by its name, its
+/// other frontmatter fields with `tools` as a list, and its body as the prompt.
+pub fn operator_helpers_agents_json() -> serde_json::Value {
+    serde_json::json!({
+        "lookup": {
+            "description": "The operator's own lookup helper.",
+            "model": "sonnet",
+            "tools": ["mcp__rigger__rigger_peers", "mcp__rigger__rigger_graph", "Read"],
+            "prompt": "Answer one question about one node, the operator's way.\n"
+        },
+        "verify": {
+            "description": "The operator's own verify helper.",
+            "model": "haiku",
+            "tools": ["Read", "Bash"],
+            "prompt": "Run one check, the operator's way.\n"
+        }
+    })
+}
+
 /// One row per `SpawnResult` among `events`, in their order: its id, output and error, and
 /// whether it is a liveness fault.
 pub fn spawn_result_rows(events: &[Event]) -> Vec<(String, String, String, bool)> {

@@ -8,15 +8,21 @@
 //! real `claude`, which records the exact argv it was started with to a file this test owns
 //! (outside the worktree) - so every assertion reads what really reached the child process.
 //! The expected values are rebuilt here from the same `hooks` installers `rigger setup` uses and
-//! from the committed `.claude/agents/*.md`, never a hand copy.
+//! from the committed `.claude/agents/*.md`, never a hand copy: each launch's host is resolved at
+//! the repository root by the production resolver, so those committed files are the operator's
+//! helper copies it hands over.
 //!
-//! Also pinned here, because both are what an operator's own session sees of the same concern:
+//! Also pinned here, because each is what an operator's own session sees of the same concern:
 //! `rigger prime` (the SessionStart hook's command) exits quietly when its reader closes the
-//! pipe, and `rigger validate` advises when the checkout carries none of these hooks.
+//! pipe, `rigger validate` advises when the checkout carries none of these hooks, and it fails
+//! naming an operator's helper copy that does not parse.
 
 mod common;
-use common::cli::{run_rigger, setup_ok, temp_project};
-use common::fixtures::{git_commit_all, git_out, implementer_opts, temp_git_project_with_commit};
+use common::cli::{failure_line, run_rigger, setup_ok, temp_project};
+use common::fixtures::{
+    git_commit_all, git_out, implementer_opts, temp_git_project_with_commit, write_helper_copy,
+    OPERATOR_HELPER_COPIES,
+};
 use common::repo::repo_root;
 
 use std::path::Path;
@@ -72,6 +78,8 @@ fn launch_handing(
         hold_sink: None,
     };
     let mut opts = implementer_opts(SPAWN_ID);
+    opts.host = hooks::resolve_spawn_host(&rigger::config::Defaults::default(), &repo_root())
+        .expect("the repository's helper copies resolve");
     opts.dir = dir.to_string_lossy().into_owned();
     opts.settings_json = settings_json.to_string();
     opts.env = vec![(
@@ -364,4 +372,31 @@ fn validate_advises_when_the_checkout_has_no_hooks_installed() {
         err.contains(HOOKS_ADVISORY) && err.contains("rigger setup"),
         "without the hooks validate advises and names the fix; stderr:\n{err}"
     );
+}
+
+/// Given a set-up project, when the operator's copy of a fan-out helper does not parse, then
+/// `rigger validate` fails naming the copy and its fault, and once the copy is the operator's own
+/// well-formed helper it passes: the definition every spawn would carry is checked before a run.
+#[test]
+fn validate_fails_naming_an_operators_helper_copy_that_does_not_parse() {
+    let proj = temp_project();
+    let root = proj.path();
+    setup_ok(root, &[("RIGGER_NPM", "true")]);
+    let copy = Path::new(".").join(".claude/agents").join("verify.md");
+    let rows = [
+        (
+            "a copy with no name",
+            "---\nmodel: haiku\n---\nRun one check.\n",
+            Some(format!(
+                "rigger: hooks: helper agent {}: no name",
+                copy.display()
+            )),
+        ),
+        ("the operator's own copy", OPERATOR_HELPER_COPIES[1].1, None),
+    ];
+    for (name, text, failure) in rows {
+        write_helper_copy(root, "verify.md", text);
+        let (_out, err, ok) = run_rigger(root, &["validate"]);
+        assert_eq!(failure_line(ok, &err), failure, "{name}; stderr:\n{err}");
+    }
 }

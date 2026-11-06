@@ -446,6 +446,7 @@ pub fn install_status_line(existing: &[u8], command: &str) -> Result<Vec<u8>, Er
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{write_helper_copy, OPERATOR_HELPER_COPIES};
 
     /// `install` onto an empty settings file writes every one of `needles`, and installing again
     /// onto its own output leaves each command of `counted` exactly as many times as it names.
@@ -598,22 +599,206 @@ mod tests {
         }
     }
 
-    /// The spawn host carries the grep-guard exactly when the workflow's defaults declare it.
+    /// The helper `file` as the resolver reads it: the operator's copy of
+    /// [`OPERATOR_HELPER_COPIES`] when `present`, else the embedded text.
+    fn resolved(file: &str, present: bool) -> HelperCopy {
+        let texts: &[(&str, &str)] = if present {
+            &OPERATOR_HELPER_COPIES
+        } else {
+            HELPER_AGENTS
+        };
+        let (_, text) = texts.iter().find(|(f, _)| *f == file).unwrap();
+        HelperCopy {
+            name: file.to_string(),
+            text: text.to_string(),
+            present,
+        }
+    }
+
+    /// Write every one of [`OPERATOR_HELPER_COPIES`] under `root`.
+    fn write_operator_copies(root: &std::path::Path) {
+        for (file, text) in OPERATOR_HELPER_COPIES {
+            write_helper_copy(root, file, text);
+        }
+    }
+
+    /// The spawn host carries the grep-guard exactly when the workflow's defaults declare it, and
+    /// each helper as the operator's copy under `<root>/.claude/agents/` when that file exists,
+    /// else as the embedded text: a file of another name, or an agents path that is no directory,
+    /// holds no copy, and a copy equal to the embedded text is still the operator's.
     #[test]
-    fn the_spawn_host_carries_the_declared_grep_guard() {
-        let resolved = [false, true].map(|grep_guard| {
-            resolve_spawn_host(&rigger_domain::config::Defaults {
-                grep_guard,
+    fn the_spawn_host_carries_the_declared_grep_guard_and_each_helper_resolved_at_the_root() {
+        struct Row {
+            name: &'static str,
+            grep_guard: bool,
+            setup: fn(&std::path::Path),
+            helpers: Vec<HelperCopy>,
+        }
+        let rows = [
+            Row {
+                name: "a root with no .claude reads both embedded helpers",
+                grep_guard: false,
+                setup: |_| {},
+                helpers: vec![resolved("lookup.md", false), resolved("verify.md", false)],
+            },
+            Row {
+                name: "the declared grep-guard rides beside the helpers",
+                grep_guard: true,
+                setup: |_| {},
+                helpers: vec![resolved("lookup.md", false), resolved("verify.md", false)],
+            },
+            Row {
+                name: "an empty agents directory reads both embedded helpers",
+                grep_guard: false,
+                setup: |root| std::fs::create_dir_all(root.join(".claude/agents")).unwrap(),
+                helpers: vec![resolved("lookup.md", false), resolved("verify.md", false)],
+            },
+            Row {
+                name: "an operator lookup copy replaces lookup alone",
+                grep_guard: false,
+                setup: |root| write_helper_copy(root, "lookup.md", OPERATOR_HELPER_COPIES[0].1),
+                helpers: vec![resolved("lookup.md", true), resolved("verify.md", false)],
+            },
+            Row {
+                name: "an operator verify copy replaces verify alone",
+                grep_guard: false,
+                setup: |root| write_helper_copy(root, "verify.md", OPERATOR_HELPER_COPIES[1].1),
+                helpers: vec![resolved("lookup.md", false), resolved("verify.md", true)],
+            },
+            Row {
+                name: "both operator copies replace both helpers",
+                grep_guard: true,
+                setup: write_operator_copies,
+                helpers: vec![resolved("lookup.md", true), resolved("verify.md", true)],
+            },
+            Row {
+                name: "a copy equal to the embedded text is still the operator's",
+                grep_guard: false,
+                setup: |root| write_helper_copy(root, "lookup.md", HELPER_AGENTS[0].1),
+                helpers: vec![
+                    HelperCopy {
+                        present: true,
+                        ..resolved("lookup.md", false)
+                    },
+                    resolved("verify.md", false),
+                ],
+            },
+            Row {
+                name: "a helper-shaped file under another name is no copy",
+                grep_guard: false,
+                setup: |root| write_helper_copy(root, "reviewer.md", OPERATOR_HELPER_COPIES[0].1),
+                helpers: vec![resolved("lookup.md", false), resolved("verify.md", false)],
+            },
+            Row {
+                name: "an agents path that is a file holds no copy",
+                grep_guard: false,
+                setup: |root| {
+                    std::fs::create_dir_all(root.join(".claude")).unwrap();
+                    std::fs::write(root.join(".claude/agents"), "not a directory").unwrap();
+                },
+                helpers: vec![resolved("lookup.md", false), resolved("verify.md", false)],
+            },
+        ];
+        for row in rows {
+            let root = tempfile::tempdir().unwrap();
+            (row.setup)(root.path());
+            let defaults = rigger_domain::config::Defaults {
+                grep_guard: row.grep_guard,
                 ..Default::default()
-            })
-        });
-        assert_eq!(
-            resolved,
-            [
-                SpawnHost { grep_guard: false },
-                SpawnHost { grep_guard: true },
-            ]
-        );
+            };
+            assert_eq!(
+                resolve_spawn_host(&defaults, root.path()).map_err(|e| e.to_string()),
+                Ok(SpawnHost {
+                    grep_guard: row.grep_guard,
+                    helpers: row.helpers,
+                }),
+                "{}",
+                row.name
+            );
+        }
+    }
+
+    /// A copy that exists but cannot be read, or does not parse as a helper definition, fails the
+    /// resolution with an error naming that file, never falling back to the embedded text.
+    #[test]
+    fn an_unreadable_or_malformed_helper_copy_fails_the_resolution_naming_the_file() {
+        const NO_FRONTMATTER: &str = "Answer one question.\n";
+        const UNTERMINATED: &str = "---\nname: verify\n";
+        struct Row {
+            name: &'static str,
+            setup: fn(&std::path::Path),
+            file: &'static str,
+            reason: fn(&std::path::Path) -> String,
+        }
+        let rows = [
+            Row {
+                name: "a copy with no frontmatter",
+                setup: |root| write_helper_copy(root, "lookup.md", NO_FRONTMATTER),
+                file: "lookup.md",
+                reason: |_| {
+                    rigger_domain::config::split_frontmatter(NO_FRONTMATTER)
+                        .unwrap_err()
+                        .to_string()
+                },
+            },
+            Row {
+                name: "a frontmatter line with no colon",
+                setup: |root| write_helper_copy(root, "lookup.md", "---\nname lookup\n---\nbody\n"),
+                file: "lookup.md",
+                reason: |_| "frontmatter line \"name lookup\"".to_string(),
+            },
+            Row {
+                name: "a copy with no name",
+                setup: |root| {
+                    write_helper_copy(root, "lookup.md", "---\nmodel: haiku\n---\nbody\n")
+                },
+                file: "lookup.md",
+                reason: |_| "no name".to_string(),
+            },
+            Row {
+                name: "a copy that is not text",
+                setup: |root| write_helper_copy(root, "lookup.md", b"---\n\xff\n---\n"),
+                file: "lookup.md",
+                reason: |path| std::fs::read_to_string(path).unwrap_err().to_string(),
+            },
+            Row {
+                name: "a copy that is a directory",
+                setup: |root| {
+                    std::fs::create_dir_all(root.join(".claude/agents/lookup.md")).unwrap()
+                },
+                file: "lookup.md",
+                reason: |path| std::fs::read_to_string(path).unwrap_err().to_string(),
+            },
+            Row {
+                name: "a malformed verify copy beside a valid lookup copy",
+                setup: |root| {
+                    write_helper_copy(root, "lookup.md", OPERATOR_HELPER_COPIES[0].1);
+                    write_helper_copy(root, "verify.md", UNTERMINATED);
+                },
+                file: "verify.md",
+                reason: |_| {
+                    rigger_domain::config::split_frontmatter(UNTERMINATED)
+                        .unwrap_err()
+                        .to_string()
+                },
+            },
+        ];
+        for row in rows {
+            let root = tempfile::tempdir().unwrap();
+            (row.setup)(root.path());
+            let path = root.path().join(".claude/agents").join(row.file);
+            assert_eq!(
+                resolve_spawn_host(&rigger_domain::config::Defaults::default(), root.path())
+                    .map_err(|e| e.to_string()),
+                Err(format!(
+                    "hooks: helper agent {}: {}",
+                    path.display(),
+                    (row.reason)(&path)
+                )),
+                "{}",
+                row.name
+            );
+        }
     }
 
     /// Settings carry the session settings when merging them again with the same flag changes
@@ -986,16 +1171,65 @@ mod tests {
         ));
     }
 
+    /// The rigger tools the given helpers declare, in declaration order and each once, read from
+    /// the copies handed in; a copy that does not parse names its helper.
     #[test]
-    fn helper_mcp_tools_are_the_rigger_tools_the_helpers_declare() {
-        assert_eq!(
-            helper_mcp_tools().unwrap(),
-            [
-                "mcp__rigger__rigger_graph",
-                "mcp__rigger__rigger_ground",
-                "mcp__rigger__rigger_peers",
-            ]
-        );
+    fn helper_mcp_tools_are_the_rigger_tools_the_given_helpers_declare() {
+        let rows: [(&str, Vec<HelperCopy>, Result<Vec<&str>, &str>); 5] = [
+            (
+                "the embedded helpers",
+                vec![resolved("lookup.md", false), resolved("verify.md", false)],
+                Ok(vec![
+                    "mcp__rigger__rigger_graph",
+                    "mcp__rigger__rigger_ground",
+                    "mcp__rigger__rigger_peers",
+                ]),
+            ),
+            (
+                "the operator's copies",
+                vec![resolved("lookup.md", true), resolved("verify.md", true)],
+                Ok(vec![
+                    "mcp__rigger__rigger_peers",
+                    "mcp__rigger__rigger_graph",
+                ]),
+            ),
+            (
+                "a tool two helpers declare lands once, where it first came",
+                vec![
+                    resolved("lookup.md", true),
+                    HelperCopy {
+                        text: "---\nname: verify\n\
+                               tools: mcp__rigger__rigger_graph, mcp__rigger__rigger_ground\n\
+                               ---\nbody\n"
+                            .to_string(),
+                        ..resolved("verify.md", true)
+                    },
+                ],
+                Ok(vec![
+                    "mcp__rigger__rigger_peers",
+                    "mcp__rigger__rigger_graph",
+                    "mcp__rigger__rigger_ground",
+                ]),
+            ),
+            ("no helpers", vec![], Ok(vec![])),
+            (
+                "a copy with no name",
+                vec![HelperCopy {
+                    text: "---\nmodel: haiku\n---\nbody\n".to_string(),
+                    ..resolved("lookup.md", true)
+                }],
+                Err("hooks: helper agent lookup.md: no name"),
+            ),
+        ];
+        for (name, helpers, expected) in rows {
+            assert_eq!(
+                helper_mcp_tools(&helpers).map_err(|e| e.to_string()),
+                expected
+                    .map(|tools| tools.iter().map(|t| t.to_string()).collect::<Vec<_>>())
+                    .map_err(str::to_string),
+                "{name}"
+            );
+        }
     }
 
     #[test]

@@ -9166,41 +9166,41 @@ mod tests {
         let base = tempfile::tempdir().unwrap();
         write_def(base.path(), "dash: on\n", "Do the unit.");
         let dir = base.path().to_str().unwrap();
-        let h0 = definition_hash(dir).unwrap();
+        let h0 = definition_hash(dir, &[]).unwrap();
         // Deterministic: recomputing over the same on-disk definition is byte-identical.
         assert_eq!(
             h0,
-            definition_hash(dir).unwrap(),
+            definition_hash(dir, &[]).unwrap(),
             "same definition, same hash"
         );
         // Canonicalization: trailing whitespace and CRLF do NOT change the hash.
         write_def(base.path(), "dash: on\r\n", "Do the unit.   ");
         assert_eq!(
             h0,
-            definition_hash(dir).unwrap(),
+            definition_hash(dir, &[]).unwrap(),
             "trailing-ws / CRLF noise is canonicalized away"
         );
         // A PROMPT edit changes the hash - the mid-campaign edit spec 13 must catch.
         write_def(base.path(), "dash: on\n", "Do the unit differently.");
         assert_ne!(
             h0,
-            definition_hash(dir).unwrap(),
+            definition_hash(dir, &[]).unwrap(),
             "a prompt edit changes the definition hash"
         );
         // A workflow.yml edit changes the hash too.
-        let with_wf = definition_hash(dir).unwrap();
+        let with_wf = definition_hash(dir, &[]).unwrap();
         write_def(base.path(), "dash: off\n", "Do the unit differently.");
         assert_ne!(
             with_wf,
-            definition_hash(dir).unwrap(),
+            definition_hash(dir, &[]).unwrap(),
             "a workflow edit changes the hash"
         );
         // The operator instruction layer is part of the definition: adding a file changes the
         // hash, editing it changes it again, and trailing-whitespace noise does not.
-        let before_instructions = definition_hash(dir).unwrap();
+        let before_instructions = definition_hash(dir, &[]).unwrap();
         let ins_dir = crate::test_support::instructions_dir(base.path());
         std::fs::write(ins_dir.join("10-house.md"), "House rule.\n").unwrap();
-        let with_instruction = definition_hash(dir).unwrap();
+        let with_instruction = definition_hash(dir, &[]).unwrap();
         assert_ne!(
             before_instructions, with_instruction,
             "adding an operator instruction changes the hash"
@@ -9208,15 +9208,94 @@ mod tests {
         std::fs::write(ins_dir.join("10-house.md"), "House rule.   \r\n").unwrap();
         assert_eq!(
             with_instruction,
-            definition_hash(dir).unwrap(),
+            definition_hash(dir, &[]).unwrap(),
             "trailing-ws / CRLF noise in an instruction is canonicalized away"
         );
         std::fs::write(ins_dir.join("10-house.md"), "A different house rule.\n").unwrap();
         assert_ne!(
             with_instruction,
-            definition_hash(dir).unwrap(),
+            definition_hash(dir, &[]).unwrap(),
             "editing an operator instruction changes the hash"
         );
+    }
+
+    /// The operator's helper copies are part of the definition: each present copy folds one
+    /// section tagged `helper:<file>`, in helper order, after the agent sections and before the
+    /// instruction sections, a copy equal to the embedded text included, while an absent one
+    /// folds nothing, so a project with no copies keeps its hash byte for byte.
+    #[test]
+    fn definition_hash_folds_each_present_helper_copy_between_the_agents_and_the_instructions() {
+        const WORKFLOW: &str = "dash: on\n";
+        const WORKER: &str = "---\nid: worker\n---\nDo the unit.\n";
+        const HOUSE: &str = "House rule.\n";
+        let base = tempfile::tempdir().unwrap();
+        let rigger_dir = base.path().join(RIGGER_DIR);
+        std::fs::create_dir_all(rigger_dir.join("agents")).unwrap();
+        std::fs::write(rigger_dir.join(WORKFLOW_FILE), WORKFLOW).unwrap();
+        std::fs::write(rigger_dir.join("agents/worker.md"), WORKER).unwrap();
+        std::fs::write(
+            crate::test_support::instructions_dir(base.path()).join("10-house.md"),
+            HOUSE,
+        )
+        .unwrap();
+        let dir = base.path().to_str().unwrap();
+        let copy = |file: &str, text: &str, present: bool| conductor::HelperCopy {
+            name: file.to_string(),
+            text: text.to_string(),
+            present,
+        };
+        let [(_, lookup), (_, verify)] = crate::test_support::OPERATOR_HELPER_COPIES;
+        let embedded_lookup = hooks::HELPER_AGENTS[0].1;
+        let embedded_verify = hooks::HELPER_AGENTS[1].1;
+        let rows: [(&str, Vec<conductor::HelperCopy>, Vec<(&str, &str)>); 5] = [
+            ("no helpers fold nothing", vec![], vec![]),
+            (
+                "absent copies fold nothing",
+                vec![
+                    copy("lookup.md", embedded_lookup, false),
+                    copy("verify.md", embedded_verify, false),
+                ],
+                vec![],
+            ),
+            (
+                "a present lookup copy folds its own section",
+                vec![
+                    copy("lookup.md", lookup, true),
+                    copy("verify.md", embedded_verify, false),
+                ],
+                vec![("helper:lookup.md", lookup)],
+            ),
+            (
+                "both present copies fold in helper order",
+                vec![
+                    copy("lookup.md", lookup, true),
+                    copy("verify.md", verify, true),
+                ],
+                vec![("helper:lookup.md", lookup), ("helper:verify.md", verify)],
+            ),
+            (
+                "a present copy equal to the embedded text still folds",
+                vec![
+                    copy("lookup.md", embedded_lookup, false),
+                    copy("verify.md", embedded_verify, true),
+                ],
+                vec![("helper:verify.md", embedded_verify)],
+            ),
+        ];
+        for (name, helpers, folded) in rows {
+            let mut buf = String::new();
+            push_definition_section(&mut buf, WORKFLOW_FILE, WORKFLOW);
+            push_definition_section(&mut buf, "agent:worker.md", WORKER);
+            for (tag, content) in folded {
+                push_definition_section(&mut buf, tag, content);
+            }
+            push_definition_section(&mut buf, "instruction:10-house.md", HOUSE);
+            assert_eq!(
+                definition_hash(dir, &helpers).map_err(|e| e.to_string()),
+                Ok(format!("{:016x}", fnv1a_64(buf.as_bytes()))),
+                "{name}"
+            );
+        }
     }
 
     /// KurrentDB is ALWAYS AVAILABLE (spec 47): the adapter is compiled into every

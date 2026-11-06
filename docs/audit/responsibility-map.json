@@ -11245,7 +11245,15 @@
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "dcfaeb19a6695551"
+    "content_hash": "021bd1cf89a25ab5"
+  },
+  {
+    "file": "src/cli/mod.rs",
+    "name": "definition_hash_folds_each_present_helper_copy_between_the_agents_and_the_instructions",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "c4e7a5a57180715a"
   },
   {
     "file": "src/cli/mod.rs",

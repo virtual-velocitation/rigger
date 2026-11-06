@@ -300,7 +300,7 @@ pub fn build_args(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::test_spawn_host;
+    use crate::test_support::{operator_helpers_agents_json, test_spawn_host};
 
     /// This host's frame closes the task with its progress verb and that verb's arguments only:
     /// the Bash command naming the spawn, since its spawn runs no bound server. When to report
@@ -790,12 +790,14 @@ thinking out loud, not json\n\
             .unwrap_or_else(|| panic!("{flag} must be in the args: {args:?}"))
     }
 
-    /// `persona_tools` followed by the helpers' MCP tools, the `--allowed-tools` value a
-    /// persona declaring `persona_tools` runs with.
+    /// `persona_tools` followed by the MCP tools the test spawn host's helpers declare, the
+    /// `--allowed-tools` value a persona declaring `persona_tools` runs with.
     fn with_helper_tools(persona_tools: &str) -> String {
         format!(
             "{persona_tools},{}",
-            crate::hooks::helper_mcp_tools().unwrap().join(",")
+            crate::hooks::helper_mcp_tools(&test_spawn_host().helpers)
+                .unwrap()
+                .join(",")
         )
     }
 
@@ -961,7 +963,9 @@ thinking out loud, not json\n\
             "--session-id".to_string(),
             "sess-fresh".to_string(),
             "--allowed-tools".to_string(),
-            crate::hooks::helper_mcp_tools().unwrap().join(","),
+            crate::hooks::helper_mcp_tools(&test_spawn_host().helpers)
+                .unwrap()
+                .join(","),
         ];
         expected.extend(spawn_config_args("rigger", &["mcp"], "", &test_spawn_host()).unwrap());
         assert_eq!(args, expected);
@@ -977,7 +981,7 @@ thinking out loud, not json\n\
     fn build_args_hands_the_spawn_the_operators_mcp_server_settings_and_helpers() {
         // A unit worktree carries no `.mcp.json` or `.claude/settings.json`, so the worker
         // gets them on its command line: the operator's read-only `rigger mcp` server alone,
-        // the three session settings and the two fan-out helpers.
+        // the three session settings and the two fan-out helpers its host carries.
         let a = AgentDef {
             id: "impl".into(),
             tools: vec!["Read".into(), "Agent".into()],
@@ -1003,18 +1007,16 @@ thinking out loud, not json\n\
             crate::hooks::carries_session_settings(settings.as_bytes(), false),
             "the spawn's settings carry the prime hook and the status line: {settings}"
         );
-        let agents = flag_json(&args, "--agents");
-        assert!(agents.get("lookup").is_some(), "{agents}");
-        assert!(agents.get("verify").is_some(), "{agents}");
+        assert_eq!(flag_json(&args, "--agents"), operator_helpers_agents_json());
         assert_eq!(args[arg_index(&args, "--permission-mode") + 1], "default");
         assert_eq!(args[arg_index(&args, "--permission-prompts") + 1], "none");
     }
 
     #[test]
     fn build_args_pre_approves_the_helpers_mcp_tools_once() {
-        // Under `--permission-prompts none` a tool nobody pre-approved is denied, so the
-        // `lookup` helper's graph calls must be on the allow list; a persona that already
-        // declares one does not get it twice.
+        // Under `--permission-prompts none` a tool nobody pre-approved is denied, so the rigger
+        // tools the host's `lookup` copy declares must be on the allow list; a persona that
+        // already declares one does not get it twice.
         let a = AgentDef {
             id: "impl".into(),
             tools: vec!["Read".into(), "mcp__rigger__rigger_graph".into()],
@@ -1023,7 +1025,7 @@ thinking out loud, not json\n\
         let args = args_for(&a, 0);
         assert_eq!(
             args[arg_index(&args, "--allowed-tools") + 1],
-            "Read,mcp__rigger__rigger_graph,mcp__rigger__rigger_ground,mcp__rigger__rigger_peers"
+            "Read,mcp__rigger__rigger_graph,mcp__rigger__rigger_peers"
         );
     }
 
@@ -1065,7 +1067,10 @@ thinking out loud, not json\n\
         for grep_guard in [false, true] {
             let opts = SpawnOpts {
                 settings_json: "{\"model\":\"opus\"}".to_string(),
-                ..SpawnOpts::new(crate::agent::SpawnHost { grep_guard })
+                ..SpawnOpts::new(crate::agent::SpawnHost {
+                    grep_guard,
+                    ..test_spawn_host()
+                })
             };
             let args = build_args(
                 &AgentDef::default(),

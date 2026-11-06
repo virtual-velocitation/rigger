@@ -2242,7 +2242,8 @@ mod tests {
     use crate::eventstore::{Direction, EventStore, SilentStore};
     use crate::test_support::implementer_opts as opts;
     use crate::test_support::{
-        captured, fixture_script, no_emit, spawn_result_rows, PROMPT_CAPTURE_DIR,
+        captured, fixture_script, no_emit, operator_helpers_agents_json, spawn_result_rows,
+        PROMPT_CAPTURE_DIR,
     };
     use std::io::Read;
     use std::time::Duration;
@@ -2291,7 +2292,7 @@ mod tests {
             get_val("--allowed-tools"),
             format!(
                 "Read,Bash,{},{}",
-                hooks::helper_mcp_tools().unwrap().join(","),
+                hooks::helper_mcp_tools(&o.host.helpers).unwrap().join(","),
                 SPAWN_BOUND_TOOLS.join(",")
             )
         );
@@ -2641,7 +2642,7 @@ mod tests {
         ] {
             let mut o = opts("u/implementer#0");
             o.settings_json = "{\"model\":\"opus\"}".to_string();
-            o.host = crate::agent::SpawnHost { grep_guard };
+            o.host.grep_guard = grep_guard;
             let args = build_args(
                 &AgentDef::default(),
                 &SystemPromptFile::default(),
@@ -2749,13 +2750,20 @@ mod tests {
             args[ti + 1],
             format!(
                 "{},{}",
-                hooks::helper_mcp_tools().unwrap().join(","),
+                hooks::helper_mcp_tools(&bare.host.helpers)
+                    .unwrap()
+                    .join(","),
                 SPAWN_BOUND_TOOLS.join(",")
             )
         );
-        // The always-on flags are still present, the session configuration included.
+        // The always-on flags are still present, the session configuration included, and the
+        // helpers are the ones the spawn's host carries.
         assert!(args.iter().any(|x| x == "--settings"));
-        assert!(args.iter().any(|x| x == "--agents"));
+        let ai = args.iter().position(|x| x == "--agents").unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&args[ai + 1]).unwrap(),
+            operator_helpers_agents_json()
+        );
         assert!(args.iter().any(|x| x == "--strict-mcp-config"));
         assert!(args.iter().any(|x| x == "--session-id"));
     }
