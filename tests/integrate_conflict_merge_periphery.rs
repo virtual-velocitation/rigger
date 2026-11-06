@@ -1064,7 +1064,7 @@ impl rigger::gate::Runner for RecordingGateRunner {
         store_fence: &str,
         build_env: &rigger::gate::BuildEnv,
         budget: &rigger::budget::BuildBudget,
-    ) -> rigger::gate::GateResult {
+    ) -> Result<rigger::gate::GateResult, rigger::gate::ProbeFault> {
         if g.id != "regenerate" {
             return rigger::gate::ExecRunner.run(
                 g,
@@ -1085,10 +1085,10 @@ impl rigger::gate::Runner for RecordingGateRunner {
             gate_scratch.to_string(),
         ));
         std::fs::write(Path::new(dir).join("c.rs"), "FAKE_REGEN_VIA_PORT\n").unwrap();
-        rigger::gate::GateResult {
+        Ok(rigger::gate::GateResult {
             pass: true,
             evidence: "fake runner: regenerated via the injected port, never a raw shell".into(),
-        }
+        })
     }
 }
 
@@ -1257,7 +1257,7 @@ impl rigger::gate::Runner for BlockingRegenerateGateRunner {
         store_fence: &str,
         build_env: &rigger::gate::BuildEnv,
         budget: &rigger::budget::BuildBudget,
-    ) -> rigger::gate::GateResult {
+    ) -> Result<rigger::gate::GateResult, rigger::gate::ProbeFault> {
         if g.id == "regenerate" {
             self.entered_tx
                 .lock()
@@ -2359,15 +2359,15 @@ impl rigger::gate::Runner for FailRegenerateOnceRunner {
         store_fence: &str,
         build_env: &rigger::gate::BuildEnv,
         budget: &rigger::budget::BuildBudget,
-    ) -> rigger::gate::GateResult {
+    ) -> Result<rigger::gate::GateResult, rigger::gate::ProbeFault> {
         if g.id == "regenerate" {
             let mut failed = self.failed_once.lock().unwrap();
             if !*failed {
                 *failed = true;
-                return rigger::gate::GateResult {
+                return Ok(rigger::gate::GateResult {
                     pass: false,
                     evidence: "simulated crash: regenerate gate failed once".into(),
-                };
+                });
             }
         }
         rigger::gate::ExecRunner.run(

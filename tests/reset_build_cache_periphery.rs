@@ -11,16 +11,15 @@
 //!     untouched when it does; the flag is registered (parses, rejects a duplicate); it
 //!     resolves a CONFIGURED `defaults.workdir` scratch root, never silently falling back to
 //!     the project-relative default - the exact guard/cache-path divergence class this
-//!     criterion's own prior review history was rejected over more than once; and (round 3
-//!     addition) the INTERACTION between the producer and consumer halves - a real
-//!     `gate::ExecRunner::run` degraded by a forced-unusable guard probe never redirects
-//!     `CARGO_TARGET_DIR` onto the shared cache dir, so this file's own `reset --build-cache`
-//!     can freely reclaim that same directory while such a degraded, guardless gate command is
-//!     still running.
+//!     criterion's own prior review history was rejected over more than once; and the
+//!     producer half's fault against a real project's shared cache - a real
+//!     `gate::ExecRunner::run` whose guard probe fails returns the `ProbeFault` naming the
+//!     guard and the OS error, runs no gate command and writes nothing into the shared cache
+//!     (spec 121 criterion 19).
 //!   - NOT OWNED: the exclusion PRIMITIVE's own unit-level contract
 //!     (`reclaim_shared_build_cache`'s rename/idempotent-zero/busy/prompt-release behavior) -
 //!     pinned in-crate beside its definition in `src/main.rs`; the PRODUCER half's OWN
-//!     internal shape (the flock-wrap construction, the guard-probe degrade decision, holding
+//!     internal shape (the flock-wrap construction, the guard probe's fault decision, holding
 //!     the guard SHARED for a genuinely guarded cargo invocation) - pinned in `src/gate.rs` and
 //!     `src/conductor.rs`; and `rigger validate`'s FOOTPRINT ACCOUNTING category for this
 //!     cache - spec 77 criterion 5's own surface.
@@ -34,7 +33,7 @@ use common::cli::run_rigger;
 use common::cli::temp_store_project;
 use common::fixtures::write_file;
 use rigger::budget::BuildBudget;
-use rigger::gate::{Autonomy, BuildEnv, ExecRunner, Gate, Kind, Runner};
+use rigger::gate::{Autonomy, BuildEnv, ExecRunner, Gate, Kind, ProbeFault, Runner};
 
 /// The shared gate build cache's entry name under the default scratch root.
 const SHARED_CACHE: &str = "cargo-target";
@@ -460,119 +459,60 @@ fn reset_build_cache_resolves_a_configured_scratch_workdir_not_the_default_path(
 }
 
 #[test]
-fn a_gate_command_degraded_by_a_forced_unusable_guard_never_writes_into_the_shared_cache_dir_and_reset_reclaims_it_freely(
+fn a_gate_whose_guard_parent_cannot_be_created_faults_runs_nothing_and_writes_nothing_into_the_shared_cache(
 ) {
-    // REQUIRED FIX for spec 77 criterion 5 round 3
-    // (adv-u77c5bsc-r2-guard-probe-failure-forces-unguarded-build-into-protected-dir, UPHELD):
-    // `ExecRunner::run`'s ambient/shared-cache branch used to FORCE `CARGO_TARGET_DIR` onto
-    // `build_cache_dir` unconditionally whenever `build_cache_dir` was non-empty - independent
-    // of whether `build_cache_guard_is_usable` had just degraded the run to unguarded. So
-    // whenever the guard probe failed (ENOSPC/EDQUOT, a locking-unsupported filesystem, a
-    // permission fault, or a transiently-missing guard-file parent dir - exactly the disk-
-    // pressure condition spec 77's own Problem statement exists to relieve), a REAL cargo
-    // build still got pointed directly at the exact directory `reclaim_shared_build_cache`
-    // (both `rigger reset --build-cache` and the automatic run-teardown sweep) can reap with
-    // zero lock taken - the liveness signal falsely reporting free instead of the reaper
-    // skipping the delete, precisely the failure spec 77 Global Constraint 3 forbids.
-    //
-    // Proves the fix through BOTH real halves together: the REAL producer
-    // (`gate::ExecRunner::run`, spec 77's producer half, pinned unit-level in `src/gate.rs`)
-    // and the REAL consumer (the compiled `rigger reset --build-cache` binary). A gate command
-    // is run with a `build_cache_guard` whose parent directory does not exist - the same
-    // "transiently-missing guard-file parent dir" degrade `src/gate.rs`'s own
-    // `exec_runner_degrades_to_unguarded_when_the_guard_path_cannot_be_opened` unit test
-    // exercises - so `build_cache_guard_is_usable` fails its probe and the run degrades to
-    // unguarded. While that gate command is still running (mid-`sleep`), a concurrent `reset
-    // --build-cache` against the SAME `build_cache_dir` must succeed (not refuse as Busy) -
-    // proving no lock was ever taken - AND the gate command's own `CARGO_TARGET_DIR` must never
-    // have equaled `build_cache_dir` in the first place, proving a real build was never pointed
-    // at the directory the concurrent reclaim just freely reaped out from under it.
+    // Spec 121 criterion 19, THE FAILED GUARD PROBE HALTS THE STEP: a guard probe that fails is
+    // an infrastructure fault, never a gate that runs unguarded. Through the REAL producer
+    // (`gate::ExecRunner::run`) against a real project's shared cache, holding a pre-existing
+    // build: the guard's parent lies under a regular file, so the probe cannot create it, and
+    // the run must return the `ProbeFault` naming the guard path and the OS error the create
+    // met, never run the gate command, and leave the shared cache exactly as it was.
     let project = temp_store_project();
     let root = project.path();
     let cache = scratch_entry(root, SHARED_CACHE);
     write_file(&cache.join("debug").join("preexisting.rlib"), &[0u8; 64]);
-
-    // A guard path under a directory that is never created: `build_cache_guard_is_usable`
-    // opens with `create(true)` but never creates the immediate parent, so this fails to open
-    // (ENOENT) exactly like `src/gate.rs`'s own degrade unit test - deliberately DIFFERENT
-    // from the real default guard sibling `reset --build-cache` itself resolves
-    // (`.rigger/tmp/cargo-target.lock`), so the two halves stay decoupled the same way any two
-    // synthetic `ExecRunner::run` test paths in `src/gate.rs` already do: nothing requires this
-    // probe's own path to be the literal one `reset` later opens, only that neither of them
-    // ever contends on the same fd - which a genuinely unguarded run guarantees by construction.
-    let bad_guard = root
-        .join(".rigger")
-        .join("tmp")
-        .join("no-such-parent-dir")
-        .join("cargo-target.lock");
+    let regular_file = scratch_entry(root, "not-a-directory");
+    write_file(&regular_file, b"");
+    let parent = regular_file.join("sub");
+    let bad_guard = parent.join(CACHE_GUARD);
+    let create_error = std::fs::create_dir_all(&parent).unwrap_err().to_string();
 
     let markers = tempfile::tempdir().expect("tempdir for markers");
-    let started = markers.path().join("started");
-    let started_str = started.to_str().unwrap().to_string();
-    let cache_str = cache.to_str().unwrap().to_string();
-    let bad_guard_str = bad_guard.to_str().unwrap().to_string();
-
+    let ran = markers.path().join("ran");
     let gate = Gate {
         id: "shared-cache-probe".to_string(),
         run: format!(
-            "touch {started_str}; test \"$CARGO_TARGET_DIR\" != {cache_str}; RC=$?; sleep 1; \
-             exit $RC"
+            "touch {}; printf x > \"$CARGO_TARGET_DIR/written.rlib\"",
+            ran.display()
         ),
         kind: Kind::Core,
         autonomy: Autonomy::AutoNotify,
         history: Vec::new(),
     };
-    let handle = std::thread::spawn(move || {
-        ExecRunner.run(
-            &gate,
-            "",
-            "",
-            "",
-            &cache_str,
-            &bad_guard_str,
-            "",
-            &BuildEnv::default(),
-            &BuildBudget::default(),
-        )
-    });
-
-    let mut started_ok = false;
-    for _ in 0..400 {
-        if started.exists() {
-            started_ok = true;
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(25));
-    }
-    assert!(
-        started_ok,
-        "the degraded gate command must start and touch its marker"
+    let got = ExecRunner.run(
+        &gate,
+        "",
+        "",
+        "",
+        cache.to_str().unwrap(),
+        bad_guard.to_str().unwrap(),
+        "",
+        &BuildEnv::default(),
+        &BuildBudget::default(),
     );
 
-    // While the gate command is still mid-`sleep`, race a real `reset --build-cache` against
-    // the SAME cache directory: it must succeed (never Busy) - conclusive proof no lock was
-    // ever taken, since a genuinely guarded build would refuse this exact race (see this
-    // file's own `..._refuses_rather_than_waits...` test above).
-    let (out, err, ok) = run_rigger(root, &["reset", "--build-cache"]);
-
-    let res = handle.join().expect("the gate thread must not panic");
-    assert!(
-        res.pass,
-        "a forced-unusable guard probe must never redirect CARGO_TARGET_DIR onto \
-         build_cache_dir: {res:?}"
+    assert_eq!(
+        got.map(|res| res.pass),
+        Err(ProbeFault {
+            guard: bad_guard.to_str().unwrap().to_string(),
+            error: create_error,
+        }),
+        "a guard whose parent cannot be created must return the probe fault"
     );
-    assert!(
-        ok,
-        "reset --build-cache must succeed while a degraded (guardless) gate build is still \
-         running - no lock was ever taken: stdout {out:?} stderr {err:?}"
-    );
-    assert!(
-        out.contains("--build-cache:") && out.contains("64 byte(s)"),
-        "the concurrent reset must actually report reclaiming the pre-existing cache: {out:?}"
-    );
-    assert!(
-        !cache.exists(),
-        "the cache must actually be reclaimed, unimpeded by the degraded gate build: {cache:?}"
+    assert_eq!(
+        (ran.exists(), dir_bytes(&cache)),
+        (false, 64),
+        "a faulted probe must never run the gate command nor write into the shared cache"
     );
 }
 

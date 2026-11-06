@@ -915,6 +915,7 @@ mod tests {
                     &BuildEnv::default(),
                     &BuildBudget::default()
                 )
+                .unwrap()
                 .pass
         );
         assert!(
@@ -930,6 +931,7 @@ mod tests {
                     &BuildEnv::default(),
                     &BuildBudget::default()
                 )
+                .unwrap()
                 .pass
         );
     }
@@ -986,17 +988,19 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
             }
         }
         cmd.push_str("false");
-        let res = ExecRunner.run(
-            &gate_cmd(&cmd),
-            "",
-            "",
-            "",
-            "",
-            "",
-            "",
-            &BuildEnv::default(),
-            &BuildBudget::default(),
-        );
+        let res = ExecRunner
+            .run(
+                &gate_cmd(&cmd),
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                &BuildEnv::default(),
+                &BuildBudget::default(),
+            )
+            .unwrap();
         assert!(!res.pass);
 
         let lines: Vec<&str> = res.evidence.lines().collect();
@@ -1019,17 +1023,19 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
         env: &BuildEnv,
         why: &str,
     ) {
-        let res = ExecRunner.run(
-            &gate_cmd(probe),
-            "",
-            target_dir,
-            "",
-            build_cache_dir,
-            guard,
-            "",
-            env,
-            &BuildBudget::default(),
-        );
+        let res = ExecRunner
+            .run(
+                &gate_cmd(probe),
+                "",
+                target_dir,
+                "",
+                build_cache_dir,
+                guard,
+                "",
+                env,
+                &BuildBudget::default(),
+            )
+            .unwrap();
         assert!(res.pass, "{why}: {res:?}");
     }
 
@@ -1161,7 +1167,7 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
                  exclusive probe"
             );
         }
-        let res = handle.join().expect("gate thread must not panic");
+        let res = handle.join().expect("gate thread must not panic").unwrap();
         assert!(res.pass, "the gate command must pass: {res:?}");
         {
             use fs2::FileExt;
@@ -1192,25 +1198,102 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
         );
     }
 
-    #[test]
-    fn exec_runner_degrades_to_unguarded_when_the_guard_path_cannot_be_opened() {
-        // Best-effort degrade (mirroring `BuildBudget::acquire`'s own convention, spec 77
-        // criterion 5 round 2 fix): a `build_cache_guard` whose parent directory does not
-        // exist can never be opened, so the gate command must still run (unguarded) rather
-        // than fail over guard trouble unrelated to the build itself - and, since this
-        // degrades BEFORE ever invoking `flock(1)`, no guard file is created either.
-        let dir = tempfile::tempdir().expect("tempdir");
-        let guard_path = dir.path().join("missing-parent").join("cargo-target.lock");
-        assert_probe_passes(
-            "true",
-            ("", "", guard_path.to_str().unwrap()),
+    /// One shared-cache gate run through [`ExecRunner`] under a tempdir `root`: the guard is
+    /// the path `lay_out` prepares under `root`, the shared cache is `root/cache`, and the
+    /// command marks `root/ran` and builds into `$CARGO_TARGET_DIR`. `os_error` reads, before
+    /// the run, the OS error the guard's probe must meet (`None` for a usable guard). A usable
+    /// guard runs the command guarded, creating the guard file and building into the shared
+    /// cache; an unusable one returns [`ProbeFault`] naming the guard and that error, and runs
+    /// and builds nothing.
+    fn assert_guard_probe(
+        lay_out: fn(&std::path::Path) -> std::path::PathBuf,
+        os_error: Option<fn(&std::path::Path) -> std::io::Error>,
+    ) {
+        let root = tempfile::tempdir().expect("tempdir");
+        let guard = lay_out(root.path());
+        let guard_str = guard.to_str().unwrap();
+        let ran = root.path().join("ran");
+        let cache = root.path().join("cache");
+        let expected_fault = os_error.map(|error| ProbeFault {
+            guard: guard_str.to_string(),
+            error: error(&guard).to_string(),
+        });
+        let got = ExecRunner.run(
+            &gate_cmd(&format!(
+                "touch {} && mkdir -p \"$CARGO_TARGET_DIR\"",
+                ran.display()
+            )),
+            "",
+            "",
+            "",
+            cache.to_str().unwrap(),
+            guard_str,
+            "",
             &BuildEnv::default(),
-            "an unusable guard path must degrade to running unguarded, never fail the gate",
+            &BuildBudget::default(),
         );
-        assert!(
-            !guard_path.exists(),
-            "a degraded (unguarded) run must never create the guard file: {guard_path:?}"
-        );
+        let ran_and_built = (ran.exists(), cache.is_dir());
+        match expected_fault {
+            Some(fault) => {
+                assert_eq!(
+                    got.map(|res| res.pass),
+                    Err(fault),
+                    "an unusable guard faults"
+                );
+                assert_eq!(
+                    ran_and_built,
+                    (false, false),
+                    "a faulted probe runs no command and leaves no build directory"
+                );
+            }
+            None => {
+                assert_eq!(
+                    got.map(|res| res.pass),
+                    Ok(true),
+                    "a usable guard runs the gate"
+                );
+                assert_eq!(
+                    (ran_and_built, guard.is_file()),
+                    ((true, true), true),
+                    "a usable guard is created and the command builds into the shared cache"
+                );
+            }
+        }
+    }
+
+    crate::test_cases! {
+        /// Spec 121 criterion 19: the probe creates the guard's missing parent first, so a
+        /// scratch root that does not exist yet is never a fault.
+        a_guard_over_a_missing_parent_is_created_and_the_gate_runs_guarded:
+            assert_guard_probe(|root| root.join("missing-parent").join("cargo-target.lock"), None);
+        /// Spec 121 criterion 19: a guard whose parent cannot be created (it lies under a
+        /// regular file) is a probe fault naming the create's OS error.
+        a_guard_whose_parent_cannot_be_created_is_a_probe_fault_and_runs_nothing:
+            assert_guard_probe(
+                |root| {
+                    std::fs::write(root.join("file"), b"").expect("write the regular file");
+                    root.join("file").join("sub").join("cargo-target.lock")
+                },
+                Some(|guard| std::fs::create_dir_all(guard.parent().unwrap()).unwrap_err()),
+            );
+        /// Spec 121 criterion 19: a guard the OS refuses to open (it names a directory) is a
+        /// probe fault naming the open's OS error.
+        a_guard_that_cannot_be_opened_is_a_probe_fault_and_runs_nothing:
+            assert_guard_probe(
+                |root| {
+                    let guard = root.join("cargo-target.lock");
+                    std::fs::create_dir(&guard).expect("create the directory guard");
+                    guard
+                },
+                Some(|guard| {
+                    std::fs::OpenOptions::new()
+                        .create(true)
+                        .write(true)
+                        .truncate(false)
+                        .open(guard)
+                        .unwrap_err()
+                }),
+            );
     }
 
     #[test]
@@ -1237,35 +1320,39 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
         // every fence injection to the spawned Command only (never std::env::set_var), so
         // clearing here cannot clobber a concurrent test's in-flight state.
         std::env::remove_var(STORE_FENCE_ENV);
-        let with = ExecRunner.run(
-            &gate_cmd(&format!(
-                "test \"${STORE_FENCE_ENV}\" = /tmp/rigger-gap19-probe-store-fence"
-            )),
-            "",
-            "/tmp/rigger-gap19-probe",
-            "",
-            "",
-            "",
-            "",
-            &BuildEnv::default(),
-            &BuildBudget::default(),
-        );
+        let with = ExecRunner
+            .run(
+                &gate_cmd(&format!(
+                    "test \"${STORE_FENCE_ENV}\" = /tmp/rigger-gap19-probe-store-fence"
+                )),
+                "",
+                "/tmp/rigger-gap19-probe",
+                "",
+                "",
+                "",
+                "",
+                &BuildEnv::default(),
+                &BuildBudget::default(),
+            )
+            .unwrap();
         assert!(
             with.pass,
             "a non-empty target_dir must fence the gate's store resolution via {STORE_FENCE_ENV}: {with:?}"
         );
 
-        let without = ExecRunner.run(
-            &gate_cmd(&format!("test -z \"${STORE_FENCE_ENV}\"")),
-            "",
-            "",
-            "",
-            "",
-            "",
-            "",
-            &BuildEnv::default(),
-            &BuildBudget::default(),
-        );
+        let without = ExecRunner
+            .run(
+                &gate_cmd(&format!("test -z \"${STORE_FENCE_ENV}\"")),
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                &BuildEnv::default(),
+                &BuildBudget::default(),
+            )
+            .unwrap();
         assert!(
             without.pass,
             "an empty target_dir (the integrated-tree/deferred gate) must not force a store fence: {without:?}"
@@ -1293,17 +1380,19 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
         let _restore = Restore(std::env::var_os(GATE_SCRATCH_ENV));
         std::env::set_var(GATE_SCRATCH_ENV, "/inherited/rigger-gate-outer");
         let run = |gate_scratch: &str, check: &str| {
-            ExecRunner.run(
-                &gate_cmd(check),
-                "",
-                "",
-                gate_scratch,
-                "",
-                "",
-                "",
-                &BuildEnv::default(),
-                &BuildBudget::default(),
-            )
+            ExecRunner
+                .run(
+                    &gate_cmd(check),
+                    "",
+                    "",
+                    gate_scratch,
+                    "",
+                    "",
+                    "",
+                    &BuildEnv::default(),
+                    &BuildBudget::default(),
+                )
+                .unwrap()
         };
 
         let none = run("", &format!("test -z \"${{{GATE_SCRATCH_ENV}+set}}\""));
@@ -1353,51 +1442,57 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
         let review_dir = review_dir.to_str().unwrap();
         let injected_fence = format!("{review_dir}-store-fence");
 
-        let with = ExecRunner.run(
-            &gate_cmd(&format!("test \"${STORE_FENCE_ENV}\" = {injected_fence}")),
-            review_dir,
-            "",
-            "",
-            "",
-            "",
-            &injected_fence,
-            &BuildEnv::default(),
-            &BuildBudget::default(),
-        );
+        let with = ExecRunner
+            .run(
+                &gate_cmd(&format!("test \"${STORE_FENCE_ENV}\" = {injected_fence}")),
+                review_dir,
+                "",
+                "",
+                "",
+                "",
+                &injected_fence,
+                &BuildEnv::default(),
+                &BuildBudget::default(),
+            )
+            .unwrap();
         assert!(
             with.pass,
             "an injected store_fence must reach the gate via {STORE_FENCE_ENV} even with an \
              empty target_dir: {with:?}"
         );
 
-        let no_cargo_override = ExecRunner.run(
-            &gate_cmd(&format!("test \"$CARGO_TARGET_DIR\" != {review_dir}")),
-            review_dir,
-            "",
-            "",
-            "",
-            "",
-            &injected_fence,
-            &BuildEnv::default(),
-            &BuildBudget::default(),
-        );
+        let no_cargo_override = ExecRunner
+            .run(
+                &gate_cmd(&format!("test \"$CARGO_TARGET_DIR\" != {review_dir}")),
+                review_dir,
+                "",
+                "",
+                "",
+                "",
+                &injected_fence,
+                &BuildEnv::default(),
+                &BuildBudget::default(),
+            )
+            .unwrap();
         assert!(
             no_cargo_override.pass,
             "an injected store_fence must never force a CARGO_TARGET_DIR override too: \
              {no_cargo_override:?}"
         );
 
-        let unfenced = ExecRunner.run(
-            &gate_cmd(&format!("test -z \"${STORE_FENCE_ENV}\"")),
-            "",
-            "",
-            "",
-            "",
-            "",
-            "",
-            &BuildEnv::default(),
-            &BuildBudget::default(),
-        );
+        let unfenced = ExecRunner
+            .run(
+                &gate_cmd(&format!("test -z \"${STORE_FENCE_ENV}\"")),
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                &BuildEnv::default(),
+                &BuildBudget::default(),
+            )
+            .unwrap();
         assert!(
             unfenced.pass,
             "an empty store_fence (the un-widened default) must not force a fence: {unfenced:?}"
