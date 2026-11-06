@@ -2027,7 +2027,7 @@ fn spec_lint_self_clean_over_the_committed_corpus() {
          or a regression in the heuristic"
     );
     assert_eq!(
-        shape_total, 140,
+        shape_total, 144,
         "F2 bundling / F6 copyability's corpus-wide total is pinned as a regression guard \
          (spot-checked legitimate by the round-5 adversary sweep), plus 8 hits added by \
          specs/80-criteria-survive-extraction.md, specs/81-deflake-held-port-contract.md and \
@@ -2036,11 +2036,12 @@ fn spec_lint_self_clean_over_the_committed_corpus() {
          single physical lines - and therefore over-long to this heuristic - so their full \
          text survives the first-physical-line extractor truncation that spec 80 itself \
          fixes; once 80's fix is in the operator binary, new specs wrap normally again and \
-         this pin only ever decreases from those files, plus 54 hits added by \
+         this pin only ever decreases from those files, plus 58 hits added by \
          specs/120-rigger-is-language-and-process-agnostic.md (8 F2, 15 F6) and \
-         specs/121-every-prompt-the-binary-ships-is-contract-or-framing.md (12 F2, 19 F6) \
+         specs/121-every-prompt-the-binary-ships-is-contract-or-framing.md (15 F2, 20 F6) \
          (operator review 2026-10-20: multi-clause and over-long criteria, advisory output on \
-         the two specs' own text), plus 4 hits added by \
+         the two specs' own text; specs/121's preflight rewrite adds 3 F2 and 1 F6 of the same \
+         kind), plus 4 hits added by \
          specs/123-the-spec-critique-passes-to-exhaustion.md (0 F2, 4 F6: its four criteria \
          are over-long, advisory output on the spec's own text); a changed total otherwise means \
          either a real spec edit (update this pin after reviewing the new/removed hits) or \
