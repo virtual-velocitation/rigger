@@ -3985,6 +3985,29 @@ mod tests {
         }
     }
 
+    /// Spec 121's SCAFFOLD DEFAULTS for the unit size cap: every rendering of the scaffold
+    /// declares `defaults.max_unit_added_lines: 3000`, which loads as that cap, under the one
+    /// comment line naming what the key switches.
+    #[test]
+    fn scaffold_workflow_declares_the_unit_size_cap_under_a_one_line_comment() {
+        const DECLARED: &str = "  # The unit size cap in added lines that the planner and plan \
+                                critique state; 0 = none.\n  max_unit_added_lines: 3000\n";
+        for (label, set, workflow) in every_rendering() {
+            assert_eq!(
+                (
+                    load_scaffold(set.as_ref(), &workflow)
+                        .workflow
+                        .defaults
+                        .max_unit_added_lines,
+                    workflow.matches(DECLARED).count(),
+                    workflow.matches("max_unit_added_lines").count()
+                ),
+                (3000, 1, 1),
+                "{label}: the scaffold declares the cap once, under its comment:\n{workflow}"
+            );
+        }
+    }
+
     /// Spec 102 criterion 2: `rigger init` on a FRESH project actually WRITES
     /// `defaults.max_parallel_units: 2` with its sizing comment to disk - the scaffold
     /// constant proven above must be what `init_project` emits, not just what it declares.
@@ -4755,6 +4778,25 @@ mod tests {
                     "{at} states the planning policy sentence {sentence:?} once"
                 );
             }
+        }
+    }
+
+    /// The unit size cap's scope sentence, which no prompt carries, lives in the planner's persona:
+    /// the committed planner and its scaffold seed each state it once, directly after the split
+    /// sentence of the planning policy.
+    #[test]
+    fn the_planner_persona_and_its_seed_state_the_cap_scope_after_the_split_sentence() {
+        let scope = crate::test_support::UNIT_SIZE_CAP_SCOPE;
+        let after_split = format!("{} {scope}", crate::test_support::PLANNING_POLICY[0]);
+        for (at, text) in shipped_planners() {
+            assert_eq!(
+                (
+                    text.matches(&after_split).count(),
+                    text.matches(scope).count()
+                ),
+                (1, 1),
+                "{at} states {scope:?} once, directly after the split sentence"
+            );
         }
     }
 

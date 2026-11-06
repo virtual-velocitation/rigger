@@ -204,8 +204,8 @@
       },
       {
         "file": "tests/common/fixtures/instructions.rs",
-        "start_line": 277,
-        "end_line": 279
+        "start_line": 293,
+        "end_line": 295
       },
       {
         "file": "tests/common/fixtures/spawn.rs",
@@ -345,7 +345,7 @@
     ]
   },
   {
-    "id": "dup-261fedbfbd66",
+    "id": "dup-e095ca500e2a",
     "sites": [
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
@@ -419,13 +419,8 @@
       },
       {
         "file": "tests/common/fixtures/plan_critique.rs",
-        "start_line": 35,
-        "end_line": 67
-      },
-      {
-        "file": "tests/common/fixtures/plan_critique.rs",
-        "start_line": 118,
-        "end_line": 123
+        "start_line": 148,
+        "end_line": 153
       },
       {
         "file": "tests/common/fixtures/spawn.rs",
@@ -974,13 +969,13 @@
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 4237,
-        "end_line": 4237
+        "start_line": 4260,
+        "end_line": 4260
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 4266,
-        "end_line": 4266
+        "start_line": 4289,
+        "end_line": 4289
       },
       {
         "file": "src/cli/validate.rs",
@@ -2209,63 +2204,63 @@
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 4212,
-        "end_line": 4212
+        "start_line": 4235,
+        "end_line": 4235
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 4568,
-        "end_line": 4568
+        "start_line": 4591,
+        "end_line": 4591
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 4624,
-        "end_line": 4624
+        "start_line": 4647,
+        "end_line": 4647
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 4724,
-        "end_line": 4724
+        "start_line": 4747,
+        "end_line": 4747
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 4843,
-        "end_line": 4843
+        "start_line": 4885,
+        "end_line": 4885
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 4845,
-        "end_line": 4845
+        "start_line": 4887,
+        "end_line": 4887
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 4846,
-        "end_line": 4846
+        "start_line": 4888,
+        "end_line": 4888
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 4847,
-        "end_line": 4847
+        "start_line": 4889,
+        "end_line": 4889
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 4860,
-        "end_line": 4860
+        "start_line": 4902,
+        "end_line": 4902
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 4873,
-        "end_line": 4873
+        "start_line": 4915,
+        "end_line": 4915
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 4876,
-        "end_line": 4876
+        "start_line": 4918,
+        "end_line": 4918
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 4878,
-        "end_line": 4878
+        "start_line": 4920,
+        "end_line": 4920
       },
       {
         "file": "src/cli/validate.rs",
@@ -3594,28 +3589,28 @@
       },
       {
         "file": "tests/common/fixtures/instructions.rs",
-        "start_line": 335,
-        "end_line": 335
+        "start_line": 351,
+        "end_line": 351
       },
       {
         "file": "tests/common/fixtures/instructions.rs",
-        "start_line": 398,
-        "end_line": 398
+        "start_line": 414,
+        "end_line": 414
       },
       {
         "file": "tests/common/fixtures/instructions.rs",
-        "start_line": 425,
-        "end_line": 425
+        "start_line": 441,
+        "end_line": 441
       },
       {
         "file": "tests/common/fixtures/instructions.rs",
-        "start_line": 456,
-        "end_line": 456
+        "start_line": 472,
+        "end_line": 472
       },
       {
         "file": "tests/common/fixtures/instructions.rs",
-        "start_line": 458,
-        "end_line": 458
+        "start_line": 474,
+        "end_line": 474
       },
       {
         "file": "tests/common/fixtures/liveness.rs",
@@ -3689,8 +3684,8 @@
       },
       {
         "file": "tests/critique_method_persona_periphery.rs",
-        "start_line": 205,
-        "end_line": 205
+        "start_line": 206,
+        "end_line": 206
       },
       {
         "file": "tests/dedup_seeding_periphery.rs",
@@ -4664,8 +4659,8 @@
     "sites": [
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 51194,
-        "end_line": 51196
+        "start_line": 51244,
+        "end_line": 51246
       },
       {
         "file": "crates/rigger-domain/src/metrics.rs",
@@ -8120,7 +8115,7 @@
     ]
   },
   {
-    "id": "dup-30d8bd7871ae",
+    "id": "dup-e9926340c5e8",
     "sites": [
       {
         "file": "tests/common/cli.rs",
@@ -8136,6 +8131,11 @@
         "file": "tests/common/fixtures/cursor.rs",
         "start_line": 173,
         "end_line": 175
+      },
+      {
+        "file": "tests/common/fixtures/plan_critique.rs",
+        "start_line": 97,
+        "end_line": 99
       },
       {
         "file": "tests/common/fixtures/spawn.rs",

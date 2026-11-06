@@ -6,7 +6,7 @@
 //! communication body's sentences that state the cadence the task prompts leave to it; the
 //! critique method the adversary and adjudicator personas
 //! hold under their `## When you critique a spec or a plan` section and each persona's share of
-//! it; the rule the sdet-author persona states for a documentation-only round and the fact its
+//! it; the unit size cap's scope sentence the planner and both critiquing personas state; the rule the sdet-author persona states for a documentation-only round and the fact its
 //! prompt states instead; the
 //! headings a composed system prompt carries, the handbook chapter that lists the built-in entries
 //! and their checked-in sources, each entry's body by name, a near name that shadows no
@@ -91,9 +91,22 @@ pub const WHEN_YOU_REVIEW: [&str; 9] = [
 /// The section heading a critiquing persona holds the critique method under.
 pub const WHEN_YOU_CRITIQUE_HEADING: &str = "## When you critique a spec or a plan";
 
+/// The unit size cap's scope sentence, spelled once for [`UNIT_SIZE_CAP_SCOPE`] and the unit-size
+/// rule of [`CRITIQUE_METHOD`].
+macro_rules! unit_size_cap_scope {
+    () => {
+        "The cap measures review scope - how much one review round must read - never code shape."
+    };
+}
+
+/// The unit size cap's scope sentence, which no prompt carries: the planner persona states it
+/// after its split sentence, and each critiquing persona after its unit-size rule.
+pub const UNIT_SIZE_CAP_SCOPE: &str = unit_size_cap_scope!();
+
 /// The critique sentences both the adversary's and the adjudicator's section hold: the section's
 /// scope, how a plan critique reads the text, Rules 7 and 8, the blast-radius note, the ownership
-/// defects, the numberless unit-size rule and the overlap rule.
+/// defects, the numberless unit-size rule with the cap's scope sentence after it, and the overlap
+/// rule.
 pub const CRITIQUE_METHOD: [&str; 8] = [
     "In a spec or plan critique this section's rules decide which finding blocks; the working \
      discipline's review rule decides a unit diff's findings.",
@@ -114,7 +127,10 @@ pub const CRITIQUE_METHOD: [&str; 8] = [
      not for mechanical overlap the partitioner already serializes.",
     "Ownership defects: twin criteria (two checkboxes claiming one concern) and bundling (one \
      checkbox carrying two mitigations) are each a BLOCKING finding.",
-    "- Unit size: a unit over the cap your prompt states is a BLOCKING finding.",
+    concat!(
+        "- Unit size: a unit over the cap your prompt states is a BLOCKING finding. ",
+        unit_size_cap_scope!()
+    ),
     "- Overlap: judge ownership/coherence, not the overlap.",
 ];
 

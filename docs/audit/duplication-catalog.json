@@ -361,7 +361,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-261fedbfbd66",
+    "id": "dup-e095ca500e2a",
     "classification": "near",
     "sites": [
       {
@@ -432,11 +432,6 @@
       {
         "file": "tests/common/fixtures/config.rs",
         "name": "separator_refusal",
-        "content_hash": "7963312db697b9f4"
-      },
-      {
-        "file": "tests/common/fixtures/plan_critique.rs",
-        "name": "plan_protocol_text",
         "content_hash": "7963312db697b9f4"
       },
       {
@@ -8820,7 +8815,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-30d8bd7871ae",
+    "id": "dup-e9926340c5e8",
     "classification": "near",
     "sites": [
       {
@@ -8839,6 +8834,11 @@
         "content_hash": "b051a6d6f4b01ca2"
       },
       {
+        "file": "tests/common/fixtures/plan_critique.rs",
+        "name": "unit_size_cap_sentence",
+        "content_hash": "b051a6d6f4b01ca2"
+      },
+      {
         "file": "tests/common/fixtures/spawn.rs",
         "name": "sleeping",
         "content_hash": "b051a6d6f4b01ca2"
@@ -8849,7 +8849,7 @@
         "content_hash": "8b0e1dc335016878"
       }
     ],
-    "proposed_home": "a new shared module (sites span 4 files: tests/common/cli.rs, tests/common/fixtures/cursor.rs, tests/common/fixtures/spawn.rs, tests/spec_critique_periphery.rs)",
+    "proposed_home": "a new shared module (sites span 5 files: tests/common/cli.rs, tests/common/fixtures/cursor.rs, tests/common/fixtures/plan_critique.rs, tests/common/fixtures/spawn.rs, tests/spec_critique_periphery.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },

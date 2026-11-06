@@ -142,9 +142,9 @@ fn served_over_a_reject_and_its_re_plan(root: &Path, reject: &str) -> ([String; 
 
 /// The task the first round's adjudicator, the second round's adversary and its adjudicator must
 /// be served over `root`'s scaffolded workflow after the reject line `reject`, each with the agent
-/// file its persona comes from: the framing, the cap, the unit list and the verdict paragraph, the
-/// re-plan round led by the reject and the adversary's closed by its findings protocol, and
-/// nothing else.
+/// file its persona comes from: the framing, the cap the workflow declares, the unit list and the
+/// verdict paragraph, the re-plan round led by the reject and the adversary's closed by its
+/// findings protocol, and nothing else.
 fn expected_tasks(root: &Path, reject: &str) -> [(&'static str, String); 3] {
     let config = loaded_config(root);
     let checkin = config.workflow.stages["checkin"].coverage.as_str();
@@ -159,6 +159,7 @@ fn expected_tasks(root: &Path, reject: &str) -> [(&'static str, String); 3] {
             ],
         ],
         DAG_DISJOINT_OVERLAP,
+        config.workflow.defaults.max_unit_added_lines,
     );
     let second_round = format!(
         "{DAG_PRIOR_REJECT_HEADER}{reject}\n\nThe planner has since revised the DAG; re-review it \
@@ -228,14 +229,18 @@ fn each_planner_spawn_is_served_the_planning_policy_by_its_persona_and_none_by_i
             copy_in_the_committed_planner,
         ),
     ];
-    let protocol = format!(
-        "{}\n",
-        plan_protocol_text(WORKER, "(no enumerated acceptance criteria)")
-    );
     for (given, arrange) in givens {
         let dir = scaffolded_project();
         let root = dir.path();
         arrange(root);
+        let protocol = format!(
+            "{}\n",
+            plan_protocol_text(
+                WORKER,
+                "(no enumerated acceptance criteria)",
+                loaded_config(root).workflow.defaults.max_unit_added_lines
+            )
+        );
         let planner = agent_text(root, "planner.md");
         assert_eq!(
             policy_counts(&planner),
