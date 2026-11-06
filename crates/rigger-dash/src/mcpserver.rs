@@ -2798,18 +2798,7 @@ mod tests {
         /// result records.", its container's contract otherwise word for word, and takes no
         /// argument.
         the_scratch_tool_names_no_toolchain:
-            assert_spawn_bound_entry(
-                "rigger_scratch",
-                json!({
-                    "name": "rigger_scratch",
-                    "description": "Your own rigger-assigned scratch container - the one \
-                                    directory every probe repo, verification worktree, test \
-                                    build, or build cache you create must live under, never \
-                                    /tmp or a session scratchpad. Reaped once your result \
-                                    records.",
-                    "inputSchema": {"type": "object", "properties": {}}
-                }),
-            );
+            assert_spawn_bound_entry("rigger_scratch", crate::test_support::scratch_tool_entry());
     }
 
     crate::test_cases! {

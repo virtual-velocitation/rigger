@@ -112,6 +112,21 @@ pub fn progress_tool_entry() -> serde_json::Value {
     })
 }
 
+/// The `rigger_scratch` entry a spawn's own MCP server lists: the reaped scratch container every
+/// probe repo, worktree, test build and build cache lives under, naming no toolchain's cache
+/// variable, with no argument.
+pub fn scratch_tool_entry() -> serde_json::Value {
+    serde_json::json!({
+        "name": "rigger_scratch",
+        "description": "Your own rigger-assigned scratch container - the one \
+                        directory every probe repo, verification worktree, test \
+                        build, or build cache you create must live under, never \
+                        /tmp or a session scratchpad. Reaped once your result \
+                        records.",
+        "inputSchema": {"type": "object", "properties": {}}
+    })
+}
+
 /// The argv a stand-in `claude` saved at `path`, one NUL-terminated field per argument.
 pub fn recorded_argv(path: &std::path::Path) -> Vec<String> {
     std::fs::read_to_string(path)

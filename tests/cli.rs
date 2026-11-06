@@ -10902,36 +10902,53 @@ fn every_host_hands_its_spawn_the_progress_cadence_once_through_its_system_promp
     }
 }
 
-/// Spec 121's THE PROGRESS CADENCE HAS ONE HOME at a spawn's own MCP server: given a spawn-bound
-/// `rigger mcp --spawn`, when its agent lists the tools over stdio, then the one `rigger_progress`
-/// entry names what the tool records and its argument only, and no tool of the list carries a
-/// sentence of the progress cadence, which the spawn's system prompt states.
-#[test]
-fn a_spawns_mcp_server_lists_the_progress_tool_without_the_progress_cadence() {
-    use common::fixtures::{assert_carries_each, progress_tool_entry, PROGRESS_CADENCE};
+/// The tool list a spawn-bound `rigger mcp --spawn` answers its agent's `tools/list` with over
+/// stdio, once the list is found to hold exactly one tool named `name`, its whole entry exactly
+/// `expected`.
+fn assert_a_spawns_server_lists(name: &str, expected: serde_json::Value) -> serde_json::Value {
     let dir = temp_project();
     let root = dir.path();
     seed_store(root);
     let mut mcp = McpSession::start_with(root, &["mcp", "--spawn", "u/implementer#0"]);
     let tools = mcp.call("tools/list", serde_json::json!({}))["result"]["tools"].clone();
-    let progress: Vec<&serde_json::Value> = tools
+    let listed: Vec<&serde_json::Value> = tools
         .as_array()
         .expect("tools/list answers with the tool list")
         .iter()
-        .filter(|tool| tool["name"] == "rigger_progress")
+        .filter(|tool| tool["name"] == name)
         .collect();
     assert_eq!(
-        progress,
-        [&progress_tool_entry()],
-        "the spawn's server lists one progress tool, naming what it records and its argument only"
-    );
-    assert_carries_each(
-        "the spawn's tool list",
-        &tools.to_string(),
-        &PROGRESS_CADENCE,
-        0,
+        listed,
+        [&expected],
+        "the spawn's server lists one {name} tool, its whole entry exactly the pinned one"
     );
     mcp.finish_cleanly();
+    tools
+}
+
+rigger::test_cases! {
+    /// Spec 121's THE PROGRESS CADENCE HAS ONE HOME at a spawn's own MCP server: given a
+    /// spawn-bound `rigger mcp --spawn`, when its agent lists the tools over stdio, then the one
+    /// `rigger_progress` entry names what the tool records and its argument only, and no tool of
+    /// the list carries a sentence of the progress cadence, which the spawn's system prompt states.
+    a_spawns_mcp_server_lists_the_progress_tool_without_the_progress_cadence:
+        common::fixtures::assert_carries_each(
+            "the spawn's tool list",
+            &assert_a_spawns_server_lists(
+                "rigger_progress",
+                common::fixtures::progress_tool_entry(),
+            )
+            .to_string(),
+            &common::fixtures::PROGRESS_CADENCE,
+            0,
+        );
+    /// Spec 121's THE SCRATCH TOOL NAMES NO TOOLCHAIN at a spawn's own MCP server: given a
+    /// spawn-bound `rigger mcp --spawn`, when its agent lists the tools over stdio, then the one
+    /// `rigger_scratch` entry says "build cache" where it named one toolchain's cache variable and
+    /// "Reaped once your result records.", its container's contract otherwise word for word, and
+    /// takes no argument.
+    a_spawns_mcp_server_lists_the_scratch_tool_naming_no_toolchain:
+        assert_a_spawns_server_lists("rigger_scratch", common::fixtures::scratch_tool_entry());
 }
 
 /// How far past the interval a beat of `rigger run` may land: the gap between two beats is the
