@@ -8399,11 +8399,13 @@ impl RunCtx<'_> {
 
     /// Build the plan-critique reviewer prompt (Unit 1, spec 10): the task framing and the
     /// output contract, never the method, which stands in each reviewer's persona. It names
-    /// those decomposition rules, states the unit size cap ([`unit_size_cap`]), lists the
-    /// proposed unit DAG and the deterministic rule-6 blast-radius analysis, and closes with the
-    /// verdict paragraph, whose cause contract tells a defect in a criterion's own text
-    /// (`spec-ambiguity`, which can stop the run - spec 112, criterion 5) from one a re-plan can
-    /// fix. On a re-plan it leads with the prior rejection so the reviewer judges the revised
+    /// those decomposition rules, states the unit size cap the workflow declares, if any
+    /// ([`Self::unit_size_cap_then`]), lists the proposed unit DAG and the deterministic rule-6
+    /// blast-radius analysis, and closes with the verdict paragraph, whose cause contract tells a
+    /// defect in a criterion's own text (`spec-ambiguity`, which can stop the run - spec 112,
+    /// criterion 5) from one a re-plan can fix, naming a unit over the size cap
+    /// ([`DAG_SIZE_CAP_CAUSE`]) among the latter only when a cap is declared. On a re-plan it
+    /// leads with the prior rejection so the reviewer judges the revised
     /// DAG against what was wrong before. The same prompt feeds the adversary (which appends the
     /// review_protocol and emits findings) and the adjudicator (whose stdout verdict gates the
     /// fan-out).
@@ -8424,8 +8426,8 @@ impl RunCtx<'_> {
             "You are the plan-critique gate. Review the PROPOSED unit DAG below - the \
              decomposition the planner produced - BEFORE any implementer runs, and judge \
              it against the decomposition rules in your persona: the CROSS-UNIT rules that \
-             per-unit review cannot see.\n\n{}\n\n",
-            unit_size_cap()
+             per-unit review cannot see.\n\n{}",
+            self.unit_size_cap_then("\n\n")
         ));
         b.push_str("Proposed units:\n");
         for (name, files) in radii {
@@ -8478,10 +8480,12 @@ impl RunCtx<'_> {
              own text and no decomposition can remove it (two criteria that contradict \
              under every landing order, a criterion no plan can satisfy, a demanded \
              mitigation no criterion owns); \"cause\":\"decomposition-conflict\" for every \
-             defect a re-plan can fix (twin units, a missing exclusion between units, a unit \
-             over the size cap, a unit owning no criterion, a split the planner chose). When \
-             unsure, \"cause\":\"decomposition-conflict\".\n",
-            spawn::CAUSE_SPEC_AMBIGUITY
+             defect a re-plan can fix (twin units, a missing exclusion between units, {}a unit \
+             owning no criterion, a split the planner chose). When unsure, \
+             \"cause\":\"decomposition-conflict\".\n",
+            spawn::CAUSE_SPEC_AMBIGUITY,
+            self.declared_unit_size_cap()
+                .map_or("", |_| DAG_SIZE_CAP_CAUSE)
         ));
         b
     }
@@ -11476,8 +11480,8 @@ impl RunCtx<'_> {
             .unwrap_or_default()
     }
 
-    /// The planner's refine protocol, with the run's acceptance criteria and the
-    /// implementer agent id filled in. Empty for a non-producer stage.
+    /// The planner's refine protocol, with the run's acceptance criteria, the implementer agent id
+    /// and the declared unit size cap, if any, filled in. Empty for a non-producer stage.
     fn plan_protocol(&self, st: &Stage) -> String {
         if !is_producer(st) {
             return String::new();
@@ -11499,10 +11503,26 @@ impl RunCtx<'_> {
         format!(
             "\n\n{}\n",
             PLAN_PROTOCOL
-                .replace("{unit_size_cap}", &format!("{} ", unit_size_cap()))
+                .replace("{unit_size_cap}", &self.unit_size_cap_then(" "))
                 .replace("{implementer}", &self.implementer_agent())
                 .replace("{criteria}", &criteria)
         )
+    }
+
+    /// The unit size cap the workflow declares in `defaults.max_unit_added_lines`: `Some` lines
+    /// when above `0`, `None` when the key is absent or `0` - the one reading of whether a cap
+    /// is declared.
+    fn declared_unit_size_cap(&self) -> Option<u32> {
+        Some(self.cfg.workflow.defaults.max_unit_added_lines).filter(|&cap| cap > 0)
+    }
+
+    /// What a prompt's cap slot holds: the [`unit_size_cap`] sentence and the `separator` after
+    /// it (the plan protocol's space, the DAG critique prompt's blank line) when the workflow
+    /// declares a cap ([`Self::declared_unit_size_cap`]), else nothing.
+    fn unit_size_cap_then(&self, separator: &str) -> String {
+        self.declared_unit_size_cap()
+            .map(|cap| format!("{}{separator}", unit_size_cap(cap)))
+            .unwrap_or_default()
     }
 
     /// The unit's TWO-VIEW blast radius (spec 16 unit 3, architecture 5.5.1): computed from the
@@ -13241,20 +13261,20 @@ fn gate_failure_cause(evidence: &[String]) -> String {
     format!("gate:{name}")
 }
 
-/// The unit size cap: a unit is too large for one review round when it is expected to add
-/// more than this many lines. It measures review scope, never code shape - no file or
-/// function size limit exists - and no gate measures it: the planner reads it in
+/// The unit size cap's sentence for a cap of `cap` lines: a unit is too large for one review
+/// round when it is expected to add more than `cap` lines. The plan protocol and every round of
+/// the DAG critique prompt carry it only when the workflow declares a cap
+/// (`defaults.max_unit_added_lines`); no gate measures it: the planner reads it in
 /// [`PLAN_PROTOCOL`] and splits a criterion by it, and the plan critique rejects a unit over it.
-const MAX_UNIT_ADDED_LINES: usize = 3000;
-
-/// The one sentence stating [`MAX_UNIT_ADDED_LINES`], carried by both the plan protocol and
-/// the plan critique.
-fn unit_size_cap() -> String {
-    format!(
-        "A unit is too large when it is expected to add more than {MAX_UNIT_ADDED_LINES} lines. \
-         The cap measures review scope - how much one review round must read - never code shape."
-    )
+/// That the cap measures review scope, never code shape, the planner's and both critiquing
+/// personas state.
+fn unit_size_cap(cap: u32) -> String {
+    format!("A unit is too large when it is expected to add more than {cap} lines.")
 }
+
+/// The cause example the DAG critique's cause contract names among the defects a re-plan can
+/// fix, only when the workflow declares a unit size cap.
+const DAG_SIZE_CAP_CAUSE: &str = "a unit over the size cap, ";
 
 const EMIT_PROTOCOL: &str = "Record each decision you make by calling the rigger_emit tool with type \"DecisionMade\" and data:\n{\"id\":\"<short-id>\",\"summary\":\"<one line>\",\"governs\":[\"<file>\"],\"supersedes\":\"<prior-id-or-empty>\"}\nThis writes it to the shared event log live, so other agents see it immediately.";
 
@@ -13264,8 +13284,9 @@ const EMIT_PROTOCOL: &str = "Record each decision you make by calling the rigger
 /// baseline implement unit per acceptance criterion, which the planner REFINES; each
 /// refinement is a `UnitProposed` carrying the spec criterion it serves. The `{criteria}`
 /// placeholder is filled with the run's actual acceptance criteria, `{implementer}` with the
-/// implementer agent id the conductor assigned the baseline, and `{unit_size_cap}` with the one
-/// unit size cap sentence ([`unit_size_cap`]) and a space.
+/// implementer agent id the conductor assigned the baseline, and `{unit_size_cap}` with the unit
+/// size cap sentence ([`unit_size_cap`]) and a space when the workflow declares a cap, else
+/// nothing.
 const PLAN_PROTOCOL: &str = "You are the planner. The conductor has ALREADY created one baseline implement unit per acceptance criterion below - the spec is decomposed by construction. Your job is to REFINE that baseline, not to re-decompose it. {unit_size_cap}Each part of a split echoes the split criterion's id and ends its `criterion` text with an OWNS sentence naming its part (the conductor keeps that sentence after the criterion's exact text as that unit's contract).\nEach criterion below is shown with a STABLE id in [brackets]. When your unit serves a criterion, your unit SUPERSEDES (replaces) that criterion's baseline - it does NOT run alongside it - so identify the criterion you serve by ECHOING its id: copy the id shown in brackets next to that criterion into the `criterion_id` field (the brackets are display delimiters - the conductor accepts the id with or without them). The conductor pairs your unit with its baseline by that id, so even if you reword or truncate the criterion text in `criterion`, the correct id still supersedes the one baseline (no duplicate). A wrong or missing `criterion_id` is what makes your unit run as an EXTRA unit on top of the baseline (duplicated work). Still copy the criterion text into `criterion` (verbatim is safest). Several units echoing the SAME id (a real split) all run and replace the one baseline.\nPropose each refinement by calling the rigger_emit tool with type \"UnitProposed\" and data:\n{\"id\":\"<short-id>\",\"agent\":\"{implementer}\",\"criterion\":\"<the spec criterion it serves>\",\"criterion_id\":\"<the id shown in [brackets] next to that criterion>\",\"needs\":[\"<unit ids it depends on>\"]}\nA unit whose `criterion_id` is none of the ids below still runs, but as a genuinely-new sub-unit that the conductor flags as unmatched. Every unit you propose - a refinement, a split, or a new sub-unit - automatically runs the fan-out template's own gates; you never need to name them.\n\nThe acceptance criteria to refine against (echo the [id] shown next to each criterion into that unit's `criterion_id`, and copy the text into `criterion`):\n{criteria}";
 
 /// The protocol a REVIEW agent (a lens or the adversary) follows so its findings

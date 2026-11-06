@@ -1253,7 +1253,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "a1e172d3e6785cf4"
+    "content_hash": "7797eda1bab5dac3"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -1613,7 +1613,23 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "056636ad3b2da24b"
+    "content_hash": "a936aec93dc608c4"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "declared_unit_size_cap",
+    "is_test": false,
+    "proposed_module": "conductor::run_ctx",
+    "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
+    "content_hash": "68f86467ce0c85cb"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "unit_size_cap_then",
+    "is_test": false,
+    "proposed_module": "conductor::run_ctx",
+    "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
+    "content_hash": "010d32009e831ed1"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -1933,7 +1949,7 @@
     "is_test": false,
     "proposed_module": "conductor::run",
     "reason": "name contains \"unit\" (unit run loop); grouped under `conductor::run`.",
-    "content_hash": "f233f4e4acdd9152"
+    "content_hash": "7dc4e1a19fe50586"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",

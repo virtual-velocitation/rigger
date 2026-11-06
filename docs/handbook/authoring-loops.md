@@ -20,7 +20,6 @@ Those two sentences are the rule the binary is held to. The rest of this section
 
 **Open exceptions.** These prescriptions still stand in the binary against the rule, each named by its constant or surface, and each is struck from this list as it is removed:
 
-- `MAX_UNIT_ADDED_LINES` and the second sentence of `unit_size_cap`
 - the toolchain words in `workflows/rigger.js`
 
 ### The review ceremony
@@ -117,12 +116,13 @@ A gate may declare `requires:`, the executables its command runs (`requires: [ca
 
 Upgrading an older workflow: the top-level `name:` key is retired, and `rigger validate` refuses a workflow.yml that still carries it - delete that line.
 
-Some behaviour a project once got unasked is now a `defaults:` key it declares, and an existing workflow.yml without the key behaves as declared, not as before: without `grep_guard: true`, no agent session carries the graph-first lookup hook and `rigger setup` removes rigger's own entry from `.claude/settings.json`, so add the key to keep a bare `grep` bouncing. Without `test_author: sdet-author` (or the id of whichever agent writes your periphery tests), no test author spawns at the build seam, whatever `.rigger/agents` defines, so add the key to keep that spawn; a load refuses an id no agent defines.
+Some behaviour a project once got unasked is now a `defaults:` key it declares, and an existing workflow.yml without the key behaves as declared, not as before: without `grep_guard: true`, no agent session carries the graph-first lookup hook and `rigger setup` removes rigger's own entry from `.claude/settings.json`, so add the key to keep a bare `grep` bouncing. Without `max_unit_added_lines: 3000` (or the cap you choose), neither the planner's plan protocol nor the plan critique states a unit size cap, so add the key to keep one. Without `test_author: sdet-author` (or the id of whichever agent writes your periphery tests), no test author spawns at the build seam, whatever `.rigger/agents` defines, so add the key to keep that spawn; a load refuses an id no agent defines.
 
 Some guidance an agent's prompt once carried now lives in a persona, and rigger never rewrites a persona a project already has, so copy each moved sentence into your own persona to keep it:
 
 - "Extend the existing owner test's needle for the changed sentence, or add no pin; never a new test." - the sdet-author's rule for a round that changed documentation only, in this repository's `.rigger/agents/sdet-author.md` under `## A documentation-only round`.
 - "Split a criterion whose one unit would be too large into ordered units (each `needs` the one before it), each owning a named part.", "If you discover a NECESSARY sub-unit or an ordering dependency the baseline missed, propose it.", "NEVER propose a unit that maps to no acceptance criterion - that is scope creep.", "Propose each refinement the moment you decide it.", "Do not write code." and "Only omit the id when you truly intend a new sub-unit." - the planner's planning policy, in this repository's `.rigger/agents/planner.md` and in the `planner.md` persona `rigger init` scaffolds.
+- "The cap measures review scope - how much one review round must read - never code shape." - the unit size cap's scope, in this repository's `.rigger/agents/planner.md`, `adversary.md` and `adjudicator.md` and in the personas of those names `rigger init` scaffolds.
 
 ### The knobs that matter
 

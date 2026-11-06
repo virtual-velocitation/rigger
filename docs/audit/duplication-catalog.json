@@ -713,31 +713,65 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-a6427ffb5410",
-    "classification": "exact",
+    "id": "dup-1a85ca096e4f",
+    "classification": "semantic",
+    "sites": [
+      {
+        "file": "crates/rigger-conductor/src/conductor.rs",
+        "name": "unit_size_cap_then",
+        "content_hash": "6cf93471a8cf3387"
+      },
+      {
+        "file": "tests/common/fixtures/plan_critique.rs",
+        "name": "unit_size_cap_then",
+        "content_hash": "03e6e3299c1df6df"
+      }
+    ],
+    "proposed_home": "one shared `unit_size_cap_then` helper (e.g. relocated into `tests/common`) rather than each file defining its own",
+    "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-e5d667c5394b",
+    "classification": "near",
     "sites": [
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
         "name": "unit_size_cap",
-        "content_hash": "c28c81e0bdeb1759"
+        "content_hash": "8b0e1dc335016878"
       },
       {
-        "file": "tests/cli.rs",
-        "name": "sweep_tool_refusal",
-        "content_hash": "c28c81e0bdeb1759"
+        "file": "tests/common/cli.rs",
+        "name": "emit_folded_line",
+        "content_hash": "b051a6d6f4b01ca2"
       },
       {
-        "file": "tests/gate_scratch_root_periphery.rs",
-        "name": "recording_gate",
-        "content_hash": "c28c81e0bdeb1759"
+        "file": "tests/common/cli.rs",
+        "name": "reclaimed_line",
+        "content_hash": "b051a6d6f4b01ca2"
+      },
+      {
+        "file": "tests/common/fixtures/cursor.rs",
+        "name": "caught_up_line",
+        "content_hash": "b051a6d6f4b01ca2"
+      },
+      {
+        "file": "tests/common/fixtures/plan_critique.rs",
+        "name": "unit_size_cap_sentence",
+        "content_hash": "b051a6d6f4b01ca2"
+      },
+      {
+        "file": "tests/common/fixtures/spawn.rs",
+        "name": "sleeping",
+        "content_hash": "b051a6d6f4b01ca2"
       },
       {
         "file": "tests/spec_critique_periphery.rs",
-        "name": "verb_head",
-        "content_hash": "c28c81e0bdeb1759"
+        "name": "gate_ceiling",
+        "content_hash": "8b0e1dc335016878"
       }
     ],
-    "proposed_home": "a new shared module (sites span 4 files: crates/rigger-conductor/src/conductor.rs, tests/cli.rs, tests/gate_scratch_root_periphery.rs, tests/spec_critique_periphery.rs)",
+    "proposed_home": "a new shared module (sites span 6 files: crates/rigger-conductor/src/conductor.rs, tests/common/cli.rs, tests/common/fixtures/cursor.rs, tests/common/fixtures/plan_critique.rs, tests/common/fixtures/spawn.rs, tests/spec_critique_periphery.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
@@ -8643,6 +8677,30 @@
     "disposition": "not-a-duplicate"
   },
   {
+    "id": "dup-184e63ddc1fc",
+    "classification": "exact",
+    "sites": [
+      {
+        "file": "tests/cli.rs",
+        "name": "sweep_tool_refusal",
+        "content_hash": "c28c81e0bdeb1759"
+      },
+      {
+        "file": "tests/gate_scratch_root_periphery.rs",
+        "name": "recording_gate",
+        "content_hash": "c28c81e0bdeb1759"
+      },
+      {
+        "file": "tests/spec_critique_periphery.rs",
+        "name": "verb_head",
+        "content_hash": "c28c81e0bdeb1759"
+      }
+    ],
+    "proposed_home": "a new shared module (sites span 3 files: tests/cli.rs, tests/gate_scratch_root_periphery.rs, tests/spec_critique_periphery.rs)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
     "id": "dup-3cfa6389efb7",
     "classification": "near",
     "sites": [
@@ -8811,45 +8869,6 @@
       }
     ],
     "proposed_home": "a new shared module (sites span 2 files: tests/common/cli.rs, tests/courier_registry_refresh_boundary_periphery.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
-    "id": "dup-e9926340c5e8",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "tests/common/cli.rs",
-        "name": "emit_folded_line",
-        "content_hash": "b051a6d6f4b01ca2"
-      },
-      {
-        "file": "tests/common/cli.rs",
-        "name": "reclaimed_line",
-        "content_hash": "b051a6d6f4b01ca2"
-      },
-      {
-        "file": "tests/common/fixtures/cursor.rs",
-        "name": "caught_up_line",
-        "content_hash": "b051a6d6f4b01ca2"
-      },
-      {
-        "file": "tests/common/fixtures/plan_critique.rs",
-        "name": "unit_size_cap_sentence",
-        "content_hash": "b051a6d6f4b01ca2"
-      },
-      {
-        "file": "tests/common/fixtures/spawn.rs",
-        "name": "sleeping",
-        "content_hash": "b051a6d6f4b01ca2"
-      },
-      {
-        "file": "tests/spec_critique_periphery.rs",
-        "name": "gate_ceiling",
-        "content_hash": "8b0e1dc335016878"
-      }
-    ],
-    "proposed_home": "a new shared module (sites span 5 files: tests/common/cli.rs, tests/common/fixtures/cursor.rs, tests/common/fixtures/plan_critique.rs, tests/common/fixtures/spawn.rs, tests/spec_critique_periphery.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },

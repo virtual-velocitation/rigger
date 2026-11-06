@@ -1805,6 +1805,8 @@ max_parallel_units: 2\n  \
 # this checkout that denies a `grep` not marked literal. Absent or false leaves it\n  \
 # out of every spawn, and `rigger setup` removes it from .claude/settings.json.\n  \
 grep_guard: true\n  \
+# The unit size cap in added lines that the planner and plan critique state; 0 = none.\n  \
+max_unit_added_lines: 3000\n  \
 # The three-tier review panel applied to EVERY implement unit. Declared once\n  \
 # here, inherited by the implement stage and every planner-proposed unit.\n  \
 review:\n    \
@@ -2008,7 +2010,8 @@ dependency carry no edge between them and run in parallel; never chain units in\
 order by default.\n\
 \n\
 Split a criterion whose one unit would be too large into ordered units (each `needs`\n\
-the one before it), each owning a named part. If you discover a NECESSARY sub-unit or\n\
+the one before it), each owning a named part. The cap measures review scope - how much\n\
+one review round must read - never code shape. If you discover a NECESSARY sub-unit or\n\
 an ordering dependency the baseline missed, propose it. NEVER propose a unit that maps\n\
 to no acceptance criterion - that is scope creep. Propose each refinement the moment\n\
 you decide it. Only omit the id when you truly intend a new sub-unit.\n",
@@ -2107,7 +2110,8 @@ concern cleanly - not for mechanical overlap the partitioner already serializes.
 Ownership defects: twin criteria (two checkboxes claiming one concern) and bundling (one\n\
 checkbox carrying two mitigations) are each a BLOCKING finding.\n\
 \n\
-- Unit size: a unit over the cap your prompt states is a BLOCKING finding.\n\
+- Unit size: a unit over the cap your prompt states is a BLOCKING finding. The cap\n  \
+measures review scope - how much one review round must read - never code shape.\n\
 - Overlap: judge ownership/coherence, not the overlap.\n\
 \n\
 Run these hunts, and name the hunt in each finding it produces:\n\
@@ -2166,7 +2170,8 @@ concern cleanly - not for mechanical overlap the partitioner already serializes.
 Ownership defects: twin criteria (two checkboxes claiming one concern) and bundling (one\n\
 checkbox carrying two mitigations) are each a BLOCKING finding.\n\
 \n\
-- Unit size: a unit over the cap your prompt states is a BLOCKING finding.\n\
+- Unit size: a unit over the cap your prompt states is a BLOCKING finding. The cap\n  \
+measures review scope - how much one review round must read - never code shape.\n\
 - Overlap: judge ownership/coherence, not the overlap.\n\
 \n\
 The judging rule: Reject ONLY for a rule 7 (ownership) or rule 8 (open disposition)\n\

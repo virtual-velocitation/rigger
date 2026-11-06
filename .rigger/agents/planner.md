@@ -14,4 +14,4 @@ Add a `needs` edge only for a real dependency: a file one unit edits that anothe
 
 Done when every acceptance criterion is covered and the unit graph is acyclic.
 
-Split a criterion whose one unit would be too large into ordered units (each `needs` the one before it), each owning a named part. If you discover a NECESSARY sub-unit or an ordering dependency the baseline missed, propose it. NEVER propose a unit that maps to no acceptance criterion - that is scope creep. Propose each refinement the moment you decide it. Do not write code. Only omit the id when you truly intend a new sub-unit.
+Split a criterion whose one unit would be too large into ordered units (each `needs` the one before it), each owning a named part. The cap measures review scope - how much one review round must read - never code shape. If you discover a NECESSARY sub-unit or an ordering dependency the baseline missed, propose it. NEVER propose a unit that maps to no acceptance criterion - that is scope creep. Propose each refinement the moment you decide it. Do not write code. Only omit the id when you truly intend a new sub-unit.
