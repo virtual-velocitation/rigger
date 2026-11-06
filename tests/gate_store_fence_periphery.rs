@@ -292,17 +292,19 @@ fn assert_fenced_scratch_store_reclaimed(
         store_fence,
         fence_dir,
     } = fence(&worktree.dir);
-    let result = ExecRunner.run(
-        gate,
-        &worktree.dir,
-        &target_dir,
-        "",
-        "",
-        "",
-        &store_fence,
-        &BuildEnv::default(),
-        &BuildBudget::default(),
-    );
+    let result = ExecRunner
+        .run(
+            gate,
+            &worktree.dir,
+            &target_dir,
+            "",
+            "",
+            "",
+            &store_fence,
+            &BuildEnv::default(),
+            &BuildBudget::default(),
+        )
+        .unwrap();
     assert!(
         result.pass,
         "a real fenced courier in a {kind} worktree must succeed before this test ever tears the \
@@ -339,17 +341,19 @@ fn a_real_fenced_courier_actually_succeeds_and_lands_in_an_isolated_persistent_s
     let dir = topo.worktree.to_string_lossy().into_owned();
     let target_dir = topo.target_dir.to_string_lossy().into_owned();
 
-    let first = ExecRunner.run(
-        &emit_gate("fence-emit-1", "fence-probe-1"),
-        &dir,
-        &target_dir,
-        "",
-        "",
-        "",
-        "",
-        &BuildEnv::default(),
-        &BuildBudget::default(),
-    );
+    let first = ExecRunner
+        .run(
+            &emit_gate("fence-emit-1", "fence-probe-1"),
+            &dir,
+            &target_dir,
+            "",
+            "",
+            "",
+            "",
+            &BuildEnv::default(),
+            &BuildBudget::default(),
+        )
+        .unwrap();
     assert!(
         first.pass,
         "a real fenced courier must succeed and land in the isolated scratch store, not \
@@ -363,17 +367,19 @@ fn a_real_fenced_courier_actually_succeeds_and_lands_in_an_isolated_persistent_s
     // A SECOND, independently spawned gate-fenced courier against the SAME target_dir must
     // see the FIRST one's write still there - a real, persistent, isolated store, not a
     // fresh empty one fabricated and discarded on every call.
-    let second = ExecRunner.run(
-        &emit_gate("fence-emit-2", "fence-probe-2"),
-        &dir,
-        &target_dir,
-        "",
-        "",
-        "",
-        "",
-        &BuildEnv::default(),
-        &BuildBudget::default(),
-    );
+    let second = ExecRunner
+        .run(
+            &emit_gate("fence-emit-2", "fence-probe-2"),
+            &dir,
+            &target_dir,
+            "",
+            "",
+            "",
+            "",
+            &BuildEnv::default(),
+            &BuildBudget::default(),
+        )
+        .unwrap();
     assert!(
         second.pass,
         "a second fenced courier against the same target_dir must also succeed: {second:?}"
@@ -411,17 +417,19 @@ fn a_fenced_gates_graph_read_resolves_inside_the_fence_never_the_live_graph() {
         autonomy: Autonomy::Manual,
         history: vec![],
     };
-    let result = ExecRunner.run(
-        &gate,
-        &topo.worktree.to_string_lossy(),
-        &target_dir,
-        "",
-        "",
-        "",
-        "",
-        &BuildEnv::default(),
-        &BuildBudget::default(),
-    );
+    let result = ExecRunner
+        .run(
+            &gate,
+            &topo.worktree.to_string_lossy(),
+            &target_dir,
+            "",
+            "",
+            "",
+            "",
+            &BuildEnv::default(),
+            &BuildBudget::default(),
+        )
+        .unwrap();
     let fence_graph = Path::new(&format!("{target_dir}{STORE_FENCE_SUFFIX}")).join("graph.db");
     assert!(
         result.pass && result.evidence.contains("no such entity") && fence_graph.is_file(),
@@ -486,17 +494,19 @@ fn an_unfenced_integrated_tree_gate_still_walks_up_to_the_live_store() {
     // exactly as it is never given a target_dir. `dir` is still explicit (never inherited
     // ambient cwd), so this test never risks running from - or writing into - wherever this
     // suite's own OS process happens to be.
-    let result = ExecRunner.run(
-        &emit_gate("unfenced-emit", "unfenced-probe"),
-        &dir,
-        "",
-        "",
-        "",
-        "",
-        "",
-        &BuildEnv::default(),
-        &BuildBudget::default(),
-    );
+    let result = ExecRunner
+        .run(
+            &emit_gate("unfenced-emit", "unfenced-probe"),
+            &dir,
+            "",
+            "",
+            "",
+            "",
+            "",
+            &BuildEnv::default(),
+            &BuildBudget::default(),
+        )
+        .unwrap();
     assert!(
         result.pass,
         "an unfenced courier must still succeed by walking up to the repo's real store: \
@@ -714,17 +724,19 @@ fn a_real_fenced_couriers_scratch_store_is_reclaimed_by_discard_too() {
     let fence_dir =
         review_fence_sibling(&dir).expect("a review worktree dir must derive a fence sibling");
 
-    let result = ExecRunner.run(
-        &emit_gate("discard-reclaim-emit", "discard-reclaim-probe"),
-        &dir,
-        "",
-        "",
-        "",
-        "",
-        &fence_dir,
-        &BuildEnv::default(),
-        &BuildBudget::default(),
-    );
+    let result = ExecRunner
+        .run(
+            &emit_gate("discard-reclaim-emit", "discard-reclaim-probe"),
+            &dir,
+            "",
+            "",
+            "",
+            "",
+            &fence_dir,
+            &BuildEnv::default(),
+            &BuildBudget::default(),
+        )
+        .unwrap();
     assert!(
         result.pass,
         "a real fenced courier for a review worktree (empty target_dir) must succeed: {result:?}"
@@ -920,17 +932,19 @@ fn an_unfenced_integrated_tree_couriers_registry_refresh_never_touches_the_real_
     std::env::set_var("KURRENTDB_CONN", "kurrentdb://127.0.0.1:1/");
     std::env::remove_var("KURRENTDB_CONN");
 
-    let result = ExecRunner.run(
-        &emit_gate("unfenced-registry-emit", "unfenced-registry-probe"),
-        &dir,
-        "",
-        "",
-        "",
-        "",
-        "",
-        &BuildEnv::default(),
-        &BuildBudget::default(),
-    );
+    let result = ExecRunner
+        .run(
+            &emit_gate("unfenced-registry-emit", "unfenced-registry-probe"),
+            &dir,
+            "",
+            "",
+            "",
+            "",
+            "",
+            &BuildEnv::default(),
+            &BuildBudget::default(),
+        )
+        .unwrap();
     assert!(
         result.pass,
         "the unfenced courier must still succeed by walking up to the repo's real store: \

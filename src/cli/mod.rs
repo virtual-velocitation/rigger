@@ -28,7 +28,7 @@ use rigger::eventstore::{
 };
 use rigger::gate::{
     resolve_build_layer, resolved_cache_dir, BuildEnv, ExecRunner, Gate, GateRequirements,
-    GateResult, Runner, STORE_FENCE_ENV,
+    GateResult, ProbeFault, Runner, STORE_FENCE_ENV,
 };
 use rigger::grounder::Grounder;
 use rigger::instructions;
@@ -3121,7 +3121,8 @@ fn format_stats_diff(run_id: &str, rev: &str, base: &Metrics, cand: &Metrics) ->
 /// replay answers them before any runner is consulted), so this is reached ONLY for a gate
 /// the CANDIDATE config introduced that the baseline never ran - which cannot be scored from
 /// recorded behaviour. It therefore FAILS SAFE (never a fabricated pass) and runs no shell,
-/// keeping the replay a pure offline re-fold of recorded facts.
+/// keeping the replay a pure offline re-fold of recorded facts. It probes no guard, so it
+/// never returns a [`ProbeFault`]: its result is always `Ok`.
 struct ReplayRunner;
 
 impl Runner for ReplayRunner {
@@ -3136,15 +3137,15 @@ impl Runner for ReplayRunner {
         _store_fence: &str,
         _build_env: &BuildEnv,
         _budget: &BuildBudget,
-    ) -> GateResult {
-        GateResult {
+    ) -> Result<GateResult, ProbeFault> {
+        Ok(GateResult {
             pass: false,
             evidence: format!(
                 "FAIL\ngate {}: not covered by the replayed trajectory (a candidate-config gate \
                  with no recorded verdict); rigger replay never executes a gate command",
                 g.id
             ),
-        }
+        })
     }
 }
 
@@ -4155,15 +4156,8 @@ fn reclaim_shared_build_cache(
             .unwrap_or_else(|| Path::new("."))
             .to_string_lossy(),
     );
-    if let Some(parent) = Path::new(&guard_path).parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let guard = std::fs::OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(false)
-        .open(&guard_path)?;
-    // Fully-qualified, matching `gate::build_cache_guard_is_usable`'s own reasoning: std's
+    let guard = rigger::gate::open_build_cache_guard(Path::new(&guard_path))?;
+    // Fully-qualified, matching `gate::probe_build_cache_guard`'s own reasoning: std's
     // more recently stabilized `File::try_lock`/`lock`/`unlock` share these exact names with
     // `fs2::FileExt`, and a plain method call would silently prefer the std inherent method
     // (leaving this crate's deliberate `fs2` choice unused) rather than genuinely exercising it.

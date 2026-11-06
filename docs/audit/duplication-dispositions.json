@@ -10,11 +10,6 @@
     "reason": "Each function formats a different durable key, message or shell fragment from different fields (review-round start, a review reject's failed record, the verified stamp, the plan-critique spec-defect stop's lesson, SpecDefect and completion records, compensation queue, conflict regeneration, stop message, spawn id, adversarial-sample identity, a whole-tree audit record id, a test fold's code-batch replay key, the fake host's shell fragment holding a wave's sessions at one gate until all of them stand there); the shared token shape is a one-line `format!`, and each replay key is the one named key fn its writers and readers share."
   },
   {
-    "id": "dup-500f0a1aa6c2",
-    "disposition": "not-a-duplicate",
-    "reason": "`spawn_crash` marks a conductor spawn crash's message with its sentinel so the single lane reruns the stage under the infra retry, while `unread_entry` builds the graph store's fold failure for an entry that asked a batch it was not handed; they share only the one-line `Error(format!(..))` shape, not a concern."
-  },
-  {
     "id": "dup-4b3a37bb0a60",
     "disposition": "not-a-duplicate",
     "reason": "Both already delegate to the shared `Adjudication::has_cause`; each names a different adjudicator cause with a different consequence (`infra-fault` reruns the stage uncharged, `spec-ambiguity` can stop the run at plan-critique)."

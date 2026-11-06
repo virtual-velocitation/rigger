@@ -393,6 +393,14 @@
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "marked",
+    "is_test": false,
+    "proposed_module": null,
+    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
+    "content_hash": "2ae29e095f656d0e"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "reruns",
     "is_test": false,
     "proposed_module": "conductor::refused_record",
@@ -481,11 +489,27 @@
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "probe_fault_halt",
+    "is_test": false,
+    "proposed_module": null,
+    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
+    "content_hash": "38f560b59c78df90"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "without_halt_markers",
+    "is_test": false,
+    "proposed_module": null,
+    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
+    "content_hash": "2a4482cda6344dfd"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "spawn_crash",
     "is_test": false,
     "proposed_module": "conductor::spawn",
     "reason": "name contains \"spawn\" (spawn lifecycle); grouped under `conductor::spawn`.",
-    "content_hash": "d5cd3ef3cc4ecacd"
+    "content_hash": "2b61f24df3b91d40"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -901,7 +925,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "e593ec4a07594eeb"
+    "content_hash": "5ec03bd78ef41c26"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -1325,7 +1349,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "85f3564fb93f02c3"
+    "content_hash": "eac8a6d003886e69"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -1341,7 +1365,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "fdc60713a4226bb4"
+    "content_hash": "327d4246d54eeb28"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -1365,7 +1389,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "36c667c296d0e515"
+    "content_hash": "d1879a8d62ad96a2"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -1437,7 +1461,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "4ef25e6d79c42c7d"
+    "content_hash": "08594c09e45b8d7c"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -6617,11 +6641,27 @@
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "regenerable_worktree",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "97ca4880f087a050"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "regenerate_conflicted_paths_returns_the_real_regeneration_commit_sha",
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "d109adbd35a3ecb9"
+    "content_hash": "28f6b92d2b651fee"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "a_probe_fault_on_the_regenerate_command_returns_the_halt_and_commits_nothing",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "e4f46fe1005aeefd"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -7029,7 +7069,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "2ed7edf02898841c"
+    "content_hash": "b99b4425211819e4"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -7253,7 +7293,15 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "85598d59482eb9dc"
+    "content_hash": "9c21fdc3062901a6"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "faulting_at",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "ae62227819a6b2e8"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -7317,7 +7365,15 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "2e41b0f034cbe609"
+    "content_hash": "969be78280745346"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "probe_fault",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "28161c4b9f3fe958"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -7349,7 +7405,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "b72f1a0ecd7167bf"
+    "content_hash": "2ace6f3471edeff8"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -8101,7 +8157,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "41867e933f76c76a"
+    "content_hash": "0aa45998af0bcc76"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -8118,6 +8174,14 @@
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
     "content_hash": "c1ea7f53964a69f9"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "assert_probe_fault_halts_the_step",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "2bd65bdafe560bfb"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -8221,7 +8285,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "23aa36a3133acc66"
+    "content_hash": "ab07c988662a1fc5"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -9781,7 +9845,7 @@
     "is_test": false,
     "proposed_module": "main::replay_runner",
     "reason": "method inside `impl Runner for ReplayRunner`; grouped with its other `ReplayRunner` methods.",
-    "content_hash": "d4e95b2f0ac23dfd"
+    "content_hash": "f9415c32f68d3c89"
   },
   {
     "file": "src/cli/mod.rs",
@@ -9981,7 +10045,7 @@
     "is_test": false,
     "proposed_module": "main::store",
     "reason": "name contains \"reclaim_\" (store hygiene); grouped under `main::store`.",
-    "content_hash": "78a4c6f89e315cbc"
+    "content_hash": "955737e7e06be519"
   },
   {
     "file": "src/cli/mod.rs",

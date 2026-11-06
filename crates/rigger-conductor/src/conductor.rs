@@ -1495,8 +1495,9 @@ pub(crate) fn is_store_fault(e: &Error) -> bool {
 }
 
 /// Whether `e` carries the sentinel `marker` ([`PARKED_MARKER`], [`BUDGET_MARKER`],
-/// [`DEGENERATE_MARKER`], [`MISMATCH_MARKER`], [`PLAN_LANDING_MARKER`] or
-/// [`LAND_REFUSED_MARKER`], each a halt's signal, [`EMIT_REFUSED_MARKER`], the emit guard's
+/// [`DEGENERATE_MARKER`], [`MISMATCH_MARKER`], [`PLAN_LANDING_MARKER`],
+/// [`LAND_REFUSED_MARKER`] or [`PROBE_FAULT_MARKER`], each a halt's signal,
+/// [`EMIT_REFUSED_MARKER`], the emit guard's
 /// refusal of a record the spawn emitted, [`INTERRUPTED_MARKER`], the host's interrupted
 /// close, or [`STORE_FAULT_MARKER`], a store read failing before the launch) rather than a plain
 /// spawn or stage failure. Robust to
@@ -1504,6 +1505,13 @@ pub(crate) fn is_store_fault(e: &Error) -> bool {
 /// survives as a substring.
 fn carries_marker(e: &Error, marker: &str) -> bool {
     e.0.contains(marker)
+}
+
+/// The error `message` travels as, marked with the sentinel `marker` that [`carries_marker`]
+/// reads back: the one spelling [`spawn_crash`] and [`probe_fault_halt`] build their errors
+/// with.
+fn marked(marker: &str, message: impl std::fmt::Display) -> Error {
+    Error(format!("{marker}{message}"))
 }
 
 /// The note a spawn re-run after the emit guard refused a record it emitted carries: the
@@ -1842,18 +1850,38 @@ fn plan_landing_failed(unit: &str, e: Error) -> Error {
 /// charges the unit no remediation attempt (no `UnitFailed`, no `UnitEscalated`).
 const LAND_REFUSED_MARKER: &str = "\u{1}rigger:land-refused\u{1}";
 
+/// The sentinel a FAILED GUARD PROBE embeds in its error (spec 121 criterion 19): a gate's
+/// requested shared-cache guard failed its probe, so the runner returned a
+/// [`gate::ProbeFault`] and ran nothing. A local filesystem answer that no wait and no rerun
+/// changes, only the operator's fix, so it is a halt over [`HALT_MARKERS`], never the F3
+/// infra rerun and never the run's hold.
+const PROBE_FAULT_MARKER: &str = "\u{1}rigger:probe-fault\u{1}";
+
+/// The error a gate runner's [`gate::ProbeFault`] travels as: its text, which names the guard
+/// path, the OS error and the operator's fix, marked with [`PROBE_FAULT_MARKER`].
+fn probe_fault_halt(fault: gate::ProbeFault) -> Error {
+    marked(PROBE_FAULT_MARKER, fault)
+}
+
 /// The halt sentinels [`run_wave`](RunCtx::run_wave) routes through its ONE no-lesson halt arm:
 /// each marks an infrastructure or configuration fault that halts the step loudly, with the
 /// marker stripped from the operator's message, while charging the unit no attempt (no
 /// `UnitFailed`, no `UnitEscalated`) and recording no per-unit lesson that would misattribute
 /// the fault to the unit. A new halt joins this list; it never grows an arm of its own.
-const HALT_MARKERS: [&str; 5] = [
+const HALT_MARKERS: [&str; 6] = [
     DEGENERATE_MARKER,
     MISMATCH_MARKER,
     PLAN_LANDING_MARKER,
     LAND_REFUSED_MARKER,
     INFRA_MARKER,
+    PROBE_FAULT_MARKER,
 ];
+
+/// `e` with every [`HALT_MARKERS`] sentinel stripped: the operator's message a halt reaches
+/// `conductor::run`'s caller with, from the wave's halt arm and the deferred gates alike.
+fn without_halt_markers(e: Error) -> Error {
+    Error(HALT_MARKERS.iter().fold(e.0, |msg, m| msg.replace(m, "")))
+}
 
 /// The sentinel an INFRA HALT (F3) embeds in its error so [`run_wave`](RunCtx::run_wave)
 /// routes it through its halt arm over [`HALT_MARKERS`]: a unit's stage failed on
@@ -1878,7 +1906,7 @@ const SPAWN_CRASH_MARKER: &str = "\u{1}rigger:spawn-crashed\u{1}";
 /// The error a sdet-author or review-tier spawn crash returns: `message` marked with
 /// [`SPAWN_CRASH_MARKER`].
 fn spawn_crash(message: String) -> Error {
-    Error(format!("{SPAWN_CRASH_MARKER}{message}"))
+    marked(SPAWN_CRASH_MARKER, message)
 }
 
 /// A sdet seam or review result split for the single lane: `Ok(Err(crash))` when it carries the
@@ -4430,7 +4458,7 @@ impl RunCtx<'_> {
             // A HALT - any of the [`HALT_MARKERS`] (a degenerate reviewer, a gating
             // persona's verdict-channel mismatch, a plan-stage commit-landing fault, a
             // landing refused by the run checkout's local changes, a unit's infra reruns
-            // past the taxonomy's infra limit) - is an infrastructure or configuration
+            // past the taxonomy's infra limit, a gate's failed guard probe) - is an infrastructure or configuration
             // fault, not the unit's failure. ONE arm for all of them: propagate the loud
             // halt as the wave's error with the recognition marker stripped (so the
             // operator's message stays clean), emit NO per-unit lesson here (it would
@@ -4439,9 +4467,7 @@ impl RunCtx<'_> {
             // no UnitFailed/UnitEscalated is written on any halt's path.
             Err(e) if HALT_MARKERS.iter().any(|m| carries_marker(&e, m)) => {
                 if first_err.is_none() {
-                    *first_err = Some(Error(
-                        HALT_MARKERS.iter().fold(e.0, |msg, m| msg.replace(m, "")),
-                    ));
+                    *first_err = Some(without_halt_markers(e));
                 }
             }
             Err(e) => {
@@ -9071,7 +9097,10 @@ impl RunCtx<'_> {
 
     /// [`run_gates`](Self::run_gates) for the stage run at `attempt` under infra retry
     /// `ordinal` (F3): the ordinal suffixes every gate key ([`gate_key`]), so an infra rerun
-    /// re-runs its gates instead of replaying the reds the outage left.
+    /// re-runs its gates instead of replaying the reds the outage left. A gate whose guard
+    /// probe fails ends the pass there as the [`probe_fault_halt`] `Err` (spec 121 criterion
+    /// 19): that gate records no verdict, the gates before it keep theirs, and no gate after it
+    /// runs.
     fn run_gates_at(
         &self,
         st: &Stage,
@@ -9275,18 +9304,20 @@ impl RunCtx<'_> {
             // Run the gate and fold the failure taxonomy's three-way outcome (spec 10,
             // unit 2): a clean pass; a flaky/infra failure that reran and PASSED (a
             // FlakyVerdict pass-with-warning); or a real failure (product/flaky demote,
-            // infra hold).
-            let (pass, flaky, ratchet, evidence) = self.run_gate_with_taxonomy(
-                &g,
-                dir,
-                &target,
-                &gate_scratch,
-                &build_cache_dir,
-                &build_cache_guard,
-                &store_fence,
-                &build_env,
-                &budget,
-            );
+            // infra hold). A failed guard probe is the halt instead, before any verdict.
+            let (pass, flaky, ratchet, evidence) = self
+                .run_gate_with_taxonomy(
+                    &g,
+                    dir,
+                    &target,
+                    &gate_scratch,
+                    &build_cache_dir,
+                    &build_cache_guard,
+                    &store_fence,
+                    &build_env,
+                    &budget,
+                )
+                .map_err(probe_fault_halt)?;
             // The compact gate evidence is threaded into the GateVerdict event payload
             // (item 3): a real run otherwise discarded it, so neither the ledger nor the
             // workflow driver ever saw WHY a gate passed or failed. `flaky` rides as the
@@ -9352,7 +9383,9 @@ impl RunCtx<'_> {
     /// while a failure that stays red across every rerun is a believed-real failure that
     /// demotes (`flaky`) or holds the ratchet (`infra`).
     ///
-    /// Returns `(recorded_pass, flaky_annotation, ratchet_effect, evidence)`.
+    /// Returns `(recorded_pass, flaky_annotation, ratchet_effect, evidence)`, or the
+    /// [`gate::ProbeFault`] of a failed guard probe on the first run or on any rerun, which
+    /// ends the gate there with no outcome and no further rerun (spec 121 criterion 19).
     #[allow(clippy::too_many_arguments)]
     fn run_gate_with_taxonomy(
         &self,
@@ -9365,7 +9398,7 @@ impl RunCtx<'_> {
         store_fence: &str,
         build_env: &gate::BuildEnv,
         budget: &BuildBudget,
-    ) -> (bool, bool, GateRatchet, String) {
+    ) -> Result<(bool, bool, GateRatchet, String), gate::ProbeFault> {
         let res = self.deps.gates.run(
             g,
             dir,
@@ -9376,9 +9409,9 @@ impl RunCtx<'_> {
             store_fence,
             build_env,
             budget,
-        );
+        )?;
         if res.pass {
-            return (true, false, GateRatchet::CleanPass, res.evidence);
+            return Ok((true, false, GateRatchet::CleanPass, res.evidence));
         }
         // Classify the failure. `FailureClass` is Copy and `Backoff` cheap to clone, so we
         // hold no borrow of the taxonomy across the rerun loop below.
@@ -9392,12 +9425,12 @@ impl RunCtx<'_> {
             // limit omitted (serde default 0) HOLDS the ratchet here exactly as it does
             // at the deferred site, never demotes by gate SITE. Routed through the single
             // demote-vs-hold authority so the three gate sites cannot drift.
-            return (
+            return Ok((
                 false,
                 false,
                 GateRatchet::for_persistent_failure(class),
                 first_evidence,
-            );
+            ));
         }
         for n in 0..limit {
             let delay = backoff.delay(n);
@@ -9418,7 +9451,7 @@ impl RunCtx<'_> {
                 store_fence,
                 build_env,
                 budget,
-            );
+            )?;
             if retry.pass {
                 // MIXED: the gate failed then passed - a FlakyVerdict pass-with-warning.
                 let evidence = format!(
@@ -9427,7 +9460,7 @@ impl RunCtx<'_> {
                     n + 1,
                     limit,
                 );
-                return (true, true, GateRatchet::FlakyPass, evidence);
+                return Ok((true, true, GateRatchet::FlakyPass, evidence));
             }
         }
         // Stayed red across every rerun: a believed-real failure. A `flaky` class demotes
@@ -9435,7 +9468,7 @@ impl RunCtx<'_> {
         // ratchet - an outage must not cost the gate its earned autonomy. Same single
         // demote-vs-hold authority as the early-return above and the deferred gate.
         let ratchet = GateRatchet::for_persistent_failure(class);
-        (false, false, ratchet, first_evidence)
+        Ok((false, false, ratchet, first_evidence))
     }
 
     /// Branch-GC as a projection over the log (spec 38, criterion 1): reclaim the
@@ -9612,6 +9645,10 @@ impl RunCtx<'_> {
     /// nothing; the step that drains the last park runs the gate once against the fully
     /// integrated tree. A verdict ALREADY recorded is replayed regardless of
     /// `converged`, so re-stepping a completed run stays idempotent.
+    ///
+    /// A deferred gate whose guard probe fails returns the [`probe_fault_halt`] `Err` with
+    /// its marker stripped (spec 121 criterion 19), recording no verdict for that gate and
+    /// running no deferred gate after it.
     fn run_deferred_gates(
         &self,
         stages: &BTreeMap<String, Stage>,
@@ -9696,17 +9733,25 @@ impl RunCtx<'_> {
                     // its gate scratch is empty too and the runner removes
                     // `RIGGER_GATE_SCRATCH` (spec 113).
                     let (cache_dir, guard) = self.shared_build_cache_paths();
-                    let res = self.deps.gates.run(
-                        &g,
-                        "",
-                        "",
-                        "",
-                        &cache_dir,
-                        &guard,
-                        "",
-                        &build_env,
-                        &self.build_budget(),
-                    );
+                    // A failed guard probe ends the run here as the halt, its marker stripped
+                    // through the wave halt arm's own fold so `conductor::run`'s caller reads
+                    // the same message as an inline halt; nothing below runs, so no deferred
+                    // verdict and no `DeferredGateFailed` is recorded (spec 121 criterion 19).
+                    let res = self
+                        .deps
+                        .gates
+                        .run(
+                            &g,
+                            "",
+                            "",
+                            "",
+                            &cache_dir,
+                            &guard,
+                            "",
+                            &build_env,
+                            &self.build_budget(),
+                        )
+                        .map_err(|fault| without_halt_markers(probe_fault_halt(fault)))?;
                     // The deferred phase-boundary gate keeps its single-run semantics (no
                     // taxonomy RERUN): it measures the ONE integrated tree once, so its
                     // verdict carries no flaky annotation (a whole-tree deferred rerun is
@@ -10836,7 +10881,8 @@ impl RunCtx<'_> {
     /// derives for a gate running in this exact worktree `dir` (Gap 19, spec 70 criterion 3)
     /// give this command the identical `CARGO_TARGET_DIR` isolation and store fence, so a
     /// regenerate build never races a concurrent unit's build cache or walks into the live
-    /// event store.
+    /// event store. A failed guard probe is returned as the [`probe_fault_halt`] `Err`, not
+    /// as this command's own failure, so it ends the step as a halt (spec 121 criterion 19).
     fn run_regenerate_command(&self, dir: &str, run: &str) -> Result<(), Error> {
         let target = crate::worktree::unit_cache_sibling(dir).unwrap_or_default();
         let gate_scratch =
@@ -10857,17 +10903,21 @@ impl RunCtx<'_> {
             autonomy: gate::Autonomy::Manual,
             history: Vec::new(),
         };
-        let res = self.deps.gates.run(
-            &g,
-            dir,
-            &target,
-            &gate_scratch,
-            &build_cache_dir,
-            &build_cache_guard,
-            &store_fence,
-            &build_env,
-            &budget,
-        );
+        let res = self
+            .deps
+            .gates
+            .run(
+                &g,
+                dir,
+                &target,
+                &gate_scratch,
+                &build_cache_dir,
+                &build_cache_guard,
+                &store_fence,
+                &build_env,
+                &budget,
+            )
+            .map_err(probe_fault_halt)?;
         if !res.pass {
             return Err(Error(format!(
                 "regenerate command {run:?} failed:\n{}",
@@ -38690,22 +38740,33 @@ mod tests {
     // with no `run()` lifecycle at all (no agents, no driver, no review panel): the returned
     // sha must be the REAL, dynamically-computed commit `commit_checkpoint` just made - a
     // value neither literal stub can ever produce - so a wrong return fails on the spot.
-    #[test]
-    fn regenerate_conflicted_paths_returns_the_real_regeneration_commit_sha() {
+    /// A one-commit git project, its worktree on branch `regen-branch`, and a config registering
+    /// `regen.txt` as regenerated by a command that writes `REGENERATED` into it.
+    fn regenerable_worktree() -> (tempfile::TempDir, Worktree, Config) {
         let repo = temp_git_project_with_commit();
-        let repo_path = repo.path().to_str().unwrap().to_string();
         let dir = std::env::temp_dir().join(format!("rigger-wt-regen-{}", uuid::Uuid::new_v4()));
-        let wt = Worktree::create(&repo_path, dir.to_str().unwrap(), "regen-branch", "").unwrap();
-
+        let wt = Worktree::create(
+            repo.path().to_str().unwrap(),
+            dir.to_str().unwrap(),
+            "regen-branch",
+            "",
+        )
+        .unwrap();
         let mut cfg = Config::default();
         cfg.workflow.regenerate = vec![crate::config::RegenerateRule {
             paths: vec!["regen.txt".into()],
             run: "printf 'REGENERATED\\n' > regen.txt".into(),
         }];
+        (repo, wt, cfg)
+    }
+
+    #[test]
+    fn regenerate_conflicted_paths_returns_the_real_regeneration_commit_sha() {
+        let (repo, wt, cfg) = regenerable_worktree();
         let store = Store::open(":memory:").unwrap();
         let driver = Stub::new();
         let deps = Deps {
-            repo: repo_path.clone(),
+            repo: repo.path().to_str().unwrap().to_string(),
             ..stub_deps(&store, &driver, Vec::new())
         };
         let ctx = RunCtx::for_test(&cfg, &deps);
@@ -38715,11 +38776,11 @@ mod tests {
             .expect("a registered regenerable path must regenerate and commit cleanly");
 
         assert_eq!(
-            std::fs::read_to_string(dir.join("regen.txt")).unwrap(),
+            std::fs::read_to_string(Path::new(&wt.dir).join("regen.txt")).unwrap(),
             "REGENERATED\n",
             "the registered command must actually have run in the worktree"
         );
-        let real_head = worktree::head_sha_of(dir.to_str().unwrap());
+        let real_head = worktree::head_sha_of(&wt.dir);
         assert!(
             !real_head.is_empty(),
             "the worktree must have a resolvable HEAD after the regenerate commit"
@@ -38729,6 +38790,39 @@ mod tests {
             "regenerate_conflicted_paths must return the REAL regeneration commit sha it just \
              made - never a stand-in literal (neither \"\" nor any other fixed string can ever \
              equal a real, dynamically-computed git sha)"
+        );
+
+        wt.remove().unwrap();
+    }
+
+    /// Spec 121 criterion 19: a guard-probe fault on a registered regeneration command returns
+    /// the probe-fault halt from `regenerate_conflicted_paths`, carrying its marker for
+    /// `settle_stage`'s halt arm, and commits nothing.
+    #[test]
+    fn a_probe_fault_on_the_regenerate_command_returns_the_halt_and_commits_nothing() {
+        let (repo, wt, cfg) = regenerable_worktree();
+        let store = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let runner = RecordingRunner::faulting_at(&[], 0);
+        let deps = Deps {
+            gates: &runner,
+            repo: repo.path().to_str().unwrap().to_string(),
+            ..stub_deps(&store, &driver, Vec::new())
+        };
+        let ctx = RunCtx::for_test(&cfg, &deps);
+        let head = worktree::head_sha_of(&wt.dir);
+
+        let got = ctx.regenerate_conflicted_paths(&wt, "regen-unit", &["regen.txt".to_string()]);
+
+        assert_eq!(
+            got.map_err(|e| e.0),
+            Err(format!("{PROBE_FAULT_MARKER}{}", probe_fault())),
+            "the regeneration's probe fault returns the marked halt"
+        );
+        assert_eq!(
+            (runner.calls(), worktree::head_sha_of(&wt.dir)),
+            (vec!["regenerate".to_string()], head),
+            "the faulted regeneration runs once and commits nothing"
         );
 
         wt.remove().unwrap();
@@ -40801,18 +40895,18 @@ mod tests {
             _store_fence: &str,
             _build_env: &gate::BuildEnv,
             _budget: &BuildBudget,
-        ) -> gate::GateResult {
+        ) -> Result<gate::GateResult, gate::ProbeFault> {
             let n = self.runs.fetch_add(1, Ordering::SeqCst);
             if n < self.fail_first {
-                gate::GateResult {
+                Ok(gate::GateResult {
                     pass: false,
                     evidence: self.evidence.clone(),
-                }
+                })
             } else {
-                gate::GateResult {
+                Ok(gate::GateResult {
                     pass: true,
                     evidence: "PASS".into(),
-                }
+                })
             }
         }
     }
@@ -42267,6 +42361,9 @@ mod tests {
         /// and a LATER spawn point (the review tier) this SAME process reaches once the gate
         /// returns.
         delete_worktree_dir: bool,
+        /// The 0-based index, in invocation order, of the one run that returns
+        /// [`probe_fault`] instead of a verdict (spec 121 criterion 19); `None` never faults.
+        fault_at: Option<usize>,
     }
     /// What a [`RecordingRunner`]'s gate does beyond recording its call.
     enum GateSideEffect {
@@ -42292,6 +42389,15 @@ mod tests {
                 materialize_cache: false,
                 fail: fail.iter().map(|s| s.to_string()).collect(),
                 delete_worktree_dir: false,
+                fault_at: None,
+            }
+        }
+        /// Like [`Self::new`], but the run at 0-based invocation index `call` records its call
+        /// and returns [`probe_fault`], running nothing (spec 121 criterion 19).
+        fn faulting_at(fail: &[&str], call: usize) -> Self {
+            RecordingRunner {
+                fault_at: Some(call),
+                ..RecordingRunner::new(fail)
             }
         }
         /// Like [`Self::new`], but every gate run also carries out `effect`.
@@ -42333,8 +42439,12 @@ mod tests {
             store_fence: &str,
             build_env: &gate::BuildEnv,
             _budget: &BuildBudget,
-        ) -> gate::GateResult {
-            self.calls.lock().unwrap().push(g.id.clone());
+        ) -> Result<gate::GateResult, gate::ProbeFault> {
+            let call = {
+                let mut calls = self.calls.lock().unwrap();
+                calls.push(g.id.clone());
+                calls.len() - 1
+            };
             self.targets.lock().unwrap().push(target.to_string());
             self.gate_scratches
                 .lock()
@@ -42356,6 +42466,9 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push(build_env.vars().to_vec());
+            if self.fault_at == Some(call) {
+                return Err(probe_fault());
+            }
             if self.materialize_cache && !target.is_empty() {
                 let _ = std::fs::create_dir_all(target);
                 let _ = std::fs::write(std::path::Path::new(target).join("built.rlib"), b"x");
@@ -42364,14 +42477,22 @@ mod tests {
                 let _ = std::fs::remove_dir_all(dir);
             }
             let pass = !self.fail.contains(&g.id);
-            gate::GateResult {
+            Ok(gate::GateResult {
                 pass,
                 evidence: if pass {
                     "PASS".into()
                 } else {
                     format!("FAIL\ngate {} failed", g.id)
                 },
-            }
+            })
+        }
+    }
+
+    /// The guard-probe fault a [`RecordingRunner`] returns at its faulting run.
+    fn probe_fault() -> gate::ProbeFault {
+        gate::ProbeFault {
+            guard: "/scratch/not-a-directory/cargo-target.lock".into(),
+            error: "Not a directory (os error 20)".into(),
         }
     }
 
@@ -42457,15 +42578,15 @@ mod tests {
             _store_fence: &str,
             _build_env: &gate::BuildEnv,
             _budget: &BuildBudget,
-        ) -> gate::GateResult {
+        ) -> Result<gate::GateResult, gate::ProbeFault> {
             let mut calls = self.calls.lock().unwrap();
             let prior = calls.iter().filter(|c| **c == g.id).count();
             calls.push(g.id.clone());
             let pass = !(g.id == self.gate && prior == 0);
-            gate::GateResult {
+            Ok(gate::GateResult {
                 pass,
                 evidence: if pass { "PASS" } else { "FAIL: transient" }.into(),
-            }
+            })
         }
     }
 
@@ -47494,17 +47615,17 @@ mod tests {
             _store_fence: &str,
             _build_env: &gate::BuildEnv,
             _budget: &BuildBudget,
-        ) -> gate::GateResult {
+        ) -> Result<gate::GateResult, gate::ProbeFault> {
             if g.id == self.fail {
-                gate::GateResult {
+                Ok(gate::GateResult {
                     pass: false,
                     evidence: self.evidence.clone(),
-                }
+                })
             } else {
-                gate::GateResult {
+                Ok(gate::GateResult {
                     pass: true,
                     evidence: "PASS".into(),
-                }
+                })
             }
         }
     }
@@ -47567,6 +47688,114 @@ mod tests {
             },
         );
         cfg
+    }
+
+    /// Spec 121 criterion 19, THE FAILED GUARD PROBE HALTS THE STEP: run `cfg` under a
+    /// [`RecordingRunner`] failing `fail` and returning [`probe_fault`] at invocation `fault_at`.
+    /// The run ends with the fault's text as its halt `Err`, the marker stripped, and that text
+    /// is the literal message naming the guard path, the OS error and the operator's fix; the
+    /// runner ran exactly `calls`, so no gate and no F3 rerun followed the fault; the log holds
+    /// exactly the pass's earlier `verdicts` and no verdict for the faulted gate; and no attempt
+    /// is charged: no `UnitFailed`, `UnitEscalated`, lesson, infra mark or `DeferredGateFailed`
+    /// is written.
+    fn assert_probe_fault_halts_the_step(
+        cfg: Config,
+        fail: &[&str],
+        fault_at: usize,
+        calls: &[&str],
+        verdicts: &[&str],
+    ) {
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let runner = RecordingRunner::faulting_at(fail, fault_at);
+        let deps = Deps {
+            gates: &runner,
+            ..stub_deps(&st, &driver, Vec::new())
+        };
+        let halt = run_isolated(&cfg, &deps).map(|_| ()).map_err(|e| e.0);
+        drop(deps);
+        let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert_eq!(
+            probe_fault().to_string(),
+            "build cache guard \"/scratch/not-a-directory/cargo-target.lock\" failed its probe: \
+             Not a directory (os error 20); fix the path or set the project's scratch root to a \
+             filesystem with advisory locks, then relaunch",
+            "the halt text names the guard path, the OS error and the operator's fix"
+        );
+        assert_eq!(
+            halt,
+            Err(probe_fault().to_string()),
+            "the probe fault ends the step as the halt, its marker stripped"
+        );
+        assert_eq!(runner.calls(), calls, "nothing runs after the faulted call");
+        assert_eq!(
+            (
+                unit_gate_verdict_keys(&events, "u"),
+                count_of_type(&events, contextgraph::TYPE_GATE_VERDICT)
+            ),
+            (
+                verdicts.iter().map(|v| v.to_string()).collect(),
+                verdicts.len()
+            ),
+            "the pass's earlier verdicts stay and the faulted gate records none"
+        );
+        assert_eq!(
+            [
+                count_of_type(&events, ledger::TYPE_UNIT_FAILED),
+                count_of_type(&events, ledger::TYPE_UNIT_ESCALATED),
+                count_of_type(&events, contextgraph::TYPE_LESSON_LEARNED),
+                count_of_type(&events, TYPE_DEFERRED_GATE_FAILED),
+                status_mark_keys(&events, "infra-retry").len(),
+                status_mark_keys(&events, "infra-halt").len(),
+            ],
+            [0; 6],
+            "a probe fault charges no attempt and writes no lesson, infra mark or deferred failure"
+        );
+    }
+
+    crate::test_cases! {
+        /// A fault on a gate's first run, after an earlier gate of the pass passed.
+        a_probe_fault_on_a_gates_first_run_halts_the_step_keeping_the_earlier_verdict:
+            assert_probe_fault_halts_the_step(
+                verify_only_cfg(vec![("g1", gate_def("true")), ("g2", gate_def("true"))]),
+                &[],
+                1,
+                &["g1", "g2"],
+                &["u/gate:g1#0"],
+            );
+        /// A fault on the taxonomy rerun of a gate whose first run failed under a flaky rule.
+        a_probe_fault_on_a_gates_taxonomy_rerun_halts_the_step_keeping_the_earlier_verdict: {
+            let mut cfg =
+                verify_only_cfg(vec![("g1", gate_def("true")), ("g2", gate_def("true"))]);
+            cfg.workflow.defaults.failure_rules = vec![config::FailureRuleDef {
+                match_: config::MatchDef {
+                    output_regex: Some("gate g2 failed".into()),
+                    ..Default::default()
+                },
+                class: "flaky".into(),
+                limit: 1,
+                ..Default::default()
+            }];
+            assert_probe_fault_halts_the_step(cfg, &["g2"], 2, &["g1", "g2", "g2"], &["u/gate:g1#0"])
+        };
+        /// A fault on the deferred gate at the phase boundary, after the inline gate passed.
+        a_probe_fault_on_a_deferred_gate_halts_the_run_keeping_the_inline_verdict:
+            assert_probe_fault_halts_the_step(
+                verify_only_cfg(vec![
+                    ("inline", gate_def("true")),
+                    (
+                        "deferred",
+                        config::Gate {
+                            kind: "deferred".into(),
+                            ..gate_def("true")
+                        },
+                    ),
+                ]),
+                &[],
+                1,
+                &["inline", "deferred"],
+                &["u/gate:inline#0"],
+            );
     }
 
     /// Two consecutive steps of `cfg` replaying the SAME recorded history: the run begins before
@@ -48406,21 +48635,21 @@ mod tests {
             _store_fence: &str,
             _build_env: &gate::BuildEnv,
             _budget: &BuildBudget,
-        ) -> gate::GateResult {
+        ) -> Result<gate::GateResult, gate::ProbeFault> {
             let out = run_git(dir, &["status", "--porcelain"]);
             let porcelain = String::from_utf8_lossy(&out.stdout);
             let dirty = !porcelain.trim().is_empty();
             if dirty {
                 self.saw_dirty.store(true, Ordering::SeqCst);
             }
-            gate::GateResult {
+            Ok(gate::GateResult {
                 pass: !dirty,
                 evidence: if dirty {
                     format!("worktree was dirty when gated: {}", porcelain.trim())
                 } else {
                     "tree clean".into()
                 },
-            }
+            })
         }
     }
 

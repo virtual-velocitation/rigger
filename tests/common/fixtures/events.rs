@@ -97,6 +97,19 @@ pub fn payloads_of_type(events: &[Event], type_: &str) -> Vec<serde_json::Value>
         .collect()
 }
 
+/// The `(gate, pass)` of every `GateVerdict` in `events`, in order.
+pub fn gate_outcomes(events: &[Event]) -> Vec<(String, bool)> {
+    payloads_of_type(events, rigger::contextgraph::TYPE_GATE_VERDICT)
+        .iter()
+        .map(|verdict| {
+            (
+                verdict["gate"].as_str().unwrap_or_default().to_string(),
+                verdict["pass"].as_bool().unwrap_or_default(),
+            )
+        })
+        .collect()
+}
+
 /// The summary of every lesson in `events` that records a stage failed in its wave, in order.
 pub fn wave_lessons(events: &[Event]) -> Vec<String> {
     payloads_of_type(events, rigger::contextgraph::TYPE_LESSON_LEARNED)
