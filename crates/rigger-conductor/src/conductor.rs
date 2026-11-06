@@ -48655,7 +48655,7 @@ mod tests {
     /// docs, and a round that changed nothing state no such fact.
     #[test]
     fn a_doc_only_round_states_only_the_fact_to_the_sdet_author() {
-        const FACT: &str = "This round changed documentation only.";
+        use crate::test_support::DOC_ONLY_ROUND_FACT as FACT;
         for (second_round, told, why) in [
             (
                 &["docs/diagram.svg", "README.md"][..],

@@ -12068,6 +12068,152 @@ fn every_resuming_role_falls_back_and_the_fresh_launch_answers_for_its_spawn() {
     assert_eq!(logged, told, "each fallback on the operator's log; {err}");
 }
 
+/// Spec 121's A DOC-ONLY ROUND STATES ONLY THE FACT, end to end: given a reviewed unit rejected
+/// once, whose sdet-author is this repository's committed persona, when `rigger run` drives a
+/// second round that changed documentation only, then the sdet-author's second launch is told that
+/// fact, last and once, before the live-progress frame, whether it resumes its session (the whole
+/// later-attempt task) or that session is gone (the whole prompt); a second round that changed code
+/// beside its docs and the first round, which no review has judged, are not told. No launch's task
+/// carries the rule such a round asks of the periphery tests, and every launch's system prompt
+/// carries it once, from the persona. The fake `claude` answers each spawn from one arm keyed on
+/// the spawn id, recording what each sdet-author launch received under its attempt.
+#[cfg(unix)]
+#[test]
+fn a_documentation_only_round_tells_the_sdet_author_only_that_fact() {
+    use common::fixtures::{status_sha, DOC_ONLY_ROUND_FACT, DOC_ONLY_ROUND_RULE};
+    let rule = DOC_ONLY_ROUND_RULE.to_lowercase();
+    for (case, writes, changed, stated) in [
+        (
+            "a round that changed documentation only",
+            [
+                "echo 'the unit' >> README.md",
+                "echo 'what changed' >> CHANGELOG.md",
+            ],
+            "CHANGELOG.md, README.md",
+            true,
+        ),
+        (
+            "a round that changed code beside its docs",
+            [
+                "echo 'the unit' >> README.md",
+                "echo 'pub fn more() {}' >> work.rs",
+            ],
+            "README.md, work.rs",
+            false,
+        ),
+    ] {
+        let round_1 = writes.join("\n        ");
+        for resumes in [true, false] {
+            let (session, on_resume) = if resumes {
+                ("resumed", ":")
+            } else {
+                ("gone", "exit 1")
+            };
+            let dir = temp_git_project_with_commit();
+            let root = dir.path();
+            write_reviewed_unit(root);
+            std::fs::write(
+                root.join(".rigger/agents/sdet-author.md"),
+                repo_text(".rigger/agents/sdet-author.md"),
+            )
+            .unwrap();
+            let scratch = tempfile::tempdir().unwrap();
+            let arms = format!(
+                r#"  *)
+    case " $* " in
+    *" --resume "*) {on_resume} ;;
+    esac
+    case "$RIGGER_SPAWN" in
+    solo/sdet-author#*)
+        n=${{RIGGER_SPAWN##*#}}
+        printf '%s\0' "$@" > "$here/sdet-argv-$n"
+        printf '%s\n' "$first" > "$here/sdet-first-$n"
+        cp "$sp_file" "$here/sdet-system-$n"
+        echo "$RIGGER_SPAWN answered"
+        ;;
+    solo/implementer#0) echo "pub fn work() {{}}" >> work.rs ;;
+    solo/implementer#1)
+        {round_1}
+        ;;
+    solo/adjudicator#0) echo '{REQUIRED_REJECT}' ;;
+    solo/adjudicator#1) echo '{{"verdict":"approve"}}' ;;
+    *) echo "$RIGGER_SPAWN answered" ;;
+    esac
+    ;;
+"#
+            );
+            let (out, err, ok, fake) = run_on_arms(root, &["run"], scratch.path(), &arms);
+            let at = format!("{case}, its session {session}");
+            assert!(ok, "{at}: the run exits 0; stderr: {err}\nstdout: {out}");
+            assert_eq!(
+                out.lines().nth(2),
+                Some("done: every unit integrated"),
+                "{at}: the second round's approve landed the unit: {out}"
+            );
+            let recorded =
+                |what: &str, attempt: u32| fake.path().join(format!("bin/sdet-{what}-{attempt}"));
+            let resumed = |attempt| {
+                recorded_argv(&recorded("argv", attempt))
+                    .iter()
+                    .any(|word| word == "--resume")
+            };
+            assert_eq!(
+                [resumed(0), resumed(1)],
+                [false, resumes],
+                "{at}: whether the sdet-author's launch that answered each round resumed"
+            );
+            let opening = recorded_task(&recorded("first", 0));
+            let closing = recorded_task(&recorded("first", 1));
+            assert_eq!(
+                opening.matches(DOC_ONLY_ROUND_FACT).count(),
+                0,
+                "{at}: the first round has no reviewed base, so no fact:\n{opening}"
+            );
+            if resumes {
+                let base = status_sha(
+                    &read_run_events(root),
+                    "\"status\":\"review-round-start\"",
+                    "the first review round stamped the sha it judged",
+                );
+                let fact = if stated { DOC_ONLY_ROUND_FACT } else { "" };
+                assert_eq!(
+                    closing,
+                    format!(
+                        "LATER ATTEMPT: the implementer has revised this unit since review sent \
+                         this unit back at {base} - `git diff {base}..HEAD` since changed \
+                         {changed}. Bring the periphery tests in line with that change.\n\
+                         {fact}{LIVE_PROGRESS_FRAME}"
+                    ),
+                    "{at}: the resumed session's whole task"
+                );
+            } else {
+                let last = format!("\n\n{DOC_ONLY_ROUND_FACT}{LIVE_PROGRESS_FRAME}");
+                assert_eq!(
+                    (
+                        closing.matches(DOC_ONLY_ROUND_FACT).count(),
+                        closing.ends_with(&last)
+                    ),
+                    (usize::from(stated), stated),
+                    "{at}: the fresh launch's whole prompt states the fact once and last exactly \
+                     when the round changed documentation only:\n{closing}"
+                );
+            }
+            for (attempt, task) in [(0, &opening), (1, &closing)] {
+                assert!(
+                    !task.to_lowercase().contains(&rule),
+                    "{at}, round {attempt}: the task leaves the rule to the persona:\n{task}"
+                );
+                let system = std::fs::read_to_string(recorded("system", attempt)).unwrap();
+                assert_eq!(
+                    system.matches(DOC_ONLY_ROUND_RULE).count(),
+                    1,
+                    "{at}, round {attempt}: the system prompt carries the persona's rule once"
+                );
+            }
+        }
+    }
+}
+
 /// Spec 64, criterion 3, adjudication round 3 finding
 /// `adv-u3c3r3-ensure-present-covers-only-the-first-tier` (UPHELD, closed by round 4's
 /// `impl-u3c3-r4-reassert-centralized-in-run-reviewer`): the TRUE periphery of round 4's
