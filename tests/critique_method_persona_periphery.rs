@@ -46,14 +46,14 @@ const REVIEWED: &str = "reviewed the DAG";
 /// The findings protocol that closes the adversary's task, spelled whole: an oracle reading the
 /// production text would pass over a method sentence added to it.
 const ADVERSARY_FINDINGS_PROTOCOL: &str = "Record each review finding you raise by calling the \
-    rigger_emit tool the moment you raise it, with type \"ReviewFinding\" and data:\n\
+    rigger_emit tool with type \"ReviewFinding\" and data:\n\
     {\"id\":\"<short-id>\",\"by\":\"adversary\",\"summary\":\"<one line>\",\
     \"about\":[\"<file>\"]}\n\
     The `by` field ATTRIBUTES the finding to you - keep it EXACTLY as \"adversary\" so the \
     review-quality metrics can measure your findings' survival even when you run out-of-process \
     (where the conductor stamps no actor for you). This writes the finding to the shared context \
     graph live, so the adversary, the adjudicator, and your fellow reviewers see it immediately \
-    (via grounding and rigger_peers) and address or refute it. Never write to this unit's own \
+    (via grounding and rigger_peers). Never write to this unit's own \
     worktree - it is the tree being judged, not yours to edit. A reproduction builds into the \
     build cache your spawn carries: the unit's review cache, never the cache the unit's gates \
     use. Leave the unit's worktree exactly as you found it.";

@@ -35950,7 +35950,8 @@ mod tests {
 
     /// Assert the CANONICAL IDENTITY SURFACE of `review` (spec 120, criterion 6): the review
     /// spawns and the verdict [`review_identity`] reads equal `golden`, captured on the tree
-    /// before the review panel ran as a sequence of steps.
+    /// before the review panel ran as a sequence of steps, its prompt hashes re-taken over the
+    /// protocols spec 121 cut.
     fn assert_review_identity(review: crate::config::ReviewPanel, golden: &[&str]) {
         let (lines, prompts) = review_identity(review);
         assert_eq!(lines, golden, "the review task prompts:\n{prompts}");
@@ -35971,15 +35972,17 @@ mod tests {
     }
 
     // The golden lines [`review_identity`] read on the tree before the review panel ran as a
-    // sequence of steps (spec 120, criterion 6): each review spawn, then each status stamp.
-    const ARCHITECTURE_LENS_SPAWN: &str = r#"s/lens:architecture-reviewer#0 [] 90da538e7cf34bb5"#;
-    const SDET_LENS_SPAWN: &str = r#"s/lens:sdet#0 [] 7ce018ae5d845d41"#;
+    // sequence of steps (spec 120, criterion 6), each review prompt's hash re-taken once spec 121
+    // cut the cadence clauses out of the decision and finding protocols: each review spawn, then
+    // each status stamp.
+    const ARCHITECTURE_LENS_SPAWN: &str = r#"s/lens:architecture-reviewer#0 [] 205b096ff6577155"#;
+    const SDET_LENS_SPAWN: &str = r#"s/lens:sdet#0 [] 96476a31e07beb09"#;
     const ADVERSARY_SPAWN: &str =
-        r#"s/adversary#0 ["lens:architecture-reviewer", "lens:sdet"] 711070660f68834f"#;
-    const ADJUDICATOR_AFTER_LENSES_AND_ADVERSARY_SPAWN: &str = r#"s/adjudicator#0 ["lens:architecture-reviewer", "lens:sdet", "adversary"] eefbf75b395904f6"#;
+        r#"s/adversary#0 ["lens:architecture-reviewer", "lens:sdet"] 54523a38d9eefe93"#;
+    const ADJUDICATOR_AFTER_LENSES_AND_ADVERSARY_SPAWN: &str = r#"s/adjudicator#0 ["lens:architecture-reviewer", "lens:sdet", "adversary"] f2483337e5d3ae91"#;
     const ADJUDICATOR_AFTER_LENSES_SPAWN: &str =
-        r#"s/adjudicator#0 ["lens:architecture-reviewer", "lens:sdet"] eefbf75b395904f6"#;
-    const ADJUDICATOR_AFTER_SDET_SPAWN: &str = r#"s/adjudicator#0 ["lens:sdet"] eefbf75b395904f6"#;
+        r#"s/adjudicator#0 ["lens:architecture-reviewer", "lens:sdet"] f2483337e5d3ae91"#;
+    const ADJUDICATOR_AFTER_SDET_SPAWN: &str = r#"s/adjudicator#0 ["lens:sdet"] f2483337e5d3ae91"#;
     const GREEN_STAMP: &str = r#""green" {"green":"implemented by worker"} Some("worker-model")"#;
     const VERIFIED_STAMP: &str = r#""verified" {} Some("worker-model")"#;
     const LIGHT_TIER_STAMP: &str = r#""review-tier" {"blast-radius":"1","empty-radius":"false","flapped":"false","high-risk-path":"","review-tier":"light","threshold":"5"} None"#;
@@ -41153,6 +41156,145 @@ mod tests {
                 tier,
                 &normalize_ws(&system),
             );
+        }
+    }
+
+    /// Spec 121's THE TASK PROMPTS CARRY NO CADENCE OR METHOD: the decision protocol, the finding
+    /// protocol, each grounding section rendered over one node and the run notes over one note keep
+    /// their shapes and nouns, byte for byte, with every cadence or method clause cut, and a
+    /// built-in states each cut clause, each sentence once: the communication body the cadence, the
+    /// working-discipline body the grounding method and the notes' review rule.
+    #[test]
+    fn every_task_prompt_text_keeps_its_shape_and_leaves_its_cadence_and_method_to_a_built_in() {
+        use crate::test_support::{
+            assert_carries_each, builtin_body, GROUNDING_METHOD, RECORD_EACH_DECISION,
+            RECORD_EACH_FINDING, SUPERSEDE_A_PEER, WHEN_YOU_REVIEW,
+        };
+        let seed = vec!["core.rs".to_string()];
+        let design_intent = {
+            let doc = |type_: &str, payload: Value| {
+                Event::new(type_, serde_json::to_vec(&payload).unwrap())
+            };
+            let g = crate::test_support::fold_events([
+                doc(
+                    contextgraph::TYPE_DOC_CONCEPT_EXTRACTED,
+                    json!({ "kind": contextgraph::KIND_HANDBOOK_RULE, "id": "docs/loops.md", "title": "the loop rule", "doc": "docs/loops.md" }),
+                ),
+                doc(
+                    contextgraph::TYPE_DOC_LINK_EXTRACTED,
+                    json!({ "from": "docs/loops.md", "to": "core.rs", "rel": contextgraph::REL_GOVERNS }),
+                ),
+            ])
+            .subgraph(&seed, 2)
+            .unwrap();
+            let mut b = String::new();
+            write_design_intent(&mut b, &g, &seed);
+            b
+        };
+        let note = RunNote {
+            id: "n-one".into(),
+            about: vec!["core.rs:3".into()],
+            summary: "name the bound".into(),
+        };
+        let communication = "communication";
+        let discipline = "working-discipline";
+        let grounding = [(discipline, GROUNDING_METHOD)];
+        // Each built-in a row's cut clauses moved to, with the one sentence that states it there.
+        type Stated<'a> = Vec<(&'a str, &'a str)>;
+        let rows: [(&str, String, String, Stated); 8] = [
+            (
+                "the decision protocol",
+                EMIT_PROTOCOL.to_string(),
+                "Record each decision you make by calling the rigger_emit tool with type \
+                 \"DecisionMade\" and data:\n{\"id\":\"<short-id>\",\"summary\":\"<one line>\",\
+                 \"governs\":[\"<file>\"],\"supersedes\":\"<prior-id-or-empty>\"}\nThis writes it \
+                 to the shared event log live, so other agents see it immediately."
+                    .to_string(),
+                vec![(communication, RECORD_EACH_DECISION)],
+            ),
+            (
+                "the finding protocol",
+                review_protocol("lens:x"),
+                format!(
+                    "Record each review finding you raise by calling the rigger_emit tool with \
+                     type \"ReviewFinding\" and data:\n{{\"id\":\"<short-id>\",\"by\":\"lens:x\",\
+                     \"summary\":\"<one line>\",\"about\":[\"<file>\"]}}\nThe `by` field \
+                     ATTRIBUTES the finding to you - keep it EXACTLY as \"lens:x\" so the \
+                     review-quality metrics can measure your findings' survival even when you run \
+                     out-of-process (where the conductor stamps no actor for you). This writes the \
+                     finding to the shared context graph live, so the adversary, the adjudicator, \
+                     and your fellow reviewers see it immediately (via grounding and \
+                     rigger_peers).{REVIEWER_DISCIPLINE}"
+                ),
+                vec![(communication, RECORD_EACH_FINDING), grounding[0]],
+            ),
+            (
+                "the decisions section",
+                render_capped_decisions(&[("d-one", "keep the port".into(), "")], &seed),
+                "Decisions that govern these files:\n- d-one: keep the port\n\n".to_string(),
+                SUPERSEDE_A_PEER
+                    .map(|sentence| (communication, sentence))
+                    .to_vec(),
+            ),
+            (
+                "the code neighborhood section",
+                render_code_neighborhood(&[("core.rs", "run", "function", 1)], &seed),
+                "Code neighborhood of these files (definitions the run extracted into the unified \
+                 graph):\n- core.rs:1  function run\n\n"
+                    .to_string(),
+                grounding.to_vec(),
+            ),
+            (
+                "the design intent section",
+                design_intent,
+                "Design intent that governs these files (the handbook rule that governs them, the \
+                 RA/architecture section that specifies them, the load-bearing decision that \
+                 constrains them, and the local rationale - reached by the one graph traversal):\n\
+                 - GOVERNS core.rs  docs/loops.md: the loop rule\n\n"
+                    .to_string(),
+                grounding.to_vec(),
+            ),
+            (
+                "the lessons section",
+                render_capped_lessons(&[("l-one", "pin the bound".into())], &seed),
+                "Lessons already learned about these files:\n- l-one: pin the bound\n\n"
+                    .to_string(),
+                grounding.to_vec(),
+            ),
+            (
+                "the findings section",
+                render_capped_findings(&[("f-one", "lens:x", "the bound is off".into())], &seed),
+                "Findings other reviewers have already raised about these files:\n\
+                 - lens:x (f-one): the bound is off\n\n"
+                    .to_string(),
+                grounding.to_vec(),
+            ),
+            (
+                "the run notes",
+                notes_block(&[note]),
+                "\n\nRUN NOTES: the review of this run upheld these findings:\n\
+                 - n-one (core.rs:3): name the bound\n\
+                 Fix every note that is still true; leave a note that is false or already fixed.\n"
+                    .to_string(),
+                WHEN_YOU_REVIEW[5..8]
+                    .iter()
+                    .map(|sentence| (discipline, *sentence))
+                    .collect(),
+            ),
+        ];
+        for (what, text, want, stated) in rows {
+            assert_eq!(
+                text, want,
+                "{what} keeps its shape and nouns with every cadence or method clause cut"
+            );
+            for (built_in, sentence) in stated {
+                assert_carries_each(
+                    &format!("the {built_in} built-in, which states what {what} no longer does,"),
+                    &normalize_ws(builtin_body(built_in)),
+                    &[sentence],
+                    1,
+                );
+            }
         }
     }
 

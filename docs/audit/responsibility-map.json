@@ -7105,6 +7105,14 @@
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "every_task_prompt_text_keeps_its_shape_and_leaves_its_cadence_and_method_to_a_built_in",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "0d312c4193749512"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "unparseable_adjudicator_output_blocks_integration",
     "is_test": true,
     "proposed_module": "conductor::tests",
@@ -11222,6 +11230,14 @@
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
     "content_hash": "2535c78cb1854648"
+  },
+  {
+    "file": "src/cli/mod.rs",
+    "name": "the_shim_peers_refresh_keeps_its_noun_and_leaves_its_cadence_to_the_communication_built_in",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "8a27089e017762d5"
   },
   {
     "file": "src/cli/mod.rs",

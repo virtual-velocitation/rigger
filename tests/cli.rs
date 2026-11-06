@@ -11917,7 +11917,7 @@ fn the_attempt_after_a_fallback_resumes_the_fresh_session() {
         recorded_task(&fake.path().join("bin/first-message")),
         format!(
             "{RED_GATE_RETRY_TASK}Record each decision you make by calling the rigger_emit tool \
-             the moment you make it, with type \"DecisionMade\" and data:\n\
+             with type \"DecisionMade\" and data:\n\
              {{\"id\":\"<short-id>\",\"summary\":\"<one line>\",\"governs\":[\"<file>\"],\
              \"supersedes\":\"<prior-id-or-empty>\"}}\n\
              This writes it to the shared event log live, so other agents see it immediately.\
