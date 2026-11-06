@@ -44,8 +44,8 @@ use common::cli::{assert_stopped_at_the_grounder, stopping_at_the_grounder};
 #[cfg(feature = "symbols")]
 use common::cli::{batch_events, recorded_and_walked};
 use common::cli::{
-    declare_grep_guard, write_scaffold, write_workflow_fixture, WorkflowFixture, ISOLATED_WORKER,
-    REVIEWLESS_GIT_UNIT_WORKFLOW, UNISOLATED_WORKER,
+    declare_grep_guard, declare_sdet_author, write_scaffold, write_workflow_fixture,
+    WorkflowFixture, ISOLATED_WORKER, REVIEWLESS_GIT_UNIT_WORKFLOW, UNISOLATED_WORKER,
 };
 use common::cli::{escalate_solo_unit, REVIEWLESS_GIT_ESCALATING_UNIT_WORKFLOW};
 use common::fixtures::assert_driver_guards_a_null_step;
@@ -12063,6 +12063,7 @@ fn every_resuming_role_falls_back_and_the_fresh_launch_answers_for_its_spawn() {
     let root = dir.path();
     write_reviewed_unit(root);
     write_agent(root, "sdet-author", "Read", "Write the boundary tests.");
+    declare_sdet_author(root);
     let scratch = tempfile::tempdir().unwrap();
     let arms = format!(
         r#"  *)
@@ -12229,6 +12230,7 @@ fn a_documentation_only_round_tells_the_sdet_author_only_that_fact() {
                 repo_text(".rigger/agents/sdet-author.md"),
             )
             .unwrap();
+            declare_sdet_author(root);
             let scratch = tempfile::tempdir().unwrap();
             let arms = format!(
                 r#"  *)

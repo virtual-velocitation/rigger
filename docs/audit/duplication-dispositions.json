@@ -110,9 +110,9 @@
     "reason": "Two `new() -> Self::default()` constructors on two unrelated types, the idiomatic pairing clippy's `new_without_default` asks every `new` to have."
   },
   {
-    "id": "dup-be2d1a3f8f8b",
+    "id": "dup-82bff055dbd1",
     "disposition": "not-a-duplicate",
-    "reason": "Three one-line named fixtures over two different shared helpers: `plant_stale_marker` passes an hour's age to `plant_marker`, and `drop_the_cursor` and `drop_the_cursor_s_log` pass two different schema changes (the cursor table, the column recording its log) to `change_the_schema`."
+    "reason": "Five one-line named fixtures over three different shared helpers: `plant_stale_marker` passes an hour's age to `plant_marker`, `drop_the_cursor` and `drop_the_cursor_s_log` pass two different schema changes (the cursor table, the column recording its log) to `change_the_schema`, and `declare_grep_guard` and `declare_sdet_author` pass two different `defaults:` entries (the grep guard, the test author) to `declare_default`."
   },
   {
     "id": "dup-b7996d22b4c4",

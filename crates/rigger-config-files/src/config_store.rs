@@ -378,8 +378,8 @@ mod tests {
     use crate::test_support::{
         adversary_first_steps, cfg_for, declaring, lenses, light_of, panel_rule_refusals,
         repeated_kind_lists, repo_review_steps, separator_refusal, PanelRead, ADVERSARY_FIRST_LIST,
-        EMIT_ONLY, LIGHT_PANEL_FORMS, NO_FULL_ADJUDICATOR_STEP, NO_LIGHT_ADJUDICATOR_STEP,
-        PANEL_AGENTS, PANEL_SCOPES,
+        EMIT_ONLY, GHOST_TEST_AUTHOR_REFUSAL, LIGHT_PANEL_FORMS, NO_FULL_ADJUDICATOR_STEP,
+        NO_LIGHT_ADJUDICATOR_STEP, PANEL_AGENTS, PANEL_SCOPES,
     };
 
     // ---- instruction injection: the operator layer loader ----
@@ -2281,6 +2281,48 @@ agent: worker\n";
             })
             .collect();
         assert_eq!(parsed, rows.map(|(_, grep_guard)| grep_guard));
+    }
+
+    /// Spec 121's THE TEST AUTHOR IS DECLARED, at load: `defaults.test_author` reads as written and
+    /// as no author when the workflow does not write it, and validation refuses a declared id no
+    /// agent defines, naming the key and the id, while no author is never refused, whatever agents
+    /// the project defines.
+    #[test]
+    fn test_author_parses_and_an_id_no_agent_defines_is_refused() {
+        let rows = [
+            (
+                "defaults:\n  test_author: sdet-author\n",
+                &["sdet-author"][..],
+                "sdet-author",
+                Ok(()),
+            ),
+            (
+                "defaults:\n  test_author: test-writer\n",
+                &["sdet-author", "test-writer"],
+                "test-writer",
+                Ok(()),
+            ),
+            (
+                "defaults:\n  test_author: ghost\n",
+                &["sdet-author"],
+                "ghost",
+                Err(GHOST_TEST_AUTHOR_REFUSAL.to_string()),
+            ),
+            ("defaults:\n  budget: 10\n", &["sdet-author"], "", Ok(())),
+            ("defaults:\n  test_author: \"\"\n", &[], "", Ok(())),
+        ];
+        for (yaml, defined, parsed, verdict) in rows {
+            let mut cfg = cfg_for(defined);
+            cfg.workflow = serde_yaml::from_str(yaml).unwrap();
+            assert_eq!(
+                (
+                    cfg.workflow.defaults.test_author.as_str(),
+                    cfg.validate().map(|_| ()).map_err(|e| e.0)
+                ),
+                (parsed, verdict),
+                "{yaml}"
+            );
+        }
     }
 
     #[test]

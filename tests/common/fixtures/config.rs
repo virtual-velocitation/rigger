@@ -55,6 +55,18 @@ pub fn cfg_for(ids: &[&str]) -> Config {
     c
 }
 
+/// Define a bare [`agent`] `id` in `cfg` and declare it the workflow's test author
+/// (`defaults.test_author`), the agent the build seam spawns under the `sdet-author` role token.
+pub fn declare_test_author(cfg: &mut Config, id: &str) {
+    cfg.agents.insert(id.to_string(), agent(id));
+    cfg.workflow.defaults.test_author = id.to_string();
+}
+
+/// The refusal a load gives a workflow whose `defaults.test_author` names `ghost`, which no agent
+/// defines.
+pub const GHOST_TEST_AUTHOR_REFUSAL: &str =
+    "defaults.test_author references unknown agent \"ghost\"";
+
 /// A lens step of `ids`.
 pub fn lenses(ids: &[&str]) -> ReviewStep {
     ReviewStep::Lenses(ids.iter().map(|id| (*id).to_string()).collect())

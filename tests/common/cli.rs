@@ -2199,15 +2199,26 @@ pub fn write_scaffold(root: &Path, agents: &[(&str, &str)], workflow: &str) {
     std::fs::write(rigger.join("workflow.yml"), workflow).expect("write workflow.yml");
 }
 
-/// Declare `defaults.grep_guard: true` in the workflow a scaffold writer left under `root`, whose
-/// `defaults:` block opens on a line of its own: the one test-side spelling of a project that
-/// declares the session's grep guard.
-pub fn declare_grep_guard(root: &Path) {
+/// Declare `entry`, one `key: value` line, under the `defaults:` block of the workflow a scaffold
+/// writer left under `root`, which opens on a line of its own.
+fn declare_default(root: &Path, entry: &str) {
     let path = rigger_file(root, "workflow.yml");
     let workflow = std::fs::read_to_string(&path).expect("read workflow.yml");
-    let declared = workflow.replacen("defaults:\n", "defaults:\n  grep_guard: true\n", 1);
+    let declared = workflow.replacen("defaults:\n", &format!("defaults:\n  {entry}\n"), 1);
     assert_ne!(declared, workflow, "the workflow opens a `defaults:` block");
     std::fs::write(&path, declared).expect("write workflow.yml");
+}
+
+/// Declare `defaults.grep_guard: true` in the workflow a scaffold writer left under `root`: the
+/// one test-side spelling of a project that declares the session's grep guard.
+pub fn declare_grep_guard(root: &Path) {
+    declare_default(root, "grep_guard: true");
+}
+
+/// Declare `defaults.test_author: sdet-author` in the workflow a scaffold writer left under `root`:
+/// the one test-side spelling of a project whose build seam spawns its `sdet-author` agent.
+pub fn declare_sdet_author(root: &Path) {
+    declare_default(root, "test_author: sdet-author");
 }
 
 /// A project at `root` holding `workflow` and its `agents` ([`write_scaffold`]) and `text` as
