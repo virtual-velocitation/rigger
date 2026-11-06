@@ -1401,7 +1401,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-381f6c65e1d1",
+    "id": "dup-47e4d1c77944",
     "classification": "semantic",
     "sites": [
       {
@@ -3196,6 +3196,11 @@
       },
       {
         "file": "tests/cli.rs",
+        "name": "\".rigger/docs-overlay.yml\"",
+        "content_hash": "072cce40fb047d0b"
+      },
+      {
+        "file": "tests/cli.rs",
         "name": "\".rigger/shim/node_modules/.package-lock.json\"",
         "content_hash": "9b2536a241d75c28"
       },
@@ -4616,7 +4621,7 @@
       }
     ],
     "proposed_home": "one .rigger-relative path-composition helper",
-    "note": "mandatory sweep: .rigger-path string literals - 642 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: .rigger-path string literals - 643 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {

@@ -4914,10 +4914,10 @@ const DOCS_OVERLAY_FILE: &str = "docs-overlay.yml";
 
 /// A per-repo overlay that adds THIS repository's specifics to every INSTALLED registry
 /// skill WITHOUT editing the shared discipline source (overlay honored per entry - spec
-/// 68, criterion 1). The two drift-prone facts a downstream project may differ on - the
-/// base branch a run anchors on and where the repo keeps its specs - are read from
-/// [`DOCS_OVERLAY_FILE`] and merged onto the code-derived [`docs_context`] before each
-/// skill is rendered and installed. Both fields are OPTIONAL:
+/// 68, criterion 1). The facts a downstream project may differ on - the base branch a run
+/// anchors on, where the repo keeps its specs and the project's own Global constraints -
+/// are read from [`DOCS_OVERLAY_FILE`] and merged onto the code-derived [`docs_context`]
+/// before each skill is rendered and installed. Every field is OPTIONAL:
 /// an absent overlay file, or an absent field, leaves the shared default in place, so the
 /// overlay only ever ADDS repo specifics and never restates the shared discipline. Unknown
 /// keys are rejected so a typo fails loudly rather than being silently ignored.
@@ -4930,6 +4930,10 @@ struct DocsOverlay {
     /// Where this repo keeps its specs, overriding [`DEFAULT_SPECS_LOCATION`].
     #[serde(default)]
     specs_location: Option<String>,
+    /// This project's own Global constraints, one entry each, listed under step 6 of the
+    /// installed `planning-a-spec` (spec 121, criterion 13).
+    #[serde(default)]
+    global_constraints: Option<Vec<String>>,
 }
 
 impl DocsOverlay {
@@ -4942,6 +4946,9 @@ impl DocsOverlay {
         }
         if let Some(specs) = &self.specs_location {
             ctx.specs_location = specs.clone();
+        }
+        if let Some(constraints) = &self.global_constraints {
+            ctx.global_constraints = constraints.clone();
         }
     }
 }
@@ -5025,9 +5032,10 @@ fn read_project_skill(
 /// returning each entry's outcome and the strays ([`SkillInstall`]). ONE code-derived context
 /// is built and this repo's [overlay](read_docs_overlay) merged onto it ONCE, then EVERY entry
 /// renders against that same context and installs via [`install_file_if_changed`] - so a
-/// downstream repo's base branch and specs location appear in every installed skill without
-/// anyone editing the shared discipline source, and adding an entry to the registry is the
-/// ONLY step needed to make a new skill install; this loop needs no per-skill edit.
+/// downstream repo's base branch, specs location and Global constraints reach every rendered
+/// skill that carries them without anyone editing the shared discipline source, and adding an
+/// entry to the registry is the ONLY step needed to make a new skill install; this loop needs
+/// no per-skill edit.
 ///
 /// A project copy shadows the shipped skill of its exact name (spec 121, criterion 14): an
 /// entry of `.rigger/skills/` whose name equals a registry entry's byte for byte
@@ -5414,7 +5422,7 @@ fn write_shim_files(root: &Path) -> Result<std::path::PathBuf, Box<dyn std::erro
 /// 20, unit 1) - the pure render lives in `rigger::docs`, and this function is where the
 /// concrete facts are injected. A project overlay (unit 3) overrides fields on the
 /// returned context BEFORE rendering, so repo specifics and the shared discipline share
-/// this one pipeline.
+/// this one pipeline; `global_constraints`, which only an overlay supplies, starts empty.
 fn docs_context() -> rigger::docs::DocsContext {
     use rigger::spec::ShapeRule;
     rigger::docs::DocsContext {
@@ -5458,6 +5466,10 @@ fn docs_context() -> rigger::docs::DocsContext {
         // command) denies with - never a hand-copy that could drift from what the hook
         // actually enforces.
         grep_guard_message: GREP_GUARD_MESSAGE.to_string(),
+        // Spec 121, criterion 13: no shared project constraints, so the committed
+        // `planning-a-spec` names none; a project's own list arrives through its
+        // [`DocsOverlay`] at install.
+        global_constraints: Vec::new(),
     }
 }
 
@@ -10276,6 +10288,57 @@ mod tests {
             rigger::docs::render_using_rigger_skill(&docs_context()).contains(DEFAULT_BASE_REF),
             "the shared render is unchanged; the overlay only overrode the install"
         );
+    }
+
+    /// Install every skill under a fresh project whose overlay file reads `overlay`, then
+    /// assert the installed `planning-a-spec` is the shipped render with `list` - the project's
+    /// constraint block - set between step 6 and step 7, while `rigger docs` still writes the
+    /// committed source without it.
+    fn assert_installed_planning_skill_carries(overlay: &str, list: &str) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join(RIGGER_DIR)).unwrap();
+        std::fs::write(rigger_path(root, DOCS_OVERLAY_FILE), overlay).unwrap();
+        install_skills(root).expect("installing with the overlay must succeed");
+        let shipped = registry_entry("planning-a-spec").render(&docs_context());
+        assert_eq!(
+            std::fs::read_to_string(skill_install_path(root, "planning-a-spec")).unwrap(),
+            shipped.replacen("**7. ", &format!("{list}**7. "), 1),
+            "the installed planning-a-spec must carry the overlay's constraints under step 6"
+        );
+        write_docs(root).expect("write_docs must render every registry entry");
+        assert_eq!(
+            std::fs::read_to_string(root.join(skill_source_rel("planning-a-spec"))).unwrap(),
+            shipped,
+            "rigger docs must render the committed planning-a-spec without the overlay"
+        );
+    }
+
+    rigger::test_cases! {
+        /// Spec 121, criterion 13 (THE PLANNING SKILL CARRIES THE PROJECT'S CONSTRAINTS): an
+        /// overlay that declares no `global_constraints` installs step 6 with no project list.
+        an_overlay_without_global_constraints_installs_no_project_list:
+            assert_installed_planning_skill_carries("specs_location: requirements/\n", "");
+        /// Spec 121, criterion 13: an empty `global_constraints` list installs no project list
+        /// either, not a "This project's:" line with nothing under it.
+        an_empty_global_constraints_list_installs_no_project_list:
+            assert_installed_planning_skill_carries("global_constraints: []\n", "");
+        /// Spec 121, criterion 13: one declared constraint installs as one `- ` line under
+        /// "This project's:", right after step 6.
+        one_global_constraint_installs_under_step_6: assert_installed_planning_skill_carries(
+            "global_constraints:\n  - Every lane green.\n",
+            "This project's:\n- Every lane green.\n\n",
+        );
+        /// Spec 121, criterion 13: this repository's own overlay lists its two constraints, and
+        /// the installed copy carries them under step 6 in the overlay's order.
+        this_repositorys_overlay_installs_its_constraints_under_step_6:
+            assert_installed_planning_skill_carries(
+                &crate::test_support::read_text(&rigger_path(
+                    Path::new(env!("CARGO_MANIFEST_DIR")),
+                    DOCS_OVERLAY_FILE,
+                )),
+                crate::test_support::THIS_REPOSITORYS_PLANNING_CONSTRAINTS,
+            );
     }
 
     /// The overlay overrides ONLY the fields it declares: a partial overlay (base_ref

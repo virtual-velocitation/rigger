@@ -10205,7 +10205,7 @@
     "is_test": false,
     "proposed_module": "main::docs_overlay",
     "reason": "method inside `impl DocsOverlay`; grouped with its other `DocsOverlay` methods.",
-    "content_hash": "73c7d9855cea92da"
+    "content_hash": "a45dbb7cb80e8355"
   },
   {
     "file": "src/cli/mod.rs",
@@ -10293,7 +10293,7 @@
     "is_test": false,
     "proposed_module": "main::provenance",
     "reason": "name contains \"docs_\" (docs overlay); grouped under `main::provenance`.",
-    "content_hash": "81131dfef7b3064e"
+    "content_hash": "ef8a9b679dd8f2b5"
   },
   {
     "file": "src/cli/mod.rs",
@@ -11414,6 +11414,14 @@
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
     "content_hash": "d0142b29e302fb25"
+  },
+  {
+    "file": "src/cli/mod.rs",
+    "name": "assert_installed_planning_skill_carries",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "8ac2f44fe67d342a"
   },
   {
     "file": "src/cli/mod.rs",
