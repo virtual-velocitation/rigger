@@ -19,7 +19,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-8622c5aefa5d",
+    "id": "dup-29cd104c92eb",
     "classification": "near",
     "sites": [
       {
@@ -200,6 +200,11 @@
       {
         "file": "tests/common/fixtures/instructions.rs",
         "name": "builtin_instruction_source",
+        "content_hash": "b0b4170272f04fb7"
+      },
+      {
+        "file": "tests/common/fixtures/spawn.rs",
+        "name": "cli_progress_frame",
         "content_hash": "b0b4170272f04fb7"
       },
       {

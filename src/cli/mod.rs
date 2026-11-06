@@ -9816,6 +9816,37 @@ mod tests {
         );
     }
 
+    /// Spec 121's THE PROGRESS CADENCE HAS ONE HOME, at the workflow script and the shim: the
+    /// progress note each appends to a worker's prompt names the progress verb and its arguments
+    /// only, byte for byte; when to report is the communication built-in's.
+    #[test]
+    fn each_script_progress_note_names_the_verb_and_its_arguments_only() {
+        use crate::test_support::js_concatenation;
+        let notes = [
+            (
+                "workflow script",
+                RIGGER_WORKFLOW,
+                "const progressNote =\n    \
+                 `LIVE PROGRESS: record a progress line, from ${REPO}, using Bash:\\n` +\n    \
+                 `  rigger progress '${req.id}' '<one line: what you just did>'\\n`",
+            ),
+            (
+                "shim",
+                SHIM_MJS,
+                "const progressNote =\n      \
+                 `\\n\\nLIVE PROGRESS: record a progress line by running (Bash):\\n` +\n      \
+                 `  rigger progress '${next.id}' '<one line: what you just did>'`",
+            ),
+        ];
+        for (script, src, note) in notes {
+            assert_eq!(
+                js_concatenation(src, "const progressNote ="),
+                note,
+                "the {script}'s progress note names the verb and its arguments only"
+            );
+        }
+    }
+
     /// Criterion 4 (spec 05): `rigger setup` is re-runnable. `install_workflow` installs
     /// the native `/rigger` workflow at `.claude/workflows/rigger.js` byte-identical to
     /// the embedded `RIGGER_WORKFLOW`, DETECTS and REFRESHES a drifted copy (an older

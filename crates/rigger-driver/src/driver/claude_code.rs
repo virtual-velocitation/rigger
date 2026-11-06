@@ -2116,8 +2116,8 @@ fn rigger_server_fault(init: &Value) -> Option<String> {
     (status != "connected").then(|| status.to_string())
 }
 
-/// `task` framed with the live-progress instruction ([`progress_framed`]), reported through
-/// the tool every launch of this host pre-approves ([`SPAWN_BOUND_TOOLS`]).
+/// `task` framed with the progress verb ([`progress_framed`]), a call of the progress tool every
+/// launch of this host pre-approves ([`SPAWN_BOUND_TOOLS`]).
 pub fn framed(task: &str) -> String {
     let report =
         format!("by calling the {SPAWN_PROGRESS_TOOL} tool with that line as its activity");
@@ -2242,7 +2242,7 @@ mod tests {
     use crate::eventstore::{Direction, EventStore, SilentStore};
     use crate::test_support::implementer_opts as opts;
     use crate::test_support::{
-        captured_system_prompt, fixture_script, no_emit, spawn_result_rows, PROMPT_CAPTURE_DIR,
+        captured, fixture_script, no_emit, spawn_result_rows, PROMPT_CAPTURE_DIR,
     };
     use std::io::Read;
     use std::time::Duration;
@@ -3374,7 +3374,7 @@ mod tests {
         launch.child.wait().unwrap();
 
         assert_eq!(
-            captured_system_prompt(capture.path()),
+            captured(capture.path(), "system-prompt"),
             o.system_prompt,
             "the whole persona arrived through the system-prompt file"
         );

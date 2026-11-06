@@ -11249,6 +11249,14 @@
   },
   {
     "file": "src/cli/mod.rs",
+    "name": "each_script_progress_note_names_the_verb_and_its_arguments_only",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "478172d8100f669f"
+  },
+  {
+    "file": "src/cli/mod.rs",
     "name": "setup_installs_refreshes_and_is_a_noop_on_the_native_rigger_workflow",
     "is_test": true,
     "proposed_module": "main::tests",

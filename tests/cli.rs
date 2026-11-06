@@ -10789,35 +10789,147 @@ fn every_launch_of_a_reviewed_unit_carries_the_hooks_for_its_own_spawn() {
     }
 }
 
-/// The live-progress instruction closing a launch's first user message.
-const LIVE_PROGRESS_FRAME: &str =
-    "\n\n--- rigger driver ---\nLIVE PROGRESS: after each significant \
-     step (a search, a build, a commit, a decision) report ONE short line of what you just did by \
-     calling the mcp__rigger__rigger_progress tool with that line as its activity. Keep it \
-     flowing while you work.";
+/// The live-progress frame closing a launch's first user message: the progress verb and its
+/// argument only, since when to report is the communication built-in's.
+const LIVE_PROGRESS_FRAME: &str = "\n\n--- rigger driver ---\nLIVE PROGRESS: record a progress \
+     line by calling the mcp__rigger__rigger_progress tool with that line as its activity.";
 
-/// Spec 105's live-progress frame, end to end: given a project, when the operator runs `rigger
-/// run`, then the launch's first user message closes with the instruction naming the
-/// `rigger_progress` tool the launch pre-approves.
+/// The spawn `rigger step` parks for the single-stage liveness workflow's worker.
 #[cfg(unix)]
-#[test]
-fn run_frames_a_launchs_first_message_with_the_live_progress_instruction() {
+const STEPWISE_WORKER_SPAWN: &str = "a/implementer#0";
+
+/// The last spawn `rigger canary` launches over the one-item canary panel project: the
+/// adjudicator's natural-order probe, its only one while the panel raises no finding.
+#[cfg(unix)]
+const CANARY_LAST_SPAWN: &str = "canary:control:adjudicator:a";
+
+/// One launch through a host over a fresh project: the system prompt and the task the spawn it
+/// starts receives.
+#[cfg(unix)]
+type HostLaunch = fn() -> (String, String);
+
+/// `rigger run` over the single-stage liveness workflow, through the headless host: the worker's
+/// system prompt and the task its first stream-json user message carries.
+#[cfg(unix)]
+fn headless_launch() -> (String, String) {
+    use common::cli::run_capturing_system_prompt_and_stdin;
+    use common::fixtures::first_message_task;
     let dir = temp_git_project_with_commit();
     let root = dir.path();
     write_workflow_fixture(root, &LIVENESS_WORKFLOW);
-    let scratch = tempfile::tempdir().unwrap();
-    let (out, err, ok, fake) = run_recording(root, &["run"], scratch.path());
-    assert!(ok, "the run succeeds; stderr: {err}\nstdout: {out}");
-    let task = recorded_task(&fake.path().join("bin/first-message"));
-    assert!(
-        task.ends_with(LIVE_PROGRESS_FRAME),
-        "the frame closes the task: {task:?}"
-    );
+    let (system, stdin) = run_capturing_system_prompt_and_stdin(root, &["run"]);
+    (system, first_message_task(&stdin))
+}
+
+/// `rigger canary` over the one-item canary panel project, through the cli host: the last panel
+/// spawn's system prompt and the task it read from its stdin.
+#[cfg(unix)]
+fn cli_launch() -> (String, String) {
+    let dir = temp_project();
+    let root = dir.path();
+    write_one_item_canary_panel(root);
+    common::cli::run_capturing_system_prompt_and_stdin(root, &["canary", "--corpus", "corpus"])
+}
+
+/// `rigger step` over the single-stage liveness workflow, then `rigger prompt` for the worker it
+/// parks: the parked request's system prompt, before the separator `rigger prompt` serves, and its
+/// task, after it - the two fields the workflow script and the shim hand their worker.
+#[cfg(unix)]
+fn stepwise_launch() -> (String, String) {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_workflow_fixture(root, &LIVENESS_WORKFLOW);
+    let step: serde_json::Value =
+        serde_json::from_str(&step_line(root, "the step parks the worker")).unwrap();
     assert_eq!(
-        task.matches("--- rigger driver ---").count(),
-        1,
-        "the task is framed once: {task:?}"
+        step["wave"][0]["id"], STEPWISE_WORKER_SPAWN,
+        "the step parks the worker: {step}"
     );
+    let served = run_rigger_ok(root, &["prompt", STEPWISE_WORKER_SPAWN]);
+    let (system, task) = served
+        .split_once("\n\n---\n\n")
+        .expect("rigger prompt serves the system prompt, the separator, then the task");
+    (system.to_string(), task.to_string())
+}
+
+/// Spec 121's THE PROGRESS CADENCE HAS ONE HOME, end to end, with spec 105's live-progress frame:
+/// given a project, when the operator launches a spawn through each host - `rigger run` through
+/// the headless host, `rigger canary` through the cli host, and `rigger step` then `rigger prompt`
+/// for the stepwise wave the workflow script and the shim drive - then the spawn's system prompt
+/// carries each sentence of the communication built-in's progress bullet once and its task none,
+/// and a process host's task closes, once, with that host's frame naming its progress verb and the
+/// verb's arguments, while no driver frame closes the stepwise task.
+#[cfg(unix)]
+#[test]
+fn every_host_hands_its_spawn_the_progress_cadence_once_through_its_system_prompt() {
+    use common::fixtures::{assert_carries_each, cli_progress_frame, PROGRESS_CADENCE};
+    let hosts: [(&str, HostLaunch, Option<String>); 3] = [
+        (
+            "the headless host",
+            headless_launch,
+            Some(LIVE_PROGRESS_FRAME.to_string()),
+        ),
+        (
+            "the cli host",
+            cli_launch,
+            Some(cli_progress_frame(CANARY_LAST_SPAWN)),
+        ),
+        ("the stepwise wave", stepwise_launch, None),
+    ];
+    for (host, launch, frame) in hosts {
+        let (system, task) = launch();
+        assert_carries_each(
+            &format!("{host}'s system prompt"),
+            &system,
+            &PROGRESS_CADENCE,
+            1,
+        );
+        assert_carries_each(&format!("{host}'s task"), &task, &PROGRESS_CADENCE, 0);
+        if let Some(frame) = &frame {
+            assert!(
+                task.ends_with(frame.as_str()),
+                "{host}: the frame closes the task: {task:?}"
+            );
+        }
+        assert_eq!(
+            task.matches("--- rigger driver ---").count(),
+            usize::from(frame.is_some()),
+            "{host}: the task is framed once by a process host, never by the stepwise wave: \
+             {task:?}"
+        );
+    }
+}
+
+/// Spec 121's THE PROGRESS CADENCE HAS ONE HOME at a spawn's own MCP server: given a spawn-bound
+/// `rigger mcp --spawn`, when its agent lists the tools over stdio, then the one `rigger_progress`
+/// entry names what the tool records and its argument only, and no tool of the list carries a
+/// sentence of the progress cadence, which the spawn's system prompt states.
+#[test]
+fn a_spawns_mcp_server_lists_the_progress_tool_without_the_progress_cadence() {
+    use common::fixtures::{assert_carries_each, progress_tool_entry, PROGRESS_CADENCE};
+    let dir = temp_project();
+    let root = dir.path();
+    seed_store(root);
+    let mut mcp = McpSession::start_with(root, &["mcp", "--spawn", "u/implementer#0"]);
+    let tools = mcp.call("tools/list", serde_json::json!({}))["result"]["tools"].clone();
+    let progress: Vec<&serde_json::Value> = tools
+        .as_array()
+        .expect("tools/list answers with the tool list")
+        .iter()
+        .filter(|tool| tool["name"] == "rigger_progress")
+        .collect();
+    assert_eq!(
+        progress,
+        [&progress_tool_entry()],
+        "the spawn's server lists one progress tool, naming what it records and its argument only"
+    );
+    assert_carries_each(
+        "the spawn's tool list",
+        &tools.to_string(),
+        &PROGRESS_CADENCE,
+        0,
+    );
+    mcp.finish_cleanly();
 }
 
 /// How far past the interval a beat of `rigger run` may land: the gap between two beats is the
@@ -21494,18 +21606,11 @@ fn canary_rejects_unknown_arguments_and_a_missing_corpus() {
     );
 }
 
-/// Spec 120's THE COMMUNICATION DISCIPLINE IS A SHADOWABLE BUILT-IN, through the canary: given a
-/// project whose review panel's three agents share one persona and a one-item corpus, when the
-/// operator runs `rigger canary`, then the system prompt a panel spawn receives through the real
-/// subprocess driver is exactly `compose`'s output over that persona - the communication section
-/// once, the retired heading nowhere, nothing appended after the composed layers.
+/// Scaffold the one-item canary panel project at `root`: a review panel of three agents sharing
+/// one persona - the lens `lens`, the adversary `adv` and the adjudicator `judge` - and the control
+/// item as its corpus, `corpus/control.md`.
 #[cfg(unix)]
-#[test]
-fn canary_spawns_its_panel_with_the_composed_system_prompt_and_nothing_appended() {
-    use common::cli::run_capturing_system_prompt;
-    use common::fixtures::{assert_communication_once, composed_system_prompt, CONTROL_ITEM};
-    let dir = temp_project();
-    let root = dir.path();
+fn write_one_item_canary_panel(root: &Path) {
     for id in ["lens", "adv", "judge"] {
         write_agent(root, id, "Read", "You review the canary item.");
     }
@@ -21517,7 +21622,22 @@ fn canary_spawns_its_panel_with_the_composed_system_prompt_and_nothing_appended(
     );
     let corpus = root.join("corpus");
     std::fs::create_dir_all(&corpus).unwrap();
-    std::fs::write(corpus.join("control.md"), CONTROL_ITEM).unwrap();
+    std::fs::write(corpus.join("control.md"), common::fixtures::CONTROL_ITEM).unwrap();
+}
+
+/// Spec 120's THE COMMUNICATION DISCIPLINE IS A SHADOWABLE BUILT-IN, through the canary: given a
+/// project whose review panel's three agents share one persona and a one-item corpus, when the
+/// operator runs `rigger canary`, then the system prompt a panel spawn receives through the real
+/// subprocess driver is exactly `compose`'s output over that persona - the communication section
+/// once, the retired heading nowhere, nothing appended after the composed layers.
+#[cfg(unix)]
+#[test]
+fn canary_spawns_its_panel_with_the_composed_system_prompt_and_nothing_appended() {
+    use common::cli::run_capturing_system_prompt;
+    use common::fixtures::{assert_communication_once, composed_system_prompt};
+    let dir = temp_project();
+    let root = dir.path();
+    write_one_item_canary_panel(root);
     let system = run_capturing_system_prompt(root, &["canary", "--corpus", "corpus"]);
     let persona =
         std::fs::read_to_string(common::cli::rigger_file(root, "agents").join("judge.md")).unwrap();

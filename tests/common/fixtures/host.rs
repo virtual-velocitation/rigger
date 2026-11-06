@@ -282,6 +282,24 @@ pub fn js_declaration<'a>(src: &'a str, start_marker: &str) -> &'a str {
     panic!("`{start_marker}` is not brace-balanced");
 }
 
+/// The JavaScript statement in `src` that starts at `start_marker` and joins one string literal
+/// per line with `+`: from the marker through the first line after the marker's own that does
+/// not end in `+`, without that line's newline.
+pub fn js_concatenation<'a>(src: &'a str, start_marker: &str) -> &'a str {
+    let start = src
+        .find(start_marker)
+        .unwrap_or_else(|| panic!("the source must contain `{start_marker}`"));
+    let mut at = start;
+    for (i, line) in src[start..].split_inclusive('\n').enumerate() {
+        let body = line.trim_end_matches('\n');
+        if i > 0 && !body.trim_end().ends_with('+') {
+            return &src[start..at + body.len()];
+        }
+        at += line.len();
+    }
+    panic!("`{start_marker}` opens no closed concatenation");
+}
+
 /// The workflow driver `code` guards a null step (spec 44, criterion 2): `agent()` can RESOLVE
 /// to null - rather than reject - when the courier agent dies on a TERMINAL error (an expired
 /// login, an exhausted API quota), so the driver must test `if (!step)` BEFORE its first

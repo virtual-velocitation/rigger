@@ -139,8 +139,8 @@ fn session_missing(out: &Output) -> bool {
     !out.status.success() && String::from_utf8_lossy(&out.stderr).contains(MISSING_SESSION)
 }
 
-/// `task` framed with the live-progress instruction ([`progress_framed`]), reported through
-/// Bash since this host's spawn runs no bound server. (This synchronous, non-parking path has no
+/// `task` framed with the progress verb ([`progress_framed`]), the `rigger progress` command run
+/// through Bash since this host's spawn runs no bound server. (This synchronous, non-parking path has no
 /// parked frontier entry, so the current consolidator does not surface it - the emit is recorded
 /// and future-proof.)
 fn framed(task: &str, opts: &SpawnOpts) -> String {
@@ -302,8 +302,9 @@ mod tests {
     use super::*;
     use crate::test_support::test_spawn_host;
 
-    /// This host's frame reports through Bash, naming the spawn, since its spawn runs no bound
-    /// server, and closes the task.
+    /// This host's frame closes the task with its progress verb and that verb's arguments only:
+    /// the Bash command naming the spawn, since its spawn runs no bound server. When to report
+    /// is the communication built-in's.
     #[test]
     fn framed_closes_the_task_with_the_bash_progress_line() {
         let opts = SpawnOpts {
@@ -312,14 +313,12 @@ mod tests {
         };
         assert_eq!(
             framed("the task", &opts),
-            "the task\n\n--- rigger driver ---\nLIVE PROGRESS: after each significant step (a \
-             search, a build, a commit, a decision) report ONE short line of what you just did by \
-             running (Bash): rigger progress 'u/implementer#0' '<one line: what you just did>'. \
-             Keep it flowing while you work."
+            format!("the task{}", cli_progress_frame("u/implementer#0"))
         );
     }
+    use crate::test_support::cli_progress_frame;
     #[cfg(unix)]
-    use crate::test_support::{captured_system_prompt, PROMPT_CAPTURE_DIR};
+    use crate::test_support::{captured, PROMPT_CAPTURE_DIR};
     use std::cell::RefCell;
     use std::rc::Rc;
     use std::sync::Mutex;
@@ -715,14 +714,14 @@ thinking out loud, not json\n\
             })
             .unwrap();
 
-        let stdin = std::fs::read_to_string(capture.path().join("stdin")).unwrap();
+        let stdin = captured(capture.path(), "stdin");
         assert!(
             stdin.starts_with(&task),
             "the whole task arrived on stdin ({} bytes read)",
             stdin.len()
         );
         assert_eq!(
-            captured_system_prompt(capture.path()),
+            captured(capture.path(), "system-prompt"),
             persona,
             "the whole persona arrived through the system-prompt file"
         );
@@ -771,10 +770,8 @@ thinking out loud, not json\n\
             )
             .unwrap();
 
-        assert_eq!(captured_system_prompt(capture.path()), "You plan.");
-        assert!(std::fs::read_to_string(capture.path().join("stdin"))
-            .unwrap()
-            .starts_with("plan it"));
+        assert_eq!(captured(capture.path(), "system-prompt"), "You plan.");
+        assert!(captured(capture.path(), "stdin").starts_with("plan it"));
         let path = std::fs::read_to_string(capture.path().join("system-prompt-path")).unwrap();
         assert!(
             std::path::Path::new(&path).is_absolute(),

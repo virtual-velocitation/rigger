@@ -247,7 +247,8 @@ mod tests {
         assert_carries_the_review_method, builtin_body, builtin_section,
         house_and_team_operator_layer, op, rendered_every_file_shadowing_layer,
         rendered_shadowing_layer, shadowing_operator_layer, COMMUNICATION_NEAR_NAME,
-        NON_EMPTY_BLANK_BODIES, REPLACING_COMMUNICATION_BODY, SHADOWING_LAYER_ADVISORIES,
+        NON_EMPTY_BLANK_BODIES, PROGRESS_CADENCE, REPLACING_COMMUNICATION_BODY,
+        SHADOWING_LAYER_ADVISORIES,
     };
 
     #[test]
@@ -331,14 +332,14 @@ mod tests {
     }
 
     /// Spec 120, criterion 14: the third built-in entry, which the layer-order test above names
-    /// `communication`, carries the communication discipline's body: the old conductor
-    /// constant's every line after its heading line, verbatim.
+    /// `communication`, carries the communication discipline's body verbatim: the old conductor
+    /// constant's every line after its heading line, with the progress bullet spec 121 lands
+    /// after its last bullet, the progress cadence's one home now that every host's progress
+    /// text names only its verb and that verb's arguments.
     #[test]
     fn the_third_built_in_is_the_communication_discipline_verbatim() {
-        assert_eq!(
-            BUILTIN.get(2).map(|(_, body)| *body),
-            Some(
-                "You are one of several agents working concurrently against a shared event log. \
+        let body = format!(
+            "You are one of several agents working concurrently against a shared event log. \
                  Other agents act on what you record, live - so your communication is part of the \
                  work, not an afterthought.\n\
                  - Record EVERY decision the MOMENT you make it by calling the `rigger_emit` tool \
@@ -356,9 +357,14 @@ mod tests {
                  `supersedes` field cites the prior decision's id, and state why. Diverging \
                  silently splits the work; superseding explicitly keeps every agent on one \
                  story.\n\
+                 - {}\n\
                  The exact JSON shapes for these emits are given in your task instructions; this \
-                 section governs the DISCIPLINE and cadence - follow it on every turn.\n"
-            ),
+                 section governs the DISCIPLINE and cadence - follow it on every turn.\n",
+            PROGRESS_CADENCE.join(" ")
+        );
+        assert_eq!(
+            BUILTIN.get(2).map(|(_, body)| *body),
+            Some(body.as_str()),
             "the third built-in carries the communication discipline's body verbatim"
         );
     }
