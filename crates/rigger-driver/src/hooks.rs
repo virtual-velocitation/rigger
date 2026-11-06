@@ -627,13 +627,21 @@ mod tests {
             "hooks": {"SessionStart": prime, "PreToolUse": guard},
             "statusLine": status,
         }));
-        let rows: [(&[u8], bool, bool); 6] = [
+        let guarded_beside_an_empty_block = bytes(&json!({
+            "hooks": {
+                "SessionStart": prime,
+                "PreToolUse": [guard[0], {"matcher": "Write", "hooks": []}],
+            },
+            "statusLine": status,
+        }));
+        let rows: [(&[u8], bool, bool); 7] = [
             (b"", false, false),
             (b"not json", true, false),
             (&primed, false, true),
             (&primed, true, false),
             (&primed_and_guarded, true, true),
             (&primed_and_guarded, false, true),
+            (&guarded_beside_an_empty_block, true, true),
         ];
         let carried: Vec<bool> = rows
             .iter()
@@ -643,8 +651,8 @@ mod tests {
     }
 
     /// The guard's install: one entry under the current matcher, appended beside every foreign
-    /// hook, an entry under a drifted matcher replaced so exactly one remains, and a second
-    /// install writing the same bytes.
+    /// hook and every foreign block, one already empty included, an entry under a drifted matcher
+    /// replaced so exactly one remains, and a second install writing the same bytes.
     #[test]
     fn the_grep_guard_installs_once_under_the_current_matcher() {
         let guard = hook_block(GREP_GUARD_MATCHER, GREP_GUARD_COMMAND);
@@ -672,6 +680,10 @@ mod tests {
                 json!({"hooks": {"PreToolUse": [guard]}}),
                 json!({"hooks": {"PreToolUse": [guard]}}),
             ),
+            (
+                json!({"hooks": {"PreToolUse": [{"matcher": "Write", "hooks": []}]}}),
+                json!({"hooks": {"PreToolUse": [{"matcher": "Write", "hooks": []}, guard]}}),
+            ),
         ];
         for (existing, expected) in rows {
             let installed = install_grep_guard(&bytes(&existing)).unwrap();
@@ -688,7 +700,8 @@ mod tests {
 
     /// The guard's removal strips every inner hook running the guard's command, whatever its
     /// matcher, drops each block, then the `PreToolUse` array, then the `hooks` object it
-    /// empties, and keeps every other hook and setting.
+    /// empties, and keeps every other hook, block and setting, a foreign block already empty
+    /// included.
     #[test]
     fn the_grep_guard_removal_strips_only_its_own_entry() {
         let guard = hook_block(GREP_GUARD_MATCHER, GREP_GUARD_COMMAND);
@@ -718,6 +731,10 @@ mod tests {
             (
                 json!({"model": "opus", "hooks": {"PreToolUse": [hook_block("Grep", GREP_GUARD_COMMAND)]}}),
                 json!({"model": "opus"}),
+            ),
+            (
+                json!({"hooks": {"PreToolUse": [{"matcher": "Write", "hooks": []}, guard]}}),
+                json!({"hooks": {"PreToolUse": [{"matcher": "Write", "hooks": []}]}}),
             ),
         ];
         for (existing, expected) in rows {
