@@ -7,13 +7,16 @@
 //! the operator's checkout; the headless host hands the same values to every spawn on its
 //! command line (a fresh unit worktree carries no `.claude/` of its own), so the two cannot
 //! drift. The hooks bound to one spawn are composed here too, by [`install_spawn_hooks`]: only
-//! the headless host hands those over, and `rigger setup` never writes them.
+//! the headless host hands those over, and `rigger setup` never writes them. The PreToolUse
+//! grep-guard is the workflow's to declare (`defaults.grep_guard`): [`resolve_spawn_host`] reads
+//! the key once per command for every spawn, and `rigger setup` installs the guard
+//! ([`install_grep_guard`]) or removes rigger's own entry ([`remove_grep_guard`]) to match.
 
 use rigger_domain::quoting::single_quoted;
 use rigger_domain::review::EDITING_TOOLS;
 use serde_json::{json, Map, Value};
 
-use crate::agent::AgentFailure;
+use crate::agent::{AgentFailure, SpawnHost};
 
 #[derive(Debug, thiserror::Error)]
 #[error("hooks: {0}")]
@@ -59,13 +62,108 @@ pub const HELPER_AGENTS: &[(&str, &str)] = &[
     ),
 ];
 
-/// Merge every session setting rigger installs - the SessionStart prime hook, the PreToolUse
-/// grep-guard and the status line - into `existing` settings JSON, through the same installers
-/// `rigger setup` runs one by one, preserving every other setting. `existing` may be empty.
-pub fn install_session_settings(existing: &[u8]) -> Result<Vec<u8>, Error> {
-    let primed = install_session_start(existing, PRIME_COMMAND)?;
-    let guarded = install_pretooluse_hook(&primed, GREP_GUARD_MATCHER, GREP_GUARD_COMMAND)?;
-    install_status_line(&guarded, STATUS_LINE_COMMAND)
+/// The host values every spawn of one command carries, resolved once from the workflow's
+/// `defaults`: the PreToolUse grep-guard exactly when `defaults.grep_guard` declares it.
+pub fn resolve_spawn_host(defaults: &rigger_domain::config::Defaults) -> SpawnHost {
+    SpawnHost {
+        grep_guard: defaults.grep_guard,
+    }
+}
+
+/// Merge the session settings rigger installs - the SessionStart prime hook and the status line,
+/// and the PreToolUse grep-guard when `grep_guard` is set - into `existing` settings JSON, through
+/// the same installers `rigger setup` runs one by one, preserving every other setting. It never
+/// removes: settings already carrying the guard keep it with `grep_guard` unset. `existing` may
+/// be empty.
+pub fn install_session_settings(existing: &[u8], grep_guard: bool) -> Result<Vec<u8>, Error> {
+    let mut merged = install_session_start(existing, PRIME_COMMAND)?;
+    if grep_guard {
+        merged = install_grep_guard(&merged)?;
+    }
+    install_status_line(&merged, STATUS_LINE_COMMAND)
+}
+
+/// Merge the PreToolUse grep-guard into `existing` settings JSON, preserving every other
+/// setting: an inner hook running [`GREP_GUARD_COMMAND`] under any matcher but
+/// [`GREP_GUARD_MATCHER`] is stripped first, its block dropped once it empties, so exactly one
+/// entry under the current matcher remains. `existing` may be empty.
+pub fn install_grep_guard(existing: &[u8]) -> Result<Vec<u8>, Error> {
+    let mut settings = parse_settings(existing)?;
+    strip_grep_guard(&mut settings, |matcher| matcher != Some(GREP_GUARD_MATCHER));
+    push_hook_block(
+        &mut settings,
+        "PreToolUse",
+        GREP_GUARD_MATCHER,
+        GREP_GUARD_COMMAND,
+    )?;
+    encode_settings(&settings)
+}
+
+/// Remove rigger's own PreToolUse grep-guard from `existing` settings JSON: every inner hook
+/// running [`GREP_GUARD_COMMAND`], under any matcher, is stripped, each block it empties dropped,
+/// then the `PreToolUse` array, then the `hooks` object, each once it empties; every other hook
+/// and setting is kept. Settings carrying no guard come back as the very bytes they were, so a
+/// file that never carried it is never rewritten. `existing` may be empty.
+pub fn remove_grep_guard(existing: &[u8]) -> Result<Vec<u8>, Error> {
+    let mut settings = parse_settings(existing)?;
+    if !strip_grep_guard(&mut settings, |_| true) {
+        return Ok(existing.to_vec());
+    }
+    if let Some(hooks) = settings.get_mut("hooks").and_then(Value::as_object_mut) {
+        if hooks
+            .get("PreToolUse")
+            .and_then(Value::as_array)
+            .is_some_and(Vec::is_empty)
+        {
+            hooks.remove("PreToolUse");
+        }
+        if hooks.is_empty() {
+            settings.remove("hooks");
+        }
+    }
+    encode_settings(&settings)
+}
+
+/// Whether the settings JSON `existing` carries the PreToolUse grep-guard: an inner `PreToolUse`
+/// hook running [`GREP_GUARD_COMMAND`], under any matcher. Unparseable settings carry none.
+pub fn carries_grep_guard(existing: &[u8]) -> bool {
+    serde_json::from_slice::<Value>(existing).is_ok_and(|settings| {
+        settings
+            .pointer("/hooks/PreToolUse")
+            .and_then(Value::as_array)
+            .is_some_and(|blocks| has_command(blocks, GREP_GUARD_COMMAND))
+    })
+}
+
+/// Strip every inner `PreToolUse` hook running [`GREP_GUARD_COMMAND`] from the blocks whose
+/// matcher `strips` accepts, dropping each block it empties; whether it stripped any. Settings
+/// with no `PreToolUse` array carry nothing to strip.
+fn strip_grep_guard(
+    settings: &mut Map<String, Value>,
+    strips: impl Fn(Option<&str>) -> bool,
+) -> bool {
+    let Some(blocks) = settings
+        .get_mut("hooks")
+        .and_then(Value::as_object_mut)
+        .and_then(|hooks| hooks.get_mut("PreToolUse"))
+        .and_then(Value::as_array_mut)
+    else {
+        return false;
+    };
+    let mut stripped = false;
+    blocks.retain_mut(|block| {
+        if !strips(block.get("matcher").and_then(Value::as_str)) {
+            return true;
+        }
+        let Some(inner) = block.get_mut("hooks").and_then(Value::as_array_mut) else {
+            return true;
+        };
+        let before = inner.len();
+        inner.retain(|hook| !runs(hook, GREP_GUARD_COMMAND));
+        stripped |= inner.len() < before;
+        !inner.is_empty()
+    });
+    stripped
 }
 
 /// Merge the hooks bound to one spawn into `existing` settings JSON, preserving every other
@@ -101,11 +199,15 @@ fn shell_quote(arg: &str) -> String {
 }
 
 /// Whether the settings JSON `existing` already carries every session setting
-/// [`install_session_settings`] installs: installing them again would change nothing. Empty or
+/// [`install_session_settings`] installs with `grep_guard`: installing them again with the same
+/// flag would change nothing, so a guard the flag does not declare is no shortfall. Empty or
 /// unparseable settings carry none.
-pub fn carries_session_settings(existing: &[u8]) -> bool {
+pub fn carries_session_settings(existing: &[u8], grep_guard: bool) -> bool {
     let parse = |bytes: &[u8]| serde_json::from_slice::<Value>(bytes).ok();
-    match (parse(existing), install_session_settings(existing)) {
+    match (
+        parse(existing),
+        install_session_settings(existing, grep_guard),
+    ) {
         (Some(current), Ok(merged)) => parse(&merged) == Some(current),
         _ => false,
     }
@@ -190,22 +292,40 @@ pub fn install_session_start(existing: &[u8], command: &str) -> Result<Vec<u8>, 
 /// under any matcher/command this call did not itself install. `existing` may be empty. The
 /// one mutation authority [`install_session_start`], [`install_pretooluse_hook`] and
 /// [`install_spawn_hooks`] build on, so no event kind can diverge on what "merge a hook block"
-/// means.
+/// means; [`install_grep_guard`] pushes its block through the same [`push_hook_block`].
 fn merge_hook_block(
     existing: &[u8],
     event_key: &str,
     matcher: &str,
     command: &str,
 ) -> Result<Vec<u8>, Error> {
-    let mut root: Value = if existing.iter().all(u8::is_ascii_whitespace) {
+    let mut settings = parse_settings(existing)?;
+    push_hook_block(&mut settings, event_key, matcher, command)?;
+    encode_settings(&settings)
+}
+
+/// The settings JSON `existing` as its top-level object, empty settings as an empty one.
+fn parse_settings(existing: &[u8]) -> Result<Map<String, Value>, Error> {
+    let root: Value = if existing.iter().all(u8::is_ascii_whitespace) {
         json!({})
     } else {
         serde_json::from_slice(existing).map_err(|e| Error(format!("parse settings.json: {e}")))?
     };
-    let obj = root
-        .as_object_mut()
-        .ok_or_else(|| Error("settings.json is not a JSON object".into()))?;
-    let hooks = obj.entry("hooks").or_insert_with(|| json!({}));
+    match root {
+        Value::Object(settings) => Ok(settings),
+        _ => Err(Error("settings.json is not a JSON object".into())),
+    }
+}
+
+/// Append a block running `command` under `matcher` to the `event_key` array of `settings`'
+/// `hooks`, creating either when absent, unless a block of that array already runs `command`.
+fn push_hook_block(
+    settings: &mut Map<String, Value>,
+    event_key: &str,
+    matcher: &str,
+    command: &str,
+) -> Result<(), Error> {
+    let hooks = settings.entry("hooks").or_insert_with(|| json!({}));
     let hooks_obj = hooks
         .as_object_mut()
         .ok_or_else(|| Error("\"hooks\" is not an object".into()))?;
@@ -219,28 +339,35 @@ fn merge_hook_block(
             "hooks": [{"type": "command", "command": command}],
         }));
     }
-    let mut out = serde_json::to_vec_pretty(&root)
+    Ok(())
+}
+
+/// `settings` as the bytes of a settings file: pretty-printed, ending in a newline.
+fn encode_settings(settings: &Map<String, Value>) -> Result<Vec<u8>, Error> {
+    let mut out = serde_json::to_vec_pretty(settings)
         .map_err(|e| Error(format!("encode settings.json: {e}")))?;
     out.push(b'\n');
     Ok(out)
 }
 
-fn has_command(session_start: &[Value], command: &str) -> bool {
-    session_start.iter().any(|block| {
+/// Whether any block of `blocks` holds an inner hook running `command`.
+fn has_command(blocks: &[Value], command: &str) -> bool {
+    blocks.iter().any(|block| {
         block
             .get("hooks")
             .and_then(Value::as_array)
-            .is_some_and(|inner| {
-                inner
-                    .iter()
-                    .any(|h| h.get("command").and_then(Value::as_str) == Some(command))
-            })
+            .is_some_and(|inner| inner.iter().any(|hook| runs(hook, command)))
     })
 }
 
+/// Whether the inner hook `hook` runs `command`.
+fn runs(hook: &Value, command: &str) -> bool {
+    hook.get("command").and_then(Value::as_str) == Some(command)
+}
+
 /// Merge a PreToolUse hook that runs `command` (matched against tool calls by `matcher`,
-/// e.g. `"Grep|Bash"`) into the settings JSON (spec 92, criterion 4: the graph-first lookup
-/// hook). A thin wrapper over [`merge_hook_block`] fixed to the `PreToolUse` event - see
+/// e.g. the write guard's editing tools) into the settings JSON. A thin wrapper over
+/// [`merge_hook_block`] fixed to the `PreToolUse` event - see
 /// there for the shared idempotence and other-settings-preserving guarantees `PreToolUse`'s
 /// general-purpose nature (a machine may already carry entries for a different tool,
 /// matcher, or command under this same event) relies on. `existing` may be empty.

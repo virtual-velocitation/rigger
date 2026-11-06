@@ -292,6 +292,7 @@ pub fn build_args(
         rigger_bin,
         &["mcp"],
         &opts.settings_json,
+        &opts.host,
     )?);
     Ok(args)
 }

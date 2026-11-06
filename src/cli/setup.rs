@@ -697,6 +697,11 @@ pub(crate) fn cmd_setup(args: &[String]) -> Res {
     // on an up-to-date repo changes nothing and prints nothing surprising (spec 05,
     // criterion 4).
     let scaffold = init_project(root, TEMPLATE_SETS)?;
+    // The workflow `init_project` left in place declares whether the lookup hook is installed
+    // or removed below; a workflow that does not parse fails setup here, loudly.
+    let grep_guard = config_store::load_workflow(&root.join(RIGGER_DIR).join(WORKFLOW_FILE))?
+        .defaults
+        .grep_guard;
     // Pay the one cold rebuild a `graph.db` owes (spec 101) - folded under an older fold rule, or
     // missing an event the log holds, in the cases `rebuild_owed_graph` names: the only command
     // that rebuilds it, because it is the verb every install already runs.
@@ -718,11 +723,12 @@ pub(crate) fn cmd_setup(args: &[String]) -> Res {
     let provisioned = provision_shim(root)?;
     // Register the operator's own MCP lookup surface (spec 92, criterion 4: IN EVERY
     // SESSION'S HAND) - `.mcp.json` gains a `rigger` entry (`rigger mcp`) exposing
-    // rigger_peers/rigger_ground/rigger_graph to THIS session - and the PreToolUse hook
-    // that bounces a bare source grep toward those tools. Both drift-aware like every
-    // install above.
+    // rigger_peers/rigger_ground/rigger_graph to THIS session - and, when the workflow
+    // declares `defaults.grep_guard`, the PreToolUse hook that bounces a bare source grep
+    // toward those tools (removed when it does not). Both drift-aware like every install
+    // above.
     let mcp_registered = install_operator_mcp(root)?;
-    let lookup_hook = install_lookup_hook(root)?;
+    let lookup_hook = install_lookup_hook(root, grep_guard)?;
     // Register `rigger status --line` as the editor's status line command (spec 94, criterion
     // 5: THE STATUSLINE COMMAND) - so the line under the person's conversation and the
     // console's own bottom line are one text. Drift-aware like every install above.
@@ -839,12 +845,15 @@ pub(crate) fn cmd_setup(args: &[String]) -> Res {
              src/, tests/, or workflows/ now bounces toward rigger_ground/rigger_graph (end \
              a `grep` command with a `# --literal` comment to proceed anyway)"
         ),
-        InstallOutcome::Refreshed => println!(
+        InstallOutcome::Refreshed if grep_guard => println!(
             "installed the graph-first lookup hook into the existing settings.json - a Grep \
              tool call or `grep` command over src/, tests/, or workflows/ now bounces toward \
              rigger_ground/rigger_graph (end a `grep` command with a `# --literal` comment to \
              proceed anyway)"
         ),
+        InstallOutcome::Refreshed => {
+            println!("removed the graph-first lookup hook: `defaults.grep_guard` is not declared")
+        }
         InstallOutcome::AlreadyCurrent => {}
     }
     match status_line {
@@ -1313,43 +1322,49 @@ fn rebuild_progress_line(
     ))
 }
 
-/// Install the graph-first lookup hook (spec 92, criterion 4): merges the PreToolUse
-/// hook that runs `rigger grep-guard` into `.claude/settings.json`. Drift-aware and
-/// non-destructive like every other `rigger setup` install (see
-/// [`hooks::install_pretooluse_hook`]): idempotent, and any pre-existing PreToolUse hook
-/// (for a different matcher, a different tool, something a person or another tool
-/// installed) is preserved untouched.
+/// Install or remove the graph-first lookup hook, as the workflow's `defaults.grep_guard`
+/// (`grep_guard`) declares it. Declared, it merges the PreToolUse hook that runs
+/// `rigger grep-guard` into `.claude/settings.json` ([`hooks::install_grep_guard`]), replacing an
+/// entry under a drifted matcher; undeclared, it strips rigger's own entry
+/// ([`hooks::remove_grep_guard`]), reading `settings.json` only when it exists and creating no
+/// `.claude/` directory. Drift-aware and non-destructive like every other `rigger setup`
+/// install: idempotent, and every other PreToolUse hook (for a different matcher, a different
+/// tool, something a person or another tool installed) is preserved untouched.
 ///
 /// The same three-state contract every other `rigger setup` install artifact has:
 /// absent settings.json -> `Installed` (a fresh file, our block its first content),
-/// an existing settings.json gaining the block (fresh OR foreign content already
-/// there) -> `Refreshed` (the FILE existed even though our own array entry did not,
-/// mirroring [`install_operator_mcp`]'s `existed` distinction), already carrying the
-/// block -> `AlreadyCurrent` (a silent no-op).
-fn install_lookup_hook(root: &Path) -> Result<InstallOutcome, Box<dyn std::error::Error>> {
-    install_into_claude_settings(root, |existing| {
-        hooks::install_pretooluse_hook(
-            existing,
-            hooks::GREP_GUARD_MATCHER,
-            hooks::GREP_GUARD_COMMAND,
-        )
-    })
+/// an existing settings.json the install or the removal changes -> `Refreshed` (the FILE
+/// existed even though our own array entry did not, mirroring [`install_operator_mcp`]'s
+/// `existed` distinction), a file the edit leaves as it is, or no file with the guard
+/// undeclared -> `AlreadyCurrent` (a silent no-op).
+fn install_lookup_hook(
+    root: &Path,
+    grep_guard: bool,
+) -> Result<InstallOutcome, Box<dyn std::error::Error>> {
+    install_into_claude_settings(
+        root,
+        if grep_guard {
+            hooks::install_grep_guard
+        } else {
+            hooks::remove_grep_guard
+        },
+    )
 }
 
-/// Merge an entry into the project's `.claude/settings.json` (creating `.claude/` first) -
-/// see [`install_into`].
+/// Merge an entry into the project's `.claude/settings.json` - see [`install_into`], which
+/// creates `.claude/` only when it writes the file.
 fn install_into_claude_settings(
     root: &Path,
     merge: impl FnOnce(&[u8]) -> Result<Vec<u8>, hooks::Error>,
 ) -> Result<InstallOutcome, Box<dyn std::error::Error>> {
-    let claude_dir = root.join(".claude");
-    std::fs::create_dir_all(&claude_dir)?;
-    install_into(&claude_dir.join("settings.json"), merge)
+    install_into(&root.join(".claude").join("settings.json"), merge)
 }
 
 /// Idempotently merge an entry into the JSON file at `path`: `merge` maps its current bytes
-/// (empty when absent) to the merged ones, and the file is rewritten only when they differ -
-/// reporting whether the entry was already current, refreshed in place, or newly installed.
+/// (empty when absent) to the merged ones, and the file is rewritten only when they differ,
+/// creating its parent directory first - reporting whether the entry was already current,
+/// refreshed in place, or newly installed. An edit that changes nothing writes nothing, so it
+/// creates no directory either.
 fn install_into(
     path: &Path,
     merge: impl FnOnce(&[u8]) -> Result<Vec<u8>, hooks::Error>,
@@ -1359,6 +1374,9 @@ fn install_into(
     let merged = merge(&existing)?;
     if merged == existing {
         return Ok(InstallOutcome::AlreadyCurrent);
+    }
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
     }
     std::fs::write(path, &merged)?;
     Ok(if existed {
@@ -1756,6 +1774,10 @@ max_retries: 3\n  \
 # a wide fan-out. 0 (the default) is unbounded, unchanged until you set this; 2\n  \
 # bounds the worst case to two live per-unit build caches at a time.\n  \
 max_parallel_units: 2\n  \
+# The graph-first lookup guard: a PreToolUse hook in every agent session and in\n  \
+# this checkout that denies a `grep` not marked literal. Absent or false leaves it\n  \
+# out of every spawn, and `rigger setup` removes it from .claude/settings.json.\n  \
+grep_guard: true\n  \
 # The three-tier review panel applied to EVERY implement unit. Declared once\n  \
 # here, inherited by the implement stage and every planner-proposed unit.\n  \
 review:\n    \

@@ -78,8 +78,15 @@ pub struct AgentResult {
     pub resumed_from: String,
 }
 
-/// Per-spawn options.
-#[derive(Default)]
+/// The host values a headless spawn carries, resolved once per command by
+/// `rigger_driver::hooks::resolve_spawn_host` from the workflow's `defaults`, never set by hand.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SpawnHost {
+    /// Whether the spawn's settings carry the PreToolUse grep-guard: `defaults.grep_guard`.
+    pub grep_guard: bool,
+}
+
+/// Per-spawn options, built through [`SpawnOpts::new`] from a resolved [`SpawnHost`].
 pub struct SpawnOpts {
     /// The spawn's DETERMINISTIC id (`{unit}/{role}#{attempt}`, see
     /// [`spawn_id`](crate::spawn::spawn_id)). A stepwise/replay driver keys on it to
@@ -163,6 +170,9 @@ pub struct SpawnOpts {
     /// host the session ones alone, and each passes the result as `--settings`. Empty means no
     /// settings of the spawn's own; the workflow driver ignores this field.
     pub settings_json: String,
+    /// The host values the spawn's settings follow: whether the session hosts merge the
+    /// PreToolUse grep-guard into [`settings_json`](Self::settings_json).
+    pub host: SpawnHost,
     /// The session id this launch CONTINUES (`claude -p --resume <session_id>`), empty
     /// for a fresh launch. The conductor sets it on a later attempt or review round of a
     /// role whose earlier spawn on the same unit recorded its session
@@ -176,6 +186,32 @@ pub struct SpawnOpts {
     /// with [`resumed_from`](Self::resumed_from); a host whose resume finds no such session
     /// falls back to a fresh launch with the full `prompt`.
     pub resume_task: String,
+}
+
+impl SpawnOpts {
+    /// The options of a spawn carrying `host`, every other field empty, false or 0, for a
+    /// caller to spread its own fields over.
+    pub fn new(host: SpawnHost) -> SpawnOpts {
+        SpawnOpts {
+            id: String::new(),
+            unit: String::new(),
+            stage: String::new(),
+            attempt: 0,
+            system_prompt: String::new(),
+            dir: String::new(),
+            isolation: false,
+            parallel: false,
+            blast_radius: Vec::new(),
+            run_id: String::new(),
+            title: String::new(),
+            env: Vec::new(),
+            reviews: Vec::new(),
+            settings_json: String::new(),
+            host,
+            resumed_from: String::new(),
+            resume_task: String::new(),
+        }
+    }
 }
 
 /// The [`SpawnRequest`] a spawn parks, derived from the spawn's arguments alone - the ONE mapping

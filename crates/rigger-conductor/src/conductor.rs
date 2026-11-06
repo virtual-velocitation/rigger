@@ -52,7 +52,7 @@ pub use rigger_domain::wave::{blast_radius_conflicts, normalize_ws, ungated_fan_
 // implement it without naming the conductor; re-exported so every `conductor::` path holds.
 pub use rigger_domain::agent::{
     classify_failure, no_result_error, parked_spawn, spawn_request, store_fault,
-    strip_failure_marker, AgentDriver, AgentFailure, AgentResult, Error, SpawnOpts,
+    strip_failure_marker, AgentDriver, AgentFailure, AgentResult, Error, SpawnHost, SpawnOpts,
     STORE_FAULT_MARKER, TYPE_UNIT_PROPOSED,
 };
 use rigger_domain::agent::{EMIT_REFUSED_MARKER, INTERRUPTED_MARKER, PARKED_MARKER};
@@ -2009,6 +2009,9 @@ pub struct Deps<'a> {
     /// its home, the graph adapter's `contextgraph::check_emit`, is a crate the conductor may not
     /// name (the dependency direction the boundary audit enforces): the composition root binds it.
     pub check_emit: &'a EmitGuard,
+    /// The host values every spawn of the run carries, resolved once by the command that built
+    /// these deps (`rigger_driver::hooks::resolve_spawn_host`) and only read here.
+    pub spawn_host: SpawnHost,
 }
 
 /// The emit guard's shape ([`Deps::check_emit`]): the store an event would land in, the stream,
@@ -3385,6 +3388,12 @@ fn unit_started_payload(
 }
 
 impl RunCtx<'_> {
+    /// The host values every spawn of this run carries: the deps' resolved
+    /// [`Deps::spawn_host`], read and never resolved here.
+    fn spawn_host(&self) -> SpawnHost {
+        self.deps.spawn_host.clone()
+    }
+
     fn emit(&self, type_: &str, payload: Value) -> Result<(), Error> {
         self.emit_with_actor("", type_, payload)
     }
@@ -4859,6 +4868,7 @@ impl RunCtx<'_> {
             // session to continue.
             resumed_from: String::new(),
             resume_task: String::new(),
+            ..SpawnOpts::new(self.spawn_host())
         })
     }
 
@@ -6190,6 +6200,7 @@ impl RunCtx<'_> {
                         // to continue.
                         resumed_from: String::new(),
                         resume_task: String::new(),
+                        ..SpawnOpts::new(self.spawn_host())
                     },
                     ROLE_IMPLEMENTER,
                     Some(prior.block(&st.name, attempts)),
@@ -6872,6 +6883,7 @@ impl RunCtx<'_> {
                             settings_json: String::new(),
                             resumed_from: String::new(),
                             resume_task: String::new(),
+                            ..SpawnOpts::new(self.spawn_host())
                         },
                         &emit,
                     )
@@ -8548,6 +8560,7 @@ impl RunCtx<'_> {
                         settings_json: String::new(),
                         resumed_from: String::new(),
                         resume_task: String::new(),
+                        ..SpawnOpts::new(self.spawn_host())
                     },
                     &emit,
                 )
@@ -11343,6 +11356,7 @@ impl RunCtx<'_> {
                 settings_json: String::new(),
                 resumed_from: String::new(),
                 resume_task: String::new(),
+                ..SpawnOpts::new(self.spawn_host())
             },
             &emit,
         );

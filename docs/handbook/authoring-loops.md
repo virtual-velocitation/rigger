@@ -123,6 +123,8 @@ A gate may declare `requires:`, the executables its command runs (`requires: [ca
 
 Upgrading an older workflow: the top-level `name:` key is retired, and `rigger validate` refuses a workflow.yml that still carries it - delete that line.
 
+Some behaviour a project once got unasked is now a `defaults:` key it declares, and an existing workflow.yml without the key behaves as declared, not as before: without `grep_guard: true`, no agent session carries the graph-first lookup hook and `rigger setup` removes rigger's own entry from `.claude/settings.json`, so add the key to keep a bare `grep` bouncing.
+
 ### The knobs that matter
 
 **`budget`** is the hard cap on agent spawns for one unattended run. When spawns reach it, the breaker records `BudgetExhausted` and aborts. Under `rigger run` the count belongs to the run, not the process: a restarted run keeps counting from where the last one stopped, so a run halted on `BudgetExhausted` continues only once `budget` is raised. Keep it non-zero always: `0` means unlimited, and unlimited is how a unit a reviewer keeps rejecting churns for five hours. Raise it for a big spec; never disable it for an unattended run.

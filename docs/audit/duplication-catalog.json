@@ -8029,25 +8029,6 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-dc79af9af1c6",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "src/cli/setup.rs",
-        "name": "install_lookup_hook",
-        "content_hash": "8e72395eb622a1a3"
-      },
-      {
-        "file": "src/cli/setup.rs",
-        "name": "install_status_line",
-        "content_hash": "ce0ac20a86ed04d2"
-      }
-    ],
-    "proposed_home": "setup::support (consolidate these 2 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
     "id": "dup-2cd309ca2b08",
     "classification": "near",
     "sites": [

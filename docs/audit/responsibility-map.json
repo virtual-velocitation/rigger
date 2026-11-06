@@ -633,6 +633,14 @@
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "spawn_host",
+    "is_test": false,
+    "proposed_module": "conductor::run_ctx",
+    "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
+    "content_hash": "aa25746b9d397a78"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "emit",
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
@@ -965,7 +973,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "ea1cb9bf6ee341ce"
+    "content_hash": "c93745f50cb4b941"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -1077,7 +1085,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "7ea65423de44ab02"
+    "content_hash": "6c0a9405af61b3b1"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -1109,7 +1117,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "3de60ef17436d099"
+    "content_hash": "947361e3240f0ac8"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -1229,7 +1237,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "15903201e9d6813a"
+    "content_hash": "f2ea534cc23d74b9"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -1549,7 +1557,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "18ef9adbc19f426e"
+    "content_hash": "d0c6e292f6cf977b"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -9685,7 +9693,7 @@
     "is_test": false,
     "proposed_module": "main::commands",
     "reason": "name contains \"cmd_\" (CLI command handler); grouped under `main::commands`.",
-    "content_hash": "00d99a57effc1d3b"
+    "content_hash": "397cc82a2b806ebd"
   },
   {
     "file": "src/cli/mod.rs",
@@ -9733,7 +9741,7 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "6a94b414b8666dac"
+    "content_hash": "db4cd1e43f6e40b0"
   },
   {
     "file": "src/cli/mod.rs",

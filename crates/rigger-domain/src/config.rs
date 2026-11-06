@@ -830,6 +830,12 @@ pub struct Defaults {
     /// spec-07 infra-vs-product semantics.
     #[serde(default)]
     pub failure_rules: Vec<FailureRuleDef>,
+    /// Whether rigger installs the PreToolUse grep-guard, which denies a `grep` that is not
+    /// marked literal: `true` merges it into every spawn's settings and `rigger setup` installs
+    /// it in the operator's checkout; absent or `false` (the default) leaves it out of every
+    /// spawn and has `rigger setup` remove rigger's own entry.
+    #[serde(default)]
+    pub grep_guard: bool,
 }
 
 /// Stage is one node of the workflow DAG.

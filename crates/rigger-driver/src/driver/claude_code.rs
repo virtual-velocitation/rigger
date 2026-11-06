@@ -2229,6 +2229,7 @@ pub fn build_args(
         rigger_bin,
         &["mcp", "--spawn", &opts.id],
         &settings,
+        &opts.host,
     )?);
     Ok(args)
 }

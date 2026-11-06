@@ -26,7 +26,7 @@ use crate::canary::{
 #[cfg(test)]
 use crate::canary::{is_batch_marker, latest_run};
 use crate::conductor::{
-    review_protocol, verdict_approves, AgentDriver, AgentResult, Error, SpawnOpts,
+    review_protocol, verdict_approves, AgentDriver, AgentResult, Error, SpawnHost, SpawnOpts,
 };
 use crate::config::{split_frontmatter, AgentDef, Config, ReviewPanel, ReviewStep};
 use crate::contextgraph::query::referenced_id;
@@ -235,10 +235,15 @@ pub fn record_header(
 /// it actually finishes rather than every item's outcome arriving in one simultaneous burst
 /// once the whole corpus is done. `rigger canary` (`cmd_canary`) wires this to a stdout
 /// print; a caller with nothing to report passes a no-op.
+///
+/// `host` is the spawn host the caller resolved once at its start: every reviewer spawn of the
+/// run carries it ([`canary_opts`]).
+#[allow(clippy::too_many_arguments)]
 pub fn run_canary(
     store: &dyn EventStore,
     driver: &dyn AgentDriver,
     cfg: &Config,
+    host: &SpawnHost,
     panel: &ReviewPanel,
     corpus: &[CanaryItem],
     jobs: usize,
@@ -271,7 +276,7 @@ pub fn run_canary(
     let (item_workers, lens_workers) = spawn_budget(jobs, corpus.len());
     let (scored, _engaged) = crate::parallel::map_ordered(corpus, item_workers, |item| {
         let start = Instant::now();
-        let outcome = score_item(driver, cfg, &steps, adjudicator, item, lens_workers);
+        let outcome = score_item(driver, cfg, host, &steps, adjudicator, item, lens_workers);
         // Fire the progress hook the INSTANT this item's own score completes, on
         // whichever worker thread just finished it - NOT after map_ordered has joined
         // every item_workers thread. The aggregation loop below only ever sees the
@@ -420,6 +425,7 @@ fn adjudicator_of(steps: &[ReviewStep]) -> Result<&str, Error> {
 fn score_item(
     driver: &dyn AgentDriver,
     cfg: &Config,
+    host: &SpawnHost,
     steps: &[ReviewStep],
     adjudicator: &str,
     item: &CanaryItem,
@@ -456,7 +462,14 @@ fn score_item(
         let k = step_ordinal(steps, index);
         let (results, _engaged) =
             crate::parallel::map_ordered(step.agents(), lens_workers, |agent| {
-                run_review_tier(driver, cfg, item, agent, &review_step_role(kind, agent, k))
+                run_review_tier(
+                    driver,
+                    cfg,
+                    host,
+                    item,
+                    agent,
+                    &review_step_role(kind, agent, k),
+                )
             });
         for raised in results {
             let (raised, resolved) = raised?;
@@ -475,7 +488,7 @@ fn score_item(
     // authority the live loop uses. Position-bias probe: re-present the same findings, the
     // whole list across steps, reversed - a verdict that flips on order alone is unstable.
     let ordered: Vec<&Finding> = findings.iter().collect();
-    let (approved, resolved) = adjudicate(driver, cfg, adjudicator, item, &ordered, "a")?;
+    let (approved, resolved) = adjudicate(driver, cfg, host, adjudicator, item, &ordered, "a")?;
     if !resolved.is_empty() {
         resolved_models.insert(ROLE_ADJUDICATOR.to_string(), resolved);
     }
@@ -487,7 +500,7 @@ fn score_item(
         let mut reversed: Vec<&Finding> = ordered.clone();
         reversed.reverse();
         let (approved_reversed, resolved) =
-            adjudicate(driver, cfg, adjudicator, item, &reversed, "b")?;
+            adjudicate(driver, cfg, host, adjudicator, item, &reversed, "b")?;
         if !resolved.is_empty() {
             resolved_models.insert(ROLE_ADJUDICATOR.to_string(), resolved);
         }
@@ -525,13 +538,14 @@ fn score_item(
 fn run_review_tier(
     driver: &dyn AgentDriver,
     cfg: &Config,
+    host: &SpawnHost,
     item: &CanaryItem,
     agent_id: &str,
     role: &str,
 ) -> Result<(Vec<Finding>, String), Error> {
     let agent = agent_of(cfg, agent_id, role)?;
     let prompt = format!("{}\n\n{}", review_header(item), review_protocol(role));
-    let opts = canary_opts(item, role, agent, &cfg.instructions);
+    let opts = canary_opts(item, role, agent, &cfg.instructions, host);
     let (result, findings) = spawn_collecting(driver, agent, &prompt, &opts)?;
     Ok((findings, result.resolved_model))
 }
@@ -543,6 +557,7 @@ fn run_review_tier(
 fn adjudicate(
     driver: &dyn AgentDriver,
     cfg: &Config,
+    host: &SpawnHost,
     adjudicator: &str,
     item: &CanaryItem,
     findings: &[&Finding],
@@ -550,7 +565,7 @@ fn adjudicate(
 ) -> Result<(bool, String), Error> {
     let agent = agent_of(cfg, adjudicator, ROLE_ADJUDICATOR)?;
     let prompt = adjudicator_prompt(item, findings);
-    let mut opts = canary_opts(item, ROLE_ADJUDICATOR, agent, &cfg.instructions);
+    let mut opts = canary_opts(item, ROLE_ADJUDICATOR, agent, &cfg.instructions, host);
     // Distinguish the two probe spawns (natural vs reversed order) by id.
     opts.id = format!("{}:{ordinal}", opts.id);
     let (result, _findings) = spawn_collecting(driver, agent, &prompt, &opts)?;
@@ -567,14 +582,16 @@ fn agent_of<'a>(cfg: &'a Config, agent_id: &str, role: &str) -> Result<&'a Agent
     })
 }
 
-/// The spawn options for a canary reviewer: a deterministic per-item, per-role id and the
-/// discipline-composed system prompt. A canary reviewer owns no worktree - it reviews the
-/// corpus snippet in the prompt - so it runs with no isolation and an empty blast radius.
+/// The spawn options for a canary reviewer: a deterministic per-item, per-role id, the
+/// discipline-composed system prompt and the `host` [`run_canary`]'s caller resolved. A canary
+/// reviewer owns no worktree - it reviews the corpus snippet in the prompt - so it runs with no
+/// isolation and an empty blast radius.
 fn canary_opts(
     item: &CanaryItem,
     role: &str,
     agent: &AgentDef,
     instructions: &[Instruction],
+    host: &SpawnHost,
 ) -> SpawnOpts {
     SpawnOpts {
         id: format!("canary:{}:{role}", item.id),
@@ -603,6 +620,7 @@ fn canary_opts(
         settings_json: String::new(),
         resumed_from: String::new(),
         resume_task: String::new(),
+        ..SpawnOpts::new(host.clone())
     }
 }
 

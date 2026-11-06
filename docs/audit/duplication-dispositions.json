@@ -1,10 +1,5 @@
 [
   {
-    "id": "dup-dc79af9af1c6",
-    "disposition": "not-a-duplicate",
-    "reason": "Both already delegate to the shared `install_into_claude_settings`; each merges a different settings entry (the PreToolUse lookup hook vs the statusLine command)."
-  },
-  {
     "id": "dup-02b6d2bbb967",
     "disposition": "not-a-duplicate",
     "reason": "`hooks::install_status_line` is the pure settings.json merge of the `statusLine` key, while `main::install_status_line` is the setup step that reads and writes `.claude/settings.json` through it and reports the install outcome."

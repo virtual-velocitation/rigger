@@ -9,7 +9,7 @@
 
 use std::path::PathBuf;
 
-use crate::agent::{Error, SpawnOpts};
+use crate::agent::{Error, SpawnHost, SpawnOpts};
 use crate::config::AgentDef;
 use crate::hooks;
 use crate::progress::SpawnLaunched;
@@ -380,9 +380,10 @@ pub(crate) fn system_prompt_file(
 ///   out. The host picks the server: the stream-json host binds each spawn its own
 ///   (`mcp --spawn <id>`, §4.3), the cli host the operator's read-only one (`mcp`, the entry
 ///   `rigger setup` writes into `.mcp.json`);
-/// - `--settings` is `settings_json` (may be empty) with the SessionStart prime hook, the
-///   PreToolUse grep-guard and the status line merged in. The host hands in what its spawn runs
-///   on: the stream-json host the spawn's own settings with the hooks bound to it already merged
+/// - `--settings` is `settings_json` (may be empty) with the SessionStart prime hook and the
+///   status line merged in, and the PreToolUse grep-guard when `host` carries it
+///   ([`hooks::install_session_settings`]). The host hands in what its spawn runs on: the
+///   stream-json host the spawn's own settings with the hooks bound to it already merged
 ///   ([`hooks::install_spawn_hooks`]), the cli host the spawn's own settings alone;
 /// - `--agents` defines the `lookup` and `verify` fan-out helpers.
 ///
@@ -391,6 +392,7 @@ pub(crate) fn spawn_config_args(
     rigger_bin: &str,
     mcp_args: &[&str],
     settings_json: &str,
+    host: &SpawnHost,
 ) -> Result<Vec<String>, Error> {
     let helpers = hooks::helper_agents_json()
         .map_err(|e| Error(format!("driver: compose the spawn's agents: {e}")))?;
@@ -407,7 +409,7 @@ pub(crate) fn spawn_config_args(
         "--strict-mcp-config".to_string(),
         "--settings".to_string(),
         json_arg(
-            hooks::install_session_settings(settings_json.as_bytes()),
+            hooks::install_session_settings(settings_json.as_bytes(), host.grep_guard),
             "settings",
         )?,
         "--agents".to_string(),
