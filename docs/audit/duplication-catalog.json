@@ -575,7 +575,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-a2fc416fb9e4",
+    "id": "dup-7310d4338924",
     "classification": "semantic",
     "sites": [
       {
@@ -634,6 +634,11 @@
         "content_hash": "9874f3396e9affbb"
       },
       {
+        "file": "src/cli/mod.rs",
+        "name": "setup_read_error",
+        "content_hash": "ee0c052ba550793e"
+      },
+      {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
         "name": "a_quarantine_record_whose_ref_was_since_deleted_hard_errors_instead_of_silently_starting_fresh",
         "content_hash": "2c71d911510e83eb"
@@ -690,7 +695,7 @@
       }
     ],
     "proposed_home": "one error-shaping helper module",
-    "note": "mandatory sweep: error-shaping helper functions - 22 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: error-shaping helper functions - 23 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {
@@ -1396,7 +1401,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-913054c5f604",
+    "id": "dup-639a65cdfd8d",
     "classification": "semantic",
     "sites": [
       {
@@ -1958,6 +1963,106 @@
         "file": "src/cli/mod.rs",
         "name": "\"{name} must be written into .rigger/shim/\"",
         "content_hash": "c2ea6b4829cb254f"
+      },
+      {
+        "file": "src/cli/mod.rs",
+        "name": "\".rigger/skills/using-rigger/SKILL.md\"",
+        "content_hash": "7e421c758a699137"
+      },
+      {
+        "file": "src/cli/mod.rs",
+        "name": "\".rigger/skills/using-riggers/SKILL.md\"",
+        "content_hash": "7e421c758a699137"
+      },
+      {
+        "file": "src/cli/mod.rs",
+        "name": "\".rigger/skills/using-riggers\"",
+        "content_hash": "f0665431c0f95bda"
+      },
+      {
+        "file": "src/cli/mod.rs",
+        "name": "\".rigger/skills/Using-rigger/SKILL.md\"",
+        "content_hash": "7e421c758a699137"
+      },
+      {
+        "file": "src/cli/mod.rs",
+        "name": "\".rigger/skills/using-rigger /SKILL.md\"",
+        "content_hash": "7e421c758a699137"
+      },
+      {
+        "file": "src/cli/mod.rs",
+        "name": "\".rigger/skills/using-riggers/SKILL.md\"",
+        "content_hash": "7e421c758a699137"
+      },
+      {
+        "file": "src/cli/mod.rs",
+        "name": "\".rigger/skills/Using-rigger\"",
+        "content_hash": "e24c26c0d9d4cbdb"
+      },
+      {
+        "file": "src/cli/mod.rs",
+        "name": "\".rigger/skills/using-rigger \"",
+        "content_hash": "e24c26c0d9d4cbdb"
+      },
+      {
+        "file": "src/cli/mod.rs",
+        "name": "\".rigger/skills/using-riggers\"",
+        "content_hash": "e24c26c0d9d4cbdb"
+      },
+      {
+        "file": "src/cli/mod.rs",
+        "name": "\".rigger/skills/planning-a-spec\"",
+        "content_hash": "d4d0283d90beb8ee"
+      },
+      {
+        "file": "src/cli/mod.rs",
+        "name": "\".rigger/skills/using-rigger\"",
+        "content_hash": "7e421c758a699137"
+      },
+      {
+        "file": "src/cli/mod.rs",
+        "name": "\".rigger/skills/README.md\"",
+        "content_hash": "29b7b7df4f08dd29"
+      },
+      {
+        "file": "src/cli/mod.rs",
+        "name": "\".rigger/skills/README.md\"",
+        "content_hash": "e24c26c0d9d4cbdb"
+      },
+      {
+        "file": "src/cli/mod.rs",
+        "name": "\".rigger/skills/planning-a-spec\"",
+        "content_hash": "e24c26c0d9d4cbdb"
+      },
+      {
+        "file": "src/cli/mod.rs",
+        "name": "\".rigger/skills/using-rigger\"",
+        "content_hash": "e24c26c0d9d4cbdb"
+      },
+      {
+        "file": "src/cli/mod.rs",
+        "name": "\".rigger/skills/planning-a-spec\"",
+        "content_hash": "b4f6780144fa9e9f"
+      },
+      {
+        "file": "src/cli/mod.rs",
+        "name": "\".rigger/skills/using-rigger/SKILL.md\"",
+        "content_hash": "abe9255dab671f1a"
+      },
+      {
+        "file": "src/cli/mod.rs",
+        "name": "\".rigger/skills/using-rigger/SKILL.md\"",
+        "content_hash": "b4f6780144fa9e9f"
+      },
+      {
+        "file": "src/cli/mod.rs",
+        "name": "\".rigger/skills\"",
+        "content_hash": "63bd2cb779d77eae"
+      },
+      {
+        "file": "src/cli/mod.rs",
+        "name": "\".rigger/skills\"",
+        "content_hash": "b4f6780144fa9e9f"
       },
       {
         "file": "src/cli/mod.rs",
@@ -3093,6 +3198,61 @@
         "file": "tests/cli.rs",
         "name": "\".rigger/docs-overlay.yml\"",
         "content_hash": "072cce40fb047d0b"
+      },
+      {
+        "file": "tests/cli.rs",
+        "name": "\".rigger/shim/node_modules/.package-lock.json\"",
+        "content_hash": "9b2536a241d75c28"
+      },
+      {
+        "file": "tests/cli.rs",
+        "name": "\".rigger/skills/using-rigger/SKILL.md\"",
+        "content_hash": "d0b1c90d8889de7e"
+      },
+      {
+        "file": "tests/cli.rs",
+        "name": "\".rigger/skills/using-riggers/SKILL.md\"",
+        "content_hash": "d0b1c90d8889de7e"
+      },
+      {
+        "file": "tests/cli.rs",
+        "name": "\".rigger/skills/planning-a-spec\"",
+        "content_hash": "090bbeba5641ea09"
+      },
+      {
+        "file": "tests/cli.rs",
+        "name": "\".rigger/skills/planning-a-spec\"",
+        "content_hash": "e24c26c0d9d4cbdb"
+      },
+      {
+        "file": "tests/cli.rs",
+        "name": "\".rigger/skills/using-riggers\"",
+        "content_hash": "e24c26c0d9d4cbdb"
+      },
+      {
+        "file": "tests/cli.rs",
+        "name": "\"{stray} shadows no shipped skill and installs nothing: a project copy is \\\n                 .rigger/skills/<name>/SKILL.md, <name> a shipped skill's exact name\"",
+        "content_hash": "25597419b8dbb616"
+      },
+      {
+        "file": "tests/cli.rs",
+        "name": "\".rigger/skills/\"",
+        "content_hash": "0d38e4c648b73dce"
+      },
+      {
+        "file": "tests/cli.rs",
+        "name": "\".rigger/skills/using-rigger/SKILL.md\"",
+        "content_hash": "072cce40fb047d0b"
+      },
+      {
+        "file": "tests/cli.rs",
+        "name": "\".rigger/skills/using-rigger\"",
+        "content_hash": "f2d626c212e0b2b5"
+      },
+      {
+        "file": "tests/cli.rs",
+        "name": "\".rigger/skills\"",
+        "content_hash": "960f7df456a79395"
       },
       {
         "file": "tests/cli.rs",
@@ -4491,7 +4651,7 @@
       }
     ],
     "proposed_home": "one .rigger-relative path-composition helper",
-    "note": "mandatory sweep: .rigger-path string literals - 618 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: .rigger-path string literals - 649 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {

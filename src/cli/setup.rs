@@ -766,11 +766,25 @@ pub(crate) fn cmd_setup(args: &[String]) -> Res {
     } else {
         false
     };
+    // Each entry under `.rigger/skills/` that shadows no shipped skill is listed on EVERY setup,
+    // so it prints before the silent-no-op check below (spec 121, criterion 14). A project copy
+    // installed in place of a skill (`ProjectCopy`) is a state, not a change: it reads as
+    // `AlreadyCurrent` at that check and in the report.
+    for stray in &skills.strays {
+        println!(
+            "{stray} shadows no shipped skill and installs nothing: a project copy is {}, <name> \
+             a shipped skill's exact name",
+            project_skill_path(Path::new(""), "<name>").display()
+        );
+    }
 
     let workflow_changed = workflow != InstallOutcome::AlreadyCurrent;
-    let skill_changed = skills
-        .iter()
-        .any(|(_, outcome)| *outcome != InstallOutcome::AlreadyCurrent);
+    let skill_changed = skills.outcomes.iter().any(|(_, outcome)| {
+        !matches!(
+            outcome,
+            InstallOutcome::AlreadyCurrent | InstallOutcome::ProjectCopy
+        )
+    });
     let hook_changed = hook != InstallOutcome::AlreadyCurrent;
     let mcp_changed = mcp_registered != InstallOutcome::AlreadyCurrent;
     let lookup_hook_changed = lookup_hook != InstallOutcome::AlreadyCurrent;
@@ -816,9 +830,9 @@ pub(crate) fn cmd_setup(args: &[String]) -> Res {
             "refreshed the drifted /rigger workflow (.claude/workflows/rigger.js) to match this \
              rigger build"
         ),
-        InstallOutcome::AlreadyCurrent => {}
+        InstallOutcome::AlreadyCurrent | InstallOutcome::ProjectCopy => {}
     }
-    for (name, outcome) in &skills {
+    for (name, outcome) in &skills.outcomes {
         match outcome {
             InstallOutcome::Installed => {
                 println!("installed the {name} skill (.claude/skills/{name}/SKILL.md)")
@@ -827,7 +841,7 @@ pub(crate) fn cmd_setup(args: &[String]) -> Res {
                 "refreshed the drifted {name} skill (.claude/skills/{name}/SKILL.md) to match \
                  this rigger build"
             ),
-            InstallOutcome::AlreadyCurrent => {}
+            InstallOutcome::AlreadyCurrent | InstallOutcome::ProjectCopy => {}
         }
     }
     match hook {
@@ -839,7 +853,7 @@ pub(crate) fn cmd_setup(args: &[String]) -> Res {
         InstallOutcome::Refreshed => {
             println!("refreshed the docs pre-commit hook to match this rigger build")
         }
-        InstallOutcome::AlreadyCurrent => {}
+        InstallOutcome::AlreadyCurrent | InstallOutcome::ProjectCopy => {}
     }
     match mcp_registered {
         InstallOutcome::Installed => println!(
@@ -849,7 +863,7 @@ pub(crate) fn cmd_setup(args: &[String]) -> Res {
         InstallOutcome::Refreshed => {
             println!("refreshed the drifted rigger MCP server entry (.mcp.json) to match this rigger build")
         }
-        InstallOutcome::AlreadyCurrent => {}
+        InstallOutcome::AlreadyCurrent | InstallOutcome::ProjectCopy => {}
     }
     match lookup_hook {
         InstallOutcome::Installed => println!(
@@ -866,7 +880,7 @@ pub(crate) fn cmd_setup(args: &[String]) -> Res {
         InstallOutcome::Refreshed => {
             println!("removed the graph-first lookup hook: `defaults.grep_guard` is not declared")
         }
-        InstallOutcome::AlreadyCurrent => {}
+        InstallOutcome::AlreadyCurrent | InstallOutcome::ProjectCopy => {}
     }
     match status_line {
         InstallOutcome::Installed => println!(
@@ -879,7 +893,7 @@ pub(crate) fn cmd_setup(args: &[String]) -> Res {
             "refreshed the drifted rigger status line command (.claude/settings.json) to match \
              this rigger build"
         ),
-        InstallOutcome::AlreadyCurrent => {}
+        InstallOutcome::AlreadyCurrent | InstallOutcome::ProjectCopy => {}
     }
     // The starter-fleet pointer fires exactly when default agents were NEWLY
     // scaffolded (spec 05 line 57 clause 2): the per-artifact report's `new_agents`

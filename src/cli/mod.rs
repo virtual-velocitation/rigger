@@ -4795,10 +4795,11 @@ fn rigger_path(root: &Path, entry: &str) -> std::path::PathBuf {
 const SHIM_DIR: &str = "shim";
 
 /// What an install step did to a file it manages under the project root (the `/rigger`
-/// workflow or the `using-rigger` skill), so `rigger setup` can REPORT a refresh but stay
-/// a silent no-op when nothing drifted (spec 05, criterion 4: setup is re-runnable - it
-/// detects and refreshes a drifted installed file, reports the refresh, and changes
-/// nothing when the file is already current).
+/// workflow, a registry skill, the docs pre-commit hook, or an `.mcp.json` or
+/// `.claude/settings.json` entry), so `rigger setup` can REPORT a refresh but stay a silent
+/// no-op when nothing drifted (spec 05, criterion 4: setup is re-runnable - it detects and
+/// refreshes a drifted installed file, reports the refresh, and changes nothing when the file
+/// is already current).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum InstallOutcome {
     /// No file was installed before; the managed copy was written fresh.
@@ -4810,6 +4811,11 @@ enum InstallOutcome {
     /// written - a rerun changes nothing (not even the file's mtime, which the grounder
     /// keys off).
     AlreadyCurrent,
+    /// The installed skill is the project's own copy under `.rigger/skills/`
+    /// ([`project_skill_path`]), written verbatim only when the installed file differed (spec
+    /// 121, criterion 14). A state, not a write: `rigger setup` reads it as
+    /// [`AlreadyCurrent`](Self::AlreadyCurrent) and reports nothing for it.
+    ProjectCopy,
 }
 
 /// Write `contents` to `path` ONLY when it is absent or differs, returning [what it
@@ -4863,6 +4869,12 @@ fn install_workflow(root: &Path) -> Result<InstallOutcome, Box<dyn std::error::E
     Ok(outcome)
 }
 
+/// The directory a skill lives under as `<SKILLS_DIR>/<name>/SKILL.md`: at the project root for
+/// a registry skill's committed source ([`skill_source_rel`]), and under `.rigger/` for a
+/// project's own copy of one ([`project_skill_path`]), the directory [`install_skills`] lists to
+/// find each copy and each stray.
+const SKILLS_DIR: &str = "skills";
+
 /// Where `rigger docs` writes a registry skill's rendered content, relative to the project
 /// root: `skills/<name>/SKILL.md`. Committed and drift-checked (spec 20, unit 2; spec 68,
 /// criterion 1) and installed into `.claude/skills/` by `rigger setup` (see
@@ -4870,7 +4882,15 @@ fn install_workflow(root: &Path) -> Result<InstallOutcome, Box<dyn std::error::E
 /// the docs-drift gate, and the CI-lane guard, so the three can never disagree on where a
 /// skill's committed source lives.
 fn skill_source_rel(name: &str) -> String {
-    format!("skills/{name}/SKILL.md")
+    format!("{SKILLS_DIR}/{name}/SKILL.md")
+}
+
+/// Where a project keeps its own copy of the registry skill `name`, which `rigger setup`
+/// installs verbatim in place of that skill's render (spec 121, criterion 14):
+/// `<root>/.rigger/skills/<name>/SKILL.md`, the [`rigger_path`] entry at [`skill_source_rel`].
+/// `rigger docs` and the docs-drift gate never read it.
+fn project_skill_path(root: &Path, name: &str) -> std::path::PathBuf {
+    rigger_path(root, &skill_source_rel(name))
 }
 
 /// Where `rigger setup` installs a registry skill, relative to the project root:
@@ -4943,37 +4963,122 @@ fn read_docs_overlay(root: &Path) -> Result<DocsOverlay, Box<dyn std::error::Err
     let raw = match std::fs::read_to_string(&path) {
         Ok(raw) => raw,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(DocsOverlay::default()),
-        Err(e) => return Err(format!("setup: reading {}: {e}", path.display()).into()),
+        Err(e) => return Err(setup_read_error(&path, e)),
     };
     serde_yaml::from_str(&raw)
         .map_err(|e| format!("setup: {} is not a valid docs overlay: {e}", path.display()).into())
 }
 
-/// Install (or refresh) EVERY skill in [`rigger::docs::skill_registry`] under `root`,
-/// returning each entry's `(name, outcome)` in registry order (spec 68, criterion 1:
-/// generalizes the single-skill `install_skill` seam over the whole registry). ONE
-/// code-derived context is built and this repo's [overlay](read_docs_overlay) merged onto
-/// it ONCE, then EVERY entry renders against that same context and installs via
-/// [`install_file_if_changed`] - so a downstream repo's base branch, specs location and
-/// Global constraints reach every installed skill that carries them without anyone editing
-/// the shared discipline source, and adding an entry to the registry is the ONLY step
-/// needed to make a new skill install; this loop needs no per-skill edit. Like
-/// [`install_workflow`], each entry writes ONLY when its file is absent or has drifted, so
-/// a `rigger setup` rerun on an up-to-date repo is a true no-op that does not even move a
-/// file's mtime.
-fn install_skills(
+/// The `rigger setup` failure for a project file at `path` it could not read: the path, then
+/// the I/O error `e`.
+fn setup_read_error(path: &Path, e: std::io::Error) -> Box<dyn std::error::Error> {
+    format!("setup: reading {}: {e}", path.display()).into()
+}
+
+/// What [`install_skills`] did: each registry entry's `(name, outcome)` in registry order, and
+/// each stray under `.rigger/skills/` - an entry that is not a directory named by a registry
+/// entry and holding a `SKILL.md`, so it shadows no shipped skill - by its root-relative path,
+/// sorted.
+struct SkillInstall {
+    outcomes: Vec<(&'static str, InstallOutcome)>,
+    strays: Vec<String>,
+}
+
+/// The name of every entry in the project's `.rigger/skills/`, none when that directory is
+/// absent. A `.rigger/skills` that exists but cannot be listed, a plain file included, fails
+/// naming it.
+fn project_skill_entries(
     root: &Path,
-) -> Result<Vec<(&'static str, InstallOutcome)>, Box<dyn std::error::Error>> {
+) -> Result<Vec<std::ffi::OsString>, Box<dyn std::error::Error>> {
+    let dir = rigger_path(root, SKILLS_DIR);
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(setup_read_error(&dir, e)),
+    };
+    entries
+        .map(|entry| {
+            entry
+                .map(|entry| entry.file_name())
+                .map_err(|e| setup_read_error(&dir, e))
+        })
+        .collect()
+}
+
+/// The bytes of the project's own copy of the skill `name` ([`project_skill_path`]), or `None`
+/// when `.rigger/skills/<name>` holds no `SKILL.md` or is a plain file. A copy that exists but
+/// cannot be read, a `SKILL.md` that is a directory included, fails naming it.
+fn read_project_skill(
+    root: &Path,
+    name: &str,
+) -> Result<Option<Vec<u8>>, Box<dyn std::error::Error>> {
+    let path = project_skill_path(root, name);
+    match std::fs::read(&path) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(e)
+            if matches!(
+                e.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+            ) =>
+        {
+            Ok(None)
+        }
+        Err(e) => Err(setup_read_error(&path, e)),
+    }
+}
+
+/// Install (or refresh) EVERY skill in [`rigger::docs::skill_registry`] under `root` (spec 68,
+/// criterion 1: generalizes the single-skill `install_skill` seam over the whole registry),
+/// returning each entry's outcome and the strays ([`SkillInstall`]). ONE code-derived context
+/// is built and this repo's [overlay](read_docs_overlay) merged onto it ONCE, then EVERY entry
+/// renders against that same context and installs via [`install_file_if_changed`] - so a
+/// downstream repo's base branch, specs location and Global constraints reach every rendered
+/// skill that carries them without anyone editing the shared discipline source, and adding an
+/// entry to the registry is the ONLY step needed to make a new skill install; this loop needs
+/// no per-skill edit.
+///
+/// A project copy shadows the shipped skill of its exact name (spec 121, criterion 14): an
+/// entry of `.rigger/skills/` whose name equals a registry entry's byte for byte
+/// (case-sensitive, never trimmed) and that holds a `SKILL.md` installs that file's bytes
+/// verbatim in place of the render, with no overlay, reported as
+/// [`ProjectCopy`](InstallOutcome::ProjectCopy). Every other entry there is a stray, which
+/// installs nothing. A `.rigger/skills` or a copy that cannot be read fails setup naming it,
+/// installing no render in place of that copy. Like [`install_workflow`], each entry writes
+/// ONLY when its file is absent or differs, so a `rigger setup` rerun on an up-to-date repo is
+/// a true no-op that does not even move a file's mtime.
+fn install_skills(root: &Path) -> Result<SkillInstall, Box<dyn std::error::Error>> {
     let mut ctx = docs_context();
     read_docs_overlay(root)?.apply(&mut ctx);
+    let entries = project_skill_entries(root)?;
     let mut outcomes = Vec::new();
     for entry in rigger::docs::skill_registry() {
-        let rendered = entry.render(&ctx);
-        let outcome =
-            install_file_if_changed(&skill_install_path(root, entry.name), rendered.as_bytes())?;
+        let installed = skill_install_path(root, entry.name);
+        let copy = if entries.iter().any(|name| name.as_os_str() == entry.name) {
+            read_project_skill(root, entry.name)?
+        } else {
+            None
+        };
+        let outcome = match copy {
+            Some(bytes) => {
+                install_file_if_changed(&installed, &bytes)?;
+                InstallOutcome::ProjectCopy
+            }
+            None => install_file_if_changed(&installed, entry.render(&ctx).as_bytes())?,
+        };
         outcomes.push((entry.name, outcome));
     }
-    Ok(outcomes)
+    let dir = rigger_path(Path::new(""), SKILLS_DIR);
+    let mut strays: Vec<String> = entries
+        .iter()
+        .filter(|name| {
+            !outcomes.iter().any(|(skill, outcome)| {
+                *outcome == InstallOutcome::ProjectCopy && name.as_os_str() == *skill
+            })
+        })
+        .map(|name| dir.join(name).display().to_string())
+        .collect();
+    strays.sort();
+    Ok(SkillInstall { outcomes, strays })
 }
 
 /// The comment line that OPENS rigger's managed block inside a `pre-commit` hook. It is a
@@ -6426,6 +6531,7 @@ mod tests {
 
         let installed_names: std::collections::BTreeSet<&str> = install_skills(root)
             .expect("install must succeed")
+            .outcomes
             .into_iter()
             .map(|(name, _)| name)
             .collect();
@@ -9921,7 +10027,7 @@ mod tests {
         );
     }
 
-    /// Find `name`'s outcome in an [`install_skills`] result, panicking if the registry
+    /// Find `name`'s outcome in an [`install_skills`] result's outcomes, panicking if the registry
     /// somehow did not install it - a test-only convenience so each assertion below reads
     /// by skill name rather than by a brittle vec index.
     fn outcome_for<'a>(
@@ -9972,7 +10078,9 @@ mod tests {
 
         // 1. Absent -> a fresh install carrying the rendered skill (loadable frontmatter),
         //    byte-identical to a fresh default render (no overlay in this repo).
-        let outcomes = install_skills(root).expect("installing writes every skill file");
+        let outcomes = install_skills(root)
+            .expect("installing writes every skill file")
+            .outcomes;
         assert_eq!(
             *outcome_for(&outcomes, "using-rigger"),
             InstallOutcome::Installed,
@@ -9997,7 +10105,9 @@ mod tests {
         // 2. Already current -> a silent no-op that does not move the mtime.
         let before = std::fs::metadata(&path).unwrap().modified().unwrap();
         std::thread::sleep(std::time::Duration::from_millis(20));
-        let outcomes = install_skills(root).expect("a no-op rerun must succeed");
+        let outcomes = install_skills(root)
+            .expect("a no-op rerun must succeed")
+            .outcomes;
         assert_eq!(
             *outcome_for(&outcomes, "using-rigger"),
             InstallOutcome::AlreadyCurrent,
@@ -10011,7 +10121,9 @@ mod tests {
 
         // 3. Drifted -> refreshed to the rendered skill.
         std::fs::write(&path, "stale hand-edit\n").unwrap();
-        let outcomes = install_skills(root).expect("re-install must succeed");
+        let outcomes = install_skills(root)
+            .expect("re-install must succeed")
+            .outcomes;
         assert_eq!(
             *outcome_for(&outcomes, "using-rigger"),
             InstallOutcome::Refreshed,
@@ -10059,7 +10171,9 @@ mod tests {
         // the same loop iteration that installs using-rigger and every other entry, with no
         // separate call or branch for planning-a-spec.
         let install_path = skill_install_path(root, "planning-a-spec");
-        let outcomes = install_skills(root).expect("installing writes every skill file");
+        let outcomes = install_skills(root)
+            .expect("installing writes every skill file")
+            .outcomes;
         assert_eq!(
             *outcome_for(&outcomes, "planning-a-spec"),
             InstallOutcome::Installed,
@@ -10080,7 +10194,9 @@ mod tests {
             .modified()
             .unwrap();
         std::thread::sleep(std::time::Duration::from_millis(20));
-        let outcomes = install_skills(root).expect("a no-op rerun must succeed");
+        let outcomes = install_skills(root)
+            .expect("a no-op rerun must succeed")
+            .outcomes;
         assert_eq!(
             *outcome_for(&outcomes, "planning-a-spec"),
             InstallOutcome::AlreadyCurrent,
@@ -10097,7 +10213,9 @@ mod tests {
 
         // Drifted -> refreshed to the registry's own render, same as every other entry.
         std::fs::write(&install_path, "stale hand-edit\n").unwrap();
-        let outcomes = install_skills(root).expect("re-install must succeed");
+        let outcomes = install_skills(root)
+            .expect("re-install must succeed")
+            .outcomes;
         assert_eq!(
             *outcome_for(&outcomes, "planning-a-spec"),
             InstallOutcome::Refreshed,
@@ -10276,6 +10394,257 @@ mod tests {
             err.to_string().contains("docs-overlay.yml"),
             "the error must name the overlay file; got: {err}"
         );
+    }
+
+    /// The bytes a project copy under `.rigger/skills/` holds in the shadow tests below: no
+    /// overlay fact, no stamped prohibition, and one byte that is not UTF-8, so only a verbatim
+    /// byte copy installs them.
+    const PROJECT_SKILL_COPY: &[u8] = b"---\ndescription: this project's own copy, installed \
+        verbatim\n---\nNo overlay, no stamped prohibition, and one byte that is not UTF-8: \xff\n";
+
+    /// Spec 121, criterion 14 (A PROJECT SKILL SHADOWS THE SHIPPED ONE): with each of `seeds`
+    /// under the root (a root-relative path holding its bytes, or an empty directory for `None`),
+    /// [`install_skills`] installs the `shadow` entry's project copy byte for byte and every other
+    /// registry entry's shipped render, reporting the shadow `ProjectCopy` and every other entry
+    /// `Installed` in registry order, and returns exactly `strays`; `.claude/skills/` then holds
+    /// exactly the registry's names, so a stray installs nothing. A second install writes nothing:
+    /// the shadow is still `ProjectCopy`, every other entry `AlreadyCurrent`, the strays the same
+    /// and no installed file's mtime moved. `rigger docs` ([`write_docs`]) then writes every
+    /// registry skill's shipped render, the shadowed one's included.
+    fn assert_skill_shadow(
+        seeds: &[(&str, Option<&[u8]>)],
+        shadow: Option<(&str, &[u8])>,
+        strays: &[&str],
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        for (rel, bytes) in seeds {
+            match bytes {
+                Some(bytes) => write_file(&root.join(rel), bytes),
+                None => std::fs::create_dir_all(root.join(rel)).unwrap(),
+            }
+        }
+        let names: Vec<&'static str> = rigger::docs::skill_registry()
+            .iter()
+            .map(|e| e.name)
+            .collect();
+        let shipped = |name: &str| registry_entry(name).render(&docs_context()).into_bytes();
+        let copy_of = |name: &str| shadow.filter(|(shadowed, _)| *shadowed == name);
+        let outcomes = |unshadowed: InstallOutcome| -> Vec<(&'static str, InstallOutcome)> {
+            names
+                .iter()
+                .map(|&name| match copy_of(name) {
+                    Some(_) => (name, InstallOutcome::ProjectCopy),
+                    None => (name, unshadowed),
+                })
+                .collect()
+        };
+        let mtimes = || -> Vec<std::time::SystemTime> {
+            names
+                .iter()
+                .map(|&name| {
+                    std::fs::metadata(skill_install_path(root, name))
+                        .unwrap()
+                        .modified()
+                        .unwrap()
+                })
+                .collect()
+        };
+        let strays: Vec<String> = strays.iter().map(|stray| stray.to_string()).collect();
+
+        let first = install_skills(root).expect("installing beside project skill copies succeeds");
+        assert_eq!(
+            (first.outcomes, first.strays),
+            (outcomes(InstallOutcome::Installed), strays.clone()),
+            "the first install's outcomes and strays"
+        );
+        assert_eq!(
+            names
+                .iter()
+                .map(|&name| (name, std::fs::read(skill_install_path(root, name)).unwrap()))
+                .collect::<Vec<_>>(),
+            names
+                .iter()
+                .map(|&name| (name, copy_of(name).map_or_else(|| shipped(name), |c| c.1.to_vec())))
+                .collect::<Vec<_>>(),
+            "the shadow installs its project copy verbatim and every other skill its shipped render"
+        );
+        assert_eq!(
+            std::fs::read_dir(root.join(".claude").join("skills"))
+                .unwrap()
+                .map(|e| e.unwrap().file_name().into_string().unwrap())
+                .collect::<std::collections::BTreeSet<String>>(),
+            names
+                .iter()
+                .map(|name| name.to_string())
+                .collect::<std::collections::BTreeSet<String>>(),
+            "only the registry's skills install; a stray installs nothing"
+        );
+
+        let before = mtimes();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let second = install_skills(root).expect("a rerun beside project skill copies succeeds");
+        assert_eq!(
+            (second.outcomes, second.strays),
+            (outcomes(InstallOutcome::AlreadyCurrent), strays),
+            "a rerun's outcomes and strays"
+        );
+        assert_eq!(mtimes(), before, "a rerun writes no installed skill");
+
+        write_docs(root).expect("rigger docs renders beside project skill copies");
+        assert_eq!(
+            names
+                .iter()
+                .map(|&name| (
+                    name,
+                    std::fs::read(root.join(skill_source_rel(name))).unwrap()
+                ))
+                .collect::<Vec<_>>(),
+            names
+                .iter()
+                .map(|&name| (name, shipped(name)))
+                .collect::<Vec<_>>(),
+            "rigger docs renders every skill's shipped text, never a project copy"
+        );
+    }
+
+    rigger::test_cases! {
+        /// No `.rigger/skills/` at all: every registry skill installs its shipped render and
+        /// nothing is a stray.
+        no_project_skill_home_installs_every_shipped_render:
+            assert_skill_shadow(&[], None, &[]);
+        /// A copy at the exact name installs verbatim in place of that skill alone; a near name
+        /// beside it shadows nothing and is the one stray.
+        a_project_copy_at_the_exact_name_shadows_the_shipped_skill:
+            assert_skill_shadow(
+                &[
+                    (".rigger/skills/using-rigger/SKILL.md", Some(PROJECT_SKILL_COPY)),
+                    (".rigger/skills/using-riggers/SKILL.md", Some(PROJECT_SKILL_COPY)),
+                ],
+                Some(("using-rigger", PROJECT_SKILL_COPY)),
+                &[".rigger/skills/using-riggers"],
+            );
+        /// A near name - another letter case, a trailing space that is never trimmed, one more
+        /// letter - shadows nothing and is a stray.
+        a_near_name_shadows_nothing_and_is_a_stray:
+            assert_skill_shadow(
+                &[
+                    (".rigger/skills/Using-rigger/SKILL.md", Some(PROJECT_SKILL_COPY)),
+                    (".rigger/skills/using-rigger /SKILL.md", Some(PROJECT_SKILL_COPY)),
+                    (".rigger/skills/using-riggers/SKILL.md", Some(PROJECT_SKILL_COPY)),
+                ],
+                None,
+                &[
+                    ".rigger/skills/Using-rigger",
+                    ".rigger/skills/using-rigger ",
+                    ".rigger/skills/using-riggers",
+                ],
+            );
+        /// A registry-named directory holding no `SKILL.md`, a plain file named by a registry
+        /// entry and a plain file naming none each shadow nothing and are strays.
+        an_entry_holding_no_project_copy_shadows_nothing_and_is_a_stray:
+            assert_skill_shadow(
+                &[
+                    (".rigger/skills/planning-a-spec", None),
+                    (".rigger/skills/using-rigger", Some(PROJECT_SKILL_COPY)),
+                    (".rigger/skills/README.md", Some(b"notes\n")),
+                ],
+                None,
+                &[
+                    ".rigger/skills/README.md",
+                    ".rigger/skills/planning-a-spec",
+                    ".rigger/skills/using-rigger",
+                ],
+            );
+    }
+
+    /// Spec 121, criterion 14 (a shadow kept, then DROPPED): while `planning-a-spec`'s project
+    /// copy is in place, a hand-edit of its installed file is rewritten to the copy, still
+    /// `ProjectCopy`; once the copy is deleted the next install refreshes the installed file to
+    /// the shipped render and lists no stray.
+    #[test]
+    fn a_shadow_rewrites_a_hand_edit_and_once_deleted_gives_way_to_the_shipped_render() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let copy = root.join(".rigger/skills/planning-a-spec");
+        write_file(&copy.join("SKILL.md"), PROJECT_SKILL_COPY);
+        let installed = skill_install_path(root, "planning-a-spec");
+        install_skills(root).expect("installing the shadow succeeds");
+
+        std::fs::write(&installed, "an operator's hand-edit\n").unwrap();
+        let kept = install_skills(root).expect("a rerun beside the shadow succeeds");
+        assert_eq!(
+            (
+                *outcome_for(&kept.outcomes, "planning-a-spec"),
+                std::fs::read(&installed).unwrap()
+            ),
+            (InstallOutcome::ProjectCopy, PROJECT_SKILL_COPY.to_vec()),
+            "a hand-edit of a shadowed skill is rewritten to the project copy"
+        );
+
+        std::fs::remove_dir_all(&copy).unwrap();
+        let dropped = install_skills(root).expect("a rerun after the copy is deleted succeeds");
+        assert_eq!(
+            (
+                *outcome_for(&dropped.outcomes, "planning-a-spec"),
+                dropped.strays,
+                std::fs::read_to_string(&installed).unwrap()
+            ),
+            (
+                InstallOutcome::Refreshed,
+                Vec::<String>::new(),
+                registry_entry("planning-a-spec").render(&docs_context())
+            ),
+            "a deleted project copy gives way to the shipped render"
+        );
+    }
+
+    /// Spec 121, criterion 14 (an unreadable project copy): with `seed` under the root,
+    /// [`install_skills`] fails naming the path `unread` returns with the error reading it gives,
+    /// and installs no shipped `using-rigger` in place of a copy it could not read.
+    fn assert_install_skills_refuses(
+        seed: fn(&Path),
+        unread: fn(&Path) -> (std::path::PathBuf, std::io::Error),
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        seed(root);
+        let (path, error) = unread(root);
+        assert_eq!(
+            install_skills(root).err().map(|e| e.to_string()),
+            Some(format!("setup: reading {}: {error}", path.display())),
+            "setup fails naming the path it could not read"
+        );
+        assert!(
+            !skill_install_path(root, "using-rigger").exists(),
+            "no shipped render installs in place of an unreadable project copy"
+        );
+    }
+
+    rigger::test_cases! {
+        /// A `SKILL.md` that is a directory cannot be read as a project copy.
+        a_project_copy_that_is_a_directory_fails_setup_naming_it:
+            assert_install_skills_refuses(
+                |root| {
+                    std::fs::create_dir_all(root.join(".rigger/skills/using-rigger/SKILL.md"))
+                        .unwrap()
+                },
+                |root| {
+                    let path = root.join(".rigger/skills/using-rigger/SKILL.md");
+                    let error = std::fs::read(&path).unwrap_err();
+                    (path, error)
+                },
+            );
+        /// A `.rigger/skills` that is a plain file cannot be read as the project's skill home.
+        a_project_skill_home_that_is_a_file_fails_setup_naming_it:
+            assert_install_skills_refuses(
+                |root| write_file(&root.join(".rigger/skills"), b"not a directory\n"),
+                |root| {
+                    let path = root.join(".rigger/skills");
+                    let error = std::fs::read_dir(&path).unwrap_err();
+                    (path, error)
+                },
+            );
     }
 
     /// Spec 48, SECRETS DISCIPLINE (the permission-hygiene rung): the store-connection secret file
