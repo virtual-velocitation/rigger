@@ -14747,10 +14747,10 @@ fn later_attempt_block(delta: Option<&(String, Vec<String>)>, gate_evidence: &[S
     )
 }
 
-/// The fact the sdet-author's fresh prompt and a resumed session's task state, last, on a
-/// round whose delta changed documentation only ([`is_documentation_only`]). It is the
-/// round's fact alone: what such a round asks of the periphery tests is the sdet-author
-/// persona's guidance, never this prompt's.
+/// The fact the sdet-author's fresh prompt and a resumed session's task state on a round
+/// whose delta changed documentation only ([`is_documentation_only`]). It is the round's
+/// fact alone: what such a round asks of the periphery tests is the sdet-author persona's
+/// guidance, never this prompt's.
 const DOC_ONLY_ROUND: &str = "This round changed documentation only.";
 
 /// The adoption decision [`RunCtx::adopt_prior_criterion_branch`] already recorded for

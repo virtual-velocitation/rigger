@@ -163,5 +163,4 @@ the code under test turns it red:
 
 ## A documentation-only round
 
-Extend the existing owner test's needle for the changed sentence, or add no pin; never a new
-test.
+Extend the existing owner test's needle for the changed sentence, or add no pin; never a new test.
