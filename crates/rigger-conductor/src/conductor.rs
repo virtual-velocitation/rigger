@@ -1375,8 +1375,9 @@ impl PriorFailure {
 
     /// The first-class, clearly-delimited prior-failure block prepended to a retry
     /// prompt. Empty when there is no prior failure, so the first attempt's prompt is
-    /// byte-identical to the historical prompt. A REQUIRED pattern item asks unit `unit`'s
-    /// attempt `attempt` for one whole-tree audit, recorded under [`audit_id`].
+    /// byte-identical to the historical prompt. A REQUIRED pattern item's line names its shape
+    /// and asks unit `unit`'s attempt `attempt` to record its audit under [`audit_id`]; how that
+    /// audit is done and bounded is the `working-discipline` built-in's, never this line's.
     fn block(&self, unit: &str, attempt: u32) -> String {
         if self.is_empty() {
             return String::new();
@@ -1416,10 +1417,7 @@ impl PriorFailure {
             let audit = audit_id(unit, attempt);
             b.push_str("REQUIRED - review holds the next round to each of these:\n");
             b.push_str(&required_lines(&self.required, |shape| {
-                format!(
-                    "  PATTERN: {shape}. Audit the whole tree, fix every site, and record \
-                     DecisionMade `{audit}` listing every site checked.\n"
-                )
+                format!("  PATTERN: {shape}. Record DecisionMade `{audit}` for it.\n")
             }));
         }
         if !self.contradiction.trim().is_empty() {
@@ -13315,8 +13313,8 @@ struct ReviewRound {
     base: String,
     delta: Vec<String>,
     required: Vec<RequiredItem>,
-    /// The DecisionMade id ([`audit_id`]) this attempt's implementer was asked to record a
-    /// whole-tree audit under, for each REQUIRED pattern item.
+    /// The DecisionMade id ([`audit_id`]) each REQUIRED pattern item's line names as this
+    /// attempt's implementer's audit record.
     audit: String,
 }
 
@@ -13342,11 +13340,11 @@ impl ReviewRound {
             let audit = &self.audit;
             format!(
                 "The items that round REQUIRED:\n{}",
-                required_lines(&self.required, |shape| format!(
-                    "  PATTERN: {shape}. The implementer was asked to audit the whole tree and \
-                     record DecisionMade `{audit}` listing every site checked; check it names \
-                     every site.\n"
-                ))
+                required_lines(&self.required, |shape| {
+                    format!(
+                    "  PATTERN: {shape}. The implementer's audit record is DecisionMade `{audit}`.\n"
+                )
+                })
             )
         };
         format!(
@@ -13392,8 +13390,8 @@ fn required_lines(items: &[RequiredItem], pattern: impl Fn(&str) -> String) -> S
 }
 
 /// The DecisionMade id unit `unit`'s attempt `attempt` records its whole-tree audit of a
-/// REQUIRED pattern item under: the one id the implementer is asked for and the next review
-/// round checks.
+/// REQUIRED pattern item under: the one id the implementer's `PATTERN:` line asks for and the
+/// next review round's names.
 fn audit_id(unit: &str, attempt: u32) -> String {
     format!("audit-{unit}-{attempt}")
 }
@@ -16688,33 +16686,44 @@ mod tests {
         );
     }
 
-    /// A pattern finding - one defect shape recurring across sites - is REQUIRED as a
-    /// whole-tree audit: the next attempt's implementer is told to audit the whole tree, fix
-    /// every site and record its audit as DecisionMade `audit-<unit>-<attempt>` listing every
-    /// site checked, and the next review round is pointed at that same record.
+    /// Spec 121's THE REQUIRED PATTERN NAMES ONLY ITS RECORD: each REQUIRED pattern item - one
+    /// defect shape recurring across sites - reaches the next attempt's implementer
+    /// ([`PriorFailure::block`]) and every tier of the next review round
+    /// ([`ReviewRound::block`]) as its shape and the DecisionMade id `audit-<unit>-<attempt>`
+    /// ([`audit_id`]) and nothing more: the implementer's line asks for that record, each
+    /// reviewer's names it, and an item with no shape carries no `PATTERN:` line. How the audit is
+    /// done and checked is the working-discipline built-in's bounded-audit bullet, never a
+    /// `PATTERN:` line's. The first attempt and the first round carry none.
     #[test]
-    fn a_pattern_item_asks_the_implementer_for_a_whole_tree_audit_record() {
+    fn each_required_pattern_item_names_only_its_shape_and_its_audit_record() {
+        use crate::test_support::{implementer_pattern_block, review_pattern_list, PATTERN_REJECT};
         let (_, _, driver) = run_review_rounds(&[
-            (
-                adjudicator_at(0, 0),
-                r#"{"verdict":"reject","required":[{"finding":"scope the log read","path":"feature.rs","correctness":true,"pattern":"unscoped log reads"}]}"#,
-            ),
+            (adjudicator_at(0, 0), PATTERN_REJECT),
             (adjudicator_at(1, 0), r#"{"verdict":"approve"}"#),
         ]);
-        let ask = "PATTERN: unscoped log reads. Audit the whole tree, fix every site, and record \
-                   DecisionMade `audit-implement-1` listing every site checked.";
-        let implementer = driver.prompts_for("worker");
-        assert!(
-            !implementer[0].contains("PATTERN:") && implementer[1].contains(ask),
-            "the attempt after the pattern finding is asked for the audit:\n{}",
-            implementer[1]
-        );
-        for agent in ["lens", "adversary", "adj"] {
-            let round = &driver.prompts_for(agent)[1];
-            assert!(
-                round.contains("unscoped log reads") && round.contains("`audit-implement-1`"),
-                "{agent}'s next round names the pattern and the audit record:\n{round}"
-            );
+        let cases: [(&[&str], String); 2] = [
+            (&["worker"], implementer_pattern_block("audit-implement-1")),
+            (
+                &["lens", "adversary", "adj"],
+                review_pattern_list("audit-implement-1"),
+            ),
+        ];
+        for (agents, required) in cases {
+            for agent in agents {
+                let prompts = driver.prompts_for(agent);
+                assert_eq!(
+                    (
+                        prompts.len(),
+                        prompts[0].matches("PATTERN:").count(),
+                        prompts[1].matches(required.as_str()).count(),
+                        prompts[1].matches("PATTERN:").count(),
+                    ),
+                    (2, 0, 1, 2),
+                    "{agent}'s second prompt names each pattern item's shape and its audit record \
+                     and nothing more, its first none; the second reads:\n{}",
+                    prompts[1]
+                );
+            }
         }
     }
 

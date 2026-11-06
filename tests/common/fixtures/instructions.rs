@@ -1,7 +1,8 @@
 //! Built-in instruction fixtures, shared by the instruction layer's unit tests, the conductor's
 //! prompt tests, the binary's shipped-text tests and the integration suites: the working-discipline
-//! body's section headings, the grounding method its one-pass section holds, the lookup method its
-//! fan-out section holds and the review method its `## When you review` section holds; the
+//! body's section headings, the grounding method its one-pass section holds, the bounded-audit
+//! bullet its hand-over section holds, the lookup method its fan-out section holds and the review
+//! method its `## When you review` section holds; the
 //! communication body's sentences that state the cadence the task prompts leave to it; the
 //! critique method the adversary and adjudicator personas
 //! hold under their `## When you critique a spec or a plan` section and each persona's share of
@@ -28,6 +29,18 @@ pub const GROUNDING_METHOD: &str = "When your task prompt shows the grounding of
 
 /// The working-discipline body's hand-over section heading.
 pub const HAND_OVER_HEADING: &str = "## Hand over a tree the gates only confirm";
+
+/// The three sentences of the hand-over section's bounded-audit bullet, in its order: its bold
+/// title, the rule that every site of a rejection's pattern is fixed, and the Check bounding the
+/// audit record a REQUIRED pattern item names.
+pub const BOUNDED_AUDIT: [&str; 3] = [
+    "A whole-tree audit a rejection requires is bounded.",
+    "When a rejection's required items name a pattern - one defect shape recurring across sites - \
+     every site of that shape is fixed.",
+    "Check: the audit record the rejection asks for names each search command you ran with its hit \
+     count and each site you fixed with its location at head, and counts the rest; it never lists \
+     or dispositions every hit, and a search term found inside a longer identifier is not a hit.",
+];
 
 /// The working-discipline body's review section heading.
 pub const WHEN_YOU_REVIEW_HEADING: &str = "## When you review";

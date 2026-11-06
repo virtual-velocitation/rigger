@@ -2128,9 +2128,9 @@ mod tests {
     use crate::test_support::AUTHORING_AGENTS_HANDBOOK;
     use crate::test_support::{
         assert_holds_its_critique_method, critique_method_by_persona, markdown_section,
-        ADJUDICATOR_JUDGING_RULE, ADVERSARY_CRITIQUE_METHOD, CRITIQUE_METHOD, DOC_ONLY_ROUND_RULE,
-        FAN_OUT_HEADING, GROUNDING_METHOD, HAND_OVER_HEADING, LOOKUP_METHOD, ONE_PASS_HEADING,
-        WHEN_YOU_REVIEW, WHEN_YOU_REVIEW_HEADING,
+        ADJUDICATOR_JUDGING_RULE, ADVERSARY_CRITIQUE_METHOD, BOUNDED_AUDIT, CRITIQUE_METHOD,
+        DOC_ONLY_ROUND_RULE, FAN_OUT_HEADING, GROUNDING_METHOD, HAND_OVER_HEADING, LOOKUP_METHOD,
+        ONE_PASS_HEADING, WHEN_YOU_REVIEW, WHEN_YOU_REVIEW_HEADING,
     };
     use crate::test_support::{production_boundary, production_files};
 
@@ -4267,6 +4267,36 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Spec 121's THE REQUIRED PATTERN NAMES ONLY ITS RECORD: the method a REQUIRED pattern
+    /// item's `PATTERN:` lines no longer state is the working-discipline body's bounded-audit
+    /// bullet, read through the shipped-text helper, which stands verbatim as exactly one bullet
+    /// of the hand-over section: its bold title, then its rule and its Check sentence, and
+    /// nothing else.
+    #[test]
+    fn the_hand_over_section_holds_the_bounded_audit_bullet_verbatim() {
+        let body = every_shipped_agent_text()
+            .into_iter()
+            .find(|(at, _)| at == "BUILTIN working-discipline")
+            .map(|(_, text)| text)
+            .expect("the working-discipline body is shipped");
+        let section = markdown_section(&body, HAND_OVER_HEADING);
+        let bullet = format!(
+            "- **{}** {} {}",
+            BOUNDED_AUDIT[0], BOUNDED_AUDIT[1], BOUNDED_AUDIT[2]
+        );
+        let bullets: Vec<String> = section
+            .split("\n- ")
+            .skip(1)
+            .map(|at| rigger::wave::normalize_ws(&format!("- {at}")))
+            .collect();
+        assert_eq!(
+            bullets.iter().filter(|held| **held == bullet).count(),
+            1,
+            "the hand-over section holds the bounded-audit bullet verbatim once; its bullets \
+             are:\n{bullets:#?}"
+        );
     }
 
     /// The critique method is the persona's: each critiquing persona, committed and scaffold
