@@ -14,10 +14,17 @@
 //! `spec_critique_prompt`, and that prompt's bytes by the whole-prompt pin in
 //! `crates/rigger-domain/src/review.rs`.
 //!
-//! The rows are the adjudicator of the first round, for the prompt no reject precedes, and the
-//! adversary and the adjudicator of the re-plan round, for the prompt that opens with the reject.
-//! The first round's adversary is no row: the step that parks the planner parks it too, so the unit
-//! list it was served predates the proposal the other rows list. Every run is minted through
+//! Spec 121, THE PLANNER PROTOCOL CARRIES NO PLANNING POLICY, over the same gate: the conductor's
+//! test pins the plan protocol a stub driver's planner receives, and the binary's the planning
+//! policy in the planner persona and its seed as text. What this file adds is that the planner
+//! `rigger init` wrote and this repository's committed planner each state the policy, and that
+//! what `rigger prompt` serves the plan's planner and its re-plan is that planner composed, then a
+//! task closing with the protocol's framing and contract alone and stating none of the policy.
+//!
+//! The critique rows are the adjudicator of the first round, for the prompt no reject precedes, and
+//! the adversary and the adjudicator of the re-plan round, for the prompt that opens with the
+//! reject. The first round's adversary is no row: the step that parks the planner parks it too, so
+//! the unit list it was served predates the proposal the other rows list. Every run is minted through
 //! `run_store::start_fresh` and adopted by the step, as the workflow driver's run is. The stepped
 //! workflow differs from what the verb wrote in one line, its pinned grounder.
 
@@ -29,9 +36,11 @@ use common::cli::{
 };
 use common::fixtures::{
     assert_holds_its_critique_method, composed_system_prompt, critique_method_by_persona,
-    critique_reject, dag_critique_prompt, markdown_section, read_text, DAG_DISJOINT_OVERLAP,
-    DAG_PRIOR_REJECT_HEADER, WHEN_YOU_CRITIQUE_HEADING, WIDGET_CRITERION, WIDGET_UNIT,
+    critique_reject, dag_critique_prompt, markdown_section, plan_protocol_text, read_text,
+    DAG_DISJOINT_OVERLAP, DAG_PRIOR_REJECT_HEADER, PLANNING_POLICY, WHEN_YOU_CRITIQUE_HEADING,
+    WIDGET_CRITERION, WIDGET_UNIT,
 };
+use common::repo::repo_text;
 use std::path::Path;
 
 /// The agent the scaffolded workflow's implement template fans out to.
@@ -93,21 +102,30 @@ fn pin_the_nop_grounder(root: &Path) {
     std::fs::write(path, pinned).unwrap();
 }
 
+/// Answer the parked planner spawn `spawn` with its proposal of the widget unit, returning what
+/// `rigger prompt` serves it, as a courier fetches it.
+fn serve_and_plan(root: &Path, spawn: &str) -> String {
+    let served = run_rigger_ok(root, &["prompt", spawn]);
+    plan_the_widget(root, spawn, WORKER);
+    served
+}
+
 /// Drive `root`'s gate through the first-round reject line `reject`, the re-plan it feeds and the
-/// approve that ends it, returning what `rigger prompt` served the first round's adjudicator and
-/// the second round's adversary and adjudicator.
-fn served_over_a_reject_and_its_re_plan(root: &Path, reject: &str) -> [String; 3] {
+/// approve that ends it, returning what `rigger prompt` served the plan's planner and its re-plan,
+/// then what it served the first round's adjudicator and the second round's adversary and
+/// adjudicator.
+fn served_over_a_reject_and_its_re_plan(root: &Path, reject: &str) -> ([String; 2], [String; 3]) {
     pin_the_nop_grounder(root);
     with_run_store(root, |store| {
         rigger::run_store::start_fresh(store, &[], "", "", "", "specs/widget.md").unwrap();
     });
     run_rigger_ok(root, &["step"]);
-    plan_the_widget(root, "plan/implementer#0", WORKER);
+    let plan = serve_and_plan(root, "plan/implementer#0");
     run_rigger_ok(root, &["result", "plan-critique/adversary#0", REVIEWED]);
     run_rigger_ok(root, &["step"]);
     let first_adjudicator = serve_and_answer(root, "plan-critique/adjudicator#0", reject);
     run_rigger_ok(root, &["step"]);
-    plan_the_widget(root, "plan/replan#1", WORKER);
+    let re_plan = serve_and_plan(root, "plan/replan#1");
     run_rigger_ok(root, &["step"]);
     let second_adversary = serve_and_answer(root, "plan-critique/adversary#1", REVIEWED);
     run_rigger_ok(root, &["step"]);
@@ -116,7 +134,10 @@ fn served_over_a_reject_and_its_re_plan(root: &Path, reject: &str) -> [String; 3
         "plan-critique/adjudicator#1",
         r#"{"verdict":"approve"}"#,
     );
-    [first_adjudicator, second_adversary, second_adjudicator]
+    (
+        [plan, re_plan],
+        [first_adjudicator, second_adversary, second_adjudicator],
+    )
 }
 
 /// The task the first round's adjudicator, the second round's adversary and its adjudicator must
@@ -177,6 +198,71 @@ fn strike_the_critique_sections(root: &Path) {
     }
 }
 
+/// Replace the planner `rigger init` wrote into `root` with this repository's committed planner.
+fn copy_in_the_committed_planner(root: &Path) {
+    std::fs::write(
+        rigger_file(root, "agents/planner.md"),
+        repo_text(".rigger/agents/planner.md"),
+    )
+    .unwrap();
+}
+
+/// How many times `text`, its whitespace normalized, states each sentence of the
+/// [`PLANNING_POLICY`], in its order.
+fn policy_counts(text: &str) -> [usize; 6] {
+    let text = rigger::wave::normalize_ws(text);
+    PLANNING_POLICY.map(|sentence| text.matches(sentence).count())
+}
+
+/// Given a project `rigger init` scaffolded, its planner the one the verb wrote or this
+/// repository's committed planner, which states each planning-policy sentence once, when the gate
+/// rejects and re-plans, `rigger prompt` serves the plan's planner and its re-plan that planner
+/// composed with the layers, then a task that closes with the plan protocol's framing and contract
+/// alone and states none of the planning policy.
+#[test]
+fn each_planner_spawn_is_served_the_planning_policy_by_its_persona_and_none_by_its_task() {
+    let givens: [(&str, Arrange); 2] = [
+        ("the planner rigger init wrote", |_| {}),
+        (
+            "this repository's committed planner",
+            copy_in_the_committed_planner,
+        ),
+    ];
+    let protocol = format!(
+        "{}\n",
+        plan_protocol_text(WORKER, "(no enumerated acceptance criteria)")
+    );
+    for (given, arrange) in givens {
+        let dir = scaffolded_project();
+        let root = dir.path();
+        arrange(root);
+        let planner = agent_text(root, "planner.md");
+        assert_eq!(
+            policy_counts(&planner),
+            [1; 6],
+            "{given} states each planning-policy sentence once:\n{planner}"
+        );
+        let head = format!("{}\n\n---\n\n", composed_system_prompt(&planner));
+        let reject = critique_reject("decomposition-conflict", &["adv-1"]);
+        let (served, _) = served_over_a_reject_and_its_re_plan(root, &reject);
+        for (spawn, served) in ["plan/implementer#0", "plan/replan#1"]
+            .into_iter()
+            .zip(served)
+        {
+            let task = served.strip_prefix(&head);
+            assert_eq!(
+                task.map(|task| (
+                    task.get(task.len().saturating_sub(protocol.len())..),
+                    policy_counts(task)
+                )),
+                Some((Some(protocol.as_str()), [0; 6])),
+                "{given}: {spawn} is served the planner composed, then a task closing with the \
+                 plan protocol alone and stating no planning policy:\n{served}"
+            );
+        }
+    }
+}
+
 /// Given a project `rigger init` scaffolded, its adversary and adjudicator personas hold their
 /// share of the critique method under the critique section and none of the other role's.
 #[test]
@@ -220,7 +306,7 @@ fn each_gate_spawn_is_served_its_own_persona_then_only_the_framing_and_the_outpu
             );
         }
         let reject = critique_reject("decomposition-conflict", &["adv-1"]);
-        let served = served_over_a_reject_and_its_re_plan(root, &reject);
+        let (_, served) = served_over_a_reject_and_its_re_plan(root, &reject);
         let tasks = expected_tasks(root, &reject);
         let spawns = ["adjudicator#0", "adversary#1", "adjudicator#1"];
         for (((file, task), served), spawn) in tasks.into_iter().zip(served).zip(spawns) {

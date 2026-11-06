@@ -1589,7 +1589,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "18fac35c34128b02"
+    "content_hash": "056636ad3b2da24b"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -1661,7 +1661,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "6dfeacf48455eed1"
+    "content_hash": "4ea2265cb92cc6d8"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -8469,7 +8469,15 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "97184a484af9a283"
+    "content_hash": "6dce85972fe06b77"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "the_planner_protocol_carries_no_planning_policy",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "c3a8baddfb1fc4d4"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",

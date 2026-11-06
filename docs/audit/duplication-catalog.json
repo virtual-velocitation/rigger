@@ -361,7 +361,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-e095ca500e2a",
+    "id": "dup-261fedbfbd66",
     "classification": "near",
     "sites": [
       {
@@ -432,6 +432,11 @@
       {
         "file": "tests/common/fixtures/config.rs",
         "name": "separator_refusal",
+        "content_hash": "7963312db697b9f4"
+      },
+      {
+        "file": "tests/common/fixtures/plan_critique.rs",
+        "name": "plan_protocol_text",
         "content_hash": "7963312db697b9f4"
       },
       {
@@ -1410,7 +1415,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-7060ae1b9798",
+    "id": "dup-5fc463189865",
     "classification": "semantic",
     "sites": [
       {
@@ -2207,6 +2212,11 @@
         "file": "src/cli/setup.rs",
         "name": "\".rigger/agents/{f}\"",
         "content_hash": "1cbc061829c2fe0e"
+      },
+      {
+        "file": "src/cli/setup.rs",
+        "name": "\".rigger/agents/planner.md\"",
+        "content_hash": "69d72830b25d5a28"
       },
       {
         "file": "src/cli/setup.rs",
@@ -3609,6 +3619,11 @@
         "content_hash": "edbddea214457e40"
       },
       {
+        "file": "tests/critique_method_persona_periphery.rs",
+        "name": "\".rigger/agents/planner.md\"",
+        "content_hash": "fdbe24f9e23fee7f"
+      },
+      {
         "file": "tests/dedup_seeding_periphery.rs",
         "name": "\".rigger\"",
         "content_hash": "090bbeba5641ea09"
@@ -4465,7 +4480,7 @@
       }
     ],
     "proposed_home": "one .rigger-relative path-composition helper",
-    "note": "mandatory sweep: .rigger-path string literals - 610 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: .rigger-path string literals - 612 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {
