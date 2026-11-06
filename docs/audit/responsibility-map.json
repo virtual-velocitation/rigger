@@ -11321,6 +11321,14 @@
   },
   {
     "file": "src/cli/mod.rs",
+    "name": "assert_installed_planning_skill_carries",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "8ac2f44fe67d342a"
+  },
+  {
+    "file": "src/cli/mod.rs",
     "name": "docs_overlay_overrides_only_declared_fields",
     "is_test": true,
     "proposed_module": "main::tests",

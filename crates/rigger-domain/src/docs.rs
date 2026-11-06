@@ -1870,7 +1870,7 @@ mod tests {
     /// registry (not just a placeholder).
     #[test]
     fn planning_a_spec_render_carries_frontmatter_and_the_recipe() {
-        let out = PLANNING_A_SPEC_BODY;
+        let out = skill_body("planning-a-spec", &sentinel_ctx());
         assert!(
             out.starts_with("---\nname: planning-a-spec\n"),
             "must open with skill frontmatter naming it; got: {}",
@@ -2410,26 +2410,26 @@ mod tests {
         &text[from..from + len]
     }
 
-    /// The `spec-preflight` registry entry's own body, before the operator-binary stamp.
-    fn spec_preflight_body(ctx: &DocsContext) -> String {
+    /// The registry entry `name`'s own body for `ctx`, before the operator-binary stamp.
+    fn skill_body(name: &str, ctx: &DocsContext) -> String {
         let registry = skill_registry();
         let entry = registry
             .iter()
-            .find(|e| e.name == "spec-preflight")
-            .expect("spec-preflight must be in the registry");
+            .find(|e| e.name == name)
+            .unwrap_or_else(|| panic!("{name} must be in the registry"));
         entry.body.render(ctx)
     }
 
     /// Spec 112, criterion 4 (THE SHIPPED SKILL): `spec-preflight` is a registry entry whose
-    /// body, like `planning-a-spec`'s, ignores `ctx` (two different contexts render it alike),
-    /// opens with its loadable frontmatter and carries its sections in order: why, when, the
-    /// four steps, and the mid-run amendment.
+    /// body ignores `ctx` (two different contexts render it alike), opens with its loadable
+    /// frontmatter and carries its sections in order: why, when, the four steps, and the mid-run
+    /// amendment.
     #[test]
     fn spec_preflight_is_a_registry_skill_carrying_its_four_steps_in_order() {
-        let body = spec_preflight_body(&sentinel_ctx());
+        let body = skill_body("spec-preflight", &sentinel_ctx());
         assert_eq!(
             body,
-            spec_preflight_body(&real_watch_facts_ctx()),
+            skill_body("spec-preflight", &real_watch_facts_ctx()),
             "the spec-preflight body carries no code-derived fact, so it ignores ctx"
         );
         assert!(
@@ -2476,7 +2476,7 @@ mod tests {
             "the field guide's catalog runs F1 to F11"
         );
 
-        let skill = PLANNING_A_SPEC_BODY;
+        let skill = skill_body("planning-a-spec", &sentinel_ctx());
         let header = "| Signature in the run | Catalog class | Fix at spec time |\n|---|---|---|\n";
         let rows = &skill[skill.find(header).expect("the churn table") + header.len()..];
         let mut labels = Vec::new();
@@ -2556,9 +2556,9 @@ mod tests {
     #[test]
     fn the_shipped_docs_carry_one_corner_list_of_eight() {
         let ctx = sentinel_ctx();
-        let skill = PLANNING_A_SPEC_BODY;
+        let skill = skill_body("planning-a-spec", &ctx);
         let guide = PLANNING_FIELD_GUIDE_BODY;
-        let preflight = spec_preflight_body(&ctx);
+        let preflight = skill_body("spec-preflight", &ctx);
         let discipline = crate::test_support::builtin_body("working-discipline");
         for (label, list) in [
             (
@@ -2567,7 +2567,7 @@ mod tests {
             ),
             (
                 "planning-a-spec step 3",
-                section(skill, "**3. Run the constraints walk.**", "**4. "),
+                section(&skill, "**3. Run the constraints walk.**", "**4. "),
             ),
             (
                 "the field guide's F3 countermeasure",
@@ -2602,9 +2602,9 @@ mod tests {
     /// under a workflow with a critic, `rigger critique <spec>` before launch.
     #[test]
     fn planning_a_spec_step_7_runs_spec_preflight_and_the_critique_before_launch() {
-        let skill = PLANNING_A_SPEC_BODY;
+        let skill = skill_body("planning-a-spec", &sentinel_ctx());
         let step = section(
-            skill,
+            &skill,
             "**7. Preflight, then launch.**",
             "## Amending mid-run",
         );
@@ -2614,6 +2614,49 @@ mod tests {
                  critique <spec>` before launch."
             ),
             "step 7 must name spec-preflight and the critique before launch; got:\n{step}"
+        );
+    }
+
+    /// The `planning-a-spec` body the shipped docs context renders reads exactly `expected` from
+    /// the first `start` up to the `end` after it.
+    fn assert_planning_a_spec_reads(start: &str, end: &str, expected: &str) {
+        let skill = skill_body("planning-a-spec", &sentinel_ctx());
+        assert_eq!(
+            section(&skill, start, end),
+            expected,
+            "planning-a-spec from {start:?} to {end:?}"
+        );
+    }
+
+    crate::test_cases! {
+        /// Spec 121, criterion 13 (THE PLANNING SKILL CARRIES THE PROJECT'S CONSTRAINTS): with
+        /// no project constraints in the context, step 6 is the generic step alone - its title,
+        /// then the one sentence every spec carries - and no project list follows it.
+        planning_a_spec_step_6_carries_the_projects_own_global_constraints:
+            assert_planning_a_spec_reads(
+                "**6. ",
+                "**7. ",
+                "**6. Carry the project's own Global constraints.** State them once in the spec; \
+                 every unit\ninherits them: no new event type unless the spec's whole point is \
+                 one; fallback stated for any\ncriterion that might be impossible; anything the \
+                 gates cannot see flagged for the adjudicator to\ndemand evidence on.\n\n",
+            );
+        /// Spec 121, criterion 13: step 1's example anchors name a neutral path, no language's
+        /// file extension.
+        planning_a_spec_step_1_anchors_on_a_neutral_path: assert_planning_a_spec_reads(
+            "**1. ",
+            "**2. ",
+            "**1. Ground the Goal in evidence.** State the problem with measured numbers and \
+             real anchors\n(`path/to/file:line`, event counts, durations) - look them up via \
+             `rigger graph --show/--around` and\n`rigger peers`, not memory. A goal an \
+             implementer can re-verify is a goal an adjudicator can\nhold the line on.\n\n",
+        );
+        /// Spec 121, criterion 13: step 5's example of the code a criterion names is a symbol
+        /// and a neutral path, no language's source tree.
+        planning_a_spec_step_5_names_code_by_a_neutral_path: assert_planning_a_spec_reads(
+            "- the code it touches",
+            " The unit's",
+            "- the code it touches named in backticks (`run_wave`, `src/ingest`).",
         );
     }
 }
