@@ -58,7 +58,8 @@ use common::git::git_answer;
 use common::git::temp_git_project_with_commit;
 use common::mcp::McpSession;
 use common::repo::{
-    assert_carries_spawn_hooks, flag_value, hook_words, stub_path, SILENT_PAST_THE_POLL,
+    assert_carries_spawn_hooks, flag_value, grep_guard_hook, hook_words, stub_path,
+    SILENT_PAST_THE_POLL,
 };
 use common::rigger_bin;
 use common::workflow_probe::write_workflow;
@@ -32778,62 +32779,93 @@ fn setup_registers_the_operator_mcp_server_and_lookup_hook() {
     );
 }
 
-/// Given a project set up with the scaffolded workflow, which declares `defaults.grep_guard`, when
-/// the operator drops the key and reruns `rigger setup`, then setup says it removed the
-/// graph-first lookup hook because the key is not declared, `.claude/settings.json` loses that one
-/// `PreToolUse` entry and keeps every other setting, a foreign `PreToolUse` hook included, and a
-/// further rerun changes and reports nothing.
+/// Given a project set up with the scaffolded workflow, which declares `defaults.grep_guard`, and
+/// a `.claude/settings.json` whose `PreToolUse` array holds, ahead of setup's own grep-guard
+/// block, a foreign `Write` hook, an already-empty `Write` block and a `Bash` block running the
+/// guard beside a foreign hook: when the operator keeps or drops the key and reruns `rigger
+/// setup`, then setup reports its one lookup-hook edit, and the file loses rigger's own guard
+/// alone - from the `Bash` block either way, and setup's own block with it when the key is not
+/// declared - keeping every other block and setting, the empty block included. A further rerun
+/// changes and reports nothing, and `rigger validate` raises no warning on the file it leaves.
 #[test]
-fn setup_without_the_declared_grep_guard_removes_only_its_lookup_hook() {
-    let dir = temp_project();
-    let root = dir.path();
-    setup_ok(root, &[("RIGGER_NPM", "true")]);
-    let settings_path = root.join(".claude").join("settings.json");
-    let read_settings = || -> serde_json::Value {
-        serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap()
-    };
-    let foreign = serde_json::json!({
-        "matcher": "Write",
-        "hooks": [{"type": "command", "command": "prettier --write"}],
-    });
-    let mut guarded = read_settings();
-    guarded["hooks"]["PreToolUse"]
-        .as_array_mut()
-        .unwrap()
-        .insert(0, foreign.clone());
-    std::fs::write(&settings_path, serde_json::to_vec_pretty(&guarded).unwrap()).unwrap();
-    let workflow_path = root.join(".rigger").join("workflow.yml");
-    let workflow = std::fs::read_to_string(&workflow_path).unwrap();
-    assert_eq!(workflow.matches("  grep_guard: true\n").count(), 1);
-    std::fs::write(&workflow_path, workflow.replace("  grep_guard: true\n", "")).unwrap();
-
-    let out = setup_ok(root, &[("RIGGER_NPM", "true")]);
+fn setup_edits_only_its_own_lookup_hook_whether_the_grep_guard_is_declared_or_not() {
+    let reinstalled = "installed the graph-first lookup hook into the existing settings.json - \
+                       a Grep tool call or `grep` command over src/, tests/, or workflows/ now \
+                       bounces toward rigger_ground/rigger_graph (end a `grep` command with a \
+                       `# --literal` comment to proceed anyway)";
     let removal = "removed the graph-first lookup hook: `defaults.grep_guard` is not declared";
-    assert_eq!(
-        out.lines()
-            .filter(|line| line.contains("lookup hook"))
-            .collect::<Vec<_>>(),
-        [removal],
-        "setup reports the removal alone; got:\n{out}"
-    );
-    let mut expected = guarded.clone();
-    expected["hooks"]["PreToolUse"] = serde_json::json!([foreign]);
-    assert_eq!(read_settings(), expected);
-    assert_eq!(
-        guarded["hooks"]["PreToolUse"][1]["hooks"][0]["command"], "rigger grep-guard",
-        "the guard was the entry the removal took: {guarded}"
-    );
+    // (whether the workflow keeps `defaults.grep_guard`, the one lookup-hook line setup reports)
+    for (declared, report) in [(true, reinstalled), (false, removal)] {
+        let dir = temp_project();
+        let root = dir.path();
+        setup_ok(root, &[("RIGGER_NPM", "true")]);
+        let settings_path = root.join(".claude").join("settings.json");
+        let read_settings = || -> serde_json::Value {
+            serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap()
+        };
+        let mut guarded = read_settings();
+        assert_eq!(
+            hook_words(&guarded, "PreToolUse"),
+            [grep_guard_hook()],
+            "setup's own PreToolUse entry is the guard alone: {guarded}"
+        );
+        let own = guarded["hooks"]["PreToolUse"][0].clone();
+        let prettier = serde_json::json!({"type": "command", "command": "prettier --write"});
+        let foreign = serde_json::json!({"matcher": "Write", "hooks": [prettier]});
+        let empty = serde_json::json!({"matcher": "Write", "hooks": []});
+        let mixed = serde_json::json!({"matcher": "Bash", "hooks": [own["hooks"][0], prettier]});
+        guarded["hooks"]["PreToolUse"] = serde_json::json!([foreign, empty, mixed, own]);
+        std::fs::write(&settings_path, serde_json::to_vec_pretty(&guarded).unwrap()).unwrap();
+        let workflow_path = root.join(".rigger").join("workflow.yml");
+        let workflow = std::fs::read_to_string(&workflow_path).unwrap();
+        assert_eq!(workflow.matches("  grep_guard: true\n").count(), 1);
+        if !declared {
+            std::fs::write(&workflow_path, workflow.replace("  grep_guard: true\n", "")).unwrap();
+        }
 
-    let rerun = setup_ok(root, &[("RIGGER_NPM", "true")]);
-    assert_eq!(
-        rerun
-            .lines()
-            .filter(|line| line.contains("lookup hook"))
-            .count(),
-        0,
-        "a rerun reports no lookup hook; got:\n{rerun}"
-    );
-    assert_eq!(read_settings(), expected);
+        let out = setup_ok(root, &[("RIGGER_NPM", "true")]);
+        assert_eq!(
+            out.lines()
+                .filter(|line| line.contains("lookup hook"))
+                .collect::<Vec<_>>(),
+            [report],
+            "setup reports its one lookup-hook edit (declared: {declared}); got:\n{out}"
+        );
+        let unguarded = serde_json::json!({"matcher": "Bash", "hooks": [prettier]});
+        let mut kept = vec![foreign, empty, unguarded];
+        if declared {
+            kept.push(own);
+        }
+        let mut expected = guarded.clone();
+        expected["hooks"]["PreToolUse"] = serde_json::Value::Array(kept);
+        assert_eq!(read_settings(), expected, "declared: {declared}");
+
+        let rerun = setup_ok(root, &[("RIGGER_NPM", "true")]);
+        assert_eq!(
+            rerun
+                .lines()
+                .filter(|line| line.contains("lookup hook"))
+                .count(),
+            0,
+            "a rerun reports no lookup hook (declared: {declared}); got:\n{rerun}"
+        );
+        assert_eq!(read_settings(), expected, "declared: {declared}");
+
+        let (out, err, ok) = run_rigger(root, &["validate"]);
+        assert!(
+            ok,
+            "validate succeeds on the set-up project; stderr:\n{err}"
+        );
+        assert_eq!(
+            out.lines()
+                .chain(err.lines())
+                .filter(|line| line.contains(".claude/settings.json"))
+                .collect::<Vec<_>>(),
+            Vec::<&str>::new(),
+            "validate reads setup's file as carrying the session settings the workflow declares \
+             (declared: {declared}); stdout:\n{out}\nstderr:\n{err}"
+        );
+    }
 }
 
 /// A live `rigger mcp` session over a store holding one decision, its workflow pinning
