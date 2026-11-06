@@ -530,7 +530,7 @@ mod tests {
     fn the_working_discipline_carries_one_pass_and_the_fan_out_helpers() {
         let body = working_discipline();
         for heading in [
-            "## One pass, by excellence",
+            crate::test_support::ONE_PASS_HEADING,
             crate::test_support::FAN_OUT_HEADING,
         ] {
             assert_eq!(

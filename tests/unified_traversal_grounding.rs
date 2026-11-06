@@ -44,18 +44,24 @@ use rigger::contextgraph::{
 use rigger::eventstore::sqlite::Store;
 use rigger::gate::ExecRunner;
 use rigger::grounder::{Grounder, Ref};
+use rigger::progress::GREP_FALLBACK_PREFIX;
 use rigger::spawn::ROLE_SDET_AUTHOR;
 use rigger::wave::normalize_ws;
 use serde_json::{json, Value};
 
 use common::cli::{planted_graph, temp_project};
 use common::fixtures::apply_next_json;
+use common::fixtures::assert_carries_each;
 use common::fixtures::assert_system_prompt_carries_the_review_method_once;
 use common::fixtures::assert_task_prompt_carries_only_the_reviewer_contract;
 use common::fixtures::language_marker_hits;
 use common::fixtures::test_spawn_host;
 use common::fixtures::{
     edge, file_half, member_graph, BARE_PARENT, LEAF_PLACEHOLDER, NESTED_METHOD, RANGE_ARTIFACT,
+};
+use common::fixtures::{
+    CHECK_THE_PEERS, GROUNDING_METHOD, LOOKUP_METHOD, LOOKUP_POINTER, RECORD_EACH_DECISION,
+    RECORD_EACH_FINDING, SUPERSEDE_A_PEER,
 };
 
 /// The opening words of the code-neighborhood section's header.
@@ -357,8 +363,8 @@ fn a_spawn_prompt_carries_the_unified_traversal_code_neighborhood_not_the_old_st
                         from the unified traversal";
     assert_prompt(
         &prompt,
-        // The code neighborhood the ONE traversal surfaces reaches the prompt, as a "read first"
-        // location line derived from the graph node (its file + line + name), not from the grounder.
+        // The code neighborhood the ONE traversal surfaces reaches the prompt, as a location line
+        // derived from the graph node (its file + line + name), not from the grounder.
         &[("run_unit", neighborhood), ("core.rs:42", neighborhood)],
         // The separate structural-grounder stitch is GONE: the code neighborhood now comes from the
         // ONE traversal, so the old "Relevant locations" block must not be rendered.
@@ -559,52 +565,48 @@ fn the_producer_prompt_keeps_the_full_grounding_context_not_the_implement_trim()
 /// producer/planner alongside the review context - EVERY non-implement spawn's FULL slice gains the
 /// three-verb lookup pointer, not just the trimmed implement slice. The sibling
 /// `the_producer_prompt_keeps_the_full_grounding_context_not_the_implement_trim` proves the producer
-/// KEEPS the full decisions/findings bulk; this proves the SAME producer prompt now ALSO names all
-/// three lookup verbs (structure/text/memory) with the grep-fallback reporting instruction, at the
-/// exact bytes a real producer spawn receives through the `AgentDriver` port during a live `run`. The
-/// implementer's in-process `lookup_pointer_names_all_three_verbs_on_every_slice` pins `graph_context`
-/// at `GroundingSlice::Full`; this pins the wiring all the way to a REAL producer spawn - something an
+/// KEEPS the full decisions/findings bulk; this proves the SAME producer prompt now ALSO carries the
+/// pointer's one paragraph naming the three lookup verbs (structure/text/memory), and, by spec 121's
+/// THE LOOKUP POINTER NAMES ONLY THE TOOLS, neither lookup-method sentence the `working-discipline`
+/// built-in holds, at the exact bytes a real producer spawn receives through the `AgentDriver` port
+/// during a live `run`. The implementer's in-process
+/// `the_lookup_pointer_names_only_the_three_verbs_on_every_slice` pins `graph_context` at
+/// `GroundingSlice::Full`; this pins the wiring all the way to a REAL producer spawn - something an
 /// in-process render assertion cannot prove.
 ///
 /// Non-vacuous / mutation-isolating: dropping the `write_lookup_pointer(&mut b)` call from
-/// `graph_context`'s `GroundingSlice::Full` arm reddens every assertion here, while the
+/// `graph_context`'s `GroundingSlice::Full` arm reddens the pointer's row here, while the
 /// implement/sdet-author trim tests (which exercise the peers-pointer path) stay green.
 #[test]
 fn the_producer_prompt_carries_the_three_verb_lookup_pointer() {
     let graph = Projector::open(":memory:", "test").unwrap();
 
     // No graph seed is needed: the lookup pointer is a fixed note the Full slice appends
-    // UNCONDITIONALLY, so no spawn is left grepping in the dark even over an empty neighborhood.
+    // UNCONDITIONALLY, so every spawn's grounding names the graph's verbs even over an empty
+    // neighborhood.
     let prompts = run_and_capture_producer_prompts(&graph);
     assert!(
         !prompts.is_empty(),
         "the producer stage's agent must have been spawned with a prompt"
     );
-    let prompt = &prompts[0];
+    assert_carries_only_the_lookup_pointer("the producer prompt", &prompts[0]);
+}
 
-    assert!(
-        prompt.contains("rigger graph --around"),
-        "the producer prompt must name the STRUCTURE verb `rigger graph --around`; \
-         prompt was:\n{prompt}"
-    );
-    assert!(
-        prompt.contains("rigger graph --show"),
-        "the producer prompt must name the TEXT verb `rigger graph --show`; prompt was:\n{prompt}"
-    );
-    assert!(
-        prompt.contains("rigger peers"),
-        "the producer prompt must name the MEMORY verb `rigger peers`; prompt was:\n{prompt}"
-    );
-    assert!(
-        prompt.contains("structure") && prompt.contains("text") && prompt.contains("memory"),
-        "the producer prompt must name each lookup verb's job (structure/text/memory); \
-         prompt was:\n{prompt}"
-    );
-    assert!(
-        prompt.contains("grep-fallback:") && prompt.contains("rigger progress"),
-        "the producer prompt must carry the grep-fallback reporting instruction; \
-         prompt was:\n{prompt}"
-    );
+/// The task `prompt`, which `what` names, carries the lookup pointer's one paragraph exactly once
+/// and neither lookup-method sentence the `working-discipline` built-in holds: no "not by
+/// grepping" and no `grep-fallback:` record.
+fn assert_carries_only_the_lookup_pointer(what: &str, prompt: &str) {
+    for (text, times) in [
+        (LOOKUP_POINTER, 1),
+        ("not by grepping", 0),
+        (GREP_FALLBACK_PREFIX, 0),
+    ] {
+        assert_eq!(
+            prompt.matches(text).count(),
+            times,
+            "{what} carries {text:?} {times} time(s); prompt was:\n{prompt}"
+        );
+    }
 }
 
 /// Drive a real, WORKTREE-ISOLATED `conductor::run` of a single non-producer (implement) stage that
@@ -847,18 +849,19 @@ fn the_review_prompt_keeps_the_full_findings_so_a_lens_finding_reaches_the_adver
 /// slice a real reviewer receives must name all three lookup verbs. The sibling
 /// `the_review_prompt_keeps_the_full_findings_so_a_lens_finding_reaches_the_adversary_and_adjudicator`
 /// proves the review tiers KEEP the full findings bulk; this proves the SAME review prompts now ALSO
-/// name all three lookup verbs (structure/text/memory) with the grep-fallback reporting instruction.
-/// The implementer's in-process `lookup_pointer_names_all_three_verbs_on_every_slice` pins
-/// `graph_context` at `GroundingSlice::Full`; this periphery layer pins the pointer all the way to a
-/// REAL review spawn - the lens, the adversary, AND the adjudicator - the exact bytes each receives
-/// through the `AgentDriver` port during a live fan-out `run`. A wiring regression that assembled a
-/// review prompt without the Full-slice pointer would keep the in-process unit test green while
-/// shipping a verb-less prompt to the reviewer; only a test at this boundary catches it.
+/// carry the pointer's one paragraph naming the three lookup verbs (structure/text/memory) and, by
+/// spec 121's THE LOOKUP POINTER NAMES ONLY THE TOOLS, neither lookup-method sentence the
+/// `working-discipline` built-in holds. The implementer's in-process
+/// `the_lookup_pointer_names_only_the_three_verbs_on_every_slice` pins `graph_context` at
+/// `GroundingSlice::Full`; this periphery layer pins the pointer all the way to a REAL review spawn -
+/// the lens, the adversary, AND the adjudicator - the exact bytes each receives through the
+/// `AgentDriver` port during a live fan-out `run`. A wiring regression that assembled a review prompt
+/// without the Full-slice pointer would keep the in-process unit test green while shipping a
+/// verb-less prompt to the reviewer; only a test at this boundary catches it.
 ///
 /// Non-vacuous / mutation-isolating: dropping the `write_lookup_pointer(&mut b)` call from
-/// `graph_context`'s `GroundingSlice::Full` arm reddens every assertion here (all three review tiers
-/// lose the verbs and the fallback instruction), while the implement/sdet-author trim tests (which
-/// exercise the peers-pointer path) stay green.
+/// `graph_context`'s `GroundingSlice::Full` arm reddens the pointer's row for all three review tiers,
+/// while the implement/sdet-author trim tests (which exercise the peers-pointer path) stay green.
 #[test]
 fn the_review_prompt_carries_the_three_verb_lookup_pointer() {
     let graph = Projector::open(":memory:", "test").unwrap();
@@ -887,36 +890,76 @@ fn the_review_prompt_carries_the_three_verb_lookup_pointer() {
             .clone()
     };
 
-    // EVERY review tier grounds through the FULL slice, so each must receive all three lookup verbs
-    // (each with its one-line job) and the grep-fallback reporting instruction: the review context
-    // names the graph verbs the SAME as the trimmed implement slice does.
+    // EVERY review tier grounds through the FULL slice, so each must receive the pointer's three
+    // lookup verbs, each with its one-line job: the review context names the graph verbs the SAME
+    // as the trimmed implement slice does.
     for role in ["lens", "adversary", "adj"] {
-        let prompt = prompt_for(role);
-        assert!(
-            prompt.contains("rigger graph --around"),
-            "the {role:?} review prompt must name the STRUCTURE verb `rigger graph --around`; \
-             prompt was:\n{prompt}"
+        assert_carries_only_the_lookup_pointer(
+            &format!("the {role:?} review prompt"),
+            &prompt_for(role),
         );
-        assert!(
-            prompt.contains("rigger graph --show"),
-            "the {role:?} review prompt must name the TEXT verb `rigger graph --show`; \
-             prompt was:\n{prompt}"
-        );
-        assert!(
-            prompt.contains("rigger peers"),
-            "the {role:?} review prompt must name the MEMORY verb `rigger peers`; \
-             prompt was:\n{prompt}"
-        );
-        assert!(
-            prompt.contains("structure") && prompt.contains("text") && prompt.contains("memory"),
-            "the {role:?} review prompt must name each lookup verb's job (structure/text/memory); \
-             prompt was:\n{prompt}"
-        );
-        assert!(
-            prompt.contains("grep-fallback:") && prompt.contains("rigger progress"),
-            "the {role:?} review prompt must carry the grep-fallback reporting instruction; \
-             prompt was:\n{prompt}"
-        );
+    }
+}
+
+/// Spec 121's THE LOOKUP POINTER NAMES ONLY THE TOOLS and THE TASK PROMPTS CARRY NO CADENCE OR
+/// METHOD, at the review boundary end to end: each method a prompt text no longer carries reaches
+/// every spawn through the built-in its system prompt composes, and only there. The rows are the
+/// lookup method the grounding pointer left to `working-discipline`'s Fan out section; the
+/// grounding method the grounding sections' headers and `review_protocol` left to its One-pass
+/// section; and, each left to `communication`, the record cadence `EMIT_PROTOCOL` and
+/// `review_protocol` left, the peers check the shim's peers refresh left, and the supersede rule
+/// the decisions header and the peers refresh left. Given a live fan-out `run` whose empty
+/// operator layer neither replaces nor switches off a built-in, when the lens, the adversary and
+/// the adjudicator each spawn through the `AgentDriver` port, then each one's system prompt
+/// carries each row's sentences exactly once and its task prompt carries none of them, so each
+/// method has one home in what a spawn receives.
+///
+/// Non-vacuous: restoring the Fan out section's former `lookup` bullet ending, the one rule in
+/// another wording, reddens the lookup row on every tier; dropping the One-pass section's grounding
+/// paragraph reddens the grounding row on every tier; spelling a row's sentence a second time in
+/// any built-in reddens that row on every tier, and spelling it once in a task-prompt text reddens
+/// that row on each tier the text reaches.
+#[test]
+fn every_review_spawn_receives_each_method_left_to_a_built_in_once_through_its_system_prompt() {
+    let graph = Projector::open(":memory:", "test").unwrap();
+    let finding = json!({
+        "id": "f_method",
+        "by": "lens:lens",
+        "unit": "u1",
+        "summary": "a lens finding about the seed file",
+        "about": ["core.rs"],
+    });
+    let (prompts, system_prompts) = run_and_capture_review_spawns(&graph, finding);
+    let spawned: Vec<&str> = prompts.iter().map(|(id, _)| id.as_str()).collect();
+    assert_eq!(
+        (spawned, system_prompts.len()),
+        (vec!["lens", "adversary", "adj"], 3),
+        "the three review tiers spawn once each, in order, each with a system prompt"
+    );
+    let moved: [(&str, &[&str]); 4] = [
+        ("lookup method", &LOOKUP_METHOD),
+        ("grounding method", &[GROUNDING_METHOD]),
+        (
+            "record and peers cadence",
+            &[RECORD_EACH_DECISION, RECORD_EACH_FINDING, CHECK_THE_PEERS],
+        ),
+        ("supersede rule", &SUPERSEDE_A_PEER),
+    ];
+    for ((role, prompt), system) in prompts.iter().zip(&system_prompts) {
+        for (method, sentences) in moved {
+            assert_carries_each(
+                &format!("the {role:?} review system prompt, for the {method},"),
+                &normalize_ws(system),
+                sentences,
+                1,
+            );
+            assert_carries_each(
+                &format!("the {role:?} review task prompt, for the {method},"),
+                &normalize_ws(prompt),
+                sentences,
+                0,
+            );
+        }
     }
 }
 

@@ -6,6 +6,11 @@ whole criterion, the whole design and every file you touch before you act; verif
 claim you make against the tree, never against memory; leave no corner (empty, repeated,
 revert, DROPPED, concurrent, crash-resume, cold start, existing data) unwalked.
 
+When your task prompt shows the grounding of the files you touch, read their code neighborhood
+first, honor the design intent that governs them, do not repeat the mistakes in the lessons
+already learned about them, and address or refute the findings other reviewers have already
+raised about them.
+
 Success is excellence, never subversion. A red gate is fixed at its cause. Narrowing any
 gate's instrument (an exclusion list, a skip attribute, a lint suppression, a lowered threshold, a
 filter that hides a case, a deleted or weakened test, a `--force`), deleting the code a finding
@@ -100,7 +105,8 @@ naming, a fact with two homes, test shape, comment density, a record, a principl
 breaking anything - is a note: raise it with its location; it never fails the unit. Where the
 workflow has a check-in stage - a stage that needs the fan-out implement template - that stage
 fixes the run's notes once, before its gates; without one, the notes stay in the run's log for the
-operator. A blocking finding names its class and, for (b) or (c), the criterion it reads; a verdict
+operator. Check each note against the current tree. A note owes no record beyond the commit that
+fixes it. A blocking finding names its class and, for (b) or (c), the criterion it reads; a verdict
 whose findings are all notes is an approval, and a rejection requires only its blocking findings.
 
 ## Fan out the mechanical work
@@ -117,8 +123,12 @@ helpers rigger scaffolds into `.claude/agents/`:
   resort, used only when the graph returned nothing, and always reported.
   Give each instance one node and one question; merge the answers yourself and never redo
   them. A `GAP:` line in an answer is a knowledge-graph gap: record it with `rigger_emit` as a
-  DecisionMade so it surfaces for a spec. The same rule binds you: the graph first, a literal
-  `grep` only when it is strictly necessary, and each such use recorded.
+  DecisionMade so it surfaces for a spec. Look things up in the knowledge graph, not by
+  grepping the project's sources. If the graph cannot answer and you fall back to grep over the
+  project's sources, record it with a progress line `grep-fallback: <what the graph did not
+  answer>` through the progress verb your task or your tool list names - one line before moving
+  on - so the gap is visible in the log; filtering your own build or gate output is not a
+  fallback.
 - `verify` (Sonnet, with a shell): ONE instance for a build, a test run or a
   reproduction. They compete for the machine's CPU, memory and disk, so a second at once only
   slows both; the machine-wide build slots belong to gate commands alone. Wait for it; do not

@@ -13202,7 +13202,7 @@ fn unit_size_cap() -> String {
     )
 }
 
-const EMIT_PROTOCOL: &str = "Record each decision you make by calling the rigger_emit tool the moment you make it, with type \"DecisionMade\" and data:\n{\"id\":\"<short-id>\",\"summary\":\"<one line>\",\"governs\":[\"<file>\"],\"supersedes\":\"<prior-id-or-empty>\"}\nThis writes it to the shared event log live, so other agents see it immediately.";
+const EMIT_PROTOCOL: &str = "Record each decision you make by calling the rigger_emit tool with type \"DecisionMade\" and data:\n{\"id\":\"<short-id>\",\"summary\":\"<one line>\",\"governs\":[\"<file>\"],\"supersedes\":\"<prior-id-or-empty>\"}\nThis writes it to the shared event log live, so other agents see it immediately.";
 
 /// The protocol a PLANNER (a `produces: dag`) stage follows. The conductor has ALREADY
 /// created one deterministic baseline implement unit per acceptance criterion, so the
@@ -13217,10 +13217,13 @@ const PLAN_PROTOCOL: &str = "You are the planner. The conductor has ALREADY crea
 
 /// The protocol a REVIEW agent (a lens or the adversary) follows so its findings
 /// reach the shared context graph - the cross-agent memory the three tiers
-/// communicate THROUGH. A reviewer records each finding by calling rigger_emit the
-/// moment it raises it; the projector folds it ABOUT the files it concerns, and the
-/// later tiers (and concurrent lenses) retrieve it via grounding + rigger_peers,
-/// never via the conductor splicing one agent's stdout into another's prompt.
+/// communicate THROUGH. A reviewer records each finding by calling rigger_emit; the
+/// projector folds it ABOUT the files it concerns, and the later tiers (and concurrent
+/// lenses) retrieve it via grounding + rigger_peers, never via the conductor splicing one
+/// agent's stdout into another's prompt. When to record a finding, and what to do with one
+/// another reviewer already raised, are guidance the communication and working-discipline
+/// built-ins state, so the protocol carries only the tool, its data and what the record
+/// reaches.
 ///
 /// `actor` is the reviewer's ROLE token, its step's [`review_step_role`] (`lens:<agent>` or
 /// `adversary`, with `@<k>` from a kind's second step on), that the finding's `by` field carries.
@@ -13240,10 +13243,10 @@ const PLAN_PROTOCOL: &str = "You are the planner. The conductor has ALREADY crea
 /// same `by` role token the live review-quality folds key on - one protocol, not two.
 pub fn review_protocol(actor: &str) -> String {
     format!(
-        "Record each review finding you raise by calling the rigger_emit tool the moment you raise it, with type \"ReviewFinding\" and data:\n\
+        "Record each review finding you raise by calling the rigger_emit tool with type \"ReviewFinding\" and data:\n\
          {{\"id\":\"<short-id>\",\"by\":\"{actor}\",\"summary\":\"<one line>\",\"about\":[\"<file>\"]}}\n\
          The `by` field ATTRIBUTES the finding to you - keep it EXACTLY as \"{actor}\" so the review-quality metrics can measure your findings' survival even when you run out-of-process (where the conductor stamps no actor for you). \
-         This writes the finding to the shared context graph live, so the adversary, the adjudicator, and your fellow reviewers see it immediately (via grounding and rigger_peers) and address or refute it.{REVIEWER_DISCIPLINE}"
+         This writes the finding to the shared context graph live, so the adversary, the adjudicator, and your fellow reviewers see it immediately (via grounding and rigger_peers).{REVIEWER_DISCIPLINE}"
     )
 }
 
@@ -13294,9 +13297,7 @@ fn notes_block(notes: &[RunNote]) -> String {
         block.push_str(&format!("- {}{at}: {}\n", note.id, note.summary));
     }
     block.push_str(
-        "Check each note against the current tree. Fix, in one pass, every note that is still \
-         true; leave a note that is false or already fixed. A note owes no record beyond the \
-         commit that fixes it.\n",
+        "Fix every note that is still true; leave a note that is false or already fixed.\n",
     );
     block
 }
@@ -13430,8 +13431,7 @@ pub const FINDINGS_BUDGET_BYTES: usize = 48 * 1024;
 
 /// The header for the decisions-that-govern injection - single-sourced so the
 /// capped renderer and any test that asserts its presence agree byte-for-byte.
-const DECISIONS_HEADER: &str =
-    "Decisions that govern these files (do not contradict them; supersede explicitly if you must):";
+const DECISIONS_HEADER: &str = "Decisions that govern these files:";
 
 /// Spec 29c criterion 1 prompt budget: how many code-entity DEFINITIONS the code-neighborhood
 /// section keeps verbatim - the code half of the unified graph the ONE seeded traversal surfaces
@@ -13466,7 +13466,7 @@ fn task_block(st: &Stage) -> String {
 /// The header for the code-neighborhood injection - single-sourced so the renderer and any test
 /// that asserts its presence agree byte-for-byte.
 const CODE_NEIGHBORHOOD_HEADER: &str =
-    "Code neighborhood of these files (definitions the run extracted into the unified graph - read first):";
+    "Code neighborhood of these files (definitions the run extracted into the unified graph):";
 
 /// The design-intent node kinds (spec 29b) the design-intent grounding section surfaces (spec 29c
 /// criterion 3): the RA / architecture doc / addendum that SPECIFIES a file, the load-bearing
@@ -13515,7 +13515,7 @@ const DESIGN_INTENT_BUDGET_BYTES: usize = 24 * 1024;
 /// The header for the design-intent injection (spec 29c criterion 3) - single-sourced so the
 /// renderer and any test that asserts its presence agree byte-for-byte.
 const DESIGN_INTENT_HEADER: &str =
-    "Design intent that governs these files (the handbook rule that governs them, the RA/architecture section that specifies them, the load-bearing decision that constrains them, and the local rationale - reached by the one graph traversal, honor them):";
+    "Design intent that governs these files (the handbook rule that governs them, the RA/architecture section that specifies them, the load-bearing decision that constrains them, and the local rationale - reached by the one graph traversal):";
 
 /// The ONE budget rule every capped record surface shares - the prompt sections (through
 /// [`render_capped_section`]) and `rigger peers` / the `rigger_peers` tool alike: walking
@@ -14144,7 +14144,7 @@ fn write_capped_lessons(b: &mut String, g: &Graph, seed: &[String]) {
         seed,
         contextgraph::KIND_LESSON,
         contextgraph::REL_ABOUT,
-        "Lessons already learned about these files (do not repeat these mistakes):",
+        "Lessons already learned about these files:",
         "lesson",
         LESSONS_VERBATIM_N,
         LESSONS_BUDGET_BYTES,
@@ -14169,7 +14169,7 @@ fn write_capped_findings(b: &mut String, g: &Graph, seed: &[String]) {
         seed,
         contextgraph::KIND_FINDING,
         contextgraph::REL_ABOUT,
-        "Findings other reviewers have already raised about these files (address or refute them):",
+        "Findings other reviewers have already raised about these files:",
         "finding",
         FINDINGS_VERBATIM_N,
         FINDINGS_BUDGET_BYTES,
@@ -14207,28 +14207,23 @@ fn write_peers_pointer(b: &mut String) {
     write_lookup_pointer(b);
 }
 
-/// The three-verb LOOKUP pointer EVERY grounding slice carries (spec 58): the knowledge graph is
-/// the lookup surface, and naming its three verbs with their one-line jobs makes reaching for the
-/// graph the path of least resistance rather than grepping the project's sources. `rigger graph
-/// --around` answers STRUCTURE (who-calls-X and the caller/callee neighborhood), `rigger graph
-/// --show` answers TEXT (an entity's definition site and its body), and `rigger peers` answers
-/// MEMORY (the prior decisions, findings, and lessons about the files). Grep over the project's
-/// sources is a fallback worth REPORTING, not a habit: an agent that greps because the graph could
-/// not answer records ONE `grep-fallback:` progress line before moving on, so every such gap lands
-/// in the event log where it can be measured and closed (filtering one's own build or gate output
-/// is not a fallback). Rendered on the IMPLEMENT slice (after the bulk-not-inlined note) and the
-/// FULL/review slice (after the capped bulk) alike, so no spawn is left grepping in the dark. A
+/// The three-verb LOOKUP pointer EVERY grounding slice carries (spec 58): one framing paragraph
+/// naming the knowledge graph's three verbs with their one-line jobs. `rigger graph --around`
+/// answers STRUCTURE (who-calls-X and the caller/callee neighborhood), `rigger graph --show`
+/// answers TEXT (an entity's definition site and its body), and `rigger peers` answers MEMORY (the
+/// prior decisions, findings, and lessons about the files). It names only the tools (spec 121):
+/// the lookup method - the graph before grep, and the `grep-fallback:` progress line a grep over
+/// the project's sources owes - is the `working-discipline` built-in's, which every spawn's
+/// instructions carry. Rendered on the IMPLEMENT slice (after the bulk-not-inlined note) and the
+/// FULL/review slice (after the capped bulk) alike, so every spawn's grounding names the verbs. A
 /// fixed string with no seed/graph data, so it is deterministic by construction; hyphens only (a
 /// gate rejects U+2014), and it names only first-party tools.
 fn write_lookup_pointer(b: &mut String) {
     b.push_str(
-        "\nLook things up in the knowledge graph, not by grepping the project's sources - three \
-         verbs answer it: `rigger graph --around <file|entity>` (structure: callers, callees, \
-         neighbors), `rigger graph --show <entity>` (text: definition site and body), `rigger \
-         peers <file>...` (memory: decisions, findings, lessons). If the graph cannot answer and \
-         you fall back to grep over the project's sources, record it with `rigger progress <id> \
-         'grep-fallback: <what the graph did not answer>'` - one line before moving on - so the \
-         gap is visible in the log; filtering your own build or gate output is not a fallback.\n",
+        "\nThe knowledge graph answers lookups through three verbs: `rigger graph --around \
+         <file|entity>` (structure: callers, callees, neighbors), `rigger graph --show <entity>` \
+         (text: definition site and body), `rigger peers <file>...` (memory: decisions, findings, \
+         lessons).\n",
     );
 }
 
@@ -21178,14 +21173,22 @@ mod tests {
         );
     }
 
+    /// Spec 121's THE LOOKUP POINTER NAMES ONLY THE TOOLS, over spec 58's pointer: the grounding
+    /// pointer renders exactly one framing paragraph naming the THREE lookup verbs with their
+    /// one-line jobs - `rigger graph --around` (structure), `rigger graph --show` (text),
+    /// `rigger peers` (memory) - and EVERY spawn's grounding carries it once: the trimmed
+    /// IMPLEMENT slice AND the full REVIEW slice alike. Neither slice says how to use grep or
+    /// asks for a `grep-fallback:` record: that method is the `working-discipline` built-in's.
     #[test]
-    fn lookup_pointer_names_all_three_verbs_on_every_slice() {
-        // Spec 58 c3 (the habit half): the grounding tool pointer names the THREE lookup verbs
-        // with their one-line jobs - `rigger graph --around` (structure), `rigger graph --show`
-        // (text), `rigger peers` (memory) - plus the grep-fallback reporting instruction, and it
-        // is carried by EVERY spawn's grounding: the trimmed IMPLEMENT slice AND the full REVIEW
-        // slice alike. Assert both slices, from ONE seeded traversal, carry all three verbs and the
-        // fallback instruction.
+    fn the_lookup_pointer_names_only_the_three_verbs_on_every_slice() {
+        let mut pointer = String::new();
+        write_lookup_pointer(&mut pointer);
+        assert_eq!(
+            pointer,
+            format!("\n{}\n", crate::test_support::LOOKUP_POINTER),
+            "the pointer is one paragraph naming the three verbs and their jobs"
+        );
+
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("modifier.rs"), "fn modifier() {}\n").unwrap();
         let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
@@ -21227,32 +21230,13 @@ mod tests {
             ("review-full", GroundingSlice::Full),
         ] {
             let out = ctx.graph_context(&seed, slice);
-            // All three lookup verbs, each with its one-line job.
-            assert!(
-                out.contains("rigger graph --around"),
-                "the {label} pointer must name the STRUCTURE verb; got:\n{out}"
-            );
-            assert!(
-                out.contains("rigger graph --show"),
-                "the {label} pointer must name the TEXT verb `rigger graph --show`; got:\n{out}"
-            );
-            assert!(
-                out.contains("rigger peers"),
-                "the {label} pointer must name the MEMORY verb `rigger peers`; got:\n{out}"
-            );
-            // The jobs are named so the reader knows which verb answers which question.
-            assert!(
-                out.contains("structure") && out.contains("text") && out.contains("memory"),
-                "the {label} pointer must name each verb's job (structure/text/memory); \
-                 got:\n{out}"
-            );
-            // The grep-fallback reporting instruction: a graph miss that forces a grep over the
-            // project's sources is recorded as one `grep-fallback:` progress line.
-            assert!(
-                out.contains("grep-fallback:") && out.contains("rigger progress"),
-                "the {label} pointer must carry the grep-fallback reporting instruction; \
-                 got:\n{out}"
-            );
+            for (text, times) in [(crate::test_support::LOOKUP_POINTER, 1), ("grep", 0)] {
+                assert_eq!(
+                    out.matches(text).count(),
+                    times,
+                    "the {label} slice carries {text:?} {times} time(s); got:\n{out}"
+                );
+            }
         }
 
         // The FULL (review) slice keeps the capped decisions bulk unchanged - the lookup pointer is
@@ -36011,7 +35995,8 @@ mod tests {
 
     /// Assert the CANONICAL IDENTITY SURFACE of `review` (spec 120, criterion 6): the review
     /// spawns and the verdict [`review_identity`] reads equal `golden`, captured on the tree
-    /// before the review panel ran as a sequence of steps.
+    /// before the review panel ran as a sequence of steps, its prompt hashes re-taken over the
+    /// protocols spec 121 cut.
     fn assert_review_identity(review: crate::config::ReviewPanel, golden: &[&str]) {
         let (lines, prompts) = review_identity(review);
         assert_eq!(lines, golden, "the review task prompts:\n{prompts}");
@@ -36032,15 +36017,17 @@ mod tests {
     }
 
     // The golden lines [`review_identity`] read on the tree before the review panel ran as a
-    // sequence of steps (spec 120, criterion 6): each review spawn, then each status stamp.
-    const ARCHITECTURE_LENS_SPAWN: &str = r#"s/lens:architecture-reviewer#0 [] 90da538e7cf34bb5"#;
-    const SDET_LENS_SPAWN: &str = r#"s/lens:sdet#0 [] 7ce018ae5d845d41"#;
+    // sequence of steps (spec 120, criterion 6), each review prompt's hash re-taken once spec 121
+    // cut the cadence and method clauses out of the decision and finding protocols: each review
+    // spawn, then each status stamp.
+    const ARCHITECTURE_LENS_SPAWN: &str = r#"s/lens:architecture-reviewer#0 [] 205b096ff6577155"#;
+    const SDET_LENS_SPAWN: &str = r#"s/lens:sdet#0 [] 96476a31e07beb09"#;
     const ADVERSARY_SPAWN: &str =
-        r#"s/adversary#0 ["lens:architecture-reviewer", "lens:sdet"] 711070660f68834f"#;
-    const ADJUDICATOR_AFTER_LENSES_AND_ADVERSARY_SPAWN: &str = r#"s/adjudicator#0 ["lens:architecture-reviewer", "lens:sdet", "adversary"] eefbf75b395904f6"#;
+        r#"s/adversary#0 ["lens:architecture-reviewer", "lens:sdet"] 54523a38d9eefe93"#;
+    const ADJUDICATOR_AFTER_LENSES_AND_ADVERSARY_SPAWN: &str = r#"s/adjudicator#0 ["lens:architecture-reviewer", "lens:sdet", "adversary"] f2483337e5d3ae91"#;
     const ADJUDICATOR_AFTER_LENSES_SPAWN: &str =
-        r#"s/adjudicator#0 ["lens:architecture-reviewer", "lens:sdet"] eefbf75b395904f6"#;
-    const ADJUDICATOR_AFTER_SDET_SPAWN: &str = r#"s/adjudicator#0 ["lens:sdet"] eefbf75b395904f6"#;
+        r#"s/adjudicator#0 ["lens:architecture-reviewer", "lens:sdet"] f2483337e5d3ae91"#;
+    const ADJUDICATOR_AFTER_SDET_SPAWN: &str = r#"s/adjudicator#0 ["lens:sdet"] f2483337e5d3ae91"#;
     const GREEN_STAMP: &str = r#""green" {"green":"implemented by worker"} Some("worker-model")"#;
     const VERIFIED_STAMP: &str = r#""verified" {} Some("worker-model")"#;
     const LIGHT_TIER_STAMP: &str = r#""review-tier" {"blast-radius":"1","empty-radius":"false","flapped":"false","high-risk-path":"","review-tier":"light","threshold":"5"} None"#;
@@ -41220,6 +41207,145 @@ mod tests {
                 tier,
                 &normalize_ws(&system),
             );
+        }
+    }
+
+    /// Spec 121's THE TASK PROMPTS CARRY NO CADENCE OR METHOD: the decision protocol, the finding
+    /// protocol, each grounding section rendered over one node and the run notes over one note keep
+    /// their shapes and nouns, byte for byte, with every cadence or method clause cut, and a
+    /// built-in states each cut clause, each sentence once: the communication body the cadence, the
+    /// working-discipline body the grounding method and the notes' review rule.
+    #[test]
+    fn every_task_prompt_text_keeps_its_shape_and_leaves_its_cadence_and_method_to_a_built_in() {
+        use crate::test_support::{
+            assert_carries_each, builtin_body, GROUNDING_METHOD, RECORD_EACH_DECISION,
+            RECORD_EACH_FINDING, SUPERSEDE_A_PEER, WHEN_YOU_REVIEW,
+        };
+        let seed = vec!["core.rs".to_string()];
+        let design_intent = {
+            let doc = |type_: &str, payload: Value| {
+                Event::new(type_, serde_json::to_vec(&payload).unwrap())
+            };
+            let g = crate::test_support::fold_events([
+                doc(
+                    contextgraph::TYPE_DOC_CONCEPT_EXTRACTED,
+                    json!({ "kind": contextgraph::KIND_HANDBOOK_RULE, "id": "docs/loops.md", "title": "the loop rule", "doc": "docs/loops.md" }),
+                ),
+                doc(
+                    contextgraph::TYPE_DOC_LINK_EXTRACTED,
+                    json!({ "from": "docs/loops.md", "to": "core.rs", "rel": contextgraph::REL_GOVERNS }),
+                ),
+            ])
+            .subgraph(&seed, 2)
+            .unwrap();
+            let mut b = String::new();
+            write_design_intent(&mut b, &g, &seed);
+            b
+        };
+        let note = RunNote {
+            id: "n-one".into(),
+            about: vec!["core.rs:3".into()],
+            summary: "name the bound".into(),
+        };
+        let communication = "communication";
+        let discipline = "working-discipline";
+        let grounding = [(discipline, GROUNDING_METHOD)];
+        // Each built-in a row's cut clauses moved to, with the one sentence that states it there.
+        type Stated<'a> = Vec<(&'a str, &'a str)>;
+        let rows: [(&str, String, String, Stated); 8] = [
+            (
+                "the decision protocol",
+                EMIT_PROTOCOL.to_string(),
+                "Record each decision you make by calling the rigger_emit tool with type \
+                 \"DecisionMade\" and data:\n{\"id\":\"<short-id>\",\"summary\":\"<one line>\",\
+                 \"governs\":[\"<file>\"],\"supersedes\":\"<prior-id-or-empty>\"}\nThis writes it \
+                 to the shared event log live, so other agents see it immediately."
+                    .to_string(),
+                vec![(communication, RECORD_EACH_DECISION)],
+            ),
+            (
+                "the finding protocol",
+                review_protocol("lens:x"),
+                format!(
+                    "Record each review finding you raise by calling the rigger_emit tool with \
+                     type \"ReviewFinding\" and data:\n{{\"id\":\"<short-id>\",\"by\":\"lens:x\",\
+                     \"summary\":\"<one line>\",\"about\":[\"<file>\"]}}\nThe `by` field \
+                     ATTRIBUTES the finding to you - keep it EXACTLY as \"lens:x\" so the \
+                     review-quality metrics can measure your findings' survival even when you run \
+                     out-of-process (where the conductor stamps no actor for you). This writes the \
+                     finding to the shared context graph live, so the adversary, the adjudicator, \
+                     and your fellow reviewers see it immediately (via grounding and \
+                     rigger_peers).{REVIEWER_DISCIPLINE}"
+                ),
+                vec![(communication, RECORD_EACH_FINDING), grounding[0]],
+            ),
+            (
+                "the decisions section",
+                render_capped_decisions(&[("d-one", "keep the port".into(), "")], &seed),
+                "Decisions that govern these files:\n- d-one: keep the port\n\n".to_string(),
+                SUPERSEDE_A_PEER
+                    .map(|sentence| (communication, sentence))
+                    .to_vec(),
+            ),
+            (
+                "the code neighborhood section",
+                render_code_neighborhood(&[("core.rs", "run", "function", 1)], &seed),
+                "Code neighborhood of these files (definitions the run extracted into the unified \
+                 graph):\n- core.rs:1  function run\n\n"
+                    .to_string(),
+                grounding.to_vec(),
+            ),
+            (
+                "the design intent section",
+                design_intent,
+                "Design intent that governs these files (the handbook rule that governs them, the \
+                 RA/architecture section that specifies them, the load-bearing decision that \
+                 constrains them, and the local rationale - reached by the one graph traversal):\n\
+                 - GOVERNS core.rs  docs/loops.md: the loop rule\n\n"
+                    .to_string(),
+                grounding.to_vec(),
+            ),
+            (
+                "the lessons section",
+                render_capped_lessons(&[("l-one", "pin the bound".into())], &seed),
+                "Lessons already learned about these files:\n- l-one: pin the bound\n\n"
+                    .to_string(),
+                grounding.to_vec(),
+            ),
+            (
+                "the findings section",
+                render_capped_findings(&[("f-one", "lens:x", "the bound is off".into())], &seed),
+                "Findings other reviewers have already raised about these files:\n\
+                 - lens:x (f-one): the bound is off\n\n"
+                    .to_string(),
+                grounding.to_vec(),
+            ),
+            (
+                "the run notes",
+                notes_block(&[note]),
+                "\n\nRUN NOTES: the review of this run upheld these findings:\n\
+                 - n-one (core.rs:3): name the bound\n\
+                 Fix every note that is still true; leave a note that is false or already fixed.\n"
+                    .to_string(),
+                WHEN_YOU_REVIEW[5..8]
+                    .iter()
+                    .map(|sentence| (discipline, *sentence))
+                    .collect(),
+            ),
+        ];
+        for (what, text, want, stated) in rows {
+            assert_eq!(
+                text, want,
+                "{what} keeps its shape and nouns with every cadence or method clause cut"
+            );
+            for (built_in, sentence) in stated {
+                assert_carries_each(
+                    &format!("the {built_in} built-in, which states what {what} no longer does,"),
+                    &normalize_ws(builtin_body(built_in)),
+                    &[sentence],
+                    1,
+                );
+            }
         }
     }
 

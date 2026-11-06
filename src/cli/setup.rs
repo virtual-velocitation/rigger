@@ -2123,7 +2123,8 @@ mod tests {
     use crate::test_support::{
         assert_holds_its_critique_method, critique_method_by_persona, markdown_section,
         ADJUDICATOR_JUDGING_RULE, ADVERSARY_CRITIQUE_METHOD, CRITIQUE_METHOD, FAN_OUT_HEADING,
-        HAND_OVER_HEADING, WHEN_YOU_REVIEW, WHEN_YOU_REVIEW_HEADING,
+        GROUNDING_METHOD, HAND_OVER_HEADING, LOOKUP_METHOD, ONE_PASS_HEADING, WHEN_YOU_REVIEW,
+        WHEN_YOU_REVIEW_HEADING,
     };
     use crate::test_support::{production_boundary, production_files};
 
@@ -4178,8 +4179,9 @@ mod tests {
 
     /// Spec 120's THE REVIEWER PROMPT CARRIES ONLY THE CONTRACT, with the review rule: the
     /// working-discipline body, read through the shipped-text helper, holds the three review
-    /// sentences the reviewer discipline no longer carries and the four sentences of the review
-    /// rule, in order, as the whole of its `## When you review` section, which sits after the
+    /// sentences the reviewer discipline no longer carries and the six sentences of the review
+    /// rule, the two the run notes no longer carry among them, in order, as the whole of its
+    /// `## When you review` section, which sits after the
     /// hand-over section and before the fan-out one, and the fan-out section's `verify` bullet no
     /// longer restates the battery rule.
     #[test]
@@ -4213,6 +4215,52 @@ mod tests {
             0,
             "the fan-out section leaves the battery rule to `## When you review`"
         );
+    }
+
+    /// Spec 121's THE LOOKUP POINTER NAMES ONLY THE TOOLS and THE TASK PROMPTS CARRY NO CADENCE
+    /// OR METHOD: the working-discipline body, read through the shipped-text helper, holds each
+    /// method a task prompt no longer carries, verbatim and each sentence once, in its slot - the
+    /// two lookup-method sentences the grounding pointer dropped as the last two sentences of the
+    /// fan-out section's `lookup` bullet, right after its `GAP:` sentence and before the `verify`
+    /// bullet, and the grounding method the grounding headers dropped as the one-pass section's
+    /// second paragraph, right after the corners sentence and before the success one.
+    #[test]
+    fn the_working_discipline_holds_each_moved_method_in_its_slot() {
+        let body = every_shipped_agent_text()
+            .into_iter()
+            .find(|(at, _)| at == "BUILTIN working-discipline")
+            .map(|(_, text)| text)
+            .expect("the working-discipline body is shipped");
+        let words = rigger::wave::normalize_ws(&body);
+        for (heading, method, before, after) in [
+            (
+                FAN_OUT_HEADING,
+                LOOKUP_METHOD.as_slice(),
+                "DecisionMade so it surfaces for a spec.",
+                "- `verify` (Sonnet, with a shell)",
+            ),
+            (
+                ONE_PASS_HEADING,
+                [GROUNDING_METHOD].as_slice(),
+                "cold start, existing data) unwalked.",
+                "Success is excellence, never subversion.",
+            ),
+        ] {
+            let section = rigger::wave::normalize_ws(markdown_section(&body, heading));
+            let slot = format!("{before} {} {after}", method.join(" "));
+            for (text, held) in method
+                .iter()
+                .map(|sentence| (*sentence, &words))
+                .chain([(slot.as_str(), &section)])
+            {
+                assert_eq!(
+                    held.matches(text).count(),
+                    1,
+                    "the working-discipline body holds {text:?} once; its {heading} section \
+                     reads:\n{section}"
+                );
+            }
+        }
     }
 
     /// The critique method is the persona's: each critiquing persona, committed and scaffold

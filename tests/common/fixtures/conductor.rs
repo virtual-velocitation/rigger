@@ -10,6 +10,13 @@ use rigger::ledger::{RunState, TYPE_UNIT_STATUS};
 
 use super::{agent, gate_def, gate_def_inputs, test_spawn_host};
 
+/// The one paragraph the lookup pointer every grounding slice carries renders, between its
+/// leading and trailing newline: the knowledge graph's three verbs, each with its one-line job.
+pub const LOOKUP_POINTER: &str = "The knowledge graph answers lookups through three verbs: \
+     `rigger graph --around <file|entity>` (structure: callers, callees, neighbors), `rigger \
+     graph --show <entity>` (text: definition site and body), `rigger peers <file>...` (memory: \
+     decisions, findings, lessons).";
+
 /// A no-op emit sink for an `AgentDriver::spawn` whose emits the test does not observe.
 pub fn no_emit(_: &str, _: serde_json::Value) -> Result<(), Error> {
     Ok(())

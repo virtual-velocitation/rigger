@@ -9779,6 +9779,43 @@ mod tests {
         );
     }
 
+    /// Spec 121's THE TASK PROMPTS CARRY NO CADENCE OR METHOD, at the shim: the peers refresh
+    /// the shim prepends to a spawn's prompt keeps its header's noun and its decision lines, byte
+    /// for byte, with its contradiction and re-check sentences cut, and the communication
+    /// built-in states each, every sentence once.
+    #[test]
+    fn the_shim_peers_refresh_keeps_its_noun_and_leaves_its_cadence_to_the_communication_built_in()
+    {
+        use crate::test_support::{
+            assert_carries_each, builtin_body, CHECK_THE_PEERS, SUPERSEDE_A_PEER,
+        };
+        assert_eq!(
+            js_declaration(SHIM_MJS, "export function renderPeers(peers) {"),
+            "export function renderPeers(peers) {
+  const decisions = (peers && peers.decisions) || []
+  if (decisions.length === 0) return ''
+  const lines = decisions.map((d) => {
+    const governs = (d.governs || []).join(', ')
+    const scope = governs ? ` [governs: ${governs}]` : ''
+    return `- ${d.id}: ${d.summary}${scope}`
+  })
+  return [
+    'PEERS CONTEXT REFRESH - concurrent agents have already decided the following',
+    'about files in your blast-radius.',
+    ...lines,
+    '',
+  ].join('\\n')
+}",
+            "the peers refresh keeps its header's noun and its lines with its cadence cut"
+        );
+        assert_carries_each(
+            "the communication built-in, which states what the peers refresh no longer does,",
+            &rigger::wave::normalize_ws(builtin_body("communication")),
+            &[CHECK_THE_PEERS, SUPERSEDE_A_PEER[0], SUPERSEDE_A_PEER[1]],
+            1,
+        );
+    }
+
     /// Criterion 4 (spec 05): `rigger setup` is re-runnable. `install_workflow` installs
     /// the native `/rigger` workflow at `.claude/workflows/rigger.js` byte-identical to
     /// the embedded `RIGGER_WORKFLOW`, DETECTS and REFRESHES a drifted copy (an older
