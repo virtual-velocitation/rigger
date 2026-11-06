@@ -783,7 +783,7 @@ impl<'a> Server<'a> {
                 {"name": "rigger_ground", "description": "The MEMORY-adjacent intent lookup (spec 92): rank code entities by relevance to a natural-language query. Same as `rigger ground \"<query>\" [<k>]`.", "inputSchema": {"type": "object", "properties": {"query": {"type": "string", "description": "the natural-language query"}, "k": {"type": "integer", "description": "how many results (default 8)"}}, "required": ["query"]}},
                 {"name": "rigger_graph", "description": "The STRUCTURE and resolution lookups: pass `show` <entity> for its definition site (same as `rigger graph --show <entity>`), or `around` <file|entity> (optionally `depth`) for its structural neighborhood (same as `rigger graph --around <file|entity> --depth <n>`). Pass exactly one of `show`/`around`.", "inputSchema": {"type": "object", "properties": {"show": {"type": "string"}, "around": {"type": "string"}, "depth": {"type": "integer", "description": "neighborhood depth for `around` (default 2)"}}}},
                 {"name": "rigger_progress", "description": "Record one live progress line for the spawn this server is bound to, so an observer sees you working between milestones.", "inputSchema": {"type": "object", "properties": {"activity": {"type": "string", "description": "a short one-line description of what you just did"}}, "required": ["activity"]}},
-                {"name": "rigger_scratch", "description": "Your own rigger-assigned scratch container - the one directory every probe repo, verification worktree, test build, or CARGO_TARGET_DIR you create must live under, never /tmp or a session scratchpad. Reaped the moment your result records.", "inputSchema": {"type": "object", "properties": {}}},
+                {"name": "rigger_scratch", "description": "Your own rigger-assigned scratch container - the one directory every probe repo, verification worktree, test build, or build cache you create must live under, never /tmp or a session scratchpad. Reaped once your result records.", "inputSchema": {"type": "object", "properties": {}}},
             ]),
             Surface::Lookup => json!([
                 {"name": "rigger_peers", "description": "List the decisions, lessons, AND review findings recorded so far, this run's and earlier runs' (each decision labeled live or historical), so you do not work blind to them. Each section returns its newest records under a byte budget; when any are left out, `left_out` counts them and says how to read one by id. Pass `files` to scope the result to decisions, lessons, and findings that touch those files; omit it for every file.", "inputSchema": {"type": "object", "properties": {"files": {"type": "array", "items": {"type": "string"}}}}},
@@ -2777,21 +2777,28 @@ mod tests {
         assert_eq!(unregistered, Vec::<&str>::new());
     }
 
-    /// The spawn-bound surface's progress tool names what it records and its one argument only:
-    /// when to report is the communication built-in's, never the tool description's.
-    #[test]
-    fn the_progress_tool_names_what_it_records_and_its_argument_only() {
+    /// The spawn-bound surface lists the tool `name` as exactly `expected`, once found by name.
+    fn assert_spawn_bound_entry(name: &str, expected: Value) {
         let store = Store::open(":memory:").unwrap();
         let driver = Driver::new();
         let tools = Server::new(&driver, &store, "run")
             .with_spawn("u/implementer#0")
             .tool_list();
-        let entry = tools
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|t| t["name"] == "rigger_progress");
-        assert_eq!(entry, Some(&crate::test_support::progress_tool_entry()));
+        let entry = tools.as_array().unwrap().iter().find(|t| t["name"] == name);
+        assert_eq!(entry, Some(&expected));
+    }
+
+    crate::test_cases! {
+        /// The spawn-bound surface's progress tool names what it records and its one argument
+        /// only: when to report is the communication built-in's, never the tool description's.
+        the_progress_tool_names_what_it_records_and_its_argument_only:
+            assert_spawn_bound_entry("rigger_progress", crate::test_support::progress_tool_entry());
+        /// Spec 121's THE SCRATCH TOOL NAMES NO TOOLCHAIN: the spawn-bound surface's scratch tool
+        /// says "build cache" where it named one toolchain's cache variable and "Reaped once your
+        /// result records.", its container's contract otherwise word for word, and takes no
+        /// argument.
+        the_scratch_tool_names_no_toolchain:
+            assert_spawn_bound_entry("rigger_scratch", crate::test_support::scratch_tool_entry());
     }
 
     crate::test_cases! {

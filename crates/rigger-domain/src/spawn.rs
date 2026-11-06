@@ -107,9 +107,10 @@ pub const TIER_ADVERSARY: &str = ReviewKind::Adversary.tier();
 /// that authors the periphery test layer (contract / API / integration) at the build
 /// seam - after the implementer emits green and before the pre-gate commit - so no
 /// boundary surface a unit exposes lands untested. A FIRST-CLASS role like the
-/// implementer and the reviewers (its agent id `sdet-author` doubles as the token, as
-/// with the adversary/adjudicator), and DISTINCT from the read-only `sdet` review LENS
-/// (`lens:sdet`), which reviews the implementer's code and cannot write.
+/// implementer and the reviewers (the token keys its spawn ids whichever agent the workflow
+/// declares its test author, `defaults.test_author`, as the adversary/adjudicator tokens key
+/// theirs), and DISTINCT from the read-only `sdet` review LENS (`lens:sdet`), which reviews the
+/// implementer's code and cannot write.
 pub const ROLE_SDET_AUTHOR: &str = "sdet-author";
 
 /// The separator of a review role token's step ordinal: `lens:c@2`, `adversary@2`. It is none of

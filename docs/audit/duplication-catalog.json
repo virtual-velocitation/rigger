@@ -8688,12 +8688,22 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-be2d1a3f8f8b",
+    "id": "dup-82bff055dbd1",
     "classification": "exact",
     "sites": [
       {
         "file": "tests/common/cli.rs",
         "name": "plant_stale_marker",
+        "content_hash": "cf2875f4b5f0d6df"
+      },
+      {
+        "file": "tests/common/cli.rs",
+        "name": "declare_grep_guard",
+        "content_hash": "cf2875f4b5f0d6df"
+      },
+      {
+        "file": "tests/common/cli.rs",
+        "name": "declare_sdet_author",
         "content_hash": "cf2875f4b5f0d6df"
       },
       {

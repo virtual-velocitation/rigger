@@ -836,6 +836,11 @@ pub struct Defaults {
     /// spawn and has `rigger setup` remove rigger's own entry.
     #[serde(default)]
     pub grep_guard: bool,
+    /// The id of the agent that authors each unit's periphery tests at the build seam, spawned
+    /// under the `sdet-author` role token; a load refuses an id no agent defines. Absent or empty
+    /// (the default), no test author spawns, whatever agents the project defines.
+    #[serde(default)]
+    pub test_author: String,
 }
 
 /// Stage is one node of the workflow DAG.

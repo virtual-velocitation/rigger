@@ -44,8 +44,9 @@ use common::cli::{assert_stopped_at_the_grounder, stopping_at_the_grounder};
 #[cfg(feature = "symbols")]
 use common::cli::{batch_events, recorded_and_walked};
 use common::cli::{
-    declare_grep_guard, write_scaffold, write_workflow_fixture, WorkflowFixture, ISOLATED_WORKER,
-    REVIEWLESS_GIT_UNIT_WORKFLOW, UNISOLATED_WORKER,
+    declare_default, declare_grep_guard, declare_sdet_author, write_scaffold,
+    write_workflow_fixture, WorkflowFixture, ISOLATED_WORKER, REVIEWLESS_GIT_UNIT_WORKFLOW,
+    UNISOLATED_WORKER,
 };
 use common::cli::{escalate_solo_unit, REVIEWLESS_GIT_ESCALATING_UNIT_WORKFLOW};
 use common::fixtures::assert_driver_guards_a_null_step;
@@ -53,6 +54,7 @@ use common::fixtures::file_len;
 use common::fixtures::pgid_of;
 use common::fixtures::{
     api_retry_lines, recorded_argv, recorded_task, stand_in_launches, ERROR_RESULT,
+    GHOST_TEST_AUTHOR_REFUSAL,
 };
 use common::git::git_answer;
 use common::git::temp_git_project_with_commit;
@@ -10900,36 +10902,53 @@ fn every_host_hands_its_spawn_the_progress_cadence_once_through_its_system_promp
     }
 }
 
-/// Spec 121's THE PROGRESS CADENCE HAS ONE HOME at a spawn's own MCP server: given a spawn-bound
-/// `rigger mcp --spawn`, when its agent lists the tools over stdio, then the one `rigger_progress`
-/// entry names what the tool records and its argument only, and no tool of the list carries a
-/// sentence of the progress cadence, which the spawn's system prompt states.
-#[test]
-fn a_spawns_mcp_server_lists_the_progress_tool_without_the_progress_cadence() {
-    use common::fixtures::{assert_carries_each, progress_tool_entry, PROGRESS_CADENCE};
+/// The tool list a spawn-bound `rigger mcp --spawn` answers its agent's `tools/list` with over
+/// stdio, once the list is found to hold exactly one tool named `name`, its whole entry exactly
+/// `expected`.
+fn assert_a_spawns_server_lists(name: &str, expected: serde_json::Value) -> serde_json::Value {
     let dir = temp_project();
     let root = dir.path();
     seed_store(root);
     let mut mcp = McpSession::start_with(root, &["mcp", "--spawn", "u/implementer#0"]);
     let tools = mcp.call("tools/list", serde_json::json!({}))["result"]["tools"].clone();
-    let progress: Vec<&serde_json::Value> = tools
+    let listed: Vec<&serde_json::Value> = tools
         .as_array()
         .expect("tools/list answers with the tool list")
         .iter()
-        .filter(|tool| tool["name"] == "rigger_progress")
+        .filter(|tool| tool["name"] == name)
         .collect();
     assert_eq!(
-        progress,
-        [&progress_tool_entry()],
-        "the spawn's server lists one progress tool, naming what it records and its argument only"
-    );
-    assert_carries_each(
-        "the spawn's tool list",
-        &tools.to_string(),
-        &PROGRESS_CADENCE,
-        0,
+        listed,
+        [&expected],
+        "the spawn's server lists one {name} tool, its whole entry exactly the pinned one"
     );
     mcp.finish_cleanly();
+    tools
+}
+
+rigger::test_cases! {
+    /// Spec 121's THE PROGRESS CADENCE HAS ONE HOME at a spawn's own MCP server: given a
+    /// spawn-bound `rigger mcp --spawn`, when its agent lists the tools over stdio, then the one
+    /// `rigger_progress` entry names what the tool records and its argument only, and no tool of
+    /// the list carries a sentence of the progress cadence, which the spawn's system prompt states.
+    a_spawns_mcp_server_lists_the_progress_tool_without_the_progress_cadence:
+        common::fixtures::assert_carries_each(
+            "the spawn's tool list",
+            &assert_a_spawns_server_lists(
+                "rigger_progress",
+                common::fixtures::progress_tool_entry(),
+            )
+            .to_string(),
+            &common::fixtures::PROGRESS_CADENCE,
+            0,
+        );
+    /// Spec 121's THE SCRATCH TOOL NAMES NO TOOLCHAIN at a spawn's own MCP server: given a
+    /// spawn-bound `rigger mcp --spawn`, when its agent lists the tools over stdio, then the one
+    /// `rigger_scratch` entry says "build cache" where it named one toolchain's cache variable and
+    /// "Reaped once your result records.", its container's contract otherwise word for word, and
+    /// takes no argument.
+    a_spawns_mcp_server_lists_the_scratch_tool_naming_no_toolchain:
+        assert_a_spawns_server_lists("rigger_scratch", common::fixtures::scratch_tool_entry());
 }
 
 /// How far past the interval a beat of `rigger run` may land: the gap between two beats is the
@@ -12063,6 +12082,7 @@ fn every_resuming_role_falls_back_and_the_fresh_launch_answers_for_its_spawn() {
     let root = dir.path();
     write_reviewed_unit(root);
     write_agent(root, "sdet-author", "Read", "Write the boundary tests.");
+    declare_sdet_author(root);
     let scratch = tempfile::tempdir().unwrap();
     let arms = format!(
         r#"  *)
@@ -12229,6 +12249,7 @@ fn a_documentation_only_round_tells_the_sdet_author_only_that_fact() {
                 repo_text(".rigger/agents/sdet-author.md"),
             )
             .unwrap();
+            declare_sdet_author(root);
             let scratch = tempfile::tempdir().unwrap();
             let arms = format!(
                 r#"  *)
@@ -12323,6 +12344,100 @@ fn a_documentation_only_round_tells_the_sdet_author_only_that_fact() {
                 );
             }
         }
+    }
+}
+
+/// Spec 121's THE TEST AUTHOR IS DECLARED, end to end: given a reviewless unit whose project
+/// defines a row's test author agents, its workflow declaring `defaults.test_author` or not, when
+/// `rigger validate` loads it and `rigger run` drives it, then the build seam launches the agent the
+/// key names, served that agent's own persona, as the `sdet-author` role token's spawn
+/// `solo/sdet-author#0`, and launches no test author when the workflow declares none, whatever
+/// `.rigger/agents` defines; a key naming an id no agent defines is refused at load by both
+/// commands, before any launch. The fake `claude` answers each author's persona from an arm of its
+/// own that records the launch and the author it was served.
+#[cfg(unix)]
+#[test]
+fn the_build_seam_launches_the_test_author_the_workflow_declares() {
+    let author_arm = |id: &str| {
+        format!(
+            r#"  *"Author tests as {id}."*)
+{RECORD_EACH_LAUNCH}    printf '%s' {id} > "$here/author"
+    ;;
+"#
+        )
+    };
+    let arms = format!(
+        r#"  *"Do the unit."*)
+{RECORD_EACH_LAUNCH}    echo "pub fn work() {{}}" >> work.rs
+    ;;
+{}{}"#,
+        author_arm("sdet-author"),
+        author_arm("test-writer")
+    );
+    let refusal = common::cli::refusal_line(&format!("config: {GHOST_TEST_AUTHOR_REFUSAL}"));
+    let spawns = |ids: &[&str]| ids.iter().map(|id| id.to_string()).collect::<Vec<_>>();
+    let seam = spawns(&["solo/implementer#0", "solo/sdet-author#0"]);
+    let implementer = spawns(&["solo/implementer#0"]);
+    for (declared, defined, want) in [
+        (
+            Some("sdet-author"),
+            &["sdet-author"][..],
+            (None, seam.clone(), Some("sdet-author")),
+        ),
+        (
+            Some("test-writer"),
+            &["sdet-author", "test-writer"],
+            (None, seam, Some("test-writer")),
+        ),
+        (None, &["sdet-author"], (None, implementer, None)),
+        (
+            Some("ghost"),
+            &["sdet-author"],
+            (Some(refusal), Vec::new(), None),
+        ),
+    ] {
+        let dir = temp_git_project_with_commit();
+        let root = dir.path();
+        write_workflow_fixture(root, &REVIEWLESS_GIT_UNIT_WORKFLOW);
+        for id in defined {
+            write_agent(
+                root,
+                id,
+                "Read, Edit, Write",
+                &format!("Author tests as {id}."),
+            );
+        }
+        if let Some(id) = declared {
+            declare_default(root, &format!("test_author: {id}"));
+        }
+        let at = format!("test_author {declared:?} over the agents {defined:?}");
+        let (_, err, ok) = run_rigger(root, &["validate"]);
+        assert_eq!(
+            common::cli::failure_line(ok, &err),
+            want.0,
+            "{at}: rigger validate; stderr: {err}"
+        );
+        let scratch = tempfile::tempdir().unwrap();
+        let (out, err, ok, fake) = run_on_arms(root, &["run"], scratch.path(), &arms);
+        let bin = fake.path().join("bin");
+        let launched = match bin.join("launches") {
+            launches if launches.exists() => stand_in_launches(&launches)
+                .into_iter()
+                .map(|launch| launch.spawn)
+                .collect(),
+            _ => Vec::new(),
+        };
+        let author = std::fs::read_to_string(bin.join("author")).ok();
+        assert_eq!(
+            (
+                common::cli::failure_line(ok, &err),
+                launched,
+                author.as_deref()
+            ),
+            want,
+            "{at}: rigger run's refusal, its launches and the author served; stderr: {err}\n\
+             stdout: {out}"
+        );
     }
 }
 

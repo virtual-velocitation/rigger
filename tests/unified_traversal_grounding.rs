@@ -54,6 +54,7 @@ use common::fixtures::apply_next_json;
 use common::fixtures::assert_carries_each;
 use common::fixtures::assert_system_prompt_carries_the_review_method_once;
 use common::fixtures::assert_task_prompt_carries_only_the_reviewer_contract;
+use common::fixtures::declare_test_author;
 use common::fixtures::language_marker_hits;
 use common::fixtures::test_spawn_host;
 use common::fixtures::{
@@ -610,10 +611,10 @@ fn assert_carries_only_the_lookup_pointer(what: &str, prompt: &str) {
 }
 
 /// Drive a real, WORKTREE-ISOLATED `conductor::run` of a single non-producer (implement) stage that
-/// also has an `sdet-author` agent configured, and return every prompt the `sdet-author` spawn
-/// received. The sdet-author runs at the BUILD SEAM - after the implementer emits green, in the
-/// implementer's OWN worktree - so this is the only PUBLIC path that exercises the sdet-author call
-/// site's grounding slice: the inside-out lifecycle tests run `graph: None` and cannot observe a
+/// also declares an `sdet-author` agent its test author, and return every prompt the `sdet-author`
+/// spawn received. The sdet-author runs at the BUILD SEAM - after the implementer emits green, in
+/// the implementer's OWN worktree - so this is the only PUBLIC path that exercises the sdet-author
+/// call site's grounding slice: the inside-out lifecycle tests run `graph: None` and cannot observe a
 /// slice at all. Seeded on `core.rs` via the stub `SeedGrounder`, exactly like the implement/producer
 /// trim tests, so the sdet-author's slice is compared against the SAME neighborhood.
 fn run_and_capture_sdet_author_prompts(graph: &Projector) -> Vec<String> {
@@ -630,13 +631,7 @@ fn run_and_capture_sdet_author_prompts(graph: &Projector) -> Vec<String> {
             ..Default::default()
         },
     );
-    cfg.agents.insert(
-        ROLE_SDET_AUTHOR.into(),
-        AgentDef {
-            id: ROLE_SDET_AUTHOR.into(),
-            ..Default::default()
-        },
-    );
+    declare_test_author(&mut cfg, ROLE_SDET_AUTHOR);
     cfg.workflow.gates.insert(
         "ok".into(),
         Gate {

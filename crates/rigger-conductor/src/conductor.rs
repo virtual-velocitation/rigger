@@ -5499,11 +5499,11 @@ impl RunCtx<'_> {
         e
     }
 
-    /// The SDET-author build seam (spec 33): spawn the operator-provided `sdet-author`
-    /// agent into the unit's OWN worktree `dir` at the build seam - AFTER the implementer
-    /// has produced its diff and BEFORE the pre-gate commit - so on EVERY unit the SDET
-    /// authors its periphery tests into the SAME committed tree the gates and reviewers
-    /// judge. This is the ONE authority for that seam, shared by BOTH code-building
+    /// The SDET-author build seam (spec 33): spawn the test author the workflow declares
+    /// (`defaults.test_author`) into the unit's OWN worktree `dir` at the build seam - AFTER
+    /// the implementer has produced its diff and BEFORE the pre-gate commit - so on EVERY unit
+    /// the SDET authors its periphery tests into the SAME committed tree the gates and
+    /// reviewers judge. This is the ONE authority for that seam, shared by BOTH code-building
     /// lifecycles: the single-lane [`run_single_stage`](RunCtx::run_single_stage) calls it
     /// before its pre-gate commit, and first-green-wins [`run_speculation`](RunCtx::run_speculation)
     /// calls it per candidate before that candidate's commit - so a speculation-built unit
@@ -5512,9 +5512,11 @@ impl RunCtx<'_> {
     /// abstraction (not a second parallel construction in each lifecycle) keeps the cwd-safety
     /// guard, the budget authority, and the parked-spawn discipline identical on both paths.
     ///
-    /// The fixed `sdet-author` id is a convention resolved through the SAME
-    /// `AgentDef` / `build_system_prompt` agent-loading path as every other role (no
-    /// `workflow.yml` change, which would drift the pinned definition). The deterministic
+    /// The declared id is resolved through the SAME `AgentDef` / `build_system_prompt`
+    /// agent-loading path as every other role, so the agent spawned and the persona it is
+    /// served are the declared agent's, whatever it is named; the role is always the
+    /// `sdet-author` token, which keys the spawn, its unit cache and the session a later
+    /// attempt continues, so a renamed author keeps the token's recorded ids. The deterministic
     /// spawn id (`spawn_retry_id(stage, ROLE_SDET_AUTHOR, attempt, retry)` - `attempt` is the
     /// single-lane remediation attempt or the speculation lane, and `retry` the first of the
     /// stage run's infra `ordinal`'s [`review_retry_window`], as the reviewers are keyed, so an
@@ -5523,27 +5525,27 @@ impl RunCtx<'_> {
     /// under the next id of that window with the refusal after its prompt
     /// ([`rerun_once_on_refusal`]). The spawn is gated on a real worktree (an empty
     /// `dir` is a repo-less or `isolation: none` unit with no tree to author into, and an
-    /// Edit/Write agent must never run in the live main checkout) and on the agent being
-    /// configured (absent-agent tolerance: a clean no-op when the operator has not installed
-    /// the persona). The opts funnel through [`reviewer_spawn_opts`](RunCtx::reviewer_spawn_opts)
+    /// Edit/Write agent must never run in the live main checkout) and on a declared test
+    /// author (a clean no-op when the workflow declares none, whatever agents the project
+    /// defines). The opts funnel through [`reviewer_spawn_opts`](RunCtx::reviewer_spawn_opts)
     /// (the single in-worktree, write-capable opts authority), so the sdet INHERITS its
     /// `assert_isolated_cwd` guard by construction and runs `isolation: false` in the
     /// implementer's EXISTING worktree (its files swept in by the caller's commit, not a fresh
     /// worktree of its own).
     ///
     /// Returns `Ok(())` when the caller may proceed to its commit: a normal result (files
-    /// authored), an absent agent, or a budget refusal. Returns the PARK signal `Err(parked)`
-    /// when the spawn parked (an unrecorded stepwise/replay frontier); the caller unwinds per its
-    /// own discipline - the single lane propagates it (holding the unit, no commit), a
-    /// speculation lane collects it into `any_parked` and does NOT commit that candidate, so a
-    /// later step replays the sdet and its periphery tests land. Returns the stage error naming
-    /// the crash, marked [`SPAWN_CRASH_MARKER`], when the spawn or its opts guard failed any
-    /// other way: no gate may run on a tree the seam never touched, so the single lane reruns
-    /// the stage uncharged under the F3 infra retry and halts loudly past the infra limit, and a
-    /// speculation candidate loses. Returns the stage error naming the refusal when the emit
-    /// guard refused the re-run's record too: a refusal is a defect in what the sdet printed,
-    /// never an outage to rerun, so the single lane fails its stage with it and a speculation
-    /// candidate loses.
+    /// authored), no declared test author, or a budget refusal. Returns the PARK signal
+    /// `Err(parked)` when the spawn parked (an unrecorded stepwise/replay frontier); the caller
+    /// unwinds per its own discipline - the single lane propagates it (holding the unit, no
+    /// commit), a speculation lane collects it into `any_parked` and does NOT commit that
+    /// candidate, so a later step replays the sdet and its periphery tests land. Returns the stage
+    /// error naming the crash, marked [`SPAWN_CRASH_MARKER`], when the spawn or its opts guard
+    /// failed any other way: no gate may run on a tree the seam never touched, so the single lane
+    /// reruns the stage uncharged under the F3 infra retry and halts loudly past the infra limit,
+    /// and a speculation candidate loses. Returns the stage error naming the refusal when the emit
+    /// guard refused the re-run's record too: a refusal is a defect in what the sdet printed, never
+    /// an outage to rerun, so the single lane fails its stage with it and a speculation candidate
+    /// loses.
     ///
     /// A round whose [`round_delta`](RunCtx::round_delta) in `wt` changed documentation only
     /// appends [`DOC_ONLY_ROUND`], that round's fact, to the prompt and to a resumed session's
@@ -5570,10 +5572,15 @@ impl RunCtx<'_> {
         if dir.is_empty() {
             return Ok(());
         }
-        // Absent-agent tolerance: no `sdet-author` configured is a clean no-op (the build
-        // proceeds exactly as today), so an operator who has not installed the persona is
-        // never blocked.
-        let Some(sdet_def) = self.cfg.agents.get(ROLE_SDET_AUTHOR) else {
+        // No declared test author is a clean no-op (the build proceeds without the seam),
+        // whatever agents the project defines: the seam spawns only the agent the workflow names.
+        let author = &self.cfg.workflow.defaults.test_author;
+        if author.is_empty() {
+            return Ok(());
+        }
+        // A load refuses a declared id no agent defines (`Config::validate`), so this arm is
+        // reached only by a config that never went through one; it proceeds author-less too.
+        let Some(sdet_def) = self.cfg.agents.get(author) else {
             return Ok(());
         };
         // The SDET-author spawn is part of the IMPLEMENT lifecycle stage (the build seam), reached
@@ -5633,7 +5640,7 @@ impl RunCtx<'_> {
             let opts = match self.reviewer_spawn_opts(
                 &sdet_id,
                 ROLE_SDET_AUTHOR,
-                ROLE_SDET_AUTHOR,
+                author,
                 dir,
                 attempt,
                 false,
@@ -15227,6 +15234,7 @@ mod tests {
     use crate::test_support::agent_with_prompt;
     use crate::test_support::commit_at_fixed_date;
     use crate::test_support::count_of_type;
+    use crate::test_support::declare_test_author;
     use crate::test_support::gate_def;
     use crate::test_support::gate_def_inputs;
     use crate::test_support::git_ok;
@@ -15240,6 +15248,7 @@ mod tests {
     use crate::test_support::test_spawn_host;
     use crate::test_support::trimmed_stdout;
     use crate::test_support::DOC_ONLY_ROUND_RULE;
+    use crate::test_support::GHOST_TEST_AUTHOR_REFUSAL;
     use crate::test_support::{assert_communication_once, COMMUNICATION_SECTION};
     use crate::test_support::{
         assert_winner_reviewed_sha_is_round_start, speculation_regen_door_cfg,
@@ -32269,12 +32278,11 @@ mod tests {
         }
     }
 
-    /// The `per_unit_panel_cfg` unit with the sdet-author configured and a criterion, so every
+    /// The `per_unit_panel_cfg` unit with the sdet-author declared and a criterion, so every
     /// role of the panel has a session to continue and a criterion its session holds.
     fn session_cfg() -> Config {
         let mut cfg = per_unit_panel_cfg(None);
-        cfg.agents
-            .insert(ROLE_SDET_AUTHOR.into(), agent(ROLE_SDET_AUTHOR));
+        declare_test_author(&mut cfg, ROLE_SDET_AUTHOR);
         cfg.workflow.stages.get_mut("implement").unwrap().coverage =
             "the unit's acceptance criterion".into();
         cfg
@@ -41177,8 +41185,7 @@ mod tests {
         let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let mut cfg = per_unit_panel_cfg(None);
-        cfg.agents
-            .insert(ROLE_SDET_AUTHOR.into(), agent(ROLE_SDET_AUTHOR));
+        declare_test_author(&mut cfg, ROLE_SDET_AUTHOR);
         let driver = Stub {
             output: "reviewed the diff".into(),
             write_file: Some("feature.rs".into()),
@@ -48718,9 +48725,9 @@ mod tests {
         // spec 33 done-when (this criterion OWNS the spawn placement + role token): the
         // conductor SPAWNS the `sdet-author` agent at the build seam - AFTER the
         // implementer emits green and BEFORE the pre-gate commit, in the implementer's
-        // OWN worktree - resolved through the existing agent-loading path by the fixed
-        // `sdet-author` id, so the periphery tests it authors are committed with the unit
-        // and judged by the gates. The load-bearing, NON-VACUOUS proof of the
+        // OWN worktree - resolved through the existing agent-loading path by the id
+        // `defaults.test_author` declares, so the periphery tests it authors are committed
+        // with the unit and judged by the gates. The load-bearing, NON-VACUOUS proof of the
         // BEFORE-the-pre-gate-commit placement is assertion #5: the sdet-author writes a
         // DISTINCTIVE file no other spawn writes, and it must be ADDED in the SAME commit
         // as the implementer's diff - the pre-gate commit `git add -A` that runs before
@@ -48734,8 +48741,7 @@ mod tests {
         let repo_path = repo.path().to_str().unwrap().to_string();
         let mut cfg = Config::default();
         cfg.agents.insert("worker".into(), agent("worker"));
-        cfg.agents
-            .insert(ROLE_SDET_AUTHOR.into(), agent(ROLE_SDET_AUTHOR));
+        declare_test_author(&mut cfg, ROLE_SDET_AUTHOR);
         cfg.workflow.gates.insert("ok".into(), gate_def("true"));
         cfg.workflow.stages.insert(
             "s".into(),
@@ -48769,7 +48775,7 @@ mod tests {
             "the unit integrates with the sdet-author's periphery tests swept into the committed tree"
         );
 
-        // (1) The sdet-author was spawned via the existing fixed-id agent-loading path.
+        // (1) The declared sdet-author was spawned via the existing agent-loading path.
         assert!(
             driver.spawned(ROLE_SDET_AUTHOR),
             "the conductor must spawn the sdet-author at the build seam"
@@ -49046,8 +49052,7 @@ mod tests {
         let repo_path = repo.path().to_str().unwrap().to_string();
         let mut cfg = Config::default();
         cfg.agents.insert("worker".into(), agent("worker"));
-        cfg.agents
-            .insert(ROLE_SDET_AUTHOR.into(), agent(ROLE_SDET_AUTHOR));
+        declare_test_author(&mut cfg, ROLE_SDET_AUTHOR);
         cfg.workflow.gates.insert("ok".into(), gate_def("true"));
         // One spawn slot for the whole run: the implementer admits and spends it, so the
         // sdet reserve that immediately follows in the same wave must be refused.
@@ -49117,7 +49122,7 @@ mod tests {
     fn a_parked_sdet_author_spawn_holds_the_unit_instead_of_integrating_without_its_periphery_tests(
     ) {
         // The regression guard for the sdet-author PARKED arm at the build seam (this
-        // criterion OWNS only the parked arm; Ok-advancement / absent-agent / crash are the
+        // criterion OWNS only the parked arm; Ok-advancement / undeclared-author / crash are the
         // next unit's). Under the REAL stepwise/replay driver the sdet-author spawn PARKS on
         // first encounter - the NORMAL first-pass path, exactly like the implementer - and the
         // conductor must UNWIND the unit cleanly (`Err(is_parked) => return Err(e)`) so a
@@ -49137,8 +49142,7 @@ mod tests {
         let repo_path = repo.path().to_str().unwrap().to_string();
         let mut cfg = Config::default();
         cfg.agents.insert("worker".into(), agent("worker"));
-        cfg.agents
-            .insert(ROLE_SDET_AUTHOR.into(), agent(ROLE_SDET_AUTHOR));
+        declare_test_author(&mut cfg, ROLE_SDET_AUTHOR);
         cfg.workflow.gates.insert("ok".into(), gate_def("true"));
         cfg.workflow.stages.insert(
             "s".into(),
@@ -49182,7 +49186,7 @@ mod tests {
         );
         // ANCHOR (the parked arm IS the code exercised): the sdet-author spawn WAS attempted at
         // the seam - the driver recorded the call before parking it - so it is the PARKED
-        // disposition, not an absent-agent skip, that this test drives.
+        // disposition, not an undeclared-author skip, that this test drives.
         assert!(
             driver.spawned(ROLE_SDET_AUTHOR),
             "the sdet-author spawn must be attempted at the seam (it then parks)"
@@ -49229,9 +49233,8 @@ mod tests {
         let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let mut cfg = spec_cfg(2);
-        // The operator-provided sdet-author persona, resolved by the fixed id like every role.
-        cfg.agents
-            .insert(ROLE_SDET_AUTHOR.into(), agent(ROLE_SDET_AUTHOR));
+        // The operator-provided sdet-author persona, declared as the workflow's test author.
+        declare_test_author(&mut cfg, ROLE_SDET_AUTHOR);
         let store = Store::open(":memory:").unwrap();
         // Every isolated implementer candidate writes the unit's feature; the sdet-author writes a
         // DISTINCTIVE periphery test that only it writes, so the same-commit proof is non-vacuous.
@@ -49336,8 +49339,7 @@ mod tests {
         let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let mut cfg = spec_cfg(2);
-        cfg.agents
-            .insert(ROLE_SDET_AUTHOR.into(), agent(ROLE_SDET_AUTHOR));
+        declare_test_author(&mut cfg, ROLE_SDET_AUTHOR);
         let store = Store::open(":memory:").unwrap();
         // Implementers return normal Ok (so control reaches the sdet seam per candidate); BOTH
         // candidates' sdet spawns PARK, so the group parks together and nothing integrates. Were a
@@ -49443,13 +49445,12 @@ mod tests {
     }
 
     /// One merging unit `s` of `worker`, gated by `ok` (which passes), with an `sdet-author`
-    /// agent configured when `with_sdet`.
+    /// agent declared its test author when `with_sdet`.
     fn sdet_lane_cfg(with_sdet: bool) -> Config {
         let mut cfg = Config::default();
         cfg.agents.insert("worker".into(), agent("worker"));
         if with_sdet {
-            cfg.agents
-                .insert(ROLE_SDET_AUTHOR.into(), agent(ROLE_SDET_AUTHOR));
+            declare_test_author(&mut cfg, ROLE_SDET_AUTHOR);
         }
         cfg.workflow.gates.insert("ok".into(), gate_def("true"));
         cfg.workflow.stages.insert(
@@ -49466,7 +49467,7 @@ mod tests {
     }
 
     /// Run one merging, gated unit `s` under `driver` in a real repo, with an `sdet-author` agent
-    /// configured when `with_sdet`: the run's own result and the whole log.
+    /// declared its test author when `with_sdet`: the run's own result and the whole log.
     fn run_sdet_lane(with_sdet: bool, driver: &Stub) -> RunAndLog {
         run_in_repo(&sdet_lane_cfg(with_sdet), driver)
     }
@@ -49482,10 +49483,10 @@ mod tests {
             .collect()
     }
 
-    /// Run a [`run_sdet_lane`] whose sdet-author (configured when `with_sdet`) authors NOTHING,
+    /// Run a [`run_sdet_lane`] whose sdet-author (declared when `with_sdet`) authors NOTHING,
     /// and whose first spawn CRASHES with a non-parked Err when `crash_sdet` (`fail_spawn_ids`
     /// crashes ONLY that sdet spawn). The sdet-author is spawned at the seam exactly when
-    /// configured (`spawn_why`), and the unit integrates charged nothing (`why`). A crashed seam
+    /// declared (`spawn_why`), and the unit integrates charged nothing (`why`). A crashed seam
     /// is one uncharged infra rerun (F3) of the seam alone: it is recorded as an `infra-retry`
     /// mark naming `infra:spawn`, the sdet re-spawns under the next round's
     /// [`review_retry_window`] id, the implementer is not re-spawned, and no gate runs before
@@ -49566,7 +49567,8 @@ mod tests {
         /// unit.
         ///
         /// ANCHOR: the sdet-author WAS spawned at the seam and returned a normal result - without
-        /// this the advance assertion could pass via the absent-agent no-op instead of the Ok arm.
+        /// this the advance assertion could pass via the undeclared-author no-op instead of the Ok
+        /// arm.
         /// NON-VACUOUS: GREEN on shipped code; RED when the Ok arm is made to NOT advance - change
         /// `Ok(_) => Ok(())` to `Ok(_) => Err(parked_spawn(&sdet_id))` (treat a normal result as a
         /// park) and the seam holds the unit, so it never integrates.
@@ -49577,25 +49579,25 @@ mod tests {
                 "the sdet-author must be spawned and self-report so the Ok result-handling arm is exercised",
                 "a normal / empty-accounting sdet-author result must ADVANCE the lifecycle to a merged unit",
             );
-        /// spec 33 done-when (this criterion OWNS absent-agent tolerance): if no `sdet-author` agent
-        /// is configured, the build seam is a CLEAN NO-OP - the build proceeds exactly as it did
-        /// before spec 33, so an operator who has not installed the persona is NEVER blocked. Here
-        /// the config has the implementer but NO sdet-author agent; the unit must still integrate,
-        /// and the sdet must never be spawned (the ANCHOR distinguishing the clean no-op from a path
-        /// that spawned and skipped).
+        /// spec 33 done-when (this criterion OWNS the seam's tolerance of no author), with spec
+        /// 121's declared test author: a workflow that declares no `test_author` makes the build
+        /// seam a CLEAN NO-OP - the build proceeds exactly as it does without the seam, so an
+        /// operator who has declared no test author is NEVER blocked. Here the config has the
+        /// implementer but declares no test author; the unit must still integrate, and the sdet
+        /// must never be spawned (the ANCHOR distinguishing the clean no-op from a path that
+        /// spawned and skipped).
         ///
         /// The seam is reached (a real worktree, so `dir` is non-empty - the worktree gate does NOT
-        /// short-circuit first), and the absent-agent arm
-        /// (`let Some(sdet_def) = self.cfg.agents.get(ROLE_SDET_AUTHOR) else { return Ok(()) }`) is
-        /// the code under test. NON-VACUOUS: GREEN on shipped code; RED when that arm is made
-        /// NON-tolerant - change its `return Ok(())` to `return Err(Error("no sdet-author".into()))`
-        /// and the absent agent propagates an error out of the seam (`spawn_sdet_author(..)?`), so
-        /// the unit never integrates.
+        /// short-circuit first), and the undeclared-author arm
+        /// (`if author.is_empty() { return Ok(()); }`) is the code under test. NON-VACUOUS: RED
+        /// when that arm is made NON-tolerant - change its `return Ok(())` to
+        /// `return Err(Error("no sdet-author".into()))` and the undeclared author propagates an
+        /// error out of the seam (`spawn_sdet_author(..)?`), so the unit never integrates.
         an_absent_sdet_author_is_a_clean_no_op_and_the_build_still_integrates:
             assert_sdet_seam_integrates(
                 false,
                 false,
-                "no sdet-author is configured, so the conductor must not spawn one",
+                "no test author is declared, so the conductor must not spawn one",
                 "an operator without the sdet-author persona must never be blocked: the unit still integrates",
             );
         /// op-105-sdet-seam-joins-the-infra-retry, the crash disposition. A sdet-author spawn
@@ -49609,10 +49611,10 @@ mod tests {
         /// implementer's below).
         ///
         /// ANCHOR: the sdet-author spawn WAS attempted at the seam - the driver recorded the call
-        /// before crashing it - so it is the CRASH disposition, not an absent-agent skip, that this
-        /// drives. NON-VACUOUS: RED when the crash is swallowed as a proceed (`Err(_) => Ok(())`
-        /// at the seam): no `infra-retry` mark is recorded and the gates run once under the bare
-        /// `s/gate:ok#0` key on the tree the crashed sdet never touched.
+        /// before crashing it - so it is the CRASH disposition, not an undeclared-author skip,
+        /// that this drives. NON-VACUOUS: RED when the crash is swallowed as a proceed
+        /// (`Err(_) => Ok(())` at the seam): no `infra-retry` mark is recorded and the gates run
+        /// once under the bare `s/gate:ok#0` key on the tree the crashed sdet never touched.
         a_crashed_sdet_author_spawn_reruns_the_seam_uncharged_before_any_gate:
             assert_sdet_seam_integrates(
                 true,
@@ -49620,6 +49622,91 @@ mod tests {
                 "the sdet-author spawn must be attempted at the seam (it then crashes)",
                 "a crashed sdet-author is an uncharged infra rerun of the seam, then the unit integrates",
             );
+    }
+
+    /// Spec 121's THE TEST AUTHOR IS DECLARED: the build seam spawns the agent
+    /// `defaults.test_author` names, served that agent's own persona, under the `sdet-author` role
+    /// token; it spawns nothing when the key is absent, whatever agents the project defines; and a
+    /// workflow whose key names no defined agent is refused at load, so it never runs. Each spawn
+    /// reads as its agent, its spawn id and the defined agents whose persona its system prompt
+    /// carries, so a seam that resolved the conventional `sdet-author` agent, or served the
+    /// declared one another agent's persona, names the wrong agent or persona.
+    #[test]
+    fn the_build_seam_spawns_the_declared_test_author_under_the_sdet_author_token() {
+        let persona = |id: &str| format!("Persona of {id}.");
+        let spawn = |agent: &str, id: &str, served: &[&str]| {
+            (
+                agent.to_string(),
+                id.to_string(),
+                served.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+            )
+        };
+        let worker = spawn("worker", "s/implementer#0", &[]);
+        let rows = [
+            (
+                "sdet-author",
+                &["sdet-author"][..],
+                Ok(vec![
+                    worker.clone(),
+                    spawn("sdet-author", "s/sdet-author#0", &["sdet-author"]),
+                ]),
+            ),
+            (
+                "test-writer",
+                &["sdet-author", "test-writer"],
+                Ok(vec![
+                    worker.clone(),
+                    spawn("test-writer", "s/sdet-author#0", &["test-writer"]),
+                ]),
+            ),
+            (
+                "test-writer",
+                &["test-writer"],
+                Ok(vec![
+                    worker.clone(),
+                    spawn("test-writer", "s/sdet-author#0", &["test-writer"]),
+                ]),
+            ),
+            ("", &["sdet-author"], Ok(vec![worker.clone()])),
+            ("", &[], Ok(vec![worker])),
+            (
+                "ghost",
+                &["sdet-author"],
+                Err(GHOST_TEST_AUTHOR_REFUSAL.to_string()),
+            ),
+        ];
+        for (declared, defined, want) in rows {
+            let mut cfg = sdet_lane_cfg(false);
+            for id in defined {
+                cfg.agents
+                    .insert(id.to_string(), agent_with_prompt(id, &persona(id)));
+            }
+            cfg.workflow.defaults.test_author = declared.to_string();
+            let driver = sdet_lane_driver();
+            let spawned = cfg.validate().map_err(|e| e.0).map(|_| {
+                run_in_repo(&cfg, &driver)
+                    .0
+                    .expect("the sdet seam never fails the run");
+                let order = driver.call_order.lock().unwrap().clone();
+                order
+                    .into_iter()
+                    .zip(driver.spawn_ids())
+                    .map(|(agent, id)| {
+                        let system = driver.system_prompt_for(&agent).unwrap_or_default();
+                        let served = defined
+                            .iter()
+                            .map(|d| d.to_string())
+                            .filter(|d| system.contains(&persona(d)))
+                            .collect::<Vec<_>>();
+                        (agent, id, served)
+                    })
+                    .collect::<Vec<_>>()
+            });
+            assert_eq!(
+                spawned, want,
+                "test_author {declared:?} over the agents {defined:?}"
+            );
+        }
     }
 
     #[test]
@@ -51066,8 +51153,7 @@ mod tests {
     fn a_speculation_candidate_whose_sdet_author_is_refused_again_loses_to_the_next() {
         let repo = temp_git_project_with_commit();
         let mut cfg = spec_cfg(2);
-        cfg.agents
-            .insert(ROLE_SDET_AUTHOR.into(), agent(ROLE_SDET_AUTHOR));
+        declare_test_author(&mut cfg, ROLE_SDET_AUTHOR);
         let st = Store::open(":memory:").unwrap();
         let driver = refusing_at(
             Stub {
