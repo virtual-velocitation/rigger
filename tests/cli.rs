@@ -10798,7 +10798,8 @@ fn every_launch_of_a_reviewed_unit_carries_the_hooks_for_its_own_spawn() {
 /// the embedded text where it does not, and pre-approves the rigger tools those definitions
 /// declare, between its own tools and the host's bound ones. The copies stay untracked, so the
 /// unit's worktree, where every launch runs, holds none: what each launch carries is what the run
-/// resolved at the checkout.
+/// resolved at the checkout, once, as it started, so a copy the implementer's launch writes into
+/// the checkout mid-run changes no later reviewer's launch.
 #[cfg(unix)]
 #[test]
 fn every_launch_of_a_run_defines_the_helpers_from_the_operators_copies() {
@@ -10808,35 +10809,71 @@ fn every_launch_of_a_run_defines_the_helpers_from_the_operators_copies() {
     use common::repo::{handed_helpers_agents_json, EMBEDDED_HELPER_TOOLS};
     const BOUND_TOOLS: &str =
         "mcp__rigger__rigger_emit,mcp__rigger__rigger_progress,mcp__rigger__rigger_scratch";
-    let arms = format!(
-        r#"  *)
-{RECORD_EACH_LAUNCH}    if [ -e .claude/agents ]; then : > "$here/worktree-holds-copies"; fi
-    case "$RIGGER_SPAWN" in
-    solo/implementer*) echo "pub fn work() {{}}" >> work.rs ;;
-    solo/adjudicator*) echo '{{"verdict":"approve"}}' ;;
-    *) echo "$RIGGER_SPAWN answered" ;;
-    esac
-    ;;
-"#
-    );
     let [lookup, verify] = OPERATOR_HELPER_COPIES;
-    let rows: [(&str, &[HelperFile], &str); 4] = [
-        ("no copy", &[], EMBEDDED_HELPER_TOOLS),
-        ("a lookup copy alone", &[lookup], OPERATOR_HELPER_TOOLS),
-        ("a verify copy alone", &[verify], EMBEDDED_HELPER_TOOLS),
-        ("both copies", &[lookup, verify], OPERATOR_HELPER_TOOLS),
+    // Each row: the copies the checkout holds as the run starts, the copies the implementer's
+    // launch writes into the checkout as it runs, ahead of every reviewer's launch, and the
+    // rigger tools the helpers resolved at the start declare.
+    let rows: [(&str, &[HelperFile], &[HelperFile], &str); 5] = [
+        ("no copy", &[], &[], EMBEDDED_HELPER_TOOLS),
+        ("a lookup copy alone", &[lookup], &[], OPERATOR_HELPER_TOOLS),
+        ("a verify copy alone", &[verify], &[], EMBEDDED_HELPER_TOOLS),
+        ("both copies", &[lookup, verify], &[], OPERATOR_HELPER_TOOLS),
+        (
+            "a lookup copy written mid-run",
+            &[],
+            &[lookup],
+            EMBEDDED_HELPER_TOOLS,
+        ),
     ];
-    for (name, copies, helper_tools) in rows {
+    for (name, copies, mid_run, helper_tools) in rows {
         let dir = temp_git_project_with_commit();
         let root = dir.path();
         write_reviewed_unit(root);
         write_helper_copies(root, copies);
+        let staged = tempfile::tempdir().unwrap();
+        write_helper_copies(staged.path(), mid_run);
+        let arms = format!(
+            r#"  *)
+{RECORD_EACH_LAUNCH}    if [ -e .claude/agents ]; then : > "$here/worktree-holds-copies"; fi
+    case "$RIGGER_SPAWN" in
+    solo/implementer*)
+        echo "pub fn work() {{}}" >> work.rs
+        if [ -d "{staged}/.claude" ]; then cp -R "{staged}/.claude" "{root}/"; fi
+        ;;
+    solo/adjudicator*) echo '{{"verdict":"approve"}}' ;;
+    *) echo "$RIGGER_SPAWN answered" ;;
+    esac
+    ;;
+"#,
+            staged = staged.path().display(),
+            root = root.display(),
+        );
         let scratch = tempfile::tempdir().unwrap();
         let (out, err, ok, fake) = run_on_arms(root, &["run"], scratch.path(), &arms);
         assert!(ok, "{name}: the run succeeds; stderr: {err}\nstdout: {out}");
         assert!(
             !fake.path().join("bin/worktree-holds-copies").exists(),
             "{name}: no launch's worktree holds a helper copy"
+        );
+        let mut on_disk: Vec<(String, String)> = std::fs::read_dir(root.join(".claude/agents"))
+            .into_iter()
+            .flatten()
+            .map(|entry| {
+                let path = entry.unwrap().path();
+                let file = path.file_name().unwrap().to_string_lossy().into_owned();
+                (file, std::fs::read_to_string(&path).unwrap())
+            })
+            .collect();
+        on_disk.sort();
+        let mut held: Vec<(String, String)> = copies
+            .iter()
+            .chain(mid_run)
+            .map(|(file, text)| (file.to_string(), text.to_string()))
+            .collect();
+        held.sort();
+        assert_eq!(
+            on_disk, held,
+            "{name}: the checkout holds the copies it started with and those written mid-run"
         );
 
         let launches: Vec<(String, serde_json::Value, String)> =

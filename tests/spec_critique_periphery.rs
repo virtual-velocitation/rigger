@@ -26,15 +26,14 @@ use common::cli::{
     temp_repoless_project, write_spec_project,
 };
 use common::fixtures::{
-    composed_system_prompt, git_ok, held_event, operator_helpers_agents_json,
-    temp_git_project_with_commit, write_helper_copies, ADVISORY, CLEAN_CRITIQUE, NO_VERDICT,
-    OPERATOR_HELPER_COPIES,
+    composed_system_prompt, git_ok, held_event, temp_git_project_with_commit, write_helper_copies,
+    HelperFile, ADVISORY, CLEAN_CRITIQUE, NO_VERDICT, OPERATOR_HELPER_COPIES,
 };
 use common::repo::{
     assert_carries_spawn_hooks, collect_files, critique_stub_argv, critique_stub_record,
-    critique_stub_spawns, critique_stub_task, flag_value, hold_critique_stub, hook_words,
-    stub_path, write_critique_stub_reporting, write_critique_stub_then, CRITIQUE_CONN,
-    CRITIQUE_SYSTEM_PROMPT, SILENT_PAST_THE_POLL,
+    critique_stub_spawns, critique_stub_task, flag_value, handed_helpers_agents_json,
+    hold_critique_stub, hook_words, stub_path, write_critique_stub_reporting,
+    write_critique_stub_then, CRITIQUE_CONN, CRITIQUE_SYSTEM_PROMPT, SILENT_PAST_THE_POLL,
 };
 use rigger::driver::claude_code::{framed, AGENT_STREAM_SUBDIR};
 use rigger::driver::replay::spawn_scratch_path;
@@ -235,32 +234,35 @@ fn a_critique_launch_carries_the_spawn_hooks_on_its_own_settings() {
     }
 }
 
-/// Given a project holding the operator's own copies of the fan-out helpers, when its critic
-/// launches, then the launch defines exactly those helpers, and its pre-approval holds the rigger
-/// tools they declare once each among the critic's own: the operator's copy is the definition,
-/// resolved at the critique's root.
+/// Given a project holding the operator's own copies of both fan-out helpers, or of neither, when
+/// its critic launches, then the launch defines the helpers from those copies, else from the
+/// embedded text, and its pre-approval holds the rigger tools they declare once each among the
+/// critic's own: the operator's copy is the definition, resolved at the critique's root.
 #[test]
-fn a_critique_launch_carries_the_operators_helper_copies() {
-    let dir = temp_project();
-    let root = std::fs::canonicalize(dir.path()).unwrap();
-    scaffold(&root, CRITIC_WORKFLOW);
-    write_helper_copies(&root, &OPERATOR_HELPER_COPIES);
-    let (work, path) = stub(REJECT);
-    let (_, err, ok) = critique(&root, SPEC_REL, &path, &root.join("scratch"));
-    assert!(ok, "the critique is recorded; stderr:\n{err}");
+fn a_critique_launch_defines_the_helpers_from_the_operators_copies() {
+    let rows: [(&str, &[HelperFile]); 2] =
+        [("no copy", &[]), ("both copies", &OPERATOR_HELPER_COPIES)];
+    for (name, copies) in rows {
+        let dir = temp_project();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        scaffold(&root, CRITIC_WORKFLOW);
+        write_helper_copies(&root, copies);
+        let (work, path) = stub(REJECT);
+        let (_, err, ok) = critique(&root, SPEC_REL, &path, &root.join("scratch"));
+        assert!(ok, "{name}: the critique is recorded; stderr:\n{err}");
 
-    let argv = critique_stub_argv(work.path());
-    assert_eq!(
-        serde_json::from_str::<Value>(flag_value(&argv, "--agents")).unwrap(),
-        operator_helpers_agents_json(),
-        "the critic's helpers are the operator's copies"
-    );
-    assert_eq!(
-        flag_value(&argv, "--allowed-tools"),
-        CRITIC_PRE_APPROVAL,
-        "the critic's tools already hold the rigger tools the operator's copies declare, so the \
-         pre-approval adds only the host's own"
-    );
+        let argv = critique_stub_argv(work.path());
+        assert_eq!(
+            (
+                serde_json::from_str::<Value>(flag_value(&argv, "--agents")).unwrap(),
+                flag_value(&argv, "--allowed-tools"),
+            ),
+            (handed_helpers_agents_json(copies), CRITIC_PRE_APPROVAL),
+            "{name}: the critic's helpers are the copies the checkout holds, else the embedded \
+             ones, and its tools already hold the rigger tools either declares, so the \
+             pre-approval adds only the host's own"
+        );
+    }
 }
 
 /// Spec 105's stray record: given a project with a run, when a critic's session ends on an API
