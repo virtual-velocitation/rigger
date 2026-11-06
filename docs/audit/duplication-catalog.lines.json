@@ -4454,8 +4454,8 @@
     "sites": [
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 49717,
-        "end_line": 49727
+        "start_line": 49726,
+        "end_line": 49736
       },
       {
         "file": "tests/replan_episode_identity.rs",
@@ -4469,8 +4469,8 @@
     "sites": [
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 51099,
-        "end_line": 51101
+        "start_line": 51108,
+        "end_line": 51110
       },
       {
         "file": "crates/rigger-domain/src/metrics.rs",

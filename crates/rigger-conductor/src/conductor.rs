@@ -47685,10 +47685,12 @@ mod tests {
 
     /// Spec 121 criterion 19, THE FAILED GUARD PROBE HALTS THE STEP: run `cfg` under a
     /// [`RecordingRunner`] failing `fail` and returning [`probe_fault`] at invocation `fault_at`.
-    /// The run ends with the fault's text as its halt `Err`, the marker stripped; the runner ran
-    /// exactly `calls`, so no gate and no F3 rerun followed the fault; the log holds exactly the
-    /// pass's earlier `verdicts` and no verdict for the faulted gate; and no attempt is charged:
-    /// no `UnitFailed`, `UnitEscalated`, lesson, infra mark or `DeferredGateFailed` is written.
+    /// The run ends with the fault's text as its halt `Err`, the marker stripped, and that text
+    /// is the literal message naming the guard path, the OS error and the operator's fix; the
+    /// runner ran exactly `calls`, so no gate and no F3 rerun followed the fault; the log holds
+    /// exactly the pass's earlier `verdicts` and no verdict for the faulted gate; and no attempt
+    /// is charged: no `UnitFailed`, `UnitEscalated`, lesson, infra mark or `DeferredGateFailed`
+    /// is written.
     fn assert_probe_fault_halts_the_step(
         cfg: Config,
         fail: &[&str],
@@ -47706,6 +47708,13 @@ mod tests {
         let halt = run_isolated(&cfg, &deps).map(|_| ()).map_err(|e| e.0);
         drop(deps);
         let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert_eq!(
+            probe_fault().to_string(),
+            "build cache guard \"/scratch/not-a-directory/cargo-target.lock\" failed its probe: \
+             Not a directory (os error 20); fix the path or set the project's scratch root to a \
+             filesystem with advisory locks, then relaunch",
+            "the halt text names the guard path, the OS error and the operator's fix"
+        );
         assert_eq!(
             halt,
             Err(probe_fault().to_string()),
