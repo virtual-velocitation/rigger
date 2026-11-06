@@ -393,6 +393,14 @@
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "marked",
+    "is_test": false,
+    "proposed_module": null,
+    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
+    "content_hash": "2ae29e095f656d0e"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "reruns",
     "is_test": false,
     "proposed_module": "conductor::refused_record",
@@ -481,11 +489,27 @@
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "probe_fault_halt",
+    "is_test": false,
+    "proposed_module": null,
+    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
+    "content_hash": "38f560b59c78df90"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "without_halt_markers",
+    "is_test": false,
+    "proposed_module": null,
+    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
+    "content_hash": "2a4482cda6344dfd"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "spawn_crash",
     "is_test": false,
     "proposed_module": "conductor::spawn",
     "reason": "name contains \"spawn\" (spawn lifecycle); grouped under `conductor::spawn`.",
-    "content_hash": "d5cd3ef3cc4ecacd"
+    "content_hash": "2b61f24df3b91d40"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -901,7 +925,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "e593ec4a07594eeb"
+    "content_hash": "5ec03bd78ef41c26"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -1325,7 +1349,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "85f3564fb93f02c3"
+    "content_hash": "eac8a6d003886e69"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -1341,7 +1365,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "fdc60713a4226bb4"
+    "content_hash": "327d4246d54eeb28"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -1365,7 +1389,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "36c667c296d0e515"
+    "content_hash": "d1879a8d62ad96a2"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -1437,7 +1461,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "4ef25e6d79c42c7d"
+    "content_hash": "08594c09e45b8d7c"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -9813,7 +9837,7 @@
     "is_test": false,
     "proposed_module": "main::replay_runner",
     "reason": "method inside `impl Runner for ReplayRunner`; grouped with its other `ReplayRunner` methods.",
-    "content_hash": "d4e95b2f0ac23dfd"
+    "content_hash": "f9415c32f68d3c89"
   },
   {
     "file": "src/cli/mod.rs",
@@ -10013,7 +10037,7 @@
     "is_test": false,
     "proposed_module": "main::store",
     "reason": "name contains \"reclaim_\" (store hygiene); grouped under `main::store`.",
-    "content_hash": "78a4c6f89e315cbc"
+    "content_hash": "955737e7e06be519"
   },
   {
     "file": "src/cli/mod.rs",

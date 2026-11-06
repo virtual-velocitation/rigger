@@ -513,25 +513,6 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-500f0a1aa6c2",
-    "classification": "exact",
-    "sites": [
-      {
-        "file": "crates/rigger-conductor/src/conductor.rs",
-        "name": "spawn_crash",
-        "content_hash": "46b10d78ec2b4b72"
-      },
-      {
-        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
-        "name": "unread_entry",
-        "content_hash": "46b10d78ec2b4b72"
-      }
-    ],
-    "proposed_home": "a new shared module (sites span 2 files: crates/rigger-conductor/src/conductor.rs, crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
     "id": "dup-cb25e49f6e22",
     "classification": "semantic",
     "sites": [
