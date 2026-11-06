@@ -54,21 +54,55 @@ pub fn fixture_script(script: &str) -> String {
 /// `tests/fixtures/prompt-capture-agent.sh` copies what it was handed into.
 pub const PROMPT_CAPTURE_DIR: &str = "PROMPT_CAPTURE_DIR";
 
-/// The system prompt the prompt-capture agent copied into `capture`: the text of the file its
-/// `--system-prompt-file` argument named.
-pub fn captured_system_prompt(capture: &std::path::Path) -> String {
-    std::fs::read_to_string(capture.join("system-prompt")).unwrap()
+/// The text of the file `file` the prompt-capture agent wrote into `capture`: `system-prompt`,
+/// the text of the file its `--system-prompt-file` argument named; `stdin`, the headless host's
+/// first stream-json line, or everything the cli host wrote.
+pub fn captured(capture: &std::path::Path, file: &str) -> String {
+    std::fs::read_to_string(capture.join(file)).unwrap()
 }
 
 /// The task a stand-in `claude` saved at `path`: the `content` of the host's first stream-json
 /// user message.
 pub fn recorded_task(path: &std::path::Path) -> String {
-    let line = std::fs::read_to_string(path).unwrap();
+    first_message_task(&std::fs::read_to_string(path).unwrap())
+}
+
+/// The task the headless host's first stream-json user message `line` carries: its `content`.
+pub fn first_message_task(line: &str) -> String {
     let message: serde_json::Value = serde_json::from_str(line.trim_end()).unwrap();
     message["message"]["content"]
         .as_str()
         .expect("the first user message carries its task as text")
         .to_string()
+}
+
+/// The frame the cli host closes spawn `id`'s task with: the driver's separator, then the line
+/// naming the `rigger progress` command and its arguments only.
+pub fn cli_progress_frame(id: &str) -> String {
+    format!(
+        "\n\n--- rigger driver ---\nLIVE PROGRESS: record a progress line by running (Bash): \
+         rigger progress '{id}' '<one line: what you just did>'."
+    )
+}
+
+/// The `rigger_progress` entry a spawn's own MCP server lists: what the tool records and its one
+/// argument, with no word on when to report.
+pub fn progress_tool_entry() -> serde_json::Value {
+    serde_json::json!({
+        "name": "rigger_progress",
+        "description": "Record one live progress line for the spawn this server is bound to, so \
+                        an observer sees you working between milestones.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "activity": {
+                    "type": "string",
+                    "description": "a short one-line description of what you just did"
+                }
+            },
+            "required": ["activity"]
+        }
+    })
 }
 
 /// The argv a stand-in `claude` saved at `path`, one NUL-terminated field per argument.

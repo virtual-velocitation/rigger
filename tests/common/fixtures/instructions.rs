@@ -225,6 +225,18 @@ pub const SUPERSEDE_A_PEER: [&str; 2] = [
      `DecisionMade` whose `supersedes` field cites the prior decision's id, and state why.",
 ];
 
+/// The communication body's progress bullet, sentence by sentence: when a spawn reports a progress
+/// line and why, stated once here for every host, whose progress text names only its verb and that
+/// verb's arguments.
+pub const PROGRESS_CADENCE: [&str; 3] = [
+    "After each significant step - a search, a file read, a build, a commit, a decision - report \
+     ONE short line of what you just did through the progress verb your task or your tool list \
+     names.",
+    "This is how an observer sees you working between the milestones you record, so a long silent \
+     stretch is never mistaken for a stall.",
+    "Keep it flowing WHILE you work; do not batch it at the end.",
+];
+
 /// The heading line the communication built-in opens in a composed system prompt.
 pub const COMMUNICATION_SECTION: &str = "\n## communication\n";
 

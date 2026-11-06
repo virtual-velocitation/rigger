@@ -518,6 +518,12 @@ fn rigger_outcome(child: Child) -> (String, String, bool) {
 /// `claude`, assert the command succeeds, and return the system prompt the last agent it spawned
 /// was handed: the text of the file its `--system-prompt-file` named.
 pub fn run_capturing_system_prompt(cwd: &Path, args: &[&str]) -> String {
+    run_capturing_system_prompt_and_stdin(cwd, args).0
+}
+
+/// [`run_capturing_system_prompt`], returning beside that system prompt the stdin the same agent
+/// was handed: the headless host's first stream-json line, or everything the cli host wrote.
+pub fn run_capturing_system_prompt_and_stdin(cwd: &Path, args: &[&str]) -> (String, String) {
     let work = tempfile::tempdir().unwrap();
     let path = super::repo::stub_path(work.path(), "claude", Some("prompt-capture-agent.sh"));
     let (out, err, ok) = run_rigger_envs(
@@ -535,7 +541,10 @@ pub fn run_capturing_system_prompt(cwd: &Path, args: &[&str]) -> String {
         ok,
         "rigger {args:?} must succeed; stderr: {err}\nstdout: {out}"
     );
-    super::fixtures::captured_system_prompt(work.path())
+    (
+        super::fixtures::captured(work.path(), "system-prompt"),
+        super::fixtures::captured(work.path(), "stdin"),
+    )
 }
 
 /// `rigger setup` in `cwd` with extra environment `envs`, which must succeed: its stdout.

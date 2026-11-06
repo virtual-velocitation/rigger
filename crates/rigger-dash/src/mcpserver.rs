@@ -2790,24 +2790,7 @@ mod tests {
             .unwrap()
             .iter()
             .find(|t| t["name"] == "rigger_progress");
-        assert_eq!(
-            entry,
-            Some(&json!({
-                "name": "rigger_progress",
-                "description": "Record one live progress line for the spawn this server is bound \
-                                to, so an observer sees you working between milestones.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "activity": {
-                            "type": "string",
-                            "description": "a short one-line description of what you just did"
-                        }
-                    },
-                    "required": ["activity"]
-                }
-            }))
-        );
+        assert_eq!(entry, Some(&crate::test_support::progress_tool_entry()));
     }
 
     crate::test_cases! {

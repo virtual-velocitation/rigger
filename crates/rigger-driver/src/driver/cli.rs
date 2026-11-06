@@ -311,12 +311,12 @@ mod tests {
         };
         assert_eq!(
             framed("the task", &opts),
-            "the task\n\n--- rigger driver ---\nLIVE PROGRESS: record a progress line by running \
-             (Bash): rigger progress 'u/implementer#0' '<one line: what you just did>'."
+            format!("the task{}", cli_progress_frame("u/implementer#0"))
         );
     }
+    use crate::test_support::cli_progress_frame;
     #[cfg(unix)]
-    use crate::test_support::{captured_system_prompt, PROMPT_CAPTURE_DIR};
+    use crate::test_support::{captured, PROMPT_CAPTURE_DIR};
     use std::cell::RefCell;
     use std::rc::Rc;
     use std::sync::Mutex;
@@ -712,14 +712,14 @@ thinking out loud, not json\n\
             })
             .unwrap();
 
-        let stdin = std::fs::read_to_string(capture.path().join("stdin")).unwrap();
+        let stdin = captured(capture.path(), "stdin");
         assert!(
             stdin.starts_with(&task),
             "the whole task arrived on stdin ({} bytes read)",
             stdin.len()
         );
         assert_eq!(
-            captured_system_prompt(capture.path()),
+            captured(capture.path(), "system-prompt"),
             persona,
             "the whole persona arrived through the system-prompt file"
         );
@@ -768,10 +768,8 @@ thinking out loud, not json\n\
             )
             .unwrap();
 
-        assert_eq!(captured_system_prompt(capture.path()), "You plan.");
-        assert!(std::fs::read_to_string(capture.path().join("stdin"))
-            .unwrap()
-            .starts_with("plan it"));
+        assert_eq!(captured(capture.path(), "system-prompt"), "You plan.");
+        assert!(captured(capture.path(), "stdin").starts_with("plan it"));
         let path = std::fs::read_to_string(capture.path().join("system-prompt-path")).unwrap();
         assert!(
             std::path::Path::new(&path).is_absolute(),
