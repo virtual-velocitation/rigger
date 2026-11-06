@@ -21,7 +21,7 @@ Those two sentences are the rule the binary is held to. The rest of this section
 **Open exceptions.** These prescriptions still stand in the binary against the rule, each named by its constant or surface, and each is struck from this list as it is removed:
 
 - `MAX_UNIT_ADDED_LINES` and the second sentence of `unit_size_cap`
-- the toolchain words in `workflows/rigger.js` and the `rigger_scratch` description
+- the toolchain words in `workflows/rigger.js`
 
 ### The review ceremony
 
