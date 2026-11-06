@@ -18,10 +18,10 @@
 //! naming an operator's helper copy that does not parse.
 
 mod common;
-use common::cli::{failure_line, run_rigger, setup_ok, temp_project};
+use common::cli::{failure_line, nameless_copy_refusal, run_rigger, setup_ok, temp_project};
 use common::fixtures::{
     git_commit_all, git_out, implementer_opts, temp_git_project_with_commit, write_helper_copy,
-    OPERATOR_HELPER_COPIES,
+    NAMELESS_HELPER_COPY, OPERATOR_HELPER_COPIES,
 };
 use common::repo::repo_root;
 
@@ -382,15 +382,11 @@ fn validate_fails_naming_an_operators_helper_copy_that_does_not_parse() {
     let proj = temp_project();
     let root = proj.path();
     setup_ok(root, &[("RIGGER_NPM", "true")]);
-    let copy = Path::new(".").join(".claude/agents").join("verify.md");
     let rows = [
         (
             "a copy with no name",
-            "---\nmodel: haiku\n---\nRun one check.\n",
-            Some(format!(
-                "rigger: hooks: helper agent {}: no name",
-                copy.display()
-            )),
+            NAMELESS_HELPER_COPY,
+            Some(nameless_copy_refusal(Path::new("."), "verify.md")),
         ),
         ("the operator's own copy", OPERATOR_HELPER_COPIES[1].1, None),
     ];

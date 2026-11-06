@@ -58,6 +58,9 @@ pub const OPERATOR_HELPER_COPIES: [(&str, &str); 2] = [
     ),
 ];
 
+/// An operator's helper copy that does not parse: its frontmatter names no helper.
+pub const NAMELESS_HELPER_COPY: &str = "---\nmodel: haiku\n---\nRun one check.\n";
+
 /// The rigger tools [`OPERATOR_HELPER_COPIES`] declare, once each in helper then declaration
 /// order, comma-joined as a launch's pre-approval lists them.
 pub const OPERATOR_HELPER_TOOLS: &str = "mcp__rigger__rigger_peers,mcp__rigger__rigger_graph";

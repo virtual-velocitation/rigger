@@ -21412,15 +21412,25 @@ fn edit_worker_prompt(root: &Path, new_body: &str) {
 /// A two-stage run whose first step pinned its definition (parking the first wave), after
 /// which a mid-campaign prompt edit to `new_prompt` drifted the on-disk definition from the pin.
 fn a_pinned_run_whose_definition_drifted(new_prompt: &str) -> tempfile::TempDir {
+    a_pinned_run_changed(|_| {}, |root| edit_worker_prompt(root, new_prompt))
+}
+
+/// A two-stage run over a project `before` prepared, whose first step pinned its definition
+/// (parking the first wave), after which `after` changed the project mid-campaign.
+fn a_pinned_run_changed(
+    before: impl FnOnce(&Path),
+    after: impl FnOnce(&Path),
+) -> tempfile::TempDir {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
     write_workflow_fixture(root, &TWO_STAGE_WORKFLOW);
+    before(root);
     let (_out, err, ok) = run_rigger(root, &["step"]);
     assert!(
         ok,
         "the first step must succeed and pin the definition; stderr: {err}"
     );
-    edit_worker_prompt(root, new_prompt);
+    after(root);
     dir
 }
 
@@ -21487,6 +21497,92 @@ fn step_halts_on_definition_drift_and_rebase_definition_continues() {
         !err.contains("definition drift"),
         "the rebased definition is the pin now - no residual drift; stderr: {err}"
     );
+}
+
+/// Spec 121's THE OPERATOR'S HELPER COPY IS THE DEFINITION at a step's pin: given a run whose
+/// first step pinned its definition over the helper copies its checkout held, when the operator
+/// changes the checkout's `.claude/agents/` mid-run and steps again, then the step halts on a
+/// definition drift exactly when a helper copy was added, edited or removed, and steps on, its
+/// wave printed, when nothing changed or the only new file there is no helper copy; a copy that
+/// does not parse is refused on the line naming it as the step reaches it, never read as a
+/// drift, and no wave is printed.
+#[test]
+fn a_step_halts_on_a_helper_copy_changed_mid_run() {
+    use common::cli::{failure_line, nameless_copy_refusal};
+    use common::fixtures::{
+        write_helper_copies, write_helper_copy, NAMELESS_HELPER_COPY, OPERATOR_HELPER_COPIES,
+    };
+    const DRIFT_OPENS: &str =
+        "rigger: definition drift - the on-disk workflow/agent definition (hash ";
+    const DRIFT_CLOSES: &str = "or restore the definition to match the pin.";
+    /// What a plain step after the change does.
+    #[derive(Debug, PartialEq)]
+    enum Next {
+        Steps,
+        Drifts,
+        Refused(String),
+    }
+    let [lookup, verify] = OPERATOR_HELPER_COPIES;
+    // Each row: the copies the checkout holds at the pin, the change after it, and the next
+    // step's outcome, a refusal naming the copy file it is refused on.
+    let rows: [(&str, &[(&str, &str)], fn(&Path), Next); 6] = [
+        (
+            "a copy added",
+            &[],
+            |root| write_helper_copies(root, &OPERATOR_HELPER_COPIES[..1]),
+            Next::Drifts,
+        ),
+        (
+            "a copy edited",
+            &[lookup, verify],
+            |root| {
+                let (file, text) = OPERATOR_HELPER_COPIES[1];
+                write_helper_copy(root, file, text.replace("model: haiku", "model: opus"))
+            },
+            Next::Drifts,
+        ),
+        (
+            "a copy removed",
+            &[lookup],
+            |root| std::fs::remove_file(root.join(".claude/agents/lookup.md")).unwrap(),
+            Next::Drifts,
+        ),
+        ("nothing changed", &[lookup, verify], |_| {}, Next::Steps),
+        (
+            "a file that is no helper copy added",
+            &[lookup, verify],
+            |root| write_helper_copy(root, "reviewer.md", OPERATOR_HELPER_COPIES[0].1),
+            Next::Steps,
+        ),
+        (
+            "a copy that does not parse",
+            &[],
+            |root| write_helper_copy(root, "verify.md", NAMELESS_HELPER_COPY),
+            Next::Refused("verify.md".to_owned()),
+        ),
+    ];
+    for (name, before, after, expected) in rows {
+        let dir = a_pinned_run_changed(|root| write_helper_copies(root, before), after);
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        let (out, err, ok) = run_rigger(&root, &["step"]);
+        let next = match failure_line(ok, &err) {
+            None => Next::Steps,
+            Some(line) if line.starts_with(DRIFT_OPENS) && line.ends_with(DRIFT_CLOSES) => {
+                Next::Drifts
+            }
+            Some(line) => Next::Refused(line),
+        };
+        let expected = match expected {
+            Next::Refused(file) => Next::Refused(nameless_copy_refusal(&root, &file)),
+            other => other,
+        };
+        let waves = expected == Next::Steps;
+        assert_eq!(
+            (next, out.contains("\"wave\"")),
+            (expected, waves),
+            "{name}; stderr: {err}"
+        );
+    }
 }
 
 /// Definition pinning, the new-run-is-free path (spec 13, unit 1): a FRESH run always pins the

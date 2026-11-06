@@ -1846,6 +1846,14 @@ pub fn failure_line(ok: bool, err: &str) -> Option<String> {
     (!ok).then(|| err.lines().last().unwrap_or_default().to_owned())
 }
 
+/// The line a command that resolves the fan-out helpers fails on when the operator's copy `file`
+/// under the checkout `root`, as the command reaches that root, is the
+/// [`NAMELESS_HELPER_COPY`](super::fixtures::NAMELESS_HELPER_COPY).
+pub fn nameless_copy_refusal(root: &Path, file: &str) -> String {
+    let copy = root.join(".claude/agents").join(file);
+    format!("rigger: hooks: helper agent {}: no name", copy.display())
+}
+
 /// The [`refusal_line`] `rigger setup` ends its stderr with when its failure is the owed mark
 /// beside `graph.db` it cannot remove - a directory stands at its path
 /// ([`unremovable_mark_beside`](super::fixtures::unremovable_mark_beside)) - naming the mark as
