@@ -4290,7 +4290,7 @@ Proposed home: `one shared `install_status_line` helper (e.g. relocated into `te
 
 mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
 
-- `crates/rigger-driver/src/hooks.rs:426-443` `install_status_line`
+- `crates/rigger-driver/src/hooks.rs:427-444` `install_status_line`
 - `src/cli/setup.rs:1399-1403` `install_status_line`
 
 #### `dup-a5bfac770233` (near, 2 sites)

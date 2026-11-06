@@ -160,8 +160,9 @@ fn strip_grep_guard(
         };
         let before = inner.len();
         inner.retain(|hook| !runs(hook, GREP_GUARD_COMMAND));
-        stripped |= inner.len() < before;
-        !inner.is_empty()
+        let removed = inner.len() < before;
+        stripped |= removed;
+        !(removed && inner.is_empty())
     });
     stripped
 }

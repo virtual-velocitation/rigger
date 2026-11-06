@@ -6034,8 +6034,8 @@
     "sites": [
       {
         "file": "crates/rigger-driver/src/hooks.rs",
-        "start_line": 426,
-        "end_line": 443
+        "start_line": 427,
+        "end_line": 444
       },
       {
         "file": "src/cli/setup.rs",
