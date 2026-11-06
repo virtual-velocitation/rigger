@@ -46,6 +46,7 @@ use common::git::run_git;
 
 use common::fixtures::agent;
 use common::fixtures::gate_def;
+use common::fixtures::test_spawn_host;
 use common::git::git_ok;
 use common::git::temp_git_project_with_commit;
 use rigger::conductor::{
@@ -150,6 +151,7 @@ fn a_non_ancestor_amend_names_the_true_diff_not_the_triple_dot_under_report() {
         log: &|_| {},
         hash_blob: &|_| Ok(String::new()),
         check_emit: &rigger::contextgraph::check_emit,
+        spawn_host: test_spawn_host(),
     };
 
     let rs = run(&cfg, &deps).expect(

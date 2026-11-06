@@ -34,6 +34,7 @@
 mod common;
 
 use common::fixtures::mk_stage;
+use common::fixtures::test_spawn_host;
 use common::fixtures::A_WORK_DRIVER;
 use common::fixtures::{repo_with_refusing_hook, workflow_cfg};
 use rigger::conductor::{run, Deps};
@@ -70,6 +71,7 @@ fn a_pre_gate_attempt_commit_bypasses_an_installed_refusing_hook() {
         log: &|_| {},
         hash_blob: &|_| Ok(String::new()),
         check_emit: &rigger::contextgraph::check_emit,
+        spawn_host: test_spawn_host(),
     };
 
     let rs = run(&cfg, &deps).expect(

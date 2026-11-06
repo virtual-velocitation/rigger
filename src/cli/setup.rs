@@ -2103,6 +2103,7 @@ mod tests {
         ADJUDICATOR_JUDGING_RULE, ADVERSARY_CRITIQUE_METHOD, CRITIQUE_METHOD, FAN_OUT_HEADING,
         HAND_OVER_HEADING, WHEN_YOU_REVIEW, WHEN_YOU_REVIEW_HEADING,
     };
+    use crate::test_support::{production_boundary, production_files};
 
     /// Spec 101: a graph rebuild reports its progress in tenths of the log positions it covers -
     /// a line each time a batch carries it into a new tenth, never twice for one tenth - with the
@@ -3796,48 +3797,131 @@ mod tests {
         assert_eq!(v2["mcpServers"]["rigger"]["command"], "rigger");
     }
 
-    /// `install_lookup_hook` has the same three-state contract, and (unlike the SessionStart
-    /// merge, whose event only ever holds rigger's own entry) must preserve an UNRELATED
-    /// PreToolUse hook a machine already carries under a different matcher/command.
+    /// `install_lookup_hook` installs the graph-first lookup hook when the workflow declares
+    /// `defaults.grep_guard` and removes only rigger's own entry when it does not, with the same
+    /// three-state contract every other `rigger setup` install artifact has: an absent file is
+    /// `Installed`, an existing file the edit changes is `Refreshed`, a file the edit leaves as it
+    /// is (or no file with the guard undeclared, which creates no `.claude/`) is `AlreadyCurrent`.
+    /// An UNRELATED PreToolUse hook and every other event survive either way; an entry under a
+    /// drifted matcher is replaced.
     #[test]
-    fn install_lookup_hook_installs_refreshes_and_is_a_noop_and_preserves_foreign_hooks() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        let settings_path = root.join(".claude").join("settings.json");
-        std::fs::create_dir_all(settings_path.parent().unwrap()).unwrap();
-        std::fs::write(
-            &settings_path,
-            r#"{"hooks":{"PreToolUse":[{"matcher":"Write","hooks":[{"type":"command","command":"prettier --write"}]}]}}"#,
-        )
-        .unwrap();
-
-        assert_eq!(
-            install_lookup_hook(root).unwrap(),
-            InstallOutcome::Refreshed,
-            "the settings file already existed, so adding our hook to it is a refresh"
-        );
-        let v: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap();
-        let blocks = v["hooks"]["PreToolUse"].as_array().unwrap();
-        assert!(
-            blocks
-                .iter()
-                .any(|b| b["hooks"][0]["command"] == "prettier --write"),
-            "the pre-existing foreign hook must survive"
-        );
-        assert!(
-            blocks
-                .iter()
-                .any(|b| b["hooks"][0]["command"] == hooks::GREP_GUARD_COMMAND
-                    && b["matcher"] == hooks::GREP_GUARD_MATCHER),
-            "our lookup hook must be installed"
-        );
-
-        assert_eq!(
-            install_lookup_hook(root).unwrap(),
-            InstallOutcome::AlreadyCurrent,
-            "a rerun changes nothing"
-        );
+    fn install_lookup_hook_installs_or_removes_only_riggers_own_entry_as_declared() {
+        let block = |matcher: &str, command: &str| serde_json::json!({"matcher": matcher, "hooks": [{"type": "command", "command": command}]});
+        let guard = block(hooks::GREP_GUARD_MATCHER, hooks::GREP_GUARD_COMMAND);
+        let foreign = block("Write", "prettier --write");
+        let prime = serde_json::json!({"SessionStart": [block("", "rigger prime")]});
+        let rows = [
+            (
+                "no file, declared",
+                None,
+                true,
+                InstallOutcome::Installed,
+                Some(serde_json::json!({"hooks": {"PreToolUse": [guard.clone()]}})),
+            ),
+            (
+                "no file, undeclared",
+                None,
+                false,
+                InstallOutcome::AlreadyCurrent,
+                None,
+            ),
+            (
+                "a foreign hook, declared",
+                Some(serde_json::json!({"hooks": {"PreToolUse": [foreign.clone()]}})),
+                true,
+                InstallOutcome::Refreshed,
+                Some(
+                    serde_json::json!({"hooks": {"PreToolUse": [foreign.clone(), guard.clone()]}}),
+                ),
+            ),
+            (
+                "the guard beside a foreign hook, declared",
+                Some(
+                    serde_json::json!({"hooks": {"PreToolUse": [foreign.clone(), guard.clone()]}}),
+                ),
+                true,
+                InstallOutcome::AlreadyCurrent,
+                Some(
+                    serde_json::json!({"hooks": {"PreToolUse": [foreign.clone(), guard.clone()]}}),
+                ),
+            ),
+            (
+                "the guard under a drifted matcher, declared",
+                Some(serde_json::json!({"hooks": {"PreToolUse": [
+                    block("Grep", hooks::GREP_GUARD_COMMAND),
+                    foreign.clone(),
+                ]}})),
+                true,
+                InstallOutcome::Refreshed,
+                Some(
+                    serde_json::json!({"hooks": {"PreToolUse": [foreign.clone(), guard.clone()]}}),
+                ),
+            ),
+            (
+                "the guard beside a foreign hook, undeclared",
+                Some(
+                    serde_json::json!({"hooks": {"PreToolUse": [foreign.clone(), guard.clone()]}}),
+                ),
+                false,
+                InstallOutcome::Refreshed,
+                Some(serde_json::json!({"hooks": {"PreToolUse": [foreign.clone()]}})),
+            ),
+            (
+                "the guard alone beside the prime hook, undeclared",
+                Some(serde_json::json!({"model": "opus", "hooks": {
+                    "SessionStart": prime["SessionStart"].clone(),
+                    "PreToolUse": [guard.clone()],
+                }})),
+                false,
+                InstallOutcome::Refreshed,
+                Some(serde_json::json!({"model": "opus", "hooks": prime.clone()})),
+            ),
+            (
+                "a foreign hook alone, undeclared",
+                Some(serde_json::json!({"hooks": {"PreToolUse": [foreign.clone()]}})),
+                false,
+                InstallOutcome::AlreadyCurrent,
+                Some(serde_json::json!({"hooks": {"PreToolUse": [foreign.clone()]}})),
+            ),
+        ];
+        let read = |path: &Path| {
+            std::fs::read(path)
+                .ok()
+                .map(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).unwrap())
+        };
+        let mut seen = Vec::new();
+        let mut expected = Vec::new();
+        for (name, before, grep_guard, outcome, after) in rows {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path();
+            let settings_path = root.join(".claude").join("settings.json");
+            if let Some(before) = &before {
+                // Written as `rigger setup` itself writes the file, pretty and newline-ended, so
+                // a row whose edit changes nothing reads back as the very bytes it found.
+                let mut bytes = serde_json::to_vec_pretty(before).unwrap();
+                bytes.push(b'\n');
+                std::fs::create_dir_all(settings_path.parent().unwrap()).unwrap();
+                std::fs::write(&settings_path, bytes).unwrap();
+            }
+            let reported = install_lookup_hook(root, grep_guard).unwrap();
+            let rerun = install_lookup_hook(root, grep_guard).unwrap();
+            seen.push((
+                name,
+                reported,
+                read(&settings_path),
+                rerun,
+                root.join(".claude").exists(),
+            ));
+            let created = after.is_some();
+            expected.push((
+                name,
+                outcome,
+                after,
+                InstallOutcome::AlreadyCurrent,
+                created,
+            ));
+        }
+        assert_eq!(seen, expected);
     }
 
     /// The repository root: this binary crate's manifest directory.
@@ -4783,41 +4867,18 @@ mod tests {
     /// rigger's core is agnostic to the gates a project wires: no built-in instruction entry,
     /// persona, helper or review-tier discipline it ships, and no production line of its own
     /// source, names mutation testing, its mutants, its sweep, its gate or its tool's
-    /// classifications. A production line is one of a tracked `.rs` file under `crates/` or
-    /// `src/` outside a `tests/` directory, above the file's test module: the first
-    /// `#[cfg(test)]` line whose next line that is neither blank nor another attribute declares
-    /// a module (`mod`, `pub mod` or `pub(crate) mod`). A `#[cfg(test)]` on a `use`, `impl` or
-    /// `fn` ends nothing, so the few test-only lines it gates are read too. The bare word for a
-    /// state change is no term: the core uses it for write authority.
+    /// classifications. A production line is one of the production text the shared
+    /// production-boundary reader ([`production_files`]) gives of the tracked files under
+    /// `crates/` and `src/`. The bare word for a state change is no term: the core uses it for
+    /// write authority.
     #[test]
     fn no_built_in_entry_persona_helper_or_production_line_names_mutation_testing() {
         let mut texts = every_shipped_agent_text();
-        for file in tracked_files(&["crates", "src"]) {
-            if !file.ends_with(".rs") || file.split('/').any(|part| part == "tests") {
-                continue;
-            }
-            let text = std::fs::read_to_string(repo().join(&file)).unwrap();
-            let lines: Vec<&str> = text.lines().collect();
-            let opens_test_module = |at: usize| {
-                lines[at].trim_start().starts_with("#[cfg(test)]")
-                    && lines[at + 1..]
-                        .iter()
-                        .map(|line| line.trim_start())
-                        .find(|line| !line.is_empty() && !line.starts_with("#["))
-                        .is_some_and(|item| {
-                            ["mod ", "pub mod ", "pub(crate) mod "]
-                                .iter()
-                                .any(|head| item.starts_with(head))
-                        })
-            };
-            let end = (0..lines.len())
-                .find(|&at| opens_test_module(at))
-                .unwrap_or(lines.len());
+        for (file, text) in production_files(&repo(), &tracked_files(&["crates", "src"])) {
             texts.extend(
-                lines[..end]
-                    .iter()
+                text.lines()
                     .enumerate()
-                    .map(|(at, line)| (format!("{file}:{}", at + 1), (*line).to_string())),
+                    .map(|(at, line)| (format!("{file}:{}", at + 1), line.to_string())),
             );
         }
         for (at, text) in texts {
@@ -4838,6 +4899,181 @@ mod tests {
                 assert!(!lower.contains(term), "{at} names {term:?}: {text}");
             }
         }
+    }
+
+    /// The production-boundary reader's one rule: a file under a `tests` directory is no
+    /// production file; a `mod <name>;` whose attribute run requires `test` (`test`, or `all(..)`
+    /// holding it, even split over lines and followed by `#[allow]` and `#[path]`) excludes the
+    /// file it names, and every file that file declares, while `any(test, ..)` and `not(test)`
+    /// keep theirs; a file is cut where the attribute run of its first inline `mod <name> {`
+    /// requiring `test` begins, and every `cfg`-gated item above that cut is production.
+    #[test]
+    fn the_production_boundary_reader_cuts_every_file_by_one_rule() {
+        let lib = "pub mod kept;\n\
+                   #[cfg(test)]\nmod plain;\n\
+                   #[cfg(all(test, feature = \"x\"))]\nmod gated;\n\
+                   #[cfg(any(test, feature = \"x\"))]\nmod either;\n\
+                   #[cfg(not(test))]\nmod never;\n\
+                   #[cfg(all(\n    test,\n    feature = \"x\"\n))]\n#[allow(dead_code)]\n\
+                   #[path = \"../fixtures/host.rs\"]\nmod host;\n\
+                   #[cfg(test)]\nfn gated_fn() {}\n\
+                   #[cfg(any(test, feature = \"x\"))]\nmod inline_either {\n}\n\
+                   mod inline_plain {\n}\n\
+                   #[cfg(all(test, feature = \"x\"))]\n// the cut\n#[allow(unused)]\n\
+                   mod test_support {\n    fn helper() {}\n}\n";
+        let kept_lib = "pub mod kept;\n\
+                        #[cfg(test)]\nmod plain;\n\
+                        #[cfg(all(test, feature = \"x\"))]\nmod gated;\n\
+                        #[cfg(any(test, feature = \"x\"))]\nmod either;\n\
+                        #[cfg(not(test))]\nmod never;\n\
+                        #[cfg(all(\n    test,\n    feature = \"x\"\n))]\n#[allow(dead_code)]\n\
+                        #[path = \"../fixtures/host.rs\"]\nmod host;\n\
+                        #[cfg(test)]\nfn gated_fn() {}\n\
+                        #[cfg(any(test, feature = \"x\"))]\nmod inline_either {\n}\n\
+                        mod inline_plain {\n}\n";
+        let file = |path: &str, text: &str| (path.to_string(), text.to_string());
+        let sources = vec![
+            file("crates/a/src/lib.rs", lib),
+            file(
+                "crates/a/src/kept.rs",
+                "mod nested;\n#[cfg(test)] mod tests { }\n",
+            ),
+            file("crates/a/src/kept/nested.rs", "fn nested() {}\n"),
+            file("crates/a/src/plain.rs", "mod deeper;\n"),
+            file("crates/a/src/plain/deeper.rs", "fn deeper() {}\n"),
+            file("crates/a/src/gated/mod.rs", "fn gated() {}\n"),
+            file("crates/a/src/either.rs", "fn either() {}\n"),
+            file("crates/a/src/never.rs", "fn never() {}\n"),
+            file("crates/a/fixtures/host.rs", "fn host() {}\n"),
+            file("crates/a/tests/suite.rs", "fn suite() {}\n"),
+            file("tests/common/mod.rs", "fn common() {}\n"),
+        ];
+        assert_eq!(
+            production_boundary(sources),
+            vec![
+                file("crates/a/src/lib.rs", kept_lib),
+                file("crates/a/src/kept.rs", "mod nested;\n"),
+                file("crates/a/src/kept/nested.rs", "fn nested() {}\n"),
+                file("crates/a/src/either.rs", "fn either() {}\n"),
+                file("crates/a/src/never.rs", "fn never() {}\n"),
+            ]
+        );
+    }
+
+    /// The reader over the live tree: of the conductor crate's tracked files it excludes exactly
+    /// the test-only module `#[cfg(all(test, ..))] mod blast_radius_eval;` declares, and cuts its
+    /// `lib.rs` where the attribute run of `mod test_support {` begins, after the multi-line
+    /// `cfg` whose run continues through `#[allow]` and `#[path]` to `mod host_fixtures;`.
+    #[test]
+    fn the_production_boundary_reader_reads_the_conductor_crate_by_its_test_gates() {
+        let tracked: Vec<String> = tracked_files(&["crates/rigger-conductor"])
+            .into_iter()
+            .filter(|file| file.ends_with(".rs"))
+            .collect();
+        let production = production_files(&repo(), &tracked);
+        let read: Vec<&String> = production.iter().map(|(file, _)| file).collect();
+        let excluded: Vec<&String> = tracked.iter().filter(|file| !read.contains(file)).collect();
+        assert_eq!(
+            excluded,
+            ["crates/rigger-conductor/src/blast_radius_eval.rs"]
+        );
+        let lib_path = "crates/rigger-conductor/src/lib.rs";
+        let lib = read_text(&repo().join(lib_path));
+        let cut = "#[cfg(all(test, any(feature = \"store\", not(feature = \"core\"))))]\nmod test_support {\n";
+        let kept = production
+            .iter()
+            .find(|(file, _)| file == lib_path)
+            .map(|(_, text)| text.as_str());
+        assert_eq!(kept, Some(&lib[..lib.find(cut).unwrap()]));
+    }
+
+    /// Each `SpawnHost` literal the production `files` construct, as `path:line`: a
+    /// `SpawnHost {` followed, after optional whitespace or a newline, by a field name or `..`,
+    /// not preceded on its line by `->`, `struct ` or `impl `, and outside the body of
+    /// `fn resolve_spawn_host` (its line through the closing brace at its indent).
+    fn spawn_host_literals(files: &[(String, String)]) -> Vec<String> {
+        const OPEN: &str = "SpawnHost {";
+        let mut hits = Vec::new();
+        for (path, text) in files {
+            let mut resolver_close: Option<String> = None;
+            let mut offset = 0;
+            for (at, line) in text.split_inclusive('\n').enumerate() {
+                let start = offset;
+                offset += line.len();
+                if let Some(close) = &resolver_close {
+                    if line.trim_end() == close {
+                        resolver_close = None;
+                    }
+                    continue;
+                }
+                if line.contains("fn resolve_spawn_host") {
+                    let indent = &line[..line.len() - line.trim_start().len()];
+                    resolver_close = Some(format!("{indent}}}"));
+                    continue;
+                }
+                for (column, _) in line.match_indices(OPEN) {
+                    let before = &line[..column];
+                    let joined = before
+                        .chars()
+                        .next_back()
+                        .is_some_and(|c| c.is_alphanumeric() || c == '_');
+                    let exempt = ["->", "struct ", "impl "]
+                        .iter()
+                        .any(|head| before.contains(head));
+                    let body = text[start + column + OPEN.len()..].trim_start();
+                    let opens = body.starts_with("..")
+                        || body.starts_with(|c: char| c.is_alphabetic() || c == '_');
+                    if !joined && !exempt && opens {
+                        hits.push(format!("{path}:{}", at + 1));
+                    }
+                }
+            }
+        }
+        hits
+    }
+
+    /// [`spawn_host_literals`] finds a construction on one line or across lines, with a field
+    /// name or a `..` spread, and passes over the declaration, an `impl` header, a signature
+    /// returning the type, a longer name, an empty brace and the resolver's own body.
+    #[test]
+    fn a_spawn_host_literal_is_found_wherever_production_builds_one() {
+        let rows: [(&str, Vec<&str>); 9] = [
+            ("let h = SpawnHost { grep_guard: true };\n", vec!["f.rs:1"]),
+            ("let h =\n    SpawnHost {\n        grep_guard,\n    };\n", vec!["f.rs:2"]),
+            ("let o = Opts { host: SpawnHost { ..other } };\n", vec!["f.rs:1"]),
+            ("pub struct SpawnHost {\n    pub grep_guard: bool,\n}\n", vec![]),
+            ("impl SpawnHost {\n    fn x() {}\n}\n", vec![]),
+            ("fn host(&self) -> SpawnHost {\n    self.host.clone()\n}\n", vec![]),
+            ("let n = MySpawnHost { a: 1 };\nlet e = SpawnHost {};\n", vec![]),
+            (
+                "pub fn resolve_spawn_host(d: &Defaults) -> SpawnHost {\n    let h = SpawnHost {\n        \
+                 grep_guard: d.grep_guard,\n    };\n    SpawnHost { ..h }\n}\nfn other() {\n    \
+                 let _ = SpawnHost { grep_guard: false };\n}\n",
+                vec!["f.rs:8"],
+            ),
+            (
+                "    fn resolve_spawn_host() -> SpawnHost {\n        SpawnHost { grep_guard }\n    \
+                 }\n    let x = SpawnHost { grep_guard };\n}\n",
+                vec!["f.rs:4"],
+            ),
+        ];
+        let found: Vec<Vec<String>> = rows
+            .iter()
+            .map(|(text, _)| spawn_host_literals(&[("f.rs".to_string(), text.to_string())]))
+            .collect();
+        let expected: Vec<Vec<String>> = rows
+            .iter()
+            .map(|(_, hits)| hits.iter().map(|hit| hit.to_string()).collect())
+            .collect();
+        assert_eq!(found, expected);
+    }
+
+    /// Every production `SpawnHost` comes from `rigger_driver::hooks::resolve_spawn_host`: no
+    /// production line of the tracked sources outside its body builds one by hand.
+    #[test]
+    fn no_production_line_but_the_resolver_builds_a_spawn_host() {
+        let production = production_files(&repo(), &tracked_files(&["crates", "src"]));
+        assert_eq!(spawn_host_literals(&production), Vec::<String>::new());
     }
 
     /// The periphery author's surface probes: the CLI probe diffs the handlers in `src/cli/`

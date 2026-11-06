@@ -6248,6 +6248,13 @@ mod tests {
         // Spec 92, criterion 4: the discipline docs' lookup-hook message is read from the
         // SAME const `rigger grep-guard` decides against, not a hand copy.
         assert_eq!(ctx.grep_guard_message, GREP_GUARD_MESSAGE);
+        // Spec 121: that message is the guard's rule and its escape hatch, word for word: no
+        // lookup method rides on it.
+        assert_eq!(
+            GREP_GUARD_MESSAGE,
+            "grep is for literal text - end the command with a `# --literal` comment to proceed",
+            "the grep-guard's deny message"
+        );
     }
 
     /// Spec 20, unit 1 (the golden fact test): known code facts appear VERBATIM in BOTH

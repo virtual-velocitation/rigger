@@ -73,6 +73,10 @@ mod test_cases;
 /// modules sit at the same paths the root facade re-exports them under.
 #[cfg(test)]
 extern crate self as rigger;
+/// The spawn fixtures name the domain's own types as `rigger_domain::...`, the dependency's name
+/// in every other crate that compiles them, which this alias makes resolve to this crate too.
+#[cfg(test)]
+extern crate self as rigger_domain;
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 #[allow(dead_code, unused_imports)]
 #[path = "../../../tests/common/fixtures/critique.rs"]

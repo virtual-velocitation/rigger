@@ -34,6 +34,7 @@
 //! calling any private helper.
 
 mod common;
+use common::fixtures::test_spawn_host;
 use common::fixtures::workflow_cfg;
 use common::git::git_ok;
 
@@ -140,6 +141,7 @@ impl PostmergeFixture {
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
             check_emit: &rigger::contextgraph::check_emit,
+            spawn_host: test_spawn_host(),
         };
         run(&self.cfg, &deps).is_err()
     }

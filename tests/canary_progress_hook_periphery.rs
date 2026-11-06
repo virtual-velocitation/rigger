@@ -44,6 +44,7 @@ use common::fixtures::critical_verdict;
 use common::fixtures::emit_review_finding;
 use common::fixtures::panel_with_lenses;
 use common::fixtures::planted_item as item;
+use common::fixtures::test_spawn_host;
 use rigger::canary::{CanaryOutcome, TIER_LENS};
 use rigger::canary_store::run_canary;
 use rigger::conductor::{AgentDriver, AgentResult, Error, SpawnOpts};
@@ -106,9 +107,18 @@ fn run_canary_calls_on_item_exactly_once_per_item_with_content_matching_the_repo
             catches: vec!["hit.rs"],
         };
         let store = Store::open(":memory:").expect("an in-memory store opens");
-        let report = run_canary(&store, &driver, &c, &p, &corpus, jobs, &|o, _elapsed| {
-            captured.lock().unwrap().push(o.clone());
-        })
+        let report = run_canary(
+            &store,
+            &driver,
+            &c,
+            &test_spawn_host(),
+            &p,
+            &corpus,
+            jobs,
+            &|o, _elapsed| {
+                captured.lock().unwrap().push(o.clone());
+            },
+        )
         .unwrap_or_else(|e| {
             panic!("run_canary must succeed through the public entry at jobs={jobs}: {e:?}")
         });
@@ -236,13 +246,22 @@ fn on_item_streams_a_fast_items_score_while_a_slower_sibling_is_still_scoring_th
     };
     let store = Store::open(":memory:").expect("an in-memory store opens");
 
-    let report = run_canary(&store, &driver, &c, &p, &corpus, 2, &|o, _elapsed| {
-        if o.id == "fast" {
-            let (lock, cvar) = &*released;
-            *lock.lock().unwrap() = true;
-            cvar.notify_all();
-        }
-    })
+    let report = run_canary(
+        &store,
+        &driver,
+        &c,
+        &test_spawn_host(),
+        &p,
+        &corpus,
+        2,
+        &|o, _elapsed| {
+            if o.id == "fast" {
+                let (lock, cvar) = &*released;
+                *lock.lock().unwrap() = true;
+                cvar.notify_all();
+            }
+        },
+    )
     .expect("run_canary succeeds through the public entry");
 
     assert_eq!(

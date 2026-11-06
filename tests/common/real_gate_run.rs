@@ -18,6 +18,7 @@ use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Direction, EventStore};
 use rigger::gate::ExecRunner;
 
+use crate::common::fixtures::test_spawn_host;
 use crate::real_driver_spy::RealDriverSpy;
 
 const UNIT: &str = "a";
@@ -129,5 +130,6 @@ fn deps<'a>(store: &'a Store, driver: &'a RealDriverSpy) -> Deps<'a> {
         log: &|_| {},
         hash_blob: &|_| Ok(String::new()),
         check_emit: &rigger::contextgraph::check_emit,
+        spawn_host: test_spawn_host(),
     }
 }

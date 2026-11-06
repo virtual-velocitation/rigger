@@ -28,6 +28,7 @@
 use std::path::{Path, PathBuf};
 
 mod common;
+use common::fixtures::test_spawn_host;
 use common::fixtures::{fan_out_stage, workflow_cfg, NoopDriver};
 use common::git::temp_git_project_with_commit;
 
@@ -110,6 +111,7 @@ fn an_isolated_in_process_fan_out_run_creates_no_new_entry_under_the_real_cache_
         log: &|_| {},
         hash_blob: &|_| Ok(String::new()),
         check_emit: &rigger::contextgraph::check_emit,
+        spawn_host: test_spawn_host(),
     };
 
     let would_leak = rigger::worktree::cache_scratch_root_from(
@@ -162,6 +164,7 @@ fn the_isolated_workdirs_real_worktree_is_gone_once_its_owning_repo_tempdir_drop
         log: &|_| {},
         hash_blob: &|_| Ok(String::new()),
         check_emit: &rigger::contextgraph::check_emit,
+        spawn_host: test_spawn_host(),
     };
     run(&cfg, &deps).expect("the isolated in-process run must complete");
     assert!(

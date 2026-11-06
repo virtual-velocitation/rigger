@@ -802,6 +802,7 @@ fn the_canary_records_nothing_it_cannot_find_afterwards() {
         &silent,
         &NeverSpawns,
         &rigger::config::Config::default(),
+        &test_spawn_host(),
         &panel,
         &[],
         rigger::canary_store::default_jobs(),
@@ -849,6 +850,7 @@ fn cli_project() -> tempfile::TempDir {
 // and every suite that spawns the product then dies with a bare NotFound.
 mod common;
 use common::cli::{init_event_log, pin_identity, temp_project};
+use common::fixtures::test_spawn_host;
 
 /// Run `rigger <args...>` in `root` through the COMPILED binary, returning its stdout.
 fn run_rigger(root: &std::path::Path, args: &[&str]) -> String {

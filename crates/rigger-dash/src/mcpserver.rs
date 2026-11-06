@@ -1175,6 +1175,7 @@ mod tests {
     use crate::eventstore::sqlite::Store;
     use crate::eventstore::{Direction, Filter};
     use crate::spawn::SpawnEvent;
+    use crate::test_support::test_spawn_host;
     use std::io::Cursor;
 
     /// Send one JSON-RPC request line to `server` and parse its one reply.
@@ -1402,7 +1403,7 @@ mod tests {
                 "adjudicate",
                 &SpawnOpts {
                     id: id.to_string(),
-                    ..Default::default()
+                    ..SpawnOpts::new(test_spawn_host())
                 },
                 &emit,
             );
@@ -1541,7 +1542,7 @@ mod tests {
                     "implement it",
                     &SpawnOpts {
                         id: spawn_id.to_string(),
-                        ..Default::default()
+                        ..SpawnOpts::new(test_spawn_host())
                     },
                     &emit,
                 );

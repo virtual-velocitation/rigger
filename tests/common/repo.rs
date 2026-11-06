@@ -222,26 +222,29 @@ pub fn hook_words(settings: &serde_json::Value, event: &str) -> Vec<(String, Vec
 }
 
 /// A launch's `settings` carry its per-spawn hooks: under `PreToolUse` the write guard running
-/// `bin` with `roots` in order, then the session's grep guard, and under `StopFailure` one entry
-/// per category running `bin` for `spawn`, in category order.
+/// `bin` with `roots` in order, then the session's grep guard exactly when `grep_guard` (the
+/// workflow's `defaults.grep_guard`) declares it, and under `StopFailure` one entry per category
+/// running `bin` for `spawn`, in category order.
 pub fn assert_carries_spawn_hooks(
     settings: &serde_json::Value,
     bin: &str,
     spawn: &str,
     roots: &[String],
+    grep_guard: bool,
 ) {
     let words = |text: &[&str]| -> Vec<String> { text.iter().map(|w| w.to_string()).collect() };
     let mut guard = words(&[bin, "guard-write"]);
     for root in roots {
         guard.extend(words(&["--root", root]));
     }
+    let mut pre_tool_use = vec![("Edit|MultiEdit|Write|NotebookEdit".to_string(), guard)];
+    if grep_guard {
+        pre_tool_use.push(("Grep|Bash".to_string(), words(&["rigger", "grep-guard"])));
+    }
     assert_eq!(
         hook_words(settings, "PreToolUse"),
-        [
-            ("Edit|MultiEdit|Write|NotebookEdit".to_string(), guard),
-            ("Grep|Bash".to_string(), words(&["rigger", "grep-guard"])),
-        ],
-        "the write guard, then the session's grep guard: {settings}"
+        pre_tool_use,
+        "the write guard, then the session's grep guard when declared ({grep_guard}): {settings}"
     );
     let stop_failures: Vec<(String, Vec<String>)> = rigger::conductor::AgentFailure::CATEGORIES
         .iter()

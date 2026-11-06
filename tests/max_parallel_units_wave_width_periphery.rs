@@ -36,7 +36,11 @@
 //! `occupancy_survives_a_crash_resume_...` unit test, exactly as the spec's own Done-when says
 //! ("pinned at `run_wave`").
 
+mod common;
+
 use std::path::Path;
+
+use common::fixtures::test_spawn_host;
 
 use rigger::conductor::{run, Deps};
 use rigger::config::{self, AgentDef, Config, Stage};
@@ -169,6 +173,7 @@ fn max_parallel_units_bounds_real_concurrent_agent_spawns_through_a_real_conduct
         log: &|_| {},
         hash_blob: &|_| Ok(String::new()),
         check_emit: &rigger::contextgraph::check_emit,
+        spawn_host: test_spawn_host(),
     };
 
     run(&cfg, &deps)

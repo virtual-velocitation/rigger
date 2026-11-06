@@ -22,6 +22,13 @@ pub fn test_request(
     }
 }
 
+/// The spawn host a test's spawns carry: the one test-side spelling of the struct the production
+/// resolver `hooks::resolve_spawn_host` returns, with the grep-guard off. A test that needs the
+/// flag set builds its own literal.
+pub fn test_spawn_host() -> rigger_domain::agent::SpawnHost {
+    rigger_domain::agent::SpawnHost { grep_guard: false }
+}
+
 /// One row per `SpawnResult` among `events`, in their order: its id, output and error, and
 /// whether it is a liveness fault.
 pub fn spawn_result_rows(events: &[Event]) -> Vec<(String, String, String, bool)> {

@@ -574,7 +574,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-4fb3cda199ae",
+    "id": "dup-a2fc416fb9e4",
     "classification": "semantic",
     "sites": [
       {
@@ -585,7 +585,7 @@
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
         "name": "integrate_plan_commits_wraps_any_hard_error_with_the_plan_landing_marker",
-        "content_hash": "f3ef6a1fc794314b"
+        "content_hash": "166c79c23f664376"
       },
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
@@ -645,7 +645,7 @@
       {
         "file": "tests/canary_item_sharding_jobs_cap_periphery.rs",
         "name": "run_canary_runs_every_item_to_completion_even_when_one_items_spawn_errors",
-        "content_hash": "a99c4bb84b057505"
+        "content_hash": "01065ade5e643348"
       },
       {
         "file": "tests/cli.rs",
@@ -1395,7 +1395,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-de0e5d5744a0",
+    "id": "dup-4fc123991a17",
     "classification": "semantic",
     "sites": [
       {
@@ -3326,6 +3326,11 @@
       {
         "file": "tests/cli.rs",
         "name": "\".rigger\"",
+        "content_hash": "c2dfa05b7c5ac948"
+      },
+      {
+        "file": "tests/cli.rs",
+        "name": "\".rigger\"",
         "content_hash": "6c4f566ba472b44d"
       },
       {
@@ -4435,7 +4440,7 @@
       }
     ],
     "proposed_home": "one .rigger-relative path-composition helper",
-    "note": "mandatory sweep: .rigger-path string literals - 607 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: .rigger-path string literals - 608 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {
@@ -6320,23 +6325,23 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-7ce260b96af1",
+    "id": "dup-52a91e1f67e3",
     "classification": "near",
     "sites": [
       {
         "file": "crates/rigger-driver/src/driver/replay.rs",
         "name": "opts_for",
-        "content_hash": "d0a1e03973768f8e"
+        "content_hash": "d62dab1079a4af6e"
       },
       {
         "file": "tests/claude_code_stream_periphery.rs",
         "name": "opts",
-        "content_hash": "7257c2c43eb0439c"
+        "content_hash": "1503bad4b92a5d00"
       },
       {
         "file": "tests/common/fixtures/conductor.rs",
         "name": "implementer_opts",
-        "content_hash": "251aec0d8bf5f115"
+        "content_hash": "ce521e14aaabde75"
       }
     ],
     "proposed_home": "a new shared module (sites span 3 files: crates/rigger-driver/src/driver/replay.rs, tests/claude_code_stream_periphery.rs, tests/common/fixtures/conductor.rs)",
@@ -8119,18 +8124,18 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-d887cb6f63f7",
+    "id": "dup-cf375e76ff60",
     "classification": "near",
     "sites": [
       {
         "file": "tests/canary_false_positives_periphery.rs",
         "name": "run_canary_scores_false_positive_controls_and_project_canary_counts_them",
-        "content_hash": "b36d64c40d6d2b60"
+        "content_hash": "61bd1ede32e34fae"
       },
       {
         "file": "tests/canary_unattributed_rejects_periphery.rs",
         "name": "run_canary_scores_an_unattributed_correct_reject_and_project_canary_counts_only_it",
-        "content_hash": "13a574836f0913f3"
+        "content_hash": "8ecf67d34ab970e9"
       }
     ],
     "proposed_home": "a new shared module (sites span 2 files: tests/canary_false_positives_periphery.rs, tests/canary_unattributed_rejects_periphery.rs)",
@@ -8480,7 +8485,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-84fea880d212",
+    "id": "dup-ceea6ddc753f",
     "classification": "near",
     "sites": [
       {
@@ -8491,7 +8496,7 @@
       {
         "file": "tests/cli.rs",
         "name": "docs_installs_the_operator_lookup_rule_text_into_the_shipped_skill_and_handbook",
-        "content_hash": "b21cb0f4d10427e6"
+        "content_hash": "b1aeb41cd4094866"
       }
     ],
     "proposed_home": "cli::support (consolidate these 2 sites into one function in this file)",

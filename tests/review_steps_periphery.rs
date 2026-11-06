@@ -42,6 +42,7 @@ use common::cli::{
 };
 #[cfg(feature = "symbols")]
 use common::cli::{edge_lines, run_around};
+use common::fixtures::test_spawn_host;
 use common::fixtures::{
     adversary_first_steps, agent_with_its_own_alias, count_status_marker, declaring, lenses,
     light_of, panel_of, panel_rule_refusals, repeated_kind_lists, repo_review_panel,
@@ -1539,6 +1540,7 @@ fn assert_winner_reviewed_aliases(panel: ReviewPanel, expected: &[&str]) {
         log: &|_| {},
         hash_blob: &|_| Ok(String::new()),
         check_emit: &rigger::contextgraph::check_emit,
+        spawn_host: test_spawn_host(),
     };
     run(&cfg, &deps).unwrap();
 

@@ -63,6 +63,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use common::cli::write_workflow;
+use common::fixtures::test_spawn_host;
 use rigger::budget::BuildBudget;
 use rigger::conductor::{run, AgentDriver, Deps, SpawnOpts};
 use rigger::config::{self, AgentDef, BuildConfig, Config, Stage};
@@ -165,7 +166,7 @@ fn an_exhausted_budget_gates_a_real_build_but_never_a_real_agent_spawn() {
         id: "worker".into(),
         ..Default::default()
     };
-    let opts = SpawnOpts::default();
+    let opts = SpawnOpts::new(test_spawn_host());
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
         let res = driver.spawn(&agent, "do the unit", &opts, &|_, _| Ok(()));
@@ -358,6 +359,7 @@ fn configured_max_concurrent_serializes_two_real_concurrent_stage_gate_builds() 
         log: &|_| {},
         hash_blob: &|_| Ok(String::new()),
         check_emit: &rigger::contextgraph::check_emit,
+        spawn_host: test_spawn_host(),
     };
     run(&cfg, &deps).expect("the run must complete: two real agents and two real gate builds");
 

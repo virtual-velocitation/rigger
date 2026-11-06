@@ -45,6 +45,7 @@
 mod common;
 
 use common::fixtures::review_panel;
+use common::fixtures::test_spawn_host;
 use common::fixtures::{repo_with_refusing_hook, workflow_cfg};
 use rigger::conductor::{run, AgentDriver, AgentResult, Deps, Error, SpawnOpts};
 use rigger::config::{AgentDef, Stage};
@@ -141,6 +142,7 @@ fn a_compensation_revert_bypasses_an_installed_refusing_hook() {
         log: &|_| {},
         hash_blob: &|_| Ok(String::new()),
         check_emit: &rigger::contextgraph::check_emit,
+        spawn_host: test_spawn_host(),
     };
 
     let rs = run(&cfg, &deps).expect(

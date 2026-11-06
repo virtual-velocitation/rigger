@@ -6931,7 +6931,7 @@ fn run_carries_each_launchs_write_guard_and_stop_failure_hooks() {
         let settings: serde_json::Value =
             serde_json::from_str(flag_value(&argv, "--settings")).unwrap();
         let bin = std::fs::canonicalize(rigger_bin()).unwrap();
-        assert_carries_spawn_hooks(&settings, bin.to_str().unwrap(), row.spawn, &roots);
+        assert_carries_spawn_hooks(&settings, bin.to_str().unwrap(), row.spawn, &roots, false);
 
         let mut targets = vec![
             (session_cwd.join("new.rs"), true),
@@ -10758,7 +10758,7 @@ fn every_launch_of_a_reviewed_unit_carries_the_hooks_for_its_own_spawn() {
         let argv = recorded_argv(&launch.join("argv"));
         let settings: serde_json::Value =
             serde_json::from_str(flag_value(&argv, "--settings")).unwrap();
-        assert_carries_spawn_hooks(&settings, bin.to_str().unwrap(), &spawn, &roots);
+        assert_carries_spawn_hooks(&settings, bin.to_str().unwrap(), &spawn, &roots, false);
         launches.push((spawn, argv.iter().any(|word| word == "--resume")));
     }
     launches.sort();
@@ -32769,6 +32769,64 @@ fn setup_registers_the_operator_mcp_server_and_lookup_hook() {
     );
 }
 
+/// Given a project set up with the scaffolded workflow, which declares `defaults.grep_guard`, when
+/// the operator drops the key and reruns `rigger setup`, then setup says it removed the
+/// graph-first lookup hook because the key is not declared, `.claude/settings.json` loses that one
+/// `PreToolUse` entry and keeps every other setting, a foreign `PreToolUse` hook included, and a
+/// further rerun changes and reports nothing.
+#[test]
+fn setup_without_the_declared_grep_guard_removes_only_its_lookup_hook() {
+    let dir = temp_project();
+    let root = dir.path();
+    setup_ok(root, &[("RIGGER_NPM", "true")]);
+    let settings_path = root.join(".claude").join("settings.json");
+    let read_settings = || -> serde_json::Value {
+        serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap()
+    };
+    let foreign = serde_json::json!({
+        "matcher": "Write",
+        "hooks": [{"type": "command", "command": "prettier --write"}],
+    });
+    let mut guarded = read_settings();
+    guarded["hooks"]["PreToolUse"]
+        .as_array_mut()
+        .unwrap()
+        .insert(0, foreign.clone());
+    std::fs::write(&settings_path, serde_json::to_vec_pretty(&guarded).unwrap()).unwrap();
+    let workflow_path = root.join(".rigger").join("workflow.yml");
+    let workflow = std::fs::read_to_string(&workflow_path).unwrap();
+    assert_eq!(workflow.matches("  grep_guard: true\n").count(), 1);
+    std::fs::write(&workflow_path, workflow.replace("  grep_guard: true\n", "")).unwrap();
+
+    let out = setup_ok(root, &[("RIGGER_NPM", "true")]);
+    let removal = "removed the graph-first lookup hook: `defaults.grep_guard` is not declared";
+    assert_eq!(
+        out.lines()
+            .filter(|line| line.contains("lookup hook"))
+            .collect::<Vec<_>>(),
+        [removal],
+        "setup reports the removal alone; got:\n{out}"
+    );
+    let mut expected = guarded.clone();
+    expected["hooks"]["PreToolUse"] = serde_json::json!([foreign]);
+    assert_eq!(read_settings(), expected);
+    assert_eq!(
+        guarded["hooks"]["PreToolUse"][1]["hooks"][0]["command"], "rigger grep-guard",
+        "the guard was the entry the removal took: {guarded}"
+    );
+
+    let rerun = setup_ok(root, &[("RIGGER_NPM", "true")]);
+    assert_eq!(
+        rerun
+            .lines()
+            .filter(|line| line.contains("lookup hook"))
+            .count(),
+        0,
+        "a rerun reports no lookup hook; got:\n{rerun}"
+    );
+    assert_eq!(read_settings(), expected);
+}
+
 /// A live `rigger mcp` session over a store holding one decision, its workflow pinning
 /// `grounder`: the lookup surface is exactly the three tools, `rigger_peers` answers from the
 /// real store and `rigger_graph` around an unknown entity answers honestly empty (both
@@ -33282,6 +33340,11 @@ fn run_guard_write(process_cwd: &Path, roots: &[&str], payload: &str) -> serde_j
     run_hook_verb(process_cwd, &args, payload)
 }
 
+/// The reason `rigger grep-guard` denies a grep with: the guard's rule and its escape hatch, no
+/// lookup method.
+const GREP_GUARD_DENIAL: &str =
+    "grep is for literal text - end the command with a `# --literal` comment to proceed";
+
 /// Asserts `out` (a [`run_grep_guard`] result) is the empty object `{}`: the hook passes a
 /// grep carrying the `# --literal` comment through with no verdict and no `updatedInput`.
 /// Claude Code runs every matching PreToolUse hook in parallel on the original input and keeps
@@ -33324,11 +33387,10 @@ fn grep_guard_bounces_every_bash_grep_target_and_passes_literal() {
         let reason = blocked["hookSpecificOutput"]["permissionDecisionReason"]
             .as_str()
             .unwrap();
-        assert!(
-            reason.contains("rigger_ground")
-                && reason.contains("rigger_graph")
-                && reason.contains("--literal"),
-            "the denial must carry the stated message; got: {reason:?}"
+        assert_eq!(
+            reason, GREP_GUARD_DENIAL,
+            "the denial must carry the stated message, the guard's rule and its escape hatch \
+             alone"
         );
 
         let literal_command = format!("grep -rn TODO {target} # --literal");
@@ -34996,9 +35058,12 @@ fn docs_installs_the_operator_lookup_rule_text_into_the_shipped_skill_and_handbo
              got:\n{out}"
         );
         // Interpolated verbatim from the SAME message `rigger grep-guard` denies with, not a
-        // hand-paraphrase that could describe a different rule than the hook actually enforces.
+        // hand-paraphrase that could describe a different rule than the hook actually enforces:
+        // its rule and its escape hatch, and no lookup method, which the working-discipline
+        // built-in states.
         assert!(
-            out.contains("rigger_ground / rigger_graph for code lookups"),
+            out.contains(GREP_GUARD_DENIAL)
+                && !out.contains("rigger_ground / rigger_graph for code lookups"),
             "{label} must carry the hook's real bounce message verbatim; got:\n{out}"
         );
         assert!(

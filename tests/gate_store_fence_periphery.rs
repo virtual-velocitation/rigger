@@ -179,6 +179,7 @@ mod common;
 use common::cli::open_graph;
 use common::fixtures::apply_code_entity;
 use common::fixtures::registry_entries;
+use common::fixtures::test_spawn_host;
 use common::git::git_init_quiet;
 use common::git::temp_git_project_with_commit;
 use common::{rigger_bin, RestoreEnvVars};
@@ -864,6 +865,7 @@ fn conductors_derived_store_fence_actually_reaches_a_real_exec_runner() {
         log: &|_| {},
         hash_blob: &|_| Ok(String::new()),
         check_emit: &rigger::contextgraph::check_emit,
+        spawn_host: test_spawn_host(),
     };
     let _ = run(&cfg, &deps);
 

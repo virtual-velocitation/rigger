@@ -590,6 +590,7 @@ fn failure_parts(e: &Error) -> Option<(&str, &str)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::test_spawn_host;
 
     const RETRIES: &str = "none, the run retries by itself";
     const LOGIN: &str = "run claude auth login";
@@ -799,7 +800,7 @@ mod tests {
             ],
             reviews: vec!["lens:sdet".into()],
             settings_json: "{}".into(),
-            ..SpawnOpts::default()
+            ..SpawnOpts::new(test_spawn_host())
         };
         assert_eq!(
             spawn_request(&agent, "the task", &opts),

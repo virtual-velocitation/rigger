@@ -200,6 +200,7 @@ use common::git::{commit_at_fixed_date, git_ok, git_out, init_repo as init_repo_
 
 use common::fixtures::agent;
 use common::fixtures::plan_stage;
+use common::fixtures::test_spawn_host;
 use rigger::conductor::{
     run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, META_COMPENSATED,
     META_COMPENSATE_TARGET, REVIEW_ONLY_NO_ARTIFACT, STREAM,
@@ -428,6 +429,7 @@ fn multiple_specs_commits_land_in_order_and_the_next_worktree_sees_both() {
         log: &|_| {},
         hash_blob: &|_| Ok(String::new()),
         check_emit: &rigger::contextgraph::check_emit,
+        spawn_host: test_spawn_host(),
     };
     let rs = run(&cfg, &deps).unwrap();
 
@@ -534,6 +536,7 @@ fn unit_integrated_shas_field_round_trips_through_a_reopened_store_and_tolerates
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
             check_emit: &rigger::contextgraph::check_emit,
+            spawn_host: test_spawn_host(),
         };
         run(&cfg, &deps).unwrap();
 
@@ -652,6 +655,7 @@ fn plan_stage_commit_mixing_an_in_scope_and_out_of_scope_path_is_rejected_and_na
         log: &|_| {},
         hash_blob: &|_| Ok(String::new()),
         check_emit: &rigger::contextgraph::check_emit,
+        spawn_host: test_spawn_host(),
     };
     let rs = run(&cfg, &deps).unwrap();
 
@@ -745,6 +749,7 @@ fn plan_stage_conflicting_amendment_escalates_with_the_integrate_conflict_cause(
         log: &|_| {},
         hash_blob: &|_| Ok(String::new()),
         check_emit: &rigger::contextgraph::check_emit,
+        spawn_host: test_spawn_host(),
     };
     let rs = run(&cfg, &deps).unwrap();
 
@@ -898,6 +903,7 @@ fn plan_stage_compensation_reverts_every_landed_commit_not_just_the_newest() {
         log: &|_| {},
         hash_blob: &|_| Ok(String::new()),
         check_emit: &rigger::contextgraph::check_emit,
+        spawn_host: test_spawn_host(),
     };
     let rs = run(&cfg, &deps).unwrap();
 
@@ -1052,6 +1058,7 @@ fn plan_stage_commit_reverting_its_own_out_of_scope_touch_still_fails_the_stage_
         log: &|_| {},
         hash_blob: &|_| Ok(String::new()),
         check_emit: &rigger::contextgraph::check_emit,
+        spawn_host: test_spawn_host(),
     };
     let rs = run(&cfg, &deps).unwrap();
 
@@ -1208,6 +1215,7 @@ fn plan_stage_resumed_after_a_crash_recovers_the_real_sha_and_stays_compensable(
         log: &|_| {},
         hash_blob: &|_| Ok(String::new()),
         check_emit: &rigger::contextgraph::check_emit,
+        spawn_host: test_spawn_host(),
     };
     let rs = run(&cfg, &deps).unwrap();
 
@@ -1372,6 +1380,7 @@ fn plan_stage_resumed_amendment_with_an_intervening_operator_commit_still_confir
         log: &|_| {},
         hash_blob: &|_| Ok(String::new()),
         check_emit: &rigger::contextgraph::check_emit,
+        spawn_host: test_spawn_host(),
     };
     let rs = run(&cfg, &deps).unwrap();
 
@@ -1561,6 +1570,7 @@ fn plan_intent_record_is_log_carried_before_any_git_mutation_and_names_the_origi
         log: &|_| {},
         hash_blob: &|_| Ok(String::new()),
         check_emit: &rigger::contextgraph::check_emit,
+        spawn_host: test_spawn_host(),
     };
     let rs = run(&cfg, &deps).unwrap();
     assert_eq!(rs.units["plan"].status, ledger::Status::Integrated);
@@ -1775,6 +1785,7 @@ fn plan_stage_resumed_with_a_pre_existing_plan_landed_record_recovers_without_an
         log: &|_| {},
         hash_blob: &|_| Ok(String::new()),
         check_emit: &rigger::contextgraph::check_emit,
+        spawn_host: test_spawn_host(),
     };
     let rs = run(&cfg, &deps).unwrap();
 
@@ -2015,6 +2026,7 @@ fn a_plan_landing_store_failure_halts_the_run_loudly_with_no_per_unit_lesson_or_
         log: &|_| {},
         hash_blob: &|_| Ok(String::new()),
         check_emit: &rigger::contextgraph::check_emit,
+        spawn_host: test_spawn_host(),
     };
 
     let err = match run(&cfg, &deps) {

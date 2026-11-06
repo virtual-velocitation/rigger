@@ -3414,7 +3414,7 @@ fn halted_line(rs: &RunState) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::pgid_of;
+    use crate::test_support::{pgid_of, test_spawn_host};
     use std::process::Command;
 
     // --- Spec 66, criterion 5: REMINDER DEDUP - the pid-scoped parent-to-child contract ---
@@ -4536,7 +4536,7 @@ mod tests {
             id: id.to_string(),
             unit: "u".into(),
             stage: "u".into(),
-            ..Default::default()
+            ..SpawnOpts::new(test_spawn_host())
         };
         let no_emit = |_: &str, _: serde_json::Value| -> Result<(), Error> { Ok(()) };
         ReplayDriver::new(store, "").spawn(

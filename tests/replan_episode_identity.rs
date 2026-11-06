@@ -103,6 +103,7 @@
 //! is the contract the implementer is handed and the ledger records.
 
 mod common;
+use common::fixtures::test_spawn_host;
 use common::fixtures::{critique_stage, fan_out_stage, plan_stage, workflow_cfg};
 
 use rigger::conductor::{
@@ -136,6 +137,7 @@ fn run_over(
         log: &|_| {},
         hash_blob: &|_| Ok(String::new()),
         check_emit: &rigger::contextgraph::check_emit,
+        spawn_host: test_spawn_host(),
     };
     run(cfg, &deps).unwrap()
 }

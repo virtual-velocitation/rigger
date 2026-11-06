@@ -43,6 +43,7 @@
 //! unmatched-sub-unit blind spot the fix closes.
 
 mod common;
+use common::fixtures::test_spawn_host;
 use common::fixtures::NoopDriver;
 
 use rigger::conductor::{
@@ -103,6 +104,7 @@ fn a_real_ungated_fanout_template_decomposes_and_every_baseline_unit_still_integ
         log: &|_| {},
         hash_blob: &|_| Ok(String::new()),
         check_emit: &rigger::contextgraph::check_emit,
+        spawn_host: test_spawn_host(),
     };
     let rs = run(&cfg, &deps).expect(
         "an authored ungated fan-out template must run to completion through the real \
@@ -254,6 +256,7 @@ fn a_genuinely_new_unmatched_proposal_under_a_gated_template_spawns_gated_via_in
         log: &|_| {},
         hash_blob: &|_| Ok(String::new()),
         check_emit: &rigger::contextgraph::check_emit,
+        spawn_host: test_spawn_host(),
     };
 
     let rs = run(&cfg, &deps).unwrap_or_else(|e| {

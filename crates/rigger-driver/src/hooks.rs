@@ -400,12 +400,11 @@ mod tests {
         ];
         for (bin, spawn, roots, guard, stop_failure) in rows {
             let roots: Vec<String> = roots.into_iter().map(str::to_string).collect();
-            let entry = |matcher: &str, command: &str| json!({"matcher": matcher, "hooks": [{"type": "command", "command": command}]});
             let stop_failures: Vec<Value> = crate::agent::AgentFailure::CATEGORIES
                 .iter()
                 .map(|category| {
                     let class = category.as_str();
-                    entry(class, &format!("{stop_failure} {class}"))
+                    hook_block(class, &format!("{stop_failure} {class}"))
                 })
                 .collect();
             assert_settings(
@@ -414,12 +413,283 @@ mod tests {
                     ("/model", Value::from("opus")),
                     (
                         "/hooks/PreToolUse",
-                        json!([entry("Edit|MultiEdit|Write|NotebookEdit", guard)]),
+                        json!([hook_block("Edit|MultiEdit|Write|NotebookEdit", guard)]),
                     ),
                     ("/hooks/StopFailure", Value::Array(stop_failures)),
                 ],
             );
         }
+    }
+
+    /// One hook block running `command` under `matcher`, as the installers write it.
+    fn hook_block(matcher: &str, command: &str) -> Value {
+        json!({"matcher": matcher, "hooks": [hook(command)]})
+    }
+
+    /// One inner hook running `command`.
+    fn hook(command: &str) -> Value {
+        json!({"type": "command", "command": command})
+    }
+
+    /// `settings` as the bytes of a compact settings file.
+    fn bytes(settings: &Value) -> Vec<u8> {
+        serde_json::to_vec(settings).unwrap()
+    }
+
+    /// The session settings a spawn's `--settings` carries: the prime hook and the status line
+    /// always, the grep-guard only with the flag set, and never a removal, so settings already
+    /// carrying the guard keep it with the flag off.
+    #[test]
+    fn session_settings_merge_the_grep_guard_only_when_declared() {
+        let prime = json!([hook_block("", PRIME_COMMAND)]);
+        let status = hook(STATUS_LINE_COMMAND);
+        let guard = json!([hook_block(GREP_GUARD_MATCHER, GREP_GUARD_COMMAND)]);
+        let guarded = bytes(&json!({"hooks": {"PreToolUse": guard}}));
+        let primed = json!({"hooks": {"SessionStart": prime}, "statusLine": status});
+        let primed_and_guarded = json!({
+            "hooks": {"SessionStart": prime, "PreToolUse": guard},
+            "statusLine": status,
+        });
+        let rows: [(&[u8], bool, &Value); 4] = [
+            (b"", false, &primed),
+            (b"", true, &primed_and_guarded),
+            (&guarded, false, &primed_and_guarded),
+            (&guarded, true, &primed_and_guarded),
+        ];
+        for (existing, grep_guard, expected) in rows {
+            let merged = install_session_settings(existing, grep_guard).unwrap();
+            assert_eq!(
+                (
+                    &serde_json::from_slice::<Value>(&merged).unwrap(),
+                    install_session_settings(&merged, grep_guard).unwrap()
+                ),
+                (expected, merged.clone()),
+                "{} with grep_guard {grep_guard}",
+                String::from_utf8_lossy(existing)
+            );
+        }
+    }
+
+    /// The spawn host carries the grep-guard exactly when the workflow's defaults declare it.
+    #[test]
+    fn the_spawn_host_carries_the_declared_grep_guard() {
+        let resolved = [false, true].map(|grep_guard| {
+            resolve_spawn_host(&rigger_domain::config::Defaults {
+                grep_guard,
+                ..Default::default()
+            })
+        });
+        assert_eq!(
+            resolved,
+            [
+                SpawnHost { grep_guard: false },
+                SpawnHost { grep_guard: true },
+            ]
+        );
+    }
+
+    /// Settings carry the session settings when merging them again with the same flag changes
+    /// nothing: a guard the flag does not declare is no shortfall, a missing one is.
+    #[test]
+    fn carried_session_settings_read_the_grep_guard_flag() {
+        let prime = json!([hook_block("", PRIME_COMMAND)]);
+        let status = hook(STATUS_LINE_COMMAND);
+        let guard = json!([hook_block(GREP_GUARD_MATCHER, GREP_GUARD_COMMAND)]);
+        let primed = bytes(&json!({"hooks": {"SessionStart": prime}, "statusLine": status}));
+        let primed_and_guarded = bytes(&json!({
+            "hooks": {"SessionStart": prime, "PreToolUse": guard},
+            "statusLine": status,
+        }));
+        let rows: [(&[u8], bool, bool); 6] = [
+            (b"", false, false),
+            (b"not json", true, false),
+            (&primed, false, true),
+            (&primed, true, false),
+            (&primed_and_guarded, true, true),
+            (&primed_and_guarded, false, true),
+        ];
+        let carried: Vec<bool> = rows
+            .iter()
+            .map(|(existing, grep_guard, _)| carries_session_settings(existing, *grep_guard))
+            .collect();
+        assert_eq!(carried, rows.map(|(_, _, carries)| carries));
+    }
+
+    /// The guard's install: one entry under the current matcher, appended beside every foreign
+    /// hook, an entry under a drifted matcher replaced so exactly one remains, and a second
+    /// install writing the same bytes.
+    #[test]
+    fn the_grep_guard_installs_once_under_the_current_matcher() {
+        let guard = hook_block(GREP_GUARD_MATCHER, GREP_GUARD_COMMAND);
+        let prettier = hook_block("Write", "prettier --write");
+        let rows = [
+            (json!({}), json!({"hooks": {"PreToolUse": [guard]}})),
+            (
+                json!({"model": "opus", "hooks": {"PreToolUse": [prettier]}}),
+                json!({"model": "opus", "hooks": {"PreToolUse": [prettier, guard]}}),
+            ),
+            (
+                json!({"hooks": {"PreToolUse": [hook_block("Grep", GREP_GUARD_COMMAND)]}}),
+                json!({"hooks": {"PreToolUse": [guard]}}),
+            ),
+            (
+                json!({"hooks": {"PreToolUse": [
+                    {"matcher": "Bash", "hooks": [hook("prettier --write"), hook(GREP_GUARD_COMMAND)]},
+                ]}}),
+                json!({"hooks": {"PreToolUse": [
+                    {"matcher": "Bash", "hooks": [hook("prettier --write")]},
+                    guard,
+                ]}}),
+            ),
+            (
+                json!({"hooks": {"PreToolUse": [guard]}}),
+                json!({"hooks": {"PreToolUse": [guard]}}),
+            ),
+        ];
+        for (existing, expected) in rows {
+            let installed = install_grep_guard(&bytes(&existing)).unwrap();
+            assert_eq!(
+                (
+                    serde_json::from_slice::<Value>(&installed).unwrap(),
+                    install_grep_guard(&installed).unwrap()
+                ),
+                (expected, installed.clone()),
+                "installed into {existing}"
+            );
+        }
+    }
+
+    /// The guard's removal strips every inner hook running the guard's command, whatever its
+    /// matcher, drops each block, then the `PreToolUse` array, then the `hooks` object it
+    /// empties, and keeps every other hook and setting.
+    #[test]
+    fn the_grep_guard_removal_strips_only_its_own_entry() {
+        let guard = hook_block(GREP_GUARD_MATCHER, GREP_GUARD_COMMAND);
+        let prime = hook_block("", PRIME_COMMAND);
+        let prettier = hook_block("Write", "prettier --write");
+        let rows = [
+            (
+                json!({"model": "opus", "hooks": {"PreToolUse": [guard]}}),
+                json!({"model": "opus"}),
+            ),
+            (
+                json!({"hooks": {"SessionStart": [prime], "PreToolUse": [guard]}}),
+                json!({"hooks": {"SessionStart": [prime]}}),
+            ),
+            (
+                json!({"hooks": {"PreToolUse": [
+                    {"matcher": GREP_GUARD_MATCHER, "hooks": [hook(GREP_GUARD_COMMAND), hook("prettier --write")]},
+                ]}}),
+                json!({"hooks": {"PreToolUse": [
+                    {"matcher": GREP_GUARD_MATCHER, "hooks": [hook("prettier --write")]},
+                ]}}),
+            ),
+            (
+                json!({"hooks": {"PreToolUse": [prettier, guard]}}),
+                json!({"hooks": {"PreToolUse": [prettier]}}),
+            ),
+            (
+                json!({"model": "opus", "hooks": {"PreToolUse": [hook_block("Grep", GREP_GUARD_COMMAND)]}}),
+                json!({"model": "opus"}),
+            ),
+        ];
+        for (existing, expected) in rows {
+            let removed = remove_grep_guard(&bytes(&existing)).unwrap();
+            assert_eq!(
+                serde_json::from_slice::<Value>(&removed).unwrap(),
+                expected,
+                "removed from {existing}"
+            );
+        }
+    }
+
+    /// Settings that carry no guard - none at all, no `PreToolUse` array, or the guard's command
+    /// under another event - come back from the removal as the very bytes they were, so a
+    /// settings file never carrying the guard is never rewritten.
+    #[test]
+    fn the_grep_guard_removal_returns_settings_without_the_guard_untouched() {
+        let rows: [&[u8]; 6] = [
+            b"",
+            br#"{"model":"opus"}"#,
+            br#"{"hooks":"none"}"#,
+            br#"{"hooks":{"PreToolUse":{}}}"#,
+            br#"{"hooks":{"PreToolUse":[{"matcher":"Write","hooks":[{"type":"command","command":"prettier --write"}]}]}}"#,
+            br#"{"hooks":{"SessionStart":[{"matcher":"","hooks":[{"type":"command","command":"rigger grep-guard"}]}]}}"#,
+        ];
+        let removed: Vec<Vec<u8>> = rows
+            .iter()
+            .map(|existing| remove_grep_guard(existing).unwrap())
+            .collect();
+        assert_eq!(removed, rows.map(<[u8]>::to_vec));
+    }
+
+    /// A settings file rigger alone gave the guard returns to its shape before the install: the
+    /// guard installed into it and then removed leaves the file the merge would reserialize.
+    #[test]
+    fn the_grep_guard_removal_undoes_its_install_byte_for_byte() {
+        let rows = [
+            json!({"model": "opus"}),
+            json!({"model": "opus", "hooks": {"PreToolUse": [hook_block("Write", "prettier --write")]}}),
+            json!({"hooks": {"SessionStart": [hook_block("", PRIME_COMMAND)]}, "statusLine": hook(STATUS_LINE_COMMAND)}),
+        ];
+        for before in rows {
+            let mut reserialized = serde_json::to_vec_pretty(&before).unwrap();
+            reserialized.push(b'\n');
+            let installed = install_grep_guard(&bytes(&before)).unwrap();
+            assert_eq!(
+                String::from_utf8(remove_grep_guard(&installed).unwrap()).unwrap(),
+                String::from_utf8(reserialized).unwrap(),
+                "installed into and removed from {before}"
+            );
+        }
+    }
+
+    /// The guard is present when any inner `PreToolUse` hook runs its command, under any
+    /// matcher; under another event, or in settings that do not parse, it is not.
+    #[test]
+    fn the_grep_guard_is_carried_by_any_pretooluse_hook_running_its_command() {
+        let rows: [(Vec<u8>, bool); 7] = [
+            (Vec::new(), false),
+            (b"not json".to_vec(), false),
+            (
+                bytes(&json!({"hooks": {"PreToolUse": [hook_block("Write", "prettier --write")]}})),
+                false,
+            ),
+            (
+                bytes(&json!({"hooks": {"SessionStart": [hook_block("", GREP_GUARD_COMMAND)]}})),
+                false,
+            ),
+            (
+                bytes(
+                    &json!({"hooks": {"PreToolUse": [hook_block(GREP_GUARD_MATCHER, GREP_GUARD_COMMAND)]}}),
+                ),
+                true,
+            ),
+            (
+                bytes(&json!({"hooks": {"PreToolUse": [hook_block("Grep", GREP_GUARD_COMMAND)]}})),
+                true,
+            ),
+            (
+                bytes(&json!({"hooks": {"PreToolUse": [
+                    {"matcher": "Bash", "hooks": [hook("prettier --write"), hook(GREP_GUARD_COMMAND)]},
+                ]}})),
+                true,
+            ),
+        ];
+        let carried: Vec<bool> = rows
+            .iter()
+            .map(|(existing, _)| carries_grep_guard(existing))
+            .collect();
+        assert_eq!(carried, rows.map(|(_, carries)| carries));
+    }
+
+    /// Settings that are not a JSON object refuse the guard's install and its removal alike.
+    #[test]
+    fn the_grep_guard_edits_refuse_settings_that_are_not_an_object() {
+        let refusals: Vec<String> = [install_grep_guard, remove_grep_guard]
+            .map(|edit| edit(b"[]").unwrap_err().to_string())
+            .to_vec();
+        assert_eq!(refusals, ["hooks: settings.json is not a JSON object"; 2]);
     }
 
     /// The write guard's matcher is every editing tool, each named once, in the list's order.

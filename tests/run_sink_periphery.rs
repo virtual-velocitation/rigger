@@ -33,6 +33,7 @@
 #![cfg(feature = "symbols")]
 
 mod common;
+use common::fixtures::test_spawn_host;
 
 use std::path::Path;
 use std::sync::Mutex;
@@ -177,6 +178,7 @@ impl Files {
             log: &log,
             hash_blob: &hash_blob,
             check_emit: &rigger::contextgraph::check_emit,
+            spawn_host: test_spawn_host(),
         };
         run(cfg, &deps).unwrap()
     }

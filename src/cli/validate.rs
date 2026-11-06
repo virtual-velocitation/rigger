@@ -1769,7 +1769,7 @@ mod tests {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, "// drifted\n").unwrap();
 
-        let advisories = validate_advisories(root);
+        let advisories = validate_advisories(root, true);
         assert!(
             advisories
                 .iter()
@@ -1777,6 +1777,48 @@ mod tests {
             "a drifted installed workflow yields a drift advisory naming the file; got: \
              {advisories:?}"
         );
+    }
+
+    /// The settings advisories over the checkout's `.claude/settings.json`, by what it carries and
+    /// whether the workflow declares the grep-guard: the missing-hooks warning names the guard
+    /// only when declared, and a guard the workflow does not declare is named stale.
+    #[test]
+    fn session_hooks_advisory_reads_the_declared_grep_guard() {
+        let missing_guarded = "warning: .claude/settings.json does not carry rigger's session \
+             hooks (the SessionStart prime hook, the PreToolUse grep-guard and the status line), \
+             so an interactive session in this checkout starts unprimed and without the \
+             graph-first lookup guard. Run `rigger setup` to install them.";
+        let missing = "warning: .claude/settings.json does not carry rigger's session hooks (the \
+             SessionStart prime hook and the status line), so an interactive session in this \
+             checkout starts unprimed. Run `rigger setup` to install them.";
+        let stale = "warning: .claude/settings.json carries the PreToolUse grep-guard, which the \
+             workflow does not declare (`defaults.grep_guard` is not true), so it still denies a \
+             grep in an interactive session in this checkout. Run `rigger setup` to remove it.";
+        let primed = rigger::hooks::install_session_settings(b"", false).unwrap();
+        let guarded = rigger::hooks::install_session_settings(b"", true).unwrap();
+        let guard_alone = rigger::hooks::install_grep_guard(b"").unwrap();
+        let rows = [
+            (None, true, vec![missing_guarded]),
+            (None, false, vec![missing]),
+            (Some(primed.as_slice()), false, vec![]),
+            (Some(primed.as_slice()), true, vec![missing_guarded]),
+            (Some(guarded.as_slice()), true, vec![]),
+            (Some(guarded.as_slice()), false, vec![stale]),
+            (Some(guard_alone.as_slice()), false, vec![missing, stale]),
+        ];
+        for (settings, grep_guard, expected) in rows {
+            let dir = tempfile::tempdir().unwrap();
+            if let Some(settings) = settings {
+                std::fs::create_dir_all(dir.path().join(".claude")).unwrap();
+                std::fs::write(dir.path().join(".claude/settings.json"), settings).unwrap();
+            }
+            assert_eq!(
+                session_hooks_advisory(dir.path(), grep_guard),
+                expected,
+                "{:?} with grep_guard {grep_guard}",
+                settings.map(String::from_utf8_lossy)
+            );
+        }
     }
 
     #[test]

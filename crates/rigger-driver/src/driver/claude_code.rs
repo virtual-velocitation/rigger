@@ -2633,42 +2633,56 @@ mod tests {
     /// A launch's settings carry its own hooks ahead of the session's, on its own settings.
     #[test]
     fn build_args_settings_carry_the_spawn_hooks_ahead_of_the_session_ones() {
-        let mut o = opts("u/implementer#0");
-        o.settings_json = "{\"model\":\"opus\"}".to_string();
-        let args = build_args(
-            &AgentDef::default(),
-            &SystemPromptFile::default(),
-            &o,
-            &fresh_session("sess"),
-            "/custom/rigger",
-            &["/wt".to_string(), "/scratch/s".to_string()],
-        )
-        .unwrap();
-        let i = args.iter().position(|x| x == "--settings").unwrap();
-        let settings: serde_json::Value = serde_json::from_str(&args[i + 1]).unwrap();
-        assert_eq!(settings["model"], "opus");
-        let commands = |event: &str| -> Vec<&str> {
-            settings["hooks"][event]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|entry| entry["hooks"][0]["command"].as_str().unwrap())
-                .collect()
-        };
-        assert_eq!(
-            commands("PreToolUse"),
-            [
-                "'/custom/rigger' guard-write --root '/wt' --root '/scratch/s'",
-                hooks::GREP_GUARD_COMMAND,
-            ]
-        );
-        assert_eq!(commands("SessionStart"), [hooks::PRIME_COMMAND]);
-        let stop_failures = commands("StopFailure");
-        assert_eq!(stop_failures.len(), AgentFailure::CATEGORIES.len());
-        assert_eq!(
-            stop_failures[0],
-            "'/custom/rigger' hook stop-failure --spawn 'u/implementer#0' --class rate_limit"
-        );
+        let write_guard = "'/custom/rigger' guard-write --root '/wt' --root '/scratch/s'";
+        for (grep_guard, pre_tool_use) in [
+            (false, vec![write_guard]),
+            (true, vec![write_guard, hooks::GREP_GUARD_COMMAND]),
+        ] {
+            let mut o = opts("u/implementer#0");
+            o.settings_json = "{\"model\":\"opus\"}".to_string();
+            o.host = crate::agent::SpawnHost { grep_guard };
+            let args = build_args(
+                &AgentDef::default(),
+                &SystemPromptFile::default(),
+                &o,
+                &fresh_session("sess"),
+                "/custom/rigger",
+                &["/wt".to_string(), "/scratch/s".to_string()],
+            )
+            .unwrap();
+            let i = args.iter().position(|x| x == "--settings").unwrap();
+            let settings: serde_json::Value = serde_json::from_str(&args[i + 1]).unwrap();
+            assert_eq!(settings["model"], "opus", "grep_guard {grep_guard}");
+            let commands = |event: &str| -> Vec<&str> {
+                settings["hooks"][event]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|entry| entry["hooks"][0]["command"].as_str().unwrap())
+                    .collect()
+            };
+            assert_eq!(
+                commands("PreToolUse"),
+                pre_tool_use,
+                "grep_guard {grep_guard}"
+            );
+            assert_eq!(
+                commands("SessionStart"),
+                [hooks::PRIME_COMMAND],
+                "grep_guard {grep_guard}"
+            );
+            let stop_failures = commands("StopFailure");
+            assert_eq!(
+                stop_failures.len(),
+                AgentFailure::CATEGORIES.len(),
+                "grep_guard {grep_guard}"
+            );
+            assert_eq!(
+                stop_failures[0],
+                "'/custom/rigger' hook stop-failure --spawn 'u/implementer#0' --class rate_limit",
+                "grep_guard {grep_guard}"
+            );
+        }
     }
 
     #[test]

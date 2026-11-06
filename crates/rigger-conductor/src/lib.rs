@@ -176,9 +176,12 @@ mod read_fault_fixtures;
 #[allow(dead_code, unused_imports)]
 #[path = "../../../tests/common/fixtures/spawn.rs"]
 mod spawn_fixtures;
-// The config fixtures the conductor fixtures name through `super::`.
+// The config and spawn fixtures the conductor fixtures name through `super::`.
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
-use config_fixtures::{agent, gate_def, gate_def_inputs};
+use {
+    config_fixtures::{agent, gate_def, gate_def_inputs},
+    spawn_fixtures::test_spawn_host,
+};
 // The fixtures the ledger fixtures name through `super::`.
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 use {
