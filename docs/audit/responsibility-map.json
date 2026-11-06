@@ -2841,11 +2841,11 @@
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
-    "name": "a_pattern_item_asks_the_implementer_for_a_whole_tree_audit_record",
+    "name": "each_required_pattern_item_names_only_its_shape_and_its_audit_record",
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "7e2bc659b530063a"
+    "content_hash": "b0d1ecd052e0b259"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",

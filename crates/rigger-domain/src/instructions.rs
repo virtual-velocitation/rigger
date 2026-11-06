@@ -710,20 +710,16 @@ mod tests {
             "A predicate is a boolean expression or a SQL conjunct, one inside a query string, a \
              format string or a macro argument the production code executes included, read as \
              the code's own expression, each operator and literal of it. Check: name its home.",
-            "A whole-tree audit a rejection requires is bounded.",
-            "When a rejection's required items name a pattern - one defect shape recurring across \
-             sites - every site of that shape is fixed.",
-            "Check: the audit record the rejection asks for names each search command you ran \
-             with its hit count and each site you fixed with its location at head, and counts the \
-             rest; it never lists or dispositions every hit, and a search term found inside a \
-             longer identifier is not a hit.",
             "A probe that edits your tree is over before your turn is.",
             "runs to completion and restores the tree before your turn ends, never as a \
              detached or background job",
             "the attempt checkpoint commits whatever the worktree holds when your session ends",
             "the sharpest case of the rule that your turn's end is your session's end",
             "each run to completion inside your turn",
-        ] {
+        ]
+        .into_iter()
+        .chain(crate::test_support::BOUNDED_AUDIT)
+        {
             assert!(
                 words.contains(phrase),
                 "the hand-over section must say {phrase:?}"

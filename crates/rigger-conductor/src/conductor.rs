@@ -16681,33 +16681,62 @@ mod tests {
         );
     }
 
-    /// A pattern finding - one defect shape recurring across sites - is REQUIRED as a
-    /// whole-tree audit: the next attempt's implementer is told to audit the whole tree, fix
-    /// every site and record its audit as DecisionMade `audit-<unit>-<attempt>` listing every
-    /// site checked, and the next review round is pointed at that same record.
+    /// Spec 121's THE REQUIRED PATTERN NAMES ONLY ITS RECORD: each REQUIRED pattern item - one
+    /// defect shape recurring across sites - reaches the next attempt's implementer
+    /// ([`PriorFailure::block`]) and every tier of the next review round
+    /// ([`ReviewRound::block`]) as its shape and the DecisionMade id `audit-<unit>-<attempt>`
+    /// ([`audit_id`]) and nothing more: the implementer's line asks for that record, each
+    /// reviewer's names it, and an item with no shape carries no `PATTERN:` line. How the audit is
+    /// done and checked is the working-discipline built-in's bounded-audit bullet, never a
+    /// `PATTERN:` line's. The first attempt and the first round carry none.
     #[test]
-    fn a_pattern_item_asks_the_implementer_for_a_whole_tree_audit_record() {
+    fn each_required_pattern_item_names_only_its_shape_and_its_audit_record() {
         let (_, _, driver) = run_review_rounds(&[
             (
                 adjudicator_at(0, 0),
-                r#"{"verdict":"reject","required":[{"finding":"scope the log read","path":"feature.rs","correctness":true,"pattern":"unscoped log reads"}]}"#,
+                r#"{"verdict":"reject","required":[{"finding":"scope the log read","path":"feature.rs","correctness":true,"pattern":"unscoped log reads"},{"finding":"bound the retry","path":"feature.rs","correctness":true},{"finding":"close the handle","path":"lib.rs","correctness":true,"pattern":"leaked handles"}]}"#,
             ),
             (adjudicator_at(1, 0), r#"{"verdict":"approve"}"#),
         ]);
-        let ask = "PATTERN: unscoped log reads. Audit the whole tree, fix every site, and record \
-                   DecisionMade `audit-implement-1` listing every site checked.";
-        let implementer = driver.prompts_for("worker");
-        assert!(
-            !implementer[0].contains("PATTERN:") && implementer[1].contains(ask),
-            "the attempt after the pattern finding is asked for the audit:\n{}",
-            implementer[1]
-        );
-        for agent in ["lens", "adversary", "adj"] {
-            let round = &driver.prompts_for(agent)[1];
-            assert!(
-                round.contains("unscoped log reads") && round.contains("`audit-implement-1`"),
-                "{agent}'s next round names the pattern and the audit record:\n{round}"
-            );
+        let cases: [(&[&str], &str); 2] = [
+            (
+                &["worker"],
+                "REQUIRED - review holds the next round to each of these:\n\
+                 - feature.rs: scope the log read\n  \
+                 PATTERN: unscoped log reads. Record DecisionMade `audit-implement-1` for it.\n\
+                 - feature.rs: bound the retry\n\
+                 - lib.rs: close the handle\n  \
+                 PATTERN: leaked handles. Record DecisionMade `audit-implement-1` for it.\n\n",
+            ),
+            (
+                &["lens", "adversary", "adj"],
+                "The items that round REQUIRED:\n\
+                 - feature.rs: scope the log read\n  \
+                 PATTERN: unscoped log reads. The implementer's audit record is DecisionMade \
+                 `audit-implement-1`.\n\
+                 - feature.rs: bound the retry\n\
+                 - lib.rs: close the handle\n  \
+                 PATTERN: leaked handles. The implementer's audit record is DecisionMade \
+                 `audit-implement-1`.\n\
+                 A finding outside that delta",
+            ),
+        ];
+        for (agents, required) in cases {
+            for agent in agents {
+                let prompts = driver.prompts_for(agent);
+                assert_eq!(
+                    (
+                        prompts.len(),
+                        prompts[0].matches("PATTERN:").count(),
+                        prompts[1].matches(required).count(),
+                        prompts[1].matches("PATTERN:").count(),
+                    ),
+                    (2, 0, 1, 2),
+                    "{agent}'s second prompt names each pattern item's shape and its audit record \
+                     and nothing more, its first none; the second reads:\n{}",
+                    prompts[1]
+                );
+            }
         }
     }
 
