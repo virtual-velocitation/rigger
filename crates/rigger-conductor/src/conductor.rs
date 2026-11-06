@@ -16689,34 +16689,16 @@ mod tests {
     /// `PATTERN:` line's. The first attempt and the first round carry none.
     #[test]
     fn each_required_pattern_item_names_only_its_shape_and_its_audit_record() {
+        use crate::test_support::{implementer_pattern_block, review_pattern_list, PATTERN_REJECT};
         let (_, _, driver) = run_review_rounds(&[
-            (
-                adjudicator_at(0, 0),
-                r#"{"verdict":"reject","required":[{"finding":"scope the log read","path":"feature.rs","correctness":true,"pattern":"unscoped log reads"},{"finding":"bound the retry","path":"feature.rs","correctness":true},{"finding":"close the handle","path":"lib.rs","correctness":true,"pattern":"leaked handles"}]}"#,
-            ),
+            (adjudicator_at(0, 0), PATTERN_REJECT),
             (adjudicator_at(1, 0), r#"{"verdict":"approve"}"#),
         ]);
-        let cases: [(&[&str], &str); 2] = [
-            (
-                &["worker"],
-                "REQUIRED - review holds the next round to each of these:\n\
-                 - feature.rs: scope the log read\n  \
-                 PATTERN: unscoped log reads. Record DecisionMade `audit-implement-1` for it.\n\
-                 - feature.rs: bound the retry\n\
-                 - lib.rs: close the handle\n  \
-                 PATTERN: leaked handles. Record DecisionMade `audit-implement-1` for it.\n\n",
-            ),
+        let cases: [(&[&str], String); 2] = [
+            (&["worker"], implementer_pattern_block("audit-implement-1")),
             (
                 &["lens", "adversary", "adj"],
-                "The items that round REQUIRED:\n\
-                 - feature.rs: scope the log read\n  \
-                 PATTERN: unscoped log reads. The implementer's audit record is DecisionMade \
-                 `audit-implement-1`.\n\
-                 - feature.rs: bound the retry\n\
-                 - lib.rs: close the handle\n  \
-                 PATTERN: leaked handles. The implementer's audit record is DecisionMade \
-                 `audit-implement-1`.\n\
-                 A finding outside that delta",
+                review_pattern_list("audit-implement-1"),
             ),
         ];
         for (agents, required) in cases {
@@ -16726,7 +16708,7 @@ mod tests {
                     (
                         prompts.len(),
                         prompts[0].matches("PATTERN:").count(),
-                        prompts[1].matches(required).count(),
+                        prompts[1].matches(required.as_str()).count(),
                         prompts[1].matches("PATTERN:").count(),
                     ),
                     (2, 0, 1, 2),

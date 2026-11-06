@@ -12326,6 +12326,107 @@ fn a_documentation_only_round_tells_the_sdet_author_only_that_fact() {
     }
 }
 
+/// Spec 121's THE REQUIRED PATTERN NAMES ONLY ITS RECORD, end to end: given a reviewed unit whose
+/// first round rejects with two REQUIRED pattern items of different shapes and one plain item,
+/// when `rigger run` drives the second round, whether each role resumes its session (the
+/// later-attempt task) or that session is gone (the whole prompt), then the implementer's second
+/// launch is told each pattern item's shape and the DecisionMade `audit-solo-1` to record it
+/// under, each review tier's second launch is told that shape and that record as the
+/// implementer's, the plain item carries no `PATTERN:` line and no first launch carries any. How
+/// the audit is done and bounded is in no task: each second launch's system prompt carries every
+/// sentence of the working-discipline built-in's bounded-audit bullet once. The fake `claude`
+/// answers each spawn from one arm keyed on the spawn id, recording what each launch received
+/// under that id.
+#[cfg(unix)]
+#[test]
+fn each_later_launch_names_a_required_pattern_by_its_shape_and_audit_record_alone() {
+    use common::fixtures::{
+        assert_carries_each, implementer_pattern_block, review_pattern_list, BOUNDED_AUDIT,
+        PATTERN_REJECT,
+    };
+    use rigger::wave::normalize_ws;
+    const AUDIT: &str = "audit-solo-1";
+    for (resumes, session, on_resume) in [(true, "resumed", ":"), (false, "gone", "exit 1")] {
+        let dir = temp_git_project_with_commit();
+        let root = dir.path();
+        write_reviewed_unit(root);
+        let scratch = tempfile::tempdir().unwrap();
+        let arms = format!(
+            r#"  *)
+    case " $* " in
+    *" --resume "*) {on_resume} ;;
+    esac
+    printf '%s\0' "$@" > "$here/argv-${{RIGGER_SPAWN#solo/}}"
+    printf '%s\n' "$first" > "$here/first-${{RIGGER_SPAWN#solo/}}"
+    cp "$sp_file" "$here/system-${{RIGGER_SPAWN#solo/}}"
+    case "$RIGGER_SPAWN" in
+    solo/implementer#*) echo "pub fn work() {{}}" >> work.rs ;;
+    solo/adjudicator#0) echo '{PATTERN_REJECT}' ;;
+    solo/adjudicator#1) echo '{{"verdict":"approve"}}' ;;
+    *) echo "$RIGGER_SPAWN answered" ;;
+    esac
+    ;;
+"#
+        );
+        let (out, err, ok, fake) = run_on_arms(root, &["run"], scratch.path(), &arms);
+        assert!(
+            ok,
+            "its session {session}: the run exits 0; stderr: {err}\nstdout: {out}"
+        );
+        assert_eq!(
+            out.lines().nth(2),
+            Some("done: every unit integrated"),
+            "its session {session}: the second round's approve landed the unit: {out}"
+        );
+        let recorded = |what: &str, role: &str, attempt: u32| {
+            fake.path().join(format!("bin/{what}-{role}#{attempt}"))
+        };
+        for (role, required) in [
+            ("implementer", implementer_pattern_block(AUDIT)),
+            ("lens:lens", review_pattern_list(AUDIT)),
+            ("adversary", review_pattern_list(AUDIT)),
+            ("adjudicator", review_pattern_list(AUDIT)),
+        ] {
+            let at = format!("{role}, its session {session}");
+            let resumed = |attempt| {
+                recorded_argv(&recorded("argv", role, attempt))
+                    .iter()
+                    .any(|word| word == "--resume")
+            };
+            assert_eq!(
+                [resumed(0), resumed(1)],
+                [false, resumes],
+                "{at}: whether the launch that answered each round resumed"
+            );
+            let opening = recorded_task(&recorded("first", role, 0));
+            let closing = recorded_task(&recorded("first", role, 1));
+            assert_eq!(
+                (
+                    opening.matches("PATTERN:").count(),
+                    closing.matches(required.as_str()).count(),
+                    closing.matches("PATTERN:").count(),
+                ),
+                (0, 1, 2),
+                "{at}: the second launch names each pattern item's shape and its audit record and \
+                 nothing more, the first none; the second reads:\n{closing}"
+            );
+            assert_carries_each(
+                &format!("{at}: the second launch's task"),
+                &normalize_ws(&closing),
+                &BOUNDED_AUDIT,
+                0,
+            );
+            let system = std::fs::read_to_string(recorded("system", role, 1)).unwrap();
+            assert_carries_each(
+                &format!("{at}: the second launch's system prompt"),
+                &normalize_ws(&system),
+                &BOUNDED_AUDIT,
+                1,
+            );
+        }
+    }
+}
+
 /// Spec 64, criterion 3, adjudication round 3 finding
 /// `adv-u3c3r3-ensure-present-covers-only-the-first-tier` (UPHELD, closed by round 4's
 /// `impl-u3c3-r4-reassert-centralized-in-run-reviewer`): the TRUE periphery of round 4's
