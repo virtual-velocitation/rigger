@@ -209,13 +209,13 @@
       },
       {
         "file": "tests/common/fixtures/spawn.rs",
-        "start_line": 142,
-        "end_line": 147
+        "start_line": 143,
+        "end_line": 148
       },
       {
         "file": "tests/common/fixtures/spawn.rs",
-        "start_line": 285,
-        "end_line": 287
+        "start_line": 286,
+        "end_line": 288
       },
       {
         "file": "tests/halted_spawn_wip_recovery_periphery.rs",
@@ -429,8 +429,8 @@
       },
       {
         "file": "tests/common/fixtures/spawn.rs",
-        "start_line": 246,
-        "end_line": 259
+        "start_line": 247,
+        "end_line": 260
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
@@ -5084,18 +5084,18 @@
       },
       {
         "file": "tests/common/fixtures/spawn.rs",
-        "start_line": 303,
-        "end_line": 303
-      },
-      {
-        "file": "tests/common/fixtures/spawn.rs",
         "start_line": 304,
         "end_line": 304
       },
       {
         "file": "tests/common/fixtures/spawn.rs",
-        "start_line": 313,
-        "end_line": 313
+        "start_line": 305,
+        "end_line": 305
+      },
+      {
+        "file": "tests/common/fixtures/spawn.rs",
+        "start_line": 314,
+        "end_line": 314
       },
       {
         "file": "tests/duplication_catalog_contract_periphery.rs",
@@ -8114,8 +8114,8 @@
       },
       {
         "file": "tests/common/fixtures/spawn.rs",
-        "start_line": 293,
-        "end_line": 295
+        "start_line": 294,
+        "end_line": 296
       },
       {
         "file": "tests/spec_critique_periphery.rs",

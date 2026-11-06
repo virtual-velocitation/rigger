@@ -55,8 +55,8 @@ pub const MCP_SERVER_NAME: &str = "rigger";
 /// The fan-out helpers every persona dispatches (the built-in working discipline names them):
 /// `lookup`, one Haiku instance per graph node, and `verify`, one Sonnet instance for builds
 /// and test runs. The text is this repository's own committed `.claude/agents/` helpers: what
-/// `rigger init` scaffolds where a checkout holds no copy, and what a spawn carries for a helper
-/// whose copy the checkout lacks ([`resolved_helpers`]).
+/// `rigger init` and `rigger setup` scaffold where a checkout holds no copy, and what a spawn
+/// carries for a helper whose copy the checkout lacks ([`resolved_helpers`]).
 pub const HELPER_AGENTS: &[(&str, &str)] = &[
     (
         "lookup.md",
