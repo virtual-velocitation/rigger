@@ -72,6 +72,10 @@ pub struct DocsContext {
     /// with, so the skill's lookup section can never describe a different rule than the
     /// installed hook actually enforces.
     pub grep_guard_message: String,
+    /// This project's own Global constraints, one line each under step 6 of
+    /// `planning-a-spec` (spec 121, criterion 13). A project-overlay override point; empty in
+    /// the shared render, so the committed skill names no project's constraints.
+    pub global_constraints: Vec<String>,
 }
 
 /// One `rigger watch` signal's canonical name and response (spec 69), carried on
@@ -377,12 +381,28 @@ fn discipline_body(ctx: &DocsContext) -> String {
     s
 }
 
-/// The `planning-a-spec` skill's body: the authoring procedure for writing, splitting, or
+/// Render the `planning-a-spec` skill: the authoring procedure for writing, splitting, or
 /// amending a spec before or during a rigger loop run (the authoring counterpart to
-/// `using-rigger`'s driving discipline). Unlike `using-rigger`, it carries no code-derived
-/// facts to interpolate, so it is a plain constant rather than a `DocsContext`-parameterized
-/// template.
-const PLANNING_A_SPEC_BODY: &str = r#"---
+/// `using-rigger`'s driving discipline). Its one interpolated fact is the project's own Global
+/// constraints: when [`DocsContext::global_constraints`] lists any, a "This project's:" line
+/// and one `- ` line per entry follow step 6's paragraph; an empty list renders step 6 alone.
+fn render_planning_a_spec_skill(ctx: &DocsContext) -> String {
+    let mut s = PLANNING_A_SPEC_THROUGH_STEP_6.to_string();
+    if !ctx.global_constraints.is_empty() {
+        s.push_str("This project's:\n");
+        for constraint in &ctx.global_constraints {
+            let _ = writeln!(s, "- {constraint}");
+        }
+        s.push('\n');
+    }
+    s.push_str(PLANNING_A_SPEC_FROM_STEP_7);
+    s
+}
+
+/// The `planning-a-spec` skill from its frontmatter through step 6's paragraph and the blank
+/// line after it, the text [`render_planning_a_spec_skill`] sets the project's constraint list
+/// after.
+const PLANNING_A_SPEC_THROUGH_STEP_6: &str = r#"---
 name: planning-a-spec
 description: Use when writing, splitting, or amending a spec for a rigger loop run - before launching /rigger on new work, when a plan-critique gate rejects a decomposition, when a run churns in review and the spec is suspect, or when turning bug reports or design discussions into Done-when criteria.
 ---
@@ -399,7 +419,7 @@ because skipping it has a recorded escalation attached.
 ## The recipe
 
 **1. Ground the Goal in evidence.** State the problem with measured numbers and real anchors
-(`file.rs:line`, event counts, durations) - look them up via `rigger graph --show/--around` and
+(`path/to/file:line`, event counts, durations) - look them up via `rigger graph --show/--around` and
 `rigger peers`, not memory. A goal an implementer can re-verify is a goal an adjudicator can
 hold the line on.
 
@@ -428,7 +448,7 @@ easy-but-wrong implementation is rejected by the text, not by attempt 4's advers
 - ownership INSIDE the checkbox ("This criterion OWNS the selection surface") with exclusions
   on every neighbor that could claim the concern ("the advisory is criterion 3's, NOT this
   one's");
-- the code it touches named in backticks (`run_wave`, `crates/x/src/ingest.rs`). The unit's
+- the code it touches named in backticks (`run_wave`, `src/ingest`). The unit's
   blast radius grounds only on those spans and identifier-shaped words, never on prose, so a
   criterion naming no code runs alone, graph or no graph. A span naming a defined symbol grounds
   on its definition and references, an undefined name on the files holding it as a whole word,
@@ -439,12 +459,16 @@ easy-but-wrong implementation is rejected by the text, not by attempt 4's advers
 Type shapes, tables, long detail: a non-criteria Notes section. Two behaviors joined by "and":
 two checkboxes.
 
-**6. Carry the house constraints.** Hyphens not em dashes (U+2014 fails the diff gate); both
-feature lanes green; no new event type unless the spec's whole point is one; fallback stated
-for any criterion that might be impossible; anything the gates cannot see flagged for the
-adjudicator to demand evidence on.
+**6. Carry the project's own Global constraints.** State them once in the spec; every unit
+inherits them: no new event type unless the spec's whole point is one; fallback stated for any
+criterion that might be impossible; anything the gates cannot see flagged for the adjudicator to
+demand evidence on.
 
-**7. Preflight, then launch.** Run the `spec-preflight` skill and, under a workflow with a
+"#;
+
+/// The `planning-a-spec` skill from step 7 to its end, the text [`render_planning_a_spec_skill`]
+/// sets after the project's constraint list.
+const PLANNING_A_SPEC_FROM_STEP_7: &str = r#"**7. Preflight, then launch.** Run the `spec-preflight` skill and, under a workflow with a
 critic, `rigger critique <spec>` before launch. `rigger validate` is mandatory (it catches
 model-alias drift - run `rigger canary --if-model-changed` on a warning); `rigger reset --runs`
 before a large run; anchor `base=` on the ref the work must land on. Launch via the /rigger
@@ -477,8 +501,8 @@ escalates? Restart fresh: durable branches carry the work, the budget resets.
 /// The `spec-preflight` skill's body (spec 112, criterion 4): the pre-launch procedure that runs
 /// after `planning-a-spec` - the landing-order simulation, the per-criterion corner walk and the
 /// `rigger critique` adversary pass, then resolving and recording every BLOCKING finding. Spec
-/// 112 ships it byte for byte as the fenced block closing its Notes section. Like
-/// [`PLANNING_A_SPEC_BODY`], it carries no code-derived facts, so it is a plain constant.
+/// 112 ships it byte for byte as the fenced block closing its Notes section. It carries no
+/// code-derived facts, so it is a plain constant.
 const SPEC_PREFLIGHT_BODY: &str = r#"---
 name: spec-preflight
 description: Use before launching any rigger spec, after planning-a-spec - simulate landing order and walk every criterion's corners, then run rigger critique on the spec and close every BLOCKING finding before launch.
@@ -611,10 +635,10 @@ When a review or plan-critique reject names a defect in the spec itself:
 /// measured outcomes. This is a HANDBOOK PAGE, not a skill (it carries no frontmatter and
 /// is not in [`skill_registry`]) - it is the "how to produce a loop-ready spec" companion
 /// the `planning-a-spec` skill and `authoring-loops.md`'s shape rules both point readers
-/// at. Self-contained: a consumer needs no access to this repo's history to use it. Like
-/// [`PLANNING_A_SPEC_BODY`], it carries no code-derived facts, so it is a plain constant
-/// rather than a `DocsContext`-parameterized template, which the binary's handbook-page list
-/// holds as a [`DocBody::Static`].
+/// at. Self-contained: a consumer needs no access to this repo's history to use it. It
+/// carries no code-derived facts, so it is a plain constant rather than a
+/// `DocsContext`-parameterized template, which the binary's handbook-page list holds as a
+/// [`DocBody::Static`].
 pub const PLANNING_FIELD_GUIDE_BODY: &str = r#"# Planning a loop run: the field guide
 
 The handbook's [authoring-loops](authoring-loops.md) rules say what a loop-ready spec IS. This
@@ -811,7 +835,7 @@ this guide as a procedure.
 pub enum DocBody {
     /// Rendered from the docs context.
     Rendered(fn(&DocsContext) -> String),
-    /// Committed as-is (`planning-a-spec`, `spec-preflight`, the planning field guide).
+    /// Committed as-is (`spec-preflight`, the planning field guide).
     Static(&'static str),
 }
 
@@ -1305,7 +1329,7 @@ pub const OPERATOR_BINARY_PROHIBITION: &str = "\n## Operator binary boundary\n\n
 /// One skill this binary owns end-to-end (spec 68, criterion 1: the skill registry): a
 /// name and its [`DocBody`] (before the operator-binary prohibition is stamped on), rendered
 /// from the code-derived [`DocsContext`]. An entry whose content carries no drift-prone facts
-/// (`planning-a-spec`, `spec-preflight`) is a static body that ignores `ctx`.
+/// (`spec-preflight`) is a static body that ignores `ctx`.
 ///
 /// [`skill_registry`] is the ONE enumeration every surface walks - `rigger docs` (renders
 /// each entry to its committed source), `rigger setup` (installs each entry, overlay
@@ -1341,7 +1365,7 @@ pub fn skill_registry() -> Vec<SkillEntry> {
         },
         SkillEntry {
             name: "planning-a-spec",
-            body: DocBody::Static(PLANNING_A_SPEC_BODY),
+            body: DocBody::Rendered(render_planning_a_spec_skill),
         },
         SkillEntry {
             name: "rigger-reset-store",
@@ -1423,6 +1447,10 @@ mod tests {
             watch_poll_interval_secs: 424_242,
             reject_recurrence_diagnose_threshold: 909_090,
             grep_guard_message: "sentinel grep-guard message".to_string(),
+            // Empty, as the shared render leaves it: `planning-a-spec` renders its step 6
+            // alone here, and the overlay's list is pinned where it is applied, the binary's
+            // skill install.
+            global_constraints: Vec::new(),
         }
     }
 

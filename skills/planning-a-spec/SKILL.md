@@ -15,7 +15,7 @@ because skipping it has a recorded escalation attached.
 ## The recipe
 
 **1. Ground the Goal in evidence.** State the problem with measured numbers and real anchors
-(`file.rs:line`, event counts, durations) - look them up via `rigger graph --show/--around` and
+(`path/to/file:line`, event counts, durations) - look them up via `rigger graph --show/--around` and
 `rigger peers`, not memory. A goal an implementer can re-verify is a goal an adjudicator can
 hold the line on.
 
@@ -44,7 +44,7 @@ easy-but-wrong implementation is rejected by the text, not by attempt 4's advers
 - ownership INSIDE the checkbox ("This criterion OWNS the selection surface") with exclusions
   on every neighbor that could claim the concern ("the advisory is criterion 3's, NOT this
   one's");
-- the code it touches named in backticks (`run_wave`, `crates/x/src/ingest.rs`). The unit's
+- the code it touches named in backticks (`run_wave`, `src/ingest`). The unit's
   blast radius grounds only on those spans and identifier-shaped words, never on prose, so a
   criterion naming no code runs alone, graph or no graph. A span naming a defined symbol grounds
   on its definition and references, an undefined name on the files holding it as a whole word,
@@ -55,10 +55,10 @@ easy-but-wrong implementation is rejected by the text, not by attempt 4's advers
 Type shapes, tables, long detail: a non-criteria Notes section. Two behaviors joined by "and":
 two checkboxes.
 
-**6. Carry the house constraints.** Hyphens not em dashes (U+2014 fails the diff gate); both
-feature lanes green; no new event type unless the spec's whole point is one; fallback stated
-for any criterion that might be impossible; anything the gates cannot see flagged for the
-adjudicator to demand evidence on.
+**6. Carry the project's own Global constraints.** State them once in the spec; every unit
+inherits them: no new event type unless the spec's whole point is one; fallback stated for any
+criterion that might be impossible; anything the gates cannot see flagged for the adjudicator to
+demand evidence on.
 
 **7. Preflight, then launch.** Run the `spec-preflight` skill and, under a workflow with a
 critic, `rigger critique <spec>` before launch. `rigger validate` is mandatory (it catches

@@ -10133,7 +10133,7 @@
     "is_test": false,
     "proposed_module": "main::docs_overlay",
     "reason": "method inside `impl DocsOverlay`; grouped with its other `DocsOverlay` methods.",
-    "content_hash": "73c7d9855cea92da"
+    "content_hash": "a45dbb7cb80e8355"
   },
   {
     "file": "src/cli/mod.rs",
@@ -10197,7 +10197,7 @@
     "is_test": false,
     "proposed_module": "main::provenance",
     "reason": "name contains \"docs_\" (docs overlay); grouped under `main::provenance`.",
-    "content_hash": "81131dfef7b3064e"
+    "content_hash": "ef8a9b679dd8f2b5"
   },
   {
     "file": "src/cli/mod.rs",
