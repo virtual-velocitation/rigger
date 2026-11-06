@@ -309,14 +309,26 @@ impl Config {
         // The default review panel (applied to every unit) must declare a well-formed step
         // sequence, reference real agents, including its light-tier roster, and carry a
         // structurally sound depth policy (a configured light tier names an adjudicator step).
+        // The declared test author (`defaults.test_author`, spec 121) must name a real agent too
+        // when set: the build seam spawns exactly the agent it names, so an id no agent defines
+        // is refused here rather than silently spawning no test author.
         wf.defaults
             .review
             .validate_steps()
             .map_err(|m| err(format!("defaults.{m}")))?;
-        for aid in wf.defaults.review.agent_ids() {
+        let review = wf
+            .defaults
+            .review
+            .agent_ids()
+            .into_iter()
+            .map(|aid| ("review", aid));
+        let author = Some(&wf.defaults.test_author)
+            .filter(|aid| !aid.is_empty())
+            .map(|aid| ("test_author", aid.clone()));
+        for (key, aid) in review.chain(author) {
             if !self.agents.contains_key(&aid) {
                 return Err(err(format!(
-                    "defaults.review references unknown agent {aid:?}"
+                    "defaults.{key} references unknown agent {aid:?}"
                 )));
             }
         }

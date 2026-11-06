@@ -5475,11 +5475,11 @@ impl RunCtx<'_> {
         e
     }
 
-    /// The SDET-author build seam (spec 33): spawn the operator-provided `sdet-author`
-    /// agent into the unit's OWN worktree `dir` at the build seam - AFTER the implementer
-    /// has produced its diff and BEFORE the pre-gate commit - so on EVERY unit the SDET
-    /// authors its periphery tests into the SAME committed tree the gates and reviewers
-    /// judge. This is the ONE authority for that seam, shared by BOTH code-building
+    /// The SDET-author build seam (spec 33): spawn the test author the workflow declares
+    /// (`defaults.test_author`) into the unit's OWN worktree `dir` at the build seam - AFTER
+    /// the implementer has produced its diff and BEFORE the pre-gate commit - so on EVERY unit
+    /// the SDET authors its periphery tests into the SAME committed tree the gates and
+    /// reviewers judge. This is the ONE authority for that seam, shared by BOTH code-building
     /// lifecycles: the single-lane [`run_single_stage`](RunCtx::run_single_stage) calls it
     /// before its pre-gate commit, and first-green-wins [`run_speculation`](RunCtx::run_speculation)
     /// calls it per candidate before that candidate's commit - so a speculation-built unit
@@ -5488,9 +5488,11 @@ impl RunCtx<'_> {
     /// abstraction (not a second parallel construction in each lifecycle) keeps the cwd-safety
     /// guard, the budget authority, and the parked-spawn discipline identical on both paths.
     ///
-    /// The fixed `sdet-author` id is a convention resolved through the SAME
-    /// `AgentDef` / `build_system_prompt` agent-loading path as every other role (no
-    /// `workflow.yml` change, which would drift the pinned definition). The deterministic
+    /// The declared id is resolved through the SAME `AgentDef` / `build_system_prompt`
+    /// agent-loading path as every other role, so the agent spawned and the persona it is
+    /// served are the declared agent's, whatever it is named; the role is always the
+    /// `sdet-author` token, which keys the spawn, its unit cache and the session a later
+    /// attempt continues, so a renamed author keeps the token's recorded ids. The deterministic
     /// spawn id (`spawn_retry_id(stage, ROLE_SDET_AUTHOR, attempt, retry)` - `attempt` is the
     /// single-lane remediation attempt or the speculation lane, and `retry` the first of the
     /// stage run's infra `ordinal`'s [`review_retry_window`], as the reviewers are keyed, so an
@@ -5499,27 +5501,27 @@ impl RunCtx<'_> {
     /// under the next id of that window with the refusal after its prompt
     /// ([`rerun_once_on_refusal`]). The spawn is gated on a real worktree (an empty
     /// `dir` is a repo-less or `isolation: none` unit with no tree to author into, and an
-    /// Edit/Write agent must never run in the live main checkout) and on the agent being
-    /// configured (absent-agent tolerance: a clean no-op when the operator has not installed
-    /// the persona). The opts funnel through [`reviewer_spawn_opts`](RunCtx::reviewer_spawn_opts)
+    /// Edit/Write agent must never run in the live main checkout) and on a declared test
+    /// author (a clean no-op when the workflow declares none, whatever agents the project
+    /// defines). The opts funnel through [`reviewer_spawn_opts`](RunCtx::reviewer_spawn_opts)
     /// (the single in-worktree, write-capable opts authority), so the sdet INHERITS its
     /// `assert_isolated_cwd` guard by construction and runs `isolation: false` in the
     /// implementer's EXISTING worktree (its files swept in by the caller's commit, not a fresh
     /// worktree of its own).
     ///
     /// Returns `Ok(())` when the caller may proceed to its commit: a normal result (files
-    /// authored), an absent agent, or a budget refusal. Returns the PARK signal `Err(parked)`
-    /// when the spawn parked (an unrecorded stepwise/replay frontier); the caller unwinds per its
-    /// own discipline - the single lane propagates it (holding the unit, no commit), a
-    /// speculation lane collects it into `any_parked` and does NOT commit that candidate, so a
-    /// later step replays the sdet and its periphery tests land. Returns the stage error naming
-    /// the crash, marked [`SPAWN_CRASH_MARKER`], when the spawn or its opts guard failed any
-    /// other way: no gate may run on a tree the seam never touched, so the single lane reruns
-    /// the stage uncharged under the F3 infra retry and halts loudly past the infra limit, and a
-    /// speculation candidate loses. Returns the stage error naming the refusal when the emit
-    /// guard refused the re-run's record too: a refusal is a defect in what the sdet printed,
-    /// never an outage to rerun, so the single lane fails its stage with it and a speculation
-    /// candidate loses.
+    /// authored), no declared test author, or a budget refusal. Returns the PARK signal
+    /// `Err(parked)` when the spawn parked (an unrecorded stepwise/replay frontier); the caller
+    /// unwinds per its own discipline - the single lane propagates it (holding the unit, no
+    /// commit), a speculation lane collects it into `any_parked` and does NOT commit that
+    /// candidate, so a later step replays the sdet and its periphery tests land. Returns the stage
+    /// error naming the crash, marked [`SPAWN_CRASH_MARKER`], when the spawn or its opts guard
+    /// failed any other way: no gate may run on a tree the seam never touched, so the single lane
+    /// reruns the stage uncharged under the F3 infra retry and halts loudly past the infra limit,
+    /// and a speculation candidate loses. Returns the stage error naming the refusal when the emit
+    /// guard refused the re-run's record too: a refusal is a defect in what the sdet printed, never
+    /// an outage to rerun, so the single lane fails its stage with it and a speculation candidate
+    /// loses.
     ///
     /// A round whose [`round_delta`](RunCtx::round_delta) in `wt` changed documentation only
     /// appends [`DOC_ONLY_ROUND`], that round's fact, to the prompt and to a resumed session's
@@ -5546,10 +5548,15 @@ impl RunCtx<'_> {
         if dir.is_empty() {
             return Ok(());
         }
-        // Absent-agent tolerance: no `sdet-author` configured is a clean no-op (the build
-        // proceeds exactly as today), so an operator who has not installed the persona is
-        // never blocked.
-        let Some(sdet_def) = self.cfg.agents.get(ROLE_SDET_AUTHOR) else {
+        // No declared test author is a clean no-op (the build proceeds without the seam),
+        // whatever agents the project defines: the seam spawns only the agent the workflow names.
+        let author = &self.cfg.workflow.defaults.test_author;
+        if author.is_empty() {
+            return Ok(());
+        }
+        // A load refuses a declared id no agent defines (`Config::validate`), so this arm is
+        // reached only by a config that never went through one; it proceeds author-less too.
+        let Some(sdet_def) = self.cfg.agents.get(author) else {
             return Ok(());
         };
         // The SDET-author spawn is part of the IMPLEMENT lifecycle stage (the build seam), reached
@@ -5609,7 +5616,7 @@ impl RunCtx<'_> {
             let opts = match self.reviewer_spawn_opts(
                 &sdet_id,
                 ROLE_SDET_AUTHOR,
-                ROLE_SDET_AUTHOR,
+                author,
                 dir,
                 attempt,
                 false,
@@ -32212,7 +32219,7 @@ mod tests {
         }
     }
 
-    /// The `per_unit_panel_cfg` unit with the sdet-author configured and a criterion, so every
+    /// The `per_unit_panel_cfg` unit with the sdet-author declared and a criterion, so every
     /// role of the panel has a session to continue and a criterion its session holds.
     fn session_cfg() -> Config {
         let mut cfg = per_unit_panel_cfg(None);
