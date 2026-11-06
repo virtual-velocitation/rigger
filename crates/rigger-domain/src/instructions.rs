@@ -331,8 +331,10 @@ mod tests {
     }
 
     /// Spec 120, criterion 14: the third built-in entry, which the layer-order test above names
-    /// `communication`, carries the communication discipline's body: the old conductor
-    /// constant's every line after its heading line, verbatim.
+    /// `communication`, carries the communication discipline's body verbatim: the old conductor
+    /// constant's every line after its heading line, with the progress bullet spec 121 lands
+    /// after its last bullet, the progress cadence's one home now that every host's progress
+    /// text names only its verb and that verb's arguments.
     #[test]
     fn the_third_built_in_is_the_communication_discipline_verbatim() {
         assert_eq!(
@@ -356,6 +358,11 @@ mod tests {
                  `supersedes` field cites the prior decision's id, and state why. Diverging \
                  silently splits the work; superseding explicitly keeps every agent on one \
                  story.\n\
+                 - After each significant step - a search, a file read, a build, a commit, a \
+                 decision - report ONE short line of what you just did through the progress verb \
+                 your task or your tool list names. This is how an observer sees you working \
+                 between the milestones you record, so a long silent stretch is never mistaken \
+                 for a stall. Keep it flowing WHILE you work; do not batch it at the end.\n\
                  The exact JSON shapes for these emits are given in your task instructions; this \
                  section governs the DISCIPLINE and cadence - follow it on every turn.\n"
             ),

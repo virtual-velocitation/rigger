@@ -2776,6 +2776,40 @@ mod tests {
         assert_eq!(unregistered, Vec::<&str>::new());
     }
 
+    /// The spawn-bound surface's progress tool names what it records and its one argument only:
+    /// when to report is the communication built-in's, never the tool description's.
+    #[test]
+    fn the_progress_tool_names_what_it_records_and_its_argument_only() {
+        let store = Store::open(":memory:").unwrap();
+        let driver = Driver::new();
+        let tools = Server::new(&driver, &store, "run")
+            .with_spawn("u/implementer#0")
+            .tool_list();
+        let entry = tools
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == "rigger_progress");
+        assert_eq!(
+            entry,
+            Some(&json!({
+                "name": "rigger_progress",
+                "description": "Record one live progress line for the spawn this server is bound \
+                                to, so an observer sees you working between milestones.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "activity": {
+                            "type": "string",
+                            "description": "a short one-line description of what you just did"
+                        }
+                    },
+                    "required": ["activity"]
+                }
+            }))
+        );
+    }
+
     crate::test_cases! {
         /// No result tool: `rigger_next` and `rigger_result` are UNDISPATCHABLE on the
         /// spawn-bound surface (not merely unadvertised) - a launched agent's session ends with

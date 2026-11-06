@@ -300,8 +300,9 @@ pub fn build_args(
 mod tests {
     use super::*;
 
-    /// This host's frame reports through Bash, naming the spawn, since its spawn runs no bound
-    /// server, and closes the task.
+    /// This host's frame closes the task with its progress verb and that verb's arguments only:
+    /// the Bash command naming the spawn, since its spawn runs no bound server. When to report
+    /// is the communication built-in's.
     #[test]
     fn framed_closes_the_task_with_the_bash_progress_line() {
         let opts = SpawnOpts {
@@ -310,10 +311,8 @@ mod tests {
         };
         assert_eq!(
             framed("the task", &opts),
-            "the task\n\n--- rigger driver ---\nLIVE PROGRESS: after each significant step (a \
-             search, a build, a commit, a decision) report ONE short line of what you just did by \
-             running (Bash): rigger progress 'u/implementer#0' '<one line: what you just did>'. \
-             Keep it flowing while you work."
+            "the task\n\n--- rigger driver ---\nLIVE PROGRESS: record a progress line by running \
+             (Bash): rigger progress 'u/implementer#0' '<one line: what you just did>'."
         );
     }
     #[cfg(unix)]

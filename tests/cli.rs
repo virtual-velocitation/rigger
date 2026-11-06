@@ -10779,12 +10779,10 @@ fn every_launch_of_a_reviewed_unit_carries_the_hooks_for_its_own_spawn() {
     );
 }
 
-/// The live-progress instruction closing a launch's first user message.
-const LIVE_PROGRESS_FRAME: &str =
-    "\n\n--- rigger driver ---\nLIVE PROGRESS: after each significant \
-     step (a search, a build, a commit, a decision) report ONE short line of what you just did by \
-     calling the mcp__rigger__rigger_progress tool with that line as its activity. Keep it \
-     flowing while you work.";
+/// The live-progress frame closing a launch's first user message: the progress verb and its
+/// argument only, since when to report is the communication built-in's.
+const LIVE_PROGRESS_FRAME: &str = "\n\n--- rigger driver ---\nLIVE PROGRESS: record a progress \
+     line by calling the mcp__rigger__rigger_progress tool with that line as its activity.";
 
 /// Spec 105's live-progress frame, end to end: given a project, when the operator runs `rigger
 /// run`, then the launch's first user message closes with the instruction naming the
