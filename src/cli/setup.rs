@@ -2101,7 +2101,7 @@ mod tests {
     use crate::test_support::{
         assert_holds_its_critique_method, critique_method_by_persona, markdown_section,
         ADJUDICATOR_JUDGING_RULE, ADVERSARY_CRITIQUE_METHOD, CRITIQUE_METHOD, FAN_OUT_HEADING,
-        HAND_OVER_HEADING, WHEN_YOU_REVIEW, WHEN_YOU_REVIEW_HEADING,
+        HAND_OVER_HEADING, LOOKUP_METHOD, WHEN_YOU_REVIEW, WHEN_YOU_REVIEW_HEADING,
     };
 
     /// Spec 101: a graph rebuild reports its progress in tenths of the log positions it covers -
@@ -4107,6 +4107,38 @@ mod tests {
             0,
             "the fan-out section leaves the battery rule to `## When you review`"
         );
+    }
+
+    /// Spec 121's THE LOOKUP POINTER NAMES ONLY THE TOOLS: the working-discipline body, read
+    /// through the shipped-text helper, holds the two lookup-method sentences the grounding
+    /// pointer no longer carries, verbatim and once each, as the last two sentences of the
+    /// fan-out section's `lookup` bullet, right after its `GAP:` sentence and before the `verify`
+    /// bullet.
+    #[test]
+    fn the_working_discipline_fan_out_section_ends_the_lookup_bullet_with_the_lookup_method() {
+        let body = every_shipped_agent_text()
+            .into_iter()
+            .find(|(at, _)| at == "BUILTIN working-discipline")
+            .map(|(_, text)| text)
+            .expect("the working-discipline body is shipped");
+        let words = rigger::wave::normalize_ws(&body);
+        let fan_out = rigger::wave::normalize_ws(markdown_section(&body, FAN_OUT_HEADING));
+        let bullet_end = format!(
+            "DecisionMade so it surfaces for a spec. {} - `verify` (Sonnet, with a shell)",
+            LOOKUP_METHOD.join(" ")
+        );
+        for (text, held, times) in [
+            (LOOKUP_METHOD[0], &words, 1),
+            (LOOKUP_METHOD[1], &words, 1),
+            (bullet_end.as_str(), &fan_out, 1),
+        ] {
+            assert_eq!(
+                held.matches(text).count(),
+                times,
+                "the working-discipline body holds {text:?} {times} time(s); its fan-out section \
+                 reads:\n{fan_out}"
+            );
+        }
     }
 
     /// The critique method is the persona's: each critiquing persona, committed and scaffold

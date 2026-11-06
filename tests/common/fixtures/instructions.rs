@@ -1,8 +1,9 @@
 //! Built-in instruction fixtures, shared by the instruction layer's unit tests, the conductor's
 //! prompt tests, the binary's shipped-text tests and the integration suites: the working-discipline
-//! body's section headings and the review method its `## When you review` section holds; the
-//! critique method the adversary and adjudicator personas hold under their
-//! `## When you critique a spec or a plan` section and each persona's share of it; the
+//! body's section headings, the lookup method its fan-out section holds and the review method its
+//! `## When you review` section holds; the critique method the adversary and adjudicator personas
+//! hold under their `## When you critique a spec or a plan` section and each persona's share of
+//! it; the
 //! headings a composed system prompt carries, the handbook chapter that lists the built-in entries
 //! and their checked-in sources, each entry's body by name, a near name that shadows no
 //! built-in, the non-empty bodies that still switch a built-in off, two operator files that shadow
@@ -20,6 +21,16 @@ pub const WHEN_YOU_REVIEW_HEADING: &str = "## When you review";
 
 /// The working-discipline body's fan-out section heading.
 pub const FAN_OUT_HEADING: &str = "## Fan out the mechanical work";
+
+/// The two lookup-method sentences the fan-out section's `lookup` bullet ends with, in its order:
+/// the graph before grep, then the `grep-fallback:` record a grep over the project's sources owes.
+pub const LOOKUP_METHOD: [&str; 2] = [
+    "Look things up in the knowledge graph, not by grepping the project's sources.",
+    "If the graph cannot answer and you fall back to grep over the project's sources, record it \
+     with a progress line `grep-fallback: <what the graph did not answer>` through the progress \
+     verb your task or your tool list names - one line before moving on - so the gap is visible \
+     in the log; filtering your own build or gate output is not a fallback.",
+];
 
 /// The seven review sentences the working-discipline body's `## When you review` section holds,
 /// in its order: the review method a reviewer prompt's discipline no longer carries, then the

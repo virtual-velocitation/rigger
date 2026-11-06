@@ -3505,11 +3505,11 @@
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
-    "name": "lookup_pointer_names_all_three_verbs_on_every_slice",
+    "name": "the_lookup_pointer_names_only_the_three_verbs_on_every_slice",
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "4d5c0f33948617ef"
+    "content_hash": "015af04f9e1f94bc"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",

@@ -21158,14 +21158,22 @@ mod tests {
         );
     }
 
+    /// Spec 121's THE LOOKUP POINTER NAMES ONLY THE TOOLS, over spec 58's pointer: the grounding
+    /// pointer renders exactly one framing paragraph naming the THREE lookup verbs with their
+    /// one-line jobs - `rigger graph --around` (structure), `rigger graph --show` (text),
+    /// `rigger peers` (memory) - and EVERY spawn's grounding carries it once: the trimmed
+    /// IMPLEMENT slice AND the full REVIEW slice alike. Neither slice says how to use grep or
+    /// asks for a `grep-fallback:` record: that method is the `working-discipline` built-in's.
     #[test]
-    fn lookup_pointer_names_all_three_verbs_on_every_slice() {
-        // Spec 58 c3 (the habit half): the grounding tool pointer names the THREE lookup verbs
-        // with their one-line jobs - `rigger graph --around` (structure), `rigger graph --show`
-        // (text), `rigger peers` (memory) - plus the grep-fallback reporting instruction, and it
-        // is carried by EVERY spawn's grounding: the trimmed IMPLEMENT slice AND the full REVIEW
-        // slice alike. Assert both slices, from ONE seeded traversal, carry all three verbs and the
-        // fallback instruction.
+    fn the_lookup_pointer_names_only_the_three_verbs_on_every_slice() {
+        let mut pointer = String::new();
+        write_lookup_pointer(&mut pointer);
+        assert_eq!(
+            pointer,
+            format!("\n{}\n", crate::test_support::LOOKUP_POINTER),
+            "the pointer is one paragraph naming the three verbs and their jobs"
+        );
+
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("modifier.rs"), "fn modifier() {}\n").unwrap();
         let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
@@ -21206,32 +21214,13 @@ mod tests {
             ("review-full", GroundingSlice::Full),
         ] {
             let out = ctx.graph_context(&seed, slice);
-            // All three lookup verbs, each with its one-line job.
-            assert!(
-                out.contains("rigger graph --around"),
-                "the {label} pointer must name the STRUCTURE verb; got:\n{out}"
-            );
-            assert!(
-                out.contains("rigger graph --show"),
-                "the {label} pointer must name the TEXT verb `rigger graph --show`; got:\n{out}"
-            );
-            assert!(
-                out.contains("rigger peers"),
-                "the {label} pointer must name the MEMORY verb `rigger peers`; got:\n{out}"
-            );
-            // The jobs are named so the reader knows which verb answers which question.
-            assert!(
-                out.contains("structure") && out.contains("text") && out.contains("memory"),
-                "the {label} pointer must name each verb's job (structure/text/memory); \
-                 got:\n{out}"
-            );
-            // The grep-fallback reporting instruction: a graph miss that forces a grep over the
-            // project's sources is recorded as one `grep-fallback:` progress line.
-            assert!(
-                out.contains("grep-fallback:") && out.contains("rigger progress"),
-                "the {label} pointer must carry the grep-fallback reporting instruction; \
-                 got:\n{out}"
-            );
+            for (text, times) in [(crate::test_support::LOOKUP_POINTER, 1), ("grep", 0)] {
+                assert_eq!(
+                    out.matches(text).count(),
+                    times,
+                    "the {label} slice carries {text:?} {times} time(s); got:\n{out}"
+                );
+            }
         }
 
         // The FULL (review) slice keeps the capped decisions bulk unchanged - the lookup pointer is
