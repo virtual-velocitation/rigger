@@ -58,7 +58,10 @@ use common::fixtures::language_marker_hits;
 use common::fixtures::{
     edge, file_half, member_graph, BARE_PARENT, LEAF_PLACEHOLDER, NESTED_METHOD, RANGE_ARTIFACT,
 };
-use common::fixtures::{LOOKUP_METHOD, LOOKUP_POINTER};
+use common::fixtures::{
+    CHECK_THE_PEERS, GROUNDING_METHOD, LOOKUP_METHOD, LOOKUP_POINTER, RECORD_EACH_DECISION,
+    RECORD_EACH_FINDING, SUPERSEDE_A_PEER,
+};
 
 /// The opening words of the code-neighborhood section's header.
 const CODE_NEIGHBORHOOD: &str = "Code neighborhood of these files";
@@ -894,20 +897,26 @@ fn the_review_prompt_carries_the_three_verb_lookup_pointer() {
     }
 }
 
-/// Spec 121's THE LOOKUP POINTER NAMES ONLY THE TOOLS, at the review boundary end to end: the
-/// lookup method the grounding pointer no longer carries still reaches every spawn, through the
-/// `working-discipline` built-in its system prompt composes. Given a live fan-out `run` whose empty
-/// operator layer neither replaces nor switches off that built-in, when the lens, the adversary and
-/// the adjudicator each spawn through the `AgentDriver` port, then each one's system prompt carries
-/// each lookup-method sentence of the built-in's Fan out section exactly once. With
-/// `the_review_prompt_carries_the_three_verb_lookup_pointer`, which proves each tier's task prompt
-/// carries neither sentence, the method has one home in what a spawn receives.
+/// Spec 121's THE LOOKUP POINTER NAMES ONLY THE TOOLS and THE TASK PROMPTS CARRY NO CADENCE OR
+/// METHOD, at the review boundary end to end: each method a prompt text no longer carries reaches
+/// every spawn through the built-in its system prompt composes, and only there. The rows are the
+/// lookup method the grounding pointer left to `working-discipline`'s Fan out section; the
+/// grounding method the grounding sections' headers and `review_protocol` left to its One-pass
+/// section; and, each left to `communication`, the record cadence `EMIT_PROTOCOL` and
+/// `review_protocol` left, the peers check the shim's peers refresh left, and the supersede rule
+/// the decisions header and the peers refresh left. Given a live fan-out `run` whose empty
+/// operator layer neither replaces nor switches off a built-in, when the lens, the adversary and
+/// the adjudicator each spawn through the `AgentDriver` port, then each one's system prompt
+/// carries each row's sentences exactly once and its task prompt carries none of them, so each
+/// method has one home in what a spawn receives.
 ///
 /// Non-vacuous: restoring the Fan out section's former `lookup` bullet ending, the one rule in
-/// another wording, reddens every tier's row for both sentences; spelling either sentence a second
-/// time in any built-in reddens its row on every tier.
+/// another wording, reddens the lookup row on every tier; dropping the One-pass section's grounding
+/// paragraph reddens the grounding row on every tier; spelling a row's sentence a second time in
+/// any built-in reddens that row on every tier, and spelling it once in a task-prompt text reddens
+/// that row on each tier the text reaches.
 #[test]
-fn every_review_spawn_receives_the_lookup_method_once_through_its_system_prompt() {
+fn every_review_spawn_receives_each_method_left_to_a_built_in_once_through_its_system_prompt() {
     let graph = Projector::open(":memory:", "test").unwrap();
     let finding = json!({
         "id": "f_method",
@@ -923,13 +932,30 @@ fn every_review_spawn_receives_the_lookup_method_once_through_its_system_prompt(
         (vec!["lens", "adversary", "adj"], 3),
         "the three review tiers spawn once each, in order, each with a system prompt"
     );
-    for ((role, _), system) in prompts.iter().zip(&system_prompts) {
-        assert_carries_each(
-            &format!("the {role:?} review system prompt"),
-            &normalize_ws(system),
-            &LOOKUP_METHOD,
-            1,
-        );
+    let moved: [(&str, &[&str]); 4] = [
+        ("lookup method", &LOOKUP_METHOD),
+        ("grounding method", &[GROUNDING_METHOD]),
+        (
+            "record and peers cadence",
+            &[RECORD_EACH_DECISION, RECORD_EACH_FINDING, CHECK_THE_PEERS],
+        ),
+        ("supersede rule", &SUPERSEDE_A_PEER),
+    ];
+    for ((role, prompt), system) in prompts.iter().zip(&system_prompts) {
+        for (method, sentences) in moved {
+            assert_carries_each(
+                &format!("the {role:?} review system prompt, for the {method},"),
+                &normalize_ws(system),
+                sentences,
+                1,
+            );
+            assert_carries_each(
+                &format!("the {role:?} review task prompt, for the {method},"),
+                &normalize_ws(prompt),
+                sentences,
+                0,
+            );
+        }
     }
 }
 
