@@ -14193,28 +14193,23 @@ fn write_peers_pointer(b: &mut String) {
     write_lookup_pointer(b);
 }
 
-/// The three-verb LOOKUP pointer EVERY grounding slice carries (spec 58): the knowledge graph is
-/// the lookup surface, and naming its three verbs with their one-line jobs makes reaching for the
-/// graph the path of least resistance rather than grepping the project's sources. `rigger graph
-/// --around` answers STRUCTURE (who-calls-X and the caller/callee neighborhood), `rigger graph
-/// --show` answers TEXT (an entity's definition site and its body), and `rigger peers` answers
-/// MEMORY (the prior decisions, findings, and lessons about the files). Grep over the project's
-/// sources is a fallback worth REPORTING, not a habit: an agent that greps because the graph could
-/// not answer records ONE `grep-fallback:` progress line before moving on, so every such gap lands
-/// in the event log where it can be measured and closed (filtering one's own build or gate output
-/// is not a fallback). Rendered on the IMPLEMENT slice (after the bulk-not-inlined note) and the
-/// FULL/review slice (after the capped bulk) alike, so no spawn is left grepping in the dark. A
+/// The three-verb LOOKUP pointer EVERY grounding slice carries (spec 58): one framing paragraph
+/// naming the knowledge graph's three verbs with their one-line jobs. `rigger graph --around`
+/// answers STRUCTURE (who-calls-X and the caller/callee neighborhood), `rigger graph --show`
+/// answers TEXT (an entity's definition site and its body), and `rigger peers` answers MEMORY (the
+/// prior decisions, findings, and lessons about the files). It names only the tools (spec 121):
+/// the lookup method - the graph before grep, and the `grep-fallback:` progress line a grep over
+/// the project's sources owes - is the `working-discipline` built-in's, which every spawn's
+/// instructions carry. Rendered on the IMPLEMENT slice (after the bulk-not-inlined note) and the
+/// FULL/review slice (after the capped bulk) alike, so every spawn's grounding names the verbs. A
 /// fixed string with no seed/graph data, so it is deterministic by construction; hyphens only (a
 /// gate rejects U+2014), and it names only first-party tools.
 fn write_lookup_pointer(b: &mut String) {
     b.push_str(
-        "\nLook things up in the knowledge graph, not by grepping the project's sources - three \
-         verbs answer it: `rigger graph --around <file|entity>` (structure: callers, callees, \
-         neighbors), `rigger graph --show <entity>` (text: definition site and body), `rigger \
-         peers <file>...` (memory: decisions, findings, lessons). If the graph cannot answer and \
-         you fall back to grep over the project's sources, record it with `rigger progress <id> \
-         'grep-fallback: <what the graph did not answer>'` - one line before moving on - so the \
-         gap is visible in the log; filtering your own build or gate output is not a fallback.\n",
+        "\nThe knowledge graph answers lookups through three verbs: `rigger graph --around \
+         <file|entity>` (structure: callers, callees, neighbors), `rigger graph --show <entity>` \
+         (text: definition site and body), `rigger peers <file>...` (memory: decisions, findings, \
+         lessons).\n",
     );
 }
 

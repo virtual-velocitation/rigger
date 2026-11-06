@@ -87,7 +87,8 @@ pub const TYPE_AGENT_PROGRESS: &str = "AgentProgress";
 /// <what the graph did not answer>'`. Every such line is a graph-coverage gap recorded IN the
 /// event log; [`crate::metrics::grep_fallbacks`] counts them per run so the fallback rate is
 /// visible run-over-run. It is the single source of truth for what a fallback line looks like,
-/// shared by the writer (the grounding pointer's instruction) and the reader (the metric).
+/// shared by the writer (the `working-discipline` built-in's lookup instruction) and the reader
+/// (the metric).
 pub const GREP_FALLBACK_PREFIX: &str = "grep-fallback:";
 
 /// One fine-grained progress report: the spawn it belongs to and a short human line of what

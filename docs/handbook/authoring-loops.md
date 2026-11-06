@@ -26,7 +26,6 @@ Those two sentences are the rule the binary is held to. The rest of this section
 - `MAX_UNIT_ADDED_LINES` and the second sentence of `unit_size_cap`
 - the progress cadence in its four host homes: the process hosts' shared framing, the workflow script's and the shim's progress notes, and the `rigger_progress` description
 - the REQUIRED PATTERN audit sentences: the `PATTERN:` lines an implementer and a reviewer read under a REQUIRED list
-- the method sentences of the lookup pointer (`write_lookup_pointer`)
 - the toolchain words in `workflows/rigger.js` and the `rigger_scratch` description
 
 ### The review ceremony
