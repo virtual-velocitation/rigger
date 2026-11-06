@@ -1401,7 +1401,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-1fcc8b4e9cfc",
+    "id": "dup-381f6c65e1d1",
     "classification": "semantic",
     "sites": [
       {
@@ -3236,6 +3236,21 @@
       },
       {
         "file": "tests/cli.rs",
+        "name": "\".rigger/skills/using-rigger/SKILL.md\"",
+        "content_hash": "072cce40fb047d0b"
+      },
+      {
+        "file": "tests/cli.rs",
+        "name": "\".rigger/skills/using-rigger\"",
+        "content_hash": "f2d626c212e0b2b5"
+      },
+      {
+        "file": "tests/cli.rs",
+        "name": "\".rigger/skills\"",
+        "content_hash": "960f7df456a79395"
+      },
+      {
+        "file": "tests/cli.rs",
         "name": "\".rigger/dash.marker\"",
         "content_hash": "de6164e0e2f76c7e"
       },
@@ -4601,7 +4616,7 @@
       }
     ],
     "proposed_home": "one .rigger-relative path-composition helper",
-    "note": "mandatory sweep: .rigger-path string literals - 639 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: .rigger-path string literals - 642 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {

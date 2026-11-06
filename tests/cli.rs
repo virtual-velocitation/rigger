@@ -25120,6 +25120,193 @@ fn setup_installs_a_project_skill_copy_verbatim_and_lists_each_stray_while_docs_
     );
 }
 
+/// Where a project keeps its own copy of the `using-rigger` skill, relative to its root.
+const USING_RIGGER_PROJECT_COPY_REL: &str = ".rigger/skills/using-rigger/SKILL.md";
+
+/// The text of a project's own `using-rigger` copy in the shadow periphery tests below.
+const USING_RIGGER_PROJECT_COPY: &str =
+    "---\nname: using-rigger\ndescription: a project's own using-rigger\n---\nOur discipline.\n";
+
+/// The text that copy holds once the project edits it.
+const USING_RIGGER_EDITED_PROJECT_COPY: &str =
+    "---\nname: using-rigger\ndescription: a project's own using-rigger\n---\nOur new discipline.\n";
+
+/// Spec 121, criterion 14 (the shadow's setup report lines, end to end). Given a project `rigger
+/// setup` already provisioned, when its own `using-rigger` copy lands under `.rigger/skills/` and
+/// the operator reruns `rigger setup`, then the copy replaces the installed shipped render and
+/// setup prints nothing, a shadow being a state rather than a change. When `edit` then writes its
+/// text at its root-relative path, or deletes that directory for `None`, and the operator reruns
+/// `rigger setup` again, then the installed `using-rigger` holds `installed` and setup prints
+/// nothing; for `installed` `None` it holds the shipped render the first setup installed, and
+/// setup prints its version line, the refresh of `using-rigger` and the orientation block the
+/// first setup's report ended with, nothing else.
+fn assert_setup_reruns_beside_a_shadow(edit: (&str, Option<&str>), installed: Option<&str>) {
+    let proj = temp_project();
+    let root = proj.path();
+    let installed_path = root.join(".claude/skills/using-rigger/SKILL.md");
+    let setup = || {
+        (
+            setup_ok(root, &[("RIGGER_NPM", "true")]),
+            std::fs::read_to_string(&installed_path).unwrap(),
+        )
+    };
+    let (first, shipped) = setup();
+    let orientation = &first[first
+        .find("to drive a run")
+        .expect("a setup that reports a change ends with its orientation block")..];
+    complete_the_shim_install(root);
+
+    common::fixtures::write_files(
+        root,
+        &[(USING_RIGGER_PROJECT_COPY_REL, USING_RIGGER_PROJECT_COPY)],
+    );
+    assert_eq!(
+        setup(),
+        (String::new(), USING_RIGGER_PROJECT_COPY.to_string()),
+        "a copy landing on a provisioned project replaces the shipped install and setup prints \
+         nothing"
+    );
+
+    match edit {
+        (rel, Some(text)) => common::fixtures::write_files(root, &[(rel, text)]),
+        (rel, None) => std::fs::remove_dir_all(root.join(rel)).unwrap(),
+    }
+    let report = match installed {
+        Some(_) => String::new(),
+        None => format!(
+            "{}refreshed the drifted using-rigger skill (.claude/skills/using-rigger/SKILL.md) to \
+             match this rigger build\n{orientation}",
+            run_rigger_ok(root, &["version"])
+        ),
+    };
+    assert_eq!(
+        setup(),
+        (report, installed.map_or(shipped, str::to_string)),
+        "the rerun's report and the installed using-rigger after {edit:?}"
+    );
+}
+
+rigger::test_cases! {
+    /// An operator's hand-edit of a shadowed skill's installed file is rewritten to the project
+    /// copy, and setup reports nothing.
+    setup_rewrites_a_hand_edited_shadowed_skill_to_its_project_copy_silently:
+        assert_setup_reruns_beside_a_shadow(
+            (".claude/skills/using-rigger/SKILL.md", Some("an operator's hand-edit\n")),
+            Some(USING_RIGGER_PROJECT_COPY),
+        );
+    /// A project copy the project edited installs on the next setup, and setup reports nothing.
+    setup_installs_an_edited_project_copy_silently:
+        assert_setup_reruns_beside_a_shadow(
+            (USING_RIGGER_PROJECT_COPY_REL, Some(USING_RIGGER_EDITED_PROJECT_COPY)),
+            Some(USING_RIGGER_EDITED_PROJECT_COPY),
+        );
+    /// A project copy deleted (DROPPED): the next setup installs the shipped render again and
+    /// reports it as a refresh.
+    setup_refreshes_a_skill_whose_project_copy_was_deleted_to_the_shipped_render:
+        assert_setup_reruns_beside_a_shadow((".rigger/skills/using-rigger", None), None);
+}
+
+/// Spec 121, criterion 14 (an unreadable project copy fails setup). Given `seeded`, a
+/// root-relative path `rigger setup` reads for the project's skill copies, made a directory where
+/// a file is read (`dir`) or a file where a directory is listed, when the operator runs `rigger
+/// setup`, then it fails printing nothing on stdout and, on stderr, the one line naming that path
+/// and the error reading it gives, and installs no skill.
+fn assert_setup_refuses_an_unreadable_project_skill(seeded: &str, dir: bool) {
+    let proj = temp_project();
+    let root = proj.path();
+    let path = root.join(seeded);
+    let error = if dir {
+        std::fs::create_dir_all(&path).unwrap();
+        std::fs::read(&path).unwrap_err()
+    } else {
+        common::fixtures::write_files(root, &[(seeded, "not a directory\n")]);
+        std::fs::read_dir(&path).unwrap_err()
+    };
+    assert_eq!(
+        run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]),
+        (
+            String::new(),
+            format!(
+                "rigger: setup: reading {}: {error}\n",
+                Path::new(".").join(seeded).display()
+            ),
+            false,
+        ),
+        "setup's stdout, stderr and success"
+    );
+    assert!(
+        !root.join(".claude/skills").exists(),
+        "setup installs no skill beside a project copy it cannot read"
+    );
+}
+
+rigger::test_cases! {
+    /// A project copy `SKILL.md` that is a directory fails setup naming it.
+    setup_fails_naming_a_project_copy_that_is_a_directory:
+        assert_setup_refuses_an_unreadable_project_skill(USING_RIGGER_PROJECT_COPY_REL, true);
+    /// A `.rigger/skills` that is a plain file fails setup naming it.
+    setup_fails_naming_a_project_skill_home_that_is_a_file:
+        assert_setup_refuses_an_unreadable_project_skill(".rigger/skills", false);
+}
+
+/// Spec 121, criterion 14 (the drift gate stays on the shipped text, from the drift side). Given a
+/// project whose docs `rigger docs` rendered and whose own `using-rigger` copy sits under
+/// `.rigger/skills/`, when the committed `skills/using-rigger/SKILL.md` holds that copy's text,
+/// then `rigger docs --check` exits 1 reporting it, alone, drifted, and `rigger validate` fails
+/// naming it alone; when the operator runs `rigger docs`, then the committed file holds the
+/// shipped text it held before the copy, and both pass naming no output.
+#[test]
+fn the_drift_gate_reports_a_committed_project_copy_drifted_beside_its_shadow() {
+    let dir = docs_rendered_project();
+    let root = dir.path();
+    let rel = "skills/using-rigger/SKILL.md";
+    let outputs = rendered_outputs(&run_rigger_ok(root, &["docs"]));
+    let shipped = std::fs::read(root.join(rel)).unwrap();
+    common::fixtures::write_files(
+        root,
+        &[
+            (USING_RIGGER_PROJECT_COPY_REL, USING_RIGGER_PROJECT_COPY),
+            (rel, USING_RIGGER_PROJECT_COPY),
+        ],
+    );
+    let gate = || {
+        let check = pipe_into_rigger(root, &["docs", "--check"], b"");
+        let (_, err, ok) = run_rigger(root, &["validate"]);
+        (
+            check.status.code(),
+            String::from_utf8_lossy(&check.stdout)
+                .lines()
+                .filter_map(|line| line.strip_prefix("drifted "))
+                .map(str::to_string)
+                .collect::<Vec<_>>(),
+            ok,
+            outputs
+                .iter()
+                .filter(|output| err.contains(output.as_str()))
+                .cloned()
+                .collect::<Vec<_>>(),
+        )
+    };
+
+    assert_eq!(
+        gate(),
+        (Some(1), vec![rel.to_string()], false, vec![rel.to_string()]),
+        "docs --check (exit code, drifted outputs) and validate (success, outputs named) over a \
+         committed project copy"
+    );
+    run_rigger_ok(root, &["docs"]);
+    assert_eq!(
+        std::fs::read(root.join(rel)).unwrap(),
+        shipped,
+        "rigger docs restores the shipped text beside the project copy"
+    );
+    assert_eq!(
+        gate(),
+        (Some(0), Vec::new(), true, Vec::new()),
+        "docs --check and validate over the restored shipped text"
+    );
+}
+
 /// The five per-operation skill names spec 68, criterion 2 adds to the registry (rigger-docs,
 /// rigger-validate, and rigger-setup already loop over `skill_registry()` generically as of
 /// spec 68, criterion 1 - shared by the three tests below).
