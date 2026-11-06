@@ -575,7 +575,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-a2fc416fb9e4",
+    "id": "dup-7310d4338924",
     "classification": "semantic",
     "sites": [
       {
@@ -634,6 +634,11 @@
         "content_hash": "9874f3396e9affbb"
       },
       {
+        "file": "src/cli/mod.rs",
+        "name": "setup_read_error",
+        "content_hash": "ee0c052ba550793e"
+      },
+      {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
         "name": "a_quarantine_record_whose_ref_was_since_deleted_hard_errors_instead_of_silently_starting_fresh",
         "content_hash": "2c71d911510e83eb"
@@ -690,7 +695,7 @@
       }
     ],
     "proposed_home": "one error-shaping helper module",
-    "note": "mandatory sweep: error-shaping helper functions - 22 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: error-shaping helper functions - 23 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {

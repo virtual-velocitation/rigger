@@ -10181,7 +10181,15 @@
     "is_test": false,
     "proposed_module": "main::setup",
     "reason": "name contains \"skill\" (project setup); grouped under `main::setup`.",
-    "content_hash": "a023d5ce9fe2a3ff"
+    "content_hash": "b447ba7e2cbf1127"
+  },
+  {
+    "file": "src/cli/mod.rs",
+    "name": "project_skill_path",
+    "is_test": false,
+    "proposed_module": "main::setup",
+    "reason": "name contains \"skill\" (project setup); grouped under `main::setup`.",
+    "content_hash": "8f919d32ae3e5297"
   },
   {
     "file": "src/cli/mod.rs",
@@ -10205,7 +10213,31 @@
     "is_test": false,
     "proposed_module": "main::provenance",
     "reason": "name contains \"docs_\" (docs overlay); grouped under `main::provenance`.",
-    "content_hash": "ca2a0a74cf440ebc"
+    "content_hash": "9e15621bc3318914"
+  },
+  {
+    "file": "src/cli/mod.rs",
+    "name": "setup_read_error",
+    "is_test": false,
+    "proposed_module": "main::setup",
+    "reason": "name contains \"setup\" (project setup); grouped under `main::setup`.",
+    "content_hash": "e4af3504402fb695"
+  },
+  {
+    "file": "src/cli/mod.rs",
+    "name": "project_skill_entries",
+    "is_test": false,
+    "proposed_module": "main::setup",
+    "reason": "name contains \"skill\" (project setup); grouped under `main::setup`.",
+    "content_hash": "e09b2bb2fb1b1915"
+  },
+  {
+    "file": "src/cli/mod.rs",
+    "name": "read_project_skill",
+    "is_test": false,
+    "proposed_module": "main::setup",
+    "reason": "name contains \"skill\" (project setup); grouped under `main::setup`.",
+    "content_hash": "cec0e7b24bc76a4f"
   },
   {
     "file": "src/cli/mod.rs",
@@ -10213,7 +10245,7 @@
     "is_test": false,
     "proposed_module": "main::setup",
     "reason": "name contains \"install\" (project setup); grouped under `main::setup`.",
-    "content_hash": "9f063462ae25759c"
+    "content_hash": "6a2863847b26b2b9"
   },
   {
     "file": "src/cli/mod.rs",

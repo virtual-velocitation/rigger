@@ -4795,10 +4795,11 @@ fn rigger_path(root: &Path, entry: &str) -> std::path::PathBuf {
 const SHIM_DIR: &str = "shim";
 
 /// What an install step did to a file it manages under the project root (the `/rigger`
-/// workflow or the `using-rigger` skill), so `rigger setup` can REPORT a refresh but stay
-/// a silent no-op when nothing drifted (spec 05, criterion 4: setup is re-runnable - it
-/// detects and refreshes a drifted installed file, reports the refresh, and changes
-/// nothing when the file is already current).
+/// workflow, a registry skill, the docs pre-commit hook, or an `.mcp.json` or
+/// `.claude/settings.json` entry), so `rigger setup` can REPORT a refresh but stay a silent
+/// no-op when nothing drifted (spec 05, criterion 4: setup is re-runnable - it detects and
+/// refreshes a drifted installed file, reports the refresh, and changes nothing when the file
+/// is already current).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum InstallOutcome {
     /// No file was installed before; the managed copy was written fresh.
@@ -4810,6 +4811,11 @@ enum InstallOutcome {
     /// written - a rerun changes nothing (not even the file's mtime, which the grounder
     /// keys off).
     AlreadyCurrent,
+    /// The installed skill is the project's own copy under `.rigger/skills/`
+    /// ([`project_skill_path`]), written verbatim only when the installed file differed (spec
+    /// 121, criterion 14). A state, not a write: `rigger setup` reads it as
+    /// [`AlreadyCurrent`](Self::AlreadyCurrent) and reports nothing for it.
+    ProjectCopy,
 }
 
 /// Write `contents` to `path` ONLY when it is absent or differs, returning [what it
@@ -4863,6 +4869,12 @@ fn install_workflow(root: &Path) -> Result<InstallOutcome, Box<dyn std::error::E
     Ok(outcome)
 }
 
+/// The directory a skill lives under as `<SKILLS_DIR>/<name>/SKILL.md`: at the project root for
+/// a registry skill's committed source ([`skill_source_rel`]), and under `.rigger/` for a
+/// project's own copy of one ([`project_skill_path`]), the directory [`install_skills`] lists to
+/// find each copy and each stray.
+const SKILLS_DIR: &str = "skills";
+
 /// Where `rigger docs` writes a registry skill's rendered content, relative to the project
 /// root: `skills/<name>/SKILL.md`. Committed and drift-checked (spec 20, unit 2; spec 68,
 /// criterion 1) and installed into `.claude/skills/` by `rigger setup` (see
@@ -4870,7 +4882,15 @@ fn install_workflow(root: &Path) -> Result<InstallOutcome, Box<dyn std::error::E
 /// the docs-drift gate, and the CI-lane guard, so the three can never disagree on where a
 /// skill's committed source lives.
 fn skill_source_rel(name: &str) -> String {
-    format!("skills/{name}/SKILL.md")
+    format!("{SKILLS_DIR}/{name}/SKILL.md")
+}
+
+/// Where a project keeps its own copy of the registry skill `name`, which `rigger setup`
+/// installs verbatim in place of that skill's render (spec 121, criterion 14):
+/// `<root>/.rigger/skills/<name>/SKILL.md`, the [`rigger_path`] entry at [`skill_source_rel`].
+/// `rigger docs` and the docs-drift gate never read it.
+fn project_skill_path(root: &Path, name: &str) -> std::path::PathBuf {
+    rigger_path(root, &skill_source_rel(name))
 }
 
 /// Where `rigger setup` installs a registry skill, relative to the project root:
@@ -4936,36 +4956,121 @@ fn read_docs_overlay(root: &Path) -> Result<DocsOverlay, Box<dyn std::error::Err
     let raw = match std::fs::read_to_string(&path) {
         Ok(raw) => raw,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(DocsOverlay::default()),
-        Err(e) => return Err(format!("setup: reading {}: {e}", path.display()).into()),
+        Err(e) => return Err(setup_read_error(&path, e)),
     };
     serde_yaml::from_str(&raw)
         .map_err(|e| format!("setup: {} is not a valid docs overlay: {e}", path.display()).into())
 }
 
-/// Install (or refresh) EVERY skill in [`rigger::docs::skill_registry`] under `root`,
-/// returning each entry's `(name, outcome)` in registry order (spec 68, criterion 1:
-/// generalizes the single-skill `install_skill` seam over the whole registry). ONE
-/// code-derived context is built and this repo's [overlay](read_docs_overlay) merged onto
-/// it ONCE, then EVERY entry renders against that same context and installs via
-/// [`install_file_if_changed`] - so a downstream repo's base branch and specs location
-/// appear in every installed skill without anyone editing the shared discipline source,
-/// and adding an entry to the registry is the ONLY step needed to make a new skill
-/// install; this loop needs no per-skill edit. Like [`install_workflow`], each entry
-/// writes ONLY when its file is absent or has drifted, so a `rigger setup` rerun on an
-/// up-to-date repo is a true no-op that does not even move a file's mtime.
-fn install_skills(
+/// The `rigger setup` failure for a project file at `path` it could not read: the path, then
+/// the I/O error `e`.
+fn setup_read_error(path: &Path, e: std::io::Error) -> Box<dyn std::error::Error> {
+    format!("setup: reading {}: {e}", path.display()).into()
+}
+
+/// What [`install_skills`] did: each registry entry's `(name, outcome)` in registry order, and
+/// each stray under `.rigger/skills/` - an entry that is not a directory named by a registry
+/// entry and holding a `SKILL.md`, so it shadows no shipped skill - by its root-relative path,
+/// sorted.
+struct SkillInstall {
+    outcomes: Vec<(&'static str, InstallOutcome)>,
+    strays: Vec<String>,
+}
+
+/// The name of every entry in the project's `.rigger/skills/`, none when that directory is
+/// absent. A `.rigger/skills` that exists but cannot be listed, a plain file included, fails
+/// naming it.
+fn project_skill_entries(
     root: &Path,
-) -> Result<Vec<(&'static str, InstallOutcome)>, Box<dyn std::error::Error>> {
+) -> Result<Vec<std::ffi::OsString>, Box<dyn std::error::Error>> {
+    let dir = rigger_path(root, SKILLS_DIR);
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(setup_read_error(&dir, e)),
+    };
+    entries
+        .map(|entry| {
+            entry
+                .map(|entry| entry.file_name())
+                .map_err(|e| setup_read_error(&dir, e))
+        })
+        .collect()
+}
+
+/// The bytes of the project's own copy of the skill `name` ([`project_skill_path`]), or `None`
+/// when `.rigger/skills/<name>` holds no `SKILL.md` or is a plain file. A copy that exists but
+/// cannot be read, a `SKILL.md` that is a directory included, fails naming it.
+fn read_project_skill(
+    root: &Path,
+    name: &str,
+) -> Result<Option<Vec<u8>>, Box<dyn std::error::Error>> {
+    let path = project_skill_path(root, name);
+    match std::fs::read(&path) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(e)
+            if matches!(
+                e.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+            ) =>
+        {
+            Ok(None)
+        }
+        Err(e) => Err(setup_read_error(&path, e)),
+    }
+}
+
+/// Install (or refresh) EVERY skill in [`rigger::docs::skill_registry`] under `root` (spec 68,
+/// criterion 1: generalizes the single-skill `install_skill` seam over the whole registry),
+/// returning each entry's outcome and the strays ([`SkillInstall`]). ONE code-derived context
+/// is built and this repo's [overlay](read_docs_overlay) merged onto it ONCE, then EVERY entry
+/// renders against that same context and installs via [`install_file_if_changed`] - so a
+/// downstream repo's base branch and specs location appear in every installed skill without
+/// anyone editing the shared discipline source, and adding an entry to the registry is the
+/// ONLY step needed to make a new skill install; this loop needs no per-skill edit.
+///
+/// A project copy shadows the shipped skill of its exact name (spec 121, criterion 14): an
+/// entry of `.rigger/skills/` whose name equals a registry entry's byte for byte
+/// (case-sensitive, never trimmed) and that holds a `SKILL.md` installs that file's bytes
+/// verbatim in place of the render, with no overlay, reported as
+/// [`ProjectCopy`](InstallOutcome::ProjectCopy). Every other entry there is a stray, which
+/// installs nothing. A `.rigger/skills` or a copy that cannot be read fails setup naming it,
+/// installing no render in place of that copy. Like [`install_workflow`], each entry writes
+/// ONLY when its file is absent or differs, so a `rigger setup` rerun on an up-to-date repo is
+/// a true no-op that does not even move a file's mtime.
+fn install_skills(root: &Path) -> Result<SkillInstall, Box<dyn std::error::Error>> {
     let mut ctx = docs_context();
     read_docs_overlay(root)?.apply(&mut ctx);
+    let entries = project_skill_entries(root)?;
     let mut outcomes = Vec::new();
     for entry in rigger::docs::skill_registry() {
-        let rendered = entry.render(&ctx);
-        let outcome =
-            install_file_if_changed(&skill_install_path(root, entry.name), rendered.as_bytes())?;
+        let installed = skill_install_path(root, entry.name);
+        let copy = if entries.iter().any(|name| name.as_os_str() == entry.name) {
+            read_project_skill(root, entry.name)?
+        } else {
+            None
+        };
+        let outcome = match copy {
+            Some(bytes) => {
+                install_file_if_changed(&installed, &bytes)?;
+                InstallOutcome::ProjectCopy
+            }
+            None => install_file_if_changed(&installed, entry.render(&ctx).as_bytes())?,
+        };
         outcomes.push((entry.name, outcome));
     }
-    Ok(outcomes)
+    let dir = rigger_path(Path::new(""), SKILLS_DIR);
+    let mut strays: Vec<String> = entries
+        .iter()
+        .filter(|name| {
+            !outcomes.iter().any(|(skill, outcome)| {
+                *outcome == InstallOutcome::ProjectCopy && name.as_os_str() == *skill
+            })
+        })
+        .map(|name| dir.join(name).display().to_string())
+        .collect();
+    strays.sort();
+    Ok(SkillInstall { outcomes, strays })
 }
 
 /// The comment line that OPENS rigger's managed block inside a `pre-commit` hook. It is a
