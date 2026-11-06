@@ -123,7 +123,7 @@ Some behaviour a project once got unasked is now a `defaults:` key it declares, 
 
 Some guidance an agent's prompt once carried now lives in a persona, and rigger never rewrites a persona a project already has, so copy each moved sentence into your own persona to keep it:
 
-- "Split a criterion whose one unit would be too large into ordered units (each `needs` the one before it), each owning a named part.", "If you discover a NECESSARY sub-unit or an ordering dependency the baseline missed, propose it.", "NEVER propose a unit that maps to no acceptance criterion - that is scope creep.", "Propose each refinement the moment you decide it.", "Do not write code." and "Only omit the id when you truly intend a new sub-unit." - the planner's planning policy, at the end of this repository's `.rigger/agents/planner.md` and of the `planner.md` persona `rigger init` scaffolds.
+- "Split a criterion whose one unit would be too large into ordered units (each `needs` the one before it), each owning a named part.", "If you discover a NECESSARY sub-unit or an ordering dependency the baseline missed, propose it.", "NEVER propose a unit that maps to no acceptance criterion - that is scope creep.", "Propose each refinement the moment you decide it.", "Do not write code." and "Only omit the id when you truly intend a new sub-unit." - the planner's planning policy, in this repository's `.rigger/agents/planner.md` and in the `planner.md` persona `rigger init` scaffolds.
 
 ### The knobs that matter
 
