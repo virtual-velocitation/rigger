@@ -24930,6 +24930,53 @@ fn setup_installs_the_using_rigger_skill_with_project_overlay() {
     );
 }
 
+/// A project's docs overlay, relative to its root: this repository's own, and the one a fresh
+/// project's `rigger setup` reads.
+const DOCS_OVERLAY_REL: &str = ".rigger/docs-overlay.yml";
+
+/// Run `rigger setup` in a fresh project whose [`DOCS_OVERLAY_REL`] reads `overlay`, then
+/// `rigger docs` there: the installed `planning-a-spec` is this repository's committed skill with
+/// `list` - the project's constraint block - set between step 6 and step 7, and the render
+/// `rigger docs` writes is the committed skill byte for byte, so the overlay reaches the install
+/// alone.
+fn assert_setup_installs_the_planning_skill_carrying(overlay: &str, list: &str) {
+    let proj = temp_project();
+    let root = proj.path();
+    common::cli::seed_rigger_dir(root);
+    std::fs::write(root.join(DOCS_OVERLAY_REL), overlay).unwrap();
+    setup_ok(root, &[("RIGGER_NPM", "true")]);
+
+    let committed = repo_text("skills/planning-a-spec/SKILL.md");
+    assert_eq!(
+        std::fs::read_to_string(root.join(".claude/skills/planning-a-spec/SKILL.md")).unwrap(),
+        committed.replacen("**7. ", &format!("{list}**7. "), 1),
+        "rigger setup must install the committed planning-a-spec with the overlay's \
+         constraints under step 6"
+    );
+    run_rigger_ok(root, &["docs"]);
+    assert_eq!(
+        std::fs::read_to_string(root.join("skills/planning-a-spec/SKILL.md")).unwrap(),
+        committed,
+        "rigger docs must render the committed planning-a-spec, without the overlay"
+    );
+}
+
+rigger::test_cases! {
+    /// Spec 121, criterion 13 (THE PLANNING SKILL CARRIES THE PROJECT'S CONSTRAINTS): given this
+    /// repository's own overlay, when the operator runs `rigger setup`, the installed
+    /// `planning-a-spec` carries its two Global constraints under step 6, in the overlay's order.
+    setup_installs_this_repositorys_global_constraints_under_planning_step_6:
+        assert_setup_installs_the_planning_skill_carrying(
+            &repo_text(DOCS_OVERLAY_REL),
+            common::fixtures::THIS_REPOSITORYS_PLANNING_CONSTRAINTS,
+        );
+    /// Spec 121, criterion 13: given an overlay that declares no `global_constraints`, when the
+    /// operator runs `rigger setup`, the installed `planning-a-spec` is the committed skill, with
+    /// no project list under step 6.
+    setup_installs_no_project_list_from_an_overlay_without_global_constraints:
+        assert_setup_installs_the_planning_skill_carrying("base_ref: origin/trunk\n", "");
+}
+
 /// Spec 68, criterion 1 (the INSTALL seam covers the WHOLE registry, end to end): `rigger
 /// setup` installs EVERY entry in the registry into the consumer project, not only the
 /// pre-existing `using-rigger` skill - `planning-a-spec` lands at its own installed path,

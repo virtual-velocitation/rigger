@@ -10225,8 +10225,7 @@ mod tests {
                     Path::new(env!("CARGO_MANIFEST_DIR")),
                     DOCS_OVERLAY_FILE,
                 )),
-                "This project's:\n- Hyphens not em dashes (U+2014 fails the diff gate).\n- Both \
-                 feature lanes green.\n\n",
+                crate::test_support::THIS_REPOSITORYS_PLANNING_CONSTRAINTS,
             );
     }
 

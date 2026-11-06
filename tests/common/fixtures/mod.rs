@@ -15,6 +15,7 @@
 mod caller_sources;
 mod config;
 mod csharp_definition_sources;
+mod docs_overlay;
 mod events;
 mod extent_sources;
 mod extraction_tree;
@@ -39,6 +40,7 @@ mod spawn;
 pub use caller_sources::*;
 pub use config::*;
 pub use csharp_definition_sources::*;
+pub use docs_overlay::*;
 pub use events::*;
 pub use extent_sources::*;
 pub use extraction_tree::*;
