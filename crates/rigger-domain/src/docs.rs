@@ -28,8 +28,9 @@ use std::fmt::Write as _;
 /// The typed, code-derived facts the discipline templates interpolate. Every field is
 /// a value that could drift from behavior if hand-copied, so the composition root
 /// populates each one FROM the code definition the runtime uses (see `docs_context` in
-/// the binary). A project overlay merges by overriding fields here BEFORE rendering, so
-/// repo specifics and the shared discipline share this one pipeline.
+/// the binary); `global_constraints`, a project's own, starts empty there. A project overlay
+/// merges by overriding fields here BEFORE rendering, so repo specifics and the shared
+/// discipline share this one pipeline.
 ///
 /// Removing or renaming a field breaks every template that interpolates it at COMPILE
 /// time - that is the load-bearing property: the templates are validated against this

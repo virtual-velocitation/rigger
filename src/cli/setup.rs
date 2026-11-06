@@ -709,8 +709,8 @@ pub(crate) fn cmd_setup(args: &[String]) -> Res {
     let workflow = install_workflow(root)?;
     // Install EVERY skill in the registry (spec 20, unit 3; spec 68, criterion 1): each a
     // loadable front-door DISTINCT from the `/rigger` workflow, with this repo's project
-    // overlay (base branch, specs location) merged into the render. Drift-aware like the
-    // workflow, so a rerun on an up-to-date repo changes nothing.
+    // overlay (base branch, specs location, Global constraints) merged into the render.
+    // Drift-aware like the workflow, so a rerun on an up-to-date repo changes nothing.
     let skills = install_skills(root)?;
     // Install the docs-checking git pre-commit hook (spec 24): on `git commit` it runs
     // `rigger docs --check` and refuses the commit when a rendered output the repo tracks

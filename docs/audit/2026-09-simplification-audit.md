@@ -2233,7 +2233,7 @@ mandatory sweep: .rigger-path string literals - 612 site(s), collected mechanica
 - `crates/rigger-dash/src/dash.rs:3946-3946` `"{root}/.rigger/events.db"`
 - `crates/rigger-dash/src/dash.rs:3997-3997` `"/.rigger/events.db"`
 - `crates/rigger-domain/src/config.rs:21-21` `".rigger"`
-- `crates/rigger-domain/src/docs.rs:227-227` `"The EVENT LOG keeps knowledge, never the derived index: an ingest records one ledger \
+- `crates/rigger-domain/src/docs.rs:228-228` `"The EVENT LOG keeps knowledge, never the derived index: an ingest records one ledger \
          entry per file generation, and the graph re-derives the code entities, inferred edges, \
          design links and doc concepts from your sources. A log recorded before that still holds \
          the derived index itself, every generation of every file, and `rigger reset --derived` \
@@ -2283,31 +2283,31 @@ mandatory sweep: .rigger-path string literals - 612 site(s), collected mechanica
          courier's (`emit`, `result`, `progress`) discovery refresh of that registration never \
          does. `--force-live` overrides the refusal for an operator certain no writer is using \
          the store; it checks nothing.\n"`
-- `crates/rigger-domain/src/docs.rs:892-892` `"Store hygiene for rigger's own state - growing .rigger/ disk usage, \
+- `crates/rigger-domain/src/docs.rs:893-893` `"Store hygiene for rigger's own state - growing .rigger/ disk usage, \
          the bloat advisory from `rigger validate`, or `rigger step`/replay running slow. \
          Read this before running `rigger reset` or touching any store file by hand."`
-- `crates/rigger-domain/src/docs.rs:896-896` `"rigger keeps three stores under `.rigger/`, and only one of them holds anything \
+- `crates/rigger-domain/src/docs.rs:897-897` `"rigger keeps three stores under `.rigger/`, and only one of them holds anything \
              durable:\n"`
-- `crates/rigger-domain/src/docs.rs:969-969` `"`rigger graph build` folds the project's source straight into `.rigger/graph.db` - \
+- `crates/rigger-domain/src/docs.rs:970-970` `"`rigger graph build` folds the project's source straight into `.rigger/graph.db` - \
              no run, no `RunStarted`, and nothing on the event log but one ledger entry per file \
              batch whose generation moved, since the tree re-derives the batch itself. \
              It CREATES the store when the checkout is cold (`.rigger/` does not exist yet) and \
              REFRESHES an existing store incrementally: an unchanged file re-ingests nothing, and \
              it reuses the exact same walk-and-content-key ingest authority a live run uses, so a \
              standalone build and a run can never fold the same file under two different keys.\n"`
-- `crates/rigger-domain/src/docs.rs:980-980` `"Never force a rebuild by deleting `.rigger/graph.db` (or `events.db`) and \
+- `crates/rigger-domain/src/docs.rs:981-981` `"Never force a rebuild by deleting `.rigger/graph.db` (or `events.db`) and \
          re-running `rigger graph build` on the empty result. Deleting the log throws away \
          truth that no rebuild can get back, and deleting only the graph is unnecessary work \
          `rigger graph build` already does FOR you, incrementally, without erasing anything \
          first. If lookups are empty, just run `rigger graph build`; only reach for \
          rigger-reset-store if you specifically mean to prune, not rebuild.\n"`
-- `crates/rigger-domain/src/docs.rs:1004-1004` `"`rigger reindex <file>...` re-parses ONLY the named files and persists the delta to \
+- `crates/rigger-domain/src/docs.rs:1005-1005` `"`rigger reindex <file>...` re-parses ONLY the named files and persists the delta to \
              the project's symbols grounding index at `.rigger/symbols/` - the fast, targeted fix \
              for an index that has drifted from files you just changed (a unit's own commit, a \
              rebase, a branch switch). It is scoped strictly to the symbols index, a DIFFERENT \
              store from the structural context graph, so it costs only the named files, never a \
              walk of the whole tree.\n"`
-- `crates/rigger-domain/src/docs.rs:1737-1737` `"the partition holding .rigger/ needs about the compacted size of the log \
+- `crates/rigger-domain/src/docs.rs:1738-1738` `"the partition holding .rigger/ needs about the compacted size of the log \
                      free"`
 - `crates/rigger-gates-shell/src/gate.rs:336-336` `".rigger-cache-probe-{}"`
 - `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:8871-8871` `"local:/p/.rigger/events.db"`
@@ -3957,8 +3957,8 @@ Proposed home: `docs::support (consolidate these 2 sites into one function in th
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-domain/src/docs.rs:98-116` `render_using_rigger_skill`
-- `crates/rigger-domain/src/docs.rs:120-131` `render_handbook_discipline`
+- `crates/rigger-domain/src/docs.rs:99-117` `render_using_rigger_skill`
+- `crates/rigger-domain/src/docs.rs:121-132` `render_handbook_discipline`
 
 #### `dup-cbeb7fee0352` (near, 4 sites)
 
@@ -3966,10 +3966,10 @@ Proposed home: `docs::support (consolidate these 4 sites into one function in th
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-domain/src/docs.rs:961-990` `render_build_graph_skill`
-- `crates/rigger-domain/src/docs.rs:995-1022` `render_reindex_skill`
-- `crates/rigger-domain/src/docs.rs:1027-1079` `render_resume_a_run_skill`
-- `crates/rigger-domain/src/docs.rs:1208-1258` `render_restore_the_dash_skill`
+- `crates/rigger-domain/src/docs.rs:962-991` `render_build_graph_skill`
+- `crates/rigger-domain/src/docs.rs:996-1023` `render_reindex_skill`
+- `crates/rigger-domain/src/docs.rs:1028-1080` `render_resume_a_run_skill`
+- `crates/rigger-domain/src/docs.rs:1209-1259` `render_restore_the_dash_skill`
 
 #### `dup-3d5ea11431d3` (near, 2 sites)
 
@@ -3977,8 +3977,8 @@ Proposed home: `docs::support (consolidate these 2 sites into one function in th
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-domain/src/docs.rs:1086-1121` `render_handle_an_escalation_skill`
-- `crates/rigger-domain/src/docs.rs:1267-1316` `render_diagnose_churn_skill`
+- `crates/rigger-domain/src/docs.rs:1087-1122` `render_handle_an_escalation_skill`
+- `crates/rigger-domain/src/docs.rs:1268-1317` `render_diagnose_churn_skill`
 
 #### `dup-e45a74e51e8a` (near, 4 sites)
 

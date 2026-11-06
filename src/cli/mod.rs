@@ -4962,11 +4962,11 @@ fn read_docs_overlay(root: &Path) -> Result<DocsOverlay, Box<dyn std::error::Err
 /// it ONCE, then EVERY entry renders against that same context and installs via
 /// [`install_file_if_changed`] - so a downstream repo's base branch, specs location and
 /// Global constraints reach every installed skill that carries them without anyone editing
-/// the shared discipline source,
-/// and adding an entry to the registry is the ONLY step needed to make a new skill
-/// install; this loop needs no per-skill edit. Like [`install_workflow`], each entry
-/// writes ONLY when its file is absent or has drifted, so a `rigger setup` rerun on an
-/// up-to-date repo is a true no-op that does not even move a file's mtime.
+/// the shared discipline source, and adding an entry to the registry is the ONLY step
+/// needed to make a new skill install; this loop needs no per-skill edit. Like
+/// [`install_workflow`], each entry writes ONLY when its file is absent or has drifted, so
+/// a `rigger setup` rerun on an up-to-date repo is a true no-op that does not even move a
+/// file's mtime.
 fn install_skills(
     root: &Path,
 ) -> Result<Vec<(&'static str, InstallOutcome)>, Box<dyn std::error::Error>> {
