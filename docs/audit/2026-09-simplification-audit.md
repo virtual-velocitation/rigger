@@ -2135,8 +2135,8 @@ mandatory sweep: Command::new call sites - 94 site(s), collected mechanically re
 - `src/cli/run.rs:3700-3700` `Command::new`
 - `src/cli/run.rs:3744-3744` `Command::new`
 - `src/cli/run.rs:3813-3813` `Command::new`
-- `src/cli/setup.rs:3988-3988` `Command::new`
-- `src/cli/setup.rs:4017-4017` `Command::new`
+- `src/cli/setup.rs:4187-4187` `Command::new`
+- `src/cli/setup.rs:4216-4216` `Command::new`
 - `src/cli/validate.rs:1556-1556` `Command::new`
 - `src/cli/validate.rs:1877-1877` `Command::new`
 - `tests/adaptive_labels_periphery.rs:87-87` `Command::new`
@@ -2578,55 +2578,55 @@ __END__
              package-lock.json and ran npm install)"`
 - `src/cli/setup.rs:1516-1516` `"kept existing .rigger/agents/{name} (import never overwrites)"`
 - `src/cli/setup.rs:1544-1544` `"imported .rigger/agents/{name} (id: {id})"`
-- `src/cli/setup.rs:2574-2574` `"nothing is written - no .rigger, no .claude, no .gitignore"`
-- `src/cli/setup.rs:2641-2641` `"scaffolded .rigger/workflow.yml"`
-- `src/cli/setup.rs:2646-2646` `"no gate template set matches this project (rust: Cargo.toml at the project \
+- `src/cli/setup.rs:2609-2609` `"nothing is written - no .rigger, no .claude, no .gitignore"`
+- `src/cli/setup.rs:2679-2679` `"scaffolded .rigger/workflow.yml"`
+- `src/cli/setup.rs:2684-2684` `"no gate template set matches this project (rust: Cargo.toml at the project \
                   root), so .rigger/workflow.yml declares no gates - declare your own under gates:"`
-- `src/cli/setup.rs:2672-2672` `"scaffolded .rigger/workflow.yml (gate template set: demo)"`
-- `src/cli/setup.rs:2700-2700` `"scaffolded .rigger/workflow.yml"`
-- `src/cli/setup.rs:2701-2701` `"no gate template set matches this project (demo: a or b; other: c at the project \
+- `src/cli/setup.rs:2710-2710` `"scaffolded .rigger/workflow.yml (gate template set: demo)"`
+- `src/cli/setup.rs:2738-2738` `"scaffolded .rigger/workflow.yml"`
+- `src/cli/setup.rs:2739-2739` `"no gate template set matches this project (demo: a or b; other: c at the project \
                  root), so .rigger/workflow.yml declares no gates - declare your own under gates:"`
-- `src/cli/setup.rs:2718-2718` `".rigger/workflow.yml"`
-- `src/cli/setup.rs:3038-3038` `".rigger/agents/"`
-- `src/cli/setup.rs:3092-3092` `".rigger/dash.url"`
-- `src/cli/setup.rs:3093-3093` `".rigger/dash.marker"`
-- `src/cli/setup.rs:3094-3094` `".rigger/dash.attempt"`
-- `src/cli/setup.rs:3103-3103` `".rigger/store.conn"`
-- `src/cli/setup.rs:3120-3120` `".rigger/\n"`
-- `src/cli/setup.rs:3126-3126` `".rigger/dash.url"`
-- `src/cli/setup.rs:3129-3129` `".rigger/dash.marker"`
-- `src/cli/setup.rs:3132-3132` `".rigger/dash.attempt"`
-- `src/cli/setup.rs:3133-3133` `"setup appends the explicit dash lines (including the round-8 attempt breadcrumb) \
+- `src/cli/setup.rs:2758-2758` `".rigger/workflow.yml"`
+- `src/cli/setup.rs:3227-3227` `".rigger/agents/"`
+- `src/cli/setup.rs:3281-3281` `".rigger/dash.url"`
+- `src/cli/setup.rs:3282-3282` `".rigger/dash.marker"`
+- `src/cli/setup.rs:3283-3283` `".rigger/dash.attempt"`
+- `src/cli/setup.rs:3292-3292` `".rigger/store.conn"`
+- `src/cli/setup.rs:3309-3309` `".rigger/\n"`
+- `src/cli/setup.rs:3315-3315` `".rigger/dash.url"`
+- `src/cli/setup.rs:3318-3318` `".rigger/dash.marker"`
+- `src/cli/setup.rs:3321-3321` `".rigger/dash.attempt"`
+- `src/cli/setup.rs:3322-3322` `"setup appends the explicit dash lines (including the round-8 attempt breadcrumb) \
              even when .rigger/ broadly covers them, so the committed .gitignore stays \
              self-contained, got: {:?}"`
-- `src/cli/setup.rs:3141-3141` `".rigger/dash.url"`
-- `src/cli/setup.rs:3142-3142` `".rigger/dash.marker"`
-- `src/cli/setup.rs:3143-3143` `".rigger/dash.attempt"`
-- `src/cli/setup.rs:3144-3144` `"all three explicit per-file dash ignore lines are present in the committed \
+- `src/cli/setup.rs:3330-3330` `".rigger/dash.url"`
+- `src/cli/setup.rs:3331-3331` `".rigger/dash.marker"`
+- `src/cli/setup.rs:3332-3332` `".rigger/dash.attempt"`
+- `src/cli/setup.rs:3333-3333` `"all three explicit per-file dash ignore lines are present in the committed \
              .gitignore even though .rigger/ already covers them, got:\n{content}"`
-- `src/cli/setup.rs:3154-3154` `".rigger/dash.url"`
-- `src/cli/setup.rs:3157-3157` `".rigger/dash.marker"`
-- `src/cli/setup.rs:3160-3160` `".rigger/dash.attempt"`
-- `src/cli/setup.rs:3513-3513` `".rigger/agents/researcher.md"`
-- `src/cli/setup.rs:3542-3542` `".rigger/agents/planner.md"`
-- `src/cli/setup.rs:3572-3572` `".rigger/agents/newcomer.md"`
-- `src/cli/setup.rs:3650-3650` `".rigger/workflow.yml"`
-- `src/cli/setup.rs:3963-3963` `".rigger"`
-- `src/cli/setup.rs:4319-4319` `".rigger/agents/{persona}"`
-- `src/cli/setup.rs:4375-4375` `".rigger/agents/{f}"`
-- `src/cli/setup.rs:4459-4459` `".rigger/agents/planner.md"`
-- `src/cli/setup.rs:4578-4578` `"`sh .rigger/gates/audit.sh`, then `git status --porcelain` empty"`
-- `src/cli/setup.rs:4580-4580` `"`sh .rigger/gates/content.sh style`"`
-- `src/cli/setup.rs:4581-4581` `"`sh .rigger/gates/content.sh no-os-kill`"`
-- `src/cli/setup.rs:4582-4582` `"`sh .rigger/gates/red-before-green.sh`"`
-- `src/cli/setup.rs:4595-4595` `"Once these checks have run, a later commit or an amend re-runs only what its new \
+- `src/cli/setup.rs:3343-3343` `".rigger/dash.url"`
+- `src/cli/setup.rs:3346-3346` `".rigger/dash.marker"`
+- `src/cli/setup.rs:3349-3349` `".rigger/dash.attempt"`
+- `src/cli/setup.rs:3709-3709` `".rigger/agents/researcher.md"`
+- `src/cli/setup.rs:3738-3738` `".rigger/agents/planner.md"`
+- `src/cli/setup.rs:3768-3768` `".rigger/agents/newcomer.md"`
+- `src/cli/setup.rs:3846-3846` `".rigger/workflow.yml"`
+- `src/cli/setup.rs:4162-4162` `".rigger"`
+- `src/cli/setup.rs:4518-4518` `".rigger/agents/{persona}"`
+- `src/cli/setup.rs:4574-4574` `".rigger/agents/{f}"`
+- `src/cli/setup.rs:4658-4658` `".rigger/agents/planner.md"`
+- `src/cli/setup.rs:4777-4777` `"`sh .rigger/gates/audit.sh`, then `git status --porcelain` empty"`
+- `src/cli/setup.rs:4779-4779` `"`sh .rigger/gates/content.sh style`"`
+- `src/cli/setup.rs:4780-4780` `"`sh .rigger/gates/content.sh no-os-kill`"`
+- `src/cli/setup.rs:4781-4781` `"`sh .rigger/gates/red-before-green.sh`"`
+- `src/cli/setup.rs:4794-4794` `"Once these checks have run, a later commit or an amend re-runs only what its new \
              diff can change: a diff that touches only comments, doc comments or Markdown \
              re-runs `cargo fmt --all --check`, the default-lane clippy line, `sh \
              .rigger/gates/audit.sh` with `git status --porcelain` empty and the root tests that \
              read a checked-in file as text; any other hunk re-runs the full list."`
-- `src/cli/setup.rs:4608-4608` `"`src/`, `crates/`, `tests/`, `docs/`, `skills/`, `scaffold/` and `.rigger/`"`
-- `src/cli/setup.rs:4611-4611` `"`git ls-files src crates tests docs skills scaffold .rigger | xargs awk"`
-- `src/cli/setup.rs:4613-4613` `"`sh .rigger/gates/lanes.sh <lane>`"`
+- `src/cli/setup.rs:4807-4807` `"`src/`, `crates/`, `tests/`, `docs/`, `skills/`, `scaffold/` and `.rigger/`"`
+- `src/cli/setup.rs:4810-4810` `"`git ls-files src crates tests docs skills scaffold .rigger | xargs awk"`
+- `src/cli/setup.rs:4812-4812` `"`sh .rigger/gates/lanes.sh <lane>`"`
 - `src/cli/validate.rs:907-907` `"warning: tracked .rigger/ files have uncommitted modifications:"`
 - `src/cli/validate.rs:1396-1396` `" M .rigger/workflow.yml\n\
                          M  .rigger/agents/sdet.md\n\
@@ -4313,7 +4313,7 @@ Proposed home: `a new shared module (sites span 2 files: crates/rigger-driver/sr
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `crates/rigger-driver/src/liveness.rs:1079-1093` `marker_filename_is_injective_so_two_ids_that_collided_under_a_prior_placeholder_scheme_no_longer_do`
-- `src/cli/setup.rs:2863-2877` `normalize_origin_url_separates_distinct_repos_and_lowercases_only_the_host`
+- `src/cli/setup.rs:3052-3066` `normalize_origin_url_separates_distinct_repos_and_lowercases_only_the_host`
 
 #### `dup-880060c29e31` (semantic, 66 sites)
 
@@ -5594,7 +5594,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 ### Adversarial sample
 
-Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 11449 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
+Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 11452 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
 
 - `crates/rigger-conductor/src/conductor.rs:16098-16120` `branch_is_foreign_when_only_one_axis_differs` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-conductor/src/conductor.rs:17083-17090` `resume_of` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
@@ -5616,8 +5616,8 @@ Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85
 - `src/cli/mod.rs:8928-8938` `parse_run_args_reads_rebase_definition` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `src/cli/run.rs:1597-1599` `pause_a_hold_poll` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `src/cli/run.rs:2486-2510` `start_run_dashboard` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
+- `src/cli/setup.rs:2886-2893` `agent_files` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `tests/change_path_revert_periphery.rs:213-323` `a_revert_through_the_shipped_build_records_the_earlier_generations_entry_again` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
-- `tests/code_entity_test_exclusion_periphery.rs:1810-1822` `edges_where` - duplicate found by reading and closed: the design-doc assertion, the dev-only path test and the test-region test each re-rolled its `(from, rel, to)` edge projection inline; all now call `edges_where`
 - `tests/common/fixtures/events.rs:957-959` `after_call` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `tests/common/fixtures/events.rs:974-976` `reads` - caught: `dup-ebee743f02de`
 - `tests/common/fixtures/events.rs:1225-1227` `reads` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
@@ -5627,7 +5627,7 @@ Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85
 - `tests/spec_critique_periphery.rs:1424-1449` `a_default_review_listing_no_adversary_step_has_no_critic` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `tests/worker_persona_label_periphery.rs:246-267` `the_subject_is_the_titles_first_sentence_passed_whole_with_no_truncation` - duplicate found by reading and closed: it re-rolled `assert_worker_label` inline; it now calls it
 
-Reading pass 2026-09-27: 4 of the 30 drawn functions read by hand (a caught row too, to judge whether its duplicate reaches past the cluster); 22 duplicate(s) found by reading, each closed.
+Reading pass 2026-09-27: 3 of the 30 drawn functions read by hand (a caught row too, to judge whether its duplicate reaches past the cluster); 21 duplicate(s) found by reading, each closed.
 - closed before the redraw: `tests/kurrentdb_always_available.rs` `architecture_blueprint_has_no_retired_kurrentdb_feature_reference` re-rolled the manifest-relative read `common::repo::repo_text` owns, as did thirteen sibling reads across eleven suites; every one now calls `repo_text`
 - closed before the redraw: `tests/replan_episode_identity.rs` `serving` had two inline copies of its scan in its own file; both now call it
 - closed before the redraw: `crates/rigger-conductor/src/conductor.rs` `integrate_and_emit` repeated `catch_up_owed_regeneration`'s regenerate/record/clear sequence twice; all three now call `regenerate_and_record`

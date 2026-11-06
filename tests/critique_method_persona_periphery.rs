@@ -44,7 +44,7 @@ use common::repo::repo_text;
 use std::path::Path;
 
 /// The agent the scaffolded workflow's implement template fans out to.
-const WORKER: &str = "rust-engineer";
+const WORKER: &str = "implementer";
 
 /// The blast radius a unit of a project with no grounded source lists.
 const NONE_GROUNDED: &str = "(none grounded)";
