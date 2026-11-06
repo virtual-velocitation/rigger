@@ -221,6 +221,13 @@ pub fn hook_words(settings: &serde_json::Value, event: &str) -> Vec<(String, Vec
         .collect()
 }
 
+/// The session's grep guard as [`hook_words`] reads it: the tools it matches and the words of the
+/// command it runs.
+pub fn grep_guard_hook() -> (String, Vec<String>) {
+    let words = ["rigger", "grep-guard"].map(str::to_string);
+    ("Grep|Bash".to_string(), words.to_vec())
+}
+
 /// A launch's `settings` carry its per-spawn hooks: under `PreToolUse` the write guard running
 /// `bin` with `roots` in order, then the session's grep guard exactly when `grep_guard` (the
 /// workflow's `defaults.grep_guard`) declares it, and under `StopFailure` one entry per category
@@ -239,7 +246,7 @@ pub fn assert_carries_spawn_hooks(
     }
     let mut pre_tool_use = vec![("Edit|MultiEdit|Write|NotebookEdit".to_string(), guard)];
     if grep_guard {
-        pre_tool_use.push(("Grep|Bash".to_string(), words(&["rigger", "grep-guard"])));
+        pre_tool_use.push(grep_guard_hook());
     }
     assert_eq!(
         hook_words(settings, "PreToolUse"),

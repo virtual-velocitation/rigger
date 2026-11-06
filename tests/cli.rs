@@ -43,15 +43,17 @@ use common::cli::validate_after_init;
 use common::cli::{assert_stopped_at_the_grounder, stopping_at_the_grounder};
 #[cfg(feature = "symbols")]
 use common::cli::{batch_events, recorded_and_walked};
-use common::cli::{escalate_solo_unit, REVIEWLESS_GIT_ESCALATING_UNIT_WORKFLOW};
 use common::cli::{
-    write_scaffold, write_workflow_fixture, WorkflowFixture, ISOLATED_WORKER,
+    declare_grep_guard, write_scaffold, write_workflow_fixture, WorkflowFixture, ISOLATED_WORKER,
     REVIEWLESS_GIT_UNIT_WORKFLOW, UNISOLATED_WORKER,
 };
+use common::cli::{escalate_solo_unit, REVIEWLESS_GIT_ESCALATING_UNIT_WORKFLOW};
 use common::fixtures::assert_driver_guards_a_null_step;
 use common::fixtures::file_len;
 use common::fixtures::pgid_of;
-use common::fixtures::{api_retry_lines, recorded_argv, recorded_task, ERROR_RESULT};
+use common::fixtures::{
+    api_retry_lines, recorded_argv, recorded_task, stand_in_launches, ERROR_RESULT,
+};
 use common::git::git_answer;
 use common::git::temp_git_project_with_commit;
 use common::mcp::McpSession;
@@ -10686,13 +10688,10 @@ stages:
 "#,
 };
 
-/// The opening of an [`install_fake_claude`] arm whose launches all stay on record: the launch
-/// leaves its argv, working directory and spawn in a directory of its own under `launches`.
-const RECORD_EACH_LAUNCH: &str = r#"    mkdir -p "$here/launches/$$"
-    printf '%s\0' "$@" > "$here/launches/$$/argv"
-    pwd -P > "$here/launches/$$/cwd"
-    printf '%s' "$RIGGER_SPAWN" > "$here/launches/$$/spawn"
-"#;
+/// The opening of an [`install_fake_claude`] arm whose launches all stay on record, through the
+/// stand-in's `record_launch`: the launch leaves its argv, working directory and spawn in a
+/// directory of its own under `launches`, which [`stand_in_launches`] reads back.
+const RECORD_EACH_LAUNCH: &str = "    record_launch \"$here/launches\" \"$@\"\n";
 
 /// Scaffold `root` with [`FULLY_REVIEWED_UNIT_WORKFLOW`] and the three reviewers it names.
 fn write_reviewed_unit(root: &Path) {
@@ -10702,19 +10701,15 @@ fn write_reviewed_unit(root: &Path) {
     write_agent(root, "judge", "Read", "Adjudicate it.");
 }
 
-/// Spec 105's hook injection on every launch: given a unit reviewed by a lens, an adversary and an
-/// adjudicator that rejects its first round, when `rigger run` drives it, then each launch of the
-/// two rounds, fresh or resumed, the implementer's and each reviewer's, carries the write guard
-/// rooted at that launch's own working directory and spawn scratch container, and the `StopFailure`
-/// entries for its own spawn.
+/// Spec 105's hook injection on every launch, with spec 121's THE GREP GUARD IS DECLARED: given a
+/// unit reviewed by a lens, an adversary and an adjudicator that rejects its first round, its
+/// workflow declaring `defaults.grep_guard` or not, when `rigger run` drives it, then each launch of
+/// the two rounds, fresh or resumed, the implementer's and each reviewer's, carries the write guard
+/// rooted at that launch's own working directory and spawn scratch container, the `StopFailure`
+/// entries for its own spawn, and the session's grep guard exactly when the workflow declares it.
 #[cfg(unix)]
 #[test]
 fn every_launch_of_a_reviewed_unit_carries_the_hooks_for_its_own_spawn() {
-    let dir = temp_git_project_with_commit();
-    let root = std::fs::canonicalize(dir.path()).unwrap();
-    write_reviewed_unit(&root);
-    let held = tempfile::tempdir().unwrap();
-    let scratch = std::fs::canonicalize(held.path()).unwrap();
     let arms = format!(
         r#"  *"Do the unit."*)
 {RECORD_EACH_LAUNCH}    echo "pub fn work() {{}}" >> work.rs
@@ -10735,48 +10730,62 @@ fn every_launch_of_a_reviewed_unit_carries_the_hooks_for_its_own_spawn() {
     ;;
 "#
     );
-    let (out, err, ok, fake) = run_on_arms(&root, &["run"], &scratch, &arms);
-    assert!(ok, "the run succeeds; stderr: {err}\nstdout: {out}");
-
-    let run = common::cli::current_run_id_of(&root).expect("the run has an id");
-    let bin = std::fs::canonicalize(rigger_bin()).unwrap();
-    let mut launches: Vec<(String, bool)> = Vec::new();
-    for launch in std::fs::read_dir(fake.path().join("bin/launches")).unwrap() {
-        let launch = launch.unwrap().path();
-        let spawn = std::fs::read_to_string(launch.join("spawn")).unwrap();
-        let cwd = std::fs::read_to_string(launch.join("cwd")).unwrap();
-        let session_cwd = cwd.trim_end();
-        assert_eq!(
-            session_cwd,
-            scratch.join("rigger-wt-solo").to_str().unwrap(),
-            "{spawn}: each launch of the unit runs in its worktree"
+    for grep_guard in [false, true] {
+        let dir = temp_git_project_with_commit();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        write_reviewed_unit(&root);
+        if grep_guard {
+            declare_grep_guard(&root);
+        }
+        let held = tempfile::tempdir().unwrap();
+        let scratch = std::fs::canonicalize(held.path()).unwrap();
+        let (out, err, ok, fake) = run_on_arms(&root, &["run"], &scratch, &arms);
+        assert!(
+            ok,
+            "grep_guard {grep_guard}: the run succeeds; stderr: {err}\nstdout: {out}"
         );
-        let container =
-            rigger::driver::replay::spawn_scratch_path(scratch.to_str().unwrap(), &run, &spawn)
-                .unwrap();
-        let roots = [session_cwd, container.to_str().unwrap()].map(str::to_string);
-        let argv = recorded_argv(&launch.join("argv"));
-        let settings: serde_json::Value =
-            serde_json::from_str(flag_value(&argv, "--settings")).unwrap();
-        assert_carries_spawn_hooks(&settings, bin.to_str().unwrap(), &spawn, &roots, false);
-        launches.push((spawn, argv.iter().any(|word| word == "--resume")));
+
+        let run = common::cli::current_run_id_of(&root).expect("the run has an id");
+        let bin = std::fs::canonicalize(rigger_bin()).unwrap();
+        let mut launches: Vec<(String, bool)> = Vec::new();
+        for launch in stand_in_launches(&fake.path().join("bin/launches")) {
+            let spawn = launch.spawn;
+            assert_eq!(
+                launch.cwd,
+                scratch.join("rigger-wt-solo").to_str().unwrap(),
+                "{spawn}: each launch of the unit runs in its worktree"
+            );
+            let container =
+                rigger::driver::replay::spawn_scratch_path(scratch.to_str().unwrap(), &run, &spawn)
+                    .unwrap();
+            let roots = [launch.cwd.as_str(), container.to_str().unwrap()].map(str::to_string);
+            let settings: serde_json::Value =
+                serde_json::from_str(flag_value(&launch.argv, "--settings")).unwrap();
+            assert_carries_spawn_hooks(
+                &settings,
+                bin.to_str().unwrap(),
+                &spawn,
+                &roots,
+                grep_guard,
+            );
+            launches.push((spawn, launch.argv.iter().any(|word| word == "--resume")));
+        }
+        let expected = [
+            ("solo/adjudicator#0", false),
+            ("solo/adjudicator#1", true),
+            ("solo/adversary#0", false),
+            ("solo/adversary#1", true),
+            ("solo/implementer#0", false),
+            ("solo/implementer#1", true),
+            ("solo/lens:lens#0", false),
+            ("solo/lens:lens#1", true),
+        ]
+        .map(|(spawn, resumed)| (spawn.to_string(), resumed));
+        assert_eq!(
+            launches, expected,
+            "grep_guard {grep_guard}: the two rounds' launches, each on record"
+        );
     }
-    launches.sort();
-    let expected = [
-        ("solo/adjudicator#0", false),
-        ("solo/adjudicator#1", true),
-        ("solo/adversary#0", false),
-        ("solo/adversary#1", true),
-        ("solo/implementer#0", false),
-        ("solo/implementer#1", true),
-        ("solo/lens:lens#0", false),
-        ("solo/lens:lens#1", true),
-    ]
-    .map(|(spawn, resumed)| (spawn.to_string(), resumed));
-    assert_eq!(
-        launches, expected,
-        "the two rounds' launches, each on record"
-    );
 }
 
 /// The live-progress instruction closing a launch's first user message.

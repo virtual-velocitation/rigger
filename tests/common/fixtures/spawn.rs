@@ -87,6 +87,35 @@ pub fn recorded_argv(path: &std::path::Path) -> Vec<String> {
         .collect()
 }
 
+/// One launch a stand-in `claude` put on record through `tests/fixtures/launch-args.sh`'s
+/// `record_launch`.
+pub struct StandInLaunch {
+    /// The spawn the launch ran as.
+    pub spawn: String,
+    /// Its working directory, every link resolved.
+    pub cwd: String,
+    /// The arguments it was started with.
+    pub argv: Vec<String>,
+}
+
+/// Each launch put on record under `dir`, in the order of its spawn.
+pub fn stand_in_launches(dir: &std::path::Path) -> Vec<StandInLaunch> {
+    let mut launches: Vec<StandInLaunch> = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|launch| {
+            let launch = launch.unwrap().path();
+            let read = |name: &str| std::fs::read_to_string(launch.join(name)).unwrap();
+            StandInLaunch {
+                spawn: read("spawn"),
+                cwd: read("cwd").trim_end().to_string(),
+                argv: recorded_argv(&launch.join("argv")),
+            }
+        })
+        .collect();
+    launches.sort_by(|a, b| a.spawn.cmp(&b.spawn));
+    launches
+}
+
 /// Write `dir/claude-arms`, the shell `case` over the system prompt `$sp` the checked-in
 /// `claude-code-arms-agent.sh` stand-in sources beside its symlink in `dir`: `arms`, each
 /// `*MARKER*) ... ;;`, then an arm failing loudly on any prompt they do not name.

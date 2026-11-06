@@ -5,7 +5,9 @@
 # `--system-prompt-file` argument names (found through `launch-args.sh`, sourced from
 # beside this fixture's own path) to `system-prompt` (and that path itself to
 # `system-prompt-path`) - so a test can read back that a
-# prompt larger than the kernel's per-argument limit arrived intact. Both hosts drive it: under
+# prompt larger than the kernel's per-argument limit arrived intact. Each launch also goes on
+# record under `launches` there (`launch-args.sh`'s `record_launch`), so a test reads back what
+# every spawn of a run was started with, the spawns of a panel included. Both hosts drive it: under
 # `--input-format` (the headless host, which keeps stdin open until a `result`) it takes the
 # first user message and answers in stream-json; otherwise (the cli host, `rigger canary`) it
 # takes stdin to its end and prints its answer. Checked in, never written at test time, for the
@@ -13,6 +15,7 @@
 : "${PROMPT_CAPTURE_DIR:?the test names the capture directory}"
 self=$(readlink "$0") || self=$0
 . "$(dirname "$self")/launch-args.sh"
+record_launch "$PROMPT_CAPTURE_DIR/launches" "$@"
 sid=$(launched_session capture "$@")
 sp=$(system_prompt_file "$@")
 stream=0

@@ -19,9 +19,9 @@ mod common;
 use std::path::Path;
 
 use common::cli::{
-    assert_selected_server, critique_finding_id, emit, no_result_failure, pin_identity,
-    read_run_events, recorded_progress, resolve, rigger_file, run_payloads, run_rigger,
-    run_rigger_envs, run_rigger_ok, run_stream_identity, seed_a_run, seed_critique,
+    assert_selected_server, critique_finding_id, declare_grep_guard, emit, no_result_failure,
+    pin_identity, read_run_events, recorded_progress, resolve, rigger_file, run_payloads,
+    run_rigger, run_rigger_envs, run_rigger_ok, run_stream_identity, seed_a_run, seed_critique,
     seed_critique_spawn, seed_on_the_run, seed_run_events, seed_store, temp_project,
     temp_repoless_project, write_spec_project,
 };
@@ -193,11 +193,13 @@ fn stub_then(critique: &str, later: &str) -> (tempfile::TempDir, String) {
 /// that same executable, beside the deny the spawn's own settings hold.
 #[test]
 fn a_critique_launch_carries_the_spawn_hooks_on_its_own_settings() {
-    let declared = CRITIC_WORKFLOW.replacen("defaults:\n", "defaults:\n  grep_guard: true\n", 1);
-    for (workflow, grep_guard) in [(CRITIC_WORKFLOW, false), (declared.as_str(), true)] {
+    for grep_guard in [false, true] {
         let dir = temp_project();
         let root = std::fs::canonicalize(dir.path()).unwrap();
-        scaffold(&root, workflow);
+        scaffold(&root, CRITIC_WORKFLOW);
+        if grep_guard {
+            declare_grep_guard(&root);
+        }
         let scratch = root.join("scratch");
         let (work, path) = stub(REJECT);
         let (_, err, ok) = critique(&root, SPEC_REL, &path, &scratch);

@@ -30,16 +30,18 @@
 //! compiled `rigger canary` walks every step of a panel under its token, each spawn's argv carrying
 //! its tier's `--model` pin, shows the adjudicator every finding in order and reversed, scores a
 //! corpus item into the tier of the step that caught it, and refuses a list with no adjudicator
-//! step.
+//! step. The same canary carries spec 121's criterion 2 (THE GREP GUARD IS DECLARED): every spawn
+//! of the panel starts with the session's grep guard exactly when the workflow declares
+//! `defaults.grep_guard`.
 
 mod common;
 
-#[cfg(unix)]
-use common::cli::run_rigger_envs;
 use common::cli::{
     cargo_project, loaded_config, read_run_events, rigger_file, run_rigger, run_rigger_ok,
     temp_project, write_scaffold,
 };
+#[cfg(unix)]
+use common::cli::{declare_grep_guard, run_rigger_envs};
 #[cfg(feature = "symbols")]
 use common::cli::{edge_lines, run_around};
 use common::fixtures::test_spawn_host;
@@ -51,11 +53,11 @@ use common::fixtures::{
     PANEL_SCOPES, REJECT_FEATURE, REPEATED_KIND_LIST,
 };
 #[cfg(unix)]
-use common::fixtures::{read_text, CONTROL_ITEM, PROMPT_CAPTURE_DIR};
+use common::fixtures::{read_text, stand_in_launches, CONTROL_ITEM, PROMPT_CAPTURE_DIR};
 use common::git::{commit_files, temp_git_project_with_commit};
 use common::repo::repo_root;
 #[cfg(unix)]
-use common::repo::stub_path;
+use common::repo::{flag_value, grep_guard_hook, hook_words, stub_path};
 use rigger::conductor::{run, Deps, META_REPLAY_KEY, STREAM};
 use rigger::config::ReviewPanel;
 use rigger::config::ReviewStep::{self, Adjudicator, Adversary};
@@ -67,6 +69,8 @@ use rigger::metrics::META_MODEL_ALIAS;
 use rigger::spawn::{
     requests, review_step_of, spawn_role, ReviewKind, SpawnEvent, SpawnResult, TYPE_SPAWN_RESULT,
 };
+#[cfg(unix)]
+use serde_json::Value;
 use std::fmt::Display;
 use std::path::{Path, PathBuf};
 
@@ -267,13 +271,67 @@ fn canary_on_stub(
 #[cfg(unix)]
 fn canary_of(root: &Path, panel: &str) -> (String, String, bool) {
     write_canary_project(root, panel, CONTROL_ITEM);
+    let (out, err, ok, _capture) = canary_capturing(root);
+    (out, err, ok)
+}
+
+/// `rigger canary` run in `root` over the real subprocess driver standing on the prompt-capture
+/// stub: its stdout, stderr and success, then the directory holding what the stub captured.
+#[cfg(unix)]
+fn canary_capturing(root: &Path) -> (String, String, bool, tempfile::TempDir) {
     let capture = tempfile::tempdir().unwrap();
-    canary_on_stub(
+    let (out, err, ok) = canary_on_stub(
         root,
         ("prompt-capture-agent.sh", PROMPT_CAPTURE_DIR),
         capture.path(),
         &[],
-    )
+    );
+    (out, err, ok, capture)
+}
+
+/// Spec 121's THE GREP GUARD IS DECLARED, through the canary: given a panel repeating a kind and a
+/// one-item corpus, its workflow declaring `defaults.grep_guard` or not, when the operator runs
+/// `rigger canary`, then every spawn of the panel, each reviewer and the adjudicator, starts with
+/// the session's grep guard as its one `PreToolUse` hook exactly when the workflow declares it,
+/// and with no `PreToolUse` hook otherwise.
+#[cfg(unix)]
+#[test]
+fn rigger_canary_starts_every_panel_spawn_with_the_grep_guard_exactly_when_declared() {
+    for grep_guard in [false, true] {
+        let dir = temp_project();
+        let root = dir.path();
+        write_canary_project(root, REPEATED_KIND_LIST, CONTROL_ITEM);
+        if grep_guard {
+            declare_grep_guard(root);
+        }
+        let (_out, err, ok, capture) = canary_capturing(root);
+        assert!(
+            ok,
+            "grep_guard {grep_guard}: the canary scores; stderr:\n{err}"
+        );
+        let spawns: Vec<_> = stand_in_launches(&capture.path().join("launches"))
+            .into_iter()
+            .map(|launch| {
+                let settings: Value =
+                    serde_json::from_str(flag_value(&launch.argv, "--settings")).unwrap();
+                let pre_tool_use = settings["hooks"].get("PreToolUse");
+                let hooks = pre_tool_use.map(|_| hook_words(&settings, "PreToolUse"));
+                (launch.spawn, hooks)
+            })
+            .collect();
+        let mut roles: Vec<&str> = REPEATED_KIND_REVIEWERS
+            .iter()
+            .map(|(role, _)| *role)
+            .collect();
+        roles.push("adjudicator:a");
+        roles.sort();
+        let hooks = grep_guard.then(|| vec![grep_guard_hook()]);
+        let expected: Vec<_> = roles
+            .iter()
+            .map(|role| (format!("canary:control:{role}"), hooks.clone()))
+            .collect();
+        assert_eq!(spawns, expected, "grep_guard {grep_guard}");
+    }
 }
 
 /// Given a corpus and a panel declared as a list repeating a kind, when the operator runs
