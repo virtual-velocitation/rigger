@@ -139,8 +139,8 @@ fn session_missing(out: &Output) -> bool {
     !out.status.success() && String::from_utf8_lossy(&out.stderr).contains(MISSING_SESSION)
 }
 
-/// `task` framed with the live-progress instruction ([`progress_framed`]), reported through
-/// Bash since this host's spawn runs no bound server. (This synchronous, non-parking path has no
+/// `task` framed with the progress verb ([`progress_framed`]), the `rigger progress` command run
+/// through Bash since this host's spawn runs no bound server. (This synchronous, non-parking path has no
 /// parked frontier entry, so the current consolidator does not surface it - the emit is recorded
 /// and future-proof.)
 fn framed(task: &str, opts: &SpawnOpts) -> String {

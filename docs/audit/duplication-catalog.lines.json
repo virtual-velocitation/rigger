@@ -349,8 +349,8 @@
       },
       {
         "file": "crates/rigger-driver/src/driver/mod.rs",
-        "start_line": 63,
-        "end_line": 69
+        "start_line": 64,
+        "end_line": 66
       },
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
@@ -5254,8 +5254,8 @@
       },
       {
         "file": "crates/rigger-driver/src/driver/mod.rs",
-        "start_line": 244,
-        "end_line": 246
+        "start_line": 241,
+        "end_line": 243
       },
       {
         "file": "crates/rigger-driver/src/reaped_child.rs",
@@ -5929,8 +5929,8 @@
     "sites": [
       {
         "file": "crates/rigger-driver/src/driver/mod.rs",
-        "start_line": 283,
-        "end_line": 285
+        "start_line": 280,
+        "end_line": 282
       },
       {
         "file": "tests/claude_code_stream_periphery.rs",

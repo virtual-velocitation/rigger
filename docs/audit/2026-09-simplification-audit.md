@@ -1915,7 +1915,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `crates/rigger-conductor/src/conductor.rs:453-455` `adoption_provenance_key`
 - `crates/rigger-conductor/src/conductor.rs:468-470` `quarantine_record_key`
 - `crates/rigger-domain/src/contextgraph/query.rs:241-243` `entity_id`
-- `crates/rigger-driver/src/driver/mod.rs:63-69` `progress_framed`
+- `crates/rigger-driver/src/driver/mod.rs:64-66` `progress_framed`
 - `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:3938-3943` `retarget_sql`
 - `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:5506-5508` `id_range_sql`
 - `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:5611-5617` `superseded_edges_sql`
@@ -3884,7 +3884,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `crates/rigger-domain/src/failure.rs:227-229` `is_empty`
 - `crates/rigger-domain/src/metrics.rs:552-554` `adversary_precision`
 - `crates/rigger-domain/src/progress.rs:256-258` `is_open`
-- `crates/rigger-driver/src/driver/mod.rs:244-246` `resumed`
+- `crates/rigger-driver/src/driver/mod.rs:241-243` `resumed`
 - `crates/rigger-driver/src/reaped_child.rs:44-46` `id`
 - `tests/common/mcp.rs:51-53` `id`
 
@@ -4235,7 +4235,7 @@ Proposed home: `a new shared module (sites span 2 files: crates/rigger-driver/sr
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-driver/src/driver/mod.rs:283-285` `resumed_from`
+- `crates/rigger-driver/src/driver/mod.rs:280-282` `resumed_from`
 - `tests/claude_code_stream_periphery.rs:2786-2788` `launch_dir`
 
 #### `dup-282069e7109f` (near, 3 sites)

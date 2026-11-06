@@ -669,13 +669,12 @@ async function runWorker(req, fatal) {
       : `LIVENESS HEARTBEAT (spec 101): your spawn carries no wall-clock bound. TOUCH your per-spawn marker anyway, at the START of your work and again after each significant step (a tool call, a build, a commit), using Bash:\n` +
         touchMarker +
         `\`rigger step\` never declares an unbounded spawn hung, and the live-writer guard (\`rigger reset --derived\`) reads a fresh or unbounded marker as a live worker until your result is recorded - so keep it fresh while you work. It stops mattering the instant you self-report your result.\n`
-  // Live progress (spec 14): every worker reports one short line after each significant step,
-  // additive to the marker heartbeat above. This is what turns a 26-minute silent stretch of
-  // real work into a visible stream an observer (and `rigger status` / the dash) can follow.
+  // Live progress (spec 14): the progress verb a worker records a line with, additive to the
+  // marker heartbeat above, so an observer (`rigger status`, the dash) can follow its work. When
+  // to report is the `communication` built-in's, in the system prompt `rigger prompt` prints.
   const progressNote =
-    `LIVE PROGRESS (spec 14): after each significant step - a search, a file read, a build, a commit, a decision - report ONE short line of what you just did, from ${REPO}, using Bash:\n` +
-    `  rigger progress '${req.id}' '<one line: what you just did>'\n` +
-    `This is how an observer sees you working between the milestones you record, so a long silent stretch is never mistaken for a stall. Keep it flowing WHILE you work; do not batch it at the end.\n`
+    `LIVE PROGRESS: record a progress line, from ${REPO}, using Bash:\n` +
+    `  rigger progress '${req.id}' '<one line: what you just did>'\n`
   // One build location per spawn (spec 77, criterion 1). The conductor pins the cache it chose
   // (the unit's `cargo-target-<unit>`, or its `review-target-<unit>` for a review tier) as
   // CARGO_TARGET_DIR in the spawn's environment for drivers that can set one; this driver runs workers through an agent tool with no environment, so

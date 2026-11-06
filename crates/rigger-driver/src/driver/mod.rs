@@ -57,15 +57,12 @@ pub(crate) fn allowed_tools_args(agent: &AgentDef, bound: &[&str]) -> Result<Vec
     Ok(vec!["--allowed-tools".to_string(), tools.join(",")])
 }
 
-/// `task` framed with the live-progress instruction (spec 14) every process host gives, so a
-/// worker reports what it is doing between milestones. `report` is how the worker reports on this
-/// host, completing the sentence "report ONE short line of what you just did ...".
+/// `task` framed with the progress verb every process host gives (spec 14): the separator, then
+/// one line naming how a worker records a progress line on this host. `report` is that verb and
+/// its arguments, completing the sentence "record a progress line ...". When to report is the
+/// `communication` built-in's.
 pub(crate) fn progress_framed(task: &str, report: &str) -> String {
-    format!(
-        "{task}\n\n--- rigger driver ---\nLIVE PROGRESS: after each significant step (a search, a \
-         build, a commit, a decision) report ONE short line of what you just did {report}. Keep \
-         it flowing while you work."
-    )
+    format!("{task}\n\n--- rigger driver ---\nLIVE PROGRESS: record a progress line {report}.")
 }
 
 /// One composed configuration as the inline JSON argument its flag takes, or the error naming
