@@ -1909,7 +1909,7 @@
     "is_test": false,
     "proposed_module": "conductor::review",
     "reason": "name contains \"review\" (review orchestration); grouped under `conductor::review`.",
-    "content_hash": "839e07e89b1f9042"
+    "content_hash": "8d7bcdf0a091a0c3"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -1917,7 +1917,7 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "fe23af442e1975ad"
+    "content_hash": "b4ef7262761cbe0e"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -2069,7 +2069,7 @@
     "is_test": false,
     "proposed_module": "conductor::support",
     "reason": "name contains \"write\" (generic write helper); grouped under `conductor::support`.",
-    "content_hash": "05398300783813e1"
+    "content_hash": "6d4dc93aa8e08bb9"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -2077,7 +2077,7 @@
     "is_test": false,
     "proposed_module": "conductor::support",
     "reason": "name contains \"write\" (generic write helper); grouped under `conductor::support`.",
-    "content_hash": "4e6a33b8fd49f94d"
+    "content_hash": "8417fbc91980af98"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",

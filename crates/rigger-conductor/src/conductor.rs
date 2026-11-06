@@ -13188,7 +13188,7 @@ fn unit_size_cap() -> String {
     )
 }
 
-const EMIT_PROTOCOL: &str = "Record each decision you make by calling the rigger_emit tool the moment you make it, with type \"DecisionMade\" and data:\n{\"id\":\"<short-id>\",\"summary\":\"<one line>\",\"governs\":[\"<file>\"],\"supersedes\":\"<prior-id-or-empty>\"}\nThis writes it to the shared event log live, so other agents see it immediately.";
+const EMIT_PROTOCOL: &str = "Record each decision you make by calling the rigger_emit tool with type \"DecisionMade\" and data:\n{\"id\":\"<short-id>\",\"summary\":\"<one line>\",\"governs\":[\"<file>\"],\"supersedes\":\"<prior-id-or-empty>\"}\nThis writes it to the shared event log live, so other agents see it immediately.";
 
 /// The protocol a PLANNER (a `produces: dag`) stage follows. The conductor has ALREADY
 /// created one deterministic baseline implement unit per acceptance criterion, so the
@@ -13203,10 +13203,13 @@ const PLAN_PROTOCOL: &str = "You are the planner. The conductor has ALREADY crea
 
 /// The protocol a REVIEW agent (a lens or the adversary) follows so its findings
 /// reach the shared context graph - the cross-agent memory the three tiers
-/// communicate THROUGH. A reviewer records each finding by calling rigger_emit the
-/// moment it raises it; the projector folds it ABOUT the files it concerns, and the
-/// later tiers (and concurrent lenses) retrieve it via grounding + rigger_peers,
-/// never via the conductor splicing one agent's stdout into another's prompt.
+/// communicate THROUGH. A reviewer records each finding by calling rigger_emit; the
+/// projector folds it ABOUT the files it concerns, and the later tiers (and concurrent
+/// lenses) retrieve it via grounding + rigger_peers, never via the conductor splicing one
+/// agent's stdout into another's prompt. When to record a finding, and what to do with one
+/// another reviewer already raised, are guidance the communication and working-discipline
+/// built-ins state, so the protocol carries only the tool, its data and what the record
+/// reaches.
 ///
 /// `actor` is the reviewer's ROLE token, its step's [`review_step_role`] (`lens:<agent>` or
 /// `adversary`, with `@<k>` from a kind's second step on), that the finding's `by` field carries.
@@ -13226,10 +13229,10 @@ const PLAN_PROTOCOL: &str = "You are the planner. The conductor has ALREADY crea
 /// same `by` role token the live review-quality folds key on - one protocol, not two.
 pub fn review_protocol(actor: &str) -> String {
     format!(
-        "Record each review finding you raise by calling the rigger_emit tool the moment you raise it, with type \"ReviewFinding\" and data:\n\
+        "Record each review finding you raise by calling the rigger_emit tool with type \"ReviewFinding\" and data:\n\
          {{\"id\":\"<short-id>\",\"by\":\"{actor}\",\"summary\":\"<one line>\",\"about\":[\"<file>\"]}}\n\
          The `by` field ATTRIBUTES the finding to you - keep it EXACTLY as \"{actor}\" so the review-quality metrics can measure your findings' survival even when you run out-of-process (where the conductor stamps no actor for you). \
-         This writes the finding to the shared context graph live, so the adversary, the adjudicator, and your fellow reviewers see it immediately (via grounding and rigger_peers) and address or refute it.{REVIEWER_DISCIPLINE}"
+         This writes the finding to the shared context graph live, so the adversary, the adjudicator, and your fellow reviewers see it immediately (via grounding and rigger_peers).{REVIEWER_DISCIPLINE}"
     )
 }
 
@@ -13280,9 +13283,7 @@ fn notes_block(notes: &[RunNote]) -> String {
         block.push_str(&format!("- {}{at}: {}\n", note.id, note.summary));
     }
     block.push_str(
-        "Check each note against the current tree. Fix, in one pass, every note that is still \
-         true; leave a note that is false or already fixed. A note owes no record beyond the \
-         commit that fixes it.\n",
+        "Fix every note that is still true; leave a note that is false or already fixed.\n",
     );
     block
 }
@@ -13416,8 +13417,7 @@ pub const FINDINGS_BUDGET_BYTES: usize = 48 * 1024;
 
 /// The header for the decisions-that-govern injection - single-sourced so the
 /// capped renderer and any test that asserts its presence agree byte-for-byte.
-const DECISIONS_HEADER: &str =
-    "Decisions that govern these files (do not contradict them; supersede explicitly if you must):";
+const DECISIONS_HEADER: &str = "Decisions that govern these files:";
 
 /// Spec 29c criterion 1 prompt budget: how many code-entity DEFINITIONS the code-neighborhood
 /// section keeps verbatim - the code half of the unified graph the ONE seeded traversal surfaces
@@ -13452,7 +13452,7 @@ fn task_block(st: &Stage) -> String {
 /// The header for the code-neighborhood injection - single-sourced so the renderer and any test
 /// that asserts its presence agree byte-for-byte.
 const CODE_NEIGHBORHOOD_HEADER: &str =
-    "Code neighborhood of these files (definitions the run extracted into the unified graph - read first):";
+    "Code neighborhood of these files (definitions the run extracted into the unified graph):";
 
 /// The design-intent node kinds (spec 29b) the design-intent grounding section surfaces (spec 29c
 /// criterion 3): the RA / architecture doc / addendum that SPECIFIES a file, the load-bearing
@@ -13501,7 +13501,7 @@ const DESIGN_INTENT_BUDGET_BYTES: usize = 24 * 1024;
 /// The header for the design-intent injection (spec 29c criterion 3) - single-sourced so the
 /// renderer and any test that asserts its presence agree byte-for-byte.
 const DESIGN_INTENT_HEADER: &str =
-    "Design intent that governs these files (the handbook rule that governs them, the RA/architecture section that specifies them, the load-bearing decision that constrains them, and the local rationale - reached by the one graph traversal, honor them):";
+    "Design intent that governs these files (the handbook rule that governs them, the RA/architecture section that specifies them, the load-bearing decision that constrains them, and the local rationale - reached by the one graph traversal):";
 
 /// The ONE budget rule every capped record surface shares - the prompt sections (through
 /// [`render_capped_section`]) and `rigger peers` / the `rigger_peers` tool alike: walking
@@ -14130,7 +14130,7 @@ fn write_capped_lessons(b: &mut String, g: &Graph, seed: &[String]) {
         seed,
         contextgraph::KIND_LESSON,
         contextgraph::REL_ABOUT,
-        "Lessons already learned about these files (do not repeat these mistakes):",
+        "Lessons already learned about these files:",
         "lesson",
         LESSONS_VERBATIM_N,
         LESSONS_BUDGET_BYTES,
@@ -14155,7 +14155,7 @@ fn write_capped_findings(b: &mut String, g: &Graph, seed: &[String]) {
         seed,
         contextgraph::KIND_FINDING,
         contextgraph::REL_ABOUT,
-        "Findings other reviewers have already raised about these files (address or refute them):",
+        "Findings other reviewers have already raised about these files:",
         "finding",
         FINDINGS_VERBATIM_N,
         FINDINGS_BUDGET_BYTES,

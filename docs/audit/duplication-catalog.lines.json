@@ -34,8 +34,8 @@
       },
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 13227,
-        "end_line": 13234
+        "start_line": 13230,
+        "end_line": 13237
       },
       {
         "file": "crates/rigger-domain/src/contextgraph.rs",
@@ -284,8 +284,8 @@
       },
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 13377,
-        "end_line": 13379
+        "start_line": 13378,
+        "end_line": 13380
       },
       {
         "file": "crates/rigger-domain/src/spawn.rs",

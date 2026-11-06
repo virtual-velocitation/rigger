@@ -358,8 +358,8 @@ fn a_spawn_prompt_carries_the_unified_traversal_code_neighborhood_not_the_old_st
                         from the unified traversal";
     assert_prompt(
         &prompt,
-        // The code neighborhood the ONE traversal surfaces reaches the prompt, as a "read first"
-        // location line derived from the graph node (its file + line + name), not from the grounder.
+        // The code neighborhood the ONE traversal surfaces reaches the prompt, as a location line
+        // derived from the graph node (its file + line + name), not from the grounder.
         &[("run_unit", neighborhood), ("core.rs:42", neighborhood)],
         // The separate structural-grounder stitch is GONE: the code neighborhood now comes from the
         // ONE traversal, so the old "Relevant locations" block must not be rendered.

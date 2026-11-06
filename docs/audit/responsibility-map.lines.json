@@ -1430,44 +1430,44 @@
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "review_protocol",
-    "start_line": 13227,
-    "end_line": 13234
+    "start_line": 13230,
+    "end_line": 13237
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "notes_block",
-    "start_line": 13269,
-    "end_line": 13288
+    "start_line": 13272,
+    "end_line": 13289
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "blocks",
-    "start_line": 13306,
-    "end_line": 13308
+    "start_line": 13307,
+    "end_line": 13309
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "block",
-    "start_line": 13312,
-    "end_line": 13340
+    "start_line": 13313,
+    "end_line": 13341
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "rejects_without_required",
-    "start_line": 13346,
-    "end_line": 13350
+    "start_line": 13347,
+    "end_line": 13351
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "required_lines",
-    "start_line": 13360,
-    "end_line": 13372
+    "start_line": 13361,
+    "end_line": 13373
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "audit_id",
-    "start_line": 13377,
-    "end_line": 13379
+    "start_line": 13378,
+    "end_line": 13380
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",

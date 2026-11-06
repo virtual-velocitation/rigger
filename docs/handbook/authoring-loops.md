@@ -20,7 +20,6 @@ Those two sentences are the rule the binary is held to. The rest of this section
 
 **Open exceptions.** These prescriptions still stand in the binary against the rule, each named by its constant or surface, and each is struck from this list as it is removed:
 
-- the cadence clauses in `EMIT_PROTOCOL` and `review_protocol`
 - `DOC_ONLY_ROUND`'s rule sentence
 - `PLAN_PROTOCOL`'s guidance sentences
 - `MAX_UNIT_ADDED_LINES` and the second sentence of `unit_size_cap`

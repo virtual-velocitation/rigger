@@ -69,8 +69,8 @@ Every function in `crates/rigger-conductor/src/conductor.rs`, `src/cli/mod.rs` a
   - `crates/rigger-conductor/src/conductor.rs:1719-1739` `degenerate_reviewer` - name contains "review" (review orchestration); grouped under `conductor::review`.
   - `crates/rigger-conductor/src/conductor.rs:13095-13104` `review_evidence` - name contains "review" (review orchestration); grouped under `conductor::review`.
   - `crates/rigger-conductor/src/conductor.rs:13154-13160` `review_failure_cause` - name contains "review" (review orchestration); grouped under `conductor::review`.
-  - `crates/rigger-conductor/src/conductor.rs:13227-13234` `review_protocol` - name contains "review" (review orchestration); grouped under `conductor::review`.
-  - `crates/rigger-conductor/src/conductor.rs:13346-13350` `rejects_without_required` - name contains "reject" (review orchestration); grouped under `conductor::review`.
+  - `crates/rigger-conductor/src/conductor.rs:13230-13237` `review_protocol` - name contains "review" (review orchestration); grouped under `conductor::review`.
+  - `crates/rigger-conductor/src/conductor.rs:13347-13351` `rejects_without_required` - name contains "reject" (review orchestration); grouped under `conductor::review`.
   - `crates/rigger-conductor/src/conductor.rs:14614-14620` `review_round_starts` - name contains "review" (review orchestration); grouped under `conductor::review`.
   - `crates/rigger-conductor/src/conductor.rs:14651-14654` `recorded_review_round_start_sha` - name contains "review" (review orchestration); grouped under `conductor::review`.
 - `conductor::review_outcome` (3 functions)
@@ -78,8 +78,8 @@ Every function in `crates/rigger-conductor/src/conductor.rs`, `src/cli/mod.rs` a
   - `crates/rigger-conductor/src/conductor.rs:942-944` `approved` - method inside `impl ReviewOutcome`; grouped with its other `ReviewOutcome` methods.
   - `crates/rigger-conductor/src/conductor.rs:945-947` `rejected` - method inside `impl ReviewOutcome`; grouped with its other `ReviewOutcome` methods.
 - `conductor::review_round` (2 functions)
-  - `crates/rigger-conductor/src/conductor.rs:13306-13308` `blocks` - method inside `impl ReviewRound`; grouped with its other `ReviewRound` methods.
-  - `crates/rigger-conductor/src/conductor.rs:13312-13340` `block` - method inside `impl ReviewRound`; grouped with its other `ReviewRound` methods.
+  - `crates/rigger-conductor/src/conductor.rs:13307-13309` `blocks` - method inside `impl ReviewRound`; grouped with its other `ReviewRound` methods.
+  - `crates/rigger-conductor/src/conductor.rs:13313-13341` `block` - method inside `impl ReviewRound`; grouped with its other `ReviewRound` methods.
 - `conductor::run` (5 functions)
   - `crates/rigger-conductor/src/conductor.rs:3367-3385` `unit_started_payload` - name contains "unit" (unit run loop); grouped under `conductor::run`.
   - `crates/rigger-conductor/src/conductor.rs:13184-13189` `unit_size_cap` - name contains "unit" (unit run loop); grouped under `conductor::run`.
@@ -1658,9 +1658,9 @@ Every function in `crates/rigger-conductor/src/conductor.rs`, `src/cli/mod.rs` a
 - `crates/rigger-conductor/src/conductor.rs:3352-3360` `event_with_meta` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
 - `crates/rigger-conductor/src/conductor.rs:13022-13027` `part_coverage` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
 - `crates/rigger-conductor/src/conductor.rs:13080-13089` `verified_evidence` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `crates/rigger-conductor/src/conductor.rs:13269-13288` `notes_block` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `crates/rigger-conductor/src/conductor.rs:13360-13372` `required_lines` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `crates/rigger-conductor/src/conductor.rs:13377-13379` `audit_id` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `crates/rigger-conductor/src/conductor.rs:13272-13289` `notes_block` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `crates/rigger-conductor/src/conductor.rs:13361-13373` `required_lines` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `crates/rigger-conductor/src/conductor.rs:13378-13380` `audit_id` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
 - `crates/rigger-conductor/src/conductor.rs:13440-13450` `task_block` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
 - `crates/rigger-conductor/src/conductor.rs:13554-13602` `render_capped_section` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
 - `crates/rigger-conductor/src/conductor.rs:13649-13659` `recency_by_own_edge` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
@@ -1833,7 +1833,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `crates/rigger-conductor/src/blast_radius_eval.rs:262-264` `span`
 - `crates/rigger-conductor/src/conductor.rs:684-686` `deferred_gate_verdict_key`
 - `crates/rigger-conductor/src/conductor.rs:695-697` `deferred_gate_failed_key`
-- `crates/rigger-conductor/src/conductor.rs:13227-13234` `review_protocol`
+- `crates/rigger-conductor/src/conductor.rs:13230-13237` `review_protocol`
 - `crates/rigger-domain/src/contextgraph.rs:824-826` `not_folded`
 - `crates/rigger-domain/src/contextgraph.rs:900-902` `rebuild_owed_refusal`
 - `crates/rigger-domain/src/instructions.rs:226-228` `operator_path`
@@ -1895,7 +1895,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `crates/rigger-conductor/src/conductor.rs:383-385` `spec_defect_escalated_key`
 - `crates/rigger-conductor/src/conductor.rs:436-438` `compensation_queued_key`
 - `crates/rigger-conductor/src/conductor.rs:1111-1113` `conflict_regenerate_key`
-- `crates/rigger-conductor/src/conductor.rs:13377-13379` `audit_id`
+- `crates/rigger-conductor/src/conductor.rs:13378-13380` `audit_id`
 - `crates/rigger-domain/src/spawn.rs:276-278` `spawn_id`
 - `crates/rigger-driver/src/driver/claude_code.rs:2033-2041` `stop_message`
 - `tests/cli.rs:7915-7928` `rendezvous`
@@ -5835,9 +5835,9 @@ Each entry below applies section 1's own proposed module tree to a god file's pr
 
 #### 6. Split `crates/rigger-conductor/src/conductor.rs`'s production code into `src/conductor/*.rs`
 
-- Scope: 237 mapped functions across 22 proposed modules (roughly 8760 lines of function bodies) plus 54 unassigned functions (1317 lines, each individually named in the committed map for manual placement, per section 1's own "unassignable functions are named as such, never omitted" rule). Headline buckets (functions/lines): `conductor::run_ctx` (149/7462), `conductor::support` (17/470), `conductor::gate` (15/193), `conductor::prior_failure` (5/104), `conductor::schedule` (5/101).
+- Scope: 237 mapped functions across 22 proposed modules (roughly 8760 lines of function bodies) plus 54 unassigned functions (1315 lines, each individually named in the committed map for manual placement, per section 1's own "unassignable functions are named as such, never omitted" rule). Headline buckets (functions/lines): `conductor::run_ctx` (149/7462), `conductor::support` (17/470), `conductor::gate` (15/193), `conductor::prior_failure` (5/104), `conductor::schedule` (5/101).
 - Files: `crates/rigger-conductor/src/conductor.rs` -> `src/conductor/mod.rs` + `src/conductor/{run_ctx,support,gate,prior_failure,schedule,review,emit,run,budget,review_round,spawn,frontier,infra_retries,gate_outcome,refused_record,review_outcome,deps,ground,gate_ratchet,integrated_probe,throwaway,integration_approval}.rs`.
-- Expected line delta: 0 net - pure relocation of roughly 10077 lines of function bodies.
+- Expected line delta: 0 net - pure relocation of roughly 10075 lines of function bodies.
 - The largest bucket, `conductor::run_ctx`, may warrant its own second pass if it does not decompose cleanly into one file.
 - Risk: medium-high - conductor.rs is the composition root's own most complex use-case file; every intermediate commit needs the full `cargo test`, no-os-kill and reap audits green, not just the final one.
 - Unblocks: the largest reduction in production-code blast-radius collision risk this audit identifies; makes future duplication-spotting against conductor.rs's own logic tractable by a human reviewer, not only by the mechanical scanner.

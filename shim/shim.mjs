@@ -146,9 +146,7 @@ export function renderPeers(peers) {
   })
   return [
     'PEERS CONTEXT REFRESH - concurrent agents have already decided the following',
-    'about files in your blast-radius. Do not contradict them; supersede explicitly',
-    'if you must. Re-check the rigger_peers tool between your own actions to stay',
-    'aware of decisions made while you work.',
+    'about files in your blast-radius.',
     ...lines,
     '',
   ].join('\n')
