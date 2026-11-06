@@ -292,6 +292,7 @@ pub fn build_args(
         rigger_bin,
         &["mcp"],
         &opts.settings_json,
+        &opts.host,
     )?);
     Ok(args)
 }
@@ -299,6 +300,7 @@ pub fn build_args(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::test_spawn_host;
 
     /// This host's frame closes the task with its progress verb and that verb's arguments only:
     /// the Bash command naming the spawn, since its spawn runs no bound server. When to report
@@ -307,7 +309,7 @@ mod tests {
     fn framed_closes_the_task_with_the_bash_progress_line() {
         let opts = SpawnOpts {
             id: "u/implementer#0".to_string(),
-            ..SpawnOpts::default()
+            ..SpawnOpts::new(test_spawn_host())
         };
         assert_eq!(
             framed("the task", &opts),
@@ -446,7 +448,7 @@ thinking out loud, not json\n\
                     isolation: false,
                     parallel: false,
                     blast_radius: Vec::new(),
-                    ..Default::default()
+                    ..SpawnOpts::new(test_spawn_host())
                 },
                 &emit,
             )
@@ -501,7 +503,7 @@ thinking out loud, not json\n\
                         ("SCCACHE_DIR".to_string(), "/shared/build-cache".to_string()),
                         ("CARGO_INCREMENTAL".to_string(), "0".to_string()),
                     ],
-                    ..Default::default()
+                    ..SpawnOpts::new(test_spawn_host())
                 },
                 &emit,
             )
@@ -521,7 +523,7 @@ thinking out loud, not json\n\
                     ..Default::default()
                 },
                 "task",
-                &SpawnOpts::default(),
+                &SpawnOpts::new(test_spawn_host()),
                 &emit,
             )
             .unwrap();
@@ -554,7 +556,7 @@ thinking out loud, not json\n\
         };
 
         let default = driver
-            .spawn(&agent, "task", &SpawnOpts::default(), &emit)
+            .spawn(&agent, "task", &SpawnOpts::new(test_spawn_host()), &emit)
             .unwrap();
         assert!(
             default
@@ -573,7 +575,7 @@ thinking out loud, not json\n\
                         "CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS".to_string(),
                         "900000".to_string(),
                     )],
-                    ..Default::default()
+                    ..SpawnOpts::new(test_spawn_host())
                 },
                 &emit,
             )
@@ -607,7 +609,7 @@ thinking out loud, not json\n\
         };
         let opts = SpawnOpts {
             id: "u/implementer#2".into(),
-            ..Default::default()
+            ..SpawnOpts::new(test_spawn_host())
         };
         let result = driver.spawn(&agent, "task", &opts, &emit).unwrap();
         assert!(
@@ -633,7 +635,7 @@ thinking out loud, not json\n\
             id: "u/adversary#0".into(),
             run_id: "r1".into(),
             dir: dir.to_string_lossy().into_owned(),
-            ..Default::default()
+            ..SpawnOpts::new(test_spawn_host())
         };
         let leaf = crate::driver::replay::spawn_scratch_path(&root, "r1", &opts.id).unwrap();
         let sibling =
@@ -696,7 +698,7 @@ thinking out loud, not json\n\
                 PROMPT_CAPTURE_DIR.to_string(),
                 capture.path().to_string_lossy().into_owned(),
             )],
-            ..Default::default()
+            ..SpawnOpts::new(test_spawn_host())
         };
         let driver = Driver {
             bin: std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -749,7 +751,7 @@ thinking out loud, not json\n\
                 PROMPT_CAPTURE_DIR.to_string(),
                 capture.path().to_string_lossy().into_owned(),
             )],
-            ..Default::default()
+            ..SpawnOpts::new(test_spawn_host())
         };
         let driver = Driver {
             bin: std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -803,7 +805,7 @@ thinking out loud, not json\n\
         SpawnOpts {
             system_prompt: system_prompt.to_string(),
             attempt,
-            ..Default::default()
+            ..SpawnOpts::new(test_spawn_host())
         }
     }
 
@@ -961,7 +963,7 @@ thinking out loud, not json\n\
             "--allowed-tools".to_string(),
             crate::hooks::helper_mcp_tools().unwrap().join(","),
         ];
-        expected.extend(spawn_config_args("rigger", &["mcp"], "").unwrap());
+        expected.extend(spawn_config_args("rigger", &["mcp"], "", &test_spawn_host()).unwrap());
         assert_eq!(args, expected);
     }
 
@@ -998,8 +1000,8 @@ thinking out loud, not json\n\
         assert!(args.iter().any(|x| x == "--strict-mcp-config"));
         let settings = &args[arg_index(&args, "--settings") + 1];
         assert!(
-            crate::hooks::carries_session_settings(settings.as_bytes()),
-            "the spawn's settings carry the prime hook, the grep-guard and the status line: {settings}"
+            crate::hooks::carries_session_settings(settings.as_bytes(), false),
+            "the spawn's settings carry the prime hook and the status line: {settings}"
         );
         let agents = flag_json(&args, "--agents");
         assert!(agents.get("lookup").is_some(), "{agents}");
@@ -1059,33 +1061,42 @@ thinking out loud, not json\n\
 
     #[test]
     fn build_args_carries_the_spawns_own_settings_under_the_session_settings() {
-        let opts = SpawnOpts {
-            settings_json: "{\"model\":\"opus\"}".to_string(),
-            ..Default::default()
-        };
-        let args = build_args(
-            &AgentDef::default(),
-            &SystemPromptFile::default(),
-            &opts,
-            &fresh_session(),
-            "rigger",
-        )
-        .unwrap();
-        let settings = flag_json(&args, "--settings");
-        assert_eq!(
-            settings["model"], "opus",
-            "the spawn's own settings survive"
-        );
-        assert!(crate::hooks::carries_session_settings(
-            settings.to_string().as_bytes()
-        ));
+        // The grep-guard rides the spawn's settings exactly when its host carries it.
+        for grep_guard in [false, true] {
+            let opts = SpawnOpts {
+                settings_json: "{\"model\":\"opus\"}".to_string(),
+                ..SpawnOpts::new(crate::agent::SpawnHost { grep_guard })
+            };
+            let args = build_args(
+                &AgentDef::default(),
+                &SystemPromptFile::default(),
+                &opts,
+                &fresh_session(),
+                "rigger",
+            )
+            .unwrap();
+            let settings = flag_json(&args, "--settings");
+            assert_eq!(
+                settings["model"], "opus",
+                "the spawn's own settings survive (grep_guard {grep_guard})"
+            );
+            let settings = settings.to_string();
+            assert_eq!(
+                (
+                    crate::hooks::carries_session_settings(settings.as_bytes(), grep_guard),
+                    crate::hooks::carries_grep_guard(settings.as_bytes()),
+                ),
+                (true, grep_guard),
+                "the session settings, the grep-guard only when the host carries it: {settings}"
+            );
+        }
     }
 
     #[test]
     fn build_args_fails_when_the_spawns_settings_are_not_a_json_object() {
         let opts = SpawnOpts {
             settings_json: "[1]".to_string(),
-            ..Default::default()
+            ..SpawnOpts::new(test_spawn_host())
         };
         let err = build_args(
             &AgentDef::default(),
@@ -1191,7 +1202,7 @@ thinking out loud, not json\n\
     #[cfg(unix)]
     #[test]
     fn a_fresh_spawn_reports_the_session_it_started() {
-        let result = spawn_session_agent("the full task", SpawnOpts::default(), "");
+        let result = spawn_session_agent("the full task", SpawnOpts::new(test_spawn_host()), "");
         assert!(
             uuid::Uuid::parse_str(&result.session_id).is_ok(),
             "a fresh spawn reports the session id it minted: {result:?}"
@@ -1217,7 +1228,7 @@ thinking out loud, not json\n\
         let opts = SpawnOpts {
             resumed_from: "sess-prior".into(),
             resume_task: "fix exactly these".into(),
-            ..Default::default()
+            ..SpawnOpts::new(test_spawn_host())
         };
         let result = spawn_session_agent("the full task", opts, "sess-prior");
         assert!(
@@ -1244,7 +1255,7 @@ thinking out loud, not json\n\
         let opts = SpawnOpts {
             resumed_from: "sess-gone".into(),
             resume_task: "fix exactly these".into(),
-            ..Default::default()
+            ..SpawnOpts::new(test_spawn_host())
         };
         let result = spawn_session_agent("the full task", opts, "sess-other");
         assert!(

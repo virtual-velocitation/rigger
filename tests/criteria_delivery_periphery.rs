@@ -26,6 +26,7 @@
 //! file does not re-walk each call site separately.
 
 mod common;
+use common::fixtures::test_spawn_host;
 use common::fixtures::NoopDriver;
 
 use common::repo::repo_text;
@@ -132,6 +133,7 @@ fn baseline_unit_started_carries_the_full_multiline_criterion_including_its_owns
         log: &|_| {},
         hash_blob: &|_| Ok(String::new()),
         check_emit: &rigger::contextgraph::check_emit,
+        spawn_host: test_spawn_host(),
     };
     let rs = run(&cfg, &deps).unwrap();
 

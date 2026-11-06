@@ -35,6 +35,7 @@
 mod common;
 use common::git::git_ok;
 
+use common::fixtures::test_spawn_host;
 use common::fixtures::{MergeBreakDriver, MERGE_BREAK_BASE};
 
 use std::path::Path;
@@ -142,6 +143,7 @@ fn a_locally_modified_tracked_file_in_the_operators_checkout_never_reaches_the_p
         log: &|_| {},
         hash_blob: &|_| Ok(String::new()),
         check_emit: &rigger::contextgraph::check_emit,
+        spawn_host: test_spawn_host(),
     };
     let rs = run(&cfg, &deps).unwrap();
     for u in ["unit-a", "unit-b"] {

@@ -190,12 +190,14 @@ fn discipline_body(ctx: &DocsContext) -> String {
         "`rigger setup` puts these same lookups directly in THIS session's hands too: it \
          registers a `rigger` MCP server (`.mcp.json`) exposing `rigger_peers`, `rigger_ground`, \
          and `rigger_graph` as tools here - the same three lookups a loop agent has, instead of a \
-         shell - and installs a PreToolUse hook that bounces every `Grep` tool call and every \
+         shell - and, when the workflow declares `defaults.grep_guard: true`, installs a \
+         PreToolUse hook that bounces every `Grep` tool call and every \
          `grep`-invoking Bash command in this project, with no target it lets through, with the \
          message \"{message}\" - unless the Bash command ends with a `# --literal` comment (the \
          shell discards the comment, so the marker never reaches grep whichever PreToolUse hook \
-         rewrites the command). The graph stays the path of least resistance in this very \
-         session, and a literal-text grep is the deliberate act `--literal` names, not a habit.\n",
+         rewrites the command). With the guard installed, the graph stays the path of least \
+         resistance in this very session, and a literal-text grep is the deliberate act \
+         `--literal` names, not a habit.\n",
         message = ctx.grep_guard_message,
     );
 

@@ -254,7 +254,7 @@ pub(crate) fn cmd_validate(args: &[String]) -> Res {
     // Non-fatal advisories (spec 05:55): surface config/install drift so it is seen,
     // not discovered by accident. Each is a stderr warning that never changes the exit
     // status - `rigger validate` still succeeds so long as the config itself is valid.
-    for advisory in validate_advisories(root) {
+    for advisory in validate_advisories(root, cfg.workflow.defaults.grep_guard) {
         eprintln!("{advisory}");
     }
     // Unbounded wall-clock advisory (spec 19c, unit 3): warn when `defaults.max_wall_clock`
@@ -466,11 +466,12 @@ fn gate_requirement_lines(gates: &[GateRequirements]) -> Vec<String> {
 /// The non-fatal `rigger validate` advisories (spec 05:55), in report order:
 ///   (a) the installed `/rigger` workflow has drifted from this binary's embedded copy;
 ///   (b) tracked `.rigger/` files carry uncommitted modifications;
-///   (c) the checkout's `.claude/settings.json` lacks rigger's session hooks.
+///   (c) the checkout's `.claude/settings.json` lacks rigger's session hooks, or carries the
+///       grep-guard `grep_guard` (the workflow's `defaults.grep_guard`) does not declare.
 /// Both are warnings only - they are collected here and printed to stderr by the caller
 /// without affecting the exit status. Rooted at `root` so the seam is testable against a
 /// temp dir without mutating the process-wide current directory.
-fn validate_advisories(root: &Path) -> Vec<String> {
+fn validate_advisories(root: &Path, grep_guard: bool) -> Vec<String> {
     let mut advisories = Vec::new();
     // Identity durability (spec 09): without a tracked project.id, identity is the volatile
     // directory basename, so a rename away orphans this project's run history. Warn (like
@@ -495,9 +496,7 @@ fn validate_advisories(root: &Path) -> Vec<String> {
     if let Some(dirty) = uncommitted_rigger_advisory(root) {
         advisories.push(dirty);
     }
-    if let Some(advisory) = session_hooks_advisory(root) {
-        advisories.push(advisory);
-    }
+    advisories.extend(session_hooks_advisory(root, grep_guard));
     // Spec 74, criterion 2: the missing-go-gitsemver-binary advisory (fires whenever
     // THIS binary's own embedded version carries the `+unversioned` marker, regardless
     // of cause) and the behind-the-tree advisory (fires when the checkout's freshly
@@ -861,21 +860,34 @@ fn workflow_drift_advisory(
 /// git is unavailable - in which case there is nothing to flag). Runs `git status
 /// --porcelain -- .rigger` rooted at `root` and folds its output through the pure
 /// [`dirty_tracked_paths`] seam.
-/// Warn when the checkout's `.claude/settings.json` lacks any of the session settings
-/// `rigger setup` installs (the prime hook, the grep-guard, the status line): a headless spawn
-/// gets them from the host, but the operator's own interactive session reads them from here.
-fn session_hooks_advisory(root: &Path) -> Option<String> {
+/// The warnings on the checkout's `.claude/settings.json`, in order: one when it lacks any of
+/// the session settings `rigger setup` installs (the prime hook and the status line, and the
+/// grep-guard when `grep_guard`, the workflow's `defaults.grep_guard`, declares it), and one when
+/// it carries the grep-guard the workflow does not declare. A headless spawn gets its settings
+/// from the host, but the operator's own interactive session reads them from here.
+fn session_hooks_advisory(root: &Path, grep_guard: bool) -> Vec<String> {
     let settings = std::fs::read(root.join(".claude").join("settings.json")).unwrap_or_default();
-    if rigger::hooks::carries_session_settings(&settings) {
-        return None;
+    let mut advisories = Vec::new();
+    if !rigger::hooks::carries_session_settings(&settings, grep_guard) {
+        advisories.push(if grep_guard {
+            "warning: .claude/settings.json does not carry rigger's session hooks (the \
+             SessionStart prime hook, the PreToolUse grep-guard and the status line), so an \
+             interactive session in this checkout starts unprimed and without the graph-first \
+             lookup guard. Run `rigger setup` to install them."
+        } else {
+            "warning: .claude/settings.json does not carry rigger's session hooks (the \
+             SessionStart prime hook and the status line), so an interactive session in this \
+             checkout starts unprimed. Run `rigger setup` to install them."
+        });
     }
-    Some(
-        "warning: .claude/settings.json does not carry rigger's session hooks (the SessionStart \
-         prime hook, the PreToolUse grep-guard and the status line), so an interactive session \
-         in this checkout starts unprimed and without the graph-first lookup guard. Run \
-         `rigger setup` to install them."
-            .to_string(),
-    )
+    if !grep_guard && rigger::hooks::carries_grep_guard(&settings) {
+        advisories.push(
+            "warning: .claude/settings.json carries the PreToolUse grep-guard, which the \
+             workflow does not declare (`defaults.grep_guard` is not true), so it still denies a \
+             grep in an interactive session in this checkout. Run `rigger setup` to remove it.",
+        );
+    }
+    advisories.into_iter().map(str::to_string).collect()
 }
 
 fn uncommitted_rigger_advisory(root: &Path) -> Option<String> {
@@ -1769,7 +1781,7 @@ mod tests {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, "// drifted\n").unwrap();
 
-        let advisories = validate_advisories(root);
+        let advisories = validate_advisories(root, true);
         assert!(
             advisories
                 .iter()
@@ -1777,6 +1789,48 @@ mod tests {
             "a drifted installed workflow yields a drift advisory naming the file; got: \
              {advisories:?}"
         );
+    }
+
+    /// The settings advisories over the checkout's `.claude/settings.json`, by what it carries and
+    /// whether the workflow declares the grep-guard: the missing-hooks warning names the guard
+    /// only when declared, and a guard the workflow does not declare is named stale.
+    #[test]
+    fn session_hooks_advisory_reads_the_declared_grep_guard() {
+        let missing_guarded = "warning: .claude/settings.json does not carry rigger's session \
+             hooks (the SessionStart prime hook, the PreToolUse grep-guard and the status line), \
+             so an interactive session in this checkout starts unprimed and without the \
+             graph-first lookup guard. Run `rigger setup` to install them.";
+        let missing = "warning: .claude/settings.json does not carry rigger's session hooks (the \
+             SessionStart prime hook and the status line), so an interactive session in this \
+             checkout starts unprimed. Run `rigger setup` to install them.";
+        let stale = "warning: .claude/settings.json carries the PreToolUse grep-guard, which the \
+             workflow does not declare (`defaults.grep_guard` is not true), so it still denies a \
+             grep in an interactive session in this checkout. Run `rigger setup` to remove it.";
+        let primed = rigger::hooks::install_session_settings(b"", false).unwrap();
+        let guarded = rigger::hooks::install_session_settings(b"", true).unwrap();
+        let guard_alone = rigger::hooks::install_grep_guard(b"").unwrap();
+        let rows = [
+            (None, true, vec![missing_guarded]),
+            (None, false, vec![missing]),
+            (Some(primed.as_slice()), false, vec![]),
+            (Some(primed.as_slice()), true, vec![missing_guarded]),
+            (Some(guarded.as_slice()), true, vec![]),
+            (Some(guarded.as_slice()), false, vec![stale]),
+            (Some(guard_alone.as_slice()), false, vec![missing, stale]),
+        ];
+        for (settings, grep_guard, expected) in rows {
+            let dir = tempfile::tempdir().unwrap();
+            if let Some(settings) = settings {
+                std::fs::create_dir_all(dir.path().join(".claude")).unwrap();
+                std::fs::write(dir.path().join(".claude/settings.json"), settings).unwrap();
+            }
+            assert_eq!(
+                session_hooks_advisory(dir.path(), grep_guard),
+                expected,
+                "{:?} with grep_guard {grep_guard}",
+                settings.map(String::from_utf8_lossy)
+            );
+        }
     }
 
     #[test]

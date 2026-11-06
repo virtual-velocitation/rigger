@@ -8,7 +8,7 @@ use rigger::eventstore::{Event, EventStore};
 use rigger::gate;
 use rigger::ledger::{RunState, TYPE_UNIT_STATUS};
 
-use super::{agent, gate_def, gate_def_inputs};
+use super::{agent, gate_def, gate_def_inputs, test_spawn_host};
 
 /// The one paragraph the lookup pointer every grounding slice carries renders, between its
 /// leading and trailing newline: the knowledge graph's three verbs, each with its one-line job.
@@ -75,7 +75,7 @@ pub fn implementer_opts(id: &str) -> SpawnOpts {
         id: id.to_string(),
         attempt: 0,
         system_prompt: "You implement findings.".to_string(),
-        ..Default::default()
+        ..SpawnOpts::new(test_spawn_host())
     }
 }
 
@@ -392,6 +392,7 @@ pub fn bare_deps<'a>(
         log: &|_| {},
         hash_blob: &|_| Ok(String::new()),
         check_emit: &rigger::contextgraph::check_emit,
+        spawn_host: test_spawn_host(),
     }
 }
 

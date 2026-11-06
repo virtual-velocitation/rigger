@@ -129,14 +129,12 @@ fn flag_json(argv: &[String], flag: &str) -> Value {
     serde_json::from_str(value).unwrap_or_else(|e| panic!("{flag} is not JSON ({e}): {value}"))
 }
 
-/// The session settings `rigger setup` installs into an empty `.claude/settings.json`, merged
-/// onto `base` by the same `hooks` installers: the SessionStart prime hook, the PreToolUse
-/// grep-guard and the status line.
+/// The session settings a spawn whose host leaves the grep-guard off carries, as every launch
+/// here does, merged onto `base` by the same `hooks` installers `rigger setup` runs: the
+/// SessionStart prime hook and the status line.
 fn installed_session_settings(base: &[u8]) -> Value {
     let primed = hooks::install_session_start(base, "rigger prime").unwrap();
-    let guarded =
-        hooks::install_pretooluse_hook(&primed, "Grep|Bash", "rigger grep-guard").unwrap();
-    let with_line = hooks::install_status_line(&guarded, "rigger status --line").unwrap();
+    let with_line = hooks::install_status_line(&primed, "rigger status --line").unwrap();
     serde_json::from_slice(&with_line).unwrap()
 }
 

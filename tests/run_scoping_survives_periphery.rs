@@ -37,6 +37,7 @@ mod common;
 use common::fixtures::count_of_type;
 use common::fixtures::reference_replay_keys;
 use common::fixtures::run_log;
+use common::fixtures::test_spawn_host;
 use common::fixtures::NoopDriver;
 use rigger::conductor::{run, Deps, META_REPLAY_KEY};
 use rigger::config::{AgentDef, Config, Gate, Stage};
@@ -100,6 +101,7 @@ fn campaign(store: &Store, criterion: &str) -> Status {
         log: &|_| {},
         hash_blob: &|_| Ok(String::new()),
         check_emit: &rigger::contextgraph::check_emit,
+        spawn_host: test_spawn_host(),
     };
     run(&cfg, &deps).unwrap().units[UNIT].status
 }

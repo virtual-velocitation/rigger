@@ -43,20 +43,23 @@ use common::cli::validate_after_init;
 use common::cli::{assert_stopped_at_the_grounder, stopping_at_the_grounder};
 #[cfg(feature = "symbols")]
 use common::cli::{batch_events, recorded_and_walked};
-use common::cli::{escalate_solo_unit, REVIEWLESS_GIT_ESCALATING_UNIT_WORKFLOW};
 use common::cli::{
-    write_scaffold, write_workflow_fixture, WorkflowFixture, ISOLATED_WORKER,
+    declare_grep_guard, write_scaffold, write_workflow_fixture, WorkflowFixture, ISOLATED_WORKER,
     REVIEWLESS_GIT_UNIT_WORKFLOW, UNISOLATED_WORKER,
 };
+use common::cli::{escalate_solo_unit, REVIEWLESS_GIT_ESCALATING_UNIT_WORKFLOW};
 use common::fixtures::assert_driver_guards_a_null_step;
 use common::fixtures::file_len;
 use common::fixtures::pgid_of;
-use common::fixtures::{api_retry_lines, recorded_argv, recorded_task, ERROR_RESULT};
+use common::fixtures::{
+    api_retry_lines, recorded_argv, recorded_task, stand_in_launches, ERROR_RESULT,
+};
 use common::git::git_answer;
 use common::git::temp_git_project_with_commit;
 use common::mcp::McpSession;
 use common::repo::{
-    assert_carries_spawn_hooks, flag_value, hook_words, stub_path, SILENT_PAST_THE_POLL,
+    assert_carries_spawn_hooks, flag_value, grep_guard_hook, hook_words, stub_path,
+    SILENT_PAST_THE_POLL,
 };
 use common::rigger_bin;
 use common::workflow_probe::write_workflow;
@@ -6931,7 +6934,7 @@ fn run_carries_each_launchs_write_guard_and_stop_failure_hooks() {
         let settings: serde_json::Value =
             serde_json::from_str(flag_value(&argv, "--settings")).unwrap();
         let bin = std::fs::canonicalize(rigger_bin()).unwrap();
-        assert_carries_spawn_hooks(&settings, bin.to_str().unwrap(), row.spawn, &roots);
+        assert_carries_spawn_hooks(&settings, bin.to_str().unwrap(), row.spawn, &roots, false);
 
         let mut targets = vec![
             (session_cwd.join("new.rs"), true),
@@ -10686,13 +10689,10 @@ stages:
 "#,
 };
 
-/// The opening of an [`install_fake_claude`] arm whose launches all stay on record: the launch
-/// leaves its argv, working directory and spawn in a directory of its own under `launches`.
-const RECORD_EACH_LAUNCH: &str = r#"    mkdir -p "$here/launches/$$"
-    printf '%s\0' "$@" > "$here/launches/$$/argv"
-    pwd -P > "$here/launches/$$/cwd"
-    printf '%s' "$RIGGER_SPAWN" > "$here/launches/$$/spawn"
-"#;
+/// The opening of an [`install_fake_claude`] arm whose launches all stay on record, through the
+/// stand-in's `record_launch`: the launch leaves its argv, working directory and spawn in a
+/// directory of its own under `launches`, which [`stand_in_launches`] reads back.
+const RECORD_EACH_LAUNCH: &str = "    record_launch \"$here/launches\" \"$@\"\n";
 
 /// Scaffold `root` with [`FULLY_REVIEWED_UNIT_WORKFLOW`] and the three reviewers it names.
 fn write_reviewed_unit(root: &Path) {
@@ -10702,19 +10702,15 @@ fn write_reviewed_unit(root: &Path) {
     write_agent(root, "judge", "Read", "Adjudicate it.");
 }
 
-/// Spec 105's hook injection on every launch: given a unit reviewed by a lens, an adversary and an
-/// adjudicator that rejects its first round, when `rigger run` drives it, then each launch of the
-/// two rounds, fresh or resumed, the implementer's and each reviewer's, carries the write guard
-/// rooted at that launch's own working directory and spawn scratch container, and the `StopFailure`
-/// entries for its own spawn.
+/// Spec 105's hook injection on every launch, with spec 121's THE GREP GUARD IS DECLARED: given a
+/// unit reviewed by a lens, an adversary and an adjudicator that rejects its first round, its
+/// workflow declaring `defaults.grep_guard` or not, when `rigger run` drives it, then each launch of
+/// the two rounds, fresh or resumed, the implementer's and each reviewer's, carries the write guard
+/// rooted at that launch's own working directory and spawn scratch container, the `StopFailure`
+/// entries for its own spawn, and the session's grep guard exactly when the workflow declares it.
 #[cfg(unix)]
 #[test]
 fn every_launch_of_a_reviewed_unit_carries_the_hooks_for_its_own_spawn() {
-    let dir = temp_git_project_with_commit();
-    let root = std::fs::canonicalize(dir.path()).unwrap();
-    write_reviewed_unit(&root);
-    let held = tempfile::tempdir().unwrap();
-    let scratch = std::fs::canonicalize(held.path()).unwrap();
     let arms = format!(
         r#"  *"Do the unit."*)
 {RECORD_EACH_LAUNCH}    echo "pub fn work() {{}}" >> work.rs
@@ -10735,48 +10731,62 @@ fn every_launch_of_a_reviewed_unit_carries_the_hooks_for_its_own_spawn() {
     ;;
 "#
     );
-    let (out, err, ok, fake) = run_on_arms(&root, &["run"], &scratch, &arms);
-    assert!(ok, "the run succeeds; stderr: {err}\nstdout: {out}");
-
-    let run = common::cli::current_run_id_of(&root).expect("the run has an id");
-    let bin = std::fs::canonicalize(rigger_bin()).unwrap();
-    let mut launches: Vec<(String, bool)> = Vec::new();
-    for launch in std::fs::read_dir(fake.path().join("bin/launches")).unwrap() {
-        let launch = launch.unwrap().path();
-        let spawn = std::fs::read_to_string(launch.join("spawn")).unwrap();
-        let cwd = std::fs::read_to_string(launch.join("cwd")).unwrap();
-        let session_cwd = cwd.trim_end();
-        assert_eq!(
-            session_cwd,
-            scratch.join("rigger-wt-solo").to_str().unwrap(),
-            "{spawn}: each launch of the unit runs in its worktree"
+    for grep_guard in [false, true] {
+        let dir = temp_git_project_with_commit();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        write_reviewed_unit(&root);
+        if grep_guard {
+            declare_grep_guard(&root);
+        }
+        let held = tempfile::tempdir().unwrap();
+        let scratch = std::fs::canonicalize(held.path()).unwrap();
+        let (out, err, ok, fake) = run_on_arms(&root, &["run"], &scratch, &arms);
+        assert!(
+            ok,
+            "grep_guard {grep_guard}: the run succeeds; stderr: {err}\nstdout: {out}"
         );
-        let container =
-            rigger::driver::replay::spawn_scratch_path(scratch.to_str().unwrap(), &run, &spawn)
-                .unwrap();
-        let roots = [session_cwd, container.to_str().unwrap()].map(str::to_string);
-        let argv = recorded_argv(&launch.join("argv"));
-        let settings: serde_json::Value =
-            serde_json::from_str(flag_value(&argv, "--settings")).unwrap();
-        assert_carries_spawn_hooks(&settings, bin.to_str().unwrap(), &spawn, &roots);
-        launches.push((spawn, argv.iter().any(|word| word == "--resume")));
+
+        let run = common::cli::current_run_id_of(&root).expect("the run has an id");
+        let bin = std::fs::canonicalize(rigger_bin()).unwrap();
+        let mut launches: Vec<(String, bool)> = Vec::new();
+        for launch in stand_in_launches(&fake.path().join("bin/launches")) {
+            let spawn = launch.spawn;
+            assert_eq!(
+                launch.cwd,
+                scratch.join("rigger-wt-solo").to_str().unwrap(),
+                "{spawn}: each launch of the unit runs in its worktree"
+            );
+            let container =
+                rigger::driver::replay::spawn_scratch_path(scratch.to_str().unwrap(), &run, &spawn)
+                    .unwrap();
+            let roots = [launch.cwd.as_str(), container.to_str().unwrap()].map(str::to_string);
+            let settings: serde_json::Value =
+                serde_json::from_str(flag_value(&launch.argv, "--settings")).unwrap();
+            assert_carries_spawn_hooks(
+                &settings,
+                bin.to_str().unwrap(),
+                &spawn,
+                &roots,
+                grep_guard,
+            );
+            launches.push((spawn, launch.argv.iter().any(|word| word == "--resume")));
+        }
+        let expected = [
+            ("solo/adjudicator#0", false),
+            ("solo/adjudicator#1", true),
+            ("solo/adversary#0", false),
+            ("solo/adversary#1", true),
+            ("solo/implementer#0", false),
+            ("solo/implementer#1", true),
+            ("solo/lens:lens#0", false),
+            ("solo/lens:lens#1", true),
+        ]
+        .map(|(spawn, resumed)| (spawn.to_string(), resumed));
+        assert_eq!(
+            launches, expected,
+            "grep_guard {grep_guard}: the two rounds' launches, each on record"
+        );
     }
-    launches.sort();
-    let expected = [
-        ("solo/adjudicator#0", false),
-        ("solo/adjudicator#1", true),
-        ("solo/adversary#0", false),
-        ("solo/adversary#1", true),
-        ("solo/implementer#0", false),
-        ("solo/implementer#1", true),
-        ("solo/lens:lens#0", false),
-        ("solo/lens:lens#1", true),
-    ]
-    .map(|(spawn, resumed)| (spawn.to_string(), resumed));
-    assert_eq!(
-        launches, expected,
-        "the two rounds' launches, each on record"
-    );
 }
 
 /// The live-progress frame closing a launch's first user message: the progress verb and its
@@ -32889,6 +32899,95 @@ fn setup_registers_the_operator_mcp_server_and_lookup_hook() {
     );
 }
 
+/// Given a project set up with the scaffolded workflow, which declares `defaults.grep_guard`, and
+/// a `.claude/settings.json` whose `PreToolUse` array holds, ahead of setup's own grep-guard
+/// block, a foreign `Write` hook, an already-empty `Write` block and a `Bash` block running the
+/// guard beside a foreign hook: when the operator keeps or drops the key and reruns `rigger
+/// setup`, then setup reports its one lookup-hook edit, and the file loses rigger's own guard
+/// alone - from the `Bash` block either way, and setup's own block with it when the key is not
+/// declared - keeping every other block and setting, the empty block included. A further rerun
+/// changes and reports nothing, and `rigger validate` raises no warning on the file it leaves.
+#[test]
+fn setup_edits_only_its_own_lookup_hook_whether_the_grep_guard_is_declared_or_not() {
+    let reinstalled = "installed the graph-first lookup hook into the existing settings.json - \
+                       a Grep tool call or `grep` command over src/, tests/, or workflows/ now \
+                       bounces toward rigger_ground/rigger_graph (end a `grep` command with a \
+                       `# --literal` comment to proceed anyway)";
+    let removal = "removed the graph-first lookup hook: `defaults.grep_guard` is not declared";
+    // (whether the workflow keeps `defaults.grep_guard`, the one lookup-hook line setup reports)
+    for (declared, report) in [(true, reinstalled), (false, removal)] {
+        let dir = temp_project();
+        let root = dir.path();
+        setup_ok(root, &[("RIGGER_NPM", "true")]);
+        let settings_path = root.join(".claude").join("settings.json");
+        let read_settings = || -> serde_json::Value {
+            serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap()
+        };
+        let mut guarded = read_settings();
+        assert_eq!(
+            hook_words(&guarded, "PreToolUse"),
+            [grep_guard_hook()],
+            "setup's own PreToolUse entry is the guard alone: {guarded}"
+        );
+        let own = guarded["hooks"]["PreToolUse"][0].clone();
+        let prettier = serde_json::json!({"type": "command", "command": "prettier --write"});
+        let foreign = serde_json::json!({"matcher": "Write", "hooks": [prettier]});
+        let empty = serde_json::json!({"matcher": "Write", "hooks": []});
+        let mixed = serde_json::json!({"matcher": "Bash", "hooks": [own["hooks"][0], prettier]});
+        guarded["hooks"]["PreToolUse"] = serde_json::json!([foreign, empty, mixed, own]);
+        std::fs::write(&settings_path, serde_json::to_vec_pretty(&guarded).unwrap()).unwrap();
+        let workflow_path = root.join(".rigger").join("workflow.yml");
+        let workflow = std::fs::read_to_string(&workflow_path).unwrap();
+        assert_eq!(workflow.matches("  grep_guard: true\n").count(), 1);
+        if !declared {
+            std::fs::write(&workflow_path, workflow.replace("  grep_guard: true\n", "")).unwrap();
+        }
+
+        let out = setup_ok(root, &[("RIGGER_NPM", "true")]);
+        assert_eq!(
+            out.lines()
+                .filter(|line| line.contains("lookup hook"))
+                .collect::<Vec<_>>(),
+            [report],
+            "setup reports its one lookup-hook edit (declared: {declared}); got:\n{out}"
+        );
+        let unguarded = serde_json::json!({"matcher": "Bash", "hooks": [prettier]});
+        let mut kept = vec![foreign, empty, unguarded];
+        if declared {
+            kept.push(own);
+        }
+        let mut expected = guarded.clone();
+        expected["hooks"]["PreToolUse"] = serde_json::Value::Array(kept);
+        assert_eq!(read_settings(), expected, "declared: {declared}");
+
+        let rerun = setup_ok(root, &[("RIGGER_NPM", "true")]);
+        assert_eq!(
+            rerun
+                .lines()
+                .filter(|line| line.contains("lookup hook"))
+                .count(),
+            0,
+            "a rerun reports no lookup hook (declared: {declared}); got:\n{rerun}"
+        );
+        assert_eq!(read_settings(), expected, "declared: {declared}");
+
+        let (out, err, ok) = run_rigger(root, &["validate"]);
+        assert!(
+            ok,
+            "validate succeeds on the set-up project; stderr:\n{err}"
+        );
+        assert_eq!(
+            out.lines()
+                .chain(err.lines())
+                .filter(|line| line.contains(".claude/settings.json"))
+                .collect::<Vec<_>>(),
+            Vec::<&str>::new(),
+            "validate reads setup's file as carrying the session settings the workflow declares \
+             (declared: {declared}); stdout:\n{out}\nstderr:\n{err}"
+        );
+    }
+}
+
 /// A live `rigger mcp` session over a store holding one decision, its workflow pinning
 /// `grounder`: the lookup surface is exactly the three tools, `rigger_peers` answers from the
 /// real store and `rigger_graph` around an unknown entity answers honestly empty (both
@@ -33402,6 +33501,11 @@ fn run_guard_write(process_cwd: &Path, roots: &[&str], payload: &str) -> serde_j
     run_hook_verb(process_cwd, &args, payload)
 }
 
+/// The reason `rigger grep-guard` denies a grep with: the guard's rule and its escape hatch, no
+/// lookup method.
+const GREP_GUARD_DENIAL: &str =
+    "grep is for literal text - end the command with a `# --literal` comment to proceed";
+
 /// Asserts `out` (a [`run_grep_guard`] result) is the empty object `{}`: the hook passes a
 /// grep carrying the `# --literal` comment through with no verdict and no `updatedInput`.
 /// Claude Code runs every matching PreToolUse hook in parallel on the original input and keeps
@@ -33444,11 +33548,10 @@ fn grep_guard_bounces_every_bash_grep_target_and_passes_literal() {
         let reason = blocked["hookSpecificOutput"]["permissionDecisionReason"]
             .as_str()
             .unwrap();
-        assert!(
-            reason.contains("rigger_ground")
-                && reason.contains("rigger_graph")
-                && reason.contains("--literal"),
-            "the denial must carry the stated message; got: {reason:?}"
+        assert_eq!(
+            reason, GREP_GUARD_DENIAL,
+            "the denial must carry the stated message, the guard's rule and its escape hatch \
+             alone"
         );
 
         let literal_command = format!("grep -rn TODO {target} # --literal");
@@ -35116,9 +35219,12 @@ fn docs_installs_the_operator_lookup_rule_text_into_the_shipped_skill_and_handbo
              got:\n{out}"
         );
         // Interpolated verbatim from the SAME message `rigger grep-guard` denies with, not a
-        // hand-paraphrase that could describe a different rule than the hook actually enforces.
+        // hand-paraphrase that could describe a different rule than the hook actually enforces:
+        // its rule and its escape hatch, and no lookup method, which the working-discipline
+        // built-in states.
         assert!(
-            out.contains("rigger_ground / rigger_graph for code lookups"),
+            out.contains(GREP_GUARD_DENIAL)
+                && !out.contains("rigger_ground / rigger_graph for code lookups"),
             "{label} must carry the hook's real bounce message verbatim; got:\n{out}"
         );
         assert!(

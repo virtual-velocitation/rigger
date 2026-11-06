@@ -2813,7 +2813,7 @@ pub(crate) fn cmd_replay(args: &[String]) -> Res {
     });
     let scratch_root = rigger::worktree::scratch_root_from_env(&repo, &workdir);
     std::fs::create_dir_all(&scratch_root)?;
-    let (candidate_cfg, candidate_definition) =
+    let (candidate_cfg, candidate_definition, spawn_host) =
         materialize_config_at_rev(&repo, &rev, &scratch_root)?;
 
     // 3. Seed the ISOLATED store (a separate scratch db + namespace) with a fresh RunStarted
@@ -2860,6 +2860,7 @@ pub(crate) fn cmd_replay(args: &[String]) -> Res {
             log: &stderr_line,
             hash_blob: &hash_blob,
             check_emit: &rigger::contextgraph::check_emit,
+            spawn_host,
         };
         let drive = conductor::run(&candidate_cfg, &deps);
 
@@ -3048,16 +3049,17 @@ fn run_started_id(e: &Event) -> Option<String> {
         .map(|r| r.run)
 }
 
-/// Load the candidate [`Config`](config) and its definition hash from git `<rev>` via a
-/// throwaway DETACHED worktree under `scratch_root`, removed once loaded. Reading the config
-/// through a real checkout (rather than piping `git show`) reuses the exact [`config::load`]
-/// / [`definition_hash`] readers the live path uses, so a replay evaluates precisely the
-/// config a run at `<rev>` would.
+/// Load the candidate [`Config`](config), its definition hash and the spawn host its defaults
+/// resolve ([`hooks::resolve_spawn_host`], the replay's one resolution point) from git `<rev>`
+/// via a throwaway DETACHED worktree under `scratch_root`, removed once loaded. Reading the
+/// config through a real checkout (rather than piping `git show`) reuses the exact
+/// [`config::load`] / [`definition_hash`] readers the live path uses, so a replay evaluates
+/// precisely the config a run at `<rev>` would.
 fn materialize_config_at_rev(
     repo: &str,
     rev: &str,
     scratch_root: &str,
-) -> Result<(config::Config, String), Box<dyn std::error::Error>> {
+) -> Result<(config::Config, String, conductor::SpawnHost), Box<dyn std::error::Error>> {
     let checkout = Path::new(scratch_root).join(format!(
         "rigger-replay-cfg-{}",
         uuid::Uuid::new_v4().simple()
@@ -3082,8 +3084,9 @@ fn materialize_config_at_rev(
     let loaded = config_store::load(checkout_str)
         .map_err(|e| format!("rigger replay: candidate config at {rev:?} is invalid: {e}"))
         .and_then(|cfg| {
+            let host = hooks::resolve_spawn_host(&cfg.workflow.defaults);
             definition_hash(checkout_str)
-                .map(|def| (cfg, def))
+                .map(|def| (cfg, def, host))
                 .map_err(|e| format!("rigger replay: candidate definition hash at {rev:?}: {e}"))
         });
     // reap-exempt (spec 79, criterion 2): `checkout_str` is created and removed entirely
@@ -5510,13 +5513,13 @@ impl TreeRoot {
     }
 }
 
-/// The graph-first lookup hook's stated bounce message (spec 92, criterion 4's Design
-/// text), naming the escape hatch in the one spelling that survives a sibling PreToolUse
-/// hook's rewrite: `--literal` inside a trailing shell comment, which the shell discards
-/// before grep runs (lesson-u101c2r3-grep-guard-literal-not-stripped).
+/// The graph-first lookup hook's stated bounce message: the guard's rule and its escape hatch
+/// alone, the method a lookup follows being the working discipline's to state. The hatch is
+/// named in the one spelling that survives a sibling PreToolUse hook's rewrite: `--literal`
+/// inside a trailing shell comment, which the shell discards before grep runs
+/// (lesson-u101c2r3-grep-guard-literal-not-stripped).
 const GREP_GUARD_MESSAGE: &str =
-    "use rigger_ground / rigger_graph for code lookups; grep is for literal text - end the \
-     command with a `# --literal` comment to proceed";
+    "grep is for literal text - end the command with a `# --literal` comment to proceed";
 
 #[cfg(test)]
 mod tests {
@@ -6248,6 +6251,13 @@ mod tests {
         // Spec 92, criterion 4: the discipline docs' lookup-hook message is read from the
         // SAME const `rigger grep-guard` decides against, not a hand copy.
         assert_eq!(ctx.grep_guard_message, GREP_GUARD_MESSAGE);
+        // Spec 121: that message is the guard's rule and its escape hatch, word for word: no
+        // lookup method rides on it.
+        assert_eq!(
+            GREP_GUARD_MESSAGE,
+            "grep is for literal text - end the command with a `# --literal` comment to proceed",
+            "the grep-guard's deny message"
+        );
     }
 
     /// Spec 20, unit 1 (the golden fact test): known code facts appear VERBATIM in BOTH

@@ -24,6 +24,9 @@
 //! store, and that `metrics::project_canary` folds those genuinely-produced wire events
 //! (never a hand-typed fixture) into the same values.
 
+mod common;
+
+use common::fixtures::test_spawn_host;
 use rigger::canary::{CanaryHeader, CanaryOutcome, STREAM, TIER_ADVERSARY, TIER_LENS};
 use rigger::canary_store::{
     apply_model_pins, corpus_hash, record_header, run_canary, CanaryItem, ModelPins,
@@ -116,6 +119,7 @@ fn model_pinning_takes_effect_through_run_canary_and_the_header_round_trips_and_
         &store,
         &EchoModelDriver,
         &pinned_cfg,
+        &test_spawn_host(),
         &panel,
         &corpus,
         1,
@@ -238,6 +242,7 @@ fn a_tier_pin_reaches_the_later_step_of_its_kind_through_run_canary() {
             &Store::open(":memory:").expect("an in-memory store opens"),
             &EchoModelDriver,
             &apply_model_pins(&cfg, &panel, &pins),
+            &test_spawn_host(),
             &panel,
             &[item("only")],
             1,

@@ -12,7 +12,7 @@ use super::*;
 use std::collections::HashSet;
 
 use rigger::blocker::RetriesSource;
-use rigger::conductor::{AgentDriver, SpawnOpts};
+use rigger::conductor::{AgentDriver, SpawnHost, SpawnOpts};
 use rigger::driver::{claude_code, replay};
 use rigger::eventstore::TypeSelection;
 use rigger::liveness;
@@ -140,6 +140,7 @@ pub(crate) fn cmd_critique(args: &[String]) -> Res {
             identity: &identity,
             scratch_root: &scratch_root,
             root: &root,
+            spawn_host: rigger::hooks::resolve_spawn_host(&cfg.workflow.defaults),
         };
         let mut union = union;
         loop {
@@ -299,6 +300,9 @@ struct CriticHost<'a> {
     scratch_root: &'a str,
     /// The root the spec path is relative to: the critic's working directory.
     root: &'a Path,
+    /// The host values every pass's spawn carries, resolved once from the workflow's defaults
+    /// when the critique starts ([`rigger::hooks::resolve_spawn_host`]).
+    spawn_host: SpawnHost,
 }
 
 impl CriticHost<'_> {
@@ -339,7 +343,7 @@ impl CriticHost<'_> {
                 "permissions": { "deny": review::CRITIC_DENIED_TOOLS }
             })
             .to_string(),
-            ..SpawnOpts::default()
+            ..SpawnOpts::new(self.spawn_host.clone())
         };
         spawn_store::park_in_run(
             self.critiques,

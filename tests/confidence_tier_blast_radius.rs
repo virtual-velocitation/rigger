@@ -35,6 +35,7 @@ use serde_json::{json, Value};
 
 mod common;
 use common::fixtures::apply_next_json;
+use common::fixtures::test_spawn_host;
 use common::fixtures::NoopDriver;
 
 /// A STRUCTURAL grounder double - the shape criterion 2's graph arm and the audit actually key off,
@@ -147,6 +148,7 @@ fn recorded_blast_radius(graph: Option<&Projector>) -> Option<Value> {
         log: &|_| {},
         hash_blob: &|_| Ok(String::new()),
         check_emit: &rigger::contextgraph::check_emit,
+        spawn_host: test_spawn_host(),
     };
     // The radius is recorded before the spawn, so the run's terminal disposition is irrelevant.
     let _ = run(&cfg, &deps);

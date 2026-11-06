@@ -22,6 +22,13 @@ pub fn test_request(
     }
 }
 
+/// The spawn host a test's spawns carry: the one test-side spelling of the struct the production
+/// resolver `hooks::resolve_spawn_host` returns, with the grep-guard off. A test that needs the
+/// flag set builds its own literal.
+pub fn test_spawn_host() -> rigger_domain::agent::SpawnHost {
+    rigger_domain::agent::SpawnHost { grep_guard: false }
+}
+
 /// One row per `SpawnResult` among `events`, in their order: its id, output and error, and
 /// whether it is a liveness fault.
 pub fn spawn_result_rows(events: &[Event]) -> Vec<(String, String, String, bool)> {
@@ -112,6 +119,35 @@ pub fn recorded_argv(path: &std::path::Path) -> Vec<String> {
         .split_terminator('\0')
         .map(str::to_string)
         .collect()
+}
+
+/// One launch a stand-in `claude` put on record through `tests/fixtures/launch-args.sh`'s
+/// `record_launch`.
+pub struct StandInLaunch {
+    /// The spawn the launch ran as.
+    pub spawn: String,
+    /// Its working directory, every link resolved.
+    pub cwd: String,
+    /// The arguments it was started with.
+    pub argv: Vec<String>,
+}
+
+/// Each launch put on record under `dir`, in the order of its spawn.
+pub fn stand_in_launches(dir: &std::path::Path) -> Vec<StandInLaunch> {
+    let mut launches: Vec<StandInLaunch> = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|launch| {
+            let launch = launch.unwrap().path();
+            let read = |name: &str| std::fs::read_to_string(launch.join(name)).unwrap();
+            StandInLaunch {
+                spawn: read("spawn"),
+                cwd: read("cwd").trim_end().to_string(),
+                argv: recorded_argv(&launch.join("argv")),
+            }
+        })
+        .collect();
+    launches.sort_by(|a, b| a.spawn.cmp(&b.spawn));
+    launches
 }
 
 /// Write `dir/claude-arms`, the shell `case` over the system prompt `$sp` the checked-in

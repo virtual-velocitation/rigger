@@ -2262,6 +2262,27 @@ agent: worker\n";
         );
     }
 
+    /// `defaults.grep_guard` reads as written, and a workflow that does not write it declares
+    /// no guard.
+    #[test]
+    fn grep_guard_parses_and_is_off_when_absent() {
+        let rows = [
+            ("defaults:\n  grep_guard: true\n", true),
+            ("defaults:\n  grep_guard: false\n", false),
+            ("defaults:\n  budget: 10\n", false),
+        ];
+        let parsed: Vec<bool> = rows
+            .iter()
+            .map(|(yaml, _)| {
+                serde_yaml::from_str::<Workflow>(yaml)
+                    .unwrap()
+                    .defaults
+                    .grep_guard
+            })
+            .collect();
+        assert_eq!(parsed, rows.map(|(_, grep_guard)| grep_guard));
+    }
+
     #[test]
     fn failure_rules_parse_into_an_ordered_taxonomy() {
         // An authored `defaults.failure_rules` block parses into a first-match-wins

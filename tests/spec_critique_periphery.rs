@@ -19,9 +19,9 @@ mod common;
 use std::path::Path;
 
 use common::cli::{
-    assert_selected_server, critique_finding_id, emit, no_result_failure, pin_identity,
-    read_run_events, recorded_progress, resolve, rigger_file, run_payloads, run_rigger,
-    run_rigger_envs, run_rigger_ok, run_stream_identity, seed_a_run, seed_critique,
+    assert_selected_server, critique_finding_id, declare_grep_guard, emit, no_result_failure,
+    pin_identity, read_run_events, recorded_progress, resolve, rigger_file, run_payloads,
+    run_rigger, run_rigger_envs, run_rigger_ok, run_stream_identity, seed_a_run, seed_critique,
     seed_critique_spawn, seed_on_the_run, seed_run_events, seed_store, temp_project,
     temp_repoless_project, write_spec_project,
 };
@@ -188,38 +188,44 @@ fn stub_then(critique: &str, later: &str) -> (tempfile::TempDir, String) {
 
 /// Given a critique, when its critic launches, then its spawn-bound server runs the running
 /// executable, and the launch carries the write guard rooted at the critic's working directory and
-/// its spawn scratch container, and one `StopFailure` entry per category for its own spawn id, all
-/// on that same executable, beside the deny the spawn's own settings hold.
+/// its spawn scratch container, the session's grep guard exactly when the workflow declares
+/// `defaults.grep_guard`, and one `StopFailure` entry per category for its own spawn id, all on
+/// that same executable, beside the deny the spawn's own settings hold.
 #[test]
 fn a_critique_launch_carries_the_spawn_hooks_on_its_own_settings() {
-    let dir = temp_project();
-    let root = std::fs::canonicalize(dir.path()).unwrap();
-    scaffold(&root, CRITIC_WORKFLOW);
-    let scratch = root.join("scratch");
-    let (work, path) = stub(REJECT);
-    let (_, err, ok) = critique(&root, SPEC_REL, &path, &scratch);
-    assert!(ok, "the critique is recorded; stderr:\n{err}");
+    for grep_guard in [false, true] {
+        let dir = temp_project();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        scaffold(&root, CRITIC_WORKFLOW);
+        if grep_guard {
+            declare_grep_guard(&root);
+        }
+        let scratch = root.join("scratch");
+        let (work, path) = stub(REJECT);
+        let (_, err, ok) = critique(&root, SPEC_REL, &path, &scratch);
+        assert!(ok, "the critique is recorded; stderr:\n{err}");
 
-    let hash = critique_hash(SPEC);
-    let spawn = critique_spawn_id(&hash, 0);
-    let container =
-        spawn_scratch_path(scratch.to_str().unwrap(), &critique_unit(&hash), &spawn).unwrap();
-    let roots = [root, container].map(|root| root.to_str().unwrap().to_string());
-    let argv = critique_stub_argv(work.path());
-    let bin = std::fs::canonicalize(common::rigger_bin()).unwrap();
-    let mcp: Value = serde_json::from_str(flag_value(&argv, "--mcp-config")).unwrap();
-    assert_eq!(
-        mcp["mcpServers"]["rigger"],
-        serde_json::json!({"command": bin, "args": ["mcp", "--spawn", spawn]}),
-        "the critic's spawn-bound server runs the running executable"
-    );
-    let settings: Value = serde_json::from_str(flag_value(&argv, "--settings")).unwrap();
-    assert_carries_spawn_hooks(&settings, bin.to_str().unwrap(), &spawn, &roots);
-    assert_eq!(
-        settings["permissions"]["deny"].as_array().map(Vec::len),
-        Some(CRITIC_DENIED_TOOLS.len()),
-        "the spawn's own settings survive the merge: {settings}"
-    );
+        let hash = critique_hash(SPEC);
+        let spawn = critique_spawn_id(&hash, 0);
+        let container =
+            spawn_scratch_path(scratch.to_str().unwrap(), &critique_unit(&hash), &spawn).unwrap();
+        let roots = [root, container].map(|root| root.to_str().unwrap().to_string());
+        let argv = critique_stub_argv(work.path());
+        let bin = std::fs::canonicalize(common::rigger_bin()).unwrap();
+        let mcp: Value = serde_json::from_str(flag_value(&argv, "--mcp-config")).unwrap();
+        assert_eq!(
+            mcp["mcpServers"]["rigger"],
+            serde_json::json!({"command": bin, "args": ["mcp", "--spawn", spawn]}),
+            "the critic's spawn-bound server runs the running executable"
+        );
+        let settings: Value = serde_json::from_str(flag_value(&argv, "--settings")).unwrap();
+        assert_carries_spawn_hooks(&settings, bin.to_str().unwrap(), &spawn, &roots, grep_guard);
+        assert_eq!(
+            settings["permissions"]["deny"].as_array().map(Vec::len),
+            Some(CRITIC_DENIED_TOOLS.len()),
+            "the spawn's own settings survive the merge: {settings}"
+        );
+    }
 }
 
 /// Spec 105's stray record: given a project with a run, when a critic's session ends on an API

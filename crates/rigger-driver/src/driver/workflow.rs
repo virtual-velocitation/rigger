@@ -296,6 +296,7 @@ impl AgentDriver for Driver<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::test_spawn_host;
     use std::sync::atomic::AtomicUsize;
     use std::sync::mpsc::Receiver;
     use std::sync::Arc;
@@ -320,7 +321,7 @@ mod tests {
                     isolation: false,
                     parallel: false,
                     blast_radius: vec!["a.rs".into()],
-                    ..Default::default()
+                    ..SpawnOpts::new(test_spawn_host())
                 },
                 &emit,
             )
@@ -417,7 +418,7 @@ mod tests {
                     isolation: false,
                     parallel: false,
                     blast_radius: Vec::new(),
-                    ..Default::default()
+                    ..SpawnOpts::new(test_spawn_host())
                 },
                 &emit,
             )
@@ -461,7 +462,7 @@ mod tests {
             "do it",
             &SpawnOpts {
                 id: ID.to_string(),
-                ..Default::default()
+                ..SpawnOpts::new(test_spawn_host())
             },
             &emit,
         )
@@ -691,7 +692,7 @@ mod tests {
                     isolation: true,
                     parallel: false,
                     blast_radius: Vec::new(),
-                    ..Default::default()
+                    ..SpawnOpts::new(test_spawn_host())
                 },
                 &emit,
             )

@@ -39,6 +39,7 @@ mod common;
 
 use common::fixtures::agent;
 use common::fixtures::gate_def;
+use common::fixtures::test_spawn_host;
 use common::git::temp_git_project_with_commit;
 use rigger::conductor::{run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, STREAM};
 use rigger::config::{self, AgentDef, Config, Stage};
@@ -127,6 +128,7 @@ fn a_lenses_only_panels_residue_is_restored_and_never_merged() {
         log: &|_| {},
         hash_blob: &|_| Ok(String::new()),
         check_emit: &rigger::contextgraph::check_emit,
+        spawn_host: test_spawn_host(),
     };
 
     let rs = run(&cfg, &deps).expect(

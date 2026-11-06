@@ -1,10 +1,5 @@
 [
   {
-    "id": "dup-dc79af9af1c6",
-    "disposition": "not-a-duplicate",
-    "reason": "Both already delegate to the shared `install_into_claude_settings`; each merges a different settings entry (the PreToolUse lookup hook vs the statusLine command)."
-  },
-  {
     "id": "dup-02b6d2bbb967",
     "disposition": "not-a-duplicate",
     "reason": "`hooks::install_status_line` is the pure settings.json merge of the `statusLine` key, while `main::install_status_line` is the setup step that reads and writes `.claude/settings.json` through it and reports the install outcome."
@@ -400,7 +395,7 @@
     "reason": "`path_with_fake_sccache` and `stage_rigger_shim` are one-line named fixtures over two different shared helpers (a fake build wrapper on PATH vs an exec shim of the built binary)."
   },
   {
-    "id": "dup-84fea880d212",
+    "id": "dup-ceea6ddc753f",
     "disposition": "not-a-duplicate",
     "reason": "Both read the consumer docs through the shared `consumer_docs_written_by_the_binary` but assert different shipped content: the three lookup verbs and the grep-fallback line vs the MCP registration, hook event, bounce message and retired tree list."
   },
@@ -555,7 +550,7 @@
     "reason": "Card-route tests asserting different fields for different subjects (known versus unknown, code subject, membership-less entity, param precedence)."
   },
   {
-    "id": "dup-7ce260b96af1",
+    "id": "dup-52a91e1f67e3",
     "disposition": "not-a-duplicate",
     "reason": "Three spawn-option builders with different field values for different drivers (the replay driver, the stream host, the conductor implementer)."
   },
@@ -610,7 +605,7 @@
     "reason": "Event-filter projections over different event types and fields (failed, integrated and escalated units; decisions; findings)."
   },
   {
-    "id": "dup-d887cb6f63f7",
+    "id": "dup-cf375e76ff60",
     "disposition": "not-a-duplicate",
     "reason": "Two canary scoring tests with different seeded items and different expected counts."
   },

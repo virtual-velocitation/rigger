@@ -39,6 +39,7 @@
 #![cfg(feature = "symbols")]
 
 mod common;
+use common::fixtures::test_spawn_host;
 use common::git::temp_git_project_with_commit;
 
 use rigger::conductor::{run, AgentDriver, AgentResult, Deps, Error, SpawnOpts};
@@ -140,6 +141,7 @@ fn a_landed_units_file_is_fresh_in_the_graph_immediately_after_integration() {
         log: &|_| {},
         hash_blob: &|_| Ok(String::new()),
         check_emit: &rigger::contextgraph::check_emit,
+        spawn_host: test_spawn_host(),
     };
 
     let rs = run(&cfg, &deps).unwrap();

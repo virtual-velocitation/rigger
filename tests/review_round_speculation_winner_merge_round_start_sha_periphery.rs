@@ -35,6 +35,7 @@
 //! clean) returns it to green.
 
 mod common;
+use common::fixtures::test_spawn_host;
 
 use common::fixtures::{
     assert_winner_reviewed_sha_is_round_start, speculation_regen_door_cfg, WriteAndApprove,
@@ -74,6 +75,7 @@ fn a_speculation_winner_reviewed_sha_stays_the_round_start_sha_across_a_post_rev
         log: &|_| {},
         hash_blob: &|_| Ok(String::new()),
         check_emit: &rigger::contextgraph::check_emit,
+        spawn_host: test_spawn_host(),
     };
     let rs = run(&cfg, &deps).expect("the winning candidate must integrate cleanly");
 

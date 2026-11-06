@@ -300,7 +300,7 @@ mod tests {
     use crate::spawn::{
         lens_role, spawn_id, spawn_retry_id, ROLE_ADJUDICATOR, ROLE_ADVERSARY, ROLE_IMPLEMENTER,
     };
-    use crate::test_support::{bare_deps, no_emit, run_isolated};
+    use crate::test_support::{bare_deps, no_emit, run_isolated, test_spawn_host};
 
     /// An agent `id` on `sonnet` granted `tools`.
     fn sonnet_agent(id: &str, tools: &[&str]) -> AgentDef {
@@ -321,7 +321,7 @@ mod tests {
             id: id.to_string(),
             unit: "u".into(),
             stage: "u".into(),
-            ..Default::default()
+            ..SpawnOpts::new(test_spawn_host())
         }
     }
 
@@ -396,7 +396,7 @@ mod tests {
             stage: "u".into(),
             dir: worktree.to_string_lossy().into_owned(),
             run_id: "r1".into(),
-            ..Default::default()
+            ..SpawnOpts::new(test_spawn_host())
         };
         // An unrecorded spawn parks (and signals the parked frontier)...
         let err = driver
@@ -468,7 +468,7 @@ mod tests {
                 unit: "u".into(),
                 stage: "u".into(),
                 attempt,
-                ..Default::default()
+                ..SpawnOpts::new(test_spawn_host())
             };
             // An unrecorded spawn parks (and signals the parked frontier).
             let err = driver.spawn(&agent, "do it", &opts, &no_emit).unwrap_err();
@@ -833,6 +833,7 @@ mod tests {
                 log: &|_| {},
                 hash_blob: &|_| Ok(String::new()),
                 check_emit: &crate::contextgraph::check_emit,
+                spawn_host: test_spawn_host(),
             };
             run_isolated(&cfg, &deps).unwrap();
         }
@@ -904,6 +905,7 @@ mod tests {
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
             check_emit: &crate::contextgraph::check_emit,
+            spawn_host: test_spawn_host(),
         };
         run_isolated(&cfg, &deps).unwrap();
 
@@ -995,6 +997,7 @@ mod tests {
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
             check_emit: &crate::contextgraph::check_emit,
+            spawn_host: test_spawn_host(),
         };
 
         let rs = run_isolated(&cfg, &deps).expect("a parked frontier is not a run failure");
@@ -1031,6 +1034,7 @@ mod tests {
                 log: &|_| {},
                 hash_blob: &|_| Ok(String::new()),
                 check_emit: &crate::contextgraph::check_emit,
+                spawn_host: test_spawn_host(),
             };
             run_isolated(&cfg, &deps).unwrap();
         }
@@ -1058,6 +1062,7 @@ mod tests {
                 log: &|_| {},
                 hash_blob: &|_| Ok(String::new()),
                 check_emit: &crate::contextgraph::check_emit,
+                spawn_host: test_spawn_host(),
             };
             run_isolated(&cfg, &deps).unwrap();
         }
@@ -1098,6 +1103,7 @@ mod tests {
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
             check_emit: &crate::contextgraph::check_emit,
+            spawn_host: test_spawn_host(),
         };
 
         run_isolated(&cfg, &deps).expect("parking a whole wave is not a run failure");
@@ -1153,6 +1159,7 @@ mod tests {
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
             check_emit: &crate::contextgraph::check_emit,
+            spawn_host: test_spawn_host(),
         };
         run_isolated(&cfg, &deps).expect("a tripped budget halts the run, it does not error");
 
@@ -1206,6 +1213,7 @@ mod tests {
                 log: &|_| {},
                 hash_blob: &|_| Ok(String::new()),
                 check_emit: &crate::contextgraph::check_emit,
+                spawn_host: test_spawn_host(),
             };
             run_isolated(&cfg, &deps).expect("a tripped budget halts the run, it does not error");
         }
@@ -1269,6 +1277,7 @@ mod tests {
                 log: &|_| {},
                 hash_blob: &|_| Ok(String::new()),
                 check_emit: &crate::contextgraph::check_emit,
+                spawn_host: test_spawn_host(),
             };
             run_isolated(&cfg, &deps).unwrap();
         }
@@ -1299,6 +1308,7 @@ mod tests {
                 log: &|_| {},
                 hash_blob: &|_| Ok(String::new()),
                 check_emit: &crate::contextgraph::check_emit,
+                spawn_host: test_spawn_host(),
             };
             run_isolated(&cfg, &deps).unwrap();
         }
@@ -1372,6 +1382,7 @@ mod tests {
                 log: &|_| {},
                 hash_blob: &|_| Ok(String::new()),
                 check_emit: &crate::contextgraph::check_emit,
+                spawn_host: test_spawn_host(),
             };
             run_isolated(&cfg, &deps).unwrap();
         }
@@ -1402,6 +1413,7 @@ mod tests {
                 log: &|_| {},
                 hash_blob: &|_| Ok(String::new()),
                 check_emit: &crate::contextgraph::check_emit,
+                spawn_host: test_spawn_host(),
             };
             // The run HALTS cleanly - the review-tier refusal is not a run error.
             run_isolated(&cfg, &deps)
@@ -1485,6 +1497,7 @@ mod tests {
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
             check_emit: &crate::contextgraph::check_emit,
+            spawn_host: test_spawn_host(),
         };
         run_isolated(cfg, &deps).map(|_| ())
     }

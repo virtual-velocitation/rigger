@@ -704,6 +704,9 @@ pub(crate) fn cmd_step(args: &[String]) -> Res {
         }
     }
 
+    // The host values every spawn this step parks or runs carries, resolved once, ahead of the
+    // definition pin.
+    let spawn_host = rigger::hooks::resolve_spawn_host(&cfg.workflow.defaults);
     // Definition pinning (spec 13, unit 1): pin this run's definition (a fresh run) or enforce
     // it (a live run). A drifted live-run definition WITHOUT `--rebase-definition` HALTS here,
     // loudly and before any worktree work, so a mid-campaign prompt edit can never silently
@@ -875,6 +878,7 @@ pub(crate) fn cmd_step(args: &[String]) -> Res {
         log: &stderr_line,
         hash_blob: &hash_blob,
         check_emit: &rigger::contextgraph::check_emit,
+        spawn_host,
     };
     let rs = conductor::run(&cfg, &deps)?;
 
@@ -1662,6 +1666,8 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
     // Refuse before starting if a gating persona would stall the integration gate (spec 18,
     // unit 2); `load_run_config` reuses unit 1's lint at this run's config-load seam.
     let cfg = load_run_config(".")?;
+    // The host values every spawn of this run carries, resolved once.
+    let spawn_host = rigger::hooks::resolve_spawn_host(&cfg.workflow.defaults);
     // EXACTLY ONE ROOT: this run's teardown reclaims the scratch root and its hosted agents write
     // into it, so it is refused here, before anything is reclaimed, reaped or anchored.
     let scratch = project_scratch_root(&repo, &cfg);
@@ -1789,6 +1795,7 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
         log: &stderr_line,
         hash_blob: &hash_blob,
         check_emit: &rigger::contextgraph::check_emit,
+        spawn_host,
     };
     // Always-on dash (spec 19b, unit 1): auto-start a `rigger dash` serving this run before
     // the loop begins, so an active harness is never invisible. Held for the whole run - the
@@ -2138,6 +2145,8 @@ fn run_workflow(parsed: &RunArgs, command: &str, sleep: &dyn SleepHold) -> Res {
     // Refuse before starting if a gating persona would stall the integration gate (spec 18,
     // unit 2); `load_run_config` reuses unit 1's lint at this run's config-load seam.
     let cfg = load_run_config(".")?;
+    // The host values every spawn of this run carries, resolved once.
+    let spawn_host = rigger::hooks::resolve_spawn_host(&cfg.workflow.defaults);
     let (criteria, text) = load_criteria(parsed.spec.as_deref())?;
     std::fs::create_dir_all(RIGGER_DIR)?;
     // Anchor + check out the run branch off `--base` (spec 18, criterion 6) before the
@@ -2257,6 +2266,7 @@ fn run_workflow(parsed: &RunArgs, command: &str, sleep: &dyn SleepHold) -> Res {
                 log: &stderr_line,
                 hash_blob: &hash_blob,
                 check_emit: &rigger::contextgraph::check_emit,
+                spawn_host,
             };
             // The halt reason goes to stderr, never stdout: stdout is the MCP transport.
             match conductor::run(&cfg, &deps) {
@@ -3414,7 +3424,7 @@ fn halted_line(rs: &RunState) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::pgid_of;
+    use crate::test_support::{pgid_of, test_spawn_host};
     use std::process::Command;
 
     // --- Spec 66, criterion 5: REMINDER DEDUP - the pid-scoped parent-to-child contract ---
@@ -4536,7 +4546,7 @@ mod tests {
             id: id.to_string(),
             unit: "u".into(),
             stage: "u".into(),
-            ..Default::default()
+            ..SpawnOpts::new(test_spawn_host())
         };
         let no_emit = |_: &str, _: serde_json::Value| -> Result<(), Error> { Ok(()) };
         ReplayDriver::new(store, "").spawn(

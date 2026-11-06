@@ -62,12 +62,15 @@ mod spawn_fixtures;
 #[allow(dead_code, unused_imports, unexpected_cfgs)]
 #[path = "../../../tests/common/fixtures/store.rs"]
 mod store_fixtures;
-// The config fixtures the conductor fixtures name, and the git fixtures the store fixtures name,
-// through `super::`.
-#[cfg(all(test, any(feature = "store", not(feature = "core"))))]
-use config_fixtures::{agent, gate_def, gate_def_inputs};
+// The config and spawn fixtures the conductor fixtures name, and the git fixtures the store
+// fixtures name, through `super::`.
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 use git_fixtures::{install_refusing_hook, temp_git_project_with_commit};
+#[cfg(all(test, any(feature = "store", not(feature = "core"))))]
+use {
+    config_fixtures::{agent, gate_def, gate_def_inputs},
+    spawn_fixtures::test_spawn_host,
+};
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 mod test_support {
     pub use crate::conductor_fixtures::*;

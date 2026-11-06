@@ -101,6 +101,7 @@ use common::cli::propose_unit_via_rigger_emit;
 use common::cli::run_rigger;
 use common::cli::seed_run_events;
 use common::cli::temp_repoless_project;
+use common::fixtures::test_spawn_host;
 use common::fixtures::{unit_proposal, ProposingPlannerDriver};
 use common::git::temp_git_project_with_commit;
 use rigger::conductor::{run, Deps};
@@ -452,6 +453,7 @@ fn checkin_integrates_after_a_real_planner_supersede_of_a_fanout_baseline_lands_
         log: &|_| {},
         hash_blob: &|_| Ok(String::new()),
         check_emit: &rigger::contextgraph::check_emit,
+        spawn_host: test_spawn_host(),
     };
     let rs = run(&cfg, &deps).unwrap();
 
