@@ -15,7 +15,11 @@
 //!     producer half's fault against a real project's shared cache - a real
 //!     `gate::ExecRunner::run` whose guard probe fails returns the `ProbeFault` naming the
 //!     guard and the OS error, runs no gate command and writes nothing into the shared cache
-//!     (spec 121 criterion 19).
+//!     (spec 121 criterion 19); and the same fault at the operator's surface - a `rigger step`
+//!     whose deferred gate's guard probe fails exits non-zero printing that fault as the
+//!     conductor's error, with no deferred verdict, nothing charged and the inline verdict
+//!     kept, and the next step after the guard is fixed finishes the run (spec 121
+//!     criterion 19).
 //!   - NOT OWNED: the exclusion PRIMITIVE's own unit-level contract
 //!     (`reclaim_shared_build_cache`'s rename/idempotent-zero/busy/prompt-release behavior) -
 //!     pinned in-crate beside its definition in `src/main.rs`; the PRODUCER half's OWN
@@ -29,9 +33,18 @@ mod common;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use common::cli::read_run_events;
 use common::cli::run_rigger;
+use common::cli::run_rigger_envs;
+use common::cli::run_rigger_envs_ok;
 use common::cli::temp_store_project;
+use common::cli::write_workflow_fixture;
+use common::cli::WorkflowFixture;
+use common::cli::ISOLATED_WORKER;
+use common::fixtures::count_of_type;
+use common::fixtures::gate_outcomes;
 use common::fixtures::write_file;
+use common::git::temp_git_project_with_commit;
 use rigger::budget::BuildBudget;
 use rigger::gate::{Autonomy, BuildEnv, ExecRunner, Gate, Kind, ProbeFault, Runner};
 
@@ -513,6 +526,118 @@ fn a_gate_whose_guard_parent_cannot_be_created_faults_runs_nothing_and_writes_no
         (ran.exists(), dir_bytes(&cache)),
         (false, 64),
         "a faulted probe must never run the gate command nor write into the shared cache"
+    );
+}
+
+/// A one-unit git workflow whose stage carries an inline core gate and a deferred gate. The
+/// deferred gate runs in the run's checkout and touches [`DEFERRED_GATE_RAN`] there, so a test
+/// can tell whether it ran.
+const DEFERRED_GATE_WORKFLOW: WorkflowFixture = WorkflowFixture {
+    worker: ISOLATED_WORKER,
+    body: r#"defaults:
+  grounder: nop
+  budget: 60
+gates:
+  ok: { run: "true", kind: core }
+  late: { run: "touch late-ran", kind: deferred }
+stages:
+  solo:
+    agent: worker
+    gates: [ok, late]
+    on_pass: merge
+"#,
+};
+
+/// The file [`DEFERRED_GATE_WORKFLOW`]'s deferred gate touches in the run's checkout.
+const DEFERRED_GATE_RAN: &str = "late-ran";
+
+/// Spec 121 criterion 19, THE FAILED GUARD PROBE HALTS THE STEP, through the operator's own
+/// surface: given a run whose one unit passed its inline gate and whose shared build cache's
+/// guard is a directory, when the operator runs `rigger step`, then the step exits non-zero
+/// printing the probe fault naming the guard path and the OS error, the deferred gate neither
+/// runs nor records a verdict, nothing is charged or misattributed to the unit and the inline
+/// verdict stands; once the guard is fixed, the next step runs the deferred gate and finishes.
+/// The scratch root is the test's own, never the ambient one a gate run may carry.
+#[test]
+fn a_step_whose_deferred_gate_guard_probe_fails_halts_naming_the_guard_and_the_next_step_finishes()
+{
+    let project = temp_git_project_with_commit();
+    let root = project.path();
+    write_workflow_fixture(root, &DEFERRED_GATE_WORKFLOW);
+    let scratch = tempfile::tempdir().expect("tempdir for the scratch root");
+    let envs = [("RIGGER_TMPDIR", scratch.path().to_str().unwrap())];
+
+    let (out, err, ok) = run_rigger_envs(root, &["step"], &envs);
+    assert!(
+        ok && out.contains(r#""id":"solo/implementer#0""#),
+        "the first step parks the implementer; stdout {out:?} stderr {err:?}"
+    );
+    run_rigger_envs_ok(
+        root,
+        &["result", "solo/implementer#0", "implemented"],
+        &envs,
+    );
+    let guard = scratch.path().join(CACHE_GUARD);
+    std::fs::create_dir_all(&guard).unwrap();
+    let open_error = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(&guard)
+        .unwrap_err()
+        .to_string();
+    let fault = ProbeFault {
+        guard: guard.to_str().unwrap().to_string(),
+        error: open_error,
+    };
+
+    let (out, err, ok) = run_rigger_envs(root, &["step"], &envs);
+    assert!(!ok, "the halted step exits non-zero; stdout {out:?}");
+    assert_eq!(
+        err.lines().collect::<Vec<_>>(),
+        vec![format!(
+            "rigger: {}",
+            rigger::conductor::Error(fault.to_string())
+        )],
+        "the step prints the probe fault as the conductor's error, naming the guard and the OS \
+         error, with no halt marker and nothing else"
+    );
+    assert!(
+        !root.join(DEFERRED_GATE_RAN).exists(),
+        "a faulted probe never runs the deferred gate's command"
+    );
+    let events = read_run_events(root);
+    assert_eq!(
+        gate_outcomes(&events),
+        vec![("ok".to_string(), true)],
+        "the inline verdict stands and the deferred gate records none"
+    );
+    for (type_, count) in [
+        (rigger::conductor::TYPE_DEFERRED_GATE_FAILED, 0),
+        (rigger::contextgraph::TYPE_LESSON_LEARNED, 0),
+        (rigger::ledger::TYPE_UNIT_FAILED, 0),
+        (rigger::ledger::TYPE_UNIT_ESCALATED, 0),
+        (rigger::ledger::TYPE_UNIT_INTEGRATED, 1),
+    ] {
+        assert_eq!(
+            count_of_type(&events, type_),
+            count,
+            "{type_} after the halted step; events: {events:?}"
+        );
+    }
+
+    std::fs::remove_dir(&guard).unwrap();
+    let (out, err, ok) = run_rigger_envs(root, &["step"], &envs);
+    assert!(
+        ok && out.contains(r#""done":true"#),
+        "with the guard fixed the next step runs the deferred gate and finishes; stdout {out:?} \
+         stderr {err:?}"
+    );
+    assert!(root.join(DEFERRED_GATE_RAN).exists());
+    assert_eq!(
+        gate_outcomes(&read_run_events(root)),
+        vec![("ok".to_string(), true), ("late".to_string(), true)],
+        "the inline verdict is replayed, never re-recorded, and the deferred gate records once"
     );
 }
 

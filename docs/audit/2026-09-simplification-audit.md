@@ -2091,7 +2091,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `crates/rigger-domain/src/eventstore.rs:604-606` `recv`
 - `crates/rigger-domain/src/eventstore.rs:614-616` `try_recv`
 - `crates/rigger-domain/src/eventstore.rs:619-621` `err`
-- `tests/common/fixtures/events.rs:961-963` `reads`
+- `tests/common/fixtures/events.rs:974-976` `reads`
 - `tests/common/real_driver_spy.rs:36-38` `outputs`
 
 #### `dup-60da41568392` (near, 2 sites)
@@ -2179,10 +2179,10 @@ mandatory sweep: Command::new call sites - 94 site(s), collected mechanically re
 - `tests/hermetic_test_git_audit.rs:203-203` `Command::new`
 - `tests/hermetic_test_git_audit.rs:235-235` `Command::new`
 - `tests/hermetic_test_git_audit.rs:307-307` `Command::new`
-- `tests/integrate_conflict_merge_periphery.rs:342-342` `Command::new`
-- `tests/integrate_conflict_merge_periphery.rs:1712-1712` `Command::new`
-- `tests/integrate_conflict_merge_periphery.rs:1803-1803` `Command::new`
-- `tests/integrate_conflict_merge_periphery.rs:2015-2015` `Command::new`
+- `tests/integrate_conflict_merge_periphery.rs:353-353` `Command::new`
+- `tests/integrate_conflict_merge_periphery.rs:1723-1723` `Command::new`
+- `tests/integrate_conflict_merge_periphery.rs:1814-1814` `Command::new`
+- `tests/integrate_conflict_merge_periphery.rs:2026-2026` `Command::new`
 - `tests/meta_phases_declaration_periphery.rs:83-83` `Command::new`
 - `tests/mutation_runner_pdeathsig_periphery.rs:107-107` `Command::new`
 - `tests/mutation_runner_pdeathsig_periphery.rs:167-167` `Command::new`
@@ -2193,10 +2193,10 @@ mandatory sweep: Command::new call sites - 94 site(s), collected mechanically re
 - `tests/principle_gates_wiring.rs:113-113` `Command::new`
 - `tests/principle_gates_wiring.rs:456-456` `Command::new`
 - `tests/product_binary_authority_periphery.rs:155-155` `Command::new`
-- `tests/reset_build_cache_periphery.rs:241-241` `Command::new`
-- `tests/reset_build_cache_periphery.rs:253-253` `Command::new`
-- `tests/reset_build_cache_periphery.rs:330-330` `Command::new`
-- `tests/reset_build_cache_periphery.rs:348-348` `Command::new`
+- `tests/reset_build_cache_periphery.rs:254-254` `Command::new`
+- `tests/reset_build_cache_periphery.rs:266-266` `Command::new`
+- `tests/reset_build_cache_periphery.rs:343-343` `Command::new`
+- `tests/reset_build_cache_periphery.rs:361-361` `Command::new`
 - `tests/revert_on_base_hook_bypass_periphery.rs:168-168` `Command::new`
 - `tests/scaffold_grounder_resolves.rs:96-96` `Command::new`
 - `tests/step_attention_periphery.rs:544-544` `Command::new`
@@ -3225,7 +3225,7 @@ project identity so one backend can hold many projects without their data mixing
 - `tests/init_template_sets_periphery.rs:182-182` `"scaffolded .rigger/gates/mutation.sh\n"`
 - `tests/init_template_sets_periphery.rs:205-205` `".rigger"`
 - `tests/init_template_sets_periphery.rs:284-284` `".rigger/workflow.yml"`
-- `tests/integrate_conflict_merge_periphery.rs:464-464` `"the project's own .rigger/workflow.yml must load through the real loader"`
+- `tests/integrate_conflict_merge_periphery.rs:475-475` `"the project's own .rigger/workflow.yml must load through the real loader"`
 - `tests/ledger_rebuild.rs:457-457` `"gw/.rigger/workflow.yml"`
 - `tests/ledger_rebuild.rs:650-650` `"gw/.rigger/workflow.yml"`
 - `tests/ledger_rebuild.rs:1238-1238` `"gw/.rigger/workflow.yml"`
@@ -3284,7 +3284,7 @@ project identity so one backend can hold many projects without their data mixing
 - `tests/relocated_worktree_store_resolution_periphery.rs:176-176` `".rigger"`
 - `tests/relocated_worktree_store_resolution_periphery.rs:219-219` `".rigger"`
 - `tests/relocated_worktree_store_resolution_periphery.rs:269-269` `".rigger"`
-- `tests/reset_build_cache_periphery.rs:424-424` `".rigger"`
+- `tests/reset_build_cache_periphery.rs:437-437` `".rigger"`
 - `tests/reset_derived_compaction_periphery.rs:609-609` `"the partition holding .rigger/ needs about the compacted size of the log free"`
 - `tests/reset_derived_compaction_periphery.rs:1021-1021` `".rigger"`
 - `tests/reset_derived_compaction_periphery.rs:1021-1021` `"create .rigger"`
@@ -4052,7 +4052,7 @@ Proposed home: `a new shared module (sites span 2 files: crates/rigger-domain/sr
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `crates/rigger-domain/src/metrics.rs:268-270` `total`
-- `tests/common/fixtures/events.rs:1179-1181` `cost`
+- `tests/common/fixtures/events.rs:1192-1194` `cost`
 
 #### `dup-6ffa6e5d1f83` (exact, 7 sites)
 
@@ -4875,7 +4875,7 @@ Proposed home: `a new shared module (sites span 2 files: src/cli/mod.rs, tests/r
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `src/cli/mod.rs:4043-4062` `dir_size_bytes`
-- `tests/reset_build_cache_periphery.rs:54-71` `dir_bytes`
+- `tests/reset_build_cache_periphery.rs:67-84` `dir_bytes`
 
 #### `dup-41d8b1c33d44` (near, 3 sites)
 
@@ -5031,8 +5031,8 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/cli.rs:31896-31918` `prime_given_a_spec_path_names_the_spec_lint_alongside_recent_decisions`
 - `tests/cli.rs:33492-33524` `mcp_rejects_a_malformed_spawn_flag_or_unexpected_arguments`
 - `tests/graph_show_periphery.rs:112-129` `graph_show_and_around_with_no_store_print_the_not_found_note`
-- `tests/reset_build_cache_periphery.rs:102-128` `reset_build_cache_is_idempotent_zero_report_on_a_project_that_never_built_anything`
-- `tests/reset_build_cache_periphery.rs:166-176` `reset_build_cache_flag_is_registered_and_rejects_a_duplicate`
+- `tests/reset_build_cache_periphery.rs:115-141` `reset_build_cache_is_idempotent_zero_report_on_a_project_that_never_built_anything`
+- `tests/reset_build_cache_periphery.rs:179-189` `reset_build_cache_flag_is_registered_and_rejects_a_duplicate`
 - `tests/reset_derived_live_writer_guard_periphery.rs:1664-1674` `reset_force_live_alone_is_refused_as_no_mode`
 - `tests/statusline_command_periphery.rs:95-105` `status_line_on_a_clean_run`
 - `tests/statusline_command_periphery.rs:141-151` `status_line_and_json_are_mutually_exclusive`
@@ -5219,8 +5219,8 @@ Proposed home: `events::silent_store`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/common/fixtures/events.rs:280-287` `read_stream`
-- `tests/common/fixtures/events.rs:320-327` `read_stream_typed`
+- `tests/common/fixtures/events.rs:293-300` `read_stream`
+- `tests/common/fixtures/events.rs:333-340` `read_stream_typed`
 
 #### `dup-3eb116c3c4c8` (exact, 2 sites)
 
@@ -5228,8 +5228,8 @@ Proposed home: `events::silent_store`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/common/fixtures/events.rs:317-319` `last_position`
-- `tests/common/fixtures/events.rs:345-347` `latest_in_group`
+- `tests/common/fixtures/events.rs:330-332` `last_position`
+- `tests/common/fixtures/events.rs:358-360` `latest_in_group`
 
 #### `dup-033af83f765c` (near, 2 sites)
 
@@ -5237,7 +5237,7 @@ Proposed home: `a new shared module (sites span 2 files: tests/common/fixtures/e
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/common/fixtures/events.rs:328-335` `read_stream_positions`
+- `tests/common/fixtures/events.rs:341-348` `read_stream_positions`
 - `tests/store_content_identity_periphery.rs:262-269` `read_stream_positions`
 
 #### `dup-6ef712aab260` (exact, 2 sites)
@@ -5246,8 +5246,8 @@ Proposed home: `events::read_counting_store`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/common/fixtures/events.rs:1075-1083` `last_position`
-- `tests/common/fixtures/events.rs:1142-1150` `latest_in_group`
+- `tests/common/fixtures/events.rs:1088-1096` `last_position`
+- `tests/common/fixtures/events.rs:1155-1163` `latest_in_group`
 
 #### `dup-aa4a3a0dfc34` (near, 2 sites)
 
@@ -5433,8 +5433,8 @@ Proposed home: `integrate_conflict_merge_periphery::support (consolidate these 2
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/integrate_conflict_merge_periphery.rs:507-572` `spawn`
-- `tests/integrate_conflict_merge_periphery.rs:1462-1503` `spawn`
+- `tests/integrate_conflict_merge_periphery.rs:518-583` `spawn`
+- `tests/integrate_conflict_merge_periphery.rs:1473-1514` `spawn`
 
 #### `dup-333ec555460f` (near, 2 sites)
 
@@ -5442,8 +5442,8 @@ Proposed home: `integrate_conflict_merge_periphery::support (consolidate these 2
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/integrate_conflict_merge_periphery.rs:2031-2095` `a_crash_right_after_the_merge_attempt_record_resumes_and_completes_row_1`
-- `tests/integrate_conflict_merge_periphery.rs:2099-2163` `a_crash_right_after_the_landing_intent_record_resumes_and_completes_row_4`
+- `tests/integrate_conflict_merge_periphery.rs:2042-2106` `a_crash_right_after_the_merge_attempt_record_resumes_and_completes_row_1`
+- `tests/integrate_conflict_merge_periphery.rs:2110-2174` `a_crash_right_after_the_landing_intent_record_resumes_and_completes_row_4`
 
 #### `dup-8fb3e9b78321` (near, 2 sites)
 
@@ -5589,7 +5589,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 ### Adversarial sample
 
-Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 11432 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
+Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 11438 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
 
 - `crates/rigger-conductor/src/conductor.rs:16089-16111` `branch_is_foreign_when_only_one_axis_differs` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-conductor/src/conductor.rs:17074-17081` `resume_of` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
@@ -5613,9 +5613,9 @@ Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85
 - `src/cli/run.rs:2486-2510` `start_run_dashboard` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `tests/change_path_revert_periphery.rs:213-323` `a_revert_through_the_shipped_build_records_the_earlier_generations_entry_again` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `tests/code_entity_test_exclusion_periphery.rs:1810-1822` `edges_where` - duplicate found by reading and closed: the design-doc assertion, the dev-only path test and the test-region test each re-rolled its `(from, rel, to)` edge projection inline; all now call `edges_where`
-- `tests/common/fixtures/events.rs:944-946` `after_call` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
-- `tests/common/fixtures/events.rs:961-963` `reads` - caught: `dup-ebee743f02de`
-- `tests/common/fixtures/events.rs:1212-1214` `reads` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
+- `tests/common/fixtures/events.rs:957-959` `after_call` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
+- `tests/common/fixtures/events.rs:974-976` `reads` - caught: `dup-ebee743f02de`
+- `tests/common/fixtures/events.rs:1225-1227` `reads` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `tests/concepts_labels_membership.rs:240-267` `label_of_the_documentless_hub` - no duplicate found by reading
 - `tests/event_classes_are_one_table.rs:390-404` `a_right_side_that_is_neither_a_literal_nor_a_type_alias_fails_the_scan_naming_it` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `tests/one_shot_reads_periphery.rs:87-140` `a_project_namespace_over_a_shared_events_file_reads_its_run_as_one_typed_read_per_selection` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
