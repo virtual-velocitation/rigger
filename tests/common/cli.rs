@@ -2216,7 +2216,7 @@ pub fn declare_grep_guard(root: &Path) {
 }
 
 /// Declare `defaults.test_author: sdet-author` in the workflow a scaffold writer left under `root`:
-/// the one test-side spelling of a project whose build seam spawns its `sdet-author` agent.
+/// a project whose build seam spawns its `sdet-author` agent.
 pub fn declare_sdet_author(root: &Path) {
     declare_default(root, "test_author: sdet-author");
 }
