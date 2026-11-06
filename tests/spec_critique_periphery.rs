@@ -67,6 +67,12 @@ const CRITIC: &str = "---\nid: critic\nmodel_ladder: [sonnet, opus]\ntools: [Rea
 const JUDGE: &str = "---\nid: judge\nmodel: sonnet\ntools: [Read]\nisolation: none\n---\nJudge. \
      End with {\"verdict\":\"approve\"}.\n";
 
+/// The critic's `--allowed-tools`: its replacement tools, which already hold every rigger tool
+/// the embedded helpers and the operator's copies declare, then the host's own grant.
+const CRITIC_PRE_APPROVAL: &str =
+    "Read,Glob,mcp__rigger__rigger_graph,mcp__rigger__rigger_ground,mcp__rigger__rigger_peers,\
+     mcp__rigger__rigger_emit,mcp__rigger__rigger_progress,mcp__rigger__rigger_scratch";
+
 const SPEC_REL: &str = "specs/9-demo.md";
 const SPEC: &str = "# 9 - A demo spec\n\n## Design\n\nThe widget renders.\n\n## Done when\n\n\
      - [ ] a test proves the widget renders\n- [ ] a test proves the widget hides\n";
@@ -230,8 +236,9 @@ fn a_critique_launch_carries_the_spawn_hooks_on_its_own_settings() {
 }
 
 /// Given a project holding the operator's own copies of the fan-out helpers, when its critic
-/// launches, then the launch defines exactly those helpers and pre-approves exactly the rigger
-/// tools they declare: the operator's copy is the definition, resolved at the critique's root.
+/// launches, then the launch defines exactly those helpers, and its pre-approval holds the rigger
+/// tools they declare once each among the critic's own: the operator's copy is the definition,
+/// resolved at the critique's root.
 #[test]
 fn a_critique_launch_carries_the_operators_helper_copies() {
     let dir = temp_project();
@@ -252,9 +259,9 @@ fn a_critique_launch_carries_the_operators_helper_copies() {
     );
     assert_eq!(
         flag_value(&argv, "--allowed-tools"),
-        "Read,Glob,mcp__rigger__rigger_peers,mcp__rigger__rigger_graph,\
-         mcp__rigger__rigger_emit,mcp__rigger__rigger_progress,mcp__rigger__rigger_scratch",
-        "the critic's tools, the rigger tools the operator's copies declare, then the host's own"
+        CRITIC_PRE_APPROVAL,
+        "the critic's tools already hold the rigger tools the operator's copies declare, so the \
+         pre-approval adds only the host's own"
     );
 }
 
@@ -340,8 +347,7 @@ fn a_spec_is_critiqued_once_per_text_and_answered_from_the_store_after() {
     let argv = critique_stub_argv(first.path());
     assert_eq!(
         flag_value(&argv, "--allowed-tools"),
-        "Read,Glob,mcp__rigger__rigger_graph,mcp__rigger__rigger_ground,mcp__rigger__rigger_peers,\
-         mcp__rigger__rigger_emit,mcp__rigger__rigger_progress,mcp__rigger__rigger_scratch",
+        CRITIC_PRE_APPROVAL,
         "the critic's tools are replaced: no Bash, Agent or Grep, and the host's own grant, which \
          the deny below wins over"
     );

@@ -234,8 +234,8 @@
       },
       {
         "file": "tests/spec_critique_periphery.rs",
-        "start_line": 997,
-        "end_line": 999
+        "start_line": 1003,
+        "end_line": 1005
       }
     ]
   },
@@ -689,8 +689,8 @@
       },
       {
         "file": "tests/spec_critique_periphery.rs",
-        "start_line": 983,
-        "end_line": 985
+        "start_line": 989,
+        "end_line": 991
       }
     ]
   },
@@ -4329,8 +4329,8 @@
       },
       {
         "file": "tests/spec_critique_periphery.rs",
-        "start_line": 507,
-        "end_line": 507
+        "start_line": 513,
+        "end_line": 513
       },
       {
         "file": "tests/statusline_command_periphery.rs",
@@ -8114,8 +8114,8 @@
       },
       {
         "file": "tests/spec_critique_periphery.rs",
-        "start_line": 2328,
-        "end_line": 2330
+        "start_line": 2334,
+        "end_line": 2336
       }
     ]
   },
@@ -8759,8 +8759,8 @@
       },
       {
         "file": "tests/spec_critique_periphery.rs",
-        "start_line": 2334,
-        "end_line": 2336
+        "start_line": 2340,
+        "end_line": 2342
       }
     ]
   },
