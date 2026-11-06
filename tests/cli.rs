@@ -25002,6 +25002,124 @@ fn setup_installs_every_registry_skill_into_the_consumer_project() {
     );
 }
 
+/// Write the marker npm leaves as the last step of a complete install into `root`'s shim
+/// directory, so the next `rigger setup`'s provision step, under the stubbed npm, is a no-op.
+fn complete_the_shim_install(root: &Path) {
+    common::fixtures::write_files(
+        root,
+        &[(".rigger/shim/node_modules/.package-lock.json", "{}")],
+    );
+}
+
+/// Spec 121, criterion 14 (A PROJECT SKILL SHADOWS THE SHIPPED ONE), end to end. Given a project
+/// holding its own `using-rigger` copy at `.rigger/skills/using-rigger/SKILL.md`, a near name
+/// `.rigger/skills/using-riggers/SKILL.md` and an empty `.rigger/skills/planning-a-spec/`: when the
+/// operator runs `rigger setup`, the copy installs verbatim in place of the shipped `using-rigger`
+/// with no install line, every other registry skill installs its shipped render, and the report
+/// lists both strays, by path, as shadowing no shipped skill; a rerun that changes nothing prints
+/// the two stray lines and nothing else. When the operator then runs `rigger docs`, it renders the
+/// same bytes as a project with no copy, and `rigger docs --check` and `rigger validate` (the drift
+/// gate) pass.
+#[test]
+fn setup_installs_a_project_skill_copy_verbatim_and_lists_each_stray_while_docs_stay_shipped() {
+    let proj = temp_project();
+    let root = proj.path();
+    let copy = "---\nname: using-rigger\ndescription: this project's own copy\n---\nOurs.\n";
+    common::fixtures::write_files(
+        root,
+        &[
+            (".rigger/skills/using-rigger/SKILL.md", copy),
+            (".rigger/skills/using-riggers/SKILL.md", copy),
+        ],
+    );
+    std::fs::create_dir_all(root.join(".rigger/skills/planning-a-spec")).unwrap();
+    let names: Vec<&str> = rigger::docs::skill_registry()
+        .iter()
+        .map(|entry| entry.name)
+        .collect();
+    let stray_lines: Vec<String> = [
+        ".rigger/skills/planning-a-spec",
+        ".rigger/skills/using-riggers",
+    ]
+    .iter()
+    .map(|stray| {
+        format!(
+            "{stray} shadows no shipped skill and installs nothing: a project copy is \
+                 .rigger/skills/<name>/SKILL.md, <name> a shipped skill's exact name"
+        )
+    })
+    .collect();
+
+    let out = setup_ok(root, &[("RIGGER_NPM", "true")]);
+    assert_eq!(
+        out.lines()
+            .filter(|line| line.contains(".rigger/skills/") || line.contains(".claude/skills/"))
+            .map(str::to_string)
+            .collect::<Vec<_>>(),
+        stray_lines
+            .iter()
+            .cloned()
+            .chain(
+                names
+                    .iter()
+                    .filter(|&&name| name != "using-rigger")
+                    .map(|name| format!(
+                        "installed the {name} skill (.claude/skills/{name}/SKILL.md)"
+                    ))
+            )
+            .collect::<Vec<_>>(),
+        "setup lists each stray, then installs every unshadowed skill; got:\n{out}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join(".claude/skills/using-rigger/SKILL.md")).unwrap(),
+        copy,
+        "the project copy installs verbatim"
+    );
+    let mut installed: Vec<String> = std::fs::read_dir(root.join(".claude/skills"))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect();
+    installed.sort();
+    let mut expected: Vec<String> = names.iter().map(|name| name.to_string()).collect();
+    expected.sort();
+    assert_eq!(installed, expected, "a stray installs nothing");
+
+    complete_the_shim_install(root);
+    assert_eq!(
+        setup_ok(root, &[("RIGGER_NPM", "true")]),
+        stray_lines
+            .iter()
+            .map(|line| format!("{line}\n"))
+            .collect::<String>(),
+        "a rerun lists each stray again and reports nothing else"
+    );
+
+    let twin = temp_project();
+    let outputs = rendered_outputs(&run_rigger_ok(root, &["docs"]));
+    assert_eq!(
+        outputs,
+        rendered_outputs(&run_rigger_ok(twin.path(), &["docs"])),
+        "rigger docs renders the same outputs beside a project copy"
+    );
+    for rel in &outputs {
+        assert_eq!(
+            std::fs::read(root.join(rel)).unwrap(),
+            std::fs::read(twin.path().join(rel)).unwrap(),
+            "rigger docs renders {rel}'s shipped text beside a project copy"
+        );
+    }
+    assert_eq!(
+        run_rigger_ok(root, &["docs", "--check"]),
+        run_rigger_ok(twin.path(), &["docs", "--check"]),
+        "the pre-commit check finds a project copy no drift"
+    );
+    let (_, err, ok) = run_rigger(root, &["validate"]);
+    assert!(
+        ok,
+        "the drift gate passes beside a project copy; stderr:\n{err}"
+    );
+}
+
 /// The five per-operation skill names spec 68, criterion 2 adds to the registry (rigger-docs,
 /// rigger-validate, and rigger-setup already loop over `skill_registry()` generically as of
 /// spec 68, criterion 1 - shared by the three tests below).

@@ -10517,7 +10517,7 @@
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "d4855a1acbcc7e4b"
+    "content_hash": "33ccd1855197fa5c"
   },
   {
     "file": "src/cli/mod.rs",
@@ -11365,7 +11365,7 @@
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "687cefe381b122dc"
+    "content_hash": "6732bfbd442b4e93"
   },
   {
     "file": "src/cli/mod.rs",
@@ -11373,7 +11373,7 @@
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "0e80a58aeb2b12c8"
+    "content_hash": "ac9dff9d7b393dd9"
   },
   {
     "file": "src/cli/mod.rs",
@@ -11398,6 +11398,30 @@
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
     "content_hash": "28e9802f29283201"
+  },
+  {
+    "file": "src/cli/mod.rs",
+    "name": "assert_skill_shadow",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "bfd1f2a709a16b42"
+  },
+  {
+    "file": "src/cli/mod.rs",
+    "name": "a_shadow_rewrites_a_hand_edit_and_once_deleted_gives_way_to_the_shipped_render",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "f76bf9c787bd5abe"
+  },
+  {
+    "file": "src/cli/mod.rs",
+    "name": "assert_install_skills_refuses",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "b0217e1647724b8d"
   },
   {
     "file": "src/cli/mod.rs",
