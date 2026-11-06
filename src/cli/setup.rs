@@ -2172,6 +2172,7 @@ mod tests {
     use crate::test_support::git_init_quiet;
     use crate::test_support::language_marker_hits;
     use crate::test_support::read_text;
+    use crate::test_support::sorted_dir_names;
     use crate::test_support::tool_available;
     use crate::test_support::AUTHORING_AGENTS_HANDBOOK;
     use crate::test_support::{
@@ -2927,16 +2928,6 @@ mod tests {
         "sdet.md",
     ];
 
-    /// The sorted file names in `root`'s `.rigger/agents`.
-    fn agent_files(root: &Path) -> Vec<String> {
-        let mut files: Vec<String> = std::fs::read_dir(root.join(RIGGER_DIR).join("agents"))
-            .unwrap()
-            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
-            .collect();
-        files.sort();
-        files
-    }
-
     /// `init_project` over `sets` on a fresh project holding the root file `marker`, if any,
     /// writes the role seeds and `<id>.md` holding `persona` byte for byte and nothing else under
     /// `.rigger/agents`, reports exactly those as new, and writes a workflow whose implement and
@@ -2956,7 +2947,11 @@ mod tests {
         let mut want: Vec<String> = ROLE_SEED_FILES.map(String::from).to_vec();
         want.push(format!("{id}.md"));
         want.sort();
-        assert_eq!(agent_files(root), want, "the agents written");
+        assert_eq!(
+            sorted_dir_names(&root.join(RIGGER_DIR).join("agents")),
+            want,
+            "the agents written"
+        );
         let mut reported = report.new_agents.clone();
         reported.sort();
         assert_eq!(reported, want, "the agents reported new");
@@ -3001,11 +2996,7 @@ mod tests {
                 TEMPLATE_SETS,
                 None,
                 "implementer",
-                "---\nid: implementer\nmodel: opus\ntools: [Read, Edit, Write, Grep, Glob, Bash, \
-                 Agent]\nisolation: worktree\nrecurse: true\n---\nYou implement ONE \
-                 fully-specified unit inside your worktree.\nWrite the failing test first, confirm \
-                 RED, implement minimally, confirm GREEN, run\nthe named gates, commit. Report the \
-                 final line as JSON: {\"id\",\"pass\",\"evidence\"}.\n",
+                crate::test_support::LANGUAGE_NEUTRAL_IMPLEMENTER,
             );
         /// The id is the one the matched set's persona carries, whatever it is.
         init_with_a_set_writes_and_names_the_id_its_persona_carries:
@@ -3051,7 +3042,7 @@ mod tests {
         let mut want: Vec<String> = ROLE_SEED_FILES.map(String::from).to_vec();
         want.push("rust-engineer.md".to_string());
         want.sort();
-        assert_eq!(agent_files(root), want, "the agents on disk");
+        assert_eq!(sorted_dir_names(&agents), want, "the agents on disk");
     }
 
     rigger::test_cases! {

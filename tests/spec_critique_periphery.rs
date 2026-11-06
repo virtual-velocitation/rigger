@@ -26,8 +26,8 @@ use common::cli::{
     temp_repoless_project, write_spec_project,
 };
 use common::fixtures::{
-    composed_system_prompt, git_ok, held_event, temp_git_project_with_commit, ADVISORY,
-    CLEAN_CRITIQUE, NO_VERDICT,
+    composed_system_prompt, git_ok, held_event, sorted_dir_names, temp_git_project_with_commit,
+    ADVISORY, CLEAN_CRITIQUE, NO_VERDICT,
 };
 use common::repo::{
     assert_carries_spawn_hooks, collect_files, critique_stub_argv, critique_stub_record,
@@ -1846,17 +1846,6 @@ fn critique_is_a_known_command_with_its_usage_line() {
 // handed to the critic from a configured rung and over an ambient one.
 // ---------------------------------------------------------------------------------------------
 
-/// The names under the project's `.rigger/` directory, sorted.
-fn rigger_dir_names(root: &Path) -> Vec<String> {
-    let mut names: Vec<String> = std::fs::read_dir(root.join(rigger::config::RIGGER_DIR))
-        .unwrap()
-        .flatten()
-        .map(|entry| entry.file_name().to_string_lossy().into_owned())
-        .collect();
-    names.sort();
-    names
-}
-
 /// Given a project, when the operator hands `rigger run`, `rigger workflow` or `rigger critique` a
 /// second spec path or an unknown flag - before or after the spec - then each verb refuses through
 /// the one spec-positional rule they share: exactly one stderr line naming the verb and the
@@ -1872,7 +1861,8 @@ fn every_spec_taking_verb_refuses_a_second_spec_and_an_unknown_flag_through_the_
         ("PATH", path.as_str()),
         ("RIGGER_TMPDIR", scratch.to_str().unwrap()),
     ];
-    let before = rigger_dir_names(root);
+    let rigger_dir = root.join(rigger::config::RIGGER_DIR);
+    let before = sorted_dir_names(&rigger_dir);
     for (args, refusal) in [
         (
             ["run", SPEC_REL, "specs/other.md"],
@@ -1904,7 +1894,7 @@ fn every_spec_taking_verb_refuses_a_second_spec_and_an_unknown_flag_through_the_
         );
     }
     assert_eq!(
-        rigger_dir_names(root),
+        sorted_dir_names(&rigger_dir),
         before,
         "a refused argument list writes nothing into the project"
     );

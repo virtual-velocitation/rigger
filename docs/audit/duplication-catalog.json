@@ -1396,7 +1396,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-54abac474bb1",
+    "id": "dup-913054c5f604",
     "classification": "semantic",
     "sites": [
       {
@@ -3915,6 +3915,36 @@
         "content_hash": "edbddea214457e40"
       },
       {
+        "file": "tests/init_template_sets_periphery.rs",
+        "name": "\"scaffolded .rigger/agents/{planner.md, implementer.md, \\\n                                  architecture-reviewer.md, sdet.md, adversary.md, adjudicator.md}\"",
+        "content_hash": "5622b7d32f9ba9c7"
+      },
+      {
+        "file": "tests/init_template_sets_periphery.rs",
+        "name": "\"scaffolded .rigger/agents/{planner.md, architecture-reviewer.md, \\\n                                sdet.md, adversary.md, adjudicator.md, rust-engineer.md}\"",
+        "content_hash": "5622b7d32f9ba9c7"
+      },
+      {
+        "file": "tests/init_template_sets_periphery.rs",
+        "name": "\"scaffolded .rigger/agents/\"",
+        "content_hash": "696f1564e6abee96"
+      },
+      {
+        "file": "tests/init_template_sets_periphery.rs",
+        "name": "\".rigger/agents\"",
+        "content_hash": "edbddea214457e40"
+      },
+      {
+        "file": "tests/init_template_sets_periphery.rs",
+        "name": "\".rigger/workflow.yml\"",
+        "content_hash": "b4f6780144fa9e9f"
+      },
+      {
+        "file": "tests/init_template_sets_periphery.rs",
+        "name": "\".rigger/agents\"",
+        "content_hash": "b4f6780144fa9e9f"
+      },
+      {
         "file": "tests/integrate_conflict_merge_periphery.rs",
         "name": "\"the project's own .rigger/workflow.yml must load through the real loader\"",
         "content_hash": "6330ce3a5a38ef8d"
@@ -4461,7 +4491,7 @@
       }
     ],
     "proposed_home": "one .rigger-relative path-composition helper",
-    "note": "mandatory sweep: .rigger-path string literals - 612 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: .rigger-path string literals - 618 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {
