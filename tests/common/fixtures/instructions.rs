@@ -177,7 +177,12 @@ pub fn assert_system_prompt_carries_the_review_method_once(tier: &str, system: &
 /// `text`, which `what` names, carries each review sentence `## When you review` holds exactly
 /// `times` times.
 pub fn assert_carries_the_review_method(what: &str, text: &str, times: usize) {
-    for sentence in WHEN_YOU_REVIEW {
+    assert_carries_each(what, text, &WHEN_YOU_REVIEW, times);
+}
+
+/// `text`, which `what` names, carries each of `sentences` exactly `times` times.
+pub fn assert_carries_each(what: &str, text: &str, sentences: &[&str], times: usize) {
+    for sentence in sentences {
         assert_eq!(
             text.matches(sentence).count(),
             times,

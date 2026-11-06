@@ -194,8 +194,8 @@
       },
       {
         "file": "tests/common/fixtures/instructions.rs",
-        "start_line": 203,
-        "end_line": 205
+        "start_line": 208,
+        "end_line": 210
       },
       {
         "file": "tests/common/fixtures/spawn.rs",
@@ -3404,28 +3404,28 @@
       },
       {
         "file": "tests/common/fixtures/instructions.rs",
-        "start_line": 261,
-        "end_line": 261
+        "start_line": 266,
+        "end_line": 266
       },
       {
         "file": "tests/common/fixtures/instructions.rs",
-        "start_line": 324,
-        "end_line": 324
+        "start_line": 329,
+        "end_line": 329
       },
       {
         "file": "tests/common/fixtures/instructions.rs",
-        "start_line": 351,
-        "end_line": 351
+        "start_line": 356,
+        "end_line": 356
       },
       {
         "file": "tests/common/fixtures/instructions.rs",
-        "start_line": 382,
-        "end_line": 382
+        "start_line": 387,
+        "end_line": 387
       },
       {
         "file": "tests/common/fixtures/instructions.rs",
-        "start_line": 384,
-        "end_line": 384
+        "start_line": 389,
+        "end_line": 389
       },
       {
         "file": "tests/common/fixtures/liveness.rs",

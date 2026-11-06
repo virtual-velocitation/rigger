@@ -1863,7 +1863,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/common/cli.rs:638-643` `emit_refused`
 - `tests/common/fixtures/fold.rs:399-401` `lock_held_past`
 - `tests/common/fixtures/fold.rs:406-408` `catch_up_short_after`
-- `tests/common/fixtures/instructions.rs:203-205` `builtin_instruction_source`
+- `tests/common/fixtures/instructions.rs:208-210` `builtin_instruction_source`
 - `tests/common/fixtures/spawn.rs:146-148` `printing`
 - `tests/halted_spawn_wip_recovery_periphery.rs:128-130` `unit_branch`
 - `tests/native_driver_pipelining_behavior.rs:597-599` `worker_prompts_harness`
@@ -3118,14 +3118,14 @@ project identity so one backend can hold many projects without their data mixing
 - `tests/common/cli.rs:2395-2395` `".rigger"`
 - `tests/common/fixtures/config.rs:516-516` `"{repo_path}/.rigger-test-scratch"`
 - `tests/common/fixtures/extraction_tree.rs:76-76` `".rigger/workflow.yml"`
-- `tests/common/fixtures/instructions.rs:261-261` `"\nOperator (.rigger/instructions/*.md, filename order):\n"`
-- `tests/common/fixtures/instructions.rs:324-324` `"\n## communication (replaced by .rigger/instructions/communication.md)\n{printed}\n"`
-- `tests/common/fixtures/instructions.rs:351-351` `"{}\n\nBuilt-in:\n\n## engineering-principles (built-in)\n{}\n\n## working-discipline \
+- `tests/common/fixtures/instructions.rs:266-266` `"\nOperator (.rigger/instructions/*.md, filename order):\n"`
+- `tests/common/fixtures/instructions.rs:329-329` `"\n## communication (replaced by .rigger/instructions/communication.md)\n{printed}\n"`
+- `tests/common/fixtures/instructions.rs:356-356` `"{}\n\nBuilt-in:\n\n## engineering-principles (built-in)\n{}\n\n## working-discipline \
          (switched off by .rigger/instructions/working-discipline.md)\n{communication}\
          {RENDERED_OPERATOR_HEADING}\n## 30-style\n{UNSHADOWING_STYLE_BODY}\n{tail}"`
-- `tests/common/fixtures/instructions.rs:382-382` `"warning: built-in instruction working-discipline is switched off by \
+- `tests/common/fixtures/instructions.rs:387-387` `"warning: built-in instruction working-discipline is switched off by \
      .rigger/instructions/working-discipline.md"`
-- `tests/common/fixtures/instructions.rs:384-384` `"warning: built-in instruction communication is replaced by \
+- `tests/common/fixtures/instructions.rs:389-389` `"warning: built-in instruction communication is replaced by \
      .rigger/instructions/communication.md"`
 - `tests/common/fixtures/liveness.rs:7-7` `"a `rigger step` or `rigger run` is running right now (it holds .rigger/step.lock)"`
 - `tests/common/layer_cli.rs:28-28` `".rigger"`
@@ -5586,7 +5586,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 ### Adversarial sample
 
-Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 11345 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
+Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 11347 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
 
 - `crates/rigger-conductor/src/conductor.rs:16026-16048` `branch_is_foreign_when_only_one_axis_differs` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-conductor/src/conductor.rs:17000-17007` `resume_of` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`

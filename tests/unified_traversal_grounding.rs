@@ -51,13 +51,14 @@ use serde_json::{json, Value};
 
 use common::cli::{planted_graph, temp_project};
 use common::fixtures::apply_next_json;
+use common::fixtures::assert_carries_each;
 use common::fixtures::assert_system_prompt_carries_the_review_method_once;
 use common::fixtures::assert_task_prompt_carries_only_the_reviewer_contract;
 use common::fixtures::language_marker_hits;
-use common::fixtures::LOOKUP_POINTER;
 use common::fixtures::{
     edge, file_half, member_graph, BARE_PARENT, LEAF_PLACEHOLDER, NESTED_METHOD, RANGE_ARTIFACT,
 };
+use common::fixtures::{LOOKUP_METHOD, LOOKUP_POINTER};
 
 /// The opening words of the code-neighborhood section's header.
 const CODE_NEIGHBORHOOD: &str = "Code neighborhood of these files";
@@ -889,6 +890,45 @@ fn the_review_prompt_carries_the_three_verb_lookup_pointer() {
         assert_carries_only_the_lookup_pointer(
             &format!("the {role:?} review prompt"),
             &prompt_for(role),
+        );
+    }
+}
+
+/// Spec 121's THE LOOKUP POINTER NAMES ONLY THE TOOLS, at the review boundary end to end: the
+/// lookup method the grounding pointer no longer carries still reaches every spawn, through the
+/// `working-discipline` built-in its system prompt composes. Given a live fan-out `run` whose empty
+/// operator layer neither replaces nor switches off that built-in, when the lens, the adversary and
+/// the adjudicator each spawn through the `AgentDriver` port, then each one's system prompt carries
+/// each lookup-method sentence of the built-in's Fan out section exactly once. With
+/// `the_review_prompt_carries_the_three_verb_lookup_pointer`, which proves each tier's task prompt
+/// carries neither sentence, the method has one home in what a spawn receives.
+///
+/// Non-vacuous: restoring the Fan out section's former `lookup` bullet ending, the one rule in
+/// another wording, reddens every tier's row for both sentences; spelling either sentence a second
+/// time in any built-in reddens its row on every tier.
+#[test]
+fn every_review_spawn_receives_the_lookup_method_once_through_its_system_prompt() {
+    let graph = Projector::open(":memory:", "test").unwrap();
+    let finding = json!({
+        "id": "f_method",
+        "by": "lens:lens",
+        "unit": "u1",
+        "summary": "a lens finding about the seed file",
+        "about": ["core.rs"],
+    });
+    let (prompts, system_prompts) = run_and_capture_review_spawns(&graph, finding);
+    let spawned: Vec<&str> = prompts.iter().map(|(id, _)| id.as_str()).collect();
+    assert_eq!(
+        (spawned, system_prompts.len()),
+        (vec!["lens", "adversary", "adj"], 3),
+        "the three review tiers spawn once each, in order, each with a system prompt"
+    );
+    for ((role, _), system) in prompts.iter().zip(&system_prompts) {
+        assert_carries_each(
+            &format!("the {role:?} review system prompt"),
+            &normalize_ws(system),
+            &LOOKUP_METHOD,
+            1,
         );
     }
 }
