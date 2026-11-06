@@ -9247,7 +9247,7 @@ mod tests {
         let [(_, lookup), (_, verify)] = crate::test_support::OPERATOR_HELPER_COPIES;
         let embedded_lookup = hooks::HELPER_AGENTS[0].1;
         let embedded_verify = hooks::HELPER_AGENTS[1].1;
-        let rows: [(&str, Vec<conductor::HelperCopy>, Vec<(&str, &str)>); 5] = [
+        let rows = [
             ("no helpers fold nothing", vec![], vec![]),
             (
                 "absent copies fold nothing",

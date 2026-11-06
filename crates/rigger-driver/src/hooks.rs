@@ -1175,7 +1175,7 @@ mod tests {
     /// the copies handed in; a copy that does not parse names its helper.
     #[test]
     fn helper_mcp_tools_are_the_rigger_tools_the_given_helpers_declare() {
-        let rows: [(&str, Vec<HelperCopy>, Result<Vec<&str>, &str>); 5] = [
+        let rows = [
             (
                 "the embedded helpers",
                 vec![resolved("lookup.md", false), resolved("verify.md", false)],
