@@ -10806,9 +10806,9 @@ fn every_launch_of_a_run_defines_the_helpers_from_the_operators_copies() {
     use common::fixtures::{
         write_helper_copies, HelperFile, OPERATOR_HELPER_COPIES, OPERATOR_HELPER_TOOLS,
     };
-    use common::repo::{handed_helpers_agents_json, EMBEDDED_HELPER_TOOLS};
-    const BOUND_TOOLS: &str =
-        "mcp__rigger__rigger_emit,mcp__rigger__rigger_progress,mcp__rigger__rigger_scratch";
+    use common::repo::{
+        handed_helpers_agents_json, launch_helpers, BOUND_TOOLS, EMBEDDED_HELPER_TOOLS,
+    };
     let [lookup, verify] = OPERATOR_HELPER_COPIES;
     // Each row: the copies the checkout holds as the run starts, the copies the implementer's
     // launch writes into the checkout as it runs, ahead of every reviewer's launch, and the
@@ -10876,16 +10876,7 @@ fn every_launch_of_a_run_defines_the_helpers_from_the_operators_copies() {
             "{name}: the checkout holds the copies it started with and those written mid-run"
         );
 
-        let launches: Vec<(String, serde_json::Value, String)> =
-            stand_in_launches(&fake.path().join("bin/launches"))
-                .into_iter()
-                .map(|launch| {
-                    let agents = serde_json::from_str(flag_value(&launch.argv, "--agents"))
-                        .expect("the helpers are JSON");
-                    let tools = flag_value(&launch.argv, "--allowed-tools").to_string();
-                    (launch.spawn, agents, tools)
-                })
-                .collect();
+        let launches = launch_helpers(&fake.path().join("bin/launches"));
         let expected: Vec<(String, serde_json::Value, String)> = [
             ("solo/adjudicator#0", "Read"),
             ("solo/adversary#0", "Read"),

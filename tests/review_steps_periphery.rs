@@ -63,7 +63,7 @@ use common::git::{commit_files, temp_git_project_with_commit};
 use common::repo::repo_root;
 #[cfg(unix)]
 use common::repo::{
-    flag_value, grep_guard_hook, handed_helpers_agents_json, hook_words, stub_path,
+    flag_value, grep_guard_hook, handed_helpers_agents_json, hook_words, launch_helpers, stub_path,
     EMBEDDED_HELPER_TOOLS,
 };
 use rigger::conductor::{run, Deps, META_REPLAY_KEY, STREAM};
@@ -376,16 +376,7 @@ fn rigger_canary_hands_every_panel_spawn_the_operators_helper_copies() {
         write_helper_copies(root, copies);
         let (_out, err, ok, capture) = canary_capturing(root);
         assert!(ok, "{name}: the canary scores; stderr:\n{err}");
-        let spawns: Vec<(String, Value, String)> =
-            stand_in_launches(&capture.path().join("launches"))
-                .into_iter()
-                .map(|launch| {
-                    let agents = serde_json::from_str(flag_value(&launch.argv, "--agents"))
-                        .expect("the helpers are JSON");
-                    let allowed = flag_value(&launch.argv, "--allowed-tools").to_string();
-                    (launch.spawn, agents, allowed)
-                })
-                .collect();
+        let spawns = launch_helpers(&capture.path().join("launches"));
         let expected: Vec<(String, Value, String)> = repeated_kind_canary_spawns()
             .into_iter()
             .map(|spawn| (spawn, handed_helpers_agents_json(copies), tools.to_string()))
