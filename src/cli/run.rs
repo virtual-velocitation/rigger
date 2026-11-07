@@ -1666,8 +1666,6 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
     // Refuse before starting if a gating persona would stall the integration gate (spec 18,
     // unit 2); `load_run_config` reuses unit 1's lint at this run's config-load seam.
     let cfg = load_run_config(".")?;
-    // The host values every spawn of this run carries, resolved once.
-    let spawn_host = rigger::hooks::resolve_spawn_host(&cfg.workflow.defaults, Path::new(&repo))?;
     // EXACTLY ONE ROOT: this run's teardown reclaims the scratch root and its hosted agents write
     // into it, so it is refused here, before anything is reclaimed, reaped or anchored.
     let scratch = project_scratch_root(&repo, &cfg);
@@ -1725,6 +1723,9 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
         anchor_run_branch(&repo, command, &base, base_explicit)?;
         base_tip = rigger::worktree::branch_tip(&repo, RUN_BRANCH).unwrap_or_default();
     }
+    // The host values every spawn of this run carries, resolved once, after the run-branch
+    // checkout, so the helper copies are the tree's the run drives and its definition pin folds.
+    let spawn_host = rigger::hooks::resolve_spawn_host(&cfg.workflow.defaults, Path::new(&repo))?;
     // Register this instance in the machine-global discovery registry (spec 50, criterion 2).
     // `rigger run` drives the WHOLE run in-process through a single `conductor::run` below, so the
     // held guard's heartbeat thread (not a one-shot register) is what keeps the entry from aging out
@@ -2150,8 +2151,6 @@ fn run_workflow(parsed: &RunArgs, command: &str, sleep: &dyn SleepHold) -> Res {
     // Refuse before starting if a gating persona would stall the integration gate (spec 18,
     // unit 2); `load_run_config` reuses unit 1's lint at this run's config-load seam.
     let cfg = load_run_config(".")?;
-    // The host values every spawn of this run carries, resolved once.
-    let spawn_host = rigger::hooks::resolve_spawn_host(&cfg.workflow.defaults, Path::new(&repo))?;
     let (criteria, text) = load_criteria(parsed.spec.as_deref())?;
     std::fs::create_dir_all(RIGGER_DIR)?;
     // Anchor + check out the run branch off `--base` (spec 18, criterion 6) before the
@@ -2181,6 +2180,9 @@ fn run_workflow(parsed: &RunArgs, command: &str, sleep: &dyn SleepHold) -> Res {
         anchor_run_branch(&repo, "rigger workflow", &base, base_explicit)?;
         base_tip = rigger::worktree::branch_tip(&repo, RUN_BRANCH).unwrap_or_default();
     }
+    // The host values every spawn of this run carries, resolved once, after the run-branch
+    // checkout, so the helper copies are the tree's the run drives and its definition pin folds.
+    let spawn_host = rigger::hooks::resolve_spawn_host(&cfg.workflow.defaults, Path::new(&repo))?;
     // One-time spec-09 identity migration before opening the run backend (local-sqlite only).
     let selection = store_selection(parsed.store, parsed.conn.as_deref())?;
     if selection.is_sqlite() {
