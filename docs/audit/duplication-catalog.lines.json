@@ -3714,8 +3714,8 @@
       },
       {
         "file": "tests/critique_method_persona_periphery.rs",
-        "start_line": 206,
-        "end_line": 206
+        "start_line": 244,
+        "end_line": 244
       },
       {
         "file": "tests/dedup_seeding_periphery.rs",
