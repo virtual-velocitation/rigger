@@ -839,6 +839,12 @@ impl SpawnEventBody for SpawnResult {
     const EVENT_TYPE: &'static str = TYPE_SPAWN_RESULT;
 }
 
+/// The environment variable the build tool reads its cache location from: the ONE home of
+/// that name. The conductor sets it in a spawn's environment, the shell gate runner in a
+/// gate's, the agent driver reads it back from a spawn's, and the wave carries it as
+/// [`WaveItem::build_cache_env`] so the workflow script names it without spelling it.
+pub const BUILD_CACHE_ENV: &str = "CARGO_TARGET_DIR";
+
 /// One wave entry as `rigger step` prints it: the SLIM manifest of a parked spawn -
 /// everything the thin driver needs to LAUNCH the agent (identity, placement, model),
 /// and nothing it doesn't. The prompt and persona are deliberately ABSENT: they can be
@@ -855,10 +861,10 @@ pub struct WaveItem {
     pub model: String,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<String>,
-    // `dir`, `max_wall_clock`, `marker_path` and `cargo_target_dir` are ALWAYS on the wire
-    // (empty or null when absent), never skipped: the wave reaches the driver through a
-    // courier agent's structured return, and a key the driver's schema cannot REQUIRE is a
-    // key the courier can drop while retyping - it dropped `marker_path` and
+    // `dir`, `max_wall_clock`, `marker_path`, `cargo_target_dir` and `build_cache_env` are
+    // ALWAYS on the wire (empty or null when absent), never skipped: the wave reaches the
+    // driver through a courier agent's structured return, and a key the driver's schema cannot
+    // REQUIRE is a key the courier can drop while retyping - it dropped `marker_path` and
     // `cargo_target_dir` on 2026-09-15, costing a worker its heartbeat and its build location.
     #[serde(default)]
     pub dir: String,
@@ -886,14 +892,21 @@ pub struct WaveItem {
     /// The spawn's ONE build location (spec 77, criterion 1), copied from
     /// [`SpawnRequest::cargo_target_dir`]: the `cargo-target-<unit>` sibling of the worktree the
     /// unit's gates build into, or the unit's `review-target-<unit>` cache for a review tier. The SDK
-    /// driver receives it as `CARGO_TARGET_DIR` in the spawn's environment; a driver that
+    /// driver receives it as [`BUILD_CACHE_ENV`] in the spawn's environment; a driver that
     /// cannot set a worker's environment (the editor's workflow driver runs workers through
-    /// an agent tool with none) must NAME it in the worker's instructions instead, or every
-    /// `cargo test` the worker runs lands in `<worktree>/target` - three such trees filled
-    /// the disk on 2026-09-15. Absent when the spawn has no unit worktree (a review or
-    /// plan spawn inherits the shared cache).
+    /// an agent tool with none) must NAME it in the worker's instructions instead, through
+    /// [`WaveItem::build_cache_env`], or every build the worker runs lands inside its
+    /// worktree - three such trees filled the disk on 2026-09-15. Absent when the spawn has
+    /// no unit worktree (a review or plan spawn inherits the shared cache).
     #[serde(default)]
     pub cargo_target_dir: Option<String>,
+    /// The NAME of the environment variable the build tool reads its cache location from,
+    /// [`BUILD_CACHE_ENV`] for every item, so a driver that must name the build location in a
+    /// worker's instructions reads the variable from the wave and never spells a toolchain
+    /// of its own. Carried even when [`WaveItem::cargo_target_dir`] is absent: the name
+    /// is a fact of the build tool, not of the spawn.
+    #[serde(default)]
+    pub build_cache_env: String,
     /// The spawn's LIVE WORK-LINE (spec 19a, c4): the unit's criterion, copied from the
     /// [`SpawnRequest::title`] so it rides the SLIM manifest the thin driver actually reads.
     /// The wave `rigger step` prints is a `Vec<WaveItem>`, NOT the request, so a title that
@@ -925,8 +938,8 @@ impl From<&SpawnRequest> for WaveItem {
             // a pure fold has neither, so leave it absent here.
             marker_path: None,
             // The build location the conductor recorded on the request - the very
-            // CARGO_TARGET_DIR its spawn environment carries - so both drivers name one build
-            // location per spawn. A request an older binary recorded carries none; it falls
+            // BUILD_CACHE_ENV value its spawn environment carries - so both drivers name one
+            // build location per spawn. A request an older binary recorded carries none; it falls
             // back to the unit's own cache, the one location every spawn used then, so a run
             // resumed across the upgrade keeps building where it did.
             cargo_target_dir: if req.cargo_target_dir.is_empty() {
@@ -934,6 +947,7 @@ impl From<&SpawnRequest> for WaveItem {
             } else {
                 Some(req.cargo_target_dir.clone())
             },
+            build_cache_env: BUILD_CACHE_ENV.to_string(),
             // The live work-line rides the slim manifest: the wave the thin driver reads is
             // a `Vec<WaveItem>`, so the title MUST be copied here or `rigger.js` narrates
             // nothing (the false-green class this copy closes).

@@ -4878,7 +4878,7 @@ impl RunCtx<'_> {
             attempt,
             run_id: self.run_id.clone(),
             // The ONE build-environment authority (spec 65) PLUS this spawn's own per-unit
-            // CARGO_TARGET_DIR (spec 77 c1, ONE BUILD LOCATION): the same wrapper/cache/
+            // build cache variable (spec 77 c1, ONE BUILD LOCATION): the same wrapper/cache/
             // incremental vars a gate build and the implementer got, and the `cache` sibling
             // of this `dir` its role picks above - the unit's own for the sdet-author, the unit's
             // review cache for a review tier - so a reviewer's reproduction never builds into
@@ -8314,10 +8314,12 @@ impl RunCtx<'_> {
         // exactly like a lens or the adversary, and its own spawn is the historically
         // riskiest one (spec 64 c3's own worktree-deletion tests are all adjudicator-
         // driven) - so it carries the SAME reviewer discipline those two tiers get via
-        // `review_protocol` (spec 103, criterion 6), appended directly here.
+        // `review_protocol` (spec 103, criterion 6), appended directly here, its build cache
+        // sentence included exactly when its spawn at `dir` carries the unit's review cache.
         let prompt = format!(
-            "{}{REVIEWER_DISCIPLINE}{UPHELD_PROTOCOL}{REQUIRED_PROTOCOL}{}",
+            "{}{}{UPHELD_PROTOCOL}{REQUIRED_PROTOCOL}{}",
             self.review_base_prompt(st, dir)?,
+            reviewer_discipline(Self::reviewer_carries_build_cache(dir)),
             round.map(ReviewRound::block).unwrap_or_default()
         );
         let resume = round
@@ -8788,7 +8790,10 @@ impl RunCtx<'_> {
                     0,
                     false,
                     ReviewerOutput::Findings,
-                    &format!("{prompt}{}", review_protocol(ROLE_ADVERSARY)),
+                    &format!(
+                        "{prompt}{}",
+                        review_protocol(ROLE_ADVERSARY, Self::reviewer_carries_build_cache(dir))
+                    ),
                     None,
                     None,
                     // The DAG-level critique names no lens tier of its own (spec 67, c4): an
@@ -8980,7 +8985,8 @@ impl RunCtx<'_> {
 
     /// The env vars a spawn's OWN process must carry (spec 77 criterion 1, ONE BUILD
     /// LOCATION): `build_env`'s wrapper/cache/incremental/jobs vars (spec 65), PLUS - the
-    /// biggest leak spec 77 exists to close - a per-unit `CARGO_TARGET_DIR` naming the
+    /// biggest leak spec 77 exists to close - a per-unit [`crate::spawn::BUILD_CACHE_ENV`]
+    /// ([`build_cache_var`](Self::build_cache_var)) naming the
     /// SAME `cargo-target-<slug>` cache sibling [`run_gates`](Self::run_gates) already
     /// points a gate's OWN build at for this exact `dir` (Gap 19,
     /// [`worktree::unit_cache_sibling`]). Without this, an agent that runs its own `cargo
@@ -8992,7 +8998,7 @@ impl RunCtx<'_> {
     /// no per-unit cache (empty, or not a `rigger-wt-*` unit worktree - a review/plan spawn
     /// with no worktree of its own, e.g. `re_plan`'s planner) yields no override, exactly
     /// mirroring `unit_cache_sibling`'s own `None` case - the ambient/shared
-    /// `CARGO_TARGET_DIR` is inherited untouched, matching `gate::Runner`'s existing
+    /// build cache variable is inherited untouched, matching `gate::Runner`'s existing
     /// "target_dir always wins, else inherit" precedence.
     ///
     /// The SINGLE place every `SpawnOpts.env` is assembled from `build_env`: the four spawn
@@ -9010,10 +9016,27 @@ impl RunCtx<'_> {
     /// the unit's gates use.
     fn spawn_env(build_env: &gate::BuildEnv, dir: &str, cache: &str) -> Vec<(String, String)> {
         let mut vars = build_env.vars().to_vec();
-        if let Some(target) = crate::worktree::unit_sibling(dir, cache) {
-            vars.push(("CARGO_TARGET_DIR".to_string(), target));
-        }
+        vars.extend(Self::build_cache_var(dir, cache));
         vars
+    }
+
+    /// The build cache variable a spawn at `dir` carries: [`crate::spawn::BUILD_CACHE_ENV`]
+    /// paired with `dir`'s `cache` sibling ([`worktree::unit_sibling`]), or `None` when `dir`
+    /// has no unit sibling - a review-only worktree, the planner's empty dir. The ONE
+    /// derivation both [`spawn_env`](Self::spawn_env) and
+    /// [`reviewer_carries_build_cache`](Self::reviewer_carries_build_cache) read, so a
+    /// reviewer's prompt names a build cache exactly when its environment carries one.
+    fn build_cache_var(dir: &str, cache: &str) -> Option<(String, String)> {
+        crate::worktree::unit_sibling(dir, cache)
+            .map(|target| (crate::spawn::BUILD_CACHE_ENV.to_string(), target))
+    }
+
+    /// Whether a reviewer spawned at `dir` carries the unit's review cache in its environment
+    /// ([`build_cache_var`](Self::build_cache_var) over
+    /// [`worktree::UNIT_REVIEW_CACHE_PREFIX`]), the condition under which its prompt carries
+    /// [`REVIEWER_BUILD_CACHE`] ([`reviewer_discipline`]).
+    fn reviewer_carries_build_cache(dir: &str) -> bool {
+        Self::build_cache_var(dir, crate::worktree::UNIT_REVIEW_CACHE_PREFIX).is_some()
     }
 
     /// The resolved machine-wide build budget for this run (spec 65): re-derived from the
@@ -11701,7 +11724,7 @@ impl RunCtx<'_> {
         Ok(format!(
             "{}{}{}",
             self.review_base_prompt(st, dir)?,
-            review_protocol(actor),
+            review_protocol(actor, Self::reviewer_carries_build_cache(dir)),
             round.map(ReviewRound::block).unwrap_or_default()
         ))
     }
@@ -13315,32 +13338,57 @@ const PLAN_PROTOCOL: &str = "You are the planner. The conductor has ALREADY crea
 /// `pub(crate)` so the canary runner (spec 13, unit 5) appends the SAME finding-emission
 /// protocol to its reviewer prompts, so a canary reviewer attributes each finding by the
 /// same `by` role token the live review-quality folds key on - one protocol, not two.
-pub fn review_protocol(actor: &str) -> String {
+///
+/// `carries_cache` is whether the reviewer's spawn environment carries the unit's review
+/// cache ([`RunCtx::reviewer_carries_build_cache`]); the protocol ends with
+/// [`reviewer_discipline`] of it, so the build cache sentence reaches only a reviewer that has
+/// one.
+pub fn review_protocol(actor: &str, carries_cache: bool) -> String {
     format!(
         "Record each review finding you raise by calling the rigger_emit tool with type \"ReviewFinding\" and data:\n\
          {{\"id\":\"<short-id>\",\"by\":\"{actor}\",\"summary\":\"<one line>\",\"about\":[\"<file>\"]}}\n\
          The `by` field ATTRIBUTES the finding to you - keep it EXACTLY as \"{actor}\" so the review-quality metrics can measure your findings' survival even when you run out-of-process (where the conductor stamps no actor for you). \
-         This writes the finding to the shared context graph live, so the adversary, the adjudicator, and your fellow reviewers see it immediately (via grounding and rigger_peers).{REVIEWER_DISCIPLINE}"
+         This writes the finding to the shared context graph live, so the adversary, the adjudicator, and your fellow reviewers see it immediately (via grounding and rigger_peers).{}",
+        reviewer_discipline(carries_cache)
     )
 }
 
 /// The contract every review-tier prompt carries: only what the harness enforces or provides,
 /// never a method of review. A REVIEW ROUND LEAVES THE TREE IT REVIEWED (spec 103, criterion 6):
-/// its first and last sentences spell out in prose what [`RunCtx::guard_review_round_tree`]
+/// its two sentences spell out in prose what [`RunCtx::guard_review_round_tree`]
 /// enforces at runtime - a reviewer that behaves like an implementer and edits the unit's own
 /// worktree leaves exactly the residue that guard exists to catch, name in a lesson, and restore.
-/// Its middle sentence names the cache the harness provides, a reproduction building into the
-/// unit's review cache ([`RunCtx::spawn_env`]), and holds whether or not any instruction body is
-/// in force. The review method - never re-running the battery or a gate its
+/// The cache the harness provides is [`REVIEWER_BUILD_CACHE`], appended by
+/// [`reviewer_discipline`] only for a reviewer whose environment carries it. The review
+/// method - never re-running the battery or a gate its
 /// [`gate_evidence_block`] shows green, the one targeted reproduction in a scratch worktree, and
 /// never running a gate's command as the gate runs it - is guidance, so it sits under the
 /// working-discipline body's `## When you review` section, which reaches a reviewer through
-/// [`crate::instructions::compose`]. Shared by
+/// [`crate::instructions::compose`]. Shared through [`reviewer_discipline`] by
 /// [`review_protocol`] (the lens and adversary tiers, which also record findings through it)
 /// and [`RunCtx::run_adjudicator`] (whose stdout is a verdict, never a finding, so its prompt never
 /// reaches `review_protocol` at all) - ONE string, so all three tiers carry identical
 /// wording rather than three hand-copied near-duplicates.
-pub const REVIEWER_DISCIPLINE: &str = " Never write to this unit's own worktree - it is the tree being judged, not yours to edit. A reproduction builds into the build cache your spawn carries: the unit's review cache, never the cache the unit's gates use. Leave the unit's worktree exactly as you found it.";
+pub const REVIEWER_DISCIPLINE: &str = " Never write to this unit's own worktree - it is the tree being judged, not yours to edit. Leave the unit's worktree exactly as you found it.";
+
+/// The build cache a reviewer's reproduction builds into: the unit's review cache, which
+/// [`RunCtx::spawn_env`] sets in the reviewer's environment. Held apart from
+/// [`REVIEWER_DISCIPLINE`] because a reviewer whose tree has no unit sibling (a standalone
+/// review stage, a plan critique) carries no such cache, and a sentence naming one would be
+/// false there; [`reviewer_discipline`] appends it exactly when the environment carries it.
+pub const REVIEWER_BUILD_CACHE: &str = " A reproduction builds into the build cache your spawn carries: the unit's review cache, never the cache the unit's gates use.";
+
+/// The reviewer contract a review-tier prompt ends with: [`REVIEWER_DISCIPLINE`], followed by
+/// [`REVIEWER_BUILD_CACHE`] when `carries_cache` - the spawn's environment carries the unit's
+/// review cache ([`RunCtx::reviewer_carries_build_cache`]).
+fn reviewer_discipline(carries_cache: bool) -> String {
+    let cache = if carries_cache {
+        REVIEWER_BUILD_CACHE
+    } else {
+        ""
+    };
+    format!("{REVIEWER_DISCIPLINE}{cache}")
+}
 
 /// What an adjudicator's reject names on its verdict line beside the verdict: its REQUIRED
 /// list ([`RequiredItem`]), which the next attempt is handed ([`PriorFailure::block`]) and

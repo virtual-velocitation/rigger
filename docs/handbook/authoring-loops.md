@@ -20,8 +20,6 @@ Those two sentences are the rule the binary is held to. The rest of this section
 
 **Open exceptions.** These prescriptions still stand in the binary against the rule, each named by its constant or surface, and each is struck from this list as it is removed:
 
-- the toolchain words in `workflows/rigger.js`
-
 ### The review ceremony
 
 A panel is a sequence of review steps, and the official vocabulary names their three kinds: `lenses`, whose reviewers run in parallel; `adversary`, one reviewer who tests the findings so far; and `adjudicator`, one reviewer whose verdict gates integration. The map form (`lenses:`, `adversary:`, `adjudicator:`) declares the canonical sequence: one step for each key it sets, each key optional, in that order. The list form, `steps:`, declares any sequence of those kinds: a kind may repeat, and an adjudicator step comes at most once and last. This panel runs a second lens step and a second adversary step ahead of its one verdict:

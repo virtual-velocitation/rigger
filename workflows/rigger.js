@@ -163,8 +163,8 @@ const OUTER_WALL_CLOCK_SEC = Number(A.outer_wall_clock) > 0 ? Number(A.outer_wal
 // The JSON shape `rigger step` prints (see spawn::Step / spawn::SpawnRequest): the wave it
 // newly parked and a `done` fixpoint flag. The wave items carry everything the driver needs
 // to spawn each agent. The fields the driver builds a worker's instructions from - `dir`,
-// `max_wall_clock`, `marker_path`, `cargo_target_dir` - are ALWAYS on the wire (null when
-// absent) and REQUIRED here: the wave arrives through a courier agent's structured return,
+// `max_wall_clock`, `marker_path`, `cargo_target_dir`, `build_cache_env` - are ALWAYS on the
+// wire (null when absent) and REQUIRED here: the wave arrives through a courier agent's structured return,
 // and a key this schema does not require is a key the courier can drop while retyping (it
 // dropped `marker_path` and `cargo_target_dir` on 2026-09-15, costing a worker its heartbeat
 // and its build location). Other optional fields are omitted when empty and tolerated.
@@ -192,7 +192,7 @@ const STEP = {
       items: {
         type: 'object',
         additionalProperties: true,
-        required: ['id', 'unit', 'stage', 'dir', 'max_wall_clock', 'marker_path', 'cargo_target_dir'],
+        required: ['id', 'unit', 'stage', 'dir', 'max_wall_clock', 'marker_path', 'cargo_target_dir', 'build_cache_env'],
         properties: {
           id: { type: 'string' },
           unit: { type: 'string' },
@@ -201,6 +201,7 @@ const STEP = {
           max_wall_clock: { type: ['integer', 'null'] },
           marker_path: { type: ['string', 'null'] },
           cargo_target_dir: { type: ['string', 'null'] },
+          build_cache_env: { type: 'string' },
           // The live work-line (spec 19a, c4): the unit's criterion, carried on the wave item
           // so the driver narrates the actual WORK, not just `${unit}:${stage}`. Omitted from
           // the wire for an untitled spawn; wave items stay open (additionalProperties: true).
@@ -647,7 +648,7 @@ async function runWorker(req, fatal) {
   // gap; the title is what turns the bare phase group into the actual criterion.
   log(`starting ${req.id}${work ? `: ${work}` : ''}`)
   const workdir = req.dir
-    ? `Do all your file edits, cargo, and any git commit inside your isolated worktree ${req.dir} (the conductor assigned it and owns its lifecycle; run \`rigger ...\` commands from ${REPO}).`
+    ? `Do all your file edits, your build tool's runs, and any git commit inside your isolated worktree ${req.dir} (the conductor assigned it and owns its lifecycle; run \`rigger ...\` commands from ${REPO}).`
     : `Work in ${REPO}.`
   // The driver-framed liveness heartbeat (spec 10, unit 3; spec 101), same mechanism family as
   // the SCRATCH POLICY: whenever `rigger step` resolved a marker path for this spawn, which it
@@ -676,14 +677,15 @@ async function runWorker(req, fatal) {
     `LIVE PROGRESS: record a progress line, from ${REPO}, using Bash:\n` +
     `  rigger progress '${req.id}' '<one line: what you just did>'\n`
   // One build location per spawn (spec 77, criterion 1). The conductor pins the cache it chose
-  // (the unit's `cargo-target-<unit>`, or its `review-target-<unit>` for a review tier) as
-  // CARGO_TARGET_DIR in the spawn's environment for drivers that can set one; this driver runs workers through an agent tool with no environment, so
-  // the wave names the directory and the worker is told to export it. Without this, every
-  // `cargo test` a worker runs builds a fresh 50 GB `target/` inside its worktree.
+  // (the unit's own cache, or its review cache for a review tier) in the spawn's environment,
+  // under the variable the wave names as `build_cache_env`, for drivers that can set one; this
+  // driver runs workers through an agent tool with no environment, so the wave names the
+  // variable and the directory and the worker is told to export it. Without this, every build
+  // a worker runs fills a fresh cache inside its worktree.
   const buildLocation = req.cargo_target_dir
-    ? `BUILD LOCATION (hard rule): every cargo command you run inside your worktree (build, test, clippy, mutants, anything that compiles) MUST run with\n` +
-      `  export CARGO_TARGET_DIR='${req.cargo_target_dir}'\n` +
-      `set first, in the same shell. That directory is the build cache the conductor chose for this spawn - the unit's own cache, which its gates also build into, when you build the unit's tree; the unit's review cache when you review it, so a reproduction never swaps a binary the gates use. A \`target/\` inside the worktree itself is a defect that fills the disk - never create one.\n`
+    ? `BUILD LOCATION (hard rule): every command your build tool runs inside your worktree (anything that builds or tests) MUST run with\n` +
+      `  export ${req.build_cache_env}='${req.cargo_target_dir}'\n` +
+      `set first, in the same shell. That directory is the build cache the conductor chose for this spawn - the unit's own cache, which its gates also build into, when you build the unit's tree; the unit's review cache when you review it, so a reproduction never swaps a binary the gates use. A build cache inside the worktree itself is a defect that fills the disk - never create one.\n`
     : ''
   const prompt =
     `You are the rigger worker for spawn ${req.id} (unit ${req.unit}). ` +
@@ -695,7 +697,7 @@ async function runWorker(req, fatal) {
     `${workdir}\n` +
     `SCRATCH POLICY (hard rule): before creating ANY scratch - probe repos, verification worktrees, test builds, setup rehearsals - fetch YOUR OWN rigger-assigned scratch container, from ${REPO}, using Bash:\n` +
     `  rigger scratch '${req.id}'\n` +
-    `Everything you create lives INSIDE that one printed path, NEVER under /tmp or your own session scratchpad (those are on the operator's small OS partition, and a single cargo target or \`rigger setup\` shim install there fills the disk). For any cargo you run outside your assigned worktree, export CARGO_TARGET_DIR to a subdir of that same printed path first - never the shared build cache. It is reaped the moment your result records - do not store anything durable there.\n` +
+    `Everything you create lives INSIDE that one printed path, NEVER under /tmp or your own session scratchpad. For any build you run outside your assigned worktree, export your build cache variable (\`${req.build_cache_env}\`) to a subdir of that same printed path first - never the shared build cache. It is reaped once your result records - do not store anything durable there.\n` +
     buildLocation +
     heartbeat +
     progressNote +
@@ -914,9 +916,8 @@ for (;;) {
   let step
   try {
     step = await agent(
-      `You are a rigger COURIER. Advance the run one frontier and return the wave, verbatim. Run EXACTLY this, from ${REPO}, as ONE FOREGROUND, BLOCKING Bash call - explicitly NOT run_in_background, and NOT via a Monitor or a poll loop - because a foreground Bash call blocks until the step prints its single JSON line, which is exactly the line you return; set the timeout parameter to 1800000 (a step integrates ready units by running cargo gates on BOTH feature lanes inline and can take 20+ minutes when several units are ready at once; too short a timeout kills it mid-gate and the courier exhausts its re-run attempts before the gates ever finish):\n` +
-        `  cd ${REPO} && CARGO_TARGET_DIR=${REPO}/.rigger/tmp/cargo-target rigger step --spec ${SPEC}${BASEFLAG}${FRESHFLAG}\n` +
-        `(the CARGO_TARGET_DIR prefix makes every gate share one build cache instead of cold-building per worktree - keep it exactly as written). ` +
+      `You are a rigger COURIER. Advance the run one frontier and return the wave, verbatim. Run EXACTLY this, from ${REPO}, as ONE FOREGROUND, BLOCKING Bash call - explicitly NOT run_in_background, and NOT via a Monitor or a poll loop - because a foreground Bash call blocks until the step prints its single JSON line, which is exactly the line you return; set the timeout parameter to 1800000 (a step integrates ready units by running their gates inline and can take 20+ minutes when several units are ready at once; too short a timeout kills it mid-gate and the courier exhausts its re-run attempts before the gates ever finish):\n` +
+        `  cd ${REPO} && rigger step --spec ${SPEC}${BASEFLAG}${FRESHFLAG}\n` +
         `It prints ONE line of JSON on stdout: {"wave":[...],"done":<bool>} (a halted run also carries a "halted":"<reason>" field). Return that JSON object EXACTLY as printed, INLINE and IN FULL, in your structured output - no matter how large it is. NEVER write it to a file, return a path, a reference, a summary, or a truncation: the driver can only read your returned JSON, so anything but the verbatim object (all wave items, all their fields) LOSES the wave and stalls the run. Do not drop fields or run anything else. ` +
         `If the Bash call TIMES OUT, re-run the exact same command - as many times as needed: the step's gate results are recorded durably as they complete, so every re-run resumes past the recorded ones and gets strictly further; return the JSON from the run that prints it. ` +
         `If it exits non-zero and stderr says "another \`rigger step\` is already running" (a TRANSIENT concurrent step - e.g. an earlier step orphaned by a Bash timeout is still finishing its gate, and steps are serialized so two never run at once), WAIT ~60 seconds and re-run the exact same command; repeat until it returns the JSON. This is normal back-off, NOT a failure. ` +

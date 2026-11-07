@@ -147,8 +147,9 @@ pub struct SpawnOpts {
     /// ([`gate::BuildEnv::vars`], empty when no wrapper is configured - today's
     /// ambient-environment behavior, unchanged), so its OWN `cargo test`/`cargo build`
     /// invocations hit the same wrapper cache under the same settings a gate build
-    /// gets; PLUS, unconditionally, spec 77 criterion 1's per-unit `CARGO_TARGET_DIR`
-    /// (empty/absent when this spawn's `dir` owns no per-unit cache), so those SAME
+    /// gets; PLUS, unconditionally, spec 77 criterion 1's per-unit
+    /// [`BUILD_CACHE_ENV`](crate::spawn::BUILD_CACHE_ENV) (absent when this spawn's `dir`
+    /// has no unit sibling, so a review-only, planner or canary spawn carries none), so those SAME
     /// invocations land in the one per-unit cache a gate build for that `dir` gets,
     /// never an embedded `target/` dir inside the worktree. The blocking cli driver
     /// applies every pair to its spawned `Command`; a driver with no subprocess of its
@@ -249,7 +250,7 @@ pub fn spawn_request(agent: &AgentDef, prompt: &str, opts: &SpawnOpts) -> SpawnR
         cargo_target_dir: opts
             .env
             .iter()
-            .find(|(name, _)| name == "CARGO_TARGET_DIR")
+            .find(|(name, _)| name == crate::spawn::BUILD_CACHE_ENV)
             .map(|(_, dir)| dir.clone())
             .unwrap_or_default(),
     }

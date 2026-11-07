@@ -19,7 +19,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-76144682ea08",
+    "id": "dup-b8ec93a7d473",
     "classification": "near",
     "sites": [
       {
@@ -36,11 +36,6 @@
         "file": "crates/rigger-conductor/src/conductor.rs",
         "name": "deferred_gate_failed_key",
         "content_hash": "6fd90a8c2eed6379"
-      },
-      {
-        "file": "crates/rigger-conductor/src/conductor.rs",
-        "name": "review_protocol",
-        "content_hash": "b0b4170272f04fb7"
       },
       {
         "file": "crates/rigger-domain/src/contextgraph.rs",
@@ -5606,13 +5601,13 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-468c9f4fc26f",
+    "id": "dup-4fee0df4305b",
     "classification": "semantic",
     "sites": [
       {
         "file": "crates/rigger-domain/src/agent.rs",
         "name": "spawn_request",
-        "content_hash": "5cbc06d4b398a5c1"
+        "content_hash": "dcd2fc0061b706ee"
       },
       {
         "file": "tests/common/mod.rs",

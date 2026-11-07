@@ -618,7 +618,7 @@ impl Runner for ExecRunner {
         // with a concurrent unit's divergent tree. The empty/ambient case (below) is the
         // shared-cache one `build_cache_dir` now pins explicitly (spec 77 criterion 5).
         if !target_dir.is_empty() {
-            cmd.env("CARGO_TARGET_DIR", target_dir);
+            cmd.env(rigger_domain::spawn::BUILD_CACHE_ENV, target_dir);
             // The gate store fence (spec 70 criterion 3), on the SAME signal: a non-empty
             // target_dir means this gate runs inside a unit worktree, so a store-opening
             // courier the gate's spawned process runs must never walk up into the repo's
@@ -651,7 +651,7 @@ impl Runner for ExecRunner {
             // Global Constraint 3 forbids. An empty guard (the "off" convention every other
             // branch in this file uses) forces it too: there is no lock to have failed.
             if !build_cache_dir.is_empty() {
-                cmd.env("CARGO_TARGET_DIR", build_cache_dir);
+                cmd.env(rigger_domain::spawn::BUILD_CACHE_ENV, build_cache_dir);
             }
             // Widened (spec 70, u4 round 2 fix for
             // adv-u3c70-store-fence-half-wired-review-worktree-call-site-unfenced, then

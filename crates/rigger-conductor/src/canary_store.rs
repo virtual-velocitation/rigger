@@ -531,7 +531,8 @@ fn score_item(
 /// Run one agent of a lens or adversary step against a canary item under its step's `role`
 /// token and collect the findings it emits. The reviewer receives the item's code under review plus the SAME
 /// [`review_protocol`] the live loop appends, so it attributes each finding by its role
-/// token; the emit callback captures every `ReviewFinding` it emits (the cli driver
+/// token - without the build cache sentence, since a canary spawn's environment carries no
+/// build cache ([`canary_opts`]); the emit callback captures every `ReviewFinding` it emits (the cli driver
 /// bridges a subprocess reviewer's stdout findings through the same callback). The second
 /// element of the returned pair is the spawn's ACTUALLY-resolved model id (MODEL PINNING
 /// criterion), sourced from `AgentResult::resolved_model`.
@@ -544,7 +545,11 @@ fn run_review_tier(
     role: &str,
 ) -> Result<(Vec<Finding>, String), Error> {
     let agent = agent_of(cfg, agent_id, role)?;
-    let prompt = format!("{}\n\n{}", review_header(item), review_protocol(role));
+    let prompt = format!(
+        "{}\n\n{}",
+        review_header(item),
+        review_protocol(role, false)
+    );
     let opts = canary_opts(item, role, agent, &cfg.instructions, host);
     let (result, findings) = spawn_collecting(driver, agent, &prompt, &opts)?;
     Ok((findings, result.resolved_model))
