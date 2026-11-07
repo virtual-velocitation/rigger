@@ -635,7 +635,7 @@ fn a_step_that_does_not_ingest_advances_the_run_without_materializing_a_derived_
         concat!(
             r#"{"wave":[{"id":"a/implementer#0","unit":"a","stage":"a","model":"sonnet","#,
             r#""tools":["Read","Edit"],"dir":"","max_wall_clock":null,"marker_path":null,"#,
-            r#""cargo_target_dir":null}],"done":false}"#,
+            r#""cargo_target_dir":null,"build_cache_env":"CARGO_TARGET_DIR"}],"done":false}"#,
             "\n"
         ),
         "the first step parks the stage's spawn"
@@ -1386,7 +1386,7 @@ fn the_binary_answers_from_a_started_run_without_materializing_a_ledger_entry() 
         concat!(
             r#"{"wave":[{"id":"a/implementer#0","unit":"a","stage":"a","model":"sonnet","#,
             r#""tools":["Read","Edit"],"dir":"","max_wall_clock":null,"marker_path":null,"#,
-            r#""cargo_target_dir":null}],"done":false}"#,
+            r#""cargo_target_dir":null,"build_cache_env":"CARGO_TARGET_DIR"}],"done":false}"#,
             "\n"
         ),
         "the first step adopts the run and parks the stage's spawn"
@@ -1434,7 +1434,7 @@ fn the_binary_answers_from_an_unstarted_stream_without_materializing_a_ledger_en
         concat!(
             r#"{"wave":[{"id":"a/implementer#0","unit":"a","stage":"a","model":"sonnet","#,
             r#""tools":["Read","Edit"],"dir":"","max_wall_clock":null,"marker_path":null,"#,
-            r#""cargo_target_dir":null}],"done":false}"#,
+            r#""cargo_target_dir":null,"build_cache_env":"CARGO_TARGET_DIR"}],"done":false}"#,
             "\n"
         ),
         "the step starts a run over the stream and parks the stage's spawn"

@@ -5640,6 +5640,7 @@ mod tests {
     use crate::test_support::git_init_quiet;
     use crate::test_support::git_ok;
     use crate::test_support::js_declaration;
+    use crate::test_support::language_marker_hits;
     use crate::test_support::pgid_of;
     use crate::test_support::run_git;
     use crate::test_support::write_file;
@@ -6028,16 +6029,26 @@ mod tests {
     #[test]
     fn shipped_workflow_driver_tells_a_worker_its_units_build_location() {
         // Spec 77 criterion 1 through the editor's workflow driver: the shipped driver reads
-        // the wave's `cargo_target_dir` and makes exporting it a hard rule for every cargo
-        // command inside the worktree, so a worker never builds a `target/` in its tree.
+        // the wave's `cargo_target_dir` and makes exporting it, as the wave's `build_cache_env`,
+        // a hard rule for every command the build tool runs inside the worktree, so a worker
+        // never builds a cache in its tree.
         assert!(
             RIGGER_WORKFLOW.contains("req.cargo_target_dir"),
             "the driver reads the build location off the wave item"
         );
         assert!(
             RIGGER_WORKFLOW.contains("BUILD LOCATION (hard rule)")
-                && RIGGER_WORKFLOW.contains("export CARGO_TARGET_DIR='${req.cargo_target_dir}'"),
-            "the worker prompt names the export as a hard rule"
+                && RIGGER_WORKFLOW
+                    .contains("  export ${req.build_cache_env}='${req.cargo_target_dir}'\\n"),
+            "the worker prompt names the export as a hard rule, through the wave's variable"
+        );
+        assert!(
+            RIGGER_WORKFLOW.contains(
+                "A build cache inside the worktree itself is a defect that fills the disk - never \
+                 create one."
+            ),
+            "the worker prompt forbids a cache inside the worktree without naming a toolchain's \
+             build directory"
         );
         // The directory is the conductor's per-spawn choice - the unit's gate cache for a spawn
         // that builds the unit, its review cache for a review tier - so the prompt never tells
@@ -6059,12 +6070,118 @@ mod tests {
         // key the schema does not REQUIRE is a key the courier can drop while retyping: the
         // schema requires every field the worker's instructions are built from.
         let required = RIGGER_WORKFLOW
-            .find("required: ['id', 'unit', 'stage', 'dir', 'max_wall_clock', 'marker_path', 'cargo_target_dir']")
+            .find("required: ['id', 'unit', 'stage', 'dir', 'max_wall_clock', 'marker_path', 'cargo_target_dir', 'build_cache_env']")
             .expect("the wave-item schema requires the driver-critical fields");
         let items = RIGGER_WORKFLOW.find("wave: {").unwrap();
         assert!(
             items < required,
             "the requirement sits on the wave items, not the top level"
+        );
+        assert!(
+            RIGGER_WORKFLOW.contains(
+                "cargo_target_dir: { type: ['string', 'null'] },\n          build_cache_env: { type: 'string' },\n"
+            ),
+            "the variable is typed a string beside the path, never null"
+        );
+    }
+
+    /// Every prompt `RIGGER_WORKFLOW` hands an agent, as the source region that builds it: a
+    /// label, the code that opens the region, the code that closes it (both read in the script
+    /// with its line comments stripped) and a sentence the prompt holds verbatim, a reworded
+    /// one where spec 121 criterion 11 rewords the prompt.
+    const WORKFLOW_PROMPT_REGIONS: [(&str, &str, &str, &str); 5] = [
+        (
+            "the repository resolver",
+            "const repoResolution = await agent(",
+            "phase: 'Drive'",
+            "Return its trimmed stdout (the absolute directory path) as structured output",
+        ),
+        (
+            "the liveness reader",
+            "const out = await agent(",
+            "schema: STATUS",
+            "You are a rigger LIVENESS READER.",
+        ),
+        (
+            "the fault courier",
+            "async function recordFaultCourier(",
+            "} catch (ce) {",
+            "You are a rigger COURIER. Record a fault for spawn",
+        ),
+        (
+            "the worker",
+            "const workdir = req.dir",
+            "const ran = agent(prompt",
+            "It is reaped once your result records - do not store anything durable there.",
+        ),
+        (
+            "the step courier",
+            "step = await agent(",
+            "schema: STEP",
+            "a step integrates ready units by running their gates inline and can take 20+ minutes \
+             when several units are ready at once;",
+        ),
+    ];
+
+    /// Spec 121 criterion 11, THE WORKFLOW SCRIPT NAMES NO TOOLCHAIN: no prompt the script hands
+    /// an agent spells a marker of the MARKERS rule, the disk-layout sentence, the courier's
+    /// cache prefix and its sentence, or "the moment"; and the only interpolations that name the
+    /// build cache are the wave item's `build_cache_env` and its path, `cargo_target_dir`.
+    #[test]
+    fn the_workflow_script_names_no_toolchain() {
+        const DROPPED: [&str; 4] = [
+            "the moment",
+            "small OS partition",
+            ".rigger/tmp/cargo-target",
+            "keep it exactly as written",
+        ];
+        let code = strip_line_comments(RIGGER_WORKFLOW);
+        let prompts = WORKFLOW_PROMPT_REGIONS
+            .iter()
+            .map(|&(label, opens, closes, holds)| {
+                let start = code
+                    .find(opens)
+                    .unwrap_or_else(|| panic!("{label} opens at {opens:?}"));
+                let end = start
+                    + code[start..]
+                        .find(closes)
+                        .unwrap_or_else(|| panic!("{label} closes at {closes:?}"));
+                (label, holds, template_prompt(&code[start..end]))
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            prompts
+                .iter()
+                .map(|(label, holds, (text, _))| (
+                    *label,
+                    language_marker_hits(text),
+                    DROPPED
+                        .iter()
+                        .copied()
+                        .filter(|dropped| text.contains(dropped))
+                        .collect::<Vec<_>>(),
+                    text.contains(holds)
+                ))
+                .collect::<Vec<_>>(),
+            WORKFLOW_PROMPT_REGIONS
+                .iter()
+                .map(|&(label, ..)| (label, Vec::new(), Vec::new(), true))
+                .collect::<Vec<_>>(),
+            "each prompt holds its sentence and spells no marker and no dropped text"
+        );
+        assert_eq!(
+            prompts
+                .iter()
+                .flat_map(|(_, _, (_, interpolations))| interpolations.iter().copied())
+                .filter(|expr| expr.contains("cache") || expr.contains("target"))
+                .collect::<Vec<_>>(),
+            [
+                "req.build_cache_env",
+                "req.cargo_target_dir",
+                "req.build_cache_env"
+            ],
+            "the worker's export and its scratch sentence name the cache through the wave's \
+             variable and path alone"
         );
     }
 
@@ -10731,6 +10848,52 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    /// The prompt a JS source region builds: the text of every template literal in it, joined
+    /// as `+` joins them, each escape read as the character it stands for and each `${...}`
+    /// interpolation cut out; and each interpolated expression, in the order it closes (a
+    /// nested one before the one holding it). A test-only scanner, not a JS parser: the region
+    /// holds no line comment (see [`strip_line_comments`]) and no backtick or brace inside a
+    /// quoted string.
+    fn template_prompt(js: &str) -> (String, Vec<&str>) {
+        let mut text = String::new();
+        let mut interpolations = Vec::new();
+        // Each frame is a template literal's text (`None`), or code at a brace depth that opened
+        // at a byte offset (the interpolation's start, for every frame but the outer one).
+        let mut frames: Vec<Option<(usize, usize)>> = vec![Some((0, 0))];
+        let mut chars = js.char_indices().peekable();
+        while let Some((at, c)) = chars.next() {
+            match (*frames.last().expect("the outer code frame stays"), c) {
+                (None, '\\') => match chars.next() {
+                    Some((_, 'n')) => text.push('\n'),
+                    Some((_, escaped)) => text.push(escaped),
+                    None => {}
+                },
+                (None, '`') => {
+                    frames.pop();
+                }
+                (None, '$') if chars.peek().map(|&(_, next)| next) == Some('{') => {
+                    chars.next();
+                    frames.push(Some((at + 2, 0)));
+                }
+                (None, c) => text.push(c),
+                (Some(_), '`') => frames.push(None),
+                (Some((from, depth)), '{') => {
+                    *frames.last_mut().expect("a frame is open") = Some((from, depth + 1));
+                }
+                (Some((from, 0)), '}') if frames.len() > 1 => {
+                    frames.pop();
+                    interpolations.push(&js[from..at]);
+                }
+                (Some((from, depth)), '}') => {
+                    *frames.last_mut().expect("a frame is open") =
+                        Some((from, depth.saturating_sub(1)));
+                }
+                (Some(_), _) => {}
+            }
+        }
+        (text, interpolations)
     }
 
     /// The native `/rigger` workflow is a THIN driver over the Rust conductor: it couriers

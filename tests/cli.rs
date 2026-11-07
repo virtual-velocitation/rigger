@@ -4307,12 +4307,10 @@ fn native_driver_couriers_the_step_against_an_absolute_repo_path() {
     // The step-courier command template must still be built from REPO (so the absolute
     // resolution actually reaches the `cd` the courier runs), and it must run `rigger step`,
     // AFTER REPO is bound to the resolved value.
-    let cd_at = src
-        .find("cd ${REPO} && CARGO_TARGET_DIR=${REPO}/.rigger/tmp/cargo-target rigger step")
-        .expect(
-            "the step-courier command must still `cd ${REPO} && ... rigger step` - the exact \
+    let cd_at = src.find("cd ${REPO} && rigger step --spec").expect(
+        "the step-courier command must still `cd ${REPO} && ... rigger step` - the exact \
              template the resolved, absolute REPO must reach",
-        );
+    );
     assert!(
         repo_bind_at < cd_at,
         "REPO must be resolved to an absolute path before the step-courier command template \
@@ -4356,7 +4354,7 @@ fn native_driver_schema_and_runtime_both_reject_a_non_absolute_resolved_repo() {
         .find("REPO.startsWith('/')")
         .expect("a runtime check must test whether the resolved REPO looks absolute");
     let cd_at = src
-        .find("cd ${REPO} && CARGO_TARGET_DIR=${REPO}/.rigger/tmp/cargo-target rigger step")
+        .find("cd ${REPO} && rigger step --spec")
         .expect("the step-courier command template must still exist");
 
     assert!(
@@ -4493,7 +4491,7 @@ fn native_driver_enforces_an_outer_wall_clock_that_surfaces_an_unbounded_spawn()
 /// Spec 77, criterion 2 (AGENT SCRATCH IS SPAWN-OWNED): the SCRATCH POLICY prompt text the
 /// native driver builds for every worker must no longer point at the unbucketed
 /// `agent-scratch/` literal or the shared build-cache literal for a worker's OWN manual
-/// cargo - both produced top-level ad-hoc dirs no run/spawn owned (spec 77 Problem: 39G of
+/// build - both produced top-level ad-hoc dirs no run/spawn owned (spec 77 Problem: 39G of
 /// `agent-scratch/u77c4-target`-shaped residue). It must instead direct the worker to
 /// `rigger scratch <spawn>` - the exact verb [`cmd_scratch`] implements - to fetch its OWN
 /// rigger-assigned container at runtime, mirroring how a worker already fetches its own
@@ -4513,10 +4511,8 @@ fn native_driver_scratch_policy_directs_the_worker_to_its_own_spawn_owned_contai
     // The SCRATCH POLICY block is one or more concatenated template-literal lines, followed
     // in the prompt-building chain by the pre-existing `heartbeat +` concatenation (spec 10) -
     // a stable structural marker unrelated to this criterion. Isolating up to it keeps these
-    // assertions immune to unrelated prompt text elsewhere in the file - notably the step
-    // courier's OWN shared build-cache use at a completely different call site, which this
-    // criterion does not touch - while tolerating the SCRATCH POLICY text itself spanning
-    // however many lines it needs.
+    // assertions immune to unrelated prompt text elsewhere in the file while tolerating the
+    // SCRATCH POLICY text itself spanning however many lines it needs.
     let policy_end = src[policy_at..]
         .find("heartbeat +")
         .map(|off| policy_at + off)
@@ -4534,11 +4530,16 @@ fn native_driver_scratch_policy_directs_the_worker_to_its_own_spawn_owned_contai
         policy.contains("${req.id}"),
         "SCRATCH POLICY must pass the worker's OWN spawn id to `rigger scratch`: {policy}"
     );
-    // ...manual CARGO_TARGET_DIR is still directed, now inside that same spawn-owned
-    // container...
+    // ...a manual build's cache is still directed, through the wave's build cache variable,
+    // now inside that same spawn-owned container...
     assert!(
-        policy.contains("CARGO_TARGET_DIR"),
-        "SCRATCH POLICY must still direct manual CARGO_TARGET_DIR: {policy}"
+        policy.contains(
+            "For any build you run outside your assigned worktree, export your build cache \
+             variable (\\`${req.build_cache_env}\\`) to a subdir of that same printed path first \
+             - never the shared build cache."
+        ),
+        "SCRATCH POLICY must still direct a manual build's cache, through the wave's \
+         variable: {policy}"
     );
     // ...never the old unbucketed `agent-scratch/` literal that produced ad-hoc, no-owner
     // top-level dirs (spec 77 Problem)...
@@ -4546,19 +4547,10 @@ fn native_driver_scratch_policy_directs_the_worker_to_its_own_spawn_owned_contai
         !policy.contains(".rigger/tmp/agent-scratch/"),
         "SCRATCH POLICY must no longer point at the unbucketed agent-scratch/ literal: {policy}"
     );
-    // ...and never the shared gate build-cache literal for a worker's OWN manual cargo (a
-    // different concern from the step courier's shared-cache use at a different call site).
+    // ...and never the shared gate build-cache literal for a worker's OWN manual build.
     assert!(
         !policy.contains(".rigger/tmp/cargo-target"),
-        "SCRATCH POLICY must no longer point manual cargo at the shared build cache: {policy}"
-    );
-
-    // The shared build-cache literal used for the CONDUCTOR's OWN single `rigger step`
-    // invocation is a DIFFERENT concern (one serialized process, not concurrent workers) and
-    // must survive untouched by this fix.
-    assert!(
-        src.contains("CARGO_TARGET_DIR=${REPO}/.rigger/tmp/cargo-target rigger step"),
-        "the step courier's own shared build-cache invocation must be untouched by this fix"
+        "SCRATCH POLICY must no longer point a manual build at the shared build cache: {policy}"
     );
 }
 

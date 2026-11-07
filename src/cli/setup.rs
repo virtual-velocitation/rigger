@@ -4373,14 +4373,20 @@ mod tests {
     }
 
     /// Every agent text rigger ships, labelled: the committed personas and scaffold seeds, the
-    /// fan-out helpers, the built-in instruction entries and the discipline every review-tier
-    /// prompt carries.
+    /// fan-out helpers, the built-in instruction entries, the discipline every review-tier
+    /// prompt carries and the build-cache sentence a review tier whose spawn carries a cache reads.
     fn every_shipped_agent_text() -> Vec<(String, String)> {
         let mut all = every_shipped_persona();
-        all.push((
-            "REVIEWER_DISCIPLINE".to_string(),
-            conductor::REVIEWER_DISCIPLINE.to_string(),
-        ));
+        all.extend([
+            (
+                "REVIEWER_DISCIPLINE".to_string(),
+                conductor::REVIEWER_DISCIPLINE.to_string(),
+            ),
+            (
+                "REVIEWER_BUILD_CACHE".to_string(),
+                conductor::REVIEWER_BUILD_CACHE.to_string(),
+            ),
+        ]);
         all.extend(
             hooks::HELPER_AGENTS
                 .iter()
@@ -4436,17 +4442,22 @@ mod tests {
     }
 
     /// Spec 120's THE BUILT-IN LAYER NAMES NO LANGUAGE: every `BUILTIN` body and the reviewer
-    /// discipline, read through the shipped-text helper, spell no marker of the MARKERS rule.
+    /// discipline with its build-cache sentence, read through the shipped-text helper, spell no
+    /// marker of the MARKERS rule.
     #[test]
     fn the_built_in_layer_and_the_reviewer_discipline_name_no_language() {
         let texts: Vec<(String, String)> = every_shipped_agent_text()
             .into_iter()
-            .filter(|(at, _)| at.starts_with("BUILTIN ") || at == "REVIEWER_DISCIPLINE")
+            .filter(|(at, _)| {
+                at.starts_with("BUILTIN ")
+                    || at == "REVIEWER_DISCIPLINE"
+                    || at == "REVIEWER_BUILD_CACHE"
+            })
             .collect();
         assert_eq!(
             texts.len(),
-            instructions::BUILTIN.len() + 1,
-            "every built-in body and the reviewer discipline are read"
+            instructions::BUILTIN.len() + 2,
+            "every built-in body, the reviewer discipline and its build-cache sentence are read"
         );
         let hits: Vec<(&str, Vec<&str>)> = texts
             .iter()

@@ -2093,51 +2093,57 @@ mod tests {
     }
 
     #[test]
-    fn wave_item_carries_the_units_build_location_beside_its_worktree() {
-        // Spec 77 criterion 1 for a driver that cannot set a worker's environment: the wave
-        // names the unit's one build location, derived exactly as the gates derive theirs,
-        // and omits it for a spawn with no unit worktree.
-        let req = SpawnRequest {
-            id: "u1/implementer#0".into(),
-            dir: "/scratch/rigger-wt-u1".into(),
-            ..Default::default()
-        };
-        let item = WaveItem::from(&req);
-        assert_eq!(
-            item.cargo_target_dir.as_deref(),
-            Some("/scratch/cargo-target-u1"),
-            "the worktree's cargo-target sibling, the gates' own directory"
-        );
-        let json = serde_json::to_string(&item).unwrap();
-        assert!(
-            json.contains("\"cargo_target_dir\":\"/scratch/cargo-target-u1\""),
-            "the driver reads it off the wave: {json}"
-        );
-        let reviewer = SpawnRequest {
-            id: "u1/lens:sdet#0".into(),
-            dir: "/scratch/rigger-wt-u1".into(),
-            cargo_target_dir: "/scratch/review-target-u1".into(),
-            ..Default::default()
-        };
-        assert_eq!(
-            WaveItem::from(&reviewer).cargo_target_dir.as_deref(),
-            Some("/scratch/review-target-u1"),
-            "the location the conductor recorded wins over the worktree's own cache"
-        );
-        let bare = SpawnRequest {
-            id: "plan/plan#0".into(),
-            ..Default::default()
-        };
-        let item = WaveItem::from(&bare);
-        assert!(
-            item.cargo_target_dir.is_none(),
-            "no unit worktree, no per-unit location"
-        );
-        let json = serde_json::to_value(&item).unwrap();
-        assert!(
-            json.get("cargo_target_dir").is_some_and(|v| v.is_null()),
-            "an explicit null when absent, so the courier schema can require the key: {json}"
-        );
+    fn wave_item_puts_the_build_location_and_its_variable_on_the_wire() {
+        // Spec 77 criterion 1 and spec 121 criterion 11, for a driver that cannot set a
+        // worker's environment: the wave names the spawn's one build location, derived exactly
+        // as the gates derive theirs, and the variable that carries it. The location is an
+        // explicit null for a spawn with no unit worktree, and the variable is on every item,
+        // so the courier schema can require both keys.
+        let rows: [(&str, SpawnRequest, &str); 4] = [
+            (
+                "a unit spawn builds into its worktree's own cache sibling, the gates' directory",
+                SpawnRequest {
+                    id: "u1/implementer#0".into(),
+                    dir: "/scratch/rigger-wt-u1".into(),
+                    ..Default::default()
+                },
+                r#"{"id":"u1/implementer#0","unit":"","stage":"","dir":"/scratch/rigger-wt-u1","max_wall_clock":null,"marker_path":null,"cargo_target_dir":"/scratch/cargo-target-u1","build_cache_env":"CARGO_TARGET_DIR"}"#,
+            ),
+            (
+                "the location the conductor recorded wins over the worktree's own cache",
+                SpawnRequest {
+                    id: "u1/lens:sdet#0".into(),
+                    dir: "/scratch/rigger-wt-u1".into(),
+                    cargo_target_dir: "/scratch/review-target-u1".into(),
+                    ..Default::default()
+                },
+                r#"{"id":"u1/lens:sdet#0","unit":"","stage":"","dir":"/scratch/rigger-wt-u1","max_wall_clock":null,"marker_path":null,"cargo_target_dir":"/scratch/review-target-u1","build_cache_env":"CARGO_TARGET_DIR"}"#,
+            ),
+            (
+                "a review-only worktree has no unit sibling, so no location",
+                SpawnRequest {
+                    id: "check-in/lens:sdet#0".into(),
+                    dir: "/scratch/rigger-review-check-in-0".into(),
+                    ..Default::default()
+                },
+                r#"{"id":"check-in/lens:sdet#0","unit":"","stage":"","dir":"/scratch/rigger-review-check-in-0","max_wall_clock":null,"marker_path":null,"cargo_target_dir":null,"build_cache_env":"CARGO_TARGET_DIR"}"#,
+            ),
+            (
+                "a spawn at no worktree has no location",
+                SpawnRequest {
+                    id: "plan/plan#0".into(),
+                    ..Default::default()
+                },
+                r#"{"id":"plan/plan#0","unit":"","stage":"","dir":"","max_wall_clock":null,"marker_path":null,"cargo_target_dir":null,"build_cache_env":"CARGO_TARGET_DIR"}"#,
+            ),
+        ];
+        for (case, req, wire) in rows {
+            assert_eq!(
+                serde_json::to_string(&WaveItem::from(&req)).unwrap(),
+                wire,
+                "{case}"
+            );
+        }
     }
 
     #[test]

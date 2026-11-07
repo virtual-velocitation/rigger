@@ -72,9 +72,8 @@ const ADVERSARY_FINDINGS_PROTOCOL: &str = "Record each review finding you raise 
     (where the conductor stamps no actor for you). This writes the finding to the shared context \
     graph live, so the adversary, the adjudicator, and your fellow reviewers see it immediately \
     (via grounding and rigger_peers). Never write to this unit's own \
-    worktree - it is the tree being judged, not yours to edit. A reproduction builds into the \
-    build cache your spawn carries: the unit's review cache, never the cache the unit's gates \
-    use. Leave the unit's worktree exactly as you found it.";
+    worktree - it is the tree being judged, not yours to edit. Leave the unit's worktree exactly \
+    as you found it.";
 
 /// A repo-less project `rigger init` scaffolded, its fleet and workflow exactly as the verb wrote
 /// them.

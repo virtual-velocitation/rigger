@@ -605,7 +605,7 @@
     "reason": "Two canary scoring tests with different seeded items and different expected counts."
   },
   {
-    "id": "dup-9da3f693c2b7",
+    "id": "dup-00b87430d7c4",
     "disposition": "not-a-duplicate",
     "reason": "Source-drift guards pinning different sentences in different files (the worker scratch policy versus the workerLabel wiring)."
   },

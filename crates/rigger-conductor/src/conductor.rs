@@ -16991,7 +16991,7 @@ mod tests {
         /// adversary -> adjudicator three-tier review order.
         call_order: Mutex<Vec<String>>,
         /// Where each spawn of an agent builds, in spawn order, keyed by agent id, as
-        /// `(env, wave)`: the `CARGO_TARGET_DIR` its environment carried, and the
+        /// `(env, wave)`: the [`crate::spawn::BUILD_CACHE_ENV`] its environment carried, and the
         /// `cargo_target_dir` the workflow driver's wave item names for its parked request
         /// (empty when either names none) - the two drivers' views of one build location.
         targets_by_agent: Mutex<HashMap<String, Vec<(String, String)>>>,
@@ -17232,7 +17232,7 @@ mod tests {
                 .push((
                     opts.env
                         .iter()
-                        .find(|(name, _)| name == "CARGO_TARGET_DIR")
+                        .find(|(name, _)| name == crate::spawn::BUILD_CACHE_ENV)
                         .map(|(_, dir)| dir.clone())
                         .unwrap_or_default(),
                     crate::spawn::WaveItem::from(&spawn_request(a, prompt, opts))
@@ -36107,14 +36107,14 @@ mod tests {
     // sequence of steps (spec 120, criterion 6), each review prompt's hash re-taken once spec 121
     // cut the cadence and method clauses out of the decision and finding protocols: each review
     // spawn, then each status stamp.
-    const ARCHITECTURE_LENS_SPAWN: &str = r#"s/lens:architecture-reviewer#0 [] 205b096ff6577155"#;
-    const SDET_LENS_SPAWN: &str = r#"s/lens:sdet#0 [] 96476a31e07beb09"#;
+    const ARCHITECTURE_LENS_SPAWN: &str = r#"s/lens:architecture-reviewer#0 [] b7e40a3070fb1689"#;
+    const SDET_LENS_SPAWN: &str = r#"s/lens:sdet#0 [] f30fefa68bbcc6e5"#;
     const ADVERSARY_SPAWN: &str =
-        r#"s/adversary#0 ["lens:architecture-reviewer", "lens:sdet"] 54523a38d9eefe93"#;
-    const ADJUDICATOR_AFTER_LENSES_AND_ADVERSARY_SPAWN: &str = r#"s/adjudicator#0 ["lens:architecture-reviewer", "lens:sdet", "adversary"] f2483337e5d3ae91"#;
+        r#"s/adversary#0 ["lens:architecture-reviewer", "lens:sdet"] a184517608c490fb"#;
+    const ADJUDICATOR_AFTER_LENSES_AND_ADVERSARY_SPAWN: &str = r#"s/adjudicator#0 ["lens:architecture-reviewer", "lens:sdet", "adversary"] 958da5b165e10309"#;
     const ADJUDICATOR_AFTER_LENSES_SPAWN: &str =
-        r#"s/adjudicator#0 ["lens:architecture-reviewer", "lens:sdet"] f2483337e5d3ae91"#;
-    const ADJUDICATOR_AFTER_SDET_SPAWN: &str = r#"s/adjudicator#0 ["lens:sdet"] f2483337e5d3ae91"#;
+        r#"s/adjudicator#0 ["lens:architecture-reviewer", "lens:sdet"] 958da5b165e10309"#;
+    const ADJUDICATOR_AFTER_SDET_SPAWN: &str = r#"s/adjudicator#0 ["lens:sdet"] 958da5b165e10309"#;
     const GREEN_STAMP: &str = r#""green" {"green":"implemented by worker"} Some("worker-model")"#;
     const VERIFIED_STAMP: &str = r#""verified" {} Some("worker-model")"#;
     const LIGHT_TIER_STAMP: &str = r#""review-tier" {"blast-radius":"1","empty-radius":"false","flapped":"false","high-risk-path":"","review-tier":"light","threshold":"5"} None"#;
@@ -41196,48 +41196,166 @@ mod tests {
         assert_eq!(gate_evidence_block(&events, "nobody", "T1"), "");
     }
 
-    /// A reviewer's own cargo runs never build into the unit's cache, under either driver: the
-    /// lenses, the adversary and the adjudicator each get the unit's review cache - in their
-    /// spawn environment and in the workflow wave item their parked request becomes - so a reproduction in a reviewer's
-    /// scratch worktree can never swap a binary the unit's gates or another tier's test is
-    /// using. The implementer and the sdet-author build the unit's own tree and keep its cache.
+    /// Where each spawn builds and whether its task prompt names that build cache, for each kind
+    /// of working tree a spawn gets, under either driver. A unit's panel builds into the unit's
+    /// caches - the implementer and the sdet-author into the unit's own, the lenses, the adversary
+    /// and the adjudicator into the unit's review cache, so a reproduction in a reviewer's scratch
+    /// worktree never swaps a binary the unit's gates or another tier's test is using - in the
+    /// spawn environment and in the workflow wave item its parked request becomes. Each review tier
+    /// reads the reviewer discipline once, followed by the build-cache sentence. A spawn with no
+    /// unit sibling carries no cache variable, and its prompt names no cache. Those spawns are: a
+    /// standalone review stage's reviewers in their review-only worktree; the planner at the empty
+    /// dir of a re-plan, where its first spawn, in the plan stage's own worktree, builds into that
+    /// worktree's unit cache; and the plan-critique reviewers. Each `(agent, caches, discipline,
+    /// cache sentence)` row reads as: the agent spawns once per entry of `caches`, in order, each
+    /// spawn building into its entry's sibling of the scratch root (`None` when it carries no
+    /// cache variable), and each spawn's prompt carrying [`REVIEWER_DISCIPLINE`] `discipline`
+    /// times and [`REVIEWER_BUILD_CACHE`] `cache sentence` times, always right after the
+    /// discipline.
     #[test]
-    fn a_reviewer_builds_into_the_units_review_cache_never_the_units_own() {
-        let repo = temp_git_project_with_commit();
-        let repo_path = repo.path().to_str().unwrap().to_string();
-        let mut cfg = per_unit_panel_cfg(None);
-        declare_test_author(&mut cfg, ROLE_SDET_AUTHOR);
-        let driver = Stub {
-            output: "reviewed the diff".into(),
-            write_file: Some("feature.rs".into()),
-            output_by_agent: HashMap::from([(
-                "adj".to_string(),
-                r#"{"verdict":"approve"}"#.to_string(),
-            )]),
-            ..Stub::new()
+    fn each_spawn_builds_into_the_cache_its_tree_carries_and_a_tree_with_no_unit_sibling_none() {
+        type Setup = fn() -> (Config, Stub);
+        type Built<'a> = Vec<(&'a str, &'a [Option<&'a str>], usize, usize)>;
+        let unit_panel: Setup = || {
+            let mut cfg = per_unit_panel_cfg(None);
+            declare_test_author(&mut cfg, ROLE_SDET_AUTHOR);
+            let driver = Stub {
+                output: "reviewed the diff".into(),
+                write_file: Some("feature.rs".into()),
+                output_by_agent: HashMap::from([(
+                    "adj".to_string(),
+                    r#"{"verdict":"approve"}"#.to_string(),
+                )]),
+                ..Stub::new()
+            };
+            (cfg, driver)
         };
-        let st = Store::open(":memory:").unwrap();
-        let deps = Deps {
-            repo: repo_path.clone(),
-            ..stub_deps(&st, &driver, Vec::new())
+        let review_stage: Setup = || {
+            let mut cfg = Config::default();
+            for id in ["lens", "adversary", "adj"] {
+                cfg.agents.insert(id.into(), agent(id));
+            }
+            cfg.workflow.stages.insert(
+                "review".into(),
+                Stage {
+                    name: "review".into(),
+                    agents: vec!["lens".into()],
+                    adversary: "adversary".into(),
+                    adjudicator: "adj".into(),
+                    ..Default::default()
+                },
+            );
+            (cfg, Stub::answering(r#"{"verdict":"approve"}"#))
         };
-        let rs = run_isolated(&cfg, &deps).unwrap();
-        assert_eq!(rs.units["implement"].status, ledger::Status::Integrated);
-        let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
-        let unit_cache = format!("{scratch}/cargo-target-implement");
-        let review_cache = format!("{scratch}/review-target-implement");
-        for (agent_id, want) in [
-            ("worker", &unit_cache),
-            (ROLE_SDET_AUTHOR, &unit_cache),
-            ("lens", &review_cache),
-            ("adversary", &review_cache),
-            ("adj", &review_cache),
-        ] {
+        let plan_critique: Setup = || {
+            let driver = Stub {
+                emits_by_agent: HashMap::from([(
+                    "planner".to_string(),
+                    vec![(
+                        TYPE_UNIT_PROPOSED.to_string(),
+                        json!({
+                            "id": "u-a",
+                            "agent": "worker",
+                            "criterion": "the widget renderer is implemented",
+                            "needs": ["plan-critique"],
+                        }),
+                    )],
+                )]),
+                output_by_spawn_id: HashMap::from([(
+                    spawn_id("plan-critique", ROLE_ADJUDICATOR, 0),
+                    r#"{"verdict":"reject","reason":"split the renderer"}"#.to_string(),
+                )]),
+                output_by_agent: HashMap::from([
+                    ("judge".to_string(), r#"{"verdict":"approve"}"#.to_string()),
+                    ("adversary".to_string(), "reviewed the dag".to_string()),
+                ]),
+                write_file: Some("feature.rs".into()),
+                ..Stub::new()
+            };
+            (critique_cfg(), driver)
+        };
+        let rows: [(&str, Setup, Built); 3] = [
+            (
+                "a unit's panel",
+                unit_panel,
+                vec![
+                    ("worker", &[Some("cargo-target-implement")], 0, 0),
+                    (ROLE_SDET_AUTHOR, &[Some("cargo-target-implement")], 0, 0),
+                    ("lens", &[Some("review-target-implement")], 1, 1),
+                    ("adversary", &[Some("review-target-implement")], 1, 1),
+                    ("adj", &[Some("review-target-implement")], 1, 1),
+                ],
+            ),
+            (
+                "a standalone review stage",
+                review_stage,
+                vec![
+                    ("lens", &[None], 1, 0),
+                    ("adversary", &[None], 1, 0),
+                    ("adj", &[None], 1, 0),
+                ],
+            ),
+            (
+                "a plan critique that rejects once",
+                plan_critique,
+                vec![
+                    ("planner", &[Some("cargo-target-plan"), None], 0, 0),
+                    ("adversary", &[None, None], 1, 0),
+                    ("judge", &[None, None], 0, 0),
+                ],
+            ),
+        ];
+        for (case, setup, built) in rows {
+            let repo = temp_git_project_with_commit();
+            let repo_path = repo.path().to_str().unwrap().to_string();
+            let (cfg, driver) = setup();
+            let st = Store::open(":memory:").unwrap();
+            let deps = Deps {
+                repo: repo_path.clone(),
+                ..stub_deps(&st, &driver, Vec::new())
+            };
+            run_isolated(&cfg, &deps).unwrap();
+            let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
+            let told = |prompt: &String| {
+                (
+                    prompt.matches(REVIEWER_DISCIPLINE).count(),
+                    prompt
+                        .matches(&format!("{REVIEWER_DISCIPLINE}{REVIEWER_BUILD_CACHE}"))
+                        .count(),
+                    prompt.matches(REVIEWER_BUILD_CACHE).count(),
+                )
+            };
+            type Spawned = (String, Vec<(String, String)>, Vec<(usize, usize, usize)>);
+            let (got, want): (Vec<Spawned>, Vec<Spawned>) = built
+                .iter()
+                .map(|&(agent_id, caches, discipline, sentence)| {
+                    (
+                        (
+                            agent_id.to_string(),
+                            driver.targets_for(agent_id),
+                            driver.prompts_for(agent_id).iter().map(told).collect(),
+                        ),
+                        (
+                            agent_id.to_string(),
+                            caches
+                                .iter()
+                                .map(|cache| {
+                                    let at = cache
+                                        .map(|sibling| format!("{scratch}/{sibling}"))
+                                        .unwrap_or_default();
+                                    (at.clone(), at)
+                                })
+                                .collect(),
+                            vec![(discipline, sentence, sentence); caches.len()],
+                        ),
+                    )
+                })
+                .unzip();
             assert_eq!(
-                driver.targets_for(agent_id),
-                vec![(want.clone(), want.clone())],
-                "{agent_id} builds into {want} under both a process host's environment and the \
-                 workflow driver's wave"
+                got, want,
+                "{case}: each spawn builds where its tree's unit sibling says, under both a process \
+                 host's environment and the workflow driver's wave, and its prompt names that cache \
+                 only when it carries one"
             );
         }
     }
@@ -41308,19 +41426,22 @@ mod tests {
 
     /// Spec 120's THE REVIEWER PROMPT CARRIES ONLY THE CONTRACT: the reviewer discipline holds
     /// exactly what the harness enforces or provides - the two worktree sentences
-    /// `guard_review_round_tree` enforces and the build-cache sentence - so every review tier's task
-    /// prompt carries it once and none of the review method, which - no operator file replacing
-    /// or switching off the working discipline here - reaches the tier through its system
-    /// prompt's working-discipline body, each sentence once.
+    /// `guard_review_round_tree` enforces, then, read after them by a spawn carrying a build cache,
+    /// the build-cache sentence - so every review tier's task prompt carries it once and none of
+    /// the review method, which - no operator file replacing or switching off the working
+    /// discipline here - reaches the tier through its system prompt's working-discipline body,
+    /// each sentence once.
     #[test]
     fn every_reviewer_prompt_carries_only_the_contract_and_its_system_prompt_the_method() {
         assert_eq!(
-            REVIEWER_DISCIPLINE,
-            " Never write to this unit's own worktree - it is the tree being judged, not yours to \
-             edit. A reproduction builds into the build cache your spawn carries: the unit's review \
-             cache, never the cache the unit's gates use. Leave the unit's worktree exactly as you \
-             found it.",
-            "the reviewer discipline is the two worktree sentences and the build-cache sentence"
+            (REVIEWER_DISCIPLINE, REVIEWER_BUILD_CACHE),
+            (
+                " Never write to this unit's own worktree - it is the tree being judged, not yours \
+                 to edit. Leave the unit's worktree exactly as you found it.",
+                " A reproduction builds into the build cache your spawn carries: the unit's review \
+                 cache, never the cache the unit's gates use."
+            ),
+            "the reviewer discipline is the two worktree sentences, then the build-cache sentence"
         );
         let [lens, adversary, adjudicator] = review_tier_prompts();
         for (tier, (prompt, system)) in [
@@ -41380,9 +41501,23 @@ mod tests {
         let communication = "communication";
         let discipline = "working-discipline";
         let grounding = [(discipline, GROUNDING_METHOD)];
+        // The finding protocol a lens attributing its findings to `lens:x` reads, ending in the
+        // reviewer discipline its spawn's build cache decides.
+        let finding_protocol = |reviewer_discipline: &str| {
+            format!(
+                "Record each review finding you raise by calling the rigger_emit tool with type \
+                 \"ReviewFinding\" and data:\n{{\"id\":\"<short-id>\",\"by\":\"lens:x\",\
+                 \"summary\":\"<one line>\",\"about\":[\"<file>\"]}}\nThe `by` field ATTRIBUTES \
+                 the finding to you - keep it EXACTLY as \"lens:x\" so the review-quality metrics \
+                 can measure your findings' survival even when you run out-of-process (where the \
+                 conductor stamps no actor for you). This writes the finding to the shared context \
+                 graph live, so the adversary, the adjudicator, and your fellow reviewers see it \
+                 immediately (via grounding and rigger_peers).{reviewer_discipline}"
+            )
+        };
         // Each built-in a row's cut clauses moved to, with the one sentence that states it there.
         type Stated<'a> = Vec<(&'a str, &'a str)>;
-        let rows: [(&str, String, String, Stated); 8] = [
+        let rows: [(&str, String, String, Stated); 9] = [
             (
                 "the decision protocol",
                 EMIT_PROTOCOL.to_string(),
@@ -41394,19 +41529,15 @@ mod tests {
                 vec![(communication, RECORD_EACH_DECISION)],
             ),
             (
-                "the finding protocol",
-                review_protocol("lens:x"),
-                format!(
-                    "Record each review finding you raise by calling the rigger_emit tool with \
-                     type \"ReviewFinding\" and data:\n{{\"id\":\"<short-id>\",\"by\":\"lens:x\",\
-                     \"summary\":\"<one line>\",\"about\":[\"<file>\"]}}\nThe `by` field \
-                     ATTRIBUTES the finding to you - keep it EXACTLY as \"lens:x\" so the \
-                     review-quality metrics can measure your findings' survival even when you run \
-                     out-of-process (where the conductor stamps no actor for you). This writes the \
-                     finding to the shared context graph live, so the adversary, the adjudicator, \
-                     and your fellow reviewers see it immediately (via grounding and \
-                     rigger_peers).{REVIEWER_DISCIPLINE}"
-                ),
+                "the finding protocol of a spawn carrying a build cache",
+                review_protocol("lens:x", true),
+                finding_protocol(&format!("{REVIEWER_DISCIPLINE}{REVIEWER_BUILD_CACHE}")),
+                vec![(communication, RECORD_EACH_FINDING), grounding[0]],
+            ),
+            (
+                "the finding protocol of a spawn carrying none",
+                review_protocol("lens:x", false),
+                finding_protocol(REVIEWER_DISCIPLINE),
                 vec![(communication, RECORD_EACH_FINDING), grounding[0]],
             ),
             (

@@ -2057,7 +2057,7 @@ mod tests {
                     format!(
                         "{}\n\n{}",
                         review_header(&step_item()),
-                        review_protocol(&spawn.role)
+                        review_protocol(&spawn.role, false)
                     ),
                     "{}",
                     spawn.role

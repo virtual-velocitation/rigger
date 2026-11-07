@@ -3013,7 +3013,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "7a551ec479d01d23"
+    "content_hash": "f287293b1b94c662"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -7137,11 +7137,11 @@
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
-    "name": "a_reviewer_builds_into_the_units_review_cache_never_the_units_own",
+    "name": "each_spawn_builds_into_the_cache_its_tree_carries_and_a_tree_with_no_unit_sibling_none",
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "eddb7121b88962f5"
+    "content_hash": "033e192de72ff580"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -7165,7 +7165,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "3dac20253a817cda"
+    "content_hash": "4d0b2f9d6f0a2257"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -7173,7 +7173,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "0d312c4193749512"
+    "content_hash": "843139d67ca9186a"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -10469,7 +10469,15 @@
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "9b8d403aa034ed2b"
+    "content_hash": "e9a590bc846cc03e"
+  },
+  {
+    "file": "src/cli/mod.rs",
+    "name": "the_workflow_script_names_no_toolchain",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "340d48624b917ced"
   },
   {
     "file": "src/cli/mod.rs",
@@ -11510,6 +11518,14 @@
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
     "content_hash": "1bca92cb55b71197"
+  },
+  {
+    "file": "src/cli/mod.rs",
+    "name": "template_prompt",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "adef3af552d4b0d7"
   },
   {
     "file": "src/cli/mod.rs",
