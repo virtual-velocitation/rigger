@@ -10910,7 +10910,7 @@ fn every_launch_of_a_run_defines_the_helpers_from_the_operators_copies() {
 #[test]
 fn a_run_reads_its_helpers_from_the_run_branch_it_checks_out() {
     use common::cli::failure_line;
-    use common::fixtures::{write_helper_copies, OPERATOR_HELPER_COPIES, OPERATOR_HELPER_TOOLS};
+    use common::fixtures::{OPERATOR_HELPER_COPIES, OPERATOR_HELPER_TOOLS};
     use common::repo::{handed_helpers_agents_json, launch_helpers, BOUND_TOOLS};
     /// What one spawn's launch carried: its helpers and pre-approval when `rigger run` hosted it,
     /// nothing when a served session's client launched it.
@@ -10963,10 +10963,7 @@ fn a_run_reads_its_helpers_from_the_run_branch_it_checks_out() {
     for (name, start, carried) in rows {
         let dir = temp_git_project_with_commit();
         let root = dir.path();
-        git_ok(root, &["checkout", "-q", "-b", "rigger-run"]);
-        write_helper_copies(root, &[lookup]);
-        common::git::git_commit_all(root, "the run branch tracks the operator's lookup copy");
-        git_ok(root, &["checkout", "-q", "-"]);
+        cut_a_run_branch_tracking(root, &[lookup]);
         assert!(
             !root.join(".claude").exists(),
             "{name}: the operator's branch holds no helper copy"
@@ -10995,6 +10992,25 @@ fn a_run_reads_its_helpers_from_the_run_branch_it_checks_out() {
             "{name}: a rigger step starts on the pinned definition; stderr: {err}\nstdout: {out}"
         );
     }
+}
+
+/// Cut the run branch in `root`, a git project on the operator's branch, tracking the helper
+/// `copies` alone, then return to the operator's branch, which tracks none of them: only a run's
+/// checkout of its branch puts them on disk. Whatever else `root` holds stays untracked.
+fn cut_a_run_branch_tracking(root: &Path, copies: &[common::fixtures::HelperFile]) {
+    git_ok(root, &["checkout", "-q", "-b", "rigger-run"]);
+    common::fixtures::write_helper_copies(root, copies);
+    git_ok(root, &["add", ".claude"]);
+    git_ok(
+        root,
+        &[
+            "commit",
+            "-q",
+            "-m",
+            "the run branch tracks the helper copies",
+        ],
+    );
+    git_ok(root, &["checkout", "-q", "-"]);
 }
 
 /// The live-progress frame closing a launch's first user message: the progress verb and its
@@ -21628,8 +21644,9 @@ fn step_halts_on_definition_drift_and_rebase_definition_continues() {
 }
 
 /// Spec 121's THE OPERATOR'S HELPER COPY IS THE DEFINITION at a step's pin: given a run whose
-/// first step pinned its definition over the helper copies its checkout held, when the operator
-/// changes the checkout's `.claude/agents/` mid-run and steps again, then the step halts on a
+/// first step pinned its definition over the helper copies its checkout held once it had checked
+/// out the run branch, a copy only that branch tracks included, when the operator changes the
+/// checkout's `.claude/agents/` mid-run and steps again, then the step halts on a
 /// definition drift exactly when a helper copy was added, edited or removed, and steps on, its
 /// wave printed, when nothing changed or the only new file there is no helper copy; a copy that
 /// does not parse is refused on the line naming it as the step reaches it, never read as a
@@ -21638,8 +21655,7 @@ fn step_halts_on_definition_drift_and_rebase_definition_continues() {
 fn a_step_halts_on_a_helper_copy_changed_mid_run() {
     use common::cli::{failure_line, nameless_copy_refusal};
     use common::fixtures::{
-        write_helper_copies, write_helper_copy, HelperFile, NAMELESS_HELPER_COPY,
-        OPERATOR_HELPER_COPIES,
+        write_helper_copies, write_helper_copy, NAMELESS_HELPER_COPY, OPERATOR_HELPER_COPIES,
     };
     const DRIFT_OPENS: &str =
         "rigger: definition drift - the on-disk workflow/agent definition (hash ";
@@ -21651,19 +21667,18 @@ fn a_step_halts_on_a_helper_copy_changed_mid_run() {
         Drifts,
         Refused(String),
     }
-    let [lookup, verify] = OPERATOR_HELPER_COPIES;
-    // Each row: the copies the checkout holds at the pin, the change after it, and the next
-    // step's outcome, a refusal naming the copy file it is refused on.
-    let rows: [(&str, &[HelperFile], common::DirStep, Next); 6] = [
+    // Each row: how the project holds its copies as the first step pins, the change after it,
+    // and the next step's outcome, a refusal naming the copy file it is refused on.
+    let rows: [(&str, common::DirStep, common::DirStep, Next); 7] = [
         (
             "a copy added",
-            &[],
+            |_| {},
             |root| write_helper_copies(root, &OPERATOR_HELPER_COPIES[..1]),
             Next::Drifts,
         ),
         (
             "a copy edited",
-            &[lookup, verify],
+            |root| write_helper_copies(root, &OPERATOR_HELPER_COPIES),
             |root| {
                 let (file, text) = OPERATOR_HELPER_COPIES[1];
                 write_helper_copy(root, file, text.replace("model: haiku", "model: opus"))
@@ -21672,26 +21687,37 @@ fn a_step_halts_on_a_helper_copy_changed_mid_run() {
         ),
         (
             "a copy removed",
-            &[lookup],
+            |root| write_helper_copies(root, &OPERATOR_HELPER_COPIES[..1]),
             |root| std::fs::remove_file(root.join(".claude/agents/lookup.md")).unwrap(),
             Next::Drifts,
         ),
-        ("nothing changed", &[lookup, verify], |_| {}, Next::Steps),
+        (
+            "nothing changed",
+            |root| write_helper_copies(root, &OPERATOR_HELPER_COPIES),
+            |_| {},
+            Next::Steps,
+        ),
+        (
+            "nothing changed over a copy only the run branch tracks",
+            |root| cut_a_run_branch_tracking(root, &OPERATOR_HELPER_COPIES[..1]),
+            |_| {},
+            Next::Steps,
+        ),
         (
             "a file that is no helper copy added",
-            &[lookup, verify],
+            |root| write_helper_copies(root, &OPERATOR_HELPER_COPIES),
             |root| write_helper_copy(root, "reviewer.md", OPERATOR_HELPER_COPIES[0].1),
             Next::Steps,
         ),
         (
             "a copy that does not parse",
-            &[],
+            |_| {},
             |root| write_helper_copy(root, "verify.md", NAMELESS_HELPER_COPY),
             Next::Refused("verify.md".to_owned()),
         ),
     ];
     for (name, before, after, expected) in rows {
-        let dir = a_pinned_run_changed(|root| write_helper_copies(root, before), after);
+        let dir = a_pinned_run_changed(before, after);
         let root = std::fs::canonicalize(dir.path()).unwrap();
         let (out, err, ok) = run_rigger(&root, &["step"]);
         let next = match failure_line(ok, &err) {
