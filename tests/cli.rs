@@ -10899,6 +10899,104 @@ fn every_launch_of_a_run_defines_the_helpers_from_the_operators_copies() {
     }
 }
 
+/// Spec 121's THE OPERATOR'S HELPER COPY IS THE DEFINITION, read from the tree the run drives:
+/// given a project whose run branch tracks the operator's own `lookup` copy while the operator's
+/// branch holds no copy, when `rigger run` or `rigger serve` starts the run and checks that branch
+/// out, then the helpers are the run branch's: every launch `rigger run` hosts defines them and
+/// pre-approves their tools from its copy, and after the run a second `rigger run` and a `rigger
+/// step`, nothing edited, start on the definition the run pinned, no drift read. A served spawn is
+/// launched by the session's client and carries no helpers, so that row reads the pin alone.
+#[cfg(unix)]
+#[test]
+fn a_run_reads_its_helpers_from_the_run_branch_it_checks_out() {
+    use common::cli::failure_line;
+    use common::fixtures::{write_helper_copies, OPERATOR_HELPER_COPIES, OPERATOR_HELPER_TOOLS};
+    use common::repo::{handed_helpers_agents_json, launch_helpers, BOUND_TOOLS};
+    /// What one spawn's launch carried: its helpers and pre-approval when `rigger run` hosted it,
+    /// nothing when a served session's client launched it.
+    type Carried = Option<(serde_json::Value, String)>;
+    /// Start the run in `root` under the scratch root `scratch`, a fake `claude` answering from
+    /// `arms`: each spawn it drove, sorted, with what its launch carried.
+    type Start = fn(&Path, &Path, &str) -> Vec<(String, Carried)>;
+    let lookup = OPERATOR_HELPER_COPIES[0];
+    let arms = format!(
+        r#"  *)
+{RECORD_EACH_LAUNCH}    echo "pub fn work() {{}}" >> work.rs
+    ;;
+"#
+    );
+    let rows: [(&str, Start, Carried); 2] = [
+        (
+            "rigger run",
+            |root, scratch, arms| {
+                let (out, err, ok, fake) = run_on_arms(root, &["run"], scratch, arms);
+                assert!(
+                    ok,
+                    "rigger run drives the run; stderr: {err}\nstdout: {out}"
+                );
+                launch_helpers(&fake.path().join("bin/launches"))
+                    .into_iter()
+                    .map(|(spawn, agents, tools)| (spawn, Some((agents, tools))))
+                    .collect()
+            },
+            Some((
+                handed_helpers_agents_json(&[lookup]),
+                format!("Read,Edit,{OPERATOR_HELPER_TOOLS},{BOUND_TOOLS}"),
+            )),
+        ),
+        (
+            "rigger serve",
+            |root, _, _| {
+                let mut mcp = McpSession::start_with(root, &["serve", "--base", "HEAD"]);
+                let served = answer_every_spawn(&mut mcp);
+                let out = mcp.finish_within(Duration::from_secs(30));
+                assert!(
+                    out.status.success(),
+                    "rigger serve drives the run; stderr: {}",
+                    String::from_utf8_lossy(&out.stderr)
+                );
+                served.into_iter().map(|spawn| (spawn, None)).collect()
+            },
+            None,
+        ),
+    ];
+    for (name, start, carried) in rows {
+        let dir = temp_git_project_with_commit();
+        let root = dir.path();
+        git_ok(root, &["checkout", "-q", "-b", "rigger-run"]);
+        write_helper_copies(root, &[lookup]);
+        common::git::git_commit_all(root, "the run branch tracks the operator's lookup copy");
+        git_ok(root, &["checkout", "-q", "-"]);
+        assert!(
+            !root.join(".claude").exists(),
+            "{name}: the operator's branch holds no helper copy"
+        );
+        write_workflow_fixture(root, &REVIEWLESS_GIT_UNIT_WORKFLOW);
+        let scratch = tempfile::tempdir().unwrap();
+        assert_eq!(
+            start(root, scratch.path(), &arms),
+            [("solo/implementer#0".to_string(), carried)],
+            "{name}: each spawn the run drove, with what its launch carried"
+        );
+        let (out, err, ok, fake) = run_on_arms(root, &["run"], scratch.path(), &arms);
+        assert_eq!(
+            (
+                failure_line(ok, &err),
+                fake.path().join("bin/launches").exists()
+            ),
+            (None, false),
+            "{name}: a second rigger run starts on the pinned definition and launches nothing; \
+             stderr: {err}\nstdout: {out}"
+        );
+        let (out, err, ok) = run_rigger(root, &["step"]);
+        assert_eq!(
+            failure_line(ok, &err),
+            None,
+            "{name}: a rigger step starts on the pinned definition; stderr: {err}\nstdout: {out}"
+        );
+    }
+}
+
 /// The live-progress frame closing a launch's first user message: the progress verb and its
 /// argument only, since when to report is the communication built-in's.
 const LIVE_PROGRESS_FRAME: &str = "\n\n--- rigger driver ---\nLIVE PROGRESS: record a progress \
