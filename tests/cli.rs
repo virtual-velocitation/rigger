@@ -10996,7 +10996,7 @@ fn a_run_reads_its_helpers_from_the_run_branch_it_checks_out() {
 
 /// Cut the run branch in `root`, a git project on the operator's branch, tracking the helper
 /// `copies` alone, then return to the operator's branch, which tracks none of them: only a run's
-/// checkout of its branch puts them on disk. Whatever else `root` holds stays untracked.
+/// checkout of its branch puts them on disk. Nothing else `root` holds is committed with them.
 fn cut_a_run_branch_tracking(root: &Path, copies: &[common::fixtures::HelperFile]) {
     git_ok(root, &["checkout", "-q", "-b", "rigger-run"]);
     common::fixtures::write_helper_copies(root, copies);
