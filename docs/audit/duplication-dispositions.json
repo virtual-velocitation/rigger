@@ -905,9 +905,9 @@
     "reason": "Two port methods of the counting store double, each recording its own `CountedRead` variant before forwarding its own inner call; the shared work (recording, running the hooks waiting on the call) is already the one `record`/`returned` pair both call."
   },
   {
-    "id": "dup-261fedbfbd66",
+    "id": "dup-e095ca500e2a",
     "disposition": "not-a-duplicate",
-    "reason": "One-line `format!` compositions of different keys and labels (adoption provenance, quarantine record, code-entity id, a KurrentDB group stream name, spawn-store subject, audit join, the closed-unit report line a `reset --runs` periphery case expects, the no-critic line a run-start refusal periphery case expects, the halt a spec-defect stop's tests expect, the plan protocol a planner's task closes with that the conductor's and the critique periphery's planner pins expect, the spec-and-hash head every line `rigger critique` writes about a text opens with, the `<file>::` id-range SQL predicate the graph store's file-range readers embed, the history prune's superseded-edges statement its count and its delete each build over their own verb, the module-declaration predicate the label degree and the relabel debt read, the change-only retarget of a `refs` row both settlements read, the refusal the panel rule tables expect for an agent id holding `@`, the live-progress frame both process hosts close a task with, the fake host's session that reports a failed result and ends only on its input's close, the fake host's hold-probe arm recording the status read's and the canary's launch, the headless host's marked no-result failure the class-hold and critique periphery cases expect) over different inputs."
+    "reason": "One-line `format!` compositions of different keys and labels (adoption provenance, quarantine record, code-entity id, a KurrentDB group stream name, spawn-store subject, audit join, the closed-unit report line a `reset --runs` periphery case expects, the no-critic line a run-start refusal periphery case expects, the halt a spec-defect stop's tests expect, the spec-and-hash head every line `rigger critique` writes about a text opens with, the `<file>::` id-range SQL predicate the graph store's file-range readers embed, the history prune's superseded-edges statement its count and its delete each build over their own verb, the module-declaration predicate the label degree and the relabel debt read, the change-only retarget of a `refs` row both settlements read, the refusal the panel rule tables expect for an agent id holding `@`, the live-progress frame both process hosts close a task with, the fake host's session that reports a failed result and ends only on its input's close, the fake host's hold-probe arm recording the status read's and the canary's launch, the headless host's marked no-result failure the class-hold and critique periphery cases expect) over different inputs."
   },
   {
     "id": "dup-da45cd3da239",
@@ -955,9 +955,9 @@
     "reason": "Two runtime driver tests running the one worker-prompts harness, each completed by a different check (the heartbeat instruction every marked spawn gets, the stop clause every worker gets for a spawn that already ended), through the one shared `assert_driver_harness_holds` helper; only the one-call shape is shared."
   },
   {
-    "id": "dup-a6427ffb5410",
+    "id": "dup-184e63ddc1fc",
     "disposition": "not-a-duplicate",
-    "reason": "Four one-call `format!` builders of different values: the unit size cap's sentence the plan protocol and the DAG critique share, the test-side requirement refusal expected for the fixture `sweep` gate, the gate scratch periphery's recording gate command, and the spec critique periphery's head of a `rigger critique` line naming its spec and hash; they share only the single-format-call token shape."
+    "reason": "Three one-call `format!` builders of different values: the test-side requirement refusal expected for the fixture `sweep` gate, the gate scratch periphery's recording gate command, and the spec critique periphery's head of a `rigger critique` line naming its spec and hash; they share only the single-format-call token shape."
   },
   {
     "id": "dup-8fb3e9b78321",
@@ -1015,9 +1015,9 @@
     "reason": "`f11` renders the plan critique's F11 advisory for one criterion, `graph_build_line` renders the line `rigger graph build` prints for an event count and a fold-loss clause, and the cursor fixtures' `catch_up_stopped` renders the head both of `rigger setup`'s catch-up stop lines share for a position and a reason: three test-side spellings of different product lines, each defined once, sharing only the shape of one `format!` over a number and a string."
   },
   {
-    "id": "dup-30d8bd7871ae",
+    "id": "dup-e5d667c5394b",
     "disposition": "not-a-duplicate",
-    "reason": "`reclaimed_line` is the line `rigger reset --derived` prints for the bytes its compaction reclaimed, `caught_up_line` the line `rigger setup` prints for the events its catch-up folded and `emit_folded_line` the line `rigger emit` prints for the decision it appended and folded at a position: three test-side expected lines of different commands; `sleeping` is the fake host's hold-probe arm shell that records its own pid and becomes a sleep of some seconds; `gate_ceiling` is the spec critique periphery's workflow whose critique gate stage declares a `max_retries` ceiling. Each is defined once, and they share only the shape of one `format!` over one number."
+    "reason": "`reclaimed_line` is the line `rigger reset --derived` prints for the bytes its compaction reclaimed, `caught_up_line` the line `rigger setup` prints for the events its catch-up folded and `emit_folded_line` the line `rigger emit` prints for the decision it appended and folded at a position: three test-side expected lines of different commands; `sleeping` is the fake host's hold-probe arm shell that records its own pid and becomes a sleep of some seconds; `gate_ceiling` is the spec critique periphery's workflow whose critique gate stage declares a `max_retries` ceiling. The conductor's `unit_size_cap` is the unit size cap's sentence the plan protocol and every round of the DAG critique prompt state for the cap a workflow declares, and the plan-critique fixtures' `unit_size_cap_sentence` is the tests' independent oracle of that sentence, which must not reuse it. Each is defined once, and they share only the shape of one `format!` over one number."
   },
   {
     "id": "dup-3f04af8603ff",
@@ -1093,5 +1093,10 @@
     "id": "dup-cef19c011c6b",
     "disposition": "not-a-duplicate",
     "reason": "`placeholder_section` is the simplification audit's pending section text for a numbered criterion and `ceiling_notice` the spec critique periphery's expected not-exhausted notice over an attempt count, a bound and a close; two test-side texts of different documents, each defined once, sharing only the shape of one `format!` over three values."
+  },
+  {
+    "id": "dup-1a85ca096e4f",
+    "disposition": "not-a-duplicate",
+    "reason": "The conductor's `unit_size_cap_then` is the production slot of the unit size cap the workflow declares, the cap's sentence and the separator after it that the plan protocol and the DAG critique prompt are filled with, while the plan-critique fixtures' `unit_size_cap_then` is the tests' independent oracle of that slot, which `plan_protocol_text` and `dag_critique_prompt` build from and which must not reuse it."
   }
 ]

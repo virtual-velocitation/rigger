@@ -1253,7 +1253,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "a1e172d3e6785cf4"
+    "content_hash": "7797eda1bab5dac3"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -1613,7 +1613,23 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "056636ad3b2da24b"
+    "content_hash": "a936aec93dc608c4"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "declared_unit_size_cap",
+    "is_test": false,
+    "proposed_module": "conductor::run_ctx",
+    "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
+    "content_hash": "68f86467ce0c85cb"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "unit_size_cap_then",
+    "is_test": false,
+    "proposed_module": "conductor::run_ctx",
+    "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
+    "content_hash": "010d32009e831ed1"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -1933,7 +1949,7 @@
     "is_test": false,
     "proposed_module": "conductor::run",
     "reason": "name contains \"unit\" (unit run loop); grouped under `conductor::run`.",
-    "content_hash": "f233f4e4acdd9152"
+    "content_hash": "7dc4e1a19fe50586"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -8517,7 +8533,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "999a6183cf921a52"
+    "content_hash": "106c0d88206b7151"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -8525,7 +8541,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "9423b83cdb714846"
+    "content_hash": "6bca90652f67f186"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -8533,15 +8549,15 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "14eccbb5d53e76e0"
+    "content_hash": "336fd3689cf2b0ba"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
-    "name": "the_plan_protocol_and_the_dag_critique_carry_one_unit_size_cap",
+    "name": "both_prompts_state_the_unit_size_cap_only_when_it_is_declared",
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "6dce85972fe06b77"
+    "content_hash": "6cd4592df21b432e"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -8549,7 +8565,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "c3a8baddfb1fc4d4"
+    "content_hash": "744bcd25e3b7be20"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -8957,7 +8973,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "3b3eb24c8d17f8c3"
+    "content_hash": "fcbd0d0cd2813a88"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",

@@ -31,7 +31,7 @@ NOTE on shared blast radius: units whose file footprints OVERLAP are NOT a defec
 
 Ownership defects: twin criteria (two checkboxes claiming one concern) and bundling (one checkbox carrying two mitigations) are each a BLOCKING finding.
 
-- Unit size: a unit over the cap your prompt states is a BLOCKING finding.
+- Unit size: a unit over the cap your prompt states is a BLOCKING finding. The cap measures review scope - how much one review round must read - never code shape.
 - Overlap: judge ownership/coherence, not the overlap.
 
 Run these hunts, and name the hunt in each finding it produces:

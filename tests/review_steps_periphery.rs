@@ -1467,8 +1467,8 @@ fn rigger_init_scaffolds_exactly_the_agents_a_list_names() {
     let panel = "{ steps: [{ adversary: adversary }, { adjudicator: sdet }], \
          tiers: { light: { steps: [{ adjudicator: architecture-reviewer }] } } }";
     for template in [
-        "defaults:\n  review: {panel}\nstages:\n  s:\n    agent: rust-engineer\n",
-        "stages:\n  s:\n    agent: rust-engineer\n    review: {panel}\n",
+        "defaults:\n  review: {panel}\nstages:\n  s:\n    agent: implementer\n",
+        "stages:\n  s:\n    agent: implementer\n    review: {panel}\n",
     ] {
         let project = temp_project();
         write_scaffold(project.path(), &[], &declaring(template, panel));
@@ -1484,7 +1484,7 @@ fn rigger_init_scaffolds_exactly_the_agents_a_list_names() {
             [
                 "adversary.md",
                 "architecture-reviewer.md",
-                "rust-engineer.md",
+                "implementer.md",
                 "sdet.md",
             ],
             "{template}"

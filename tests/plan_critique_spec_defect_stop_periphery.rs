@@ -34,8 +34,8 @@ use common::cli::{
     run_rigger, run_rigger_ok, temp_repoless_project, with_run_store, write_scaffold,
 };
 use common::fixtures::{
-    critique_reject, keyed_index, keyed_payload, spec_defect_halt_text, stop_records,
-    the_stop_records, DAG_CRITIQUE_VERDICT_PARAGRAPH, STOP_ESCALATED_KEY, STOP_LESSON_KEY,
+    critique_reject, dag_critique_verdict_paragraph, keyed_index, keyed_payload,
+    spec_defect_halt_text, stop_records, the_stop_records, STOP_ESCALATED_KEY, STOP_LESSON_KEY,
     STOP_SPEC_DEFECT_KEY, WIDGET_CRITERION,
 };
 use rigger::conductor::STREAM;
@@ -420,19 +420,21 @@ fn a_re_plannable_reject_after_a_spec_ambiguity_one_re_plans_again() {
 
 /// Given a run whose plan-critique adjudicator is parked at its first round and again at the
 /// re-plan round its first reject drove, when each fetches its prompt as a courier does (`rigger
-/// prompt`), then each prompt carries the DAG critique verdict paragraph exactly once: every
-/// round's adjudicator - the re-plan round's, whose reject is the one that stops, included - is
-/// asked for `spec-ambiguity`, spelled as the stop reads it, only on a defect in a criterion's
-/// own text, and for `decomposition-conflict` on every defect a re-plan can fix and when unsure.
+/// prompt`), then each prompt carries the DAG critique verdict paragraph of a workflow declaring
+/// no unit size cap, as [`WORKFLOW`] does, exactly once: every round's adjudicator - the re-plan
+/// round's, whose reject is the one that stops, included - is asked for `spec-ambiguity`, spelled
+/// as the stop reads it, only on a defect in a criterion's own text, and for
+/// `decomposition-conflict` on every defect a re-plan can fix and when unsure.
 /// The stop that round's `spec-ambiguity` reject then drives is pinned by
 /// [`a_spec_ambiguity_reject_after_a_re_plan_that_did_not_clear_it_halts_the_step`].
 #[test]
 fn every_critique_round_asks_its_adjudicator_for_the_cause_the_stop_reads() {
     let (_dir, served) = answered_second_spec_ambiguity_reject();
+    let paragraph = dag_critique_verdict_paragraph(0);
     assert_eq!(
         served
             .each_ref()
-            .map(|prompt| prompt.matches(DAG_CRITIQUE_VERDICT_PARAGRAPH).count()),
+            .map(|prompt| prompt.matches(&paragraph).count()),
         [1, 1],
         "the first round's and the re-plan round's prompts each carry the verdict paragraph \
          once:\n{}",

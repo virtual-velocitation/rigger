@@ -361,7 +361,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-261fedbfbd66",
+    "id": "dup-e095ca500e2a",
     "classification": "near",
     "sites": [
       {
@@ -432,11 +432,6 @@
       {
         "file": "tests/common/fixtures/config.rs",
         "name": "separator_refusal",
-        "content_hash": "7963312db697b9f4"
-      },
-      {
-        "file": "tests/common/fixtures/plan_critique.rs",
-        "name": "plan_protocol_text",
         "content_hash": "7963312db697b9f4"
       },
       {
@@ -723,31 +718,65 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-a6427ffb5410",
-    "classification": "exact",
+    "id": "dup-1a85ca096e4f",
+    "classification": "semantic",
+    "sites": [
+      {
+        "file": "crates/rigger-conductor/src/conductor.rs",
+        "name": "unit_size_cap_then",
+        "content_hash": "6cf93471a8cf3387"
+      },
+      {
+        "file": "tests/common/fixtures/plan_critique.rs",
+        "name": "unit_size_cap_then",
+        "content_hash": "03e6e3299c1df6df"
+      }
+    ],
+    "proposed_home": "one shared `unit_size_cap_then` helper (e.g. relocated into `tests/common`) rather than each file defining its own",
+    "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-e5d667c5394b",
+    "classification": "near",
     "sites": [
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
         "name": "unit_size_cap",
-        "content_hash": "c28c81e0bdeb1759"
+        "content_hash": "8b0e1dc335016878"
       },
       {
-        "file": "tests/cli.rs",
-        "name": "sweep_tool_refusal",
-        "content_hash": "c28c81e0bdeb1759"
+        "file": "tests/common/cli.rs",
+        "name": "emit_folded_line",
+        "content_hash": "b051a6d6f4b01ca2"
       },
       {
-        "file": "tests/gate_scratch_root_periphery.rs",
-        "name": "recording_gate",
-        "content_hash": "c28c81e0bdeb1759"
+        "file": "tests/common/cli.rs",
+        "name": "reclaimed_line",
+        "content_hash": "b051a6d6f4b01ca2"
+      },
+      {
+        "file": "tests/common/fixtures/cursor.rs",
+        "name": "caught_up_line",
+        "content_hash": "b051a6d6f4b01ca2"
+      },
+      {
+        "file": "tests/common/fixtures/plan_critique.rs",
+        "name": "unit_size_cap_sentence",
+        "content_hash": "b051a6d6f4b01ca2"
+      },
+      {
+        "file": "tests/common/fixtures/spawn.rs",
+        "name": "sleeping",
+        "content_hash": "b051a6d6f4b01ca2"
       },
       {
         "file": "tests/spec_critique_periphery.rs",
-        "name": "verb_head",
-        "content_hash": "c28c81e0bdeb1759"
+        "name": "gate_ceiling",
+        "content_hash": "8b0e1dc335016878"
       }
     ],
-    "proposed_home": "a new shared module (sites span 4 files: crates/rigger-conductor/src/conductor.rs, tests/cli.rs, tests/gate_scratch_root_periphery.rs, tests/spec_critique_periphery.rs)",
+    "proposed_home": "a new shared module (sites span 6 files: crates/rigger-conductor/src/conductor.rs, tests/common/cli.rs, tests/common/fixtures/cursor.rs, tests/common/fixtures/plan_critique.rs, tests/common/fixtures/spawn.rs, tests/spec_critique_periphery.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
@@ -1406,7 +1435,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-47e4d1c77944",
+    "id": "dup-639a65cdfd8d",
     "classification": "semantic",
     "sites": [
       {
@@ -4080,6 +4109,36 @@
         "content_hash": "edbddea214457e40"
       },
       {
+        "file": "tests/init_template_sets_periphery.rs",
+        "name": "\"scaffolded .rigger/agents/{planner.md, implementer.md, \\\n                                  architecture-reviewer.md, sdet.md, adversary.md, adjudicator.md}\"",
+        "content_hash": "5622b7d32f9ba9c7"
+      },
+      {
+        "file": "tests/init_template_sets_periphery.rs",
+        "name": "\"scaffolded .rigger/agents/{planner.md, architecture-reviewer.md, \\\n                                sdet.md, adversary.md, adjudicator.md, rust-engineer.md}\"",
+        "content_hash": "5622b7d32f9ba9c7"
+      },
+      {
+        "file": "tests/init_template_sets_periphery.rs",
+        "name": "\"scaffolded .rigger/agents/\"",
+        "content_hash": "696f1564e6abee96"
+      },
+      {
+        "file": "tests/init_template_sets_periphery.rs",
+        "name": "\".rigger/agents\"",
+        "content_hash": "edbddea214457e40"
+      },
+      {
+        "file": "tests/init_template_sets_periphery.rs",
+        "name": "\".rigger/workflow.yml\"",
+        "content_hash": "b4f6780144fa9e9f"
+      },
+      {
+        "file": "tests/init_template_sets_periphery.rs",
+        "name": "\".rigger/agents\"",
+        "content_hash": "b4f6780144fa9e9f"
+      },
+      {
         "file": "tests/integrate_conflict_merge_periphery.rs",
         "name": "\"the project's own .rigger/workflow.yml must load through the real loader\"",
         "content_hash": "6330ce3a5a38ef8d"
@@ -4626,7 +4685,7 @@
       }
     ],
     "proposed_home": "one .rigger-relative path-composition helper",
-    "note": "mandatory sweep: .rigger-path string literals - 643 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: .rigger-path string literals - 649 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {
@@ -8623,6 +8682,30 @@
     "disposition": "not-a-duplicate"
   },
   {
+    "id": "dup-184e63ddc1fc",
+    "classification": "exact",
+    "sites": [
+      {
+        "file": "tests/cli.rs",
+        "name": "sweep_tool_refusal",
+        "content_hash": "c28c81e0bdeb1759"
+      },
+      {
+        "file": "tests/gate_scratch_root_periphery.rs",
+        "name": "recording_gate",
+        "content_hash": "c28c81e0bdeb1759"
+      },
+      {
+        "file": "tests/spec_critique_periphery.rs",
+        "name": "verb_head",
+        "content_hash": "c28c81e0bdeb1759"
+      }
+    ],
+    "proposed_home": "a new shared module (sites span 3 files: tests/cli.rs, tests/gate_scratch_root_periphery.rs, tests/spec_critique_periphery.rs)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
     "id": "dup-3cfa6389efb7",
     "classification": "near",
     "sites": [
@@ -8791,40 +8874,6 @@
       }
     ],
     "proposed_home": "a new shared module (sites span 2 files: tests/common/cli.rs, tests/courier_registry_refresh_boundary_periphery.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
-    "id": "dup-30d8bd7871ae",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "tests/common/cli.rs",
-        "name": "emit_folded_line",
-        "content_hash": "b051a6d6f4b01ca2"
-      },
-      {
-        "file": "tests/common/cli.rs",
-        "name": "reclaimed_line",
-        "content_hash": "b051a6d6f4b01ca2"
-      },
-      {
-        "file": "tests/common/fixtures/cursor.rs",
-        "name": "caught_up_line",
-        "content_hash": "b051a6d6f4b01ca2"
-      },
-      {
-        "file": "tests/common/fixtures/spawn.rs",
-        "name": "sleeping",
-        "content_hash": "b051a6d6f4b01ca2"
-      },
-      {
-        "file": "tests/spec_critique_periphery.rs",
-        "name": "gate_ceiling",
-        "content_hash": "8b0e1dc335016878"
-      }
-    ],
-    "proposed_home": "a new shared module (sites span 4 files: tests/common/cli.rs, tests/common/fixtures/cursor.rs, tests/common/fixtures/spawn.rs, tests/spec_critique_periphery.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },

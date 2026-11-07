@@ -127,9 +127,11 @@ impl ScaffoldReport {
 /// changed. Every step is a no-op when its artifact already exists and matches, so a
 /// rerun on an initialized project changes nothing and reports `changed: false`.
 ///
-/// The workflow's gates come from the first of `sets` (handed in key order: the embedded
-/// [`TEMPLATE_SETS`] in production) any of whose `detect` markers is a file at `root`; with
-/// none, the workflow declares no gates. Every set is parsed before the first write, so a
+/// The workflow's gates and its implementer come from the first of `sets` (handed in key order:
+/// the embedded [`TEMPLATE_SETS`] in production) any of whose `detect` markers is a file at
+/// `root`, whose `implementer` persona is seeded beside the role seeds; with none, the workflow
+/// declares no gates and names the language-neutral `implementer` seed. An existing workflow or
+/// agent file is kept. Every set is parsed before the first write, so a
 /// set that fails [`parse_template_set`] refuses naming its key and writes nothing.
 fn init_project(
     root: &Path,
@@ -178,49 +180,9 @@ fn init_project(
         Some(id)
     };
 
-    // 2. Load the workflow to determine which agents are referenced, then only
-    // scaffold those agents. This allows setup to skip scaffolding when the
-    // workflow's referenced agents already exist (§05 setup hygiene). A genuine parse
-    // failure (most importantly an unrecognized key) escalates as a real `Err` here -
-    // never `.unwrap_or_default()` - because folding it into the empty set would make
-    // `init_project` treat a broken PRESENT workflow.yml the same as a genuinely ABSENT
-    // one, below, and silently re-scaffold the full default fleet over whatever agents the
-    // operator had deliberately curated (spec 102's own goal: a config key rigger does not
-    // read is an error, never silence).
-    let referenced_agents = get_referenced_agent_ids(root)?;
-
-    // If the workflow references agents, scaffold only those. If it references
-    // nothing (should not happen with a valid workflow), scaffold all defaults
-    // for backward compatibility (empty repo case) - reached now only when
-    // `get_referenced_agent_ids` returned the empty set because workflow.yml is
-    // genuinely ABSENT, never because a present one failed to parse.
-    let agents_to_scaffold: Vec<(&str, &str)> = if referenced_agents.is_empty() {
-        SCAFFOLD_AGENTS.to_vec()
-    } else {
-        SCAFFOLD_AGENTS
-            .iter()
-            .filter(|(_, content)| {
-                // Extract the agent id from the YAML frontmatter (id: xxx)
-                if let Ok(def) = rigger::config::parse_agent(content.as_bytes()) {
-                    referenced_agents.contains(&def.id)
-                } else {
-                    // If we can't parse it, skip it to avoid scaffolding invalid agents
-                    false
-                }
-            })
-            .copied()
-            .collect()
-    };
-
-    let mut new_agents = Vec::new();
-    for (file, content) in &agents_to_scaffold {
-        // Report only NEWLY-written agents; an existing agent is kept silently, so a
-        // rerun scaffolds nothing new (the skip-scaffolding hygiene of §05). A genuine
-        // write failure escalates (naming the artifact), never a silent omission.
-        if write_if_absent(&agents_dir.join(file), content)? {
-            new_agents.push(file.to_string());
-        }
-    }
+    // 2. Seed the agents the workflow references, the matched set's implementer among the
+    // candidates.
+    let new_agents = write_seed_agents(root, matched.map(|(_, spec)| spec))?;
 
     // 3. Install the SessionStart hook, merging into any existing settings. Write ONLY
     // when the merge actually changes settings.json, so a rerun (the hook already
@@ -302,6 +264,56 @@ fn init_project(
         set_catalogue,
         new_set_files,
     })
+}
+
+/// Write into `<root>/.rigger/agents/` each seed candidate - every [`SCAFFOLD_AGENTS`] entry,
+/// then `set`'s `implementer` persona as `<id>.md` - whose `id` the workflow at `root`
+/// references (every candidate when `root` holds no workflow), returning the file names it
+/// newly wrote. An existing file is kept silently ([`write_if_absent`]), so a rerun writes
+/// nothing new and an operator's curated agent stays.
+fn write_seed_agents(
+    root: &Path,
+    set: Option<&SetSpec>,
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    // Load the workflow to determine which agents are referenced, then only scaffold those
+    // agents. This allows setup to skip scaffolding when the workflow's referenced agents
+    // already exist (§05 setup hygiene). A genuine parse failure (most importantly an
+    // unrecognized key) escalates as a real `Err` here - never `.unwrap_or_default()` -
+    // because folding it into the empty set would treat a broken PRESENT workflow.yml the same
+    // as a genuinely ABSENT one, below, and silently re-scaffold the full default fleet over
+    // whatever agents the operator had deliberately curated (spec 102's own goal: a config key
+    // rigger does not read is an error, never silence).
+    let referenced_agents = get_referenced_agent_ids(root)?;
+
+    let mut candidates: Vec<(String, &str)> = SCAFFOLD_AGENTS
+        .iter()
+        .map(|(file, content)| (file.to_string(), *content))
+        .collect();
+    if let Some(spec) = set {
+        candidates.push((
+            format!("{}.md", spec.implementer_id),
+            spec.implementer.as_str(),
+        ));
+    }
+
+    // If the workflow references agents, scaffold only those; a candidate whose id cannot be
+    // parsed is skipped, never scaffolded invalid. If it references nothing, scaffold every
+    // candidate for backward compatibility (empty repo case) - reached only when
+    // `get_referenced_agent_ids` returned the empty set because workflow.yml is genuinely
+    // ABSENT, never because a present one failed to parse.
+    let agents_dir = root.join(RIGGER_DIR).join("agents");
+    let mut new_agents = Vec::new();
+    for (file, content) in candidates {
+        let referenced = referenced_agents.is_empty()
+            || seed_id(content).is_some_and(|id| referenced_agents.contains(&id));
+        // Report only NEWLY-written agents; an existing agent is kept silently, so a
+        // rerun scaffolds nothing new (the skip-scaffolding hygiene of §05). A genuine
+        // write failure escalates (naming the artifact), never a silent omission.
+        if referenced && write_if_absent(&agents_dir.join(&file), content)? {
+            new_agents.push(file);
+        }
+    }
+    Ok(new_agents)
 }
 
 /// Print the empty-repo scaffold pointer: where to get a real starting agent fleet
@@ -1760,10 +1772,11 @@ as a definition drift. Edit them between runs, or continue with `--rebase-defini
 /// review is PER UNIT. It demonstrates the documented shape - a `defaults:` block
 /// (autonomy + grounder + the three-tier `review` panel), a reusable `gates:`
 /// library, and an implement stage that runs each unit's complete lifecycle
-/// (implement -> gates -> three-tier review of THIS unit -> integrate). Its three
-/// placeholders - `@GATES@` on its own line, `@IMPLEMENT_GATES@` and `@CHECKIN_GATES@` -
-/// are filled by [`scaffold_workflow`] from the matched gate template set; every rendering
-/// loads through `config::load` against the agents scaffolded alongside it.
+/// (implement -> gates -> three-tier review of THIS unit -> integrate). Its four
+/// placeholders - `@GATES@` on its own line, `@IMPLEMENT_GATES@`, `@CHECKIN_GATES@` and
+/// `@IMPLEMENTER@`, the implement and checkin stages' agent - are filled by
+/// [`scaffold_workflow`] from the matched gate template set; every rendering loads through
+/// `config::load` against the agents scaffolded alongside it.
 const SCAFFOLD_WORKFLOW: &str =
     "# Scaffolded by `rigger init`. A worked plan -> implement pipeline where the\n\
 # review is PER UNIT: each unit implements, three-tier-reviews ITSELF (lenses ->\n\
@@ -1793,6 +1806,8 @@ max_parallel_units: 2\n  \
 # this checkout that denies a `grep` not marked literal. Absent or false leaves it\n  \
 # out of every spawn, and `rigger setup` removes it from .claude/settings.json.\n  \
 grep_guard: true\n  \
+# The unit size cap in added lines that the planner and plan critique state; 0 = none.\n  \
+max_unit_added_lines: 3000\n  \
 # The three-tier review panel applied to EVERY implement unit. Declared once\n  \
 # here, inherited by the implement stage and every planner-proposed unit.\n  \
 review:\n    \
@@ -1836,7 +1851,7 @@ adjudicator: adjudicator    # tier 3: its approve/reject gates the fan-out\n\
 # same unit's remediation loop; it does NOT integrate until approved + green.\n  \
 implement:\n    \
 needs: [plan-critique]\n    \
-agent: rust-engineer\n    \
+agent: @IMPLEMENTER@\n    \
 strategy: fan-out       # one worker per ready unit, in isolated worktrees\n    \
 partition: by-blast-radius\n    \
 gates: @IMPLEMENT_GATES@\n    \
@@ -1851,7 +1866,7 @@ coverage: \"each unit is implemented, reviews itself, and integrates green\"\n\
 # escalate with the accounting already on record.\n  \
 checkin:\n    \
 needs: [implement]\n    \
-agent: rust-engineer\n    \
+agent: @IMPLEMENTER@\n    \
 max_retries: 2          # attempt bound: the gates, one remediation round, the gates again\n    \
 gates: @CHECKIN_GATES@\n    \
 on_pass: merge\n    \
@@ -1871,7 +1886,10 @@ struct TemplateSet {
 include!(concat!(env!("OUT_DIR"), "/template_sets.rs"));
 
 /// A gate template set's `set.yml`: the marker file names whose presence at the project root
-/// selects it, the text of its `gates:` block (comments kept), and the two stages' gate lists.
+/// selects it, the text of its `gates:` block (comments kept), the two stages' gate lists, and
+/// its `implementer` persona in markdown-with-frontmatter form. `implementer_id` is no
+/// `set.yml` key: it is the `id` that persona's frontmatter carries, which
+/// [`parse_template_set`] reads.
 #[derive(Debug, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SetSpec {
@@ -1879,12 +1897,17 @@ struct SetSpec {
     gates: String,
     implement: Vec<String>,
     checkin: Vec<String>,
+    implementer: String,
+    #[serde(skip)]
+    implementer_id: String,
 }
 
 /// Parse a gate template set: its `set.yml`, then its `gates` text as a mapping whose keys are
-/// the declared gate ids. A `gates` text declaring nothing (empty or comments only) comes back
-/// empty. Refuses, naming the set key, a `set.yml` or `gates` text that fails to parse and a
-/// stage list naming a gate id the `gates` text does not declare.
+/// the declared gate ids, then its `implementer` persona, whose `id` becomes the spec's
+/// `implementer_id`. A `gates` text declaring nothing (empty or comments only) comes back
+/// empty. Refuses, naming the set key, a `set.yml` or `gates` text that fails to parse, a stage
+/// list naming a gate id the `gates` text does not declare, an `implementer` persona that fails
+/// to parse and one whose `id` is a [`SCAFFOLD_AGENTS`] seed's.
 fn parse_template_set(set: &TemplateSet) -> Result<SetSpec, String> {
     let refuse = |why: String| format!("gate template set {}: {why}", set.key);
     let mut spec: SetSpec = serde_yaml::from_str(set.set).map_err(|e| refuse(e.to_string()))?;
@@ -1898,15 +1921,35 @@ fn parse_template_set(set: &TemplateSet) -> Result<SetSpec, String> {
             )));
         }
     }
+    let id = config::parse_agent(spec.implementer.as_bytes())
+        .map_err(|e| refuse(format!("implementer: {e}")))?
+        .id;
+    if SCAFFOLD_AGENTS
+        .iter()
+        .any(|(_, seed)| seed_id(seed).as_ref() == Some(&id))
+    {
+        return Err(refuse(format!(
+            "implementer id {id} is a scaffold seed's id"
+        )));
+    }
+    spec.implementer_id = id;
     if declared.is_empty() {
         spec.gates.clear();
     }
     Ok(spec)
 }
 
+/// The `id` a seed persona's frontmatter carries, or `None` when the persona fails to parse.
+fn seed_id(persona: &str) -> Option<String> {
+    config::parse_agent(persona.as_bytes())
+        .ok()
+        .map(|def| def.id)
+}
+
 /// Render [`SCAFFOLD_WORKFLOW`] for `set`: its `gates` text under `gates:`, indented two spaces
-/// (`gates: {}` when it declares nothing), and its two stage lists as YAML flow sequences; with
-/// no set, `gates: {}` and `[]` for both lists.
+/// (`gates: {}` when it declares nothing), its two stage lists as YAML flow sequences, and its
+/// `implementer_id` as the implement and checkin stages' agent; with no set, `gates: {}`, `[]`
+/// for both lists and the language-neutral [`SCAFFOLD_AGENTS`] seed `implementer` as the agent.
 fn scaffold_workflow(set: Option<&SetSpec>) -> String {
     let gates = match set.filter(|spec| !spec.gates.is_empty()) {
         Some(spec) => {
@@ -1929,15 +1972,22 @@ fn scaffold_workflow(set: Option<&SetSpec>) -> String {
         .replace("@GATES@", &gates)
         .replace("@IMPLEMENT_GATES@", &list(|spec| &spec.implement))
         .replace("@CHECKIN_GATES@", &list(|spec| &spec.checkin))
+        .replace(
+            "@IMPLEMENTER@",
+            set.map_or("implementer", |spec| &spec.implementer_id),
+        )
 }
 
 /// The agents the scaffolded workflow references - a fresh-repo SEED template, not a
-/// frozen canonical fleet. Every entry is referenced by [`SCAFFOLD_WORKFLOW`] and every
-/// referenced id is seeded here (the two stay in lockstep so a fresh `rigger init` seeds
-/// no stray, unreferenced agent). The ids match this project's own canonical personas
-/// (planner, rust-engineer, architecture-reviewer, sdet, adversary, adjudicator); the
-/// four generic placeholder personas (implementer, devils-advocate, reviewer.architecture,
-/// reviewer.technical) deliberately do NOT appear. Every seed, reviewers included, runs on
+/// frozen canonical fleet. The implement and checkin stages' agent comes with the gate
+/// template set: a matched set's workflow names the set's own `implementer` persona, which
+/// `rigger init` writes as `<id>.md` beside the role seeds, and with no set matched it names
+/// the language-neutral `implementer` seed here. Every other referenced id is a role seed here
+/// (planner, architecture-reviewer, sdet, adversary, adjudicator), and `rigger init` writes
+/// only the referenced candidates, so a fresh project holds no stray, unreferenced agent; a
+/// set's implementer reusing an id seeded here is refused by [`parse_template_set`]. The three
+/// generic placeholder personas (devils-advocate, reviewer.architecture, reviewer.technical)
+/// deliberately do NOT appear. Every seed, reviewers included, runs on
 /// `opus` and may fan its mechanical work out (`Agent` in `tools`, `recurse: true`) to the
 /// `lookup` and `verify` helpers [`hooks::HELPER_AGENTS`] installs; the discipline that
 /// governs that fan-out is the built-in instruction layer, never copied into a seed. Each is a
@@ -1961,21 +2011,22 @@ dependency carry no edge between them and run in parallel; never chain units in\
 order by default.\n\
 \n\
 Split a criterion whose one unit would be too large into ordered units (each `needs`\n\
-the one before it), each owning a named part. If you discover a NECESSARY sub-unit or\n\
+the one before it), each owning a named part. The cap measures review scope - how much\n\
+one review round must read - never code shape. If you discover a NECESSARY sub-unit or\n\
 an ordering dependency the baseline missed, propose it. NEVER propose a unit that maps\n\
 to no acceptance criterion - that is scope creep. Propose each refinement the moment\n\
 you decide it. Only omit the id when you truly intend a new sub-unit.\n",
     ),
     (
-        "rust-engineer.md",
+        "implementer.md",
         "---\n\
-id: rust-engineer\n\
+id: implementer\n\
 model: opus\n\
 tools: [Read, Edit, Write, Grep, Glob, Bash, Agent]\n\
 isolation: worktree\n\
 recurse: true\n\
 ---\n\
-You implement ONE fully-specified unit inside your worktree, in idiomatic Rust.\n\
+You implement ONE fully-specified unit inside your worktree.\n\
 Write the failing test first, confirm RED, implement minimally, confirm GREEN, run\n\
 the named gates, commit. Report the final line as JSON: {\"id\",\"pass\",\"evidence\"}.\n",
     ),
@@ -2060,7 +2111,8 @@ concern cleanly - not for mechanical overlap the partitioner already serializes.
 Ownership defects: twin criteria (two checkboxes claiming one concern) and bundling (one\n\
 checkbox carrying two mitigations) are each a BLOCKING finding.\n\
 \n\
-- Unit size: a unit over the cap your prompt states is a BLOCKING finding.\n\
+- Unit size: a unit over the cap your prompt states is a BLOCKING finding. The cap\n  \
+measures review scope - how much one review round must read - never code shape.\n\
 - Overlap: judge ownership/coherence, not the overlap.\n\
 \n\
 Run these hunts, and name the hunt in each finding it produces:\n\
@@ -2119,7 +2171,8 @@ concern cleanly - not for mechanical overlap the partitioner already serializes.
 Ownership defects: twin criteria (two checkboxes claiming one concern) and bundling (one\n\
 checkbox carrying two mitigations) are each a BLOCKING finding.\n\
 \n\
-- Unit size: a unit over the cap your prompt states is a BLOCKING finding.\n\
+- Unit size: a unit over the cap your prompt states is a BLOCKING finding. The cap\n  \
+measures review scope - how much one review round must read - never code shape.\n\
 - Overlap: judge ownership/coherence, not the overlap.\n\
 \n\
 The judging rule: Reject ONLY for a rule 7 (ownership) or rule 8 (open disposition)\n\
@@ -2139,6 +2192,7 @@ mod tests {
     use crate::test_support::git_init_quiet;
     use crate::test_support::language_marker_hits;
     use crate::test_support::read_text;
+    use crate::test_support::sorted_dir_names;
     use crate::test_support::tool_available;
     use crate::test_support::AUTHORING_AGENTS_HANDBOOK;
     use crate::test_support::{
@@ -2370,33 +2424,31 @@ mod tests {
         assert_eq!(begins, 1, "the managed block is never duplicated");
     }
 
-    /// Write `workflow` and the scaffolded agent seeds into a fresh project's `.rigger/` (the
-    /// bytes `rigger init` emits) and load them through `config_store::load`, which validates.
-    fn load_scaffold(workflow: &str) -> config::Config {
+    /// Write `workflow` and the agent seeds `rigger init` writes beside it for `set` into a fresh
+    /// project's `.rigger/` and load them through `config_store::load`, which validates.
+    fn load_scaffold(set: Option<&SetSpec>, workflow: &str) -> config::Config {
         let dir = tempfile::tempdir().unwrap();
         let rigger = dir.path().join(RIGGER_DIR);
-        let agents = rigger.join("agents");
-        std::fs::create_dir_all(&agents).unwrap();
+        std::fs::create_dir_all(rigger.join("agents")).unwrap();
         std::fs::write(rigger.join("workflow.yml"), workflow).unwrap();
-        for (file, content) in SCAFFOLD_AGENTS {
-            std::fs::write(agents.join(file), content).unwrap();
-        }
+        write_seed_agents(dir.path(), set).unwrap();
         config_store::load(dir.path().to_str().unwrap()).unwrap_or_else(|e| {
             panic!("the scaffolded config must load and validate: {e}\n{workflow}")
         })
     }
 
-    /// Every workflow `rigger init` can write, as `(label, text)`: each embedded set's rendering,
-    /// then the no-set one.
-    fn every_rendering() -> Vec<(String, String)> {
-        let mut renderings: Vec<(String, String)> = TEMPLATE_SETS
+    /// Every workflow `rigger init` can write, as `(label, set, text)`: each embedded set's
+    /// rendering, then the no-set one.
+    fn every_rendering() -> Vec<(String, Option<SetSpec>, String)> {
+        let mut renderings: Vec<(String, Option<SetSpec>, String)> = TEMPLATE_SETS
             .iter()
             .map(|set| {
                 let spec = parse_template_set(set).unwrap_or_else(|e| panic!("{e}"));
-                (set.key.to_string(), scaffold_workflow(Some(&spec)))
+                let workflow = scaffold_workflow(Some(&spec));
+                (set.key.to_string(), Some(spec), workflow)
             })
             .collect();
-        renderings.push(("no set".to_string(), scaffold_workflow(None)));
+        renderings.push(("no set".to_string(), None, scaffold_workflow(None)));
         renderings
     }
 
@@ -2432,10 +2484,11 @@ mod tests {
     /// set listing a path `init_project` writes itself fails here, naming the path.
     #[test]
     fn scaffold_parses_into_a_valid_config() {
-        for (label, workflow) in every_rendering() {
-            let cfg = load_scaffold(&workflow);
-            // Six CANONICAL agents: planner, rust-engineer, the two reviewer lenses
-            // (architecture-reviewer + sdet), the adversary, the adjudicator.
+        for (label, set, workflow) in every_rendering() {
+            let cfg = load_scaffold(set.as_ref(), &workflow);
+            // Six agents: the planner, the implementer (the set's own, or the language-neutral
+            // seed with no set), the two reviewer lenses (architecture-reviewer + sdet), the
+            // adversary, the adjudicator.
             assert_eq!(cfg.agents.len(), 6, "{label}: scaffold agent count");
             // Four stages: plan -> plan-critique -> implement -> checkin.
             assert_eq!(
@@ -2539,9 +2592,18 @@ mod tests {
         }
     }
 
-    /// `parse_template_set` refuses, naming the set key, a `set.yml` that fails to parse, a
-    /// `gates` text that fails to parse, and a stage list naming a gate the `gates` text does
-    /// not declare.
+    /// `set`, a `set.yml` literal, with the `implementer` key every set carries appended: a
+    /// persona whose `id` is `maker`.
+    macro_rules! with_implementer {
+        ($set:literal) => {
+            concat!($set, "implementer: \"---\\nid: maker\\n---\\nBuild.\\n\"\n")
+        };
+    }
+
+    /// `parse_template_set` refuses, naming the set key, a `set.yml` that fails to parse or
+    /// lacks its `implementer`, a `gates` text that fails to parse, a stage list naming a gate
+    /// the `gates` text does not declare, an implementer persona that fails to parse and one
+    /// whose `id` is a scaffold seed's.
     #[test]
     fn parse_template_set_refuses_naming_the_set_key() {
         let refusal = |set| parse_template_set(&synthetic(set)).map(|_| ()).unwrap_err();
@@ -2551,25 +2613,49 @@ mod tests {
                 && bad_set_yml.contains("checking"),
             "{bad_set_yml}"
         );
-        let bad_gates =
-            refusal("detect: []\ngates: \"unit-check: [\"\nimplement: []\ncheckin: []\n");
+        let bad_gates = refusal(with_implementer!(
+            "detect: []\ngates: \"unit-check: [\"\nimplement: []\ncheckin: []\n"
+        ));
         assert!(
-            bad_gates.starts_with("gate template set synthetic: "),
+            bad_gates.starts_with("gate template set synthetic: gates: "),
             "{bad_gates}"
         );
-        assert_eq!(
-            refusal(
-                "detect: []\ngates: |\n  unit-check: { run: \"make check\", kind: core }\n\
-                 implement: [unit-check]\ncheckin: [unit-check, sweep]\n"
+        for (set, want) in [
+            (
+                with_implementer!(
+                    "detect: []\ngates: |\n  unit-check: { run: \"make check\", kind: core }\n\
+                     implement: [unit-check]\ncheckin: [unit-check, sweep]\n"
+                ),
+                "gate template set synthetic: checkin lists gate sweep, which its gates text does \
+                 not declare",
             ),
-            "gate template set synthetic: checkin lists gate sweep, which its gates text does not \
-             declare"
-        );
-        assert_eq!(
-            refusal("detect: []\ngates: \"\"\nimplement: [unit-check]\ncheckin: []\n"),
-            "gate template set synthetic: implement lists gate unit-check, which its gates text \
-             does not declare"
-        );
+            (
+                with_implementer!("detect: []\ngates: \"\"\nimplement: [unit-check]\ncheckin: []\n"),
+                "gate template set synthetic: implement lists gate unit-check, which its gates \
+                 text does not declare",
+            ),
+            (
+                "detect: []\ngates: \"\"\nimplement: []\ncheckin: []\n",
+                "gate template set synthetic: missing field `implementer`",
+            ),
+            (
+                "detect: []\ngates: \"\"\nimplement: []\ncheckin: []\nimplementer: Not a persona.\n",
+                "gate template set synthetic: implementer: config: missing YAML frontmatter (--- \
+                 delimiters)",
+            ),
+            (
+                "detect: []\ngates: \"\"\nimplement: []\ncheckin: []\n\
+                 implementer: \"---\\nid: planner\\n---\\nPlan.\\n\"\n",
+                "gate template set synthetic: implementer id planner is a scaffold seed's id",
+            ),
+            (
+                "detect: []\ngates: \"\"\nimplement: []\ncheckin: []\n\
+                 implementer: \"---\\nid: implementer\\n---\\nBuild.\\n\"\n",
+                "gate template set synthetic: implementer id implementer is a scaffold seed's id",
+            ),
+        ] {
+            assert_eq!(refusal(set), want, "{set}");
+        }
     }
 
     /// `init_project` parses every set it is handed before its first write: one whose `set.yml`
@@ -2594,12 +2680,14 @@ mod tests {
     /// empty, renders `gates: {}` and the rendering loads with no gate on either stage.
     #[test]
     fn scaffold_workflow_renders_a_comment_only_gates_text_as_an_empty_mapping() {
-        let set = synthetic("detect: []\ngates: |\n  # nothing yet\nimplement: []\ncheckin: []\n");
+        let set = synthetic(with_implementer!(
+            "detect: []\ngates: |\n  # nothing yet\nimplement: []\ncheckin: []\n"
+        ));
         let spec = parse_template_set(&set).expect("a comment-only gates text parses");
         assert_eq!(spec.gates, "");
         let workflow = scaffold_workflow(Some(&spec));
         assert!(workflow.lines().any(|l| l == "gates: {}"), "{workflow}");
-        let cfg = load_scaffold(&workflow);
+        let cfg = load_scaffold(Some(&spec), &workflow);
         assert!(cfg.workflow.gates.is_empty());
         assert!(cfg.workflow.stages["implement"].gates.is_empty());
         assert!(cfg.workflow.stages["checkin"].gates.is_empty());
@@ -2609,12 +2697,13 @@ mod tests {
     /// and its stage lists render as YAML flow sequences in their order.
     #[test]
     fn scaffold_workflow_indents_the_gates_text_and_renders_the_lists_in_order() {
-        let set = synthetic(
+        let set = synthetic(with_implementer!(
             "detect: []\ngates: |\n  # checks\n  unit-check: { run: \"make check\", kind: core }\n\n  \
              sweep: { run: \"make sweep\", kind: core }\nimplement: [unit-check, sweep]\n\
-             checkin: [sweep]\n",
-        );
-        let workflow = scaffold_workflow(Some(&parse_template_set(&set).unwrap()));
+             checkin: [sweep]\n"
+        ));
+        let spec = parse_template_set(&set).unwrap();
+        let workflow = scaffold_workflow(Some(&spec));
         assert!(
             workflow.contains(
                 "\ngates:\n  # checks\n  unit-check: { run: \"make check\", kind: core }\n\n  \
@@ -2622,7 +2711,7 @@ mod tests {
             ),
             "{workflow}"
         );
-        let cfg = load_scaffold(&workflow);
+        let cfg = load_scaffold(Some(&spec), &workflow);
         assert_eq!(
             cfg.workflow.stages["implement"].gates,
             ["unit-check", "sweep"]
@@ -2727,7 +2816,9 @@ mod tests {
     fn init_project_detects_the_first_matching_set_and_writes_its_files_when_absent() {
         const FIRST: TemplateSet = TemplateSet {
             key: "first",
-            set: "detect: [first.marker, both.marker]\ngates: \"\"\nimplement: []\ncheckin: []\n",
+            set: with_implementer!(
+                "detect: [first.marker, both.marker]\ngates: \"\"\nimplement: []\ncheckin: []\n"
+            ),
             files: &[
                 (
                     ".rigger/workflow.yml",
@@ -2738,7 +2829,9 @@ mod tests {
         };
         const SECOND: TemplateSet = TemplateSet {
             key: "second",
-            set: "detect: [second.marker]\ngates: \"\"\nimplement: []\ncheckin: []\n",
+            set: with_implementer!(
+                "detect: [second.marker]\ngates: \"\"\nimplement: []\ncheckin: []\n"
+            ),
             files: &[("two.sh", "two\n")],
         };
         let sets = [FIRST, SECOND];
@@ -2817,8 +2910,10 @@ mod tests {
     fn init_project_keeps_an_existing_workflow_and_writes_the_matched_sets_absent_files() {
         const SET: TemplateSet = TemplateSet {
             key: "only",
-            set: "detect: [m]\ngates: |\n  unit-check: { run: \"make check\", kind: core }\n\
-                  implement: [unit-check]\ncheckin: []\n",
+            set: with_implementer!(
+                "detect: [m]\ngates: |\n  unit-check: { run: \"make check\", kind: core }\n\
+                 implement: [unit-check]\ncheckin: []\n"
+            ),
             files: &[("s.sh", "s\n")],
         };
         let dir = tempfile::tempdir().unwrap();
@@ -2842,6 +2937,141 @@ mod tests {
                 .count(),
             0
         );
+    }
+
+    /// The role seeds a fresh `rigger init` writes beside the implementer persona, sorted.
+    const ROLE_SEED_FILES: [&str; 5] = [
+        "adjudicator.md",
+        "adversary.md",
+        "architecture-reviewer.md",
+        "planner.md",
+        "sdet.md",
+    ];
+
+    /// `init_project` over `sets` on a fresh project holding the root file `marker`, if any,
+    /// writes the role seeds and `<id>.md` holding `persona` byte for byte and nothing else under
+    /// `.rigger/agents`, reports exactly those as new, and writes a workflow whose implement and
+    /// checkin stages both run `id`.
+    fn assert_init_scaffolds_the_implementer(
+        sets: &[TemplateSet],
+        marker: Option<&str>,
+        id: &str,
+        persona: &str,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        if let Some(marker) = marker {
+            std::fs::write(root.join(marker), "").unwrap();
+        }
+        let report = init_project(root, sets).expect("init must scaffold");
+        let mut want: Vec<String> = ROLE_SEED_FILES.map(String::from).to_vec();
+        want.push(format!("{id}.md"));
+        want.sort();
+        assert_eq!(
+            sorted_dir_names(&root.join(RIGGER_DIR).join("agents")),
+            want,
+            "the agents written"
+        );
+        let mut reported = report.new_agents.clone();
+        reported.sort();
+        assert_eq!(reported, want, "the agents reported new");
+        assert_eq!(
+            std::fs::read_to_string(
+                root.join(RIGGER_DIR)
+                    .join("agents")
+                    .join(format!("{id}.md"))
+            )
+            .unwrap(),
+            persona
+        );
+        let cfg = config_store::load(root.to_str().unwrap()).expect("the scaffold loads");
+        assert_eq!(
+            [
+                cfg.workflow.stages["implement"].agent.as_str(),
+                cfg.workflow.stages["checkin"].agent.as_str()
+            ],
+            [id, id],
+            "the implement and checkin stages run the implementer"
+        );
+    }
+
+    rigger::test_cases! {
+        /// The Rust set brings its own implementer: `rust-engineer`, carrying the base seed's
+        /// text verbatim.
+        init_with_the_rust_set_writes_and_names_its_implementer:
+            assert_init_scaffolds_the_implementer(
+                TEMPLATE_SETS,
+                Some("Cargo.toml"),
+                "rust-engineer",
+                "---\nid: rust-engineer\nmodel: opus\ntools: [Read, Edit, Write, Grep, Glob, Bash, \
+                 Agent]\nisolation: worktree\nrecurse: true\n---\nYou implement ONE \
+                 fully-specified unit inside your worktree, in idiomatic Rust.\nWrite the failing \
+                 test first, confirm RED, implement minimally, confirm GREEN, run\nthe named gates, \
+                 commit. Report the final line as JSON: {\"id\",\"pass\",\"evidence\"}.\n",
+            );
+        /// With no set matched, the language-neutral `implementer`: the base seed's text with
+        /// its language cut.
+        init_with_no_set_writes_and_names_the_language_neutral_implementer:
+            assert_init_scaffolds_the_implementer(
+                TEMPLATE_SETS,
+                None,
+                "implementer",
+                crate::test_support::LANGUAGE_NEUTRAL_IMPLEMENTER,
+            );
+        /// The id is the one the matched set's persona carries, whatever it is.
+        init_with_a_set_writes_and_names_the_id_its_persona_carries:
+            assert_init_scaffolds_the_implementer(
+                &[synthetic(with_implementer!(
+                    "detect: [m]\ngates: \"\"\nimplement: []\ncheckin: []\n"
+                ))],
+                Some("m"),
+                "maker",
+                "---\nid: maker\n---\nBuild.\n",
+            );
+    }
+
+    /// An existing project keeps what an earlier `rigger init` wrote: a workflow whose implement
+    /// and checkin stages run `rust-engineer` and that persona stay byte for byte, with or without
+    /// the Rust set's marker, and a rerun writes the absent role seeds and no implementer persona.
+    fn assert_init_keeps_an_earlier_rust_engineer_scaffold(marker: Option<&str>) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        if let Some(marker) = marker {
+            std::fs::write(root.join(marker), "").unwrap();
+        }
+        let agents = root.join(RIGGER_DIR).join("agents");
+        std::fs::create_dir_all(&agents).unwrap();
+        let workflow =
+            scaffold_workflow(None).replace("agent: implementer", "agent: rust-engineer");
+        std::fs::write(root.join(RIGGER_DIR).join("workflow.yml"), &workflow).unwrap();
+        let mine = "---\nid: rust-engineer\n---\nMine.\n";
+        std::fs::write(agents.join("rust-engineer.md"), mine).unwrap();
+        let report = init_project(root, TEMPLATE_SETS).expect("init must keep the scaffold");
+        assert!(!report.wrote_workflow);
+        assert_eq!(
+            std::fs::read_to_string(root.join(RIGGER_DIR).join("workflow.yml")).unwrap(),
+            workflow
+        );
+        assert_eq!(
+            std::fs::read_to_string(agents.join("rust-engineer.md")).unwrap(),
+            mine
+        );
+        let mut reported = report.new_agents.clone();
+        reported.sort();
+        assert_eq!(reported, ROLE_SEED_FILES, "the agents reported new");
+        let mut want: Vec<String> = ROLE_SEED_FILES.map(String::from).to_vec();
+        want.push("rust-engineer.md".to_string());
+        want.sort();
+        assert_eq!(sorted_dir_names(&agents), want, "the agents on disk");
+    }
+
+    rigger::test_cases! {
+        /// Without the Rust set's marker, the earlier scaffold's `rust-engineer` stays.
+        init_keeps_an_earlier_rust_engineer_scaffold_with_no_set:
+            assert_init_keeps_an_earlier_rust_engineer_scaffold(None);
+        /// Beside a root `Cargo.toml`, the earlier persona is kept, never overwritten by the set's.
+        init_keeps_an_earlier_rust_engineer_scaffold_beside_the_rust_set:
+            assert_init_keeps_an_earlier_rust_engineer_scaffold(Some("Cargo.toml"));
     }
 
     #[test]
@@ -3181,9 +3411,9 @@ mod tests {
     /// Spec 08 item 2: the scaffold seed and the scaffold workflow reference the SAME
     /// canonical persona set - every seeded agent is referenced by the workflow and every
     /// referenced agent is seeded (no stray, unreferenced persona on a fresh-repo init) -
-    /// and that set is the canonical six, with NONE of the four generic placeholder
-    /// personas. A regression re-seeding a generic stray, or seeding an agent the workflow
-    /// does not reference, fails here.
+    /// and that set is the canonical six, the language-neutral `implementer` among them, with
+    /// NONE of the three generic placeholder personas. A regression re-seeding a generic stray,
+    /// or seeding an agent the workflow does not reference, fails here.
     #[test]
     fn scaffold_agents_and_workflow_reference_the_same_canonical_set() {
         use std::collections::BTreeSet;
@@ -3200,8 +3430,16 @@ mod tests {
             referenced
         };
         let referenced = referenced_by(&scaffold_workflow(None));
-        for (label, workflow) in every_rendering() {
-            assert_eq!(referenced_by(&workflow), referenced, "{label}");
+        for (label, _, workflow) in every_rendering() {
+            // A set's rendering names its own implementer, on both unit stages, in place of the
+            // language-neutral `implementer`; every other id is the no-set rendering's.
+            let wf: config::Workflow = serde_yaml::from_str(&workflow).unwrap();
+            let implementer = &wf.stages["implement"].agent;
+            assert_eq!(&wf.stages["checkin"].agent, implementer, "{label}");
+            let mut want = referenced.clone();
+            want.remove("implementer");
+            want.insert(implementer.clone());
+            assert_eq!(referenced_by(&workflow), want, "{label}");
         }
 
         // Every agent id the scaffold seeds.
@@ -3222,7 +3460,7 @@ mod tests {
 
         let canonical: BTreeSet<String> = [
             "planner",
-            "rust-engineer",
+            "implementer",
             "architecture-reviewer",
             "sdet",
             "adversary",
@@ -3236,10 +3474,9 @@ mod tests {
             "the seed is exactly the canonical persona set"
         );
 
-        // The four generic placeholder personas are gone for good - not a filename, not an
+        // The three generic placeholder personas are gone for good - not a filename, not an
         // id (the strays spec 05/08 removed and must never re-scaffold).
         for stray in [
-            "implementer",
             "devils-advocate",
             "reviewer.architecture",
             "reviewer.technical",
@@ -3289,7 +3526,7 @@ mod tests {
             "referenced adversary seeded"
         );
         for skipped in [
-            "rust-engineer.md",
+            "implementer.md",
             "architecture-reviewer.md",
             "sdet.md",
             "adjudicator.md",
@@ -3350,7 +3587,7 @@ mod tests {
         );
 
         for skipped in [
-            "rust-engineer.md",
+            "implementer.md",
             "architecture-reviewer.md",
             "sdet.md",
             "adjudicator.md",
@@ -3378,7 +3615,7 @@ mod tests {
         let ids = get_referenced_agent_ids(root).unwrap();
         let want: std::collections::HashSet<String> = [
             "planner",
-            "rust-engineer",
+            "implementer",
             "architecture-reviewer",
             "sdet",
             "adversary",
@@ -3664,7 +3901,7 @@ mod tests {
         // Break a workflow agent reference so the whole-project load fails referentially.
         let wf_path = root.join(".rigger/workflow.yml");
         let wf = std::fs::read_to_string(&wf_path).unwrap();
-        std::fs::write(&wf_path, wf.replace("agent: rust-engineer", "agent: ghost")).unwrap();
+        std::fs::write(&wf_path, wf.replace("agent: implementer", "agent: ghost")).unwrap();
 
         let src = root.join("collection");
         std::fs::create_dir_all(&src).unwrap();
@@ -3718,9 +3955,12 @@ mod tests {
     /// machine's already-installed compilation-cache wrapper with no further config.
     #[test]
     fn scaffold_workflow_declares_build_wrapper_auto() {
-        for (label, workflow) in every_rendering() {
+        for (label, set, workflow) in every_rendering() {
             assert_eq!(
-                load_scaffold(&workflow).workflow.build.wrapper,
+                load_scaffold(set.as_ref(), &workflow)
+                    .workflow
+                    .build
+                    .wrapper,
                 "auto",
                 "{label}: a freshly scaffolded workflow.yml must default build.wrapper to auto"
             );
@@ -3734,9 +3974,9 @@ mod tests {
     /// file-write path is covered separately below.
     #[test]
     fn scaffold_workflow_declares_max_parallel_units_two_with_a_sizing_comment() {
-        for (label, workflow) in every_rendering() {
+        for (label, set, workflow) in every_rendering() {
             assert_eq!(
-                load_scaffold(&workflow)
+                load_scaffold(set.as_ref(), &workflow)
                     .workflow
                     .defaults
                     .max_parallel_units,
@@ -3747,6 +3987,29 @@ mod tests {
                 workflow.contains("build cache") && workflow.contains("max_parallel_units: 2"),
                 "{label}: the scaffold must carry a sizing comment (explaining the per-unit \
                  build-cache cost) next to max_parallel_units, not a bare number"
+            );
+        }
+    }
+
+    /// Spec 121's SCAFFOLD DEFAULTS for the unit size cap: every rendering of the scaffold
+    /// declares `defaults.max_unit_added_lines: 3000`, which loads as that cap, under the one
+    /// comment line naming what the key switches.
+    #[test]
+    fn scaffold_workflow_declares_the_unit_size_cap_under_a_one_line_comment() {
+        const DECLARED: &str = "  # The unit size cap in added lines that the planner and plan \
+                                critique state; 0 = none.\n  max_unit_added_lines: 3000\n";
+        for (label, set, workflow) in every_rendering() {
+            assert_eq!(
+                (
+                    load_scaffold(set.as_ref(), &workflow)
+                        .workflow
+                        .defaults
+                        .max_unit_added_lines,
+                    workflow.matches(DECLARED).count(),
+                    workflow.matches("max_unit_added_lines").count()
+                ),
+                (3000, 1, 1),
+                "{label}: the scaffold declares the cap once, under its comment:\n{workflow}"
             );
         }
     }
@@ -4380,10 +4643,10 @@ mod tests {
         }
     }
 
-    /// Every agent text rigger ships: the committed personas and the scaffold seeds, each
-    /// labelled with where it lives. The personas of `examples/demo` stay out: the demo is a
-    /// consumer project owning its agents, and a persona with no critique section still critiques
-    /// under the binary's output contract.
+    /// Every agent text rigger ships: the committed personas, the scaffold seeds and each gate
+    /// template set's implementer, each labelled with where it lives. The personas of
+    /// `examples/demo` stay out: the demo is a consumer project owning its agents, and a persona
+    /// with no critique section still critiques under the binary's output contract.
     fn every_shipped_persona() -> Vec<(String, String)> {
         let mut all: Vec<(String, String)> = committed_personas()
             .into_iter()
@@ -4394,7 +4657,23 @@ mod tests {
                 .iter()
                 .map(|(f, t)| (format!("SCAFFOLD_AGENTS {f}"), (*t).to_string())),
         );
+        all.extend(set_implementers());
         all
+    }
+
+    /// Each embedded gate template set's `implementer` persona, labelled with the `set.yml` it
+    /// ships in.
+    fn set_implementers() -> Vec<(String, String)> {
+        TEMPLATE_SETS
+            .iter()
+            .map(|set| {
+                let spec = parse_template_set(set).unwrap_or_else(|e| panic!("{e}"));
+                (
+                    format!("scaffold/{}/set.yml implementer", set.key),
+                    spec.implementer,
+                )
+            })
+            .collect()
     }
 
     /// Byran's seam rulings: every persona, reviewers included, runs on opus with no ladder,
@@ -4505,6 +4784,25 @@ mod tests {
                     "{at} states the planning policy sentence {sentence:?} once"
                 );
             }
+        }
+    }
+
+    /// The unit size cap's scope sentence, which no prompt carries, lives in the planner's persona:
+    /// the committed planner and its scaffold seed each state it once, directly after the split
+    /// sentence of the planning policy.
+    #[test]
+    fn the_planner_persona_and_its_seed_state_the_cap_scope_after_the_split_sentence() {
+        let scope = crate::test_support::UNIT_SIZE_CAP_SCOPE;
+        let after_split = format!("{} {scope}", crate::test_support::PLANNING_POLICY[0]);
+        for (at, text) in shipped_planners() {
+            assert_eq!(
+                (
+                    text.matches(&after_split).count(),
+                    text.matches(scope).count()
+                ),
+                (1, 1),
+                "{at} states {scope:?} once, directly after the split sentence"
+            );
         }
     }
 
@@ -4684,7 +4982,11 @@ mod tests {
         let seeds = SCAFFOLD_AGENTS
             .iter()
             .map(|(file, text)| (format!("seed {file}"), text.to_string()));
-        let texts: Vec<(String, String)> = committed_personas().into_iter().chain(seeds).collect();
+        let texts: Vec<(String, String)> = committed_personas()
+            .into_iter()
+            .chain(seeds)
+            .chain(set_implementers())
+            .collect();
         for (command, marker) in [
             ("the rule-spelling search", "b='<noun phrase>' xargs awk"),
             ("the rule-spelling search", "tolower(ENVIRON[\"a\"])"),

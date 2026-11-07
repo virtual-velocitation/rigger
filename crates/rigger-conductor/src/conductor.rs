@@ -8399,11 +8399,13 @@ impl RunCtx<'_> {
 
     /// Build the plan-critique reviewer prompt (Unit 1, spec 10): the task framing and the
     /// output contract, never the method, which stands in each reviewer's persona. It names
-    /// those decomposition rules, states the unit size cap ([`unit_size_cap`]), lists the
-    /// proposed unit DAG and the deterministic rule-6 blast-radius analysis, and closes with the
-    /// verdict paragraph, whose cause contract tells a defect in a criterion's own text
-    /// (`spec-ambiguity`, which can stop the run - spec 112, criterion 5) from one a re-plan can
-    /// fix. On a re-plan it leads with the prior rejection so the reviewer judges the revised
+    /// those decomposition rules, states the unit size cap the workflow declares, if any
+    /// ([`Self::unit_size_cap_then`]), lists the proposed unit DAG and the deterministic rule-6
+    /// blast-radius analysis, and closes with the verdict paragraph, whose cause contract tells a
+    /// defect in a criterion's own text (`spec-ambiguity`, which can stop the run - spec 112,
+    /// criterion 5) from one a re-plan can fix, naming a unit over the size cap
+    /// ([`DAG_SIZE_CAP_CAUSE`]) among the latter only when a cap is declared. On a re-plan it
+    /// leads with the prior rejection so the reviewer judges the revised
     /// DAG against what was wrong before. The same prompt feeds the adversary (which appends the
     /// review_protocol and emits findings) and the adjudicator (whose stdout verdict gates the
     /// fan-out).
@@ -8424,8 +8426,8 @@ impl RunCtx<'_> {
             "You are the plan-critique gate. Review the PROPOSED unit DAG below - the \
              decomposition the planner produced - BEFORE any implementer runs, and judge \
              it against the decomposition rules in your persona: the CROSS-UNIT rules that \
-             per-unit review cannot see.\n\n{}\n\n",
-            unit_size_cap()
+             per-unit review cannot see.\n\n{}",
+            self.unit_size_cap_then("\n\n")
         ));
         b.push_str("Proposed units:\n");
         for (name, files) in radii {
@@ -8478,10 +8480,12 @@ impl RunCtx<'_> {
              own text and no decomposition can remove it (two criteria that contradict \
              under every landing order, a criterion no plan can satisfy, a demanded \
              mitigation no criterion owns); \"cause\":\"decomposition-conflict\" for every \
-             defect a re-plan can fix (twin units, a missing exclusion between units, a unit \
-             over the size cap, a unit owning no criterion, a split the planner chose). When \
-             unsure, \"cause\":\"decomposition-conflict\".\n",
-            spawn::CAUSE_SPEC_AMBIGUITY
+             defect a re-plan can fix (twin units, a missing exclusion between units, {}a unit \
+             owning no criterion, a split the planner chose). When unsure, \
+             \"cause\":\"decomposition-conflict\".\n",
+            spawn::CAUSE_SPEC_AMBIGUITY,
+            self.declared_unit_size_cap()
+                .map_or("", |_| DAG_SIZE_CAP_CAUSE)
         ));
         b
     }
@@ -11476,8 +11480,8 @@ impl RunCtx<'_> {
             .unwrap_or_default()
     }
 
-    /// The planner's refine protocol, with the run's acceptance criteria and the
-    /// implementer agent id filled in. Empty for a non-producer stage.
+    /// The planner's refine protocol, with the run's acceptance criteria, the implementer agent id
+    /// and the declared unit size cap, if any, filled in. Empty for a non-producer stage.
     fn plan_protocol(&self, st: &Stage) -> String {
         if !is_producer(st) {
             return String::new();
@@ -11499,10 +11503,26 @@ impl RunCtx<'_> {
         format!(
             "\n\n{}\n",
             PLAN_PROTOCOL
-                .replace("{unit_size_cap}", &format!("{} ", unit_size_cap()))
+                .replace("{unit_size_cap}", &self.unit_size_cap_then(" "))
                 .replace("{implementer}", &self.implementer_agent())
                 .replace("{criteria}", &criteria)
         )
+    }
+
+    /// The unit size cap the workflow declares in `defaults.max_unit_added_lines`: `Some` lines
+    /// when above `0`, `None` when the key is absent or `0` - the one reading of whether a cap
+    /// is declared.
+    fn declared_unit_size_cap(&self) -> Option<u32> {
+        Some(self.cfg.workflow.defaults.max_unit_added_lines).filter(|&cap| cap > 0)
+    }
+
+    /// What a prompt's cap slot holds: the [`unit_size_cap`] sentence and the `separator` after
+    /// it (the plan protocol's space, the DAG critique prompt's blank line) when the workflow
+    /// declares a cap ([`Self::declared_unit_size_cap`]), else nothing.
+    fn unit_size_cap_then(&self, separator: &str) -> String {
+        self.declared_unit_size_cap()
+            .map(|cap| format!("{}{separator}", unit_size_cap(cap)))
+            .unwrap_or_default()
     }
 
     /// The unit's TWO-VIEW blast radius (spec 16 unit 3, architecture 5.5.1): computed from the
@@ -13241,20 +13261,20 @@ fn gate_failure_cause(evidence: &[String]) -> String {
     format!("gate:{name}")
 }
 
-/// The unit size cap: a unit is too large for one review round when it is expected to add
-/// more than this many lines. It measures review scope, never code shape - no file or
-/// function size limit exists - and no gate measures it: the planner reads it in
+/// The unit size cap's sentence for a cap of `cap` lines: a unit is too large for one review
+/// round when it is expected to add more than `cap` lines. The plan protocol and every round of
+/// the DAG critique prompt carry it only when the workflow declares a cap
+/// (`defaults.max_unit_added_lines`); no gate measures it: the planner reads it in
 /// [`PLAN_PROTOCOL`] and splits a criterion by it, and the plan critique rejects a unit over it.
-const MAX_UNIT_ADDED_LINES: usize = 3000;
-
-/// The one sentence stating [`MAX_UNIT_ADDED_LINES`], carried by both the plan protocol and
-/// the plan critique.
-fn unit_size_cap() -> String {
-    format!(
-        "A unit is too large when it is expected to add more than {MAX_UNIT_ADDED_LINES} lines. \
-         The cap measures review scope - how much one review round must read - never code shape."
-    )
+/// That the cap measures review scope, never code shape, the planner's and both critiquing
+/// personas state.
+fn unit_size_cap(cap: u32) -> String {
+    format!("A unit is too large when it is expected to add more than {cap} lines.")
 }
+
+/// The cause example the DAG critique's cause contract names among the defects a re-plan can
+/// fix, only when the workflow declares a unit size cap.
+const DAG_SIZE_CAP_CAUSE: &str = "a unit over the size cap, ";
 
 const EMIT_PROTOCOL: &str = "Record each decision you make by calling the rigger_emit tool with type \"DecisionMade\" and data:\n{\"id\":\"<short-id>\",\"summary\":\"<one line>\",\"governs\":[\"<file>\"],\"supersedes\":\"<prior-id-or-empty>\"}\nThis writes it to the shared event log live, so other agents see it immediately.";
 
@@ -13264,8 +13284,9 @@ const EMIT_PROTOCOL: &str = "Record each decision you make by calling the rigger
 /// baseline implement unit per acceptance criterion, which the planner REFINES; each
 /// refinement is a `UnitProposed` carrying the spec criterion it serves. The `{criteria}`
 /// placeholder is filled with the run's actual acceptance criteria, `{implementer}` with the
-/// implementer agent id the conductor assigned the baseline, and `{unit_size_cap}` with the one
-/// unit size cap sentence ([`unit_size_cap`]) and a space.
+/// implementer agent id the conductor assigned the baseline, and `{unit_size_cap}` with the unit
+/// size cap sentence ([`unit_size_cap`]) and a space when the workflow declares a cap, else
+/// nothing.
 const PLAN_PROTOCOL: &str = "You are the planner. The conductor has ALREADY created one baseline implement unit per acceptance criterion below - the spec is decomposed by construction. Your job is to REFINE that baseline, not to re-decompose it. {unit_size_cap}Each part of a split echoes the split criterion's id and ends its `criterion` text with an OWNS sentence naming its part (the conductor keeps that sentence after the criterion's exact text as that unit's contract).\nEach criterion below is shown with a STABLE id in [brackets]. When your unit serves a criterion, your unit SUPERSEDES (replaces) that criterion's baseline - it does NOT run alongside it - so identify the criterion you serve by ECHOING its id: copy the id shown in brackets next to that criterion into the `criterion_id` field (the brackets are display delimiters - the conductor accepts the id with or without them). The conductor pairs your unit with its baseline by that id, so even if you reword or truncate the criterion text in `criterion`, the correct id still supersedes the one baseline (no duplicate). A wrong or missing `criterion_id` is what makes your unit run as an EXTRA unit on top of the baseline (duplicated work). Still copy the criterion text into `criterion` (verbatim is safest). Several units echoing the SAME id (a real split) all run and replace the one baseline.\nPropose each refinement by calling the rigger_emit tool with type \"UnitProposed\" and data:\n{\"id\":\"<short-id>\",\"agent\":\"{implementer}\",\"criterion\":\"<the spec criterion it serves>\",\"criterion_id\":\"<the id shown in [brackets] next to that criterion>\",\"needs\":[\"<unit ids it depends on>\"]}\nA unit whose `criterion_id` is none of the ids below still runs, but as a genuinely-new sub-unit that the conductor flags as unmatched. Every unit you propose - a refinement, a split, or a new sub-unit - automatically runs the fan-out template's own gates; you never need to name them.\n\nThe acceptance criteria to refine against (echo the [id] shown next to each criterion into that unit's `criterion_id`, and copy the text into `criterion`):\n{criteria}";
 
 /// The protocol a REVIEW agent (a lens or the adversary) follows so its findings
@@ -15254,11 +15275,11 @@ mod tests {
         assert_winner_reviewed_sha_is_round_start, speculation_regen_door_cfg,
     };
     use crate::test_support::{
-        critique_reject, dag_critique_prompt, keyed_index, keyed_payload, payloads_of_type,
-        plan_protocol_text, run_log, spec_defect_halt_text, stop_records, the_stop_records,
-        wave_lessons, DAG_CRITIQUE_VERDICT_PARAGRAPH, DAG_DISJOINT_OVERLAP,
-        DAG_PRIOR_REJECT_HEADER, PLANNING_POLICY, STOP_ESCALATED_KEY, STOP_LESSON_KEY,
-        STOP_SPEC_DEFECT_KEY, UNIT_SIZE_CAP_SENTENCE, WIDGET_CRITERION,
+        critique_reject, dag_critique_prompt, dag_critique_verdict_paragraph, keyed_index,
+        keyed_payload, payloads_of_type, plan_protocol_text, run_log, spec_defect_halt_text,
+        stop_records, the_stop_records, wave_lessons, DAG_DISJOINT_OVERLAP,
+        DAG_PRIOR_REJECT_HEADER, DAG_SIZE_CAP_CAUSE, PLANNING_POLICY, STOP_ESCALATED_KEY,
+        STOP_LESSON_KEY, STOP_SPEC_DEFECT_KEY, UNIT_SIZE_CAP_SCOPE, WIDGET_CRITERION,
     };
     use crate::test_support::{
         critique_stage, fan_out_stage, plan_stage, review_stage_cfg, workflow_cfg,
@@ -50202,16 +50223,18 @@ mod tests {
         );
     }
 
-    /// Run `critique_cfg` over proposed `units`, each `(id, file, criterion)` grounding to its
-    /// `file`; returns the driver, which recorded the planner's and the adjudicator's prompts.
-    fn critique_over(units: &[(&str, &str, &str)]) -> CritiqueDriver {
+    /// Run `critique_cfg`, its `defaults.max_unit_added_lines` set to `cap`, over proposed `units`,
+    /// each `(id, file, criterion)` grounding to its `file`; returns the driver, which recorded the
+    /// planner's and the adjudicator's prompts.
+    fn critique_over(units: &[(&str, &str, &str)], cap: u32) -> CritiqueDriver {
         let dir = tempfile::tempdir().unwrap();
         for (_, file, criterion) in units {
             let path = dir.path().join(file);
             let text = std::fs::read_to_string(&path).unwrap_or_default();
             std::fs::write(path, format!("{text}// {criterion}\n")).unwrap();
         }
-        let cfg = critique_cfg();
+        let mut cfg = critique_cfg();
+        cfg.workflow.defaults.max_unit_added_lines = cap;
         let st = Store::open(":memory:").unwrap();
         let driver = CritiqueDriver::new(
             units
@@ -50239,15 +50262,15 @@ mod tests {
         driver
     }
 
-    /// Run `critique_cfg` over one proposed unit serving one criterion; returns the driver,
-    /// which recorded the planner's and the adjudicator's prompts.
+    /// Run `critique_cfg`, which declares no unit size cap, over one proposed unit serving one
+    /// criterion; returns the driver, which recorded the planner's and the adjudicator's prompts.
     fn one_unit_critique() -> CritiqueDriver {
-        critique_over(&[("u-a", "feature.rs", "the widget renderer is implemented")])
+        critique_over(&[("u-a", "feature.rs", WIDGET_CRITERION)], 0)
     }
 
-    /// The critique method is the persona's: over a disjoint DAG and an overlapping one, the DAG
-    /// critique prompt is its opener, the cap framing, the unit and overlap list and its verdict
-    /// and cause paragraph, byte for byte and nothing else.
+    /// The critique method is the persona's: over a disjoint DAG and an overlapping one of a
+    /// workflow declaring no unit size cap, the DAG critique prompt is its opener, the unit and
+    /// overlap list and its verdict and cause paragraph, byte for byte and nothing else.
     #[test]
     fn the_dag_critique_prompt_is_only_its_framing_and_its_verdict_contract() {
         const WIDGET: &str = "the widget renderer is implemented";
@@ -50264,43 +50287,91 @@ mod tests {
             ),
         ];
         for (units, overlap) in table {
-            let driver = critique_over(&units);
+            let driver = critique_over(&units, 0);
             let prompt = driver.adj_prompts.lock().unwrap()[0].clone();
             let rows = units.map(|(id, file, criterion)| [id, criterion, "plan-critique", file]);
-            assert_eq!(prompt, dag_critique_prompt(&rows, overlap));
+            assert_eq!(prompt, dag_critique_prompt(&rows, overlap, 0));
         }
     }
 
-    /// One unit size cap, measuring review scope and never code shape, reaches both the
-    /// planner and the plan critique, and the critique rejects a unit over it with the
-    /// `decomposition-conflict` cause that sends the DAG back to the planner.
+    /// The unit size cap is declared: `defaults.max_unit_added_lines` states the cap's one
+    /// sentence, its number the key's, in the planner's plan protocol and in the DAG critique
+    /// prompt, whose cause contract then names a unit over the size cap among the defects a
+    /// re-plan fixes; a workflow declaring no cap, 0 being the absent key's value, gets neither
+    /// prompt a cap sentence nor that cause, and neither prompt ever carries the cap's scope
+    /// sentence, which the planner and critiquing personas state. The rows 1 and 2500 render
+    /// their own number, so no constant cap stands beside the key.
     #[test]
-    fn the_plan_protocol_and_the_dag_critique_carry_one_unit_size_cap() {
-        let driver = one_unit_critique();
-        let planner = driver.planner_prompts.lock().unwrap()[0].clone();
-        let critique = driver.adj_prompts.lock().unwrap()[0].clone();
-        for (who, prompt) in [("planner", &planner), ("plan critique", &critique)] {
-            assert!(
-                prompt.contains(UNIT_SIZE_CAP_SENTENCE),
-                "the {who} prompt carries the one cap sentence:\n{prompt}"
+    fn both_prompts_state_the_unit_size_cap_only_when_it_is_declared() {
+        let table = [
+            (0, None),
+            (
+                1,
+                Some("A unit is too large when it is expected to add more than 1 lines."),
+            ),
+            (
+                2500,
+                Some("A unit is too large when it is expected to add more than 2500 lines."),
+            ),
+        ];
+        let id = criterion_stable_id(1, WIDGET_CRITERION);
+        let criteria = format!("- [{id}] {WIDGET_CRITERION}");
+        for (cap, sentence) in table {
+            let driver = critique_over(&[("u-a", "feature.rs", WIDGET_CRITERION)], cap);
+            let planner = driver.planner_prompts.lock().unwrap()[0].clone();
+            let critique = driver.adj_prompts.lock().unwrap()[0].clone();
+            assert_eq!(
+                (
+                    planner.rsplit_once(EMIT_PROTOCOL).map(|(_, tail)| tail),
+                    critique.as_str()
+                ),
+                (
+                    Some(plan_protocol_text("worker", &criteria, cap).as_str()),
+                    dag_critique_prompt(
+                        &[["u-a", WIDGET_CRITERION, "plan-critique", "feature.rs"]],
+                        DAG_DISJOINT_OVERLAP,
+                        cap
+                    )
+                    .as_str()
+                ),
+                "cap {cap}: the planner's task closes with the plan protocol and the critique \
+                 prompt is the DAG critique prompt, each with that cap"
+            );
+            let stated = usize::from(sentence.is_some());
+            for (who, prompt) in [("planner", &planner), ("plan critique", &critique)] {
+                assert_eq!(
+                    (
+                        prompt.matches("A unit is too large").count(),
+                        sentence.map_or(0, |sentence| prompt.matches(sentence).count()),
+                        prompt.matches(UNIT_SIZE_CAP_SCOPE).count()
+                    ),
+                    (stated, stated, 0),
+                    "cap {cap}: the {who} prompt states {sentence:?} and no scope sentence:\n\
+                     {prompt}"
+                );
+            }
+            assert_eq!(
+                (
+                    planner.matches(DAG_SIZE_CAP_CAUSE).count(),
+                    critique.matches(DAG_SIZE_CAP_CAUSE).count()
+                ),
+                (0, stated),
+                "cap {cap}: only the critique's cause contract names a unit over the size cap, \
+                 and only when a cap is declared:\n{critique}"
             );
         }
-        assert!(
-            critique.contains(r#""cause":"decomposition-conflict""#),
-            "the critique rejects an oversize unit as a decomposition conflict:\n{critique}"
-        );
     }
 
     /// The planner protocol carries no planning policy: after the emit protocol, the planner's
-    /// task is exactly the protocol's framing and contract sentences, the unit size cap sentence
-    /// in their slot, and the run's criteria, and it states none of the planning policy the
-    /// planner persona holds.
+    /// task is exactly the protocol's framing and contract sentences, the cap slot empty under a
+    /// workflow declaring no unit size cap, and the run's criteria, and it states none of the
+    /// planning policy the planner persona holds.
     #[test]
     fn the_planner_protocol_carries_no_planning_policy() {
         let driver = one_unit_critique();
         let planner = driver.planner_prompts.lock().unwrap()[0].clone();
         let id = criterion_stable_id(1, WIDGET_CRITERION);
-        let protocol = plan_protocol_text("worker", &format!("- [{id}] {WIDGET_CRITERION}"));
+        let protocol = plan_protocol_text("worker", &format!("- [{id}] {WIDGET_CRITERION}"), 0);
         assert_eq!(
             planner.rsplit_once(EMIT_PROTOCOL).map(|(_, tail)| tail),
             Some(protocol.as_str()),
@@ -51833,7 +51904,7 @@ mod tests {
         let driver = one_unit_critique();
         let prompt = driver.adj_prompts.lock().unwrap()[0].clone();
         assert!(
-            prompt.contains(DAG_CRITIQUE_VERDICT_PARAGRAPH),
+            prompt.contains(&dag_critique_verdict_paragraph(0)),
             "the verdict paragraph carries the cause contract:\n{prompt}"
         );
     }
