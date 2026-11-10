@@ -139,9 +139,11 @@
 # rewrites the test catching an earlier spec's mutant examines that mutant again on its first
 # sweep. The map names a binary as nextest does, less the root package's own `<root>::` prefix,
 # and a changed path reaches binaries through the package that owns it: its `tests/<t>.rs` is
-# the integration-test binary `<package>::<t>` (`<t>` for the root package); a change nested
-# deeper under its tests/ (a shared module, a fixture) reaches every integration-test binary of
-# that package and no other, since only they compile it; a change under a workspace crate's src/
+# the integration-test binary `<package>::<t>` (`<t>` for the root package), except in a package
+# whose Cargo.toml sets `autotests = false`, where a file that is not a `[[test]]` entry is a
+# module of that package's one `all` binary; a change nested deeper under its tests/ (a shared
+# module, a fixture) reaches every integration-test binary of that package and no other, since
+# only they compile it (`all` and its `[[test]]` entries in a consolidated package); a change under a workspace crate's src/
 # reaches that crate's lib unit-test binary `<crate>`. The root package's own unit-test binaries
 # are reached by no path: its lib and its bin share src/, and no path says which of them a
 # change compiles into. That same point is the base of the diff the sweep covers. The rerun's
@@ -224,7 +226,7 @@ test_binaries() {
     if consolidates_tests "$1"; then
         echo all
         sed -n 's/^name = "\(.*\)"$/\1/p' "$1/Cargo.toml" | while IFS= read -r n; do
-            test ! -f "$1/tests/$n.rs" || echo "$n"
+            test "$n" = all || test ! -f "$1/tests/$n.rs" || echo "$n"
         done
     else
         for t in "$1"/tests/*.rs; do t="${t##*/}"; echo "${t%.rs}"; done
