@@ -101,6 +101,10 @@ name = "product_binary_authority_periphery"
 path = "tests/product_binary_authority_periphery.rs"
 
 [[test]]
+name = "proofs_settle_once_periphery"
+path = "tests/proofs_settle_once_periphery.rs"
+
+[[test]]
 name = "registry_refresh_driver_courier_convergence_periphery"
 path = "tests/registry_refresh_driver_courier_convergence_periphery.rs"
 

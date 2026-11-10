@@ -167,8 +167,6 @@ mod projections_stay_local;
 mod proof_lands_on_the_card_periphery;
 mod proof_row_renders_on_the_card;
 mod proofs_settle_in_every_frame_periphery;
-#[cfg(all(feature = "symbols", target_os = "linux"))]
-mod proofs_settle_once_periphery;
 mod published_content_key_split_periphery;
 mod python_definitions_are_nodes_periphery;
 mod rationale_overlay_data;
