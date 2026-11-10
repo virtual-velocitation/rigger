@@ -110,6 +110,7 @@ mod fanout_template_needs_and_stage_retries_periphery;
 mod file_half_is_one_read_periphery;
 mod files_lens_directory_hulls_viz;
 mod files_lens_view_periphery;
+mod gate_verb_periphery;
 mod gitsemver_derivation;
 mod gitsemver_path_inclusion_accounting_periphery;
 mod gitsemver_worktree_periphery;

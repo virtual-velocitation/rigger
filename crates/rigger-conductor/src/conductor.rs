@@ -43035,6 +43035,379 @@ mod tests {
         );
     }
 
+    /// A [`RecordingRunner`] whose first `failing` runs, of any gate, fail: the verb's own run
+    /// red while the driver's later run of the same gate passes.
+    struct FirstRunsFail {
+        inner: RecordingRunner,
+        failing: usize,
+    }
+    impl gate::Runner for FirstRunsFail {
+        fn run(
+            &self,
+            g: &Gate,
+            dir: &str,
+            target: &str,
+            gate_scratch: &str,
+            build_cache_dir: &str,
+            build_cache_guard: &str,
+            store_fence: &str,
+            build_env: &gate::BuildEnv,
+            budget: &BuildBudget,
+        ) -> Result<gate::GateResult, gate::ProbeFault> {
+            let res = self.inner.run(
+                g,
+                dir,
+                target,
+                gate_scratch,
+                build_cache_dir,
+                build_cache_guard,
+                store_fence,
+                build_env,
+                budget,
+            )?;
+            if self.inner.calls().len() <= self.failing {
+                return Ok(gate::GateResult {
+                    pass: false,
+                    evidence: "FAIL: the first run".into(),
+                });
+            }
+            Ok(res)
+        }
+    }
+
+    /// How the implementer's own verdict on its commit reaches the log before the driver gates
+    /// that commit.
+    #[derive(Clone, Copy)]
+    enum VerbRoute {
+        /// `rigger gate g` through [`run_gate_verb`], the gate's command set to this text.
+        Verb(&'static str),
+        /// A green GateVerdict addressing the commit under the driver's own command, appended
+        /// straight to the store under the verb's key shape and without the verb's provenance.
+        Unattested,
+    }
+
+    /// An implementer that commits its work and then gates the commit through `route`; the
+    /// adjudicator approves at once and the lenses narrate.
+    struct GateVerbDriver<'a> {
+        cfg: &'a Config,
+        store: &'a dyn EventStore,
+        runner: &'a dyn gate::Runner,
+        repo: String,
+        route: VerbRoute,
+    }
+    impl AgentDriver for GateVerbDriver<'_> {
+        fn spawn(
+            &self,
+            a: &AgentDef,
+            prompt: &str,
+            opts: &SpawnOpts,
+            emit: &dyn Fn(&str, Value) -> Result<(), Error>,
+        ) -> Result<AgentResult, Error> {
+            if !opts.id.contains("/implementer#") {
+                let approving = CacheDriver {
+                    contents: Vec::new(),
+                    approve_at: 0,
+                };
+                return approving.spawn(a, prompt, opts, emit);
+            }
+            std::fs::write(Path::new(&opts.dir).join("work.rs"), "verb\n").unwrap();
+            run_git(&opts.dir, &["add", "-A"]);
+            run_git(&opts.dir, &["commit", "-q", "-m", "work"]);
+            match self.route {
+                VerbRoute::Verb(command) => {
+                    let mut verb_cfg = self.cfg.clone();
+                    verb_cfg
+                        .workflow
+                        .gates
+                        .insert("g".into(), gate_def(command));
+                    run_gate_verb(
+                        &verb_cfg,
+                        self.store,
+                        self.runner,
+                        &self.repo,
+                        &opts.dir,
+                        "g",
+                        &opts.id,
+                    )?;
+                }
+                VerbRoute::Unattested => {
+                    let sha = crate::worktree::head_sha_of(&opts.dir);
+                    let ev = Event::new(
+                        contextgraph::TYPE_GATE_VERDICT,
+                        serde_json::to_vec(&json!({
+                            "gate": "g", "pass": true, "flaky": false, "evidence": "PASS"
+                        }))?,
+                    )
+                    .with_meta(META_REPLAY_KEY, format!("s/gate-verb:g@{sha}"))
+                    .with_meta(META_INPUT_DIGEST, input_digest("true", &sha));
+                    self.store.append(STREAM, ExpectedRevision::Any, &[ev])?;
+                }
+            }
+            Ok(AgentResult::default())
+        }
+    }
+
+    /// THE AGENT'S GATE RUN IS REUSED: GIVEN an implementer that commits its work and gates the
+    /// commit itself before the driver gates it, WHEN the driver reaches gate `g` on that commit,
+    /// THEN a green the verb recorded for the driver's own command answers it as a logged cache
+    /// hit and the command does not run again; a red verb run, a verb run of a different command
+    /// and a green that did not come from the verb answer nothing, and the driver runs the gate.
+    /// Wherever both ran, the verb handed the gate the inputs the driver hands it.
+    #[test]
+    fn a_verb_verdict_on_the_gated_commit_answers_the_drivers_gate_only_when_green_attested_and_same_command(
+    ) {
+        struct Case {
+            why: &'static str,
+            route: VerbRoute,
+            failing: usize,
+            runs: usize,
+            hit: bool,
+        }
+        let cases = [
+            Case {
+                why: "a green verb run of the driver's command",
+                route: VerbRoute::Verb("true"),
+                failing: 0,
+                runs: 1,
+                hit: true,
+            },
+            Case {
+                why: "a red verb run",
+                route: VerbRoute::Verb("true"),
+                failing: 1,
+                runs: 2,
+                hit: false,
+            },
+            Case {
+                why: "a green verb run of a different command",
+                route: VerbRoute::Verb("echo other"),
+                failing: 0,
+                runs: 2,
+                hit: false,
+            },
+            Case {
+                why: "a green verdict without the verb's provenance",
+                route: VerbRoute::Unattested,
+                failing: 0,
+                runs: 1,
+                hit: false,
+            },
+        ];
+        for case in cases {
+            let why = case.why;
+            let repo = temp_git_project_with_commit();
+            let repo_path = repo.path().to_str().unwrap().to_string();
+            let cfg = review_stage_cfg("g");
+            let store = Store::open(":memory:").unwrap();
+            let runner = FirstRunsFail {
+                inner: RecordingRunner::new(&[]),
+                failing: case.failing,
+            };
+            let driver = GateVerbDriver {
+                cfg: &cfg,
+                store: &store,
+                runner: &runner,
+                repo: repo_path.clone(),
+                route: case.route,
+            };
+            let deps = Deps {
+                gates: &runner,
+                repo: repo_path,
+                ..stub_deps(&store, &driver, Vec::new())
+            };
+            let rs = run_isolated(&cfg, &deps).unwrap();
+            assert_eq!(rs.units["s"].status, ledger::Status::Integrated, "{why}");
+            let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+            let driven = gate_verdict_event(&events, "s", 0);
+            assert!(verdict_passed(driven), "{why}: the driver's verdict passes");
+            let calls = runner.inner.calls();
+            assert_eq!(
+                calls.iter().filter(|c| c.as_str() == "g").count(),
+                case.runs,
+                "{why}: the gate's runs: {calls:?}"
+            );
+            let verb = events.iter().find(|e| {
+                e.type_ == contextgraph::TYPE_GATE_VERDICT
+                    && e.meta.get(META_GATE_ORIGIN).map(String::as_str) == Some(GATE_ORIGIN_VERB)
+            });
+            if let VerbRoute::Verb(command) = case.route {
+                let verb = verb.unwrap_or_else(|| panic!("{why}: the verb records its verdict"));
+                let sha = digest_address(&driven.meta[META_INPUT_DIGEST]).unwrap();
+                assert_eq!(
+                    verb.meta.get(META_INPUT_DIGEST),
+                    Some(&input_digest(command, sha)),
+                    "{why}: the verb's verdict addresses its command over the gated commit"
+                );
+                assert_eq!(
+                    verdict_passed(verb),
+                    case.failing == 0,
+                    "{why}: the verb records the gate's own result"
+                );
+            } else {
+                assert!(verb.is_none(), "{why}: nothing ran the verb");
+            }
+            let cited = driven.meta.get(META_CACHE_HIT);
+            if case.hit {
+                assert_eq!(
+                    cited,
+                    verb.map(|v| v.position.to_string()).as_ref(),
+                    "{why}: the driver's hit cites the verb's verdict"
+                );
+            } else {
+                assert_eq!(cited, None, "{why}: the driver ran the gate itself");
+            }
+            if case.runs == 2 && matches!(case.route, VerbRoute::Verb(_)) {
+                let pair = |seen: Vec<String>, what: &str| {
+                    assert_eq!(
+                        seen[0], seen[1],
+                        "{why}: the verb and the driver hand the same {what}"
+                    );
+                };
+                pair(runner.inner.targets(), "target");
+                pair(runner.inner.gate_scratches(), "gate scratch");
+                pair(runner.inner.store_fences(), "store fence");
+                pair(runner.inner.build_cache_dirs(), "build cache dir");
+                pair(runner.inner.build_cache_guards(), "build cache guard");
+                let envs = support::snapshot(&runner.inner.build_envs);
+                assert_eq!(
+                    envs[0], envs[1],
+                    "{why}: the verb and the driver hand the same build env"
+                );
+                assert!(
+                    !envs[0].is_empty(),
+                    "{why}: the build env carries the run's vars"
+                );
+            }
+        }
+    }
+
+    /// THE VERB GATES ONLY A COMMITTED TREE AND A DECLARED GATE: each row's call is refused with
+    /// an error naming why, runs nothing and records nothing.
+    #[test]
+    fn the_gate_verb_refuses_a_dirty_tree_and_an_undeclared_gate_running_and_recording_nothing() {
+        struct Case {
+            why: &'static str,
+            dirty: bool,
+            gate: &'static str,
+            refusal: &'static str,
+        }
+        let cases = [
+            Case {
+                why: "an uncommitted file",
+                dirty: true,
+                gate: "g",
+                refusal: "uncommitted changes",
+            },
+            Case {
+                why: "an undeclared gate",
+                dirty: false,
+                gate: "nope",
+                refusal:
+                    "no gate \"nope\" is declared in the workflow; the declared gates are: g, h",
+            },
+        ];
+        for case in cases {
+            let why = case.why;
+            let repo = temp_git_project_with_commit();
+            let dir = repo.path().to_str().unwrap().to_string();
+            if case.dirty {
+                std::fs::write(repo.path().join("loose.rs"), "loose\n").unwrap();
+            }
+            let mut cfg = Config::default();
+            cfg.workflow.gates.insert("g".into(), gate_def("true"));
+            cfg.workflow.gates.insert("h".into(), gate_def("true"));
+            let store = Store::open(":memory:").unwrap();
+            let runner = RecordingRunner::new(&[]);
+            let err = run_gate_verb(&cfg, &store, &runner, &dir, &dir, case.gate, "")
+                .err()
+                .unwrap_or_else(|| panic!("{why}: the verb refuses"));
+            assert!(
+                err.0.contains(case.refusal),
+                "{why}: the refusal says {:?}: {}",
+                case.refusal,
+                err.0
+            );
+            assert!(runner.calls().is_empty(), "{why}: no gate ran");
+            assert!(
+                store
+                    .read_stream(STREAM, 0, Direction::Forward)
+                    .unwrap()
+                    .is_empty(),
+                "{why}: nothing was recorded"
+            );
+        }
+    }
+
+    /// A gate runner that changes the tree it gates while it runs: it writes a file, and
+    /// commits it when `commit` is set.
+    struct TreeChangingRunner {
+        commit: bool,
+    }
+    impl gate::Runner for TreeChangingRunner {
+        fn run(
+            &self,
+            _g: &Gate,
+            dir: &str,
+            _target: &str,
+            _gate_scratch: &str,
+            _build_cache_dir: &str,
+            _build_cache_guard: &str,
+            _store_fence: &str,
+            _build_env: &gate::BuildEnv,
+            _budget: &BuildBudget,
+        ) -> Result<gate::GateResult, gate::ProbeFault> {
+            std::fs::write(Path::new(dir).join("written-by-the-gate.rs"), "x\n").unwrap();
+            if self.commit {
+                run_git(dir, &["add", "-A"]);
+                run_git(dir, &["commit", "-q", "-m", "by the gate"]);
+            }
+            Ok(gate::GateResult {
+                pass: true,
+                evidence: "PASS".into(),
+            })
+        }
+    }
+
+    /// A VERDICT ADDRESSES ONLY THE COMMIT IT GATED: GIVEN a gate that changes the tree while it
+    /// runs, WHEN the verb records its verdict, THEN the verdict carries no input digest, so it
+    /// can answer no later gate.
+    #[test]
+    fn a_gate_that_changes_the_tree_while_the_verb_runs_it_records_a_verdict_with_no_digest() {
+        for commit in [false, true] {
+            let repo = temp_git_project_with_commit();
+            let dir = repo.path().to_str().unwrap().to_string();
+            let mut cfg = Config::default();
+            cfg.workflow.gates.insert("g".into(), gate_def("true"));
+            let store = Store::open(":memory:").unwrap();
+            let ran = run_gate_verb(
+                &cfg,
+                &store,
+                &TreeChangingRunner { commit },
+                &dir,
+                &dir,
+                "g",
+                "",
+            )
+            .unwrap();
+            assert!(ran.pass, "commit {commit}: the gate's result is recorded");
+            assert!(ran.digest.is_empty(), "commit {commit}: no digest");
+            let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+            let verdict = events
+                .iter()
+                .find(|e| e.type_ == contextgraph::TYPE_GATE_VERDICT)
+                .expect("the verb records its verdict");
+            assert_eq!(verdict.position, ran.position);
+            assert_eq!(
+                verdict.meta.get(META_GATE_ORIGIN).map(String::as_str),
+                Some(GATE_ORIGIN_VERB)
+            );
+            assert!(
+                !verdict.meta.contains_key(META_INPUT_DIGEST),
+                "commit {commit}: a changed tree is addressed by nothing"
+            );
+        }
+    }
+
     /// A FAST-FORWARD LANDING REPLAYS ITS GATES: GIVEN `beta` needs `alpha`, `alpha`'s landing
     /// touches a file in `beta`'s blast radius, and `beta` lands as a fast-forward, WHEN `beta`'s
     /// post-merge gate runs on the commit its pre-merge gate already proved green, THEN the
