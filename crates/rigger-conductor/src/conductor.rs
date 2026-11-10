@@ -44045,7 +44045,7 @@ mod tests {
                 let copy = forged_copy(&recorded, case.row);
                 let mut rows = vec![copy.clone()];
                 if matches!(case.row, FrontierRow::Settled) {
-                    rows.push(settle_record("u", &[copy.id.clone()]));
+                    rows.push(settle_record("u", std::slice::from_ref(&copy.id)));
                 }
                 st.append(STREAM, ExpectedRevision::Any, &rows).unwrap();
                 let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
