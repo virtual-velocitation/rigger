@@ -381,6 +381,32 @@ mod tests {
         }
     }
 
+    /// A finding's sign-off mark is a bool: one carrying it, true or false, passes, and one whose
+    /// mark is any other value is refused naming the field, so no mistyped mark lands a finding
+    /// the peers read cannot decode.
+    #[test]
+    fn a_finding_sign_off_mark_is_judged_as_a_bool() {
+        let finding = |mark: &str| {
+            format!(r#"{{"id":"f1","summary":"s","about":["src/a.rs"],"sign_off":{mark}}}"#)
+        };
+        assert_eq!(
+            ["true", "false", r#""true""#, "1"]
+                .map(|mark| check_fold_payload(TYPE_REVIEW_FINDING, finding(mark).as_bytes())),
+            [
+                Ok(()),
+                Ok(()),
+                Err(format!(
+                    "{TYPE_REVIEW_FINDING} payload field `sign_off`: invalid type: string \"true\", \
+                     expected a boolean at line 1 column 63"
+                )),
+                Err(format!(
+                    "{TYPE_REVIEW_FINDING} payload field `sign_off`: invalid type: integer `1`, \
+                     expected a boolean at line 1 column 58"
+                )),
+            ]
+        );
+    }
+
     /// A ledger entry is judged by the parse its fold reads it with: a payload missing a field is
     /// refused in that parse's own words, and one carrying all five passes.
     #[test]
