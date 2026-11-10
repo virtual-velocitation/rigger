@@ -461,14 +461,19 @@ pub fn install_pretooluse_hook(
 /// OTHER top-level key and every OTHER server entry in the file is preserved untouched.
 /// Because the write is unconditional on the SAME inputs, calling this twice with the same
 /// `name`/`command`/`args` is idempotent by construction: the second call reproduces the
-/// same bytes. `existing` may be empty.
+/// same bytes. The entry is marked [`MCP_ALWAYS_LOAD`], so the session that reads the file has
+/// the server's tools from its first turn. `existing` may be empty.
 pub fn install_mcp_server(
     existing: &[u8],
     name: &str,
     command: &str,
     args: &[&str],
 ) -> Result<Vec<u8>, Error> {
-    merge_mcp_server(existing, name, json!({"command": command, "args": args}))
+    merge_mcp_server(
+        existing,
+        name,
+        json!({"command": command, "args": args, MCP_ALWAYS_LOAD: true}),
+    )
 }
 
 /// The host's per-server MCP key that puts every tool the server lists into the session's prompt
@@ -477,15 +482,11 @@ pub fn install_mcp_server(
 pub const MCP_ALWAYS_LOAD: &str = "alwaysLoad";
 
 /// The MCP configuration a headless spawn launches with: rigger's one stdio server
-/// (`command args..` under [`MCP_SERVER_NAME`]) marked [`MCP_ALWAYS_LOAD`], so the graph tools are
-/// callable from the spawn's first turn. Only rigger's own entry carries the mark; it changes no
-/// other server and no host-wide setting.
+/// (`command args..` under [`MCP_SERVER_NAME`]), the same entry [`install_mcp_server`] writes, so
+/// the graph tools are callable from the spawn's first turn. Only rigger's own entry carries the
+/// mark; it changes no other server and no host-wide setting.
 pub fn spawn_mcp_config(command: &str, args: &[&str]) -> Result<Vec<u8>, Error> {
-    merge_mcp_server(
-        b"",
-        MCP_SERVER_NAME,
-        json!({"command": command, "args": args, MCP_ALWAYS_LOAD: true}),
-    )
+    install_mcp_server(b"", MCP_SERVER_NAME, command, args)
 }
 
 /// Merge `entry` under `name` into `existing`'s `mcpServers` object, replacing whatever was there
