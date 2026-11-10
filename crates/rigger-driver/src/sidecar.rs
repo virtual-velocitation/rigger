@@ -51,6 +51,12 @@ pub struct PeerFinding {
     pub summary: String,
     #[serde(default)]
     pub about: Vec<String>,
+    /// The file (or `file:line` cite) it names beside `about`.
+    #[serde(default)]
+    pub file: Option<String>,
+    /// The unit it was raised on.
+    #[serde(default)]
+    pub unit: String,
     /// Whether the reviewer marked it as its sign-off (`"sign_off": true`) rather than a
     /// finding about the code; absent, as on every older finding, it reads as an ordinary one.
     #[serde(default)]
@@ -68,6 +74,9 @@ pub struct PeerLesson {
     pub summary: String,
     #[serde(default)]
     pub about: Vec<String>,
+    /// The file (or `file:line` cite) it names beside `about`.
+    #[serde(default)]
+    pub file: Option<String>,
 }
 
 /// A peer record the side-car surfaces: the event type it folds from, and the files it
@@ -89,6 +98,13 @@ pub trait Peer: DeserializeOwned {
     /// Whether the record is a reviewer's marked sign-off, which ranks with ceremony
     /// ([`is_ceremony`]); false for a kind that carries no such mark.
     const SIGN_OFF: fn(&Self) -> bool = |_| false;
+    /// Every location the fold ties a record of this kind to, each read through
+    /// [`referenced_id`] by [`Sidecar::site_of`]: its [`Self::SCOPE`] unless the kind names more.
+    const LOCATIONS: fn(&Self) -> Vec<&str> =
+        |r| (Self::SCOPE)(r).iter().map(String::as_str).collect();
+    /// The attrs the fold gives a record of this kind's node: its summary unless the kind
+    /// carries more.
+    const ATTRS: fn(&Self) -> Vec<(&'static str, &str)> = |r| vec![("summary", (Self::SUMMARY)(r))];
 
     /// Every record of this kind in `seen`, in stream order - each matching event's body
     /// decoded, an undecodable one skipped.
@@ -137,6 +153,9 @@ impl Peer for PeerFinding {
     const SUMMARY: fn(&Self) -> &str = |f| &f.summary;
     const BY: fn(&Self) -> &str = |f| &f.by;
     const SIGN_OFF: fn(&Self) -> bool = |f| f.sign_off;
+    const LOCATIONS: fn(&Self) -> Vec<&str> = |f| about_and_file(&f.about, &f.file);
+    const ATTRS: fn(&Self) -> Vec<(&'static str, &str)> =
+        |f| vec![("summary", &f.summary), ("by", &f.by), ("unit", &f.unit)];
 }
 
 impl Peer for PeerLesson {
@@ -145,6 +164,13 @@ impl Peer for PeerLesson {
     const SCOPE: fn(&Self) -> &[String] = |l| &l.about;
     const ID: fn(&Self) -> &str = |l| &l.id;
     const SUMMARY: fn(&Self) -> &str = |l| &l.summary;
+    const LOCATIONS: fn(&Self) -> Vec<&str> = |l| about_and_file(&l.about, &l.file);
+}
+
+/// A lesson's or finding's locations as the fold reads them: each `about` reference, then its
+/// `file`.
+fn about_and_file<'a>(about: &'a [String], file: &'a Option<String>) -> Vec<&'a str> {
+    about.iter().chain(file).map(String::as_str).collect()
 }
 
 /// The single c1 run attribution ([`run::run_attribution`] keyed by event index, plus
@@ -261,8 +287,8 @@ impl Sidecar {
 
     /// The decision, lesson or finding whose id is `id`, read from the log as a show surface
     /// prints a graph node, for an id the graph no longer holds (a `rigger reset --runs` prune
-    /// deletes no event): its kind, the distinct references it names as its degree, and its
-    /// summary and reviewer as the fold's attrs; a restated id reads as its latest record.
+    /// deletes no event): its kind, the distinct locations it names ([`Peer::LOCATIONS`]) as its
+    /// degree, and the fold's attrs ([`Peer::ATTRS`]); a restated id reads as its latest record.
     pub fn site_of(&self, id: &str) -> Option<contextgraph::EntitySite> {
         self.site_of_kind::<PeerDecision>(id)
             .or_else(|| self.site_of_kind::<PeerLesson>(id))
@@ -274,14 +300,14 @@ impl Sidecar {
         let record = T::collect(&self.seen)
             .into_iter()
             .rfind(|r| (T::ID)(r) == id)?;
-        let attrs = [("summary", (T::SUMMARY)(&record)), ("by", (T::BY)(&record))]
+        let attrs = (T::ATTRS)(&record)
             .into_iter()
             .filter(|(_, value)| !value.is_empty())
             .map(|(key, value)| (key.to_string(), value.to_string()))
             .collect();
-        let degree = (T::SCOPE)(&record)
-            .iter()
-            .map(|r| referenced_id(r))
+        let degree = (T::LOCATIONS)(&record)
+            .into_iter()
+            .map(referenced_id)
             .collect::<HashSet<_>>()
             .len();
         Some(contextgraph::EntitySite {
