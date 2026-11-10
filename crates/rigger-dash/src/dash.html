@@ -867,7 +867,7 @@ function renderCard(card) {
   const row = (title, chips) => chips ? '<div class="kgcard-row"><h4>' + esc(title) + '</h4>' + chips + '</div>' : "";
   // The PROOF row (spec 86 criterion 2): "proven by N tests" with the evidence file:lines on
   // expand, or the explicit amber "no test reaches this entity" state - absence of proof is
-  // itself information the audit (spec 85) and reviewers want, so this is NEVER omitted like an
+  // itself information reviewers want, so this is NEVER omitted like an
   // empty chip row above (`row`'s own `chips ? ... : ""` would silently hide a zero-proof entity
   // exactly like an entity with no decisions/findings, which is the wrong default here).
   const proofRow = c => {
