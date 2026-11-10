@@ -15588,6 +15588,7 @@ mod tests {
     };
     use crate::test_support::{MergeBreakDriver, MERGE_BREAK_BASE, REJECT_FEATURE};
     use std::path::Path;
+    use std::sync::mpsc;
 
     /// Shared test doubles and case bodies for this module's same-shaped tests.
     mod support {
@@ -43301,27 +43302,319 @@ mod tests {
         }
     }
 
-    /// How the implementer's own verdict on its commit reaches the log before the driver gates
-    /// that commit.
-    #[derive(Clone, Copy)]
-    enum VerbRoute {
-        /// `rigger gate g` through [`run_gate_verb`], the gate's command set to this text.
-        Verb(&'static str),
-        /// A green GateVerdict addressing the commit under the driver's own command, appended
-        /// straight to the store under the verb's key shape and without the verb's provenance.
-        Unattested,
+    /// The bytes of the key a test run signs with: a row a test signs with them stands for one
+    /// the live driver recorded.
+    const LIVE_KEY: &[u8] = b"signed-verdicts-live-test-key-01";
+    /// The bytes of another driver process's key: what a restarted driver held before.
+    const OTHER_KEY: &[u8] = b"signed-verdicts-other-test-key-2";
+
+    /// [`run_serving`] under the key `bytes` make and `channel`, with a repo-less run's scratch
+    /// root pinned as [`run_isolated`] pins it.
+    fn run_signed(
+        cfg: &Config,
+        deps: &Deps,
+        bytes: &[u8],
+        channel: Option<&dyn GateChannel>,
+    ) -> Result<RunState, Error> {
+        crate::test_support::isolated(cfg, deps, |cfg, deps| {
+            run_serving(cfg, deps, VerdictKey::from_bytes(bytes), channel)
+        })
     }
 
-    /// An implementer that commits its work and then gates the commit through `route`; the
-    /// adjudicator approves at once and the lenses narrate.
-    struct GateVerbDriver<'a> {
-        cfg: &'a Config,
-        store: &'a dyn EventStore,
-        runner: &'a dyn gate::Runner,
-        repo: String,
-        route: VerbRoute,
+    /// One request the in-process channel carries: the request and where its reply goes; `None`
+    /// closes the channel.
+    type ChannelMessage = Option<(GateRequest, mpsc::Sender<GateReply>)>;
+
+    /// An in-process [`GateChannel`]: `ask` hands the serving run one request and waits for its
+    /// reply, as `rigger gate` does over the socket.
+    struct TestChannel {
+        tx: Mutex<mpsc::Sender<ChannelMessage>>,
+        rx: Mutex<mpsc::Receiver<ChannelMessage>>,
     }
-    impl AgentDriver for GateVerbDriver<'_> {
+    impl TestChannel {
+        fn new() -> Self {
+            let (tx, rx) = mpsc::channel();
+            TestChannel {
+                tx: Mutex::new(tx),
+                rx: Mutex::new(rx),
+            }
+        }
+        fn ask(&self, dir: &str, gate: &str) -> GateReply {
+            let (back, reply) = mpsc::channel();
+            let request = GateRequest {
+                dir: dir.into(),
+                gate: gate.into(),
+            };
+            self.tx
+                .lock()
+                .unwrap()
+                .send(Some((request, back)))
+                .unwrap();
+            reply.recv().expect("the serving run answers every request")
+        }
+    }
+    impl GateChannel for TestChannel {
+        fn serve(&self, answer: &(dyn Fn(GateRequest) -> GateReply + Sync)) -> std::io::Result<()> {
+            let rx = self.rx.lock().unwrap();
+            while let Ok(Some((request, back))) = rx.recv() {
+                let _ = back.send(answer(request));
+            }
+            Ok(())
+        }
+        fn close(&self) {
+            let _ = self.tx.lock().unwrap().send(None);
+        }
+    }
+
+    /// The GateVerdict recorded under `key`, the latest when several are.
+    fn verdict_under<'a>(events: &'a [Event], key: &str) -> Option<&'a Event> {
+        events.iter().rev().find(|e| {
+            e.type_ == contextgraph::TYPE_GATE_VERDICT
+                && e.meta.get(META_REPLAY_KEY).map(String::as_str) == Some(key)
+        })
+    }
+
+    fn verdict_evidence(e: &Event) -> String {
+        serde_json::from_slice::<GateVerdictData>(&e.data)
+            .unwrap()
+            .evidence
+    }
+
+    /// How the frontier pass stands when the second run resumes: the first run recorded it
+    /// signed and halted before settling its battery, and a later row under the same key, which
+    /// the resume takes as the frontier, may follow it.
+    #[derive(Clone, Copy, Debug)]
+    enum FrontierRow {
+        /// The first run's own row, untouched.
+        AsRecorded,
+        /// A copy without its MAC.
+        Unsigned,
+        /// A copy whose command digest no longer matches its MAC.
+        Tampered,
+        /// An unsigned copy a settle record cites, so it is history.
+        Settled,
+        /// An unsigned copy recording a red.
+        Red,
+    }
+
+    /// A copy of `row` under a fresh id, edited as `how` says.
+    fn forged_copy(row: &Event, how: FrontierRow) -> Event {
+        let mut copy = Event::new(row.type_.clone(), row.data.clone());
+        copy.meta = row.meta.clone();
+        match how {
+            FrontierRow::AsRecorded => {}
+            FrontierRow::Tampered => {
+                copy.meta
+                    .insert(META_COMMAND_DIGEST.into(), "0".repeat(64));
+            }
+            FrontierRow::Unsigned | FrontierRow::Settled => {
+                copy.meta.remove(META_VERDICT_MAC);
+            }
+            FrontierRow::Red => {
+                copy.meta.remove(META_VERDICT_MAC);
+                let mut v: Value = serde_json::from_slice(&row.data).unwrap();
+                v["pass"] = json!(false);
+                v["evidence"] = json!("FAIL: forged");
+                copy.data = serde_json::to_vec(&v).unwrap();
+            }
+        }
+        copy
+    }
+
+    /// THE FRONTIER PASS COUNTS ONLY WHEN THE LIVE DRIVER CAN VERIFY IT: GIVEN a first run that
+    /// recorded a pass and halted on a later gate's probe fault before settling the battery, WHEN
+    /// a second run resumes over the log, THEN it acts on that frontier pass only when its MAC
+    /// verifies under the live key or a settle record already cites it. An unsigned, tampered or
+    /// other-key pass re-runs the gate under a fresh re-verify key with evidence saying why, and a
+    /// red is replayed as red, never re-run at that attempt. Inline and deferred gates alike.
+    #[test]
+    fn a_frontier_pass_is_acted_on_only_when_its_mac_verifies_under_the_live_key_or_a_settle_record_cites_it(
+    ) {
+        struct Case {
+            why: &'static str,
+            deferred: bool,
+            row: FrontierRow,
+            second_key: &'static [u8],
+            calls: &'static [&'static str],
+        }
+        let inline = |why, row, second_key, calls| Case {
+            why,
+            deferred: false,
+            row,
+            second_key,
+            calls,
+        };
+        let deferred = |why, row, second_key, calls| Case {
+            why,
+            deferred: true,
+            row,
+            second_key,
+            calls,
+        };
+        let cases = [
+            inline(
+                "the live key's own pass",
+                FrontierRow::AsRecorded,
+                LIVE_KEY,
+                &["g2"][..],
+            ),
+            inline(
+                "a pass an earlier driver process signed",
+                FrontierRow::AsRecorded,
+                OTHER_KEY,
+                &["g1", "g2"],
+            ),
+            inline(
+                "an unsigned pass",
+                FrontierRow::Unsigned,
+                LIVE_KEY,
+                &["g1", "g2"],
+            ),
+            inline(
+                "a tampered pass",
+                FrontierRow::Tampered,
+                LIVE_KEY,
+                &["g1", "g2"],
+            ),
+            inline(
+                "an unsigned pass a settle record cites",
+                FrontierRow::Settled,
+                LIVE_KEY,
+                &["g2"],
+            ),
+            inline(
+                "an unsigned red",
+                FrontierRow::Red,
+                LIVE_KEY,
+                &["g2", "g1", "g2"],
+            ),
+            deferred(
+                "the live key's own deferred pass",
+                FrontierRow::AsRecorded,
+                LIVE_KEY,
+                &["g2"],
+            ),
+            deferred(
+                "an unsigned deferred pass",
+                FrontierRow::Unsigned,
+                LIVE_KEY,
+                &["g1", "g2"],
+            ),
+        ];
+        for case in cases {
+            let why = case.why;
+            let (cfg, frontier, reverify) = if case.deferred {
+                let deferred_gate = config::Gate {
+                    kind: "deferred".into(),
+                    ..gate_def("true")
+                };
+                (
+                    verify_only_cfg(vec![
+                        ("g0", gate_def("true")),
+                        ("g1", deferred_gate.clone()),
+                        ("g2", deferred_gate),
+                    ]),
+                    "deferred/gate:g1",
+                    "deferred/gate:g1~reverify1",
+                )
+            } else {
+                (
+                    verify_only_cfg(vec![("g1", gate_def("true")), ("g2", gate_def("true"))]),
+                    "u/gate:g1#0",
+                    "u/gate:g1~reverify1#0",
+                )
+            };
+            let st = Store::open(":memory:").unwrap();
+            let driver = Stub::new();
+            let first = RecordingRunner::faulting_at(&[], if case.deferred { 2 } else { 1 });
+            let deps = Deps {
+                gates: &first,
+                ..stub_deps(&st, &driver, Vec::new())
+            };
+            assert!(
+                run_signed(&cfg, &deps, LIVE_KEY, None).is_err(),
+                "{why}: the first run halts on g2's probe fault"
+            );
+            let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
+            let recorded = verdict_under(&events, frontier)
+                .unwrap_or_else(|| panic!("{why}: the first run recorded {frontier}"))
+                .clone();
+            assert!(
+                verdict_verifies(&VerdictKey::from_bytes(LIVE_KEY), &recorded),
+                "{why}: the live driver signs what it records"
+            );
+            let mut acted_on = recorded.clone();
+            if !matches!(case.row, FrontierRow::AsRecorded) {
+                let copy = forged_copy(&recorded, case.row);
+                let mut rows = vec![copy.clone()];
+                if matches!(case.row, FrontierRow::Settled) {
+                    rows.push(settle_record("u", &[copy.id.clone()]));
+                }
+                st.append(STREAM, ExpectedRevision::Any, &rows).unwrap();
+                let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
+                acted_on = verdict_under(&events, frontier).unwrap().clone();
+            }
+            let second = RecordingRunner::new(&[]);
+            let deps = Deps {
+                gates: &second,
+                ..stub_deps(&st, &driver, Vec::new())
+            };
+            run_signed(&cfg, &deps, case.second_key, None)
+                .unwrap_or_else(|e| panic!("{why}: the resumed run completes: {}", e.0));
+            let skipped_g0: Vec<String> = second
+                .calls()
+                .into_iter()
+                .filter(|c| c != "g0")
+                .collect();
+            assert_eq!(skipped_g0, case.calls, "{why}: the gates the resume ran");
+            let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
+            let rerun = verdict_under(&events, reverify);
+            let reruns = case.calls.first() == Some(&"g1");
+            assert_eq!(
+                rerun.is_some(),
+                reruns,
+                "{why}: a re-run records under the re-verify key {reverify}"
+            );
+            if let Some(rerun) = rerun {
+                let evidence = verdict_evidence(rerun);
+                let why_rerun = format!(
+                    "re-run: unverified recorded pass at log position {}",
+                    acted_on.position
+                );
+                assert!(
+                    evidence.starts_with(&why_rerun),
+                    "{why}: the re-run's evidence says why it ran: {evidence}"
+                );
+                assert!(
+                    verdict_verifies(&VerdictKey::from_bytes(case.second_key), rerun),
+                    "{why}: the re-run is signed under the live key"
+                );
+            }
+        }
+    }
+
+    /// How a row addressing the implementer's commit reaches the log while its spawn runs.
+    #[derive(Clone, Copy, Debug)]
+    enum JoinedRow {
+        /// A green signed under the live key.
+        Signed,
+        /// A green signed under another key.
+        OtherKey,
+        /// A green with no MAC.
+        Unsigned,
+        /// A green whose commit no longer matches its MAC.
+        Tampered,
+        /// A red signed under the live key.
+        SignedRed,
+    }
+
+    /// An implementer that commits its work and then appends `row` for that commit straight to
+    /// the store, under the shape a verb's verdict takes; the review approves at once.
+    struct JoiningDriver<'a> {
+        store: &'a dyn EventStore,
+        row: JoinedRow,
+    }
+    impl AgentDriver for JoiningDriver<'_> {
         fn spawn(
             &self,
             a: &AgentDef,
@@ -43336,234 +43629,359 @@ mod tests {
                 };
                 return approving.spawn(a, prompt, opts, emit);
             }
-            std::fs::write(Path::new(&opts.dir).join("work.rs"), "verb\n").unwrap();
+            std::fs::write(Path::new(&opts.dir).join("work.rs"), "joined\n").unwrap();
             run_git(&opts.dir, &["add", "-A"]);
             run_git(&opts.dir, &["commit", "-q", "-m", "work"]);
-            match self.route {
-                VerbRoute::Verb(command) => {
-                    let mut verb_cfg = self.cfg.clone();
-                    verb_cfg
-                        .workflow
-                        .gates
-                        .insert("g".into(), gate_def(command));
-                    run_gate_verb(
-                        &verb_cfg,
-                        self.store,
-                        self.runner,
-                        &self.repo,
-                        &opts.dir,
-                        "g",
-                        &opts.id,
-                    )?;
+            let sha = crate::worktree::head_sha_of(&opts.dir);
+            let replay_key = format!("s/gate-verb:g@{sha}#0");
+            let row = |pass: bool| VerdictRow {
+                replay_key: &replay_key,
+                unit: "s",
+                gate: "g",
+                pass,
+                flaky: false,
+                evidence: if pass { "PASS" } else { "FAIL" },
+                command: "true",
+                commit: &sha,
+            };
+            let live = VerdictKey::from_bytes(LIVE_KEY);
+            let ev = match self.row {
+                JoinedRow::Signed => row(true).event(&live, ""),
+                JoinedRow::OtherKey => row(true).event(&VerdictKey::from_bytes(OTHER_KEY), ""),
+                JoinedRow::Unsigned => {
+                    let mut ev = row(true).event(&live, "");
+                    ev.meta.remove(META_VERDICT_MAC);
+                    ev
                 }
-                VerbRoute::Unattested => {
-                    let sha = crate::worktree::head_sha_of(&opts.dir);
-                    let ev = Event::new(
-                        contextgraph::TYPE_GATE_VERDICT,
-                        serde_json::to_vec(&json!({
-                            "gate": "g", "pass": true, "flaky": false, "evidence": "PASS"
-                        }))?,
-                    )
-                    .with_meta(META_REPLAY_KEY, format!("s/gate-verb:g@{sha}"))
-                    .with_meta(META_INPUT_DIGEST, input_digest("true", &sha));
-                    self.store.append(STREAM, ExpectedRevision::Any, &[ev])?;
+                JoinedRow::Tampered => {
+                    let mut ev = row(true).event(&live, "");
+                    ev.meta.insert(META_GATE_COMMIT.into(), "0".repeat(40));
+                    ev
                 }
-            }
+                JoinedRow::SignedRed => row(false).event(&live, ""),
+            };
+            self.store.append(STREAM, ExpectedRevision::Any, &[ev])?;
             Ok(AgentResult::default())
         }
     }
 
-    /// THE AGENT'S GATE RUN IS REUSED: GIVEN an implementer that commits its work and gates the
-    /// commit itself before the driver gates it, WHEN the driver reaches gate `g` on that commit,
-    /// THEN a green the verb recorded for the driver's own command answers it as a logged cache
-    /// hit and the command does not run again; a red verb run, a verb run of a different command
-    /// and a green that did not come from the verb answer nothing, and the driver runs the gate.
-    /// Wherever both ran, the verb handed the gate the inputs the driver hands it.
+    /// THE CACHE ADMITS ONLY WHAT THE LIVE DRIVER SIGNED: GIVEN a row addressing the implementer's
+    /// commit under the driver's own command reaches the log while the spawn runs, WHEN the driver
+    /// gates that commit, THEN only a green signed under the live key answers the gate as a
+    /// logged, verified cache hit; an unsigned, tampered or other-key green and a red answer
+    /// nothing, and the gate runs.
     #[test]
-    fn a_verb_verdict_on_the_gated_commit_answers_the_drivers_gate_only_when_green_attested_and_same_command(
-    ) {
-        struct Case {
-            why: &'static str,
-            route: VerbRoute,
-            failing: usize,
-            runs: usize,
-            hit: bool,
-        }
+    fn a_green_joined_mid_run_answers_a_gate_only_when_signed_under_the_live_key() {
         let cases = [
-            Case {
-                why: "a green verb run of the driver's command",
-                route: VerbRoute::Verb("true"),
-                failing: 0,
-                runs: 1,
-                hit: true,
-            },
-            Case {
-                why: "a red verb run",
-                route: VerbRoute::Verb("true"),
-                failing: 1,
-                runs: 2,
-                hit: false,
-            },
-            Case {
-                why: "a green verb run of a different command",
-                route: VerbRoute::Verb("echo other"),
-                failing: 0,
-                runs: 2,
-                hit: false,
-            },
-            Case {
-                why: "a green verdict without the verb's provenance",
-                route: VerbRoute::Unattested,
-                failing: 0,
-                runs: 1,
-                hit: false,
-            },
+            (JoinedRow::Signed, true),
+            (JoinedRow::OtherKey, false),
+            (JoinedRow::Unsigned, false),
+            (JoinedRow::Tampered, false),
+            (JoinedRow::SignedRed, false),
         ];
-        for case in cases {
-            let why = case.why;
+        for (row, hit) in cases {
             let repo = temp_git_project_with_commit();
-            let repo_path = repo.path().to_str().unwrap().to_string();
-            let mut cfg = review_stage_cfg("g");
-            // A jobs cap puts a variable in the build env, so the comparison below has one to see.
-            cfg.workflow.build.jobs = 3;
+            let cfg = review_stage_cfg("g");
             let store = Store::open(":memory:").unwrap();
-            let runner = FirstRunsFail {
-                inner: RecordingRunner::new(&[]),
-                failing: case.failing,
-            };
-            let driver = GateVerbDriver {
-                cfg: &cfg,
-                store: &store,
-                runner: &runner,
-                repo: repo_path.clone(),
-                route: case.route,
-            };
+            let runner = RecordingRunner::new(&[]);
+            let driver = JoiningDriver { store: &store, row };
             let deps = Deps {
                 gates: &runner,
-                repo: repo_path,
+                repo: repo.path().to_str().unwrap().to_string(),
                 ..stub_deps(&store, &driver, Vec::new())
             };
-            let rs = run_isolated(&cfg, &deps).unwrap();
-            assert_eq!(rs.units["s"].status, ledger::Status::Integrated, "{why}");
+            let rs = run_signed(&cfg, &deps, LIVE_KEY, None).unwrap();
+            assert_eq!(rs.units["s"].status, ledger::Status::Integrated, "{row:?}");
             let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
             let driven = gate_verdict_event(&events, "s", 0);
-            assert!(verdict_passed(driven), "{why}: the driver's verdict passes");
-            let calls = runner.inner.calls();
+            let joined = events
+                .iter()
+                .find(|e| {
+                    e.meta
+                        .get(META_REPLAY_KEY)
+                        .is_some_and(|k| k.starts_with("s/gate-verb:"))
+                })
+                .expect("the spawn's row is in the log");
             assert_eq!(
-                calls.iter().filter(|c| c.as_str() == "g").count(),
-                case.runs,
-                "{why}: the gate's runs: {calls:?}"
+                runner.calls().len(),
+                usize::from(!hit),
+                "{row:?}: the gate's runs: {:?}",
+                runner.calls()
             );
-            let verb = events.iter().find(|e| {
-                e.type_ == contextgraph::TYPE_GATE_VERDICT
-                    && e.meta.get(META_GATE_ORIGIN).map(String::as_str) == Some(GATE_ORIGIN_VERB)
-            });
-            if let VerbRoute::Verb(command) = case.route {
-                let verb = verb.unwrap_or_else(|| panic!("{why}: the verb records its verdict"));
-                let sha = digest_address(&driven.meta[META_INPUT_DIGEST]).unwrap();
-                assert_eq!(
-                    verb.meta.get(META_INPUT_DIGEST),
-                    Some(&input_digest(command, sha)),
-                    "{why}: the verb's verdict addresses its command over the gated commit"
-                );
-                assert_eq!(
-                    verdict_passed(verb),
-                    case.failing == 0,
-                    "{why}: the verb records the gate's own result"
-                );
-            } else {
-                assert!(verb.is_none(), "{why}: nothing ran the verb");
-            }
-            let cited = driven.meta.get(META_CACHE_HIT);
-            if case.hit {
-                assert_eq!(
-                    cited,
-                    verb.map(|v| v.position.to_string()).as_ref(),
-                    "{why}: the driver's hit cites the verb's verdict"
-                );
-            } else {
-                assert_eq!(cited, None, "{why}: the driver ran the gate itself");
-            }
-            if case.runs == 2 && matches!(case.route, VerbRoute::Verb(_)) {
-                let pair = |seen: Vec<String>, what: &str| {
-                    assert_eq!(
-                        seen[0], seen[1],
-                        "{why}: the verb and the driver hand the same {what}"
-                    );
-                };
-                pair(runner.inner.targets(), "target");
-                pair(runner.inner.gate_scratches(), "gate scratch");
-                pair(runner.inner.store_fences(), "store fence");
-                pair(runner.inner.build_cache_dirs(), "build cache dir");
-                pair(runner.inner.build_cache_guards(), "build cache guard");
-                let envs = support::snapshot(&runner.inner.build_envs);
-                assert_eq!(
-                    envs[0], envs[1],
-                    "{why}: the verb and the driver hand the same build env"
-                );
+            assert_eq!(
+                driven.meta.get(META_CACHE_HIT),
+                hit.then(|| joined.position.to_string()).as_ref(),
+                "{row:?}: the driver's verdict cites the joined row only when it is reused"
+            );
+            if hit {
                 assert!(
-                    !envs[0].is_empty(),
-                    "{why}: the build env carries the run's vars"
+                    verdict_evidence(driven).contains("verified"),
+                    "{row:?}: the hit says it verified the row: {}",
+                    verdict_evidence(driven)
                 );
             }
         }
     }
 
-    /// THE VERB GATES ONLY A COMMITTED TREE AND A DECLARED GATE: each row's call is refused with
-    /// an error naming why, runs nothing and records nothing.
-    #[test]
-    fn the_gate_verb_refuses_a_dirty_tree_and_an_undeclared_gate_running_and_recording_nothing() {
-        struct Case {
-            why: &'static str,
-            dirty: bool,
-            gate: &'static str,
-            refusal: &'static str,
-        }
-        let cases = [
-            Case {
-                why: "an uncommitted file",
-                dirty: true,
-                gate: "g",
-                refusal: "uncommitted changes",
-            },
-            Case {
-                why: "an undeclared gate",
-                dirty: false,
-                gate: "nope",
-                refusal:
-                    "no gate \"nope\" is declared in the workflow; the declared gates are: g, h",
-            },
-        ];
-        for case in cases {
-            let why = case.why;
-            let repo = temp_git_project_with_commit();
-            let dir = repo.path().to_str().unwrap().to_string();
-            if case.dirty {
-                std::fs::write(repo.path().join("loose.rs"), "loose\n").unwrap();
+    /// What the implementer asks the run's gate channel once it has committed its work.
+    #[derive(Clone, Copy, Debug)]
+    enum Ask {
+        /// Gate `g` on its own committed worktree.
+        Gate,
+        /// Gate `g` with an uncommitted file in its worktree.
+        Dirty,
+        /// Gate `g` on the operator checkout, which no unit of the run owns.
+        OutsideUnit,
+        /// Gate `nope`, which the workflow does not declare.
+        Undeclared,
+    }
+
+    /// An implementer that commits its work and then asks `channel` to gate it as `ask` says,
+    /// keeping the reply and every spawn's env; the review approves at once.
+    struct ChannelDriver<'a> {
+        channel: &'a TestChannel,
+        ask: Ask,
+        checkout: String,
+        reply: Mutex<Option<GateReply>>,
+        envs: Mutex<Vec<Vec<(String, String)>>>,
+    }
+    impl AgentDriver for ChannelDriver<'_> {
+        fn spawn(
+            &self,
+            a: &AgentDef,
+            prompt: &str,
+            opts: &SpawnOpts,
+            emit: &dyn Fn(&str, Value) -> Result<(), Error>,
+        ) -> Result<AgentResult, Error> {
+            self.envs.lock().unwrap().push(opts.env.clone());
+            if !opts.id.contains("/implementer#") {
+                let approving = CacheDriver {
+                    contents: Vec::new(),
+                    approve_at: 0,
+                };
+                return approving.spawn(a, prompt, opts, emit);
             }
-            let mut cfg = Config::default();
-            cfg.workflow.gates.insert("g".into(), gate_def("true"));
-            cfg.workflow.gates.insert("h".into(), gate_def("true"));
-            let store = Store::open(":memory:").unwrap();
-            let runner = RecordingRunner::new(&[]);
-            let err = run_gate_verb(&cfg, &store, &runner, &dir, &dir, case.gate, "")
-                .err()
-                .unwrap_or_else(|| panic!("{why}: the verb refuses"));
+            std::fs::write(Path::new(&opts.dir).join("work.rs"), "verb\n").unwrap();
+            run_git(&opts.dir, &["add", "-A"]);
+            run_git(&opts.dir, &["commit", "-q", "-m", "work"]);
+            let reply = match self.ask {
+                Ask::Gate => self.channel.ask(&opts.dir, "g"),
+                Ask::Dirty => {
+                    std::fs::write(Path::new(&opts.dir).join("loose.rs"), "loose\n").unwrap();
+                    self.channel.ask(&opts.dir, "g")
+                }
+                Ask::OutsideUnit => self.channel.ask(&self.checkout, "g"),
+                Ask::Undeclared => self.channel.ask(&opts.dir, "nope"),
+            };
+            *self.reply.lock().unwrap() = Some(reply);
+            Ok(AgentResult::default())
+        }
+    }
+
+    /// The outcome of one run whose implementer asked the gate channel as `ask` says, its gate
+    /// runner failing its first `failing` runs.
+    struct ChannelRun {
+        events: Vec<Event>,
+        reply: GateReply,
+        runner: FirstRunsFail,
+        envs: Vec<Vec<(String, String)>>,
+        repo: tempfile::TempDir,
+    }
+
+    fn run_asking(ask: Ask, failing: usize) -> ChannelRun {
+        let repo = temp_git_project_with_commit();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let mut cfg = review_stage_cfg("g");
+        // A jobs cap puts a variable in the build env, so the comparison has one to see.
+        cfg.workflow.build.jobs = 3;
+        let store = Store::open(":memory:").unwrap();
+        let runner = FirstRunsFail {
+            inner: RecordingRunner::new(&[]),
+            failing,
+        };
+        let channel = TestChannel::new();
+        let driver = ChannelDriver {
+            channel: &channel,
+            ask,
+            checkout: repo_path.clone(),
+            reply: Mutex::new(None),
+            envs: Mutex::new(Vec::new()),
+        };
+        let deps = Deps {
+            gates: &runner,
+            repo: repo_path,
+            ..stub_deps(&store, &driver, Vec::new())
+        };
+        let rs = run_signed(&cfg, &deps, LIVE_KEY, Some(&channel)).unwrap();
+        assert_eq!(rs.units["s"].status, ledger::Status::Integrated, "{ask:?}");
+        let events = store
+            .read_all(0, Direction::Forward, &Filter::default())
+            .unwrap();
+        let reply = driver
+            .reply
+            .lock()
+            .unwrap()
+            .take()
+            .expect("the implementer asked the channel");
+        let envs = driver.envs.lock().unwrap().clone();
+        drop(deps);
+        ChannelRun {
+            events,
+            reply,
+            runner,
+            envs,
+            repo,
+        }
+    }
+
+    /// THE VERB IS A REQUEST TO THE DRIVER: GIVEN an implementer that commits its work and asks
+    /// the serving run to gate it while its spawn runs, WHEN the run answers, THEN it runs the
+    /// gate the workflow declares, signs and records the verdict, and replies with it; the
+    /// driver's own gate on that commit is a verified cache hit on a green and a fresh run after
+    /// a red, both runs handed the same inputs.
+    #[test]
+    fn a_verb_request_during_the_spawn_is_run_signed_recorded_and_reused_by_the_driver() {
+        for (failing, pass) in [(0, true), (1, false)] {
+            let run = run_asking(Ask::Gate, failing);
+            let GateReply::Ran {
+                gate,
+                pass: ran_pass,
+                commit,
+                digest,
+                position,
+                ..
+            } = run.reply
+            else {
+                panic!("pass {pass}: the run gates the commit: {:?}", run.reply);
+            };
+            assert_eq!((gate.as_str(), ran_pass), ("g", pass));
+            assert_eq!(digest, input_digest("true", &commit), "pass {pass}");
+            let verb = run
+                .events
+                .iter()
+                .find(|e| e.position == position && e.type_ == contextgraph::TYPE_GATE_VERDICT)
+                .expect("the reply cites the recorded verdict");
             assert!(
-                err.0.contains(case.refusal),
-                "{why}: the refusal says {:?}: {}",
-                case.refusal,
-                err.0
+                verdict_verifies(&VerdictKey::from_bytes(LIVE_KEY), verb),
+                "pass {pass}: the verb's verdict is signed under the live key"
             );
-            assert!(runner.calls().is_empty(), "{why}: no gate ran");
+            assert_eq!(
+                verb.meta.get(META_GATE_UNIT).map(String::as_str),
+                Some("s"),
+                "pass {pass}: the verdict names the unit whose worktree asked"
+            );
+            let driven = gate_verdict_event(&run.events, "s", 0);
+            assert!(verdict_passed(driven), "pass {pass}: the driver's gate passes");
+            let calls = run.runner.inner.calls();
+            assert_eq!(calls.len(), if pass { 1 } else { 2 }, "pass {pass}: {calls:?}");
+            assert_eq!(
+                driven.meta.get(META_CACHE_HIT),
+                pass.then(|| position.to_string()).as_ref(),
+                "pass {pass}: the driver reuses only a green"
+            );
+            if !pass {
+                let pair = |seen: Vec<String>, what: &str| {
+                    assert_eq!(seen[0], seen[1], "the verb and the driver hand the same {what}");
+                };
+                pair(run.runner.inner.targets(), "target");
+                pair(run.runner.inner.gate_scratches(), "gate scratch");
+                pair(run.runner.inner.store_fences(), "store fence");
+                pair(run.runner.inner.build_cache_dirs(), "build cache dir");
+                pair(run.runner.inner.build_cache_guards(), "build cache guard");
+                let envs = support::snapshot(&run.runner.inner.build_envs);
+                assert_eq!(envs[0], envs[1], "the verb and the driver hand the same build env");
+                assert!(!envs[0].is_empty(), "the build env carries the run's vars");
+            }
+        }
+    }
+
+    /// THE DRIVER GATES ONLY A COMMITTED UNIT WORKTREE AND A DECLARED GATE: each row's request is
+    /// refused with the reason, runs nothing for the verb and records nothing for it.
+    #[test]
+    fn a_verb_request_on_a_dirty_tree_a_non_unit_worktree_or_an_undeclared_gate_is_refused() {
+        let cases = [
+            (Ask::Dirty, "uncommitted changes"),
+            (
+                Ask::OutsideUnit,
+                "is not the worktree of a unit this run is driving",
+            ),
+            (
+                Ask::Undeclared,
+                "no gate \"nope\" is declared in the workflow; the declared gates are: g",
+            ),
+        ];
+        for (ask, refusal) in cases {
+            let run = run_asking(ask, 0);
+            let GateReply::Refused { reason } = &run.reply else {
+                panic!("{ask:?}: the run refuses: {:?}", run.reply);
+            };
             assert!(
-                store
-                    .read_stream(STREAM, 0, Direction::Forward)
-                    .unwrap()
-                    .is_empty(),
-                "{why}: nothing was recorded"
+                reason.contains(refusal),
+                "{ask:?}: the refusal says {refusal:?}: {reason}"
+            );
+            assert_eq!(
+                run.runner.inner.calls(),
+                ["g"],
+                "{ask:?}: only the driver's own gate ran"
+            );
+            assert!(
+                !run.events.iter().any(|e| e
+                    .meta
+                    .get(META_REPLAY_KEY)
+                    .is_some_and(|k| k.contains("/gate-verb:"))),
+                "{ask:?}: the refused request recorded nothing"
             );
         }
+    }
+
+    /// Every file under `dir`, recursively.
+    fn files_under(dir: &Path) -> Vec<std::path::PathBuf> {
+        let mut out = Vec::new();
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return out;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                out.extend(files_under(&path));
+            } else {
+                out.push(path);
+            }
+        }
+        out
+    }
+
+    /// THE KEY NEVER LEAVES THE DRIVER'S MEMORY: GIVEN a run that signed a verb's verdict and its
+    /// own, THEN the key's bytes, as text or hex, appear in no store row, no file under the
+    /// project's `.rigger`, no spawn's env and no gate's build env.
+    #[test]
+    fn the_verdict_key_appears_in_no_store_row_no_file_under_rigger_and_no_child_env() {
+        let run = run_asking(Ask::Gate, 0);
+        let text = String::from_utf8(LIVE_KEY.to_vec()).unwrap();
+        let hex: String = LIVE_KEY.iter().map(|b| format!("{b:02x}")).collect();
+        let leaks = |what: &str, seen: &str| {
+            assert!(
+                !seen.contains(&text) && !seen.contains(&hex),
+                "the key leaked into {what}"
+            );
+        };
+        for e in &run.events {
+            leaks("a row's data", &String::from_utf8_lossy(&e.data));
+            leaks("a row's meta", &format!("{:?}", e.meta));
+        }
+        for file in files_under(&run.repo.path().join(".rigger")) {
+            let bytes = std::fs::read(&file).unwrap_or_default();
+            leaks(&file.display().to_string(), &String::from_utf8_lossy(&bytes));
+        }
+        leaks("a spawn's env", &format!("{:?}", run.envs));
+        leaks(
+            "a gate's build env",
+            &format!("{:?}", support::snapshot(&run.runner.inner.build_envs)),
+        );
+        assert!(
+            !format!("{:?}", VerdictKey::from_bytes(LIVE_KEY)).contains(&text),
+            "the key's Debug is redacted"
+        );
     }
 
     /// A gate runner that changes the tree it gates while it runs: it writes a file, and
@@ -43596,8 +44014,8 @@ mod tests {
         }
     }
 
-    /// A VERDICT ADDRESSES ONLY THE COMMIT IT GATED: GIVEN a gate that changes the tree while it
-    /// runs, WHEN the verb records its verdict, THEN the verdict carries no input digest, so it
+    /// A VERDICT ADDRESSES ONLY THE COMMIT IT GATED: GIVEN a gate that changes the tree while the
+    /// driver answers a verb's request, THEN the recorded verdict carries no input digest, so it
     /// can answer no later gate.
     #[test]
     fn a_gate_that_changes_the_tree_while_the_verb_runs_it_records_a_verdict_with_no_digest() {
@@ -43607,33 +44025,77 @@ mod tests {
             let mut cfg = Config::default();
             cfg.workflow.gates.insert("g".into(), gate_def("true"));
             let store = Store::open(":memory:").unwrap();
-            let ran = run_gate_verb(
-                &cfg,
-                &store,
-                &TreeChangingRunner { commit },
-                &dir,
-                &dir,
-                "g",
-                "",
-            )
-            .unwrap();
-            assert!(ran.pass, "commit {commit}: the gate's result is recorded");
-            assert!(ran.digest.is_empty(), "commit {commit}: no digest");
+            let driver = Stub::new();
+            let runner = TreeChangingRunner { commit };
+            let deps = Deps {
+                gates: &runner,
+                repo: dir.clone(),
+                ..stub_deps(&store, &driver, Vec::new())
+            };
+            let ctx = RunCtx::for_test(&cfg, &deps);
+            let _live = ctx.live_unit(&dir, "u");
+            let reply = ctx.answer_gate_request(GateRequest {
+                dir: dir.clone(),
+                gate: "g".into(),
+            });
+            let GateReply::Ran {
+                pass,
+                digest,
+                position,
+                ..
+            } = reply
+            else {
+                panic!("commit {commit}: the run gates the commit: {reply:?}");
+            };
+            assert!(pass, "commit {commit}: the gate's result is recorded");
+            assert!(digest.is_empty(), "commit {commit}: no digest");
             let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
             let verdict = events
                 .iter()
                 .find(|e| e.type_ == contextgraph::TYPE_GATE_VERDICT)
-                .expect("the verb records its verdict");
-            assert_eq!(verdict.position, ran.position);
-            assert_eq!(
-                verdict.meta.get(META_GATE_ORIGIN).map(String::as_str),
-                Some(GATE_ORIGIN_VERB)
-            );
+                .expect("the verdict is recorded");
+            assert_eq!(verdict.position, position);
             assert!(
                 !verdict.meta.contains_key(META_INPUT_DIGEST),
                 "commit {commit}: a changed tree is addressed by nothing"
             );
         }
+    }
+
+    /// A REPLAY WALKS WHAT A RUN SETTLED: GIVEN a run that passed its inline and deferred gates
+    /// under one key, WHEN `rigger replay`'s trajectory of its log is re-driven by a later process
+    /// under another key with a runner that fails every gate, THEN every pass replays from the
+    /// settle records the trajectory carries and no gate runs.
+    #[test]
+    fn a_replayed_trajectory_walks_its_settled_passes_under_a_new_key_running_no_gate() {
+        let deferred_gate = config::Gate {
+            kind: "deferred".into(),
+            ..gate_def("true")
+        };
+        let cfg = verify_only_cfg(vec![("g1", gate_def("true")), ("d", deferred_gate)]);
+        let driver = Stub::new();
+        let st = Store::open(":memory:").unwrap();
+        let first = RecordingRunner::new(&[]);
+        let deps = Deps {
+            gates: &first,
+            ..stub_deps(&st, &driver, Vec::new())
+        };
+        run_signed(&cfg, &deps, LIVE_KEY, None).unwrap();
+        assert_eq!(first.calls(), ["g1", "d"], "the first run gates both");
+        let baseline = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let replayed = Store::open(":memory:").unwrap();
+        seed_events_in_run(&replayed, &[], &replay_trajectory(&baseline));
+        let failing = RecordingRunner::new(&["g1", "d"]);
+        let deps = Deps {
+            gates: &failing,
+            ..stub_deps(&replayed, &driver, Vec::new())
+        };
+        run_signed(&cfg, &deps, OTHER_KEY, None).unwrap();
+        assert!(
+            failing.calls().is_empty(),
+            "the replay ran no gate: {:?}",
+            failing.calls()
+        );
     }
 
     /// A FAST-FORWARD LANDING REPLAYS ITS GATES: GIVEN `beta` needs `alpha`, `alpha`'s landing

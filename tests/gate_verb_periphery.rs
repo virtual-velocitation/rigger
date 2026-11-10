@@ -1,14 +1,15 @@
-//! Periphery for `rigger gate <id>`: an agent's own run of a declared gate, recorded where the
-//! driver reuses it. These run OUTSIDE the crates, over the compiled binary and the on-disk store.
+//! Periphery for `rigger gate <id>`: an agent's request that the run's driver gate its committed
+//! worktree. These run OUTSIDE the crates, over the compiled binary and the on-disk store.
 //!
-//! OWNED HERE: the verb's CLI face over a committed project (it runs the gate, prints the result
-//! and leaves one GateVerdict carrying the verb's provenance and the input digest of the commit it
-//! gated); its refusals of an uncommitted tree and of an undeclared gate; and `rigger emit`'s
-//! refusal of a GateVerdict, the forge a worker would otherwise reach for.
+//! OWNED HERE: the verb's CLI face with no driver serving the project (it runs the gate for
+//! information only, prints the result, says it recorded nothing and records nothing, a stale
+//! socket file included); its refusals of an uncommitted tree and of an undeclared gate; and
+//! `rigger emit`'s refusal of a GateVerdict, the forge a worker would otherwise reach for.
 //!
-//! NOT OWNED HERE: the driver's reuse of the verb's verdict, the verb's resolution of the gate's
-//! inputs and the tree-changing gate (`rigger-conductor`'s own tests, which drive both the verb's
-//! core and the driver over one store).
+//! NOT OWNED HERE: the driver's answer to a request (the gate run, the signed verdict, its reuse
+//! and the refusals the driver makes), which `rigger-conductor`'s own tests drive through the run's
+//! serving entry point over an in-process channel, and the socket adapter, which
+//! `rigger-process`'s own tests drive.
 
 use crate::common;
 
@@ -18,7 +19,7 @@ use common::cli::{
     emit_refused, identified_git_project, run_rigger_envs, seed_store, with_run_store,
     write_workflow,
 };
-use common::fixtures::{git_ok, git_out};
+use common::fixtures::git_ok;
 use rigger::eventstore::{Direction, Event};
 use rigger::run::STREAM;
 
@@ -57,30 +58,30 @@ fn gate_verdicts(root: &Path) -> Vec<Event> {
     })
 }
 
+/// WITH NO DRIVER THE VERB INFORMS AND RECORDS NOTHING: GIVEN a committed project no driver
+/// serves, with no socket file or a stale one, WHEN an agent runs `rigger gate g`, THEN the gate
+/// runs, the verb prints its result and says it recorded nothing, and the store holds no verdict.
 #[test]
-fn the_gate_verb_runs_a_declared_gate_on_a_committed_tree_and_records_an_attested_verdict() {
-    let (root, scratch) = committed_project();
-    let sha = git_out(root.path(), &["rev-parse", "HEAD"]);
-    let sha = sha.trim();
-    let (out, err, ok) = rigger_in(root.path(), scratch.path(), &["gate", "g"]);
-    assert!(ok, "rigger gate g exits 0 on a green gate; stderr:\n{err}");
-    assert!(out.contains("PASS"), "the verb prints the result: {out}");
-    let verdicts = gate_verdicts(root.path());
-    assert_eq!(verdicts.len(), 1, "the verb records one verdict");
-    let v = &verdicts[0];
-    assert_eq!(
-        v.meta.get("gate_origin").map(String::as_str),
-        Some("rigger gate"),
-        "the verdict carries the verb's provenance"
-    );
-    let digest = v
-        .meta
-        .get("input_digest")
-        .expect("the verdict carries a digest");
-    assert!(
-        digest.ends_with(&format!(":{sha}")),
-        "the digest addresses the gated commit {sha}: {digest}"
-    );
+fn with_no_driver_the_gate_verb_runs_the_gate_for_information_only_and_records_nothing() {
+    for stale in [false, true] {
+        let (root, scratch) = committed_project();
+        if stale {
+            // A listener dropped without unlinking leaves a socket file nothing answers.
+            #[cfg(unix)]
+            drop(std::os::unix::net::UnixListener::bind(root.path().join(".rigger/gate.sock")).unwrap());
+        }
+        let (out, err, ok) = rigger_in(root.path(), scratch.path(), &["gate", "g"]);
+        assert!(ok, "stale {stale}: rigger gate g exits 0 on a green gate; stderr:\n{err}");
+        assert!(out.contains("PASS gate g"), "stale {stale}: the verb prints the result: {out}");
+        assert!(
+            err.contains("no driver is serving this project") && err.contains("recorded nothing"),
+            "stale {stale}: the verb says it recorded nothing: {err}"
+        );
+        assert!(
+            gate_verdicts(root.path()).is_empty(),
+            "stale {stale}: nothing was recorded"
+        );
+    }
 }
 
 #[test]

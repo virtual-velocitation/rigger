@@ -25,6 +25,9 @@ pub mod hold_controller;
 mod logged_generations;
 #[cfg(any(feature = "store", not(feature = "core")))]
 mod replay_keys;
+/// The per-run verdict key and the MAC every gate verdict the driver records carries.
+#[cfg(any(feature = "store", not(feature = "core")))]
+pub mod verdict_mac;
 
 // The modules the moved code names by their historical `crate::` paths.
 #[cfg(any(feature = "store", not(feature = "core")))]

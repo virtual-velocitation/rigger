@@ -400,13 +400,23 @@ impl AgentDriver for FifoAtLandingDriver {
 /// `.rigger/tmp` into the source tree. A run over a repo already resolves its scratch root from
 /// the repo and runs unchanged.
 pub fn run_isolated(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
+    isolated(cfg, deps, rigger::conductor::run)
+}
+
+/// `run` over `cfg` and `deps` with a repo-less run's scratch root pinned as [`run_isolated`]
+/// pins it, for a test driving the run through another entry point.
+pub fn isolated(
+    cfg: &Config,
+    deps: &Deps,
+    run: impl FnOnce(&Config, &Deps) -> Result<RunState, Error>,
+) -> Result<RunState, Error> {
     if !deps.repo.is_empty() {
-        return rigger::conductor::run(cfg, deps);
+        return run(cfg, deps);
     }
     let scratch = tempfile::tempdir().unwrap();
     let mut cfg = cfg.clone();
     cfg.workflow.defaults.workdir = scratch.path().to_str().unwrap().to_string();
-    rigger::conductor::run(&cfg, deps)
+    run(&cfg, deps)
 }
 
 /// The conductor's ports for one run over `repo`: no grounder, no graph and no criteria.
