@@ -11422,10 +11422,10 @@ rigger::test_cases! {
         assert_a_spawns_server_lists("rigger_scratch", common::fixtures::scratch_tool_entry());
 }
 
-/// The texts the built binary advertises over stdio in its `tools/list` answer to an initialized
-/// `rigger <args>` session over the project `project` makes, once they are found to be exactly
-/// `expected`: each text beside its stem under THE NAMING RULE, in document order. `end` closes
-/// the session through its handle.
+/// Assert the texts the built binary advertises over stdio in its `tools/list` answer to an
+/// initialized `rigger <args>` session over the project `project` makes are exactly `expected`:
+/// each text beside its stem under THE NAMING RULE, in document order. `end` closes the session
+/// through its handle before the comparison.
 fn assert_a_surface_advertises(
     project: fn() -> tempfile::TempDir,
     args: &[&str],
