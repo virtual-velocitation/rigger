@@ -862,6 +862,28 @@ fn seed_both_stores(root: &Path, rounds: u64) {
     common::fixtures::folds(&graph, &written);
 }
 
+/// A record `reset --runs` pruned from the graph still reads by its id: `rigger graph --show`
+/// falls back to the event log, which the prune never touches, and prints the record exactly as
+/// it printed the graph's node before the prune, with one line saying where it was read from.
+#[test]
+fn graph_show_reads_a_pruned_record_from_the_event_log() {
+    let project = pinned_project();
+    seed_both_stores(project.path(), 1);
+    let show = || {
+        let (out, err, ok) = run_rigger(project.path(), &["graph", "--show", DEAD_DECISION]);
+        assert!(ok, "graph --show must succeed; stderr: {err}\n{out}");
+        out
+    };
+    let before = show();
+    let (out, err, ok) = run_rigger(project.path(), &["reset", "--runs"]);
+    assert!(ok, "reset --runs must succeed; stderr: {err}\n{out}");
+    assert_eq!(
+        show(),
+        format!("{before}  (read from the event log: the graph no longer holds this record)\n"),
+        "before the prune the graph printed: {before:?}"
+    );
+}
+
 /// `rigger reset` drives TWO modes over TWO stores, and each one tells the operator it left the
 /// other alone: `reset --runs` prints that it deletes no event from the log, and the shipped
 /// `--derived` guidance says it writes nothing to graph.db. Both claims are load-bearing

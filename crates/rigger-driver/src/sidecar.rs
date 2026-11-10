@@ -256,6 +256,12 @@ impl Sidecar {
         T::collect(&self.seen)
     }
 
+    /// The decision, lesson or finding whose id is `id`, read from the log as a show surface
+    /// prints a graph node, for an id the graph no longer holds.
+    pub fn site_of(&self, _id: &str) -> Option<contextgraph::EntitySite> {
+        None
+    }
+
     /// The peer records of kind `T` scoped to an agent's blast-radius (§5.3): a peer record is
     /// relevant only when the files its [`Peer::SCOPE`] references name (a decision's `governs`,
     /// a finding's or lesson's `about`) intersect the files the agent's blast-radius names, each
@@ -490,6 +496,70 @@ mod tests {
                 "the decision, finding and lesson scoped to {blast_radius}"
             );
         }
+    }
+
+    /// A record a superseded run left in the log reads back by its id as the show surfaces print
+    /// a graph node: its kind, the distinct references it names as its degree, its summary and its
+    /// reviewer; a restated id reads as its latest record, and an id no record holds reads as none.
+    #[test]
+    fn site_of_reads_a_record_by_id_from_the_log() {
+        use serde_json::json;
+        let store = Store::open(":memory:").unwrap();
+        let events = [
+            crate::test_support::run_started("r1", &[]),
+            stamped(
+                contextgraph::TYPE_REVIEW_FINDING,
+                json!({"id": "f-old", "by": "lens:sdet", "summary": "first",
+                       "about": ["a.rs", "a.rs:3", "b.rs"]}),
+                &[],
+            ),
+            stamped(
+                contextgraph::TYPE_REVIEW_FINDING,
+                json!({"id": "f-old", "by": "lens:sdet", "summary": "restated",
+                       "about": ["a.rs:3", "b.rs"]}),
+                &[],
+            ),
+            stamped(
+                contextgraph::TYPE_DECISION_MADE,
+                json!({"id": "d-old", "summary": "chose X", "governs": ["a.rs"]}),
+                &[],
+            ),
+            crate::test_support::run_started("r2", &[]),
+        ];
+        store.append("run", ExpectedRevision::Any, &events).unwrap();
+        let sidecar = Sidecar::read(&store, "run").unwrap();
+        let site = |id: &str, kind: &str, degree: usize, attrs: &[(&str, &str)]| {
+            Some(contextgraph::EntitySite {
+                id: id.to_string(),
+                kind: kind.to_string(),
+                file: None,
+                line: 0,
+                degree,
+                attrs: attrs
+                    .iter()
+                    .map(|(k, v)| (k.to_string(), v.to_string()))
+                    .collect(),
+                unresolved: Vec::new(),
+            })
+        };
+        assert_eq!(
+            ["f-old", "d-old", "nope"].map(|id| sidecar.site_of(id)),
+            [
+                site(
+                    "f-old",
+                    contextgraph::KIND_FINDING,
+                    2,
+                    &[("by", "lens:sdet"), ("summary", "restated")]
+                ),
+                site(
+                    "d-old",
+                    contextgraph::KIND_DECISION,
+                    1,
+                    &[("summary", "chose X")]
+                ),
+                None,
+            ]
+        );
     }
 
     /// One `type_` event carrying `body`, stamped with each `(key, value)` of `meta`.
