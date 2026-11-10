@@ -45,12 +45,10 @@ use std::process::Output;
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves,
 // and every suite that spawns the product then dies with a bare NotFound.
 use crate::common;
+use crate::store_courier;
 use common::cli::rigger_file;
 use common::cli::temp_rigger_project;
 use common::cli::{courier_project, emit};
-#[allow(clippy::duplicate_mod)]
-#[path = "common/store_courier.rs"]
-mod store_courier;
 use store_courier::run_bare_result;
 
 #[test]

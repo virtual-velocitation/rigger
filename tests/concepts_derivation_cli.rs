@@ -44,9 +44,7 @@ use rigger::ingest::folding_into;
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves,
 // and every suite that spawns the product then dies with a bare NotFound.
 use crate::common;
-#[allow(clippy::duplicate_mod)]
-#[path = "common/layer_cli.rs"]
-mod layer_cli;
+use crate::layer_cli;
 use layer_cli::{member_of, rigger_db, LayerCli};
 
 /// A stable project identity pinned into the fixture, so the in-test SEED store and the BINARY

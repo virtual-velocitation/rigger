@@ -28,9 +28,7 @@ use crate::common;
 use std::path::Path;
 use std::process::Command;
 
-#[allow(clippy::duplicate_mod)]
-#[path = "common/audit_record.rs"]
-mod audit_record;
+use crate::audit_record;
 use audit_record::read_audit_record;
 
 /// The committed stage-1 compiler-pass record this suite checks against the real tree.

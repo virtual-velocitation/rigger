@@ -42,9 +42,7 @@ use common::repo::collect_rs_files;
 use std::fs;
 use std::path::Path;
 
-#[allow(clippy::duplicate_mod)]
-#[path = "common/source_audit.rs"]
-mod source_audit;
+use crate::source_audit;
 use source_audit::Finding;
 
 /// The ONLY reason this exists: see SOURCE HYGIENE above. Every fragment pair this file

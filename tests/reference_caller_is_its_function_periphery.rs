@@ -25,9 +25,7 @@
 
 #[allow(unused_imports)] // used only by the symbols-gated tests
 use crate::common;
-#[allow(clippy::duplicate_mod)]
-#[path = "common/symbol_index.rs"]
-mod symbol_index;
+use crate::symbol_index;
 
 use rigger::grounder::symbols::model::Kind;
 use symbol_index::{def, rust_file, SavedIndex};

@@ -112,9 +112,7 @@ use crate::common;
 #[cfg(feature = "symbols")]
 use Expect::{CodeEntity, Graphed, NoCodeEntity, NoneGraphed, NotGraphed};
 
-#[allow(clippy::duplicate_mod)]
-#[path = "common/symbol_index.rs"]
-mod symbol_index;
+use crate::symbol_index;
 
 use rigger::grounder::symbols::model::{Def, Kind, Lang};
 use symbol_index::{

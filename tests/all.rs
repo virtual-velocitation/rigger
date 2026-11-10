@@ -4,6 +4,23 @@
 
 mod common;
 
+#[path = "common/audit_record.rs"]
+mod audit_record;
+#[path = "common/layer_cli.rs"]
+mod layer_cli;
+#[path = "common/retired_feature.rs"]
+mod retired_feature;
+#[path = "common/served_asset.rs"]
+mod served_asset;
+#[path = "common/source_audit.rs"]
+mod source_audit;
+#[path = "common/store_courier.rs"]
+mod store_courier;
+#[path = "common/symbol_index.rs"]
+mod symbol_index;
+#[path = "common/vm_harness.rs"]
+mod vm_harness;
+
 mod a_module_row_reaches_its_file_periphery;
 mod a_renamed_path_retires_its_old_leaf_periphery;
 mod adaptive_labels_periphery;

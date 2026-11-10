@@ -13,9 +13,8 @@
 
 #[allow(unused_imports)] // used only by the symbols-gated tests
 use crate::common;
-#[allow(clippy::duplicate_mod)]
-#[path = "common/symbol_index.rs"]
-mod symbol_index;
+#[cfg(feature = "symbols")]
+use crate::symbol_index;
 
 /// A payload's `name` and its `path` key's JSON value, `None` when it has no such key.
 #[cfg(feature = "symbols")]

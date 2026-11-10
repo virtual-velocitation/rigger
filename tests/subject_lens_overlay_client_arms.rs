@@ -26,9 +26,7 @@ use crate::common;
 
 use common::served::node_harness_passes;
 
-#[allow(clippy::duplicate_mod)]
-#[path = "common/vm_harness.rs"]
-mod vm_harness;
+use crate::vm_harness;
 use vm_harness::vm_harness;
 
 /// The DOM shim every driver in this file runs under (node `vm`, no npm): the handful of element

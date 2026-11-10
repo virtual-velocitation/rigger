@@ -13,9 +13,7 @@
 
 #[allow(unused_imports)] // used only by the symbols-gated tests
 use crate::common;
-#[allow(clippy::duplicate_mod)]
-#[path = "common/symbol_index.rs"]
-mod symbol_index;
+use crate::symbol_index;
 
 rigger::test_cases! {
     /// GIVEN a project whose one C# file is the C# definitions fixture,

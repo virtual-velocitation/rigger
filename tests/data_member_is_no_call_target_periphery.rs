@@ -20,9 +20,7 @@
 
 use crate::common;
 #[cfg(feature = "symbols")]
-#[allow(clippy::duplicate_mod)]
-#[path = "common/symbol_index.rs"]
-mod symbol_index;
+use crate::symbol_index;
 
 use common::cli::{
     ambiguous_show, open_graph, run_rigger_ok, seed_rigger_dir, show_head, temp_project,
