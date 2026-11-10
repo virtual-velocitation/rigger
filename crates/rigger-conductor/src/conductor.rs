@@ -44922,6 +44922,51 @@ mod tests {
         );
     }
 
+    /// A grounder whose prompt seed differs from its whole-text `ground` match, so a test shows
+    /// which of the two the conductor seeds from.
+    struct SeedOverGround;
+    impl Grounder for SeedOverGround {
+        fn ground(&self, _query: &str, _k: usize) -> Vec<crate::grounder::Ref> {
+            vec![crate::grounder::Ref {
+                file: "prose_match.rs".into(),
+                line: 1,
+                text: String::new(),
+            }]
+        }
+        fn seed(&self, _query: &str, _k: usize) -> Vec<String> {
+            vec!["named.rs".into()]
+        }
+    }
+
+    /// The prompt seed is the grounder's `seed` (the code the criterion names), never its
+    /// whole-text `ground` match.
+    #[test]
+    fn the_prompt_seed_is_the_grounders_seed_not_its_prose_match() {
+        let st = Stage {
+            name: "u".into(),
+            coverage: "`named` does the thing".into(),
+            ..Default::default()
+        };
+        let cfg = Config::default();
+        let store = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: Some(&SeedOverGround),
+            graph: None,
+            criteria: Vec::new(),
+            log: &|_| {},
+            hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
+            spawn_host: test_spawn_host(),
+        };
+        let ctx = RunCtx::for_test(&cfg, &deps);
+        assert_eq!(ctx.grounded_seed(&st), vec!["named.rs".to_string()]);
+    }
+
     /// A driver whose every spawn holds for its agent's configured time (`hold`, else 400 ms) and
     /// records its wall-clock window, so a wave test reads how many spawns GENUINELY overlapped and
     /// in which order they started - which the synchronous [`Stub`] can never show. A probe made

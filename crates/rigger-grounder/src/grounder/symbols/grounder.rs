@@ -1493,6 +1493,88 @@ mod tests {
         }
     }
 
+    /// Over a tree holding `files`, `query`'s prompt seed at cap `k` is exactly `expected`.
+    fn assert_seed(files: &[(&str, &str)], query: &str, k: usize, expected: &[&str], why: &str) {
+        let (_tree, g) = grounder_over(files);
+        assert_eq!(g.seed(query, k), expected, "{why}");
+    }
+
+    crate::test_cases! {
+        /// A backticked identifier seeds its definition file ahead of a name that merely covers
+        /// more of the criterion's prose words.
+        seed_puts_a_named_identifier_s_definition_file_before_any_prose_match: assert_seed(
+            &[
+                ("src/conductor.rs", "fn write_lookup_pointer() {}\n"),
+                ("src/pointer_names.rs", "fn names_the_tools() {}\n"),
+            ],
+            "`write_lookup_pointer` names the tools",
+            8,
+            &["src/conductor.rs", "src/pointer_names.rs"],
+            "the named definition comes first, the prose match fills after it",
+        );
+        /// A path the criterion spells out, bare in its prose, seeds that file first.
+        seed_resolves_a_path_the_criterion_spells_bare_to_that_file: assert_seed(
+            &[
+                ("crates/dash/src/mcpserver.rs", "fn tool_list() {}\n"),
+                ("src/listing.rs", "fn lists_every_tool() {}\n"),
+            ],
+            "crates/dash/src/mcpserver.rs lists every tool",
+            8,
+            &["crates/dash/src/mcpserver.rs", "src/listing.rs"],
+            "the spelled path comes first, the prose match fills after it",
+        );
+        /// A test file the criterion names explicitly still seeds: only the prose fill skips test
+        /// code.
+        seed_takes_a_test_file_the_criterion_names_explicitly: assert_seed(
+            &[("tests/guard.rs", "fn awk_is_held() {}\n")],
+            "`tests/guard.rs` holds the awk case",
+            8,
+            &["tests/guard.rs"],
+            "a named test path seeds its file",
+        );
+        /// Prose words never match a test function's sentence name, in a test directory or in a
+        /// test module of a product file.
+        seed_never_matches_prose_against_test_function_names: assert_seed(
+            &[
+                ("tests/notes.rs", "fn the_rebuild_owed_note_speaks_only_for_a_graph_db() {}\n"),
+                ("src/note.rs", "fn rebuild_note() {}\n"),
+                (
+                    "src/lib.rs",
+                    "#[cfg(test)]\nmod tests {\n    fn the_note_speaks_for_the_graph() {}\n}\n",
+                ),
+            ],
+            "the rebuild owed note speaks only for a graph db",
+            8,
+            &["src/note.rs"],
+            "the prose fill holds product code alone",
+        );
+        /// The named code fills the cap before any prose match does.
+        seed_caps_at_k_with_the_named_code_first: assert_seed(
+            &[
+                ("a_prose.rs", "fn wires_every_spawn_gate() {}\n"),
+                ("z.rs", "fn arm() {}\n"),
+            ],
+            "`arm` wires every spawn gate",
+            1,
+            &["z.rs"],
+            "a cap of one keeps the named definition alone",
+        );
+        /// Among named identifiers, the one fewer files define seeds first, so a widely defined
+        /// name cannot crowd out a specific one.
+        seed_puts_a_rarely_defined_name_before_a_widely_defined_one: assert_seed(
+            &[
+                ("r1.rs", "fn run() {}\n"),
+                ("r2.rs", "fn run() {}\n"),
+                ("r3.rs", "fn run() {}\n"),
+                ("combat.rs", "fn apply_damage() {}\n"),
+            ],
+            "`run` before `apply_damage`",
+            2,
+            &["combat.rs", "r1.rs"],
+            "the one-definer name seeds before the three-definer name",
+        );
+    }
+
     /// A `Symbols` grounder over a fresh root holding `files` (`(name, source)` pairs); the
     /// root lives as long as the returned dir.
     fn grounder_over(files: &[(&str, &str)]) -> (tempfile::TempDir, Symbols) {
