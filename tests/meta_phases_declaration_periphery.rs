@@ -47,8 +47,7 @@
 mod common;
 
 use common::fixtures::js_declaration;
-use common::repo::repo_text;
-use std::process::Command;
+use common::repo::{repo_text, run_node};
 
 /// One declared phase, as `meta.phases` ACTUALLY parses under node - never re-derived from
 /// source text.
@@ -76,31 +75,15 @@ fn run_meta_phases() -> Option<Vec<Phase>> {
 
     let script = format!("{meta_decl}\nprocess.stdout.write(JSON.stringify(meta.phases))\n");
 
-    let node = std::env::var("RIGGER_NODE").unwrap_or_else(|_| "node".to_string());
-    let mut f = tempfile::NamedTempFile::new().unwrap();
-    std::io::Write::write_all(&mut f, script.as_bytes()).unwrap();
-
-    match Command::new(&node).arg(f.path()).output() {
-        Ok(out) => {
-            assert!(
-                out.status.success(),
-                "the real meta object literal must evaluate without throwing:\n{}",
-                String::from_utf8_lossy(&out.stderr)
-            );
-            let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
-            Some(
-                serde_json::from_str(&stdout)
-                    .unwrap_or_else(|e| panic!("meta.phases must be a JSON array: {e}: {stdout}")),
-            )
-        }
-        Err(e) => {
-            assert!(
-                e.kind() == std::io::ErrorKind::NotFound,
-                "node failed for a reason other than being absent: {e}"
-            );
-            None
-        }
-    }
+    let stdout = run_node(
+        &script,
+        &[],
+        "the real meta object literal must evaluate without throwing",
+    )?;
+    Some(
+        serde_json::from_str(&stdout)
+            .unwrap_or_else(|e| panic!("meta.phases must be a JSON array: {e}: {stdout}")),
+    )
 }
 
 /// The criterion's own words are "declares EXACTLY Plan, Build, Review, Drive" - proven here

@@ -68,7 +68,7 @@
 //! an accidental drop of `pub` (or of `pub mod liveness` in `lib.rs`) fails HERE, at the
 //! crate boundary, rather than only inside the module that would silently stop exporting it.
 
-use common::repo::repo_text;
+use common::repo::{repo_text, run_node};
 
 /// Spec 69, criterion 5 (review u69c5 round 4, cause genuine-defect): `liveness::
 /// hung_cursor_path`, `read_hung_cursor`, and `write_hung_cursor` are the three new PUBLIC
@@ -145,8 +145,6 @@ use common::cli::temp_repoless_project;
 use common::cli::{write_workflow_fixture, WorkflowFixture, UNISOLATED_WORKER};
 use common::fixtures::js_declaration;
 use common::git::temp_git_project_with_commit;
-
-use std::process::Command;
 
 /// A single-unit workflow whose gate always FAILS and whose remediation bound
 /// (`max_retries: 5`) is generous enough that the unit is STILL retrying - never escalated -
@@ -537,33 +535,17 @@ fn run_relay_attention(step_json: &str) -> Option<Vec<String>> {
          relayAttention(JSON.parse(process.argv[2]))\n"
     );
 
-    let node = std::env::var("RIGGER_NODE").unwrap_or_else(|_| "node".to_string());
-    let mut f = tempfile::NamedTempFile::new().unwrap();
-    std::io::Write::write_all(&mut f, script.as_bytes()).unwrap();
-
-    match Command::new(&node).arg(f.path()).arg(step_json).output() {
-        Ok(out) => {
-            assert!(
-                out.status.success(),
-                "the real relayAttention must run without throwing on input {step_json}: {}",
-                String::from_utf8_lossy(&out.stderr)
-            );
-            let text = String::from_utf8_lossy(&out.stdout).into_owned();
-            Some(
-                text.lines()
-                    .filter(|l| !l.is_empty())
-                    .map(|l| l.to_string())
-                    .collect(),
-            )
-        }
-        Err(e) => {
-            assert!(
-                e.kind() == std::io::ErrorKind::NotFound,
-                "node failed for a reason other than being absent: {e}"
-            );
-            None
-        }
-    }
+    let text = run_node(
+        &script,
+        &[step_json],
+        &format!("the real relayAttention must run without throwing on input {step_json}"),
+    )?;
+    Some(
+        text.lines()
+            .filter(|l| !l.is_empty())
+            .map(|l| l.to_string())
+            .collect(),
+    )
 }
 
 /// Spec 69, criterion 6, driven end to end across the real cross-module seam: the Rust-emitted

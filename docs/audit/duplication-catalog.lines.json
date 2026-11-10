@@ -870,7 +870,7 @@
     ]
   },
   {
-    "id": "dup-c3905b193277",
+    "id": "dup-279bbf28e671",
     "sites": [
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
@@ -1243,11 +1243,6 @@
         "end_line": 2026
       },
       {
-        "file": "tests/meta_phases_declaration_periphery.rs",
-        "start_line": 83,
-        "end_line": 83
-      },
-      {
         "file": "tests/mutation_runner_pdeathsig_periphery.rs",
         "start_line": 107,
         "end_line": 107
@@ -1316,11 +1311,6 @@
         "file": "tests/scaffold_grounder_resolves.rs",
         "start_line": 96,
         "end_line": 96
-      },
-      {
-        "file": "tests/step_attention_periphery.rs",
-        "start_line": 544,
-        "end_line": 544
       },
       {
         "file": "tests/store_flag_precedence.rs",
