@@ -1951,10 +1951,9 @@ fn token_tree_facts(tt: tree_sitter::Node, source: &[u8]) -> (bool, bool) {
 /// EXCLUSIVELY from `test`/`not`/`all`/`any`, naming no other cfg atom (a feature flag,
 /// `target_os`, a bare `debug_assertions`, ...) anywhere in it. Computed TOGETHER in one minimal
 /// recursive descent over the cfg predicate grammar `ident | not(P) | all(P, ...) | any(P, ...)`,
-/// never as two separate walks over the identical shape (a round-6 review finding /
-/// `docs/audit`'s own duplication scan: an earlier version of this fix shipped "names test" and
-/// "is pure" as two near-identical functions, exactly the duplicate-implementation shape this
-/// repo's own audit exists to catch) - `not(P)`'s "names test" answer can only be obtained by
+/// never as two separate walks over the identical shape (a round-6 review finding: an earlier
+/// version of this fix shipped "names test" and "is pure" as two near-identical functions) -
+/// `not(P)`'s "names test" answer can only be obtained by
 /// inverting P's own "names test" answer WHEN P is ALSO pure, so the `not` arm needs both facts
 /// about P at once:
 /// - a bare identifier (or a `key = "value"` attribute, e.g. `feature = "x"` - the leading

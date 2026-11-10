@@ -17,7 +17,7 @@
 //! one check that is not cheap - it actually builds the library for `wasm32-unknown-unknown`
 //! plus a native `--features core` build and test pass - is gated behind
 //! `RIGGER_CORE_LANE_VERIFY=1`, the same opt-in shape `RIGGER_COMPILER_PASS_VERIFY=1` (spec 87)
-//! and `RIGGER_AUDIT_WRITE=1` already use: a real, permanent per-`cargo test` cost (a wasm cross-
+//! already uses: a real, permanent per-`cargo test` cost (a wasm cross-
 //! compile plus a from-scratch native recompile under a feature combination no other test
 //! builds) is not paid by every future unit's gate cycle to reprove a fact the cheap tests
 //! already guard against regressing. The expensive check was run by hand while this unit was
@@ -273,8 +273,8 @@ fn no_core_module_imports_the_banned_set_outside_its_cited_store_gate() {
         actual, expected_sorted,
         "the live banned-pattern scan over core_modules no longer matches \
          docs/audit/core-lane-purity.json's found_occurrences - a NEW banned import \
-         landed in a core module (THE PURITY RULE violation, fix it or gate it and re-run \
-         RIGGER_AUDIT_WRITE=1-equivalent by hand to update the record), a previously-gated \
+         landed in a core module (THE PURITY RULE violation, fix it or gate it and update \
+         the record by hand), a previously-gated \
          one was removed (update the record to drop the stale citation), or a line added or \
          removed above a cited one moved it (update the record to cite its line and its \
          gated_by_line where they now stand)"

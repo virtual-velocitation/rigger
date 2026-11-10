@@ -424,9 +424,8 @@ pub fn gate_name_in(line: &str, begins_in_literal: bool) -> Option<&'static str>
         })
 }
 
-/// Rust keywords (2018+ reserved and strict, plus weak keywords actually used as such) - kept
-/// verbatim by the simplification audit's normalizer rather than canonicalized like an
-/// identifier, since a keyword is structural signal, not a name.
+/// Rust keywords (2018+ reserved and strict, plus weak keywords actually used as such) - a
+/// keyword is structural signal, not a name, so [`tokenize`] marks it `Keyword`, not `Ident`.
 pub const RUST_KEYWORDS: &[&str] = &[
     "as", "break", "const", "continue", "crate", "dyn", "else", "enum", "extern", "false", "fn",
     "for", "if", "impl", "in", "let", "loop", "match", "mod", "move", "mut", "pub", "ref",
@@ -446,8 +445,7 @@ pub fn is_keyword(s: &str) -> bool {
 /// run (plus one optional `.`-fraction) is one `Lit` (number)
 /// token; a letter/`_`-led run is `Keyword` when it names a Rust keyword, else `Ident`; every
 /// other character is its own single-char `Punct` token (so a multi-char operator like `::` or
-/// `->` becomes two/three adjacent `Punct` tokens - the simplification audit's mandatory-sweep
-/// matchers account for this).
+/// `->` becomes two/three adjacent `Punct` tokens).
 pub fn tokenize(chars: &[char]) -> Vec<RawTok> {
     let n = chars.len();
     let mut i = 0usize;
