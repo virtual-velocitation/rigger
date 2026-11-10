@@ -7777,6 +7777,9 @@ impl RunCtx<'_> {
             }
             let wt = self.speculation_lane_worktree(st, lane)?;
             let dir = wt.dir.clone();
+            // While the candidate drives its lane's worktree, a `rigger gate <id>` request from
+            // it may be answered (signed verdicts).
+            let _live = self.live_unit(&dir, &st.name);
             // Speculation lanes are implementer candidates by construction (`speculates` excludes
             // producers), so each candidate gets the trimmed implement slice - byte-identical to the
             // single-lane implementer's, since the lanes differ only in SCHEDULING, not assembly.
