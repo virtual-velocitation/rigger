@@ -321,6 +321,107 @@ mod tests {
         }
     }
 
+    /// One `type_` event carrying `body`, stamped with each `(key, value)` of `meta`.
+    fn stamped(type_: &str, body: serde_json::Value, meta: &[(&str, &str)]) -> Event {
+        meta.iter().fold(
+            Event::new(type_, serde_json::to_vec(&body).unwrap()),
+            |e, (key, value)| e.with_meta(*key, *value),
+        )
+    }
+
+    /// A log holding a record of every rank tier, oldest first: `d-prior`, unit u1's ruling from
+    /// before the run; the run's `RunStarted`; `d-verdict`, u1's adjudicator verdict; `d-rebase`, a
+    /// definition re-pin; `d-own` and `f-own`, u1's ruling and lens finding; `d-both`, u2's ruling
+    /// on a.rs and a line of b.rs; `d-peer`, u2's ruling on a.rs; `l-a`, a lesson about a.rs; and
+    /// `d-off`, a ruling on c.rs alone. Ranked for `caller` over `files`, as `(id, live)` pairs.
+    fn ranked_ids(files: &[&str], caller: Option<&str>) -> Vec<(String, Option<bool>)> {
+        use serde_json::json;
+        let decision = |id: &str, governs: &[&str], meta: &[(&str, &str)]| {
+            stamped(
+                contextgraph::TYPE_DECISION_MADE,
+                json!({"id": id, "summary": id, "governs": governs}),
+                meta,
+            )
+        };
+        let events = [
+            decision("d-prior", &["a.rs"], &[(META_SPAWN, "u1/implementer#0")]),
+            crate::test_support::run_started("r1", &[]),
+            decision("d-verdict", &["a.rs"], &[(META_SPAWN, "u1/adjudicator#0")]),
+            decision("d-rebase", &["a.rs"], &[(run::META_DEFINITION, "h2")]),
+            decision("d-own", &["a.rs"], &[(META_SPAWN, "u1/implementer#0")]),
+            stamped(
+                contextgraph::TYPE_REVIEW_FINDING,
+                json!({"id": "f-own", "by": "lens:sdet", "summary": "f", "about": ["a.rs"]}),
+                &[(META_SPAWN, "u1/lens:sdet#0")],
+            ),
+            decision(
+                "d-both",
+                &["a.rs", "b.rs:3"],
+                &[(META_SPAWN, "u2/implementer#0")],
+            ),
+            decision("d-peer", &["a.rs"], &[(META_SPAWN, "u2/implementer#0")]),
+            stamped(
+                contextgraph::TYPE_LESSON_LEARNED,
+                json!({"id": "l-a", "summary": "l", "about": ["a.rs"]}),
+                &[],
+            ),
+            decision("d-off", &["c.rs"], &[]),
+        ];
+        let store = Store::open(":memory:").unwrap();
+        store.append("run", ExpectedRevision::Any, &events).unwrap();
+        let files: Vec<String> = files.iter().map(|f| f.to_string()).collect();
+        Sidecar::read(&store, "run")
+            .unwrap()
+            .ranked(&files, caller)
+            .into_iter()
+            .map(|p| (p.id, p.live))
+            .collect()
+    }
+
+    /// Asserts [`ranked_ids`] over `files` for `caller` is `expected`, each id's `live` label
+    /// being HISTORICAL for `d-prior`, none for the lesson `l-a`, and LIVE for the rest.
+    fn assert_ranked(files: &[&str], caller: Option<&str>, expected: &[&str]) {
+        let live = |id: &str| match id {
+            "d-prior" => Some(false),
+            "l-a" => None,
+            _ => Some(true),
+        };
+        let expected: Vec<(String, Option<bool>)> = expected
+            .iter()
+            .map(|id| (id.to_string(), live(id)))
+            .collect();
+        assert_eq!(ranked_ids(files, caller), expected);
+    }
+
+    crate::test_cases! {
+        /// For a spawn of unit u1: u1's own records first (live before its prior run's), then the
+        /// rest by the files they name and then by age, the lesson ranking with the live records,
+        /// and every judging seat's verdict and definition re-pin last, u1's own verdict first
+        /// among them; the c.rs ruling is out of scope.
+        ranked_puts_the_callers_own_unit_first_and_ceremony_last: assert_ranked(
+            &["a.rs", "b.rs"],
+            Some("u1/implementer#1"),
+            &["f-own", "d-own", "d-prior", "d-both", "l-a", "d-peer", "d-verdict", "d-rebase"],
+        );
+        /// With no calling spawn, no unit is raised: the record naming both files leads, then
+        /// the live records and the lesson newest first, the prior run's ruling after them and
+        /// the ceremony last, newest first.
+        ranked_without_a_caller_orders_by_files_named_then_age: assert_ranked(
+            &["a.rs", "b.rs"],
+            None,
+            &["d-both", "l-a", "d-peer", "f-own", "d-own", "d-prior", "d-rebase", "d-verdict"],
+        );
+        /// Unscoped, every record is in and none names a passed file, so age orders each tier.
+        ranked_unscoped_holds_every_record_newest_first_within_a_tier: assert_ranked(
+            &[],
+            None,
+            &[
+                "d-off", "l-a", "d-peer", "d-both", "f-own", "d-own", "d-prior", "d-rebase",
+                "d-verdict",
+            ],
+        );
+    }
+
     crate::test_cases! {
         /// One decision governs a.rs, another governs b.rs: scoped to a.rs, only the a.rs
         /// decision comes back.

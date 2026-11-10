@@ -159,28 +159,13 @@ fn call_tool(server: &Server, name: &str, args: Value) -> Value {
     })
 }
 
-/// `(id, live)` of each decision a `rigger_peers` reply holds, in order.
-fn live_decisions(reply: &Value) -> Vec<(String, bool)> {
-    reply["result"]["structuredContent"]["decisions"]
+/// The record lines a `rigger_peers` reply holds, best first.
+fn records(reply: &Value) -> Vec<String> {
+    reply["result"]["structuredContent"]["records"]
         .as_array()
-        .unwrap_or_else(|| panic!("a decisions array: {reply}"))
+        .unwrap_or_else(|| panic!("a records array: {reply}"))
         .iter()
-        .map(|d| {
-            (
-                d["id"].as_str().unwrap().to_string(),
-                d["live"].as_bool().unwrap(),
-            )
-        })
-        .collect()
-}
-
-/// The `id`s in one section of a `rigger_peers` reply, in order.
-fn section_ids(reply: &Value, section: &str) -> Vec<String> {
-    reply["result"]["structuredContent"][section]
-        .as_array()
-        .unwrap_or_else(|| panic!("a {section} array: {reply}"))
-        .iter()
-        .map(|v| v["id"].as_str().unwrap().to_string())
+        .map(|v| v.as_str().unwrap().to_string())
         .collect()
 }
 
@@ -206,9 +191,13 @@ fn every_mcp_peers_and_progress_call_reads_the_run_afresh_from_its_boundary() {
         .with_spawn("u/implementer#0");
 
     let first = call_tool(&server, "rigger_peers", json!({"files": ["c.rs"]}));
-    assert_eq!(live_decisions(&first), [("d-c".to_string(), true)]);
-    assert_eq!(section_ids(&first, "findings"), ["f-c"]);
-    assert_eq!(section_ids(&first, "lessons"), Vec::<String>::new());
+    assert_eq!(
+        records(&first),
+        [
+            "finding f-c | LIVE | by lens | found c",
+            "decision d-c | LIVE | chose d-c"
+        ]
+    );
     assert_eq!(store.reads(), fixture.read(STREAM));
 
     inner
@@ -229,8 +218,12 @@ fn every_mcp_peers_and_progress_call_reads_the_run_afresh_from_its_boundary() {
 
     let second = call_tool(&server, "rigger_peers", json!({"files": ["c.rs"]}));
     assert_eq!(
-        live_decisions(&second),
-        [("d-c".to_string(), true), ("d-new".to_string(), true)],
+        records(&second),
+        [
+            "decision d-new | LIVE | chose new",
+            "finding f-c | LIVE | by lens | found c",
+            "decision d-c | LIVE | chose d-c"
+        ],
         "a decision recorded between two calls is seen by the second"
     );
     assert_eq!(
@@ -429,36 +422,27 @@ fn the_one_shot_commands_answer_from_the_run_without_materializing_a_derived_or_
         "both superseded runs' RunStarted, UnitStarted and note are poisoned"
     );
 
-    // `rigger peers`: every run's decisions, lessons and findings, the current run's LIVE.
+    // `rigger peers`: every run's decisions, lessons and findings, the current run's LIVE and
+    // first, newest first within each.
+    let every = [
+        "finding f-c | LIVE | by lens | found c",
+        "decision d-c | LIVE | chose d-c",
+        "lesson l-a | learned a",
+        "finding f-b | HISTORICAL | by lens | found b",
+        "decision d-a | HISTORICAL | chose d-a",
+    ];
     assert_eq!(
         rigger_ok(root, &["peers"]),
-        "decision d-a | HISTORICAL | chose d-a | governs: a.rs\n\
-         decision d-c | LIVE | chose d-c | governs: c.rs\n\
-         lesson l-a | learned a | about: a.rs\n\
-         finding f-b | by lens | found b | about: b.rs\n\
-         finding f-c | by lens | found c | about: c.rs\n"
+        format!("{}\n", every.join("\n"))
     );
     assert_eq!(
         rigger_ok(root, &["peers", "c.rs"]),
-        "decision d-c | LIVE | chose d-c | governs: c.rs\n\
-         finding f-c | by lens | found c | about: c.rs\n"
+        "finding f-c | LIVE | by lens | found c\n\
+         decision d-c | LIVE | chose d-c\n"
     );
 
     // `rigger mcp`'s `rigger_peers`: the same records, answered on the first call.
-    assert_eq!(
-        mcp_peers(root),
-        json!({
-            "decisions": [
-                {"id": "d-a", "summary": "chose d-a", "governs": ["a.rs"], "live": false},
-                {"id": "d-c", "summary": "chose d-c", "governs": ["c.rs"], "live": true},
-            ],
-            "lessons": [{"id": "l-a", "summary": "learned a", "about": ["a.rs"]}],
-            "findings": [
-                {"id": "f-b", "by": "lens", "summary": "found b", "about": ["b.rs"]},
-                {"id": "f-c", "by": "lens", "summary": "found c", "about": ["c.rs"]},
-            ],
-        })
-    );
+    assert_eq!(mcp_peers(root), json!({"records": every}));
 
     // `rigger prime`: every run's decisions by type, newest first, after its instructions line.
     assert_eq!(
@@ -1347,19 +1331,12 @@ fn the_binary_answers_from_a_started_run_without_materializing_a_ledger_entry() 
 
     assert_eq!(
         rigger_ok(root, &["peers"]),
-        "decision d-0 | HISTORICAL | chose d-0 | governs: a.rs\n\
-         decision d-1 | LIVE | chose d-1 | governs: b.rs\n"
+        "decision d-1 | LIVE | chose d-1\n\
+         decision d-0 | HISTORICAL | chose d-0\n"
     );
     assert_eq!(
         mcp_peers(root),
-        json!({
-            "decisions": [
-                {"id": "d-0", "summary": "chose d-0", "governs": ["a.rs"], "live": false},
-                {"id": "d-1", "summary": "chose d-1", "governs": ["b.rs"], "live": true},
-            ],
-            "lessons": [],
-            "findings": [],
-        })
+        json!({"records": ["decision d-1 | LIVE | chose d-1", "decision d-0 | HISTORICAL | chose d-0"]})
     );
     assert_eq!(
         rigger_ok(root, &["prime"])
@@ -1418,8 +1395,8 @@ fn the_binary_answers_from_an_unstarted_stream_without_materializing_a_ledger_en
 
     assert_eq!(
         rigger_ok(root, &["peers"]),
-        "decision d-0 | LIVE | chose d-0 | governs: a.rs\n\
-         decision d-1 | LIVE | chose d-1 | governs: b.rs\n",
+        "decision d-1 | LIVE | chose d-1\n\
+         decision d-0 | LIVE | chose d-0\n",
         "with no run started the whole stream is the run, so both decisions are its own"
     );
     assert_eq!(
@@ -1445,8 +1422,8 @@ fn the_binary_answers_from_an_unstarted_stream_without_materializing_a_ledger_en
     );
     assert_eq!(
         rigger_ok(root, &["peers"]),
-        "decision d-0 | HISTORICAL | chose d-0 | governs: a.rs\n\
-         decision d-1 | HISTORICAL | chose d-1 | governs: b.rs\n",
+        "decision d-1 | HISTORICAL | chose d-1\n\
+         decision d-0 | HISTORICAL | chose d-0\n",
         "the run the step started is after both decisions"
     );
 }

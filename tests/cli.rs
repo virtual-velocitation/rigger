@@ -93,7 +93,8 @@ fn append_line(path: &Path, line: &str) {
 
 /// `rigger emit` appends + folds, and `rigger peers <file>` then shows the decision
 /// scoped to the file it governs - the round-trip a workflow agent makes to record a
-/// decision and have a peer read it back through the context graph.
+/// decision and have a peer read it back through the context graph - on one line whose id
+/// `rigger graph --show` resolves to the whole record.
 #[test]
 fn emit_appends_and_folds_then_peers_shows_it() {
     let dir = temp_store_project();
@@ -129,9 +130,15 @@ fn emit_appends_and_folds_then_peers_shows_it() {
     // peers scoped to the file the decision governs shows it back.
     let (out, err, ok) = run_rigger(root, &["peers", "src/foo.rs"]);
     assert!(ok, "peers must succeed; stderr: {err}");
+    assert_eq!(
+        out, "decision d1 | LIVE | x\n",
+        "peers src/foo.rs must show the d1 decision governing it on one line"
+    );
+    let id = out.split_whitespace().nth(1).unwrap();
+    let shown = run_rigger_ok(root, &["graph", "--show", id]);
     assert!(
-        out.contains("decision d1") && out.contains("governs: src/foo.rs"),
-        "peers src/foo.rs must show the d1 decision governing it; got: {out:?}"
+        shown.starts_with("show d1\n") && shown.contains("kind decision"),
+        "the id a peers line carries resolves through `rigger graph --show`; got: {shown:?}"
     );
 
     // peers scoped to an UNRELATED file does not surface d1 (the blast-radius scope).
@@ -168,13 +175,14 @@ const HOT_RECORDS_PER_FILE: usize = 40;
 /// Seed `root`'s run: one decision about `src/old.rs` before the run's boundary (HISTORICAL once
 /// the run starts), the run's `RunStarted`, then [`HOT_RECORDS_PER_FILE`] decisions, lessons and
 /// findings about each of [`SIX_HOT_FILES`], oldest first, each `{kind}-{n:03}` id numbered in
-/// that order and each summary over 2 KiB - many times every section's budget.
+/// that order and each summary over 2 KiB of text that a JSON rendering escapes (quotes, a
+/// backslash, line breaks) and that spans multibyte characters - many times the reply's budget.
 fn seed_hot_files(root: &Path) {
     use rigger::eventstore::{Event, ExpectedRevision};
 
     let record =
         |typ: &str, body: serde_json::Value| Event::new(typ, body.to_string().into_bytes());
-    let pad = "x".repeat(2048);
+    let pad = "say \"x\" \\ caf\u{e9} \u{2713}\n".repeat(128);
     let mut events = vec![
         record(
             "DecisionMade",
@@ -206,30 +214,29 @@ fn seed_hot_files(root: &Path) {
     });
 }
 
-/// `rigger peers` and the `rigger_peers` tool over six hot files - each holding many times its
-/// budget of large decisions, lessons and findings - keep per section the NEWEST records under
-/// the one budget rule the prompt sections use (the conductor's verbatim count and byte budget
-/// per section), so neither the CLI nor a live `rigger mcp` session prints the whole history;
-/// both keep the same records, and the reply's tail counts what each section left out and says
-/// how to reach it. The budget filters by age, never by liveness: a prior run's decision still
-/// answers its own file, labeled HISTORICAL, with no tail.
+/// `rigger peers` and the `rigger_peers` tool over six hot files - each holding many times the
+/// budget of large decisions, lessons and findings - keep the best-ranked records (here, all of
+/// one run and naming one file each, the NEWEST) under the one reply budget
+/// [`PEERS_REPLY_BUDGET_BYTES`](rigger::mcpserver::PEERS_REPLY_BUDGET_BYTES), so neither the CLI
+/// nor a live `rigger mcp` session prints the whole history and the tool's text stays under the
+/// host's reply limit; both keep the same records, and the reply's tail counts what was left out
+/// per kind and says how to reach it. A prior run's decision still answers its own file, labeled
+/// HISTORICAL, with no tail.
 #[test]
 fn peers_of_six_hot_files_keeps_the_newest_under_the_shared_budget_through_the_cli_and_the_tool() {
-    use rigger::conductor::{DECISIONS_BUDGET_BYTES, FINDINGS_BUDGET_BYTES, LESSONS_BUDGET_BYTES};
+    use rigger::mcpserver::PEERS_REPLY_BUDGET_BYTES as BUDGET;
 
     let dir = temp_store_project();
     let root = dir.path();
     seed_hot_files(root);
     let total = HOT_RECORDS_PER_FILE * SIX_HOT_FILES.len();
-    let budget = DECISIONS_BUDGET_BYTES + LESSONS_BUDGET_BYTES + FINDINGS_BUDGET_BYTES;
 
     let mut args = vec!["peers"];
     args.extend(SIX_HOT_FILES);
     let out = run_rigger_ok(root, &args);
     assert!(
-        out.len() <= budget + 1024,
-        "`rigger peers` over six hot files stays under the three sections' budgets; printed {} \
-         bytes",
+        out.len() <= BUDGET,
+        "`rigger peers` over six hot files stays under the reply budget; printed {} bytes",
         out.len()
     );
     let kept = |kind: &str| out.lines().filter(|l| l.starts_with(kind)).count();
@@ -256,7 +263,7 @@ fn peers_of_six_hot_files_keeps_the_newest_under_the_shared_budget_through_the_c
         ("finding", findings),
     ] {
         assert!(
-            tail.contains(&format!("{} older {kind}(s)", total - n)),
+            tail.contains(&format!("{} more {kind}(s)", total - n)),
             "the tail counts the {kind}s left out; tail: {tail}"
         );
     }
@@ -269,21 +276,20 @@ fn peers_of_six_hot_files_keeps_the_newest_under_the_shared_budget_through_the_c
     let reply = mcp.tool_call("rigger_peers", serde_json::json!({"files": SIX_HOT_FILES}));
     mcp.finish_cleanly();
     let structured = &reply["result"]["structuredContent"];
+    let text = reply["result"]["content"][0]["text"].as_str().unwrap();
     assert!(
-        structured.to_string().len() <= budget + 1024,
-        "the `rigger_peers` tool over six hot files stays under the same budgets; answered {} \
-         bytes",
-        structured.to_string().len()
+        text.len() <= BUDGET,
+        "the `rigger_peers` tool's text over six hot files stays under the same budget; \
+         answered {} bytes",
+        text.len()
     );
-    let section = |name: &str| structured[name].as_array().map_or(0, Vec::len);
     assert_eq!(
-        (
-            section("decisions"),
-            section("lessons"),
-            section("findings")
-        ),
-        (decisions, lessons, findings),
-        "the CLI and the tool keep the same records"
+        structured["records"],
+        serde_json::json!(out
+            .lines()
+            .take(out.lines().count() - 1)
+            .collect::<Vec<_>>()),
+        "the CLI and the tool keep the same records, one line each"
     );
     for (name, n) in [
         ("decisions", decisions),
@@ -303,7 +309,7 @@ fn peers_of_six_hot_files_keeps_the_newest_under_the_shared_budget_through_the_c
 
     assert_eq!(
         run_rigger_ok(root, &["peers", "src/old.rs"]),
-        "decision d-old | HISTORICAL | the prior run's ruling | governs: src/old.rs\n",
+        "decision d-old | HISTORICAL | the prior run's ruling\n",
         "a prior run's decision still answers its own file, labeled, with no tail"
     );
 }
@@ -404,17 +410,15 @@ fn emit_review_finding_shows_in_peers() {
     let (out, err, ok) = run_rigger(root, &["peers", "combat.rs"]);
     assert!(ok, "peers must succeed; stderr: {err}");
     assert!(
-        out.contains("finding f1")
-            && out.contains("by tech-lens")
-            && out.contains("about: combat.rs"),
-        "peers must render the finding's id/by/about; got: {out:?}"
+        out.contains("finding f1 | LIVE | by tech-lens | skips the buffer"),
+        "peers must render the finding's id/by/summary; got: {out:?}"
     );
 }
 
 /// A record citing a line of a file (`tests/x.rs:12`) or a span of its lines
 /// (`tests/x.rs:12-20`) is about that file, through the compiled binary: `rigger peers tests/x.rs`
-/// lists the finding, decision and lesson with their citations as recorded, and the graph links
-/// each to the file's node, so `rigger graph --around tests/x.rs` reaches all three.
+/// lists the finding, decision and lesson, each by an id `rigger graph --show` resolves, and the
+/// graph links each to the file's node, so `rigger graph --around tests/x.rs` reaches all three.
 #[test]
 fn a_record_citing_lines_of_a_file_is_about_that_file_in_peers_and_the_graph() {
     let dir = temp_store_project();
@@ -437,14 +441,23 @@ fn a_record_citing_lines_of_a_file_is_about_that_file_in_peers_and_the_graph() {
     }
 
     let out = run_rigger_ok(root, &["peers", "tests/x.rs"]);
-    for line in [
-        "finding f1 | by adversary | the doc misleads | about: tests/x.rs:12",
-        "| retry twice | governs: tests/x.rs:12-20",
-        "lesson l1 | never sleep in a test | about: tests/x.rs:7",
+    for (line, kind) in [
+        (
+            "finding f1 | LIVE | by adversary | the doc misleads",
+            "finding",
+        ),
+        ("decision d1 | LIVE | retry twice", "decision"),
+        ("lesson l1 | never sleep in a test", "lesson"),
     ] {
         assert!(
             out.contains(line),
             "peers tests/x.rs must list `{line}`; got: {out:?}"
+        );
+        let id = line.split_whitespace().nth(1).unwrap();
+        let shown = run_rigger_ok(root, &["graph", "--show", id]);
+        assert!(
+            shown.starts_with(&format!("show {id}\n")) && shown.contains(&format!("kind {kind}")),
+            "the id on `{line}` resolves through `rigger graph --show`; got: {shown:?}"
         );
     }
 
@@ -21698,7 +21711,7 @@ fn project_identity_survives_a_directory_rename() {
     let (out, err, ok) = run_rigger(&renamed, &["peers", "src/foo.rs"]);
     assert!(ok, "peers must succeed after the rename; stderr:\n{err}");
     assert!(
-        out.contains("decision survivor") && out.contains("governs: src/foo.rs"),
+        out.contains("decision survivor"),
         "history must survive the directory rename end-to-end (Gap 20); got:\n{out}"
     );
 }
@@ -34311,7 +34324,7 @@ fn assert_mcp_serves_its_three_tools(
 
     let peers = mcp.peers();
     assert_eq!(
-        peers["result"]["structuredContent"]["decisions"][0]["id"], "d1",
+        peers["result"]["structuredContent"]["records"][0], "decision d1 | LIVE | x",
         "rigger_peers must reflect the real store; got:\n{peers}"
     );
 

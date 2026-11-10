@@ -5786,20 +5786,15 @@ fn a_decision_recorded_before_any_run_is_live_on_both_peers_surfaces_until_a_run
     let (out, err, ok) = emit_decision(root, "d-early");
     assert!(ok, "the emit appends; stdout: {out} stderr: {err}");
     let mut mcp = common::mcp::McpSession::start(root);
-    // `(id, live)` of each decision a `rigger_peers` reply holds, and the decision lines of a
-    // `rigger peers` read, in order.
+    // The decision lines of a `rigger_peers` reply and of a `rigger peers` read, in order.
     let mut both_surfaces = || {
         let reply = mcp.peers();
-        let tool: Vec<(String, bool)> = reply["result"]["structuredContent"]["decisions"]
+        let tool: Vec<String> = reply["result"]["structuredContent"]["records"]
             .as_array()
-            .unwrap_or_else(|| panic!("a decisions array: {reply}"))
+            .unwrap_or_else(|| panic!("a records array: {reply}"))
             .iter()
-            .map(|d| {
-                (
-                    d["id"].as_str().unwrap().to_string(),
-                    d["live"].as_bool().unwrap(),
-                )
-            })
+            .map(|r| r.as_str().unwrap().to_string())
+            .filter(|r| r.starts_with("decision "))
             .collect();
         let (out, err, ok) = run_rigger(root, &["peers", "src/f.rs"]);
         assert!(ok, "rigger peers answers; stdout: {out} stderr: {err}");
@@ -5816,14 +5811,17 @@ fn a_decision_recorded_before_any_run_is_live_on_both_peers_surfaces_until_a_run
         (before_any_run, once_a_run_started, exit.status.success()),
         (
             (
-                vec![("d-early".to_string(), true)],
-                vec!["decision d-early | LIVE | s | governs: src/f.rs".to_string()],
+                vec!["decision d-early | LIVE | s".to_string()],
+                vec!["decision d-early | LIVE | s".to_string()],
             ),
             (
-                vec![("d-early".to_string(), false), ("d-run".to_string(), true)],
                 vec![
-                    "decision d-early | HISTORICAL | s | governs: src/f.rs".to_string(),
-                    "decision d-run | LIVE | s | governs: src/f.rs".to_string(),
+                    "decision d-run | LIVE | s".to_string(),
+                    "decision d-early | HISTORICAL | s".to_string(),
+                ],
+                vec![
+                    "decision d-run | LIVE | s".to_string(),
+                    "decision d-early | HISTORICAL | s".to_string(),
                 ],
             ),
             true,
@@ -5966,10 +5964,7 @@ fn a_log_that_never_started_a_run_is_rebuilt_and_reset_without_pruning_anything(
             ),
             live,
             true,
-            vec![
-                "decision d-old | LIVE | s | governs: src/f.rs",
-                "decision d-new | LIVE | s | governs: src/f.rs",
-            ],
+            vec!["decision d-new | LIVE | s", "decision d-old | LIVE | s",],
         ),
         "nothing is dead before a run starts; setup stdout: {out} stderr: {err}; reset stderr: \
          {reset_err}; peers stderr: {peers_err}"

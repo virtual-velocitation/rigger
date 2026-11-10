@@ -1212,17 +1212,17 @@ mod tests {
         let server = Server::new(&driver, &store, "run");
 
         let peers = call(&server, &tools_call("rigger_peers", json!({})));
-        let ids = |section: &str| -> Vec<String> {
-            peers["result"]["structuredContent"][section]
-                .as_array()
-                .unwrap_or_else(|| panic!("a {section} array: {peers}"))
-                .iter()
-                .map(|v| v["id"].as_str().unwrap().to_string())
-                .collect()
-        };
-        assert_eq!(ids("decisions"), ["d-a", "d-c"]);
-        assert_eq!(ids("lessons"), ["l-a"]);
-        assert_eq!(ids("findings"), ["f-b", "f-c"]);
+        // The current run's records and the lesson newest first, then the superseded runs'.
+        assert_eq!(
+            peers["result"]["structuredContent"]["records"],
+            json!([
+                "finding f-c | LIVE | by lens | found c",
+                "decision d-c | LIVE | chose d-c",
+                "lesson l-a | learned a",
+                "finding f-b | HISTORICAL | by lens | found b",
+                "decision d-a | HISTORICAL | chose d-a",
+            ])
+        );
         assert_eq!(store.reads(), fixture.reads("run", 1));
 
         let activity = call(&server, &tools_call("rigger_activity", json!({})));
@@ -1973,6 +1973,7 @@ mod tests {
         let core = peers_json(
             &Sidecar::read(&store, "run").unwrap(),
             &["a.rs".to_string()],
+            None,
         );
 
         // The MCP path: the same scope through the rigger_peers tool.
@@ -1984,15 +1985,12 @@ mod tests {
             &core, tool,
             "the shared peers_json core and the MCP tool must return the same value"
         );
-        assert_eq!(core["decisions"].as_array().unwrap().len(), 1);
-        assert_eq!(core["decisions"][0]["id"], "da");
-        // The lessons section is present and blast-radius scoped exactly like decisions.
+        // The a.rs lesson rides the same core and the same scoping as the a.rs decision, newest
+        // first, so `rigger peers a.rs` returns the lessons a capped prompt elided.
         assert_eq!(
-            core["lessons"].as_array().unwrap().len(),
-            1,
-            "`rigger peers a.rs` must return the a.rs lesson (the recovery the elision note names)"
+            core,
+            json!({"records": ["lesson la | y", "decision da | LIVE | x"]})
         );
-        assert_eq!(core["lessons"][0]["id"], "la");
     }
 
     #[test]
@@ -2077,12 +2075,8 @@ mod tests {
 
     /// Seed the two `type_` events `seeded` (one about a.rs, one about b.rs) on the run
     /// stream, check the side-car reads both as `P` peers, and call `rigger_peers` scoped to
-    /// a.rs: its `section` must hold exactly one entry, which is returned.
-    fn sole_peer_of_a_rs<P: crate::sidecar::Peer>(
-        type_: &str,
-        seeded: [Value; 2],
-        section: &str,
-    ) -> Value {
+    /// a.rs: its `records` must hold exactly one line, which is returned.
+    fn sole_peer_of_a_rs<P: crate::sidecar::Peer>(type_: &str, seeded: [Value; 2]) -> Value {
         let store = Store::open(":memory:").unwrap();
         for data in seeded {
             append_run(&store, type_, data);
@@ -2092,13 +2086,13 @@ mod tests {
         let server = Server::new(&driver, &store, "run");
 
         let resp = call(&server, PEERS_OF_A_RS);
-        let arr = resp["result"]["structuredContent"][section]
+        let arr = resp["result"]["structuredContent"]["records"]
             .as_array()
-            .unwrap_or_else(|| panic!("a {section} array: {resp}"));
+            .unwrap_or_else(|| panic!("a records array: {resp}"));
         assert_eq!(
             arr.len(),
             1,
-            "files=[a.rs] returns only the a.rs {section} entry: {resp}"
+            "files=[a.rs] returns only the a.rs record: {resp}"
         );
         arr[0].clone()
     }
@@ -2111,24 +2105,180 @@ mod tests {
                     json!({"id": "da", "summary": "x", "governs": ["a.rs"]}),
                     json!({"id": "db", "summary": "x", "governs": ["b.rs"]}),
                 ],
-                "decisions",
-            )["id"],
-            "da"
+            ),
+            "decision da | LIVE | x"
         );
         // Item 4: rigger_peers surfaces peer review FINDINGS as well as decisions, so a
         // concurrent reviewer scoped to its files sees a finding about one of them.
-        peers_tool_surfaces_findings_scoped_to_the_files_arg: {
-            let finding = sole_peer_of_a_rs::<crate::sidecar::PeerFinding>(
+        peers_tool_surfaces_findings_scoped_to_the_files_arg: assert_eq!(
+            sole_peer_of_a_rs::<crate::sidecar::PeerFinding>(
                 crate::contextgraph::TYPE_REVIEW_FINDING,
                 [
                     json!({"id": "fa", "by": "lensA", "summary": "x", "about": ["a.rs"]}),
                     json!({"id": "fb", "by": "lensA", "summary": "x", "about": ["b.rs"]}),
                 ],
-                "findings",
+            ),
+            "finding fa | LIVE | by lensA | x"
+        );
+    }
+
+    /// A summary of `n` copies of a piece that a JSON rendering escapes (quotes, a backslash),
+    /// spreads over more than one byte (two- and three-byte characters) and breaks across lines.
+    fn awkward_summary(n: usize) -> String {
+        "a \"quoted\" \\ path, caf\u{e9} \u{2713}\n\tnext line. ".repeat(n)
+    }
+
+    /// Seed `n` decisions, `n` findings and `n / 2` lessons about a.rs, each summary many times a
+    /// line's cap, and return the totals: decisions, lessons, findings.
+    fn seed_oversized(store: &Store, n: usize) -> [usize; 3] {
+        for i in 0..n {
+            let summary = awkward_summary(60);
+            append_run(
+                store,
+                crate::contextgraph::TYPE_DECISION_MADE,
+                json!({"id": format!("d-{i}"), "summary": summary, "governs": ["a.rs"]}),
             );
-            assert_eq!(finding["id"], "fa");
-            assert_eq!(finding["by"], "lensA");
+            append_run(
+                store,
+                crate::contextgraph::TYPE_REVIEW_FINDING,
+                json!({"id": format!("f-{i}"), "by": "lens", "summary": summary, "about": ["a.rs"]}),
+            );
+            if i % 2 == 0 {
+                append_run(
+                    store,
+                    crate::contextgraph::TYPE_LESSON_LEARNED,
+                    json!({"id": format!("l-{i}"), "summary": summary, "about": ["a.rs"]}),
+                );
+            }
+        }
+        [n, n.div_ceil(2), n]
+    }
+
+    /// Over a file holding many times the budget of records whose summaries escape, span bytes
+    /// and break lines, the `rigger_peers` reply - its text and its structured copy, each as the
+    /// host reads it - stays under the one [`PEERS_REPLY_BUDGET_BYTES`] on every surface, keeps
+    /// every record on one line, and counts every record it left out by kind, so kept plus left
+    /// out is every record.
+    #[test]
+    fn the_peers_reply_stays_under_one_budget_over_an_oversized_file() {
+        let store = Store::open(":memory:").unwrap();
+        let totals = seed_oversized(&store, 300);
+        let driver = Driver::new();
+        for server in [
+            Server::new(&driver, &store, "run"),
+            Server::new(&driver, &store, "run").with_spawn("u1/implementer#0"),
+        ] {
+            let resp = call(&server, PEERS_OF_A_RS);
+            let text = resp["result"]["content"][0]["text"].as_str().unwrap();
+            let structured = &resp["result"]["structuredContent"];
+            assert!(
+                text.len() <= PEERS_REPLY_BUDGET_BYTES,
+                "the reply text is {} bytes",
+                text.len()
+            );
+            assert_eq!(&serde_json::from_str::<Value>(text).unwrap(), structured);
+            let records = structured["records"].as_array().unwrap();
+            assert!(
+                records.len() > 20,
+                "the budget is spent on records, not on padding: kept {}",
+                records.len()
+            );
+            for (i, (noun, out)) in [
+                ("decision", "decisions"),
+                ("lesson", "lessons"),
+                ("finding", "findings"),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let kept = records
+                    .iter()
+                    .filter(|r| r.as_str().unwrap().starts_with(&format!("{noun} ")))
+                    .count();
+                assert_eq!(
+                    kept + structured["left_out"][out].as_u64().unwrap() as usize,
+                    totals[i],
+                    "every {noun} is kept or counted out"
+                );
+            }
+            assert!(
+                records.iter().all(|r| !r.as_str().unwrap().contains('\n')),
+                "every record is one line"
+            );
+            assert!(structured["left_out"]["note"]
+                .as_str()
+                .unwrap()
+                .contains(crate::conductor::RECORD_RECOVERY));
+        }
+    }
+
+    /// The bound spawn ranks the tool's reply: a server bound to a spawn of unit u1 puts u1's
+    /// older ruling before u2's newer one, and an unbound server puts the newer first.
+    #[test]
+    fn the_peers_tool_ranks_for_the_spawn_it_is_bound_to() {
+        let store = Store::open(":memory:").unwrap();
+        for (id, spawn) in [
+            ("d-own", "u1/implementer#0"),
+            ("d-other", "u2/implementer#0"),
+        ] {
+            let event = Event::new(
+                crate::contextgraph::TYPE_DECISION_MADE,
+                serde_json::to_vec(&json!({"id": id, "summary": "s", "governs": ["a.rs"]}))
+                    .unwrap(),
+            )
+            .with_meta(crate::spawn::META_SPAWN, spawn);
+            store
+                .append("run", ExpectedRevision::Any, &[event])
+                .unwrap();
+        }
+        let driver = Driver::new();
+        let records = |server: Server| {
+            call(&server, PEERS_OF_A_RS)["result"]["structuredContent"]["records"].clone()
         };
+        assert_eq!(
+            [
+                records(Server::new(&driver, &store, "run").with_spawn("u1/implementer#1")),
+                records(Server::new(&driver, &store, "run")),
+            ],
+            [
+                json!(["decision d-own | LIVE | s", "decision d-other | LIVE | s"]),
+                json!(["decision d-other | LIVE | s", "decision d-own | LIVE | s"]),
+            ]
+        );
+    }
+
+    /// The record a [`peer_line`] test renders: `noun` `id` by `by`, `live`, saying `summary`.
+    fn peer(noun: &'static str, by: &str, summary: &str, live: Option<bool>) -> RankedPeer {
+        RankedPeer {
+            noun,
+            id: format!("{}1", &noun[..1]),
+            by: by.to_string(),
+            summary: summary.to_string(),
+            live,
+        }
+    }
+
+    crate::test_cases! {
+        /// A live decision: its provenance, and its summary's whitespace runs collapsed.
+        peer_line_collapses_a_summary_onto_one_line: assert_eq!(
+            peer_line(&peer("decision", "", "chose\n  X\tnow ", Some(true))),
+            "decision d1 | LIVE | chose X now"
+        );
+        /// A historical finding names its reviewer after its provenance.
+        peer_line_names_a_findings_reviewer: assert_eq!(
+            peer_line(&peer("finding", "lens:sdet", "found y", Some(false))),
+            "finding f1 | HISTORICAL | by lens:sdet | found y"
+        );
+        /// A lesson belongs to no run, so its line carries no provenance.
+        peer_line_gives_a_lesson_no_provenance: assert_eq!(
+            peer_line(&peer("lesson", "", "learned z", None)),
+            "lesson l1 | learned z"
+        );
+        /// A summary past the cap is clipped on a character boundary and marked.
+        peer_line_clips_a_long_summary_on_a_character_boundary: assert_eq!(
+            peer_line(&peer("lesson", "", &"\u{e9}".repeat(PEER_SUMMARY_BYTES), None)),
+            format!("lesson l1 | {}...", "\u{e9}".repeat((PEER_SUMMARY_BYTES - 3) / 2))
+        );
     }
 
     #[test]
@@ -2426,7 +2576,7 @@ mod tests {
         server.run(Cursor::new(peers_input), &mut out).unwrap();
         let resp: Value = serde_json::from_str(String::from_utf8(out).unwrap().trim()).unwrap();
         assert_eq!(
-            resp["result"]["structuredContent"]["decisions"][0]["id"], "d1",
+            resp["result"]["structuredContent"]["records"][0], "decision d1 | LIVE | x",
             "rigger_peers must keep answering even though the grounder failed to resolve; \
              got:\n{resp}"
         );
