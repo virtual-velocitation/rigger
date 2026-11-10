@@ -49,6 +49,10 @@ name = "all"
 path = "tests/all.rs"
 
 [[test]]
+name = "boundary_audit"
+path = "tests/boundary_audit.rs"
+
+[[test]]
 name = "build_budget_slots_periphery"
 path = "tests/build_budget_slots_periphery.rs"
 

@@ -26,7 +26,7 @@
 //! work queue and never outlives the work. The appender audit's two lists are no offender queue:
 //! each is the whole set of its family's sites, compared both ways.
 
-use crate::common;
+mod common;
 use common::repo::{
     collect_files, collect_rs_files, production_part, production_sources, repo_root, table_lines,
 };
@@ -35,7 +35,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::source_audit;
+#[path = "common/source_audit.rs"]
+mod source_audit;
 use source_audit::{
     assert_real_tree_clean, cfg_test_ranges, close_of, enclosing_fn_line, fn_sig_lines,
     gate_name_in, holds_whole_word, imported_names, in_ranges, is_definition_site,

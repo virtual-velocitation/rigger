@@ -31,7 +31,6 @@ mod architecture_integrity;
 mod batched_fold_cadence;
 #[cfg(feature = "symbols")]
 mod blob_is_written_periphery;
-mod boundary_audit;
 mod build_watch_paths;
 #[cfg(feature = "symbols")]
 mod call_lands_on_its_one_same_file_candidate_periphery;

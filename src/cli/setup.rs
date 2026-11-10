@@ -4760,15 +4760,17 @@ mod tests {
 
     /// The two author roles carry this project's anchors for the built-in hand-over rules as one
     /// block, byte-identical in both and in no other persona: the implement gate set by name, the
-    /// commands the author runs before it reports (clippy on both lanes, the boundary audit, the content gates, red-before-green and, when the
-    /// production hunks touch `src/` or `crates/`, the whole root suite, `cargo test --tests`, run
-    /// once on the default lane, the lane-no-default gate running it on the final tree), the root
-    /// test filter by module on `all` or by executable name, the re-run after a later commit or
-    /// an amend (a comment, doc-comment or Markdown diff re-runs fmt, the default-lane clippy line
-    /// and `cargo test --tests`; any other hunk the full
-    /// list), the whole suite left to the gates, the test homes with the tool that searches them, the counted check - the roots a retired spelling is
-    /// counted over with the command that counts it - and the foreground wait for the long runs
-    /// (the test binaries on both lanes and a lane script), polled to its exit line when the host
+    /// commands the author runs before it reports (clippy on both lanes, the boundary audit, the
+    /// content gates, red-before-green and, when the production hunks touch `src/` or `crates/`,
+    /// the whole root suite, `cargo test --tests`, run once on the default lane, the
+    /// lane-no-default gate running it on the final tree), the root test filter by module on
+    /// `all` or by executable name, the declaration of a new test file and how a suite reaches
+    /// the shared helpers, the re-run after a later commit or an amend (a comment, doc-comment
+    /// or Markdown diff re-runs fmt, the default-lane clippy line and `cargo test --tests`; any
+    /// other hunk the full list), the whole suite left to the gates, the test homes with the
+    /// tool that searches them, the counted check - the roots a retired spelling is counted over
+    /// with the command that counts it - and the foreground wait for the long runs (the test
+    /// binaries on both lanes and a lane script), polled to its exit line when the host
     /// backgrounds one. The block owes no record: no sentence walk and its generators, no
     /// one-home line, no rule-spelling search, no hand-applied mutation and no per-statement
     /// test-shape record.
@@ -4799,7 +4801,7 @@ mod tests {
             "`cargo fmt --all --check`",
             "`cargo clippy --workspace --all-targets -- -D warnings`",
             "`cargo clippy --workspace --all-targets --no-default-features -- -D warnings`",
-            "`cargo test --test all boundary_audit::`",
+            "`cargo test --test boundary_audit`",
             "`sh .rigger/gates/content.sh style`",
             "`sh .rigger/gates/content.sh no-os-kill`",
             "`sh .rigger/gates/red-before-green.sh`",
@@ -4809,6 +4811,8 @@ mod tests {
              `[[test]]` executable",
             "A new test file is declared in `tests/all.rs` (or, when it must own its process, as a \
              `[[test]]` entry), and a test enforces it",
+            "A suite that is a module of `all` reaches the shared helpers with \
+             `use crate::common;`, a suite with its own `[[test]]` entry declares `mod common;`",
             "when your production hunks touch `src/` or `crates/`, `cargo test --tests` on the \
              default lane alone",
             "Once these checks have run, a later commit or an amend re-runs only what its new \

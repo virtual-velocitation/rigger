@@ -90,13 +90,15 @@ your committed tree:
 - `cargo clippy --workspace --all-targets -- -D warnings` and
   `cargo clippy --workspace --all-targets --no-default-features -- -D warnings`, the clippy
   line of the lane-no-default gate: a helper only one lane calls is dead code on the other;
-- `cargo test --test all boundary_audit::`, `sh .rigger/gates/content.sh style`,
+- `cargo test --test boundary_audit`, `sh .rigger/gates/content.sh style`,
   `sh .rigger/gates/content.sh no-os-kill` and `sh .rigger/gates/red-before-green.sh`;
 - every test binary your change touched, on both lanes: `cargo test -p <crate> --lib`, or for
   a root test `cargo test --test all <file>::` when the file is a module of the consolidated
   `all` executable, `cargo test --test <file>` when `Cargo.toml` lists it as its own `[[test]]`
   executable; then the same with `--no-default-features`. A new test file is declared in
-  `tests/all.rs` (or, when it must own its process, as a `[[test]]` entry), and a test enforces it;
+  `tests/all.rs` (or, when it must own its process, as a `[[test]]` entry), and a test enforces it.
+  A suite that is a module of `all` reaches the shared helpers with `use crate::common;`, a suite
+  with its own `[[test]]` entry declares `mod common;`;
 - when your production hunks touch `src/` or `crates/`, `cargo test --tests` on the default
   lane alone, since a text pin in a root test goes red when a hunk moves the text it reads
   and the lane-no-default gate runs the suite on the final tree.
