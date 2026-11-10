@@ -38,6 +38,8 @@ When you author a change, you report only once the tree you hand over meets ever
 Each rule is an outcome and the check that proves it; run the checks your change needs
 yourself, in your worktree, before you report; the checks owe no record. Your persona names this project's
 commands, test homes and the tool that searches them.
+An author who wants a gate's verdict runs `rigger gate <id>` after committing, and the driver
+reuses that verdict for the same commit instead of running the gate again.
 
 - **The gates confirm, never discover.** The stage's gates run the full battery on your
   committed tree and are the authority: you run only the checks your change needs, so you do

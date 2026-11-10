@@ -72,6 +72,10 @@ here: run it in the foreground with the Bash timeout raised to fit, and when one
 timeout and moves to the background, poll its output in an `until`-loop until its exit line is
 there, before you report.
 
+When you want a gate's verdict before you report, run `rigger gate <id>` with one of the gate
+ids above (`rigger gate clippy`, say) after you commit: the driver reuses that verdict for the
+same commit and does not run the gate again.
+
 The test homes: a crate's own `mod tests` and its contract module under `crates/*/src/`; the
 shared fixtures, `tests/common/fixtures/<area>.rs` (a crate mounts each one it needs with
 `#[path]` in its `lib.rs`, so this is the one home a crate's unit tests and a root test both
