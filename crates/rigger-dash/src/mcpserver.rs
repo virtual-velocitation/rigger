@@ -15,7 +15,7 @@ use crate::contextgraph::{entity_site, site_fields, wired, EntitySite, Fold, Loc
 use crate::driver::workflow::Driver;
 use crate::eventstore::{Event, EventStore, ExpectedRevision};
 use crate::grounder::Grounder;
-use crate::sidecar::Sidecar;
+use crate::sidecar::{Peer, PeerDecision, PeerFinding, PeerLesson, RankedPeer, Sidecar};
 
 /// A tool's failure, carrying the JSON-RPC error code to report it with. Most
 /// failures are internal (`-32603`); a bad argument (e.g. an unknown spawn id)
@@ -612,8 +612,9 @@ impl<'a> Server<'a> {
     /// List peers' decisions, lessons, AND review findings, optionally scoped to a
     /// blast-radius (§5.3). When the caller passes a `files` array (the agent's
     /// blast-radius), only decisions whose `governs`, lessons whose `about`, and findings
-    /// whose `about` intersect it come back; absent or empty, every one does - each section the
-    /// newest under its budget (see [`peers_json`]). The findings are how concurrent review
+    /// whose `about` intersect it come back; absent or empty, every one does - ranked for the
+    /// spawn this server is bound to (none on the other surfaces) and kept under one budget
+    /// (see [`peers_json`]). The findings are how concurrent review
     /// lenses see each other's findings LIVE, before any of them grounds again - the same
     /// side-car channel that surfaces peer decisions and lessons.
     fn tool_peers(&self, args: &Value) -> Result<Value, ToolError> {
@@ -628,7 +629,7 @@ impl<'a> Server<'a> {
             .unwrap_or_default();
         let peers = Sidecar::read(self.store, &self.stream)
             .map_err(|e| ToolError::new(INTERNAL_ERROR, e.to_string()))?;
-        Ok(peers_json(&peers, &files))
+        Ok(peers_json(&peers, &files, self.spawn.as_deref()))
     }
 
     /// `rigger_ground` (spec 92, criterion 4's fix round): the operator's own MEMORY-adjacent
@@ -779,14 +780,14 @@ impl<'a> Server<'a> {
         match self.surface() {
             Surface::SpawnBound => json!([
                 {"name": "rigger_emit", "description": "Record a decision on the shared event log, live, so other agents see it immediately. Stamped with the spawn this server is bound to; optionally set valid_from (the bi-temporal time the fact became true).", "inputSchema": {"type": "object", "properties": {"type": {"type": "string"}, "data": {"type": "object"}, "meta": {"type": "object", "description": "Metadata entries (string->string). meta.spawn, if set, must name THIS server's own bound spawn.", "additionalProperties": {"type": "string"}}, "valid_from": {"description": "When the fact became true: unix nanoseconds (integer) or an RFC3339 timestamp string.", "type": ["integer", "string"]}}, "required": ["type", "data"]}},
-                {"name": "rigger_peers", "description": "List the decisions, lessons, AND review findings recorded so far, this run's and earlier runs' (each decision labeled live or historical), so you do not work blind to them. Each section returns its newest records under a byte budget; when any are left out, `left_out` counts them and says how to read one by id. Pass `files` to scope the result to decisions, lessons, and findings that touch those files; omit it for every file.", "inputSchema": {"type": "object", "properties": {"files": {"type": "array", "items": {"type": "string"}}}}},
+                {"name": "rigger_peers", "description": "List the decisions, lessons, AND review findings recorded so far, this run's and earlier runs', so you do not work blind to them. Each record is one line, `<kind> <id> | LIVE|HISTORICAL | [by <reviewer> | ]<summary>`, best first: your own unit's records, then this run's, then those naming more of `files`, then the newest, with reviewer verdicts last. The reply stays under one size budget; when records are left out, `left_out` counts them and says how to read one by id (`rigger_graph` `show` <id> returns a whole record). Pass `files` to scope the result to decisions, lessons, and findings that touch those files; omit it for every file.", "inputSchema": {"type": "object", "properties": {"files": {"type": "array", "items": {"type": "string"}}}}},
                 {"name": "rigger_ground", "description": "The MEMORY-adjacent intent lookup (spec 92): rank code entities by relevance to a natural-language query. Same as `rigger ground \"<query>\" [<k>]`.", "inputSchema": {"type": "object", "properties": {"query": {"type": "string", "description": "the natural-language query"}, "k": {"type": "integer", "description": "how many results (default 8)"}}, "required": ["query"]}},
                 {"name": "rigger_graph", "description": "The STRUCTURE and resolution lookups: pass `show` <entity> for its definition site (same as `rigger graph --show <entity>`), or `around` <file|entity> (optionally `depth`) for its structural neighborhood (same as `rigger graph --around <file|entity> --depth <n>`). Pass exactly one of `show`/`around`. Worked examples - who calls <name>: pass `around` <name>; where is <name> defined: pass `show` <name>.", "inputSchema": {"type": "object", "properties": {"show": {"type": "string"}, "around": {"type": "string"}, "depth": {"type": "integer", "description": "neighborhood depth for `around` (default 2)"}}}},
                 {"name": "rigger_progress", "description": "Record one live progress line for the spawn this server is bound to, so an observer sees you working between milestones.", "inputSchema": {"type": "object", "properties": {"activity": {"type": "string", "description": "a short one-line description of what you just did"}}, "required": ["activity"]}},
                 {"name": "rigger_scratch", "description": "Your own rigger-assigned scratch container - the one directory every probe repo, verification worktree, test build, or build cache you create must live under, never /tmp or a session scratchpad. Reaped once your result records.", "inputSchema": {"type": "object", "properties": {}}},
             ]),
             Surface::Lookup => json!([
-                {"name": "rigger_peers", "description": "List the decisions, lessons, AND review findings recorded so far, this run's and earlier runs' (each decision labeled live or historical), so you do not work blind to them. Each section returns its newest records under a byte budget; when any are left out, `left_out` counts them and says how to read one by id. Pass `files` to scope the result to decisions, lessons, and findings that touch those files; omit it for every file.", "inputSchema": {"type": "object", "properties": {"files": {"type": "array", "items": {"type": "string"}}}}},
+                {"name": "rigger_peers", "description": "List the decisions, lessons, AND review findings recorded so far, this run's and earlier runs', so you do not work blind to them. Each record is one line, `<kind> <id> | LIVE|HISTORICAL | [by <reviewer> | ]<summary>`, best first: this run's records, then those naming more of `files`, then the newest, with reviewer verdicts last. The reply stays under one size budget; when records are left out, `left_out` counts them and says how to read one by id (`rigger_graph` `show` <id> returns a whole record). Pass `files` to scope the result to decisions, lessons, and findings that touch those files; omit it for every file.", "inputSchema": {"type": "object", "properties": {"files": {"type": "array", "items": {"type": "string"}}}}},
                 {"name": "rigger_ground", "description": "The MEMORY-adjacent intent lookup (spec 92): rank code entities by relevance to a natural-language query. Same as `rigger ground \"<query>\" [<k>]`.", "inputSchema": {"type": "object", "properties": {"query": {"type": "string", "description": "the natural-language query"}, "k": {"type": "integer", "description": "how many results (default 8)"}}, "required": ["query"]}},
                 {"name": "rigger_graph", "description": "The STRUCTURE and resolution lookups: pass `show` <entity> for its definition site (same as `rigger graph --show <entity>`), or `around` <file|entity> (optionally `depth`) for its structural neighborhood (same as `rigger graph --around <file|entity> --depth <n>`). Pass exactly one of `show`/`around`. Worked examples - who calls <name>: pass `around` <name>; where is <name> defined: pass `show` <name>.", "inputSchema": {"type": "object", "properties": {"show": {"type": "string"}, "around": {"type": "string"}, "depth": {"type": "integer", "description": "neighborhood depth for `around` (default 2)"}}}},
             ]),
@@ -794,7 +795,7 @@ impl<'a> Server<'a> {
                 {"name": "rigger_next", "description": "Pick up the next queued agent spawn. The id is empty when nothing is waiting.", "inputSchema": {"type": "object", "properties": {}}},
                 {"name": "rigger_result", "description": "Report an agent's final result by spawn id.", "inputSchema": {"type": "object", "properties": {"id": {"type": "string"}, "output": {"type": "string"}, "error": {"type": "string"}}, "required": ["id"]}},
                 {"name": "rigger_emit", "description": "Record a decision on the shared event log, live, so other agents see it immediately. Optionally set meta (e.g. the acting agent, which stamps the graph's DECIDED edge) and valid_from (the bi-temporal time the fact became true).", "inputSchema": {"type": "object", "properties": {"type": {"type": "string"}, "data": {"type": "object"}, "meta": {"type": "object", "description": "Metadata entries (string->string), e.g. {\"actor\": \"<agent-id>\"}.", "additionalProperties": {"type": "string"}}, "valid_from": {"description": "When the fact became true: unix nanoseconds (integer) or an RFC3339 timestamp string.", "type": ["integer", "string"]}}, "required": ["type", "data"]}},
-                {"name": "rigger_peers", "description": "List the decisions, lessons, AND review findings other agents have recorded so far, this run's and earlier runs' (each decision labeled live or historical), so you do not work blind to them (concurrent reviewers see each other's findings live). Each section returns its newest records under a byte budget; when any are left out, `left_out` counts them and says how to read one by id. Pass `files` (your blast-radius) to scope the result to decisions, lessons, and findings that touch those files; omit it for every file.", "inputSchema": {"type": "object", "properties": {"files": {"type": "array", "items": {"type": "string"}, "description": "The agent's blast-radius: only decisions whose `governs`, and lessons and findings whose `about`, name one of these files (a `path:line` citation names its file) are returned. Omit for all."}}}},
+                {"name": "rigger_peers", "description": "List the decisions, lessons, AND review findings other agents have recorded so far, this run's and earlier runs', so you do not work blind to them (concurrent reviewers see each other's findings live). Each record is one line, `<kind> <id> | LIVE|HISTORICAL | [by <reviewer> | ]<summary>`, best first: this run's records, then those naming more of `files`, then the newest, with reviewer verdicts last. The reply stays under one size budget; when records are left out, `left_out` counts them and says how to read one by id (`rigger_graph` `show` <id> returns a whole record). Pass `files` (your blast-radius) to scope the result to decisions, lessons, and findings that touch those files; omit it for every file.", "inputSchema": {"type": "object", "properties": {"files": {"type": "array", "items": {"type": "string"}, "description": "The agent's blast-radius: only decisions whose `governs`, and lessons and findings whose `about`, name one of these files (a `path:line` citation names its file) are returned. Omit for all."}}}},
                 {"name": "rigger_activity", "description": "The live per-agent view of the current run: one entry per in-flight agent with its stage, latest activity, how long since that activity and its last heartbeat, and its last event-store milestone (and how long ago - the blackout this fills). Rigger consolidates the run stream, the progress store, and the liveness markers and presents them here, so you get up-to-the-second agent state with no filesystem access of your own.", "inputSchema": {"type": "object", "properties": {}}},
             ]),
         }
@@ -910,64 +911,81 @@ fn append_emit(store: &dyn EventStore, stream: &str, args: &Value) -> Result<Eve
     Ok(event.appended_at(stream, position))
 }
 
-/// The shared core of `rigger_peers` (the MCP tool) and `rigger peers` (the CLI):
-/// the peers' decisions, lessons, AND review findings, scoped to `files` (empty = all),
-/// EXACTLY as the MCP tool returns them - `{"decisions": [...], "lessons": [...],
-/// "findings": [...]}`, each in log order. Both paths call this so the CLI and the MCP
-/// surface stay identical. Each section keeps its NEWEST records under the matching capped
-/// prompt section's verbatim count and byte budget, through the conductor's one
-/// [`within_budget`](crate::conductor::within_budget) rule, so no file's history can grow a
-/// reply past a bound. When a section leaves records out, a `left_out` object counts them per
-/// section and carries the one-line `note` naming how to narrow the call or read a left-out
-/// record by id ([`RECORD_RECOVERY`](crate::conductor::RECORD_RECOVERY)).
-pub fn peers_json(peers: &Sidecar, files: &[String]) -> Value {
-    use crate::conductor::{
-        DECISIONS_BUDGET_BYTES, DECISIONS_VERBATIM_N, FINDINGS_BUDGET_BYTES, FINDINGS_VERBATIM_N,
-        LESSONS_BUDGET_BYTES, LESSONS_VERBATIM_N,
-    };
-    let (decisions, decisions_out) = newest_within(
-        peers
-            .peers_for::<crate::sidecar::PeerDecision>(files)
-            .iter()
-            .map(
-                |d| json!({"id": d.id, "summary": d.summary, "governs": d.governs, "live": d.live}),
-            ),
-        DECISIONS_VERBATIM_N,
-        DECISIONS_BUDGET_BYTES,
+/// The one size budget of a `rigger_peers` reply, in bytes of its serialized JSON (the text the
+/// host reads, which counts at most this many characters): under the host's tool-result limit of
+/// about 50K characters with room for the frame, so the reply is delivered inline.
+pub const PEERS_REPLY_BUDGET_BYTES: usize = 40_000;
+
+/// The longest a peer line's summary runs, in bytes, before it is clipped with `...`: the line
+/// names the record, and `rigger graph --show <id>` reads the whole of it.
+pub const PEER_SUMMARY_BYTES: usize = 480;
+
+/// The shared core of `rigger_peers` (the MCP tool) and `rigger peers` (the CLI): the peers'
+/// decisions, lessons AND review findings scoped to `files` (empty = all), ranked for the spawn
+/// `caller` ([`Sidecar::ranked`]: ceremony last, the caller's own unit first, then the active
+/// run's, then those naming more of `files`, then the newest), EXACTLY as the MCP tool returns
+/// them - `{"records": [...]}`, one [`peer_line`] each, best first. Both paths call this so the
+/// CLI and the MCP surface stay identical. The records kept are the best-ranked prefix under ONE
+/// budget for the whole reply, [`PEERS_REPLY_BUDGET_BYTES`], taken through the conductor's one
+/// [`within_budget`](crate::conductor::within_budget) rule. When records are left out, a
+/// `left_out` object counts them per kind and carries the one-line `note` naming how to narrow
+/// the call or read a left-out record by id ([`RECORD_RECOVERY`](crate::conductor::RECORD_RECOVERY)),
+/// and the budget holds with that object in the reply.
+pub fn peers_json(peers: &Sidecar, files: &[String], caller: Option<&str>) -> Value {
+    let ranked = peers.ranked(files, caller);
+    let totals = kind_counts(&ranked);
+    // The reply's size with no record kept and every record counted out: the most the envelope
+    // and the `left_out` object can take, since a count never has more digits than its total.
+    let reserve = peers_reply(Vec::new(), totals).to_string().len();
+    let kept = crate::conductor::within_budget(
+        ranked.iter(),
+        usize::MAX,
+        PEERS_REPLY_BUDGET_BYTES.saturating_sub(reserve),
+        |p| Value::from(peer_line(p)).to_string().len() + ",".len(),
     );
-    let (lessons, lessons_out) = newest_within(
-        peers
-            .peers_for::<crate::sidecar::PeerLesson>(files)
-            .iter()
-            .map(|l| json!({"id": l.id, "summary": l.summary, "about": l.about})),
-        LESSONS_VERBATIM_N,
-        LESSONS_BUDGET_BYTES,
-    );
-    let (findings, findings_out) = newest_within(
-        peers
-            .peers_for::<crate::sidecar::PeerFinding>(files)
-            .iter()
-            .map(|f| json!({"id": f.id, "by": f.by, "summary": f.summary, "about": f.about})),
-        FINDINGS_VERBATIM_N,
-        FINDINGS_BUDGET_BYTES,
-    );
-    let mut reply = json!({"decisions": decisions, "lessons": lessons, "findings": findings});
-    let counts: Vec<String> = [
-        (decisions_out, "decision"),
-        (lessons_out, "lesson"),
-        (findings_out, "finding"),
-    ]
-    .iter()
-    .filter(|(n, _)| *n > 0)
-    .map(|(n, noun)| format!("{n} older {noun}(s)"))
-    .collect();
+    let kept_counts = kind_counts(kept.iter().copied());
+    let out = totals.map(|(noun, total)| (noun, total - count_of(&kept_counts, noun)));
+    peers_reply(kept.into_iter().map(peer_line).collect(), out)
+}
+
+/// The kinds a peers reply counts, in the order its `left_out` note names them.
+const PEER_KINDS: [&str; 3] = [PeerDecision::NOUN, PeerLesson::NOUN, PeerFinding::NOUN];
+
+/// How many of `peers` are of each of [`PEER_KINDS`].
+fn kind_counts<'p>(peers: impl IntoIterator<Item = &'p RankedPeer>) -> [(&'static str, usize); 3] {
+    let mut counts = PEER_KINDS.map(|noun| (noun, 0));
+    for p in peers {
+        if let Some((_, n)) = counts.iter_mut().find(|(noun, _)| *noun == p.noun) {
+            *n += 1;
+        }
+    }
+    counts
+}
+
+fn count_of(counts: &[(&str, usize); 3], noun: &str) -> usize {
+    counts
+        .iter()
+        .find(|(n, _)| *n == noun)
+        .map_or(0, |(_, c)| *c)
+}
+
+/// A peers reply holding `records`, with a `left_out` object when any of the `out` counts is
+/// above zero.
+fn peers_reply(records: Vec<String>, out: [(&str, usize); 3]) -> Value {
+    let mut reply = json!({ "records": records });
+    let counts: Vec<String> = out
+        .iter()
+        .filter(|(_, n)| *n > 0)
+        .map(|(noun, n)| format!("{n} more {noun}(s)"))
+        .collect();
     if !counts.is_empty() {
         reply["left_out"] = json!({
-            "decisions": decisions_out,
-            "lessons": lessons_out,
-            "findings": findings_out,
+            "decisions": count_of(&out, PeerDecision::NOUN),
+            "lessons": count_of(&out, PeerLesson::NOUN),
+            "findings": count_of(&out, PeerFinding::NOUN),
             "note": format!(
-                "(+{} left out to keep this reply under budget - narrow with fewer files, or {})",
+                "(+{} ranked below these left out to keep this reply under budget - narrow with \
+                 fewer files, or {})",
                 counts.join(", "),
                 crate::conductor::RECORD_RECOVERY
             ),
@@ -976,22 +994,30 @@ pub fn peers_json(peers: &Sidecar, files: &[String]) -> Value {
     reply
 }
 
-/// One `peers_json` section under its budget: `records` arrive in log order (oldest first), so
-/// the newest are walked first through the shared
-/// [`within_budget`](crate::conductor::within_budget) rule, each sized by its JSON rendering;
-/// the kept records return in log order beside how many were left out.
-fn newest_within(
-    records: impl DoubleEndedIterator<Item = Value> + ExactSizeIterator,
-    verbatim_n: usize,
-    budget_bytes: usize,
-) -> (Vec<Value>, usize) {
-    let total = records.len();
-    let mut kept = crate::conductor::within_budget(records.rev(), verbatim_n, budget_bytes, |r| {
-        r.to_string().len()
-    });
-    kept.reverse();
-    let left_out = total - kept.len();
-    (kept, left_out)
+/// One peer record on ONE line: `<kind> <id> | LIVE|HISTORICAL | [by <reviewer> | ]<summary>`,
+/// the provenance column absent for a lesson (no run owns one), the summary's whitespace runs
+/// collapsed to single spaces and clipped at [`PEER_SUMMARY_BYTES`] with `...`. The id is the
+/// one `rigger graph --show <id>` resolves to the whole record.
+pub fn peer_line(p: &RankedPeer) -> String {
+    let mut line = format!("{} {} | ", p.noun, p.id);
+    if let Some(live) = p.live {
+        line.push_str(if live { "LIVE | " } else { "HISTORICAL | " });
+    }
+    if !p.by.is_empty() {
+        line.push_str(&format!("by {} | ", p.by));
+    }
+    let summary = crate::conductor::normalize_ws(&p.summary);
+    if summary.len() <= PEER_SUMMARY_BYTES {
+        line.push_str(&summary);
+    } else {
+        let mut cut = PEER_SUMMARY_BYTES - "...".len();
+        while !summary.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        line.push_str(&summary[..cut]);
+        line.push_str("...");
+    }
+    line
 }
 
 /// Parse a `valid_from` argument into a [`SystemTime`]: a JSON integer of unix

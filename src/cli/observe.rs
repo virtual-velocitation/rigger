@@ -590,9 +590,10 @@ fn unread_ci_note(ci: &watch::CiProbe, last: &mut Option<String>) -> Option<Stri
 /// `rigger_peers` tool does (both render through [`mcpserver::peers_json`]). The store
 /// is RESOLVED by walking up to the project's existing `.rigger` (refusing to fabricate
 /// one, spec 05 - see [`require_store_dir`]); the side-car reads the `conductor::STREAM` run
-/// from its boundary with the carried-over knowledge by type, and this command renders one
-/// readable line per decision / lesson / finding the shared core kept under its budget, then,
-/// when a section left records out, the core's `left_out` note as the last line.
+/// from its boundary with the carried-over knowledge by type, and this command prints the
+/// shared core's records, one line each, best-ranked first, then, when records were left out,
+/// the core's `left_out` note as the last line. The command runs as no spawn, so no unit's own
+/// records are raised.
 pub(crate) fn cmd_peers(args: &[String]) -> Res {
     let files: Vec<String> = args.to_vec();
 
@@ -601,62 +602,14 @@ pub(crate) fn cmd_peers(args: &[String]) -> Res {
     // log.
     let peers = over_the_run_store(|_, _, store| Ok(Sidecar::read(store, conductor::STREAM)?))?;
 
-    let result = mcpserver::peers_json(&peers, &files);
-    let decisions = result["decisions"].as_array().cloned().unwrap_or_default();
-    let lessons = result["lessons"].as_array().cloned().unwrap_or_default();
-    let findings = result["findings"].as_array().cloned().unwrap_or_default();
-    for d in &decisions {
-        println!("{}", peer_decision_line(d));
-    }
-    for l in &lessons {
-        let id = l["id"].as_str().unwrap_or_default();
-        let summary = l["summary"].as_str().unwrap_or_default();
-        let about = json_str_array(&l["about"]);
-        println!("lesson {id} | {summary} | about: {about}");
-    }
-    for f in &findings {
-        let id = f["id"].as_str().unwrap_or_default();
-        let by = f["by"].as_str().unwrap_or_default();
-        let summary = f["summary"].as_str().unwrap_or_default();
-        let about = json_str_array(&f["about"]);
-        println!("finding {id} | by {by} | {summary} | about: {about}");
+    let result = mcpserver::peers_json(&peers, &files, None);
+    for line in result["records"].as_array().into_iter().flatten() {
+        println!("{}", line.as_str().unwrap_or_default());
     }
     if let Some(note) = result["left_out"]["note"].as_str() {
         println!("{note}");
     }
     Ok(())
-}
-
-/// Render one `rigger peers` decision line, labeling its provenance LIVE (from the
-/// active run, or recorded before any run started) or HISTORICAL (a superseded run, or
-/// pre-boundary once a run has started) from the `live` flag the side-car derived via the
-/// single c1 run attribution (spec 21, unit 3; spec 101). The label makes
-/// a prior run's decision legible instead of alarming; grounding still surfaces cross-run
-/// decisions unchanged. A missing/false `live` flag renders HISTORICAL - the conservative
-/// default that matches the side-car's own default.
-fn peer_decision_line(d: &serde_json::Value) -> String {
-    let id = d["id"].as_str().unwrap_or_default();
-    let summary = d["summary"].as_str().unwrap_or_default();
-    let governs = json_str_array(&d["governs"]);
-    let provenance = if d["live"].as_bool().unwrap_or(false) {
-        "LIVE"
-    } else {
-        "HISTORICAL"
-    };
-    format!("decision {id} | {provenance} | {summary} | governs: {governs}")
-}
-
-/// Join a JSON array of strings into a comma-separated list for a `rigger peers`
-/// line (the `governs` / `about` files). A non-array or empty value renders as `-`.
-fn json_str_array(v: &serde_json::Value) -> String {
-    match v.as_array() {
-        Some(a) if !a.is_empty() => a
-            .iter()
-            .filter_map(|x| x.as_str())
-            .collect::<Vec<_>>()
-            .join(", "),
-        _ => "-".to_string(),
-    }
 }
 
 #[cfg(test)]
@@ -922,33 +875,6 @@ mod tests {
             })),
             "a probe that failed locally carries its url and its error, never not_serving"
         );
-    }
-
-    /// spec 21, unit 3: the exact line `rigger peers` PRINTS for a decision must label its
-    /// provenance - LIVE for a decision from the active run, HISTORICAL for one from a
-    /// superseded run - from the `live` flag the shared `peers_json` core threads through.
-    /// Asserting on the rendered line (not just the JSON) closes the gap where the printed
-    /// label was untested (sdet-u21peers-cmdpeers-render-label-untested).
-    #[test]
-    fn cmd_peers_prints_live_or_historical_per_decision_provenance() {
-        let live = peer_decision_line(&serde_json::json!({
-            "id": "d_new", "summary": "chose X", "governs": ["a.rs"], "live": true,
-        }));
-        assert_eq!(live, "decision d_new | LIVE | chose X | governs: a.rs");
-
-        let historical = peer_decision_line(&serde_json::json!({
-            "id": "d_old", "summary": "chose Y", "governs": ["b.rs"], "live": false,
-        }));
-        assert_eq!(
-            historical,
-            "decision d_old | HISTORICAL | chose Y | governs: b.rs"
-        );
-
-        // A missing `live` flag renders HISTORICAL - the conservative default.
-        let defaulted = peer_decision_line(&serde_json::json!({
-            "id": "d_bare", "summary": "z", "governs": [],
-        }));
-        assert_eq!(defaulted, "decision d_bare | HISTORICAL | z | governs: -");
     }
 
     /// Spec 38, criterion 3 (the ready-to-release handoff): the exact lines the `rigger

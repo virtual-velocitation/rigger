@@ -12118,8 +12118,8 @@ impl RunCtx<'_> {
         // and the producer/planner - keeps the FULL bulk unchanged.
         match slice {
             // The trimmed doer slice: OMIT the capped bulk, point at the lookup verbs instead. The
-            // reference history stays retrievable through `rigger peers` (memory: the newest under
-            // the sections' own budget), with `rigger graph --around` (structure) and `rigger graph
+            // reference history stays retrievable through `rigger peers` (the best-ranked records
+            // under one budget), with `rigger graph --around` (structure) and `rigger graph
             // --show` (text, any record by id) for the rest; the store keeps everything, the
             // implement prompt just stops pushing the truncated blob.
             GroundingSlice::Implement => write_peers_pointer(&mut b),
@@ -13770,9 +13770,7 @@ fn audit_id(unit: &str, attempt: u32) -> String {
 
 /// Gap-15 prompt budget: the most-recent governing decisions kept VERBATIM in a
 /// prompt. Older ones collapse into a single visible elision note. The store keeps
-/// the full history; only this prompt slice narrows. This and the five constants after it
-/// also bound `rigger peers` / the `rigger_peers` tool section by section, through the one
-/// [`within_budget`] rule.
+/// the full history; only this prompt slice narrows.
 pub const DECISIONS_VERBATIM_N: usize = 12;
 
 /// Gap-15 prompt budget: a hard byte cap on the verbatim body of the
@@ -13894,10 +13892,11 @@ const DESIGN_INTENT_HEADER: &str =
 
 /// The ONE budget rule every capped record surface shares - the prompt sections (through
 /// [`render_capped_section`]) and `rigger peers` / the `rigger_peers` tool alike: walking
-/// `entries` in their ranked order (newest first), keep the leading ones while fewer than
-/// `verbatim_n` are kept AND the next entry's `size` still fits under `budget_bytes`; the first
-/// entry that crosses either cap ends the slice, so the kept prefix is the most-recent slice the
-/// caps allow and everything after it is left out. Entries are produced lazily, so nothing past
+/// `entries` in their ranked order (newest first for a prompt section, best-ranked first for
+/// peers), keep the leading ones while fewer than `verbatim_n` are kept AND the next entry's
+/// `size` still fits under `budget_bytes`; the first entry that crosses either cap ends the
+/// slice, so the kept prefix is the best-ranked slice the caps allow and everything after it is
+/// left out. Entries are produced lazily, so nothing past
 /// the cut is rendered.
 pub fn within_budget<T>(
     entries: impl IntoIterator<Item = T>,
@@ -13920,8 +13919,8 @@ pub fn within_budget<T>(
 
 /// How a reader reaches a decision, lesson or finding a capped surface left out: by its id
 /// through the graph. Every capped record surface names it in its left-out note - the prompt
-/// sections, `rigger peers` (which keeps only the newest under the same budget, so it is no
-/// full-set recovery) and `rigger graph --around`'s governance tail - so the instruction is
+/// sections, `rigger peers` (which keeps only its best-ranked records under one budget, so it is
+/// no full-set recovery) and `rigger graph --around`'s governance tail - so the instruction is
 /// stated once.
 pub const RECORD_RECOVERY: &str = "read one by id with `rigger graph --show <id>` (the \
      `rigger_graph` tool's `show`; its `around` on a file lists the ids)";
@@ -14128,7 +14127,7 @@ fn write_capped_section<'g>(
     // Delegate the count / byte cap and the elision note to the SINGLE budgeted-section core,
     // supplying the restore closure that keeps THIS section's slice fact-complete and the note
     // naming [`RECORD_RECOVERY`] - reading an elided decision / lesson / finding by id through the
-    // graph, since `rigger peers` keeps only the newest under this same budget.
+    // graph, since `rigger peers` keeps only its best-ranked records under a budget.
     render_capped_section(
         b,
         header,
@@ -21729,8 +21728,8 @@ mod tests {
             "verbatim decisions must be capped to <= N; got {verbatim}"
         );
         // The trim is VISIBLE: one elision note naming the elided count and reaching an
-        // elided record by id through the graph (`rigger peers` keeps only the newest under
-        // the same budget, so it is no full-set recovery).
+        // elided record by id through the graph (`rigger peers` keeps only its best-ranked
+        // records under a budget, so it is no full-set recovery).
         let elided = K - verbatim;
         assert!(
             prompt.contains(&format!("+{elided} older decision")),
