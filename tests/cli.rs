@@ -11039,6 +11039,228 @@ fn every_launch_of_a_reviewed_unit_carries_the_hooks_for_its_own_spawn() {
     }
 }
 
+/// Spec 121's THE OPERATOR'S HELPER COPY IS THE DEFINITION, end to end: given a reviewed unit
+/// whose checkout holds the operator's own copy of no helper, of `lookup` alone, of `verify`
+/// alone or of both, when `rigger run` drives it, then every launch, the implementer's and each
+/// reviewer's, defines each helper from the operator's copy where the checkout holds one and from
+/// the embedded text where it does not, and pre-approves the rigger tools those definitions
+/// declare, between its own tools and the host's bound ones. The copies stay untracked, so the
+/// unit's worktree, where every launch runs, holds none: what each launch carries is what the run
+/// resolved at the checkout, once, as it started, so a copy the implementer's launch writes into
+/// the checkout mid-run changes no later reviewer's launch.
+#[cfg(unix)]
+#[test]
+fn every_launch_of_a_run_defines_the_helpers_from_the_operators_copies() {
+    use common::fixtures::{
+        write_helper_copies, HelperFile, OPERATOR_HELPER_COPIES, OPERATOR_HELPER_TOOLS,
+    };
+    use common::repo::{
+        handed_helpers_agents_json, launch_helpers, BOUND_TOOLS, EMBEDDED_HELPER_TOOLS,
+    };
+    let [lookup, verify] = OPERATOR_HELPER_COPIES;
+    // Each row: the copies the checkout holds as the run starts, the copies the implementer's
+    // launch writes into the checkout as it runs, ahead of every reviewer's launch, and the
+    // rigger tools the helpers resolved at the start declare.
+    let rows: [(&str, &[HelperFile], &[HelperFile], &str); 5] = [
+        ("no copy", &[], &[], EMBEDDED_HELPER_TOOLS),
+        ("a lookup copy alone", &[lookup], &[], OPERATOR_HELPER_TOOLS),
+        ("a verify copy alone", &[verify], &[], EMBEDDED_HELPER_TOOLS),
+        ("both copies", &[lookup, verify], &[], OPERATOR_HELPER_TOOLS),
+        (
+            "a lookup copy written mid-run",
+            &[],
+            &[lookup],
+            EMBEDDED_HELPER_TOOLS,
+        ),
+    ];
+    for (name, copies, mid_run, helper_tools) in rows {
+        let dir = temp_git_project_with_commit();
+        let root = dir.path();
+        write_reviewed_unit(root);
+        write_helper_copies(root, copies);
+        let staged = tempfile::tempdir().unwrap();
+        write_helper_copies(staged.path(), mid_run);
+        let arms = format!(
+            r#"  *)
+{RECORD_EACH_LAUNCH}    if [ -e .claude/agents ]; then : > "$here/worktree-holds-copies"; fi
+    case "$RIGGER_SPAWN" in
+    solo/implementer*)
+        echo "pub fn work() {{}}" >> work.rs
+        if [ -d "{staged}/.claude" ]; then cp -R "{staged}/.claude" "{root}/"; fi
+        ;;
+    solo/adjudicator*) echo '{{"verdict":"approve"}}' ;;
+    *) echo "$RIGGER_SPAWN answered" ;;
+    esac
+    ;;
+"#,
+            staged = staged.path().display(),
+            root = root.display(),
+        );
+        let scratch = tempfile::tempdir().unwrap();
+        let (out, err, ok, fake) = run_on_arms(root, &["run"], scratch.path(), &arms);
+        assert!(ok, "{name}: the run succeeds; stderr: {err}\nstdout: {out}");
+        assert!(
+            !fake.path().join("bin/worktree-holds-copies").exists(),
+            "{name}: no launch's worktree holds a helper copy"
+        );
+        let mut on_disk: Vec<(String, String)> = std::fs::read_dir(root.join(".claude/agents"))
+            .into_iter()
+            .flatten()
+            .map(|entry| {
+                let path = entry.unwrap().path();
+                let file = path.file_name().unwrap().to_string_lossy().into_owned();
+                (file, std::fs::read_to_string(&path).unwrap())
+            })
+            .collect();
+        on_disk.sort();
+        let mut held: Vec<(String, String)> = copies
+            .iter()
+            .chain(mid_run)
+            .map(|(file, text)| (file.to_string(), text.to_string()))
+            .collect();
+        held.sort();
+        assert_eq!(
+            on_disk, held,
+            "{name}: the checkout holds the copies it started with and those written mid-run"
+        );
+
+        let launches = launch_helpers(&fake.path().join("bin/launches"));
+        let expected: Vec<(String, serde_json::Value, String)> = [
+            ("solo/adjudicator#0", "Read"),
+            ("solo/adversary#0", "Read"),
+            ("solo/implementer#0", "Read,Edit"),
+            ("solo/lens:lens#0", "Read"),
+        ]
+        .into_iter()
+        .map(|(spawn, own)| {
+            (
+                spawn.to_string(),
+                handed_helpers_agents_json(copies),
+                format!("{own},{helper_tools},{BOUND_TOOLS}"),
+            )
+        })
+        .collect();
+        assert_eq!(
+            launches, expected,
+            "{name}: each launch's helpers and pre-approval"
+        );
+    }
+}
+
+/// Spec 121's THE OPERATOR'S HELPER COPY IS THE DEFINITION, read from the tree the run drives:
+/// given a project whose run branch tracks the operator's own `lookup` copy while the operator's
+/// branch holds no copy, when `rigger run` or `rigger serve` starts the run and checks that branch
+/// out, then the helpers are the run branch's: every launch `rigger run` hosts defines them and
+/// pre-approves their tools from its copy, and after the run a second `rigger run` and a `rigger
+/// step`, nothing edited, start on the definition the run pinned, no drift read. A served spawn is
+/// launched by the session's client and carries no helpers, so that row reads the pin alone.
+#[cfg(unix)]
+#[test]
+fn a_run_reads_its_helpers_from_the_run_branch_it_checks_out() {
+    use common::cli::failure_line;
+    use common::fixtures::{OPERATOR_HELPER_COPIES, OPERATOR_HELPER_TOOLS};
+    use common::repo::{handed_helpers_agents_json, launch_helpers, BOUND_TOOLS};
+    /// What one spawn's launch carried: its helpers and pre-approval when `rigger run` hosted it,
+    /// nothing when a served session's client launched it.
+    type Carried = Option<(serde_json::Value, String)>;
+    /// Start the run in `root` under the scratch root `scratch`, a fake `claude` answering from
+    /// `arms`: each spawn it drove, sorted, with what its launch carried.
+    type Start = fn(&Path, &Path, &str) -> Vec<(String, Carried)>;
+    let lookup = OPERATOR_HELPER_COPIES[0];
+    let arms = format!(
+        r#"  *)
+{RECORD_EACH_LAUNCH}    echo "pub fn work() {{}}" >> work.rs
+    ;;
+"#
+    );
+    let rows: [(&str, Start, Carried); 2] = [
+        (
+            "rigger run",
+            |root, scratch, arms| {
+                let (out, err, ok, fake) = run_on_arms(root, &["run"], scratch, arms);
+                assert!(
+                    ok,
+                    "rigger run drives the run; stderr: {err}\nstdout: {out}"
+                );
+                launch_helpers(&fake.path().join("bin/launches"))
+                    .into_iter()
+                    .map(|(spawn, agents, tools)| (spawn, Some((agents, tools))))
+                    .collect()
+            },
+            Some((
+                handed_helpers_agents_json(&[lookup]),
+                format!("Read,Edit,{OPERATOR_HELPER_TOOLS},{BOUND_TOOLS}"),
+            )),
+        ),
+        (
+            "rigger serve",
+            |root, _, _| {
+                let mut mcp = McpSession::start_with(root, &["serve", "--base", "HEAD"]);
+                let served = answer_every_spawn(&mut mcp);
+                let out = mcp.finish_within(Duration::from_secs(30));
+                assert!(
+                    out.status.success(),
+                    "rigger serve drives the run; stderr: {}",
+                    String::from_utf8_lossy(&out.stderr)
+                );
+                served.into_iter().map(|spawn| (spawn, None)).collect()
+            },
+            None,
+        ),
+    ];
+    for (name, start, carried) in rows {
+        let dir = temp_git_project_with_commit();
+        let root = dir.path();
+        cut_a_run_branch_tracking(root, &[lookup]);
+        assert!(
+            !root.join(".claude").exists(),
+            "{name}: the operator's branch holds no helper copy"
+        );
+        write_workflow_fixture(root, &REVIEWLESS_GIT_UNIT_WORKFLOW);
+        let scratch = tempfile::tempdir().unwrap();
+        assert_eq!(
+            start(root, scratch.path(), &arms),
+            [("solo/implementer#0".to_string(), carried)],
+            "{name}: each spawn the run drove, with what its launch carried"
+        );
+        let (out, err, ok, fake) = run_on_arms(root, &["run"], scratch.path(), &arms);
+        assert_eq!(
+            (
+                failure_line(ok, &err),
+                fake.path().join("bin/launches").exists()
+            ),
+            (None, false),
+            "{name}: a second rigger run starts on the pinned definition and launches nothing; \
+             stderr: {err}\nstdout: {out}"
+        );
+        let (out, err, ok) = run_rigger(root, &["step"]);
+        assert_eq!(
+            failure_line(ok, &err),
+            None,
+            "{name}: a rigger step starts on the pinned definition; stderr: {err}\nstdout: {out}"
+        );
+    }
+}
+
+/// Cut the run branch in `root`, a git project on the operator's branch, tracking the helper
+/// `copies` alone, then return to the operator's branch, which tracks none of them: only a run's
+/// checkout of its branch puts them on disk. Nothing else `root` holds is committed with them.
+fn cut_a_run_branch_tracking(root: &Path, copies: &[common::fixtures::HelperFile]) {
+    git_ok(root, &["checkout", "-q", "-b", "rigger-run"]);
+    common::fixtures::write_helper_copies(root, copies);
+    git_ok(root, &["add", ".claude"]);
+    git_ok(
+        root,
+        &[
+            "commit",
+            "-q",
+            "-m",
+            "the run branch tracks the helper copies",
+        ],
+    );
+    git_ok(root, &["checkout", "-q", "-"]);
+}
+
 /// The live-progress frame closing a launch's first user message: the progress verb and its
 /// argument only, since when to report is the communication built-in's.
 const LIVE_PROGRESS_FRAME: &str = "\n\n--- rigger driver ---\nLIVE PROGRESS: record a progress \
@@ -21582,15 +21804,25 @@ fn edit_worker_prompt(root: &Path, new_body: &str) {
 /// A two-stage run whose first step pinned its definition (parking the first wave), after
 /// which a mid-campaign prompt edit to `new_prompt` drifted the on-disk definition from the pin.
 fn a_pinned_run_whose_definition_drifted(new_prompt: &str) -> tempfile::TempDir {
+    a_pinned_run_changed(|_| {}, |root| edit_worker_prompt(root, new_prompt))
+}
+
+/// A two-stage run over a project `before` prepared, whose first step pinned its definition
+/// (parking the first wave), after which `after` changed the project mid-campaign.
+fn a_pinned_run_changed(
+    before: impl FnOnce(&Path),
+    after: impl FnOnce(&Path),
+) -> tempfile::TempDir {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
     write_workflow_fixture(root, &TWO_STAGE_WORKFLOW);
+    before(root);
     let (_out, err, ok) = run_rigger(root, &["step"]);
     assert!(
         ok,
         "the first step must succeed and pin the definition; stderr: {err}"
     );
-    edit_worker_prompt(root, new_prompt);
+    after(root);
     dir
 }
 
@@ -21657,6 +21889,103 @@ fn step_halts_on_definition_drift_and_rebase_definition_continues() {
         !err.contains("definition drift"),
         "the rebased definition is the pin now - no residual drift; stderr: {err}"
     );
+}
+
+/// Spec 121's THE OPERATOR'S HELPER COPY IS THE DEFINITION at a step's pin: given a run whose
+/// first step pinned its definition over the helper copies its checkout held once it had checked
+/// out the run branch, a copy only that branch tracks included, when the operator changes the
+/// checkout's `.claude/agents/` mid-run and steps again, then the step halts on a
+/// definition drift exactly when a helper copy was added, edited or removed, and steps on, its
+/// wave printed, when nothing changed or the only new file there is no helper copy; a copy that
+/// does not parse is refused on the line naming it as the step reaches it, never read as a
+/// drift, and no wave is printed.
+#[test]
+fn a_step_halts_on_a_helper_copy_changed_mid_run() {
+    use common::cli::{failure_line, nameless_copy_refusal};
+    use common::fixtures::{
+        write_helper_copies, write_helper_copy, NAMELESS_HELPER_COPY, OPERATOR_HELPER_COPIES,
+    };
+    const DRIFT_OPENS: &str =
+        "rigger: definition drift - the on-disk workflow/agent definition (hash ";
+    const DRIFT_CLOSES: &str = "or restore the definition to match the pin.";
+    /// What a plain step after the change does.
+    #[derive(Debug, PartialEq)]
+    enum Next {
+        Steps,
+        Drifts,
+        Refused(String),
+    }
+    // Each row: how the project holds its copies as the first step pins, the change after it,
+    // and the next step's outcome, a refusal naming the copy file it is refused on.
+    let rows: [(&str, common::DirStep, common::DirStep, Next); 7] = [
+        (
+            "a copy added",
+            |_| {},
+            |root| write_helper_copies(root, &OPERATOR_HELPER_COPIES[..1]),
+            Next::Drifts,
+        ),
+        (
+            "a copy edited",
+            |root| write_helper_copies(root, &OPERATOR_HELPER_COPIES),
+            |root| {
+                let (file, text) = OPERATOR_HELPER_COPIES[1];
+                write_helper_copy(root, file, text.replace("model: haiku", "model: opus"))
+            },
+            Next::Drifts,
+        ),
+        (
+            "a copy removed",
+            |root| write_helper_copies(root, &OPERATOR_HELPER_COPIES[..1]),
+            |root| std::fs::remove_file(root.join(".claude/agents/lookup.md")).unwrap(),
+            Next::Drifts,
+        ),
+        (
+            "nothing changed",
+            |root| write_helper_copies(root, &OPERATOR_HELPER_COPIES),
+            |_| {},
+            Next::Steps,
+        ),
+        (
+            "nothing changed over a copy only the run branch tracks",
+            |root| cut_a_run_branch_tracking(root, &OPERATOR_HELPER_COPIES[..1]),
+            |_| {},
+            Next::Steps,
+        ),
+        (
+            "a file that is no helper copy added",
+            |root| write_helper_copies(root, &OPERATOR_HELPER_COPIES),
+            |root| write_helper_copy(root, "reviewer.md", OPERATOR_HELPER_COPIES[0].1),
+            Next::Steps,
+        ),
+        (
+            "a copy that does not parse",
+            |_| {},
+            |root| write_helper_copy(root, "verify.md", NAMELESS_HELPER_COPY),
+            Next::Refused("verify.md".to_owned()),
+        ),
+    ];
+    for (name, before, after, expected) in rows {
+        let dir = a_pinned_run_changed(before, after);
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        let (out, err, ok) = run_rigger(&root, &["step"]);
+        let next = match failure_line(ok, &err) {
+            None => Next::Steps,
+            Some(line) if line.starts_with(DRIFT_OPENS) && line.ends_with(DRIFT_CLOSES) => {
+                Next::Drifts
+            }
+            Some(line) => Next::Refused(line),
+        };
+        let expected = match expected {
+            Next::Refused(file) => Next::Refused(nameless_copy_refusal(&root, &file)),
+            other => other,
+        };
+        let waves = expected == Next::Steps;
+        assert_eq!(
+            (next, out.contains("\"wave\"")),
+            (expected, waves),
+            "{name}; stderr: {err}"
+        );
+    }
 }
 
 /// Definition pinning, the new-run-is-free path (spec 13, unit 1): a FRESH run always pins the

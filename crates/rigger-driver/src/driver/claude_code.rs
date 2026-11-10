@@ -2197,8 +2197,9 @@ fn model_args(model: &str) -> Vec<String> {
 /// (the Done-when text names session id, stream-json, persona, model, tools, permission
 /// flags, MCP config and settings only) and is not built here; a later criterion adds it
 /// alongside whichever caller knows a persona is a verdict role, through this same
-/// function rather than a second argv authority. Fails only when the spawn's own
-/// `settings_json` is not a JSON object the spawn's hooks and the session settings can merge into.
+/// function rather than a second argv authority. Fails when the spawn's own `settings_json` is
+/// not a JSON object the spawn's hooks and the session settings can merge into, or a helper
+/// `opts.host` carries does not parse.
 pub fn build_args(
     agent: &AgentDef,
     persona: &SystemPromptFile,
@@ -2215,7 +2216,7 @@ pub fn build_args(
         args.push("--fallback-model".to_string());
         args.push(agent.fallback_model.clone());
     }
-    args.extend(allowed_tools_args(agent, &SPAWN_BOUND_TOOLS)?);
+    args.extend(allowed_tools_args(agent, &opts.host, &SPAWN_BOUND_TOOLS)?);
     let settings = json_arg(
         hooks::install_spawn_hooks(
             opts.settings_json.as_bytes(),
@@ -2242,7 +2243,8 @@ mod tests {
     use crate::eventstore::{Direction, EventStore, SilentStore};
     use crate::test_support::implementer_opts as opts;
     use crate::test_support::{
-        captured, fixture_script, no_emit, spawn_result_rows, PROMPT_CAPTURE_DIR,
+        captured, fixture_script, no_emit, operator_helpers_agents_json, spawn_result_rows,
+        PROMPT_CAPTURE_DIR,
     };
     use std::io::Read;
     use std::time::Duration;
@@ -2291,7 +2293,7 @@ mod tests {
             get_val("--allowed-tools"),
             format!(
                 "Read,Bash,{},{}",
-                hooks::helper_mcp_tools().unwrap().join(","),
+                hooks::helper_mcp_tools(&o.host.helpers).unwrap().join(","),
                 SPAWN_BOUND_TOOLS.join(",")
             )
         );
@@ -2641,7 +2643,7 @@ mod tests {
         ] {
             let mut o = opts("u/implementer#0");
             o.settings_json = "{\"model\":\"opus\"}".to_string();
-            o.host = crate::agent::SpawnHost { grep_guard };
+            o.host.grep_guard = grep_guard;
             let args = build_args(
                 &AgentDef::default(),
                 &SystemPromptFile::default(),
@@ -2749,13 +2751,20 @@ mod tests {
             args[ti + 1],
             format!(
                 "{},{}",
-                hooks::helper_mcp_tools().unwrap().join(","),
+                hooks::helper_mcp_tools(&bare.host.helpers)
+                    .unwrap()
+                    .join(","),
                 SPAWN_BOUND_TOOLS.join(",")
             )
         );
-        // The always-on flags are still present, the session configuration included.
+        // The always-on flags are still present, the session configuration included, and the
+        // helpers are the ones the spawn's host carries.
         assert!(args.iter().any(|x| x == "--settings"));
-        assert!(args.iter().any(|x| x == "--agents"));
+        let ai = args.iter().position(|x| x == "--agents").unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&args[ai + 1]).unwrap(),
+            operator_helpers_agents_json()
+        );
         assert!(args.iter().any(|x| x == "--strict-mcp-config"));
         assert!(args.iter().any(|x| x == "--session-id"));
     }

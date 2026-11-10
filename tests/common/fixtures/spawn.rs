@@ -23,10 +23,82 @@ pub fn test_request(
 }
 
 /// The spawn host a test's spawns carry: the one test-side spelling of the struct the production
-/// resolver `hooks::resolve_spawn_host` returns, with the grep-guard off. A test that needs the
-/// flag set builds its own literal.
+/// resolver `hooks::resolve_spawn_host` returns, with the grep-guard off, over a checkout holding
+/// exactly the [`OPERATOR_HELPER_COPIES`], so a spawn that reads its helpers anywhere but the
+/// host carries the embedded text instead of these copies, and a test pinning the copies goes
+/// red. A test that needs the flag set spreads this one.
 pub fn test_spawn_host() -> rigger_domain::agent::SpawnHost {
-    rigger_domain::agent::SpawnHost { grep_guard: false }
+    rigger_domain::agent::SpawnHost {
+        grep_guard: false,
+        helpers: OPERATOR_HELPER_COPIES
+            .iter()
+            .map(|(file, text)| rigger_domain::agent::HelperCopy {
+                name: file.to_string(),
+                text: text.to_string(),
+                present: true,
+            })
+            .collect(),
+    }
+}
+
+/// An operator's helper copy as its `(file, text)` under `.claude/agents/`.
+pub type HelperFile<'a> = (&'a str, &'a str);
+
+/// An operator's own copies of the two fan-out helpers: each differs from the embedded helper in
+/// every field, and the `lookup` copy declares two of the three rigger tools the embedded one
+/// does, in another order.
+pub const OPERATOR_HELPER_COPIES: [HelperFile; 2] = [
+    (
+        "lookup.md",
+        "---\nname: lookup\ndescription: The operator's own lookup helper.\nmodel: sonnet\n\
+         tools: mcp__rigger__rigger_peers, mcp__rigger__rigger_graph, Read\n---\n\
+         Answer one question about one node, the operator's way.\n",
+    ),
+    (
+        "verify.md",
+        "---\nname: verify\ndescription: The operator's own verify helper.\nmodel: haiku\n\
+         tools: Read, Bash\n---\nRun one check, the operator's way.\n",
+    ),
+];
+
+/// An operator's helper copy that does not parse: its frontmatter names no helper.
+pub const NAMELESS_HELPER_COPY: &str = "---\nmodel: haiku\n---\nRun one check.\n";
+
+/// The rigger tools [`OPERATOR_HELPER_COPIES`] declare, once each in helper then declaration
+/// order, comma-joined as a launch's pre-approval lists them.
+pub const OPERATOR_HELPER_TOOLS: &str = "mcp__rigger__rigger_peers,mcp__rigger__rigger_graph";
+
+/// Write `text` as the operator's helper copy `file` under `root`'s `.claude/agents/`.
+pub fn write_helper_copy(root: &std::path::Path, file: &str, text: impl AsRef<[u8]>) {
+    let agents = root.join(".claude/agents");
+    std::fs::create_dir_all(&agents).unwrap();
+    std::fs::write(agents.join(file), text).unwrap();
+}
+
+/// Write each of `copies` as an operator's helper copy under `root` ([`write_helper_copy`]).
+pub fn write_helper_copies(root: &std::path::Path, copies: &[HelperFile]) {
+    for (file, text) in copies {
+        write_helper_copy(root, file, text);
+    }
+}
+
+/// The `--agents` value [`OPERATOR_HELPER_COPIES`] define: each helper keyed by its name, its
+/// other frontmatter fields with `tools` as a list, and its body as the prompt.
+pub fn operator_helpers_agents_json() -> serde_json::Value {
+    serde_json::json!({
+        "lookup": {
+            "description": "The operator's own lookup helper.",
+            "model": "sonnet",
+            "tools": ["mcp__rigger__rigger_peers", "mcp__rigger__rigger_graph", "Read"],
+            "prompt": "Answer one question about one node, the operator's way.\n"
+        },
+        "verify": {
+            "description": "The operator's own verify helper.",
+            "model": "haiku",
+            "tools": ["Read", "Bash"],
+            "prompt": "Run one check, the operator's way.\n"
+        }
+    })
 }
 
 /// One row per `SpawnResult` among `events`, in their order: its id, output and error, and

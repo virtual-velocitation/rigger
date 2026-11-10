@@ -52,8 +52,8 @@ pub use rigger_domain::wave::{blast_radius_conflicts, normalize_ws, ungated_fan_
 // implement it without naming the conductor; re-exported so every `conductor::` path holds.
 pub use rigger_domain::agent::{
     classify_failure, no_result_error, parked_spawn, spawn_request, store_fault,
-    strip_failure_marker, AgentDriver, AgentFailure, AgentResult, Error, SpawnHost, SpawnOpts,
-    STORE_FAULT_MARKER, TYPE_UNIT_PROPOSED,
+    strip_failure_marker, AgentDriver, AgentFailure, AgentResult, Error, HelperCopy, SpawnHost,
+    SpawnOpts, STORE_FAULT_MARKER, TYPE_UNIT_PROPOSED,
 };
 use rigger_domain::agent::{EMIT_REFUSED_MARKER, INTERRUPTED_MARKER, PARKED_MARKER};
 #[cfg(test)]

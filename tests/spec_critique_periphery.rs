@@ -27,13 +27,13 @@ use common::cli::{
 };
 use common::fixtures::{
     composed_system_prompt, git_ok, held_event, sorted_dir_names, temp_git_project_with_commit,
-    ADVISORY, CLEAN_CRITIQUE, NO_VERDICT,
+    write_helper_copies, HelperFile, ADVISORY, CLEAN_CRITIQUE, NO_VERDICT, OPERATOR_HELPER_COPIES,
 };
 use common::repo::{
     assert_carries_spawn_hooks, collect_files, critique_stub_argv, critique_stub_record,
-    critique_stub_spawns, critique_stub_task, flag_value, hold_critique_stub, hook_words,
-    stub_path, write_critique_stub_reporting, write_critique_stub_then, CRITIQUE_CONN,
-    CRITIQUE_SYSTEM_PROMPT, SILENT_PAST_THE_POLL,
+    critique_stub_spawns, critique_stub_task, flag_value, handed_helpers_agents_json,
+    hold_critique_stub, hook_words, stub_path, write_critique_stub_reporting,
+    write_critique_stub_then, CRITIQUE_CONN, CRITIQUE_SYSTEM_PROMPT, SILENT_PAST_THE_POLL,
 };
 use rigger::driver::claude_code::{framed, AGENT_STREAM_SUBDIR};
 use rigger::driver::replay::spawn_scratch_path;
@@ -65,6 +65,12 @@ const CRITIC: &str = "---\nid: critic\nmodel_ladder: [sonnet, opus]\ntools: [Rea
      Agent]\nisolation: none\n---\nYou are the CRITIC-PERSONA adversary.\n";
 const JUDGE: &str = "---\nid: judge\nmodel: sonnet\ntools: [Read]\nisolation: none\n---\nJudge. \
      End with {\"verdict\":\"approve\"}.\n";
+
+/// The critic's `--allowed-tools`: its replacement tools, which already hold every rigger tool
+/// the embedded helpers and the operator's copies declare, then the host's own grant.
+const CRITIC_PRE_APPROVAL: &str =
+    "Read,Glob,mcp__rigger__rigger_graph,mcp__rigger__rigger_ground,mcp__rigger__rigger_peers,\
+     mcp__rigger__rigger_emit,mcp__rigger__rigger_progress,mcp__rigger__rigger_scratch";
 
 const SPEC_REL: &str = "specs/9-demo.md";
 const SPEC: &str = "# 9 - A demo spec\n\n## Design\n\nThe widget renders.\n\n## Done when\n\n\
@@ -228,6 +234,37 @@ fn a_critique_launch_carries_the_spawn_hooks_on_its_own_settings() {
     }
 }
 
+/// Given a project holding the operator's own copies of both fan-out helpers, or of neither, when
+/// its critic launches, then the launch defines the helpers from those copies, else from the
+/// embedded text, and its pre-approval holds the rigger tools they declare once each among the
+/// critic's own: the operator's copy is the definition, resolved at the critique's root.
+#[test]
+fn a_critique_launch_defines_the_helpers_from_the_operators_copies() {
+    let rows: [(&str, &[HelperFile]); 2] =
+        [("no copy", &[]), ("both copies", &OPERATOR_HELPER_COPIES)];
+    for (name, copies) in rows {
+        let dir = temp_project();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        scaffold(&root, CRITIC_WORKFLOW);
+        write_helper_copies(&root, copies);
+        let (work, path) = stub(REJECT);
+        let (_, err, ok) = critique(&root, SPEC_REL, &path, &root.join("scratch"));
+        assert!(ok, "{name}: the critique is recorded; stderr:\n{err}");
+
+        let argv = critique_stub_argv(work.path());
+        assert_eq!(
+            (
+                serde_json::from_str::<Value>(flag_value(&argv, "--agents")).unwrap(),
+                flag_value(&argv, "--allowed-tools"),
+            ),
+            (handed_helpers_agents_json(copies), CRITIC_PRE_APPROVAL),
+            "{name}: the critic's helpers are the copies the checkout holds, else the embedded \
+             ones, and its tools already hold the rigger tools either declares, so the \
+             pre-approval adds only the host's own"
+        );
+    }
+}
+
 /// Spec 105's stray record: given a project with a run, when a critic's session ends on an API
 /// error and fires the `StopFailure` command its launch's settings carry, then the record stands
 /// on the project's run under the critic's own spawn id, which is what leaves every other launch's
@@ -310,8 +347,7 @@ fn a_spec_is_critiqued_once_per_text_and_answered_from_the_store_after() {
     let argv = critique_stub_argv(first.path());
     assert_eq!(
         flag_value(&argv, "--allowed-tools"),
-        "Read,Glob,mcp__rigger__rigger_graph,mcp__rigger__rigger_ground,mcp__rigger__rigger_peers,\
-         mcp__rigger__rigger_emit,mcp__rigger__rigger_progress,mcp__rigger__rigger_scratch",
+        CRITIC_PRE_APPROVAL,
         "the critic's tools are replaced: no Bash, Agent or Grep, and the host's own grant, which \
          the deny below wins over"
     );

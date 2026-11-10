@@ -199,8 +199,9 @@ fn init_project(
 
     // 3b. Install the fan-out helpers the built-in working discipline names, at the
     // `.claude/agents/` path it names them by. An existing helper is kept (the operator may
-    // have tuned it), so a rerun writes nothing.
-    let helpers_dir = claude_dir.join("agents");
+    // have tuned it, and the copy is the definition every spawn carries), so a rerun writes
+    // nothing.
+    let helpers_dir = root.join(hooks::HELPER_AGENTS_DIR);
     std::fs::create_dir_all(&helpers_dir)?;
     let mut new_helpers = Vec::new();
     for (file, content) in hooks::HELPER_AGENTS {

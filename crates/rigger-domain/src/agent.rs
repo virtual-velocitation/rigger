@@ -79,11 +79,28 @@ pub struct AgentResult {
 }
 
 /// The host values a headless spawn carries, resolved once per command by
-/// `rigger_driver::hooks::resolve_spawn_host` from the workflow's `defaults`, never set by hand.
+/// `rigger_driver::hooks::resolve_spawn_host` from the workflow's `defaults` and the operator's
+/// checkout, never set by hand.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SpawnHost {
     /// Whether the spawn's settings carry the PreToolUse grep-guard: `defaults.grep_guard`.
     pub grep_guard: bool,
+    /// The fan-out helpers the spawn defines and pre-approves, one per helper rigger ships, in
+    /// its order: the operator's copy under `.claude/agents/` where the checkout holds one, else
+    /// the embedded text.
+    pub helpers: Vec<HelperCopy>,
+}
+
+/// One fan-out helper's definition as a spawn host resolved it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HelperCopy {
+    /// The helper's file name under `.claude/agents/` (`lookup.md`, `verify.md`).
+    pub name: String,
+    /// The helper's definition: its frontmatter and its prompt body.
+    pub text: String,
+    /// Whether `text` is the operator's own copy, read from the checkout, rather than the
+    /// embedded one.
+    pub present: bool,
 }
 
 /// Per-spawn options, built through [`SpawnOpts::new`] from a resolved [`SpawnHost`].
@@ -171,8 +188,9 @@ pub struct SpawnOpts {
     /// host the session ones alone, and each passes the result as `--settings`. Empty means no
     /// settings of the spawn's own; the workflow driver ignores this field.
     pub settings_json: String,
-    /// The host values the spawn's settings follow: whether the session hosts merge the
-    /// PreToolUse grep-guard into [`settings_json`](Self::settings_json).
+    /// The host values the spawn's launch follows: whether the session hosts merge the
+    /// PreToolUse grep-guard into [`settings_json`](Self::settings_json), and the fan-out
+    /// helpers they define and pre-approve.
     pub host: SpawnHost,
     /// The session id this launch CONTINUES (`claude -p --resume <session_id>`), empty
     /// for a fresh launch. The conductor sets it on a later attempt or review round of a

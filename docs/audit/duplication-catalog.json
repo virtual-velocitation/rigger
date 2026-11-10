@@ -565,7 +565,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-7310d4338924",
+    "id": "dup-f1a86f4a60bc",
     "classification": "semantic",
     "sites": [
       {
@@ -607,6 +607,11 @@
         "file": "crates/rigger-driver/src/driver/claude_code.rs",
         "name": "read_agent_stream_error",
         "content_hash": "39542815314cdc02"
+      },
+      {
+        "file": "crates/rigger-driver/src/hooks.rs",
+        "name": "helper_error",
+        "content_hash": "7a621ba69f7fe716"
       },
       {
         "file": "crates/rigger-grounder/src/grounder/mod.rs",
@@ -685,7 +690,7 @@
       }
     ],
     "proposed_home": "one error-shaping helper module",
-    "note": "mandatory sweep: error-shaping helper functions - 23 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: error-shaping helper functions - 24 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {

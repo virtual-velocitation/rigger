@@ -276,6 +276,40 @@ pub fn assert_carries_spawn_hooks(
     );
 }
 
+/// The rigger tools the embedded helpers declare, once each in helper then declaration order,
+/// comma-joined as a launch's pre-approval lists them.
+pub const EMBEDDED_HELPER_TOOLS: &str =
+    "mcp__rigger__rigger_graph,mcp__rigger__rigger_ground,mcp__rigger__rigger_peers";
+
+/// The record, progress and scratch tools a `rigger run` launch's bound server serves,
+/// comma-joined as the launch's pre-approval closes on them.
+pub const BOUND_TOOLS: &str =
+    "mcp__rigger__rigger_emit,mcp__rigger__rigger_progress,mcp__rigger__rigger_scratch";
+
+/// The `--agents` value a launch carries over a checkout whose `.claude/agents/` holds exactly
+/// `copies`, each one of the [`super::fixtures::OPERATOR_HELPER_COPIES`]: a copied helper is
+/// defined by its [`super::fixtures::operator_helpers_agents_json`] entry, every other one by its
+/// embedded text, this repository's own committed `.claude/agents/` helper.
+pub fn handed_helpers_agents_json(copies: &[super::fixtures::HelperFile]) -> serde_json::Value {
+    let operator = super::fixtures::operator_helpers_agents_json();
+    let mut agents = serde_json::Map::new();
+    for (file, embedded) in rigger::hooks::HELPER_AGENTS {
+        let name = file.trim_end_matches(".md");
+        let def = if copies.iter().any(|(copied, _)| copied == file) {
+            operator[name].clone()
+        } else {
+            let copy = rigger_domain::agent::HelperCopy {
+                name: file.to_string(),
+                text: embedded.to_string(),
+                present: false,
+            };
+            rigger::hooks::helper_agents_json(&[copy]).unwrap()[name].clone()
+        };
+        agents.insert(name.to_string(), def);
+    }
+    serde_json::Value::Object(agents)
+}
+
 /// The value `argv` carries right after `flag`.
 pub fn flag_value<'a>(argv: &'a [String], flag: &str) -> &'a str {
     let at = argv
@@ -283,6 +317,20 @@ pub fn flag_value<'a>(argv: &'a [String], flag: &str) -> &'a str {
         .position(|a| a == flag)
         .unwrap_or_else(|| panic!("the argv carries {flag}: {argv:?}"));
     &argv[at + 1]
+}
+
+/// Each launch the stand-in recorded under `launches`, in spawn order: its spawn, the helpers its
+/// `--agents` defines and the tools its `--allowed-tools` pre-approves.
+pub fn launch_helpers(launches: &Path) -> Vec<(String, serde_json::Value, String)> {
+    super::fixtures::stand_in_launches(launches)
+        .into_iter()
+        .map(|launch| {
+            let agents = serde_json::from_str(flag_value(&launch.argv, "--agents"))
+                .expect("the helpers are JSON");
+            let tools = flag_value(&launch.argv, "--allowed-tools").to_string();
+            (launch.spawn, agents, tools)
+        })
+        .collect()
 }
 
 /// The task the critique stub under `work` was handed on its first spawn: the `content` of the

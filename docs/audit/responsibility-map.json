@@ -9413,7 +9413,7 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "8d1579a80b5080dc"
+    "content_hash": "8efe1f9cb24f6bcd"
   },
   {
     "file": "src/cli/mod.rs",
@@ -9869,7 +9869,7 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "db4cd1e43f6e40b0"
+    "content_hash": "df06df9d54782547"
   },
   {
     "file": "src/cli/mod.rs",
@@ -11293,7 +11293,15 @@
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "dcfaeb19a6695551"
+    "content_hash": "021bd1cf89a25ab5"
+  },
+  {
+    "file": "src/cli/mod.rs",
+    "name": "definition_hash_folds_each_present_helper_copy_between_the_agents_and_the_instructions",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "22d4f3890fc3581d"
   },
   {
     "file": "src/cli/mod.rs",

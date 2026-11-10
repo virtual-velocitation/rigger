@@ -37,13 +37,18 @@ pub(crate) fn bin_or_path_default<'s>(configured: &'s str, default: &'s str) -> 
 
 /// The `--allowed-tools` pair every headless spawn passes: the tools `agent` is granted
 /// ([`AgentDef::allowed_tools`]: `recurse: false` strips any fan-out tool, runaway-proof by
-/// construction, §3.1, §6), then the helpers' rigger MCP tools ([`hooks::helper_mcp_tools`]),
-/// then the `bound` tools the launching host's own server serves, each name once. The helpers'
-/// tools are pre-approved because under `--permission-prompts none` nothing answers a prompt, so
-/// a `lookup` would otherwise be denied every graph call it makes, and a host's `bound` tools for
-/// the same reason. Always present, since the helpers declare their tools.
-pub(crate) fn allowed_tools_args(agent: &AgentDef, bound: &[&str]) -> Result<Vec<String>, Error> {
-    let helpers = hooks::helper_mcp_tools()
+/// construction, §3.1, §6), then the rigger MCP tools of the helpers `host` carries
+/// ([`hooks::helper_mcp_tools`]), then the `bound` tools the launching host's own server serves,
+/// each name once. The helpers' tools are pre-approved because under `--permission-prompts none`
+/// nothing answers a prompt, so a `lookup` would otherwise be denied every graph call it makes,
+/// and a host's `bound` tools for the same reason. Always present; fails when a helper `host`
+/// carries does not parse.
+pub(crate) fn allowed_tools_args(
+    agent: &AgentDef,
+    host: &SpawnHost,
+    bound: &[&str],
+) -> Result<Vec<String>, Error> {
+    let helpers = hooks::helper_mcp_tools(&host.helpers)
         .map_err(|e| Error(format!("driver: compose the spawn's allowed tools: {e}")))?;
     let mut tools = agent.allowed_tools();
     for tool in helpers
@@ -382,16 +387,18 @@ pub(crate) fn system_prompt_file(
 ///   ([`hooks::install_session_settings`]). The host hands in what its spawn runs on: the
 ///   stream-json host the spawn's own settings with the hooks bound to it already merged
 ///   ([`hooks::install_spawn_hooks`]), the cli host the spawn's own settings alone;
-/// - `--agents` defines the `lookup` and `verify` fan-out helpers.
+/// - `--agents` defines the `lookup` and `verify` fan-out helpers `host` carries
+///   ([`hooks::helper_agents_json`]): the operator's copy of each where the checkout holds one.
 ///
-/// Fails only when `settings_json` is not a JSON object the session settings can merge into.
+/// Fails when `settings_json` is not a JSON object the session settings can merge into, or a
+/// helper `host` carries does not parse.
 pub(crate) fn spawn_config_args(
     rigger_bin: &str,
     mcp_args: &[&str],
     settings_json: &str,
     host: &SpawnHost,
 ) -> Result<Vec<String>, Error> {
-    let helpers = hooks::helper_agents_json()
+    let helpers = hooks::helper_agents_json(&host.helpers)
         .map_err(|e| Error(format!("driver: compose the spawn's agents: {e}")))?;
     Ok(vec![
         "--permission-mode".to_string(),
@@ -417,12 +424,16 @@ pub(crate) fn spawn_config_args(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::HelperCopy;
+    use crate::test_support::{operator_helpers_agents_json, test_spawn_host};
 
     /// `allowed_tools_args` over every order and repeat a grant can arrive in: the agent's own
-    /// tools, then the helpers', then the host's bound ones, each name once where it first came.
+    /// tools, then the host's helpers', then the host's bound ones, each name once where it first
+    /// came.
     #[test]
     fn allowed_tools_chain_the_agent_the_helpers_and_the_bound_tools_each_name_once() {
-        let helpers = hooks::helper_mcp_tools().unwrap();
+        let host = test_spawn_host();
+        let helpers = hooks::helper_mcp_tools(&host.helpers).unwrap();
         struct Case<'a> {
             name: &'a str,
             tools: Vec<&'a str>,
@@ -474,10 +485,78 @@ mod tests {
                 .chain(case.after_the_helpers.iter().copied())
                 .collect();
             assert_eq!(
-                allowed_tools_args(&agent, &case.bound).unwrap(),
+                allowed_tools_args(&agent, &host, &case.bound).unwrap(),
                 ["--allowed-tools".to_string(), expected.join(",")],
                 "{}",
                 case.name
+            );
+        }
+    }
+
+    /// Both readers of the spawn host's helpers read the copies the host carries and nothing
+    /// else: `spawn_config_args` builds `--agents` from them and `allowed_tools_args` pre-approves
+    /// the rigger tools they declare, and a copy that does not parse fails both, naming it.
+    #[test]
+    fn the_agents_and_the_pre_approval_are_the_helpers_the_host_carries() {
+        let operator = test_spawn_host().helpers;
+        let operator_json = operator_helpers_agents_json();
+        struct Row {
+            name: &'static str,
+            helpers: Vec<HelperCopy>,
+            agents: Result<serde_json::Value, &'static str>,
+            allowed: Result<&'static str, &'static str>,
+        }
+        let rows = [
+            Row {
+                name: "both operator copies",
+                helpers: operator.clone(),
+                agents: Ok(operator_json.clone()),
+                allowed: Ok("Read,mcp__rigger__rigger_peers,mcp__rigger__rigger_graph"),
+            },
+            Row {
+                name: "the verify copy alone declares no rigger tool",
+                helpers: vec![operator[1].clone()],
+                agents: Ok(serde_json::json!({ "verify": operator_json["verify"].clone() })),
+                allowed: Ok("Read"),
+            },
+            Row {
+                name: "a copy with no name",
+                helpers: vec![HelperCopy {
+                    text: "---\nmodel: haiku\n---\nbody\n".to_string(),
+                    ..operator[0].clone()
+                }],
+                agents: Err("conductor: driver: compose the spawn's agents: \
+                             hooks: helper agent lookup.md: no name"),
+                allowed: Err("conductor: driver: compose the spawn's allowed tools: \
+                              hooks: helper agent lookup.md: no name"),
+            },
+        ];
+        let agent = AgentDef {
+            tools: vec!["Read".to_string()],
+            ..AgentDef::default()
+        };
+        for row in rows {
+            let host = SpawnHost {
+                helpers: row.helpers,
+                ..test_spawn_host()
+            };
+            let agents = spawn_config_args("rigger", &["mcp"], "", &host).map(|args| {
+                let at = args.iter().position(|a| a == "--agents").unwrap();
+                serde_json::from_str::<serde_json::Value>(&args[at + 1]).unwrap()
+            });
+            assert_eq!(
+                agents.map_err(|e| e.to_string()),
+                row.agents.map_err(str::to_string),
+                "{}",
+                row.name
+            );
+            assert_eq!(
+                allowed_tools_args(&agent, &host, &[]).map_err(|e| e.to_string()),
+                row.allowed
+                    .map(|tools| vec!["--allowed-tools".to_string(), tools.to_string()])
+                    .map_err(str::to_string),
+                "{}",
+                row.name
             );
         }
     }
