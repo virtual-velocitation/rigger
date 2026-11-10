@@ -113,7 +113,7 @@ fn campaign(store: &Store, criterion: &str) -> Status {
 fn keys_of(events: &[Event], type_: &str) -> Vec<String> {
     events
         .iter()
-        .filter(|e| e.type_ == type_)
+        .filter(|e| e.type_ == type_ && !rigger::conductor::is_settle_record(e))
         .filter_map(|e| e.meta.get(META_REPLAY_KEY).cloned())
         .collect()
 }

@@ -97,9 +97,15 @@ pub fn payloads_of_type(events: &[Event], type_: &str) -> Vec<serde_json::Value>
         .collect()
 }
 
-/// The `(gate, pass)` of every `GateVerdict` in `events`, in order.
+/// The `(gate, pass)` of every `GateVerdict` in `events` that records a gate run, in order; a
+/// settle record records none.
 pub fn gate_outcomes(events: &[Event]) -> Vec<(String, bool)> {
-    payloads_of_type(events, rigger::contextgraph::TYPE_GATE_VERDICT)
+    let runs: Vec<Event> = events
+        .iter()
+        .filter(|e| !rigger::conductor::is_settle_record(e))
+        .cloned()
+        .collect();
+    payloads_of_type(&runs, rigger::contextgraph::TYPE_GATE_VERDICT)
         .iter()
         .map(|verdict| {
             (

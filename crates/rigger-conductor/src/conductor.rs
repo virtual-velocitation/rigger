@@ -746,15 +746,19 @@ fn settle_record(scope: &str, ids: &[String]) -> Event {
     )
 }
 
-/// Whether `e` is a gate verdict row of a gate run, skip or request, not a settle record
-/// ([`settle_record`]).
-#[cfg(test)]
-fn is_gate_verdict_row(e: &Event) -> bool {
+/// Whether `e` is a settle record ([`settle_record`]): a gate verdict row that records no gate
+/// run, only which passes a completed gate battery acted on.
+pub fn is_settle_record(e: &Event) -> bool {
     e.type_ == contextgraph::TYPE_GATE_VERDICT
-        && !e
-            .meta
+        && e.meta
             .get(META_REPLAY_KEY)
             .is_some_and(|k| k.contains(GATES_SETTLED_INFIX))
+}
+
+/// Whether `e` is a gate verdict row of a gate run, skip or request, not a settle record.
+#[cfg(test)]
+fn is_gate_verdict_row(e: &Event) -> bool {
+    e.type_ == contextgraph::TYPE_GATE_VERDICT && !is_settle_record(e)
 }
 
 /// The log positions of the gate verdict rows a settle record cites ([`settle_record`]), resolved
