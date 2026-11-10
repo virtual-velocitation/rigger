@@ -258,8 +258,13 @@ fn no_runtime_failures() -> [TestcontainersError; 2] {
     let path = |name: &str| dir.path().join(name).to_str().unwrap().to_string();
     let no_socket = Docker::connect_with_unix(&path("absent.sock"), 120, API_DEFAULT_VERSION)
         .expect_err("no socket where nothing created one");
-    // The socket file outlives its listener, so the path exists and nothing accepts on it.
-    drop(std::os::unix::net::UnixListener::bind(path("refusing.sock")).unwrap());
+    // A stream socket bound to the path and never listening, so the path exists and refuses every
+    // connection. A socket that once listened can still accept one while a process another test
+    // spawns holds a copy of its descriptor between fork and exec, and the start then reaches it.
+    tokio::net::UnixSocket::new_stream()
+        .unwrap()
+        .bind(path("refusing.sock"))
+        .unwrap();
     let docker = Docker::connect_with_unix(&path("refusing.sock"), 120, API_DEFAULT_VERSION)
         .expect("a client for a socket that exists");
     let refused = container_runtime()
@@ -273,13 +278,15 @@ fn no_runtime_failures() -> [TestcontainersError; 2] {
 
 /// Failed starts on a runtime the client reached, one per way a start fails there: the server
 /// never reports ready in time, the runtime refuses the image's pull, the port does not bind, the
-/// daemon refuses to create the container.
-fn reachable_runtime_failures() -> [TestcontainersError; 4] {
+/// daemon refuses to create the container, the runtime accepts the connection and closes it before
+/// answering.
+fn reachable_runtime_failures() -> [TestcontainersError; 5] {
     let daemon = |message: &str| BollardError::DockerResponseServerError {
         status_code: 500,
         message: message.to_string(),
     };
     [
+        TestcontainersError::Client(ClientError::CreateContainer(closed_before_answering())),
         TestcontainersError::WaitContainer(WaitContainerError::StartupTimeout),
         TestcontainersError::Client(ClientError::PullImage {
             descriptor: format!("{}:{}", KURRENTDB_IMAGE.0, KURRENTDB_IMAGE.1),
@@ -292,6 +299,37 @@ fn reachable_runtime_failures() -> [TestcontainersError; 4] {
             "no space left on device",
         ))),
     ]
+}
+
+/// The error the client returns when the runtime accepts its connection and closes it before the
+/// request is sent: the client hands the unsent request back as `Canceled`. On the one-thread
+/// runtime the accepting task closes the connection before the client's connection task first runs.
+/// It shuts the connection down rather than dropping it, since a process another test spawns can
+/// hold a copy of the descriptor between fork and exec and keep a dropped one open.
+fn closed_before_answering() -> BollardError {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("closing.sock");
+    let error = container_runtime().block_on(async {
+        let listener = tokio::net::UnixListener::bind(&path).unwrap();
+        tokio::spawn(async move {
+            let (connection, _) = listener.accept().await.unwrap();
+            connection
+                .into_std()
+                .unwrap()
+                .shutdown(std::net::Shutdown::Both)
+                .unwrap();
+        });
+        Docker::connect_with_unix(path.to_str().unwrap(), 120, API_DEFAULT_VERSION)
+            .expect("a client for a socket that exists")
+            .create_container(None, Default::default())
+            .await
+            .expect_err("a connection closed before the answer fails the creation")
+    });
+    assert!(
+        error.to_string().ends_with("client error (Canceled)"),
+        "a connection the runtime closed before answering fails as `Canceled`: {error}"
+    );
+    error
 }
 
 /// A start that reached no container runtime skips the test while DOCKER_HOST is unset, or
