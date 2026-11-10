@@ -78,6 +78,10 @@ struct ReviewFinding {
     about: Vec<String>,
     #[serde(default, deserialize_with = "referenced_file")]
     file: Option<String>,
+    /// The reviewer's sign-off mark, judged here as a bool so a mistyped one is refused at emit;
+    /// the fold does not read it, the peers ranking does.
+    #[serde(default, rename = "sign_off")]
+    _sign_off: bool,
 }
 
 /// A record's references - a decision's `governs`, a lesson's or finding's `about` - each read as
