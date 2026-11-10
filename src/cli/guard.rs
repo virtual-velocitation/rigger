@@ -41,8 +41,8 @@ const LITERAL_MARKER: &str = "--literal";
 /// `rigger_graph` or pass through untouched. The hook has NO target axis - a shell command's
 /// real search target is undecidable from its text alone (`..`, `*`, `~`, `$(pwd)`, a
 /// redirection, a symlink all defeat a path-based guess) - so every `Grep` tool call and
-/// every `Bash` command that searches for a name ([`invokes_name_search`]: a `grep`, or a `sed`
-/// or `awk` pattern search) is denied inside a rigger project, with no path/target ever
+/// every `Bash` command that searches for a name ([`invokes_name_search`]: a `grep`, `git grep`
+/// or `rg`, or a `sed` or `awk` pattern search) is denied inside a rigger project, with no path/target ever
 /// inspected. Pure (no I/O), so the decision is unit-testable against
 /// synthesized hook payloads without spawning a real hook process. A [`LITERAL_MARKER`] in a
 /// shell comment of a `Bash` `grep` command is the sole, deliberate escape hatch (Design's
@@ -166,8 +166,8 @@ fn shell_words(command: &str) -> ShellWords {
 /// regardless of how it was invoked (reject-fix round 5,
 /// adv-u92c4-r4-path-qualified-grep-bypasses-command-check: `/usr/bin/grep`, `./grep` and
 /// `bin/grep` all name the binary a bare `grep` does). Comparing the basename for equality,
-/// never a substring, keeps `zgrep` or `--grep-something` out: the literal command name the
-/// Design text names ("a Grep or a `grep`"), never `rg`/`egrep`/`fgrep`.
+/// never a substring, keeps `zgrep` or `--grep-something` out: only the literal command names
+/// [`invokes_name_search`] lists match.
 fn word_basename(word: &str) -> &str {
     match word.rsplit_once('/') {
         Some((_, base)) => base,
@@ -175,7 +175,8 @@ fn word_basename(word: &str) -> &str {
     }
 }
 
-/// Whether one command line's [`shell_words`] argv searches for a name: a `grep`, a `sed` whose
+/// Whether one command line's [`shell_words`] argv searches for a name: a `grep` (a `git grep`
+/// among them, its `grep` word matching wherever it falls in the argv), an `rg`, a `sed` whose
 /// script selects lines by a pattern address, or an `awk` whose program matches a pattern. A
 /// `sed` that reads a line range or edits, and an `awk` that prints fields or ranges over line
 /// numbers, look for nothing and pass, as does a script read from a file, which the command line
@@ -184,7 +185,7 @@ fn invokes_name_search(argv: &[String]) -> bool {
     argv.iter().enumerate().any(|(i, word)| {
         let after = &argv[i + 1..];
         match word_basename(word) {
-            "grep" => true,
+            "grep" | "rg" => true,
             "sed" => inline_scripts(after, &["-l"])
                 .iter()
                 .any(|s| sed_selects_by_pattern(s)),
