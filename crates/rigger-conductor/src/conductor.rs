@@ -14593,8 +14593,9 @@ fn write_peers_pointer(b: &mut String) {
 /// naming the knowledge graph's three verbs with their one-line jobs. `rigger graph --around`
 /// answers STRUCTURE (who-calls-X and the caller/callee neighborhood), `rigger graph --show`
 /// answers TEXT (an entity's definition site and its body), and `rigger peers` answers MEMORY (the
-/// prior decisions, findings, and lessons about the files). It names only the tools (spec 121):
-/// the lookup method - the graph before grep, and the `grep-fallback:` progress line a grep over
+/// prior decisions, findings, and lessons about the files). It names the tools and one worked
+/// example each of the two commonest questions, who calls a name and where it is defined, with a
+/// `<name>` placeholder so it names no language; the lookup method - the graph before grep, and the `grep-fallback:` progress line a grep over
 /// the project's sources owes - is the `working-discipline` built-in's, which every spawn's
 /// instructions carry. Rendered on the IMPLEMENT slice (after the bulk-not-inlined note) and the
 /// FULL/review slice (after the capped bulk) alike, so every spawn's grounding names the verbs. A
@@ -14605,7 +14606,8 @@ fn write_lookup_pointer(b: &mut String) {
         "\nThe knowledge graph answers lookups through three verbs: `rigger graph --around \
          <file|entity>` (structure: callers, callees, neighbors), `rigger graph --show <entity>` \
          (text: definition site and body), `rigger peers <file>...` (memory: decisions, findings, \
-         lessons).\n",
+         lessons). Who calls <name>: `rigger graph --around <name>`. Where is <name> defined: \
+         `rigger graph --show <name>`.\n",
     );
 }
 
