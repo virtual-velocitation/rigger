@@ -111,8 +111,7 @@ uncapped and holds:
 - every file a named path holds;
 - for a named symbol the index does NOT define (a string-literal event name, a name nothing defines
   yet), every file holding it as a whole identifier - a name ending in `_` is a family prefix
-  (`TYPE_`) and needs only its left boundary - outside spec files and the regenerated audit under
-  `docs/audit/`. A defined symbol and a path are never text-searched: a text-only mention of a
+  (`TYPE_`) and needs only its left boundary - outside spec files. A defined symbol and a path are never text-searched: a text-only mention of a
   resolved name is not a reference a unit edits through.
 
 When the knowledge graph is present the radius is widened over it: the traversal is seeded from

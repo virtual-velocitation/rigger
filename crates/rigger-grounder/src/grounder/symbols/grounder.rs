@@ -136,9 +136,9 @@ struct Named {
     name: String,
 }
 
-/// Files the text search never matches: spec files no unit edits, and the simplification audit
-/// every unit regenerates, so a mention there is never a conflict between two units.
-const TEXT_SEARCH_SKIPS: &[&str] = &["specs/", "docs/audit/"];
+/// Files the text search never matches: spec files no unit edits, so a mention there is never a
+/// conflict between two units.
+const TEXT_SEARCH_SKIPS: &[&str] = &["specs/"];
 
 /// Language keywords a code span may carry (`pub fn`, `&mut self`) that name no code of the
 /// project, so they are never terms.
@@ -1226,11 +1226,10 @@ mod tests {
         );
     }
 
-    /// The text search never matches a spec file or the regenerated audit: no unit edits the
-    /// first and every unit regenerates the second, so neither is a conflict. Tests and the
-    /// handbook stay in scope.
+    /// The text search never matches a spec file, which no unit edits. Everything else stays in
+    /// scope: tests, the handbook and `docs/audit/`.
     #[test]
-    fn blast_radius_text_search_skips_specs_and_the_audit() {
+    fn blast_radius_text_search_skips_specs_alone() {
         assert_safe(
             &[
                 ("code.rs", "const K: &str = \"unindexed_name\";\n"),
@@ -1244,8 +1243,14 @@ mod tests {
                 ("tests/cli.rs", "// unindexed_name\n"),
             ],
             "`unindexed_name` is read",
-            &["code.rs", "docs/handbook/page.md", "tests/cli.rs"],
-            "specs and the audit are never text-search hits",
+            &[
+                "code.rs",
+                "docs/audit/catalog.json",
+                "docs/audit/report.md",
+                "docs/handbook/page.md",
+                "tests/cli.rs",
+            ],
+            "specs are never text-search hits",
         );
     }
 
