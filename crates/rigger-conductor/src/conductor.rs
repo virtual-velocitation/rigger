@@ -178,6 +178,21 @@ pub const META_INPUT_DIGEST: &str = "input_digest";
 /// freshly-run gate's verdict omits it.
 pub const META_CACHE_HIT: &str = "cache_hit_of";
 
+/// The metadata key naming what RAN the gate a [`GateVerdict`](contextgraph::TYPE_GATE_VERDICT)
+/// records, when the driver did not: [`GATE_ORIGIN_VERB`] on the verdict `rigger gate <id>` records
+/// ([`run_gate_verb`]). A driver verdict carries no origin. The content cache ([`cacheable_green`])
+/// admits a green only from these two origins, so a verdict appended by any other writer answers
+/// no gate however its digest reads.
+pub const META_GATE_ORIGIN: &str = "gate_origin";
+
+/// The [`META_GATE_ORIGIN`] value of a verdict `rigger gate <id>` recorded by running the gate.
+pub const GATE_ORIGIN_VERB: &str = "rigger gate";
+
+/// The replay-key infix of a verdict `rigger gate <id>` recorded: `{unit}/gate-verb:{gate}@{sha}`
+/// ([`gate_verb_key`]). It carries no `/gate:` substring, so neither [`unit_of_gate_key`] nor any
+/// reader of a unit's own gate runs mistakes it for a driver verdict.
+const GATE_VERB_INFIX: &str = "/gate-verb:";
+
 /// The metadata key naming the integrating commit(s) a COMPENSATION reverted (spec 12,
 /// unit 4): a comma-separated list of the reverted commit shas, stamped on the `UnitFailed`
 /// event that re-enters a compensated unit into remediation. This is the `UnitCompensated`
@@ -437,6 +452,12 @@ fn gate_key(kind: GateKey, unit: &str, attempt: u32, retry: u32, gate: &str) -> 
     spawn::with_retry(format!("{unit}/{infix}:{gate}#{attempt}"), retry)
 }
 
+/// The replay key of the verdict `rigger gate <id>` records for `gate` on commit `sha`, run by an
+/// agent of `unit` (empty when no spawn ran it): `{unit}/gate-verb:{gate}@{sha}`.
+fn gate_verb_key(unit: &str, gate: &str, sha: &str) -> String {
+    format!("{unit}{GATE_VERB_INFIX}{gate}@{sha}")
+}
+
 /// The replay key for a durable compensation-QUEUED mark (spec 12, unit 4), keyed by the
 /// `(triggering unit, target, triggering attempt)` coordinate so the SAME review naming the
 /// SAME target at the SAME attempt re-appends the mark exactly once on a stepwise resume
@@ -562,6 +583,478 @@ struct GateVerdictData {
     pass: bool,
     #[serde(default)]
     evidence: String,
+}
+
+/// The `(input digest, earning unit)` a GateVerdict offers the content cache, or `None` when it
+/// offers nothing: a red, a verdict with no digest, and any verdict whose origin is neither the
+/// driver nor `rigger gate`. A driver verdict carries no [`META_GATE_ORIGIN`] and a driver gate
+/// key (`/gate:` or `/postmerge-gate:`); a verb verdict carries [`GATE_ORIGIN_VERB`] and the verb's
+/// key. Anything else - a record appended with no origin under any other key, or under an origin
+/// no runner of gates stamps - is not a gate run, and answers no gate. The one admission rule the
+/// run-start seed and the mid-run join ([`GreenDigests`]) share.
+fn cacheable_green(e: &Event) -> Option<(&str, &str)> {
+    if e.type_ != contextgraph::TYPE_GATE_VERDICT {
+        return None;
+    }
+    let digest = e.meta.get(META_INPUT_DIGEST).filter(|d| !d.is_empty())?;
+    if !serde_json::from_slice::<GateVerdictData>(&e.data)
+        .ok()?
+        .pass
+    {
+        return None;
+    }
+    let key = e.meta.get(META_REPLAY_KEY)?;
+    let unit = match e.meta.get(META_GATE_ORIGIN).map(String::as_str) {
+        None => unit_of_gate_key(key)
+            .or_else(|| key.split_once("/postmerge-gate:").map(|(unit, _)| unit))?,
+        Some(GATE_ORIGIN_VERB) => key.split_once(GATE_VERB_INFIX)?.0,
+        Some(_) => return None,
+    };
+    Some((digest, unit))
+}
+
+/// The content-address cache (spec 12, unit 1): `input_digest -> (position, unit)` of each green
+/// gate verdict [`cacheable_green`] admits, and how far into the run stream it has read.
+///
+/// Seeded once at run start from the run's prior events, it is extended two ways: by the greens
+/// this process records ([`record`](Self::record)), and by [`join`](Self::join), which reads the
+/// GateVerdicts appended to the stream since its last read - the verdicts `rigger gate <id>`
+/// records while an agent works - before the driver looks a digest up. One store, one digest, one
+/// map: the verb's verdict reaches the driver through the log, never through a second cache.
+///
+/// Only greens enter (a red always re-proves), and the EARLIEST green for a digest wins
+/// (insert-if-absent in ascending position), so a cache-hit re-emit under the same digest cites the
+/// original green, never a chain of hits. The stored `unit` is the green's earner, carried as
+/// provenance in the cache-hit evidence.
+struct GreenDigests {
+    map: Mutex<HashMap<String, (u64, String)>>,
+    /// The stream revision the next [`join`](Self::join) reads from: one past the last event the
+    /// cache has seen. Held across the read and the inserts, so two units joining at once read
+    /// each event once.
+    joined_to: Mutex<crate::eventstore::Revision>,
+}
+
+impl GreenDigests {
+    /// The cache over `prior`, the run's events read at run start, joined up to the last of them.
+    fn seeded(prior: &[Event]) -> Self {
+        let digests = GreenDigests {
+            map: Mutex::new(HashMap::new()),
+            joined_to: Mutex::new(prior.last().map_or(0, |e| e.revision + 1)),
+        };
+        digests.admit(prior);
+        digests
+    }
+
+    /// Insert every green of `events` [`cacheable_green`] admits, keeping an earlier green.
+    fn admit(&self, events: &[Event]) {
+        for e in events {
+            if let Some((digest, unit)) = cacheable_green(e) {
+                self.record(digest, e.position, unit);
+            }
+        }
+    }
+
+    /// Record the green at `position` earned by `unit` under `digest`, unless an earlier green
+    /// already holds it.
+    fn record(&self, digest: &str, position: u64, unit: &str) {
+        self.map
+            .lock()
+            .unwrap()
+            .entry(digest.to_string())
+            .or_insert((position, unit.to_string()));
+    }
+
+    /// Read the GateVerdicts appended to `store`'s run stream since the last join and admit them.
+    fn join(&self, store: &dyn EventStore) -> Result<(), Error> {
+        let mut joined_to = self.joined_to.lock().unwrap();
+        let fresh = store.read_stream_typed(
+            STREAM,
+            *joined_to,
+            crate::eventstore::TypeSelection::Only(&[contextgraph::TYPE_GATE_VERDICT]),
+        )?;
+        if let Some(last) = fresh.last() {
+            *joined_to = last.revision + 1;
+        }
+        self.admit(&fresh);
+        Ok(())
+    }
+}
+
+/// The build environment every gate of `cfg` builds under (spec 65): the configured wrapper and
+/// cache layer resolved into the [`gate::BuildEnv`] a gate and an agent's spawn both carry. The one
+/// resolution [`RunCtx::build_env`] and [`run_gate_verb`] share; its `Err` is the config's own.
+fn build_env_of(cfg: &Config) -> Result<gate::BuildEnv, Error> {
+    let wrapper =
+        gate::resolve_build_layer(&cfg.workflow.build.wrapper, &cfg.workflow.build.cache_dir)
+            .map_err(|e| Error(e.to_string()))?;
+    Ok(gate::BuildEnv::resolve(
+        wrapper.as_deref().unwrap_or(""),
+        &cfg.workflow.build.cache_dir,
+        cfg.workflow.build.jobs,
+    ))
+}
+
+/// The machine-wide build budget of `cfg` (spec 65): `build.max_concurrent` slots in the OS-wide
+/// [`budget::default_slot_dir`]. The one resolution [`RunCtx::build_budget`] and [`run_gate_verb`]
+/// share.
+fn build_budget_of(cfg: &Config) -> BuildBudget {
+    BuildBudget::new(
+        cfg.workflow.build.max_concurrent,
+        budget::default_slot_dir(),
+    )
+}
+
+/// The shared gate build cache's DIR and guard-lock PATH for the project at `repo` (spec 77
+/// criterion 5), both derived from one `scratch_root_from_env(repo, workdir)` call. The one
+/// resolution [`RunCtx::shared_build_cache_paths`] and [`run_gate_verb`] share.
+fn shared_build_cache_paths_of(cfg: &Config, repo: &str) -> (String, String) {
+    let scratch = crate::worktree::scratch_root_from_env(repo, &cfg.workflow.defaults.workdir);
+    let dir = format!("{scratch}/{}", crate::worktree::SHARED_BUILD_CACHE_NAME);
+    let guard = crate::worktree::shared_build_cache_guard_path(&scratch);
+    (dir, guard)
+}
+
+/// The run's `$RIGGER_RUN_BASE` over `events`, the current run's slice: the run branch's tip
+/// when the run started, or empty for a run that recorded none.
+fn run_base_of(events: &[Event]) -> String {
+    crate::run::current_run_base_tip(events).unwrap_or_default()
+}
+
+/// Everything a gate run at a worktree reads besides its command: the build cache, gate scratch
+/// root, shared-cache pair, store fence, build environment and budget it is handed, and the commit
+/// its verdict addresses. Resolved by [`GateInputs::resolve`], the one derivation the driver's
+/// inline gates ([`RunCtx::run_gates_at`]) and `rigger gate <id>` ([`run_gate_verb`]) both use, so
+/// an agent's own run of a gate builds where, and under what, the driver's run would.
+struct GateInputs {
+    target: String,
+    gate_scratch: String,
+    build_cache_dir: String,
+    build_cache_guard: String,
+    store_fence: String,
+    build_env: gate::BuildEnv,
+    budget: BuildBudget,
+    commit_sha: String,
+}
+
+impl GateInputs {
+    /// The inputs of a gate run at `dir` for the project at `repo` under `cfg`, `run_base` the
+    /// run's `$RIGGER_RUN_BASE`. `postmerge_unit_dir` is the unit worktree path a post-merge
+    /// re-gate borrows its cache and scratch root from, `None` for every other run.
+    fn resolve(
+        cfg: &Config,
+        repo: &str,
+        dir: &str,
+        postmerge_unit_dir: Option<&str>,
+        run_base: &str,
+    ) -> Result<Self, Error> {
+        // Per-unit build cache (Gap 19): a gate running INSIDE a unit's worktree builds into
+        // a unit-keyed CARGO_TARGET_DIR that is the SIBLING of that worktree, so concurrent
+        // units' divergent trees never poison one shared incremental cache - a compile error a
+        // gate surfaces is then always this unit's own. Derived as the sibling of the ACTUAL
+        // worktree `dir` the gate runs in (the single source it shares with the reclamation in
+        // `Worktree::remove` / `sweep_terminal`, so the cache the gate builds is exactly the
+        // one that is reclaimed): a `rigger-wt-<slug>` unit worktree -> `cargo-target-<slug>`.
+        // A `rigger-review-*` review worktree or the worktree-less path (`dir` "", e.g. an
+        // `isolation: none` agent or a repo-less run) has no per-unit tree to isolate, so
+        // `unit_cache_sibling` returns None and the gate inherits the ambient/shared target.
+        //
+        // EXCEPT the POST-MERGE re-gate (spec 12, unit 5 / spec 103, criterion 7): it runs in
+        // its OWN throwaway `rigger-postmerge-<slug>-<attempt>` worktree (never the repo, and
+        // never the unit's own `rigger-wt-<slug>` dir, which the merge already landed out of),
+        // whose basename is no `rigger-wt-<slug>` either, so the plain sibling derivation below
+        // yields nothing there - yet the merged tree it certifies is still THIS unit's, and (a)
+        // a gate there that needs the unit's gate scratch root must be handed it (a gate that
+        // refuses an empty root would block the integration of a green unit) and (b) the
+        // re-gate should build into the SAME warm cache the pre-merge gates already populated,
+        // not a cold shared one. Both fall back to `postmerge_unit_dir`, the path the unit's OWN
+        // worktree occupies, shared by `target` and `gate_scratch` below.
+        let target = crate::worktree::unit_cache_sibling(dir)
+            .or_else(|| postmerge_unit_dir.and_then(crate::worktree::unit_cache_sibling))
+            .unwrap_or_default();
+        // The unit's gate scratch root (spec 113, THE GATE SCRATCH ROOT IS HANDED
+        // GENERICALLY): the `rigger-gate-<slug>` sibling of the SAME `dir`, the SAME sibling
+        // shape as `target` immediately above, handed to every gate as `RIGGER_GATE_SCRATCH`.
+        // rigger never creates it; a gate that uses it does. Empty for a standalone review
+        // worktree or a worktree-less run, so the runner removes the variable there. Shares
+        // `postmerge_unit_dir`'s fallback with `target` for the post-merge re-gate.
+        let gate_scratch =
+            crate::worktree::unit_sibling(dir, crate::worktree::UNIT_GATE_SCRATCH_PREFIX)
+                .or_else(|| {
+                    postmerge_unit_dir.and_then(|d| {
+                        crate::worktree::unit_sibling(d, crate::worktree::UNIT_GATE_SCRATCH_PREFIX)
+                    })
+                })
+                .unwrap_or_default();
+        // The shared gate build cache's guard path (spec 77 criterion 5, BOUNDED SHARED
+        // CACHE), on the SAME signal as `target` above: a non-empty `target` means this
+        // gate builds into its OWN per-unit `cargo-target-<slug>` cache, never at risk from
+        // `rigger reset --build-cache` (which only ever touches the bare shared cache), so
+        // it takes no lock at all - mirroring `target_dir`'s own "empty means off"
+        // convention exactly. An empty `target` (a unit-less run, or a review worktree)
+        // means this gate inherits the ambient/shared cache, so it must hold the SAME guard
+        // every OTHER shared-cache build holds AND build into the SAME dir that guard
+        // protects (see `shared_build_cache_paths_of`).
+        let (build_cache_dir, build_cache_guard) = if target.is_empty() {
+            shared_build_cache_paths_of(cfg, repo)
+        } else {
+            (String::new(), String::new())
+        };
+        // The gate store fence's caller-injected signal (spec 70 criterion 3): a standalone
+        // review worktree (`rigger-review-*`) owns no per-unit build cache above (`target` is
+        // ""), yet its EXHAUSTIVE gate pass still runs real store-opening couriers inside a real
+        // scratch-root worktree that must never walk up into the repo's live run stream. Derived
+        // HERE, alongside `target` (the analogous unit-worktree signal, same `dir`-sibling
+        // shape), and threaded through as a plain injected value, so every module
+        // `gate::Runner::run` reaches is a value the CALLER computed, never one the adapter
+        // derives by reaching into a sibling domain module itself (`conductor` ->
+        // `{gate, worktree}`, never `gate` -> `worktree`). A unit worktree (non-empty `target`)
+        // or the worktree-less path both yield None here and the empty default.
+        let store_fence = crate::worktree::review_fence_sibling(dir).unwrap_or_default();
+        Ok(GateInputs {
+            target,
+            gate_scratch,
+            build_cache_dir,
+            build_cache_guard,
+            store_fence,
+            // The ONE build-environment authority (spec 65), layered with `$RIGGER_RUN_BASE`
+            // (spec 91, THE GATE ENVIRONMENT): the SAME bag every gate command already receives
+            // unconditionally (`gate::ExecRunner::run`'s `build_env.apply`).
+            build_env: build_env_of(cfg)?.with_var("RIGGER_RUN_BASE", run_base),
+            // The machine-wide build budget (spec 65), threaded to every gate this resolves for.
+            budget: build_budget_of(cfg),
+            // The content address of the gate's inputs (spec 12, unit 1): the HEAD commit of the
+            // worktree, which fixes both the tree and the history a gate may read. Empty when
+            // there is no worktree (a repo-less / `isolation: none` run), which simply disables
+            // content-addressing there.
+            commit_sha: crate::worktree::head_sha_of(dir),
+        })
+    }
+}
+
+/// The failure taxonomy's reading of a red gate's `evidence` (spec 10, unit 2): the FIRST
+/// matching rule's class, rerun limit and backoff, or a plain `product` defect with no rerun when
+/// no rule matches. The one classification a gate's in-place reruns ([`run_gate_with_taxonomy`])
+/// and the stage's infra verdict ([`GateOutcome::fail`]) read, live or replayed.
+fn classify_gate_failure(
+    taxonomy: &failure::Taxonomy,
+    evidence: &str,
+) -> (failure::FailureClass, u32, failure::Backoff) {
+    match taxonomy.classify(&Signal::from_output(evidence.to_string())) {
+        Some(rule) => (rule.class, rule.limit, rule.backoff.clone()),
+        // No rule matched: a plain product defect (no rerun) - today's behavior.
+        None => (
+            failure::FailureClass::Product,
+            0,
+            failure::Backoff::default(),
+        ),
+    }
+}
+
+/// Run one gate through `runner` at `dir` with `inputs` and fold the failure taxonomy's
+/// three-way outcome (spec 10, unit 2).
+///
+/// A gate that passes on its first run is a clean pass. A gate that FAILS is classified by the
+/// taxonomy (a gate site supplies the captured output; exit-status and signal matchers simply
+/// never match here). A `product` failure - the shipped default for any unrecognised gate output -
+/// fails immediately and demotes, exactly as a gate failure did before this taxonomy. A `flaky` or
+/// `infra` failure is rerun up to the matched rule's `limit` with its `backoff`: the FIRST rerun
+/// that passes makes the outcome MIXED - a `FlakyVerdict` pass-with-warning that never demotes -
+/// while a failure that stays red across every rerun is a believed-real failure that demotes
+/// (`flaky`) or holds the ratchet (`infra`).
+///
+/// Returns `(recorded_pass, flaky_annotation, ratchet_effect, evidence)`, or the
+/// [`gate::ProbeFault`] of a failed guard probe on the first run or on any rerun, which ends the
+/// gate there with no outcome and no further rerun (spec 121 criterion 19). The one gate run the
+/// driver ([`RunCtx::run_gates_at`]) and `rigger gate <id>` ([`run_gate_verb`]) share.
+fn run_gate_with_taxonomy(
+    runner: &dyn gate::Runner,
+    taxonomy: &failure::Taxonomy,
+    g: &Gate,
+    dir: &str,
+    inputs: &GateInputs,
+) -> Result<(bool, bool, GateRatchet, String), gate::ProbeFault> {
+    let run = || {
+        runner.run(
+            g,
+            dir,
+            &inputs.target,
+            &inputs.gate_scratch,
+            &inputs.build_cache_dir,
+            &inputs.build_cache_guard,
+            &inputs.store_fence,
+            &inputs.build_env,
+            &inputs.budget,
+        )
+    };
+    let res = run()?;
+    if res.pass {
+        return Ok((true, false, GateRatchet::CleanPass, res.evidence));
+    }
+    // Classify the failure. `FailureClass` is Copy and `Backoff` cheap to clone, so we
+    // hold no borrow of the taxonomy across the rerun loop below.
+    let (class, limit, backoff) = classify_gate_failure(taxonomy, &res.evidence);
+    let first_evidence = res.evidence;
+    if !class.reruns() || limit == 0 {
+        // A failure that is never rerun (a `product` defect, or a rerunnable class
+        // authored with a zero/omitted limit): believed real on its first run. Its
+        // demote-vs-hold is the SAME persistent-failure decision as the rerun
+        // exhaustion below and the deferred gate - an authored `infra` rule with its
+        // limit omitted (serde default 0) HOLDS the ratchet here exactly as it does
+        // at the deferred site, never demotes by gate SITE. Routed through the single
+        // demote-vs-hold authority so the three gate sites cannot drift.
+        return Ok((
+            false,
+            false,
+            GateRatchet::for_persistent_failure(class),
+            first_evidence,
+        ));
+    }
+    for n in 0..limit {
+        let delay = backoff.delay(n);
+        if !delay.is_zero() {
+            // The only wall-clock wait in the loop; a zero-backoff rule (and every
+            // test) never reaches it. There is no injected clock seam in `Deps`, so a
+            // configured backoff sleeps this unit's own thread - it delays only this
+            // unit's gate, never the wider wave.
+            std::thread::sleep(delay);
+        }
+        if run()?.pass {
+            // MIXED: the gate failed then passed - a FlakyVerdict pass-with-warning.
+            let evidence = format!(
+                "flaky: gate {:?} failed then passed on rerun {}/{}; first failure:\n{first_evidence}",
+                g.id,
+                n + 1,
+                limit,
+            );
+            return Ok((true, true, GateRatchet::FlakyPass, evidence));
+        }
+    }
+    // Stayed red across every rerun: a believed-real failure. A `flaky` class demotes
+    // (it was thought intermittent but consistently fails); an `infra` class holds the
+    // ratchet - an outage must not cost the gate its earned autonomy. Same single
+    // demote-vs-hold authority as the early-return above and the deferred gate.
+    let ratchet = GateRatchet::for_persistent_failure(class);
+    Ok((false, false, ratchet, first_evidence))
+}
+
+/// What `rigger gate <id>` ran and recorded ([`run_gate_verb`]).
+#[derive(Debug)]
+pub struct GateVerbRun {
+    /// The gate's id.
+    pub gate: String,
+    /// Whether the gate passed (a flaky pass included).
+    pub pass: bool,
+    /// The gate's compact evidence: its output tail.
+    pub evidence: String,
+    /// The commit the gate ran on.
+    pub commit: String,
+    /// The verdict's input digest; empty when the tree changed while the gate ran, so the
+    /// verdict addresses no commit.
+    pub digest: String,
+    /// The log position the verdict was recorded at.
+    pub position: u64,
+}
+
+/// Whether `dir` holds changes no commit records; an unreadable status counts as dirty.
+fn tree_is_dirty(dir: &str) -> bool {
+    crate::worktree::path_is_dirty(dir).unwrap_or(true)
+}
+
+/// `rigger gate <id>`: run the declared gate `gate_id` on `dir`'s committed tree, through the
+/// gate run and the input resolution the driver uses ([`run_gate_with_taxonomy`] over
+/// [`GateInputs::resolve`]), and record its GateVerdict on `store`'s run stream, where the driver
+/// reuses a green one ([`GreenDigests::join`]).
+///
+/// The verdict carries [`META_GATE_ORIGIN`] = [`GATE_ORIGIN_VERB`] and the same
+/// [`META_INPUT_DIGEST`] the driver would compute for the gate's command over the commit, so the
+/// driver gating that commit with that command answers it as a cache-hit and does not run it
+/// again. It is stamped with the current run's id and, when an agent ran it, with `spawn`, its
+/// spawn id, whose unit names the green's earner. The tree must be clean and committed: an
+/// uncommitted change is refused, since no commit addresses it. A tree the gate itself changed
+/// while running is recorded with no digest, so it answers no later gate. A red is recorded too,
+/// and never cached. The verb moves no ratchet: autonomy is the driver's to earn.
+///
+/// Refuses, running and recording nothing, an undeclared gate (naming the declared ones), a dirty
+/// tree and a tree with no commit; a failed guard probe is returned as its error.
+pub fn run_gate_verb(
+    cfg: &Config,
+    store: &dyn EventStore,
+    runner: &dyn gate::Runner,
+    repo: &str,
+    dir: &str,
+    gate_id: &str,
+    spawn: &str,
+) -> Result<GateVerbRun, Error> {
+    let Some(gc) = cfg.workflow.gates.get(gate_id) else {
+        let declared: Vec<&str> = cfg.workflow.gates.keys().map(String::as_str).collect();
+        return Err(Error(format!(
+            "gate: no gate {gate_id:?} is declared in the workflow; the declared gates are: {}",
+            declared.join(", ")
+        )));
+    };
+    if tree_is_dirty(dir) {
+        return Err(Error(format!(
+            "gate: {dir} has uncommitted changes; commit them, then run `rigger gate {gate_id}`, \
+             so the verdict addresses the commit the driver gates"
+        )));
+    }
+    let commit = crate::worktree::head_sha_of(dir);
+    if commit.is_empty() {
+        return Err(Error(format!("gate: {dir} has no commit to gate")));
+    }
+    let (events, run_id) = crate::run::read::read_current_run(store, STREAM)?;
+    let inputs = GateInputs::resolve(cfg, repo, dir, None, &run_base_of(&events))?;
+    let taxonomy = cfg
+        .workflow
+        .failure_taxonomy()
+        .map_err(|e| Error(e.to_string()))?;
+    let g = Gate {
+        id: gate_id.to_string(),
+        run: gc.run.clone(),
+        kind: gate::parse::<gate::Kind>(&gc.kind),
+        autonomy: gate::Autonomy::Manual,
+        history: Vec::new(),
+    };
+    let (pass, flaky, _ratchet, evidence) =
+        run_gate_with_taxonomy(runner, &taxonomy, &g, dir, &inputs)
+            .map_err(|fault| without_halt_markers(probe_fault_halt(fault)))?;
+    // The digest addresses the commit only if the gate left it as it found it.
+    let unchanged = crate::worktree::head_sha_of(dir) == commit && !tree_is_dirty(dir);
+    let digest = if unchanged {
+        input_digest(&gc.run, &commit)
+    } else {
+        String::new()
+    };
+    let unit = spawn::unit_of(spawn).unwrap_or_default();
+    let mut ev = Event::new(
+        contextgraph::TYPE_GATE_VERDICT,
+        serde_json::to_vec(&json!({
+            "gate": gate_id, "pass": pass, "flaky": flaky, "evidence": evidence
+        }))?,
+    )
+    .with_meta(META_REPLAY_KEY, gate_verb_key(unit, gate_id, &commit))
+    .with_meta(META_GATE_ORIGIN, GATE_ORIGIN_VERB);
+    if !digest.is_empty() {
+        ev = ev.with_meta(META_INPUT_DIGEST, &digest);
+    }
+    if !run_id.is_empty() {
+        ev = ev.with_meta(crate::run::META_RUN_ID, &run_id);
+    }
+    if !spawn.is_empty() {
+        ev = ev.with_meta(META_SPAWN, spawn);
+    }
+    let what = format!("the verdict of gate {gate_id:?} on {STREAM:?}");
+    let position = store
+        .append(STREAM, crate::eventstore::ExpectedRevision::Any, &[ev])?
+        .one(&what)?;
+    Ok(GateVerbRun {
+        gate: gate_id.to_string(),
+        pass,
+        evidence,
+        commit,
+        digest,
+        position,
+    })
 }
 
 /// `unit`'s own gate-RUN verdicts in log order, each as its event, its replay key and its
@@ -2226,37 +2719,12 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
         })
         .collect();
     // Content-address cache (spec 12, unit 1): seed `input_digest -> (position, unit)` from
-    // the prior log's GREEN gate verdicts (those carrying a META_INPUT_DIGEST), so a fresh
+    // the prior log's GREEN gate verdicts the cache admits ([`cacheable_green`]), so a fresh
     // gate whose command + commit-sha digest matches is answered as a logged cache-hit citing
-    // that position. prior_events is ascending by position, and we insert only-if-absent, so
-    // the EARLIEST green for a digest is the cited source (a later cache-hit re-emit under
-    // the same digest is a no-op). Failures are excluded here (a red must re-prove), and the
-    // legacy per-file artifact verdicts older logs hold carry no replay key / digest so they
-    // never seed the cache. The unit is recovered once from the verdict's replay key.
-    let mut green_digests: HashMap<String, (u64, String)> = HashMap::new();
-    for e in prior_events
-        .iter()
-        .filter(|e| e.type_ == contextgraph::TYPE_GATE_VERDICT)
-    {
-        let Some(digest) = e.meta.get(META_INPUT_DIGEST) else {
-            continue;
-        };
-        let Ok(v) = serde_json::from_slice::<GateVerdictData>(&e.data) else {
-            continue;
-        };
-        if !v.pass {
-            continue;
-        }
-        let unit = e
-            .meta
-            .get(META_REPLAY_KEY)
-            .and_then(|k| unit_of_gate_key(k))
-            .unwrap_or_default()
-            .to_string();
-        green_digests
-            .entry(digest.clone())
-            .or_insert((e.position, unit));
-    }
+    // that position. prior_events is ascending by position, and the seed inserts only-if-absent,
+    // so the EARLIEST green for a digest is the cited source. The cache then joins what the
+    // stream gains after this read before each lookup ([`GreenDigests::join`]).
+    let green_digests = GreenDigests::seeded(prior_events);
     // Compensation replay state (spec 12, unit 4): the integrating commits a PRIOR step
     // already reverted (so a resume never re-reverts them - the reverse gear is
     // replay-deterministic over the log) and the contradiction fed back to each re-entered
@@ -2369,7 +2837,7 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
         prior_failure,
         replayed_keys,
         gate_verdicts: Mutex::new(gate_verdicts),
-        green_digests: Mutex::new(green_digests),
+        green_digests,
         compensations: Mutex::new(pending_compensations),
         compensation_feedback: Mutex::new(compensation_feedback),
         compensation_attempts: Mutex::new(HashMap::new()),
@@ -3238,17 +3706,10 @@ struct RunCtx<'a> {
     /// arch-gate-verdict-redundant-scan): gate-verdict replay is O(1) per lookup, seeded
     /// from the same `prior_events` read that already seeded `replayed_keys`.
     gate_verdicts: Mutex<HashMap<String, (bool, String)>>,
-    /// The content-address cache (spec 12, unit 1): `input_digest -> (position, unit)` of
-    /// each GREEN gate verdict, seeded ONCE at run start from the prior log's GateVerdicts
-    /// that carry a [`META_INPUT_DIGEST`] and extended as this process records fresh greens.
-    /// [`cached`] over [`green_digests`](RunCtx::green_digests) consults it at the ONE
-    /// run_gates hit-site so a gate whose `(command, commit-sha)` digest matches a prior green
-    /// is answered as a logged cache-hit citing that `position` instead of re-running the
-    /// command. Only GREEN verdicts enter it (a red must always re-prove), and the EARLIEST
-    /// green for a digest wins (insert-if-absent in ascending position), so a cache-hit
-    /// re-emit under the same digest cites the original green, never a chain of hits. The
-    /// stored `unit` is the green's earner, carried as provenance in the cache-hit evidence.
-    green_digests: Mutex<HashMap<String, (u64, String)>>,
+    /// The content-address cache ([`GreenDigests`]), consulted at the ONE run_gates hit-site so
+    /// a gate whose `(command, commit-sha)` digest matches a prior green is answered as a logged
+    /// cache-hit citing that green's position instead of re-running the command.
+    green_digests: GreenDigests,
     /// The queued post-integration compensations (spec 12, unit 4): each is an
     /// already-integrated unit a later unit's review named as the defect source. A review
     /// site (inside a possibly-concurrent wave) PUSHES here; the single-threaded run loop
@@ -3369,7 +3830,7 @@ impl<'a> RunCtx<'a> {
             prior_failure: HashMap::new(),
             replayed_keys: crate::replay_keys::ReplayKeys::seeded(&[]),
             gate_verdicts: Mutex::new(HashMap::new()),
-            green_digests: Mutex::new(HashMap::new()),
+            green_digests: GreenDigests::seeded(&[]),
             compensations: Mutex::new(Vec::new()),
             compensation_feedback: Mutex::new(HashMap::new()),
             compensation_attempts: Mutex::new(HashMap::new()),
@@ -4089,11 +4550,7 @@ impl RunCtx<'_> {
         // the one the store ISSUED for this verdict: the emit above cannot return any
         // other, so there is no made-up location to guard against here.
         if pass && !digest.is_empty() {
-            self.green_digests
-                .lock()
-                .unwrap()
-                .entry(digest.to_string())
-                .or_insert((pos, unit.to_string()));
+            self.green_digests.record(digest, pos, unit);
         }
         Ok(())
     }
@@ -8958,16 +9415,7 @@ impl RunCtx<'_> {
     /// so a library caller gets the identical loud failure a CLI caller already does -
     /// whichever entry point resolves this first.
     fn build_env(&self) -> Result<gate::BuildEnv, Error> {
-        let wrapper = gate::resolve_build_layer(
-            &self.cfg.workflow.build.wrapper,
-            &self.cfg.workflow.build.cache_dir,
-        )
-        .map_err(|e| Error(e.to_string()))?;
-        Ok(gate::BuildEnv::resolve(
-            wrapper.as_deref().unwrap_or(""),
-            &self.cfg.workflow.build.cache_dir,
-            self.cfg.workflow.build.jobs,
-        ))
+        build_env_of(self.cfg)
     }
 
     /// The run's own `$RIGGER_RUN_BASE`: the SINGLE
@@ -8986,8 +9434,7 @@ impl RunCtx<'_> {
     /// the behavior a run with nothing to diff against needs.
     fn run_base_env(&self) -> String {
         self.read_current_run()
-            .ok()
-            .and_then(|events| crate::run::current_run_base_tip(&events))
+            .map(|events| run_base_of(&events))
             .unwrap_or_default()
     }
 
@@ -9057,10 +9504,7 @@ impl RunCtx<'_> {
     /// every project checked out on the machine, so it cannot live under any one
     /// project's own `.rigger/`).
     fn build_budget(&self) -> BuildBudget {
-        BuildBudget::new(
-            self.cfg.workflow.build.max_concurrent,
-            budget::default_slot_dir(),
-        )
+        build_budget_of(self.cfg)
     }
 
     /// The shared gate build cache's DIR and guard-lock PATH (spec 77 criterion 5, BOUNDED
@@ -9087,13 +9531,7 @@ impl RunCtx<'_> {
     /// moment RIGGER_TMPDIR/defaults.workdir is configured away from the courier launcher's
     /// own hardcoded literal - the guard would then protect a directory nothing builds into.
     fn shared_build_cache_paths(&self) -> (String, String) {
-        let scratch = crate::worktree::scratch_root_from_env(
-            &self.deps.repo,
-            &self.cfg.workflow.defaults.workdir,
-        );
-        let dir = format!("{scratch}/{}", crate::worktree::SHARED_BUILD_CACHE_NAME);
-        let guard = crate::worktree::shared_build_cache_guard_path(&scratch);
-        (dir, guard)
+        shared_build_cache_paths_of(self.cfg, &self.deps.repo)
     }
 
     /// The path `unit`'s OWN worktree occupies (the SAME `unit_worktree_dir` derivation
@@ -9145,105 +9583,20 @@ impl RunCtx<'_> {
         selection: GateSelection,
     ) -> Result<GateOutcome, Error> {
         let mut outcome = GateOutcome::green();
-        // Per-unit build cache (Gap 19): a gate running INSIDE a unit's worktree builds into
-        // a unit-keyed CARGO_TARGET_DIR that is the SIBLING of that worktree, so concurrent
-        // units' divergent trees never poison one shared incremental cache - a compile error a
-        // gate surfaces is then always this unit's own. Derived as the sibling of the ACTUAL
-        // worktree `dir` the gate runs in (the single source it shares with the reclamation in
-        // `Worktree::remove` / `sweep_terminal`, so the cache the gate builds is exactly the
-        // one that is reclaimed): a `rigger-wt-<slug>` unit worktree -> `cargo-target-<slug>`.
-        // A `rigger-review-*` review worktree or the worktree-less path (`dir` "", e.g. an
-        // `isolation: none` agent or a repo-less run) has no per-unit tree to isolate, so
-        // `unit_cache_sibling` returns None and the gate inherits the ambient/shared target.
-        //
-        // EXCEPT the POST-MERGE re-gate (spec 12, unit 5 / spec 103, criterion 7): it runs in
-        // its OWN throwaway `rigger-postmerge-<slug>-<attempt>` worktree (never the repo, and
-        // never the unit's own `rigger-wt-<slug>` dir, which the merge already landed out of),
-        // whose basename is no `rigger-wt-<slug>` either, so the plain sibling derivation below
-        // yields nothing there - yet the merged tree it certifies is still THIS unit's, and (a)
-        // a gate there that needs the unit's gate scratch root must be handed it (a gate that
-        // refuses an empty root would block the integration of a green unit) and (b) the
-        // re-gate should build into the SAME warm cache the pre-merge gates already populated,
-        // not a cold shared one. Both fall back to the path the unit's OWN worktree occupies -
-        // [`Self::postmerge_unit_dir`], the SAME derivation `stage_worktree` used to create it -
-        // computed ONCE here and shared by `target` and `gate_scratch` below.
+        // Every input the attempt's gates read besides their commands, resolved ONCE through the
+        // derivation `rigger gate <id>` shares ([`GateInputs::resolve`]). The POST-MERGE re-gate
+        // (spec 12, unit 5 / spec 103, criterion 7) runs in its own throwaway worktree yet
+        // certifies THIS unit's merged tree, so it borrows the unit's own worktree path
+        // ([`Self::postmerge_unit_dir`]) for its cache and gate scratch root.
         let postmerge_unit_dir = matches!(selection, GateSelection::PostMerge)
             .then(|| self.postmerge_unit_dir(&st.name));
-        let target = crate::worktree::unit_cache_sibling(dir)
-            .or_else(|| {
-                postmerge_unit_dir
-                    .as_deref()
-                    .and_then(crate::worktree::unit_cache_sibling)
-            })
-            .unwrap_or_default();
-        // The unit's gate scratch root (spec 113, THE GATE SCRATCH ROOT IS HANDED
-        // GENERICALLY): the `rigger-gate-<slug>` sibling of the SAME `dir`, the SAME sibling
-        // shape as `target` immediately above, handed to every gate as `RIGGER_GATE_SCRATCH`.
-        // rigger never creates it; a gate that uses it does. Empty for a standalone review
-        // worktree or a worktree-less run, so the runner removes the variable there. Shares
-        // `postmerge_unit_dir`'s fallback with `target` for the post-merge re-gate.
-        let gate_scratch =
-            crate::worktree::unit_sibling(dir, crate::worktree::UNIT_GATE_SCRATCH_PREFIX)
-                .or_else(|| {
-                    postmerge_unit_dir.as_deref().and_then(|d| {
-                        crate::worktree::unit_sibling(d, crate::worktree::UNIT_GATE_SCRATCH_PREFIX)
-                    })
-                })
-                .unwrap_or_default();
-        // The shared gate build cache's guard path (spec 77 criterion 5, BOUNDED SHARED
-        // CACHE), on the SAME signal as `target` above: a non-empty `target` means this
-        // gate builds into its OWN per-unit `cargo-target-<slug>` cache, never at risk from
-        // `rigger reset --build-cache` (which only ever touches the bare shared cache), so
-        // it takes no lock at all - mirroring `target_dir`'s own "empty means off"
-        // convention exactly. An empty `target` (a unit-less run, or a review worktree)
-        // means this gate inherits the ambient/shared cache, so it must hold the SAME guard
-        // every OTHER shared-cache build holds AND build into the SAME dir that guard
-        // protects (see `shared_build_cache_paths`).
-        let (build_cache_dir, build_cache_guard) = if target.is_empty() {
-            self.shared_build_cache_paths()
-        } else {
-            (String::new(), String::new())
-        };
-        // The gate store fence's caller-injected signal (spec 70 criterion 3, u4 round 3
-        // fix for arch-u4c70r2-fence-signal-not-injected-into-runner-review-case /
-        // arch-u4c70r2-sharpens-round1-no-cycle-invariant-now-broken): a standalone review
-        // worktree (`rigger-review-*`) owns no per-unit build cache above (`target` is ""),
-        // yet its EXHAUSTIVE gate pass still runs real store-opening couriers inside a real
-        // scratch-root worktree that must never walk up into the repo's live run stream.
-        // `gate::ExecRunner::run` used to derive this itself by calling back into
-        // `worktree::review_fence_sibling(dir)` - a dependency from `gate.rs` into
-        // `worktree.rs` that broke the one-directional dependency shape (`conductor` ->
-        // `{gate, worktree}`, never `gate` -> `worktree`) round 1 certified. Deriving it
-        // HERE instead, alongside `target` (the analogous unit-worktree signal, same
-        // `dir`-sibling shape), and threading it through as a plain injected value restores
-        // that invariant: every module `gate::Runner::run` reaches (`dir`, `target_dir`,
-        // `store_fence`, `build_env`, `budget`) is now a value the CALLER computed, never
-        // one the adapter derives by reaching into a sibling domain module itself. A unit
-        // worktree (non-empty `target`) or the worktree-less path both yield None here and
-        // the empty default, matching `gate::ExecRunner::run`'s existing "target_dir always
-        // wins" precedence.
-        let store_fence = crate::worktree::review_fence_sibling(dir).unwrap_or_default();
-        // The ONE build-environment authority (spec 65): resolved once per call and
-        // threaded to every gate this attempt runs, so they all build under the same
-        // wrapper/cache/incremental settings an agent-spawn build gets too. Layered with
-        // `$RIGGER_RUN_BASE` (spec 91, THE GATE ENVIRONMENT): the SAME bag every gate command
-        // already receives unconditionally (`gate::ExecRunner::run`'s existing
-        // `build_env.apply`), so exporting it here alone reaches every gate this attempt
-        // runs - no new `Runner::run` parameter, no new call site to update. See
-        // `run_base_env`'s own doc for why this is the run's `base_tip`, never a `git
-        // merge-base` with the run branch.
-        let build_env = self
-            .build_env()?
-            .with_var("RIGGER_RUN_BASE", &self.run_base_env());
-        // The machine-wide build budget (spec 65): resolved once per call, alongside
-        // `build_env`, and threaded to every gate this attempt runs.
-        let budget = self.build_budget();
-        // The content address of this attempt's gate inputs (spec 12, unit 1): the HEAD commit
-        // of the worktree, which fixes both the tree and the history a gate may read. Computed
-        // ONCE - every gate this attempt reads the same commit, and each gate folds its own
-        // command over it in `input_digest`. Empty when there is no worktree (a repo-less /
-        // `isolation: none` run), which simply disables content-addressing for these gates.
-        let commit_sha = crate::worktree::head_sha_of(dir);
+        let inputs = GateInputs::resolve(
+            self.cfg,
+            &self.deps.repo,
+            dir,
+            postmerge_unit_dir.as_deref(),
+            &self.run_base_env(),
+        )?;
         for gid in &st.gates {
             let gc = self
                 .cfg
@@ -9328,9 +9681,13 @@ impl RunCtx<'_> {
             // commit that changed anything this gate reads has already changed the digest, and
             // the very commit already proven green (the integrate door's re-check, or a fast-forward
             // landing whose landed commit IS the gated commit) replays here.
-            let digest = input_digest(&gc.run, &commit_sha);
+            //
+            // Before the lookup the cache joins the verdicts appended since its last read, so a
+            // green an agent's own `rigger gate <id>` recorded on this commit answers here.
+            let digest = input_digest(&gc.run, &inputs.commit_sha);
             if !digest.is_empty() {
-                if let Some((pos, cached_unit)) = cached(&self.green_digests, &digest) {
+                self.green_digests.join(self.deps.store)?;
+                if let Some((pos, cached_unit)) = cached(&self.green_digests.map, &digest) {
                     let evidence = format!(
                         "cache-hit: gate {gid:?} was proven green at log position {pos} \
                          (unit {cached_unit:?}) for the same command and input digest \
@@ -9360,19 +9717,9 @@ impl RunCtx<'_> {
             // unit 2): a clean pass; a flaky/infra failure that reran and PASSED (a
             // FlakyVerdict pass-with-warning); or a real failure (product/flaky demote,
             // infra hold). A failed guard probe is the halt instead, before any verdict.
-            let (pass, flaky, ratchet, evidence) = self
-                .run_gate_with_taxonomy(
-                    &g,
-                    dir,
-                    &target,
-                    &gate_scratch,
-                    &build_cache_dir,
-                    &build_cache_guard,
-                    &store_fence,
-                    &build_env,
-                    &budget,
-                )
-                .map_err(probe_fault_halt)?;
+            let (pass, flaky, ratchet, evidence) =
+                run_gate_with_taxonomy(self.deps.gates, &self.taxonomy, &g, dir, &inputs)
+                    .map_err(probe_fault_halt)?;
             // The compact gate evidence is threaded into the GateVerdict event payload
             // (item 3): a real run otherwise discarded it, so neither the ledger nor the
             // workflow driver ever saw WHY a gate passed or failed. `flaky` rides as the
@@ -9403,127 +9750,12 @@ impl RunCtx<'_> {
         Ok(outcome)
     }
 
-    /// The failure taxonomy's reading of a red gate's `evidence` (spec 10, unit 2): the
-    /// FIRST matching rule's class, rerun limit and backoff, or a plain `product` defect with
-    /// no rerun when no rule matches. The one classification both a gate's in-place reruns
-    /// ([`run_gate_with_taxonomy`](Self::run_gate_with_taxonomy)) and the stage's infra
-    /// verdict ([`GateOutcome::fail`]) read, live or replayed.
+    /// [`classify_gate_failure`] under this run's taxonomy.
     fn classify_gate_failure(
         &self,
         evidence: &str,
     ) -> (failure::FailureClass, u32, failure::Backoff) {
-        match self
-            .taxonomy
-            .classify(&Signal::from_output(evidence.to_string()))
-        {
-            Some(rule) => (rule.class, rule.limit, rule.backoff.clone()),
-            // No rule matched: a plain product defect (no rerun) - today's behavior.
-            None => (
-                failure::FailureClass::Product,
-                0,
-                failure::Backoff::default(),
-            ),
-        }
-    }
-
-    /// Run one gate and fold the failure taxonomy's three-way outcome (spec 10, unit 2).
-    ///
-    /// A gate that passes on its first run is a clean pass. A gate that FAILS is
-    /// classified by the taxonomy (a gate site supplies the captured output; exit-status
-    /// and signal matchers simply never match here). A `product` failure - the shipped
-    /// default for any unrecognised gate output - fails immediately and demotes, exactly
-    /// as a gate failure did before this taxonomy. A `flaky` or `infra` failure is rerun
-    /// up to the matched rule's `limit` with its `backoff`: the FIRST rerun that passes
-    /// makes the outcome MIXED - a `FlakyVerdict` pass-with-warning that never demotes -
-    /// while a failure that stays red across every rerun is a believed-real failure that
-    /// demotes (`flaky`) or holds the ratchet (`infra`).
-    ///
-    /// Returns `(recorded_pass, flaky_annotation, ratchet_effect, evidence)`, or the
-    /// [`gate::ProbeFault`] of a failed guard probe on the first run or on any rerun, which
-    /// ends the gate there with no outcome and no further rerun (spec 121 criterion 19).
-    #[allow(clippy::too_many_arguments)]
-    fn run_gate_with_taxonomy(
-        &self,
-        g: &Gate,
-        dir: &str,
-        target: &str,
-        gate_scratch: &str,
-        build_cache_dir: &str,
-        build_cache_guard: &str,
-        store_fence: &str,
-        build_env: &gate::BuildEnv,
-        budget: &BuildBudget,
-    ) -> Result<(bool, bool, GateRatchet, String), gate::ProbeFault> {
-        let res = self.deps.gates.run(
-            g,
-            dir,
-            target,
-            gate_scratch,
-            build_cache_dir,
-            build_cache_guard,
-            store_fence,
-            build_env,
-            budget,
-        )?;
-        if res.pass {
-            return Ok((true, false, GateRatchet::CleanPass, res.evidence));
-        }
-        // Classify the failure. `FailureClass` is Copy and `Backoff` cheap to clone, so we
-        // hold no borrow of the taxonomy across the rerun loop below.
-        let (class, limit, backoff) = self.classify_gate_failure(&res.evidence);
-        let first_evidence = res.evidence;
-        if !class.reruns() || limit == 0 {
-            // A failure that is never rerun (a `product` defect, or a rerunnable class
-            // authored with a zero/omitted limit): believed real on its first run. Its
-            // demote-vs-hold is the SAME persistent-failure decision as the rerun
-            // exhaustion below and the deferred gate - an authored `infra` rule with its
-            // limit omitted (serde default 0) HOLDS the ratchet here exactly as it does
-            // at the deferred site, never demotes by gate SITE. Routed through the single
-            // demote-vs-hold authority so the three gate sites cannot drift.
-            return Ok((
-                false,
-                false,
-                GateRatchet::for_persistent_failure(class),
-                first_evidence,
-            ));
-        }
-        for n in 0..limit {
-            let delay = backoff.delay(n);
-            if !delay.is_zero() {
-                // The only wall-clock wait in the loop; a zero-backoff rule (and every
-                // test) never reaches it. There is no injected clock seam in `Deps`, so a
-                // configured backoff sleeps this unit's own thread - it delays only this
-                // unit's gate, never the wider wave.
-                std::thread::sleep(delay);
-            }
-            let retry = self.deps.gates.run(
-                g,
-                dir,
-                target,
-                gate_scratch,
-                build_cache_dir,
-                build_cache_guard,
-                store_fence,
-                build_env,
-                budget,
-            )?;
-            if retry.pass {
-                // MIXED: the gate failed then passed - a FlakyVerdict pass-with-warning.
-                let evidence = format!(
-                    "flaky: gate {:?} failed then passed on rerun {}/{}; first failure:\n{first_evidence}",
-                    g.id,
-                    n + 1,
-                    limit,
-                );
-                return Ok((true, true, GateRatchet::FlakyPass, evidence));
-            }
-        }
-        // Stayed red across every rerun: a believed-real failure. A `flaky` class demotes
-        // (it was thought intermittent but consistently fails); an `infra` class holds the
-        // ratchet - an outage must not cost the gate its earned autonomy. Same single
-        // demote-vs-hold authority as the early-return above and the deferred gate.
-        let ratchet = GateRatchet::for_persistent_failure(class);
-        Ok((false, false, ratchet, first_evidence))
+        classify_gate_failure(&self.taxonomy, evidence)
     }
 
     /// Branch-GC as a projection over the log (spec 38, criterion 1): reclaim the
@@ -28318,7 +28550,7 @@ mod tests {
             prior_failure: HashMap::new(),
             replayed_keys: crate::replay_keys::ReplayKeys::seeded(&[]),
             gate_verdicts: Mutex::new(HashMap::new()),
-            green_digests: Mutex::new(HashMap::new()),
+            green_digests: GreenDigests::seeded(&[]),
             compensations: Mutex::new(Vec::new()),
             compensation_feedback: Mutex::new(HashMap::new()),
             compensation_attempts: Mutex::new(HashMap::new()),
@@ -36451,7 +36683,7 @@ mod tests {
             prior_failure: HashMap::new(),
             replayed_keys: crate::replay_keys::ReplayKeys::seeded(&[]),
             gate_verdicts: Mutex::new(HashMap::new()),
-            green_digests: Mutex::new(HashMap::new()),
+            green_digests: GreenDigests::seeded(&[]),
             compensations: Mutex::new(Vec::new()),
             compensation_feedback: Mutex::new(HashMap::new()),
             compensation_attempts: Mutex::new(HashMap::new()),
@@ -43197,7 +43429,9 @@ mod tests {
             let why = case.why;
             let repo = temp_git_project_with_commit();
             let repo_path = repo.path().to_str().unwrap().to_string();
-            let cfg = review_stage_cfg("g");
+            let mut cfg = review_stage_cfg("g");
+            // A jobs cap puts a variable in the build env, so the comparison below has one to see.
+            cfg.workflow.build.jobs = 3;
             let store = Store::open(":memory:").unwrap();
             let runner = FirstRunsFail {
                 inner: RecordingRunner::new(&[]),
