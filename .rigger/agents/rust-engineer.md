@@ -61,7 +61,8 @@ your committed tree:
 - every test binary your change touched, on both lanes: `cargo test -p <crate> --lib`, or for
   a root test `cargo test --test all <file>::` when the file is a module of the consolidated
   `all` executable, `cargo test --test <file>` when `Cargo.toml` lists it as its own `[[test]]`
-  executable; then the same with `--no-default-features`;
+  executable; then the same with `--no-default-features`. A new test file is declared in
+  `tests/all.rs` (or, when it must own its process, as a `[[test]]` entry), and a test enforces it;
 - when your production hunks touch `src/` or `crates/`, `cargo test --tests` on the default
   lane alone, since a text pin in a root test goes red when a hunk moves the text it reads
   and the lane-no-default gate runs the suite on the final tree.

@@ -4807,6 +4807,8 @@ mod tests {
             "`cargo test --test all <file>::` when the file is a module of the consolidated \
              `all` executable, `cargo test --test <file>` when `Cargo.toml` lists it as its own \
              `[[test]]` executable",
+            "A new test file is declared in `tests/all.rs` (or, when it must own its process, as a \
+             `[[test]]` entry), and a test enforces it",
             "when your production hunks touch `src/` or `crates/`, `cargo test --tests` on the \
              default lane alone",
             "Once these checks have run, a later commit or an amend re-runs only what its new \

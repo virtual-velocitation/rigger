@@ -259,6 +259,7 @@ mod subject_view_memory_rail_contract;
 mod symbol_ref_caller_attribution;
 mod template_sets_build;
 mod test_cache_home_reclaimed_periphery;
+mod test_files_are_declared;
 mod tree_read_rule_periphery;
 mod turbovec_retired;
 mod turbovec_retired_cargo_boundary;
