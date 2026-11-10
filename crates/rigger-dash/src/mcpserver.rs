@@ -705,7 +705,19 @@ impl<'a> Server<'a> {
         if !show.is_empty() {
             let located = graph.locate(show).map_err(|e| e.to_string())?;
             return Ok(match located {
-                Located::None => json!({"status": "none"}),
+                // A record the graph no longer holds (pruned by `rigger reset --runs`, which
+                // deletes no event) is read from the run store's log, as `rigger peers` reads it.
+                Located::None => match Sidecar::read(self.store, &self.stream)
+                    .map_err(|e| e.to_string())?
+                    .site_of(show)
+                {
+                    Some(site) => json!({
+                        "status": "one",
+                        "site": site_object(&site, &[]),
+                        "note": crate::sidecar::LOGGED_SITE_NOTE,
+                    }),
+                    None => json!({"status": "none"}),
+                },
                 Located::Many(cands) => json!({
                     "status": "many",
                     "candidates": cands.iter().map(|c| json!({"id": c.id, "file": c.file})).collect::<Vec<_>>(),
