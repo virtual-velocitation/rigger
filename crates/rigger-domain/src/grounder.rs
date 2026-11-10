@@ -61,6 +61,14 @@ pub trait Grounder: Send + Sync {
     /// default is a no-op - grep re-reads the tree each time and needs no index.
     fn reindex(&self, _src_dir: &str, _files: &[String]) {}
 
+    /// The prompt seed of `query`: at most `k` distinct files an agent is grounded on. The
+    /// DEFAULT - the one a grep / nop grounder inherits - is the distinct files of its own
+    /// `ground(query, k)`, in ground order. The `symbols` grounder overrides it to start from the
+    /// code the query names, resolved to the files that define it.
+    fn seed(&self, query: &str, k: usize) -> Vec<String> {
+        distinct_files(self.ground(query, k))
+    }
+
     /// The two-view blast radius of `query` (architecture 5.5.1, spec 16). The DEFAULT impl - the
     /// one a grep / nop grounder inherits - returns this grounder's OWN top-`k` radius
     /// (the distinct files it grounds, in ground order) as BOTH views. So a non-symbols grounder's
@@ -69,12 +77,7 @@ pub trait Grounder: Send + Sync {
     /// it produces today. Only the `symbols` grounder overrides this to union the structural
     /// cross-reference graph with an uncapped grep.
     fn blast_radius(&self, query: &str, k: usize) -> BlastRadius {
-        let mut files: Vec<String> = Vec::new();
-        for r in self.ground(query, k) {
-            if !files.contains(&r.file) {
-                files.push(r.file);
-            }
-        }
+        let files = distinct_files(self.ground(query, k));
         BlastRadius {
             precise: files.clone(),
             safe: files,
@@ -118,4 +121,15 @@ pub trait Grounder: Send + Sync {
     fn has_strong_match(&self, _query: &str, _k: usize) -> bool {
         true
     }
+}
+
+/// The distinct files of `refs`, in their order.
+fn distinct_files(refs: Vec<Ref>) -> Vec<String> {
+    let mut files: Vec<String> = Vec::new();
+    for r in refs {
+        if !files.contains(&r.file) {
+            files.push(r.file);
+        }
+    }
+    files
 }

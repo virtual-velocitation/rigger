@@ -11817,9 +11817,9 @@ impl RunCtx<'_> {
     /// change to the light panel). The `.safe` view is the `BlastRadiusComputed` audit's
     /// payload; the audit's `precise` is instead the actual prompt SEED
     /// ([`grounded_seed`](Self::grounded_seed)), because this radius's `.precise` - a k-FILE
-    /// structural rank - DIVERGES from the seed (distinct FILES of the k-LINE `ground` pass) past
-    /// the cap (spec 17, 4b), so `record_blast_radius` records the seed the agent actually saw and
-    /// `.precise` here has no production reader. `grounded_seed` stays the cheap `ground` path so the
+    /// structural rank - DIVERGES from the seed (the grounder's `seed`, whose fill is a k-LINE pass)
+    /// past the cap (spec 17, 4b), so `record_blast_radius` records the seed the agent actually saw and
+    /// `.precise` here has no production reader. `grounded_seed` stays the cheap `seed` path so the
     /// many per-unit / per-reviewer seed calls never pay for the uncapped safe walk. With no grounder
     /// configured this is the empty fail-safe (`BlastRadius::default()`). On the symbols-INACTIVE
     /// path the default [`Grounder::blast_radius`] returns `ground(query, k)` as BOTH views, so
@@ -11874,16 +11874,16 @@ impl RunCtx<'_> {
         }
     }
 
-    /// The stage's PRECISE grounded seed: the distinct files the grounder surfaces for the stage's
-    /// grounding query (its `coverage`/name, or the spec criteria for a planner), in ground order
-    /// (§5.3). For the `symbols` grounder `ground` IS the precise structural contract (a definition
-    /// ranked above a reference, capped at `k`, architecture 5.5.6), so this seeds the prompt from
-    /// the precise view (spec 16 unit 3). It is the same grounding `build_prompt` seeds the graph
+    /// The stage's PRECISE grounded seed: the grounder's [`Grounder::seed`] of the stage's
+    /// grounding query (its `coverage`/name, or the spec criteria for a planner), at most
+    /// [`GROUNDED_SEED_K`] files (§5.3). For the `symbols` grounder that is the code the criterion
+    /// names, resolved to its definition files, before any whole-text match, which never matches
+    /// test code. It is the same grounding `build_prompt` seeds the graph
     /// context from, the spawn's `blast_radius` field carries, and the blast-radius-narrowed gate
     /// loop selects on - so the side-car filters peer decisions against exactly the files the agent
     /// was grounded on. The SAFETY consumers do NOT read this precise seed: rule-6 conflict
     /// detection keys off the safe-superset view (spec 17 unit 3, 3b), alongside partitioning and
-    /// tier routing. Kept on the cheap `ground` path (NOT the uncapped safe walk)
+    /// tier routing. Kept on the cheap `seed` path (NOT the uncapped safe walk)
     /// because it is called per-unit and per-reviewer; unit 3's safe-superset view rides only the
     /// partition / tier / audit / rule-6-conflict consumers via
     /// [`grounded_blast_radius`](Self::grounded_blast_radius). Empty when no grounder is configured
@@ -11893,14 +11893,7 @@ impl RunCtx<'_> {
             Some(g) => g,
             None => return Vec::new(),
         };
-        let query = self.ground_query(st);
-        let mut seed: Vec<String> = Vec::new();
-        for r in gr.ground(&query, GROUNDED_SEED_K) {
-            if !seed.contains(&r.file) {
-                seed.push(r.file);
-            }
-        }
-        seed
+        gr.seed(&self.ground_query(st), GROUNDED_SEED_K)
     }
 
     /// Record a unit's computed blast radius as a `BlastRadiusComputed` audit event (spec 16 unit
@@ -11916,9 +11909,9 @@ impl RunCtx<'_> {
     /// context-graph projector matches no fold arm for it, so it folds to no node/edge idempotently.
     ///
     /// The recorded `precise` is the actual prompt `seed` - the caller's
-    /// [`grounded_seed`](Self::grounded_seed), the distinct FILES of `ground(query, k)` that seed
+    /// [`grounded_seed`](Self::grounded_seed), the grounder's `seed(query, k)` files that seed
     /// the agent - NOT the radius's `precise` view (spec 17, 4b). The two DIVERGE past the cap:
-    /// `grounded_seed` truncates at k LINES then dedups to distinct files, while the radius's
+    /// `grounded_seed`'s fill truncates at k LINES then dedups to distinct files, while the radius's
     /// `precise` is a k-FILE structural rank, so beyond the cap the recorded files would otherwise
     /// name files the prompt was never seeded on. The same `seed` seeds the spawn and is recorded
     /// here (derive-both-from-one-pass), so the audit provenance always matches what the agent saw.
@@ -12051,7 +12044,7 @@ impl RunCtx<'_> {
         // from), but those refs are no longer rendered as a parallel "Relevant locations" block:
         // the code neighborhood now comes from the ONE `graph_context` traversal below, alongside
         // the decisions/findings and design-intent nodes about the SAME files. `grounded_seed`
-        // derives the seed from the SAME `ground(query, GROUNDED_SEED_K)` pass the spawn's blast
+        // derives the seed from the SAME `seed(query, GROUNDED_SEED_K)` pass the spawn's blast
         // radius and audit already use, so the seed is unchanged - only the render collapses from
         // two stitched sources onto the single unified traversal.
         let seed = self.grounded_seed(st);
@@ -44810,8 +44803,8 @@ mod tests {
     /// empty-stamp early return that keeps the non-structural grep / nop default silent.
     ///
     /// (4b) The recorded `precise` equals the files that SEEDED the prompt at AND beyond the
-    /// truncation cap. The prompt seed is `grounded_seed` - the distinct FILES of `ground(query, k)`,
-    /// a k-LINE-truncated pass - while the radius's `precise` is a k-FILE-truncated structural rank;
+    /// truncation cap. The prompt seed is `grounded_seed` - the named `target`'s definer, then the
+    /// distinct FILES of a k-LINE-truncated `ground` fill - while the radius's `precise` is a k-FILE-truncated structural rank;
     /// past the cap the two diverge. The fixture makes the divergence unmissable: `busy.rs`
     /// references `target` on many LINES, consuming the k-LINE `ground` budget so the distinct-FILE
     /// seed is just {def.rs, busy.rs}; the structural `precise` instead ranks def-then-referencers

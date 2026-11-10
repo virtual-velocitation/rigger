@@ -5,7 +5,7 @@
 //! `grounder_for` / `main::select_grounder`; this module is the consumer of units 1-3's model,
 //! extraction, registry, and store.
 
-use crate::grounder::symbols::model::{percentile_cutoff, Lang, SymbolIndex};
+use crate::grounder::symbols::model::{percentile_cutoff, FileSymbols, Lang, SymbolIndex};
 use crate::grounder::symbols::{build_index, reindex_files, store};
 use crate::grounder::{BlastRadius, Grep, Grounder, RankedRef, Ref};
 use rigger_domain::contextgraph::query::path_leaf;
@@ -152,8 +152,8 @@ const FILE_EXTENSIONS: &[&str] = &[
 ];
 
 /// The code a criterion names ([`CodeTerms`]). Each code span (backticked text) and each bare
-/// token that is identifier-shaped ([`identifier_shaped`]) contributes; a plain prose word never
-/// does. Generic and call arguments (`<T>`, `(x)`), surrounding punctuation and trailing `:`, `!`
+/// token that is identifier-shaped ([`identifier_shaped`]) or path-shaped ([`is_path`])
+/// contributes; a plain prose word never does. Generic and call arguments (`<T>`, `(x)`), surrounding punctuation and trailing `:`, `!`
 /// or `?` are stripped, and keywords dropped. A span left with ONE piece is a path when it looks
 /// like one (contains `/`, starts with `.`, or ends in a file extension), else a symbol when it is
 /// an identifier or a `::`/`.` path of identifiers; anything else names no code. A span left
@@ -169,7 +169,7 @@ fn code_terms(query: &str) -> CodeTerms {
         for word in part.split_whitespace() {
             let stripped = strip_groups(word);
             let piece = clean_piece(&stripped);
-            if identifier_shaped(piece) {
+            if identifier_shaped(piece) || is_path(piece) {
                 terms.add_piece(piece);
             }
         }
@@ -262,6 +262,41 @@ fn clean_piece(piece: &str) -> &str {
             )
         })
         .trim_end_matches('.')
+}
+
+/// Whether the indexed file at `path` is the one a criterion's path `term` names: the same path,
+/// or one ending in `/term` (a criterion may spell a path from any directory down).
+fn names_path(path: &str, term: &str) -> bool {
+    path == term || path.ends_with(&format!("/{term}"))
+}
+
+/// Whether a path `term` the index does not parse (`.gitignore`) is a file the tree holds. An
+/// absolute or `..` path, which would escape the tree, is never read.
+fn held_in_tree(root: &str, term: &str) -> bool {
+    !Path::new(term).is_absolute()
+        && !term.split('/').any(|c| c == "..")
+        && Path::new(root).join(term).is_file()
+}
+
+/// Whether `fs` defines `name`.
+fn defines(fs: &FileSymbols, name: &str) -> bool {
+    fs.defs.iter().any(|d| d.name == name)
+}
+
+/// The files that define `name`, product code before test code, each group in path order.
+fn definers<'a>(idx: &'a SymbolIndex, name: &str) -> Vec<&'a str> {
+    let mut files: Vec<(bool, &'a str)> = idx
+        .files()
+        .iter()
+        .filter(|(_, fs)| defines(fs, name))
+        .map(|(path, fs)| {
+            let test = crate::grounder::symbols::events::is_dev_only(path)
+                || fs.defs.iter().any(|d| d.name == name && d.is_test);
+            (test, path.as_str())
+        })
+        .collect();
+    files.sort_by_key(|(test, _)| *test);
+    files.into_iter().map(|(_, path)| path).collect()
 }
 
 /// Whether a bare prose token reads as code: it contains `_` or `::`, or mixes case with an
@@ -528,6 +563,54 @@ impl Grounder for Symbols {
             .collect()
     }
 
+    /// The prompt seed: the code `query` names ([`code_terms`]) resolved to the files that hold
+    /// it, then the whole-text match. The files it spells come first (an indexed file whose path
+    /// ends in the term, else the file itself when the tree holds it), then the files that define
+    /// each identifier it names - the identifier fewer files define first, so a widely defined
+    /// name never crowds out a specific one. The fill is [`Symbols::ground`]'s own top-`k` hit
+    /// lines with test code left out: a prose word never matches a test function's sentence name,
+    /// while a test file or test function the query names explicitly still seeds. At most `k`
+    /// distinct files.
+    fn seed(&self, query: &str, k: usize) -> Vec<String> {
+        if query.is_empty() || k == 0 {
+            return Vec::new();
+        }
+        let terms = code_terms(query);
+        let idx = self.idx.lock().unwrap();
+        let mut seed: Vec<String> = Vec::new();
+        let mut add = |file: &str| {
+            if !seed.iter().any(|s| s == file) {
+                seed.push(file.to_string());
+            }
+        };
+        for t in &terms.paths {
+            let indexed: Vec<&str> = idx
+                .files()
+                .keys()
+                .map(String::as_str)
+                .filter(|p| names_path(p, t))
+                .collect();
+            if indexed.is_empty() && held_in_tree(&self.root, t) {
+                add(t);
+            }
+            indexed.into_iter().for_each(&mut add);
+        }
+        let mut named: Vec<Vec<&str>> = terms
+            .names
+            .iter()
+            .map(|n| definers(&idx, &n.name))
+            .collect();
+        named.sort_by_key(Vec::len);
+        named.into_iter().flatten().for_each(&mut add);
+        scored_hits(&idx, &query_terms(query))
+            .into_iter()
+            .filter(|h| !h.test)
+            .take(k)
+            .for_each(|h| add(h.file));
+        seed.truncate(k);
+        seed
+    }
+
     fn reindex(&self, _src_dir: &str, files: &[String]) {
         // Decide which named files ACTUALLY changed (the content-hash freshening gate). Persist only
         // when something changed, so a reindex of unchanged files touches neither the parser nor the
@@ -621,16 +704,13 @@ impl Grounder for Symbols {
                     .paths
                     .iter()
                     .map(String::as_str)
-                    .filter(|t| path == t || path.ends_with(&format!("/{t}")))
+                    .filter(|t| names_path(path, t))
                     .collect();
                 found_paths.extend(&named);
-                let defines: Vec<&str> = names
-                    .iter()
-                    .copied()
-                    .filter(|n| fs.defs.iter().any(|d| d.name == *n))
-                    .collect();
-                defined.extend(&defines);
-                if !named.is_empty() || !defines.is_empty() {
+                let defined_here: Vec<&str> =
+                    names.iter().copied().filter(|n| defines(fs, n)).collect();
+                defined.extend(&defined_here);
+                if !named.is_empty() || !defined_here.is_empty() {
                     definers.push(path.as_str());
                 }
                 if fs.calls().any(|r| names.contains(&r.name.as_str())) {
@@ -638,19 +718,12 @@ impl Grounder for Symbols {
                 }
             }
             // A named path the index does not parse (`.gitignore`) still grounds on its own file
-            // when the tree holds it; a path the tree does not hold grounds nothing, and an
-            // absolute or `..` path, which would escape the tree, is never read.
-            let root = std::path::Path::new(&self.root);
+            // when the tree holds it; a path the tree does not hold grounds nothing.
             let unindexed: Vec<&str> = terms
                 .paths
                 .iter()
                 .map(String::as_str)
-                .filter(|t| {
-                    !found_paths.contains(t)
-                        && !std::path::Path::new(t).is_absolute()
-                        && !t.split('/').any(|c| c == "..")
-                })
-                .filter(|t| root.join(t).is_file())
+                .filter(|t| !found_paths.contains(t) && held_in_tree(&self.root, t))
                 .collect();
             definers.extend(unindexed);
             // Ranked: every definer file first, then each referencer that is not also a definer.
