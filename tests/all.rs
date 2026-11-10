@@ -208,6 +208,7 @@ mod reset_menu_identity_migration_periphery;
 mod reset_menu_previews_periphery;
 mod reset_runs_closes_landed_run_periphery;
 mod revert_on_base_hook_bypass_periphery;
+mod review_roles_run_without_the_advisor_periphery;
 mod review_round_lenses_only_log_derived_resume_periphery;
 mod review_round_no_adjudicator_residue_periphery;
 mod review_round_non_ancestor_residue_names_true_diff_periphery;
