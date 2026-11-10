@@ -99,7 +99,7 @@ export GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 GIT_CONFIG_KEY_1 GIT
 # of the suite, each with nextest's one-process-per-test fan-out (32 at once on this box), so a
 # runaway mutant is up to ~100 identical runaways. On 2026-09-24 eight concurrent children of one
 # loop mutant each grew to ~5.5G inside 15 s - every one under 24G - and the global OOM killer
-# took the check-in step itself. 4 GiB is the cap: it is past the whole suite's largest
+# took the check-in step itself. 4 GiB was the cap (resized 2026-11-10, see below): it is past the whole suite's largest
 # legitimate test (the suite passes under it), and a runaway child fails its own allocation at
 # 4G instead of growing until the machine does. The WHOLE sweep is bounded separately by the
 # mutation gate's own memory scope (.rigger/gates/mutation.sh); this cap bounds each process.
@@ -108,7 +108,13 @@ export GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 GIT_CONFIG_KEY_1 GIT
 # thread finds the others locked, up to eight per core, so a binary running its tests on many
 # threads grows its address space with lock contention rather than with memory and reaches the
 # cap under load; two arenas keep the cap measuring what the tests really allocate.
-as_bytes="${RIGGER_TEST_AS_BYTES:-4294967296}"
+# Resized 2026-11-10 (4 GiB -> 7 GiB): the root package's integration tests are ONE executable
+# (`all`, about 2,700 tests on up to 128 threads), no longer 271 small ones. Measured on the
+# default lane at the default thread count: peak virtual size (VmPeak) 3.06 GiB, peak resident
+# memory 1.1 GiB (1.6 GiB over the cargo process tree). The cap bounds ADDRESS SPACE, so it is
+# sized at about twice the measured virtual peak, rounded up to a whole GiB: 7 GiB. A runaway
+# process still fails its own allocation long before the machine does.
+as_bytes="${RIGGER_TEST_AS_BYTES:-7516192768}"
 export MALLOC_ARENA_MAX=2
 if [ "${RIGGER_PIDNS:-on}" = "off" ]; then
   # TERM here, not KILL: `timeout` forwards a TERM it receives to the test binary and exits;
