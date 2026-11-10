@@ -68,11 +68,20 @@ fn with_no_driver_the_gate_verb_runs_the_gate_for_information_only_and_records_n
         if stale {
             // A listener dropped without unlinking leaves a socket file nothing answers.
             #[cfg(unix)]
-            drop(std::os::unix::net::UnixListener::bind(root.path().join(".rigger/gate.sock")).unwrap());
+            drop(
+                std::os::unix::net::UnixListener::bind(root.path().join(".rigger/gate.sock"))
+                    .unwrap(),
+            );
         }
         let (out, err, ok) = rigger_in(root.path(), scratch.path(), &["gate", "g"]);
-        assert!(ok, "stale {stale}: rigger gate g exits 0 on a green gate; stderr:\n{err}");
-        assert!(out.contains("PASS gate g"), "stale {stale}: the verb prints the result: {out}");
+        assert!(
+            ok,
+            "stale {stale}: rigger gate g exits 0 on a green gate; stderr:\n{err}"
+        );
+        assert!(
+            out.contains("PASS gate g"),
+            "stale {stale}: the verb prints the result: {out}"
+        );
         assert!(
             err.contains("no driver is serving this project") && err.contains("recorded nothing"),
             "stale {stale}: the verb says it recorded nothing: {err}"

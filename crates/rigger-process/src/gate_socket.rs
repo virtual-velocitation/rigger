@@ -43,7 +43,10 @@ impl GateSocket {
             if UnixStream::connect(path).is_ok() {
                 return Err(io::Error::new(
                     io::ErrorKind::AddrInUse,
-                    format!("a driver already serves gate requests at {}", path.display()),
+                    format!(
+                        "a driver already serves gate requests at {}",
+                        path.display()
+                    ),
                 ));
             }
             std::fs::remove_file(path)?;
@@ -94,8 +97,7 @@ impl GateChannel for GateSocket {
     }
 
     fn close(&self) {
-        self.closed
-            .store(true, std::sync::atomic::Ordering::SeqCst);
+        self.closed.store(true, std::sync::atomic::Ordering::SeqCst);
         // Wake the accept the serving loop blocks in, so it sees the flag.
         let _ = std::os::unix::net::UnixStream::connect(&self.path);
     }
@@ -139,10 +141,11 @@ pub fn ask(path: &Path, request: &GateRequest) -> io::Result<Option<GateReply>> 
     use std::io::{BufRead, Write};
     let mut stream = match std::os::unix::net::UnixStream::connect(path) {
         Ok(stream) => stream,
-        Err(e) if matches!(
-            e.kind(),
-            io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
-        ) =>
+        Err(e)
+            if matches!(
+                e.kind(),
+                io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
+            ) =>
         {
             return Ok(None)
         }
@@ -239,15 +242,21 @@ mod tests {
     /// answers `None`; binding over a stale file reclaims it, and binding over a live one is
     /// refused.
     #[test]
-    fn asking_with_no_listener_answers_none_and_a_stale_socket_is_reclaimed_but_a_live_one_is_not() {
+    fn asking_with_no_listener_answers_none_and_a_stale_socket_is_reclaimed_but_a_live_one_is_not()
+    {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("gate.sock");
         assert_eq!(ask(&path, &request()).unwrap(), None, "no socket file");
         drop(std::os::unix::net::UnixListener::bind(&path).unwrap());
-        assert!(path.exists(), "a listener dropped without unlinking leaves its file");
+        assert!(
+            path.exists(),
+            "a listener dropped without unlinking leaves its file"
+        );
         assert_eq!(ask(&path, &request()).unwrap(), None, "a stale socket file");
         let live = GateSocket::bind(&path).expect("a stale socket is reclaimed");
-        let again = GateSocket::bind(&path).err().expect("a live socket is not taken");
+        let again = GateSocket::bind(&path)
+            .err()
+            .expect("a live socket is not taken");
         assert_eq!(again.kind(), std::io::ErrorKind::AddrInUse);
         drop(live);
     }

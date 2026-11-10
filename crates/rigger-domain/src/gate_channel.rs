@@ -53,5 +53,6 @@ pub fn to_line(message: &impl Serialize) -> String {
 
 /// The message one JSON line an adapter read carries, or why it carries none.
 pub fn from_line<T: DeserializeOwned>(line: &str) -> Result<T, String> {
-    serde_json::from_str(line.trim_end()).map_err(|e| format!("a malformed gate channel message: {e}"))
+    serde_json::from_str(line.trim_end())
+        .map_err(|e| format!("a malformed gate channel message: {e}"))
 }

@@ -20,11 +20,11 @@ pub mod contextgraph;
 pub mod docs;
 pub mod eventstore;
 pub mod failure;
-/// The gate request interface: how `rigger gate` asks the run's driver to gate a unit's commit.
-pub mod gate_channel;
 /// The gate vocabulary the gate runner and the worktree reclaimer share.
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod gate;
+/// The gate request interface: how `rigger gate` asks the run's driver to gate a unit's commit.
+pub mod gate_channel;
 /// The grounding port: the `Grounder` trait and the plain values it returns.
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod grounder;
