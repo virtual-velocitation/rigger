@@ -382,8 +382,9 @@ pub(crate) fn system_prompt_file(
 ///   out. The host picks the server: the stream-json host binds each spawn its own
 ///   (`mcp --spawn <id>`, §4.3), the cli host the operator's read-only one (`mcp`, the entry
 ///   `rigger setup` writes into `.mcp.json`);
-/// - `--settings` is `settings_json` (may be empty) with the SessionStart prime hook and the
-///   status line merged in, and the PreToolUse grep-guard when `host` carries it
+/// - `--settings` is `settings_json` (may be empty), with `advisorModel` set to the empty string
+///   when `agent` runs without the advisor ([`AgentDef::without_advisor`]), with the SessionStart
+///   prime hook and the status line merged in, and the PreToolUse grep-guard when `host` carries it
 ///   ([`hooks::install_session_settings`]). The host hands in what its spawn runs on: the
 ///   stream-json host the spawn's own settings with the hooks bound to it already merged
 ///   ([`hooks::install_spawn_hooks`]), the cli host the spawn's own settings alone;
@@ -393,6 +394,7 @@ pub(crate) fn system_prompt_file(
 /// Fails when `settings_json` is not a JSON object the session settings can merge into, or a
 /// helper `host` carries does not parse.
 pub(crate) fn spawn_config_args(
+    agent: &AgentDef,
     rigger_bin: &str,
     mcp_args: &[&str],
     settings_json: &str,
@@ -400,6 +402,14 @@ pub(crate) fn spawn_config_args(
 ) -> Result<Vec<String>, Error> {
     let helpers = hooks::helper_agents_json(&host.helpers)
         .map_err(|e| Error(format!("driver: compose the spawn's agents: {e}")))?;
+    let own_settings = if agent.without_advisor() {
+        json_arg(
+            hooks::install_no_advisor(settings_json.as_bytes()),
+            "settings",
+        )?
+    } else {
+        settings_json.to_string()
+    };
     Ok(vec![
         "--permission-mode".to_string(),
         PERMISSION_MODE.to_string(),
@@ -413,7 +423,7 @@ pub(crate) fn spawn_config_args(
         "--strict-mcp-config".to_string(),
         "--settings".to_string(),
         json_arg(
-            hooks::install_session_settings(settings_json.as_bytes(), host.grep_guard),
+            hooks::install_session_settings(own_settings.as_bytes(), host.grep_guard),
             "settings",
         )?,
         "--agents".to_string(),
@@ -540,10 +550,11 @@ mod tests {
                 helpers: row.helpers,
                 ..test_spawn_host()
             };
-            let agents = spawn_config_args("rigger", &["mcp"], "", &host).map(|args| {
-                let at = args.iter().position(|a| a == "--agents").unwrap();
-                serde_json::from_str::<serde_json::Value>(&args[at + 1]).unwrap()
-            });
+            let agents = spawn_config_args(&AgentDef::default(), "rigger", &["mcp"], "", &host)
+                .map(|args| {
+                    let at = args.iter().position(|a| a == "--agents").unwrap();
+                    serde_json::from_str::<serde_json::Value>(&args[at + 1]).unwrap()
+                });
             assert_eq!(
                 agents.map_err(|e| e.to_string()),
                 row.agents.map_err(str::to_string),

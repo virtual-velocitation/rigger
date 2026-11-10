@@ -290,6 +290,7 @@ pub fn build_args(
     }
     args.extend(allowed_tools_args(agent, &opts.host, &[])?);
     args.extend(spawn_config_args(
+        agent,
         rigger_bin,
         &["mcp"],
         &opts.settings_json,
@@ -968,7 +969,16 @@ thinking out loud, not json\n\
                 .unwrap()
                 .join(","),
         ];
-        expected.extend(spawn_config_args("rigger", &["mcp"], "", &test_spawn_host()).unwrap());
+        expected.extend(
+            spawn_config_args(
+                &AgentDef::default(),
+                "rigger",
+                &["mcp"],
+                "",
+                &test_spawn_host(),
+            )
+            .unwrap(),
+        );
         assert_eq!(args, expected);
     }
 

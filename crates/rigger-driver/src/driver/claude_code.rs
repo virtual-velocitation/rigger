@@ -2227,6 +2227,7 @@ pub fn build_args(
         "settings",
     )?;
     args.extend(spawn_config_args(
+        agent,
         rigger_bin,
         &["mcp", "--spawn", &opts.id],
         &settings,

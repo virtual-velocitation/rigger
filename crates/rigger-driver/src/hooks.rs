@@ -487,6 +487,22 @@ pub fn install_mcp_server(
     Ok(out)
 }
 
+/// The settings key naming the model the host's advisor tool runs on. A session with no value
+/// configured has no advisor, and the empty string is the value that removes one a lower settings
+/// layer configures: probed on the agent CLI, `--settings '{"advisorModel": ""}'` removes the tool
+/// from a session whose user settings name an advisor, while a disallowed-tools entry does not
+/// (the tool is server side and is not in the session's tool list) and `null` is read as unset.
+const ADVISOR_MODEL_KEY: &str = "advisorModel";
+
+/// Merge `advisorModel` set to the empty string into the settings JSON, so the session these
+/// settings launch has no advisor whatever the host's own settings configure; every other setting
+/// is preserved, and a value already there is replaced. `existing` may be empty.
+pub fn install_no_advisor(existing: &[u8]) -> Result<Vec<u8>, Error> {
+    let mut settings = parse_settings(existing)?;
+    settings.insert(ADVISOR_MODEL_KEY.to_string(), json!(""));
+    encode_settings(&settings)
+}
+
 /// Merge the editor's `statusLine` setting into the settings JSON (spec 94, criterion 5: THE
 /// STATUSLINE COMMAND) - the same one-line summary `rigger status --line` prints, running
 /// under the person's conversation. Like [`install_mcp_server`]'s `mcpServers` entry, rigger
@@ -559,6 +575,31 @@ mod tests {
                 ("hook stop-failure", AgentFailure::CATEGORIES.len()),
             ],
         );
+    }
+
+    /// `install_no_advisor` sets `advisorModel` to the empty string over empty settings and over
+    /// settings that already name an advisor, keeps every other setting, and reproduces its own
+    /// bytes when applied again.
+    #[test]
+    fn no_advisor_sets_the_empty_model_keeping_the_other_settings() {
+        let rows = [
+            ("", json!({"advisorModel": ""})),
+            (
+                r#"{"advisorModel":"strong","model":"opus"}"#,
+                json!({"advisorModel": "", "model": "opus"}),
+            ),
+            (
+                r#"{"advisorModel":null,"hooks":{}}"#,
+                json!({"advisorModel": "", "hooks": {}}),
+            ),
+        ];
+        for (existing, expected) in rows {
+            let once = install_no_advisor(existing.as_bytes()).unwrap();
+            let settings: Value = serde_json::from_slice(&once).unwrap();
+            assert_eq!(settings, expected, "settings {existing:?}");
+            assert_eq!(install_no_advisor(&once).unwrap(), once, "idempotent");
+        }
+        assert!(install_no_advisor(b"[]").is_err(), "not an object");
     }
 
     /// An argument of a hook command stays one word whatever it holds.

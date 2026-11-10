@@ -208,6 +208,13 @@ pub struct AgentDef {
     /// construction: each agent's own value overrides the workflow default.
     #[serde(default)]
     pub max_wall_clock: Option<u64>,
+    /// Whether the agent's session may consult the host's advisor, a stronger model the session
+    /// calls mid-turn when the host's own settings configure one. Absent or `true` inherits the
+    /// host's setting, so nothing changes until a persona declares `advisor: false`: a role whose
+    /// job is to judge someone else's work, which consults none. Read through the single
+    /// authority [`without_advisor`](Self::without_advisor).
+    #[serde(default)]
+    pub advisor: Option<bool>,
     #[serde(skip)]
     pub prompt: String,
 }
@@ -1012,6 +1019,12 @@ impl AgentDef {
         }
         let last = self.model_ladder.len() - 1;
         self.model_ladder[(attempt as usize).min(last)].clone()
+    }
+
+    /// Whether this agent's session runs without the host's advisor: it declared
+    /// `advisor: false`. Absent and `true` both inherit the host's setting.
+    pub fn without_advisor(&self) -> bool {
+        self.advisor == Some(false)
     }
 
     /// The tools this agent is actually granted. When `recurse` is false (the
