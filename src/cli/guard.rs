@@ -898,6 +898,58 @@ mod tests {
         }
     }
 
+    /// A `sed` or `awk` whose script selects lines by a pattern is a name search exactly like a
+    /// grep, so it is denied unless it carries the `# --literal` comment; one that reads a line
+    /// range, edits, or prints fields searches for nothing and passes.
+    #[test]
+    fn grep_guard_decision_treats_a_sed_or_awk_pattern_search_as_a_grep() {
+        let deny = GuardDecision::Deny(GREP_GUARD_MESSAGE.to_string());
+        let rows = [
+            ("sed -n '/fn spawn_config_args/p' src/a.rs", &deny),
+            ("sed -n '/start/,/end/p' src/a.rs", &deny),
+            ("sed -n '10,/end/p' src/a.rs", &deny),
+            ("sed -n -e '/needle/=' src/a.rs", &deny),
+            ("sed -n --expression='/needle/p' src/a.rs", &deny),
+            (r"sed -n '\%needle%p' src/a.rs", &deny),
+            ("cat src/a.rs | /bin/sed -n '/needle/p'", &deny),
+            ("awk '/needle/' src/a.rs", &deny),
+            ("awk -F: '/needle/ {print $1}' src/a.rs", &deny),
+            ("awk '$0 ~ \"needle\"' src/a.rs", &deny),
+            ("gawk 'match($0, /needle/)' src/a.rs", &deny),
+            ("sed -n '1,40p' src/a.rs", &GuardDecision::Allow),
+            ("sed -n 12p src/a.rs", &GuardDecision::Allow),
+            ("sed -i 's/old/new/' src/a.rs", &GuardDecision::Allow),
+            ("awk '{print $1}' src/a.rs", &GuardDecision::Allow),
+            ("awk 'NR>=10 && NR<=20' src/a.rs", &GuardDecision::Allow),
+            ("awk -f prog.awk src/a.rs", &GuardDecision::Allow),
+            ("sed -n '/needle/p' src/a.rs # --literal", &GuardDecision::Allow),
+            ("awk '/needle/' src/a.rs # --literal", &GuardDecision::Allow),
+        ];
+        for (command, expected) in rows {
+            assert_eq!(
+                &grep_guard_decision("Bash", &serde_json::json!({ "command": command })),
+                expected,
+                "{command:?}"
+            );
+        }
+    }
+
+    /// The denial answers the question the search was asking before it names the escape: who
+    /// calls a name is `rigger_graph` around it and where a name is defined is `rigger_graph`
+    /// show it, both ahead of the `# --literal` comment.
+    #[test]
+    fn grep_guard_message_names_the_graph_call_before_the_literal_escape() {
+        let escape = GREP_GUARD_MESSAGE
+            .find("# --literal")
+            .expect("the message names the escape");
+        for call in ["rigger_graph `around` <name>", "rigger_graph `show` <name>"] {
+            let at = GREP_GUARD_MESSAGE
+                .find(call)
+                .unwrap_or_else(|| panic!("the message names {call:?}: {GREP_GUARD_MESSAGE}"));
+            assert!(at < escape, "{call:?} comes before the escape: {GREP_GUARD_MESSAGE}");
+        }
+    }
+
     /// A path-qualified spelling of a DIFFERENT command (not `grep`) must still be allowed - the
     /// basename comparison must not become a substring match.
     #[test]

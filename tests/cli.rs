@@ -34793,10 +34793,12 @@ fn run_guard_write(process_cwd: &Path, roots: &[&str], payload: &str) -> serde_j
     run_hook_verb(process_cwd, &args, payload)
 }
 
-/// The reason `rigger grep-guard` denies a grep with: the guard's rule and its escape hatch, no
-/// lookup method.
-const GREP_GUARD_DENIAL: &str =
-    "grep is for literal text - end the command with a `# --literal` comment to proceed";
+/// The reason `rigger grep-guard` denies a grep with: the graph call that answers a name lookup,
+/// then the guard's rule and its escape hatch.
+const GREP_GUARD_DENIAL: &str = "A name lookup is a graph call: who calls <name> is rigger_graph \
+     `around` <name>, and where <name> is defined is rigger_graph `show` <name>. A grep, or a sed \
+     or awk pattern search, is for literal text - end the command with a `# --literal` comment to \
+     proceed";
 
 /// Asserts `out` (a [`run_grep_guard`] result) is the empty object `{}`: the hook passes a
 /// grep carrying the `# --literal` comment through with no verdict and no `updatedInput`.

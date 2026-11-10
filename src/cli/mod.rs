@@ -6491,11 +6491,14 @@ mod tests {
         // Spec 92, criterion 4: the discipline docs' lookup-hook message is read from the
         // SAME const `rigger grep-guard` decides against, not a hand copy.
         assert_eq!(ctx.grep_guard_message, GREP_GUARD_MESSAGE);
-        // Spec 121: that message is the guard's rule and its escape hatch, word for word: no
-        // lookup method rides on it.
+        // The message names the graph call that answers the search before the guard's rule and
+        // its escape hatch, word for word.
         assert_eq!(
             GREP_GUARD_MESSAGE,
-            "grep is for literal text - end the command with a `# --literal` comment to proceed",
+            "A name lookup is a graph call: who calls <name> is rigger_graph `around` <name>, and \
+             where <name> is defined is rigger_graph `show` <name>. A grep, or a sed or awk \
+             pattern search, is for literal text - end the command with a `# --literal` comment \
+             to proceed",
             "the grep-guard's deny message"
         );
     }
