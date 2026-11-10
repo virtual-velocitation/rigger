@@ -1234,6 +1234,34 @@ mod tests {
         .to_string()
     }
 
+    /// A sign-off mark a reviewer sets through `rigger_emit` reaches the log with its finding, so
+    /// `rigger_peers` ranks the marked finding below an older unmarked one.
+    #[test]
+    fn a_sign_off_emitted_through_the_tool_ranks_last_in_peers() {
+        let store = Store::open(":memory:").unwrap();
+        let driver = Driver::new();
+        let server = Server::new(&driver, &store, "run");
+        for data in [
+            json!({"id": "f-code", "by": "lens", "summary": "a defect", "about": ["a.rs"]}),
+            json!({"id": "f-done", "by": "lens", "summary": "approve", "about": ["a.rs"],
+                   "sign_off": true}),
+        ] {
+            let emitted = call(
+                &server,
+                &tools_call("rigger_emit", json!({"type": "ReviewFinding", "data": data})),
+            );
+            assert!(emitted.get("error").is_none(), "{emitted}");
+        }
+        let peers = call(&server, &tools_call("rigger_peers", json!({})));
+        assert_eq!(
+            peers["result"]["structuredContent"]["records"],
+            json!([
+                "finding f-code | LIVE | by lens | a defect",
+                "finding f-done | LIVE | by lens | approve",
+            ])
+        );
+    }
+
     /// THE MCP TOOLS READ FROM THE BOUNDARY (spec 101): over a log holding 200,000 ledger
     /// entries and two superseded runs before the boundary, every tool that reads the run -
     /// `rigger_peers`, `rigger_activity` and the spawn-bound `rigger_scratch` - costs exactly one
