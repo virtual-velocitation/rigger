@@ -36,9 +36,8 @@
 mod common;
 
 use common::fixtures::js_declaration;
-use common::repo::repo_text;
+use common::repo::{repo_text, run_node};
 use rigger_domain::spawn::{review_step_of, ReviewKind};
-use std::process::Command;
 
 /// Run the REAL `phaseOf` - extracted verbatim from the shipped `workflows/rigger.js` together
 /// with the `roleOf` and `bareRoleOf` helpers it calls, never hand-copied - against one `req`
@@ -65,27 +64,11 @@ fn run_driver_reader(call: &str, arg: &str) -> Option<String> {
          process.stdout.write(String({call}))\n"
     );
 
-    let node = std::env::var("RIGGER_NODE").unwrap_or_else(|_| "node".to_string());
-    let mut f = tempfile::NamedTempFile::new().unwrap();
-    std::io::Write::write_all(&mut f, script.as_bytes()).unwrap();
-
-    match Command::new(&node).arg(f.path()).arg(arg).output() {
-        Ok(out) => {
-            assert!(
-                out.status.success(),
-                "the real {call} must run without throwing on {arg}: {}",
-                String::from_utf8_lossy(&out.stderr)
-            );
-            Some(String::from_utf8_lossy(&out.stdout).into_owned())
-        }
-        Err(e) => {
-            assert!(
-                e.kind() == std::io::ErrorKind::NotFound,
-                "node failed for a reason other than being absent: {e}"
-            );
-            None
-        }
-    }
+    run_node(
+        &script,
+        &[arg],
+        &format!("the real {call} must run without throwing on {arg}"),
+    )
 }
 
 /// The real `phaseOf` resolves every `(unit, id)` of `cases` to `phase` (or `node` is

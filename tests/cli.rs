@@ -4554,6 +4554,262 @@ fn native_driver_scratch_policy_directs_the_worker_to_its_own_spawn_owned_contai
     );
 }
 
+/// The node program [`driven_agent_calls`] runs after its `BODY`, `STEP` and `REPO` constants: the
+/// workflow body, run as the async function body the Workflow runtime runs it as, inside a `vm`
+/// sandbox that exposes only the runtime's `args`, `agent` and `log`. It has no `setTimeout`, so the
+/// driver awaits each worker's `agent()` plainly. Its `agent` answers the repo resolver with
+/// `REPO`, the first step courier with `STEP` and every later one with an empty, done step. It
+/// records each call's label and prompt and prints them, with the driver's return value, as one
+/// JSON object once the driver returns.
+const DRIVER_HARNESS: &str = r#"
+const vm = require("vm");
+const calls = [];
+let steps = 0;
+const sandbox = {
+  args: { repo: REPO },
+  log: () => {},
+  agent: async (prompt, opts) => {
+    calls.push([opts.label, prompt]);
+    if (opts.label === "resolve-repo") return { path: REPO };
+    if (opts.label.startsWith("step#")) return steps++ === 0 ? STEP : { wave: [], done: true };
+    return null;
+  },
+};
+vm.createContext(sandbox);
+vm.runInContext(BODY, sandbox).then(
+  (result) => process.stdout.write(JSON.stringify({ result, calls })),
+  (e) => {
+    process.stderr.write(String((e && e.stack) || e));
+    process.exitCode = 1;
+  },
+);
+"#;
+
+/// Every `agent()` call, as `(label, prompt)` in call order, that the workflow script `workflow`
+/// makes under [`DRIVER_HARNESS`] when its driver loop runs from `repo` and its first step courier
+/// relays `step`. The driver must return `{ waves: 1 }`. Returns `None` when `node` is not on
+/// PATH.
+fn driven_agent_calls(
+    workflow: &str,
+    step: &serde_json::Value,
+    repo: &str,
+) -> Option<Vec<(String, String)>> {
+    let body = workflow.replacen("export const meta = {", "const meta = {", 1);
+    assert_ne!(
+        body, workflow,
+        "the workflow opens with its `export const meta` literal"
+    );
+    let script = format!(
+        "const BODY = {};\nconst STEP = {step};\nconst REPO = {};\n{DRIVER_HARNESS}",
+        serde_json::Value::String(format!("(async () => {{\n{body}\n}})()")),
+        serde_json::Value::String(repo.to_string()),
+    );
+    let out = common::repo::run_node(
+        &script,
+        &[],
+        &format!("the shipped driver must run to its fixpoint relaying {step}"),
+    )?;
+    let out: serde_json::Value = serde_json::from_str(&out).expect("the harness prints JSON");
+    assert_eq!(
+        out["result"],
+        serde_json::json!({ "waves": 1 }),
+        "the driver returns after the one wave it relayed"
+    );
+    Some(
+        serde_json::from_value(out["calls"].clone())
+            .expect("each recorded call is a label and a prompt"),
+    )
+}
+
+/// One row of [`the_shipped_driver_names_the_build_cache_only_through_the_wave_item`]: the
+/// project `setup` scaffolds over a git repository, the spawn its first `rigger step` parks, and
+/// the worktree and build cache that spawn's wave item carries, each a leaf of the default
+/// scratch root, `None` for a spawn that carries none.
+struct CacheWaveRow {
+    name: &'static str,
+    setup: fn(&Path),
+    id: &'static str,
+    worktree: Option<&'static str>,
+    cache: Option<&'static str>,
+}
+
+/// Spec 121, criterion 11 (THE WORKFLOW SCRIPT NAMES NO TOOLCHAIN), across the seam from the
+/// binary's wave to the script's prompts. A real `rigger step` parks one spawn. The workflow
+/// script `rigger setup` installs runs whole under node and relays that step from its courier.
+/// It runs once with the real wave item and once with the same item carrying a probe variable
+/// name and, where the item has a build cache, a probe path. Given a unit's implementer in its
+/// unit worktree, a standalone review's lens in a worktree with no unit sibling, or an
+/// unisolated worker with no worktree, the test checks four things:
+/// - the wave names `CARGO_TARGET_DIR` and the cache path only on the unit's spawn;
+/// - the real worker prompt is the probe prompt with the probe values mapped back;
+/// - the probe prompt, and every courier prompt, never spell the variable;
+/// - once the wave's paths and the repository are stripped, no prompt carries a language marker.
+///
+/// The probe prompt also states each value exactly where it belongs. The variable appears in the
+/// scratch policy's manual-build clause on every spawn. The variable and the path both appear in
+/// the one export line of the BUILD LOCATION block, which only the spawn with a unit sibling
+/// carries.
+#[test]
+fn the_shipped_driver_names_the_build_cache_only_through_the_wave_item() {
+    const CACHE_VAR: &str = "CARGO_TARGET_DIR";
+    const PROBE_VAR: &str = "BUILD_CACHE_PROBE";
+    const PROBE_CACHE: &str = "/build-cache-probe";
+    const ROWS: &[CacheWaveRow] = &[
+        CacheWaveRow {
+            name: "a unit's implementer builds in its unit worktree",
+            setup: |root| write_workflow_fixture(root, &REVIEWLESS_GIT_UNIT_WORKFLOW),
+            id: "solo/implementer#0",
+            worktree: Some("rigger-wt-solo"),
+            cache: Some("cargo-target-solo"),
+        },
+        CacheWaveRow {
+            name: "a standalone review's lens reviews in a worktree with no unit sibling",
+            setup: write_standalone_review_workflow,
+            id: "review/lens:lens#0",
+            worktree: Some("rigger-review-review-0"),
+            cache: None,
+        },
+        CacheWaveRow {
+            name: "an unisolated worker works in the repository with no worktree",
+            setup: |root| write_workflow_fixture(root, &UNBOUNDED_LIVENESS_WORKFLOW),
+            id: "a/implementer#0",
+            worktree: None,
+            cache: None,
+        },
+    ];
+
+    let workflow = installed_rigger_workflow();
+    for row in ROWS {
+        let name = row.name;
+        let dir = temp_git_project_with_commit();
+        let root = dir.path();
+        (row.setup)(root);
+        let step: serde_json::Value =
+            serde_json::from_str(&step_line(root, name)).expect("the step prints JSON");
+        let scratch = common::default_scratch_root(root);
+        let leaf =
+            |part: Option<&str>| part.map(|l| scratch.join(l).to_string_lossy().into_owned());
+        let cache = leaf(row.cache);
+        let item = &step["wave"][0];
+        assert_eq!(
+            step["wave"].as_array().map(Vec::len),
+            Some(1),
+            "{name}: the step parks one spawn; got {step}"
+        );
+        assert_eq!(item["id"], row.id, "{name}: the parked spawn; got {item}");
+        assert_eq!(
+            item["build_cache_env"], CACHE_VAR,
+            "{name}: the wave names the build cache variable; got {item}"
+        );
+        assert_eq!(
+            item["dir"],
+            leaf(row.worktree).unwrap_or_default(),
+            "{name}: the spawn's worktree; got {item}"
+        );
+        assert_eq!(
+            item["cargo_target_dir"],
+            serde_json::json!(cache),
+            "{name}: the spawn's build cache; got {item}"
+        );
+
+        let mut probe = step.clone();
+        probe["wave"][0]["build_cache_env"] = serde_json::json!(PROBE_VAR);
+        if cache.is_some() {
+            probe["wave"][0]["cargo_target_dir"] = serde_json::json!(PROBE_CACHE);
+        }
+        let repo = root.to_str().expect("a UTF-8 fixture root");
+        let Some(real) = driven_agent_calls(&workflow, &step, repo) else {
+            eprintln!("SKIP: no `node` on PATH to run the shipped driver under");
+            return;
+        };
+        let probed = driven_agent_calls(&workflow, &probe, repo).expect("node ran the real wave");
+        for calls in [&real, &probed] {
+            assert_eq!(
+                calls
+                    .iter()
+                    .map(|(label, _)| label.as_str())
+                    .collect::<Vec<_>>(),
+                ["resolve-repo", "step#1", row.id, "step#2"],
+                "{name}: the driver resolves the repo, steps, runs the one worker, then steps to \
+                 its fixpoint"
+            );
+        }
+        let worker = &probed[2].1;
+        assert_eq!(
+            real[2].1,
+            worker
+                .replace(PROBE_VAR, CACHE_VAR)
+                .replace(PROBE_CACHE, cache.as_deref().unwrap_or(PROBE_CACHE)),
+            "{name}: the real worker prompt names the cache exactly where the probe's values sit"
+        );
+        let clause = format!(
+            "export your build cache variable (`{PROBE_VAR}`) to a subdir of that same printed \
+             path first"
+        );
+        assert_eq!(
+            worker.matches(&clause).count(),
+            1,
+            "{name}: the scratch policy names the wave's variable for a manual build:\n{worker}"
+        );
+        assert_eq!(
+            worker
+                .lines()
+                .filter(|l| l.contains(PROBE_CACHE))
+                .collect::<Vec<_>>(),
+            if cache.is_some() {
+                vec![format!("  export {PROBE_VAR}='{PROBE_CACHE}'")]
+            } else {
+                vec![]
+            },
+            "{name}: only a spawn with a unit sibling exports its cache:\n{worker}"
+        );
+        assert_eq!(
+            (
+                worker.matches(PROBE_VAR).count(),
+                worker.matches("BUILD LOCATION").count()
+            ),
+            if cache.is_some() { (2, 1) } else { (1, 0) },
+            "{name}: the variable rides the scratch clause and, with a cache, the export:\n{worker}"
+        );
+        assert_eq!(
+            worker.matches("the moment").count(),
+            0,
+            "{name}: the scratch policy says when its container is reaped without `the \
+             moment`:\n{worker}"
+        );
+        let courier_line = format!("  cd {repo} && rigger step --spec spec.md");
+        for courier in [&probed[1].1, &probed[3].1] {
+            assert_eq!(
+                courier.lines().filter(|l| *l == courier_line).count(),
+                1,
+                "{name}: the step courier runs the bare step command:\n{courier}"
+            );
+        }
+        let paths = [
+            item["dir"].as_str(),
+            item["marker_path"].as_str(),
+            Some(repo),
+        ];
+        for (label, prompt) in &probed {
+            assert_eq!(
+                prompt.matches(CACHE_VAR).count(),
+                0,
+                "{name}: `{label}` spells the build cache variable only through the wave:\n{prompt}"
+            );
+            let bare = paths
+                .iter()
+                .flatten()
+                .filter(|p| !p.is_empty())
+                .fold(prompt.clone(), |text, p| text.replace(p, ""));
+            assert_eq!(
+                common::fixtures::language_marker_hits(&bare),
+                Vec::<&str>::new(),
+                "{name}: `{label}` names no toolchain:\n{bare}"
+            );
+        }
+    }
+}
+
 /// Spec 67, criterion 3 (COURIERS RIDE THE DRIVE LANE): the driver's own step courier - the
 /// ONE spawn site that couriers `rigger step` itself - must group under the dedicated `Drive`
 /// orchestration lane (a meta phase, spec 67 Design), not the retired global `Plan` marker;

@@ -527,24 +527,35 @@ pub fn worker_label(
          {role_attempt}\n{worker_label}\n\
          process.stdout.write(workerLabel(JSON.parse(process.argv[2])) + '\\n')\n"
     );
+    let text = run_node(
+        &script,
+        &[&req],
+        &format!("the real workerLabel must run without throwing on {req}"),
+    )?;
+    Some(text.trim_end_matches('\n').to_string())
+}
 
+/// Run `script` under a real `node` subprocess (the `RIGGER_NODE` override, else `node` on PATH)
+/// with `args` after it, asserting it exits 0 (`what` names the run in the failure); returns its
+/// stdout, or `None` when `node` is not on PATH (missing node is an environment fact, never a test
+/// failure).
+pub fn run_node(script: &str, args: &[&str], what: &str) -> Option<String> {
     let node = std::env::var("RIGGER_NODE").unwrap_or_else(|_| "node".to_string());
     let mut f = tempfile::NamedTempFile::new().unwrap();
     std::io::Write::write_all(&mut f, script.as_bytes()).unwrap();
 
     match std::process::Command::new(&node)
         .arg(f.path())
-        .arg(&req)
+        .args(args)
         .output()
     {
         Ok(out) => {
             assert!(
                 out.status.success(),
-                "the real workerLabel must run without throwing on {req}: {}",
+                "{what}: {}",
                 String::from_utf8_lossy(&out.stderr)
             );
-            let text = String::from_utf8_lossy(&out.stdout).into_owned();
-            Some(text.trim_end_matches('\n').to_string())
+            Some(String::from_utf8_lossy(&out.stdout).into_owned())
         }
         Err(e) => {
             assert!(
