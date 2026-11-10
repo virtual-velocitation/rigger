@@ -157,15 +157,14 @@ gates:                      # the project's verification library, referenced by 
   # commits that landed on the run branch directly are checked too, never only the check-in
   # branch's own commits. `tests/cli.rs` drives both forms on a fixture repository.
   #
-  # Every content gate reads only a diff, never the tree, so each declares `post_merge: false`:
-  # the post-merge re-gate would run it over a landed tree that no longer differs from the base,
-  # where the unit forms diff an empty range and the `-spec` forms re-read the diff the check-in
-  # stage's own run of the gate already checked. The implement and check-in runs, before the
-  # merge, still run them.
+  # The unit forms (`style`, `no-os-kill`) read only the unit's own diff, which is empty once the
+  # unit has landed, so each declares `post_merge: false`: the post-merge re-gate would check
+  # nothing. The `-spec` forms stay in the post-merge re-gate: they read the whole spec diff from
+  # the run base, so after landing they are the one check of content a merge resolution introduced.
   style:           { run: "sh .rigger/gates/content.sh style",                         kind: core, post_merge: false }
   no-os-kill:      { run: "sh .rigger/gates/content.sh no-os-kill",                    kind: core, post_merge: false }
-  style-spec:      { run: 'sh .rigger/gates/content.sh style "$RIGGER_RUN_BASE"',      kind: core, post_merge: false }
-  no-os-kill-spec: { run: 'sh .rigger/gates/content.sh no-os-kill "$RIGGER_RUN_BASE"', kind: core, post_merge: false }
+  style-spec:      { run: 'sh .rigger/gates/content.sh style "$RIGGER_RUN_BASE"',      kind: core }
+  no-os-kill-spec: { run: 'sh .rigger/gates/content.sh no-os-kill "$RIGGER_RUN_BASE"', kind: core }
   # The boundary gate (workspace split, step 0): Clean Architecture made mechanical.
   # `tests/boundary_audit.rs` fails when a workspace crate depends outward (the ring table in
   # the test), when production code constructs an adapter (a store, a graph, an agent driver)
