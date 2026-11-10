@@ -317,6 +317,29 @@ mod tests {
             format!("the task{}", cli_progress_frame("u/implementer#0"))
         );
     }
+
+    /// This host's `framed` over the placeholder fixture is the progress frame's groups with
+    /// `CLI_PROGRESS_VERB` filled into their `{report}` slot.
+    #[test]
+    fn framed_is_the_progress_groups_with_the_bash_verb_in_their_report_slot() {
+        use crate::driver::tests::framed_groups;
+        use crate::prompt_surface::prompt_groups;
+        use crate::prompt_surface_fixtures::{assert_renders, rendered_groups};
+        let opts = SpawnOpts {
+            id: "{id}".to_string(),
+            ..SpawnOpts::new(test_spawn_host())
+        };
+        let verb = rendered_groups(
+            prompt_groups(),
+            "driver::cli::framed",
+            &["CLI_PROGRESS_VERB"],
+        );
+        assert_renders(
+            "the cli host's frame",
+            &framed("{task}", &opts),
+            &framed_groups(&verb),
+        );
+    }
     use crate::test_support::cli_progress_frame;
     #[cfg(unix)]
     use crate::test_support::{captured, PROMPT_CAPTURE_DIR};

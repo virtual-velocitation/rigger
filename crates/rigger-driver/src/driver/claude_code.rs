@@ -3394,6 +3394,75 @@ mod tests {
         );
     }
 
+    /// This host's two surfaces over the placeholder fixture, one row per branch: `framed` is the
+    /// progress frame's groups with `STREAM_PROGRESS_VERB` filled into their `{report}` slot, its
+    /// `{tool}` slot holding the progress tool, and the resume note is `RESUME_NOTE` with the
+    /// branch's clause filled into its `{why}` slot: the restart with no class, the released hold
+    /// (standing the fixture's 42 seconds) after a hold, the class alone otherwise.
+    #[test]
+    fn the_headless_host_texts_are_their_groups_on_each_branch() {
+        use crate::driver::tests::framed_groups;
+        use crate::eventstore::ExpectedRevision;
+        use crate::prompt_surface::prompt_groups;
+        use crate::prompt_surface_fixtures::{assert_renders, rendered_groups};
+        use crate::test_support::{held_event, released_event};
+        use rigger_domain::prompt_surface::fill;
+        let group = |surface: &str, name: &str| rendered_groups(prompt_groups(), surface, &[name]);
+        let note = |clause: &str, slots: &[(&str, &str)]| {
+            let surface = "driver::claude_code::interruption_note";
+            let why = fill(&group(surface, clause), slots);
+            fill(&group(surface, "RESUME_NOTE"), &[("why", &why)])
+        };
+        let hold_sink = Store::open(":memory:").unwrap();
+        run_store::ensure_started(&hold_sink, &["c".to_string()]).unwrap();
+        let hold = [
+            held_event("{reason}", run::HOLD_BY_HOST),
+            released_event(run::HOLD_BY_HOST, 42),
+        ];
+        hold_sink
+            .append(STREAM, ExpectedRevision::Any, &hold)
+            .unwrap();
+        let held = Driver {
+            hold_sink: Some(&hold_sink),
+            ..Driver::default()
+        };
+        let classed = SpawnLaunched {
+            class: Some("{class}".to_string()),
+            revision: Some(0),
+            ..SpawnLaunched::default()
+        };
+        let verb = fill(
+            &group("driver::claude_code::framed", "STREAM_PROGRESS_VERB"),
+            &[("tool", SPAWN_PROGRESS_TOOL)],
+        );
+        let cases = [
+            ("the frame", framed("{task}"), framed_groups(&verb)),
+            (
+                "a supervisor restart",
+                Driver::default()
+                    .interruption_note(&SpawnLaunched::default())
+                    .unwrap(),
+                note("RESUME_RESTARTED", &[]),
+            ),
+            (
+                "a released hold",
+                held.interruption_note(&classed).unwrap(),
+                note(
+                    "RESUME_HELD",
+                    &[("held_for_s", "42"), ("reason", "{reason}")],
+                ),
+            ),
+            (
+                "a class with no release",
+                Driver::default().interruption_note(&classed).unwrap(),
+                note("RESUME_CLASS", &[("class", "{class}")]),
+            ),
+        ];
+        for (case, render, expected) in cases {
+            assert_renders(case, &render, &expected);
+        }
+    }
+
     #[test]
     fn a_launch_asked_to_resume_continues_the_recorded_session_with_the_resume_task() {
         // Both session hosts share the one session authority (`LaunchSession`): a launch whose
