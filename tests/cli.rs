@@ -7098,8 +7098,9 @@ fn run_hosts_its_agents_granting_each_launch_its_bound_tools() {
         serde_json::json!({
             "command": std::fs::canonicalize(rigger_bin()).unwrap(),
             "args": ["mcp", "--spawn", "a/implementer#0"],
+            "alwaysLoad": true,
         }),
-        "the spawn's bound server runs the running executable"
+        "the spawn's bound server runs the running executable, its tools loaded up front"
     );
 }
 

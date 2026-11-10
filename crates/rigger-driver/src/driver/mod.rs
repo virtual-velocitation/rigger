@@ -571,4 +571,35 @@ mod tests {
             );
         }
     }
+
+    /// Whichever host launches the spawn, its one MCP server is marked to load every tool it lists
+    /// into the session's prompt up front, so the graph tools are callable from the first turn
+    /// instead of sitting behind the host's tool search; the mark sits on rigger's own entry, the
+    /// only server the spawn configures.
+    #[test]
+    fn every_hosts_spawn_loads_the_rigger_tools_up_front() {
+        let rows: [(&str, &[&str]); 2] = [
+            ("the stream-json host's spawn-bound server", &["mcp", "--spawn", "u/implementer#0"]),
+            ("the cli host's read-only server", &["mcp"]),
+        ];
+        for (name, mcp_args) in rows {
+            let args = spawn_config_args(
+                &AgentDef::default(),
+                "rigger",
+                mcp_args,
+                "",
+                &test_spawn_host(),
+            )
+            .unwrap();
+            let at = args.iter().position(|a| a == "--mcp-config").unwrap();
+            let cfg: serde_json::Value = serde_json::from_str(&args[at + 1]).unwrap();
+            let servers = cfg["mcpServers"].as_object().unwrap();
+            assert_eq!(servers.len(), 1, "{name}: one server alone: {cfg}");
+            assert_eq!(
+                servers[hooks::MCP_SERVER_NAME]["alwaysLoad"],
+                serde_json::json!(true),
+                "{name}: rigger's tools load up front: {cfg}"
+            );
+        }
+    }
 }

@@ -185,6 +185,12 @@ fn assert_mcp_config_is_the_installed_server(argv: &[String]) {
         serde_json::from_slice::<Value>(&installed).unwrap(),
         "the spawn's MCP config is the installer-built spawn-bound server"
     );
+    assert_eq!(
+        flag_json(argv, "--mcp-config")["mcpServers"]["rigger"]["alwaysLoad"],
+        Value::Bool(true),
+        "the spawn loads rigger's tools into its prompt up front, never behind the host's tool \
+         search"
+    );
     assert!(
         argv.iter().any(|a| a == "--strict-mcp-config"),
         "only the host's MCP config applies: {argv:?}"

@@ -221,8 +221,8 @@ fn a_critique_launch_carries_the_spawn_hooks_on_its_own_settings() {
         let mcp: Value = serde_json::from_str(flag_value(&argv, "--mcp-config")).unwrap();
         assert_eq!(
             mcp["mcpServers"]["rigger"],
-            serde_json::json!({"command": bin, "args": ["mcp", "--spawn", spawn]}),
-            "the critic's spawn-bound server runs the running executable"
+            serde_json::json!({"command": bin, "args": ["mcp", "--spawn", spawn], "alwaysLoad": true}),
+            "the critic's spawn-bound server runs the running executable, its tools loaded up front"
         );
         let settings: Value = serde_json::from_str(flag_value(&argv, "--settings")).unwrap();
         assert_carries_spawn_hooks(&settings, bin.to_str().unwrap(), &spawn, &roots, grep_guard);
