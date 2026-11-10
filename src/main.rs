@@ -312,10 +312,12 @@ rigger symbols-index [dir]  build + persist the structural symbol index over [di
 process determinism harness for the symbols grounder (spec 15)\n  \
 rigger emit <type> <json>   append {{type, data:<json>}} to the event store and fold\n                              \
 it into the context graph (the CLI form of rigger_emit)\n  \
-rigger gate <id>            run declared gate <id> on this checkout's committed tree\n                              \
-through the driver's gate path and record its verdict; the\n                              \
-driver reuses a green one for that commit instead of\n                              \
-running the gate again. Refuses uncommitted changes\n  \
+rigger gate <id>            ask the driver serving this run to run declared gate <id>\n                              \
+on this unit worktree's committed tree; it signs and\n                              \
+records the verdict and reuses a green one for that commit\n                              \
+instead of running the gate again. With no driver serving,\n                              \
+runs the gate for information only and records nothing.\n                              \
+Refuses uncommitted changes\n  \
 rigger progress <id> <act>  record one live progress line for spawn <id> to the\n                              \
 separate .rigger/progress.db (never the run stream), so an\n                              \
 observer can see what a working agent is doing between\n                              \
