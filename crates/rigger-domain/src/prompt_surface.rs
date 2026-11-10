@@ -117,7 +117,7 @@ pub fn prompt_groups() -> &'static [Group] {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::prompt_surface_fixtures::assert_registry;
+    use crate::prompt_surface_fixtures::registry_test;
 
     /// THE CLASS TABLE's domain rows: each const and the class its doc comment opens with.
     const CLASS_TABLE: &[(&str, &str)] = &[
@@ -128,16 +128,10 @@ mod tests {
         ("INSTRUCTIONS_HEADING", "FRAMING"),
     ];
 
-    /// Every domain prompt text is one const whose doc comment opens with THE CLASS TABLE's
-    /// class, each const is a group's text, and no two groups share a surface and a name.
-    #[test]
-    fn every_domain_prompt_text_is_a_group_of_its_class_table_class() {
-        assert_registry(
-            include_str!("prompt_surface.rs"),
-            prompt_groups(),
-            CLASS_TABLE,
-        );
-    }
+    registry_test!(
+        every_domain_prompt_text_is_a_group_of_its_class_table_class,
+        CLASS_TABLE
+    );
 
     /// One `fill` case: its name, the template, the slots passed and the filled text.
     type FillCase<'a> = (&'a str, &'a str, &'a [(&'a str, &'a str)], &'a str);

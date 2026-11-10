@@ -1,7 +1,7 @@
 //! The checks every crate's `prompt_surface` tests share (spec 121, criterion 16): the registry
-//! test over a module's source and its groups, and the concatenation test's group pick and
-//! whitespace-normalized comparison. Each reads only the source text and the groups its caller
-//! passes, never a file.
+//! test over a module's source and its groups, which one macro generates in each crate, and the
+//! concatenation test's group pick and whitespace-normalized comparison. Each reads only the
+//! source text and the groups its caller passes, never a file at run time.
 
 use rigger_domain::prompt_surface::Group;
 
@@ -51,6 +51,27 @@ pub fn assert_registry(source: &str, groups: &[Group], pinned: &[(&str, &str)]) 
     );
     assert_groups_name_the_consts(source, groups);
 }
+
+/// A crate's registry test, `#[test] fn $name`, invoked in its `prompt_surface` module's tests:
+/// [`assert_registry`] over that module's own source (`include_str!` resolves against the file
+/// that invokes the macro), its `prompt_groups()` and `$pinned`, the crate's rows of THE CLASS
+/// TABLE.
+macro_rules! registry_test {
+    ($name:ident, $pinned:expr) => {
+        /// Every prompt text of this crate is one const whose doc comment opens with THE CLASS
+        /// TABLE's class, each const is a group's text, and no two groups share a surface and a
+        /// name.
+        #[test]
+        fn $name() {
+            $crate::prompt_surface_fixtures::assert_registry(
+                include_str!("prompt_surface.rs"),
+                prompt_groups(),
+                $pinned,
+            );
+        }
+    };
+}
+pub(crate) use registry_test;
 
 /// `groups` name exactly the `pub const`s of the module `source`, so every const is some group's
 /// text and every group's text is a const, and no two groups share a surface and a name.
