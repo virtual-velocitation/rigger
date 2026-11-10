@@ -4138,6 +4138,45 @@ mod tests {
         assert_eq!(v2["mcpServers"]["rigger"]["command"], "rigger");
     }
 
+    /// The operator's rigger entry loads with every session (`alwaysLoad`), so its tools are in
+    /// hand without a search: a fresh install writes it, and an entry missing it is refreshed in
+    /// place while every other server and top-level key survives; a rerun then changes nothing.
+    #[test]
+    fn install_operator_mcp_writes_always_load_and_refreshes_an_entry_without_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let mcp_path = root.join(".mcp.json");
+        let read = || -> serde_json::Value {
+            serde_json::from_str(&std::fs::read_to_string(&mcp_path).unwrap()).unwrap()
+        };
+
+        install_operator_mcp(root).unwrap();
+        assert_eq!(read()["mcpServers"]["rigger"][hooks::MCP_ALWAYS_LOAD], true);
+
+        std::fs::write(
+            &mcp_path,
+            r#"{"mcpServers":{"rigger":{"command":"rigger","args":["mcp"]},"other":{"command":"o"}},"top":1}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            [
+                install_operator_mcp(root).unwrap(),
+                install_operator_mcp(root).unwrap()
+            ],
+            [InstallOutcome::Refreshed, InstallOutcome::AlreadyCurrent]
+        );
+        assert_eq!(
+            read(),
+            serde_json::json!({
+                "mcpServers": {
+                    "rigger": {"command": "rigger", "args": ["mcp"], hooks::MCP_ALWAYS_LOAD: true},
+                    "other": {"command": "o"}
+                },
+                "top": 1
+            })
+        );
+    }
+
     /// `install_lookup_hook` installs the graph-first lookup hook when the workflow declares
     /// `defaults.grep_guard` and removes only rigger's own entry when it does not, with the same
     /// three-state contract every other `rigger setup` install artifact has: an absent file is
