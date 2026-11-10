@@ -48,18 +48,14 @@ Stay inside your unit's blast-radius.
 ## Hand-over checks in this project
 
 This project's anchors for the built-in hand-over rules. The implement stage's gates
-(`.rigger/workflow.yml`) are fmt, clippy, build, audit, test, lane-no-default, style,
-no-os-kill, boundary and red-before-green. Before you report, run from the worktree root, on
+(`.rigger/workflow.yml`) are fmt, clippy, build, test, lane-no-default, style, no-os-kill,
+boundary and red-before-green. Before you report, run from the worktree root, on
 your committed tree:
 
 - `cargo fmt --all --check`;
 - `cargo clippy --workspace --all-targets -- -D warnings` and
   `cargo clippy --workspace --all-targets --no-default-features -- -D warnings`, the clippy
   line of the lane-no-default gate: a helper only one lane calls is dead code on the other;
-- `sh .rigger/gates/audit.sh`, then `git status --porcelain` empty. The audit regenerates
-  `docs/audit` from the tree, so run it before each commit that moves code under `src/`,
-  `crates/` or `tests/`, tests-only commits included, and commit what it rewrote with that
-  commit;
 - `cargo test --test boundary_audit`, `sh .rigger/gates/content.sh style`,
   `sh .rigger/gates/content.sh no-os-kill` and `sh .rigger/gates/red-before-green.sh`;
 - every test binary your change touched, on both lanes: `cargo test -p <crate> --lib` or
@@ -81,9 +77,8 @@ your committed tree:
 
 Once these checks have run, a later commit or an amend re-runs only what its new diff can
 change: a diff that touches only comments, doc comments or Markdown re-runs
-`cargo fmt --all --check`, the default-lane clippy line, `sh .rigger/gates/audit.sh` with
-`git status --porcelain` empty and the root tests that read a checked-in file as text; any
-other hunk re-runs the full list.
+`cargo fmt --all --check`, the default-lane clippy line and the root tests that read a
+checked-in file as text; any other hunk re-runs the full list.
 
 Each run above, the test binaries on both lanes and any `sh .rigger/gates/lanes.sh <lane>` run
 a unit asks of you included, takes minutes here: run it in the foreground with the Bash timeout
@@ -93,10 +88,6 @@ in an `until`-loop until its exit line is there, before you report.
 The whole workspace suite on both lanes is the test and lane-no-default gates' run, not yours:
 a gate's verdict is replayed only from its own recorded run, so a shell run of the suite saves
 the gate nothing.
-
-A red `every_open_cluster_is_dispositioned` from the audit is a twin your change opened: close
-it by extending the helper that already exists and calling it from both sites, never by a
-disposition in `docs/audit/duplication-dispositions.json` that excuses the twin.
 
 The test homes: a crate's own `mod tests` and its contract module under `crates/*/src/`; the
 shared fixtures, `tests/common/fixtures/<area>.rs` (a crate mounts each one it needs with

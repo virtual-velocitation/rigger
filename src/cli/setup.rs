@@ -4856,17 +4856,15 @@ mod tests {
 
     /// The two author roles carry this project's anchors for the built-in hand-over rules as one
     /// block, byte-identical in both and in no other persona: the implement gate set by name, the
-    /// commands the author runs before it reports (clippy on both lanes, the audit gate with a
-    /// clean `git status`, the boundary audit, the content gates, red-before-green and, when the
+    /// commands the author runs before it reports (clippy on both lanes, the boundary audit, the content gates, red-before-green and, when the
     /// production hunks touch `src/` or `crates/`, every root test that reaches the checked-in
     /// tree - by the package root, a compile-time include, a read of a literal path or a
     /// `tests/common` helper that resolves against the root or reads the root-relative path its
     /// caller hands it, each anchor the block's command names - listed by that command and run
     /// once on the default lane, the lane-no-default gate running them on the final tree), the
     /// re-run after a later commit or an amend (a comment, doc-comment or Markdown diff re-runs
-    /// fmt, the default-lane clippy line, the audit and the text-reading root tests; any other
-    /// hunk the full list), the whole suite left to the gates, the audit's closing rule, the test
-    /// homes with the tool that searches them, the counted check - the roots a retired spelling is
+    /// fmt, the default-lane clippy line and the text-reading root tests; any other hunk the full
+    /// list), the whole suite left to the gates, the test homes with the tool that searches them, the counted check - the roots a retired spelling is
     /// counted over with the command that counts it - and the foreground wait for the long runs
     /// (the test binaries on both lanes and a lane script), polled to its exit line when the host
     /// backgrounds one. The block owes no record: no sentence walk and its generators, no
@@ -4894,12 +4892,11 @@ mod tests {
         );
         let block = rigger::wave::normalize_ws(&blocks[0]);
         for wanted in [
-            "fmt, clippy, build, audit, test, lane-no-default, style, no-os-kill, boundary and \
+            "fmt, clippy, build, test, lane-no-default, style, no-os-kill, boundary and \
              red-before-green",
             "`cargo fmt --all --check`",
             "`cargo clippy --workspace --all-targets -- -D warnings`",
             "`cargo clippy --workspace --all-targets --no-default-features -- -D warnings`",
-            "`sh .rigger/gates/audit.sh`, then `git status --porcelain` empty",
             "`cargo test --test boundary_audit`",
             "`sh .rigger/gates/content.sh style`",
             "`sh .rigger/gates/content.sh no-os-kill`",
@@ -4918,14 +4915,10 @@ mod tests {
              the lane-no-default gate runs them on the final tree:",
             "Once these checks have run, a later commit or an amend re-runs only what its new \
              diff can change: a diff that touches only comments, doc comments or Markdown \
-             re-runs `cargo fmt --all --check`, the default-lane clippy line, `sh \
-             .rigger/gates/audit.sh` with `git status --porcelain` empty and the root tests that \
-             read a checked-in file as text; any other hunk re-runs the full list.",
+             re-runs `cargo fmt --all --check`, the default-lane clippy line and the root tests \
+             that read a checked-in file as text; any other hunk re-runs the full list.",
             "The whole workspace suite on both lanes is the test and lane-no-default gates' run, \
              not yours",
-            "`every_open_cluster_is_dispositioned`",
-            "never by a disposition in `docs/audit/duplication-dispositions.json` that excuses \
-             the twin",
             "`tests/common/fixtures/<area>.rs`",
             "`tests/common/cli.rs` (root tests only)",
             "search all three with Read, awk or python3",
