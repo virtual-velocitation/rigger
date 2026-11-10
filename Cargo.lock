@@ -2052,6 +2052,7 @@ dependencies = [
  "rigger-process",
  "rigger-store-sqlite",
  "rigger-worktree-git",
+ "ring",
  "serde",
  "serde_json",
  "serde_yaml",
