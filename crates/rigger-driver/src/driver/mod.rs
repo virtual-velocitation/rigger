@@ -13,6 +13,8 @@ use crate::agent::{Error, SpawnHost, SpawnOpts};
 use crate::config::AgentDef;
 use crate::hooks;
 use crate::progress::SpawnLaunched;
+use crate::prompt_surface::{PROGRESS_FRAME, PROGRESS_LINE};
+use rigger_domain::prompt_surface::fill;
 
 pub mod claude_code;
 pub mod cli;
@@ -67,7 +69,8 @@ pub(crate) fn allowed_tools_args(
 /// its arguments, completing the sentence "record a progress line ...". When to report is the
 /// `communication` built-in's.
 pub(crate) fn progress_framed(task: &str, report: &str) -> String {
-    format!("{task}\n\n--- rigger driver ---\nLIVE PROGRESS: record a progress line {report}.")
+    let frame = fill(PROGRESS_FRAME, &[("task", task)]);
+    frame + &fill(PROGRESS_LINE, &[("report", report)])
 }
 
 /// One composed configuration as the inline JSON argument its flag takes, or the error naming

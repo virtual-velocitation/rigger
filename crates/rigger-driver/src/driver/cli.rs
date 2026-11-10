@@ -21,6 +21,8 @@ use crate::driver::{
     allowed_tools_args, bin_or_path_default, harness_env, progress_framed, spawn_config_args,
     system_prompt_file, LaunchSession, SystemPromptFile, MISSING_SESSION,
 };
+use crate::prompt_surface::CLI_PROGRESS_VERB;
+use rigger_domain::prompt_surface::fill;
 
 /// Driver spawns agents via the `claude` CLI.
 pub struct Driver {
@@ -144,11 +146,7 @@ fn session_missing(out: &Output) -> bool {
 /// parked frontier entry, so the current consolidator does not surface it - the emit is recorded
 /// and future-proof.)
 fn framed(task: &str, opts: &SpawnOpts) -> String {
-    let report = format!(
-        "by running (Bash): rigger progress '{}' '<one line: what you just did>'",
-        opts.id
-    );
-    progress_framed(task, &report)
+    progress_framed(task, &fill(CLI_PROGRESS_VERB, &[("id", &opts.id)]))
 }
 
 impl AgentDriver for Driver {
