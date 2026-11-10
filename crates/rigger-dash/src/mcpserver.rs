@@ -2708,6 +2708,47 @@ mod tests {
         shown_graph_answer(graph, json!({"around": seed, "depth": 1}))
     }
 
+    /// The MCP `show` of an id the graph no longer holds falls back to the run store's log, as the
+    /// CLI's does: the record's site as a graph node's, with the note naming where it was read
+    /// from; an id the log does not hold either still answers none.
+    #[test]
+    fn rigger_graph_show_reads_a_record_the_graph_no_longer_holds_from_the_log() {
+        let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
+        let store = Store::open(":memory:").unwrap();
+        let decision = json!({"id": "d-old", "summary": "chose X", "governs": ["a.rs", "b.rs"]});
+        store
+            .append(
+                "run",
+                ExpectedRevision::Any,
+                &[Event::new(
+                    crate::contextgraph::TYPE_DECISION_MADE,
+                    serde_json::to_vec(&decision).unwrap(),
+                )],
+            )
+            .unwrap();
+        let driver = Driver::new();
+        let grounder = crate::grounder::Nop;
+        let server = Server::new(&driver, &store, "run")
+            .with_graph(&graph)
+            .with_grounder(Ok(&grounder));
+        let show = |id: &str| {
+            call(&server, &tools_call("rigger_graph", json!({"show": id})))["result"]
+                ["structuredContent"]
+                .clone()
+        };
+        assert_eq!(
+            [show("d-old"), show("nope")],
+            [
+                json!({
+                    "status": "one",
+                    "site": {"id": "d-old", "kind": "decision", "degree": 2, "summary": "chose X"},
+                    "note": "read from the event log: the graph no longer holds this record",
+                }),
+                json!({"status": "none"}),
+            ]
+        );
+    }
+
     /// Spec 119, SHOW IS ONE RENDERER: the MCP `show` gives each node by exact id as its `id` and
     /// the `site_fields` entries as keys - `line` and `degree` JSON numbers, a `doc` holding a
     /// newline verbatim, an empty `lang` and the `proven_by` attr giving no key, an empty `kind`
