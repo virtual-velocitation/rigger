@@ -1248,7 +1248,10 @@ mod tests {
         ] {
             let emitted = call(
                 &server,
-                &tools_call("rigger_emit", json!({"type": "ReviewFinding", "data": data})),
+                &tools_call(
+                    "rigger_emit",
+                    json!({"type": "ReviewFinding", "data": data}),
+                ),
             );
             assert!(emitted.get("error").is_none(), "{emitted}");
         }

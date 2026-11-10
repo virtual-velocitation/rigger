@@ -532,8 +532,9 @@ mod tests {
     }
 
     /// A record a superseded run left in the log reads back by its id as the show surfaces print
-    /// a graph node: its kind, the distinct references it names as its degree, its summary and its
-    /// reviewer; a restated id reads as its latest record, and an id no record holds reads as none.
+    /// a graph node: its kind, the distinct locations it names (a lesson's or finding's `about`
+    /// and `file`, a decision's `governs`) as its degree, and the attrs the fold gives it; a
+    /// restated id reads as its latest record, and an id no record holds reads as none.
     #[test]
     fn site_of_reads_a_record_by_id_from_the_log() {
         use serde_json::json;
@@ -557,6 +558,17 @@ mod tests {
                 json!({"id": "d-old", "summary": "chose X", "governs": ["a.rs"]}),
                 &[],
             ),
+            stamped(
+                contextgraph::TYPE_REVIEW_FINDING,
+                json!({"id": "f-file", "by": "adversary", "unit": "u1", "summary": "at a line",
+                       "file": "c.rs:9"}),
+                &[],
+            ),
+            stamped(
+                contextgraph::TYPE_LESSON_LEARNED,
+                json!({"id": "l-old", "summary": "learned", "about": ["a.rs"], "file": "d.rs"}),
+                &[],
+            ),
             crate::test_support::run_started("r2", &[]),
         ];
         store.append("run", ExpectedRevision::Any, &events).unwrap();
@@ -576,7 +588,7 @@ mod tests {
             })
         };
         assert_eq!(
-            ["f-old", "d-old", "nope"].map(|id| sidecar.site_of(id)),
+            ["f-old", "d-old", "f-file", "l-old", "nope"].map(|id| sidecar.site_of(id)),
             [
                 site(
                     "f-old",
@@ -589,6 +601,22 @@ mod tests {
                     contextgraph::KIND_DECISION,
                     1,
                     &[("summary", "chose X")]
+                ),
+                site(
+                    "f-file",
+                    contextgraph::KIND_FINDING,
+                    1,
+                    &[
+                        ("by", "adversary"),
+                        ("summary", "at a line"),
+                        ("unit", "u1")
+                    ]
+                ),
+                site(
+                    "l-old",
+                    contextgraph::KIND_LESSON,
+                    2,
+                    &[("summary", "learned")]
                 ),
                 None,
             ]
