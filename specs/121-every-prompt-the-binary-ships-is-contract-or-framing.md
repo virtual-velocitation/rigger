@@ -1099,6 +1099,10 @@ relaunches once with `--rebase-definition` after the key edit and the `rigger se
 | moved sentences | switched off | a consumer switching `working-discipline` or `communication` off removes the moved sentences with the rest: intended |
 | moved sentences | MARKERS | each moved sentence carries no MARKERS hit, so the MARKERS test over the shipped texts stays green |
 
+By a later operator decision on graph adoption, the grep guard's denial names the graph call, and
+the graph tool description and the lookup pointer each carry one worked example; criterion 2's
+exact-message pin and the method cut hold everywhere except those three texts.
+
 ## Notes (non-criteria)
 
 INTERIM SENTENCES: a doc or handbook sentence a later criterion makes false is left by an earlier
