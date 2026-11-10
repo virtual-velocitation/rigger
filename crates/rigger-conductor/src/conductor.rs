@@ -24609,6 +24609,136 @@ mod tests {
         );
     }
 
+    /// A gate declared `post_merge: false` judges only the unit's own diff, which a landed tree
+    /// no longer differs from: GIVEN a merging unit listing that gate and an ordinary one,
+    /// WHEN it lands, THEN the pre-merge pass runs both, the post-merge pass runs only the
+    /// ordinary one, and the declared gate's skip is logged with its reason, never silent.
+    #[test]
+    fn a_gate_declared_not_post_merge_is_skipped_after_the_landing_and_logged() {
+        let plain = "{ run: 'true', kind: core }";
+        for (label, scoped, scoped_skipped) in [
+            (
+                "declared false",
+                "{ run: 'true', kind: core, post_merge: false }",
+                true,
+            ),
+            (
+                "declared true",
+                "{ run: 'true', kind: core, post_merge: true }",
+                false,
+            ),
+            ("undeclared", plain, false),
+        ] {
+            let repo = temp_git_project_with_commit();
+            let mut cfg = Config::default();
+            cfg.agents.insert("worker".into(), agent("worker"));
+            for (id, yaml) in [("scoped", scoped), ("plain", plain)] {
+                let def: config::Gate = config::parse_yaml_naming_unknown_keys(yaml)
+                    .unwrap_or_else(|e| panic!("{label}: parse {yaml}: {e}"));
+                cfg.workflow.gates.insert(id.into(), def);
+            }
+            cfg.workflow.stages.insert(
+                "unit-a".into(),
+                Stage {
+                    name: "unit-a".into(),
+                    agent: "worker".into(),
+                    gates: vec!["scoped".into(), "plain".into()],
+                    on_pass: "merge".into(),
+                    ..Default::default()
+                },
+            );
+            let driver = Stub {
+                commits_by_agent: HashMap::from([(
+                    "worker".to_string(),
+                    vec![("a.rs".to_string(), "// a\n".to_string())],
+                )]),
+                ..Stub::new()
+            };
+            let st = Store::open(":memory:").unwrap();
+            let deps = Deps {
+                repo: repo.path().to_str().unwrap().to_string(),
+                ..stub_deps(&st, &driver, Vec::new())
+            };
+
+            run_isolated(&cfg, &deps).unwrap();
+
+            let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
+            let landed = events
+                .iter()
+                .position(|e| {
+                    e.type_ == ledger::TYPE_UNIT_STATUS
+                        && serde_json::from_slice::<Value>(&e.data).unwrap()["status"]
+                            == json!(STATUS_INTEGRATE_LANDED)
+                })
+                .unwrap_or_else(|| panic!("{label}: the unit records its landing"));
+            let verdicts = |range: &[Event]| -> Vec<Value> {
+                range
+                    .iter()
+                    .filter(|e| e.type_ == contextgraph::TYPE_GATE_VERDICT)
+                    .map(|e| serde_json::from_slice::<Value>(&e.data).unwrap())
+                    .collect()
+            };
+            let ran_before: Vec<(String, bool)> = verdicts(&events[..landed])
+                .iter()
+                .map(|v| {
+                    (
+                        v["gate"].as_str().unwrap().to_string(),
+                        v["skipped"] == json!(true),
+                    )
+                })
+                .collect();
+            assert_eq!(
+                ran_before,
+                [("scoped".to_string(), false), ("plain".to_string(), false)],
+                "{label}: the pre-merge pass runs both gates"
+            );
+            let after = verdicts(&events[landed..]);
+            let seen_after: Vec<(String, bool)> = after
+                .iter()
+                .map(|v| {
+                    (
+                        v["gate"].as_str().unwrap().to_string(),
+                        v["skipped"] == json!(true),
+                    )
+                })
+                .collect();
+            assert_eq!(
+                seen_after,
+                [
+                    ("scoped".to_string(), scoped_skipped),
+                    ("plain".to_string(), false)
+                ],
+                "{label}: the post-merge pass skips exactly the gate declared not post-merge"
+            );
+            if scoped_skipped {
+                let reason = after[0]["evidence"].as_str().unwrap();
+                assert!(
+                    reason.contains("post_merge: false"),
+                    "{label}: the skip names the declaration it follows: {reason}"
+                );
+                assert_eq!(
+                    after[0]["pass"],
+                    json!(true),
+                    "{label}: a skip is no failure"
+                );
+            }
+            let keys: Vec<&String> = events[landed..]
+                .iter()
+                .filter(|e| e.type_ == contextgraph::TYPE_GATE_VERDICT)
+                .filter_map(|e| e.meta.get(META_REPLAY_KEY))
+                .collect();
+            assert_eq!(
+                keys.iter()
+                    .filter(
+                        |k| **k == &gate_key(GateKey::PostMergeVerdict, "unit-a", 0, 0, "scoped")
+                    )
+                    .count(),
+                usize::from(!scoped_skipped),
+                "{label}: only a gate that ran records a post-merge verdict"
+            );
+        }
+    }
+
     /// Item I (A LANDING RECORDS EVERY PATH IT LANDED): GIVEN a reviewed unit whose landing
     /// conflicts on a registered regenerable path whose command also writes a second file, WHEN
     /// the unit lands through that regeneration commit, THEN the second file reaches `FileTouched`

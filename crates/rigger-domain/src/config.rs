@@ -1787,6 +1787,26 @@ mod tests {
         parse_yaml_naming_unknown_keys(yaml).unwrap_or_else(|e| panic!("parse {yaml}: {e}"))
     }
 
+    /// A gate is re-run on the merged tree unless its definition says `post_merge: false`.
+    #[test]
+    fn a_gate_runs_post_merge_unless_it_declares_post_merge_false() {
+        for (yaml, post_merge) in [
+            ("{ run: x }", true),
+            ("{ run: x, kind: core }", true),
+            ("{ run: x, post_merge: true }", true),
+            ("{ run: x, post_merge: false }", false),
+            ("{ run: x, inputs: [src/**], post_merge: false }", false),
+        ] {
+            let gate: Gate = parse_yaml_naming_unknown_keys(yaml)
+                .unwrap_or_else(|e| panic!("parse {yaml}: {e}"));
+            assert_eq!(gate.post_merge, post_merge, "{yaml}");
+        }
+        assert!(
+            Gate::default().post_merge,
+            "a defaulted gate runs post-merge, as a parsed one without the key does"
+        );
+    }
+
     #[test]
     fn a_map_form_panel_steps_through_its_set_lenses_adversary_and_adjudicator_in_that_order() {
         let ab = || ReviewStep::Lenses(vec!["a".into(), "b".into()]);
