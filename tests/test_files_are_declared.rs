@@ -1,7 +1,8 @@
 //! With `autotests = false`, a `tests/*.rs` file nobody declares is never compiled: its tests
 //! never run while every gate stays green. Every top-level test file is exactly one of a module
 //! of the consolidated `all` executable (`mod <name>;` in `tests/all.rs`, cfg-gated ones
-//! included) or the `path` of a `[[test]]` entry in the root `Cargo.toml`.
+//! included) or the file of a `[[test]]` entry in the root `Cargo.toml` (its `path`, else cargo's
+//! default `tests/<name>.rs`), and a `[[test]]` entry is named after its file.
 
 use std::collections::BTreeSet;
 
@@ -9,11 +10,10 @@ use crate::common::repo::{repo_root, repo_text};
 
 /// The modules `tests/all.rs` declares that resolve to a file of their own; a `#[path]` module
 /// is a helper under `tests/common`, not a test file.
-fn modules_of_all() -> BTreeSet<String> {
+fn modules_of(all_rs: &str) -> BTreeSet<String> {
     let mut modules = BTreeSet::new();
     let mut path_attribute = false;
-    for line in repo_text("tests/all.rs").lines() {
-        let line = line.trim();
+    for line in all_rs.lines().map(str::trim) {
         if line.starts_with("#[path") {
             path_attribute = true;
             continue;
@@ -33,27 +33,81 @@ fn modules_of_all() -> BTreeSet<String> {
     modules
 }
 
-/// The files the root `Cargo.toml` declares as `[[test]]` executables, other than `all`.
-fn separate_executables() -> BTreeSet<String> {
-    let mut files = BTreeSet::new();
+/// The `[[test]]` entries of a manifest, each as `(name, file stem)`; a missing `path` is
+/// cargo's default `tests/<name>.rs`.
+fn test_entries(manifest: &str) -> Vec<(String, String)> {
+    let value = |line: &str, key: &str| {
+        line.strip_prefix(key)
+            .and_then(|rest| rest.strip_prefix(" = \""))
+            .and_then(|rest| rest.strip_suffix('"'))
+            .map(str::to_string)
+    };
+    let mut entries: Vec<(String, Option<String>)> = Vec::new();
     let mut in_test = false;
-    for line in repo_text("Cargo.toml").lines() {
-        let line = line.trim();
+    for line in manifest.lines().map(str::trim) {
         if line.starts_with('[') {
             in_test = line == "[[test]]";
-        } else if let Some(path) = in_test
-            .then(|| line.strip_prefix("path = \""))
-            .flatten()
-            .and_then(|rest| rest.strip_suffix('"'))
-            .and_then(|path| path.strip_prefix("tests/"))
-            .and_then(|path| path.strip_suffix(".rs"))
-        {
-            if path != "all" {
-                files.insert(path.to_string());
+            if in_test {
+                entries.push((String::new(), None));
+            }
+        } else if let (true, Some(entry)) = (in_test, entries.last_mut()) {
+            if let Some(name) = value(line, "name") {
+                entry.0 = name;
+            } else if let Some(path) = value(line, "path") {
+                entry.1 = Some(path);
             }
         }
     }
-    files
+    entries
+        .into_iter()
+        .map(|(name, path)| {
+            let path = path.unwrap_or_else(|| format!("tests/{name}.rs"));
+            let stem = path
+                .strip_prefix("tests/")
+                .and_then(|p| p.strip_suffix(".rs"))
+                .unwrap_or(&path)
+                .to_string();
+            (name, stem)
+        })
+        .collect()
+}
+
+/// What is wrong with how the top-level test files `on_disk` are declared; empty when nothing is.
+/// `has_mod_dir(n)` says whether `tests/<n>/mod.rs` exists.
+fn problems(
+    on_disk: &BTreeSet<String>,
+    all_rs: &str,
+    manifest: &str,
+    has_mod_dir: impl Fn(&str) -> bool,
+) -> Vec<String> {
+    let modules = modules_of(all_rs);
+    let entries: Vec<(String, String)> = test_entries(manifest)
+        .into_iter()
+        .filter(|(_, stem)| stem != "all")
+        .collect();
+    let separate: BTreeSet<&String> = entries.iter().map(|(_, stem)| stem).collect();
+    let mut found = Vec::new();
+    for name in on_disk {
+        if !modules.contains(name) && !separate.contains(name) {
+            found.push(format!("tests/{name}.rs is undeclared (never compiled)"));
+        }
+        if modules.contains(name) && separate.contains(name) {
+            found.push(format!("tests/{name}.rs is declared both ways"));
+        }
+    }
+    for name in modules.iter().chain(separate.iter().copied()) {
+        if !on_disk.contains(name) && !has_mod_dir(name) {
+            found.push(format!("tests/{name}.rs is declared but absent"));
+        }
+    }
+    for (name, stem) in &entries {
+        if name != stem {
+            found.push(format!(
+                "[[test]] `{name}` is not named after its file tests/{stem}.rs"
+            ));
+        }
+    }
+    found
 }
 
 #[test]
@@ -65,36 +119,77 @@ fn every_top_level_test_file_is_declared_exactly_once() {
         .filter_map(|path| path.file_stem().map(|s| s.to_string_lossy().into_owned()))
         .filter(|name| name != "all")
         .collect();
-    let modules = modules_of_all();
-    let separate = separate_executables();
-    let list = |names: Vec<&String>| {
-        names
-            .iter()
-            .map(|n| format!("tests/{n}.rs"))
-            .collect::<Vec<_>>()
-    };
-    let undeclared = list(
-        on_disk
-            .iter()
-            .filter(|n| !modules.contains(*n) && !separate.contains(*n))
-            .collect(),
-    );
-    let both = list(modules.intersection(&separate).collect());
-    let missing = list(
-        modules
-            .iter()
-            .chain(separate.iter())
-            .filter(|n| {
-                !on_disk.contains(*n) && !repo_root().join(format!("tests/{n}/mod.rs")).exists()
-            })
-            .collect(),
+    let found = problems(
+        &on_disk,
+        &repo_text("tests/all.rs"),
+        &repo_text("Cargo.toml"),
+        |n| repo_root().join(format!("tests/{n}/mod.rs")).exists(),
     );
     assert!(
-        undeclared.is_empty() && both.is_empty() && missing.is_empty(),
-        "a test file is declared exactly once, as a `mod` in tests/all.rs or a `[[test]]` entry \
-         in Cargo.toml; with `autotests = false` an undeclared file never runs.\n\
-         undeclared (never compiled): {undeclared:?}\n\
-         declared both ways: {both:?}\n\
-         declared but absent: {missing:?}"
+        found.is_empty(),
+        "with `autotests = false` a test file is declared exactly once, as a `mod` in \
+         tests/all.rs or a `[[test]]` entry named after it in Cargo.toml, else it never \
+         runs: {found:#?}"
     );
+}
+
+/// Each way to declare a file wrongly, and the ways that are right, over a synthetic tree.
+#[test]
+fn the_declaration_check_flags_each_wrong_way_and_passes_each_right_one() {
+    const ALL: &str = "mod common;\n#[path = \"common/h.rs\"]\nmod h;\nmod a;\n#[cfg(x)]\nmod b;\n";
+    let tree = |names: &[&str]| names.iter().map(|n| n.to_string()).collect::<BTreeSet<_>>();
+    let entry = |name: &str, path: Option<&str>| {
+        let path = path
+            .map(|p| format!("path = \"{p}\"\n"))
+            .unwrap_or_default();
+        format!("[[test]]\nname = \"{name}\"\n{path}")
+    };
+    for (label, files, all, manifest, expected) in [
+        (
+            "modules and a pathed entry",
+            &["a", "b", "c"][..],
+            ALL,
+            entry("c", Some("tests/c.rs")),
+            0,
+        ),
+        (
+            "an entry with no path",
+            &["a", "b", "c"],
+            ALL,
+            entry("c", None),
+            0,
+        ),
+        (
+            "an undeclared file",
+            &["a", "b", "z"],
+            ALL,
+            String::new(),
+            1,
+        ),
+        (
+            "a file declared both ways",
+            &["a", "b"],
+            ALL,
+            entry("a", None),
+            1,
+        ),
+        ("a module with no file", &["a"], ALL, String::new(), 1),
+        (
+            "an entry with no file",
+            &["a", "b"],
+            ALL,
+            entry("c", None),
+            1,
+        ),
+        (
+            "an entry named off its file",
+            &["a", "b", "c"],
+            ALL,
+            entry("d", Some("tests/c.rs")),
+            1,
+        ),
+    ] {
+        let found = problems(&tree(files), all, &manifest, |_| false);
+        assert_eq!(found.len(), expected, "{label}: {found:?}");
+    }
 }
