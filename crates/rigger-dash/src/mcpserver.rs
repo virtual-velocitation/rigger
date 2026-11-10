@@ -2298,6 +2298,37 @@ mod tests {
         assert_eq!(names, vec!["rigger_peers", "rigger_ground", "rigger_graph"]);
     }
 
+    /// Every surface that lists `rigger_graph` gives one worked example of each question it
+    /// answers: who calls a name is `around` that name, and where a name is defined is `show` it.
+    #[test]
+    fn the_graph_tool_gives_a_worked_example_of_each_question_on_every_surface() {
+        use crate::grounder::Nop;
+
+        let store = Store::open(":memory:").unwrap();
+        let driver = Driver::new();
+        let grounder = Nop;
+        let lookup = Server::new(&driver, &store, "run").with_grounder(Ok(&grounder));
+        let spawn_bound = Server::new(&driver, &store, "run")
+            .with_grounder(Ok(&grounder))
+            .with_spawn("u/implementer#0");
+        for (surface, server) in [("lookup", lookup), ("spawn-bound", spawn_bound)] {
+            let tools = server.tool_list();
+            let graph = tools
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|t| t["name"] == "rigger_graph")
+                .unwrap_or_else(|| panic!("{surface} lists rigger_graph"));
+            let text = graph["description"].as_str().unwrap();
+            for example in [
+                "who calls <name>: pass `around` <name>",
+                "where is <name> defined: pass `show` <name>",
+            ] {
+                assert!(text.contains(example), "{surface}: {example:?} in {text:?}");
+            }
+        }
+    }
+
     /// The lookup surface answers `rigger_ground` through the wired [`Grounder`] port, and
     /// REJECTS a workflow-lifecycle tool name as unknown - it is not merely unadvertised, it
     /// is genuinely undispatchable on this surface, so an operator session can never emit onto
