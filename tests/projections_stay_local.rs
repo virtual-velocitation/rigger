@@ -118,7 +118,7 @@ fn the_graph_and_progress_projections_open_via_the_local_sqlite_constructors() {
 // The compiled `rigger` binary under test is located at RUNTIME by the shared authority in
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves,
 // and every suite that spawns the product then dies with a bare NotFound.
-mod common;
+use crate::common;
 
 use common::cli::identified_git_project;
 use common::cli::run_stream_identity;

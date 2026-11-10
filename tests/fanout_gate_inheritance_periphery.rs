@@ -57,7 +57,7 @@
 //! guard (spec 103 criterion 2, not this unit's scope) and the integration re-gate (spec 103
 //! criterion 3, not this unit's scope).
 
-mod common;
+use crate::common;
 use common::fixtures::test_spawn_host;
 use common::fixtures::{fan_out_stage, plan_stage, workflow_cfg};
 use common::fixtures::{unit_proposal, ProposingPlannerDriver};

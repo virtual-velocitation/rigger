@@ -33,7 +33,7 @@ use rigger::contextgraph::{
     KIND_CONCEPT, REL_REALIZES, TIER_INFERRED, TYPE_CONCEPT_DERIVED, TYPE_CONCEPT_REALIZED,
 };
 
-mod common;
+use crate::common;
 use common::fixtures::{apply_json, hold, live_node_ids, live_targets};
 
 /// Fold one `ConceptDerived` (the concept super-node) at `pos`.

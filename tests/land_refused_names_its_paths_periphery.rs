@@ -14,7 +14,7 @@
 //! CONDUCTOR-SIDE seam: `Worktree::land -> integrate_and_emit -> run_wave -> run()`, driven
 //! through a real `AgentDriver` and a real git repo, never hand-seeded events.
 
-mod common;
+use crate::common;
 use common::git::run_git;
 
 use common::fixtures::gated_scratch_cfg;

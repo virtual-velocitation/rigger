@@ -51,7 +51,7 @@
 //! than importing `DupCluster` - the same position a real downstream reader of both committed
 //! artifacts is in.
 
-mod common;
+use crate::common;
 
 use std::collections::HashMap;
 

@@ -34,7 +34,7 @@
 //! the sha the round actually judged. Restoring the field verbatim (`git diff` on `src/`
 //! clean) returns it to green.
 
-mod common;
+use crate::common;
 use common::fixtures::test_spawn_host;
 
 use common::fixtures::{

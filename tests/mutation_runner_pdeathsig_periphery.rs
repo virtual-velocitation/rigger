@@ -18,7 +18,7 @@
 //! because its parent thread group exited, which is the exact mechanism a real `cargo test`
 //! parent dying (killed by cargo-mutants, or simply finishing) exercises in production.
 
-mod common;
+use crate::common;
 
 use common::is_running;
 

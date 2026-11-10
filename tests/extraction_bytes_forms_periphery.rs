@@ -14,7 +14,7 @@
 //! `walk_exclusions` among them. NOT OWNED: each split against its own caller and against literal
 //! payloads, which the tests of the module owning the split pin beside the code.
 
-mod common;
+use crate::common;
 
 use common::cli::{rigger_file, run_rigger_ok, temp_project};
 use common::fixtures::{planted_extraction_tree, write_file};

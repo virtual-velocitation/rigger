@@ -147,7 +147,7 @@
 //! a gap: still out of periphery reach by the same white-box-only reasoning, now genuinely closed
 //! rather than merely claimed.
 
-mod common;
+use crate::common;
 
 use common::repo::assert_committed_json_round_trips;
 use common::repo::committed_json;

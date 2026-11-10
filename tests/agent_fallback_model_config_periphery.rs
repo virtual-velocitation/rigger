@@ -16,7 +16,7 @@
 //! file does not re-litigate that (it asserts the SAME flag, but only ever downstream of a
 //! REAL parse, which is the one link in the chain nothing else exercises).
 
-mod common;
+use crate::common;
 use common::fixtures::implementer_opts as opts;
 
 use rigger::config::parse_agent;

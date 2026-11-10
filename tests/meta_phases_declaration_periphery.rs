@@ -44,7 +44,7 @@
 //! courier spawn sites still pass `phase: 'Plan'` and the global `phase('Plan')` marker
 //! still exists, both untouched by this criterion and out of scope here).
 
-mod common;
+use crate::common;
 
 use common::fixtures::js_declaration;
 use common::repo::{repo_text, run_node};

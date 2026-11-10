@@ -20,7 +20,7 @@
 //! identity claim whose Design and Notes never decide removal (F11), and the corpus snapshot
 //! pins the F10 and F11 totals.
 
-mod common;
+use crate::common;
 
 use common::cli::run_rigger;
 use common::cli::temp_project;

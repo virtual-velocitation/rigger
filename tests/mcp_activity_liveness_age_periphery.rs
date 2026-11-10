@@ -48,7 +48,7 @@
 //!   shape via the `rigger result <id>` positional's own lack of format validation and is
 //!   exactly what the round 3/5/7 regression tests in `tests/cli.rs` already close end to end.
 
-mod common;
+use crate::common;
 
 use common::cli::plant_marker;
 use rigger::spawn::SpawnEvent;

@@ -33,7 +33,7 @@ use rigger::gate::ExecRunner;
 use rigger::grounder::{BlastRadius, Grounder, Ref};
 use serde_json::{json, Value};
 
-mod common;
+use crate::common;
 use common::fixtures::apply_next_json;
 use common::fixtures::test_spawn_host;
 use common::fixtures::NoopDriver;

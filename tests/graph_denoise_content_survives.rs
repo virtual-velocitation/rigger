@@ -27,7 +27,7 @@ use rigger::contextgraph::{
     TYPE_LESSON_LEARNED, TYPE_REVIEW_FINDING, TYPE_UNIT_INTEGRATED, TYPE_UNIT_STARTED,
 };
 
-mod common;
+use crate::common;
 use common::fixtures::apply_json_as;
 
 #[test]

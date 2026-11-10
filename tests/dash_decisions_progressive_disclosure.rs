@@ -21,7 +21,7 @@
 //! `dash`, `spawn`, `contextgraph` are compiled on BOTH the default and the `--no-default-features`
 //! lane (none feature-gated), so this guards the served boundary in both lanes.
 
-mod common;
+use crate::common;
 
 use common::fixtures::assert_decisions_region_discloses_progressively;
 use common::served::node_harness_passes;

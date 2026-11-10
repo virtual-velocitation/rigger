@@ -25,7 +25,7 @@
 //! not exercise. It leans on (but does not own) the upsert-live `add_edge` fold arm that landed in
 //! criterion 1.
 
-mod common;
+use crate::common;
 
 use common::fixtures::apply_governs_at;
 use common::fixtures::governs;

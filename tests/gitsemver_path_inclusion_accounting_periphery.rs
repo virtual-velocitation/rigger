@@ -41,9 +41,10 @@
 //! attribute as a worked example of an upward-escaping `#[path]` value; a naive substring
 //! scan would misidentify that comment as a fifth inclusion site).
 
+#[allow(clippy::duplicate_mod)]
 #[path = "common/audit_record.rs"]
 mod audit_record;
-mod common;
+use crate::common;
 
 use audit_record::read_audit_record;
 use common::repo::collect_rs_files;

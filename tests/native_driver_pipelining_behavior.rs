@@ -35,7 +35,7 @@
 //! two steps that courier while it is still running - exactly what makes the in-flight guard
 //! load-bearing rather than a no-op.
 
-mod common;
+use crate::common;
 
 use common::fixtures::tool_available;
 use common::repo::repo_text;

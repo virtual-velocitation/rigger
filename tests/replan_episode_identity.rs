@@ -102,7 +102,7 @@
 //! spawn's unit under its EXACT id with a new ownership sentence, and the latest refine's text
 //! is the contract the implementer is handed and the ledger records.
 
-mod common;
+use crate::common;
 use common::fixtures::test_spawn_host;
 use common::fixtures::{critique_stage, fan_out_stage, plan_stage, workflow_cfg};
 

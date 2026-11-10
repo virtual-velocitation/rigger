@@ -8,9 +8,7 @@
 //!
 //! Every test extracts real source, so the file runs on the `symbols` lane alone.
 
-#![cfg(feature = "symbols")]
-
-mod common;
+use crate::common;
 
 use common::cli::{built_graph, rebuilt_graph};
 use common::fixtures::{a_call_from_main, hold, landed};

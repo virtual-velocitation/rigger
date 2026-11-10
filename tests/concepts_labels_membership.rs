@@ -24,7 +24,7 @@
 //! file-to-file edge never enters it) and a PURE STAR (one hub, degree-1 leaves) for the single-hub
 //! cases. Every symbol used is always-compiled, so these run identically in BOTH feature lanes.
 
-mod common;
+use crate::common;
 
 use common::fixtures::edge;
 use common::fixtures::node_with_optional_attrs;

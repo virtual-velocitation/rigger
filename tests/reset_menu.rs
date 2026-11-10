@@ -19,7 +19,7 @@
 //!     `main.rs`-private type) and is instead pinned by an in-crate unit test beside
 //!     `derived_menu_line`.
 
-mod common;
+use crate::common;
 
 use common::cli::derived_menu_line_naming;
 use common::cli::derived_menu_lines;

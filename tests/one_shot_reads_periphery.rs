@@ -19,7 +19,7 @@
 //!    real 200,000-event log is made undecodable, so a command that materialized even one of them
 //!    would fail - and a control proves the poison does fail a command that reads it.
 
-mod common;
+use crate::common;
 
 use std::io::Cursor;
 use std::path::Path;

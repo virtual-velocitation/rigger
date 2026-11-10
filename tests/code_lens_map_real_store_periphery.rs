@@ -23,7 +23,7 @@
 // light (`--no-default-features`) lane would compile this file down to nothing BUT these
 // top-level imports and flag every one of them unused.
 #[cfg(feature = "symbols")]
-mod common;
+use crate::common;
 #[cfg(feature = "symbols")]
 use rigger::community;
 #[cfg(feature = "symbols")]

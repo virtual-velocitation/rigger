@@ -26,7 +26,7 @@
 //! public boundary a same-crate `super::` test is structurally blind to, and drive the served
 //! `route` end-to-end through the `seed=` / `lens=` / `resolution=` query parsing the browser hits.
 
-mod common;
+use crate::common;
 
 use common::fixtures::def_node as def;
 use common::fixtures::edge;

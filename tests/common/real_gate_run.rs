@@ -18,8 +18,8 @@ use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Direction, EventStore};
 use rigger::gate::ExecRunner;
 
+use super::real_driver_spy::RealDriverSpy;
 use crate::common::fixtures::test_spawn_host;
-use crate::real_driver_spy::RealDriverSpy;
 
 const UNIT: &str = "a";
 const GATE: &str = "envgate";

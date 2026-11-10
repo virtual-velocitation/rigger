@@ -1,5 +1,6 @@
 [package]
 name = "rigger"
+autotests = false
 version = "0.3.0"
 edition = "2021"
 description = "A config-driven, event-sourced multi-agent dev-loop harness"
@@ -39,6 +40,73 @@ path = "src/lib.rs"
 [[bin]]
 name = "rigger"
 path = "src/main.rs"
+
+# Every integration suite is a module of the one `all` executable (one link of the whole
+# workspace instead of one per file). A suite that changes process-global state (environment,
+# cwd) or needs an exact process shape keeps its own executable below.
+[[test]]
+name = "all"
+path = "tests/all.rs"
+
+[[test]]
+name = "build_budget_slots_periphery"
+path = "tests/build_budget_slots_periphery.rs"
+
+[[test]]
+name = "build_env_authority_periphery"
+path = "tests/build_env_authority_periphery.rs"
+
+[[test]]
+name = "claude_code_launch_wire_periphery"
+path = "tests/claude_code_launch_wire_periphery.rs"
+
+[[test]]
+name = "claude_code_stream_periphery"
+path = "tests/claude_code_stream_periphery.rs"
+
+[[test]]
+name = "courier_registry_refresh_boundary_periphery"
+path = "tests/courier_registry_refresh_boundary_periphery.rs"
+
+[[test]]
+name = "courier_registry_refresh_fence_periphery"
+path = "tests/courier_registry_refresh_fence_periphery.rs"
+
+[[test]]
+name = "courier_registry_refresh_periphery"
+path = "tests/courier_registry_refresh_periphery.rs"
+
+[[test]]
+name = "dash_console_stream_periphery"
+path = "tests/dash_console_stream_periphery.rs"
+
+[[test]]
+name = "gate_scratch_root_periphery"
+path = "tests/gate_scratch_root_periphery.rs"
+
+[[test]]
+name = "gate_store_fence_periphery"
+path = "tests/gate_store_fence_periphery.rs"
+
+[[test]]
+name = "graph_around_code_first"
+path = "tests/graph_around_code_first.rs"
+
+[[test]]
+name = "kurrentdb_store_threads"
+path = "tests/kurrentdb_store_threads.rs"
+
+[[test]]
+name = "product_binary_authority_periphery"
+path = "tests/product_binary_authority_periphery.rs"
+
+[[test]]
+name = "registry_refresh_driver_courier_convergence_periphery"
+path = "tests/registry_refresh_driver_courier_convergence_periphery.rs"
+
+[[test]]
+name = "spawn_target_dir_periphery"
+path = "tests/spawn_target_dir_periphery.rs"
 
 [features]
 # `symbols` (deterministic structural grounding, spec 15) is ON BY DEFAULT: the

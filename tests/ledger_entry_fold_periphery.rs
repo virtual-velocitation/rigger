@@ -28,7 +28,7 @@
 //! `applied` row per entry, the fold's outcome answered beside the store's report for each of the
 //! three ways a fold ends, and a fold it could not make said only when its caller asks.
 
-mod common;
+use crate::common;
 
 use std::cell::Cell;
 use std::path::Path;

@@ -106,11 +106,13 @@
 //!    `#[cfg(unix)]` fn stay production
 //!    (`a_test_region_is_every_test_attributed_range_through_the_public_api`).
 
-mod common;
+#[allow(unused_imports)] // used only by the symbols-gated tests
+use crate::common;
 
 #[cfg(feature = "symbols")]
 use Expect::{CodeEntity, Graphed, NoCodeEntity, NoneGraphed, NotGraphed};
 
+#[allow(clippy::duplicate_mod)]
 #[path = "common/symbol_index.rs"]
 mod symbol_index;
 

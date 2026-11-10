@@ -47,7 +47,7 @@
 //! recording no post-merge-gate verdict and reporting `UnitIntegrated` with the same empty
 //! `commit` sentinel a pre-fix binary always reported for this shape.
 
-mod common;
+use crate::common;
 use common::git::run_git;
 
 use common::fixtures::count_status_marker;

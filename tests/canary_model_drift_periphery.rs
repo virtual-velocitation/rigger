@@ -31,7 +31,7 @@ use std::path::Path;
 
 // The compiled `rigger` binary under test is located at RUNTIME by the shared authority in
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves.
-mod common;
+use crate::common;
 
 use common::cli::pin_identity;
 use common::cli::run_rigger;

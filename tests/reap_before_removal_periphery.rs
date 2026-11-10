@@ -23,7 +23,7 @@
 //! periphery.rs` and `spawn_scratch_reap_authorized_root_periphery.rs` already close for their
 //! own call chains.
 
-mod common;
+use crate::common;
 use common::git::git_ok;
 
 use std::collections::HashSet;

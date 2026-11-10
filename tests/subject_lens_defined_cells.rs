@@ -30,7 +30,7 @@
 //! REPROJECT_NO_CONCEPT}`), so they guard the exact public boundary the served panel consumes, and
 //! drive the served `route` end-to-end.
 
-mod common;
+use crate::common;
 
 use common::fixtures::def_node as def;
 use common::fixtures::edge;

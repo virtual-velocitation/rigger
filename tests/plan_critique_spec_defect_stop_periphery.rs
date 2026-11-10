@@ -26,7 +26,7 @@
 //! amendment that leaves the criteria equal - the boundary only the three criteria together
 //! hold.
 
-mod common;
+use crate::common;
 
 use common::cli::Refusal::Unexhausted;
 use common::cli::{

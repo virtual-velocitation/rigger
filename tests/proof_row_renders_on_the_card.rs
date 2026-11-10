@@ -11,10 +11,11 @@
 //! integration test compiles as its own independent crate, so the harness plumbing cannot be shared
 //! via a plain `use`).
 
-mod common;
+use crate::common;
 
 use common::served::node_harness_passes;
 
+#[allow(clippy::duplicate_mod)]
 #[path = "common/vm_harness.rs"]
 mod vm_harness;
 use vm_harness::vm_harness;

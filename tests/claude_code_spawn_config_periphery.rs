@@ -17,7 +17,7 @@
 //! pipe, `rigger validate` advises when the checkout carries none of these hooks, and it fails
 //! naming an operator's helper copy that does not parse.
 
-mod common;
+use crate::common;
 use common::cli::{failure_line, nameless_copy_refusal, run_rigger, setup_ok, temp_project};
 use common::fixtures::{
     git_commit_all, git_out, implementer_opts, temp_git_project_with_commit, write_helper_copy,

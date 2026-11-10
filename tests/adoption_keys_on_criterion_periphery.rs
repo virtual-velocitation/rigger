@@ -157,7 +157,7 @@ use std::path::Path;
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-mod common;
+use crate::common;
 use common::fixtures::bare_deps;
 use common::git::git_ok;
 

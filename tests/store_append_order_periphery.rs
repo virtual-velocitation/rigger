@@ -35,7 +35,7 @@
 //! reaches into a private field or a raw connection, so it exercises exactly what an external
 //! consumer of the port can exercise.
 
-mod common;
+use crate::common;
 
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Direction, Error, Event, EventStore, ExpectedRevision, Filter};

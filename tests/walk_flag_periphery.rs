@@ -15,7 +15,7 @@
 //! advisory take it and ignore it, and what they record is held by the tests that drive the
 //! binary over the same tree.
 
-mod common;
+use crate::common;
 
 use rigger::eventstore::Event;
 use rigger::ingest::{sink_walked_batches, BatchSink};

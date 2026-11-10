@@ -93,7 +93,7 @@
 //! already-parsed structs, no new I/O boundary - covered by the implementer's own
 //! `a_stages_own_max_retries_overrides_the_run_default_for_its_units`).
 
-mod common;
+use crate::common;
 
 use std::path::Path;
 

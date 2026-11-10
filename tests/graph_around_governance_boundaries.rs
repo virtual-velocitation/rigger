@@ -29,7 +29,7 @@ use rigger::contextgraph::Projection;
 
 // The compiled `rigger` binary under test is located at RUNTIME by the shared authority in
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves.
-mod common;
+use crate::common;
 
 use common::cli::edge_lines;
 use common::cli::graph_node_ids;

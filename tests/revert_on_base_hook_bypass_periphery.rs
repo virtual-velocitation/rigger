@@ -42,7 +42,7 @@
 //! assertion is load-bearing; restoring the fix verbatim (`git diff` on `src/` clean) returns it
 //! to green.
 
-mod common;
+use crate::common;
 
 use common::fixtures::review_panel;
 use common::fixtures::test_spawn_host;

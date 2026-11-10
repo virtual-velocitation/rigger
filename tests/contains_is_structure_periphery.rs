@@ -12,7 +12,7 @@
 //!  - `rigger graph build` folds each variant's `CONTAINS` from its enum, and a build after a
 //!    variant is removed retires that variant's, as `rigger graph --around` prints them.
 
-mod common;
+use crate::common;
 
 use rigger::contextgraph::REL_CONTAINS;
 

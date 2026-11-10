@@ -19,7 +19,7 @@
 //! These drive the COMPILED binary against a real git repo and `.rigger/events.db`, because the
 //! observable contract is the log the operator's next `rigger status` folds.
 
-mod common;
+use crate::common;
 
 use common::cli::{
     configure_workdir, hold_step_lock, init_event_log, liveness_fault_body, plant_marker,

@@ -20,7 +20,7 @@
 //! are owned by sibling in-crate units; this file's role is to guard the changed PUBLIC prune
 //! surface, not to re-derive those criteria.
 
-mod common;
+use crate::common;
 
 use common::fixtures::apply_def_at;
 use common::fixtures::nanos;

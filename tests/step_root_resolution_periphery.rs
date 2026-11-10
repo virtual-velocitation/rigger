@@ -132,7 +132,7 @@
 //! one rustdoc block attached to the WRONG function). Restored: each test's doc comment now
 //! sits directly above its own `#[test] fn` again; no test content or assertion changed.
 
-mod common;
+use crate::common;
 
 use common::cli::run_rigger;
 use common::cli::run_rigger_envs;

@@ -30,9 +30,7 @@
 //! an identity a rebuild of `graph.db` left behind mid-run recorded again at the next reindex
 //! with no group lookup.
 
-#![cfg(feature = "symbols")]
-
-mod common;
+use crate::common;
 use common::fixtures::test_spawn_host;
 
 use std::path::Path;

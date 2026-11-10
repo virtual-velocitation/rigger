@@ -16,7 +16,7 @@
 //!   yields byte-identical events for identical source, and definitions precede references.
 //!   Exercised through the real extraction pass, so it lives in the `symbols` lane only.
 
-mod common;
+use crate::common;
 
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{

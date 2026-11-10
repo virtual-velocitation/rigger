@@ -47,7 +47,7 @@
 //! names `a-residue.rs` and the residue file survives into the integrated tree). Restoring
 //! the call verbatim (`git diff` on `crates/` clean) returns it to green.
 
-mod common;
+use crate::common;
 use common::git::run_git;
 
 use common::fixtures::agent;

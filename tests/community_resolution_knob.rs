@@ -54,7 +54,7 @@ use rigger::community::{self, Assignment, Coupling};
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{Graph, KIND_COMMUNITY, REL_IN_COMMUNITY};
 
-mod common;
+use crate::common;
 use common::fixtures::{hold, live_node_ids, seed_two_subsystems};
 
 /// The coupling graph of the seeded projection (over the public `whole()` read).

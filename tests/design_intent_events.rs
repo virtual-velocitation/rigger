@@ -32,7 +32,7 @@ use rigger::contextgraph::{
 #[cfg(feature = "symbols")]
 use rigger::eventstore::Event;
 
-mod common;
+use crate::common;
 use common::fixtures::apply_json;
 
 /// [`common::fixtures::fold_events`]s `events`, which must be exactly one event of `event_type` - what one emitted

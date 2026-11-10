@@ -47,7 +47,7 @@
 //! image constant, identically in both
 //! feature lanes, a real member of each lane's `cargo test` battery.
 
-mod common;
+use crate::common;
 
 use common::fixtures::{
     container_runtime, start_failure, StartFailure, KURRENTDB_IMAGE, START_ATTEMPTS,

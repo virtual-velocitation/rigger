@@ -24,7 +24,7 @@
 //! independently, never against `LegendEntry`'s own field (which would only prove `serde`
 //! didn't mangle a string - already implied by the existing key-set test).
 
-mod common;
+use crate::common;
 
 use common::fixtures::ONE_COMMUNITY;
 use rigger::console::map;

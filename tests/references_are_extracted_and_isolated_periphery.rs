@@ -20,7 +20,9 @@
 //!    for a call, the form an index saved before the field existed holds, and reads back so a
 //!    reloaded index counts no tagged reference as a call.
 
-mod common;
+#[allow(unused_imports)] // used only by the symbols-gated tests
+use crate::common;
+#[allow(clippy::duplicate_mod)]
 #[path = "common/symbol_index.rs"]
 mod symbol_index;
 

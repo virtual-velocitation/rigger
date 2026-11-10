@@ -27,7 +27,7 @@
 //! `dash` compiles on BOTH the default and the `--no-default-features` lane (the seam is not
 //! feature-gated), so this guards the served page in both lanes.
 
-mod common;
+use crate::common;
 
 use common::fixtures::tool_available;
 use common::served::node_harness_passes;

@@ -16,7 +16,7 @@
 //!      project's same-id node or edge" - a promise no other test exercises with two projects
 //!      sharing one graph.db file.
 
-mod common;
+use crate::common;
 
 use common::fixtures::apply_def_at;
 use common::fixtures::nanos;

@@ -11,7 +11,7 @@
 //! neighborhood). The inside-out unit test exercises `graph_seeds` through in-crate helpers; this
 //! layer pins the observable contract at the module boundary the dash inspector consumes.
 
-mod common;
+use crate::common;
 
 use common::fixtures::ev_at;
 use rigger::contextgraph::sqlite::Projector;

@@ -37,7 +37,7 @@
 //! workflow differs from what the verb wrote in its pinned grounder and, in a row declaring another
 //! cap or none, its cap line.
 
-mod common;
+use crate::common;
 
 use common::cli::{
     loaded_config, plan_the_widget, rigger_file, run_rigger_envs_ok, run_rigger_ok,

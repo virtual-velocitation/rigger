@@ -5,7 +5,7 @@
 //! implement and checkin stages run among it - and that `rigger validate` accepts both fresh
 //! scaffolds.
 
-mod common;
+use crate::common;
 use common::cli::{
     cargo_project, loaded_config, run_rigger, run_rigger_ok, setup_ok, temp_project,
 };

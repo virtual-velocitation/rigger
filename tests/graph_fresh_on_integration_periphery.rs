@@ -36,9 +36,7 @@
 //! light-lane counterpart to prove - a bare `--no-default-features` build with zero tests here,
 //! same as the light lane draws no GRAPH INDEX LAG warning at all in `validate_advisories.rs`.
 
-#![cfg(feature = "symbols")]
-
-mod common;
+use crate::common;
 use common::fixtures::test_spawn_host;
 use common::git::temp_git_project_with_commit;
 

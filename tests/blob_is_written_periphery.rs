@@ -20,9 +20,7 @@
 //! The migration's own write, `rigger reset --derived` writing the blob of each entry it migrates,
 //! is held beside the migration's other properties in `tests/reset_derived_compaction_periphery.rs`.
 
-#![cfg(feature = "symbols")]
-
-mod common;
+use crate::common;
 
 use common::cli::{batch_events, graph_build_line, recorded_and_walked, run_rigger_envs};
 use common::fixtures::{

@@ -23,7 +23,7 @@
 //! (criterion 2) and the rebuild-collapse of pre-existing duplicates (criterion 3) are owned by
 //! sibling units and are not exercised here.
 
-mod common;
+use crate::common;
 
 use common::fixtures::apply_governs_at;
 use common::fixtures::governs;

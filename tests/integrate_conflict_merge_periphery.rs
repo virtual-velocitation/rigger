@@ -284,7 +284,7 @@
 //! lesson, failure, escalation or infra mark is recorded, the unit's gate verdict is kept, and a
 //! resume regenerates and lands the unit with no attempt charged.
 
-mod common;
+use crate::common;
 use common::git::run_git;
 
 use common::cli::write_workflow;

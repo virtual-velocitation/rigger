@@ -13,7 +13,7 @@
 //!
 //! Every test runs on both lanes.
 
-mod common;
+use crate::common;
 
 use common::fixtures::{card_file, kinded_def_node, one_community_graph, plain, ONE_COMMUNITY};
 use common::lens::files_lens_rows;

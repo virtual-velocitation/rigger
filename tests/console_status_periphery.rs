@@ -15,7 +15,7 @@
 //! `rigger status`, reading a real on-disk store, prints exactly what that fold computes,
 //! through a real `argv` -> `main()` -> `cmd_status` dispatch and a real SQLite round trip.
 
-mod common;
+use crate::common;
 
 use std::path::Path;
 use std::time::Duration;

@@ -14,7 +14,7 @@
 //! in-memory graph; the empty `name` enters as the entity event the fold reads. Every test runs
 //! on both lanes.
 
-mod common;
+use crate::common;
 
 use common::fixtures::{
     apply_code_entity, apply_def, def_node, definition, edge, empty_named_node, plain,

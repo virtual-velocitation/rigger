@@ -18,7 +18,7 @@
 //! NOT OWNED HERE: the critique verb and its record (criterion 1), and the plan-critique stop on
 //! a spec defect (criterion 5).
 
-mod common;
+use crate::common;
 
 use std::path::Path;
 

@@ -30,7 +30,7 @@ use rigger::contextgraph::{
     KIND_COMMUNITY, REL_IN_COMMUNITY, TIER_INFERRED, TYPE_COMMUNITY_ASSIGNED,
 };
 
-mod common;
+use crate::common;
 use common::fixtures::ONE_COMMUNITY;
 use common::fixtures::{apply_call, apply_json, community_snapshot, def, live_targets};
 

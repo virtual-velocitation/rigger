@@ -62,7 +62,7 @@
 //! and that the command refusing to append one does so on every input this criterion's own
 //! Done-when and docstring name.
 
-mod common;
+use crate::common;
 
 use std::collections::HashMap;
 

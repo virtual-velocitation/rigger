@@ -25,7 +25,7 @@
 //! proving delivery into `coverage`/`spec_criterion` proves delivery to all of them at once; this
 //! file does not re-walk each call site separately.
 
-mod common;
+use crate::common;
 use common::fixtures::test_spawn_host;
 use common::fixtures::NoopDriver;
 

@@ -36,7 +36,7 @@
 //! `occupancy_survives_a_crash_resume_...` unit test, exactly as the spec's own Done-when says
 //! ("pinned at `run_wave`").
 
-mod common;
+use crate::common;
 
 use std::path::Path;
 

@@ -6,7 +6,7 @@
 //! (`rigger::config_store::load`), so a gate that is merely mentioned in a comment, or declared
 //! but never listed on a stage, fails.
 
-mod common;
+use crate::common;
 use common::cli::{cargo_project, loaded_config, run_rigger};
 use common::fixtures::{container_runtime, with_kurrentdb, TEST_CONTAINER_LABEL};
 use common::git::{commit_files, git_ok, git_out, init_repo};

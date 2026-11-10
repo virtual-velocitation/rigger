@@ -7,7 +7,7 @@
 //! real under `node`. `workerLabel` (and the `ROSTER_VERB` table it now reads alongside
 //! `PERSONA_VERB`) depends on no injected global, so nothing needs stubbing.
 
-mod common;
+use crate::common;
 
 use common::repo::worker_label;
 

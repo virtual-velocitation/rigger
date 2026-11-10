@@ -26,7 +26,7 @@
 //! `dash_decisions_progressive_disclosure.rs`), fed the SAME JSON this file's socket test above
 //! proves crosses the wire, and asserts the resulting DOM node's content - not its source text.
 
-mod common;
+use crate::common;
 
 use std::collections::HashMap;
 use std::io::{Read, Write};

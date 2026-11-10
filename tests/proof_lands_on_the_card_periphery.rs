@@ -53,7 +53,7 @@
 //!    (`crate::ingest::key_batch`, driven by `RunCtx::ingest_project_batches` in production) does,
 //!    per [`events_for_file`]'s own doc below.
 
-mod common;
+use crate::common;
 
 use common::served::body_of;
 use common::served::fetch_served;

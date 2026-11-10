@@ -42,7 +42,7 @@
 //! spec can actually produce on the production path: the authored-ungated carve-out, and the
 //! unmatched-sub-unit blind spot the fix closes.
 
-mod common;
+use crate::common;
 use common::fixtures::test_spawn_host;
 use common::fixtures::NoopDriver;
 

@@ -41,8 +41,9 @@
 //! regression that resolves the wrong commit changes what `derive_version` reports
 //! without changing what this test expects, and the assertion catches the divergence.
 
-mod common;
+use crate::common;
 
+#[allow(clippy::duplicate_mod)]
 #[path = "../build/gitsemver.rs"]
 #[allow(dead_code)]
 mod gitsemver;

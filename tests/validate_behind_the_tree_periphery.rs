@@ -52,7 +52,7 @@
 //! itself (`tests/gitsemver_derivation.rs`, `tests/gitsemver_worktree_periphery.rs`, spec 74
 //! criterion 1).
 
-mod common;
+use crate::common;
 
 use common::cli::run_rigger;
 use common::cli::temp_rigger_project;

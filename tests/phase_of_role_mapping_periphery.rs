@@ -33,7 +33,7 @@
 //! parser and the JS reader answer every row alike, so the driver's mirror of the
 //! `review_step_of` grammar cannot drift from the one parser it mirrors.
 
-mod common;
+use crate::common;
 
 use common::fixtures::js_declaration;
 use common::repo::{repo_text, run_node};

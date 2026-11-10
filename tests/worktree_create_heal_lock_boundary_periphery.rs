@@ -55,7 +55,7 @@
 //! git race - not a guaranteed reproduction of any specific defect on every run. The two
 //! predicate tests are the deterministic proof of the heal decision table itself.
 
-mod common;
+use crate::common;
 use common::fixtures::assert_concurrent_creates_succeed;
 use common::git::temp_git_project_with_commit;
 

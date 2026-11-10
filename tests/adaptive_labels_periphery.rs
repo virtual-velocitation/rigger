@@ -44,7 +44,7 @@
 //! coincidence or importance reddens the contract harness; and a layered render that leaks `data-nid`
 //! or an auto `<title>` reddens the regression harness.
 
-mod common;
+use crate::common;
 
 use std::process::Command;
 

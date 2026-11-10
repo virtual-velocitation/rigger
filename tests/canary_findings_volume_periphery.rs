@@ -27,7 +27,7 @@
 //! populated map, decode it back); nothing else in the diff proves the pre-existing-data
 //! direction.
 
-mod common;
+use crate::common;
 
 use std::collections::BTreeMap;
 

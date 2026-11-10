@@ -23,7 +23,7 @@
 //! Everything but the real-tree walk is compiled unconditionally, so this suite runs in BOTH
 //! feature lanes; the two tests that need a tree to walk are `symbols`-gated exactly as the walk is.
 
-mod common;
+use crate::common;
 
 #[cfg(feature = "symbols")]
 use common::fixtures::minted_events as minted;

@@ -24,12 +24,13 @@
 //! authored and confirmed clean - see this file's own `verification` field in the JSON and this
 //! unit's own `DecisionMade` record.
 
-mod common;
+use crate::common;
 
 use std::fs;
 use std::path::Path;
 use std::process::Command;
 
+#[allow(clippy::duplicate_mod)]
 #[path = "common/audit_record.rs"]
 mod audit_record;
 use audit_record::read_audit_record;

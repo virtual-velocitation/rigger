@@ -26,7 +26,7 @@
 //! It is intentionally NOT feature-gated: it reads YAML files and runs a shell script, touching
 //! no turbovec/grep symbols, so it runs identically in every lane that runs it.
 
-mod common;
+use crate::common;
 use common::repo::{repo_root, repo_text, stub_path, table_declares_key, table_lines};
 use common::shell_outcome;
 use std::process::Command;

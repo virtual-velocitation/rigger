@@ -12,7 +12,9 @@
 //!  - `rigger graph communities` couples no `mod` node to its module's file, so a module file whose
 //!    one structural edge is its declaration's joins no community.
 
-mod common;
+#[allow(unused_imports)] // used only by the symbols-gated tests
+use crate::common;
+#[allow(clippy::duplicate_mod)]
 #[path = "common/symbol_index.rs"]
 mod symbol_index;
 

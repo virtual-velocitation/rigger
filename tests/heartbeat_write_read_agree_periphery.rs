@@ -40,7 +40,7 @@
 //! age the workflow's marker race reads, leaves the run's hold intervals out of a marker's age,
 //! while `rigger dash --export` and `rigger_activity` read the same marker on wall clock.
 
-mod common;
+use crate::common;
 use common::git::run_git;
 
 use std::io::Cursor;

@@ -31,7 +31,7 @@
 
 use std::path::Path;
 
-mod common;
+use crate::common;
 use common::rigger_courier;
 
 /// Write an executable POSIX-sh stub standing in for the Node driver `cmd_workflow` would

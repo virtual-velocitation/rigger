@@ -26,7 +26,7 @@
 //! work queue and never outlives the work. The appender audit's two lists are no offender queue:
 //! each is the whole set of its family's sites, compared both ways.
 
-mod common;
+use crate::common;
 use common::repo::{
     collect_files, collect_rs_files, production_part, production_sources, repo_root, table_lines,
 };
@@ -35,6 +35,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+#[allow(clippy::duplicate_mod)]
 #[path = "common/source_audit.rs"]
 mod source_audit;
 use source_audit::{

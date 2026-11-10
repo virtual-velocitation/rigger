@@ -40,7 +40,7 @@
 //! `step_result_meta_stamps_the_resolved_model_on_the_replayed_units_events`). This file only
 //! proves the WORKFLOW driver's wire-to-store path, the one round 1 found dead.
 
-mod common;
+use crate::common;
 use common::cli::{write_workflow_fixture, WorkflowFixture, UNISOLATED_WORKER};
 use common::git::temp_git_project_with_commit;
 use common::mcp::McpSession;

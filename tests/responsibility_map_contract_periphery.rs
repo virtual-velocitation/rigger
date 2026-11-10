@@ -49,7 +49,7 @@
 //! group). `(file, start_line)` is the one key that is: no two function definitions can start on
 //! the same line of the same file.
 
-mod common;
+use crate::common;
 
 use common::repo::committed_json;
 use common::repo::{assert_committed_json_round_trips, assert_committed_ledger_is_nonempty};

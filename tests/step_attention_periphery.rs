@@ -135,7 +135,7 @@ fn hung_cursor_functions_are_a_working_public_contract_across_the_crate_boundary
     );
 }
 
-mod common;
+use crate::common;
 
 use common::cli::plant_stale_marker;
 use common::cli::run_rigger;

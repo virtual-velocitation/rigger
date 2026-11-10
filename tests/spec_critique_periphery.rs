@@ -14,7 +14,7 @@
 //! NOT OWNED HERE: the refusal a new run meets without a clean critique (criterion 2), and the
 //! plan-critique stop on a spec defect (criterion 5).
 
-mod common;
+use crate::common;
 
 use std::path::Path;
 

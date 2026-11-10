@@ -23,6 +23,7 @@
 //!    `build_index` entry point through the real tree-sitter extraction pass, so it lives in the
 //!    `symbols` lane only.
 
+#[allow(clippy::duplicate_mod)]
 #[path = "common/symbol_index.rs"]
 mod symbol_index;
 

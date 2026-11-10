@@ -195,7 +195,7 @@
 //!     conductor or `run()` involved - the same "public API, no conductor" boundary gaps 5, 10
 //!     and 13 above already established for this file's other `Worktree` methods.
 
-mod common;
+use crate::common;
 use common::git::{commit_at_fixed_date, git_ok, git_out, init_repo as init_repo_at, run_git};
 
 use common::fixtures::agent;

@@ -12,7 +12,7 @@
 //! and the index-lag sample's use of the rule, which `tests/validate_advisories.rs` drives
 //! through `rigger validate`.
 
-mod common;
+use crate::common;
 
 use common::cli::{rigger_file, run_rigger, temp_project};
 use common::fixtures::{arm_read_fault, write_file, write_files};

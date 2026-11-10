@@ -32,7 +32,7 @@
 //! `mod tests` fixtures, per this role's boundary) for that reason alone - not because the
 //! scenario itself is this file's real subject.
 
-mod common;
+use crate::common;
 use common::git::git_ok;
 
 use common::fixtures::test_spawn_host;

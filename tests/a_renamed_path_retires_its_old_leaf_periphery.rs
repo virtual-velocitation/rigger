@@ -17,7 +17,7 @@
 //! alone. The log is hand-built, as the criterion names, so each case folds exactly the leaves,
 //! kinds and order it pins; every test runs on both lanes.
 
-mod common;
+use crate::common;
 
 use common::fixtures::{
     a_call_from, attrs_of, cross_file_call_and_proof, definition, ev_at, f_rs_batch_def, folds,

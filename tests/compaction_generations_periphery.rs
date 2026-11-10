@@ -47,7 +47,7 @@
 //!      stop at a failure; beside a file without its cursor it is no cause either, the seeding
 //!      reading the file's ledger against the log, never the mark.
 
-mod common;
+use crate::common;
 
 use common::cli::append_run_events;
 use common::cli::applied;

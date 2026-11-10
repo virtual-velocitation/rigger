@@ -38,7 +38,7 @@
 //! in `crates/rigger-driver/src/claude_auth.rs`; its `authMethod` key is tested only here, through
 //! the binary.
 
-mod common;
+use crate::common;
 
 use common::cli::rigger_file;
 use common::cli::run_rigger;

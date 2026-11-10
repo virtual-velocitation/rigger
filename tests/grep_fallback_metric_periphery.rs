@@ -35,7 +35,7 @@
 //! `progress`, `metrics`, `dash`, and `eventstore::sqlite` are not feature-gated, so this guards
 //! the counted-fallback contract on BOTH the default and the `--no-default-features` lane.
 
-mod common;
+use crate::common;
 
 use std::collections::HashMap;
 

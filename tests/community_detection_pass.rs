@@ -24,7 +24,7 @@ use rigger::community::{self, Coupling, DEFAULT_RESOLUTION};
 use rigger::contextgraph::sqlite::Projector;
 use rigger::eventstore::Event;
 
-mod common;
+use crate::common;
 use common::fixtures::{community_snapshot, seed_two_subsystems};
 
 /// Run the pass on a projector seeded with the coupling graph, returning (assignment, the recorded

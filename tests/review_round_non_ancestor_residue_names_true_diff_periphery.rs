@@ -41,7 +41,7 @@
 //! before `round_start_sha`, where `work.rs` never existed either. Restoring the `DiffMode::Direct`
 //! call verbatim (`git diff` on `src/` clean) returns it to green.
 
-mod common;
+use crate::common;
 use common::git::run_git;
 
 use common::fixtures::agent;

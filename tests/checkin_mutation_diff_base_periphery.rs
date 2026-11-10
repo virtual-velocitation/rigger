@@ -49,7 +49,7 @@
 //! THE GATE OWNS ITS INSTRUMENT. A unit diff that adds an exclusion or examine key to
 //! `.cargo/mutants.toml`, or a cargo-mutants skip attribute, fails before any sweep.
 
-mod common;
+use crate::common;
 
 use common::cli::ambient_tools_bin;
 use common::fixtures::write_text;

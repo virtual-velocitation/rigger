@@ -10,9 +10,7 @@
 //! outside it. It
 //! extracts real source, so it runs on the `symbols` lane alone, and only Linux has the clock.
 
-#![cfg(all(feature = "symbols", target_os = "linux"))]
-
-mod common;
+use crate::common;
 
 use std::time::Duration;
 

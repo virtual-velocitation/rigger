@@ -28,7 +28,7 @@
 //! BOTH the default and the `--no-default-features` lane - none is feature-gated - so these guard
 //! the boundary in both lanes.
 
-mod common;
+use crate::common;
 
 use rigger::spawn::SpawnEvent;
 use std::collections::HashMap;

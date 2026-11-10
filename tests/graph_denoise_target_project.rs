@@ -29,7 +29,7 @@ use rigger::contextgraph::{
 };
 use rigger::spawn::SpawnEvent;
 
-mod common;
+use crate::common;
 use common::fixtures::apply_json_as;
 
 #[test]

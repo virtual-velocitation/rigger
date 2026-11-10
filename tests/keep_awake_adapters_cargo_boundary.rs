@@ -16,7 +16,7 @@
 //! Linux build has warmed. A warm cache touches no network; a cold one fetches what the Windows
 //! resolve needs, as `cargo build` would.
 
-mod common;
+use crate::common;
 
 /// The Windows target the resolver is asked about.
 const WINDOWS: &str = "x86_64-pc-windows-msvc";

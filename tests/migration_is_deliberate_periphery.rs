@@ -54,7 +54,7 @@
 //!    follows "only currently valid edges" - so this is provable only in-crate, where
 //!    `sqlite.rs::migration_c3` already reads the raw superseded edge directly.
 
-mod common;
+use crate::common;
 
 use common::cli::run_rigger;
 use common::cli::run_stream_identity;

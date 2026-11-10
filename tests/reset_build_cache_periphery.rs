@@ -31,7 +31,7 @@
 //!     `rigger validate`'s FOOTPRINT ACCOUNTING category for this cache - spec 77 criterion 5's
 //!     own surface.
 
-mod common;
+use crate::common;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

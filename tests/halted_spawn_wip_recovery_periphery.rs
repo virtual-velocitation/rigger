@@ -81,7 +81,7 @@
 //! then lets every later call - including the halted-commit capture's own, once adoption
 //! proceeds - reach the genuine git unmodified.
 
-mod common;
+use crate::common;
 
 use common::cli::run_rigger;
 use common::cli::run_rigger_envs;

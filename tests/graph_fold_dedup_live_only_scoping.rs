@@ -24,7 +24,7 @@
 //! fold (criterion 1) lives in `graph_fold_dedup_live_edge.rs`; the rebuild-collapse of pre-existing
 //! duplicates (criterion 3) is owned by a sibling unit and is not exercised here.
 
-mod common;
+use crate::common;
 use common::fixtures::apply_decision;
 
 use rigger::contextgraph::sqlite::Projector;

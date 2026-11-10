@@ -35,7 +35,7 @@
 //! residue file survives into the integrated tree); restoring the call verbatim (`git diff` on
 //! `crates/` clean) returns it to green.
 
-mod common;
+use crate::common;
 
 use common::fixtures::agent;
 use common::fixtures::gate_def;

@@ -23,7 +23,9 @@
 //! It also holds the wire form of the eight older kinds (spec 116 criterion 4 moved their kind
 //! strings onto shared constants): the emit pass still lowers each to the string it always did.
 
-mod common;
+#[allow(unused_imports)] // used only by the symbols-gated tests
+use crate::common;
+#[allow(clippy::duplicate_mod)]
 #[path = "common/symbol_index.rs"]
 mod symbol_index;
 

@@ -24,7 +24,7 @@
 //! `dash`, `contextgraph` are compiled on BOTH the default and the `--no-default-features` lane (none
 //! feature-gated), so this guards the served boundary in both lanes.
 
-mod common;
+use crate::common;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::{Read, Write};

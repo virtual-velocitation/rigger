@@ -24,7 +24,7 @@
 //!   7. **The blob is written.** Inside a repository the entry the migration writes names a blob
 //!      the project's object database holds, the bytes the tree holds, though no commit holds it.
 
-mod common;
+use crate::common;
 use common::fixtures::git_hash_object;
 use common::git::{assert_holds_no_object, held_blob, object_ids, run_git};
 

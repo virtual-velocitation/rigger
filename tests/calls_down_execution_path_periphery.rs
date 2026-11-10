@@ -50,7 +50,7 @@
 //! pin the JSON contract the fold reads, exactly as the sibling graph-fold periphery tests do. No
 //! reference to any external tool or project; hyphens, never em dashes.
 
-mod common;
+use crate::common;
 
 use common::fixtures::{apply_call, apply_def, apply_ref};
 use common::fixtures::{call_edge_pairs, call_layer, call_node_ids};

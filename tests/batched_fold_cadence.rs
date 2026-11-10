@@ -28,7 +28,7 @@
 //! exactly like the sibling ingest suites; a light-lane test pins the walk's no-op there. Both lanes
 //! stay green.
 
-mod common;
+use crate::common;
 
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{Error as CgError, Projection, REL_GOVERNS, TYPE_DECISION_MADE};

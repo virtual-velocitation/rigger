@@ -10,7 +10,7 @@
 //!   3. **The shipped store-hygiene skill.** The committed skill an operator reads before a reset
 //!      describes `--derived` as the migration, word for word, wherever it names it.
 
-mod common;
+use crate::common;
 
 use common::cli::{
     applied_positions, emit, log_and_graph_files, migrated_lines, pre_ledger_batch, rigger_file,

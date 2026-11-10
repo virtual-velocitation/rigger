@@ -24,8 +24,9 @@
 
 use std::sync::Mutex;
 
-mod common;
+use crate::common;
 use common::git::temp_git_project_with_commit;
+#[allow(clippy::duplicate_mod)]
 #[path = "common/source_audit.rs"]
 mod source_audit;
 use source_audit::gate_name_in;

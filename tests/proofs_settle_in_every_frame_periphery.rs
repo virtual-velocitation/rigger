@@ -8,7 +8,7 @@
 //! generation dropping a reference and one dropping a definition take their proofs away. It
 //! runs on both lanes.
 
-mod common;
+use crate::common;
 
 use std::collections::BTreeMap;
 use std::path::Path;

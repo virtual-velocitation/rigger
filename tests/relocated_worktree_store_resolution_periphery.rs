@@ -26,7 +26,7 @@
 
 use std::path::Path;
 
-mod common;
+use crate::common;
 use common::cli::open_graph;
 use common::cli::run_rigger;
 use common::fixtures::apply_code_entity;

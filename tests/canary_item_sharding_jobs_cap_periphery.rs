@@ -25,7 +25,7 @@
 //! erroring one (in corpus order) are ever appended to the store, matching this crate's own
 //! "a canary score the store did not write is not a score" discipline.
 
-mod common;
+use crate::common;
 
 use std::sync::{Barrier, Mutex};
 

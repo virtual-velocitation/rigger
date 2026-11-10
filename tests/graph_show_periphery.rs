@@ -47,7 +47,7 @@
 // The compiled `rigger` binary under test is located at RUNTIME by the shared authority in
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves,
 // and every suite that spawns the product then dies with a bare NotFound.
-mod common;
+use crate::common;
 
 #[cfg(not(feature = "symbols"))]
 use common::cli::assert_light_lane_extent_note;

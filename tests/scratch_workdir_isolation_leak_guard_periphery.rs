@@ -27,7 +27,7 @@
 
 use std::path::{Path, PathBuf};
 
-mod common;
+use crate::common;
 use common::fixtures::test_spawn_host;
 use common::fixtures::{fan_out_stage, workflow_cfg, NoopDriver};
 use common::git::temp_git_project_with_commit;

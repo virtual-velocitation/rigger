@@ -6,7 +6,8 @@
 //! boundaries the rule crosses: the list every crate reads the order from, and the graph
 //! `rigger graph build` folds from what the extractor emits for a real source file.
 
-mod common;
+#[allow(unused_imports)] // used only by the symbols-gated tests
+use crate::common;
 
 /// `CODE_KIND_PRECEDENCE` is the order the spec states, kind string by kind string: sixteen
 /// kinds, a type first and `other` last, each spelled as the log and a folded graph carry it.

@@ -20,7 +20,7 @@
 //! shape is exactly what it claims to be, locked down here so a future field rename becomes a
 //! test failure instead of a silent JS-side break.
 
-mod common;
+use crate::common;
 
 use common::fixtures::ONE_COMMUNITY;
 use rigger::console::map;

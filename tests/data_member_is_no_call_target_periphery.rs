@@ -18,8 +18,9 @@
 //! reads. The rebuild test extracts real source, so it runs on the `symbols` lane alone; both
 //! lanes run every other test.
 
-mod common;
+use crate::common;
 #[cfg(feature = "symbols")]
+#[allow(clippy::duplicate_mod)]
 #[path = "common/symbol_index.rs"]
 mod symbol_index;
 

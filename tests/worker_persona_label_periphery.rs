@@ -11,7 +11,7 @@
 //! source - never hand-copied, so a future edit is exercised here without a separate update - and
 //! runs them for real under `node`.
 
-mod common;
+use crate::common;
 
 use common::repo::repo_text;
 use common::repo::worker_label;

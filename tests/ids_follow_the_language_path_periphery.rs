@@ -11,7 +11,9 @@
 //!    definitions carried `path` is never served, so the ingest's payloads come from a rebuild over
 //!    the tree, while the same index carrying `path` is served as persisted.
 
-mod common;
+#[allow(unused_imports)] // used only by the symbols-gated tests
+use crate::common;
+#[allow(clippy::duplicate_mod)]
 #[path = "common/symbol_index.rs"]
 mod symbol_index;
 

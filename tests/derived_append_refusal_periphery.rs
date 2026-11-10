@@ -23,7 +23,7 @@
 //! No operator verb reaches this refusal: both ingest sinks record a ledger entry and fold the
 //! batch, and `rigger emit` refuses a derived type at its own allowlist before the store.
 
-mod common;
+use crate::common;
 
 use std::collections::BTreeSet;
 use std::path::Path;

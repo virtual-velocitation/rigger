@@ -54,7 +54,7 @@
 //! citation shape (same real sites, a different purpose) and would otherwise be misread as
 //! belonging to whichever cluster happens to render last.
 
-mod common;
+use crate::common;
 
 use common::repo::committed_json;
 use common::repo::{assert_committed_json_round_trips, assert_committed_ledger_is_nonempty};

@@ -95,12 +95,13 @@
 //! above it. [`block_span`] and [`cfg_test_ranges`] (in `common/source_audit.rs`) lean on exactly these two properties
 //! and nothing else about Rust's grammar.
 
-mod common;
+use crate::common;
 use common::repo::collect_rs_files;
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
+#[allow(clippy::duplicate_mod)]
 #[path = "common/source_audit.rs"]
 mod source_audit;
 use source_audit::{

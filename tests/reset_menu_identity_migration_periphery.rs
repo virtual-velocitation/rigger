@@ -14,7 +14,7 @@
 //! exists to prevent, and a shape a fixture that always seeds AFTER `rigger init` can never
 //! reproduce.
 
-mod common;
+use crate::common;
 
 use common::cli::derived_menu_line_naming;
 use common::cli::derived_menu_lines;

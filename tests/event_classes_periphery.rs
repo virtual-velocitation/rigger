@@ -16,7 +16,7 @@
 //! read, every live node and edge, then folds a decision after them as the positive control: the
 //! read that stayed still moves when a knowledge event arrives, at that event's own position.
 
-mod common;
+use crate::common;
 
 use common::fixtures::nanos;
 use common::fixtures::{

@@ -32,7 +32,7 @@
 //! (criterion 3) and the store-layer append guard (criterion 4) are owned by sibling units and are
 //! deliberately not exercised here.
 
-mod common;
+use crate::common;
 
 use common::fixtures::count_of_type;
 use common::fixtures::reference_replay_keys;

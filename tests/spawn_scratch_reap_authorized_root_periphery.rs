@@ -28,7 +28,7 @@
 
 use std::path::Path;
 
-mod common;
+use crate::common;
 
 use common::cli::run_rigger_envs;
 use common::cli::run_stream_identity;

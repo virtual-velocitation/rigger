@@ -55,7 +55,7 @@
 //! `run::start_fresh`/`current_run_base_tip` are all compiled and exercised in both feature
 //! lanes.
 
-mod common;
+use crate::common;
 
 use std::path::Path;
 

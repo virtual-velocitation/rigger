@@ -36,7 +36,7 @@
 //! suite - these tests run on both the default and the `--no-default-features` lane. No reference to
 //! any external tool or project; hyphens, never em dashes.
 
-mod common;
+use crate::common;
 
 use common::fixtures::edge;
 use common::fixtures::node_with_attrs as node;

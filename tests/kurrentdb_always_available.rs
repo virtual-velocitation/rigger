@@ -26,12 +26,13 @@
 //! Deliberately NOT feature-gated: it parses a text file and touches no backend
 //! symbol, so it runs identically in both feature lanes.
 
-mod common;
+use crate::common;
 
 use common::repo::repo_text;
 use common::repo::table_declares_key;
 use common::repo::table_lines;
 
+#[allow(clippy::duplicate_mod)]
 #[path = "common/retired_feature.rs"]
 mod retired_feature;
 use retired_feature::assert_no_src_line_gates_on;

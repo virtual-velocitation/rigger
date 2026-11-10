@@ -7,7 +7,7 @@
 #[path = "../build/template_sets.rs"]
 mod template_sets;
 
-mod common;
+use crate::common;
 use common::assert_names;
 use std::path::{Path, PathBuf};
 use template_sets::generate_template_sets;

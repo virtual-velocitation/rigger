@@ -5,7 +5,7 @@
 //! constant neither the knowledge enumeration nor the episodic list names is added to the
 //! knowledge list here.
 
-mod common;
+use crate::common;
 
 use common::repo::{collect_rs_files, repo_root};
 use rigger::contextgraph::{

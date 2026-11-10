@@ -37,7 +37,7 @@
 //! `dash` + `contextgraph` compile on BOTH the default and the `--no-default-features` lane (neither
 //! the route nor these DTOs is feature-gated), so this guards the served contract in both lanes.
 
-mod common;
+use crate::common;
 
 use std::collections::BTreeSet;
 

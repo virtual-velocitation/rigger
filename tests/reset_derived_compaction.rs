@@ -6,7 +6,7 @@
 //! leaving the local log as it stands, then the same project without that configuration to
 //! migrating.
 
-mod common;
+use crate::common;
 
 use common::cli::log_and_graph_files;
 use common::cli::migrated_lines;

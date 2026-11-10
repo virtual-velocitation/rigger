@@ -25,7 +25,7 @@
 //! tests are not feature-gated and run in both - the fold and the read they exercise are always
 //! compiled.
 
-mod common;
+use crate::common;
 
 use common::served::body_of;
 use common::served::{fetch_with_retry, try_fetch_over};

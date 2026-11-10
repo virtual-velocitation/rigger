@@ -84,7 +84,7 @@
 //! branch ref is silently reclaimed underneath (only the duplicate LOG line is suppressed, never
 //! the underlying best-effort cleanup).
 
-mod common;
+use crate::common;
 
 use common::cli::run_rigger;
 use common::cli::run_stream_identity;

@@ -22,7 +22,7 @@
 //! Reprojection, route, Cluster, Lens}`), so they guard the exact public boundary a same-crate
 //! `super::` test is structurally blind to, and drive the served `route` end-to-end.
 
-mod common;
+use crate::common;
 
 use common::fixtures::def_node as def;
 use common::fixtures::edge;

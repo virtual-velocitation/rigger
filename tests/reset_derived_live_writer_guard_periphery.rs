@@ -32,7 +32,7 @@
 //!     criterion 5 - `tests/reset_derived_compaction*.rs`), the append-time assertion (spec 71,
 //!     criterion 1), and the validate advisory (spec 71, criterion 3).
 
-mod common;
+use crate::common;
 
 use common::cli::configure_workdir;
 use common::cli::hold_step_lock;

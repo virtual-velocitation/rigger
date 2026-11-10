@@ -31,7 +31,7 @@
 //! Every test here takes [`serial`]: item 4 points the whole process's engine at one directory,
 //! so nothing else in this binary may stage a temporary file while it watches.
 
-mod common;
+use crate::common;
 
 use common::fixtures::{file_len, plant_free_pages, pragma_i64, DATABASE_IS_LOCKED};
 use rigger::eventstore::sqlite::{Reclamation, Store};

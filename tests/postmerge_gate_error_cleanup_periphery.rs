@@ -33,7 +33,7 @@
 //! for which that slugging is the identity transform, so the path is reconstructed here without
 //! calling any private helper.
 
-mod common;
+use crate::common;
 use common::fixtures::test_spawn_host;
 use common::fixtures::workflow_cfg;
 use common::git::git_ok;

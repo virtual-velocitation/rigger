@@ -27,7 +27,7 @@
 //! regression snapshot, which this unit's `checkbox_opening_lines` split was designed to
 //! leave untouched).
 
-mod common;
+use crate::common;
 use common::repo::repo_text;
 use std::path::Path;
 

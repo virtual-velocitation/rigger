@@ -20,7 +20,7 @@
 //! wire-shape suite, `console_map_legend_wire_shape_periphery.rs`, needed the identical helper -
 //! spec 85's own mandatory duplication sweep), never a copy local to this file.
 
-mod common;
+use crate::common;
 
 use common::fixtures::ONE_COMMUNITY;
 use common::json_object_keys;

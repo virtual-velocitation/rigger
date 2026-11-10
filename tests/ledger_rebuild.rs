@@ -17,7 +17,7 @@
 //! folds nothing and is passed over as resolved to nothing (spec 124), and the hole a refused fold
 //! left is still paid.
 
-mod common;
+use crate::common;
 
 use std::path::Path;
 use std::time::{Duration, UNIX_EPOCH};

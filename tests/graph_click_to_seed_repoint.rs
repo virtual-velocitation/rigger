@@ -14,7 +14,7 @@
 //! adds the cross-unit isolation boundary a single-unit unit test cannot reach. It intentionally does
 //! NOT re-author the implementer's inside-out tests; it adds the outside-in periphery layer.
 
-mod common;
+use crate::common;
 
 use std::collections::HashMap;
 

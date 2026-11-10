@@ -36,7 +36,7 @@
 //! DEFINITION) too: every spawn of the panel defines the helpers from the operator's copies the
 //! checkout holds, else from the embedded text, and pre-approves the rigger tools they declare.
 
-mod common;
+use crate::common;
 
 use common::cli::{
     cargo_project, loaded_config, read_run_events, rigger_file, run_rigger, run_rigger_ok,

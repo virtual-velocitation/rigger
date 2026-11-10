@@ -22,10 +22,11 @@
 //! compiles on BOTH the default and the `--no-default-features` lane (the seam is not feature-gated),
 //! so this guards the client seam in both lanes.
 
-mod common;
+use crate::common;
 
 use common::served::node_harness_passes;
 
+#[allow(clippy::duplicate_mod)]
 #[path = "common/vm_harness.rs"]
 mod vm_harness;
 use vm_harness::vm_harness;

@@ -19,7 +19,7 @@
 //! walk folds its calls before the definition, whose tier upgrade binds the leaf and lifts them
 //! to the walk's `inferred` floor. Every test runs on both lanes.
 
-mod common;
+use crate::common;
 
 use common::fixtures::{
     apply_call, apply_code_entity, apply_def, apply_generation_head, apply_ref, call_frontiers,

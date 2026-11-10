@@ -24,11 +24,12 @@
 //! authored and confirmed clean on all 4 (target x lane) combinations - see this file's own
 //! `verification` field and this unit's own `DecisionMade` record.
 
-mod common;
+use crate::common;
 
 use std::path::Path;
 use std::process::Command;
 
+#[allow(clippy::duplicate_mod)]
 #[path = "common/audit_record.rs"]
 mod audit_record;
 use audit_record::read_audit_record;

@@ -37,7 +37,7 @@
 //! wire contract. `dash` and `contextgraph` compile on BOTH the default and the
 //! `--no-default-features` lane (neither is feature-gated), so this guards the drill in both lanes.
 
-mod common;
+use crate::common;
 
 use std::collections::BTreeMap;
 

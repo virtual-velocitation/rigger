@@ -24,7 +24,7 @@
 //! store, and that `metrics::project_canary` folds those genuinely-produced wire events
 //! (never a hand-typed fixture) into the same values.
 
-mod common;
+use crate::common;
 
 use common::fixtures::test_spawn_host;
 use rigger::canary::{CanaryHeader, CanaryOutcome, STREAM, TIER_ADVERSARY, TIER_LENS};

@@ -19,7 +19,7 @@
 //!    namespace; one project's recording of an identity must never answer another project's
 //!    lookup of the same identity. Drivable in both feature lanes, since it needs no walk.
 
-mod common;
+use crate::common;
 
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::Store;

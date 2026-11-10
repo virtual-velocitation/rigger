@@ -30,7 +30,7 @@
 //! `dash` and `contextgraph` compile on BOTH the default and the `--no-default-features` lane
 //! (neither is feature-gated), so this guards the overview boundary in both lanes.
 
-mod common;
+use crate::common;
 use common::fixtures::edge_valid_to;
 use common::fixtures::{leaf_named_node, plain};
 

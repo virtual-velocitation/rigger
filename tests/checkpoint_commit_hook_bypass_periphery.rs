@@ -31,7 +31,7 @@
 //! differently-shaped failure), confirming the assertion is load-bearing; restoring the fix
 //! verbatim (`git diff` on `src/` clean) returns it to green.
 
-mod common;
+use crate::common;
 
 use common::fixtures::mk_stage;
 use common::fixtures::test_spawn_host;
