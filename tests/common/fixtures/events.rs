@@ -98,15 +98,12 @@ pub fn payloads_of_type(events: &[Event], type_: &str) -> Vec<serde_json::Value>
 }
 
 /// The `(gate, pass)` of every `GateVerdict` in `events` that records a gate run, in order; a
-/// settle record records none.
+/// settle record, the row whose `settled` list cites the passes a gate battery acted on, records
+/// none.
 pub fn gate_outcomes(events: &[Event]) -> Vec<(String, bool)> {
-    let runs: Vec<Event> = events
+    payloads_of_type(events, rigger::contextgraph::TYPE_GATE_VERDICT)
         .iter()
-        .filter(|e| !rigger::conductor::is_settle_record(e))
-        .cloned()
-        .collect();
-    payloads_of_type(&runs, rigger::contextgraph::TYPE_GATE_VERDICT)
-        .iter()
+        .filter(|verdict| verdict.get("settled").is_none())
         .map(|verdict| {
             (
                 verdict["gate"].as_str().unwrap_or_default().to_string(),
