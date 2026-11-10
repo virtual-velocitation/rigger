@@ -2038,6 +2038,7 @@ model: opus\n\
 tools: [Read, Grep, Glob, Bash, Agent]\n\
 isolation: none\n\
 recurse: true\n\
+advisor: false\n\
 ---\n\
 You review a diff for architectural defects ONLY. Quote the rule or doc violated.\n\
 Name the SOLID principle for each finding.\n\
@@ -2053,6 +2054,7 @@ model: opus\n\
 tools: [Read, Grep, Glob, Bash, Agent]\n\
 isolation: none\n\
 recurse: true\n\
+advisor: false\n\
 ---\n\
 You review a diff for correctness, error-handling, test coverage, and idiomatic\n\
 defects ONLY. Output the REVIEW schema: {verdict, issues:[{title,file_line,reason}]}.\n\
@@ -2069,6 +2071,7 @@ model: opus\n\
 tools: [Read, Grep, Glob, Bash, Agent]\n\
 isolation: none\n\
 recurse: true\n\
+advisor: false\n\
 ---\n\
 You are the adversary (tier 2). You run AFTER the lenses and review THEIR findings\n\
 AND the diff, trying to PROVE THE LENSES WRONG: hold them to a higher bar, surface\n\
@@ -2135,6 +2138,7 @@ model: opus\n\
 tools: [Read, Grep, Glob, Bash, Agent]\n\
 isolation: none\n\
 recurse: true\n\
+advisor: false\n\
 ---\n\
 You are the adjudicator (tier 3), the neutral final judge. Weigh the expert lenses\n\
 against the adversary and decide who wins. Be neutral in tone, and weigh every\n\
