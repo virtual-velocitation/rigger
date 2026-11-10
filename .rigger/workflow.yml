@@ -136,10 +136,10 @@ gates:                      # the project's verification library, referenced by 
   # The lane gates: the no-default and core feature lanes, each through the one script CI runs
   # (.rigger/gates/lanes.sh), so a check-in never lands a tree CI then fails on a lane the gates
   # above never built. The script derives the core lane's members from the workspace and fails a
-  # test step that ran no test. The no-default lane gates every implement round: it is the lane a
-  # reviewer would otherwise rebuild by hand, and an instrument proves it once per tree instead.
-  # The core lane gates the check-in, whose post-merge re-gate covers the merged tree too. Each
-  # sources the container runtime snippet first, as `test` does, so container-backed tests run,
+  # test step that ran no test. Both lanes gate every implement round: they are the lanes a
+  # reviewer would otherwise rebuild by hand, and an instrument proves them once per tree instead,
+  # so a break in either lane surfaces at the unit that made it. The check-in gates both again on
+  # the merged tree. Each sources the container runtime snippet first, as `test` does, so container-backed tests run,
   # not skip.
   lane-no-default:
     run: ". .rigger/gates/container-env.sh || exit 1; sh .rigger/gates/lanes.sh no-default"
@@ -226,8 +226,8 @@ stages:
   #    unit, each in an isolated worktree, partitioned by blast-radius so the waves
   #    stay disjoint. Each unit's complete lifecycle runs inside this one stage:
   #    red -> green is enforced around the change, the full gate set
-  #    (fmt + clippy + build + test + the no-default lane + style) must pass, THEN the unit reviews ITSELF through
-  #    `defaults.review`'s three tiers, and only on adjudicator-approve + green gates
+  #    (fmt + clippy + build + test + the no-default and core lanes + style) must pass, THEN
+  #    the unit reviews ITSELF through `defaults.review`'s three tiers, and only on adjudicator-approve + green gates
   #    does it integrate (on_pass: merge). A reject or a gate failure feeds back into
   #    this same unit's remediation loop (re-ground, re-implement with the feedback)
   #    and escalates after the retry bound - it does NOT integrate. Every
@@ -237,7 +237,8 @@ stages:
     agent: rust-engineer
     strategy: fan-out
     partition: by-blast-radius
-    gates: [fmt, clippy, build, test, lane-no-default, style, no-os-kill, boundary, red-before-green]
+    gates: [fmt, clippy, build, test, lane-no-default, lane-core, style, no-os-kill, boundary,
+             red-before-green]
     on_pass: merge
     coverage: "each unit is implemented, three-tier-reviews itself, and integrates on a green workspace"
 

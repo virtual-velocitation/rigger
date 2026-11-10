@@ -4796,8 +4796,8 @@ mod tests {
         );
         let block = rigger::wave::normalize_ws(&blocks[0]);
         for wanted in [
-            "fmt, clippy, build, test, lane-no-default, style, no-os-kill, boundary and \
-             red-before-green",
+            "fmt, clippy, build, test, lane-no-default, lane-core, style, no-os-kill, boundary \
+             and red-before-green",
             "`cargo fmt --all --check`",
             "`cargo clippy --workspace --all-targets -- -D warnings`",
             "`cargo clippy --workspace --all-targets --no-default-features -- -D warnings`",

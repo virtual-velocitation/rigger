@@ -48,8 +48,8 @@ Stay inside your unit's blast-radius.
 ## Hand-over checks in this project
 
 This project's anchors for the built-in hand-over rules. The implement stage's gates
-(`.rigger/workflow.yml`) are fmt, clippy, build, test, lane-no-default, style, no-os-kill,
-boundary and red-before-green. Before you report, run from the worktree root, on
+(`.rigger/workflow.yml`) are fmt, clippy, build, test, lane-no-default, lane-core, style,
+no-os-kill, boundary and red-before-green. Before you report, run from the worktree root, on
 your committed tree:
 
 - `cargo fmt --all --check`;
