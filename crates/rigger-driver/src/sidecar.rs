@@ -34,6 +34,9 @@ pub struct PeerDecision {
     pub live: bool,
 }
 
+/// The note a show surface gives beside a record it read from the log ([`Sidecar::site_of`]).
+pub const LOGGED_SITE_NOTE: &str = "read from the event log: the graph no longer holds this record";
+
 /// A peer reviewer's finding, as the side-car surfaces it to a concurrent reviewer.
 /// This is how concurrent lenses see each other's findings LIVE: a lens emits a
 /// ReviewFinding, the side-car's catch-up subscription picks it up, and a fellow
@@ -257,9 +260,39 @@ impl Sidecar {
     }
 
     /// The decision, lesson or finding whose id is `id`, read from the log as a show surface
-    /// prints a graph node, for an id the graph no longer holds.
-    pub fn site_of(&self, _id: &str) -> Option<contextgraph::EntitySite> {
-        None
+    /// prints a graph node, for an id the graph no longer holds (a `rigger reset --runs` prune
+    /// deletes no event): its kind, the distinct references it names as its degree, and its
+    /// summary and reviewer as the fold's attrs; a restated id reads as its latest record.
+    pub fn site_of(&self, id: &str) -> Option<contextgraph::EntitySite> {
+        self.site_of_kind::<PeerDecision>(id)
+            .or_else(|| self.site_of_kind::<PeerLesson>(id))
+            .or_else(|| self.site_of_kind::<PeerFinding>(id))
+    }
+
+    /// [`Self::site_of`] over the records of kind `T`.
+    fn site_of_kind<T: Peer>(&self, id: &str) -> Option<contextgraph::EntitySite> {
+        let record = T::collect(&self.seen)
+            .into_iter()
+            .rfind(|r| (T::ID)(r) == id)?;
+        let attrs = [("summary", (T::SUMMARY)(&record)), ("by", (T::BY)(&record))]
+            .into_iter()
+            .filter(|(_, value)| !value.is_empty())
+            .map(|(key, value)| (key.to_string(), value.to_string()))
+            .collect();
+        let degree = (T::SCOPE)(&record)
+            .iter()
+            .map(|r| referenced_id(r))
+            .collect::<HashSet<_>>()
+            .len();
+        Some(contextgraph::EntitySite {
+            id: id.to_string(),
+            kind: T::NOUN.to_string(),
+            file: None,
+            line: 0,
+            degree,
+            attrs,
+            unresolved: Vec::new(),
+        })
     }
 
     /// The peer records of kind `T` scoped to an agent's blast-radius (§5.3): a peer record is

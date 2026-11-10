@@ -203,14 +203,31 @@ const SHOW_MAX_BODY_LINES: u32 = 60;
 /// - NONE: a one-line not-found note (never an error), mirroring `--around`'s empty result.
 ///
 /// Read-only over the projection and the working tree; deterministic for a given tree and graph.
+/// The decision, lesson or finding `id` names, read from the run store's log the way `rigger
+/// peers` reads it ([`Sidecar::site_of`]), for an id the graph no longer holds: a `rigger reset
+/// --runs` prune drops a superseded run's records from the graph and deletes no event. A project
+/// with no store yet holds no such record.
+fn logged_site(id: &str) -> Result<Option<contextgraph::EntitySite>, Box<dyn std::error::Error>> {
+    let Some((loc, selection)) = store_if_any()? else {
+        return Ok(None);
+    };
+    over_the_run_store_at(&loc, &selection, |store| {
+        Ok(Sidecar::read(store, conductor::STREAM)?.site_of(id))
+    })
+}
+
 fn cmd_graph_show(entity: &str) -> Res {
     let gp = owning_graph_to_read()?;
     match gp.locate(entity)? {
-        Located::None => {
-            println!(
+        Located::None => match logged_site(entity)? {
+            Some(site) => {
+                print_entity_site(&site);
+                println!("  ({})", rigger::sidecar::LOGGED_SITE_NOTE);
+            }
+            None => println!(
                 "show {entity:?}: no such entity in the graph (has it been built? try `rigger graph build`)"
-            );
-        }
+            ),
+        },
         Located::Many(cands) => {
             println!(
                 "show {entity:?}: {} candidates - the name is ambiguous, re-run --show on one id:",
