@@ -659,7 +659,8 @@ mod tests {
     /// each search with its hit count and each site fixed, never every hit listed or
     /// dispositioned, a search term found inside a longer identifier no hit; and a probe that
     /// edits the tree - the sharpest case of a turn's end being the session's end - run to
-    /// completion and restored before the turn ends. No sentence-walk record, witness, rule
+    /// completion and restored before the turn ends; and the gate verb named, whose verdict on a
+    /// commit the driver reuses. No sentence-walk record, witness, rule
     /// search, one-home line or lens re-derivation is owed, and no hand mutation rule or
     /// per-literal shape search is carried. Read by its words, so a rewrap never moves a verdict.
     #[test]
@@ -721,6 +722,7 @@ mod tests {
         ]
         .into_iter()
         .chain(crate::test_support::BOUNDED_AUDIT)
+        .chain([crate::test_support::GATE_VERB_REUSE])
         {
             assert!(
                 words.contains(phrase),

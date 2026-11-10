@@ -4774,9 +4774,9 @@ mod tests {
     /// with the tool that searches them, the counted check - the roots a retired spelling is counted over
     /// with the command that counts it - and the foreground wait for the long runs (the
     /// touched tests and a lane script), polled to its exit line when the host
-    /// backgrounds one. The block owes no record: no sentence walk and its generators, no
-    /// one-home line, no rule-spelling search, no hand-applied mutation and no per-statement
-    /// test-shape record.
+    /// backgrounds one, and this project's anchor for the gate verb, whose verdict the driver
+    /// reuses. The block owes no record: no sentence walk and its generators, no one-home line,
+    /// no rule-spelling search, no hand-applied mutation and no per-statement test-shape record.
     #[test]
     fn the_author_roles_carry_one_hand_over_block_naming_the_checks_and_the_test_homes() {
         const HEADING: &str = "## Hand-over checks in this project";
@@ -4828,6 +4828,9 @@ mod tests {
             "`sh .rigger/gates/lanes.sh <lane>`",
             "takes minutes here: run it in the foreground with the Bash timeout raised to fit",
             "poll its output in an `until`-loop until its exit line is there, before you report",
+            "When you want a gate's verdict before you report, run `rigger gate <id>` with one of the \
+             gate ids above",
+            "the driver reuses that verdict for the same commit and does not run the gate again",
         ] {
             assert!(
                 block.contains(wanted),
