@@ -3,13 +3,12 @@
 //! writer both prove detection with, and the real-tree assertion both close on. Included by
 //! each suite through `#[path]`, never through `tests/common/mod.rs`. Also the line-level
 //! source reading those audits and `tests/boundary_audit.rs` share: which lines are test code,
-//! and which function encloses a line. And the one Rust lexer, [`tokenize`], that
-//! `tests/simplification_audit.rs` scans by, rule 4 of `tests/boundary_audit.rs` finds string
-//! literals with and its appender audit finds calls with, and the binary's unit tests (mounted by
-//! `src/main.rs`) read `tests/common`'s functions by; and the token readers the simplification and
-//! boundary audits read its tokens with ([`ref_punct`], [`ref_token`], [`lone_colon_at`],
+//! and which function encloses a line. And the one Rust lexer, [`tokenize`], that rule 4 of
+//! `tests/boundary_audit.rs` finds string literals with and its appender audit finds calls with,
+//! and the binary's unit tests (mounted by `src/main.rs`) read `tests/common`'s functions by; and
+//! the token readers the boundary audit reads its tokens with ([`ref_punct`], [`ref_token`],
 //! [`qualifier_before`], [`follows_keyword`], [`is_definition_site`], [`close_of`],
-//! [`imported_names`], [`renamed_imports`]). Each suite uses the subset it needs (hence the
+//! [`imported_names`]). Each suite uses the subset it needs (hence the
 //! module-wide `dead_code` allowance, as in `tests/common/mod.rs`).
 
 #![allow(dead_code)]
@@ -425,9 +424,8 @@ pub fn gate_name_in(line: &str, begins_in_literal: bool) -> Option<&'static str>
         })
 }
 
-/// Rust keywords (2018+ reserved and strict, plus weak keywords actually used as such) - kept
-/// verbatim by the simplification audit's normalizer rather than canonicalized like an
-/// identifier, since a keyword is structural signal, not a name.
+/// Rust keywords (2018+ reserved and strict, plus weak keywords actually used as such) - a
+/// keyword is structural signal, not a name, so [`tokenize`] marks it `Keyword`, not `Ident`.
 pub const RUST_KEYWORDS: &[&str] = &[
     "as", "break", "const", "continue", "crate", "dyn", "else", "enum", "extern", "false", "fn",
     "for", "if", "impl", "in", "let", "loop", "match", "mod", "move", "mut", "pub", "ref",
@@ -447,8 +445,7 @@ pub fn is_keyword(s: &str) -> bool {
 /// run (plus one optional `.`-fraction) is one `Lit` (number)
 /// token; a letter/`_`-led run is `Keyword` when it names a Rust keyword, else `Ident`; every
 /// other character is its own single-char `Punct` token (so a multi-char operator like `::` or
-/// `->` becomes two/three adjacent `Punct` tokens - the simplification audit's mandatory-sweep
-/// matchers account for this).
+/// `->` becomes two/three adjacent `Punct` tokens).
 pub fn tokenize(chars: &[char]) -> Vec<RawTok> {
     let n = chars.len();
     let mut i = 0usize;
@@ -568,14 +565,6 @@ pub fn ref_token(tok: Option<&RawTok>, kind: RawKind, text: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Whether `toks[i]` is a single `:` (a field, binding-type or argument-type separator) rather
-/// than either half of a `::` path separator, which the tokenizer splits into two `:` tokens.
-pub fn lone_colon_at(toks: &[RawTok], i: usize) -> bool {
-    ref_punct(toks.get(i), ":")
-        && !ref_punct(toks.get(i + 1), ":")
-        && !(i > 0 && ref_punct(toks.get(i - 1), ":"))
-}
-
 /// The identifier or keyword (such as `crate`, `self` or `super`) in front of the `::` that
 /// precedes `toks[i]`, the qualifier of a `qualifier::name`-shaped occurrence; `None` when fewer
 /// than three tokens precede `toks[i]`, when `toks[i]` is not `::`-preceded, or when the token in
@@ -630,8 +619,8 @@ pub fn close_of(toks: &[RawTok], open: usize, close: &str) -> usize {
 /// a group's braces and the closing `;`, and the owners of the groups open at it, innermost last.
 /// A declaration runs from any `use` keyword to the next `;`, so a precise-capturing bound
 /// (`impl Sized + use<'a>`) opens one too. A group's owner is the identifier or keyword in front of
-/// the `::` before its `{`, the empty string when there is none. The one walk [`imported_names`]
-/// and [`renamed_imports`] read declarations by.
+/// the `::` before its `{`, the empty string when there is none. The walk [`imported_names`]
+/// reads declarations by.
 fn each_use_token(toks: &[RawTok], mut visit: impl FnMut(usize, &[String])) {
     // Inside a `use` declaration, each open group's owner, innermost last.
     let mut owners: Option<Vec<String>> = None;
@@ -660,8 +649,7 @@ fn each_use_token(toks: &[RawTok], mut visit: impl FnMut(usize, &[String])) {
 /// `::` before it (`use a::b::c;` imports `c` owned by `b`). A name with no such owner of its own
 /// is owned by the innermost open group (`use a::{b, c::{d}};` imports `b` owned by `a` and `d`
 /// owned by `c`; `use {a, b::c};` imports `a` owned by `""` and `c` owned by `b`). These imports
-/// are read for no name: a glob (`a::*`), a renamed import (`b as c`, which [`renamed_imports`]
-/// reads), a path ending in a keyword (a `self` group member, which imports the `a` of
+/// are read for no name: a glob (`a::*`), a renamed import (`b as c`), a path ending in a keyword (a `self` group member, which imports the `a` of
 /// `use a::{self, b};`) and a name with no owner outside any group (a one-segment path,
 /// `use serde;`).
 pub fn imported_names(toks: &[RawTok]) -> Vec<(String, String)> {
@@ -674,29 +662,6 @@ pub fn imported_names(toks: &[RawTok]) -> Vec<(String, String)> {
         }
     });
     names
-}
-
-/// The renames read from the `use` declarations among `toks` ([`each_use_token`]), each alias
-/// paired with the name it renames, in source order: the identifier after an `as` renames the
-/// identifier in front of it (`use a::b as c;` renames `b` to `c`), and a `self` in front of it
-/// renames the innermost open group's owner (`use a::{self as c};` renames `a` to `c`).
-pub fn renamed_imports(toks: &[RawTok]) -> Vec<(String, String)> {
-    let mut renames = Vec::new();
-    each_use_token(toks, |at, groups| {
-        if !ref_token(toks.get(at), RawKind::Keyword, "as") {
-            return;
-        }
-        let Some(alias) = toks.get(at + 1).filter(|t| t.kind == RawKind::Ident) else {
-            return;
-        };
-        let renamed = match at.checked_sub(1).and_then(|i| toks.get(i)) {
-            Some(t) if t.kind == RawKind::Ident => Some(t.text.clone()),
-            Some(t) if ref_token(Some(t), RawKind::Keyword, "self") => groups.last().cloned(),
-            _ => None,
-        };
-        renames.extend(renamed.map(|renamed| (alias.text.clone(), renamed)));
-    });
-    renames
 }
 
 /// Whether the identifier at `toks[at]` is the last segment of a `use` path that imports it by

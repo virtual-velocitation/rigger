@@ -118,23 +118,6 @@ build:
   # `mutation` gate below, declared but unwired until #32 lands.
   max_concurrent: 1         # serialize builds machine-wide: two concurrent cargo-mutants sweeps (~100G each) exhausted /home this session. Blunt cap (operator-binary boundary blocks a surgical mutation-only slot); revisit as a spec.
 
-# Registered regenerable artifacts (spec 88, criterion 1): an integration merge conflict
-# CONFINED entirely to paths one of these rules matches is resolved by the conductor
-# itself - running `run` in the unit's worktree and committing - with no implementer
-# spawn at all. `docs/audit/*` is the simplification-audit catalog/report spec 85/87's
-# units regenerate today by hand with RIGGER_AUDIT_WRITE=1; registering it here lets a
-# conflict confined to those files (a common parallel-unit collision, since every unit
-# that touches audited code also updates them) resolve itself.
-# Only the FULLY generated artifacts are regenerable. The report
-# (docs/audit/2026-09-simplification-audit.md) is partly hand-written - the generator
-# rewrites only its section 2 - so a merge conflict in it is source: it goes to the
-# implementer's conflict-resolution retry like any other file (2026-09-15: a `docs/audit/*`
-# rule left 475 conflict-marker lines in the report after a "successful" regeneration and
-# the half-merge checkpoint guard rightly refused the commit; run c6ccaf8e, u89c2).
-regenerate:
-  - paths: ["docs/audit/*.json"]
-    run: "RIGGER_AUDIT_WRITE=1 cargo test --test simplification_audit"
-
 gates:                      # the project's verification library, referenced by name
   # fmt, clippy and build cover every workspace crate, never the root package alone: a bare
   # `cargo clippy` or `cargo build` here reaches only the root package, so no crate's own code
@@ -183,15 +166,6 @@ gates:                      # the project's verification library, referenced by 
   # outside the composition root, or when an item exempts itself from a denied principle
   # lint. Each rule's allowlist of today's offenders only shrinks. The adjudicator treats a red boundary gate as non-negotiable.
   boundary: { run: "cargo test --test boundary_audit", kind: core }
-  # The audit gate (workspace split, step 0): DRY and YAGNI as a red gate, the simplification
-  # audit regenerated over the worktree and then asserted. It runs before `test`, whose plain
-  # `cargo test` includes the audit's drift guards. The logic lives in `.rigger/gates/audit.sh`
-  # (its header carries the why of each clause: regenerating before asserting, the red
-  # diagnostic and the not-committed line); `tests/principle_gates_wiring.rs` drives it on
-  # fixture repositories.
-  audit:
-    run: "sh .rigger/gates/audit.sh"
-    kind: core
   # The red-before-green gate (workspace split, step 0): TDD made mechanical. The unit
   # branch's first commit that touches source - any path with a `src/` component (`src/...`,
   # `crates/<name>/src/...`, `tools/<name>/src/...`) - must be preceded by, or
@@ -263,7 +237,7 @@ stages:
     agent: rust-engineer
     strategy: fan-out
     partition: by-blast-radius
-    gates: [fmt, clippy, build, audit, test, lane-no-default, style, no-os-kill, boundary, red-before-green]
+    gates: [fmt, clippy, build, test, lane-no-default, style, no-os-kill, boundary, red-before-green]
     on_pass: merge
     coverage: "each unit is implemented, three-tier-reviews itself, and integrates on a green workspace"
 
@@ -280,6 +254,6 @@ stages:
     agent: rust-engineer
     max_retries: 2          # an ATTEMPT bound like defaults.max_retries: the gates, one remediation round, the gates again
     # The `mutation` gate is declared above but unwired from this stage until #32 lands.
-    gates: [fmt, clippy, build, audit, test, lane-no-default, lane-core, style-spec, no-os-kill-spec, boundary]
+    gates: [fmt, clippy, build, test, lane-no-default, lane-core, style-spec, no-os-kill-spec, boundary]
     on_pass: merge
     coverage: "the whole spec diff passes every gate on the merged tree"

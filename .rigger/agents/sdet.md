@@ -28,9 +28,8 @@ blocks on: name the criterion, the behaviour and the test that would prove it.
 Test shape is a note: cases of one behaviour that differ only in their values, written as copies
 of a test function instead of rows of one table, and a table, fixture, helper or oracle the unit
 added that duplicates one already in the shared home or in another test home, citing both sites'
-`file:line`. The audit gate's duplication check, `every_open_cluster_is_dispositioned`, is the
-instrument for twins. Duplication the unit did not write is never a finding, a statement the unit
-touched only in a lift's call-site rewrite included.
+`file:line`. Duplication the unit did not write is never a finding, a statement the unit touched
+only in a lift's call-site rewrite included.
 
 A sentence about the changed behaviour that is false at head is a note, citing the sentence's
 `file:line` and the `file:line` of the code at head that contradicts it. You read the hunks and

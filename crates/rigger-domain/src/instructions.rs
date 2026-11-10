@@ -756,8 +756,8 @@ mod tests {
             !words.contains("(the project's graph, or your persona's fallback)"),
             "the caller read must name the graph's depth"
         );
-        // Tests are table-driven and the duplication gate is the instrument for twins, so the
-        // hand-over owes no per-literal shape search and no per-statement shape record.
+        // Tests are table-driven and a twin is a review note, so the hand-over owes no
+        // per-literal shape search and no per-statement shape record.
         assert!(
             !words.contains("One search per literal")
                 && !words.contains("The record is owed for every test-side shape"),

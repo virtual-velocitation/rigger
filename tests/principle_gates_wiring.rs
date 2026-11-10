@@ -576,53 +576,6 @@ fn the_container_snippet_goes_on_without_a_container_cli() {
     assert_eq!(out.lines().count(), 1, "{out}");
 }
 
-/// `.rigger/gates/audit.sh` run in a fixture repository whose committed catalog is `committed`,
-/// against a stand-in `cargo` (`tests/fixtures/audit-cargo.sh`): in write mode it regenerates the
-/// catalog as `fresh`; otherwise it asserts, failing with `red` output when `red` is set. Returns
-/// (passed, output).
-fn run_audit_gate(committed: &str, fresh: &str, red: Option<&str>) -> (bool, String) {
-    let work = tempfile::tempdir().unwrap();
-    let repo = work.path().join("repo");
-    std::fs::create_dir_all(&repo).unwrap();
-    init_repo(&repo);
-    commit_files(&repo, &[("docs/audit/catalog.json", committed)], "catalog");
-    let path = stub_path(work.path(), "cargo", Some("audit-cargo.sh"));
-    run_gate_script(
-        &repo,
-        "audit.sh",
-        &[
-            ("PATH", path.as_ref()),
-            ("AUDIT_CARGO_FRESH", fresh.as_ref()),
-            ("AUDIT_CARGO_RED", red.unwrap_or_default().as_ref()),
-        ],
-    )
-}
-
-#[test]
-fn the_audit_script_passes_a_fresh_committed_catalog_silently() {
-    let (passed, out) = run_audit_gate("same", "same", None);
-    assert!(passed, "{out}");
-    assert!(!out.contains("not committed"), "{out}");
-}
-
-#[test]
-fn the_audit_script_names_a_regenerated_uncommitted_catalog_without_failing_on_drift_alone() {
-    let (passed, out) = run_audit_gate("stale", "fresh", None);
-    assert!(passed, "drift alone must never fail the gate: {out}");
-    assert!(
-        out.contains("audit: docs/audit was regenerated for this tree and is not committed"),
-        "the gate must report the uncommitted regeneration distinctly: {out}"
-    );
-}
-
-#[test]
-fn the_audit_script_fails_red_assertions_with_its_own_diagnostic() {
-    let (passed, out) = run_audit_gate("same", "same", Some("clusters with no disposition"));
-    assert!(!passed, "{out}");
-    assert!(out.contains("clusters with no disposition"), "{out}");
-    assert!(out.contains("error[audit]:"), "{out}");
-}
-
 /// `.rigger/gates/test.sh` run in the worktree `tree` - the gate's working directory - with a
 /// stand-in `cargo` (`tests/fixtures/recording-cargo.sh`) that records its argv and the
 /// environment it received. Returns (passed, output, what cargo recorded - empty when cargo never

@@ -11331,8 +11331,8 @@ impl RunCtx<'_> {
     /// funnels through: a `TYPE_UNIT_STATUS` marker keyed for idempotent replay
     /// ([`Self::emit_keyed`]), carrying `status` (which of the six fold-neutral row tokens this
     /// is) and `evidence` (the row-specific payload). Factored out once the six near-identical
-    /// wrappers made the shared envelope a real duplication cluster the project's own
-    /// simplification audit would otherwise flag - one shared composer, never six parallel
+    /// wrappers made the shared envelope a real duplication cluster - one shared composer,
+    /// never six parallel
     /// copies of the same `emit_keyed(..., json!({"id":..,"status":..,"attempt":..,
     /// "evidence":..}))` shape (mirrors [`Self::record_regenerate_pending`]'s own pre-existing
     /// key/status/evidence envelope, which now composes the same way).

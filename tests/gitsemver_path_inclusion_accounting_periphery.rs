@@ -142,9 +142,8 @@ fn every_real_hash_path_inclusion_site_of_gitsemver_rs_is_named_in_the_stage1_re
              there. The record's own safety narrative is 'nothing outside this item's own \
              defining crate ever reaches it at any of its N #[path] inclusion sites' - that \
              claim only holds if every real site is actually named, so an unnamed site here is \
-             a genuine gap in the record (and in the matching prose render_section_4 in \
-             tests/simplification_audit.rs adds under section 4.0), not a passing case. Update \
-             both to name every site this scan finds: {sites:?}."
+             a genuine gap in the record, not a passing case. Update it to name every site \
+             this scan finds: {sites:?}."
         );
     }
 }

@@ -374,7 +374,7 @@ turn, and the tokens spent. A `Follow live` toggle keeps the newest turn in view
    | Round 2 delivered section 2 only; sections 1, 4.3 and 6 still read live lines ...        |
    +--------------------------------------------------------------------------------------------+
    Decisions governing this unit:  op-u90c2-round-3-delivers-the-whole-line-free-clause ...
-   [code pane: tests/simplification_audit.rs around line 1802]
+   [code pane: tests/boundary_audit.rs around line 1802]
    Finding audit: 2 rejects . same cause through 2 paths (report rendering) . 0 new causes
 ```
 

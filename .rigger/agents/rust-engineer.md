@@ -48,18 +48,14 @@ Stay inside your unit's blast-radius.
 ## Hand-over checks in this project
 
 This project's anchors for the built-in hand-over rules. The implement stage's gates
-(`.rigger/workflow.yml`) are fmt, clippy, build, audit, test, lane-no-default, style,
-no-os-kill, boundary and red-before-green. Before you report, run from the worktree root, on
+(`.rigger/workflow.yml`) are fmt, clippy, build, test, lane-no-default, style, no-os-kill,
+boundary and red-before-green. Before you report, run from the worktree root, on
 your committed tree:
 
 - `cargo fmt --all --check`;
 - `cargo clippy --workspace --all-targets -- -D warnings` and
   `cargo clippy --workspace --all-targets --no-default-features -- -D warnings`, the clippy
   line of the lane-no-default gate: a helper only one lane calls is dead code on the other;
-- `sh .rigger/gates/audit.sh`, then `git status --porcelain` empty. The audit regenerates
-  `docs/audit` from the tree, so run it before each commit that moves code under `src/`,
-  `crates/` or `tests/`, tests-only commits included, and commit what it rewrote with that
-  commit;
 - `cargo test --test boundary_audit`, `sh .rigger/gates/content.sh style`,
   `sh .rigger/gates/content.sh no-os-kill` and `sh .rigger/gates/red-before-green.sh`;
 - every test binary your change touched, on both lanes: `cargo test -p <crate> --lib` or
@@ -73,7 +69,7 @@ your committed tree:
   helper that resolves against the root, by its bare name so a turbofish call is found too -
   which lists them and runs them in one invocation, on the default lane alone, since the
   lane-no-default gate runs them on the final tree:
-  `git ls-files 'tests/*.rs' | awk -F/ 'NF == 2' | xargs awk 'index($0, "CARGO_MANIFEST_DIR") || index($0, "include_str!(") || index($0, "include_bytes!(") || index($0, "read_to_string(\"") || index($0, "fs::read(\"") || index($0, "read_dir(\"") || index($0, "File::open(\"") || index($0, "read_text(Path::new(\"") || index($0, "read_audit_record") || index($0, "production_sources") || index($0, "collect_rs_files") || index($0, "collect_files") || index($0, "for_each_rs_file") || index($0, "repo_root") || index($0, "repo_text") || index($0, "cargo_tree") || index($0, "stub_path") || index($0, "write_critique_stub") || index($0, "committed_json") || index($0, "assert_committed_ledger_is_nonempty") || index($0, "assert_doc_carries_none_of") || index($0, "production_main_rs") || index($0, "worker_label") || index($0, "run_capturing_system_prompt") || index($0, "record_critique") || index($0, "record_clean_critique") || index($0, "refused_run") || index($0, "echo_agent_path") || index($0, "fixture_script") || index($0, "arms_claude") || index($0, "assert_no_src_line_gates_on") || index($0, "assert_real_tree_clean") { print FILENAME }' | sort -u | sed 's|^tests/||; s|\.rs$||; s|^|--test |' | xargs cargo test`.
+  `git ls-files 'tests/*.rs' | awk -F/ 'NF == 2' | xargs awk 'index($0, "CARGO_MANIFEST_DIR") || index($0, "include_str!(") || index($0, "include_bytes!(") || index($0, "read_to_string(\"") || index($0, "fs::read(\"") || index($0, "read_dir(\"") || index($0, "File::open(\"") || index($0, "read_text(Path::new(\"") || index($0, "read_audit_record") || index($0, "production_sources") || index($0, "collect_rs_files") || index($0, "collect_files") || index($0, "for_each_rs_file") || index($0, "repo_root") || index($0, "repo_text") || index($0, "cargo_tree") || index($0, "stub_path") || index($0, "write_critique_stub") || index($0, "assert_doc_carries_none_of") || index($0, "production_main_rs") || index($0, "worker_label") || index($0, "run_capturing_system_prompt") || index($0, "record_critique") || index($0, "record_clean_critique") || index($0, "refused_run") || index($0, "echo_agent_path") || index($0, "fixture_script") || index($0, "arms_claude") || index($0, "assert_no_src_line_gates_on") || index($0, "assert_real_tree_clean") { print FILENAME }' | sort -u | sed 's|^tests/||; s|\.rs$||; s|^|--test |' | xargs cargo test`.
 - whenever a commit touches `tests/common` or the selector command above,
   `cargo test --bin rigger the_author_text_test_selector`, on the default lane alone: that
   pin derives the selector's anchors from `tests/common` and lives in the binary target,
@@ -81,9 +77,8 @@ your committed tree:
 
 Once these checks have run, a later commit or an amend re-runs only what its new diff can
 change: a diff that touches only comments, doc comments or Markdown re-runs
-`cargo fmt --all --check`, the default-lane clippy line, `sh .rigger/gates/audit.sh` with
-`git status --porcelain` empty and the root tests that read a checked-in file as text; any
-other hunk re-runs the full list.
+`cargo fmt --all --check`, the default-lane clippy line and the root tests that read a
+checked-in file as text; any other hunk re-runs the full list.
 
 Each run above, the test binaries on both lanes and any `sh .rigger/gates/lanes.sh <lane>` run
 a unit asks of you included, takes minutes here: run it in the foreground with the Bash timeout
@@ -93,10 +88,6 @@ in an `until`-loop until its exit line is there, before you report.
 The whole workspace suite on both lanes is the test and lane-no-default gates' run, not yours:
 a gate's verdict is replayed only from its own recorded run, so a shell run of the suite saves
 the gate nothing.
-
-A red `every_open_cluster_is_dispositioned` from the audit is a twin your change opened: close
-it by extending the helper that already exists and calling it from both sites, never by a
-disposition in `docs/audit/duplication-dispositions.json` that excuses the twin.
 
 The test homes: a crate's own `mod tests` and its contract module under `crates/*/src/`; the
 shared fixtures, `tests/common/fixtures/<area>.rs` (a crate mounts each one it needs with

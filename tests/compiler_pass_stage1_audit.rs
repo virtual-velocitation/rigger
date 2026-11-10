@@ -17,9 +17,8 @@
 //! actually re-runs `cargo minify` plus four `cargo rustc` recompiles of the whole crate, each
 //! one invalidating the prior incremental fingerprint since the promoted lints differ from a
 //! normal build - is gated behind `RIGGER_COMPILER_PASS_VERIFY=1`, the same opt-in shape this
-//! codebase already uses for `RIGGER_AUDIT_WRITE=1` (regenerate the committed audit JSONs) and
-//! for `cargo mutants` (never wired into the default suite): a real, permanent per-`cargo test`
-//! cost is not paid by every future unit's gate cycle to reprove a fact this file's cheap tests
+//! codebase already uses for `cargo mutants` (never wired into the default suite): a real,
+//! permanent per-`cargo test` cost is not paid by every future unit's gate cycle to reprove a fact this file's cheap tests
 //! already guard against regressing. The expensive check was run by hand while this unit was
 //! authored and confirmed clean on all 4 (target x lane) combinations - see this file's own
 //! `verification` field and this unit's own `DecisionMade` record.
