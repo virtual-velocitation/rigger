@@ -44091,6 +44091,114 @@ mod tests {
         }
     }
 
+    /// A RECORDED PASS NEVER JUDGES ANOTHER TREE: GIVEN a recorded verdict, WHEN the replay
+    /// re-reaches its gate on a commit, THEN a red or a settled pass is acted on as recorded, a
+    /// live-signed pass is acted on only when it gated that same commit (or either side gated no
+    /// tree), and any other pass re-runs under the next re-verify key with evidence naming why.
+    #[test]
+    fn a_live_signed_pass_on_another_commit_re_runs_and_names_both_commits() {
+        struct Case {
+            why: &'static str,
+            pass: bool,
+            verified: bool,
+            settled: bool,
+            recorded: &'static str,
+            now: &'static str,
+            /// `None` when the verdict is acted on, else the text the re-run's reason holds.
+            rerun: Option<&'static str>,
+        }
+        let cases = [
+            Case {
+                why: "a live-signed pass on the same commit",
+                pass: true,
+                verified: true,
+                settled: false,
+                recorded: "aaa",
+                now: "aaa",
+                rerun: None,
+            },
+            Case {
+                why: "a live-signed pass on another commit",
+                pass: true,
+                verified: true,
+                settled: false,
+                recorded: "aaa",
+                now: "bbb",
+                rerun: Some("(it gated commit aaa, and the gate runs on bbb now)"),
+            },
+            Case {
+                why: "a live-signed pass that gated no tree",
+                pass: true,
+                verified: true,
+                settled: false,
+                recorded: "",
+                now: "bbb",
+                rerun: None,
+            },
+            Case {
+                why: "an unverified pass on the same commit",
+                pass: true,
+                verified: false,
+                settled: false,
+                recorded: "aaa",
+                now: "aaa",
+                rerun: Some("re-run: unverified recorded pass at log position 7; "),
+            },
+            Case {
+                why: "a settled pass on another commit",
+                pass: true,
+                verified: false,
+                settled: true,
+                recorded: "aaa",
+                now: "bbb",
+                rerun: None,
+            },
+            Case {
+                why: "a red on another commit",
+                pass: false,
+                verified: false,
+                settled: false,
+                recorded: "aaa",
+                now: "bbb",
+                rerun: None,
+            },
+        ];
+        let cfg = verify_only_cfg(vec![("g", gate_def("true"))]);
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let deps = stub_deps(&st, &driver, Vec::new());
+        let key = "u/gate:g#0";
+        for case in cases {
+            let ctx = RunCtx::for_test(&cfg, &deps);
+            ctx.gate_verdicts.lock().unwrap().insert(
+                key.into(),
+                RecordedVerdict {
+                    pass: case.pass,
+                    evidence: "recorded".into(),
+                    id: "row".into(),
+                    position: 7,
+                    verified: case.verified,
+                    commit: case.recorded.into(),
+                },
+            );
+            if case.settled {
+                ctx.settled.lock().unwrap().insert(7);
+            }
+            match (ctx.recorded_verdict(key, case.now), case.rerun) {
+                (Some(Recorded::Act(v)), None) => assert_eq!(v.position, 7, "{}", case.why),
+                (Some(Recorded::Rerun { key: rerun, why }), Some(text)) => {
+                    assert_eq!(rerun, "u/gate:g~reverify1#0", "{}", case.why);
+                    assert!(why.contains(text), "{}: the reason: {why}", case.why);
+                }
+                (Some(Recorded::Act(_)), Some(_)) => panic!("{}: acted on, not re-run", case.why),
+                (Some(Recorded::Rerun { why, .. }), None) => {
+                    panic!("{}: re-run, not acted on: {why}", case.why)
+                }
+                (None, _) => panic!("{}: no recorded verdict", case.why),
+            }
+        }
+    }
+
     /// How a row addressing the implementer's commit reaches the log while its spawn runs.
     #[derive(Clone, Copy, Debug)]
     enum JoinedRow {
