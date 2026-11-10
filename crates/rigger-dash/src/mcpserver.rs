@@ -1179,7 +1179,7 @@ mod tests {
     use crate::prompt_surface::prompt_groups;
     use crate::prompt_surface_fixtures::{assert_renders, registry_test, rendered_groups};
     use crate::spawn::SpawnEvent;
-    use crate::test_support::test_spawn_host;
+    use crate::test_support::{stemmed_texts, test_spawn_host};
     use std::io::Cursor;
 
     /// Send one JSON-RPC request line to `server` and parse its one reply.
@@ -2347,23 +2347,6 @@ mod tests {
                 .collect(),
             _ => Vec::new(),
         }
-    }
-
-    /// Each text `tools` advertises beside its stem under THE NAMING RULE, in document order: a
-    /// tool's description under `<TOOL>`, then each `inputSchema` property description under
-    /// `<TOOL>_<ARG>`.
-    fn stemmed_texts(tools: &Value) -> Vec<(String, &str)> {
-        let mut texts = Vec::new();
-        for tool in tools.as_array().unwrap() {
-            let stem = tool["name"].as_str().unwrap().to_uppercase();
-            texts.push((stem.clone(), tool["description"].as_str().unwrap()));
-            for (arg, property) in tool["inputSchema"]["properties"].as_object().unwrap() {
-                if let Some(text) = property["description"].as_str() {
-                    texts.push((format!("{stem}_{}", arg.to_uppercase()), text));
-                }
-            }
-        }
-        texts
     }
 
     /// THE NAMING RULE over every surface: each text a surface advertises beside the const it

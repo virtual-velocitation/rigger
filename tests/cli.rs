@@ -65,6 +65,7 @@ use common::repo::{
 };
 use common::rigger_bin;
 use common::workflow_probe::write_workflow;
+use rigger_dash::prompt_surface;
 
 /// Extract a JSON string field's value from a one-line JSON object `line` - a tiny reader
 /// for asserting on `rigger step`'s printed wave without a JSON dependency in the test crate.
@@ -11419,6 +11420,108 @@ rigger::test_cases! {
     /// takes no argument.
     a_spawns_mcp_server_lists_the_scratch_tool_naming_no_toolchain:
         assert_a_spawns_server_lists("rigger_scratch", common::fixtures::scratch_tool_entry());
+}
+
+/// The texts the built binary advertises over stdio in its `tools/list` answer to an initialized
+/// `rigger <args>` session over the project `project` makes, once they are found to be exactly
+/// `expected`: each text beside its stem under THE NAMING RULE, in document order. `end` closes
+/// the session through its handle.
+fn assert_a_surface_advertises(
+    project: fn() -> tempfile::TempDir,
+    args: &[&str],
+    end: fn(McpSession),
+    expected: &[(&str, &str)],
+) {
+    let dir = project();
+    let mut mcp = McpSession::start_with(dir.path(), args);
+    mcp.initialize();
+    let tools = mcp.call("tools/list", serde_json::json!({}))["result"]["tools"].clone();
+    end(mcp);
+    let stemmed = common::fixtures::stemmed_texts(&tools);
+    let advertised: Vec<(&str, &str)> = stemmed
+        .iter()
+        .map(|(stem, text)| (stem.as_str(), *text))
+        .collect();
+    assert_eq!(
+        advertised,
+        expected,
+        "rigger {}: each advertised text, in document order, is the dash registry const named for \
+         its stem",
+        args.join(" ")
+    );
+}
+
+rigger::test_cases! {
+    /// Spec 121's THE REGISTRY HOLDS EVERY PROMPT TEXT at the built binary's spawn-bound server:
+    /// given a project, when a spawn's agent lists the tools of `rigger mcp --spawn` over stdio,
+    /// then every tool and argument description the list carries, in document order, is the
+    /// `rigger_dash::prompt_surface` const THE NAMING RULE names for its stem.
+    a_spawns_mcp_server_advertises_the_registry_const_named_for_each_stem:
+        assert_a_surface_advertises(
+            temp_store_project,
+            &["mcp", "--spawn", "u/implementer#0"],
+            McpSession::finish_cleanly,
+            &[
+                ("RIGGER_EMIT", prompt_surface::SPAWN_BOUND_RIGGER_EMIT),
+                ("RIGGER_EMIT_META", prompt_surface::SPAWN_BOUND_RIGGER_EMIT_META),
+                ("RIGGER_EMIT_VALID_FROM", prompt_surface::RIGGER_EMIT_VALID_FROM),
+                ("RIGGER_PEERS", prompt_surface::RIGGER_PEERS),
+                ("RIGGER_GROUND", prompt_surface::RIGGER_GROUND),
+                ("RIGGER_GROUND_K", prompt_surface::RIGGER_GROUND_K),
+                ("RIGGER_GROUND_QUERY", prompt_surface::RIGGER_GROUND_QUERY),
+                ("RIGGER_GRAPH", prompt_surface::RIGGER_GRAPH),
+                ("RIGGER_GRAPH_DEPTH", prompt_surface::RIGGER_GRAPH_DEPTH),
+                ("RIGGER_PROGRESS", prompt_surface::SPAWN_BOUND_RIGGER_PROGRESS),
+                (
+                    "RIGGER_PROGRESS_ACTIVITY",
+                    prompt_surface::SPAWN_BOUND_RIGGER_PROGRESS_ACTIVITY,
+                ),
+                ("RIGGER_SCRATCH", prompt_surface::SPAWN_BOUND_RIGGER_SCRATCH),
+            ],
+        );
+    /// The same at the lookup server: given a project, when the operator's session lists the
+    /// tools of `rigger mcp` over stdio, then each description is the shared const named for its
+    /// stem.
+    the_lookup_mcp_server_advertises_the_registry_const_named_for_each_stem:
+        assert_a_surface_advertises(
+            temp_store_project,
+            &["mcp"],
+            McpSession::finish_cleanly,
+            &[
+                ("RIGGER_PEERS", prompt_surface::RIGGER_PEERS),
+                ("RIGGER_GROUND", prompt_surface::RIGGER_GROUND),
+                ("RIGGER_GROUND_K", prompt_surface::RIGGER_GROUND_K),
+                ("RIGGER_GROUND_QUERY", prompt_surface::RIGGER_GROUND_QUERY),
+                ("RIGGER_GRAPH", prompt_surface::RIGGER_GRAPH),
+                ("RIGGER_GRAPH_DEPTH", prompt_surface::RIGGER_GRAPH_DEPTH),
+            ],
+        );
+    /// The same at the workflow server: given a two-stage workflow project, when the session
+    /// lists the tools of `rigger serve` over stdio and then answers every spawn, then each
+    /// description is the const THE NAMING RULE names for its stem.
+    the_workflow_serve_session_advertises_the_registry_const_named_for_each_stem:
+        assert_a_surface_advertises(
+            || {
+                let dir = temp_git_project_with_commit();
+                write_workflow_fixture(dir.path(), &TWO_STAGE_WORKFLOW);
+                dir
+            },
+            &["serve", "--base", "HEAD"],
+            |mut mcp| {
+                answer_spawns_until_done(&mut mcp, || {});
+                mcp.finish_cleanly();
+            },
+            &[
+                ("RIGGER_NEXT", prompt_surface::WORKFLOW_RIGGER_NEXT),
+                ("RIGGER_RESULT", prompt_surface::WORKFLOW_RIGGER_RESULT),
+                ("RIGGER_EMIT", prompt_surface::WORKFLOW_RIGGER_EMIT),
+                ("RIGGER_EMIT_META", prompt_surface::WORKFLOW_RIGGER_EMIT_META),
+                ("RIGGER_EMIT_VALID_FROM", prompt_surface::RIGGER_EMIT_VALID_FROM),
+                ("RIGGER_PEERS", prompt_surface::WORKFLOW_RIGGER_PEERS),
+                ("RIGGER_PEERS_FILES", prompt_surface::WORKFLOW_RIGGER_PEERS_FILES),
+                ("RIGGER_ACTIVITY", prompt_surface::WORKFLOW_RIGGER_ACTIVITY),
+            ],
+        );
 }
 
 /// How far past the interval a beat of `rigger run` may land: the gap between two beats is the
