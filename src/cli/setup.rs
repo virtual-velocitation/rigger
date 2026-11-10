@@ -1663,7 +1663,7 @@ fn instructions_in_force_line(operator: &[instructions::Instruction]) -> String 
     };
     format!(
         "{} in force: {builtin}{extra} - see rigger instructions",
-        instructions::HEADING
+        rigger_domain::prompt_surface::INSTRUCTIONS_HEADING
     )
 }
 

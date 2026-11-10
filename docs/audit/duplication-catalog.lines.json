@@ -44,13 +44,13 @@
       },
       {
         "file": "crates/rigger-domain/src/instructions.rs",
-        "start_line": 226,
-        "end_line": 228
+        "start_line": 223,
+        "end_line": 225
       },
       {
         "file": "crates/rigger-domain/src/review.rs",
-        "start_line": 431,
-        "end_line": 433
+        "start_line": 404,
+        "end_line": 406
       },
       {
         "file": "crates/rigger-domain/src/spawn.rs",
@@ -1739,8 +1739,8 @@
       },
       {
         "file": "src/cli/critique.rs",
-        "start_line": 319,
-        "end_line": 319
+        "start_line": 320,
+        "end_line": 320
       },
       {
         "file": "src/cli/hygiene.rs",
@@ -3594,28 +3594,28 @@
       },
       {
         "file": "tests/common/fixtures/instructions.rs",
-        "start_line": 351,
-        "end_line": 351
+        "start_line": 354,
+        "end_line": 354
       },
       {
         "file": "tests/common/fixtures/instructions.rs",
-        "start_line": 414,
-        "end_line": 414
+        "start_line": 417,
+        "end_line": 417
       },
       {
         "file": "tests/common/fixtures/instructions.rs",
-        "start_line": 441,
-        "end_line": 441
+        "start_line": 444,
+        "end_line": 444
       },
       {
         "file": "tests/common/fixtures/instructions.rs",
-        "start_line": 472,
-        "end_line": 472
+        "start_line": 475,
+        "end_line": 475
       },
       {
         "file": "tests/common/fixtures/instructions.rs",
-        "start_line": 474,
-        "end_line": 474
+        "start_line": 477,
+        "end_line": 477
       },
       {
         "file": "tests/common/fixtures/liveness.rs",

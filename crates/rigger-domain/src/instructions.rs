@@ -20,6 +20,7 @@
 //! ([`shadow_advisories`]).
 
 use crate::config::{INSTRUCTIONS_DIR, RIGGER_DIR};
+use crate::prompt_surface::INSTRUCTIONS_HEADING;
 
 /// One instruction section: `name` is the file stem (or the built-in id) and `body` its text.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -55,10 +56,6 @@ pub const BUILTIN: &[(&str, &str)] = &[
         include_str!("instructions/communication.md"),
     ),
 ];
-
-/// The heading that opens the injected layers in a system prompt; tests and `rigger prime`
-/// key on it.
-pub const HEADING: &str = "# Rigger instructions";
 
 /// What the operator layer made of one built-in entry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -143,17 +140,17 @@ fn without_bom(body: &str) -> &str {
 }
 
 /// Compose `persona` followed by the built-in layer and then `operator`, each section under
-/// its own `## <name>` heading beneath [`HEADING`]: a built-in in force or replaced prints its
-/// section, a switched-off one prints none, and [`HEADING`] is printed even when no section
-/// follows it. An empty persona still receives every built-in not switched off; an empty
-/// operator layer adds nothing after the built-ins. It is the one authority for every spawn's
-/// system prompt: the conductor, the canary runner and the spec critic all thread its output,
-/// appending nothing after it.
+/// its own `## <name>` heading beneath [`INSTRUCTIONS_HEADING`]: a built-in in force or replaced
+/// prints its section, a switched-off one prints none, and [`INSTRUCTIONS_HEADING`] is printed
+/// even when no section follows it. An empty persona still receives every built-in not switched
+/// off; an empty operator layer adds nothing after the built-ins. It is the one authority for
+/// every spawn's system prompt: the conductor, the canary runner and the spec critic all thread
+/// its output, appending nothing after it.
 pub fn compose(persona: &str, operator: &[Instruction]) -> String {
     let layers = resolve_layers(operator);
     let mut out = String::from(persona);
     out.push_str("\n\n");
-    out.push_str(HEADING);
+    out.push_str(INSTRUCTIONS_HEADING);
     out.push('\n');
     for layer in &layers.builtins {
         if let Some(body) = layer.state.in_force() {
@@ -174,7 +171,7 @@ pub fn compose(persona: &str, operator: &[Instruction]) -> String {
 pub fn render(operator: &[Instruction]) -> String {
     let layers = resolve_layers(operator);
     let mut out = String::new();
-    out.push_str(HEADING);
+    out.push_str(INSTRUCTIONS_HEADING);
     out.push_str("\n\nBuilt-in:\n");
     for layer in &layers.builtins {
         let label = shadowed_by(layer).unwrap_or_else(|| "built-in".to_string());
@@ -378,8 +375,9 @@ mod tests {
     /// only the tests of the persona's place and of an empty persona name their own.
     const PERSONA: &str = "P.";
 
-    /// The prompt `compose(PERSONA, ..)` must return: the persona, the bare [`HEADING`], then each
-    /// named section in order, its body with trailing whitespace trimmed.
+    /// The prompt `compose(PERSONA, ..)` must return: the persona, the bare
+    /// [`INSTRUCTIONS_HEADING`], then each named section in order, its body with trailing
+    /// whitespace trimmed.
     fn expected_prompt(sections: &[(&str, &str)]) -> String {
         crate::test_support::expected_composed_prompt(PERSONA, sections)
     }

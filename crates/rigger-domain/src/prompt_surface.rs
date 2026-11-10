@@ -4,9 +4,115 @@
 //! agent). A renderer formats from those consts, through [`fill`] wherever a const carries a
 //! `{slot}`, so no prompt literal stays in a renderer. Each crate lists its texts as [`Group`]s
 //! from its own `prompt_groups()`, grouped by surface and in render order within one, so a
-//! surface's groups concatenate to its render. This module holds the registry types and the
-//! domain's own texts: the spec critique prompt's and the composed system prompt's heading. It
-//! is pure and compiles in the `core` lane.
+//! surface's groups concatenate to its render; until the binary crate's `all_groups()` reads
+//! them, each crate's tests are their only reader, so each is compiled for tests alone. This
+//! module holds the registry types and the domain's own texts: the spec critique prompt's and the
+//! composed system prompt's heading. It is pure and compiles in the `core` lane.
+
+/// One sentence group of one class on one surface: `surface` names the renderer that prints it,
+/// `name` is its const's identifier and `text` is that const, whose `{slot}` placeholders
+/// [`fill`] replaces.
+pub struct Group {
+    pub surface: &'static str,
+    pub name: &'static str,
+    pub text: &'static str,
+}
+
+/// A [`Group`] on `$surface` whose name is the const `$text`'s own identifier, so a group's name
+/// and its text are one spelling.
+#[macro_export]
+macro_rules! prompt_group {
+    ($surface:literal, $text:ident) => {
+        $crate::prompt_surface::Group {
+            surface: $surface,
+            name: stringify!($text),
+            text: $text,
+        }
+    };
+}
+
+/// `text` with each `{slot}` token `slots` names replaced by its value, in one left-to-right
+/// scan: an inserted value is never rescanned, and every other brace, a JSON shape's included,
+/// stays literal.
+pub fn fill(text: &str, slots: &[(&str, &str)]) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(open) = rest.find('{') {
+        out.push_str(&rest[..open]);
+        let after = &rest[open + 1..];
+        let named = slots.iter().find_map(|(slot, value)| {
+            let tail = after.strip_prefix(slot)?.strip_prefix('}')?;
+            Some((value, tail))
+        });
+        match named {
+            Some((value, tail)) => {
+                out.push_str(value);
+                rest = tail;
+            }
+            None => {
+                out.push('{');
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// FRAMING: the built-in layer's heading, opening the injected layers of every composed system
+/// prompt; `instructions::render` and `rigger prime` print it too, and tests key on it.
+pub const INSTRUCTIONS_HEADING: &str = "# Rigger instructions";
+
+/// FRAMING: the spec critique's task framing and voided-duties clause: what is under critique,
+/// how the critic's persona rules read on a spec, and the duties this task voids. The critique
+/// method itself is the persona's, under its `## When you critique a spec or a plan` section.
+pub const CRITIQUE_FRAMING: &str =
+    "This is a critique of a SPEC, not code: the text below is a design \
+     and its Done-when criteria, written before any run builds them. In your persona's critique \
+     rules a unit reads as a criterion, and a reject as a BLOCKING finding. Every persona or \
+     discipline duty that conflicts with a spec critique is void for this task: reviewing lenses \
+     and a diff, the rule against rendering a verdict, running gates or any build or test command, \
+     editing a file, and recording through `rigger_emit`, `rigger_progress` or `rigger_scratch`. \
+     Read the spec and the repository; the finding lines and the verdict line of your final \
+     message are the only output.\n\n";
+
+/// CONTRACT: the critic's output contract, the finding line's five fields (the remedy field
+/// included) and the verdict line the binary parses.
+pub const CRITIQUE_OUTPUT_CONTRACT: &str = "The output contract: one finding per line, then the \
+     verdict as the last line:\n\n\
+     <critic id> | BLOCKING | <criterion n or Design block title> | <exact reading that breaks> \
+     | <smallest Design change that closes it>\n\
+     <critic id> | NON-BLOCKING | ...\n\
+     {\"verdict\":\"reject\"}\n\n\
+     A finding line has five `|`-separated fields whose second is exactly BLOCKING or \
+     NON-BLOCKING; any other line is prose. `<critic id>` is your own short label for the \
+     finding. The verdict is reject when any line is BLOCKING, else approve.\n\n";
+
+/// CONTRACT: the clause that opens a pass's recorded findings (spec 123, THE PASS FRAMING IS
+/// CONTRACT): each line after it is a finding the critique already holds, which the critic does
+/// not report again.
+pub const CRITIQUE_RECORDED_FINDINGS: &str = "The findings already recorded for this text \
+     follow, one per line as <severity> | <location> | <reading> | <fix>. A finding among these \
+     lines is recorded and is not reported again: report only findings not among them, and when \
+     there is none to add, write no finding line and the verdict line {\"verdict\":\"approve\"}.";
+
+/// FRAMING: the critique prompt's tail, the spec's path in `{spec_path}` and its text verbatim in
+/// `{spec_text}`.
+pub const CRITIQUE_SPEC_TAIL: &str =
+    "The spec under critique, `{spec_path}`, verbatim:\n\n{spec_text}";
+
+/// The domain's groups: the composed system prompt's heading, then the spec critique prompt's
+/// four in render order. Its readers are tests, so it is compiled for tests alone.
+#[cfg(test)]
+pub fn prompt_groups() -> &'static [Group] {
+    &[
+        crate::prompt_group!("instructions::compose", INSTRUCTIONS_HEADING),
+        crate::prompt_group!("review::spec_critique_prompt", CRITIQUE_FRAMING),
+        crate::prompt_group!("review::spec_critique_prompt", CRITIQUE_OUTPUT_CONTRACT),
+        crate::prompt_group!("review::spec_critique_prompt", CRITIQUE_RECORDED_FINDINGS),
+        crate::prompt_group!("review::spec_critique_prompt", CRITIQUE_SPEC_TAIL),
+    ]
+}
 
 #[cfg(test)]
 mod tests {
