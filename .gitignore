@@ -35,9 +35,6 @@
 # (`rigger playbooks --rebuild`), derived per-machine, never hand-edited state.
 .rigger/playbooks/
 
-# Node deps for the workflow shim (shim/package-lock.json IS committed)
-shim/node_modules/
-
 # Editor / OS
 .DS_Store
 .idea/
@@ -48,7 +45,6 @@ shim/node_modules/
 !/.claude/
 /.claude/*
 !/.claude/agents/
-.rigger/shim
 # The run's transient scratch root: unit/review worktrees + their build dirs
 # (defaults.workdir / RIGGER_TMPDIR override the location; Gap 14)
 .rigger/tmp

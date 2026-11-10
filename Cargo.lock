@@ -2086,7 +2086,6 @@ name = "rigger-dash"
 version = "0.3.0"
 dependencies = [
  "rigger-conductor",
- "rigger-config-files",
  "rigger-console",
  "rigger-domain",
  "rigger-driver",

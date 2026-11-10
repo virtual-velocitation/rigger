@@ -610,7 +610,7 @@ pub struct SpawnRequest {
     /// [`Stage::coverage`](crate::config::Stage), trimmed), threaded from the conductor so
     /// the thin driver can narrate the actual WORK a worker is doing - not just its
     /// `{unit}:{stage}` progress-group label. Carried onto [`WaveItem`] so the printed wave
-    /// `rigger step` emits surfaces it for `workflows/rigger.js` to render. Omitted from the
+    /// `rigger step` emits surfaces it. Omitted from the
     /// wire when empty (a spawn with no criterion - e.g. a plan/canary stage - serializes
     /// exactly as before), so it is a purely additive, back-compatible field.
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -621,8 +621,8 @@ pub struct SpawnRequest {
     /// plus [`ROLE_ADVERSARY`] for the adjudicator after that adversary, and a later step of a
     /// kind under its own token) - stamped by the CONDUCTOR from the actually-routed panel (light
     /// or full), never guessed by the driver, so a replayed or tier-reduced roster is never stale.
-    /// Carried onto [`WaveItem`] so the printed wave `rigger step` emits surfaces it for
-    /// `workflows/rigger.js` to render inside the action phrase. Omitted from the wire when
+    /// Carried onto [`WaveItem`] so the printed wave `rigger step` emits surfaces it. Omitted
+    /// from the wire when
     /// empty (a lens spawn, an empty panel, or an older conductor) - a purely additive,
     /// back-compatible field.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -893,10 +893,9 @@ pub struct WaveItem {
     /// [`SpawnRequest::cargo_target_dir`]: the `cargo-target-<unit>` sibling of the worktree the
     /// unit's gates build into, or the unit's `review-target-<unit>` cache for a review tier. The SDK
     /// driver receives it as [`BUILD_CACHE_ENV`] in the spawn's environment; a driver that
-    /// cannot set a worker's environment (the editor's workflow driver runs workers through
-    /// an agent tool with none) must NAME it in the worker's instructions instead, through
-    /// [`WaveItem::build_cache_env`], or every build the worker runs lands inside its
-    /// worktree - three such trees filled the disk on 2026-09-15. Absent when the spawn has
+    /// cannot set a worker's environment must NAME it in the worker's instructions instead,
+    /// through [`WaveItem::build_cache_env`], or every build the worker runs lands inside its
+    /// worktree. Absent when the spawn has
     /// no unit worktree (a review or plan spawn inherits the shared cache).
     #[serde(default)]
     pub cargo_target_dir: Option<String>,
@@ -910,8 +909,7 @@ pub struct WaveItem {
     /// The spawn's LIVE WORK-LINE (spec 19a, c4): the unit's criterion, copied from the
     /// [`SpawnRequest::title`] so it rides the SLIM manifest the thin driver actually reads.
     /// The wave `rigger step` prints is a `Vec<WaveItem>`, NOT the request, so a title that
-    /// lived only on the request would render NOTHING - `workflows/rigger.js` narrates from
-    /// this field. Omitted from the wire when empty (an untitled spawn stays byte-identical
+    /// lived only on the request would render NOTHING. Omitted from the wire when empty (an untitled spawn stays byte-identical
     /// to the historical slim manifest).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub title: String,
@@ -949,7 +947,7 @@ impl From<&SpawnRequest> for WaveItem {
             },
             build_cache_env: BUILD_CACHE_ENV.to_string(),
             // The live work-line rides the slim manifest: the wave the thin driver reads is
-            // a `Vec<WaveItem>`, so the title MUST be copied here or `rigger.js` narrates
+            // a `Vec<WaveItem>`, so the title MUST be copied here or a driver narrates
             // nothing (the false-green class this copy closes).
             title: req.title.clone(),
             // Same seam, same reason: the routed review roster must ride the slim manifest or
@@ -2220,7 +2218,7 @@ mod tests {
         // The false-green seam (finding adv-u4-fix-is-necessary-and-sufficient): the wave the
         // thin driver actually reads is a `Vec<WaveItem>`, NOT the SpawnRequest, so a title on
         // the request alone renders NOTHING. `WaveItem::from` MUST copy the title, and it must
-        // ride the printed wire, or `rigger.js` has nothing to narrate.
+        // ride the printed wire, or a driver has nothing to narrate.
         let req = SpawnRequest {
             title: "do the work".into(),
             ..test_request("u", "u", ROLE_IMPLEMENTER, 0, "task")
@@ -2228,7 +2226,7 @@ mod tests {
         let item = WaveItem::from(&req);
         assert_eq!(
             item.title, "do the work",
-            "WaveItem::from must copy the request's title - the seam rigger.js reads"
+            "WaveItem::from must copy the request's title - the seam a driver reads"
         );
         let json = serde_json::to_value(&item).unwrap();
         assert_eq!(
@@ -2254,8 +2252,7 @@ mod tests {
     fn step_wave_carries_the_unit_title_end_to_end() {
         // The regression the false-green demands: assert on the PRINTED Step wave. A parked
         // request carrying a title, folded through `step_result` into the JSON `rigger step`
-        // prints, must surface the title on the wave item - the exact wire `rigger.js` reads
-        // to narrate the work. This fails if `WaveItem::from` drops the title (the class of
+        // prints, must surface the title on the wave item. This fails if `WaveItem::from` drops the title (the class of
         // bug that shipped a title on the request but rendered nothing).
         let req = SpawnRequest {
             title: "the live work-line shows the actual criterion".into(),
@@ -2268,46 +2265,6 @@ mod tests {
             json["wave"][0]["title"].as_str(),
             Some("the live work-line shows the actual criterion"),
             "the printed Step wave must carry each spawn's title end to end"
-        );
-    }
-
-    #[test]
-    fn the_thin_driver_renders_the_work_line_at_both_sites() {
-        // The RENDER contract (spec 19a, c4): the thin driver narrates the unit's criterion at
-        // BOTH surfaces `runWorker` controls - the per-worker progress-group LABEL and a log()
-        // NARRATOR line - so the live view shows the actual WORK, not just the `{unit}:{stage}`
-        // group. Paired with `step_wave_carries_the_unit_title_end_to_end` (which proves the
-        // title reaches the PRINTED wave), these pins are NOT the dead source-proxy a WaveItem
-        // drop would survive: that wire test catches the drop, and each assertion below pins a
-        // DISTINCT render site so neither can be silently deleted without a red test.
-        let js = include_str!("../../../workflows/rigger.js");
-
-        // The work-line is the wave item's title (`req.title`), collapsed to one narration line.
-        assert!(
-            js.contains("work = (req.title"),
-            "the work-line must be sourced from the wave item's title"
-        );
-        // Site 1 - the progress-group LABEL is the work-line, never bare `req.id`, so the item
-        // shown live in the /workflows group names the criterion.
-        assert!(
-            js.contains("label: workLabel") && js.contains("workLabel = work"),
-            "the worker's agent() label must be the work-line label, not bare req.id"
-        );
-        // Site 2 - a log() NARRATOR announces the work-line (distinct code from the label), so a
-        // long silent stretch is a visible stream (spec 14) that names the work.
-        assert!(
-            js.contains("starting ${req.id}"),
-            "a log() narrator line must announce the worker's title (the work-line)"
-        );
-        // Additive: the progress-GROUP label (phaseOf) is a mechanism SEPARATE from the
-        // work-line built here - the work-line enriches the item and narrator, it never reads
-        // from or replaces the phase group. phaseOf's own role/stage -> {Plan,Build,Review}
-        // mapping (spec 67, criterion 1) is pinned in its own dedicated test, not re-derived
-        // here.
-        assert!(
-            js.contains("const ph = phaseOf(req)") && js.contains("phase: ph"),
-            "the worker's progress group must still come from phaseOf(req), a mechanism \
-             distinct from the work-line label built here"
         );
     }
 
@@ -2351,7 +2308,7 @@ mod tests {
         // The same false-green seam `title` closed above: the wave the thin driver actually
         // reads is a `Vec<WaveItem>`, NOT the SpawnRequest, so a roster on the request alone
         // renders NOTHING. `WaveItem::from` must copy the roster, and it must ride the printed
-        // wire, or `rigger.js` has nothing to render inside the action phrase.
+        // wire, or a driver has nothing to render inside the action phrase.
         let req = SpawnRequest {
             reviews: vec!["lens:sdet".into(), "adversary".into()],
             ..test_request("u", "u", ROLE_ADJUDICATOR, 0, "task")
@@ -2360,7 +2317,7 @@ mod tests {
         assert_eq!(
             item.reviews,
             vec!["lens:sdet".to_string(), "adversary".to_string()],
-            "WaveItem::from must copy the request's roster - the seam rigger.js reads"
+            "WaveItem::from must copy the request's roster - the seam a driver reads"
         );
         let json = serde_json::to_value(&item).unwrap();
         assert_eq!(
@@ -2391,7 +2348,7 @@ mod tests {
         // The regression the title's false-green already demanded a guard for, mirrored here:
         // assert on the PRINTED Step wave. A parked request carrying a roster, folded through
         // `step_result` into the JSON `rigger step` prints, must surface the roster on the wave
-        // item - the exact wire `rigger.js` reads to render it inside the action phrase.
+        // item - the exact wire a driver reads to render it inside the action phrase.
         let req = SpawnRequest {
             reviews: vec!["lens:sdet".into()],
             ..test_request("u", "u", ROLE_ADVERSARY, 0, "task")

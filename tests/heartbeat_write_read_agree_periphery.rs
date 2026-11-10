@@ -20,8 +20,8 @@
 //! This file drives the compiled `rigger status` binary, from a cwd inside a REAL git-linked
 //! worktree nested under a REAL owning repo (the deterministic shape a run's unit worktrees
 //! take), against a marker written at the exact path the real writer (`rigger step`'s own
-//! `scratch_root`/`marker_path` composition - the wire `WaveItem::marker_path` the thin
-//! driver frames its `touch` instruction around) would have stamped it. Two regressions this
+//! `scratch_root`/`marker_path` composition - the wire `WaveItem::marker_path` a spawn's
+//! framing points its `touch` instruction at) would have stamped it. Two regressions this
 //! guards against, both reproducing spec 83's own Problem statement ("the per-spawn liveness
 //! marker the sweep would consult is absent even while the agent is demonstrably alive"):
 //! resolving the scratch root from the process's raw cwd (`git_repo()`) instead of the
@@ -36,14 +36,13 @@
 //! through the real binary, from the real nested-worktree cwd the bug's own doc comment
 //! names.
 //!
-//! Spec 105's LIVENESS reads through the same seam: `rigger status --json`'s `liveness_age_s`, the
-//! age the workflow's marker race reads, leaves the run's hold intervals out of a marker's age,
-//! while `rigger dash --export` and `rigger_activity` read the same marker on wall clock.
+//! Spec 105's LIVENESS reads through the same seam: `rigger status --json`'s `liveness_age_s` leaves
+//! the run's hold intervals out of a marker's age, while `rigger dash --export` reads the same
+//! marker on wall clock.
 
 use crate::common;
 use common::git::run_git;
 
-use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::process::Output;
 
@@ -51,13 +50,10 @@ use common::cli::now_nanos;
 use common::cli::run_stream_identity;
 use common::cli::seed_run_events;
 use common::cli::seed_store;
-use common::cli::with_run_store;
 use common::git::git_out;
 use common::git::nested_worktree;
-use rigger::driver::workflow::Driver;
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::Store;
-use rigger::mcpserver::Server;
 
 const RUN_ID: &str = "r-heartbeat-seam";
 const SPAWN_ID: &str = "seam-unit/implementer#0";
@@ -198,7 +194,7 @@ fn real_scratch_root(owning_root: &Path, configured: &str) -> String {
 /// Write a liveness marker at the path the REAL writer computes for `owning_root` with the
 /// configured `defaults.workdir` `workdir` (empty: the default rung) - the same `scratch_root` +
 /// `marker_path` composition `rigger step` stamps a wave item's `marker_path` with (the wire path
-/// the thin driver frames the worker's `touch` around).
+/// a spawn's framing points the worker's `touch` at).
 fn write_real_marker(owning_root: &Path, workdir: &str) -> PathBuf {
     let scratch_root = real_scratch_root(owning_root, workdir);
     let marker = rigger::liveness::marker_path(&scratch_root, RUN_ID, SPAWN_ID)
@@ -431,7 +427,7 @@ fn seed_a_marker_silent_across_a_released_17_h_hold(root: &Path) {
     common::cli::plant_marker(&marker, MARKER_AGE as u64);
 }
 
-/// Spec 105's LIVENESS at the read the workflow's marker race makes: a marker last touched 17 h 10
+/// Spec 105's LIVENESS at `rigger status`'s marker read: a marker last touched 17 h 10
 /// min ago, 5 min before a 17 h hold that released 5 min ago, reads the 10 min outside the hold,
 /// never the 17 h 10 min of wall clock.
 #[test]
@@ -466,24 +462,20 @@ fn status_reads_a_marker_silent_across_a_released_17_h_hold_as_minutes() {
 
 /// Spec 105's LIVENESS keeps every marker-age reader but `rigger status` on wall clock: the marker
 /// `rigger status --json` reads as the 10 min outside a 17 h hold reads its whole age through
-/// `rigger dash --export` and through `rigger_activity`, with that hold in the log they read.
+/// `rigger dash --export`, with that hold in the log it reads.
 #[test]
-fn the_dash_and_rigger_activity_read_a_marker_silent_across_a_released_hold_on_wall_clock() {
+fn the_dash_reads_a_marker_silent_across_a_released_hold_on_wall_clock() {
     let project = main_repo_with_commit();
     let root = project.path();
     seed_a_marker_silent_across_a_released_17_h_hold(root);
 
-    for (surface, age) in [
-        ("rigger dash --export", exported_liveness_age(root)),
-        ("rigger_activity", activity_liveness_age(root)),
-    ] {
-        // Only this test's own wall-clock overhead sits above the marker's age.
-        let wall_clock = MARKER_AGE as u64..MARKER_AGE as u64 + 120;
-        assert!(
-            age.is_some_and(|age| wall_clock.contains(&age)),
-            "{surface} reads the marker's whole age: {age:?}"
-        );
-    }
+    let age = exported_liveness_age(root);
+    // Only this test's own wall-clock overhead sits above the marker's age.
+    let wall_clock = MARKER_AGE as u64..MARKER_AGE as u64 + 120;
+    assert!(
+        age.is_some_and(|age| wall_clock.contains(&age)),
+        "rigger dash --export reads the marker's whole age: {age:?}"
+    );
 }
 
 /// The `liveness_age_s` of [`SPAWN_ID`], the one in-flight spawn, in `root`'s `rigger dash --export`
@@ -500,26 +492,6 @@ fn exported_liveness_age(root: &Path) -> Option<u64> {
     let (_, age) = html.split_once("\"liveness_age_s\":")?;
     let digits = age.find(|c: char| !c.is_ascii_digit())?;
     age[..digits].parse().ok()
-}
-
-/// The `liveness_age_s` of [`SPAWN_ID`] in the `rigger_activity` view of `root`'s run, over its real
-/// run log and scratch root.
-fn activity_liveness_age(root: &Path) -> Option<u64> {
-    let progress = Store::open(":memory:").unwrap();
-    let driver = Driver::new();
-    let scratch_root = real_scratch_root(root, "");
-    let input = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"rigger_activity","arguments":{}}}"#;
-    let mut output = Vec::new();
-    with_run_store(root, |store| {
-        Server::new(&driver, store, "run")
-            .with_progress(&progress, &scratch_root)
-            .run(Cursor::new(input), &mut output)
-            .unwrap();
-    });
-    let response: serde_json::Value = serde_json::from_slice(&output).unwrap();
-    let view = &response["result"]["structuredContent"];
-    assert_eq!(view[0]["id"], SPAWN_ID, "the in-flight spawn: {view}");
-    view[0]["liveness_age_s"].as_u64()
 }
 
 /// The SAME round-2 seam as `status_resolves_a_configured_workdir_from_the_owning_root_with_

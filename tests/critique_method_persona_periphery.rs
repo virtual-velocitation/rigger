@@ -33,7 +33,7 @@
 //! the adversary and the adjudicator of the re-plan round, for the prompt that opens with the
 //! reject. The first round's adversary is no row: the step that parks the planner parks it too, so
 //! the unit list it was served predates the proposal the other rows list. Every run is minted through
-//! `run_store::start_fresh` and adopted by the step, as the workflow driver's run is. The stepped
+//! `run_store::start_fresh` and adopted by the step. The stepped
 //! workflow differs from what the verb wrote in its pinned grounder and, in a row declaring another
 //! cap or none, its cap line.
 
@@ -368,7 +368,7 @@ fn each_gate_spawn_is_served_its_own_persona_then_only_the_framing_and_the_outpu
         arrange(root);
         let files = critique_method_by_persona().map(|(file, _, _)| file);
         let before = files.map(|file| agent_text(root, file));
-        for (verb, envs) in [("init", &[][..]), ("setup", &[("RIGGER_NPM", "true")][..])] {
+        for (verb, envs) in [("init", &[][..]), ("setup", &[][..])] {
             run_rigger_envs_ok(root, &[verb], envs);
             assert_eq!(
                 files.map(|file| agent_text(root, file)),

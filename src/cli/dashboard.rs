@@ -18,7 +18,7 @@ pub(crate) fn cmd_dash(args: &[String]) -> Res {
     // `--export <path>` and/or `--port <n>`; loopback only (no host flag by design).
     // `--reap-on-idle` makes this dash SELF-REAP when the run it serves goes idle/complete
     // (spec 39, criterion 3) - passed only by the DETACHED step-path spawn, never the
-    // guard-bound `rigger run` / `run_workflow` dash (which keeps its `ReapedChild`).
+    // guard-bound `rigger run` dash (which keeps its `ReapedChild`).
     let mut export: Option<String> = None;
     let mut port: u16 = dash::DEFAULT_PORT;
     let mut reap_on_idle = false;
@@ -119,7 +119,7 @@ pub(crate) fn cmd_dash(args: &[String]) -> Res {
     // criterion 5) - resolved ONLY when this is the detached, self-reaping singleton
     // (`--reap-on-idle`) and the environment has a state home (a homeless environment holds no
     // registry, so the watcher never starts and the dash simply serves). `None` for the guard-bound
-    // `rigger run` / `run_workflow` dash, which never starts a watcher (it keeps its `ReapedChild`).
+    // `rigger run` dash, which never starts a watcher (it keeps its `ReapedChild`).
     // Retargets spec 39's per-run liveness snapshot at the singleton: the reap trigger is now the
     // registry (every instance on the machine), not this one project's run, so no per-RUN inputs
     // are captured here. Spec 62 criterion 5 adds a second, per-PROJECT (never per-run) signal
@@ -298,8 +298,8 @@ pub(crate) fn cmd_dash(args: &[String]) -> Res {
                     // liveness trigger at the machine-level singleton; it is driven by the
                     // registry plus every known project's own agent-liveness check, NOT by any
                     // single `step` process exiting. Read-only: the watcher only reads the
-                    // registry and stats marker files. The guard-bound `rigger run` /
-                    // `run_workflow` dash omits the flag and keeps its `ReapedChild` reaping
+                    // registry and stats marker files. The guard-bound `rigger run` dash
+                    // omits the flag and keeps its `ReapedChild` reaping
                     // instead. Started ONLY on the branch that actually binds and serves - a
                     // short-circuited singleton invocation serves nothing and starts no watcher.
                     if let Some(registry_dir) = reap_registry_dir {
@@ -758,25 +758,17 @@ fn dash_attach_graph(inst: &rigger::registry::Instance) -> contextgraph::Graph {
 
 /// `rigger mcp` (spec 92, criterion 4: IN EVERY SESSION'S HAND): the operator's own
 /// read-only MCP surface, the one `rigger setup` registers into `.mcp.json` for the
-/// interactive Claude Code session. Unlike `rigger serve`/`cmd_serve` (the
-/// workflow-driver bridge a loop run spawns, which anchors a run branch and creates unit
-/// worktrees the moment it starts), this command has no run to drive and touches
-/// NOTHING on disk beyond opening the existing event store, side-car, grounder, and
-/// context graph read-only: it answers `rigger_peers`, `rigger_ground`, and
-/// `rigger_graph` over stdio, the same three lookups a loop agent has (`rigger_peers`
-/// through the shim's proxy to `rigger serve`; `ground`/`graph --show`/`graph --around`
-/// as the CLI commands its persona names) - given to an interactive session as tools
+/// interactive session. This command has no run to drive and touches NOTHING on disk
+/// beyond opening the existing event store, side-car, grounder, and context graph
+/// read-only: it answers `rigger_peers`, `rigger_ground`, and `rigger_graph` over stdio,
+/// the same three lookups a loop agent has - given to an interactive session as tools
 /// instead of a shell.
 ///
-/// Served through the SAME [`mcpserver::Server`] the workflow-driver bridge (`cmd_serve`
-/// above) uses, wired with [`Server::with_grounder`](mcpserver::Server::with_grounder) and
-/// [`Server::with_graph`](mcpserver::Server::with_graph) exactly like that call site already
-/// wires `with_graph`/`with_progress` - ONE read loop, JSON-RPC dispatch, and ok/err envelope
-/// answering both tool surfaces, rather than a second small stdio loop reaching for the
-/// concrete grounder/`Projector` across the crate boundary. `rigger_next`/`rigger_result`
-/// need a live `Driver`, but this surface never calls them (wiring a grounder is what marks a
-/// `Server` as the lookup-only surface - see [`mcpserver::Server`]'s own doc comment) - a
-/// freshly constructed, never-`spawn`ed one satisfies the constructor with no side effects.
+/// Served through the SAME [`mcpserver::Server`] a spawn-bound `rigger mcp --spawn <id>`
+/// uses, wired with [`Server::with_grounder`](mcpserver::Server::with_grounder) and
+/// [`Server::with_graph`](mcpserver::Server::with_graph) - ONE read loop, JSON-RPC dispatch,
+/// and ok/err envelope answering both tool surfaces, rather than a second small stdio loop
+/// reaching for the concrete grounder/`Projector` across the crate boundary.
 ///
 /// Grounder resolution is NEVER propagated with `?`: a misconfigured/unavailable grounder
 /// (no `defaults.grounder` pinned on a `--no-default-features` build with no `symbols`
@@ -825,7 +817,6 @@ pub(crate) fn cmd_mcp(args: &[String]) -> Res {
         // fold refuses while it does), and the graph and grounding tools, which depend on the fold,
         // refuse naming `rigger setup` until it is paid (spec 101).
         let graph = loc.graph(selection)?;
-        let driver = rigger::driver::workflow::Driver::new();
 
         // Only opened/resolved when `--spawn` is given - a plain `rigger mcp` (the operator's
         // lookup surface) must not conjure `.rigger/progress.db` or a scratch root it never uses.
@@ -849,7 +840,7 @@ pub(crate) fn cmd_mcp(args: &[String]) -> Res {
         };
 
         let mut server =
-            mcpserver::Server::new(&driver, store, conductor::STREAM).with_graph(graph.as_ref());
+            mcpserver::Server::new(store, conductor::STREAM).with_graph(graph.as_ref());
         server = server.with_grounder(match &grounder {
             Ok(g) => Ok(g.as_ref()),
             Err(e) => Err(e.to_string()),

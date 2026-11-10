@@ -357,7 +357,7 @@ const HOOKS_ADVISORY: &str = "does not carry rigger's session hooks";
 fn validate_advises_when_the_checkout_has_no_hooks_installed() {
     let proj = temp_project();
     let root = proj.path();
-    setup_ok(root, &[("RIGGER_NPM", "true")]);
+    setup_ok(root, &[]);
 
     let (_out, err, ok) = run_rigger(root, &["validate"]);
     assert!(ok, "validate succeeds on a set-up project; stderr:\n{err}");
@@ -385,7 +385,7 @@ fn validate_advises_when_the_checkout_has_no_hooks_installed() {
 fn validate_fails_naming_an_operators_helper_copy_that_does_not_parse() {
     let proj = temp_project();
     let root = proj.path();
-    setup_ok(root, &[("RIGGER_NPM", "true")]);
+    setup_ok(root, &[]);
     let rows = [
         (
             "a copy with no name",

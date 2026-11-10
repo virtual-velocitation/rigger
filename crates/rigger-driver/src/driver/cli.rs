@@ -5,8 +5,7 @@
 //! the emit-protocol lines (DecisionMade / ReviewFinding / UnitProposed JSON, the
 //! same shape the EMIT_PROTOCOL / review_protocol have the agent pass to `rigger_emit`) and
 //! replays each through `emit`. So the cli path also records decisions, extends the
-//! living DAG (UnitProposed), and feeds the side-car - the only difference from the
-//! workflow driver is that emission is post-hoc, not live mid-run.
+//! living DAG (UnitProposed), and feeds the side-car - post-hoc, not live mid-run.
 
 use std::io::Write;
 use std::process::{Output, Stdio};
@@ -171,8 +170,8 @@ impl AgentDriver for Driver {
         // decisions/findings reach this driver only as lines it prints to stdout, in the
         // shape the EMIT_PROTOCOL / review_protocol give `rigger_emit`. Replay each
         // through `emit` so the cli path also records
-        // decisions, extends the living DAG (UnitProposed), and feeds the side-car -
-        // exactly what the workflow driver does live. Done BEFORE the exit-status
+        // decisions, extends the living DAG (UnitProposed), and feeds the side-car.
+        // Done BEFORE the exit-status
         // check so a partially-failed run still records what the agent decided.
         bridge_emits(&stdout, emit)?;
         // A blocking subprocess driver does not learn the resolved model id (spec 05 line

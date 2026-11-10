@@ -212,7 +212,7 @@ fn init_project(
 
     // 4. Write .gitignore entries for machine-local installs, the always-on dash's runtime
     // breadcrumbs, and the per-machine store-connection secret file, when they are not already
-    // ignored or tracked. `.claude/` and `.rigger/shim/` are the machine-local installs;
+    // ignored or tracked. `.claude/` is the machine-local install;
     // `.rigger/dash.url` and `.rigger/dash.marker` are the dash's discoverability breadcrumbs
     // (spec 39) - left untracked-and-not-ignored they get swept into a unit worktree's commit by
     // `git add` and then collide with the live dash's rewrites when the conductor merges the unit
@@ -228,7 +228,6 @@ fn init_project(
     let mut gitignore_added = Vec::new();
     for pattern in [
         ".claude/",
-        ".rigger/shim/",
         ".rigger/dash.url",
         ".rigger/dash.marker",
         ".rigger/dash.attempt",
@@ -331,24 +330,20 @@ fn print_scaffold_pointer() {
     );
 }
 
-/// Print the end-of-setup orientation block: the three ways to drive a run, so an operator
-/// who just provisioned the project discovers them without grepping the docs (spec 19a unit
-/// 2). Names the blessed native `/rigger <spec>` path (chosen from the `/workflows` menu),
-/// the read-only dashboard (`rigger dash`, on `127.0.0.1:<dash::DEFAULT_PORT>` - the port is
-/// single-sourced from the constant so this line and the fixture that asserts it cannot
-/// drift), and `rigger workflow` / `rigger run` as the headless twins that drive the same
-/// loop without an editor. Output text only; the dashboard's runtime behavior is spec 19b's.
+/// Print the end-of-setup orientation block: how to drive a run and follow it, so an operator
+/// who just provisioned the project discovers it without grepping the docs (spec 19a unit 2).
+/// Names `rigger run <spec> --base <ref>` (the one driver), `rigger status` / `rigger watch`
+/// (following it), and the read-only dashboard (`rigger dash`, on
+/// `127.0.0.1:<dash::DEFAULT_PORT>` - the port is single-sourced from the constant so this line
+/// and the fixture that asserts it cannot drift). Output text only; the dashboard's runtime
+/// behavior is spec 19b's.
 fn print_orientation() {
-    println!("to drive a run, three ways:");
+    println!("to drive a run:");
+    println!("  rigger run <spec> --base <ref>  launch it in the background; it spawns each agent");
+    println!("  rigger status / rigger watch    follow it from any terminal");
     println!(
-        "  /rigger <spec>                 the blessed native path (choose it from /workflows)"
-    );
-    println!(
-        "  rigger dash                    a read-only live dashboard at http://127.0.0.1:{}",
+        "  rigger dash                     a read-only live dashboard at http://127.0.0.1:{}",
         dash::DEFAULT_PORT
-    );
-    println!(
-        "  rigger workflow / rigger run   the headless twins (the same loop without an editor)"
     );
 }
 
@@ -385,8 +380,8 @@ fn write_gitignore_entries(root: &Path, pattern: &str) -> Result<bool, Box<dyn s
         return Ok(false); // Already in .gitignore
     }
 
-    // Check if the path is tracked in git (it should not be, as .claude/ and .rigger/shim/
-    // are machine-local and should never be committed). This is just a safety check.
+    // Check if the path is tracked in git (it should not be, as .claude/ is machine-local and
+    // should never be committed). This is just a safety check.
     let is_tracked = subprocess::command("git")
         .args(["ls-files"])
         .current_dir(root)
@@ -612,101 +607,15 @@ fn install_precommit_hook(root: &Path) -> Result<InstallOutcome, Box<dyn std::er
     })
 }
 
-/// Provision the per-project JS driver under `<root>/.rigger/shim/`: write the three
-/// embedded runtime files (`shim.mjs`, `package.json`, `package-lock.json`) and
-/// install their npm dependencies so `node_modules` is ready and `rigger workflow`
-/// is zero-setup. Rooted at `root` so it is testable against a temp dir.
-///
-/// Provisioning is a silent no-op when the shim is already up to date: the three
-/// runtime files match the embedded copies AND `node_modules` is present (see
-/// [`shim_is_current`]). Skipping then avoids re-touching the files' mtimes and
-/// re-running npm on every `rigger setup` (spec 05, criterion 4: setup is re-runnable
-/// and changes nothing when nothing drifted). Otherwise the files are (re)written from
-/// the embedded copies (so a `rigger` upgrade refreshes the driver to match the binary)
-/// and npm install runs: `npm ci` when the lockfile is present (a reproducible, locked
-/// install), else `npm install`. A missing `npm` is a CLEAR error (naming the directory
-/// it would have installed in), never a silent skip - the user must know the driver is
-/// not ready. Returns whether it actually (re)provisioned.
-fn provision_shim(root: &Path) -> Result<bool, Box<dyn std::error::Error>> {
-    let dir = rigger_path(root, SHIM_DIR);
-    if shim_is_current(&dir) {
-        return Ok(false);
-    }
-    write_shim_files(root)?;
-    run_npm_install(&dir)?;
-    Ok(true)
-}
-
-/// Whether the provisioned shim in `dir` is up to date: every embedded runtime file is
-/// present with byte-identical content AND npm's install is COMPLETE. Used by
-/// [`provision_shim`] to make a `rigger setup` rerun a no-op instead of re-writing the
-/// files and re-running npm.
-///
-/// Completeness is gated on `node_modules/.package-lock.json` - the hidden lockfile npm
-/// writes as the FINAL step of a successful `npm ci` / `npm install` - not on the mere
-/// PRESENCE of a `node_modules` directory. A torn/partial install (an interrupted `npm
-/// ci`, which `rm -rf`s `node_modules` then repopulates incrementally) leaves the
-/// directory present-but-incomplete and WITHOUT the marker; gating on the marker makes
-/// setup re-run npm and SELF-HEAL it rather than treating the broken tree as current and
-/// refusing to repair it forever (spec 05, criterion 4: setup is re-runnable).
-fn shim_is_current(dir: &Path) -> bool {
-    dir.join("node_modules")
-        .join(".package-lock.json")
-        .is_file()
-        && SHIM_FILES.iter().all(|(name, contents)| {
-            std::fs::read(dir.join(name))
-                .map(|on_disk| on_disk == contents.as_bytes())
-                .unwrap_or(false)
-        })
-}
-
-/// Install the shim's npm dependencies in `dir`. Uses `npm ci` when a
-/// `package-lock.json` is present (a clean, lockfile-exact install) and `npm
-/// install` otherwise. `npm` not being on PATH is a clear, actionable error naming
-/// the directory - the JS driver is unusable without its deps, so this never
-/// silently succeeds.
-fn run_npm_install(dir: &Path) -> Res {
-    let npm = std::env::var("RIGGER_NPM").unwrap_or_else(|_| "npm".to_string());
-    let subcmd = if dir.join("package-lock.json").exists() {
-        "ci"
-    } else {
-        "install"
-    };
-    let status = subprocess::command(&npm)
-        .arg(subcmd)
-        .current_dir(dir)
-        .status()
-        .map_err(|e| {
-            format!(
-                "setup: could not run `{npm} {subcmd}` in {}: {e}. \
-                 Is Node's npm installed and on your PATH? The JS driver needs its \
-                 dependencies before `rigger workflow` can run.",
-                dir.display()
-            )
-        })?;
-    if !status.success() {
-        return Err(format!(
-            "setup: `{npm} {subcmd}` failed in {} ({status}); the JS driver's \
-             dependencies were not installed",
-            dir.display()
-        )
-        .into());
-    }
-    Ok(())
-}
-
 /// `rigger setup` is the FULL project setup: it does everything `rigger init` does
-/// (scaffold `.rigger/` + install the Claude Code hook), installs the native
-/// `/rigger` Claude Code workflow at `.claude/workflows/rigger.js`, AND provisions
-/// the JS driver (writes the embedded shim runtime into `.rigger/shim/` and runs `npm
-/// install`). After it runs the user can drive the loop with the native workflow
-/// (`/rigger <spec>`) with zero manual setup; the standalone `rigger workflow` shim
-/// remains as a fallback.
+/// (scaffold `.rigger/` + install the session hook), installs every registry skill, the docs
+/// pre-commit hook, the operator MCP entry and the session settings. After it runs the user
+/// drives the loop with `rigger run <spec> --base <ref>` with zero manual setup.
 pub(crate) fn cmd_setup(args: &[String]) -> Res {
     let opts = parse_setup_args(args)?;
     let root = Path::new(".");
     // Each step is drift-aware and reports whether it changed anything, so setup is
-    // safely re-runnable: it refreshes a drifted workflow and reports it, and a rerun
+    // safely re-runnable: it refreshes a drifted install and reports it, and a rerun
     // on an up-to-date repo changes nothing and prints nothing surprising (spec 05,
     // criterion 4).
     let scaffold = init_project(root, TEMPLATE_SETS)?;
@@ -719,11 +628,10 @@ pub(crate) fn cmd_setup(args: &[String]) -> Res {
     // missing an event the log holds, in the cases `rebuild_owed_graph` names: the only command
     // that rebuilds it, because it is the verb every install already runs.
     let graph_rebuilt = rebuild_owed_graph()?;
-    let workflow = install_workflow(root)?;
     // Install EVERY skill in the registry (spec 20, unit 3; spec 68, criterion 1): each a
-    // loadable front-door DISTINCT from the `/rigger` workflow, with this repo's project
-    // overlay (base branch, specs location, Global constraints) merged into the render.
-    // Drift-aware like the workflow, so a rerun on an up-to-date repo changes nothing.
+    // loadable front-door, with this repo's project overlay (base branch, specs location,
+    // Global constraints) merged into the render. Drift-aware, so a rerun on an up-to-date
+    // repo changes nothing.
     let skills = install_skills(root)?;
     // Install the docs-checking git pre-commit hook (spec 24): on `git commit` it runs
     // `rigger docs --check` and refuses the commit when a rendered output the repo tracks
@@ -733,7 +641,6 @@ pub(crate) fn cmd_setup(args: &[String]) -> Res {
     // an already-installed hook changes nothing, an older build's managed block is replaced
     // in place, and any pre-existing pre-commit hook is chained, never clobbered.
     let hook = install_precommit_hook(root)?;
-    let provisioned = provision_shim(root)?;
     // Register the operator's own MCP lookup surface (spec 92, criterion 4: IN EVERY
     // SESSION'S HAND) - `.mcp.json` gains a `rigger` entry (`rigger mcp`) exposing
     // rigger_peers/rigger_ground/rigger_graph to THIS session - and, when the workflow
@@ -779,7 +686,6 @@ pub(crate) fn cmd_setup(args: &[String]) -> Res {
         );
     }
 
-    let workflow_changed = workflow != InstallOutcome::AlreadyCurrent;
     let skill_changed = skills.outcomes.iter().any(|(_, outcome)| {
         !matches!(
             outcome,
@@ -792,10 +698,8 @@ pub(crate) fn cmd_setup(args: &[String]) -> Res {
     let status_line_changed = status_line != InstallOutcome::AlreadyCurrent;
     if !scaffold.changed()
         && !graph_rebuilt
-        && !workflow_changed
         && !skill_changed
         && !hook_changed
-        && !provisioned
         && !imported
         && !mcp_changed
         && !lookup_hook_changed
@@ -815,23 +719,6 @@ pub(crate) fn cmd_setup(args: &[String]) -> Res {
     // claim, so a gitignore-only repair reports the gitignore change alone.
     for line in scaffold_summary_lines(&scaffold) {
         println!("{line}");
-    }
-    if provisioned {
-        println!(
-            "provisioned the JS driver in .rigger/shim/ (wrote shim.mjs + package.json + \
-             package-lock.json and ran npm install)"
-        );
-    }
-    match workflow {
-        InstallOutcome::Installed => println!(
-            "installed the /rigger workflow (.claude/workflows/rigger.js) - run it with: /rigger \
-             <spec-path>"
-        ),
-        InstallOutcome::Refreshed => println!(
-            "refreshed the drifted /rigger workflow (.claude/workflows/rigger.js) to match this \
-             rigger build"
-        ),
-        InstallOutcome::AlreadyCurrent | InstallOutcome::ProjectCopy => {}
     }
     for (name, outcome) in &skills.outcomes {
         match outcome {
@@ -1669,7 +1556,7 @@ fn instructions_in_force_line(operator: &[instructions::Instruction]) -> String 
 
 /// `rigger prime [<spec>]` - print recent decisions (what the SessionStart hook runs), and,
 /// when a spec path is given, the DISCOVERABILITY next step naming the spec lint (spec 66,
-/// criterion 5) so an operator or agent about to drive `/rigger <spec>` finds `rigger
+/// criterion 5) so an operator or agent about to drive `rigger run <spec>` finds `rigger
 /// validate <spec>` instead of stumbling onto it by accident. `args.first()` is the spec
 /// path; the bare `rigger prime` the installed hook actually runs carries none, and stays
 /// exactly as it was - no lint mention.
@@ -2203,7 +2090,6 @@ mod tests {
     use crate::test_support::language_marker_hits;
     use crate::test_support::read_text;
     use crate::test_support::sorted_dir_names;
-    use crate::test_support::tool_available;
     use crate::test_support::AUTHORING_AGENTS_HANDBOOK;
     use crate::test_support::{
         assert_holds_its_critique_method, critique_method_by_persona, markdown_section,
@@ -3133,73 +3019,6 @@ mod tests {
         );
     }
 
-    /// Criterion 4: provisioning the JS driver is a silent no-op when the shim is
-    /// already current - the runtime files match the embedded copies and npm's install
-    /// is COMPLETE (its `node_modules/.package-lock.json` marker present) - so a `rigger
-    /// setup` rerun does not rewrite the files or re-run npm. Faking a complete
-    /// `node_modules` lets this assert the short-circuit WITHOUT npm: were the
-    /// short-circuit broken, `provision_shim` would run npm and return `true` (or error
-    /// when npm is absent), both of which fail this test.
-    #[test]
-    fn provision_shim_is_a_silent_noop_when_already_current() {
-        let dir = tempfile::tempdir().unwrap();
-        let shim = write_shim_files(dir.path()).unwrap();
-        assert!(!shim_is_current(&shim), "no node_modules yet: not current");
-
-        // A COMPLETE npm install leaves node_modules/.package-lock.json as its final
-        // marker; only then is the shim current.
-        let node_modules = shim.join("node_modules");
-        std::fs::create_dir_all(&node_modules).unwrap();
-        std::fs::write(node_modules.join(".package-lock.json"), "{}").unwrap();
-        assert!(
-            shim_is_current(&shim),
-            "matching runtime files + a COMPLETE node_modules (marker present): current"
-        );
-
-        let provisioned = provision_shim(dir.path())
-            .expect("a fully-provisioned shim must be a clean no-op (no npm needed)");
-        assert!(
-            !provisioned,
-            "provision_shim must report no work when the shim is already current"
-        );
-
-        // A drifted runtime file makes the shim not-current again (an upgrade path).
-        std::fs::write(shim.join("shim.mjs"), "// stale shim from an older build\n").unwrap();
-        assert!(
-            !shim_is_current(&shim),
-            "a drifted runtime file must make the shim not-current"
-        );
-    }
-
-    /// Criterion 4: setup SELF-HEALS a torn/partial shim install. An interrupted `npm
-    /// ci` (which `rm -rf`s `node_modules` then repopulates incrementally) leaves a
-    /// `node_modules` DIRECTORY that lacks npm's completeness marker
-    /// (`node_modules/.package-lock.json`). `shim_is_current` must treat that as NOT
-    /// current so the next `rigger setup` re-runs npm and repairs it, rather than
-    /// short-circuiting on bare directory presence and permanently refusing to fix a
-    /// broken install. Regression-locks adv-u4-shim-torn-install-not-self-healed.
-    #[test]
-    fn shim_is_not_current_when_node_modules_is_torn_missing_the_install_marker() {
-        let dir = tempfile::tempdir().unwrap();
-        let shim = write_shim_files(dir.path()).unwrap();
-
-        // A torn install: node_modules exists (some deps partially unpacked) but the
-        // final .package-lock.json marker a COMPLETE install writes is absent.
-        std::fs::create_dir_all(shim.join("node_modules").join("some-partial-dep")).unwrap();
-        assert!(
-            !shim_is_current(&shim),
-            "a node_modules dir lacking the .package-lock.json completeness marker is a torn \
-             install and must NOT be treated as current"
-        );
-
-        // Adding the marker (as a completed npm install would) makes it current again.
-        std::fs::write(shim.join("node_modules").join(".package-lock.json"), "{}").unwrap();
-        assert!(
-            shim_is_current(&shim),
-            "once the completeness marker is present the shim is current"
-        );
-    }
-
     /// Criterion 4: scaffolding is idempotent. The first `init_project` on an empty
     /// project changes the tree and reports the agents it wrote; a second run finds
     /// everything present and is a silent no-op (`changed: false`, no new agents), so
@@ -3928,37 +3747,6 @@ mod tests {
             "import must run the same validation `rigger validate` applies and reject a \
              project whose workflow references a missing agent"
         );
-    }
-
-    /// `rigger setup` runs npm install against the provisioned shim so `node_modules`
-    /// is ready. When npm is available we run it FOR REAL against a temp dir and
-    /// confirm `node_modules` appears; when npm is unavailable we assert the clear
-    /// error path instead (never a silent skip).
-    #[test]
-    fn setup_runs_npm_install_or_reports_a_clear_error() {
-        let dir = tempfile::tempdir().unwrap();
-        let shim = write_shim_files(dir.path()).unwrap();
-
-        if tool_available("npm", "--version") {
-            // npm is on PATH: provisioning must run it for real and leave node_modules.
-            provision_shim(dir.path()).expect("provision_shim must succeed when npm is available");
-            assert!(
-                shim.join("node_modules").is_dir(),
-                "npm install must populate node_modules in the provisioned shim dir"
-            );
-        } else {
-            // npm is NOT on PATH: the error must be clear and actionable, not a silent
-            // skip. Point RIGGER_NPM at a binary that does not exist to exercise the
-            // missing-npm path deterministically.
-            std::env::set_var("RIGGER_NPM", "definitely-not-a-real-npm-binary-xyz");
-            let err = run_npm_install(&shim).expect_err("a missing npm must be a clear error");
-            std::env::remove_var("RIGGER_NPM");
-            let msg = err.to_string();
-            assert!(
-                msg.contains("npm") && msg.to_lowercase().contains("path"),
-                "the missing-npm error must mention npm and PATH; got: {msg}"
-            );
-        }
     }
 
     /// The scaffolded workflow (`rigger init`/`setup` on a NEW project) declares

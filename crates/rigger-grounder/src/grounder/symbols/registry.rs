@@ -982,11 +982,10 @@ pub(crate) mod tests {
         // Spec 92 criterion 2 (THE WHOLE PRODUCT IS COVERED): the upstream
         // tree-sitter-javascript tags.scm tags a `const`/`let` ONLY when its value is an
         // arrow/function expression, or an ES `export X = <literal>` assignment-form export -
-        // a syntax this project's plain CommonJS-style `workflows/rigger.js` never uses. A
-        // plain top-level constant therefore never became a graph entity at all - exactly
-        // the gap docs/audit/2026-09-graph-vs-grep.md questions 5 and 8 measured against that
-        // file's own `OUTER_WALL_CLOCK_SEC` (a ternary) and `FRESH` (a boolean coercion)
-        // constants. Both must now extract as `Kind::Constant` definitions.
+        // a syntax plain CommonJS-style scripts never use. A plain top-level constant
+        // therefore never became a graph entity at all - such as a ternary-valued
+        // `OUTER_WALL_CLOCK_SEC` or a boolean-coercion `FRESH`. Both must now extract as
+        // `Kind::Constant` definitions.
         let src = "const OUTER_WALL_CLOCK_SEC = Number(x) > 0 ? Number(x) : 900\nconst FRESH = !!a.fresh\n";
         let fs = crate::symbol_index::extracted("js", src);
         assert!(

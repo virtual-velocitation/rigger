@@ -543,38 +543,6 @@ impl EventStore for ReadsFailWhenArmed<'_> {
     }
 }
 
-/// A store that runs `land` inside its next run read once `armed` is set, ahead of that read's
-/// first call, then disarms: the world moving inside a reader's read rather than between two of
-/// its reads. The run read's two calls and an append reach `inner`; every other method panics.
-pub struct LandsInTheNextRead<'a> {
-    pub inner: &'a dyn EventStore,
-    pub armed: &'a std::sync::atomic::AtomicBool,
-    pub land: &'a (dyn Fn() + Sync),
-}
-
-impl EventStore for LandsInTheNextRead<'_> {
-    refuse_event_store_calls!(
-        "only the run read and an append are reachable":
-        read_stream,
-        read_all,
-        read_all_page,
-        log_head,
-        subscribe_all,
-        subscribe_stream,
-        read_stream_positions,
-        read_stream_batched,
-        latest_in_group,
-    );
-    crate::delegate_event_store_reads!(append);
-    fn last_position(&self, stream: &str, event_type: &str) -> Result<Option<Revision>, Error> {
-        if self.armed.swap(false, std::sync::atomic::Ordering::SeqCst) {
-            (self.land)();
-        }
-        self.inner.last_position(stream, event_type)
-    }
-    crate::delegate_event_store_reads!(typed);
-}
-
 /// A read-only store over ONE hand-built stream, for a use case tested where no backend is in
 /// reach: its events are stamped in the order given as the sqlite store stamps an append to an
 /// empty log, per-stream revisions from 0 and log positions from 1, and only the boundary lookup

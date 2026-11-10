@@ -58,7 +58,7 @@ use crate::spawn_store;
 
 /// The scratch subdirectory the per-spawn liveness markers live under, a sibling of the
 /// worktrees and `agent-scratch`. Kept in ONE place so the sweep and the driver-framed
-/// worker instruction (`workflows/rigger.js`) derive the same path.
+/// worker instruction derive the same path.
 pub const MARKER_SUBDIR: &str = "agent-live";
 
 /// The filesystem-safe marker filename for a spawn id: an INJECTIVE byte-for-byte
@@ -66,8 +66,8 @@ pub const MARKER_SUBDIR: &str = "agent-live";
 /// is not ASCII alphanumeric or `-` becomes `_` followed by its two-lowercase-hex-digit
 /// value, and `_` itself is escaped the same way (to `_5f`), so a literal `_` never
 /// appears in the output except as the first byte of a 3-byte escape. A spawn id is
-/// `{unit}/{role}#{n}`, so `/` becomes `_2f` and `#` becomes `_23`. `workflows/rigger.js`
-/// never recomputes this rule itself - it receives the fully-resolved absolute path
+/// `{unit}/{role}#{n}`, so `/` becomes `_2f` and `#` becomes `_23`. A driver never
+/// recomputes this rule itself - it receives the fully-resolved absolute path
 /// `rigger step` stamps on the wire (through THIS function, via [`marker_path`]) and just
 /// touches it verbatim, so the worker and the sweep can never compute two different
 /// filenames for the same spawn.

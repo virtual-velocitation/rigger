@@ -105,9 +105,7 @@ pub struct ProbeFault {
 /// and the process hosts' spawned agent process (via
 /// `conductor::SpawnOpts`), so a gate build and that agent's own `cargo test`
 /// invocation hit the same compilation cache under the same settings, at the same
-/// jobs cap. The turn-key `rigger workflow` Node-shim driver and `driver::replay`'s
-/// wire contract do not carry these vars yet - a disclosed, tracked gap for a
-/// follow-on unit, not something this resolver claims to reach today. One resolver,
+/// jobs cap. `driver::replay`'s wire contract does not carry these vars. One resolver,
 /// two wired injection sites; neither derives its own competing copy.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct BuildEnv {

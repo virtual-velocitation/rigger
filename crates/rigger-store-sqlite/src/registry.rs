@@ -83,8 +83,8 @@ impl StoreIdentity {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Writer {
-    /// A process that drives the run for as long as it lives - `rigger run`, `serve` and
-    /// `workflow`, and `rigger step` - re-stamping from a heartbeat thread while it holds the
+    /// A process that drives the run for as long as it lives - `rigger run` and `rigger step` -
+    /// re-stamping from a heartbeat thread while it holds the
     /// run, so its `heartbeat_ms` is also its driver-liveness stamp. The DEFAULT, and what an
     /// entry written before the role was recorded reads as: an unknown writer is taken for a
     /// live driver, which can only delay a dead-driver judgment by the idle window, never

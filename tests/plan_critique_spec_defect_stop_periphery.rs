@@ -19,8 +19,8 @@
 //! Every run here is minted through `run_store::start_fresh` with a spec path and adopted by the
 //! step, never at a CLI mint site: a mint is criterion 2's surface, and an adopted run is never
 //! refused there. A run minted with no criteria is stepped with no `--spec` (the step's criteria
-//! are empty and match), one minted on [`SPEC`]'s criteria with `--spec` [`SPEC`], as the
-//! workflow driver steps a run it began on its spec. The one exception is the relaunch the halt
+//! are empty and match), one minted on [`SPEC`]'s criteria with `--spec` [`SPEC`], as a
+//! driver steps a run it began on its spec. The one exception is the relaunch the halt
 //! directs (Design *Relaunch*), where the stopped run meets criterion 2's refusal and criterion
 //! 1's verb: its new run is begun by `rigger step --spec` - with `--fresh`, and with none after an
 //! amendment that leaves the criteria equal - the boundary only the three criteria together

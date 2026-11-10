@@ -1882,7 +1882,7 @@ fn critique_is_a_known_command_with_its_usage_line() {
 // handed to the critic from a configured rung and over an ambient one.
 // ---------------------------------------------------------------------------------------------
 
-/// Given a project, when the operator hands `rigger run`, `rigger workflow` or `rigger critique` a
+/// Given a project, when the operator hands `rigger run` or `rigger critique` a
 /// second spec path or an unknown flag - before or after the spec - then each verb refuses through
 /// the one spec-positional rule they share: exactly one stderr line naming the verb and the
 /// argument, a non-zero exit, nothing on stdout and nothing written into the project.
@@ -1905,14 +1905,7 @@ fn every_spec_taking_verb_refuses_a_second_spec_and_an_unknown_flag_through_the_
             "run: unexpected second positional argument \"specs/other.md\"",
         ),
         (["run", "--frob", SPEC_REL], "run: unknown flag \"--frob\""),
-        (
-            ["workflow", SPEC_REL, "specs/other.md"],
-            "workflow: unexpected second positional argument \"specs/other.md\"",
-        ),
-        (
-            ["workflow", SPEC_REL, "--frob"],
-            "workflow: unknown flag \"--frob\"",
-        ),
+        (["run", SPEC_REL, "--frob"], "run: unknown flag \"--frob\""),
         (
             ["critique", SPEC_REL, "--frob"],
             "critique: unknown flag \"--frob\"",

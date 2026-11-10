@@ -860,8 +860,8 @@ pub enum DashStatus {
     /// A URL is recorded and TRUSTED: either a probe PROVES it is still serving, or no marker
     /// exists to check against and it is left unverified. An absent marker reads as
     /// "unverifiable", never "dead" - the marker LIFECYCLE is a separate concern (spec 62), and
-    /// more than one dash-starting path (the guard-bound `rigger run` / `rigger serve` dash)
-    /// records a URL but no marker at all, so treating "no marker" as "dead" would falsely
+    /// a dash-starting path (the guard-bound `rigger run` dash) records a URL but no marker
+    /// at all, so treating "no marker" as "dead" would falsely
     /// report a genuinely live dash as down.
     Serving(String),
     /// A probe PROVED the recorded URL's own port is not serving - the lie this criterion
@@ -916,7 +916,7 @@ pub enum DashStatus {
 /// marker sailed straight through as trusted, unverified. The fix: probe `url_port(&url)`
 /// itself directly whenever no MATCHING marker exists to prove it. A marker that is truly
 /// ABSENT still skips the probe and stays trusted unconditionally (the guard-bound `rigger run`
-/// / `rigger serve` dash never writes one at all, so treating its absence as suspicious would
+/// dash never writes one at all, so treating its absence as suspicious would
 /// falsely distrust the one path that is documented to have none - spec 62 owns making that
 /// path write one, not this criterion). A mismatched marker no longer gets that free pass: its
 /// port differs from `port`, so the branch below probes `port` (the URL's own) regardless, and
@@ -1032,7 +1032,7 @@ pub fn dash_start_needed(
 ///   (an absent marker degrades to `agent_live: false`, the same safe-to-check-again-next-poll
 ///   default the registry's own absent-directory read already uses).
 /// - `agent_live`: whether the SAME liveness authority `rigger status` presents - a per-spawn
-///   `agent-live` marker ([`crate::liveness::any_marker_fresh`]) - shows a fresh signal right now,
+///   `agent-live` marker ([`rigger_driver::liveness::any_marker_fresh`]) - shows a fresh signal right now,
 ///   for the launching project OR (spec 62 criterion 5 round 2) ANY other currently- or
 ///   formerly-registered project the watcher has ever seen (`watch_and_self_reap_on_idle`'s own
 ///   doc comment covers the per-project derivation and its `known_roots` durability). `true`
@@ -8847,7 +8847,7 @@ mod tests {
         );
 
         // A recorded URL with NO marker to check against is TRUSTED as-is, with NO probe - the
-        // guard-bound `rigger run` / `rigger serve` dash records a URL but no marker at all
+        // guard-bound `rigger run` dash records a URL but no marker at all
         // (spec 62 owns the marker lifecycle), so an absent marker must never read as "dead".
         assert_eq!(
             dash_status(Some(url.clone()), None, |_| panic!(

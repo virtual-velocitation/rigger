@@ -216,8 +216,7 @@ const NO_RUN_RECORDED_LINE: &str = "no run recorded; start one with `rigger run 
 /// run-stream milestone, the latest progress report, and the liveness-marker age it reads in
 /// Rust here (so no consumer stats a file) - into one view: what each agent is at, what it is
 /// doing, how long since its last activity and heartbeat, and how long since its last store
-/// event (the blackout this closes). `--json` prints the machine shape the shim and the dash
-/// also consume; `--line` prints ONLY the core's one-line statusline (spec 94, criterion 5 -
+/// event (the blackout this closes). `--json` prints the machine shape the dash also consumes; `--line` prints ONLY the core's one-line statusline (spec 94, criterion 5 -
 /// the same command `rigger setup` registers as the editor's status bar); the default is a
 /// readable table. Read-only over the run store, the separate progress store, and the
 /// liveness markers.
@@ -341,11 +340,8 @@ pub(crate) fn cmd_status(args: &[String]) -> Res {
 
     if json {
         // The dashboard truth is APPENDED to the in-flight-agent array rather than wrapping
-        // it in a new top-level shape: the liveness courier (workflows/rigger.js:218) does
-        // `Array.isArray(arr) ? arr.find(a => a.id === id) : null` over this exact line, so
-        // the top level MUST stay a bare array - wrapping it in an object would silently and
-        // permanently blind spec 10/14's liveness watchdog (`find` never runs, every
-        // liveness read becomes `null`, "conservatively" treated as never-stale forever).
+        // it in a new top-level shape: a consumer that looks an agent up by `id` reads the
+        // top level as a bare array, so it MUST stay one.
         // Absent (nothing ever recorded) appends nothing, so a project with no dash history
         // gets byte-identical `--json` output to before this criterion; the appended object
         // carries no `id` field, so it can never collide with a real spawn id.

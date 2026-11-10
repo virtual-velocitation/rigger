@@ -107,14 +107,7 @@ fn on_head(root: &Path, args: &[&str], envs: &[(&str, &str)]) -> (String, String
 }
 
 /// The run entries besides `rigger step`, each on [`SPEC_REL`] and named by its own command.
-const RUN_ENTRIES: [(&[&str], &str); 3] = [
-    (&["run", SPEC_REL], "rigger run"),
-    (&["serve", SPEC_REL], "rigger serve"),
-    (
-        &["run", "--driver", "workflow", SPEC_REL],
-        "rigger run --driver workflow",
-    ),
-];
+const RUN_ENTRIES: [(&[&str], &str); 1] = [(&["run", SPEC_REL], "rigger run")];
 
 /// A stand-in `claude` and the `PATH` that puts it first, so a run entry that gets past its run
 /// start never reaches a real agent; the directory holding it must outlive every call.
@@ -570,7 +563,7 @@ fn a_critique_answers_only_its_own_text_and_a_spec_outside_the_repository_is_nev
 /// Each run entry refuses a new run on the uncritiqued spec under its own command name: on an
 /// empty store, and with `--fresh` beside the spec's existing run, which begins a new run though
 /// the run it would otherwise adopt is in the store. The workflow stops at the grounder, so an
-/// entry that misses its refusal fails here instead of driving or serving.
+/// entry that misses its refusal fails here instead of driving.
 #[test]
 fn every_cli_run_start_refuses_a_new_run_on_an_uncritiqued_spec_under_its_own_name() {
     let dir = temp_git_project_with_commit();

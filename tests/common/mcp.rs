@@ -1,6 +1,5 @@
-//! A live rigger stdio session over a project (`rigger mcp`, `rigger serve`, `rigger run
-//! --driver workflow`), shared by every suite that drives an MCP server through the real
-//! subprocess.
+//! A live rigger stdio session over a project (`rigger mcp`, `rigger mcp --spawn`), shared by
+//! every suite that drives an MCP server through the real subprocess.
 
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -119,8 +118,8 @@ impl McpSession {
         self.graph_tool(serde_json::json!({"around": seed, "depth": 1}))
     }
 
-    /// The `initialize` handshake a well-behaved MCP client (the shim's SDK client included)
-    /// performs first, once per session; it must succeed.
+    /// The `initialize` handshake a well-behaved MCP client performs first, once per session;
+    /// it must succeed.
     pub fn initialize(&mut self) {
         let init = self.call(
             "initialize",
@@ -134,31 +133,6 @@ impl McpSession {
             init.get("result").is_some(),
             "initialize must succeed; got {init}"
         );
-    }
-
-    /// Poll `rigger_next` 20 ms apart: `Some(id)` once it hands out a spawn, `None` once it
-    /// answers `done: true`. An empty or absent id is no handout and the run still going (the
-    /// conductor grounds and enqueues on its own thread), so it polls on; past `deadline` the
-    /// session [`fail`](Self::fail)s.
-    pub fn next_spawn(&mut self, deadline: Instant) -> Option<String> {
-        loop {
-            let next = self.tool_call("rigger_next", serde_json::json!({}));
-            if let Some(content) = next["result"].get("structuredContent") {
-                let id = content["id"].as_str().unwrap_or_default();
-                if !id.is_empty() {
-                    return Some(id.to_string());
-                }
-                if content["done"] == serde_json::Value::Bool(true) {
-                    return None;
-                }
-            }
-            if Instant::now() >= deadline {
-                self.fail(
-                    "rigger_next handed out no spawn and never answered done by the deadline",
-                );
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        }
     }
 
     /// End the session's own child by its handle, drain its stderr, wait it, and panic naming

@@ -920,7 +920,7 @@ fn cmd_graph_concepts(args: &[String]) -> Res {
 }
 
 /// `rigger ground "<query>" [<k>]` - run the project's configured grounder (the
-/// same one the `run`/`serve` paths build from `defaults.grounder` via
+/// same one the `run` path builds from `defaults.grounder` via
 /// [`select_grounder`]) over the repo and print up to `k` (default 8) relevant
 /// entities, one per line as `file:line: <text> (degree N)`. This is the CLI surface a
 /// native-workflow agent (which has Bash, not the MCP grounding tool) uses to ground.
@@ -1057,7 +1057,7 @@ pub(crate) fn cmd_symbols_index(args: &[String]) -> Res {
 /// `rigger emit <type> '<json-object>'` - append an event `{type: <type>, data:
 /// <parsed json>}` to the project's event store AND fold it into the context graph,
 /// EXACTLY as the MCP `rigger_emit` tool does (both call [`mcpserver::emit_event`]).
-/// The store and graph are opened the way `serve` opens them - the namespaced
+/// The store and graph are opened the way `rigger run` opens them - the namespaced
 /// per-project event store and the `graph.db` projector on the `conductor::STREAM`.
 /// A bad / non-object JSON payload, one whose shape the context-graph fold cannot apply, or a
 /// record whose id another author's kept record holds (both checked by the shared core before
@@ -1123,7 +1123,7 @@ pub(crate) fn cmd_emit(args: &[String]) -> Res {
     over_the_run_store_at(&loc, &selection, |store| {
         // Same args shape the MCP tool receives, so the append - the shared core both surfaces
         // call - behaves identically here and over MCP. A non-empty spawn id (the flag's, else the
-        // exported one) rides in `meta.spawn`, the same key the MCP server's `stamp_current_spawn`
+        // exported one) rides in `meta.spawn`, the same key the spawn-bound MCP server
         // writes.
         let mut tool_args = serde_json::json!({ "type": typ, "data": data });
         if let Some(spawn) = spawn.filter(|s| !s.is_empty()) {

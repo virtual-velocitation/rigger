@@ -151,9 +151,8 @@ pub use crate::metrics::META_MODEL_RESOLVED;
 /// [`META_MODEL_ALIAS`] and [`contextgraph::META_ACTOR`]. An out-of-process emit is stamped
 /// too, so EVERY driver names its emitting spawn at RECORD time and the same one identity
 /// check attributes the emit on all three: the cli callback stamps it in-process (above);
-/// the workflow MCP server stamps it (`stamp_current_spawn`) with the id of the spawn it is
-/// currently serving; and a native courier records it via `rigger emit --spawn <id>` (the
-/// workflow threads the worker's own spawn id into that invocation). Attribution is by this
+/// the spawn-bound MCP server (`rigger mcp --spawn <id>`) stamps it with its bound id; and a
+/// native courier records it via `rigger emit --spawn <id>`. Attribution is by this
 /// identity stamp alone - an UNSTAMPED emit is never attributed, so the backstop FAILS SAFE
 /// to the ordinary reject - and the ambiguous position-window logic is retired entirely (see
 /// [`gating_spawn_emitted_approve`](RunCtx::gating_spawn_emitted_approve)).
@@ -2969,8 +2968,8 @@ pub fn run_serving(
     // too, so a restarted `rigger run` folds every spawn an earlier process parked, the
     // budget binding across `rigger run` processes as across steps, and admits each one it
     // answers from the log free; a spawn whose result the log holds with no request is
-    // charged as new when answered. The cli and workflow drivers record no spawn
-    // request, so both are empty for them and their in-process spawns are the whole count.
+    // charged as new when answered. The cli driver records no spawn
+    // request, so both are empty for it and their in-process spawns are the whole count.
     let recorded_spawns = spawn::recorded(prior_events).map_err(|e| Error(e.to_string()))?;
     let base_spawns = recorded_spawns.len() as u32;
     let recorded_spawn_ids: HashSet<String> = recorded_spawns.into_keys().collect();
@@ -3533,10 +3532,10 @@ fn settle_run_state(
     // at its start for the budget breaker itself); the after-count reads the SAME in-process
     // `ctx.spawns` counter `budget_tripped`/`halt_reason` read - the single source of truth
     // for "spawns made", which (unlike `spawn::recorded` over the event log) counts the cli
-    // and workflow drivers' spawns too: only the replay driver and the headless host PARK a
+    // driver's spawns too: only the replay driver and the headless host PARK a
     // `SpawnRequested` for the log to hold, so scanning the log would silently read zero
-    // for every other driver. The still-parked wave IS read from the log (the cli and
-    // workflow drivers leave it empty). On `rigger run` a spawn the headless host parks ends
+    // for every other driver. The still-parked wave IS read from the log (the cli
+    // driver leaves it empty). On `rigger run` a spawn the headless host parks ends
     // the call with its result recorded, by the host or by the decorator's error write, save
     // two: a spawn a store fault ended before its launch, and one whose error write did not
     // land (the write is best-effort, and a relaunch whose hold read failed hands its error
@@ -3650,8 +3649,8 @@ fn settle_run_state(
 /// and canonical position - see its own call site for the ordering mechanics. This still satisfies
 /// spec 69's own text ("Threshold events stamp ONCE PER CROSSING, conductor-side" / "stamped
 /// BY `rigger step` FROM live conductor state exactly as `halted` is"): `main.rs::cmd_step`
-/// IS the conductor side of this codebase, as distinct from the DRIVER side
-/// (`workflows/rigger.js`, spec 69's own next criterion, "the driver relays it") - and
+/// IS the conductor side of this codebase, as distinct from the DRIVER side that relays
+/// it (spec 69's own next criterion) - and
 /// `halted` itself has always been assembled the SAME way, partly in `cmd_step` (its hung
 /// fallback, unchanged by this unit), never solely inside `compute_attention`.
 ///
@@ -3783,7 +3782,7 @@ fn has_producer(stages: &BTreeMap<String, Stage>) -> bool {
 /// event carries the stop's completion key ([`spec_defect_escalated_key`] at `s - 1`). A re-plan
 /// is recorded by its `SpawnRequested` or `SpawnResult` (the stepwise driver records both, the
 /// headless host at least the request) or by an event it emitted, stamped with its id as
-/// [`META_SPAWN`] (the cli and workflow drivers record no spawn event), under its own id or the
+/// [`META_SPAWN`] (the cli driver records no spawn event), under its own id or the
 /// `~retry` id it re-ran as after a refused record ([`RunCtx::re_plan`]). So a first
 /// `spec-ambiguity` reject re-plans as before, and the stop fires on one that follows a re-plan
 /// which did not clear the previous one.
@@ -3862,8 +3861,8 @@ struct RunCtx<'a> {
     /// `defaults.budget` binds across the many `rigger step` processes a stepwise run
     /// spans (spec 04, criterion 5 / finding adv-budget-per-step-resets). A replayed
     /// spawn (an id already recorded) never increments this - its budget was spent when
-    /// it was first parked. The cli and workflow drivers record no spawn request, so
-    /// `base_spawns` is 0 for them and this counts their in-process spawns; the headless host
+    /// it was first parked. The cli driver records no spawn request, so
+    /// `base_spawns` is 0 for it and this counts its in-process spawns; the headless host
     /// parks each spawn before its launch, so a restarted `rigger run` starts from every spawn
     /// its earlier processes ran.
     spawns: AtomicU32,
@@ -5090,8 +5089,8 @@ impl RunCtx<'_> {
     /// Whether `spawn_id` was already parked in the run log by an EARLIER process of the run
     /// (a `rigger step`, or a `rigger run` whose headless host parked it) - i.e. this spawn
     /// is a REPLAY whose budget was spent when it was first parked. An O(1) lookup into
-    /// `recorded_spawn_ids`, seeded once at run start; the cli and workflow drivers record no
-    /// spawn request, so this is always `false` for them and every one of their spawns counts
+    /// `recorded_spawn_ids`, seeded once at run start; the cli driver records no
+    /// spawn request, so this is always `false` for it and every one of its spawns counts
     /// against the budget.
     fn spawn_is_recorded(&self, spawn_id: &str) -> bool {
         self.recorded_spawn_ids.contains(spawn_id)
@@ -5728,7 +5727,7 @@ impl RunCtx<'_> {
     /// fix): an agent NEVER runs in the live main-repo checkout. A spawn's `dir`
     /// becomes the agent's working directory (a process host's `current_dir`, the
     /// Agent SDK's `cwd`); an EMPTY `dir` makes the agent inherit the driver's own
-    /// cwd, which - for `rigger workflow`, run from the repo root - IS the main
+    /// cwd, which - for a driver run from the repo root - IS the main
     /// checkout. With `bypassPermissions` on, the agent can then edit the live repo,
     /// so the implementer's edits (and any reviewer that writes via Bash/Edit) land
     /// in the checkout the gates and review never look at, and the unit can never
@@ -7106,9 +7105,9 @@ impl RunCtx<'_> {
                 // undercosted): stamp META_SPAWN alongside the actor, not only the actor,
                 // so a producer/planner spawn's UnitProposed events carry THIS spawn's own
                 // deterministic id - the PLAN-EPISODE IDENTITY `harvest_proposed` derives
-                // its supersede order from (see the matching comment there). The live
-                // MCP/workflow driver path already gets this for free (`stamp_current_spawn`
-                // stamps every emit while a spawn is being served); this `emit` callback is
+                // its supersede order from (see the matching comment there). The spawn-bound
+                // MCP server already gets this for free (it stamps every emit with its bound
+                // spawn); this `emit` callback is
                 // the ONLY channel a driver that hands a record through it has for a
                 // UnitProposed's attribution, so it must stamp it itself here. Harmless (and
                 // consistent with `run_reviewer`'s identical pattern) for a plain implementer's own
@@ -9027,8 +9026,8 @@ impl RunCtx<'_> {
                 // spawn and a CONCURRENT sibling adjudicator's approve (which carries the
                 // SIBLING's id) is excluded by identity, not by a shared-stream position window
                 // a sibling could fall inside (addendum 2.2). So the backstop fires on every
-                // driver a conductor run takes: the headless host (rigger run), ReplayDriver
-                // (rigger step) and workflow::Driver (rigger serve). The result-channel check is
+                // driver a conductor run takes: the headless host (rigger run) and ReplayDriver
+                // (rigger step). The result-channel check is
                 // FIRST, so the store read is taken only for a genuinely empty verdict.
                 if output != ReviewerOutput::Findings
                     && !has_verdict_line(&result.output)
@@ -9097,12 +9096,10 @@ impl RunCtx<'_> {
     /// spawn's id at RECORD time, so the same one identity check works on all three:
     /// - the headless host's spawn-bound MCP server (`rigger mcp --spawn <id>`) stamps it with
     ///   its bound id;
-    /// - the workflow MCP server stamps it with the id of the spawn it is currently serving
-    ///   (the shim serves agents serially, so every `rigger_emit` between a spawn's
-    ///   `rigger_next` and its `rigger_result` is that spawn's);
-    /// - a NATIVE courier's `rigger emit` (the replay/step path) stamps it too - the workflow
-    ///   threads the worker's own spawn id into the `rigger emit --spawn <id>` invocation, and
-    ///   the `rigger emit` cli records the stamp - so the recording the ReplayDriver later
+    /// - the cli driver's emit callback stamps it in-process;
+    /// - a NATIVE courier's `rigger emit` (the replay/step path) stamps it too - the worker's
+    ///   own spawn id rides its `rigger emit --spawn <id>` invocation, and the `rigger emit`
+    ///   cli records the stamp - so the recording the ReplayDriver later
     ///   folds already carries the emitting spawn's id.
     ///
     /// A sibling's stamped emit carries the SIBLING's id and a superseded attempt's a different
@@ -9177,7 +9174,7 @@ impl RunCtx<'_> {
     ///   an empty stdout is the NORMAL outcome, never degeneracy by itself. It is
     ///   degenerate only when the conductor OBSERVED it produce nothing at all: zero
     ///   ReviewFindings from this spawn's emit callback AND an empty stdout. That
-    ///   observation is possible only while the agent runs IN-PROCESS (the workflow driver);
+    ///   observation is possible only while the agent runs IN-PROCESS (the cli driver);
     ///   on the stepwise and the hosted path the agent ran out-of-process and its findings,
     ///   if any, are already in the graph, so a result whose outcome is already recorded
     ///   in the log is a VALID outcome, never degeneracy. This is why a healthy
@@ -9213,7 +9210,7 @@ impl RunCtx<'_> {
         // in-process. A spawn whose result is ALREADY recorded ran out-of-process - replayed,
         // or hosted as a headless session, whose host records the result - and its findings
         // went to the graph, so its empty stdout is a valid outcome, not degeneracy. The
-        // workflow driver records no spawn result, so this read is `None` there and the
+        // cli driver records no spawn result, so this read is `None` there and the
         // in-process observation stands.
         let events = self.read_current_run()?;
         let replayed = spawn::result_of(&events, id)
@@ -10244,7 +10241,7 @@ impl RunCtx<'_> {
                     .map_err(probe_fault_halt)?;
             // The compact gate evidence is threaded into the GateVerdict event payload
             // (item 3): a real run otherwise discarded it, so neither the ledger nor the
-            // workflow driver ever saw WHY a gate passed or failed. `flaky` rides as the
+            // driver ever saw WHY a gate passed or failed. `flaky` rides as the
             // FlakyVerdict annotation (no new event type). Replay-keyed (and cached) so a
             // re-step replays this verdict instead of re-running; the `digest` addresses it
             // by content so a later gate over the same command + tree is a cache-hit (a
@@ -13526,8 +13523,8 @@ impl RunCtx<'_> {
             // left every REAL planner proposal's episode permanently empty - every real
             // proposal shared rank 0 and THE SUPERSEDE RULE could never fire in
             // production. META_SPAWN is already the authoritative, server-stamped
-            // per-spawn identity (`Server::stamp_current_spawn` on the live MCP/workflow
-            // path, and the cli courier's `rigger emit --spawn`) - and one planner PASS
+            // per-spawn identity (the spawn-bound MCP server's bound id, and the cli
+            // courier's `rigger emit --spawn`) - and one planner PASS
             // is exactly one spawn (`plan/implementer#0` for the initial wave,
             // `plan/replan#N` per critique-reject re-plan; see `re_plan`), so it is
             // already the conforming value PLAN-EPISODE IDENTITY calls for ("the planner
@@ -17850,7 +17847,7 @@ mod tests {
         call_order: Mutex<Vec<String>>,
         /// Where each spawn of an agent builds, in spawn order, keyed by agent id, as
         /// `(env, wave)`: the [`crate::spawn::BUILD_CACHE_ENV`] its environment carried, and the
-        /// `cargo_target_dir` the workflow driver's wave item names for its parked request
+        /// `cargo_target_dir` the wave item names for its parked request
         /// (empty when either names none) - the two drivers' views of one build location.
         targets_by_agent: Mutex<HashMap<String, Vec<(String, String)>>>,
         /// Per-agent id: THIS agent's own spawn deletes `opts.dir` wholesale, right
@@ -20645,7 +20642,7 @@ mod tests {
         /// `a_later_episodes_proposal_supersedes_an_earlier_episodes_planner_unit` above (which
         /// hand-supplies `data.episode` and so cannot catch this), these two events carry NO
         /// `episode` key in their JSON `data` at all - exactly the PLAN_PROTOCOL shape - and are
-        /// distinguished ONLY by `meta.spawn`, exactly what `Server::stamp_current_spawn`
+        /// distinguished ONLY by `meta.spawn`, exactly what the spawn-bound MCP server
         /// (mcpserver.rs) and the cli courier's `rigger emit --spawn` both stamp authoritatively on
         /// the real write path. RED before the fix: both proposals fold to episode `""` (shared
         /// rank 0), so the later one's supersede scan never removes the earlier one and both
@@ -21716,7 +21713,7 @@ mod tests {
         // this asserts the PROOF the dogfood run wants: the conductor emits one
         // UnitStarted per real spec criterion, each carrying the REAL criterion text
         // (metrics/stats), never the `coverage: required` label. This is exactly the path
-        // the live `rigger workflow specs/01-observability.md` drives.
+        // a live `rigger run specs/01-observability.md` drives.
         let mut cfg = config_store::load("../..").expect("the repo's own .rigger config must load");
         // Neutralize the real cargo gate COMMANDS to `true` so this test exercises the
         // decomposition path without recursively invoking cargo (the gate IDENTITIES and
@@ -29036,20 +29033,20 @@ mod tests {
     }
 
     #[test]
-    fn the_workflow_live_path_correlates_the_approve_by_stamp_not_a_bare_stream_position() {
+    fn a_parkless_path_correlates_the_approve_by_stamp_not_a_bare_stream_position() {
         // Reject-fix guard (spec 18, unit 3; arch-u18-3r3-workflow-live-degrades-to-shared-
-        // position-window + sdet-u18-3r2-workflow-path-still-races). The workflow live driver
-        // (rigger serve) does NOT park its spawns, so a workflow gating spawn records NO
-        // park/result window; its emits are correlated by the MCP server's per-spawn
+        // position-window + sdet-u18-3r2-workflow-path-still-races). A driver that does NOT park
+        // its spawns (the cli driver) leaves a gating spawn with NO
+        // park/result window; its emits are correlated by their per-spawn
         // [`META_SPAWN`] STAMP instead. This pins `gating_spawn_emitted_approve` directly on a
-        // WORKFLOW-SHAPED store (a RunStarted, an approve, and NO SpawnRequested/SpawnResult):
+        // PARKLESS store (a RunStarted, an approve, and NO SpawnRequested/SpawnResult):
         //  - an UNSTAMPED approve (a concurrent sibling adjudicator's, or a stale one) is NOT
         //    attributed to a windowless spawn - the bare shared-stream position that the reject
         //    forbade never fires the backstop, so an innocent unit's empty-verdict reject is
         //    never falsely hard-errored (the concurrent-sibling false POSITIVE, closed);
-        //  - an approve STAMPED with THIS spawn's id IS attributed - the correlation the MCP
-        //    server writes for the spawn it is serving, which is what makes the backstop fire on
-        //    the parkless live driver (the emit-only-approve persona still caught);
+        //  - an approve STAMPED with THIS spawn's id IS attributed - the correlation the emit
+        //    stamp writes for its spawn, which is what makes the backstop fire on
+        //    a parkless driver (the emit-only-approve persona still caught);
         //  - a DIFFERENT spawn's stamp is never THIS spawn's, even sharing the reviewer role
         //    token a concurrent sibling carries.
         let store = Store::open(":memory:").unwrap();
@@ -42356,7 +42353,7 @@ mod tests {
             assert_eq!(
                 got, want,
                 "{case}: each spawn builds where its tree's unit sibling says, under both a process \
-                 host's environment and the workflow driver's wave, and its prompt names that cache \
+                 host's environment and the parked wave item, and its prompt names that cache \
                  only when it carries one"
             );
         }

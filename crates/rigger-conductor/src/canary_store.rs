@@ -632,8 +632,7 @@ fn canary_opts(
 /// Spawn a reviewer and collect every `ReviewFinding` it emits (the lens/adversary work
 /// channel), returning its stdout and the collected findings. Reuses the emit-callback
 /// seam the live review path uses, so this works on every driver: a fake test driver
-/// calls `emit` directly, the cli driver bridges a subprocess's stdout findings, and the
-/// workflow driver emits them live.
+/// calls `emit` directly, and the cli driver bridges a subprocess's stdout findings.
 fn spawn_collecting(
     driver: &dyn AgentDriver,
     agent: &AgentDef,

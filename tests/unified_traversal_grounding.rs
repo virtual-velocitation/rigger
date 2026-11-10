@@ -902,7 +902,7 @@ fn the_review_prompt_carries_the_three_verb_lookup_pointer() {
 /// lookup method the grounding pointer left to `working-discipline`'s Fan out section; the
 /// grounding method the grounding sections' headers and `review_protocol` left to its One-pass
 /// section; and, each left to `communication`, the record cadence `EMIT_PROTOCOL` and
-/// `review_protocol` left, the peers check the shim's peers refresh left, and the supersede rule
+/// `review_protocol` left, the peers check a peers refresh left, and the supersede rule
 /// the decisions header and the peers refresh left. Given a live fan-out `run` whose empty
 /// operator layer neither replaces nor switches off a built-in, when the lens, the adversary and
 /// the adjudicator each spawn through the `AgentDriver` port, then each one's system prompt

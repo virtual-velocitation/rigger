@@ -1,8 +1,8 @@
 //! The harness CLI and the single composition root: it constructs the concrete
 //! adapters (event store, agent driver, grounder, projector) and injects them into
 //! the conductor, which depends only on ports. `rigger run` executes the configured
-//! workflow - the agent driver (`--driver cli|workflow`) and the event store
-//! (`--eventstore sqlite|kurrentdb`) are selected by flag; `rigger graph` inspects
+//! workflow, spawning each agent as its own host CLI process - the event store
+//! (`--eventstore sqlite|kurrentdb`) is selected by flag; `rigger graph` inspects
 //! the context graph; `rigger init`/`setup` scaffold a project.
 
 mod cli;
@@ -18,10 +18,8 @@ use cli::*;
 // git) - but only from `validate`'s comparison path, never from `rigger version`'s own
 // self-report, which stays the compile-time-only `GITSEMVER_VERSION` const below. The
 // Global constraint ("version values are computed at COMPILE time only - no runtime git
-// or tool invocation") reads narrowly, scoped to that self-report: `git_is_ancestor`
-// (below) already shells to git live inside this exact command for the analogous
-// spec-18-criterion-9 workflow-drift ordering diagnostic, an established precedent for a
-// runtime tool/git call from `validate` for comparison purposes.
+// or tool invocation") reads narrowly, scoped to that self-report: a runtime tool/git call
+// from `validate` for comparison purposes is in bounds.
 #[path = "../build/gitsemver.rs"]
 #[allow(dead_code)]
 mod gitsemver;
@@ -33,8 +31,7 @@ mod test_support;
 /// subcommand names: the runtime reads it (the unknown-command help below names the
 /// known commands from it) and `rigger docs` reads it so the generated discipline's
 /// command list is code-derived, not hand-copied. Keep it in step with the `main`
-/// dispatch match below - the same must-agree discipline [`RUN_BRANCH`] keeps with the
-/// JS driver. `docs_context` and the `commands_registry_agrees_with_dispatch` test guard
+/// dispatch match below. `docs_context` and the `commands_registry_agrees_with_dispatch` test guard
 /// it against drift.
 const SUBCOMMANDS: &[&str] = &[
     "run",
@@ -45,8 +42,6 @@ const SUBCOMMANDS: &[&str] = &[
     "reported",
     "prompt",
     "scratch",
-    "serve",
-    "workflow",
     "graph",
     "stats",
     "canary",
@@ -147,8 +142,6 @@ fn main() {
         "reported" => cmd_reported(&args[2..]),
         "prompt" => cmd_prompt(&args[2..]),
         "scratch" => cmd_scratch(&args[2..]),
-        "serve" => cmd_serve(&args[2..]),
-        "workflow" => cmd_workflow(&args[2..]),
         "graph" => cmd_graph(&args[2..]),
         "stats" => cmd_stats(&args[2..]),
         "canary" => cmd_canary(&args[2..]),
@@ -241,11 +234,6 @@ rigger scratch <id>         print spawn <id>'s own rigger-assigned scratch conta
 (the exact dir the per-spawn reclaim reaps at its terminus);\n                              \
 a worker points agent-created scratch and manual\n                              \
 CARGO_TARGET_DIR there instead of an unbucketed literal\n  \
-rigger workflow [spec]      turn-key: launch the per-project Node driver, which\n                              \
-spawns `rigger serve`, runs each agent via the Agent\n                              \
-SDK, and drives the loop (one command; run `rigger\n                              \
-setup` first - it provisions the driver in .rigger/shim/)\n  \
-rigger serve [opts]         run as an MCP server the driver connects to\n  \
 rigger graph --around <id>  print the context subgraph around a node\n  \
 rigger graph --show <entity> print an entity's definition site + line-numbered body\n                              \
 (the text half of lookup; resolves a full id, a bare name or a path)\n  \
@@ -285,7 +273,7 @@ config edit (\"did that change regress first-pass yield?\")\n  \
 rigger status [--json|--line] present the live per-agent view of the current run: for\n                              \
 each in-flight agent, what it is doing (latest progress),\n                              \
 its heartbeat age, and how long since its last store event\n                              \
-(the blackout). --json prints the shim/dash machine shape;\n                              \
+(the blackout). --json prints the dash machine shape;\n                              \
 --line prints only the one-line statusline (the same line\n                              \
 `rigger setup` registers as the editor's status bar)\n  \
 rigger dash [--port <n>]    serve the read-only observability page on 127.0.0.1\n                              \
@@ -397,10 +385,8 @@ rigger init                 set up a project: scaffold .rigger/ (workflow.yml +\
 an agents/ folder) and install the Claude Code\n                              \
 SessionStart hook (it runs `rigger prime`)\n  \
 rigger setup                full setup: everything `init` does, PLUS install the\n                              \
-native /rigger Claude Code workflow (.claude/workflows/\n                              \
-rigger.js) and provision the JS driver (.rigger/shim/ +\n                              \
-npm install). After it: run `/rigger <spec>` in Claude\n                              \
-Code (primary), or `rigger workflow` as a fallback\n  \
+registry skills, the MCP server entry and the session\n                              \
+settings. After it: `rigger run <spec> --base <ref>`\n  \
 rigger docs                 render the code-derived docs (every registry skill and\n                              \
 handbook page) into their committed paths\n  \
 rigger docs --check         check every rendered output against a fresh render,\n                              \
@@ -419,9 +405,7 @@ agent can identify the exact binary. Also `--version`\n  \
 rigger help [<command>]     print this text, or given a command, only its entry: the\n                              \
 one `rigger <command> --help` prints for each command\n                              \
 whose arguments are its own flags\n\n\
-run/serve options:\n  \
---driver <cli|workflow>          cli (default): standalone claude subprocess;\n                                   \
-workflow: in-Claude-Code MCP server\n  \
+run options:\n  \
 --eventstore <sqlite|kurrentdb>  sqlite (default): embedded file in .rigger/;\n                                   \
 kurrentdb: shared server backend, always available\n  \
 --conn <url>                     KurrentDB connection url (or set KURRENTDB_CONN)\n  \

@@ -19,15 +19,6 @@
 /// `prctl`): `libc` is an optional feature-gated dependency, but this guard must compile
 /// on BOTH the default and the `--no-default-features` lane, and `std::process` is the
 /// only child-lifecycle primitive available on both.
-///
-/// The other long-lived child is supervised by the same DISCIPLINE at its own ownership
-/// boundary, not through this handle:
-///   - `rigger serve` is spawned ONLY by the Node shim over an stdio transport, so the
-///     Rust conductor never holds its `Child` to wrap in a Rust guard. Its
-///     kill-on-parent-exit is STRUCTURAL: [`crate::mcpserver::Server::run`] serves only
-///     until the input closes (the shim's stdin), and the OS closes that pipe whenever
-///     the shim dies - a clean exit, a thrown error, or an uncatchable signal alike - so
-///     an orphaned `rigger serve` sees EOF on stdin and exits on its own.
 pub struct ReapedChild {
     child: std::process::Child,
 }

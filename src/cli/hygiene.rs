@@ -660,12 +660,12 @@ fn reclamation_lines(reclamation: &rigger::eventstore::sqlite::Reclamation) -> V
 ///   - `live_spawns`: an in-flight spawn of the current run - no recorded result, or only the
 ///     step's liveness fault, which a resumed worker outlives - whose liveness marker is younger
 ///     than its own wall-clock bound ([`rigger::liveness::live_spawns`]): a worker still running
-///     its own `rigger emit`/`rigger result` couriers even with no `step`/`run`/`serve` process
+///     its own `rigger emit`/`rigger result` couriers even with no `step`/`run` process
 ///     alive.
 ///   - `driver_registrations`: entries in the machine-global instance registry (spec 50) for THIS
 ///     project's exact store whose DRIVER heartbeat is younger than
 ///     [`rigger::registry::DEFAULT_IDLE_MS`] ([`live_driver_registrations`]): an in-process
-///     `rigger run` (which holds `step.lock` too) or `rigger serve` (which never touches it), or a
+///     `rigger run` (which holds `step.lock` too), or a
 ///     driver between two of its `rigger step`s (every step registers as the run's driver, so its
 ///     last stamp counts for the idle window), elsewhere on this machine. A courier's discovery
 ///     refresh is not one.
@@ -703,7 +703,7 @@ fn live_writer_reasons(
         reasons.push(format!(
             "{driver_registrations} driver registration(s) for this project's store in the \
              machine-global instance registry (spec 50) heartbeat within the last {}s - a \
-             `run`/`serve`/`step` may be advancing this run elsewhere on this machine",
+             `run`/`step` may be advancing this run elsewhere on this machine",
             rigger::registry::DEFAULT_IDLE_MS / 1000,
         ));
     }
@@ -1765,7 +1765,7 @@ mod tests {
             vec![
                 "3 driver registration(s) for this project's store in the machine-global \
                  instance registry (spec 50) heartbeat within the last 900s - a \
-                 `run`/`serve`/`step` may be advancing this run elsewhere on this machine"
+                 `run`/`step` may be advancing this run elsewhere on this machine"
             ]
         );
     }

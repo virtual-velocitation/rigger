@@ -12,7 +12,7 @@
 //! THE GUARD READS LIVENESS (spec 101): a run is live when a `rigger step` holds the step lock,
 //! when an in-flight spawn's liveness marker is younger than that spawn's wall-clock bound, or
 //! when a DRIVER registration for this store is younger than the idle window - every `rigger
-//! step`, `run` and `serve` registers as one, a courier's discovery refresh never does. A spawn is
+//! step` and `run` registers as one, a courier's discovery refresh never does. A spawn is
 //! in flight until a real result is recorded for it: the step's own liveness fault does not end
 //! it. Unit terminality is not a liveness signal: a run whose driver died leaves its units
 //! non-terminal forever, and that run - the one whose bloat most needs the compaction - must not
@@ -1225,7 +1225,7 @@ fn the_help_and_the_rendered_skills_state_that_the_guard_reads_liveness() {
     );
     assert!(
         reset_store.contains(
-            "A `rigger step` registers as the run's driver just as `run` and `serve` do, so a \
+            "A `rigger step` registers as the run's driver just as `run` does, so a \
              hand-landed unit closes once the last step's stamp is older than the idle window; a \
              courier's (`emit`, `result`, `progress`) discovery refresh never counts as a driver"
         ),
@@ -1248,7 +1248,7 @@ fn the_help_and_the_rendered_skills_state_that_the_guard_reads_liveness() {
              spawn with no marker never does, and an in-flight spawn stops blocking once its \
              marker outlives the spawn's bound or a real result is recorded for it. An unbounded \
              spawn's marker never outlives its bound, so record that spawn's result to end it. \
-             Every `rigger step`, `run` and `serve` registers as the run's driver, so the last \
+             Every `rigger step` and `rigger run` registers as the run's driver, so the last \
              step's stamp counts as a live driver for the idle window; a courier's (`emit`, \
              `result`, `progress`) discovery refresh of that registration never does."
         ),
@@ -1457,7 +1457,7 @@ fn reset_derived_fails_on_an_unreadable_step_lock_probe_and_prunes_nothing() {
 
 /// A live entry in the machine-global instance registry (spec 50) for THIS project's exact
 /// store refuses compaction naming the registration - even with an empty run stream (an
-/// in-process `rigger run`/`serve` may not have parked its first spawn yet).
+/// in-process `rigger run` may not have parked its first spawn yet).
 #[test]
 fn reset_derived_refuses_a_live_driver_registration_naming_it() {
     let dir = temp_store_project();

@@ -21,7 +21,7 @@ fn record_dash_attempt(run_id: &str) {
 }
 
 /// Environment opt-out for every run entry's always-on dashboard: when
-/// [`DASH_DISABLE_ENV`] is set (to any value) `rigger step`, `rigger run` and `rigger serve` do
+/// [`DASH_DISABLE_ENV`] is set (to any value) `rigger step` and `rigger run` do
 /// NOT auto-start a run dashboard. Production leaves it unset (the dash is always-on, no opt-in
 /// flag - spec 19b); a headless CI or the crate's own integration tests set it so a short-lived
 /// run never spawns a real dashboard process.
@@ -52,7 +52,7 @@ fn registry_heartbeat_interval() -> std::time::Duration {
 /// [`register_run_instance`]; while this guard is held a background thread REFRESHES the heartbeat
 /// every [`registry_heartbeat_interval`], and dropping it (the run scope ends, on success OR error)
 /// signals that thread to stop and joins it. The periodic refresh is what keeps a run driven WHOLLY
-/// in-process (`rigger run`/`serve` - a single `conductor::run` call that can drive for hours, or a
+/// in-process (`rigger run` - a single `conductor::run` call that can drive for hours, or a
 /// `rigger step` whose one gate runs longer than the idle window) from aging out of discovery
 /// MID-RUN: a one-shot register alone would let a reader prune the live entry after the window.
 struct RunRegistration {
@@ -87,7 +87,7 @@ impl Drop for RunRegistration {
 /// Register THIS invocation's instance in the machine-global discovery registry (spec 50, criterion
 /// 2): the project root, the credential-free store identity, and a fresh heartbeat, keyed so a
 /// re-registration refreshes one entry in place. This is the SINGLE registration writer - every run
-/// entry point (`rigger step`, and the in-process `rigger run`/`serve`/`workflow` drivers) requests
+/// entry point (`rigger step`, and the in-process `rigger run` driver) requests
 /// through it, so the machine-global registry sees every invocation that starts or advances a run,
 /// not just the stepwise loop path. Every one of them DRIVES the run while it lives, so the entry
 /// and each heartbeat re-stamp are written as [`rigger::registry::Writer::Driver`]: the
@@ -288,12 +288,11 @@ pub(crate) fn refuse_unless_one_root(
     Ok(())
 }
 
-/// The project scratch root a run entry (`rigger step`, `rigger run`, `rigger serve`) and
+/// The project scratch root a run entry (`rigger step`, `rigger run`) and
 /// `rigger critique` work under: `None` in a project with no git repository, where nothing keys a scratch root and
 /// no liveness marker or transcript is written; else the root `scratch_root_from_env` resolves
 /// for the repository and `defaults.workdir`. The one home of that rule, so the roots a step
-/// sweeps, a hosted run writes under, a served run hands its MCP server and a critique writes
-/// under, and that [`refuse_unless_one_root`] checks, can never disagree.
+/// sweeps, a hosted run writes under and a critique writes under, and that [`refuse_unless_one_root`] checks, can never disagree.
 pub(crate) fn project_scratch_root(repo: &str, cfg: &config::Config) -> Option<String> {
     (!repo.is_empty())
         .then(|| rigger::worktree::scratch_root_from_env(repo, &cfg.workflow.defaults.workdir))
@@ -315,7 +314,7 @@ pub(crate) fn running_executable() -> String {
 
 /// Load the config a RUN will drive, refusing to start when a gating persona guarantees an
 /// integration-gate stall (spec 18, unit 2). This is the single load seam every run entry
-/// (`cmd_step`, `run_cli`, `run_workflow`) shares, so the run-start refusal cannot be present
+/// (`cmd_step`, `run_cli`) shares, so the run-start refusal cannot be present
 /// at one entry and silently missing at another.
 ///
 /// The integration gate reads a gating agent's RESULT channel for a `{"verdict":...}` line and
@@ -334,13 +333,7 @@ pub(crate) fn load_run_config(dir: &str) -> Result<config::Config, Box<dyn std::
 
 pub(crate) fn cmd_run(args: &[String]) -> Res {
     let parsed = parse_run_args(args)?;
-    let sleep = sleep_hold();
-    // `--driver workflow` is the equivalent of `rigger serve`: the in-Claude-Code
-    // MCP-server path. `cli` (the default) is the standalone path, hosting its agents itself.
-    match parsed.driver {
-        DriverKind::Workflow => run_workflow(&parsed, "rigger run --driver workflow", &*sleep),
-        DriverKind::Cli => run_cli(&parsed, &*sleep),
-    }
+    run_cli(&parsed, &*sleep_hold())
 }
 
 /// `rigger resume-unit <unit> [--attempts N]` (default `N`: 1) - spec 88, criterion 3
@@ -446,22 +439,13 @@ pub(crate) fn cmd_resume_unit(args: &[String]) -> Res {
 
 pub(crate) fn cmd_step(args: &[String]) -> Res {
     let args = parse_step_args(args)?;
-    // DISCOVERABILITY (spec 66, criterion 5, round 3): `rigger step` is the PRIMARY,
-    // most-used pre-launch surface - on the native `/rigger <spec>` path `cmd_step` IS the
-    // driver (see this fn's own doc comment above), so it must name the spec lint too, not
-    // only the one-shot `run_cli`/`cmd_workflow` entries. Printed FIRST, before any config
-    // load or base check, so the reminder survives every downstream refusal or failure path -
-    // mirroring `run_cli`'s and `cmd_workflow`'s placement. Routed to STDERR, never stdout:
+    // DISCOVERABILITY (spec 66, criterion 5): `rigger step` holds the spec path, so it names
+    // the spec lint too. Printed FIRST, before any config load or base check, so the reminder
+    // survives every downstream refusal or failure path. Routed to STDERR, never stdout:
     // `cmd_step` prints exactly ONE line of `{wave,done}` JSON on stdout that a driver parses
-    // (see this fn's doc comment and `acquire_step_lock`'s), and a stdout `println!` here
-    // (mirroring the other two callers verbatim) would corrupt that single-line contract.
-    // Gated on `spec_lint_reminder_should_print` (spec 66, c5 REMINDER DEDUP disposition): a
-    // `rigger step` genuinely nested under a parent that already printed (its real direct
-    // parent pid names it in `SPEC_LINT_REMINDER_PID_ENV`) stays silent; anything else prints.
+    // (see this fn's doc comment and `acquire_step_lock`'s).
     if let Some(spec) = &args.spec {
-        if spec_lint_reminder_should_print() {
-            eprintln!("{}", spec_lint_next_step(spec));
-        }
+        eprintln!("{}", spec_lint_next_step(spec));
     }
     // STEP RESOLVES THE MAIN WORKTREE (spec 89, criterion 4): resolved and refused-or-not
     // FIRST, before any config load, store touch or worktree mutation - a linked worktree
@@ -848,7 +832,7 @@ pub(crate) fn cmd_step(args: &[String]) -> Res {
         }
     }
 
-    // Always-on dash on the native step path, retargeted at the machine SINGLETON (spec 39,
+    // Always-on dash on the step path, retargeted at the machine SINGLETON (spec 39,
     // criterion 1; spec 50, criterion 4): ENSURE the one machine-level dash at the fixed default
     // address is up, so the loop the driver advances through many short-lived `rigger step`
     // invocations is never invisible. The first step of a run starts it at `dash::DEFAULT_PORT`
@@ -1650,13 +1634,9 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
     // `rigger prime` hook, which the installed hook always invokes with zero args - see
     // `spec_lint_next_step`'s doc comment). Printed FIRST, before any config load or base
     // check, so the reminder survives every downstream refusal or failure path, not only a
-    // successful run. Gated on `spec_lint_reminder_should_print` (REMINDER DEDUP): a genuinely
-    // nested `rigger run` stays silent, ambient env pollution from an unrelated tree still
-    // prints.
+    // successful run.
     if let Some(spec) = &parsed.spec {
-        if spec_lint_reminder_should_print() {
-            println!("{}", spec_lint_next_step(spec));
-        }
+        println!("{}", spec_lint_next_step(spec));
     }
     // STEP RESOLVES THE MAIN WORKTREE (spec 89, criterion 4): resolved and refused-or-not
     // FIRST, mirroring `cmd_step`'s own placement - see `resolve_main_worktree_or_refuse`'s
@@ -1698,8 +1678,8 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
     // Anchor + check out the run branch off `--base` (spec 18, criterion 6) BEFORE the
     // conductor branches any unit worktree off HEAD, so machine-generated units never
     // branch/merge onto the operator's own branch. `--base` threads here exactly as it does
-    // for `rigger step`; the effective base is the flag, then the `RIGGER_BASE` env override
-    // (how `rigger workflow` threads its `--base` through the shim), then `origin/main`.
+    // for `rigger step`; the effective base is the flag, then the `RIGGER_BASE` env override,
+    // then `origin/main`.
     // Guarded on a real repo, so the repo-less path is untouched.
     // The run branch's tip commit sha AT THIS ANCHOR (spec 91): resolved right after
     // `anchor_run_branch` below, before the conductor branches any unit worktree off it -
@@ -1730,7 +1710,7 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
     // `rigger run` drives the WHOLE run in-process through a single `conductor::run` below, so the
     // held guard's heartbeat thread (not a one-shot register) is what keeps the entry from aging out
     // of discovery mid-run; it is dropped when `run_cli` returns. Best-effort - it never blocks the
-    // run. Registered here, off the same resolved `selection` `rigger step` uses, so a native
+    // run. Registered here, off the same resolved `selection` `rigger step` uses, so
     // `rigger run` is as discoverable as the stepwise loop path.
     let _registration = register_run_instance(&repo, &selection);
     // The boxed backend and its namespaced wrapper both live here, in this stack
@@ -1745,13 +1725,11 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
     // `--fresh`: begin a NEW run before driving, so the conductor's own `ensure_started`
     // adopts this just-minted boundary instead of the (possibly wedged) latest run. See
     // `runscope_store::start_fresh` - the evented restart for a terminal escalation on an
-    // unchanged spec. `false`: this is the standalone CLI path, so stdout is the normal
-    // human-facing channel and the `--fresh` notice belongs there, unchanged.
+    // unchanged spec.
     fresh_run_if_requested(
         parsed,
         &folding,
         &criteria,
-        false,
         &base_tip,
         &spawn_host.helpers,
         &RunStartCritique {
@@ -1776,13 +1754,7 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
     };
     // The decorator records the errors it hands the conductor on the folding store the host
     // records results on, so the graph folds them as it folds the host's.
-    let held = HeldDriver::new(
-        &driver,
-        &folding,
-        rigger::held::Results::Recorded,
-        None,
-        &pause_a_hold_poll,
-    );
+    let held = HeldDriver::new(&driver, &folding, &pause_a_hold_poll);
     let grounder = select_grounder(&cfg.workflow.defaults.grounder)?;
     let root = repo.clone();
     let hash_blob = hash_blob_in(&root);
@@ -1893,7 +1865,7 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
     Ok(())
 }
 
-/// Begin (or adopt) and definition-PIN the run both `run` drivers drive (spec 13, unit 1).
+/// Begin (or adopt) and definition-PIN the run `rigger run` drives (spec 13, unit 1).
 /// First, before anything is appended, a command that would begin a new run on a spec whose
 /// critique is not clean is refused (spec 112, [`RunStartCritique::refuse_unless_clean`]; the
 /// caller hands `critique`, naming its own command).
@@ -1902,16 +1874,6 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
 /// printing the new run id. It then enforces the definition pin ([`enforce_definition_pin`]):
 /// a drifted live-run definition HALTS loudly unless `--rebase-definition` records the
 /// supersession and continues. A fresh or unchanged run continues silently.
-///
-/// `fresh_notice_to_stderr` names which stream the `--fresh` notice is safe to land on for
-/// THIS caller (spec 66, criterion 5 escalation remedy round 2: adj-u66c5-escalation-remedy-
-/// verdict-reject-adjacent-fresh-leak upheld adv-u66c5-escalation-remedy-fresh-println-still-
-/// leaks-stdout - this notice was a bare, unconditional `println!` that corrupted
-/// `run_workflow`'s stdout, the live MCP JSON-RPC transport, even after that same round taught
-/// the DISCOVERABILITY reminder three lines above it to respect that invariant). `run_cli`
-/// passes `false`: stdout is the normal human-facing channel there and must keep printing.
-/// `run_workflow` passes `true`, mirroring the reminder's own `eprintln!` three lines above its
-/// call site - ONE shared implementation, not a second parallel copy per caller.
 ///
 /// `base_tip` is the run branch's tip commit sha the caller anchored at (spec 91), resolved via
 /// [`worktree::branch_tip`] right after its own `anchor_run_branch` call - BEFORE the conductor
@@ -1925,7 +1887,6 @@ fn fresh_run_if_requested(
     parsed: &RunArgs,
     store: &dyn EventStore,
     criteria: &[String],
-    fresh_notice_to_stderr: bool,
     base_tip: &str,
     helpers: &[conductor::HelperCopy],
     critique: &RunStartCritique,
@@ -1950,13 +1911,7 @@ fn fresh_run_if_requested(
             base_tip,
             parsed.spec.as_deref().unwrap_or(""),
         )?;
-        let notice =
-            format!("rigger: --fresh: began a new run {run} (the prior run stays in the log)");
-        if fresh_notice_to_stderr {
-            eprintln!("{notice}");
-        } else {
-            println!("{notice}");
-        }
+        println!("rigger: --fresh: began a new run {run} (the prior run stays in the log)");
     }
     enforce_definition_pin(
         store,
@@ -2117,330 +2072,14 @@ fn new_run_refusal(command: &str, spec: &str, refusal: NewRunRefusal) -> String 
     refused
 }
 
-/// The in-Claude-Code MCP-server path (`rigger serve` / `rigger run --driver
-/// workflow`): the conductor orchestrates on a background thread, behind the
-/// [`HeldDriver`] that launches nothing while the run is held and ends its wait
-/// when the session closes, and this thread serves the MCP bridge over stdio. The
-/// store is selected by flag and wrapped in the per-project namespace decorator
-/// before it is injected into BOTH the conductor and the side-car (§5.1.1, R9).
-///
-/// `command` is the ACTUALLY-INVOKED command line (`"rigger serve"` from [`cmd_serve`],
-/// `"rigger run --driver workflow"` from [`cmd_run`]) - threaded through rather than a
-/// literal `"rigger serve"` here, so [`resolve_main_worktree_or_refuse`]'s refusal names
-/// the command the operator actually typed instead of always naming `rigger serve` even
-/// when reached via `rigger run --driver workflow` (spec 89 criterion 4, round 2
-/// adjudication `adv-u89c4-r2-serve-command-name-hardcoded-for-both-entry-points`).
-///
-/// The machine stays awake through `sleep` from the moment the conductor starts until the MCP
-/// session ends, past a run already done while its session stays open ([`keep_awake`]).
-fn run_workflow(parsed: &RunArgs, command: &str, sleep: &dyn SleepHold) -> Res {
-    // DISCOVERABILITY (spec 66, criterion 5): `rigger serve <spec>` / the shim-driven
-    // workflow path is a REAL pre-launch surface holding the spec path - the one the
-    // /rigger workflow itself runs through, and the omission this unit was rejected for
-    // twice (adj-u66c5r6-reject-run-workflow-gap, adj-u66c5-rebuild-verdict-reject-dead-
-    // consumer). Printed FIRST, before any config load or base check, so the reminder
-    // survives every downstream refusal path; on stderr so the shim-captured stdout
-    // protocol stream stays clean. Gated on `spec_lint_reminder_should_print` (REMINDER
-    // DEDUP): the shim's validated pass-through suppresses a genuinely nested surface,
-    // ambient pollution from an unrelated tree still prints.
-    if let Some(spec) = &parsed.spec {
-        if spec_lint_reminder_should_print() {
-            eprintln!("{}", spec_lint_next_step(spec));
-        }
-    }
-    // STEP RESOLVES THE MAIN WORKTREE (spec 89, criterion 4, round 2): resolved and
-    // refused-or-not FIRST, before any config load, store touch or worktree mutation -
-    // mirroring `run_cli`'s and `cmd_step`'s own placement. `run_workflow` is `run_cli`'s
-    // sibling `DriverKind` dispatched from the same `cmd_run` (and is `rigger serve`'s sole
-    // implementation, via `cmd_serve` below) - round 1 of this criterion guarded `run_cli`
-    // and the Node-shim-launching `cmd_workflow` but missed THIS entry point, which every
-    // one of its repo-reading call sites called bare `git_repo()` with no refusal wired in
-    // at all: a `rigger serve` (the shape the shim's driver actually spawns on the
-    // automated `/rigger` path) invoked from a linked worktree drove straight into
-    // `anchor_run_branch` and failed with git's own opaque "already used by worktree"
-    // error, never this refusal. `repo` is resolved ONCE here and reused for the rest of
-    // this function (the branch anchor, instance registration, scratch root and the
-    // conductor's `Deps`) instead of a `git_repo()` re-read at each site, so there is one
-    // resolution authority for the whole call, never several that could in principle
-    // disagree with each other or with this guard.
-    let cwd = cwd();
-    let repo = resolve_main_worktree_or_refuse(&cwd, command)?;
-    // Refuse before starting if a gating persona would stall the integration gate (spec 18,
-    // unit 2); `load_run_config` reuses unit 1's lint at this run's config-load seam.
-    let cfg = load_run_config(".")?;
-    let (criteria, text) = load_criteria(parsed.spec.as_deref())?;
-    std::fs::create_dir_all(RIGGER_DIR)?;
-    // Anchor + check out the run branch off `--base` (spec 18, criterion 6) before the
-    // conductor branches any unit worktree off HEAD, mirroring `rigger step`. `rigger
-    // workflow` threads its `--base` here through the shim via the inherited `RIGGER_BASE`
-    // env (the shim spawns this `rigger serve` with the inherited environment); an explicit
-    // `--base` on `rigger serve` / `rigger run --driver workflow` takes precedence. Guarded
-    // on a real repo, so the repo-less path is untouched.
-    // The run branch's tip commit sha AT THIS ANCHOR (spec 91): resolved right after
-    // `anchor_run_branch` below, threaded to `fresh_run_if_requested` so a mint persists the
-    // tip the run genuinely started at. `""` on the repo-less path.
-    let mut base_tip = String::new();
-    if !repo.is_empty() {
-        let (base, base_explicit) = resolve_run_base(
-            parsed.base.as_deref(),
-            std::env::var("RIGGER_BASE").ok().as_deref(),
-        );
-        // Refuse an obviously-wrong base BEFORE anchoring (spec 18, criterion 7), gating on
-        // the side-effect-free planned anchor so no wrong-base run branch is ever created and
-        // the corrected `--base` retry re-anchors fresh.
-        let planned = Worktree::planned_run_branch_setup(&repo, RUN_BRANCH, &base);
-        // Loop-readiness gate (spec 38, criterion 2): refuse a run with no reachable base
-        // (an unresolvable base AND no HEAD to fall back to) loudly rather than minting a run
-        // branch that branches from nowhere.
-        refuse_when_base_unreachable(&repo, "rigger workflow", &base, planned)?;
-        refuse_when_base_lacks_spec_paths(&repo, "rigger workflow", &base, planned, &criteria)?;
-        anchor_run_branch(&repo, "rigger workflow", &base, base_explicit)?;
-        base_tip = rigger::worktree::branch_tip(&repo, RUN_BRANCH).unwrap_or_default();
-    }
-    // The host values every spawn of this run carries, resolved once, after the run-branch
-    // checkout, so the helper copies are the tree's the run drives and its definition pin folds.
-    let spawn_host = rigger::hooks::resolve_spawn_host(&cfg.workflow.defaults, Path::new(&repo))?;
-    // One-time spec-09 identity migration before opening the run backend (local-sqlite only).
-    let selection = store_selection(parsed.store, parsed.conn.as_deref())?;
-    if selection.is_sqlite() {
-        migrate_local_identity(None)?;
-    }
-    // Register this instance in the machine-global discovery registry (spec 50, criterion 2). Like
-    // `rigger run`, the served conductor drives the whole run in-process (on the background thread
-    // in the scope below), so the held guard's heartbeat thread keeps the entry live for the whole
-    // MCP session; it is dropped when `run_workflow` returns. Reuses the `repo` this function
-    // resolved once above - see that resolution's own comment for why a second `git_repo()`
-    // re-read is never taken here any more. Best-effort - it never blocks.
-    let _registration = register_run_instance(&repo, &selection);
-    let backend = resolve_store(&selection, &db_path("events.db"))?;
-    let store = Namespaced::new(backend.as_ref(), &project_identity());
-    // `--fresh`: begin a NEW run before the conductor thread starts, so its `ensure_started`
-    // adopts this boundary rather than the latest (possibly wedged) run. `true`: this is the
-    // MCP-serving path, so the notice must land on stderr, mirroring the reminder three lines
-    // above (spec 66, criterion 5 escalation remedy round 2) - stdout stays the pure MCP wire.
-    let graph = open_graph(&db_path("graph.db"), &project_identity(), &selection, "run")?;
-    fresh_run_if_requested(
-        parsed,
-        &rigger::ingest::folding_into(&store, Some(&graph), &stderr_line),
-        &criteria,
-        true,
-        &base_tip,
-        &spawn_host.helpers,
-        &RunStartCritique {
-            command,
-            backend: backend.as_ref(),
-            identity: &project_identity(),
-            workflow: &cfg.workflow,
-            root: &review::spec_root(&cwd, &repo),
-            text: &text,
-        },
-    )?;
-    // On this surface the launch is the handout, so the driver reads the hold the decorator reads.
-    let hold_stands = || {
-        runscope::read::hold_stands(&store, conductor::STREAM)
-            .map_err(rigger::conductor::Error::from)
-    };
-    let driver = rigger::driver::workflow::Driver::new().with_hold_read(&hold_stands);
-    let grounder = select_grounder(&cfg.workflow.defaults.grounder)?;
-
-    // Spec 14: the SEPARATE progress store + scratch root, so the MCP `rigger_activity` tool
-    // presents the live per-agent view (this run's progress joined with the frontier and the
-    // liveness-marker ages rigger reads in Rust) to the shim over its existing connection -
-    // the shim never touches the filesystem. Progress is always the local sqlite sibling of
-    // the run store, regardless of the run store's backend.
-    let prog_backend = open_progress_backend()?;
-    let prog_store = Namespaced::new(&prog_backend, &project_identity());
-    // Reuses the `repo` resolved once at this function's entry (see its own comment) rather
-    // than a second `git_repo()` re-read.
-    let scratch_root = project_scratch_root(&repo, &cfg).unwrap_or_default();
-
-    // Always-on dash (spec 19b, unit 1): auto-start a `rigger dash` serving this run for the
-    // whole MCP session, so an active harness is never invisible. Held here (not inside the
-    // scope) so it is reaped when `run_workflow` returns - after the session ends - by unit
-    // 3's guard.
-    let _dash = start_run_dashboard(cfg.workflow.dash_enabled(), &store);
-
-    let hash_blob = hash_blob_in(&repo);
-    let awake = keep_awake(sleep, command);
-    // The conductor orchestrates in the background; this thread serves the MCP
-    // bridge over stdio. The shim drains spawns via rigger_next/result; closing
-    // stdin ends the session.
-    std::thread::scope(|s| {
-        s.spawn(|| {
-            // Signal the run is over as this thread ends, so an empty rigger_next reports
-            // done:true and the shim exits cleanly. Set on success, error and panic alike: a
-            // conductor that fails still ends the run, and the shim must not poll forever.
-            let _finishing = driver.finishing();
-            let held = HeldDriver::new(
-                &driver,
-                &store,
-                rigger::held::Results::HandedBack,
-                Some(&driver.session_closed),
-                &pause_a_hold_poll,
-            );
-            let deps = Deps {
-                store: &store,
-                driver: &held,
-                gates: &ExecRunner,
-                // Reuses the `repo` this function resolved once at entry via
-                // `resolve_main_worktree_or_refuse`, rather than a second `git_repo()` re-read.
-                repo: repo.clone(),
-                grounder: Some(grounder.as_ref()),
-                graph: Some(&graph),
-                criteria,
-                log: &stderr_line,
-                hash_blob: &hash_blob,
-                check_emit: &rigger::contextgraph::check_emit,
-                spawn_host,
-            };
-            // The halt reason goes to stderr, never stdout: stdout is the MCP transport.
-            match conductor::run(&cfg, &deps) {
-                Ok(rs) => {
-                    if let Some(line) = halted_line(&rs) {
-                        eprintln!("{line}");
-                    }
-                }
-                Err(e) => eprintln!("rigger: conductor: {e}"),
-            }
-        });
-        // Wire the graph into the MCP server too, so a ReviewFinding (or DecisionMade)
-        // an agent emits via rigger_emit folds into the graph as it lands - the
-        // adversary / adjudicator, which ground afterwards, then retrieve it through
-        // `graph_context` (the cross-agent memory the review tiers communicate
-        // through), not via the conductor hand-threading prompts.
-        let server = rigger::mcpserver::Server::new(&driver, &store, conductor::STREAM)
-            .with_graph(&graph)
-            .with_progress(&prog_store, &scratch_root);
-        let _ = server.run(std::io::stdin().lock(), std::io::stdout().lock());
-        // The session is over, so the hold ends here; a gate or merge still running ends unheld.
-        drop(awake);
-        // Nothing serves a spawn past the close, so each one parks and the scope joins the
-        // conductor.
-        driver.close_session();
-    });
-    Ok(())
-}
-
-pub(crate) fn cmd_serve(args: &[String]) -> Res {
-    // `rigger serve` is the equivalent of `rigger run --driver workflow`, so it
-    // shares the same flag surface (the event store and its connection string) and
-    // the same composition path - it just forces the workflow driver.
-    let mut parsed = parse_run_args(args)?;
-    parsed.driver = DriverKind::Workflow;
-    run_workflow(&parsed, "rigger serve", &*sleep_hold())
-}
-
-/// Parse `rigger workflow`'s arguments: an optional positional spec path and an optional
-/// `--base <ref>` (the run-branch base, spec 18 criterion 6). A second positional, an
-/// unknown flag, and a valueless `--base` are clear errors, so a typo never silently
-/// changes what runs or which base a run anchors on.
-fn parse_workflow_args(
-    args: &[String],
-) -> Result<(Option<String>, Option<String>), Box<dyn std::error::Error>> {
-    let mut spec = None;
-    let mut base = None;
-    let mut i = 0;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--base" => {
-                i += 1;
-                base = match args.get(i) {
-                    Some(r) => Some(r.clone()),
-                    None => return Err("workflow: --base expects a ref".into()),
-                };
-            }
-            other => spec_positional(other, &mut spec, "workflow")?,
-        }
-        i += 1;
-    }
-    Ok((spec, base))
-}
-
-/// `rigger workflow [spec] [--base <ref>]` is the turn-key one-command activation of the
-/// workflow driver: it execs the Node shim (`shim/shim.mjs`), which spawns `rigger serve`
-/// (this same binary, via `RIGGER_BIN`), connects an MCP client to it, and drives the agent
-/// loop via the Claude Agent SDK. The user runs ONE command instead of hand-wiring `rigger
-/// serve` into an MCP host. `--base` (spec 18, criterion 6) threads to the served run's
-/// branch anchor through the inherited `RIGGER_BASE` environment.
-pub(crate) fn cmd_workflow(args: &[String]) -> Res {
-    // `rigger workflow [spec] [--base <ref>]`: an optional spec path and the run-branch base
-    // (spec 18, criterion 6). A second positional or a valueless --base is a clear error.
-    let (spec, base) = parse_workflow_args(args)?;
-    // DISCOVERABILITY (spec 66, criterion 5): `rigger workflow <spec>` is a REAL pre-launch
-    // surface that genuinely holds the spec path in production (unlike the SessionStart-only
-    // `rigger prime` hook - see `spec_lint_next_step`'s doc comment). Printed before locating
-    // or launching the JS driver, so the reminder survives an un-provisioned shim or any
-    // other launch failure below. Gated on `spec_lint_reminder_should_print` (REMINDER DEDUP):
-    // a genuinely nested `rigger workflow` stays silent, ambient env pollution still prints.
-    if let Some(spec) = &spec {
-        if spec_lint_reminder_should_print() {
-            println!("{}", spec_lint_next_step(spec));
-        }
-    }
-    // STEP RESOLVES THE MAIN WORKTREE (spec 89, criterion 4): resolved and refused-or-not
-    // BEFORE locating or launching the Node shim - a linked worktree is refused up front
-    // instead of (at best) failing to find a per-project shim only ever provisioned in the
-    // main checkout, or (at worst) driving a stray one. See
-    // `resolve_main_worktree_or_refuse`'s doc comment. Empty (repo-less) resolves to "." -
-    // the existing behavior every prior caller of `locate_shim` already relied on.
-    let cwd = cwd();
-    let repo = resolve_main_worktree_or_refuse(&cwd, "rigger workflow")?;
-    let shim_root = if repo.is_empty() {
-        PathBuf::from(".")
-    } else {
-        PathBuf::from(&repo)
-    };
-    let shim = locate_shim(&shim_root)?;
-    // The shim spawns `rigger serve` itself; point it at THIS binary so the driver
-    // and the served conductor are always the same build (no PATH ambiguity).
-    let rigger_bin = running_executable();
-
-    let node = std::env::var("RIGGER_NODE").unwrap_or_else(|_| "node".to_string());
-    let mut cmd = subprocess::command(&node);
-    cmd.arg(&shim);
-    if let Some(spec) = &spec {
-        cmd.arg(spec);
-    }
-    cmd.env("RIGGER_BIN", &rigger_bin);
-    // REMINDER DEDUP, the nesting-surface half of the pid-scoped contract: this process is
-    // the shim's real direct OS parent, so stamp ITS OWN pid (never a value inherited from
-    // further up) - the shim (an INTERMEDIARY, spec 66 c5) validates it against its own real
-    // parent id before it may re-stamp and pass it on to `rigger serve`. Set unconditionally
-    // (not only when the print above actually fired) so an already-suppressed `rigger
-    // workflow` still hands a genuine, verifiable link to its own child rather than a stale
-    // or absent one.
-    cmd.env(SPEC_LINT_REMINDER_PID_ENV, std::process::id().to_string());
-    // Thread --base to the served `rigger serve` the shim spawns: the shim inherits this
-    // process's environment (the same channel it uses for RIGGER_BIN), so RIGGER_BASE reaches
-    // `run_workflow`'s run-branch anchor, where `resolve_run_base` reads it. Set only when the
-    // operator passed --base, so the no-flag default (origin/main) is unchanged.
-    if let Some(base) = &base {
-        cmd.env("RIGGER_BASE", base);
-    }
-
-    let status = cmd.status().map_err(|e| {
-        format!(
-            "workflow: failed to launch the Node driver ({node} {shim}): {e}. \
-             Is Node installed and on your PATH? Run `rigger setup` if the JS driver's \
-             dependencies are not yet installed."
-        )
-    })?;
-    if !status.success() {
-        return Err(format!("workflow: the Node driver exited unsuccessfully ({status})").into());
-    }
-    Ok(())
-}
-
 /// Extract the spec's acceptance criteria, enforcing the loop-ready gate (§8): a
 /// spec with no enumerable Done-when criteria blocks until a human adds them; no
 /// spec path means an unconstrained run (empty criteria).
 ///
 /// The ONE in-run spec-lint call site (spec 66, criterion 4 - ONE LINT AUTHORITY): every
-/// real live-run entry (`rigger run` via `run_cli`, `rigger step` via `cmd_step` - the ONE
-/// command the documented primary native `/rigger <spec>` workflow ever invokes - and
-/// `rigger serve`/`rigger workflow` via `run_workflow`) calls this SAME function to load a
-/// spec's criteria, so wiring the lint here reaches all three without a bespoke call site
-/// per entry. Prints via `spec_lint_warning_lines` - the identical formatter `cmd_validate`
+/// real live-run entry (`rigger run` via `run_cli` and `rigger step` via `cmd_step`) calls
+/// this SAME function to load a spec's criteria, so wiring the lint here reaches both without
+/// a bespoke call site per entry. Prints via `spec_lint_warning_lines` - the identical formatter `cmd_validate`
 /// (the pre-launch, standalone `rigger validate <spec>`) uses, itself built on
 /// `spec::spec_lint_advisories` (criterion 3's untouched classification) - so an operator
 /// who launches straight into a run without a separate `rigger validate` pass still sees
@@ -2520,8 +2159,7 @@ fn start_run_dashboard(
     }
     match spawn_run_dashboard() {
         Ok((guard, url)) => {
-            // Stderr, not stdout: in the workflow driver (`rigger serve`) stdout is the MCP
-            // transport, which the run-start pointer must never corrupt.
+            // Stderr: stdout is the run's own report, which the run-start pointer stays out of.
             eprintln!("rigger dash: serving this run at {url}");
             Some(guard)
         }
@@ -2536,8 +2174,8 @@ fn start_run_dashboard(
 
 /// Pick a free port, spawn `rigger dash --port <n>` as a child of the current executable,
 /// and record its URL in `.rigger/`[`DASH_URL_FILE`] for `rigger status`. The child's stdout
-/// is silenced (in the MCP `rigger serve` driver the parent's stdout is the protocol
-/// transport, which the dash child must never write to) and its stdin is closed; the dash
+/// is silenced (the parent's stdout is the run's own report, which the dash child must never
+/// write to) and its stdin is closed; the dash
 /// logs only to its own stderr. Returns the guard plus the URL for the run-start pointer.
 fn spawn_run_dashboard() -> Result<(dash::ReapedChild, String), Box<dyn std::error::Error>> {
     let port = dash::free_port_from(dash::DEFAULT_PORT)?;
@@ -2995,8 +2633,7 @@ fn ensure_run_dashboard(config_dash_enabled: bool, store: &dyn EventStore) {
         spawn_run_dashboard_detached,
     ) {
         DashStart::Started(port) => {
-            // Stderr, not stdout: in the workflow driver (`rigger serve`) stdout is the MCP
-            // transport; in the step driver stdout carries only the `{wave,done}` JSON.
+            // Stderr, not stdout: in the step driver stdout carries only the `{wave,done}` JSON.
             eprintln!("rigger dash: serving this run at http://127.0.0.1:{port}/");
         }
         // A dash is already serving the singleton address - the idempotent no-op, nothing to
@@ -3370,51 +3007,6 @@ fn fold_recorded_result(
     }
 }
 
-/// The pid-scoped parent-to-child contract's env var name (spec 66, criterion 5 disposition,
-/// closing the ad-hoc-mechanism class two earlier rounds tried and a reviewer rejected: a
-/// bare presence sentinel leaks across unrelated process trees, an in-process static leaks
-/// across in-process calls but not across a real process boundary). A nesting surface that
-/// has already printed [`spec_lint_next_step`]'s reminder sets this to ITS OWN process id
-/// before spawning a child; a genuinely nested child then suppresses its own reminder. An
-/// INTERMEDIARY (a non-rigger wrapper such as `shim/shim.mjs` that spawns rigger as its own
-/// OS child) passes the contract through in the same pass-through form: see `shim.mjs`'s
-/// mirror of this name and [`spec_lint_reminder_suppressed`]'s doc comment.
-const SPEC_LINT_REMINDER_PID_ENV: &str = "RIGGER_SPEC_LINT_REMINDER_PID";
-
-/// Whether the spec-lint discoverability reminder is suppressed for THIS process, per the
-/// [`SPEC_LINT_REMINDER_PID_ENV`] contract (spec 66, criterion 5): suppressed ONLY when
-/// `env_value` parses as a `u32` AND equals `parent_pid` (the real direct OS parent, e.g.
-/// `std::os::unix::process::parent_id()`) - an absent, foreign (parses but names some other
-/// process), stale, or malformed value always means "print". Pure over its inputs (no env or
-/// process reads inside) so both directions - nested invocation suppressed, ambient pollution
-/// from an unrelated process tree still prints - are unit-testable without a real process
-/// tree; [`spec_lint_reminder_should_print`] is the impure wrapper real call sites use.
-fn spec_lint_reminder_suppressed(env_value: Option<&str>, parent_pid: u32) -> bool {
-    env_value
-        .and_then(|v| v.trim().parse::<u32>().ok())
-        .is_some_and(|seen_pid| seen_pid == parent_pid)
-}
-
-/// The real-environment, real-process wrapper around [`spec_lint_reminder_suppressed`]: reads
-/// [`SPEC_LINT_REMINDER_PID_ENV`] and this process's real direct parent id, so every
-/// reminder-printing call site (`run_cli`, `run_workflow`, `cmd_workflow`, `cmd_step`)
-/// shares ONE decision rather than per-site copies that could drift. `parent_id()` is Unix-only in `std`; a
-/// non-Unix build has no parent-pid seam to check, so it always prints (never silently
-/// suppresses on a platform this contract cannot verify).
-fn spec_lint_reminder_should_print() -> bool {
-    #[cfg(unix)]
-    {
-        !spec_lint_reminder_suppressed(
-            std::env::var(SPEC_LINT_REMINDER_PID_ENV).ok().as_deref(),
-            std::os::unix::process::parent_id(),
-        )
-    }
-    #[cfg(not(unix))]
-    {
-        true
-    }
-}
-
 fn print_run_state(rs: &RunState, base: &str) {
     println!("run state:");
     for (name, u) in &rs.units {
@@ -3451,43 +3043,6 @@ mod tests {
     use super::*;
     use crate::test_support::{pgid_of, test_spawn_host};
     use std::process::Command;
-
-    // --- Spec 66, criterion 5: REMINDER DEDUP - the pid-scoped parent-to-child contract ---
-
-    /// The nested-invocation direction: a child whose env names EXACTLY its own real direct
-    /// parent pid is suppressed (the nesting surface just printed and passed its own pid
-    /// down).
-    #[test]
-    fn spec_lint_reminder_suppressed_when_env_names_the_real_direct_parent_pid() {
-        assert!(spec_lint_reminder_suppressed(Some("4242"), 4242));
-    }
-
-    /// The ambient-pollution direction: absent, foreign (a pid that is not the real direct
-    /// parent), stale, or malformed values must never suppress - state lives ONLY in the
-    /// explicit parent-to-child contract, never ambient env presence.
-    #[test]
-    fn spec_lint_reminder_prints_on_absent_foreign_stale_or_malformed_env() {
-        assert!(
-            !spec_lint_reminder_suppressed(None, 4242),
-            "an absent value must print"
-        );
-        assert!(
-            !spec_lint_reminder_suppressed(Some("1"), 4242),
-            "a foreign pid (not the real direct parent) must print"
-        );
-        assert!(
-            !spec_lint_reminder_suppressed(Some("not-a-pid"), 4242),
-            "a malformed value must print"
-        );
-        assert!(
-            !spec_lint_reminder_suppressed(Some(""), 4242),
-            "a stale/empty value must print"
-        );
-        assert!(
-            !spec_lint_reminder_suppressed(Some(" 4242 "), 4243),
-            "a value that parses but does not equal the real direct parent must print"
-        );
-    }
 
     // --- Spec 39, criterion 1: idempotent start of the run dashboard on the step path ---
 
@@ -4622,50 +4177,6 @@ mod tests {
         assert!(
             !rigger::conductor::is_parked(&err),
             "a recorded failure is a real failure, not a park"
-        );
-    }
-
-    /// `rigger workflow` accepts an optional spec AND `--base <ref>` (spec 18, criterion 6):
-    /// `--base` is no longer rejected as "expected at most one spec path". Spec and flag
-    /// compose in any order; a second positional and a valueless `--base` are hard errors.
-    #[test]
-    fn parse_workflow_args_reads_spec_and_base() {
-        let w =
-            |a: &[&str]| parse_workflow_args(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>());
-
-        // Bare: no spec, no base.
-        let (spec, base) = w(&[]).unwrap();
-        assert!(spec.is_none());
-        assert!(base.is_none());
-
-        // Just a spec (the pre-existing behavior).
-        let (spec, base) = w(&["spec.md"]).unwrap();
-        assert_eq!(spec.as_deref(), Some("spec.md"));
-        assert!(base.is_none());
-
-        // `rigger workflow <spec> --base <ref>` and the order-flipped form both parse.
-        let (spec, base) = w(&["spec.md", "--base", "my-feature"]).unwrap();
-        assert_eq!(spec.as_deref(), Some("spec.md"));
-        assert_eq!(base.as_deref(), Some("my-feature"));
-        let (spec, base) = w(&["--base", "my-feature", "spec.md"]).unwrap();
-        assert_eq!(spec.as_deref(), Some("spec.md"));
-        assert_eq!(base.as_deref(), Some("my-feature"));
-
-        // `--base` with no spec is fine (the default spec-less workflow, re-anchored).
-        let (spec, base) = w(&["--base", "my-feature"]).unwrap();
-        assert!(spec.is_none());
-        assert_eq!(base.as_deref(), Some("my-feature"));
-
-        // A second spec path is still the same clear error; a valueless --base names the fix.
-        let err = w(&["a.md", "b.md"]).unwrap_err().to_string();
-        assert_eq!(
-            err, "workflow: unexpected second positional argument \"b.md\"",
-            "a second positional must be rejected through the shared spec rule"
-        );
-        let err = w(&["--base"]).unwrap_err().to_string();
-        assert!(
-            err.contains("--base expects a ref"),
-            "the error must explain --base needs a ref; got: {err:?}"
         );
     }
 

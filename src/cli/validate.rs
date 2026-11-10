@@ -467,9 +467,8 @@ fn gate_requirement_lines(gates: &[GateRequirements]) -> Vec<String> {
 }
 
 /// The non-fatal `rigger validate` advisories (spec 05:55), in report order:
-///   (a) the installed `/rigger` workflow has drifted from this binary's embedded copy;
-///   (b) tracked `.rigger/` files carry uncommitted modifications;
-///   (c) the checkout's `.claude/settings.json` lacks rigger's session hooks, or carries the
+///   (a) tracked `.rigger/` files carry uncommitted modifications;
+///   (b) the checkout's `.claude/settings.json` lacks rigger's session hooks, or carries the
 ///       grep-guard `grep_guard` (the workflow's `defaults.grep_guard`) does not declare.
 /// Both are warnings only - they are collected here and printed to stderr by the caller
 /// without affecting the exit status. Rooted at `root` so the seam is testable against a
@@ -485,16 +484,6 @@ fn validate_advisories(root: &Path, grep_guard: bool) -> Vec<String> {
              back to the directory basename, so renaming the checkout orphans its run history. \
              Run `rigger setup` (or `rigger init`) to mint a durable id, then commit it."
         ));
-    }
-    // Workflow-drift diagnostic (spec 18, criterion 9): when the installed workflow differs
-    // from this binary's embedded copy, name WHICH side is stale (the installed workflow vs
-    // the binary) using the embedded build provenance and give the directive fix, rather
-    // than an ambiguous "they differ". The binary's provenance and the git ancestry oracle
-    // are wired here at the edge; the decision itself is the pure [`drift_side`].
-    if let Some(advisory) =
-        workflow_drift_advisory(root, BUILD_PROVENANCE, |a, b| git_is_ancestor(root, a, b))
-    {
-        advisories.push(advisory);
     }
     if let Some(dirty) = uncommitted_rigger_advisory(root) {
         advisories.push(dirty);
@@ -635,37 +624,19 @@ fn retired_entities_advisory_for(graph_db: &str, project: &str) -> Option<String
     retired_entities_advisory(graph.retired_code_entity_count().ok()?)
 }
 
-/// Whether the `/rigger` workflow installed at `<root>/.claude/workflows/rigger.js` has
-/// DRIFTED from the embedded [`RIGGER_WORKFLOW`] this binary ships. `false` when the file
-/// is absent (nothing installed, so nothing to drift) or byte-identical to the embedded
-/// copy; `true` only when an installed file differs. This is the single source of truth
-/// for the "installed vs embedded workflow" comparison - it reuses the same
-/// [`workflow_path`] and [`RIGGER_WORKFLOW`] that [`install_workflow`] writes, so the
-/// drift check and the install can never disagree on what "the workflow" is.
-fn installed_workflow_drifted(root: &Path) -> bool {
-    match std::fs::read(workflow_path(root)) {
-        Ok(bytes) => bytes != RIGGER_WORKFLOW.as_bytes(),
-        Err(_) => false, // absent or unreadable: no installed workflow to surface drift for
-    }
-}
-
 /// Whether commit `ancestor` is an ancestor of commit `descendant` in the git repository
 /// rooted at `root`: `Some(true)`/`Some(false)` when git can decide, `None` when it cannot
 /// (git unavailable, not a repo, or either id unresolvable - e.g. an operator project that
 /// does not carry rigger's history). Uses `git merge-base --is-ancestor`, whose exit status
-/// is 0 for an ancestor and 1 otherwise; any other status is treated as undecidable. This
-/// is the ordering oracle the [`drift_side`] decision injects, so the pure decision stays
-/// testable in both directions without a live repo.
+/// is 0 for an ancestor and 1 otherwise; any other status is treated as undecidable.
 ///
 /// Spec 74, criterion 2 periphery finding: captures the child's stdout/stderr (`.output()`)
 /// rather than inheriting the parent's (`.status()`), so an unresolvable `ancestor` - the
 /// exact "does not carry rigger's history" case this doc comment already calls out as
 /// normal and silently handled via `None` - never leaks git's own `fatal: Not a valid
-/// object name ...` onto the CALLER's stderr. Before this fix `behind_the_tree_advisory`
-/// (below) called this UNCONDITIONALLY on every `rigger validate` invocation, so the leak
-/// fired on nearly every non-self-hosting target project, not merely the rare drifted-
-/// workflow-with-recorded-provenance case [`workflow_drift_advisory`] alone would reach;
-/// mirrors [`git_commit_distance`]'s already-correct `.output()` pattern immediately below.
+/// object name ...` onto the CALLER's stderr. `behind_the_tree_advisory` (below) calls
+/// this on every `rigger validate` invocation, so a leak would fire on nearly every
+/// non-self-hosting target project; mirrors [`git_commit_distance`]'s already-correct `.output()` pattern immediately below.
 fn git_is_ancestor(root: &Path, ancestor: &str, descendant: &str) -> Option<bool> {
     let out = subprocess::command("git")
         .args(["merge-base", "--is-ancestor", ancestor, descendant])
@@ -728,7 +699,7 @@ fn missing_gitsemver_binary_advisory(installed_version: &str) -> Option<String> 
 /// separately by [`missing_gitsemver_binary_advisory`] - a string comparison against a
 /// fallback marker would be meaningless noise here), the git order was undecidable, or
 /// the checkout is not (or no longer) ahead. `commit_distance` is injected so this stays
-/// pure and testable without a live repo - mirrors [`drift_side`]'s injected-oracle shape.
+/// pure and testable without a live repo.
 fn behind_the_tree_message(
     installed_version: &str,
     checkout_version: &str,
@@ -753,16 +724,15 @@ fn behind_the_tree_message(
 
 /// Gather the behind-the-tree advisory (spec 74, criterion 2) at `root`, given
 /// `installed_version` and `installed_commit` (the composition root wires
-/// [`GITSEMVER_VERSION`] and [`BUILD_PROVENANCE`] - the SAME commit-determined identity
-/// [`workflow_drift_advisory`] already uses, per the spec's global constraint that
-/// stored provenance keeps the build hash as its identity key). Re-derives the
+/// [`GITSEMVER_VERSION`] and [`BUILD_PROVENANCE`] - the commit-determined identity, per the
+/// spec's global constraint that stored provenance keeps the build hash as its identity
+/// key). Re-derives the
 /// CHECKOUT's current version through the SAME derivation seam criterion 1 embeds at
 /// compile time ([`gitsemver::derive_version`], reused here rather than reimplemented -
 /// a live, runtime invocation of `go-gitsemver`/git for VALIDATE's comparison
 /// specifically, never for `rigger version`'s own compile-time-only self-report; see the
 /// `mod gitsemver` doc comment above for why this is in-bounds). "Ahead" is decided by
-/// real git ANCESTRY of `installed_commit` in `HEAD` (mirrors [`git_is_ancestor`]'s
-/// existing role in [`drift_side`]) rather than a hand-rolled semver comparison: under
+/// real git ANCESTRY of `installed_commit` in `HEAD` (via [`git_is_ancestor`]) rather than a hand-rolled semver comparison: under
 /// this project's Mainline config the derived order is monotonic with commit order along
 /// one line of history, and ancestry is the more literal reading of the Problem
 /// statement's own "behind the tree" framing, with no new dependency. Only when
@@ -780,82 +750,6 @@ fn behind_the_tree_advisory(
         None
     };
     behind_the_tree_message(installed_version, &checkout_version, distance)
-}
-
-/// Which side of an installed-vs-embedded workflow drift is stale (spec 18, criterion 9).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DriftSide {
-    /// The installed workflow is from a NEWER build than this binary: the binary is stale
-    /// (rebuild it).
-    BinaryStale,
-    /// The installed workflow is older than - or was hand-edited away from - this binary's
-    /// embedded copy: the workflow is stale (`rigger setup` to refresh it).
-    WorkflowStale,
-}
-
-/// Decide which side of a workflow drift is stale from the two builds' provenance, using an
-/// injected ancestry oracle so the decision is pure and testable in both directions. Names
-/// the BINARY as stale ONLY when the installed workflow's build is provably newer (this
-/// binary's build is a proper ancestor of it). Every other case (the installed build equals
-/// this binary from a local hand-edit, no recorded provenance, or an undecidable order)
-/// resolves to the actionable refresh directive, so the diagnostic is never the ambiguous
-/// "they differ".
-fn drift_side(
-    installed_provenance: Option<&str>,
-    binary_provenance: &str,
-    is_ancestor: impl Fn(&str, &str) -> Option<bool>,
-) -> DriftSide {
-    match installed_provenance {
-        Some(installed)
-            if installed != binary_provenance
-                && is_ancestor(binary_provenance, installed) == Some(true) =>
-        {
-            DriftSide::BinaryStale
-        }
-        _ => DriftSide::WorkflowStale,
-    }
-}
-
-/// The workflow-drift advisory (spec 18, criterion 9): when the installed `/rigger` workflow
-/// differs from this binary's embedded copy, name WHICH side is stale using the build
-/// provenance and give the directive fix (rebuild the binary vs `rigger setup`), never an
-/// ambiguous "they differ". `None` when there is no drift. `binary_provenance` and the
-/// ancestry oracle are injected so the message is testable for both drift directions without
-/// a live git repo; the composition root wires [`BUILD_PROVENANCE`] and [`git_is_ancestor`].
-fn workflow_drift_advisory(
-    root: &Path,
-    binary_provenance: &str,
-    is_ancestor: impl Fn(&str, &str) -> Option<bool>,
-) -> Option<String> {
-    if !installed_workflow_drifted(root) {
-        return None;
-    }
-    let path = workflow_path(root);
-    let installed_provenance = installed_workflow_provenance(root);
-    Some(
-        match drift_side(
-            installed_provenance.as_deref(),
-            binary_provenance,
-            is_ancestor,
-        ) {
-            DriftSide::BinaryStale => format!(
-                "warning: the installed /rigger workflow ({}) is from a newer build ({}) than \
-                 this rigger binary (build {}); the binary is stale. Rebuild rigger so the \
-                 workflow and the binary that drives it are the same build.",
-                path.display(),
-                installed_provenance.as_deref().unwrap_or("a newer build"),
-                binary_provenance,
-            ),
-            DriftSide::WorkflowStale => format!(
-                "warning: the installed /rigger workflow ({}) has drifted from this rigger \
-                 binary's embedded copy (build {}); the installed workflow is stale. Run \
-                 `rigger setup` to refresh it so the workflow and the binary that drives it \
-                 are the same build.",
-                path.display(),
-                binary_provenance,
-            ),
-        },
-    )
 }
 
 /// Advisory naming the tracked `.rigger/` files that carry uncommitted modifications, or
@@ -919,7 +813,7 @@ fn uncommitted_rigger_advisory(root: &Path) -> Option<String> {
 /// Given `git status --porcelain` output already scoped to `.rigger/`, return the paths
 /// of TRACKED files with uncommitted modifications. Untracked (`??`) and ignored (`!!`)
 /// entries are excluded - the criterion flags TRACKED files, and a machine-local
-/// untracked/ignored file (e.g. `.rigger/events.db`, `.rigger/shim/`) is not a drift the
+/// untracked/ignored file (e.g. `.rigger/events.db`, `.rigger/graph.db`) is not a drift the
 /// operator must commit. A porcelain line is `XY <path>` (two status columns, a space,
 /// then the path); rename entries (`R  old -> new`) are reported verbatim.
 fn dirty_tracked_paths(porcelain: &str) -> Vec<String> {
@@ -1202,8 +1096,7 @@ fn check_docs(root: &Path) -> Res {
 /// [`rendered_docs`] order (registry order, then
 /// [`HANDBOOK_PAGES`] order). An ABSENT (or unreadable) output is skipped - these are
 /// rigger's OWN committed docs, and an operator project never carries them, so their
-/// absence is not drift (the same "nothing installed, nothing to drift" rule
-/// [`installed_workflow_drifted`] applies to the workflow). Byte comparison (not
+/// absence is not drift (nothing installed, nothing to drift). Byte comparison (not
 /// `read_to_string`): a committed file corrupted to non-UTF-8 is genuinely drifted, and
 /// comparing bytes catches it rather than silently skipping it. Renders through the ONE
 /// list [`write_docs`] writes, so the check and the write can never disagree on what "the
@@ -1401,7 +1294,7 @@ mod tests {
                          A  .rigger/agents/new.md\n\
                          D  .rigger/agents/gone.md\n\
                          ?? .rigger/events.db\n\
-                         !! .rigger/shim/node_modules\n";
+                         !! .rigger/graph.db\n";
         let dirty = dirty_tracked_paths(porcelain);
         assert_eq!(
             dirty,
@@ -1421,136 +1314,7 @@ mod tests {
         assert!(dirty_tracked_paths("").is_empty());
     }
 
-    #[test]
-    fn installed_workflow_drifted_is_false_when_absent_or_identical_and_true_on_drift() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-
-        // Absent: nothing installed, so there is no drift to surface.
-        assert!(
-            !installed_workflow_drifted(root),
-            "an absent installed workflow is not drift"
-        );
-
-        // Identical to the embedded copy: not drift.
-        let path = workflow_path(root);
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, RIGGER_WORKFLOW).unwrap();
-        assert!(
-            !installed_workflow_drifted(root),
-            "an installed workflow byte-identical to the embedded copy is not drift"
-        );
-
-        // Differs from the embedded copy: drift.
-        std::fs::write(&path, "// stale installed workflow\n").unwrap();
-        assert!(
-            installed_workflow_drifted(root),
-            "an installed workflow differing from the embedded copy IS drift"
-        );
-    }
-
     // ---- spec 18, criterion 9: workflow-drift "which side is stale" diagnostic --------
-
-    #[test]
-    fn drift_side_names_the_binary_stale_only_when_the_installed_workflow_is_provably_newer() {
-        // This binary's build is a PROPER ANCESTOR of the build that wrote the installed
-        // workflow: the installed workflow is newer, so the BINARY is stale.
-        let binary_is_ancestor = |ancestor: &str, descendant: &str| -> Option<bool> {
-            Some(ancestor == "binary" && descendant == "installed")
-        };
-        assert_eq!(
-            drift_side(Some("installed"), "binary", binary_is_ancestor),
-            DriftSide::BinaryStale,
-            "a provably-newer installed workflow makes the binary stale"
-        );
-
-        // The installed workflow's build is OLDER (this binary is not its ancestor): the
-        // WORKFLOW is stale.
-        assert_eq!(
-            drift_side(Some("installed"), "binary", |_, _| Some(false)),
-            DriftSide::WorkflowStale,
-            "an older installed workflow makes the workflow stale"
-        );
-
-        // Undecidable order (git cannot resolve one of the ids, e.g. an operator project
-        // that lacks rigger's history): fall back to the actionable refresh directive.
-        assert_eq!(
-            drift_side(Some("installed"), "binary", |_, _| None),
-            DriftSide::WorkflowStale,
-            "an undecidable order falls back to refreshing the workflow"
-        );
-
-        // No recorded provenance (an older install with no sidecar): refresh directive, and
-        // the ancestry oracle is never consulted.
-        assert_eq!(
-            drift_side(None, "binary", |_, _| panic!(
-                "ancestry must not be consulted without a recorded provenance"
-            )),
-            DriftSide::WorkflowStale,
-            "a missing provenance falls back to refreshing the workflow"
-        );
-
-        // The installed build EQUALS this binary but the content drifted (a local
-        // hand-edit): refresh directive, ancestry never consulted.
-        assert_eq!(
-            drift_side(Some("binary"), "binary", |_, _| panic!(
-                "ancestry must not be consulted for a same-build hand-edit"
-            )),
-            DriftSide::WorkflowStale,
-            "a same-build content edit falls back to refreshing the workflow"
-        );
-    }
-
-    #[test]
-    fn workflow_drift_advisory_names_which_side_is_stale_and_never_says_they_differ() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        let path = workflow_path(root);
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-
-        // No drift (byte-identical to the embedded copy): no advisory at all.
-        std::fs::write(&path, RIGGER_WORKFLOW).unwrap();
-        assert!(
-            workflow_drift_advisory(root, "binary", |_, _| None).is_none(),
-            "no advisory when the installed workflow matches the embedded copy"
-        );
-
-        // Drift the installed workflow and record it as written by a NEWER build.
-        std::fs::write(&path, "// drifted installed workflow\n").unwrap();
-        std::fs::write(workflow_provenance_path(root), "installed-newer\n").unwrap();
-        let binary_stale = workflow_drift_advisory(root, "binary-old", |anc, desc| {
-            Some(anc == "binary-old" && desc == "installed-newer")
-        })
-        .expect("a drifted workflow yields an advisory");
-        assert!(
-            binary_stale.contains("the binary is stale")
-                && binary_stale.to_lowercase().contains("rebuild")
-                && binary_stale.contains("installed-newer")
-                && binary_stale.contains("binary-old"),
-            "the binary-stale advisory names the binary as stale, says rebuild, and cites \
-             both provenances; got: {binary_stale}"
-        );
-        assert!(
-            !binary_stale.contains("they differ"),
-            "the advisory must never be the ambiguous 'they differ'; got: {binary_stale}"
-        );
-
-        // Same drifted file, but recorded as an OLDER build: the WORKFLOW is stale.
-        std::fs::write(workflow_provenance_path(root), "installed-old\n").unwrap();
-        let workflow_stale = workflow_drift_advisory(root, "binary-new", |_, _| Some(false))
-            .expect("a drifted workflow yields an advisory");
-        assert!(
-            workflow_stale.contains("the installed workflow is stale")
-                && workflow_stale.contains("rigger setup")
-                && workflow_stale.contains(".claude/workflows/rigger.js"),
-            "the workflow-stale advisory names the workflow as stale, says `rigger setup`, \
-             and names the file; got: {workflow_stale}"
-        );
-        assert!(
-            !workflow_stale.contains("they differ"),
-            "the advisory must never be the ambiguous 'they differ'; got: {workflow_stale}"
-        );
-    }
 
     /// A fresh repo at `root` with a linear history of `commits` commits (each rewriting one
     /// file), returning their ids oldest first.
@@ -1773,24 +1537,6 @@ mod tests {
         assert!(
             behind_the_tree_advisory(root, &installed_version, &installed_commit).is_none(),
             "the installed commit equals HEAD, so there is nothing to report"
-        );
-    }
-
-    #[test]
-    fn validate_advisories_warns_on_workflow_drift_naming_the_file() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        let path = workflow_path(root);
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, "// drifted\n").unwrap();
-
-        let advisories = validate_advisories(root, true);
-        assert!(
-            advisories
-                .iter()
-                .any(|a| a.contains("drifted") && a.contains(".claude/workflows/rigger.js")),
-            "a drifted installed workflow yields a drift advisory naming the file; got: \
-             {advisories:?}"
         );
     }
 

@@ -37,7 +37,7 @@
 //!
 //! Like the unit test, the proof is a hermetic node `vm` harness that extracts the served page's own
 //! `<script>` and executes its real functions - no npm, no browser - and it SKIPs (not fails) when no
-//! `node` runtime is present (the shim-only lane), while `cargo test` on the always-on lanes runs it.
+//! `node` runtime is present, while `cargo test` on the always-on lanes runs it.
 //! `dash` compiles on both the default and `--no-default-features` lane (the viz is not feature-gated),
 //! so this guards the served page in both. Every harness is RED unless the seam it guards is real: with
 //! no live wire the integration harness reddens (`kg-nolabel` never toggles); a declutter that ignores

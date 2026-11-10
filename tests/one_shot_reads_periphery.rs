@@ -12,8 +12,8 @@
 //!    own scoped stream, so the store (not the caller) refuses what the selection refuses;
 //!  - the MCP tools used to hold a side-car subscription; nothing outside the crate pins that each
 //!    call now reads afresh (a decision recorded between two calls is seen by the second, at the
-//!    cost of exactly one more read), that the spawn-bound `rigger_progress` stamps the run the
-//!    boundary read names, nor that `rigger_activity` reads that run's progress stream alone;
+//!    cost of exactly one more read), nor that the spawn-bound `rigger_progress` stamps the run the
+//!    boundary read names;
 //!  - no counting double reaches into the compiled binary, so the binary tests make any read past
 //!    the slice observable instead: each perception event and every superseded run's own event in a
 //!    real 200,000-event log is made undecodable, so a command that materialized even one of them
@@ -32,7 +32,6 @@ use common::fixtures::{
     ONE_SHOT_PERCEPTION_TYPES,
 };
 use rigger::conductor::STREAM;
-use rigger::driver::workflow::Driver;
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Direction, Event, EventStore, ExpectedRevision, TypeSelection};
@@ -173,9 +172,8 @@ fn records(reply: &Value) -> Vec<String> {
 /// `rigger_peers` scoped to a file, a peer then records a decision about that file, and the agent
 /// calls `rigger_peers` again and reports progress, then every call is exactly one read of the
 /// run from its boundary plus the typed carry-over - the second peers call sees the new decision
-/// LIVE at the cost of one more carried-over event, `rigger_progress` stamps its report with
-/// the run the boundary read names, and `rigger_activity` reads the run's progress from its own
-/// stream alone.
+/// LIVE at the cost of one more carried-over event, and `rigger_progress` stamps its report with
+/// the run the boundary read names.
 #[test]
 fn every_mcp_peers_and_progress_call_reads_the_run_afresh_from_its_boundary() {
     let inner = Store::open(":memory:").unwrap();
@@ -185,8 +183,7 @@ fn every_mcp_peers_and_progress_call_reads_the_run_afresh_from_its_boundary() {
     seed_one_shot_progress(&progress_inner, 1);
     let progress = ReadCountingStore::new(&progress_inner);
     let scratch = tempfile::tempdir().unwrap();
-    let driver = Driver::new();
-    let server = Server::new(&driver, &store, STREAM)
+    let server = Server::new(&store, STREAM)
         .with_progress(&progress, scratch.path().to_str().unwrap())
         .with_spawn("u/implementer#0");
 
@@ -240,32 +237,6 @@ fn every_mcp_peers_and_progress_call_reads_the_run_afresh_from_its_boundary() {
     assert_eq!(store.materialized(), fixture.cost() + 2 * after.cost());
     assert_eq!(progress.reads(), [], "recording progress reads nothing");
 
-    // `rigger_activity` (the workflow surface): one read of the run, and ONE read of the run's
-    // own progress stream -
-    // its seeded report and the one just recorded - never a superseded run's reports.
-    let workflow = Server::new(&driver, &store, STREAM)
-        .with_progress(&progress, scratch.path().to_str().unwrap());
-    let activity = call_tool(&workflow, "rigger_activity", json!({}));
-    assert!(activity.get("result").is_some(), "{activity}");
-    assert_eq!(
-        store.reads(),
-        [
-            fixture.read(STREAM),
-            after.read(STREAM),
-            after.read(STREAM),
-            after.read(STREAM)
-        ]
-        .concat()
-    );
-    assert_eq!(
-        progress.reads(),
-        [CountedRead::Stream {
-            stream: "progress/run-c".to_string(),
-            from: 0,
-            forward: true,
-            materialized: 2,
-        }]
-    );
     let recorded = rigger::progress::read_run(&progress_inner, "run-c").unwrap();
     assert_eq!(
         recorded

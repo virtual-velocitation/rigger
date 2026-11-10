@@ -172,7 +172,7 @@ pub fn rigger_bin() -> PathBuf {
 /// address re-sets it with `.env(...)`, which wins.
 ///
 /// Also pins [`KEEP_AWAKE_ENV`] to a recording fake writing under [`test_cache_home`] (spec
-/// 105, KEEP-AWAKE): a `rigger run` or `rigger serve` left on the OS adapter would hold the
+/// 105, KEEP-AWAKE): a `rigger run` left on the OS adapter would hold the
 /// operator's real machine awake, or print the keep-awake unavailable line on a host lacking the
 /// facility, so no test outside the adapter's own rows depends on the host's power facility. A
 /// test that drives the knob re-sets it with `.env(...)` or clears it with `.env_remove(...)`,

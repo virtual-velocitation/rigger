@@ -90,8 +90,8 @@ pub struct WatchSignalFact {
 }
 
 /// Render the `using-rigger` skill: a self-contained front-door that tells an agent
-/// WHEN and HOW to drive the loop. Distinct from the `/rigger` workflow (which RUNS the
-/// loop); this skill tells an agent when to reach for it and how to stay on the rails.
+/// WHEN and HOW to drive the loop. Distinct from `rigger run` (which RUNS the loop); this
+/// skill tells an agent when to reach for it and how to stay on the rails.
 ///
 /// The skill opens with loadable frontmatter (a name and a description) so it installs
 /// as a discoverable skill, then carries the shared discipline body. Every drift-prone
@@ -154,10 +154,12 @@ fn discipline_body(ctx: &DocsContext) -> String {
     let _ = writeln!(s, "## The one blessed driver\n");
     let _ = writeln!(
         s,
-        "Drive every run through the native /rigger workflow (visible in /workflows and on \
-         the dashboard at 127.0.0.1:{port}). It launches the loop and keeps the event log, the \
-         ledger, and the context graph consistent with one another. These anti-patterns split \
-         the run's state away from that shared record and must be avoided:\n",
+        "Drive every run with `rigger run <spec> --base <ref>`, started in the background: it \
+         launches one host process per agent, keeps the event log, the ledger, and the context \
+         graph consistent with one another, and drives the run to done or to a unit handed back. \
+         Follow it with `rigger status`, `rigger watch`, and the dashboard at \
+         127.0.0.1:{port}. These anti-patterns split the run's state away from that shared \
+         record and must be avoided:\n",
         port = ctx.dash_port
     );
     let _ = writeln!(
@@ -271,7 +273,7 @@ fn discipline_body(ctx: &DocsContext) -> String {
          block the compaction, a spawn with no marker never does, and an in-flight spawn stops \
          blocking once its marker outlives the spawn's bound or a real result is recorded for \
          it. An unbounded spawn's marker never outlives its bound, so record that spawn's \
-         result to end it. Every `rigger step`, `run` and `serve` registers as the run's \
+         result to end it. Every `rigger step` and `rigger run` registers as the run's \
          driver, so the last step's stamp counts as a live driver for the idle window; a \
          courier's (`emit`, `result`, `progress`) discovery refresh of that registration never \
          does. `--force-live` overrides the refusal for an operator certain no writer is using \
@@ -315,14 +317,12 @@ fn discipline_body(ctx: &DocsContext) -> String {
     let _ = writeln!(
         s,
         "`rigger hold --reason <text>` holds the current run for you, the text recorded as the \
-         hold's reason: a run driven by `rigger run` or `rigger serve` launches no agent while a \
+         hold's reason: a run driven by `rigger run` launches no agent while a \
          hold stands, a session already running finishes, and no probe ends your hold. It \
          refuses, recording nothing, when no run is live: none has started, or the current run \
          is done. `rigger release` ends the current run's hold, whichever \
          writer declared it, an outage hold included, so the next launch goes at once instead of \
-         after the next probe, which only `rigger run` runs: under `rigger serve` a hold stands \
-         until a release or the start of a new run ends it. With no hold open it records \
-         nothing and says so.\n"
+         after the next probe. With no hold open it records nothing and says so.\n"
     );
 
     let _ = writeln!(s, "## Auto-integration on approve\n");
@@ -352,8 +352,7 @@ fn discipline_body(ctx: &DocsContext) -> String {
     let _ = writeln!(
         s,
         "Run `rigger version` to see the exact binary and its build provenance and to \
-         diagnose drift between the installed /rigger workflow and the binary that would run \
-         it. This repo keeps its specs in {specs}. The full command surface is: {cmds}.\n",
+         diagnose drift between the binary on your path and the tree it was built from. This repo keeps its specs in {specs}. The full command surface is: {cmds}.\n",
         specs = ctx.specs_location,
         cmds = ctx.subcommands.join(", ")
     );
@@ -406,7 +405,7 @@ fn render_planning_a_spec_skill(ctx: &DocsContext) -> String {
 /// after.
 const PLANNING_A_SPEC_THROUGH_STEP_6: &str = r#"---
 name: planning-a-spec
-description: Use when writing, splitting, or amending a spec for a rigger loop run - before launching /rigger on new work, when a plan-critique gate rejects a decomposition, when a run churns in review and the spec is suspect, or when turning bug reports or design discussions into Done-when criteria.
+description: Use when writing, splitting, or amending a spec for a rigger loop run - before launching `rigger run` on new work, when a plan-critique gate rejects a decomposition, when a run churns in review and the spec is suspect, or when turning bug reports or design discussions into Done-when criteria.
 ---
 
 # Planning a spec
@@ -473,8 +472,8 @@ demand evidence on.
 const PLANNING_A_SPEC_FROM_STEP_7: &str = r#"**7. Preflight, then launch.** Run the `spec-preflight` skill and, under a workflow with a
 critic, `rigger critique <spec>` before launch. `rigger validate` is mandatory (it catches
 model-alias drift - run `rigger canary --if-model-changed` on a warning); `rigger reset --runs`
-before a large run; anchor `base=` on the ref the work must land on. Launch via the /rigger
-workflow only.
+before a large run; anchor `--base` on the ref the work must land on. Launch with `rigger run <spec> --base <ref>`
+only.
 
 ## Amending mid-run
 
@@ -926,7 +925,7 @@ fn render_reset_store_skill(_ctx: &DocsContext) -> String {
              liveness fault has not ended - the step halts on it and a relaunched driver re-parks \
              it - so a dead run with a hung spawn stays open and the reset names it: record its \
              real result with `rigger result <id>`, then rerun `rigger reset --runs`. A `rigger \
-             step` registers as the run's driver just as `run` and `serve` do, so a hand-landed \
+             step` registers as the run's driver just as `run` does, so a hand-landed \
              unit closes once the last step's stamp is older than the idle window; a courier's \
              (`emit`, `result`, `progress`) discovery refresh never counts as a driver, so your \
              own courier just before the reset never holds it back.",
@@ -1042,9 +1041,8 @@ fn render_resume_a_run_skill(_ctx: &DocsContext) -> String {
              Under an open hold the heartbeat age stops at the hold's start, so a driver that \
              dies inside a hold never reads stale there: `rigger watch` reads the heartbeat on \
              wall clock and names it.\n",
-            "Relaunch the same blessed driver on the same spec WITHOUT `--fresh` - `rigger run \
-             <spec>`, `rigger serve <spec>` / `rigger workflow <spec>`, or the native `/rigger \
-             <spec>` workflow with its `fresh` argument left unset. Because the run lives in the \
+            "Relaunch the same driver on the same spec WITHOUT `--fresh` - `rigger run <spec> \
+             --base <ref>`, in the background as before. Because the run lives in the \
              event log, not in the dead process, the conductor's own run-starting step adopts \
              the existing run instead of minting a new one: it replays the log, rebuilds its \
              in-memory state, and continues exactly where the dead driver left off. No unit \
@@ -1060,11 +1058,7 @@ fn render_resume_a_run_skill(_ctx: &DocsContext) -> String {
             "A run that is HELD, not dead, launches nothing until the hold ends, and its driver \
              decides what ends it. A `rigger run` driver stays alive through the hold, and a \
              passing probe ends an outage hold by itself, save a `model_not_found` hold, which \
-             runs none. `rigger serve` runs no probe, so its hold stands until `rigger release` \
-             or the start of a new run ends it, and a wait still open when its session closes \
-             parks the spawn; a relaunch then continues the run. A `rigger workflow` driver \
-             drains its live workers and stops on a held run, and `rigger release` and a new \
-             `rigger workflow` resume it. `rigger release` ends any hold at once. No probe ends \
+             runs none. `rigger release` ends any hold at once. No probe ends \
              one you declared with `rigger hold --reason <text>`: `rigger release` does, as do \
              the start of a new run and a `rigger run` run reaching done. A release with no hold \
              open records nothing and says so.\n",
@@ -1106,8 +1100,7 @@ fn render_handle_an_escalation_skill(ctx: &DocsContext) -> String {
             "Apply EXACTLY that remedy on the unit's durable branch (`rigger/u/<unit-id>`, the \
              branch rigger itself created and kept for this unit's committed work across every \
              attempt) - nothing more, nothing less. Then relaunch the run fresh - `rigger run \
-             --fresh <spec>` (or `rigger serve --fresh <spec>` / the native `/rigger <spec>` \
-             workflow with `fresh` set) - against the same, otherwise-unchanged spec: the \
+             <spec> --base <ref> --fresh` - against the same, otherwise-unchanged spec: the \
              conductor mints a new run boundary, and the loop picks the escalated unit back up \
              with a clean remediation budget.\n",
         ],
@@ -1225,8 +1218,8 @@ fn render_restore_the_dash_skill(_ctx: &DocsContext) -> String {
              that line alone. `rigger watch --once` IS the accurate check: it verifies the \
              recorded marker by actually probing its port, and prints a `dash liveness` line \
              naming the dead PID when nothing answers there - trust that over a bare status \
-             line. `rigger run` and `rigger serve` never write that marker at all (only \
-             `rigger step` does) - for those two drivers `rigger watch` falls back to probing \
+             line. `rigger run` never writes that marker (only `rigger step` does) - for a \
+             `rigger run` driver `rigger watch` falls back to probing \
              the recorded dash URL's OWN port directly, and its `dash liveness` line still \
              fires, just without a pid to name.\n",
             "Restart with a plain `rigger dash` (no flags needed for the default address). The \
@@ -1242,7 +1235,7 @@ fn render_restore_the_dash_skill(_ctx: &DocsContext) -> String {
              process if it is merely stopped (a suspended terminal, a paused container), or KILL \
              it if it is dead weight - THAT pid, the one the marker and `rigger watch`'s own \
              line actually name - then restart with `rigger dash`. When NO marker was ever \
-             recorded (`rigger run` / `rigger serve`), `rigger watch`'s line names no pid at all \
+             recorded (a `rigger run` driver), `rigger watch`'s line names no pid at all \
              - skip straight to restarting with `rigger dash`; its singleton bind never fights a \
              genuinely-live dash, and a bind failure against a real non-dash holder is then a \
              manual, outside-`rigger` situation, never one to guess a pid for.\n",

@@ -1,7 +1,7 @@
 //! Agent drivers: adapters implementing the conductor's AgentDriver port. `claude_code` is the
 //! headless-session host `rigger run` and `rigger critique` launch their agents through;
-//! `workflow` is the in-Claude-Code alternative; `cli` is the blocking one-shot host `rigger
-//! canary` probes with; `replay` is the stepwise path `rigger step` drives.
+//! `cli` is the blocking one-shot host `rigger canary` probes with; `replay` is the stepwise
+//! path `rigger step` drives.
 //!
 //! Both process hosts launch a headless `claude` session, so what such a session needs
 //! beyond its protocol (permissions, MCP server, settings, helpers) is composed here once,
@@ -17,7 +17,6 @@ use crate::progress::SpawnLaunched;
 pub mod claude_code;
 pub mod cli;
 pub mod replay;
-pub mod workflow;
 
 /// The permission mode every headless spawn runs under (architecture addendum §4.1): paired
 /// with `--permission-prompts none`, whatever would otherwise prompt is DENIED (and, on the

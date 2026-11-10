@@ -67,13 +67,13 @@
 //! reach the log by different mechanisms on the two drivers, so attribution is carried
 //! the SAME way on both:
 //!
-//! - **In-process (the `rigger serve` workflow driver):** that driver records **no**
+//! - **In-process (the cli driver):** that driver records **no**
 //!   adjudicator `SpawnResult` (the verdict gates the stage in-memory). So `upheld` is
 //!   0 on this path - the `raised` and overlap signals are exact, but a finding's
 //!   survival cannot be computed without a recorded verdict. This is a real per-driver
 //!   limitation, not a defect: the render discloses it (an all-zero-upheld panel over a
 //!   run with findings but no recorded verdicts is this path, not reviewer failure).
-//! - **Out-of-process (`rigger run`'s headless host, the courier / workflow path):** the
+//! - **Out-of-process (`rigger run`'s headless host, the courier path):** the
 //!   reviewer runs as its own process and emits its finding through `rigger_emit` or
 //!   `rigger emit`, which stamp no `META_ACTOR`; the adjudicator's verdict IS recorded, as
 //!   the `SpawnResult` the host records from the session's stream or the courier writes with
@@ -495,7 +495,7 @@ pub struct ReviewQuality {
     /// `SpawnResult` (which carries `upheld`) land on the SAME log: the out-of-process
     /// courier path records the `SpawnResult` but stamps no `META_ACTOR`, so the reviewer's
     /// `by`-carried role token (the conductor's `review_protocol` puts it there) is what
-    /// supplies attribution on THAT path and on the headless host's; the workflow driver
+    /// supplies attribution on THAT path and on the headless host's; the cli driver
     /// records no adjudicator `SpawnResult`, so its `upheld` stays 0 (no
     /// verdict to fold) - a genuine per-driver limitation, disclosed here and rendered as
     /// such, not a silent always-zero.
@@ -522,7 +522,7 @@ pub struct ReviewQuality {
     /// upheld findings, every step of a kind under its tier, sorted by tier.
     pub tier_cost: BTreeMap<String, TierCost>,
     /// Adjudicator verdicts RECORDED as a `SpawnResult` and parsed for their upheld/cause
-    /// (the headless host and the courier path record these; the workflow driver does not).
+    /// (the headless host and the courier path record these; the cli driver does not).
     /// This is the numerator source for every upheld-based fold, so when it is `0` there simply is no
     /// verdict on this run's driver to compute survival/precision/cost-per-upheld from -
     /// the render discloses that rather than showing a misleading `0%` survival.

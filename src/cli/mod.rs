@@ -116,8 +116,7 @@ const DASH_ATTEMPT_FILE: &str = "dash.attempt";
 const PROJECT_ID_FILE: &str = "project.id";
 
 /// The run branch the stepwise driver accumulates a run on: every unit worktree is
-/// branched from it and every approved unit is merged back into it. Mirrored by
-/// `RUN` in `workflows/rigger.js` (the JS driver); the two names must agree.
+/// branched from it and every approved unit is merged back into it.
 const RUN_BRANCH: &str = "rigger-run";
 
 /// The default ref the run branch is anchored to when `rigger step` (or the driver)
@@ -128,41 +127,6 @@ const RUN_BRANCH: &str = "rigger-run";
 /// off the current HEAD instead, so isolation is still established. Mirrored by the
 /// driver's own default.
 const DEFAULT_BASE_REF: &str = "origin/main";
-
-/// The JS-driver RUNTIME files, embedded in the binary so `rigger setup` can
-/// provision a per-project shim without the user cloning the repo. Only the three
-/// runtime files ship: `shim.mjs` (the driver), `package.json`, and the
-/// `package-lock.json` (so `npm ci` installs the exact locked tree). The dev-only
-/// `mock-*`/`*.test.mjs` files are deliberately NOT embedded - they are for the
-/// repo's own tests + CI, not the runtime a user runs.
-const SHIM_MJS: &str = include_str!("../../shim/shim.mjs");
-const SHIM_PACKAGE_JSON: &str = include_str!("../../shim/package.json");
-const SHIM_PACKAGE_LOCK_JSON: &str = include_str!("../../shim/package-lock.json");
-
-/// The three embedded shim runtime files as (filename, contents) pairs, written
-/// verbatim into `<project>/.rigger/shim/` by `provision_shim`.
-const SHIM_FILES: &[(&str, &str)] = &[
-    ("shim.mjs", SHIM_MJS),
-    ("package.json", SHIM_PACKAGE_JSON),
-    ("package-lock.json", SHIM_PACKAGE_LOCK_JSON),
-];
-
-/// The native Claude Code workflow, embedded in the binary so `rigger setup` can
-/// install it into a project without the user cloning the repo. A saved Claude Code
-/// workflow is a single self-contained `.js` file: Claude Code auto-discovers any
-/// `.js` under `<project>/.claude/workflows/`, so writing this there makes the
-/// `/rigger <spec>` workflow runnable immediately, with no registration step. The
-/// workflow drives its agents through the Workflow tool and grounds / persists their
-/// reasoning via `rigger ground`, `rigger emit`, and `rigger peers`.
-const RIGGER_WORKFLOW: &str = include_str!("../../workflows/rigger.js");
-
-/// Where the native `/rigger` workflow is installed, relative to the project root:
-/// `<root>/.claude/workflows/rigger.js`. Claude Code auto-discovers `.js` files in
-/// this directory, so the workflow is runnable as `/rigger <spec>` the moment it is
-/// written - no registration. Rooted at `root` so it is testable against a temp dir.
-fn workflow_path(root: &Path) -> std::path::PathBuf {
-    root.join(".claude").join("workflows").join("rigger.js")
-}
 
 /// Where `rigger docs` writes the rendered handbook discipline chapter, relative to the
 /// project root. It lives beside the other handbook chapters and is drift-checked against
@@ -227,14 +191,6 @@ fn version_line() -> String {
     format!("rigger {} (build {})", GITSEMVER_VERSION, BUILD_PROVENANCE)
 }
 
-/// Which agent driver a `run` uses (§10): `cli` is the standalone `claude`
-/// subprocess path; `workflow` is the in-Claude-Code MCP-server path.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum DriverKind {
-    Cli,
-    Workflow,
-}
-
 /// Which event-store backend a run uses (§10): `sqlite` is the embedded default;
 /// `kurrentdb` is the server backend, compiled into every build (spec 47) and
 /// selected at runtime by `--eventstore kurrentdb`.
@@ -244,11 +200,9 @@ enum StoreKind {
     KurrentDb,
 }
 
-/// The parsed flags shared by `run` (and the `--driver workflow` path): which
-/// driver, which event store, the connection string for the server backend, the
+/// The parsed flags of `run`: which event store, the connection string for the server backend, the
 /// positional spec path, and whether to force a fresh run.
 struct RunArgs {
-    driver: DriverKind,
     store: Option<StoreKind>,
     conn: Option<String>,
     spec: Option<String>,
@@ -292,8 +246,7 @@ fn conn_flag(value: Option<&String>, verb: &str) -> Result<String, Box<dyn std::
 }
 
 /// One argument of `verb`'s argv that none of its flag arms claimed, under the single-positional
-/// spec rule every spec-taking verb's parser shares (`rigger run`, `rigger workflow`, `rigger
-/// critique`): a `--` argument is an unknown flag, the first positional is the spec path, and a
+/// spec rule every spec-taking verb's parser shares (`rigger run` and `rigger critique`): a `--` argument is an unknown flag, the first positional is the spec path, and a
 /// second positional is refused.
 fn spec_positional(
     arg: &str,
@@ -310,12 +263,11 @@ fn spec_positional(
     Ok(())
 }
 
-/// Parse `rigger run`'s flags: `--driver <cli|workflow>`, `--eventstore
+/// Parse `rigger run`'s flags: `--fresh`, `--rebase-definition`, `--eventstore
 /// <sqlite|kurrentdb>`, `--conn <url>`, `--base <ref>` (the run-branch base, spec 18
 /// criterion 6), and a single positional spec path. Unknown flags and a second positional
 /// are rejected (§10).
 fn parse_run_args(args: &[String]) -> Result<RunArgs, Box<dyn std::error::Error>> {
-    let mut driver = DriverKind::Cli;
     let mut store = None;
     let mut conn = None;
     let mut spec = None;
@@ -334,18 +286,6 @@ fn parse_run_args(args: &[String]) -> Result<RunArgs, Box<dyn std::error::Error>
                     None => return Err("run: --base expects a ref".into()),
                 };
             }
-            "--driver" => {
-                i += 1;
-                driver = match args.get(i).map(String::as_str) {
-                    Some("cli") => DriverKind::Cli,
-                    Some("workflow") => DriverKind::Workflow,
-                    other => {
-                        return Err(
-                            format!("run: --driver expects cli|workflow, got {other:?}").into()
-                        )
-                    }
-                };
-            }
             "--eventstore" => {
                 i += 1;
                 store = Some(eventstore_flag(args.get(i), "run")?);
@@ -359,7 +299,6 @@ fn parse_run_args(args: &[String]) -> Result<RunArgs, Box<dyn std::error::Error>
         i += 1;
     }
     Ok(RunArgs {
-        driver,
         store,
         conn,
         spec,
@@ -371,10 +310,8 @@ fn parse_run_args(args: &[String]) -> Result<RunArgs, Box<dyn std::error::Error>
 
 /// Resolve the effective run-branch base for a run entry (spec 18, criterion 6), and
 /// whether it was chosen explicitly. Precedence: an explicit `--base <ref>` on the argv
-/// (`argv_base`), then the `RIGGER_BASE` environment override (`env_base`) - the channel
-/// `rigger workflow` threads its `--base` down through the shim to the served `rigger
-/// serve`, since the shim spawns the child with the inherited environment (the same
-/// mechanism it already uses for `RIGGER_BIN`) - then the load-bearing [`DEFAULT_BASE_REF`]
+/// (`argv_base`), then the `RIGGER_BASE` environment override (`env_base`), then the
+/// load-bearing [`DEFAULT_BASE_REF`]
 /// (`origin/main`). An empty override is treated as unset so a run never anchors on "".
 /// The bool is `true` when the base came from the flag or the env (used only to warn when
 /// an operator's chosen base is ignored because the run branch already exists).
@@ -1029,8 +966,8 @@ fn refresh_registry_entry(loc: &StoreLocation, selection: &StoreSelection) {
 /// R9): the basename of the git repo top-level, falling back to the current
 /// directory's name, falling back to "rigger". Never empty.
 ///
-/// Anchored at the process cwd, which is correct for the RUN DRIVER (`run`/`step`/
-/// `serve`): it creates the store under the cwd's `.rigger/`, so the cwd's git
+/// Anchored at the process cwd, which is correct for the RUN DRIVER (`run`/`step`): it
+/// creates the store under the cwd's `.rigger/`, so the cwd's git
 /// top-level is the identity that scopes it. The store-opening COURIERS must NOT use
 /// this - a courier can run from a cwd that is not the store's owner (a nested git
 /// worktree) - so they bind identity to the RESOLVED store root instead, via
@@ -1575,10 +1512,8 @@ fn main_repo_root(start: &Path) -> Option<PathBuf> {
     abs.parent().map(|p| p.to_path_buf())
 }
 
-/// STEP RESOLVES THE MAIN WORKTREE (spec 89, criterion 4): `rigger step`, `rigger run`
-/// (both the default CLI driver and `--driver workflow`, i.e. `run_cli` and `run_workflow` -
-/// the latter also `rigger serve`'s sole implementation) and `rigger workflow` each call this
-/// at their own entry so a LINKED git worktree is refused up front, naming both trees, instead
+/// STEP RESOLVES THE MAIN WORKTREE (spec 89, criterion 4): `rigger step` and `rigger run`
+/// each call this at their own entry so a LINKED git worktree is refused up front, naming both trees, instead
 /// of silently proceeding on the linked tree's own toplevel
 /// and later failing deep inside branch setup with git's own opaque "'rigger-run' is already
 /// used by worktree ..." (a linked worktree cannot itself hold the run branch checked out - git
@@ -1769,7 +1704,7 @@ struct NoStoreFound(String);
 /// the project root; refusing (when no ancestor has one) surfaces the wrong-cwd mistake
 /// instead of silently swallowing the write. The returned [`StoreLocation`] additionally
 /// binds identity to the resolved root, so a walked-up write lands in the stream the
-/// conductor reads (see [`StoreLocation::identity`]). The run driver (`run`/`step`/`serve`)
+/// conductor reads (see [`StoreLocation::identity`]). The run driver (`run`/`step`)
 /// is deliberately NOT routed through here: it legitimately BOOTSTRAPS the store on the
 /// first step of a fresh project.
 fn require_store_dir() -> Result<(StoreLocation, StoreSelection), Box<dyn std::error::Error>> {
@@ -2009,11 +1944,11 @@ fn result_refusal(
 /// conductor - which branches every unit worktree off HEAD and merges every approved
 /// unit back into the current branch - the step ensures [`RUN_BRANCH`] exists AND is
 /// checked out, so that isolation boundary is the run branch and never the operator's
-/// own branch. On the native path `cmd_step` IS the driver (there is no separate setup
-/// step), so this cannot be skipped when the base is missing: if [`RUN_BRANCH`] does not
+/// own branch. `cmd_step` has no separate setup step, so this cannot be skipped when the
+/// base is missing: if [`RUN_BRANCH`] does not
 /// exist yet it is created off `--base`, or off the current HEAD when `--base` does not
 /// resolve (a repo with no remote, a `master`-default repo, or a pre-fetch clone) - a
-/// fallback that keeps isolation and mirrors the JS driver. A step will therefore switch
+/// fallback that keeps isolation. A step will therefore switch
 /// the repo's checkout to [`RUN_BRANCH`] as a deliberate side effect; if that checkout
 /// fails (e.g. a dirty tree, or the run branch is checked out in another worktree) the
 /// step aborts with a clear error BEFORE it prints any JSON - run-branch setup is a
@@ -2289,39 +2224,6 @@ fn refuse_when_base_lacks_spec_paths(
     Ok(())
 }
 
-/// Locate the JS driver's `shim.mjs` to run, rooted at the project `root`.
-///
-/// `rigger workflow` runs the PER-PROJECT shim that `rigger setup` provisions
-/// (`<root>/.rigger/shim/shim.mjs`), so the driver and its installed `node_modules`
-/// travel with the project, not the binary. Search order:
-///   1. the `RIGGER_SHIM` env override (an explicit path) - the escape hatch for a
-///      custom or dev shim;
-///   2. the provisioned per-project shim at `<root>/.rigger/shim/shim.mjs`.
-///
-/// When neither exists the error tells the user to run `rigger setup` (which
-/// provisions `.rigger/shim/` and installs its deps), rather than leaving them to
-/// hand-wire a shim. A `RIGGER_SHIM` override that points at a missing path is a
-/// clear error, never a silent fallthrough.
-fn locate_shim(root: &Path) -> Result<String, Box<dyn std::error::Error>> {
-    if let Ok(explicit) = std::env::var("RIGGER_SHIM") {
-        if Path::new(&explicit).exists() {
-            return Ok(explicit);
-        }
-        return Err(format!("workflow: RIGGER_SHIM={explicit} does not exist").into());
-    }
-    let provisioned = rigger_path(root, SHIM_DIR).join("shim.mjs");
-    if provisioned.exists() {
-        return Ok(provisioned.to_string_lossy().into_owned());
-    }
-    Err(format!(
-        "workflow: the per-project JS driver is not provisioned (looked for {}). \
-         Run `rigger setup` to write the shim into .rigger/shim/ and install its \
-         dependencies, then re-run `rigger workflow`.",
-        provisioned.display()
-    )
-    .into())
-}
-
 /// The pure read-model core of `rigger stats`: open the embedded `events.db` at `path`,
 /// read `project`'s `run` stream through the per-project [`Namespaced`] decorator, and
 /// fold it into the printable metric lines - returning `None` for the two "no runs yet"
@@ -2509,7 +2411,7 @@ fn append_review_quality(lines: &mut Vec<String>, m: &Metrics) {
     // disclose the UNFED case so a reader never misreads "0 upheld" as proven reviewer
     // failure. Two unfed shapes leave the folded upheld total at 0 while findings/spawns
     // exist:
-    //   - NO verdict recorded on this run's driver (the workflow driver records none), or
+    //   - NO verdict recorded on this run's log (a log written without adjudicator verdicts), or
     //   - a verdict WAS recorded but the findings it upheld carry no attribution to fold onto
     //     (`upheld_unattributed > 0` - the empty-actor sentinel dropped them). This is the
     //     dominant case on a real aggregate store, which the adjudications==0 guard missed.
@@ -2522,7 +2424,7 @@ fn append_review_quality(lines: &mut Vec<String>, m: &Metrics) {
         && (rq.adjudications == 0 || rq.upheld_unattributed > 0)
     {
         let why = if rq.adjudications == 0 {
-            "no adjudicator verdict recorded on this run's driver - the upheld set rides the recorded SpawnResult the workflow driver never writes".to_string()
+            "no adjudicator verdict recorded on this run's driver - the upheld set rides a recorded SpawnResult this log does not carry".to_string()
         } else {
             format!(
                 "a verdict WAS recorded, but {} upheld finding(s) carry no attribution to fold onto (unattributed on this log)",
@@ -2572,9 +2474,9 @@ fn append_review_quality(lines: &mut Vec<String>, m: &Metrics) {
             lines.push(format!("      {cause:<24} {n}"));
         }
     }
-    // A rejection's cause rides a RECORDED adjudicator reject verdict; the workflow driver
-    // records none, so on that path - and on any aggregate store mixing the two - the
-    // folded causes account for FEWER rejects than review_reject. Disclose the unfed
+    // A rejection's cause rides a RECORDED adjudicator reject verdict; a log written without
+    // adjudicator verdicts carries none, so on such a log - and on any aggregate store mixing
+    // the two - the folded causes account for FEWER rejects than review_reject. Disclose the unfed
     // remainder so the cause panel is never misread as the full reject breakdown (the count
     // never underflows: each cause fold is paired with a review_reject in the same arm).
     let causes_folded: u64 = rq.rejections_by_cause.values().sum();
@@ -3443,12 +3345,12 @@ fn watch_poll_over(
     // verified with the same real serve probe `dash_serving_on` uses - a marker naming
     // a dead or hung-holder pid never reads as serving, exactly like c4's status truth.
     //
-    // Only ONE of the three real dash-launching drivers (`rigger step`, via
-    // `ensure_run_dashboard`) ever writes a marker; `rigger run` and `rigger serve`
-    // (`spawn_run_dashboard`/`spawn_run_dashboard_detached`) record ONLY the
+    // Only ONE of the two real dash-launching drivers (`rigger step`, via
+    // `ensure_run_dashboard`) ever writes a marker; `rigger run`
+    // (`spawn_run_dashboard`/`spawn_run_dashboard_detached`) records ONLY the
     // `dash.url` breadcrumb. Without a fallback, a marker-absent project always read
     // as `NotRecorded` regardless of whether a dash was ever actually up - silently
-    // blind for 2 of the 3 real drivers (round-3 reject cause
+    // blind for `rigger run` (round-3 reject cause
     // adv-u69c1r3-watch-once-inherits-marker-absent-blindspot). So when no marker
     // exists, probe the PORT EMBEDDED IN THE RECORDED URL directly instead - the same
     // safe, timeout-bounded `dash::dash_answer_on` probe, just without a pid to name. Only
@@ -3615,8 +3517,7 @@ fn json_type_name(v: &serde_json::Value) -> &'static str {
 /// classification, untouched here) as the `"warning: spec {path}: {advisory}"` lines
 /// `rigger validate` prints. The ONE formatter both the pre-launch `cmd_validate` below
 /// AND the in-run `load_criteria` call site (spec 66 criterion 4 - reached by `rigger
-/// run`, `rigger step`, and `rigger serve`/`rigger workflow` alike, since all three route
-/// through that one function) build their warning lines from - never a second, parallel
+/// run` and `rigger step` alike, since both route through that one function) build their warning lines from - never a second, parallel
 /// aggregation or a re-derived wording, so the two lint surfaces cannot silently diverge.
 /// Pure (no I/O), so the sharing is pinned by a direct unit test on this function, not
 /// only inferred from a subprocess capture of either call site.
@@ -3625,28 +3526,6 @@ fn spec_lint_warning_lines(spec_path: &str, text: &str) -> Vec<String> {
         .into_iter()
         .map(|advisory| format!("warning: spec {spec_path}: {advisory}"))
         .collect()
-}
-
-/// The sidecar that records WHICH build's `rigger setup` last wrote the installed
-/// workflow, stored beside it as `.claude/workflows/.rigger-workflow-provenance`. The
-/// drift diagnostic reads it (see [`workflow_drift_advisory`]) to name which side of a
-/// workflow drift is stale. Absent for a workflow written by a build that predates this
-/// recording - the diagnostic then falls back to the refresh directive.
-fn workflow_provenance_path(root: &Path) -> std::path::PathBuf {
-    workflow_path(root).with_file_name(".rigger-workflow-provenance")
-}
-
-/// The build provenance recorded for the installed workflow (the build whose `rigger
-/// setup` last wrote it), or `None` when no sidecar is present (an older install, or none).
-/// Trimmed so a trailing newline never defeats the comparison against [`BUILD_PROVENANCE`].
-fn installed_workflow_provenance(root: &Path) -> Option<String> {
-    let raw = std::fs::read_to_string(workflow_provenance_path(root)).ok()?;
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed.to_string())
-    }
 }
 
 // ---- `rigger validate` residue report (spec 06, unit 6 / Gap 14d) -----------------
@@ -4801,13 +4680,7 @@ fn rigger_path(root: &Path, entry: &str) -> std::path::PathBuf {
     root.join(RIGGER_DIR).join(entry)
 }
 
-/// The [`rigger_path`] entry the per-project JS driver is provisioned into:
-/// `<root>/.rigger/shim/`. `rigger setup` writes the embedded runtime files here and
-/// installs their npm deps; `rigger workflow` runs `shim.mjs` from here.
-const SHIM_DIR: &str = "shim";
-
-/// What an install step did to a file it manages under the project root (the `/rigger`
-/// workflow, a registry skill, the docs pre-commit hook, or an `.mcp.json` or
+/// What an install step did to a file it manages under the project root (a registry skill, the docs pre-commit hook, or an `.mcp.json` or
 /// `.claude/settings.json` entry), so `rigger setup` can REPORT a refresh but stay a silent
 /// no-op when nothing drifted (spec 05, criterion 4: setup is re-runnable - it detects and
 /// refreshes a drifted installed file, reports the refresh, and changes nothing when the file
@@ -4836,8 +4709,8 @@ enum InstallOutcome {
 /// observable side effect (the grounder's staleness gate keys off mtime). Parent
 /// directories are created so a fresh checkout installs cleanly. This is the SINGLE
 /// authority for the compare-then-write-if-changed install step, shared by
-/// [`install_workflow`] and [`install_skills`] so every install cannot drift in how it
-/// detects and reports a no-op.
+/// every install ([`install_skills`] among them) so none can drift in how it detects and
+/// reports a no-op.
 fn install_file_if_changed(
     path: &Path,
     contents: &[u8],
@@ -4855,30 +4728,6 @@ fn install_file_if_changed(
     } else {
         InstallOutcome::Installed
     })
-}
-
-/// Install (or refresh) the native `/rigger` Claude Code workflow at
-/// `<root>/.claude/workflows/rigger.js`, returning [what it did](InstallOutcome).
-///
-/// It COMPARES the installed file against the embedded [`RIGGER_WORKFLOW`] (via
-/// [`install_file_if_changed`]) and writes ONLY when the file is absent (a fresh install)
-/// or has drifted (a stale copy from an older `rigger` build): an up-to-date workflow is
-/// left untouched so a `rigger setup` rerun is a true no-op. A drifted file is overwritten
-/// so an upgrade refreshes the workflow to match the binary - the workflow and the
-/// conductor / CLI it drives stay the same build. Claude Code auto-discovers `.js` here,
-/// so the user can run `/rigger <spec>` immediately, with no registration. Rooted at
-/// `root` so it is testable against a temp dir. The installed path is
-/// [`workflow_path`]`(root)`.
-fn install_workflow(root: &Path) -> Result<InstallOutcome, Box<dyn std::error::Error>> {
-    let outcome = install_file_if_changed(&workflow_path(root), RIGGER_WORKFLOW.as_bytes())?;
-    // Record which build wrote this workflow so the drift diagnostic can later name WHICH
-    // side is stale (spec 18, criterion 9). Written beside the workflow and ONLY when the
-    // workflow itself was (re)written, so an `AlreadyCurrent` rerun stays a true no-op that
-    // does not even touch the file's mtime.
-    if outcome != InstallOutcome::AlreadyCurrent {
-        std::fs::write(workflow_provenance_path(root), BUILD_PROVENANCE)?;
-    }
-    Ok(outcome)
 }
 
 /// The directory a skill lives under as `<SKILLS_DIR>/<name>/SKILL.md`: at the project root for
@@ -4908,8 +4757,7 @@ fn project_skill_path(root: &Path, name: &str) -> std::path::PathBuf {
 /// Where `rigger setup` installs a registry skill, relative to the project root:
 /// `<root>/.claude/skills/<name>/SKILL.md`. Claude Code auto-discovers skills under
 /// `.claude/skills/`, so the installed file is loadable the moment it is written - a file
-/// DISTINCT from the `/rigger` workflow at [`workflow_path`] (the workflow RUNS the loop;
-/// a skill tells an agent WHEN and HOW) and from the committed, drift-checked source at
+/// DISTINCT from the committed, drift-checked source at
 /// [`skill_source_rel`] (which `rigger docs` renders and `rigger validate` re-renders
 /// against). Rooted at `root` so it is testable against a temp dir.
 fn skill_install_path(root: &Path, name: &str) -> std::path::PathBuf {
@@ -5055,7 +4903,7 @@ fn read_project_skill(
 /// verbatim in place of the render, with no overlay, reported as
 /// [`ProjectCopy`](InstallOutcome::ProjectCopy). Every other entry there is a stray, which
 /// installs nothing. A `.rigger/skills` or a copy that cannot be read fails setup naming it,
-/// installing no render in place of that copy. Like [`install_workflow`], each entry writes
+/// installing no render in place of that copy. Through [`install_file_if_changed`], each entry writes
 /// ONLY when its file is absent or differs, so a `rigger setup` rerun on an up-to-date repo is
 /// a true no-op that does not even move a file's mtime.
 fn install_skills(root: &Path) -> Result<SkillInstall, Box<dyn std::error::Error>> {
@@ -5415,18 +5263,6 @@ fn compose_precommit(existing: Option<&str>) -> String {
     String::from_utf8(bytes).expect("composing UTF-8 hook parts yields UTF-8")
 }
 
-/// Write the three embedded shim runtime files into `<root>/.rigger/shim/`,
-/// returning that directory. Split out from [`provision_shim`] (which also runs npm
-/// install) so the file-provisioning step is testable without invoking npm.
-fn write_shim_files(root: &Path) -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
-    let dir = rigger_path(root, SHIM_DIR);
-    std::fs::create_dir_all(&dir)?;
-    for (name, contents) in SHIM_FILES {
-        std::fs::write(dir.join(name), contents)?;
-    }
-    Ok(dir)
-}
-
 /// Build the [`rigger::docs::DocsContext`] from the code definitions the runtime uses,
 /// so no discipline fact is hand-copied into the rendered document: each field is read
 /// from the same const / enum / registry the binary runs on, and changing that source
@@ -5528,15 +5364,12 @@ fn write_docs(root: &Path) -> Result<Vec<std::path::PathBuf>, Box<dyn std::error
 /// sourced so every such surface says the exact same thing rather than each inventing its
 /// own wording.
 ///
-/// Callers: `run_cli` (`rigger run <spec>`), `cmd_workflow` (`rigger workflow <spec>`), and
-/// `cmd_step` (`rigger step --spec <spec>`) are the surfaces that GENUINELY hold a spec path
-/// at the real pre-launch moment in production, so they are the ones that make this
-/// criterion's "reaches every consumer" promise true. `cmd_step` is the PRIMARY one: on the
-/// native `/rigger <spec>` Claude Code workflow, `cmd_step` IS the driver (there is no
-/// separate setup step - `shim/shim.mjs`'s whole mechanism is to courier `rigger step`
-/// calls), so it is by far the most-exercised of the three; it prints the reminder on
-/// STDERR (unlike the other two, which use stdout) because its stdout carries exactly one
-/// line of `{wave,done}` JSON a driver parses, and the reminder must never share that line.
+/// Callers: `run_cli` (`rigger run <spec>`) and `cmd_step` (`rigger step --spec <spec>`) are
+/// the surfaces that GENUINELY hold a spec path at the real pre-launch moment in production,
+/// so they are the ones that make this criterion's "reaches every consumer" promise true.
+/// `cmd_step` prints the reminder on STDERR (unlike `run_cli`, which uses stdout) because its
+/// stdout carries exactly one line of `{wave,done}` JSON a caller parses, and the reminder
+/// must never share that line.
 /// `cmd_prime` also calls this when given an explicit spec arg, but its own sole AUTOMATIC
 /// caller - the installed Claude Code SessionStart hook (`crates/rigger-driver/src/hooks.rs`) - always invokes it
 /// with zero args (the hook fires before any spec is ever chosen), so `cmd_prime`'s spec-arg
@@ -5650,12 +5483,9 @@ const GREP_GUARD_MESSAGE: &str = "A name lookup is a graph call: who calls <name
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::assert_driver_guards_a_null_step;
     use crate::test_support::assert_teardown_reaps_what_is_rooted_inside;
     use crate::test_support::git_init_quiet;
     use crate::test_support::git_ok;
-    use crate::test_support::js_declaration;
-    use crate::test_support::language_marker_hits;
     use crate::test_support::pgid_of;
     use crate::test_support::run_git;
     use crate::test_support::write_file;
@@ -6039,165 +5869,6 @@ mod tests {
                 "shell and Rust encodings must agree for {path}"
             );
         }
-    }
-
-    #[test]
-    fn shipped_workflow_driver_tells_a_worker_its_units_build_location() {
-        // Spec 77 criterion 1 through the editor's workflow driver: the shipped driver reads
-        // the wave's `cargo_target_dir` and makes exporting it, as the wave's `build_cache_env`,
-        // a hard rule for every command the build tool runs inside the worktree, so a worker
-        // never builds a cache in its tree.
-        assert!(
-            RIGGER_WORKFLOW.contains("req.cargo_target_dir"),
-            "the driver reads the build location off the wave item"
-        );
-        assert!(
-            RIGGER_WORKFLOW.contains("BUILD LOCATION (hard rule)")
-                && RIGGER_WORKFLOW
-                    .contains("  export ${req.build_cache_env}='${req.cargo_target_dir}'\\n"),
-            "the worker prompt names the export as a hard rule, through the wave's variable"
-        );
-        assert!(
-            RIGGER_WORKFLOW.contains(
-                "A build cache inside the worktree itself is a defect that fills the disk - never \
-                 create one."
-            ),
-            "the worker prompt forbids a cache inside the worktree without naming a toolchain's \
-             build directory"
-        );
-        // The directory is the conductor's per-spawn choice - the unit's gate cache for a spawn
-        // that builds the unit, its review cache for a review tier - so the prompt never tells
-        // a reviewer it builds into the cache the gates use.
-        assert!(
-            RIGGER_WORKFLOW.contains("That directory is the build cache the conductor chose for this spawn")
-                && !RIGGER_WORKFLOW.contains("shared with its gates"),
-            "the worker prompt names the chosen cache without claiming every spawn shares the gates' cache"
-        );
-        let rule = RIGGER_WORKFLOW.find("BUILD LOCATION (hard rule)").unwrap();
-        let heartbeat = RIGGER_WORKFLOW
-            .find("buildLocation +\n    heartbeat +")
-            .unwrap();
-        assert!(
-            rule < heartbeat,
-            "the rule is composed into the prompt ahead of the heartbeat and progress notes"
-        );
-        // The courier's structured return is the only way a wave reaches the driver, and a
-        // key the schema does not REQUIRE is a key the courier can drop while retyping: the
-        // schema requires every field the worker's instructions are built from.
-        let required = RIGGER_WORKFLOW
-            .find("required: ['id', 'unit', 'stage', 'dir', 'max_wall_clock', 'marker_path', 'cargo_target_dir', 'build_cache_env']")
-            .expect("the wave-item schema requires the driver-critical fields");
-        let items = RIGGER_WORKFLOW.find("wave: {").unwrap();
-        assert!(
-            items < required,
-            "the requirement sits on the wave items, not the top level"
-        );
-        assert!(
-            RIGGER_WORKFLOW.contains(
-                "cargo_target_dir: { type: ['string', 'null'] },\n          build_cache_env: { type: 'string' },\n"
-            ),
-            "the variable is typed a string beside the path, never null"
-        );
-    }
-
-    /// Every prompt `RIGGER_WORKFLOW` hands an agent, as the source region that builds it: a
-    /// label, the code that opens the region, the code that closes it (both read in the script
-    /// with its line comments stripped) and a sentence the prompt holds verbatim, a reworded
-    /// one where spec 121 criterion 11 rewords the prompt.
-    const WORKFLOW_PROMPT_REGIONS: [(&str, &str, &str, &str); 5] = [
-        (
-            "the repository resolver",
-            "const repoResolution = await agent(",
-            "phase: 'Drive'",
-            "Return its trimmed stdout (the absolute directory path) as structured output",
-        ),
-        (
-            "the liveness reader",
-            "const out = await agent(",
-            "schema: STATUS",
-            "You are a rigger LIVENESS READER.",
-        ),
-        (
-            "the fault courier",
-            "async function recordFaultCourier(",
-            "} catch (ce) {",
-            "You are a rigger COURIER. Record a fault for spawn",
-        ),
-        (
-            "the worker",
-            "const workdir = req.dir",
-            "const ran = agent(prompt",
-            "It is reaped once your result records - do not store anything durable there.",
-        ),
-        (
-            "the step courier",
-            "step = await agent(",
-            "schema: STEP",
-            "a step integrates ready units by running their gates inline and can take 20+ minutes \
-             when several units are ready at once;",
-        ),
-    ];
-
-    /// Spec 121 criterion 11, THE WORKFLOW SCRIPT NAMES NO TOOLCHAIN: no prompt the script hands
-    /// an agent spells a marker of the MARKERS rule, the disk-layout sentence, the courier's
-    /// cache prefix and its sentence, or "the moment"; and the only interpolations that name the
-    /// build cache are the wave item's `build_cache_env` and its path, `cargo_target_dir`.
-    #[test]
-    fn the_workflow_script_names_no_toolchain() {
-        const DROPPED: [&str; 4] = [
-            "the moment",
-            "small OS partition",
-            ".rigger/tmp/cargo-target",
-            "keep it exactly as written",
-        ];
-        let code = strip_line_comments(RIGGER_WORKFLOW);
-        let prompts = WORKFLOW_PROMPT_REGIONS
-            .iter()
-            .map(|&(label, opens, closes, holds)| {
-                let start = code
-                    .find(opens)
-                    .unwrap_or_else(|| panic!("{label} opens at {opens:?}"));
-                let end = start
-                    + code[start..]
-                        .find(closes)
-                        .unwrap_or_else(|| panic!("{label} closes at {closes:?}"));
-                (label, holds, template_prompt(&code[start..end]))
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(
-            prompts
-                .iter()
-                .map(|(label, holds, (text, _))| (
-                    *label,
-                    language_marker_hits(text),
-                    DROPPED
-                        .iter()
-                        .copied()
-                        .filter(|dropped| text.contains(dropped))
-                        .collect::<Vec<_>>(),
-                    text.contains(holds)
-                ))
-                .collect::<Vec<_>>(),
-            WORKFLOW_PROMPT_REGIONS
-                .iter()
-                .map(|&(label, ..)| (label, Vec::new(), Vec::new(), true))
-                .collect::<Vec<_>>(),
-            "each prompt holds its sentence and spells no marker and no dropped text"
-        );
-        assert_eq!(
-            prompts
-                .iter()
-                .flat_map(|(_, _, (_, interpolations))| interpolations.iter().copied())
-                .filter(|expr| expr.contains("cache") || expr.contains("target"))
-                .collect::<Vec<_>>(),
-            [
-                "req.build_cache_env",
-                "req.cargo_target_dir",
-                "req.build_cache_env"
-            ],
-            "the worker's export and its scratch sentence name the cache through the wave's \
-             variable and path alone"
-        );
     }
 
     #[test]
@@ -6736,11 +6407,11 @@ mod tests {
             ),
             (
                 "rigger-resume-a-run",
-                &["status", "run", "serve", "workflow", "step"],
+                &["status", "run", "step"],
             ),
             (
                 "rigger-handle-an-escalation",
-                &["status", "peers", "run", "serve"],
+                &["status", "peers", "run"],
             ),
         ]);
     }
@@ -6873,22 +6544,6 @@ mod tests {
                 "u-esc: escalated (awaiting a human)".to_string(),
                 "u-fail: reject-recurrence #2/6 (unknown)".to_string(),
             ]
-        );
-    }
-
-    #[test]
-    fn install_workflow_records_the_build_provenance_beside_the_workflow() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        assert!(
-            installed_workflow_provenance(root).is_none(),
-            "no recorded provenance before any install"
-        );
-        install_workflow(root).expect("a fresh install must succeed");
-        assert_eq!(
-            installed_workflow_provenance(root).as_deref(),
-            Some(BUILD_PROVENANCE),
-            "a fresh install records THIS binary's build provenance beside the workflow"
         );
     }
 
@@ -9113,13 +8768,13 @@ mod tests {
             "run: unknown flag \"--frob\""
         );
         assert_eq!(spec, None, "a refused flag takes no spec");
-        spec_positional("a.md", &mut spec, "workflow").unwrap();
+        spec_positional("a.md", &mut spec, "critique").unwrap();
         assert_eq!(spec.as_deref(), Some("a.md"));
         assert_eq!(
-            spec_positional("b.md", &mut spec, "workflow")
+            spec_positional("b.md", &mut spec, "critique")
                 .unwrap_err()
                 .to_string(),
-            "workflow: unexpected second positional argument \"b.md\""
+            "critique: unexpected second positional argument \"b.md\""
         );
         assert_eq!(spec.as_deref(), Some("a.md"), "the first spec stands");
         let (second_err, flag_err) = (
@@ -9139,9 +8794,8 @@ mod tests {
     }
 
     #[test]
-    fn parse_run_args_defaults_to_cli_and_an_unset_store() {
+    fn parse_run_args_defaults_to_an_unset_store() {
         let a = parse_run_args(&[]).unwrap();
-        assert!(a.driver == DriverKind::Cli);
         // No `--eventstore` flag leaves the store UNSET, so the resolver picks it up from the
         // configuration chain (env, then default sqlite) - a flagless `run` is not pinned to
         // sqlite at parse time, which is what lets it honor a server-configured project.
@@ -9158,7 +8812,6 @@ mod tests {
         let a = parse_run_args(&["--fresh".to_string(), "spec.md".to_string()]).unwrap();
         assert!(a.fresh, "--fresh sets the fresh-restart flag");
         assert_eq!(a.spec.as_deref(), Some("spec.md"));
-        assert!(a.driver == DriverKind::Cli, "--fresh leaves other defaults");
         assert!(
             !a.rebase_definition,
             "--rebase-definition is off unless asked"
@@ -9179,18 +8832,15 @@ mod tests {
     }
 
     #[test]
-    fn parse_run_args_reads_driver_eventstore_conn_and_spec() {
+    fn parse_run_args_reads_eventstore_conn_and_spec() {
         let args = [
             "spec.md".to_string(),
-            "--driver".to_string(),
-            "workflow".to_string(),
             "--eventstore".to_string(),
             "kurrentdb".to_string(),
             "--conn".to_string(),
             "kurrentdb://localhost:2113".to_string(),
         ];
         let a = parse_run_args(&args).unwrap();
-        assert!(a.driver == DriverKind::Workflow);
         assert!(a.store == Some(StoreKind::KurrentDb));
         assert_eq!(a.conn.as_deref(), Some("kurrentdb://localhost:2113"));
         assert_eq!(a.spec.as_deref(), Some("spec.md"));
@@ -9211,7 +8861,7 @@ mod tests {
         parse_run_args_rejects_unknown_flags_and_values: assert_every_arg_list_refused(
             parse_run_args,
             &[
-                &["--driver", "bogus"],
+                &["--driver", "workflow"],
                 &["--eventstore", "bogus"],
                 &["--nope"],
                 &["a", "b"],
@@ -9219,7 +8869,7 @@ mod tests {
         );
     }
 
-    /// `rigger run`/`rigger serve` accept `--base <ref>` (spec 18, criterion 6): it is no
+    /// `rigger run` accepts `--base <ref>` (spec 18, criterion 6): it is no
     /// longer an "unknown flag". The raw argv base is captured (None when absent, so the
     /// default resolves to `origin/main`), it composes with a positional spec in any order,
     /// and a valueless `--base` is a clear error.
@@ -9253,9 +8903,8 @@ mod tests {
     }
 
     /// [`resolve_run_base`] fixes the run-branch base precedence for a run entry:
-    /// an explicit `--base` flag wins, then the `RIGGER_BASE` environment override (how
-    /// `rigger workflow` threads its `--base` down through the shim to the served
-    /// `rigger serve`), then the load-bearing [`DEFAULT_BASE_REF`]. The bool reports
+    /// an explicit `--base` flag wins, then the `RIGGER_BASE` environment override, then the
+    /// load-bearing [`DEFAULT_BASE_REF`]. The bool reports
     /// whether the base was chosen explicitly (flag or env) vs. defaulted.
     #[test]
     fn resolve_run_base_precedence_flag_then_env_then_default() {
@@ -9264,7 +8913,7 @@ mod tests {
             resolve_run_base(Some("flag-ref"), Some("env-ref")),
             ("flag-ref".to_string(), true)
         );
-        // No flag: the RIGGER_BASE env is honored (the `rigger workflow` -> shim thread).
+        // No flag: the RIGGER_BASE env is honored.
         assert_eq!(
             resolve_run_base(None, Some("env-ref")),
             ("env-ref".to_string(), true)
@@ -10067,180 +9716,6 @@ mod tests {
         );
     }
 
-    /// `rigger setup` must provision the per-project JS driver: write the three
-    /// embedded runtime files into `.rigger/shim/` with the embedded content. (The
-    /// npm-install step is asserted separately so this test does not depend on npm.)
-    #[test]
-    fn setup_provisions_the_shim_runtime_files() {
-        let dir = tempfile::tempdir().unwrap();
-        let shim = write_shim_files(dir.path()).expect("provisioning writes the shim files");
-        assert_eq!(shim, rigger_path(dir.path(), SHIM_DIR));
-
-        for (name, embedded) in SHIM_FILES {
-            let path = shim.join(name);
-            assert!(path.exists(), "{name} must be written into .rigger/shim/");
-            let on_disk = std::fs::read_to_string(&path).unwrap();
-            assert_eq!(
-                &on_disk, embedded,
-                "{name} on disk must be byte-identical to the embedded runtime"
-            );
-        }
-
-        // The dev-only mock/test files must NOT ship - only the three runtime files.
-        let names: Vec<String> = std::fs::read_dir(&shim)
-            .unwrap()
-            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
-            .collect();
-        assert!(
-            !names
-                .iter()
-                .any(|n| n.contains("mock") || n.contains(".test.")),
-            "only runtime files ship; no mock-*/*.test.mjs. found: {names:?}"
-        );
-
-        // The embedded shim.mjs is the real driver (a sanity check it is not a stub).
-        assert!(
-            SHIM_MJS.contains("rigger") && SHIM_MJS.contains("query"),
-            "the embedded shim.mjs must be the real JS driver"
-        );
-    }
-
-    /// Spec 121's THE TASK PROMPTS CARRY NO CADENCE OR METHOD, at the shim: the peers refresh
-    /// the shim prepends to a spawn's prompt keeps its header's noun and its decision lines, byte
-    /// for byte, with its contradiction and re-check sentences cut, and the communication
-    /// built-in states each, every sentence once.
-    #[test]
-    fn the_shim_peers_refresh_keeps_its_noun_and_leaves_its_cadence_to_the_communication_built_in()
-    {
-        use crate::test_support::{
-            assert_carries_each, builtin_body, CHECK_THE_PEERS, SUPERSEDE_A_PEER,
-        };
-        assert_eq!(
-            js_declaration(SHIM_MJS, "export function renderPeers(peers) {"),
-            "export function renderPeers(peers) {
-  const decisions = (peers && peers.decisions) || []
-  if (decisions.length === 0) return ''
-  const lines = decisions.map((d) => {
-    const governs = (d.governs || []).join(', ')
-    const scope = governs ? ` [governs: ${governs}]` : ''
-    return `- ${d.id}: ${d.summary}${scope}`
-  })
-  return [
-    'PEERS CONTEXT REFRESH - concurrent agents have already decided the following',
-    'about files in your blast-radius.',
-    ...lines,
-    '',
-  ].join('\\n')
-}",
-            "the peers refresh keeps its header's noun and its lines with its cadence cut"
-        );
-        assert_carries_each(
-            "the communication built-in, which states what the peers refresh no longer does,",
-            &rigger::wave::normalize_ws(builtin_body("communication")),
-            &[CHECK_THE_PEERS, SUPERSEDE_A_PEER[0], SUPERSEDE_A_PEER[1]],
-            1,
-        );
-    }
-
-    /// Spec 121's THE PROGRESS CADENCE HAS ONE HOME, at the workflow script and the shim: the
-    /// progress note each appends to a worker's prompt names the progress verb and its arguments
-    /// only, byte for byte; when to report is the communication built-in's.
-    #[test]
-    fn each_script_progress_note_names_the_verb_and_its_arguments_only() {
-        use crate::test_support::js_concatenation;
-        let notes = [
-            (
-                "workflow script",
-                RIGGER_WORKFLOW,
-                "const progressNote =\n    \
-                 `LIVE PROGRESS: record a progress line, from ${REPO}, using Bash:\\n` +\n    \
-                 `  rigger progress '${req.id}' '<one line: what you just did>'\\n`",
-            ),
-            (
-                "shim",
-                SHIM_MJS,
-                "const progressNote =\n      \
-                 `\\n\\nLIVE PROGRESS: record a progress line by running (Bash):\\n` +\n      \
-                 `  rigger progress '${next.id}' '<one line: what you just did>'`",
-            ),
-        ];
-        for (script, src, note) in notes {
-            assert_eq!(
-                js_concatenation(src, "const progressNote ="),
-                note,
-                "the {script}'s progress note names the verb and its arguments only"
-            );
-        }
-    }
-
-    /// Criterion 4 (spec 05): `rigger setup` is re-runnable. `install_workflow` installs
-    /// the native `/rigger` workflow at `.claude/workflows/rigger.js` byte-identical to
-    /// the embedded `RIGGER_WORKFLOW`, DETECTS and REFRESHES a drifted copy (an older
-    /// `rigger` build), and is a SILENT NO-OP - not even an mtime bump - when the
-    /// installed workflow already matches. The npm-install step is exercised separately,
-    /// so this test does not depend on npm.
-    #[test]
-    fn setup_installs_refreshes_and_is_a_noop_on_the_native_rigger_workflow() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = workflow_path(dir.path());
-        assert_eq!(
-            path,
-            dir.path()
-                .join(".claude")
-                .join("workflows")
-                .join("rigger.js"),
-            "the workflow must be installed at .claude/workflows/rigger.js"
-        );
-
-        // 1. Absent -> a fresh install, written byte-identical to the embedded copy.
-        assert_eq!(
-            install_workflow(dir.path()).expect("installing writes the workflow file"),
-            InstallOutcome::Installed,
-            "the first install reports a fresh install"
-        );
-        assert_eq!(
-            std::fs::read_to_string(&path).unwrap(),
-            RIGGER_WORKFLOW,
-            "the installed workflow must be byte-identical to the embedded RIGGER_WORKFLOW"
-        );
-
-        // The embedded workflow is the real driver, not a stub: it exports `meta` and
-        // drives agents via the workflow runtime.
-        assert!(
-            RIGGER_WORKFLOW.contains("export const meta") && RIGGER_WORKFLOW.contains("agent("),
-            "the embedded workflow must be the real native /rigger workflow"
-        );
-
-        // 2. Already current -> a silent no-op that changes NOTHING, not even the file's
-        //    mtime (the grounder's staleness gate keys off mtime). Sleep past the clock's
-        //    resolution first so a stray rewrite WOULD move the mtime we assert is stable.
-        let before = std::fs::metadata(&path).unwrap().modified().unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(20));
-        assert_eq!(
-            install_workflow(dir.path()).expect("a no-op rerun must succeed"),
-            InstallOutcome::AlreadyCurrent,
-            "an up-to-date workflow must be detected as current"
-        );
-        assert_eq!(
-            std::fs::metadata(&path).unwrap().modified().unwrap(),
-            before,
-            "an up-to-date workflow must NOT be rewritten (its mtime must not move)"
-        );
-
-        // 3. Drifted (a stale copy from an older build) -> refreshed to the embedded copy.
-        std::fs::write(&path, "// stale - from an older rigger build\n").unwrap();
-        assert_eq!(
-            install_workflow(dir.path()).expect("re-install must succeed"),
-            InstallOutcome::Refreshed,
-            "a drifted workflow must be refreshed"
-        );
-        assert_eq!(
-            std::fs::read_to_string(&path).unwrap(),
-            RIGGER_WORKFLOW,
-            "refreshing must overwrite the drifted workflow with the embedded content"
-        );
-    }
-
     /// Find `name`'s outcome in an [`install_skills`] result's outcomes, panicking if the registry
     /// somehow did not install it - a test-only convenience so each assertion below reads
     /// by skill name rather than by a brittle vec index.
@@ -10265,14 +9740,12 @@ mod tests {
     }
 
     /// Spec 20, unit 3; spec 68, criterion 1: `rigger setup` installs EVERY registry
-    /// skill, each as a file DISTINCT from the `/rigger` workflow. `using-rigger` lands at
-    /// `.claude/skills/using-rigger/SKILL.md` (a loadable skill Claude Code
-    /// auto-discovers), which is not the workflow path, and it carries the rendered skill
-    /// (loadable frontmatter) PLUS the operator-binary prohibition. Install is re-runnable
-    /// exactly like the workflow: absent -> Installed, unchanged -> a silent no-op that
+    /// skill. `using-rigger` lands at `.claude/skills/using-rigger/SKILL.md` (a loadable
+    /// skill the host auto-discovers), and it carries the rendered skill (loadable
+    /// frontmatter) PLUS the operator-binary prohibition. Install is re-runnable: absent -> Installed, unchanged -> a silent no-op that
     /// does not even move the mtime, drifted -> Refreshed.
     #[test]
-    fn setup_installs_the_using_rigger_skill_distinct_from_the_workflow() {
+    fn setup_installs_the_using_rigger_skill() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         let path = skill_install_path(root, "using-rigger");
@@ -10283,11 +9756,6 @@ mod tests {
                 .join("using-rigger")
                 .join("SKILL.md"),
             "the skill installs at .claude/skills/using-rigger/SKILL.md"
-        );
-        assert_ne!(
-            path,
-            workflow_path(root),
-            "the installed skill must be a file DISTINCT from the /rigger workflow"
         );
 
         // 1. Absent -> a fresh install carrying the rendered skill (loadable frontmatter),
@@ -10882,929 +10350,6 @@ mod tests {
             "0o644 (a default umask) grants group+other read"
         );
         assert!(exposed(0o444), "0o444 is world-readable");
-    }
-
-    /// Extract the literal body of the `export const meta = { ... }` object from the
-    /// embedded workflow: from `export const meta` to the matching top-level `}`. Used to
-    /// assert the meta object stays a PURE LITERAL (the Workflow runtime extracts it
-    /// statically, so it cannot contain computed values or interpolation).
-    fn meta_object_body(src: &str) -> &str {
-        let start = src
-            .find("export const meta")
-            .expect("workflow must export const meta");
-        let open = start + src[start..].find('{').expect("meta must open a brace");
-        let mut depth = 0usize;
-        for (i, c) in src[open..].char_indices() {
-            match c {
-                '{' => depth += 1,
-                '}' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        return &src[open..=open + i];
-                    }
-                }
-                _ => {}
-            }
-        }
-        panic!("meta object literal is not brace-balanced");
-    }
-
-    /// Extract the STRING VALUE of `meta.description` from the workflow source: the
-    /// single-quoted literal that follows the `description:` key inside the meta object.
-    /// `meta.description` is the tagline the skills list and the `/workflows` header show,
-    /// so a test can assert it reads as user-facing prose free of the driver's internal
-    /// plumbing terms. The description literal is single-quoted and contains no apostrophe,
-    /// so the first `'...'` pair after the key delimits it exactly (a test-only heuristic,
-    /// not a JS parser).
-    fn meta_description(src: &str) -> &str {
-        let meta = meta_object_body(src);
-        let key = meta
-            .find("description:")
-            .expect("meta must declare a description");
-        let after = &meta[key + "description:".len()..];
-        let open = after
-            .find('\'')
-            .expect("meta.description must be a single-quoted string literal");
-        let rest = &after[open + 1..];
-        let close = rest
-            .find('\'')
-            .expect("meta.description string literal must be closed");
-        &rest[..close]
-    }
-
-    /// Strip `//` line comments from JS source so assertions about the executable code
-    /// (e.g. "the global `phase('Build')` marker is gone") are not tripped by prose that
-    /// documents the removed construct. Only whole-line comments and end-of-line comments
-    /// are stripped; this is a test-only heuristic, not a JS parser, and the workflow's
-    /// comments never contain `//` inside a string literal on the same line.
-    fn strip_line_comments(src: &str) -> String {
-        src.lines()
-            .map(|line| match line.find("//") {
-                Some(i) => &line[..i],
-                None => line,
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
-
-    /// The prompt a JS source region builds: the text of every template literal in it, joined
-    /// as `+` joins them, each escape read as the character it stands for and each `${...}`
-    /// interpolation cut out; and each interpolated expression, in the order it closes (a
-    /// nested one before the one holding it). A test-only scanner, not a JS parser: the region
-    /// holds no line comment (see [`strip_line_comments`]) and no backtick or brace inside a
-    /// quoted string.
-    fn template_prompt(js: &str) -> (String, Vec<&str>) {
-        let mut text = String::new();
-        let mut interpolations = Vec::new();
-        // Each frame is a template literal's text (`None`), or code at a brace depth that opened
-        // at a byte offset (the interpolation's start, for every frame but the outer one).
-        let mut frames: Vec<Option<(usize, usize)>> = vec![Some((0, 0))];
-        let mut chars = js.char_indices().peekable();
-        while let Some((at, c)) = chars.next() {
-            match (*frames.last().expect("the outer code frame stays"), c) {
-                (None, '\\') => match chars.next() {
-                    Some((_, 'n')) => text.push('\n'),
-                    Some((_, escaped)) => text.push(escaped),
-                    None => {}
-                },
-                (None, '`') => {
-                    frames.pop();
-                }
-                (None, '$') if chars.peek().map(|&(_, next)| next) == Some('{') => {
-                    chars.next();
-                    frames.push(Some((at + 2, 0)));
-                }
-                (None, c) => text.push(c),
-                (Some(_), '`') => frames.push(None),
-                (Some((from, depth)), '{') => {
-                    *frames.last_mut().expect("a frame is open") = Some((from, depth + 1));
-                }
-                (Some((from, 0)), '}') if frames.len() > 1 => {
-                    frames.pop();
-                    interpolations.push(&js[from..at]);
-                }
-                (Some((from, depth)), '}') => {
-                    *frames.last_mut().expect("a frame is open") =
-                        Some((from, depth.saturating_sub(1)));
-                }
-                (Some(_), _) => {}
-            }
-        }
-        (text, interpolations)
-    }
-
-    /// The native `/rigger` workflow is a THIN driver over the Rust conductor: it couriers
-    /// each frontier via `rigger step`, spawns the returned wave natively in parallel with an
-    /// `opts.phase` label built from the wave item's ROLE, lets each worker self-report via
-    /// `rigger result`, records a dead worker's failure on its behalf via `rigger result
-    /// --if-absent --error`, and loops until the step reports `done`. Because `meta` MUST be a pure literal
-    /// (statically extracted by the Workflow runtime - no computed values / no interpolation)
-    /// and unit ids are only known at runtime, the lifecycle-phase labels live in the runtime
-    /// `opts.phase` strings `phaseOf` derives from role, while `meta.phases` keeps the fixed
-    /// stage set. This test pins the thin-driver contract so a future edit cannot silently
-    /// regress it; it supersedes the fat-workflow `buildUnit`/`PH` structure this workflow
-    /// replaced.
-    #[test]
-    fn workflow_is_a_thin_courier_driver_with_per_unit_phase_labels() {
-        let wf = RIGGER_WORKFLOW;
-        // Code assertions run against comment-stripped source so the workflow's own prose
-        // (which documents the removed fat-workflow constructs) cannot trip them; the meta
-        // assertions run against the raw literal object body.
-        let code = strip_line_comments(wf);
-
-        // 1. meta.phases keeps the FIXED stage set as a pure up-front literal. (`Integrate`
-        //    was retired for `Drive` by spec 67 criterion 5 - pinned in its own dedicated
-        //    test below, not re-derived here.)
-        let meta = meta_object_body(wf);
-        for stage in ["Plan", "Build", "Review", "Drive"] {
-            assert!(
-                meta.contains(&format!("title: '{stage}'")),
-                "meta.phases must declare the fixed stage '{stage}'"
-            );
-        }
-
-        // 2. meta stays a PURE LITERAL: no interpolation / computed values anywhere in the
-        //    object body, so the runtime can statically extract it before the body runs.
-        //    Runtime per-unit ids must never leak into meta.
-        assert!(
-            !meta.contains("${"),
-            "meta must be a pure literal - no `${{...}}` interpolation or computed values \
-             (found interpolation inside the meta object body): {meta}"
-        );
-
-        // 3. The driver COURIERS the wave via `rigger step` - it does not decompose or
-        //    orchestrate the DAG itself (that lives in the conductor behind the step) - and
-        //    loops on the `{wave, done}` shape the step prints.
-        assert!(
-            code.contains("rigger step"),
-            "the thin driver must fetch each wave by having a courier run `rigger step`"
-        );
-        assert!(
-            code.contains("step.wave") && code.contains("step.done"),
-            "the driver must read the wave and loop until the step reports done"
-        );
-
-        // 4. It SPAWNS the wave natively, one agent per wave item - PIPELINED per unit (spec
-        //    89, criterion 5): each new item starts its own `runWorker` call and is tracked in
-        //    the `inFlight` set rather than every item being awaited together as one
-        //    `parallel(wave.map(...))` batch (the pre-criterion-5 shape this superseded), which
-        //    is exactly what lets a fast unit's result be couriered while a slow sibling in the
-        //    SAME wave is still running.
-        assert!(
-            code.contains("runWorker(req, fatal)") && code.contains("inFlight.set(req.id,"),
-            "the driver must spawn the wave's agents natively, one per item, tracked in the \
-             in-flight set"
-        );
-
-        // 5. Lifecycle-phase progress groups are produced at runtime from the WAVE ITEM, and
-        //    every worker is labelled with one. `phaseOf`'s own role -> {Plan,Build,Review}
-        //    mapping (spec 67, criterion 1) is pinned in its own dedicated test below, not
-        //    re-derived here.
-        assert!(
-            code.contains("function phaseOf(req)"),
-            "the driver must build each worker's opts.phase label from the wave item"
-        );
-        assert!(
-            code.contains("phase: ph"),
-            "each spawned worker must label its progress group with phaseOf's derived phase"
-        );
-        // No bare global lifecycle phase markers survive at all now (spec 67, criterion 3):
-        // Build/Review/Integrate are per-unit (inside the conductor), and Plan's own global
-        // `phase('Plan')` call - which used to pin the courier steps under a fixed
-        // "orchestration pass" group for the run's whole duration - is retired outright. A
-        // global marker for any of these would re-imply a false "all units build, then all
-        // review" (or "everything is one Plan pass") order.
-        for stage in ["Plan", "Build", "Review", "Integrate"] {
-            assert!(
-                !code.contains(&format!("phase('{stage}')")),
-                "the global phase('{stage}') marker must not exist - {stage} is per-unit or \
-                 retired now"
-            );
-            assert!(
-                !code.contains(&format!("phase: '{stage}'")),
-                "no agent may use the bare global `phase: '{stage}'` opts - that would collapse \
-                 every unit into one global progress group"
-            );
-        }
-        // No global phase(...) marker call of ANY kind survives - the couriers (which have no
-        // unit of their own) now group under the dedicated `Drive` orchestration lane instead,
-        // via the SAME per-spawn opts.phase literal mechanism every worker already uses.
-        assert!(
-            !code.contains("phase("),
-            "no global phase(...) marker call may survive anywhere in the driver - \
-             orchestration groups ride the per-spawn `phase: 'Drive'` opts literal instead"
-        );
-        assert!(
-            code.contains("phase: 'Drive'"),
-            "the step courier must group under the dedicated Drive orchestration lane"
-        );
-
-        // 6. Workers SELF-REPORT via `rigger result <id>`, and a worker that DIES without
-        //    reporting has its failure recorded on its behalf via `rigger result <id>
-        //    --if-absent --error` from the `agent()`-rejected (catch) branch.
-        assert!(
-            code.contains("rigger result ${req.id}"),
-            "each worker must be told to self-report its result via `rigger result <id>`"
-        );
-        assert!(
-            code.contains("catch") && code.contains("report-death:"),
-            "a worker that dies (its agent() rejects) must be caught and its failure couriered"
-        );
-
-        // 6a. The death courier records the failure ATOMICALLY and CONDITIONALLY via a single
-        //     `rigger result <id> --if-absent --error <why>`: the `--error` lands ONLY when the
-        //     spawn has no result yet, and an existing result (a worker that self-reported
-        //     success/approve and THEN ran to max-turns) is left untouched. It replaces the old
-        //     two-process `rigger reported <id> || rigger result <id> --error` guard, whose
-        //     read-then-write gap could clobber a self-report landing between the check and the
-        //     record (`rigger result` / `spawn::result_of` are last-write-wins), force-failing an
-        //     approved unit on replay. One atomic op closes that TOCTOU window - the primary
-        //     correctness invariant the review rejected the unguarded version for.
-        assert!(
-            code.contains("rigger result ${req.id} --if-absent --error"),
-            "the death courier must record atomically via `rigger result <id> --if-absent --error` \
-             so a self-reported result is never clobbered"
-        );
-        assert!(
-            !code.contains("rigger reported ${req.id} ||"),
-            "the death courier must no longer use the two-process `rigger reported <id> || ...` \
-             check-then-record guard (the atomic `--if-absent` record supersedes it)"
-        );
-
-        // 6b. Both courier `agent()` calls (the death-report courier AND the top-level `rigger
-        //     step` courier) are wrapped so a courier that itself dies is a clean, loud stop
-        //     rather than an uncaught rejection that aborts the driver (or, for the death
-        //     courier, an abort that also leaves the spawn unreported and hangs the run). The
-        //     death courier's own failure is captured in the shared `fatal` sink, not re-thrown.
-        assert!(
-            code.contains("fatal.push("),
-            "a death-report courier that itself fails must be captured (in `fatal`), not swallowed \
-             or allowed to abort parallel() mid-wave"
-        );
-        assert!(
-            code.contains("courier agent itself failed"),
-            "the top-level `rigger step` courier agent() must be wrapped so its own death is a \
-             clean, loud stop, not an uncaught abort of the whole driver"
-        );
-
-        // 6c. Every anomalous (non-fixpoint) exit stops LOUDLY: `stop()` throws so a hung/failed
-        //     run surfaces as a workflow failure instead of resolving as a clean completion.
-        assert!(
-            code.contains("function stop(") && code.contains("throw new Error"),
-            "anomalous exits must stop loudly via a throwing `stop()`, never a silent success return"
-        );
-
-        // 6d. A HALT (a hold's; the spawn-budget breaker's, Gap 13; a plan-critique spec-defect
-        //     stop's; or hung liveness) is a LOUD stop, never a clean completion: `rigger step`
-        //     reports a `halted` reason distinct from `done` convergence, and the driver routes a
-        //     halted step through the throwing `stop()` (so a starved run surfaces as a workflow
-        //     failure instead of the `done` fixpoint reading it as success). The STEP
-        //     schema must also ADMIT the optional `halted` field - the top level rejects unknown
-        //     properties, so a halted step's JSON would otherwise fail validation and be lost.
-        assert!(
-            code.contains("step.halted"),
-            "the driver must inspect `step.halted` and stop loudly on a halt \
-             (a halted run is never a clean completion)"
-        );
-        assert!(
-            code.contains("halted: { type: 'string' }"),
-            "the STEP schema must declare the optional `halted` field (top-level \
-             additionalProperties is false, so an undeclared `halted` would be rejected)"
-        );
-
-        // 6e. A WEDGED terminus (spec 19c, unit 1) is a LOUD stop, never a clean completion:
-        //     `rigger step` carries the set of escalated units, and the driver's `done` branch
-        //     routes a fixpoint reached with any of them through the throwing `stop()` (so a
-        //     unit that can never pass review does not masquerade as success). The STEP schema
-        //     must also ADMIT the `escalated` array - the top level rejects unknown properties,
-        //     so an undeclared `escalated` would fail validation and the wedge would be lost.
-        assert!(
-            code.contains("step.escalated"),
-            "the driver must inspect `step.escalated` and stop loudly on a fixpoint reached \
-             with an escalated unit (a wedged terminus is never a clean completion)"
-        );
-        assert!(
-            code.contains("escalated: { type: 'array', items: { type: 'string' } }"),
-            "the STEP schema must declare the `escalated` array (top-level \
-             additionalProperties is false, so an undeclared `escalated` would be rejected)"
-        );
-        // The loud-stop guarantee IS the ordering: the wedge `stop()` must run BEFORE the
-        // `done` fixpoint breaks the loop, or an escalated terminus would break as a clean
-        // completion (the exact regression a reorder would silently reintroduce). Pin it: the
-        // wedge stop's reason precedes the "run complete" break in source. Presence alone
-        // (checked above) does not guarantee the position that makes the stop reachable.
-        let wedge_stop = code
-            .find("escalated after exhausting remediation")
-            .expect("the driver must stop loudly on an escalated fixpoint, naming the units");
-        let run_complete = code
-            .find("run complete: the conductor reached a fixpoint")
-            .expect("the driver must log a clean completion at a non-wedged fixpoint");
-        assert!(
-            wedge_stop < run_complete,
-            "the escalated-fixpoint `stop()` must precede the `done` completion break, or a \
-             wedged terminus would resolve as a clean `run complete` before the wedge is checked"
-        );
-        // 6f. Spec 88, criterion 3 (ESCALATION RESUMES): the wedge stop names the operator's
-        // own remedy - `rigger resume-unit` - not just the bare fact of the wedge, so an
-        // unattended run's failure output tells the operator exactly what to run next.
-        assert!(
-            code.contains("rigger resume-unit"),
-            "the escalated-fixpoint stop reason must name `rigger resume-unit` as the \
-             operator's remedy for a wedged unit"
-        );
-
-        // 7. The workflow still parses: run `node --check` when node is on PATH (never a
-        //    silent skip - assert the clear reason when it is not available).
-        let node = std::env::var("RIGGER_NODE").unwrap_or_else(|_| "node".to_string());
-        let mut f = tempfile::NamedTempFile::new().unwrap();
-        std::io::Write::write_all(&mut f, wf.as_bytes()).unwrap();
-        match Command::new(&node).arg("--check").arg(f.path()).output() {
-            Ok(out) => assert!(
-                out.status.success(),
-                "node --check must pass on the embedded workflow:\n{}",
-                String::from_utf8_lossy(&out.stderr)
-            ),
-            Err(e) => assert!(
-                e.kind() == std::io::ErrorKind::NotFound,
-                "node --check failed for a reason other than node being absent: {e}"
-            ),
-        }
-    }
-
-    /// Spec 69, criterion 5 (this unit OWNS the wire stamp): the STEP schema must ADMIT the
-    /// `attention` array - the top level rejects unknown properties (`additionalProperties:
-    /// false`), so a step carrying a non-empty `attention` would otherwise fail validation
-    /// and the signal would be lost, exactly the `halted`/`escalated` precedent this
-    /// mirrors. This unit stamps the wire ONLY; rendering an entry as a narrator log line
-    /// is a later criterion's job, so this test asserts schema admission alone.
-    #[test]
-    fn the_step_schema_admits_the_attention_array() {
-        assert!(
-            RIGGER_WORKFLOW.contains("attention: {"),
-            "the STEP schema must declare the optional `attention` array (top-level \
-             additionalProperties is false, so an undeclared `attention` would be rejected \
-             and a flagged step's signal would be lost)"
-        );
-        assert!(
-            RIGGER_WORKFLOW.contains("kind: { type: 'string' }"),
-            "the `attention` item schema must admit `kind` (the signal name)"
-        );
-    }
-
-    /// Spec 67, criterion 1 (THIS unit OWNS phase derivation; courier placement - the Drive
-    /// lane call sites - is criterion 3's, a separate function, not this one's). `phaseOf`
-    /// must map every wave item to one of the fixed `meta.phases` groups by role, with the
-    /// two run-wide meta-stages special-cased ahead of any role read: a `plan`/`plan-critique`
-    /// item is `Plan` regardless of its OWN role (the planner spawns as an `implementer` role
-    /// and the critique gate spawns as `adversary`/`adjudicator` roles - unmapped, those would
-    /// fall into Build/Review and split the two meta-stages across three different groups,
-    /// exactly the bug this special-case prevents). Every other item is a per-criterion unit,
-    /// and the ROLE half of its deterministic spawn id (`<unit>/<role>#<attempt>`, spec 18)
-    /// decides the rest: the three review-tier roles (`lens:*`, `adversary`, `adjudicator`)
-    /// map to `Review`; `implementer` and every other role - INCLUDING one this mapping does
-    /// not recognize - map to `Build`, the fail-visible default the Design names (an unknown
-    /// role groups with ongoing work, never a dropped row).
-    #[test]
-    fn phase_of_maps_wave_items_to_the_meta_phase_by_role_and_stage() {
-        let code = strip_line_comments(RIGGER_WORKFLOW);
-        assert!(
-            code.contains("function phaseOf(req)"),
-            "the driver must define a phaseOf(req) function"
-        );
-        let decl = js_declaration(&code, "function phaseOf(req) {");
-        let body = &decl[decl.find('{').unwrap()..];
-
-        // The two run-wide meta-stages are special-cased on the UNIT, ahead of any role
-        // read, and resolve straight to Plan.
-        assert!(
-            body.contains("req.unit === 'plan'") && body.contains("req.unit === 'plan-critique'"),
-            "phaseOf must special-case the plan and plan-critique meta-stages by unit, ahead \
-             of role-based mapping: {body}"
-        );
-        let stage_check = body
-            .find("req.unit === 'plan'")
-            .expect("plan-stage check must exist");
-        let stage_line_end = body[stage_check..]
-            .find('\n')
-            .map(|n| stage_check + n)
-            .unwrap_or(body.len());
-        assert!(
-            body[stage_check..stage_line_end].contains("'Plan'"),
-            "the plan/plan-critique special case must return 'Plan' on the SAME statement as \
-             the unit check, ahead of any role-based branch: {body}"
-        );
-
-        // The three review-tier roles - lens:*, adversary, adjudicator - map to
-        // Review, named individually so a mapping that drops one of the three is caught.
-        assert!(
-            body.contains("adversary") && body.contains("adjudicator") && body.contains("lens"),
-            "phaseOf must name all three review-tier roles (lens:*, adversary, adjudicator): \
-             {body}"
-        );
-        assert!(
-            body.contains("'Review'"),
-            "phaseOf must map the review-tier roles to 'Review': {body}"
-        );
-
-        // implementer, and any role this mapping does not recognize, fall to the
-        // fail-visible Build default: the function's LAST statement is an unconditional
-        // `return 'Build'`, not one more conditional branch that could leave a role
-        // unmapped (falling off the end of the function -> undefined, a dropped row).
-        let last_stmt = body
-            .lines()
-            .rev()
-            .map(str::trim)
-            .find(|l| !l.is_empty() && *l != "}")
-            .unwrap_or("");
-        assert_eq!(
-            last_stmt, "return 'Build'",
-            "phaseOf's final, unconditional statement must be `return 'Build'` - the \
-             fail-visible default for implementer and any unrecognized role: {body}"
-        );
-    }
-
-    /// Spec 120, criterion 9: every table lookup of the driver reads a review step's token
-    /// through `bareRoleOf`, and the persona alone keeps the full token, so a later step takes
-    /// its kind's phrase and still names itself. Behaviour lives in the periphery tests that run
-    /// the extracted functions; this pins the wiring on the shipped text.
-    #[test]
-    fn the_driver_reads_every_step_token_through_its_bare_role() {
-        let code = strip_line_comments(RIGGER_WORKFLOW);
-        let cases = [
-            (
-                "function phaseOf(req) {",
-                "const role = bareRoleOf(roleOf(req))",
-            ),
-            (
-                "function workerLabel(req) {",
-                "const bare = bareRoleOf(role)",
-            ),
-            ("function workerLabel(req) {", "PERSONA_VERB[bare]"),
-            ("function workerLabel(req) {", "ROSTER_VERB[bare]"),
-            ("function workerLabel(req) {", "personaOf(role)"),
-        ];
-        for (declaration, wiring) in cases {
-            let body = js_declaration(&code, declaration);
-            assert!(
-                body.contains(wiring),
-                "{declaration} lacks {wiring}: {body}"
-            );
-        }
-    }
-
-    /// Spec 67, criterion 5 (THIS unit OWNS meta matching reality). `meta.phases` must
-    /// declare exactly the four groups a spawn can render under - `Plan`, `Build`, `Review`,
-    /// `Drive` - never the retired `Integrate` (conductor-only work: it spawns no agent of
-    /// its own, so it was never a group a WORKER rendered under; its detail folds onto
-    /// `Review` instead). And no prose anywhere in the template may still teach the
-    /// `<unit>:<stage>` per-unit construction criterion 1 retired: every spawn's `opts.phase`
-    /// group is now derived from its ROLE by `phaseOf` (Plan/Build/Review, shared across
-    /// units), never keyed on a unit+stage pair, so a leftover "per-unit progress group" /
-    /// "per-unit distinction" description would actively mislead a reader about how the
-    /// grouping actually works today.
-    #[test]
-    fn meta_matches_reality_drops_integrate_and_the_unit_stage_construction() {
-        let wf = RIGGER_WORKFLOW;
-        let meta = meta_object_body(wf);
-
-        for stage in ["Plan", "Build", "Review", "Drive"] {
-            assert!(
-                meta.contains(&format!("title: '{stage}'")),
-                "meta.phases must declare the fixed stage '{stage}': {meta}"
-            );
-        }
-        assert!(
-            !meta.contains("title: 'Integrate'"),
-            "meta.phases must drop the retired 'Integrate' phase - conductor-only work that \
-             spawns no agent, so it was never a group a worker rendered under; its detail \
-             folds onto 'Review': {meta}"
-        );
-
-        // Whitespace-normalize so a phrase wrapped across a `//` comment's line break is one
-        // contiguous, checkable string (this is prose scanning, not JS parsing).
-        let normalized = wf.split_whitespace().collect::<Vec<_>>().join(" ");
-        assert!(
-            !normalized.contains("<unit>:<stage>"),
-            "no detail line may still describe opts.phase groups as keyed on <unit>:<stage> - \
-             phaseOf (spec 67 c1) groups by ROLE-derived lifecycle phase, shared across units, \
-             not by a per-unit construction"
-        );
-        for stale in [
-            "own per-unit",
-            "per-unit progress group",
-            "per-unit distinction",
-        ] {
-            assert!(
-                !normalized.contains(stale),
-                "the template must not describe progress groups as per-unit (found {stale:?}) - \
-                 phaseOf (spec 67 c1) groups by lifecycle phase (Plan/Build/Review/Drive), \
-                 shared across units, never one group per unit"
-            );
-        }
-    }
-
-    /// Spec 69, criterion 6 ("the driver relays it" - THIS unit OWNS the relay; the wire
-    /// stamp is criterion 5's, pinned above by `the_step_schema_admits_the_attention_array`).
-    /// Each `attention` entry the wire carries must render as ONE narrator `log()` line naming
-    /// the event (`kind`), the unit, and a response - mirroring `src/watch.rs::Signal::
-    /// response`'s convention for the pull-side watchdog (decision
-    /// d-u69c6-attention-response-mapping): `escalated` and `halted` resolve to the two
-    /// existing spec-68 skills the Design's own Notes point at by name ("resume and escalation
-    /// response protocols are spec 68's skills, referenced by name"), `reject-recurrence`
-    /// to the churn skill, `budget-final-tenth` to the resume skill (a preemptive warning for
-    /// the same halt), and `stalled-frontier` and `spec-defect` each name their Design's own
-    /// literal directive instead of inventing another skill - exactly as `Signal::FrontierStall`
-    /// and `Signal::SpecDefect` do on the pull side.
-    /// This is a RENDER-ONLY relay (spec 69: "log lines only, no new stops, no retry-rule
-    /// changes"), so the function must never call `stop(`; an entry-less step must render
-    /// nothing, which iterating the wire's own array (never a second anomaly list) guarantees
-    /// structurally. The relay must fire "at the wave it arrived" - before that wave's own
-    /// agents are spawned, not after.
-    #[test]
-    fn the_driver_relays_each_attention_entry_as_a_narrator_log_line() {
-        let code = strip_line_comments(RIGGER_WORKFLOW);
-
-        // The relay is a named function, both DEFINED and actually CALLED (not merely
-        // declared and dead).
-        assert!(
-            code.contains("function relayAttention(step)"),
-            "the driver must define a relayAttention(step) function that renders the wire's \
-             attention array"
-        );
-        assert_eq!(
-            code.matches("relayAttention(step)").count(),
-            2,
-            "relayAttention(step) must appear exactly twice: its own definition signature and \
-             one call site that actually invokes it"
-        );
-
-        let decl = js_declaration(&code, "function relayAttention(step) {");
-        let body = &decl[decl.find('{').unwrap()..];
-
-        // Renders ONLY what the wire says: iterates the wire's own `attention` array (omitted
-        // entirely on a clean step - criterion 5's `skip_serializing_if`), never a second,
-        // independently-maintained anomaly list; an entry-less step's loop body never runs.
-        assert!(
-            body.contains("step.attention || []"),
-            "relayAttention must iterate step.attention (guarded with || [] against the \
-             omitted-on-a-clean-step shape), so an entry-less step renders nothing"
-        );
-
-        // Each entry names its event (kind) and detail in one log() line.
-        assert!(
-            body.contains("log(") && body.contains("a.kind") && body.contains("a.detail"),
-            "each attention entry must render as a log() line naming its kind and detail"
-        );
-
-        // The six wire kinds (ledger::ATTENTION_* minus HELD and RELEASED, the closed vocabulary
-        // criterion 5 stamps) each resolve to a response - pinned against the SAME constants the
-        // wire stamp uses, so a renamed kind breaks this test rather than silently going unmapped.
-        for (kind, response) in [
-            (ledger::ATTENTION_ESCALATED, "rigger-handle-an-escalation"),
-            (ledger::ATTENTION_SPEC_DEFECT, "amend the spec and relaunch"),
-            (ledger::ATTENTION_HALTED, "rigger-resume-a-run"),
-            (ledger::ATTENTION_REJECT_RECURRENCE, "rigger-diagnose-churn"),
-            (ledger::ATTENTION_BUDGET_FINAL_TENTH, "rigger-resume-a-run"),
-            (
-                ledger::ATTENTION_STALLED_FRONTIER,
-                "stop the driver and diagnose before another round spends",
-            ),
-        ] {
-            assert!(
-                code.contains(&format!("'{kind}': '{response}'"))
-                    || code.contains(&format!("{kind}: '{response}'")),
-                "the driver must map wire kind '{kind}' to response '{response}'"
-            );
-        }
-
-        // Render-only: never a new stop path (spec 69: "log lines only, no new stops").
-        assert!(
-            !body.contains("stop("),
-            "the attention relay must never call stop() - it is a render-only narration; the \
-             wire stamp already decided what happened"
-        );
-
-        // "At the wave it arrived": the relay call must precede the wave-spawn CALL itself
-        // (`spawnNewItems(wave)`, spec 89 criterion 5's pipelined replacement for the old
-        // `if (wave.length > 0)` conditional), not merely its inner spawn-narration text - a
-        // weaker check anchored on the log() line alone stays green even if a future edit
-        // nests the call inside that function (review u69c6 round 1, cause genuine-defect:
-        // moving the shipped, unconditional call to the block's first line left every
-        // periphery test and this test green, because the call still textually preceded the
-        // log() line while now running only when something is spawned). Anchoring on the
-        // spawn-call line itself catches that exact nesting: a step whose wave is empty - the
-        // escalated/halted/stalled-frontier "nothing left to spawn" case an unattended
-        // operator most needs the narrator line for - must still get its attention relayed.
-        let call_pos = code
-            .rfind("relayAttention(step)")
-            .expect("relayAttention(step) must be called");
-        // `rfind`, not `find`: the FIRST occurrence of "spawnNewItems(wave)" is the function's
-        // own declaration (`function spawnNewItems(wave) {`), which sits well before the loop
-        // and would wrongly anchor this check on the wrong position; the actual CALL site
-        // (inside the loop, after relayAttention) is the last occurrence.
-        let wave_conditional_pos = code
-            .rfind("spawnNewItems(wave)")
-            .expect("the driver must still spawn newly-parked wave items");
-        assert!(
-            call_pos < wave_conditional_pos,
-            "attention must be relayed for the step BEFORE the wave-spawn call \
-             (\"at the wave it arrived\"), not nested inside it - a step with an empty wave \
-             (escalated/halted/stalled-frontier) must still get its attention relayed"
-        );
-    }
-
-    /// Spec 44, criterion 1 (this unit OWNS the courier-prompt guarantee): the step
-    /// courier must run `rigger step` as ONE FOREGROUND, BLOCKING Bash call - never
-    /// `run_in_background`, never watched via a Monitor / poll loop - because a foreground
-    /// call blocks until the step prints its single JSON line, which is exactly the line to
-    /// relay. And when it must report a failure, the `error` string must be the command's
-    /// ACTUAL stderr or the fixed phrase `step did not complete within my attempts` - NEVER
-    /// an invented placeholder token. This pins the exact defect that surfaced while
-    /// dogfooding the loop: a courier that backgrounded the step, watched it with a Monitor,
-    /// and returned `{"wave":[],"done":false,"error":"PLACEHOLDER_DO_NOT_USE"}` before the
-    /// step had produced anything - a fabricated error that stopped the run after zero waves
-    /// while lying about its own state. Asserted over the EMBEDDED `RIGGER_WORKFLOW` (the
-    /// `include_str!` byte-source `rigger setup` writes and the drift check reads), the same
-    /// structural style spec 39 used for the workflow string, because the cargo gate set
-    /// runs no JS. This unit owns ONLY the courier prompt: it asserts nothing about the
-    /// driver's null-step guard (criterion 2) or the dash detachment (criterion 3).
-    #[test]
-    fn workflow_step_courier_prompt_is_foreground_and_honest() {
-        // Assert over comment-stripped source so the phrases are checked in the actual
-        // courier-prompt string literal, not the file's documentation prose.
-        let code = strip_line_comments(RIGGER_WORKFLOW);
-
-        // 1. FOREGROUND, BLOCKING: the courier runs the step as one blocking Bash call - a
-        //    foreground call blocks until the step prints its single JSON line, which is
-        //    exactly the line the courier relays.
-        assert!(
-            code.contains("FOREGROUND, BLOCKING Bash"),
-            "the step-courier prompt must instruct running `rigger step` as one FOREGROUND, \
-             BLOCKING Bash call (a foreground call blocks until the step prints its JSON line)"
-        );
-
-        // 2. NOT backgrounded, NOT polled: the exact shape the defect ran the step in (a
-        //    `run_in_background` step watched by a Monitor, returning a fabricated error
-        //    before the step produced anything) is explicitly forbidden in the prompt.
-        assert!(
-            code.contains("NOT run_in_background"),
-            "the step-courier prompt must explicitly forbid `run_in_background` (the step must \
-             block in the foreground, not run detached)"
-        );
-        assert!(
-            code.contains("NOT via a Monitor"),
-            "the step-courier prompt must explicitly forbid watching the step via a Monitor / \
-             poll loop (that path fabricated an error before the step produced its JSON)"
-        );
-
-        // 3. HONEST error: when the courier must report a failure, `error` is the ACTUAL
-        //    stderr or the one fixed no-completion phrase - never an invented placeholder.
-        assert!(
-            code.contains("step did not complete within my attempts"),
-            "the courier's `error` must be allowed to carry the fixed no-completion phrase"
-        );
-        assert!(
-            code.contains("NEVER an invented placeholder"),
-            "the step-courier prompt must forbid returning a fabricated placeholder token in \
-             `error` (the error must be real stderr or the fixed no-completion phrase)"
-        );
-
-        // 4. Regression guard on the exact fabricated token the defect returned: it must not
-        //    appear ANYWHERE in the embedded workflow (asserted on the raw source, comments
-        //    included) - a courier that returns it lies that the step failed.
-        assert!(
-            !RIGGER_WORKFLOW.contains("PLACEHOLDER_DO_NOT_USE"),
-            "the fabricated placeholder token `PLACEHOLDER_DO_NOT_USE` must never appear in the \
-             embedded workflow - a courier returning it lies that the step failed after zero waves"
-        );
-    }
-
-    /// Isolate the STEP-courier prompt (the agent that runs `rigger step` and relays the wave)
-    /// from the surrounding driver source, so a structural assertion pins the RIGHT agent's
-    /// instructions and not some other prompt that shares a word. The prompt is the template
-    /// string that opens with `Advance the run one frontier` and runs up to the `{ phase:
-    /// 'Drive'` options object that closes the `agent(...)` call (spec 67, criterion 3: the
-    /// step courier's own progress group is the dedicated Drive orchestration lane, not the
-    /// retired global `Plan` marker). Asserted over comment-stripped source so the phrases are
-    /// checked in the actual prompt literal, not the file's documentation prose.
-    fn step_courier_prompt(code: &str) -> &str {
-        let at = code
-            .find("Advance the run one frontier")
-            .expect("the driver must still define the step-courier prompt");
-        let end = code[at..]
-            .find("{ phase: 'Drive'")
-            .map(|off| at + off)
-            .expect("the step-courier prompt must close with the `{ phase: 'Drive' }` options");
-        &code[at..end]
-    }
-
-    /// Spec 51, criterion 3 (this unit OWNS the courier amendment): the step courier keeps its
-    /// foreground-blocking rule and its placeholder prohibition, and gains the ONE sanctioned
-    /// exception - if the DRIVING HARNESS (not the courier) converts the running foreground step
-    /// into a BACKGROUND task because it outran the harness's foreground cap, the courier must
-    /// NOT return a placeholder sentinel (the defect the re-park/wait work fixes): it WAITS on
-    /// that background task's OUTPUT FILE until it holds the step's single JSON line and returns
-    /// that line verbatim - polling the output file is the sanctioned wait here - or, if the JSON
-    /// still cannot be obtained, falls back to the existing re-run rule (recorded gate results let
-    /// a re-run resume past finished work). This pins the exact gap spec 51 closes: a courier
-    /// forbidden from monitors and unable to wait returned a placeholder for an auto-backgrounded
-    /// step, stopping the driver. Asserted structurally over the EMBEDDED `RIGGER_WORKFLOW` (the
-    /// `include_str!` byte-source `rigger setup` writes and the drift check reads), the same
-    /// convention spec 44's courier tests use because the cargo gate set runs no JS. This unit
-    /// owns ONLY the courier amendment: it asserts nothing about the reviewer-error re-park
-    /// (criteria 1/2) or the worktree self-heal / sweep-ordering (criteria 4/5).
-    #[test]
-    fn workflow_step_courier_waits_on_an_auto_backgrounded_step() {
-        let code = strip_line_comments(RIGGER_WORKFLOW);
-        let prompt = step_courier_prompt(&code);
-
-        // 1. The NORMAL-case foreground rule is UNCHANGED: the courier still runs the step as one
-        //    foreground, blocking Bash call (the amendment adds an exception, it does not relax
-        //    the default that a foreground call blocks until the step prints its JSON line).
-        assert!(
-            prompt.contains("FOREGROUND, BLOCKING Bash"),
-            "the amended step-courier prompt must keep the FOREGROUND, BLOCKING rule for the \
-             normal case; got:\n{prompt}"
-        );
-        assert!(
-            prompt.contains("NOT run_in_background"),
-            "the amended prompt must keep forbidding the courier from backgrounding the step \
-             itself; got:\n{prompt}"
-        );
-
-        // 2. The exception is scoped to a HARNESS-INITIATED backgrounding, not a courier choice:
-        //    the prompt states the driving harness may convert the foreground call into a
-        //    background task on its own (it outran the foreground cap), a conversion the courier
-        //    did not choose - so a courier reading this cannot use it to justify backgrounding.
-        assert!(
-            prompt.contains("harness")
-                && prompt.contains("background task")
-                && prompt.contains("did not choose"),
-            "the amendment must scope the wait to a HARNESS-initiated conversion of the foreground \
-             call into a background task (a conversion the courier did not choose), not a courier \
-             decision to background the step; got:\n{prompt}"
-        );
-
-        // 3. The SANCTIONED WAIT: on that path the courier waits on the background task's OUTPUT
-        //    FILE, polling it until it holds the step's single JSON line, and returns that line
-        //    verbatim - the exact sanctioned exception spec 51 grants (a courier otherwise
-        //    forbidden from monitors and unable to wait).
-        assert!(
-            prompt.contains("output file")
-                && prompt.contains("poll")
-                && prompt.contains("sanctioned")
-                && prompt.contains("verbatim"),
-            "the amendment must instruct the courier to WAIT by polling the auto-backgrounded \
-             step's OUTPUT FILE for the single JSON line and return it verbatim (the sanctioned \
-             wait); got:\n{prompt}"
-        );
-
-        // 4. FALL BACK to the existing re-run rule when the JSON still cannot be obtained: the
-        //    step's gate results are recorded durably, so a re-run resumes past finished work -
-        //    the amendment must route to that rule, never to a fabricated result.
-        assert!(
-            prompt.contains("re-run") && prompt.contains("resume"),
-            "if the JSON cannot be obtained from the background task's output, the amendment must \
-             fall back to re-running the step (a re-run resumes past durably recorded work), not \
-             fabricate a result; got:\n{prompt}"
-        );
-
-        // 5. The PLACEHOLDER PROHIBITION still holds ON THIS PATH: returning a sentinel or
-        //    placeholder for an auto-backgrounded step is exactly the defect spec 51 closes, so
-        //    the amended prompt must keep forbidding it (never a fabricated wave / error token).
-        assert!(
-            prompt.contains("placeholder"),
-            "the amendment must keep the placeholder prohibition on the auto-background path (a \
-             sentinel / placeholder remains forbidden); got:\n{prompt}"
-        );
-        assert!(
-            !RIGGER_WORKFLOW.contains("PLACEHOLDER_DO_NOT_USE"),
-            "the fabricated placeholder token must never appear in the embedded workflow"
-        );
-    }
-
-    /// Spec 44, criterion 2 (this unit OWNS the driver null-step guard): the driver must GUARD
-    /// a null step BEFORE it dereferences `step.error`. `agent()` can RESOLVE to null - rather
-    /// than reject - when the courier agent dies on a TERMINAL error (an expired login, an
-    /// exhausted API quota): it produces no structured output, so the await yields null instead
-    /// of throwing and the surrounding try/catch never fires. Dereferencing `step.error` on that
-    /// null step crashes the driver uncaught - the exact defect that surfaced while dogfooding
-    /// the loop (an uncaught crash instead of a clean, resumable stop). The guard turns it into a
-    /// clean, loud, RESUMABLE stop that names the likely cause. This unit owns ONLY the null-step
-    /// guard: it asserts nothing about the courier prompt (criterion 1) or the dash detachment
-    /// (criterion 3). Asserted structurally over the EMBEDDED `RIGGER_WORKFLOW` (the
-    /// `include_str!` byte-source `rigger setup` writes and the drift check reads), the same
-    /// style spec 39 used for the workflow string, because the cargo gate set runs no JS.
-    #[test]
-    fn workflow_driver_guards_a_null_step_before_dereferencing_it() {
-        // Assert over comment-stripped source so the guard is checked in the actual driver code
-        // and its stop-message string literal, not the file's documentation prose.
-        assert_driver_guards_a_null_step(
-            &strip_line_comments(RIGGER_WORKFLOW),
-            "step.error",
-            "the embedded driver",
-        );
-    }
-
-    /// Spec 19a Unit 3 (done-when item 3): the static `meta.description` is the tagline
-    /// the skills list and the `/workflows` header both show, so it must read as a
-    /// jargon-free, user-useful line - what the workflow does and when to reach for it -
-    /// NOT the driver's internal plumbing. The architecture explanation lives in the
-    /// file's header comment; the tagline must leak NONE of the plumbing terms the old
-    /// description carried ("driven THINLY", "courier", "SpawnResult"). Asserted over the
-    /// EMBEDDED `RIGGER_WORKFLOW` (the `include_str!` byte-source the drift check and the
-    /// thin-driver contract test also read), because the cargo gate set runs no JS. This
-    /// unit owns ONLY the `meta.description` scrub; the `SpawnRequest.title` live-render
-    /// is a separate unit's concern, so this test asserts nothing about it.
-    #[test]
-    fn workflow_meta_description_is_a_user_facing_tagline_free_of_plumbing_terms() {
-        let desc = meta_description(RIGGER_WORKFLOW);
-
-        // 1. None of the internal plumbing terms leak into the user-facing tagline. Each
-        //    names the driver's mechanism (the thin courier over the conductor, the
-        //    SpawnResult wire) rather than the user's outcome; that prose belongs in the
-        //    file's header comment, not the skills-list / `/workflows` tagline.
-        for term in ["driven THINLY", "courier", "SpawnResult"] {
-            assert!(
-                !desc.contains(term),
-                "meta.description is the user-facing tagline; it must not leak the internal \
-                 plumbing term {term:?} (that prose belongs in the file's header comment): \
-                 {desc:?}"
-            );
-        }
-
-        // 2. meta stays a PURE static literal (the Workflow runtime extracts it before the
-        //    body runs), so the tagline carries no interpolation / computed values.
-        assert!(
-            !desc.contains("${"),
-            "meta.description must be a pure static literal - no `${{...}}` interpolation: \
-             {desc:?}"
-        );
-
-        // 3. It reads as a CONCISE tagline, not the multi-clause plumbing paragraph the old
-        //    description was (~900+ chars). A one-line tagline fits a sane length bound.
-        assert!(
-            desc.len() < 350,
-            "meta.description must read as a concise one-line tagline, not a plumbing \
-             paragraph ({} chars): {desc:?}",
-            desc.len()
-        );
-
-        // 4. It is USER-USEFUL: it names what the workflow acts on (a spec, so a user knows
-        //    when to reach for it) AND what it DOES for them (build / implement / deliver /
-        //    turn a spec into code), not only how the driver is wired internally.
-        let lc = desc.to_lowercase();
-        assert!(
-            lc.contains("spec"),
-            "the tagline must name what the workflow acts on (a spec) so a user knows when \
-             to reach for it: {desc:?}"
-        );
-        assert!(
-            [
-                "build",
-                "implement",
-                "deliver",
-                "turn",
-                "ship",
-                "write",
-                "make"
-            ]
-            .iter()
-            .any(|verb| lc.contains(verb)),
-            "the tagline must say what the workflow DOES for the user (build / implement / \
-             deliver / turn a spec into working code), not only how it is wired: {desc:?}"
-        );
-    }
-
-    /// `rigger workflow` runs the PROVISIONED per-project shim when `.rigger/shim/`
-    /// exists, and otherwise reports a clear "run `rigger setup`" error rather than
-    /// failing obscurely.
-    #[test]
-    fn workflow_locates_the_provisioned_shim_or_tells_you_to_run_setup() {
-        // Guard the RIGGER_SHIM override does not leak in from the environment.
-        let prior = std::env::var("RIGGER_SHIM").ok();
-        std::env::remove_var("RIGGER_SHIM");
-
-        let dir = tempfile::tempdir().unwrap();
-        // Absent: a clear, actionable error naming `rigger setup`.
-        let err = locate_shim(dir.path()).expect_err("an unprovisioned project must error");
-        assert!(
-            err.to_string().contains("rigger setup"),
-            "the unprovisioned error must tell the user to run `rigger setup`; got: {err}"
-        );
-
-        // After provisioning the files, locate_shim finds the per-project shim.mjs.
-        let shim = write_shim_files(dir.path()).unwrap();
-        let found = locate_shim(dir.path()).expect("a provisioned shim must be located");
-        assert_eq!(
-            Path::new(&found),
-            shim.join("shim.mjs"),
-            "locate_shim must return the provisioned .rigger/shim/shim.mjs"
-        );
-
-        if let Some(v) = prior {
-            std::env::set_var("RIGGER_SHIM", v);
-        }
     }
 
     use rigger::metrics::{GateCounts, SpawnTiming};

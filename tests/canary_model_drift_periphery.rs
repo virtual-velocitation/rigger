@@ -3,9 +3,8 @@
 //! coverage leaves untested: the CONSUMER side.
 //!
 //! `meta_str(META_RESOLVED_MODEL)` (src/spawn.rs) and its `rigger result --meta` -> `conductor.rs`
-//! ->persisted-green-event write path are already proven at two real seams (the CLI/replay
-//! driver in `tests/cli.rs` and the workflow driver in
-//! `tests/workflow_driver_resolved_model_periphery.rs`): a spawn with no metadata omits the
+//! ->persisted-green-event write path are already proven at the CLI/replay driver's seam in
+//! `tests/cli.rs`: a spawn with no metadata omits the
 //! resolved-model key, and a prose claim in the agent's own output never reaches it. Neither
 //! test drives what READS that key back: `metrics::model_drift`, the ONE fold both `rigger
 //! validate`'s drift advisory and `rigger canary --if-model-changed`'s gate share (spec 61

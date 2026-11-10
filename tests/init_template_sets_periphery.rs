@@ -69,7 +69,7 @@ fn init(root: &Path) -> String {
 
 /// `rigger setup` in `root`, with the npm step stubbed, returning its stdout.
 fn setup(root: &Path) -> String {
-    setup_ok(root, &[("RIGGER_NPM", "true")])
+    setup_ok(root, &[])
 }
 
 /// The two unit stages' agents, `[implement, checkin]`.
@@ -263,7 +263,7 @@ fn init_keeps_an_existing_workflow_and_still_writes_the_rust_sets_files() {
 #[test]
 fn setup_beside_a_root_cargo_toml_scaffolds_from_the_rust_set() {
     let dir = cargo_project();
-    let out = setup_ok(dir.path(), &[("RIGGER_NPM", "true")]);
+    let out = setup_ok(dir.path(), &[]);
     let mut expected = vec![RUST_WORKFLOW_LINE];
     expected.extend(RUST_SET_FILE_LINES);
     assert_eq!(set_lines(&out), expected, "stdout:\n{out}");
@@ -304,7 +304,7 @@ fn init_with_a_cargo_toml_only_below_the_root_matches_no_set() {
 #[test]
 fn setup_matching_no_set_prints_the_no_set_line_and_writes_a_gateless_workflow() {
     let dir = temp_project();
-    let out = setup_ok(dir.path(), &[("RIGGER_NPM", "true")]);
+    let out = setup_ok(dir.path(), &[]);
     assert_no_set_scaffold(dir.path(), &out);
 }
 

@@ -168,12 +168,12 @@ fn recording(
 /// `rigger setup` in `cwd`: (stdout, stderr, success).
 #[cfg(feature = "symbols")]
 fn setup(cwd: &Path) -> (String, String, bool) {
-    run_rigger_envs(cwd, &["setup"], &[("RIGGER_NPM", "true")])
+    run_rigger_envs(cwd, &["setup"], &[])
 }
 
 /// `rigger setup` in `cwd`, which must succeed: the lines it prints about its rebuild.
 fn setup_rebuild_lines(cwd: &Path) -> Vec<String> {
-    rebuild_lines(&setup_ok(cwd, &[("RIGGER_NPM", "true")]))
+    rebuild_lines(&setup_ok(cwd, &[]))
 }
 
 /// Give the directory `cwd` an event log, and let `rigger setup` settle its scaffold, its identity
@@ -1412,7 +1412,7 @@ fn a_rebuild_passes_a_re_extracted_batch_the_fold_rejects_over_as_a_fold_failure
 fn git_invocations_of_setup(cwd: &Path) -> Vec<String> {
     let work = tempfile::tempdir().unwrap();
     let path = common::repo::stub_path(work.path(), "git", Some("git-recording.sh"));
-    setup_ok(cwd, &[("RIGGER_NPM", "true"), ("PATH", path.as_str())]);
+    setup_ok(cwd, &[("PATH", path.as_str())]);
     std::fs::read_to_string(work.path().join("bin").join("git-invocations"))
         .expect("the recording git was reached")
         .lines()
@@ -2104,7 +2104,7 @@ fn the_rebuild_reports_the_identities_behind_their_latest_recording_whose_file_t
     let root = dir.path();
     let (project, positions) = report_fixture(root);
 
-    let out = setup_ok(root, &[("RIGGER_NPM", "true")]);
+    let out = setup_ok(root, &[]);
     assert_eq!(report_lines(&out), vec![report_fixture_line()]);
     assert_eq!(
         out.lines().skip_while(|line| *line != REBUILT_LINE).nth(2),
@@ -2121,7 +2121,7 @@ fn the_rebuild_reports_the_identities_behind_their_latest_recording_whose_file_t
         "the number is read from the rebuilt graph these generations stand in"
     );
 
-    let out = setup_ok(root, &[("RIGGER_NPM", "true")]);
+    let out = setup_ok(root, &[]);
     assert_eq!(
         (report_lines(&out), out.lines().any(|l| l == REBUILT_LINE)),
         (Vec::<&str>::new(), false),
@@ -2174,7 +2174,7 @@ fn a_rebuild_interrupted_and_resumed_reports_the_number_a_single_pass_does() {
         "the stopped rebuild committed three entries to its shadow and left graph.db untouched"
     );
 
-    let out = setup_ok(root, &[("RIGGER_NPM", "true")]);
+    let out = setup_ok(root, &[]);
     assert_eq!(
         (
             report_lines(&out),
@@ -2208,7 +2208,7 @@ fn a_rebuild_with_no_identity_to_record_again_reports_a_zero_without_the_note() 
     record(root, &recordings);
     stand_graph(root, &project);
 
-    let out = setup_ok(root, &[("RIGGER_NPM", "true")]);
+    let out = setup_ok(root, &[]);
     assert_eq!(report_lines(&out), vec![report_line(0)]);
     assert_eq!(
         recorded_generations(root, &project, &recordings),
@@ -2306,7 +2306,7 @@ fn the_report_reads_the_tree_from_the_top_level_of_a_store_in_a_repository_subdi
         "the working directory holds the third identity's file and not the first's"
     );
 
-    let out = setup_ok(&sub, &[("RIGGER_NPM", "true")]);
+    let out = setup_ok(&sub, &[]);
     assert_eq!(report_lines(&out), vec![report_line(2)]);
 }
 
@@ -2459,7 +2459,7 @@ fn a_rebuild_with_one_identity_to_record_again_reports_a_one_with_the_note() {
     record(root, &recordings);
     stand_graph(root, &project);
 
-    let out = setup_ok(root, &[("RIGGER_NPM", "true")]);
+    let out = setup_ok(root, &[]);
     assert_eq!(report_lines(&out), vec![report_line(1)]);
     assert_eq!(
         recorded_generations(root, &project, &recordings),
@@ -2532,7 +2532,7 @@ fn the_report_asks_git_for_the_root_only_once_an_identity_is_behind_its_recordin
         .into_iter()
         .map(|rows| {
             let (dir, project) = owing_rows(rows);
-            let out = setup_ok(dir.path(), &[("RIGGER_NPM", "true")]);
+            let out = setup_ok(dir.path(), &[]);
             (
                 report_lines(&out).into_iter().map(str::to_string).collect(),
                 generations(dir.path(), &project, &["gc/src/lib.rs"]),
@@ -2710,7 +2710,7 @@ fn an_identity_the_graph_holds_at_its_latest_recording_is_not_counted_though_its
     );
     stand_graph(root, &project);
 
-    let out = setup_ok(root, &[("RIGGER_NPM", "true")]);
+    let out = setup_ok(root, &[]);
     assert_eq!(report_lines(&out), vec![report_line(1)]);
     assert_eq!(
         generations(root, &project, &["gc/src/lib.rs", "gc/src/checks.rs"]),

@@ -80,7 +80,7 @@ vm.runInContext(SHIM + "\n" + pageScript + "\n" + DRIVER, sandbox, { filename: "
 /// STRUCTURAL: the served page wires the LAYERED call-DAG path (`opts.layout`) with the BARE 4-arg
 /// `forceLayout` signature - no radius/label accessors - so that path never density-scales. This is the
 /// complement of the density proof's assertion that the FORCE path is fed the 6-arg accessor call; both
-/// together pin the c2 wiring: force scales, layered does not. Runs in the shim-only lane (no node).
+/// together pin the c2 wiring: force scales, layered does not. Needs no `node` runtime.
 #[test]
 fn the_served_page_wires_the_layered_path_without_the_density_accessors() {
     let page = dash::live_page();

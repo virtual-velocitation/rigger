@@ -2250,9 +2250,8 @@ pub fn write_spec_project(
 const REJECTED_GROUNDER: &str = "no-such-grounder";
 
 /// `workflow`, whose grounder is `nop`, with a grounder the binary rejects instead: a run entry
-/// (`rigger step`, `rigger run` on either driver, `rigger serve`) that gets past its run start -
-/// its run minted or adopted - then stops selecting the grounder, before it drives an agent or
-/// serves stdin, so a run start that should have refused fails its test instead of hanging it.
+/// (`rigger step`, `rigger run`) that gets past its run start - its run minted or adopted - then
+/// stops selecting the grounder, before it drives an agent, so a run start that should have refused fails its test instead of hanging it.
 pub fn stopping_at_the_grounder(workflow: &str) -> String {
     let stopping = workflow.replace("grounder: nop", &format!("grounder: {REJECTED_GROUNDER}"));
     assert_ne!(

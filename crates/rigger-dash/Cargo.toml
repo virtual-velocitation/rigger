@@ -37,7 +37,6 @@ core = [
     "rigger-grounder/core",
     "rigger-conductor/core",
     "rigger-console/core",
-    "rigger-config-files/core",
 ]
 
 [dependencies]
@@ -54,9 +53,6 @@ serde_json = "1"
 
 [dev-dependencies]
 tempfile = "3"
-# The MCP server's tests build agent definitions from the loaded config. `core` above forwards to
-# it, so this crate's core-lane tests build it in the same lane as every other dependency.
-rigger-config-files = { path = "../rigger-config-files", default-features = false }
 serial_test = "3"
 
 [lints]

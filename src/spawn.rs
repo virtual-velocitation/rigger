@@ -18,9 +18,5 @@
 //! breaker counts those same DISTINCT requests (via [`recorded`], deduped by id - a
 //! re-parked id is never double-counted) - so both derive from the log rather than
 //! process memory, and the breaker binds across every step process the run spans.
-//!
-//! This is DISTINCT from `driver::workflow::SpawnRequest`, the in-process MCP
-//! driver's wire type: that path (the shim) keeps working unchanged, while this
-//! vocabulary is what the stepwise `rigger step` / `rigger result` surface persists.
 
 pub use rigger_domain::spawn::*;
