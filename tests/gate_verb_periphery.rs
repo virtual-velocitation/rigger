@@ -19,7 +19,7 @@ use common::cli::{
     write_workflow,
 };
 use common::fixtures::{git_ok, git_out};
-use rigger::eventstore::{Direction, Event, EventStore};
+use rigger::eventstore::{Direction, Event};
 use rigger::run::STREAM;
 
 /// The workflow block declaring the one gate `g`, under no build budget, so the verb's run takes

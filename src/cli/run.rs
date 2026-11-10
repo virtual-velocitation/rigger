@@ -326,7 +326,7 @@ pub(crate) fn running_executable() -> String {
 /// `rigger run`/`workflow`/`step` refuse up front with the SAME deterministic fix message
 /// `rigger validate` gives. The check itself has ONE authority - `config::lint_gating_verdict_lines`
 /// (spec 18, unit 1) - reused here, never re-derived; this seam only wires it onto the run path.
-fn load_run_config(dir: &str) -> Result<config::Config, Box<dyn std::error::Error>> {
+pub(crate) fn load_run_config(dir: &str) -> Result<config::Config, Box<dyn std::error::Error>> {
     let cfg = config_store::load(dir)?;
     config::lint_gating_verdict_lines(&cfg)?;
     Ok(cfg)

@@ -59,6 +59,7 @@ const SUBCOMMANDS: &[&str] = &[
     "reindex",
     "symbols-index",
     "emit",
+    "gate",
     "progress",
     "result",
     "peers",
@@ -160,6 +161,7 @@ fn main() {
         "reindex" => cmd_reindex(&args[2..]),
         "symbols-index" => cmd_symbols_index(&args[2..]),
         "emit" => cmd_emit(&args[2..]),
+        "gate" => cmd_gate(&args[2..]),
         "progress" => cmd_progress(&args[2..]),
         "result" => cmd_result(&args[2..]),
         "peers" => cmd_peers(&args[2..]),
@@ -310,6 +312,10 @@ rigger symbols-index [dir]  build + persist the structural symbol index over [di
 process determinism harness for the symbols grounder (spec 15)\n  \
 rigger emit <type> <json>   append {{type, data:<json>}} to the event store and fold\n                              \
 it into the context graph (the CLI form of rigger_emit)\n  \
+rigger gate <id>            run declared gate <id> on this checkout's committed tree\n                              \
+through the driver's gate path and record its verdict; the\n                              \
+driver reuses a green one for that commit instead of\n                              \
+running the gate again. Refuses uncommitted changes\n  \
 rigger progress <id> <act>  record one live progress line for spawn <id> to the\n                              \
 separate .rigger/progress.db (never the run stream), so an\n                              \
 observer can see what a working agent is doing between\n                              \
