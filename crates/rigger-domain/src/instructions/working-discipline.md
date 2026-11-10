@@ -35,13 +35,15 @@ turn is not over - use the alternative.
 ## Hand over a tree the gates only confirm
 
 When you author a change, you report only once the tree you hand over meets every rule below.
-Each rule is an outcome and the check that proves it; run each check yourself, in your
-worktree, before you report; the checks owe no record. Your persona names this project's
+Each rule is an outcome and the check that proves it; run the checks your change needs
+yourself, in your worktree, before you report; the checks owe no record. Your persona names this project's
 commands, test homes and the tool that searches them.
 
-- **The gates confirm, never discover.** Every gate the stage names is green on your committed
-  tree before you report. Check: run the gate commands your persona lists, as the workflow
-  spells them, each run to completion inside your turn, and read each exit status.
+- **The gates confirm, never discover.** The stage's gates run the full battery on your
+  committed tree and are the authority: you run only the checks your change needs, so you do
+  not run the whole suite, the other lanes or the gates' own checks by hand, and a gate failure
+  comes back as the next round's finding. Check: run the checks your change needs, as your
+  persona lists them, each run to completion inside your turn, and read each exit status.
 - **Generated files are committed with their inputs.** A file a tool generates from the tree is
   regenerated and committed in the same commit that changed its inputs. Check: `git status
   --porcelain` is empty at head.

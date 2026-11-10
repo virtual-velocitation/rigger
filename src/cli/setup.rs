@@ -3006,8 +3006,10 @@ mod tests {
                 "---\nid: rust-engineer\nmodel: opus\ntools: [Read, Edit, Write, Grep, Glob, Bash, \
                  Agent]\nisolation: worktree\nrecurse: true\n---\nYou implement ONE \
                  fully-specified unit inside your worktree, in idiomatic Rust.\nWrite the failing \
-                 test first, confirm RED, implement minimally, confirm GREEN, run\nthe named gates, \
-                 commit. Report the final line as JSON: {\"id\",\"pass\",\"evidence\"}.\n",
+                 test first, confirm RED, implement minimally, confirm GREEN, run the\nchecks your \
+                 change needs (cargo fmt --all --check, cargo clippy, the tests you touched), \
+                 commit.\nThe workflow's gates run the full battery on the commit. Report the \
+                 final line as JSON:\n{\"id\",\"pass\",\"evidence\"}.\n",
             );
         /// With no set matched, the language-neutral `implementer`: the base seed's text with
         /// its language cut.
@@ -4760,17 +4762,14 @@ mod tests {
 
     /// The two author roles carry this project's anchors for the built-in hand-over rules as one
     /// block, byte-identical in both and in no other persona: the implement gate set by name, the
-    /// commands the author runs before it reports (clippy on both lanes, the boundary audit, the
-    /// content gates, red-before-green and, when the production hunks touch `src/` or `crates/`,
-    /// the whole root suite, `cargo test --tests`, run once on the default lane, the
-    /// lane-no-default gate running it on the final tree), the root test filter by module on
-    /// `all` or by executable name, the declaration of a new test file and how a suite reaches
-    /// the shared helpers, the re-run after a later commit or an amend (a comment, doc-comment
-    /// or Markdown diff re-runs fmt, the default-lane clippy line and `cargo test --tests`; any
-    /// other hunk the full list), the whole suite left to the gates, the test homes with the
-    /// tool that searches them, the counted check - the roots a retired spelling is counted over
-    /// with the command that counts it - and the foreground wait for the long runs (the test
-    /// binaries on both lanes and a lane script), polled to its exit line when the host
+    /// statement that the workflow's gates run the full battery and are the authority (a gate
+    /// failure is the next round's finding), the only commands the author runs before it reports
+    /// (fmt, default-lane clippy and the tests it added or changed - the no-default lane only for
+    /// feature-gated code), the root test filter by module on `all` or by executable name, the
+    /// declaration of a new test file and how a suite reaches the shared helpers, the test homes
+    /// with the tool that searches them, the counted check - the roots a retired spelling is counted over
+    /// with the command that counts it - and the foreground wait for the long runs (the
+    /// touched tests and a lane script), polled to its exit line when the host
     /// backgrounds one. The block owes no record: no sentence walk and its generators, no
     /// one-home line, no rule-spelling search, no hand-applied mutation and no per-statement
     /// test-shape record.
@@ -4798,29 +4797,22 @@ mod tests {
         for wanted in [
             "fmt, clippy, build, test, lane-no-default, lane-core, style, no-os-kill, boundary \
              and red-before-green",
+            "The workflow's gates run that full battery on your committed result and are the \
+             authority: you do not run the whole suite, the other lanes, the boundary suite, the \
+             content gates or red-before-green by hand, and a gate failure comes back as the \
+             next round's finding.",
+            "these and nothing else",
             "`cargo fmt --all --check`",
             "`cargo clippy --workspace --all-targets -- -D warnings`",
-            "`cargo clippy --workspace --all-targets --no-default-features -- -D warnings`",
-            "`cargo test --test boundary_audit`",
-            "`sh .rigger/gates/content.sh style`",
-            "`sh .rigger/gates/content.sh no-os-kill`",
-            "`sh .rigger/gates/red-before-green.sh`",
-            "every test binary your change touched, on both lanes",
-            "`cargo test --test all <file>::` when the file is a module of the consolidated \
-             `all` executable, `cargo test --test <file>` when `Cargo.toml` lists it as its own \
-             `[[test]]` executable",
+            "the tests you added or changed, on the default lane: `cargo test --test all \
+             <module>::` for a module of the consolidated `all` executable, `cargo test --test \
+             <file>` for a suite `Cargo.toml` lists as its own `[[test]]` executable",
+            "and the same with `--no-default-features` only when your change touches \
+             feature-gated code",
             "A new test file is declared in `tests/all.rs` (or, when it must own its process, as a \
              `[[test]]` entry), and a test enforces it",
             "A suite that is a module of `all` reaches the shared helpers with \
              `use crate::common;`, a suite with its own `[[test]]` entry declares `mod common;`",
-            "when your production hunks touch `src/` or `crates/`, `cargo test --tests` on the \
-             default lane alone",
-            "Once these checks have run, a later commit or an amend re-runs only what its new \
-             diff can change: a diff that touches only comments, doc comments or Markdown \
-             re-runs `cargo fmt --all --check`, the default-lane clippy line and `cargo test \
-             --tests`; any other hunk re-runs the full list.",
-            "The whole workspace suite on both lanes is the test and lane-no-default gates' run, \
-             not yours",
             "`tests/common/fixtures/<area>.rs`",
             "`tests/common/cli.rs` (root tests only)",
             "search all three with Read, awk or python3",
@@ -4840,10 +4832,22 @@ mod tests {
         }
         assert_eq!(
             block.matches("--no-default-features").count(),
-            2,
-            "the no-default lane runs only the clippy line and the touched binaries; the \
-             whole root suite runs once, on the default lane"
+            1,
+            "the no-default lane runs only the touched tests, and only for feature-gated code"
         );
+        for gate_run in [
+            "cargo test --test boundary_audit",
+            "content.sh style",
+            "content.sh no-os-kill",
+            "red-before-green.sh",
+            "cargo test --tests",
+            "--no-default-features -- -D warnings",
+        ] {
+            assert!(
+                !block.contains(gate_run),
+                "the gates run {gate_run:?}; the hand-over block does not ask the author to"
+            );
+        }
         assert!(
             !block.contains("t='<phrase>'"),
             "the rule search runs a term pair, never one phrase as its one argument"

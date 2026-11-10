@@ -672,10 +672,12 @@ mod tests {
         );
         let words = body.split_whitespace().collect::<Vec<_>>().join(" ");
         for phrase in [
-            "run each check yourself, in your worktree, before you report; the checks owe no \
-             record.",
+            "run the checks your change needs yourself, in your worktree, before you report; the \
+             checks owe no record.",
             "The gates confirm, never discover.",
-            "Every gate the stage names is green on your committed tree before you report.",
+            "The stage's gates run the full battery on your committed tree and are the \
+             authority: you run only the checks your change needs",
+            "a gate failure comes back as the next round's finding",
             "regenerated and committed in the same commit that changed its inputs",
             "`git status --porcelain` is empty at head",
             "Tests are table-driven, and a test-side shape you add exists once.",

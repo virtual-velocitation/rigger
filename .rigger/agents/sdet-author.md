@@ -83,39 +83,28 @@ never rests on your judgment alone.
 
 This project's anchors for the built-in hand-over rules. The implement stage's gates
 (`.rigger/workflow.yml`) are fmt, clippy, build, test, lane-no-default, lane-core, style,
-no-os-kill, boundary and red-before-green. Before you report, run from the worktree root, on
-your committed tree:
+no-os-kill, boundary and red-before-green. The workflow's gates run that full battery on your
+committed result and are the authority: you do not run the whole suite, the other lanes, the
+boundary suite, the content gates or red-before-green by hand, and a gate failure comes back
+as the next round's finding. Before you report, run from the worktree root, on your committed
+tree, these and nothing else:
 
 - `cargo fmt --all --check`;
-- `cargo clippy --workspace --all-targets -- -D warnings` and
-  `cargo clippy --workspace --all-targets --no-default-features -- -D warnings`, the clippy
-  line of the lane-no-default gate: a helper only one lane calls is dead code on the other;
-- `cargo test --test boundary_audit`, `sh .rigger/gates/content.sh style`,
-  `sh .rigger/gates/content.sh no-os-kill` and `sh .rigger/gates/red-before-green.sh`;
-- every test binary your change touched, on both lanes: `cargo test -p <crate> --lib`, or for
-  a root test `cargo test --test all <file>::` when the file is a module of the consolidated
-  `all` executable, `cargo test --test <file>` when `Cargo.toml` lists it as its own `[[test]]`
-  executable; then the same with `--no-default-features`. A new test file is declared in
-  `tests/all.rs` (or, when it must own its process, as a `[[test]]` entry), and a test enforces it.
-  A suite that is a module of `all` reaches the shared helpers with `use crate::common;`, a suite
-  with its own `[[test]]` entry declares `mod common;`;
-- when your production hunks touch `src/` or `crates/`, `cargo test --tests` on the default
-  lane alone, since a text pin in a root test goes red when a hunk moves the text it reads
-  and the lane-no-default gate runs the suite on the final tree.
+- `cargo clippy --workspace --all-targets -- -D warnings`;
+- the tests you added or changed, on the default lane: `cargo test --test all <module>::` for
+  a module of the consolidated `all` executable, `cargo test --test <file>` for a suite
+  `Cargo.toml` lists as its own `[[test]]` executable, `cargo test -p <crate> --lib` for a
+  crate's own tests; and the same with `--no-default-features` only when your change touches
+  feature-gated code.
 
-Once these checks have run, a later commit or an amend re-runs only what its new diff can
-change: a diff that touches only comments, doc comments or Markdown re-runs
-`cargo fmt --all --check`, the default-lane clippy line and `cargo test --tests`; any
-other hunk re-runs the full list.
+A new test file is declared in `tests/all.rs` (or, when it must own its process, as a
+`[[test]]` entry), and a test enforces it. A suite that is a module of `all` reaches the shared
+helpers with `use crate::common;`, a suite with its own `[[test]]` entry declares `mod common;`.
 
-Each run above, the test binaries on both lanes and any `sh .rigger/gates/lanes.sh <lane>` run
-a unit asks of you included, takes minutes here: run it in the foreground with the Bash timeout
-raised to fit, and when one outlives that timeout and moves to the background, poll its output
-in an `until`-loop until its exit line is there, before you report.
-
-The whole workspace suite on both lanes is the test and lane-no-default gates' run, not yours:
-a gate's verdict is replayed only from its own recorded run, so a shell run of the suite saves
-the gate nothing.
+Each run above, and any `sh .rigger/gates/lanes.sh <lane>` run a unit asks of you, takes minutes
+here: run it in the foreground with the Bash timeout raised to fit, and when one outlives that
+timeout and moves to the background, poll its output in an `until`-loop until its exit line is
+there, before you report.
 
 The test homes: a crate's own `mod tests` and its contract module under `crates/*/src/`; the
 shared fixtures, `tests/common/fixtures/<area>.rs` (a crate mounts each one it needs with
