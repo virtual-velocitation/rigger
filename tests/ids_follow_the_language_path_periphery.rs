@@ -11,7 +11,7 @@
 //!    definitions carried `path` is never served, so the ingest's payloads come from a rebuild over
 //!    the tree, while the same index carrying `path` is served as persisted.
 
-#[allow(unused_imports)] // used only by the symbols-gated tests
+#[cfg(feature = "symbols")]
 use crate::common;
 #[cfg(feature = "symbols")]
 use crate::symbol_index;

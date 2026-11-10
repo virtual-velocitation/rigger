@@ -9,7 +9,7 @@
 //!  - the persisted symbol index: the variant names `Static`, `Variant` and `Field`, which the
 //!    three kinds a Rust data definition takes are written under and read back from.
 
-#[allow(unused_imports)] // used only by the symbols-gated tests
+#[cfg(feature = "symbols")]
 use crate::common;
 use crate::symbol_index;
 

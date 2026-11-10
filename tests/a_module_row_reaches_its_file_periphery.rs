@@ -12,7 +12,7 @@
 //!  - `rigger graph communities` couples no `mod` node to its module's file, so a module file whose
 //!    one structural edge is its declaration's joins no community.
 
-#[allow(unused_imports)] // used only by the symbols-gated tests
+#[cfg(feature = "symbols")]
 use crate::common;
 #[cfg(feature = "symbols")]
 use crate::symbol_index;

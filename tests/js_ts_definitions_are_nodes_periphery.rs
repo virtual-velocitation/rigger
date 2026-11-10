@@ -6,7 +6,7 @@
 //! carrying its kind string and line, a computed member and a `for .. of` assigning an existing
 //! name are no node, and each reference hangs off the caller the fixture gives it.
 
-#[allow(unused_imports)] // used only by the symbols-gated tests
+#[cfg(feature = "symbols")]
 use crate::common;
 
 rigger::test_cases! {

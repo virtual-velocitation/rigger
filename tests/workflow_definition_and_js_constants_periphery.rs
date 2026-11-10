@@ -67,7 +67,7 @@ use std::path::Path;
 // The compiled `rigger` binary under test is located at RUNTIME by the shared authority in
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves, and
 // every suite that spawns the product then dies with a bare NotFound.
-#[allow(unused_imports)] // used only by the symbols-gated tests
+#[cfg(feature = "symbols")]
 use crate::common;
 
 #[cfg(feature = "symbols")]

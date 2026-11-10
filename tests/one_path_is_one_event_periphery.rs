@@ -5,7 +5,7 @@
 //! file: a path's one node and its one `CONTAINS`, from the winner's parent alone, since a twin
 //! that loses emits no event to fold a `CONTAINS` from its own parent.
 
-#[allow(unused_imports)] // used only by the symbols-gated tests
+#[cfg(feature = "symbols")]
 use crate::common;
 
 #[cfg(feature = "symbols")]

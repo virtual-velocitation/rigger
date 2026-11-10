@@ -106,7 +106,7 @@
 //!    `#[cfg(unix)]` fn stay production
 //!    (`a_test_region_is_every_test_attributed_range_through_the_public_api`).
 
-#[allow(unused_imports)] // used only by the symbols-gated tests
+#[cfg(feature = "symbols")]
 use crate::common;
 
 #[cfg(feature = "symbols")]

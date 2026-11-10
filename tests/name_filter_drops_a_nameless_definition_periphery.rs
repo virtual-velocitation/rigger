@@ -5,7 +5,7 @@
 //! `rigger graph build` folds: a dropped definition is no node there and no caller of the calls
 //! in its body, and a `_` the filter keeps is a node.
 
-#[allow(unused_imports)] // used only by the symbols-gated tests
+#[cfg(feature = "symbols")]
 use crate::common;
 
 /// GIVEN a project holding the three name filter sources: a Go file with a function, a method

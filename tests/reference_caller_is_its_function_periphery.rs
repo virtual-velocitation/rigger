@@ -23,7 +23,7 @@
 //! It also holds the wire form of the eight older kinds (spec 116 criterion 4 moved their kind
 //! strings onto shared constants): the emit pass still lowers each to the string it always did.
 
-#[allow(unused_imports)] // used only by the symbols-gated tests
+#[cfg(feature = "symbols")]
 use crate::common;
 use crate::symbol_index;
 

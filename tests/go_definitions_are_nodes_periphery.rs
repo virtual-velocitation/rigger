@@ -9,7 +9,7 @@
 //!  - the persisted symbol index: the variant name `Variable`, which the kind a package-level
 //!    `var` takes is written under and read back from.
 
-#[allow(unused_imports)] // used only by the symbols-gated tests
+#[cfg(feature = "symbols")]
 use crate::common;
 use crate::symbol_index;
 

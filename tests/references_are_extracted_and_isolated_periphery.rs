@@ -20,7 +20,7 @@
 //!    for a call, the form an index saved before the field existed holds, and reads back so a
 //!    reloaded index counts no tagged reference as a call.
 
-#[allow(unused_imports)] // used only by the symbols-gated tests
+#[cfg(feature = "symbols")]
 use crate::common;
 use crate::symbol_index;
 

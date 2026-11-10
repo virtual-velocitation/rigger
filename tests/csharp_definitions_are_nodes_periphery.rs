@@ -11,7 +11,7 @@
 //!  - the persisted symbol index: the variant name `Property`, which the kind a C# property
 //!    takes is written under and read back from.
 
-#[allow(unused_imports)] // used only by the symbols-gated tests
+#[cfg(feature = "symbols")]
 use crate::common;
 use crate::symbol_index;
 
