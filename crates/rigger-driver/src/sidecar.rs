@@ -492,7 +492,9 @@ mod tests {
 
     /// A log holding a record of every rank tier, oldest first: `d-prior`, unit u1's ruling from
     /// before the run; the run's `RunStarted`; `d-verdict`, u1's adjudicator verdict; `d-rebase`, a
-    /// definition re-pin; `d-own` and `f-own`, u1's ruling and lens finding; `d-both`, u2's ruling
+    /// definition re-pin; `d-own` and `f-own`, u1's ruling and lens finding; `f-signoff`, u1's
+    /// lens sign-off, marked `sign_off`; `f-review-complete`, u2's lens finding whose id and summary
+    /// read as a sign-off but which carries no mark; `d-both`, u2's ruling
     /// on a.rs and a line of b.rs; `d-peer`, u2's ruling on a.rs; `l-a`, a lesson about a.rs; and
     /// `d-off`, a ruling on c.rs alone. Ranked for `caller` over `files`, as `(id, live)` pairs.
     fn ranked_ids(files: &[&str], caller: Option<&str>) -> Vec<(String, Option<bool>)> {
@@ -514,6 +516,18 @@ mod tests {
                 contextgraph::TYPE_REVIEW_FINDING,
                 json!({"id": "f-own", "by": "lens:sdet", "summary": "f", "about": ["a.rs"]}),
                 &[(META_SPAWN, "u1/lens:sdet#0")],
+            ),
+            stamped(
+                contextgraph::TYPE_REVIEW_FINDING,
+                json!({"id": "f-signoff", "by": "lens:sdet", "summary": "s", "about": ["a.rs"],
+                       "sign_off": true}),
+                &[(META_SPAWN, "u1/lens:sdet#0")],
+            ),
+            stamped(
+                contextgraph::TYPE_REVIEW_FINDING,
+                json!({"id": "f-review-complete", "by": "lens:sdet",
+                       "summary": "REVIEW COMPLETE: approve", "about": ["a.rs"]}),
+                &[(META_SPAWN, "u2/lens:sdet#0")],
             ),
             decision(
                 "d-both",
@@ -557,12 +571,16 @@ mod tests {
     crate::test_cases! {
         /// For a spawn of unit u1: u1's own records first (live before its prior run's), then the
         /// rest by the files they name and then by age, the lesson ranking with the live records,
-        /// and every judging seat's verdict and definition re-pin last, u1's own verdict first
-        /// among them; the c.rs ruling is out of scope.
+        /// and every judging seat's verdict, marked sign-off and definition re-pin last, u1's own
+        /// first among them; a finding whose text reads as a sign-off but carries no mark ranks as
+        /// a finding; the c.rs ruling is out of scope.
         ranked_puts_the_callers_own_unit_first_and_ceremony_last: assert_ranked(
             &["a.rs", "b.rs"],
             Some("u1/implementer#1"),
-            &["f-own", "d-own", "d-prior", "d-both", "l-a", "d-peer", "d-verdict", "d-rebase"],
+            &[
+                "f-own", "d-own", "d-prior", "d-both", "l-a", "d-peer", "f-review-complete",
+                "f-signoff", "d-verdict", "d-rebase",
+            ],
         );
         /// With no calling spawn, no unit is raised: the record naming both files leads, then
         /// the live records and the lesson newest first, the prior run's ruling after them and
@@ -570,15 +588,18 @@ mod tests {
         ranked_without_a_caller_orders_by_files_named_then_age: assert_ranked(
             &["a.rs", "b.rs"],
             None,
-            &["d-both", "l-a", "d-peer", "f-own", "d-own", "d-prior", "d-rebase", "d-verdict"],
+            &[
+                "d-both", "l-a", "d-peer", "f-review-complete", "f-own", "d-own", "d-prior",
+                "f-signoff", "d-rebase", "d-verdict",
+            ],
         );
         /// Unscoped, every record is in and none names a passed file, so age orders each tier.
         ranked_unscoped_holds_every_record_newest_first_within_a_tier: assert_ranked(
             &[],
             None,
             &[
-                "d-off", "l-a", "d-peer", "d-both", "f-own", "d-own", "d-prior", "d-rebase",
-                "d-verdict",
+                "d-off", "l-a", "d-peer", "d-both", "f-review-complete", "f-own", "d-own",
+                "d-prior", "f-signoff", "d-rebase", "d-verdict",
             ],
         );
     }
