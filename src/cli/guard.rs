@@ -1014,6 +1014,32 @@ mod tests {
         }
     }
 
+    /// An `rg` and a `git grep` are name searches exactly like a grep, whatever their path or
+    /// options, so each is denied with the message that names the graph call unless it carries
+    /// the `# --literal` comment; a git command that is not `grep` passes.
+    #[test]
+    fn grep_guard_decision_treats_rg_and_git_grep_as_a_grep() {
+        let deny = GuardDecision::Deny(GREP_GUARD_MESSAGE.to_string());
+        let rows = [
+            ("rg spawn_config_args src/", &deny),
+            ("rg -n 'fn spawn_config_args' .", &deny),
+            ("/usr/bin/rg needle", &deny),
+            ("cat src/a.rs | rg needle", &deny),
+            ("git grep -n spawn_config_args", &deny),
+            ("git -C ../other grep needle -- src", &deny),
+            ("rg needle src/ # --literal", &GuardDecision::Allow),
+            ("git grep -n needle # --literal", &GuardDecision::Allow),
+            ("git log --oneline -3", &GuardDecision::Allow),
+        ];
+        for (command, expected) in rows {
+            assert_eq!(
+                &grep_guard_decision("Bash", &serde_json::json!({ "command": command })),
+                expected,
+                "{command:?}"
+            );
+        }
+    }
+
     /// The denial answers the question the search was asking before it names the escape: who
     /// calls a name is `rigger_graph` around it and where a name is defined is `rigger_graph`
     /// show it, both ahead of the `# --literal` comment.
