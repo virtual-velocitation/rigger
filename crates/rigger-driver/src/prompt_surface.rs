@@ -41,15 +41,16 @@ pub const RESUME_CLASS: &str = " by {class}";
 /// tests, so it is compiled for tests alone.
 #[cfg(test)]
 pub fn prompt_groups() -> &'static [rigger_domain::prompt_surface::Group] {
-    &[
-        rigger_domain::prompt_group!("driver::progress_framed", PROGRESS_FRAME),
-        rigger_domain::prompt_group!("driver::progress_framed", PROGRESS_LINE),
-        rigger_domain::prompt_group!("driver::cli::framed", CLI_PROGRESS_VERB),
-        rigger_domain::prompt_group!("driver::claude_code::framed", STREAM_PROGRESS_VERB),
-        rigger_domain::prompt_group!("driver::claude_code::interruption_note", RESUME_NOTE),
-        rigger_domain::prompt_group!("driver::claude_code::interruption_note", RESUME_RESTARTED),
-        rigger_domain::prompt_group!("driver::claude_code::interruption_note", RESUME_HELD),
-        rigger_domain::prompt_group!("driver::claude_code::interruption_note", RESUME_CLASS),
+    rigger_domain::prompt_groups![
+        "driver::progress_framed" => [PROGRESS_FRAME, PROGRESS_LINE],
+        "driver::cli::framed" => [CLI_PROGRESS_VERB],
+        "driver::claude_code::framed" => [STREAM_PROGRESS_VERB],
+        "driver::claude_code::interruption_note" => [
+            RESUME_NOTE,
+            RESUME_RESTARTED,
+            RESUME_HELD,
+            RESUME_CLASS,
+        ],
     ]
 }
 

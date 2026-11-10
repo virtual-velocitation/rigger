@@ -18,16 +18,17 @@ pub struct Group {
     pub text: &'static str,
 }
 
-/// A [`Group`] on `$surface` whose name is the const `$text`'s own identifier, so a group's name
-/// and its text are one spelling.
+/// A crate's groups, a `&'static [Group]`, from its surfaces in registry order, each spelt once
+/// beside its consts in render order: `prompt_groups!["surface" => [CONST, ...], ...]`. Each
+/// group's name is its const's own identifier, so a group's name and its text are one spelling.
 #[macro_export]
-macro_rules! prompt_group {
-    ($surface:literal, $text:ident) => {
-        $crate::prompt_surface::Group {
+macro_rules! prompt_groups {
+    ($($surface:literal => [$($text:ident),+ $(,)?]),+ $(,)?) => {
+        &[$($($crate::prompt_surface::Group {
             surface: $surface,
             name: stringify!($text),
             text: $text,
-        }
+        }),+),+]
     };
 }
 
@@ -105,12 +106,14 @@ pub const CRITIQUE_SPEC_TAIL: &str =
 /// four in render order. Its readers are tests, so it is compiled for tests alone.
 #[cfg(test)]
 pub fn prompt_groups() -> &'static [Group] {
-    &[
-        crate::prompt_group!("instructions::compose", INSTRUCTIONS_HEADING),
-        crate::prompt_group!("review::spec_critique_prompt", CRITIQUE_FRAMING),
-        crate::prompt_group!("review::spec_critique_prompt", CRITIQUE_OUTPUT_CONTRACT),
-        crate::prompt_group!("review::spec_critique_prompt", CRITIQUE_RECORDED_FINDINGS),
-        crate::prompt_group!("review::spec_critique_prompt", CRITIQUE_SPEC_TAIL),
+    crate::prompt_groups![
+        "instructions::compose" => [INSTRUCTIONS_HEADING],
+        "review::spec_critique_prompt" => [
+            CRITIQUE_FRAMING,
+            CRITIQUE_OUTPUT_CONTRACT,
+            CRITIQUE_RECORDED_FINDINGS,
+            CRITIQUE_SPEC_TAIL,
+        ],
     ]
 }
 
