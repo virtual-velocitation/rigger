@@ -165,7 +165,7 @@ gates:                      # the project's verification library, referenced by 
   # the test), when production code constructs an adapter (a store, a graph, an agent driver)
   # outside the composition root, or when an item exempts itself from a denied principle
   # lint. Each rule's allowlist of today's offenders only shrinks. The adjudicator treats a red boundary gate as non-negotiable.
-  boundary: { run: "cargo test --test boundary_audit", kind: core }
+  boundary: { run: "cargo test --test all boundary_audit::", kind: core }
   # The red-before-green gate (workspace split, step 0): TDD made mechanical. The unit
   # branch's first commit that touches source - any path with a `src/` component (`src/...`,
   # `crates/<name>/src/...`, `tools/<name>/src/...`) - must be preceded by, or

@@ -212,15 +212,35 @@ package_of() {
 # The test binaries whose code changed since $1, named as the catch map names them (see
 # INCREMENTAL RE-SWEEPS): a package's tests/<t>.rs is `<package>::<t>`, `<t>` for the root
 # package; a change nested deeper under its tests/ is every such binary of that package; a
-# change under a workspace crate's src/ is `<crate>`.
+# change under a workspace crate's src/ is `<crate>`. A package whose Cargo.toml sets
+# `autotests = false` compiles its tests/*.rs as modules of one executable, `all`, except the
+# files it lists as their own `[[test]]` (named after the file): its binaries are `all` and
+# those.
+consolidates_tests() {
+    grep -q '^autotests *= *false' "$1/Cargo.toml" 2>/dev/null
+}
+
+test_binaries() {
+    if consolidates_tests "$1"; then
+        echo all
+        sed -n 's/^name = "\(.*\)"$/\1/p' "$1/Cargo.toml" | while IFS= read -r n; do
+            test ! -f "$1/tests/$n.rs" || echo "$n"
+        done
+    else
+        for t in "$1"/tests/*.rs; do t="${t##*/}"; echo "${t%.rs}"; done
+    fi
+}
+
 changed_binaries() {
     git diff --name-only "$1" | while IFS= read -r f; do
         package_of "$f"
         prefix="$pkg_name::"
         test "$pkg_dir" != . || prefix=""
         case "${f#"$pkg_dir"/}" in
-            tests/*/*) for t in "$pkg_dir"/tests/*.rs; do t="${t##*/}"; echo "$prefix${t%.rs}"; done ;;
-            tests/*.rs) t="${f##*/}"; echo "$prefix${t%.rs}" ;;
+            tests/*/*) test_binaries "$pkg_dir" | sed "s/^/$prefix/" ;;
+            tests/*.rs)
+                t="${f##*/}"; t="${t%.rs}"
+                if consolidates_tests "$pkg_dir" && ! test_binaries "$pkg_dir" | grep -qx "$t"; then echo "${prefix}all"; else echo "$prefix$t"; fi ;;
             src/*) test -z "$prefix" || echo "$pkg_name" ;;
         esac
     done
