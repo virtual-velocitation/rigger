@@ -191,22 +191,22 @@ fn wrapped_output(out: &Output) -> String {
 
 /// Gap 92: the per-test cap is sized for a mutation sweep's CONCURRENCY, not for one runaway.
 /// At the old 24 GiB default, eight concurrent children of one loop mutant grew to ~5.5 GiB each
-/// and the global OOM killer took the check-in step instead; at 4 GiB each such child fails its
-/// own allocation first, and the whole suite still passes under it.
+/// and the global OOM killer took the check-in step instead; under the sized cap each such child
+/// fails its own allocation first, and the whole suite still passes under it.
 ///
 /// Every assertion runs on every host, with or without unprivileged user namespaces:
-/// - the plain path (`RIGGER_PIDNS=off`, a throwaway CI host) caps the wrapped process at 4 GiB,
+/// - the plain path (`RIGGER_PIDNS=off`, a throwaway CI host) caps the wrapped process at 7 GiB,
 ///   and an explicit `RIGGER_TEST_AS_BYTES` overrides that cap. The runner computes the cap once
 ///   (`as_bytes`, one home for both paths), so the override proven here is the value the
 ///   namespace path applies too.
-/// - the namespace path (the default) either runs the wrapped process under the same 4 GiB cap,
+/// - the namespace path (the default) either runs the wrapped process under the same 7 GiB cap,
 ///   on a host that can create a user+pid namespace (a workstation), or fails CLOSED on a host
 ///   that cannot (a hosted CI runner): it exits non-zero with its refusal and runs nothing
 ///   unsandboxed. Both outcomes are runner guarantees. The runner's own outcome is the host's
 ///   capability probe, so this test never probes the host a second way.
 #[test]
-fn the_runner_caps_each_test_process_address_space_at_4_gib_on_every_path_it_runs() {
-    const FOUR_GIB: &str = "4294967296";
+fn the_runner_caps_each_test_process_address_space_at_7_gib_on_every_path_it_runs() {
+    const SEVEN_GIB: &str = "7516192768";
     // The cap (in bytes) the wrapped process read from its own `/proc/self/limits`.
     let applied_cap = |out: &Output| -> String {
         let limits = wrapped_output(out);
@@ -222,8 +222,8 @@ fn the_runner_caps_each_test_process_address_space_at_4_gib_on_every_path_it_run
             "RIGGER_PIDNS",
             "off"
         )])),
-        FOUR_GIB,
-        "the plain path (a CI host) caps each test process at 4 GiB"
+        SEVEN_GIB,
+        "the plain path (a CI host) caps each test process at 7 GiB"
     );
     assert_eq!(
         applied_cap(&run_the_runner_reading_its_memory_bounds(&[
@@ -232,13 +232,13 @@ fn the_runner_caps_each_test_process_address_space_at_4_gib_on_every_path_it_run
         ])),
         "2147483648",
         "an explicit cap still overrides the default (lower here: this test process already \
-         runs under the 4 GiB hard limit, which no child can raise)"
+         runs under the 7 GiB hard limit, which no child can raise)"
     );
     let namespaced = run_the_runner_reading_its_memory_bounds(&[]);
     if namespaced.status.success() {
         assert_eq!(
             applied_cap(&namespaced),
-            FOUR_GIB,
+            SEVEN_GIB,
             "the namespace path caps each test process the same way"
         );
     } else {
