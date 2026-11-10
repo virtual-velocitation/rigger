@@ -156,10 +156,16 @@ gates:                      # the project's verification library, referenced by 
   # branch's tip when the run started, which the conductor exports to every gate), so operator
   # commits that landed on the run branch directly are checked too, never only the check-in
   # branch's own commits. `tests/cli.rs` drives both forms on a fixture repository.
-  style:           { run: "sh .rigger/gates/content.sh style",                         kind: core }
-  no-os-kill:      { run: "sh .rigger/gates/content.sh no-os-kill",                    kind: core }
-  style-spec:      { run: 'sh .rigger/gates/content.sh style "$RIGGER_RUN_BASE"',      kind: core }
-  no-os-kill-spec: { run: 'sh .rigger/gates/content.sh no-os-kill "$RIGGER_RUN_BASE"', kind: core }
+  #
+  # Every content gate reads only a diff, never the tree, so each declares `post_merge: false`:
+  # the post-merge re-gate would run it over a landed tree that no longer differs from the base,
+  # where the unit forms diff an empty range and the `-spec` forms re-read the diff the check-in
+  # stage's own run of the gate already checked. The implement and check-in runs, before the
+  # merge, still run them.
+  style:           { run: "sh .rigger/gates/content.sh style",                         kind: core, post_merge: false }
+  no-os-kill:      { run: "sh .rigger/gates/content.sh no-os-kill",                    kind: core, post_merge: false }
+  style-spec:      { run: 'sh .rigger/gates/content.sh style "$RIGGER_RUN_BASE"',      kind: core, post_merge: false }
+  no-os-kill-spec: { run: 'sh .rigger/gates/content.sh no-os-kill "$RIGGER_RUN_BASE"', kind: core, post_merge: false }
   # The boundary gate (workspace split, step 0): Clean Architecture made mechanical.
   # `tests/boundary_audit.rs` fails when a workspace crate depends outward (the ring table in
   # the test), when production code constructs an adapter (a store, a graph, an agent driver)
@@ -173,8 +179,10 @@ gates:                      # the project's verification library, referenced by 
   # file's test module - from the first column-0 `#[cfg(test)]` that opens a `mod` body to the
   # end of the file). The logic lives in
   # `.rigger/gates/red-before-green.sh`; `tests/principle_gates_wiring.rs` drives it on
-  # fixture repositories. The reviewer lens checks the same order.
-  red-before-green: { run: "sh .rigger/gates/red-before-green.sh", kind: core }
+  # fixture repositories. The reviewer lens checks the same order. It reads the unit's commits
+  # since their merge base with the run branch, which is empty once the unit has landed, so it
+  # declares `post_merge: false`.
+  red-before-green: { run: "sh .rigger/gates/red-before-green.sh", kind: core, post_merge: false }
   # The check-in-stage mutation gate (spec 91): the diff-scoped `cargo mutants` sweep, run
   # ONCE by a `checkin` stage that lists it - after every implement unit has integrated - never
   # per implementer round. The `checkin` stage below leaves it unwired until #32 lands. The
