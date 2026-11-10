@@ -4068,6 +4068,28 @@ mod tests {
     // bounces a bare source grep.
     // =======================================================================================
 
+    /// The reviewing personas, committed and seeded, and only they, tell their reviewer to mark a
+    /// sign-off finding with `"sign_off": true`, the mark the peers ranking reads.
+    #[test]
+    fn the_reviewing_personas_and_only_they_mark_a_sign_off() {
+        let reviewing = ["architecture-reviewer.md", "sdet.md", "adversary.md"];
+        let shipped = every_shipped_persona();
+        for name in reviewing {
+            assert_eq!(
+                shipped.iter().filter(|(at, _)| at.ends_with(name)).count(),
+                2,
+                "{name} is committed and seeded"
+            );
+        }
+        for (at, text) in shipped {
+            assert_eq!(
+                text.contains(r#"`"sign_off": true`"#),
+                reviewing.iter().any(|name| at.ends_with(name)),
+                "{at}"
+            );
+        }
+    }
+
     /// `install_operator_mcp` is drift-aware and re-runnable, the same three-state contract
     /// every other `rigger setup` install artifact has: absent -> Installed (fresh write),
     /// drifted (an older build's entry, or a hand edit) -> Refreshed, already matching ->
