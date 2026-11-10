@@ -1817,7 +1817,9 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
     // request socket under the store directory carries each `rigger gate <id>` to it for as long
     // as the run drives. A socket that cannot be bound leaves the verb information-only.
     let verdict_key = rigger::verdict_mac::VerdictKey::generate()?;
-    let socket_path = Path::new(RIGGER_DIR).join(super::gate_verb::GATE_SOCKET);
+    let socket_path = Path::new(&root)
+        .join(RIGGER_DIR)
+        .join(super::gate_verb::GATE_SOCKET);
     let socket = rigger::gate_socket::GateSocket::bind(&socket_path)
         .inspect_err(|e| {
             stderr_line(&format!(

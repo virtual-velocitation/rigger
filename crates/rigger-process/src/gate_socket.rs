@@ -2,8 +2,7 @@
 //! [`GateChannel`] on a Unix domain socket under the project's `.rigger` directory, readable and
 //! writable by its owner only, and `rigger gate` asks over it with [`ask`]. One request and one
 //! reply per connection, each one JSON line. Windows has no adapter yet: there both ends answer an
-//! `Unsupported` error naming the named pipe it would take, and the verb runs the gate for
-//! information only.
+//! `Unsupported` error naming the named pipe it would take, which the verb reports as its error.
 
 use std::io;
 use std::path::Path;
