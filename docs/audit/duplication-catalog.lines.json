@@ -494,8 +494,8 @@
       },
       {
         "file": "crates/rigger-dash/src/mcpserver.rs",
-        "start_line": 553,
-        "end_line": 556
+        "start_line": 554,
+        "end_line": 557
       },
       {
         "file": "crates/rigger-domain/src/run/read.rs",
@@ -5379,8 +5379,8 @@
     "sites": [
       {
         "file": "crates/rigger-dash/src/mcpserver.rs",
-        "start_line": 562,
-        "end_line": 564
+        "start_line": 563,
+        "end_line": 565
       },
       {
         "file": "crates/rigger-domain/src/run.rs",
