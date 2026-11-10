@@ -1,7 +1,7 @@
 //! The one check of a BINARY asset served by the real dash over a real socket, shared by the
-//! suites that serve one (the console's fonts, its wasm core). Included by path
-//! (`#[path = "common/served_asset.rs"] mod served_asset;`) next to `mod common;`, whose
-//! `served` helpers it drives.
+//! suites that serve one (the console's fonts, its wasm core).
+//! Mounted once by `tests/all.rs`; a suite reaches it with `use crate::served_asset;`.
+//! It drives `common::served`'s helpers.
 
 use crate::common::served::{get_raw, header_value, split_response};
 

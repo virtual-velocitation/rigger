@@ -1,12 +1,12 @@
 //! Shared support for the whole-tree source audits (`tests/no_os_kill_audit.rs`,
 //! `tests/reap_before_removal_audit.rs`): the one finding shape both report, the fixture-file
-//! writer both prove detection with, and the real-tree assertion both close on. Included by
-//! each suite through `#[path]`, never through `tests/common/mod.rs`. Also the line-level
+//! writer both prove detection with, and the real-tree assertion both close on. Mounted
+//! once by `tests/all.rs` and by `tests/boundary_audit.rs`, through `#[path]`, never through
+//! `tests/common/mod.rs`. Also the line-level
 //! source reading those audits and `tests/boundary_audit.rs` share: which lines are test code,
 //! and which function encloses a line. And the one Rust lexer, [`tokenize`], that rule 4 of
 //! `tests/boundary_audit.rs` finds string literals with and its appender audit finds calls with,
-//! and the binary's unit tests (mounted by `src/main.rs`) read `tests/common`'s functions by; and
-//! the token readers the boundary audit reads its tokens with ([`ref_punct`], [`ref_token`],
+//! and the token readers the boundary audit reads its tokens with ([`ref_punct`], [`ref_token`],
 //! [`qualifier_before`], [`follows_keyword`], [`is_definition_site`], [`close_of`],
 //! [`imported_names`]). Each suite uses the subset it needs (hence the
 //! module-wide `dead_code` allowance, as in `tests/common/mod.rs`).

@@ -3,8 +3,7 @@
 //! share one shape - a subcommand that reads the project's graph, derives a layer of nodes at a
 //! `--resolution` grain, and records it through `FoldingStore::append_and_fold` as live membership
 //! edges. [`LayerCli`] names one such subcommand; its methods are the binary-boundary checks
-//! both suites run against it. Included by each suite through `#[path]`, next to its own
-//! `mod common;`.
+//! both suites run against it. Mounted once by `tests/all.rs`; a suite reaches it with `use crate::layer_cli;`.
 
 use std::collections::BTreeSet;
 use std::path::Path;

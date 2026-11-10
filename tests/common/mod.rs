@@ -1,5 +1,6 @@
-//! Shared test support for the integration suites - compiled into each suite that declares
-//! `mod common;`, so each suite uses the subset it needs (hence the module-wide `dead_code`
+//! Shared test support for the integration suites - compiled once into `all` (a suite there
+//! reaches it with `use crate::common;`) and into each suite with its own `[[test]]` entry that
+//! declares `mod common;`, so each suite uses the subset it needs (hence the module-wide `dead_code`
 //! allowance: an item used by one suite is genuinely unused in the next).
 //!
 //! Its first, still-largest concern is WHERE the product binary is: a shared home because it
