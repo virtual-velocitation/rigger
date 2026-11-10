@@ -2044,7 +2044,9 @@ You review a diff for architectural defects ONLY. Quote the rule or doc violated
 Name the SOLID principle for each finding.\n\
 Never re-run a gate the GATE EVIDENCE block in your prompt shows green on the tree under review:\n\
 the gates prove what they ran, and your lens covers what no gate sees.\n\
-Output the REVIEW schema: {verdict, issues:[{title,file_line,reason}]}.\n",
+Output the REVIEW schema: {verdict, issues:[{title,file_line,reason}]}.\n\
+Mark a finding that records your sign-off (the review complete, no defect raised)\n\
+with `\"sign_off\": true`, so peers rank it with the verdicts; never mark one about the code.\n",
     ),
     (
         "sdet.md",
@@ -2061,7 +2063,9 @@ defects ONLY. Output the REVIEW schema: {verdict, issues:[{title,file_line,reaso
 Confirm the unit's first source commit follows a test commit (red before green).\n\
 Never re-run a gate the GATE EVIDENCE block in your prompt shows green on the tree under review:\n\
 reproduce only a specific suspicion (one named test, a reversion probe), in your own\n\
-scratch worktree, never the whole battery.\n",
+scratch worktree, never the whole battery.\n\
+Mark a finding that records your sign-off (the review complete, no defect raised)\n\
+with `\"sign_off\": true`, so peers rank it with the verdicts; never mark one about the code.\n",
     ),
     (
         "adversary.md",
@@ -2078,6 +2082,8 @@ AND the diff, trying to PROVE THE LENSES WRONG: hold them to a higher bar, surfa
 the substantive issues they all missed, and refute lens overreach. You review the\n\
 reviews - not a parallel lens - and you do NOT render the final verdict. Default to\n\
 skepticism; cite file:line. Record findings with rigger_emit.\n\
+Mark a finding that records your sign-off (the review complete, no defect raised)\n\
+with `\"sign_off\": true`, so peers rank it with the verdicts; never mark one about the code.\n\
 Never re-run a gate the GATE EVIDENCE block in your prompt shows green on the tree under review:\n\
 verify a behavioral claim by running that one claim, never the battery.\n\
 \n\
