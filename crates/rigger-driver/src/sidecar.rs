@@ -48,6 +48,10 @@ pub struct PeerFinding {
     pub summary: String,
     #[serde(default)]
     pub about: Vec<String>,
+    /// Whether the reviewer marked it as its sign-off (`"sign_off": true`) rather than a
+    /// finding about the code; absent, as on every older finding, it reads as an ordinary one.
+    #[serde(default)]
+    pub sign_off: bool,
 }
 
 /// A lesson a prior run's escalation recorded, as the side-car surfaces it. Lessons
@@ -79,6 +83,9 @@ pub trait Peer: DeserializeOwned {
     const SUMMARY: fn(&Self) -> &str;
     /// The reviewer a record names as its author, empty for a kind that names none.
     const BY: fn(&Self) -> &str = |_| "";
+    /// Whether the record is a reviewer's marked sign-off, which ranks with ceremony
+    /// ([`is_ceremony`]); false for a kind that carries no such mark.
+    const SIGN_OFF: fn(&Self) -> bool = |_| false;
 
     /// Every record of this kind in `seen`, in stream order - each matching event's body
     /// decoded, an undecodable one skipped.
@@ -126,6 +133,7 @@ impl Peer for PeerFinding {
     const ID: fn(&Self) -> &str = |f| &f.id;
     const SUMMARY: fn(&Self) -> &str = |f| &f.summary;
     const BY: fn(&Self) -> &str = |f| &f.by;
+    const SIGN_OFF: fn(&Self) -> bool = |f| f.sign_off;
 }
 
 impl Peer for PeerLesson {
@@ -166,7 +174,8 @@ impl Provenance {
 /// Whether `e` is ceremony: a decision recorded as review bookkeeping rather than as a ruling
 /// about the code - a judging seat's verdict (its [`META_SPAWN`] role is a review step, see
 /// [`review_step_of`]) or a definition re-pin (it carries [`run::META_DEFINITION`]). A review
-/// finding is never ceremony: it is the content a verdict rests on.
+/// finding is ceremony only when its reviewer marked it as a sign-off ([`Peer::SIGN_OFF`]); any
+/// other finding is the content a verdict rests on, whatever its id or summary says.
 fn is_ceremony(e: &Event) -> bool {
     e.type_ == contextgraph::TYPE_DECISION_MADE
         && (e
@@ -207,7 +216,8 @@ pub struct RankedPeer {
 /// fields top to bottom, so each field breaks the ties of the one above it.
 #[derive(PartialEq, Eq, PartialOrd, Ord)]
 struct Rank {
-    /// Ceremony ranks below every ruling, finding and lesson ([`is_ceremony`]).
+    /// Ceremony ranks below every ruling, finding and lesson ([`is_ceremony`], or a finding
+    /// marked as a sign-off).
     ceremony: bool,
     /// The calling unit's own records rank first.
     other_unit: bool,
@@ -266,7 +276,7 @@ impl Sidecar {
 
     /// Every decision, lesson and finding scoped to `files` as [`Self::peers_for`] scopes them,
     /// ranked best first for the spawn `caller` (`None` when the caller is no spawn): ceremony
-    /// last ([`is_ceremony`]), then the caller's own unit's records first, then the active run's
+    /// last ([`is_ceremony`], and every finding marked as a sign-off), then the caller's own unit's records first, then the active run's
     /// records and lessons before a superseded run's, then those naming more of `files`, then
     /// the newest. A reader that keeps a prefix of this list keeps the most relevant records.
     pub fn ranked(&self, files: &[String], caller: Option<&str>) -> Vec<RankedPeer> {
@@ -302,7 +312,7 @@ impl Sidecar {
             let own = context.unit.is_some()
                 && e.meta.get(META_SPAWN).and_then(|s| unit_of(s)) == context.unit;
             let rank = Rank {
-                ceremony: is_ceremony(e),
+                ceremony: is_ceremony(e) || (T::SIGN_OFF)(&record),
                 other_unit: !own,
                 superseded: live == Some(false),
                 files_named: Reverse(named),
