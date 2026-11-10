@@ -1465,6 +1465,53 @@ mod tests {
         );
     }
 
+    /// Spec 121, criterion 16: over the placeholder fixture the critique prompt is its registry
+    /// groups concatenated in registry order, on each branch: with no recorded finding, and with
+    /// one, whose summary line and the line breaks around it are the skeleton the test inserts
+    /// after the recorded-findings group, since neither a skeleton nor a joiner is a group.
+    #[test]
+    fn the_spec_critique_prompt_is_its_groups_concatenated_on_each_branch() {
+        use crate::prompt_surface::prompt_groups;
+        use crate::prompt_surface_fixtures::{assert_renders, rendered_groups};
+        let groups = |names: &[&str]| {
+            rendered_groups(prompt_groups(), "review::spec_critique_prompt", names)
+        };
+        let recorded = finding(
+            "{id}",
+            true,
+            ["{critic}", "{location}", "{reading}", "{fix}"],
+        );
+        let cases = [
+            (
+                "no recorded finding",
+                vec![],
+                groups(&[
+                    "CRITIQUE_FRAMING",
+                    "CRITIQUE_OUTPUT_CONTRACT",
+                    "CRITIQUE_SPEC_TAIL",
+                ]),
+            ),
+            (
+                "one recorded finding",
+                vec![recorded.clone()],
+                format!(
+                    "{}\n{}\n\n{}",
+                    groups(&[
+                        "CRITIQUE_FRAMING",
+                        "CRITIQUE_OUTPUT_CONTRACT",
+                        "CRITIQUE_RECORDED_FINDINGS",
+                    ]),
+                    recorded.summary(),
+                    groups(&["CRITIQUE_SPEC_TAIL"]),
+                ),
+            ),
+        ];
+        for (case, findings, expected) in cases {
+            let render = spec_critique_prompt("{spec_path}", "{spec_text}", &findings);
+            assert_renders(case, &render, &expected);
+        }
+    }
+
     #[test]
     fn the_critique_output_contract_carries_the_finding_lines_and_the_verdict_line() {
         for line in [

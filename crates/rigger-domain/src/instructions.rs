@@ -257,7 +257,7 @@ mod tests {
         let sys = compose(persona, &house_and_team_operator_layer());
         let persona = sys.find(persona).expect("persona leads");
         let heading = sys
-            .find(HEADING)
+            .find(INSTRUCTIONS_HEADING)
             .expect("the instructions heading follows the persona");
         let builtin = sys
             .find("## engineering-principles")
