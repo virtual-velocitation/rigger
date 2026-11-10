@@ -1,5 +1,5 @@
-//! Fixtures that read this repository's own checked-in files: sources, docs, manifests (as text,
-//! or with the lock through cargo's resolver) and the committed audit ledgers.
+//! Fixtures that read this repository's own checked-in files: sources, docs and manifests (as
+//! text, or with the lock through cargo's resolver).
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -27,12 +27,6 @@ pub fn cargo_tree(args: &[&str]) -> Output {
         .output()
         .unwrap_or_else(|e| panic!("failed to spawn `{cargo_bin} tree {args:?}`: {e}"))
 }
-
-/// The committed simplification audit report, relative to [`repo_root`].
-pub const AUDIT_REPORT_PATH: &str = "docs/audit/2026-09-simplification-audit.md";
-
-/// The committed duplication catalog, relative to [`repo_root`].
-pub const DUPLICATION_CATALOG_PATH: &str = "docs/audit/duplication-catalog.json";
 
 /// The text of the checked-in file at `rel` (relative to [`repo_root`]).
 pub fn repo_text(rel: &str) -> String {
@@ -349,44 +343,6 @@ pub fn critique_stub_record(work: &Path, record: &str) -> String {
 /// The argv the critique stub under `work` was started with on its first spawn.
 pub fn critique_stub_argv(work: &Path) -> Vec<String> {
     recorded_argv(&work.join("bin").join(CRITIQUE_ARGV))
-}
-
-/// The committed JSON file at `rel`, decoded as the documented `contract` a downstream
-/// consumer relies on - failing loudly, naming both, when it does not decode.
-pub fn committed_json<T: serde::de::DeserializeOwned>(rel: &str, contract: &str) -> T {
-    serde_json::from_str(&repo_text(rel))
-        .unwrap_or_else(|e| panic!("{rel} does not deserialize as the documented {contract}: {e}"))
-}
-
-/// The committed JSON ledger `rel`, decoded as `contract`, holds at least one entry - a
-/// downstream consumer pinning counts against it never silently sees nothing.
-pub fn assert_committed_ledger_is_nonempty<T: serde::de::DeserializeOwned>(
-    rel: &str,
-    contract: &str,
-) {
-    let entries: Vec<T> = committed_json(rel, contract);
-    assert!(
-        !entries.is_empty(),
-        "{rel} deserialized to zero entries - a downstream consumer pinning counts against \
-         this file would silently see nothing"
-    );
-}
-
-/// Decoding the committed JSON file `rel` as `contract` and re-encoding it reproduces the
-/// committed bytes exactly - a downstream consumer decoding and re-encoding it never silently
-/// diverges from the committed artifact.
-pub fn assert_committed_json_round_trips<T>(rel: &str, contract: &str)
-where
-    T: serde::de::DeserializeOwned + serde::Serialize,
-{
-    let decoded: T = committed_json(rel, contract);
-    let mut reencoded = serde_json::to_string_pretty(&decoded).expect("the contract re-serializes");
-    reencoded.push('\n');
-    assert_eq!(
-        repo_text(rel),
-        reencoded,
-        "{rel} does not round-trip byte-for-byte through the documented {contract}"
-    );
 }
 
 /// The committed text file `rel`, compared lowercase, carries none of `phrasings`; the failure
