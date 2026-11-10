@@ -196,8 +196,9 @@ fn discipline_body(ctx: &DocsContext) -> String {
          registers a `rigger` MCP server (`.mcp.json`) exposing `rigger_peers`, `rigger_ground`, \
          and `rigger_graph` as tools here - the same three lookups a loop agent has, instead of a \
          shell - and, when the workflow declares `defaults.grep_guard: true`, installs a \
-         PreToolUse hook that bounces every `Grep` tool call and every \
-         `grep`-invoking Bash command in this project, with no target it lets through, with the \
+         PreToolUse hook that bounces every `Grep` tool call and every Bash command in this \
+         project that invokes `grep`, or a `sed` or `awk` that selects lines by a pattern, with \
+         no target it lets through, with the \
          message \"{message}\" - unless the Bash command ends with a `# --literal` comment (the \
          shell discards the comment, so the marker never reaches grep whichever PreToolUse hook \
          rewrites the command). With the guard installed, the graph stays the path of least \

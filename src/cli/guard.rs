@@ -41,8 +41,9 @@ const LITERAL_MARKER: &str = "--literal";
 /// `rigger_graph` or pass through untouched. The hook has NO target axis - a shell command's
 /// real search target is undecidable from its text alone (`..`, `*`, `~`, `$(pwd)`, a
 /// redirection, a symlink all defeat a path-based guess) - so every `Grep` tool call and
-/// every `grep`-invoking `Bash` command is denied inside a rigger project, with no
-/// path/target ever inspected. Pure (no I/O), so the decision is unit-testable against
+/// every `Bash` command that searches for a name ([`invokes_name_search`]: a `grep`, or a `sed`
+/// or `awk` pattern search) is denied inside a rigger project, with no path/target ever
+/// inspected. Pure (no I/O), so the decision is unit-testable against
 /// synthesized hook payloads without spawning a real hook process. A [`LITERAL_MARKER`] in a
 /// shell comment of a `Bash` `grep` command is the sole, deliberate escape hatch (Design's
 /// CONSTRAINTS WALK: "a literal-text lookup - `--literal` passes the hook"); a bare
@@ -59,8 +60,9 @@ fn grep_guard_decision(tool_name: &str, tool_input: &serde_json::Value) -> Guard
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or("");
             let words = shell_words(command);
-            let invokes_grep = words.argv.iter().any(|w| word_basename(w) == "grep");
-            if invokes_grep && !words.comments.iter().any(|w| w == LITERAL_MARKER) {
+            if invokes_name_search(&words.argv)
+                && !words.comments.iter().any(|w| w == LITERAL_MARKER)
+            {
                 GuardDecision::Deny(GREP_GUARD_MESSAGE.to_string())
             } else {
                 GuardDecision::Allow
@@ -171,6 +173,81 @@ fn word_basename(word: &str) -> &str {
         Some((_, base)) => base,
         None => word,
     }
+}
+
+/// Whether one command line's [`shell_words`] argv searches for a name: a `grep`, a `sed` whose
+/// script selects lines by a pattern address, or an `awk` whose program matches a pattern. A
+/// `sed` that reads a line range or edits, and an `awk` that prints fields or ranges over line
+/// numbers, look for nothing and pass, as does a script read from a file, which the command line
+/// does not show.
+fn invokes_name_search(argv: &[String]) -> bool {
+    argv.iter().enumerate().any(|(i, word)| {
+        let after = &argv[i + 1..];
+        match word_basename(word) {
+            "grep" => true,
+            "sed" => inline_scripts(after, &["-l"])
+                .iter()
+                .any(|s| sed_selects_by_pattern(s)),
+            "awk" | "gawk" | "mawk" | "nawk" => inline_scripts(after, &["-F", "-v"])
+                .iter()
+                .any(|p| awk_matches_a_pattern(p)),
+            _ => false,
+        }
+    })
+}
+
+/// The inline scripts a `sed` or `awk` runs, read from the words after its name: every `-e` or
+/// `--expression=` value, else the first word that is neither an option nor the value of one of
+/// `valued` (the options that take a separate value). Empty when the script comes from a file
+/// (`-f`, `--file`).
+fn inline_scripts<'a>(after: &'a [String], valued: &[&str]) -> Vec<&'a str> {
+    let mut scripts = Vec::new();
+    let mut words = after.iter().map(String::as_str);
+    while let Some(word) = words.next() {
+        match word {
+            "-f" | "--file" => return Vec::new(),
+            _ if word.starts_with("--file=") => return Vec::new(),
+            "-e" | "--expression" => scripts.extend(words.next()),
+            _ if word.starts_with("--expression=") => {
+                scripts.push(&word["--expression=".len()..]);
+            }
+            _ if valued.contains(&word) => {
+                words.next();
+            }
+            _ if word.starts_with('-') => {}
+            _ => {
+                if scripts.is_empty() {
+                    scripts.push(word);
+                }
+                break;
+            }
+        }
+    }
+    scripts
+}
+
+/// Whether a `sed` script selects lines by a pattern: one of its `;`- or newline-separated
+/// commands is addressed by a `/re/` or `\cREc` pattern, alone or as the second address of a
+/// line range (`10,/re/`). A line range (`1,40p`), a substitution (`s/a/b/`) and a last-line
+/// address (`$p`) select by no pattern.
+fn sed_selects_by_pattern(script: &str) -> bool {
+    script.split([';', '\n']).any(|command| {
+        let line_address = |c: char| c.is_ascii_digit() || c == '$';
+        let rest = command.trim_start().trim_start_matches(line_address);
+        let rest = rest.strip_prefix(',').unwrap_or(rest);
+        rest.starts_with('/') || rest.starts_with('\\')
+    })
+}
+
+/// Whether an `awk` program matches a pattern: its pattern (the text before the first action
+/// brace) holds a `/re/`, or the program uses the `~` match operator, `match(` or `index(`. A
+/// program that prints fields or ranges over line numbers matches none.
+fn awk_matches_a_pattern(program: &str) -> bool {
+    let pattern = program.split('{').next().unwrap_or("");
+    pattern.contains('/')
+        || program.contains('~')
+        || program.contains("match(")
+        || program.contains("index(")
 }
 
 /// `rigger grep-guard`: the command the installed PreToolUse hook runs (see
@@ -922,7 +999,10 @@ mod tests {
             ("awk '{print $1}' src/a.rs", &GuardDecision::Allow),
             ("awk 'NR>=10 && NR<=20' src/a.rs", &GuardDecision::Allow),
             ("awk -f prog.awk src/a.rs", &GuardDecision::Allow),
-            ("sed -n '/needle/p' src/a.rs # --literal", &GuardDecision::Allow),
+            (
+                "sed -n '/needle/p' src/a.rs # --literal",
+                &GuardDecision::Allow,
+            ),
             ("awk '/needle/' src/a.rs # --literal", &GuardDecision::Allow),
         ];
         for (command, expected) in rows {
@@ -946,7 +1026,10 @@ mod tests {
             let at = GREP_GUARD_MESSAGE
                 .find(call)
                 .unwrap_or_else(|| panic!("the message names {call:?}: {GREP_GUARD_MESSAGE}"));
-            assert!(at < escape, "{call:?} comes before the escape: {GREP_GUARD_MESSAGE}");
+            assert!(
+                at < escape,
+                "{call:?} comes before the escape: {GREP_GUARD_MESSAGE}"
+            );
         }
     }
 
