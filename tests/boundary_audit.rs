@@ -781,7 +781,6 @@ fn a_constructor_outside_the_root_is_reported_by_file_and_item() {
 const PROJECT_STREAM_APPENDS: &[&str] = &[
     "crates/rigger-conductor/src/conductor.rs:append_and_fold_batch",
     "crates/rigger-conductor/src/conductor.rs:emit_keyed_batch",
-    "crates/rigger-conductor/src/conductor.rs:run_gate_verb",
     "crates/rigger-store-sqlite/src/run_store.rs:append_at_head",
     "crates/rigger-store-sqlite/src/run_store.rs:record_rebase",
     "crates/rigger-store-sqlite/src/run_store.rs:start_fresh",

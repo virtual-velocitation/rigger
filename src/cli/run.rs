@@ -1813,13 +1813,30 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
             stderr_line(&format!("rigger run: the hold probe: {e}"));
         }
     };
+    // SIGNED VERDICTS: this driver process's verdict key lives only in its memory, and the gate
+    // request socket under the store directory carries each `rigger gate <id>` to it for as long
+    // as the run drives. A socket that cannot be bound leaves the verb information-only.
+    let verdict_key = rigger::verdict_mac::VerdictKey::generate()?;
+    let socket_path = Path::new(RIGGER_DIR).join(super::gate_verb::GATE_SOCKET);
+    let socket = rigger::gate_socket::GateSocket::bind(&socket_path)
+        .inspect_err(|e| {
+            stderr_line(&format!(
+                "rigger run: gate requests are not served ({}: {e}); `rigger gate <id>` runs \
+                 for information only and records nothing",
+                socket_path.display()
+            ))
+        })
+        .ok();
+    let channel = socket
+        .as_ref()
+        .map(|s| s as &dyn rigger::gate_channel::GateChannel);
     let rs = beating(
         &store,
         &progress,
         rigger::progress::SUPERVISOR_BEAT_INTERVAL,
         || {
             ticking(HOLD_POLL_INTERVAL, control_holds, || {
-                conductor::run(&cfg, &deps)
+                conductor::run_serving(&cfg, &deps, verdict_key, channel)
             })
         },
     )?;

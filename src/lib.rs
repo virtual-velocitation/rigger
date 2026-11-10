@@ -24,6 +24,9 @@ pub use rigger_conductor::conductor;
 pub use rigger_conductor::held;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use rigger_conductor::hold_controller;
+/// The driver's per-run verdict key: a gate verdict counts only when it verifies under it.
+#[cfg(any(feature = "store", not(feature = "core")))]
+pub use rigger_conductor::verdict_mac;
 pub use rigger_config_files::config;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use rigger_config_files::config_store;
@@ -67,6 +70,8 @@ pub mod grounder;
 pub use rigger_config_files::playbooks;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use rigger_dash::mcpserver;
+/// The gate request interface the run's driver serves and `rigger gate` asks over.
+pub use rigger_domain::gate_channel;
 /// The hold probe's delay and its progress line (spec 105 RELEASE).
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use rigger_domain::hold_probe;
@@ -82,8 +87,6 @@ pub use rigger_domain::retention;
 pub use rigger_domain::review;
 pub use rigger_domain::run;
 pub use rigger_domain::safety;
-/// The gate request interface the run's driver serves and `rigger gate` asks over.
-pub use rigger_domain::gate_channel;
 pub use rigger_domain::sleep_hold;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use rigger_driver::hooks;
@@ -96,11 +99,11 @@ pub use rigger_driver::reaped_child;
 pub use rigger_driver::sidecar;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use rigger_grounder::ingest;
-#[cfg(any(feature = "store", not(feature = "core")))]
-pub use rigger_process::holders;
 /// The gate request channel's adapters: the driver's socket and the verb's request over it.
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use rigger_process::gate_socket;
+#[cfg(any(feature = "store", not(feature = "core")))]
+pub use rigger_process::holders;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use rigger_process::keep_awake;
 #[cfg(any(feature = "store", not(feature = "core")))]
