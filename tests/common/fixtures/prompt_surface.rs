@@ -34,15 +34,16 @@ pub fn const_classes(source: &str) -> Vec<(String, String)> {
     pairs
 }
 
-/// The registry test of a crate whose classes THE CLASS TABLE lists: each `pub const` in its
-/// module `source` opens its doc comment with its class word, the (const, class) pairs equal
-/// `pinned` (the table's rows, order aside), and [`assert_groups_name_the_consts`] holds.
-pub fn assert_registry(source: &str, groups: &[Group], pinned: &[(&str, &str)]) {
+/// A crate's registry test: each `pub const` in its module `source` opens its doc comment with
+/// its class word, the (const, class) pairs equal `pinned` (the crate's rows of THE CLASS TABLE,
+/// order aside, pinned or derived by the table's naming rule), and
+/// [`assert_groups_name_the_consts`] holds.
+pub fn assert_registry<N: AsRef<str>>(source: &str, groups: &[Group], pinned: &[(N, &str)]) {
     let mut classes = const_classes(source);
     classes.sort();
     let mut expected: Vec<(String, String)> = pinned
         .iter()
-        .map(|(name, class)| (name.to_string(), class.to_string()))
+        .map(|(name, class)| (name.as_ref().to_string(), class.to_string()))
         .collect();
     expected.sort();
     assert_eq!(
@@ -52,10 +53,10 @@ pub fn assert_registry(source: &str, groups: &[Group], pinned: &[(&str, &str)]) 
     assert_groups_name_the_consts(source, groups);
 }
 
-/// A crate's registry test, `#[test] fn $name`, invoked in its `prompt_surface` module's tests:
-/// [`assert_registry`] over that module's own source (`include_str!` resolves against the file
-/// that invokes the macro), its `prompt_groups()` and `$pinned`, the crate's rows of THE CLASS
-/// TABLE.
+/// A crate's registry test, `#[test] fn $name`, invoked in a test module whose file sits beside
+/// the crate's `prompt_surface.rs` with that module's `prompt_groups` in scope: [`assert_registry`]
+/// over that module's source (`include_str!` resolves against the file that invokes the macro),
+/// its `prompt_groups()` and `$pinned`, the crate's rows of THE CLASS TABLE.
 macro_rules! registry_test {
     ($name:ident, $pinned:expr) => {
         /// Every prompt text of this crate is one const whose doc comment opens with THE CLASS

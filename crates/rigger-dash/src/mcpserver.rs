@@ -1174,6 +1174,8 @@ mod tests {
     use super::*;
     use crate::eventstore::sqlite::Store;
     use crate::eventstore::{Direction, Filter};
+    use crate::prompt_surface::prompt_groups;
+    use crate::prompt_surface_fixtures::{assert_renders, registry_test, rendered_groups};
     use crate::spawn::SpawnEvent;
     use crate::test_support::test_spawn_host;
     use std::io::Cursor;
@@ -2296,6 +2298,151 @@ mod tests {
 
         let names = tool_names(&server);
         assert_eq!(names, vec!["rigger_peers", "rigger_ground", "rigger_graph"]);
+    }
+
+    // =======================================================================================
+    // Spec 121, criterion 16: THE REGISTRY HOLDS EVERY PROMPT TEXT. Every description
+    // `tool_list` advertises is one const of `crate::prompt_surface`, named by THE NAMING RULE.
+    // =======================================================================================
+
+    /// Each surface `tool_list` serves, in registry order: its registry surface, its prefix
+    /// under THE NAMING RULE and the tools it advertises.
+    fn tool_surfaces() -> [(&'static str, &'static str, Value); 3] {
+        use crate::grounder::Nop;
+
+        let store = Store::open(":memory:").unwrap();
+        let driver = Driver::new();
+        let server = || Server::new(&driver, &store, "run");
+        [
+            (
+                "mcpserver::tool_list::SpawnBound",
+                "SPAWN_BOUND",
+                server().with_spawn("u/implementer#0").tool_list(),
+            ),
+            (
+                "mcpserver::tool_list::Lookup",
+                "LOOKUP",
+                server().with_grounder(Ok(&Nop)).tool_list(),
+            ),
+            (
+                "mcpserver::tool_list::Workflow",
+                "WORKFLOW",
+                server().tool_list(),
+            ),
+        ]
+    }
+
+    /// Every `description` string `json` holds, at any depth, in document order.
+    fn descriptions(json: &Value) -> Vec<&str> {
+        match json {
+            Value::Array(items) => items.iter().flat_map(descriptions).collect(),
+            Value::Object(fields) => fields
+                .iter()
+                .flat_map(|(key, value)| match value {
+                    Value::String(text) if key == "description" => vec![text.as_str()],
+                    _ => descriptions(value),
+                })
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Each text `tools` advertises beside its stem under THE NAMING RULE, in document order: a
+    /// tool's description under `<TOOL>`, then each `inputSchema` property description under
+    /// `<TOOL>_<ARG>`.
+    fn stemmed_texts(tools: &Value) -> Vec<(String, &str)> {
+        let mut texts = Vec::new();
+        for tool in tools.as_array().unwrap() {
+            let stem = tool["name"].as_str().unwrap().to_uppercase();
+            texts.push((stem.clone(), tool["description"].as_str().unwrap()));
+            for (arg, property) in tool["inputSchema"]["properties"].as_object().unwrap() {
+                if let Some(text) = property["description"].as_str() {
+                    texts.push((format!("{stem}_{}", arg.to_uppercase()), text));
+                }
+            }
+        }
+        texts
+    }
+
+    /// THE NAMING RULE over every surface: each text a surface advertises beside the const it
+    /// names, in document order. A stem and text two or more surfaces advertise word for word
+    /// are shared, named by the stem alone; any other text is named `<SURFACE>_<stem>`.
+    fn rule_named(
+        surfaces: &[(&'static str, &'static str, Value)],
+    ) -> Vec<(&'static str, Vec<(String, String)>)> {
+        let stemmed: Vec<Vec<(String, &str)>> = surfaces
+            .iter()
+            .map(|(_, _, tools)| stemmed_texts(tools))
+            .collect();
+        surfaces
+            .iter()
+            .zip(&stemmed)
+            .map(|((surface, prefix, _), texts)| {
+                let named = texts
+                    .iter()
+                    .map(|(stem, text)| {
+                        let advertisers = stemmed
+                            .iter()
+                            .filter(|other| other.iter().any(|(s, t)| s == stem && t == text))
+                            .count();
+                        let name = if advertisers > 1 {
+                            stem.clone()
+                        } else {
+                            format!("{prefix}_{stem}")
+                        };
+                        (name, text.to_string())
+                    })
+                    .collect();
+                (*surface, named)
+            })
+            .collect()
+    }
+
+    /// The dash's rows of THE CLASS TABLE, derived by THE NAMING RULE rather than enumerated:
+    /// each const the rule names on any surface, once, CONTRACT.
+    fn rule_pins() -> Vec<(String, &'static str)> {
+        let mut names: Vec<String> = rule_named(&tool_surfaces())
+            .into_iter()
+            .flat_map(|(_, named)| named.into_iter().map(|(name, _)| name))
+            .collect();
+        names.sort();
+        names.dedup();
+        names.into_iter().map(|name| (name, "CONTRACT")).collect()
+    }
+
+    registry_test!(
+        every_advertised_tool_text_is_one_contract_const_named_by_the_naming_rule,
+        &rule_pins()
+    );
+
+    /// THE REGISTRY HOLDS EVERY PROMPT TEXT for `tool_list`: on each surface, every
+    /// `description` string the advertised JSON holds, concatenated in document order, is the
+    /// surface's groups concatenated in registry order, and those groups are, one for one and
+    /// in that order, the consts THE NAMING RULE names holding the texts it names them for.
+    #[test]
+    fn each_tool_list_surface_is_its_groups_concatenated() {
+        let surfaces = tool_surfaces();
+        for ((surface, _, tools), (_, named)) in surfaces.iter().zip(rule_named(&surfaces)) {
+            let held: Vec<(&str, &str)> = prompt_groups()
+                .iter()
+                .filter(|group| group.surface == *surface)
+                .map(|group| (group.name, group.text))
+                .collect();
+            let wanted: Vec<(&str, &str)> = named
+                .iter()
+                .map(|(name, text)| (name.as_str(), text.as_str()))
+                .collect();
+            assert_eq!(
+                held, wanted,
+                "{surface}: the groups are the named texts in document order"
+            );
+            let names: Vec<&str> = named.iter().map(|(name, _)| name.as_str()).collect();
+            assert_renders(
+                surface,
+                &descriptions(tools).concat(),
+                &rendered_groups(prompt_groups(), surface, &names),
+            );
+        }
     }
 
     /// The lookup surface answers `rigger_ground` through the wired [`Grounder`] port, and
