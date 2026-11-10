@@ -4277,102 +4277,6 @@ mod tests {
             .collect()
     }
 
-    /// The awk program the author block spells after `open`, up to the `close` that ends it.
-    fn author_awk_program(open: &str, close: &str) -> String {
-        let text = committed_persona("rust-engineer.md");
-        let from = text
-            .find(open)
-            .unwrap_or_else(|| panic!("the block spells {open:?}"))
-            + open.len();
-        let len = text[from..]
-            .find(close)
-            .unwrap_or_else(|| panic!("the awk after {open:?} closes at {close:?}"));
-        text[from..from + len].to_string()
-    }
-
-    /// What awk prints running `program` over `files`; the run must succeed.
-    fn awk_output(program: &str, files: &[std::path::PathBuf]) -> String {
-        let out = std::process::Command::new("awk")
-            .arg(program)
-            .args(files)
-            .output()
-            .expect("awk runs");
-        assert!(
-            out.status.success(),
-            "awk runs the block's program: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-        String::from_utf8(out.stdout).unwrap()
-    }
-
-    /// The public functions of the tracked `tests/common` files that reach the checked-in tree,
-    /// by name: each whose body spells the package root `CARGO_MANIFEST_DIR` or a compile-time
-    /// include, then each whose body names one already found, to a fixpoint. The bodies are
-    /// read by the tree's one lexer, so a comment naming a function is no call.
-    fn tree_reaching_helpers() -> std::collections::BTreeSet<String> {
-        use crate::source_audit::{block_span, fn_sig_lines, tokenize, RawKind};
-        const PRIMITIVES: [&str; 3] = ["CARGO_MANIFEST_DIR", "include_str!(", "include_bytes!("];
-        struct Item {
-            name: String,
-            public: bool,
-            spelled: String,
-            names: std::collections::BTreeSet<String>,
-        }
-        let mut items = Vec::new();
-        for file in tracked_files(&["tests/common"]) {
-            if !file.ends_with(".rs") {
-                continue;
-            }
-            let text = read_text(&repo().join(&file));
-            let lines: Vec<&str> = text.lines().collect();
-            for sig in fn_sig_lines(&lines, &[]) {
-                let (start, end) = block_span(&lines, sig);
-                let chars: Vec<char> = lines[start..=end].join("\n").chars().collect();
-                let toks = tokenize(&chars);
-                let Some(at) = toks
-                    .iter()
-                    .position(|t| t.kind == RawKind::Keyword && t.text == "fn")
-                else {
-                    continue;
-                };
-                let Some(name) = toks.get(at + 1).filter(|t| t.kind == RawKind::Ident) else {
-                    continue;
-                };
-                items.push(Item {
-                    name: name.text.clone(),
-                    public: toks[..at].iter().any(|t| t.text == "pub"),
-                    spelled: toks.iter().map(|t| t.text.as_str()).collect(),
-                    names: toks[at + 2..]
-                        .iter()
-                        .filter(|t| t.kind == RawKind::Ident)
-                        .map(|t| t.text.clone())
-                        .collect(),
-                });
-            }
-        }
-        let mut found = std::collections::BTreeSet::new();
-        loop {
-            let more: Vec<String> = items
-                .iter()
-                .filter(|item| !found.contains(&item.name))
-                .filter(|item| {
-                    PRIMITIVES.iter().any(|p| item.spelled.contains(p))
-                        || item.names.iter().any(|n| found.contains(n))
-                })
-                .map(|item| item.name.clone())
-                .collect();
-            if more.is_empty() {
-                break;
-            }
-            found.extend(more);
-        }
-        items
-            .into_iter()
-            .filter(|item| item.public && found.contains(&item.name))
-            .map(|item| item.name)
-            .collect()
-    }
-
     /// Every agent text rigger ships, labelled: the committed personas and scaffold seeds, the
     /// fan-out helpers, the built-in instruction entries, the discipline every review-tier
     /// prompt carries and the build-cache sentence a review tier whose spawn carries a cache reads.
@@ -4857,13 +4761,11 @@ mod tests {
     /// The two author roles carry this project's anchors for the built-in hand-over rules as one
     /// block, byte-identical in both and in no other persona: the implement gate set by name, the
     /// commands the author runs before it reports (clippy on both lanes, the boundary audit, the content gates, red-before-green and, when the
-    /// production hunks touch `src/` or `crates/`, every root test that reaches the checked-in
-    /// tree - by the package root, a compile-time include, a read of a literal path or a
-    /// `tests/common` helper that resolves against the root or reads the root-relative path its
-    /// caller hands it, each anchor the block's command names - listed by that command and run
-    /// once on the default lane, the lane-no-default gate running them on the final tree), the
-    /// re-run after a later commit or an amend (a comment, doc-comment or Markdown diff re-runs
-    /// fmt, the default-lane clippy line and the text-reading root tests; any other hunk the full
+    /// production hunks touch `src/` or `crates/`, the whole root suite, `cargo test --tests`, run
+    /// once on the default lane, the lane-no-default gate running it on the final tree), the root
+    /// test filter by module on `all` or by executable name, the re-run after a later commit or
+    /// an amend (a comment, doc-comment or Markdown diff re-runs fmt, the default-lane clippy line
+    /// and `cargo test --tests`; any other hunk the full
     /// list), the whole suite left to the gates, the test homes with the tool that searches them, the counted check - the roots a retired spelling is
     /// counted over with the command that counts it - and the foreground wait for the long runs
     /// (the test binaries on both lanes and a lane script), polled to its exit line when the host
@@ -4897,26 +4799,20 @@ mod tests {
             "`cargo fmt --all --check`",
             "`cargo clippy --workspace --all-targets -- -D warnings`",
             "`cargo clippy --workspace --all-targets --no-default-features -- -D warnings`",
-            "`cargo test --test boundary_audit`",
+            "`cargo test --test all boundary_audit::`",
             "`sh .rigger/gates/content.sh style`",
             "`sh .rigger/gates/content.sh no-os-kill`",
             "`sh .rigger/gates/red-before-green.sh`",
             "every test binary your change touched, on both lanes",
-            "When your production hunks touch `src/` or `crates/`",
-            "`git ls-files 'tests/*.rs' | awk -F/ 'NF == 2' | xargs awk 'index($0, \
-             \"CARGO_MANIFEST_DIR\") || index($0, \"include_str!(\") || index($0, \
-             \"include_bytes!(\") || index($0, \"read_to_string(\\\"\") || index($0, \
-             \"fs::read(\\\"\") || index($0, \"read_dir(\\\"\") || index($0, \
-             \"File::open(\\\"\") || index($0, \"read_text(Path::new(\\\"\") || index($0, \
-             \"read_audit_record\") || index($0, \"production_sources\") || index($0, \
-             \"collect_rs_files\") || index($0, \"collect_files\") || index($0, \
-             \"for_each_rs_file\")",
-            "which lists them and runs them in one invocation, on the default lane alone, since \
-             the lane-no-default gate runs them on the final tree:",
+            "`cargo test --test all <file>::` when the file is a module of the consolidated \
+             `all` executable, `cargo test --test <file>` when `Cargo.toml` lists it as its own \
+             `[[test]]` executable",
+            "when your production hunks touch `src/` or `crates/`, `cargo test --tests` on the \
+             default lane alone",
             "Once these checks have run, a later commit or an amend re-runs only what its new \
              diff can change: a diff that touches only comments, doc comments or Markdown \
-             re-runs `cargo fmt --all --check`, the default-lane clippy line and the root tests \
-             that read a checked-in file as text; any other hunk re-runs the full list.",
+             re-runs `cargo fmt --all --check`, the default-lane clippy line and `cargo test \
+             --tests`; any other hunk re-runs the full list.",
             "The whole workspace suite on both lanes is the test and lane-no-default gates' run, \
              not yours",
             "`tests/common/fixtures/<area>.rs`",
@@ -4940,7 +4836,7 @@ mod tests {
             block.matches("--no-default-features").count(),
             2,
             "the no-default lane runs only the clippy line and the touched binaries; the \
-             text-reading root tests run once, on the default lane"
+             whole root suite runs once, on the default lane"
         );
         assert!(
             !block.contains("t='<phrase>'"),
@@ -4979,8 +4875,8 @@ mod tests {
 
     /// The author roles owe no sentence-walk record, so no persona and no scaffold seed spells a
     /// command only that record ran: the rule-spelling search over a pair of terms, or the
-    /// by-shape generator of the predicates a range adds. The root-test selector and the counted
-    /// check stay, each pinned by its own test.
+    /// by-shape generator of the predicates a range adds. The counted check stays, pinned by its
+    /// own test.
     #[test]
     fn no_persona_or_seed_spells_a_retired_walk_command() {
         let seeds = SCAFFOLD_AGENTS
@@ -5004,134 +4900,6 @@ mod tests {
                 );
             }
         }
-    }
-
-    /// The author block's root-test selector finds a top-level test by each way it can reach
-    /// the checked-in tree: the package root `CARGO_MANIFEST_DIR`, a compile-time include, a
-    /// read given a literal path (a root test runs from the package root), the audit-record
-    /// reader and the walkers, each given the root-relative path its caller hands it, and every
-    /// public `tests/common` function that resolves against the root, derived from the tracked
-    /// `tests/common` files rather than listed, each found called plainly and by turbofish. A
-    /// read of a temporary file is no tree read, and the selector passes it by.
-    #[test]
-    fn the_author_text_test_selector_finds_every_way_a_root_test_reaches_the_tree() {
-        let helpers = tree_reaching_helpers();
-        for known in ["repo_root", "repo_text", "production_main_rs"] {
-            assert!(
-                helpers.contains(known),
-                "the derivation reads tests/common and finds {known}: {helpers:?}"
-            );
-        }
-        let program = author_awk_program("awk -F/ 'NF == 2' | xargs awk '", "' | sort -u");
-        let mut reaches: Vec<(String, String)> = [
-            (
-                "manifest_dir",
-                "let root = PathBuf::from(env!(\"CARGO_MANIFEST_DIR\"));",
-            ),
-            (
-                "include_str",
-                "const DOC: &str = include_str!(\"../README.md\");",
-            ),
-            (
-                "include_bytes",
-                "const RAW: &[u8] = include_bytes!(\"../Cargo.lock\");",
-            ),
-            (
-                "read_to_string",
-                "let lib = fs::read_to_string(\"src/lib.rs\").unwrap();",
-            ),
-            (
-                "fs_read",
-                "let manifest = std::fs::read(\"Cargo.toml\").unwrap();",
-            ),
-            (
-                "read_dir",
-                "let docs = std::fs::read_dir(\"docs\").unwrap();",
-            ),
-            (
-                "file_open",
-                "let lock = File::open(\"Cargo.lock\").unwrap();",
-            ),
-            (
-                "read_text_literal",
-                "let readme = read_text(Path::new(\"README.md\"));",
-            ),
-            (
-                "audit_record",
-                "let record = read_audit_record(\"docs/audit/core-lane-purity.json\");",
-            ),
-            (
-                "production_sources",
-                "let sources = production_sources(Path::new(\"src\"));",
-            ),
-            (
-                "collect_rs_files",
-                "collect_rs_files(Path::new(\"crates\"), &mut found);",
-            ),
-            (
-                "collect_files",
-                "collect_files(Path::new(\"docs\"), &mut found);",
-            ),
-            (
-                "collect_files_with_extension",
-                "collect_files_with_extension(Path::new(\"docs\"), \"md\", &mut found);",
-            ),
-            (
-                "for_each_rs_file",
-                "for_each_rs_file(Path::new(\"src\"), &mut visit);",
-            ),
-        ]
-        .into_iter()
-        .map(|(label, line)| (label.to_string(), line.to_string()))
-        .collect();
-        for name in &helpers {
-            reaches.push((
-                format!("call_{name}"),
-                format!("let _ = common::{name}(&at);"),
-            ));
-            reaches.push((
-                format!("turbofish_{name}"),
-                format!("let _ = {name}::<Vec<String>>(&at);"),
-            ));
-        }
-        const TEMPORARY: &str = "temporary_read";
-        let dir = tempfile::tempdir().unwrap();
-        let files: Vec<std::path::PathBuf> = reaches
-            .iter()
-            .map(|(label, line)| (label.as_str(), line.as_str()))
-            .chain([(
-                TEMPORARY,
-                "let out = read_text(&dir.path().join(\"out.txt\"));",
-            )])
-            .map(|(label, line)| {
-                let file = dir.path().join(format!("{label}.rs"));
-                std::fs::write(&file, format!("{line}\n")).unwrap();
-                file
-            })
-            .collect();
-        let printed: std::collections::BTreeSet<String> = awk_output(&program, &files)
-            .lines()
-            .map(|path| {
-                std::path::Path::new(path)
-                    .file_stem()
-                    .unwrap()
-                    .to_string_lossy()
-                    .into_owned()
-            })
-            .collect();
-        let missed: Vec<&str> = reaches
-            .iter()
-            .map(|(label, _)| label.as_str())
-            .filter(|label| !printed.contains(*label))
-            .collect();
-        assert!(
-            missed.is_empty(),
-            "the selector names no anchor for these ways to the tree: {missed:?}"
-        );
-        assert!(
-            !printed.contains(TEMPORARY),
-            "a read of a temporary file is no tree read"
-        );
     }
 
     /// The `sdet` lens reads the unit's tests against the Done-when criteria it owns: a behaviour

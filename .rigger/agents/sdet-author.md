@@ -90,29 +90,20 @@ your committed tree:
 - `cargo clippy --workspace --all-targets -- -D warnings` and
   `cargo clippy --workspace --all-targets --no-default-features -- -D warnings`, the clippy
   line of the lane-no-default gate: a helper only one lane calls is dead code on the other;
-- `cargo test --test boundary_audit`, `sh .rigger/gates/content.sh style`,
+- `cargo test --test all boundary_audit::`, `sh .rigger/gates/content.sh style`,
   `sh .rigger/gates/content.sh no-os-kill` and `sh .rigger/gates/red-before-green.sh`;
-- every test binary your change touched, on both lanes: `cargo test -p <crate> --lib` or
-  `cargo test --test <file>`, then the same with `--no-default-features`. When your production
-  hunks touch `src/` or `crates/`, those binaries include every root test that reads a
-  checked-in file as text, edited by you or not, since a text pin goes red when a hunk moves
-  the text it reads: the top-level `tests/*.rs` files spelling one of the ways to the tree this
-  command names - the package root `CARGO_MANIFEST_DIR`, a compile-time include, a read given a
-  literal path (a root test runs from the package root), the audit-record reader and the
-  walkers, which read the root-relative path their caller hands them, and each `tests/common`
-  helper that resolves against the root, by its bare name so a turbofish call is found too -
-  which lists them and runs them in one invocation, on the default lane alone, since the
-  lane-no-default gate runs them on the final tree:
-  `git ls-files 'tests/*.rs' | awk -F/ 'NF == 2' | xargs awk 'index($0, "CARGO_MANIFEST_DIR") || index($0, "include_str!(") || index($0, "include_bytes!(") || index($0, "read_to_string(\"") || index($0, "fs::read(\"") || index($0, "read_dir(\"") || index($0, "File::open(\"") || index($0, "read_text(Path::new(\"") || index($0, "read_audit_record") || index($0, "production_sources") || index($0, "collect_rs_files") || index($0, "collect_files") || index($0, "for_each_rs_file") || index($0, "repo_root") || index($0, "repo_text") || index($0, "cargo_tree") || index($0, "stub_path") || index($0, "write_critique_stub") || index($0, "assert_doc_carries_none_of") || index($0, "production_main_rs") || index($0, "worker_label") || index($0, "run_capturing_system_prompt") || index($0, "record_critique") || index($0, "record_clean_critique") || index($0, "refused_run") || index($0, "echo_agent_path") || index($0, "fixture_script") || index($0, "arms_claude") || index($0, "assert_no_src_line_gates_on") || index($0, "assert_real_tree_clean") { print FILENAME }' | sort -u | sed 's|^tests/||; s|\.rs$||; s|^|--test |' | xargs cargo test`.
-- whenever a commit touches `tests/common` or the selector command above,
-  `cargo test --bin rigger the_author_text_test_selector`, on the default lane alone: that
-  pin derives the selector's anchors from `tests/common` and lives in the binary target,
-  which none of the runs above reaches.
+- every test binary your change touched, on both lanes: `cargo test -p <crate> --lib`, or for
+  a root test `cargo test --test all <file>::` when the file is a module of the consolidated
+  `all` executable, `cargo test --test <file>` when `Cargo.toml` lists it as its own `[[test]]`
+  executable; then the same with `--no-default-features`;
+- when your production hunks touch `src/` or `crates/`, `cargo test --tests` on the default
+  lane alone, since a text pin in a root test goes red when a hunk moves the text it reads
+  and the lane-no-default gate runs the suite on the final tree.
 
 Once these checks have run, a later commit or an amend re-runs only what its new diff can
 change: a diff that touches only comments, doc comments or Markdown re-runs
-`cargo fmt --all --check`, the default-lane clippy line and the root tests that read a
-checked-in file as text; any other hunk re-runs the full list.
+`cargo fmt --all --check`, the default-lane clippy line and `cargo test --tests`; any
+other hunk re-runs the full list.
 
 Each run above, the test binaries on both lanes and any `sh .rigger/gates/lanes.sh <lane>` run
 a unit asks of you included, takes minutes here: run it in the foreground with the Bash timeout
