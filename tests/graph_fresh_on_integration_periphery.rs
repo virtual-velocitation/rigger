@@ -109,6 +109,7 @@ fn a_landed_units_file_is_fresh_in_the_graph_immediately_after_integration() {
             kind: "core".into(),
             inputs: Vec::new(),
             requires: Vec::new(),
+            post_merge: true,
         },
     );
     cfg.workflow.stages.insert(

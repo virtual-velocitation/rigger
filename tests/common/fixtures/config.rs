@@ -496,6 +496,7 @@ pub fn gate_def_inputs(run: &str, inputs: &[&str]) -> Gate {
         kind: "core".to_string(),
         inputs: inputs.iter().map(|s| s.to_string()).collect(),
         requires: Vec::new(),
+        post_merge: true,
     }
 }
 

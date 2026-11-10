@@ -638,6 +638,7 @@ fn run_and_capture_sdet_author_prompts(graph: &Projector) -> Vec<String> {
             kind: "core".into(),
             inputs: Vec::new(),
             requires: Vec::new(),
+            post_merge: true,
         },
     );
     cfg.workflow.stages.insert(

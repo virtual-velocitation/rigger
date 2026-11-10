@@ -213,7 +213,7 @@ pub struct AgentDef {
 }
 
 /// Gate is a verification command plus how much it is trusted.
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Gate {
     #[serde(default)]
@@ -236,6 +236,32 @@ pub struct Gate {
     /// fails at load, never mid-run. Empty (the default) requires nothing.
     #[serde(default)]
     pub requires: Vec<String>,
+    /// Whether the conductor re-runs this gate on the merged tree after a unit lands
+    /// (`gates.<id>.post_merge`). `false` declares the gate DIFF-SCOPED: it judges only the unit's
+    /// own diff against the run branch, which a landed tree no longer differs from, so a post-merge
+    /// run checks nothing and costs a full gate run. The post-merge pass then skips it and logs the
+    /// skip with this reason; the implement pass still runs it before the merge. `true` (the
+    /// default) keeps today's behaviour: the gate re-runs on the merged tree. The project declares
+    /// it - the engine knows no gate by name.
+    #[serde(default = "run_post_merge")]
+    pub post_merge: bool,
+}
+
+/// The default of [`Gate::post_merge`]: a gate re-runs on the merged tree unless it says not to.
+fn run_post_merge() -> bool {
+    true
+}
+
+impl Default for Gate {
+    fn default() -> Self {
+        Gate {
+            run: String::new(),
+            kind: String::new(),
+            inputs: Vec::new(),
+            requires: Vec::new(),
+            post_merge: run_post_merge(),
+        }
+    }
 }
 
 /// One registered REGENERABLE artifact rule (spec 88, criterion 1): `paths` names the glob

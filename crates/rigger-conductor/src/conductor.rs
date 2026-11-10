@@ -411,6 +411,14 @@ enum GateKey {
     /// unit-4's attempt high-water scan nor seeds the cache with a unit). Keyed so a stepwise
     /// resume re-emits the post-merge verdict exactly once.
     PostMergeVerdict,
+    /// A POST-MERGE skip record: the post-merge re-gate did not run a gate because its
+    /// definition declares `post_merge: false`. DISTINCT from [`GateKey::Skip`] at the same
+    /// `(unit, attempt)`, so neither skip shadows the other under the once-per-key guard, and
+    /// from [`GateKey::PostMergeVerdict`], so [`cached`] over `gate_verdicts` never reads it as a
+    /// verdict. The `postmerge-gate-skip:` infix carries no `/gate:` substring, so
+    /// [`unit_of_gate_key`] never mis-parses it. Keyed so a stepwise resume re-emits the skip
+    /// exactly once.
+    PostMergeSkip,
 }
 
 /// The replay key for the [`GateKey`] record of `gate` run by `unit` at `attempt`, under the
@@ -424,6 +432,7 @@ fn gate_key(kind: GateKey, unit: &str, attempt: u32, retry: u32, gate: &str) -> 
         GateKey::Verdict => "gate",
         GateKey::Skip => "gate-skip",
         GateKey::PostMergeVerdict => "postmerge-gate",
+        GateKey::PostMergeSkip => "postmerge-gate-skip",
     };
     spawn::with_retry(format!("{unit}/{infix}:{gate}#{attempt}"), retry)
 }
@@ -767,7 +776,9 @@ impl GateOutcome {
 ///   from the pre-merge `{unit}/gate:` verdict so it never REPLAYS the isolation green but
 ///   still consults unit-1's CONTENT cache - a merge that changed nothing a gate reads is a
 ///   near-free cache-hit, while an unpredicted merge break misses and RUNS on the merged
-///   tree. Skips nothing, exactly like `Exhaustive`.
+///   tree. Skips only a gate the project declares `post_merge: false` (a gate judging the
+///   unit's own diff, which the landed tree no longer differs from) and logs that skip; every
+///   other gate runs, as in `Exhaustive`.
 enum GateSelection<'a> {
     Narrowed(&'a [String]),
     Exhaustive,
@@ -3973,8 +3984,10 @@ impl RunCtx<'_> {
         commits
     }
 
-    /// Log a blast-radius SKIP (spec 12, unit 3): the inner loop did not run `gid` because its
-    /// `inputs:` globs miss the unit's grounded blast radius. Recorded as a `GateVerdict`
+    /// Log a gate SKIP (spec 12, unit 3): the pass did not run `gid` for `reason` - the inner
+    /// loop because its `inputs:` globs miss the unit's grounded blast radius
+    /// ([`GateKey::Skip`]), the post-merge re-gate because the gate declares `post_merge: false`
+    /// ([`GateKey::PostMergeSkip`]); `kind` is the skip's key. Recorded as a `GateVerdict`
     /// carrying `skipped: true` and the reason (no new event type - the skip rides the existing
     /// vocabulary), under the distinct [`gate_key`] so it never shadows the gate-RUN key
     /// the exhaustive integrate pass records, and with NO content digest so it never seeds the
@@ -3983,15 +3996,15 @@ impl RunCtx<'_> {
     /// Keyed so a stepwise resume re-appends it exactly once.
     fn emit_gate_skip(
         &self,
+        kind: GateKey,
         unit: &str,
         gid: &str,
         attempt: u32,
-        inputs: &[String],
-        blast_radius: &[String],
+        reason: &str,
     ) -> Result<(), Error> {
-        // A skip is the same decision on every infra rerun of the attempt (its blast radius
-        // does not change), so it keys at ordinal 0 and is recorded once per attempt.
-        let key = gate_key(GateKey::Skip, unit, attempt, 0, gid);
+        // A skip is the same decision on every infra rerun of the attempt (its blast radius and
+        // its declaration do not change), so it keys at ordinal 0 and is recorded once per attempt.
+        let key = gate_key(kind, unit, attempt, 0, gid);
         {
             // Idempotency guard, identical to `emit_gate_verdict`: a re-step that already
             // recorded this skip re-appends nothing.
@@ -3999,11 +4012,6 @@ impl RunCtx<'_> {
                 return Ok(());
             }
         }
-        let reason = format!(
-            "skipped: gate {gid:?} inputs {inputs:?} do not intersect the unit's blast radius \
-             {blast_radius:?}; the inner loop runs only blast-radius gates (spec 12, unit 3), and \
-             the exhaustive integrate pass still runs this gate"
-        );
         let ev = Event::new(
             contextgraph::TYPE_GATE_VERDICT,
             serde_json::to_vec(&json!({
@@ -9283,9 +9291,29 @@ impl RunCtx<'_> {
             // still runs the skipped gate below. `Exhaustive` skips nothing.
             if let GateSelection::Narrowed(blast_radius) = selection {
                 if !gate_intersects_radius(&gc.inputs, blast_radius) {
-                    self.emit_gate_skip(&st.name, gid, attempt, &gc.inputs, blast_radius)?;
+                    let reason = format!(
+                        "skipped: gate {gid:?} inputs {:?} do not intersect the unit's blast \
+                         radius {blast_radius:?}; the inner loop runs only blast-radius gates \
+                         (spec 12, unit 3), and the exhaustive integrate pass still runs this gate",
+                        gc.inputs
+                    );
+                    self.emit_gate_skip(GateKey::Skip, &st.name, gid, attempt, &reason)?;
                     continue;
                 }
+            }
+            // A gate the project declares `post_merge: false` judges only the unit's own diff,
+            // which the landed tree no longer differs from: the post-merge re-gate would check
+            // nothing, so it is SKIPPED and logged (never silent). Only the post-merge pass
+            // skips it - the implement, remediate and integrate passes ran it on the diff before
+            // the merge. The engine knows no gate by name; the declaration is the project's.
+            if matches!(selection, GateSelection::PostMerge) && !gc.post_merge {
+                let reason = format!(
+                    "skipped: gate {gid:?} declares post_merge: false, so it judges only the \
+                     unit's own diff and the post-merge pass over the landed tree would check \
+                     nothing; the passes before the merge still run this gate"
+                );
+                self.emit_gate_skip(GateKey::PostMergeSkip, &st.name, gid, attempt, &reason)?;
+                continue;
             }
             // Content-addressed cache-hit (spec 12, unit 1): this gate has not run at THIS
             // (unit, attempt, gate) coordinate, but a prior GREEN verdict may already have
@@ -47823,6 +47851,7 @@ mod tests {
                 kind: "deferred".into(),
                 inputs: Vec::new(),
                 requires: Vec::new(),
+                post_merge: true,
             },
         );
         cfg.workflow.stages.insert(
@@ -48224,6 +48253,7 @@ mod tests {
                     kind: "deferred".into(),
                     inputs: Vec::new(),
                     requires: Vec::new(),
+                    post_merge: true,
                 },
             ),
         ]));
@@ -48278,6 +48308,7 @@ mod tests {
                 kind: "deferred".into(),
                 inputs: Vec::new(),
                 requires: Vec::new(),
+                post_merge: true,
             },
         );
         cfg.workflow.stages.insert(
@@ -48440,6 +48471,7 @@ mod tests {
                 kind: "deferred".into(),
                 inputs: Vec::new(),
                 requires: Vec::new(),
+                post_merge: true,
             },
         );
         // A Manual-autonomy stage pauses on its gate awaiting a human (§4.3). It also
@@ -48534,6 +48566,7 @@ mod tests {
                 kind: "deferred".into(),
                 inputs: Vec::new(),
                 requires: Vec::new(),
+                post_merge: true,
             },
         );
         cfg.workflow.defaults.review = config::ReviewPanel {
@@ -48668,6 +48701,7 @@ mod tests {
                 kind: "deferred".into(),
                 inputs: Vec::new(),
                 requires: Vec::new(),
+                post_merge: true,
             },
         );
         cfg.workflow.stages.insert(

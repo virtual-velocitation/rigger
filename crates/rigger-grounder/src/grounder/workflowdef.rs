@@ -260,6 +260,7 @@ mod tests {
                 kind: "core".to_string(),
                 inputs: Vec::new(),
                 requires: Vec::new(),
+                post_merge: true,
             },
         );
         gates.insert(
@@ -269,6 +270,7 @@ mod tests {
                 kind: "core".to_string(),
                 inputs: Vec::new(),
                 requires: Vec::new(),
+                post_merge: true,
             },
         );
 

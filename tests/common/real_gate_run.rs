@@ -100,6 +100,7 @@ fn one_gate_workflow(build: BuildConfig, gate_kind: &str, gate_cmd: &str) -> Con
             kind: gate_kind.into(),
             inputs: Vec::new(),
             requires: Vec::new(),
+            post_merge: true,
         },
     );
     cfg.workflow.build = build;

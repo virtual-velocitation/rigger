@@ -98,6 +98,7 @@ fn baseline_unit_started_carries_the_full_multiline_criterion_including_its_owns
             kind: "core".into(),
             inputs: Vec::new(),
             requires: Vec::new(),
+            post_merge: true,
         },
     );
     // The fan-out TEMPLATE: `deps.criteria` below drives the conductor's own baseline-unit

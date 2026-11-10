@@ -77,6 +77,7 @@ fn campaign(store: &Store, criterion: &str) -> Status {
             kind: "core".into(),
             inputs: Vec::new(),
             requires: Vec::new(),
+            post_merge: true,
         },
     );
     cfg.workflow.stages.insert(
