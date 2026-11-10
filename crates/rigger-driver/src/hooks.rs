@@ -468,6 +468,29 @@ pub fn install_mcp_server(
     command: &str,
     args: &[&str],
 ) -> Result<Vec<u8>, Error> {
+    merge_mcp_server(existing, name, json!({"command": command, "args": args}))
+}
+
+/// The host's per-server MCP key that puts every tool the server lists into the session's prompt
+/// up front instead of deferring it behind the host's tool search (which a session must call
+/// before a deferred tool's schema is in hand).
+pub const MCP_ALWAYS_LOAD: &str = "alwaysLoad";
+
+/// The MCP configuration a headless spawn launches with: rigger's one stdio server
+/// (`command args..` under [`MCP_SERVER_NAME`]) marked [`MCP_ALWAYS_LOAD`], so the graph tools are
+/// callable from the spawn's first turn. Only rigger's own entry carries the mark; it changes no
+/// other server and no host-wide setting.
+pub fn spawn_mcp_config(command: &str, args: &[&str]) -> Result<Vec<u8>, Error> {
+    merge_mcp_server(
+        b"",
+        MCP_SERVER_NAME,
+        json!({"command": command, "args": args, MCP_ALWAYS_LOAD: true}),
+    )
+}
+
+/// Merge `entry` under `name` into `existing`'s `mcpServers` object, replacing whatever was there
+/// under that name and preserving every other key; see [`install_mcp_server`].
+fn merge_mcp_server(existing: &[u8], name: &str, entry: Value) -> Result<Vec<u8>, Error> {
     let mut root: Value = if existing.iter().all(u8::is_ascii_whitespace) {
         json!({})
     } else {
@@ -480,7 +503,7 @@ pub fn install_mcp_server(
     let servers_obj = servers
         .as_object_mut()
         .ok_or_else(|| Error("\"mcpServers\" is not an object".into()))?;
-    servers_obj.insert(name.to_string(), json!({"command": command, "args": args}));
+    servers_obj.insert(name.to_string(), entry);
     let mut out =
         serde_json::to_vec_pretty(&root).map_err(|e| Error(format!("encode .mcp.json: {e}")))?;
     out.push(b'\n');

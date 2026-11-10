@@ -378,8 +378,8 @@ pub(crate) fn system_prompt_file(
 ///
 /// - `--permission-mode default` with `--permission-prompts none`: see [`PERMISSION_MODE`];
 /// - `--mcp-config` names exactly one server, `<rigger_bin> <mcp_args..>` under
-///   [`hooks::MCP_SERVER_NAME`], and `--strict-mcp-config` keeps every other MCP configuration
-///   out. The host picks the server: the stream-json host binds each spawn its own
+///   [`hooks::MCP_SERVER_NAME`], marked to load its tools up front ([`hooks::spawn_mcp_config`]),
+///   and `--strict-mcp-config` keeps every other MCP configuration out. The host picks the server: the stream-json host binds each spawn its own
 ///   (`mcp --spawn <id>`, §4.3), the cli host the operator's read-only one (`mcp`, the entry
 ///   `rigger setup` writes into `.mcp.json`);
 /// - `--settings` is `settings_json` (may be empty), with `advisorModel` set to the empty string
@@ -416,10 +416,7 @@ pub(crate) fn spawn_config_args(
         "--permission-prompts".to_string(),
         "none".to_string(),
         "--mcp-config".to_string(),
-        json_arg(
-            hooks::install_mcp_server(b"", hooks::MCP_SERVER_NAME, rigger_bin, mcp_args),
-            "MCP config",
-        )?,
+        json_arg(hooks::spawn_mcp_config(rigger_bin, mcp_args), "MCP config")?,
         "--strict-mcp-config".to_string(),
         "--settings".to_string(),
         json_arg(
@@ -579,7 +576,10 @@ mod tests {
     #[test]
     fn every_hosts_spawn_loads_the_rigger_tools_up_front() {
         let rows: [(&str, &[&str]); 2] = [
-            ("the stream-json host's spawn-bound server", &["mcp", "--spawn", "u/implementer#0"]),
+            (
+                "the stream-json host's spawn-bound server",
+                &["mcp", "--spawn", "u/implementer#0"],
+            ),
             ("the cli host's read-only server", &["mcp"]),
         ];
         for (name, mcp_args) in rows {

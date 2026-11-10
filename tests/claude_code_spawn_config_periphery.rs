@@ -177,9 +177,7 @@ fn assert_settings_are_the_installed_ones(argv: &[String], dir: &Path) {
 /// `argv`'s `--mcp-config` is the one `rigger` server the MCP installer builds for this spawn,
 /// and `--strict-mcp-config` keeps any other configuration out.
 fn assert_mcp_config_is_the_installed_server(argv: &[String]) {
-    let installed =
-        hooks::install_mcp_server(b"", "rigger", RIGGER_BIN, &["mcp", "--spawn", SPAWN_ID])
-            .unwrap();
+    let installed = hooks::spawn_mcp_config(RIGGER_BIN, &["mcp", "--spawn", SPAWN_ID]).unwrap();
     assert_eq!(
         flag_json(argv, "--mcp-config"),
         serde_json::from_slice::<Value>(&installed).unwrap(),
