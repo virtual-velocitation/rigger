@@ -341,6 +341,40 @@ crate::test_cases! {
         ("skills/x/SKILL.md", Some("# Skill\nuse the gizmo\n")), &[("skill", "skills/x/SKILL.md:1")]);
 }
 
+/// A tree holding `files` ranks `term` to the (kind, place) hits `expected`, the first hit's
+/// snippet being `snippet`.
+fn ranks(files: &[(&str, &str)], term: &str, expected: &[(&str, &str)], snippet: &str) {
+    let dir = tree(files);
+    let ranked = ProseIndex::default()
+        .rank(dir.path(), &[term], Ok(Vec::new()))
+        .unwrap();
+    let want: Vec<(String, String)> = expected
+        .iter()
+        .map(|(k, p)| (k.to_string(), p.to_string()))
+        .collect();
+    assert_eq!(ranked_places(&ranked), want, "{files:?}");
+    assert_eq!(
+        ranked.hits.first().map(|h| h.snippet.as_str()),
+        Some(snippet),
+        "{files:?}"
+    );
+}
+
+crate::test_cases! {
+    a_heading_inside_backtick_fences_starts_no_section: ranks(
+        &[("docs/a.md", "# Intro\n```\n# gizmo\n```\n")], "gizmo",
+        &[("doc", "docs/a.md:1")], "``` # gizmo");
+    a_heading_inside_tilde_fences_starts_no_section: ranks(
+        &[("docs/a.md", "# Intro\n~~~\n# gizmo\n~~~\n")], "gizmo",
+        &[("doc", "docs/a.md:1")], "~~~ # gizmo");
+    the_text_before_the_first_heading_is_a_section: ranks(
+        &[("docs/a.md", "the gizmo first\n# Other\nnothing\n")], "gizmo",
+        &[("doc", "docs/a.md:1")], "the gizmo first");
+    a_snippet_is_one_line_its_whitespace_collapsed: ranks(
+        &[("docs/a.md", "# Intro\nthe   gizmo\n   spins\n")], "gizmo",
+        &[("doc", "docs/a.md:1")], "the gizmo spins");
+}
+
 /// The graph's records rank as prose, and records left out are said to be.
 #[test]
 fn records_rank_as_prose_and_a_left_out_record_set_is_stated() {
@@ -553,6 +587,48 @@ fn a_graph_that_cannot_answer_still_returns_text_and_prose() {
             "{reply}"
         );
     }
+}
+
+/// A build without code extraction states that its graph holds no code entity, and still ranks
+/// the graph's records as prose.
+#[cfg(not(feature = "symbols"))]
+#[test]
+fn a_build_without_code_extraction_states_its_graph_holds_no_code() {
+    let dir = tree(&[("a.rs", "fn gizmo() {}\n")]);
+    let graph = Held {
+        nodes: vec![decision("d1", "keep the gizmo")],
+        ..Held::default()
+    };
+    let reply = TreeLookup::new(dir.path())
+        .lookup(&terms(&["gizmo"]), Ok(&graph))
+        .unwrap();
+    assert!(
+        section(&reply, "graph").starts_with(
+            "not answered: this rigger build carries no code extraction (the `symbols` feature)"
+        ),
+        "{reply}"
+    );
+    assert!(
+        section(&reply, "prose").contains("- prose:decision d1: keep the gizmo\n"),
+        "{reply}"
+    );
+}
+
+/// The whole lookup ranks the graph's records among the tree's prose.
+#[test]
+fn a_lookup_ranks_the_graphs_records_as_prose() {
+    let dir = tree(&[]);
+    let graph = Held {
+        nodes: vec![decision("d1", "keep the gizmo in memory")],
+        ..Held::default()
+    };
+    let reply = TreeLookup::new(dir.path())
+        .lookup(&terms(&["gizmo"]), Ok(&graph))
+        .unwrap();
+    assert!(
+        section(&reply, "prose").contains("- prose:decision d1: keep the gizmo in memory\n"),
+        "{reply}"
+    );
 }
 
 /// No term to look up is the one error.
