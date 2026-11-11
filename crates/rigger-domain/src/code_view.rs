@@ -4,6 +4,7 @@
 //! ([`FactsView`]). A store holds no language knowledge: extraction and grouping are passed in.
 
 use crate::code_facts::{FileFacts, Half, MentionKind, Scope, Stamp, Tip};
+use crate::resolve::ProofCall;
 use std::borrow::Cow;
 use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
@@ -189,6 +190,33 @@ pub trait CodeView: Send + Sync {
         }
         leaves.into_iter().collect()
     }
+
+    /// What the store settled for this view at advance, when the view holds it: a reader then
+    /// reads its rows instead of computing them ([`crate::resolve::Resolver`] computes them for a
+    /// view that does not).
+    fn settled(&self) -> Option<&dyn Settled> {
+        None
+    }
+}
+
+/// The proof calls a [`Settled`] read selects.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Proofs<'a> {
+    /// Every proof call.
+    All,
+    /// The calls proving the definition with this id.
+    Of(&'a str),
+    /// The calls in the file at this path.
+    In(&'a str),
+}
+
+/// What a store computes from the tree alone when it advances, so a read takes rows rather than
+/// computing them: each one is what [`crate::resolve::Resolver`] computes over the same view.
+pub trait Settled: Sync {
+    /// Every test file, by its Test scope or the test-module closure, in path order.
+    fn test_files(&self) -> Vec<&str>;
+    /// The proof calls `of` selects, in proof order ([`crate::resolve::Resolver::proof_calls`]).
+    fn proofs(&self, of: Proofs<'_>) -> Vec<ProofCall>;
 }
 
 /// Where a tree is read from: a git repository, or a directory with no git.

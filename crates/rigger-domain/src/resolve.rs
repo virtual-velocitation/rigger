@@ -27,7 +27,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use crate::code_facts::{Def, FileFacts, Half, Mention, MentionKind, ModuleDecl, Scope};
-use crate::code_view::{CodeView, DefRef};
+use crate::code_view::{CodeView, DefRef, Proofs, Settled};
 use crate::contextgraph::query::{entity_id, file_of, leaf_of, placeholder_id};
 use crate::contextgraph::{
     definition_precedence, is_call_target, reference_candidate_kinds, KIND_AGENT,
@@ -36,6 +36,13 @@ use crate::contextgraph::{
     REL_NEEDS, REL_REFERENCES, REL_REVIEWS, REL_REVIEWS_LIGHT, REL_RUNS, REL_SPECIFIES,
     TIER_AMBIGUOUS, TIER_EXTRACTED, TIER_INFERRED,
 };
+
+/// The generation of what a store settles from the tree alone when it advances ([`Settled`]):
+/// the test-module closure and the proof rule. Bump it whenever either can settle other rows for
+/// a view than before; the store's fingerprint folds it in, so a snapshot settled under an older
+/// one is computed anew. A golden test pins it beside a digest of the rows over a fixture, so a
+/// change that is not bumped fails there.
+pub const SETTLED_GENERATION: u64 = 1;
 
 /// The node kinds a design concept or a workflow node may name.
 pub(crate) const INTENT_KINDS: [&str; 7] = [
@@ -219,6 +226,14 @@ fn proof_order(mut calls: Vec<ProofCall>) -> Vec<ProofCall> {
     calls
 }
 
+/// The test entity making a call in `facts` whose enclosing definition is `enclosing`: that
+/// definition, or the file itself when the call sits at file level.
+fn caller_of(facts: &FileFacts, enclosing: Option<u32>) -> String {
+    enclosing
+        .and_then(|i| facts.defs.get(i as usize))
+        .map_or_else(|| facts.path.clone(), |d| entity_id(&facts.path, &d.local))
+}
+
 /// Grows `set` to its fixed point: the target of every declaration `admits` takes, given the set
 /// so far, joins it.
 fn grow<'v>(
@@ -238,9 +253,51 @@ fn grow<'v>(
     }
 }
 
+/// The test files of `view`, whose code files are `code_files`, `declaring` those that declare a
+/// module held elsewhere: the Test-scope files (`scoped`), then the test-module closure: every
+/// file a test-only module declaration, or any declaration in a test file, reaches, unless a
+/// product declaration reaches it. The product files are a fixed point from the roots, the code
+/// files no declaration reaches outside Test scope, through every declaration not marked test
+/// that a product file makes; a Test-scope file is never product.
+fn test_closure<'v>(
+    view: &'v dyn CodeView,
+    code_files: &BTreeSet<&'v str>,
+    declaring: &[&'v str],
+    mut test_files: BTreeSet<&'v str>,
+) -> BTreeSet<&'v str> {
+    let mut declared: Vec<(&'v str, bool, &'v str)> = Vec::new();
+    for &path in declaring {
+        let Some(facts) = view.file(path) else {
+            continue;
+        };
+        for decl in &facts.modules {
+            if let Some(target) = module_target(decl, |p| code_files.contains(p))
+                .and_then(|target| code_files.get(target))
+            {
+                declared.push((path, decl.test, target));
+            }
+        }
+    }
+    let reached: BTreeSet<&str> = declared.iter().map(|&(_, _, to)| to).collect();
+    let mut product: BTreeSet<&str> = code_files
+        .iter()
+        .copied()
+        .filter(|path| !reached.contains(path) && !test_files.contains(path))
+        .collect();
+    grow(&declared, &mut product, |from, test, to, product| {
+        !test && product.contains(from) && !test_files.contains(to)
+    });
+    grow(&declared, &mut test_files, |from, test, to, test_files| {
+        (test || test_files.contains(from)) && !product.contains(to)
+    });
+    test_files
+}
+
 /// The rule table applied to one view.
 pub struct Resolver<'v> {
     view: &'v dyn CodeView,
+    /// What the store settled for the view, when it holds it.
+    settled: Option<&'v dyn Settled>,
     /// Every code-half file of the view.
     code_files: BTreeSet<&'v str>,
     /// Every test file: Test-scope by path, or in the test-module closure.
@@ -252,16 +309,14 @@ pub struct Resolver<'v> {
 }
 
 impl<'v> Resolver<'v> {
-    /// The resolver of `view`. Its test files are the Test-scope files, then the test-module
-    /// closure: every file a test-only module declaration, or any declaration in a test file,
-    /// reaches, unless a product declaration reaches it. The product files are a fixed point
-    /// from the roots, the code files no declaration reaches outside Test scope, through every
-    /// declaration not marked test that a product file makes; a Test-scope file is never product.
+    /// The resolver of `view`. Its test files are the ones the view settled, else
+    /// [`test_closure`]'s.
     pub fn new(view: &'v dyn CodeView) -> Self {
+        let settled = view.settled();
         let mut code_files = BTreeSet::new();
-        let mut test_files = BTreeSet::new();
         // Only a file that declares a module held elsewhere has a declaration to read.
         let mut declaring = Vec::new();
+        let mut scoped = BTreeSet::new();
         for f in view.files() {
             if f.half == Half::Code {
                 code_files.insert(f.path);
@@ -270,38 +325,20 @@ impl<'v> Resolver<'v> {
                 }
             }
             if f.scope == Scope::Test {
-                test_files.insert(f.path);
+                scoped.insert(f.path);
             }
         }
-        let mut declared: Vec<(&'v str, bool, &'v str)> = Vec::new();
-        for path in declaring {
-            let Some(facts) = view.file(path) else {
-                continue;
-            };
-            for decl in &facts.modules {
-                if let Some(target) = module_target(decl, |p| code_files.contains(p))
-                    .and_then(|target| code_files.get(target))
-                {
-                    declared.push((path, decl.test, target));
-                }
-            }
-        }
-        let reached: BTreeSet<&str> = declared.iter().map(|&(_, _, to)| to).collect();
-        let mut product: BTreeSet<&str> = code_files
-            .iter()
-            .copied()
-            .filter(|path| !reached.contains(path) && !test_files.contains(path))
-            .collect();
-        grow(&declared, &mut product, |from, test, to, product| {
-            !test && product.contains(from) && !test_files.contains(to)
-        });
-        grow(&declared, &mut test_files, |from, test, to, test_files| {
-            (test || test_files.contains(from)) && !product.contains(to)
-        });
+        let test_files = match settled {
+            Some(settled) => settled.test_files().into_iter().collect(),
+            None => test_closure(view, &code_files, &declaring, scoped)
+                .into_iter()
+                .collect(),
+        };
         Self {
             view,
+            settled,
             code_files,
-            test_files: test_files.into_iter().collect(),
+            test_files,
             candidates: RefCell::default(),
             proof_calls: std::cell::OnceCell::new(),
         }
@@ -606,10 +643,19 @@ impl<'v> Resolver<'v> {
     /// the calling file, then the evidence `file:line` as text. The same whatever tests a reader
     /// shows.
     ///
-    /// The walk of every test mention runs once per resolver: proofs and test attachment both read
-    /// this result.
+    /// Read once per resolver, from the view's settled rows when it holds them, else walked over
+    /// every test mention: proofs and test attachment both read this result.
     pub fn proof_calls(&self) -> &[ProofCall] {
-        self.proof_calls.get_or_init(|| self.walk_proof_calls())
+        self.proof_calls.get_or_init(|| match self.settled {
+            Some(settled) => settled.proofs(Proofs::All),
+            None => self.walk_proof_calls(),
+        })
+    }
+
+    /// Whether the view holds its proof calls settled, so a reader need not walk them
+    /// ([`Self::file_proofs`]).
+    pub fn proofs_settled(&self) -> bool {
+        self.settled.is_some()
     }
 
     fn walk_proof_calls(&self) -> Vec<ProofCall> {
@@ -631,23 +677,34 @@ impl<'v> Resolver<'v> {
             .filter(|m| m.kind == MentionKind::Call && self.mention_is_test(facts, m))
             .filter_map(|m| {
                 let target = self.proof(path, &m.leaf)?;
-                let caller = m
-                    .enclosing
-                    .and_then(|i| facts.defs.get(i as usize))
-                    .map_or_else(|| path.to_string(), |d| entity_id(path, &d.local));
                 Some(ProofCall {
                     target,
-                    caller,
+                    caller: caller_of(facts, m.enclosing),
                     evidence: format!("{path}:{}", m.line),
                 })
             })
             .collect()
     }
 
-    /// The evidence of the proofs landing on the definition `id`, whose definitions are named
-    /// `leaves`, in [`Self::proofs`] order: each test call of one of `leaves` in a code file that
-    /// the proof rule resolves onto `id`, read from the mentions of those leaves alone.
-    pub fn proof_evidence(&self, id: &str, leaves: &[&str]) -> Vec<String> {
+    /// The proof calls in the file at `path`, in proof order: the view's settled rows, else
+    /// [`Self::file_proofs`] of its facts when it is a code file.
+    pub fn proofs_in(&self, path: &str) -> Vec<ProofCall> {
+        if let Some(settled) = self.settled {
+            return settled.proofs(Proofs::In(path));
+        }
+        let facts = (self.is_code_file(path))
+            .then(|| self.view.file(path))
+            .flatten();
+        proof_order(facts.map_or_else(Vec::new, |facts| self.file_proofs(&facts)))
+    }
+
+    /// The proof calls landing on the definition `id`, whose definitions are named `leaves`, in
+    /// proof order: the view's settled rows, else each test call of one of `leaves` in a code
+    /// file that the proof rule resolves onto `id`, read from the mentions of those leaves alone.
+    pub fn proofs_of(&self, id: &str, leaves: &[&str]) -> Vec<ProofCall> {
+        if let Some(settled) = self.settled {
+            return settled.proofs(Proofs::Of(id));
+        }
         let mut calls = Vec::new();
         for &leaf in leaves {
             for m in self.view.mentions_named(leaf) {
@@ -657,15 +714,22 @@ impl<'v> Resolver<'v> {
                     continue;
                 }
                 if self.proof(path, leaf).as_deref() == Some(id) {
+                    let caller = match m.enclosing {
+                        Some(_) => self
+                            .view
+                            .file(path)
+                            .map_or_else(|| path.to_string(), |f| caller_of(&f, m.enclosing)),
+                        None => path.to_string(),
+                    };
                     calls.push(ProofCall {
                         target: id.to_string(),
-                        caller: String::new(),
+                        caller,
                         evidence: format!("{path}:{}", m.line),
                     });
                 }
             }
         }
-        proof_order(calls).into_iter().map(|c| c.evidence).collect()
+        proof_order(calls)
     }
 
     /// Holds `calls`, the [`Self::file_proofs`] of every code file, as this resolver's proof calls
@@ -1273,6 +1337,34 @@ pub(crate) mod tests {
 
     /// ONE PATH IS ONE ENTITY (spec 119 criterion 10): of same-path twins of one kind the lower
     /// line settles the id wherever it sits among them, and of twins on one line the first.
+    /// A CHANGE TO WHAT A STORE SETTLES SHIPS WITH A BUMP: the fixture's test files and proof
+    /// calls are pinned by digest beside the generation the store's fingerprint folds in, so a
+    /// change to the test-module closure or the proof rule fails here until `SETTLED_GENERATION`
+    /// is bumped and the pair re-pinned.
+    #[test]
+    fn a_change_to_the_settled_rows_ships_with_a_generation_bump() {
+        const PINNED: (u64, &str) = (1, "b668e495a0e24465");
+        let view = fixture();
+        let resolver = Resolver::new(&view);
+        let test_files: Vec<&str> = (view.files())
+            .map(|f| f.path)
+            .filter(|path| resolver.is_test_file(path))
+            .collect();
+        let proofs = resolver.proof_calls();
+        assert!(
+            !proofs.is_empty() && test_files.iter().any(|p| !p.starts_with("tests/")),
+            "the fixture holds proofs and a test file by the closure alone"
+        );
+        let digest = crate::community::fnv1a_hex(&format!("{test_files:#?}{proofs:#?}"));
+        assert_eq!(
+            (SETTLED_GENERATION, digest.as_str()),
+            PINNED,
+            "this build's settled generation and the digest of the fixture's settled rows (left) \
+             differ from the pinned pair: a change to what a store settles ships with a bump, so \
+             bump `SETTLED_GENERATION` and re-pin the pair to this build's values together"
+        );
+    }
+
     #[test]
     fn settled_takes_the_lower_line_wherever_it_sits_then_the_first_of_a_tie() {
         fn kind_line<'d>(d: &'d (&'static str, u32, &'static str)) -> (&'d str, u32) {

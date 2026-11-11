@@ -312,11 +312,12 @@ Tip                                  (what a TreeSource names: the tree to descr
 
 Stamp                                (a Tip plus what only advance knows)
   tip         the Tip the snapshot describes
-  fingerprint the extractor's fingerprint folded with the grouper's generation: changes when
-              any extractor's output or the groupings can change (the symbol extractors' tag
-              version, the facts generation and the grouping generation; golden tests pin them
-              to digests of the facts and the groupings over fixtures, so an unbumped change
-              fails)
+  fingerprint the extractor's fingerprint folded with the grouper's generation and the
+              settled generation: changes when any extractor's output, the groupings or the
+              rows settled at advance can change (the symbol extractors' tag version, the facts
+              generation, the grouping generation and the settled generation; golden tests pin
+              them to digests of the facts, the groupings and the settled rows over fixtures, so
+              an unbumped change fails)
   seq         the snapshot's sequence number
 ```
 
@@ -331,14 +332,15 @@ a (u32 offset, u32 length) pair into one pool, and each distinct string is store
 ```
  +-------------------------------------------------------------------------------+
  | header   magic "RGCS"  | u16 format version | u16 section count               |
- |          u64 fingerprint (extractor and grouper)                              |
+ |          u64 fingerprint (extractor, grouper and settled rows)                |
  |          stamp: head (str), commit (str), tree (str), u64 seq                 |
  |          u32 crc32 of the header                                              |
  +-------------------------------------------------------------------------------+
  | section table: [u16 kind | u64 offset | u64 length | u32 crc32] x count       |
  +-------------------------------------------------------------------------------+
  | STRINGS    the pool                                                           |
- | FILES      path, blob, lang, half, scope, partial, then [start, end) into each of      |
+ | FILES      path, blob, lang, half, scope, flags (partial, test file), then    |
+ |            [start, end) into each of                                          |
  |            DEFS, MENTIONS, MODULES, DOC, WORKFLOW        (rows sorted by path) |
  | DEFS       local, leaf, kind, line, end_line, parent, flags   (one run a file) |
  | MENTIONS   enclosing, name, leaf, kind, line, flags            (one run a file) |
@@ -349,6 +351,9 @@ a (u32 offset, u32 length) pair into one pool, and each distinct string is store
  | IDX_NAME   leaf -> [mention row]   (sorted by leaf; binary search)            |
  | GROUPINGS  communities at the default grain, their labels; concepts, their    |
  |            labels and REALIZES members      (computed over the production view)|
+ | PROOFS     target, caller, file, line       (proof order: by target; binary   |
+ |            search)                                                            |
+ | IDX_PROOF_FILE  [proof row]                 (by file, then proof order)       |
  +-------------------------------------------------------------------------------+
 ```
 
@@ -511,6 +516,23 @@ so it runs once per advance and is stored in the snapshot:
   the stamp's fingerprint, so a snapshot grouped by another algorithm is never trusted and is
   computed anew. A golden test pins it beside a digest of the groupings over a fixture, so an
   unbumped change fails.
+- **Settled rows.** What a read would otherwise compute over the whole tree is settled once
+  per advance beside the groupings, by the resolver itself (section 6.2), so a read takes rows:
+  - **test-ness per file:** each FILES row's test flag, its Test scope or the test-module
+    closure. Without it every reader read the facts of each file declaring a module and grew
+    the closure before it resolved anything.
+  - **proofs:** every test call that proves a product definition (`PROOFS`: target, calling test
+    entity, file, line), in proof order, so the proofs of one definition are a binary search,
+    and indexed by file, so the calls one test entity makes are the rows of its file. A whole
+    read reads them instead of walking every test mention; a neighbourhood reads a
+    definition's proofs and a test's attachment from them instead of resolving each mention of
+    the leaf.
+  - **definition leaves:** the keys of `IDX_LEAF`, which a lookup's name index reads.
+
+  Their generation (`SETTLED_GENERATION`) is folded into the fingerprint like the grouping
+  generation, and a golden test pins it beside a digest of the rows over a fixture. A view
+  that holds no settled rows (an in-memory view) has the resolver compute them, and the two
+  are tested to answer alike.
 - A grain other than the default is computed on demand at read (~2 s) and is not stored.
 - `rigger graph communities` and `rigger graph concepts` become read-only reports over the
   current snapshot. Nothing writes groupings anywhere else.
@@ -655,7 +677,7 @@ Which facts live where:
 |---|---|---|
 | a tier | stored at fold, upgraded when a later definition folds | a function of the view: no upgrade pass, no staging |
 | a placeholder | a stored node | made per answer, the same id each time |
-| proofs | a 99,623-row table | counted from test call and plain-reference mentions at read |
+| proofs | a 99,623-row table | resolved from test call mentions at advance and stored as `PROOFS` rows (section 5.4) |
 | the community unique-leaf rule | its own copy in `community.rs` (`Coupling::from_graph`) | the resolver's call rule; the copy is removed |
 
 The `CodeGraph` adapter (`rigger-domain/src/code_graph.rs`) applies the table to a `CodeView` and
@@ -673,10 +695,15 @@ edge has no log position, and readers only ever skip closed edges. The history o
                    + CONTAINS children of D           defs whose parent = D
   in-edges of D    = for m in IDX_NAME[D.leaf]: resolve(m) lands on D or on a placeholder of
                      D.leaf whose frontier holds D
-  proofs of D      = for m in IDX_NAME[D.leaf] where m is test: resolve as a proof, count those
-                     landing on D
+  proofs of D      = PROOFS rows whose target is D                (binary search)
   community of D   = GROUPINGS lookup
+  tests of a cluster = the callers of the PROOFS rows of its members, each kept when its
+                     plurality cluster is this one: the targets a test entity proves are the
+                     PROOFS rows of its file (IDX_PROOF_FILE) it calls from
 ```
+
+A neighbourhood's test files are each FILES row's test flag, so opening one reads no
+declaration and grows no closure (section 5.4).
 
 The work is proportional to the number of mentions of one leaf. The largest frontier measured is
 25 candidates.

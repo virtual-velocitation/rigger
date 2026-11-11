@@ -1,5 +1,6 @@
-//! The snapshot format: one immutable file holding a stamp, every file's facts, the leaf indexes
-//! and the groupings, and [`Snapshot`], the [`CodeView`] that reads one.
+//! The snapshot format: one immutable file holding a stamp, every file's facts, the leaf indexes,
+//! the groupings and what the store settles from the tree alone (the test files and the proof
+//! calls), and [`Snapshot`], the [`CodeView`] that reads one.
 //!
 //! The file is a [`crate::format`] container. Its header payload is the stamp: the extractor
 //! fingerprint, the tip's head, commit and tree as strings, and the sequence number. A string is
@@ -7,7 +8,7 @@
 //! an absent commit is the offset `u32::MAX`. Each other section is fixed-width rows:
 //!
 //! ```text
-//! FILES        path, blob, lang, half u8, scope u8, flags u8 (partial),
+//! FILES        path, blob, lang, half u8, scope u8, flags u8 (partial 1, test file 2),
 //!              then [start, end) into DEFS, MENTIONS, MODULES, DOC_CONCEPTS, DOC_LINKS,
 //!              WF_NODES, WF_RELATIONS                  (rows sorted by path; one run a file)
 //! DEFS         local, leaf, kind, line, end_line, parent (u32::MAX: none), flags (test)
@@ -22,7 +23,12 @@
 //! IDX_NAME     the same over MENTIONS rows
 //! GROUPINGS    u32 count, clusters (id, label, resolution as f64 bits, hash, u32 count,
 //!              members); communities then concepts
+//! PROOFS       target, caller, file, line: each proof call, in proof order
+//! IDX_PROOF_FILE  u32 PROOFS rows, by file then proof order
 //! ```
+//!
+//! A FILES row's test flag and the PROOFS rows are what [`Resolver`] computes over the view, so a
+//! read takes them rather than computing them ([`Settled`]).
 //!
 //! Encoding is a pure function of the view and its groupings: rows follow path then source
 //! order, the pool interns in that order and the indexes are built sorted, so the same facts
@@ -33,14 +39,17 @@ use rigger_domain::code_facts::{
     Def, DocConcept, DocLink, FileFacts, Half, Mention, MentionKind, ModuleDecl, Scope, Stamp, Tip,
     WfNode, WfRelation,
 };
-use rigger_domain::code_view::{Cluster, CodeView, DefRef, FileRef, Groupings, MentionRef};
+use rigger_domain::code_view::{
+    Cluster, CodeView, DefRef, FileRef, Groupings, MentionRef, Proofs, Settled,
+};
+use rigger_domain::resolve::{ProofCall, Resolver};
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
 use std::ops::Range;
 use std::sync::OnceLock;
 
 pub(crate) const MAGIC: &[u8; 4] = b"RGCS";
-pub(crate) const VERSION: u16 = 2;
+pub(crate) const VERSION: u16 = 3;
 /// An absent index (parent, enclosing definition) or an absent string (commit).
 const NONE: u32 = u32::MAX;
 
@@ -57,6 +66,8 @@ const WF_RELATIONS: u16 = 10;
 const IDX_LEAF: u16 = 11;
 const IDX_NAME: u16 = 12;
 const GROUPINGS: u16 = 13;
+const PROOFS: u16 = 14;
+const IDX_PROOF_FILE: u16 = 15;
 
 /// The width of a string reference.
 const STR: usize = 8;
@@ -109,9 +120,16 @@ const MODULE_ROW: usize = MOD_CANDS + 8;
 const TRIPLE_ROW: usize = 3 * STR;
 const KEY_ROW: usize = STR + 8;
 
+/// PROOFS row: target, caller, file, line.
+const P_FILE: usize = 2 * STR;
+const P_LINE: usize = P_FILE + STR;
+const PROOF_ROW: usize = P_LINE + 4;
+
 const KIND_CALL: u8 = 0;
 const KIND_TAGGED: u8 = 1;
 const FLAG_SET: u8 = 1;
+/// A FILES row's flag: test code, by its scope or the test-module closure.
+const FLAG_TEST: u8 = 2;
 
 /// The string pool being written: each distinct string once, in first-use order.
 #[derive(Default)]
@@ -196,7 +214,7 @@ impl Encoder {
         Ok(())
     }
 
-    fn file(&mut self, facts: &FileFacts) -> Result<(), String> {
+    fn file(&mut self, facts: &FileFacts, test: bool) -> Result<(), String> {
         let starts = LISTS
             .iter()
             .map(|&kind| self.rows(kind, width_of(kind)))
@@ -294,7 +312,10 @@ impl Encoder {
         }
         put_u8(&mut files, facts.half as u8);
         put_u8(&mut files, facts.scope as u8);
-        put_u8(&mut files, flag(facts.partial));
+        put_u8(
+            &mut files,
+            flag(facts.partial) | if test { FLAG_TEST } else { 0 },
+        );
         for (&kind, start) in LISTS.iter().zip(starts) {
             put_u32(&mut files, start);
             put_u32(&mut files, self.rows(kind, width_of(kind))?);
@@ -338,6 +359,30 @@ impl Encoder {
         self.sections.insert(GROUPINGS, out);
         Ok(())
     }
+
+    /// The PROOFS rows of `calls`, in their (proof) order, and the index of them by file.
+    fn proofs(&mut self, calls: &[ProofCall]) -> Result<(), String> {
+        let mut out = Vec::new();
+        let mut by_file: Vec<(&str, u32)> = Vec::new();
+        for (row, call) in calls.iter().enumerate() {
+            let (file, line) = (call.evidence.rsplit_once(':'))
+                .and_then(|(file, line)| Some((file, line.parse::<u32>().ok()?)))
+                .ok_or_else(|| format!("proof evidence {:?} is not file:line", call.evidence))?;
+            self.pool.put(&mut out, &call.target)?;
+            self.pool.put(&mut out, &call.caller)?;
+            self.pool.put(&mut out, file)?;
+            put_u32(&mut out, line);
+            by_file.push((file, narrow(row, "proof row")?));
+        }
+        by_file.sort();
+        let mut index = Vec::new();
+        for (_, row) in by_file {
+            put_u32(&mut index, row);
+        }
+        self.sections.insert(PROOFS, out);
+        self.sections.insert(IDX_PROOF_FILE, index);
+        Ok(())
+    }
 }
 
 fn width_of(kind: u16) -> usize {
@@ -347,6 +392,8 @@ fn width_of(kind: u16) -> usize {
         MENTIONS => MENTION_ROW,
         MODULES => MODULE_ROW,
         CANDIDATES => STR,
+        PROOFS => PROOF_ROW,
+        IDX_PROOF_FILE => 4,
         _ => TRIPLE_ROW,
     }
 }
@@ -354,6 +401,7 @@ fn width_of(kind: u16) -> usize {
 /// The bytes of `view`'s snapshot with `groupings`: a pure function of the two.
 pub fn encode(view: &dyn CodeView, groupings: &Groupings) -> Result<Vec<u8>, String> {
     let mut enc = Encoder::default();
+    let resolver = Resolver::new(view);
     let stamp = view.stamp();
     let mut header = Vec::new();
     put_u64(&mut header, stamp.fingerprint);
@@ -366,9 +414,10 @@ pub fn encode(view: &dyn CodeView, groupings: &Groupings) -> Result<Vec<u8>, Str
     }
     for file in view.files() {
         if let Some(facts) = view.file(file.path) {
-            enc.file(&facts)?;
+            enc.file(&facts, resolver.is_test_file(file.path))?;
         }
     }
+    enc.proofs(resolver.proof_calls())?;
     let (leaf_defs, leaf_mentions) = (
         std::mem::take(&mut enc.leaf_defs),
         std::mem::take(&mut enc.leaf_mentions),
@@ -444,7 +493,10 @@ impl Snapshot {
         let pool = String::from_utf8(container.section(STRINGS)?.to_vec())
             .map_err(|_| "the string pool is not UTF-8".to_string())?;
         let mut tables = BTreeMap::new();
-        for kind in [FILES, CANDIDATES].into_iter().chain(LISTS) {
+        for kind in [FILES, CANDIDATES, PROOFS, IDX_PROOF_FILE]
+            .into_iter()
+            .chain(LISTS)
+        {
             let range = container.section_range(kind)?;
             let width = width_of(kind);
             if range.len() % width != 0 {
@@ -571,7 +623,7 @@ impl Snapshot {
 
     /// Checks every string, range and index the rows hold, so the accessors never meet a bad one.
     fn validate(&self) -> Result<(), String> {
-        let strings: [(u16, &[usize]); 9] = [
+        let strings: [(u16, &[usize]); 10] = [
             (FILES, &[0, STR, 2 * STR]),
             (DEFS, &[0, STR, 2 * STR]),
             (MENTIONS, &[M_NAME, M_LEAF, M_TAG]),
@@ -581,6 +633,7 @@ impl Snapshot {
             (DOC_LINKS, &[0, STR, 2 * STR]),
             (WF_NODES, &[0, STR, 2 * STR]),
             (WF_RELATIONS, &[0, STR, 2 * STR]),
+            (PROOFS, &[0, STR, P_FILE]),
         ];
         for (kind, offsets) in strings {
             let table = self.table(kind);
@@ -656,6 +709,24 @@ impl Snapshot {
         }
         if next_candidate != self.table(CANDIDATES).rows {
             return Err("candidates no module owns".into());
+        }
+        let (proofs, by_file) = (self.table(PROOFS), self.table(IDX_PROOF_FILE));
+        fn in_order<'s>(key: &dyn Fn(usize) -> &'s str, rows: usize) -> bool {
+            (1..rows).all(|i| key(i - 1) <= key(i))
+        }
+        if !in_order(&|i| self.text(self.row(proofs, i), 0), proofs.rows) {
+            return Err("proofs out of target order".into());
+        }
+        let mut indexed = vec![false; proofs.rows];
+        for i in 0..by_file.rows {
+            let row = le32(self.row(by_file, i), 0) as usize;
+            if indexed.get(row).is_none_or(|seen| *seen) {
+                return Err("a proof file index row outside its proofs, or twice".into());
+            }
+            indexed[row] = true;
+        }
+        if by_file.rows != proofs.rows || !in_order(&|i| self.proof_file(i), by_file.rows) {
+            return Err("the proof file index does not cover its proofs in file order".into());
         }
         for (index, kind) in [(self.leaf, DEFS), (self.name, MENTIONS)] {
             let rows = self.table(kind).rows;
@@ -827,6 +898,78 @@ impl Snapshot {
     }
 }
 
+impl Snapshot {
+    /// The PROOFS row the `i`th entry of the file index names.
+    fn proof_at(&self, i: usize) -> &[u8] {
+        let row = le32(self.row(self.table(IDX_PROOF_FILE), i), 0) as usize;
+        self.row(self.table(PROOFS), row)
+    }
+
+    /// The file of the PROOFS row the `i`th entry of the file index names.
+    fn proof_file(&self, i: usize) -> &str {
+        self.text(self.proof_at(i), P_FILE)
+    }
+
+    fn proof(&self, row: &[u8]) -> ProofCall {
+        ProofCall {
+            target: self.text(row, 0).to_owned(),
+            caller: self.text(row, STR).to_owned(),
+            evidence: format!("{}:{}", self.text(row, P_FILE), le32(row, P_LINE)),
+        }
+    }
+
+    /// The first of `rows` rows whose `key` is not less than `want`, the keys ascending.
+    fn lower_bound<'s>(rows: usize, want: &str, key: impl Fn(usize) -> &'s str) -> usize {
+        let (mut lo, mut hi) = (0, rows);
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            if key(mid) < want {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        lo
+    }
+}
+
+impl Settled for Snapshot {
+    fn test_files(&self) -> Vec<&str> {
+        let files = self.table(FILES);
+        (0..files.rows)
+            .map(|i| self.row(files, i))
+            .filter(|row| byte(row, F_FLAGS) & FLAG_TEST != 0)
+            .map(|row| self.text(row, 0))
+            .collect()
+    }
+
+    fn proofs(&self, of: Proofs<'_>) -> Vec<ProofCall> {
+        let proofs = self.table(PROOFS);
+        match of {
+            Proofs::All => (0..proofs.rows)
+                .map(|i| self.proof(self.row(proofs, i)))
+                .collect(),
+            Proofs::Of(id) => {
+                let target = |i| self.text(self.row(proofs, i), 0);
+                (Self::lower_bound(proofs.rows, id, target)..proofs.rows)
+                    .map(|i| self.row(proofs, i))
+                    .take_while(|row| self.text(row, 0) == id)
+                    .map(|row| self.proof(row))
+                    .collect()
+            }
+            Proofs::In(path) => {
+                let rows = self.table(IDX_PROOF_FILE).rows;
+                let file = |i| self.proof_file(i);
+                (Self::lower_bound(rows, path, file)..rows)
+                    .map(|i| self.proof_at(i))
+                    .take_while(|row| self.text(row, P_FILE) == path)
+                    .map(|row| self.proof(row))
+                    .collect()
+            }
+        }
+    }
+}
+
 fn pool_text(pool: &str, off: u32, len: u32) -> Option<&str> {
     let start = off as usize;
     pool.get(start..start.checked_add(len as usize)?)
@@ -897,6 +1040,17 @@ impl CodeView for Snapshot {
 
     fn groupings(&self) -> &Groupings {
         &self.groupings
+    }
+
+    fn def_leaves(&self) -> Vec<String> {
+        let keys = self.leaf.keys;
+        (0..keys.rows)
+            .map(|k| self.text(self.row(keys, k), 0).to_owned())
+            .collect()
+    }
+
+    fn settled(&self) -> Option<&dyn Settled> {
+        Some(self)
     }
 }
 
@@ -1044,6 +1198,118 @@ mod tests {
             ],
             concepts: vec![cluster("concept/1.5/0", &["doc/a"])],
         }
+    }
+
+    /// A code file of `path` and `scope` holding `defs` (local = leaf, a function each), the
+    /// calls `calls` (leaf, enclosing def, line) and the module declarations `modules` (name,
+    /// declaring def, test, candidates).
+    fn proving_file(
+        path: &str,
+        scope: Scope,
+        defs: &[&str],
+        calls: &[(&str, Option<u32>, u32)],
+        modules: &[(&str, u32, bool, &str)],
+    ) -> FileFacts {
+        FileFacts {
+            path: path.into(),
+            blob: format!("b-{path}"),
+            lang: "rust".into(),
+            half: Half::Code,
+            scope,
+            partial: false,
+            defs: (defs.iter().enumerate())
+                .map(|(i, leaf)| Def {
+                    local: leaf.to_string(),
+                    leaf: leaf.to_string(),
+                    kind: "function".into(),
+                    line: i as u32 + 1,
+                    end_line: i as u32 + 1,
+                    parent: None,
+                    test: false,
+                })
+                .collect(),
+            mentions: (calls.iter())
+                .map(|&(leaf, enclosing, line)| Mention {
+                    enclosing,
+                    name: leaf.into(),
+                    leaf: leaf.into(),
+                    kind: MentionKind::Call,
+                    line,
+                    test: false,
+                })
+                .collect(),
+            modules: (modules.iter())
+                .map(|&(name, def, test, candidate)| ModuleDecl {
+                    name: name.into(),
+                    def,
+                    test,
+                    candidates: vec![candidate.into()],
+                })
+                .collect(),
+            ..empty_file(path)
+        }
+    }
+
+    /// WHAT A STORE SETTLES READS BACK AS THE RESOLVER COMPUTES IT: over a view holding a test
+    /// file by its scope, one by the test-module closure alone and calls from both (at file
+    /// level and inside a definition, on lines whose text order is not their number order), the
+    /// snapshot's test files, its proof calls (every one, those of each definition, those in each
+    /// file) and its definition leaves are what a resolver computes over the facts.
+    #[test]
+    fn a_snapshot_settles_the_test_files_and_proofs_the_resolver_computes() {
+        let files = vec![
+            proving_file(
+                "src/lib.rs",
+                Scope::Product,
+                &["run", "stop", "checks"],
+                &[("run", Some(1), 3)],
+                &[("checks", 2, true, "src/checks.rs")],
+            ),
+            proving_file(
+                "src/checks.rs",
+                Scope::Product,
+                &["verify"],
+                &[("run", Some(0), 9), ("stop", Some(0), 10), ("run", None, 2)],
+                &[],
+            ),
+            proving_file(
+                "tests/it.rs",
+                Scope::Test,
+                &[],
+                &[("stop", None, 4), ("missing", None, 5)],
+                &[],
+            ),
+        ];
+        let view = FactsView::new(stamp(Some("c"), 1), files);
+        let snap = Snapshot::decode(encode(&view, &Groupings::default()).unwrap()).unwrap();
+        let resolver = Resolver::new(&view);
+        let want_tests: Vec<&str> = (view.files())
+            .map(|f| f.path)
+            .filter(|p| resolver.is_test_file(p))
+            .collect();
+        assert_eq!(want_tests, ["src/checks.rs", "tests/it.rs"], "the fixture");
+        let settled = snap.settled().expect("a snapshot settles");
+        assert_eq!(settled.test_files(), want_tests, "test files");
+        let all = resolver.proof_calls();
+        assert_eq!(all.len(), 4, "the fixture's proofs: {all:#?}");
+        assert_eq!(settled.proofs(Proofs::All), all, "every proof");
+        for id in [
+            "src/lib.rs::run",
+            "src/lib.rs::stop",
+            "src/lib.rs::checks",
+            "x",
+        ] {
+            let want: Vec<ProofCall> = all.iter().filter(|c| c.target == id).cloned().collect();
+            assert_eq!(settled.proofs(Proofs::Of(id)), want, "proofs of {id}");
+        }
+        for path in ["src/checks.rs", "src/lib.rs", "tests/it.rs", "src/a", "z"] {
+            assert_eq!(
+                settled.proofs(Proofs::In(path)),
+                resolver.proofs_in(path),
+                "proofs in {path}"
+            );
+        }
+        assert_eq!(snap.def_leaves(), view.def_leaves(), "definition leaves");
     }
 
     /// Each row: a stamp, the files and the groupings a view holds. Every section must read back

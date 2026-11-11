@@ -10,7 +10,7 @@
 //! the test calls of its leaves; and its groupings are read from the view's groupings by id. Each
 //! file's assertions are read once and kept for the answer.
 
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::FxHashMap;
 use std::borrow::Cow;
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
@@ -27,7 +27,7 @@ use crate::contextgraph::{
     KIND_COMMUNITY, KIND_CONCEPT, KIND_FILE, PLACEHOLDER_SIGIL, REL_IN_COMMUNITY, REL_REALIZES,
     REL_TESTS, TIER_INFERRED,
 };
-use crate::resolve::INTENT_KINDS;
+use crate::resolve::{ProofCall, INTENT_KINDS};
 use crate::test_view::TESTS_ATTR;
 
 /// The groupings' two arms, in the order they are joined: each cluster's node kind and the
@@ -263,15 +263,11 @@ struct State<'v> {
     resolved: FxHashMap<String, [Option<Arc<Resolved>>; 4]>,
     /// Each (arm, test entity)'s cluster place, the plurality rule's winner.
     attach: FxHashMap<(usize, String), Option<usize>>,
-    /// Each code file's test calls by the definition enclosing them, by place.
-    test_calls: FxHashMap<u32, Arc<TestCalls>>,
+    /// Each code file's proof calls, by place.
+    proofs_in: FxHashMap<u32, Arc<Vec<ProofCall>>>,
     /// Each (arm, cluster id)'s attached test entities, in id order.
     attached: FxHashMap<(usize, String), Arc<Vec<String>>>,
 }
-
-/// A code file's test call mentions (their indices), by the local path of the definition
-/// enclosing them (none at file level).
-type TestCalls = FxHashMap<Option<String>, Vec<u32>>;
 
 /// The code half of a view under one filter, resolved only near the ids it is asked about. Its
 /// answers are the whole graph's ([`crate::composed::Indexed`] over [`joined`]): the reads that
@@ -301,7 +297,7 @@ impl<'v> Near<'v> {
                 clusters: None,
                 resolved: FxHashMap::default(),
                 attach: FxHashMap::default(),
-                test_calls: FxHashMap::default(),
+                proofs_in: FxHashMap::default(),
                 attached: FxHashMap::default(),
             }),
             whole: OnceLock::new(),
@@ -542,7 +538,10 @@ impl<'v> State<'v> {
         }
         if !leaves.is_empty() {
             let leaves: Vec<&str> = leaves.iter().map(String::as_str).collect();
-            let evidence = self.graph.resolver().proof_evidence(id, &leaves);
+            let evidence: Vec<String> = (self.graph.resolver().proofs_of(id, &leaves))
+                .into_iter()
+                .map(|c| c.evidence)
+                .collect();
             if !evidence.is_empty() {
                 b.prove(id, &evidence);
             }
@@ -609,26 +608,15 @@ impl<'v> State<'v> {
         Arc::clone(clusters)
     }
 
-    /// The test calls of the code file at `place`, by the local path of the definition
-    /// enclosing them (none at file level): the calls each test entity makes.
-    fn test_calls(&mut self, place: u32) -> Arc<TestCalls> {
-        if let Some(held) = self.test_calls.get(&place) {
+    /// The proof calls of the code file at `place`: the calls each test entity there makes that
+    /// prove a definition.
+    fn proofs_in(&mut self, place: u32) -> Arc<Vec<ProofCall>> {
+        if let Some(held) = self.proofs_in.get(&place) {
             return Arc::clone(held);
         }
-        let mut calls = TestCalls::default();
-        if let Some(facts) = self.facts(place) {
-            let resolver = self.graph.resolver();
-            for (at, m) in facts.mentions.iter().enumerate() {
-                if m.kind == MentionKind::Call && resolver.mention_is_test(&facts, m) {
-                    let local = (m.enclosing)
-                        .and_then(|d| facts.defs.get(d as usize))
-                        .map(|d| d.local.clone());
-                    calls.entry(local).or_default().push(at as u32);
-                }
-            }
-        }
-        let calls = Arc::new(calls);
-        self.test_calls.insert(place, Arc::clone(&calls));
+        let path = self.files[place as usize].path;
+        let calls = Arc::new(self.graph.resolver().proofs_in(path));
+        self.proofs_in.insert(place, Arc::clone(&calls));
         calls
     }
 
@@ -640,28 +628,18 @@ impl<'v> State<'v> {
         if let Some(&held) = self.attach.get(&key) {
             return held;
         }
-        let (file, local) = split_id(test);
+        let (file, _) = split_id(test);
         let won = match self.code_place(file) {
             Some(place) => {
-                let calls = self.test_calls(place);
-                let facts = self.facts(place).expect("a file with calls is read");
-                let resolver = self.graph.resolver();
-                let leaves: FxHashSet<&str> = (calls.get(&local.map(String::from)).into_iter())
-                    .flatten()
-                    .map(|&at| facts.mentions[at as usize].leaf.as_str())
-                    .collect();
-                let targets: BTreeSet<String> = (leaves.into_iter())
-                    .filter_map(|leaf| resolver.proof(file, leaf))
+                let calls = self.proofs_in(place);
+                let targets: BTreeSet<&str> = (calls.iter())
+                    .filter(|c| c.caller == test)
+                    .map(|c| c.target.as_str())
                     .collect();
                 let clusters = self.clusters();
                 let mut votes: std::collections::BTreeMap<usize, usize> = Default::default();
-                for target in &targets {
-                    for &(a, at) in clusters
-                        .membership
-                        .get(target.as_str())
-                        .into_iter()
-                        .flatten()
-                    {
+                for target in targets {
+                    for &(a, at) in clusters.membership.get(target).into_iter().flatten() {
                         if a == arm {
                             *votes.entry(at).or_default() += 1;
                         }
@@ -692,34 +670,13 @@ impl<'v> State<'v> {
             .filter(|(a, _)| *a == arm)
             .flat_map(|&c| clusters.cluster(c).members.iter().map(String::as_str))
             .collect();
-        // A test call proves a member only by one of the member's leaves: its caller is the
-        // definition enclosing it, or its file.
+        // A test call proves one member: its caller is the definition enclosing it, or its file.
         let mut callers = BTreeSet::new();
         for m in &members {
-            for leaf in self.leaves_of(m) {
-                let resolver = self.graph.resolver();
-                let mut calls = Vec::new();
-                for mention in self.view.mentions_named(&leaf) {
-                    let path = mention.file.path;
-                    let test = mention.test || resolver.is_test_file(path);
-                    if mention.file.half == Half::Code
-                        && mention.kind == MentionKind::Call
-                        && test
-                        && resolver
-                            .proof(path, &leaf)
-                            .is_some_and(|t| members.contains(t.as_str()))
-                    {
-                        calls.push((path, mention.enclosing));
-                    }
-                }
-                for (path, enclosing) in calls {
-                    let facts = self.code_place(path).and_then(|at| self.facts(at));
-                    let local = (enclosing.zip(facts.as_deref()))
-                        .and_then(|(d, facts)| facts.defs.get(d as usize))
-                        .map(|d| d.local.as_str());
-                    callers.insert(local.map_or_else(|| path.to_string(), |l| entity_id(path, l)));
-                }
-            }
+            let leaves = self.leaves_of(m);
+            let leaves: Vec<&str> = leaves.iter().map(String::as_str).collect();
+            let calls = self.graph.resolver().proofs_of(m, &leaves);
+            callers.extend(calls.into_iter().map(|c| c.caller));
         }
         let mut tests = Vec::new();
         for t in callers {
@@ -1051,11 +1008,12 @@ impl CodeHalf for Near<'_> {
 mod tests {
     use super::*;
     use crate::code_facts::{FileFacts, ModuleDecl};
-    use crate::code_view::{DefRef, FactsView, Groupings, MentionRef};
+    use crate::code_view::{DefRef, FactsView, Groupings, MentionRef, Proofs, Settled};
     use crate::composed::{Composed, Honesty, Whole};
     use crate::contextgraph::query::node_name;
     use crate::contextgraph::{ContextGraph, Direction, TIER_AMBIGUOUS};
     use crate::resolve::tests::{fixture, stamp};
+    use crate::resolve::Resolver;
     use std::borrow::Cow;
 
     /// Asserts two answers are the same, by their debug text: nodes and edges are compared
@@ -1138,6 +1096,73 @@ mod tests {
 
     const FILTERS: [Tests; 3] = [Tests::Exclude, Tests::Include, Tests::Only];
 
+    /// `view` holding what a store settles at advance as rows, as a resolver computes them over
+    /// it: a read of it takes the rows and computes neither.
+    struct Settles {
+        view: FactsView,
+        test_files: Vec<String>,
+        proofs: Vec<ProofCall>,
+    }
+
+    impl Settles {
+        fn of(view: FactsView) -> Self {
+            let resolver = Resolver::new(&view);
+            let test_files = (view.files())
+                .filter(|f| resolver.is_test_file(f.path))
+                .map(|f| f.path.to_string())
+                .collect();
+            let proofs = resolver.proof_calls().to_vec();
+            assert!(!proofs.is_empty(), "the fixture holds proofs");
+            drop(resolver);
+            Settles {
+                view,
+                test_files,
+                proofs,
+            }
+        }
+    }
+
+    impl CodeView for Settles {
+        fn stamp(&self) -> &crate::code_facts::Stamp {
+            self.view.stamp()
+        }
+        fn files(&self) -> Box<dyn Iterator<Item = FileRef<'_>> + '_> {
+            self.view.files()
+        }
+        fn file(&self, path: &str) -> Option<Cow<'_, FileFacts>> {
+            self.view.file(path)
+        }
+        fn defs_named(&self, leaf: &str) -> Box<dyn Iterator<Item = DefRef<'_>> + '_> {
+            self.view.defs_named(leaf)
+        }
+        fn mentions_named(&self, leaf: &str) -> Box<dyn Iterator<Item = MentionRef<'_>> + '_> {
+            self.view.mentions_named(leaf)
+        }
+        fn groupings(&self) -> &Groupings {
+            self.view.groupings()
+        }
+        fn settled(&self) -> Option<&dyn Settled> {
+            Some(self)
+        }
+    }
+
+    impl Settled for Settles {
+        fn test_files(&self) -> Vec<&str> {
+            self.test_files.iter().map(String::as_str).collect()
+        }
+        fn proofs(&self, of: Proofs<'_>) -> Vec<ProofCall> {
+            let file = |c: &ProofCall| c.evidence.rsplit_once(':').map(|(f, _)| f.to_string());
+            (self.proofs.iter())
+                .filter(|c| match of {
+                    Proofs::All => true,
+                    Proofs::Of(id) => c.target == id,
+                    Proofs::In(path) => file(c).as_deref() == Some(path),
+                })
+                .cloned()
+                .collect()
+        }
+    }
+
     /// Every id worth asking about: the whole graph's nodes and edge ends under every filter, and
     /// ids no graph holds.
     fn ids(view: &FactsView) -> BTreeSet<String> {
@@ -1192,12 +1217,22 @@ mod tests {
         let whole_graph = Whole::new(&view, ViewFilter::default()).whole().unwrap();
         let tiers: BTreeSet<&str> = whole_graph.edges.iter().map(|e| e.tier.as_str()).collect();
         assert!(tiers.contains(TIER_AMBIGUOUS) && tiers.contains(TIER_INFERRED));
-        for tests in FILTERS {
+        let settles = Settles::of(self::view());
+        for (tests, (held, read)) in FILTERS.into_iter().flat_map(|t| {
+            [
+                (t, ("facts", &view as &dyn CodeView)),
+                (t, ("settled", &settles)),
+            ]
+        }) {
             let filter = ViewFilter { tests };
             let whole = Whole::new(&view, filter);
-            let shared = Near::new(&view, filter);
+            same!(
+                Whole::new(read, filter).whole().unwrap(),
+                whole.whole().unwrap()
+            );
+            let shared = Near::new(read, filter);
             let one = |near: &Near, id: &str, when: &str| {
-                let at = format!("{tests:?} {when} {id}");
+                let at = format!("{tests:?} {held} {when} {id}");
                 same!(near.node(id).unwrap(), whole.node(id).unwrap(), "node {at}");
                 same!(near.out(id).unwrap(), whole.out(id).unwrap(), "out {at}");
                 let (got, want) = (near.incoming(id).unwrap(), whole.incoming(id).unwrap());
@@ -1211,7 +1246,7 @@ mod tests {
             };
             for id in &ids {
                 one(&shared, id, "shared");
-                one(&Near::new(&view, filter), id, "fresh");
+                one(&Near::new(read, filter), id, "fresh");
             }
             for leaf in &leaves {
                 let (got, want) = (shared.leaf_nodes(leaf).unwrap(), whole.leaf_nodes(leaf));
@@ -1256,14 +1291,20 @@ mod tests {
             "docs/d.md",
             "tests/it.rs",
         ];
-        for tests in FILTERS {
+        let settles = Settles::of(self::view());
+        for (tests, (held, read)) in FILTERS.into_iter().flat_map(|t| {
+            [
+                (t, ("facts", &view as &dyn CodeView)),
+                (t, ("settled", &settles)),
+            ]
+        }) {
             let filter = ViewFilter { tests };
             let whole = Composed::new(&records, &view, filter, honesty()).unwrap();
-            let near = Composed::near(&records, &view, filter, honesty()).unwrap();
+            let near = Composed::near(&records, read, filter, honesty()).unwrap();
             for seed in seeds {
                 let seed = [seed.to_string()];
                 for depth in [1, 2, 3] {
-                    let at = format!("{tests:?} {seed:?} {depth}");
+                    let at = format!("{tests:?} {held} {seed:?} {depth}");
                     let (got, want) = (near.subgraph(&seed, depth), whole.subgraph(&seed, depth));
                     same!(got.unwrap(), want.unwrap(), "subgraph {at}");
                     for direction in [Direction::Up, Direction::Down] {

@@ -14,6 +14,7 @@ use rigger_domain::code_facts::{FileFacts, Stamp, Tip};
 use rigger_domain::code_view::{in_scope, CodeView, Entry, Extract, FactsView, Group, TreeSource};
 use rigger_domain::config::RIGGER_DIR;
 use rigger_domain::playbooks::fnv1a_64;
+use rigger_domain::resolve::SETTLED_GENERATION;
 use std::collections::HashMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -44,13 +45,21 @@ impl Publish for AtomicPublish {
     }
 }
 
-/// The fingerprint a snapshot is stamped with: the extractor's fingerprint and the grouper's
-/// generation folded together, since both compute the snapshot, so a change to either computes
-/// it anew.
+/// The fingerprint a snapshot is stamped with: the extractor's fingerprint, the grouper's
+/// generation and the generation of what the store settles from the tree alone
+/// ([`SETTLED_GENERATION`]) folded together, since all three compute the snapshot, so a change to
+/// any computes it anew.
 pub fn fingerprint(extract: &dyn Extract, group: &dyn Group) -> u64 {
-    let mut both = extract.fingerprint().to_le_bytes().to_vec();
-    both.extend_from_slice(&group.generation().to_le_bytes());
-    fnv1a_64(&both)
+    folded([
+        extract.fingerprint(),
+        group.generation(),
+        SETTLED_GENERATION,
+    ])
+}
+
+/// The one fingerprint of the extractor's fingerprint and the two generations, in that order.
+fn folded(parts: [u64; 3]) -> u64 {
+    fnv1a_64(&parts.map(u64::to_le_bytes).concat())
 }
 
 fn snap_name(seq: u64) -> String {
@@ -762,6 +771,31 @@ mod tests {
                 "{name}: the stamp folds both generations"
             );
         }
+    }
+
+    /// Each row: one part of the fingerprint changed. Each part changes the fingerprint, so a
+    /// snapshot computed under another extractor, grouping or settled generation is not trusted.
+    #[test]
+    fn every_part_of_the_fingerprint_changes_it() {
+        let base = [FP, 1, SETTLED_GENERATION];
+        let cases = [
+            ("the extractor's fingerprint", 0),
+            ("the grouping generation", 1),
+            ("the settled generation", 2),
+        ];
+        for (name, part) in cases {
+            let mut changed = base;
+            changed[part] += 1;
+            assert_ne!(folded(changed), folded(base), "{name}");
+        }
+        assert_eq!(
+            fingerprint(&ToyExtract::new(FP), &CountingGroup::default()),
+            folded([
+                FP,
+                CountingGroup::default().generation(),
+                SETTLED_GENERATION
+            ]),
+        );
     }
 
     /// Each row: a damage to the published store. The damaged snapshot reads as absent, and the

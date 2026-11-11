@@ -249,6 +249,8 @@ impl<'v> CodeGraph<'v> {
         let tests = self.filter.tests != Tests::Exclude;
         let mut b = Builder::default();
         let mut hidden_tests = Vec::new();
+        // A view holding its proof calls settled is read, not walked.
+        let walk = !self.resolver.proofs_settled();
         let mut proofs = Vec::new();
         for f in self.view.files() {
             let Some(facts) = self.view.file(f.path) else {
@@ -256,11 +258,15 @@ impl<'v> CodeGraph<'v> {
             };
             if f.half == Half::Code {
                 self.code(&facts, tests, &mut b, Some(&mut hidden_tests));
-                proofs.extend(self.resolver.file_proofs(&facts));
+                if walk {
+                    proofs.extend(self.resolver.file_proofs(&facts));
+                }
             }
             self.intent(&facts, &mut b);
         }
-        self.resolver.settle_proofs(proofs);
+        if walk {
+            self.resolver.settle_proofs(proofs);
+        }
         for (id, evidence) in self.resolver.proofs() {
             b.prove(&id, &evidence);
         }
