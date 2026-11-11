@@ -12,6 +12,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
 use std::sync::Mutex;
 
+use crate::code_facts::Tip;
 use crate::code_graph::CodeGraph;
 use crate::code_view::{CodeView, Groupings, ViewFilter, WorktreeDiff};
 use crate::contextgraph::query::{
@@ -48,6 +49,32 @@ pub struct Label {
     pub behind: Option<String>,
     /// The nodes withheld so far because their file differs.
     pub withheld: usize,
+}
+
+impl Label {
+    /// The label of a view of `tip` read from the worktree `honesty` names, before anything is
+    /// withheld, and the worktree's files that differ from the tip's tree.
+    pub fn of(tip: &Tip, honesty: Honesty) -> (Label, BTreeSet<String>) {
+        let (compared, differing) = match honesty.diff {
+            Ok(diff) => {
+                // A file out of the tree's scope (rigger's own state among them) holds no fact.
+                let files: BTreeSet<String> = (diff.changed.into_iter())
+                    .chain(diff.untracked)
+                    .filter(|f| crate::code_view::in_scope(f))
+                    .collect();
+                (Compared::Differ(files.len()), files)
+            }
+            Err(_) => (Compared::Uncomparable, BTreeSet::new()),
+        };
+        let label = Label {
+            describes: tip.commit.clone().unwrap_or_else(|| tip.tree.clone()),
+            worktree: honesty.worktree,
+            compared,
+            behind: honesty.behind,
+            withheld: 0,
+        };
+        (label, differing)
+    }
 }
 
 /// `describes <commit>`, then how many files differ (or that the worktree cannot be compared),
@@ -349,18 +376,7 @@ impl<'r> Composed<'r> {
                 concepts_of.entry(m.clone()).or_default().push(c.id.clone());
             }
         }
-        let tip = &view.stamp().tip;
-        let (compared, differing) = match honesty.diff {
-            Ok(diff) => {
-                // A file out of the tree's scope (rigger's own state among them) holds no fact.
-                let files: BTreeSet<String> = (diff.changed.into_iter())
-                    .chain(diff.untracked)
-                    .filter(|f| crate::code_view::in_scope(f))
-                    .collect();
-                (Compared::Differ(files.len()), files)
-            }
-            Err(_) => (Compared::Uncomparable, BTreeSet::new()),
-        };
+        let (label, differing) = Label::of(&view.stamp().tip, honesty);
         Ok(Composed {
             records,
             code,
@@ -369,13 +385,7 @@ impl<'r> Composed<'r> {
             concept_members,
             concepts_of,
             differing,
-            label: Label {
-                describes: tip.commit.clone().unwrap_or_else(|| tip.tree.clone()),
-                worktree: honesty.worktree,
-                compared,
-                behind: honesty.behind,
-                withheld: 0,
-            },
+            label,
             withheld: Mutex::new(BTreeSet::new()),
         })
     }

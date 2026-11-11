@@ -6,6 +6,7 @@
 
 use rigger_domain::code_facts::Stamp;
 use rigger_domain::code_view::{AdvanceCodeStore, CodeView, Extract, TreeSource, WorktreeDiff};
+use rigger_domain::composed::{Honesty, Label};
 use rigger_domain::groupings::ProductionGroupings;
 use rigger_grounder::facts::FactsExtractor;
 use rigger_store::code::{open_current, DirTreeSource, Mode, Opened, Store};
@@ -65,28 +66,15 @@ impl CodeStore {
             .changed_against_worktree(&opened.view.stamp().tip.tree, worktree)
     }
 
-    /// One line naming the tip `opened` describes, why it is behind the head when it is, and how
-    /// many files `worktree` differs from it by.
-    pub fn stamp_line(&self, opened: &Opened, worktree: &Path) -> String {
-        let tip = &opened.view.stamp().tip;
-        let mut line = format!(
-            "code store: describes {} on {}",
-            tip.commit.as_deref().unwrap_or(&tip.tree),
-            tip.head
-        );
-        if let Some(behind) = &opened.behind {
-            line.push_str(&format!(" ({behind})"));
-        }
-        let worktree_name = worktree.display();
-        match self.differing(opened, worktree) {
-            Ok(diff) if diff.changed.is_empty() && diff.untracked.is_empty() => {}
-            Ok(diff) => line.push_str(&format!(
-                "; {} files in {worktree_name} differ",
-                diff.changed.len() + diff.untracked.len()
-            )),
-            Err(e) => line.push_str(&format!("; {worktree_name} cannot be compared ({e})")),
-        }
-        line
+    /// The honesty label ([`Label`]) of `opened` read from `worktree`: the tip it describes, how
+    /// many files `worktree` differs from it by, and why it is behind the head when it is.
+    pub fn label(&self, opened: &Opened, worktree: &Path) -> Label {
+        let honesty = Honesty {
+            worktree: worktree.display().to_string(),
+            diff: self.differing(opened, worktree),
+            behind: opened.behind.as_ref().map(ToString::to_string),
+        };
+        Label::of(&opened.view.stamp().tip, honesty).0
     }
 }
 

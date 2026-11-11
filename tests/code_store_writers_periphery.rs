@@ -39,11 +39,6 @@ fn head_of(root: &Path) -> String {
     git_out(root, &["rev-parse", "HEAD"])
 }
 
-/// The branch the checkout at `root` has checked out.
-fn branch_of(root: &Path) -> String {
-    git_out(root, &["symbolic-ref", "--short", "HEAD"])
-}
-
 /// A repository holding [`SOURCE`] in a commit, its root canonical.
 fn source_repository() -> (tempfile::TempDir, PathBuf) {
     let dir = tempfile::tempdir().unwrap();
@@ -303,10 +298,7 @@ fn setup_advances_from_empty() {
         assert_eq!(stamp.tip.commit, (row.commit)(&root), "{}", row.name);
         let described = stamp.tip.commit.as_deref().unwrap_or(&stamp.tip.tree);
         assert!(
-            first.contains(&format!(
-                "code store: describes {described} on {}",
-                stamp.tip.head
-            )),
+            first.contains(&format!("code store: describes {described}")),
             "{}: setup prints the stamp line; stdout: {first}",
             row.name
         );
@@ -364,8 +356,7 @@ fn a_reader_in_a_unit_worktree_advances_from_the_operator_checkout_head() {
         );
         if prints_the_count {
             let line = format!(
-                "code store: describes {operator_head} on {}; 1 files in {} differ",
-                branch_of(&operator),
+                "code store: describes {operator_head}; 1 file in {} differs",
                 unit.display()
             );
             assert!(
@@ -386,7 +377,7 @@ fn validate_prints_the_stamp_line() {
         (
             "a modified file",
             |root| write_files(root, &[(SOURCE.0, "pub fn product() { edited() }\n")]),
-            "; 1 files in {root} differ",
+            "; 1 file in {root} differs",
         ),
         (
             "a modified and an untracked file",
@@ -403,9 +394,8 @@ fn validate_prints_the_stamp_line() {
         let (out, err, ok) = run_rigger(&root, &["validate"]);
         assert!(ok, "{name}: validate succeeds; stderr: {err}");
         let line = format!(
-            "code store: describes {} on {}{}",
+            "code store: describes {}{}",
             head_of(&root),
-            branch_of(&root),
             differ.replace("{root}", &root.display().to_string())
         );
         assert!(

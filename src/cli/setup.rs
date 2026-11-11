@@ -721,7 +721,8 @@ pub(crate) struct CodeStoreOpened {
 }
 
 impl CodeStoreOpened {
-    /// The stamp line ([`rigger::code_store::CodeStore::stamp_line`]) for the caller's tree,
+    /// The stamp line: the store's honesty label ([`rigger::code_store::CodeStore::label`]) for the
+    /// caller's tree,
     /// compared with the snapshot only when it is asked for.
     pub(crate) fn line(&self) -> String {
         (self.stamp_line)()
@@ -748,7 +749,9 @@ pub(crate) fn open_project_code_store(
     Ok(Some(CodeStoreOpened {
         moved: before.as_ref() != Some(opened.view.stamp()),
         behind: opened.behind.as_ref().map(ToString::to_string),
-        stamp_line: Box::new(move || store.stamp_line(&opened, &caller_tree())),
+        stamp_line: Box::new(move || {
+            format!("code store: {}", store.label(&opened, &caller_tree()))
+        }),
     }))
 }
 
