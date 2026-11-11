@@ -598,8 +598,9 @@ Two orders coexist on every event: **position**, the store's own global append o
 (assigned once, never reused, never itself disordered), and **revision**, an event's place
 within its own stream (also store-assigned, as `MAX(revision) + 1` at append time). On a
 stream that has only ever been appended to, the two always agree - whichever event lands at
-a later position also holds a higher revision. The derived-index compaction (`rigger reset
---derived`) is the one thing that deletes rows from a live stream, and deleting rows opens
+a later position also holds a higher revision. The delete of the derived events (`rigger reset
+--derived`, which `rigger setup` also runs once its migrated graph is in place) is the one thing
+that deletes rows from a live stream, and deleting rows opens
 **revision holes**: numbers a surviving row no longer occupies. A write that computes its
 next revision from something other than the stream's current maximum (a build predating the
 `MAX(revision)` cursor, for example) can land in one of those holes - the insert satisfies
@@ -682,25 +683,28 @@ includes), not a capability removal: every excluded fact remains in the event lo
 *content* stays (only the builder-agent attribution drops), so the rationale overlay (section
 5.4) is unaffected. The graph-inspector addendum linked above gives the full treatment.
 
-### 5.3 The derivations: coupling communities and intent concepts  **[AS-BUILT]**
+### 5.3 The groupings: coupling communities and intent concepts  **[AS-BUILT]**
 
-Two higher-altitude views of the graph are **event-sourced offline derivations** - not
-request-time computations, which would jitter the view on every poll and break the
-rebuildable-projection invariant. Each runs as a deterministic pass over the projection and
-records its result as events, so a rebuild reproduces it byte-identically:
+Two higher-altitude views of the code are **groupings computed once per code-store advance**
+(section 5.5) and stored in the snapshot beside the facts they group - not request-time
+computations, which would cost ~2 s per query, and not recorded events, which would go stale at
+every merge. Each is a pure function of the tree at the snapshot's commit, so the same commit
+always groups the same way:
 
-- **Coupling communities** (`rigger graph communities`, `crates/rigger-domain/src/community.rs`) - community
-  detection over the call/reference edges, seeded over a deterministic edge ordering, emitting
-  `IN_COMMUNITY` membership edges at a chosen resolution grain. This is "which functions
-  actually work together", a different grouping from the directory tree.
-- **Intent concepts** (`rigger graph concepts`, `crates/rigger-domain/src/concepts.rs`) - a grouping over the
-  design-intent layer into the ideas a project is *about* ("the grounding pipeline"), emitting
-  concept nodes and `REALIZES` membership edges, labelled deterministically with a
-  model-assisted refinement that has a deterministic fallback.
+- **Coupling communities** (`crates/rigger-domain/src/community.rs`) - community detection over
+  the resolved production view's CALLS, REFERENCES and CONTAINS edges, seeded over a deterministic
+  edge ordering and numbered by smallest member id, so `community/<res>/<n>` is itself a function
+  of the tree. This is "which functions actually work together", a different grouping from the
+  directory tree.
+- **Intent concepts** (`crates/rigger-domain/src/concepts.rs`) - a grouping over the tree's
+  design-intent layer into the ideas a project is *about* ("the grounding pipeline"), labelled
+  deterministically. Concepts cluster the tree alone; a decision shows under the concept of the
+  document it governs, attached at read by the composed view.
 
-Until a derivation has run, its lens renders a documented "not built yet - run the pass"
-state, never an error. The concept-graph addendum linked above covers the concept
-derivation in depth.
+`rigger graph communities` and `rigger graph concepts` are read-only reports over the current
+snapshot; nothing else writes a grouping (`crates/rigger-domain/src/groupings.rs` is the one
+place it is computed). A grain other than the default is computed on demand at read and not
+stored. The concept-graph addendum linked above covers the concept derivation in depth.
 
 ### 5.4 The inspector: three lenses, subject re-projection, call queries, the "why"
 
@@ -763,118 +767,49 @@ projection or running a traversal on that cadence would be a quarter-million-edg
 poll on a large repo. The full design is the graph-inspector addendum linked at the top of
 this document.
 
-### 5.5 The ingest: parallel, incremental, project-scoped  **[AS-BUILT]**
+### 5.5 Code facts and records: the code store and a log of records only  **[AS-BUILT]**
 
-Populating the graph from a project's source is one walk-and-content-key authority
-(`crates/rigger-grounder/src/ingest.rs`, `ingest::ingest_project_batched`) that both the live run and the standalone
-`rigger graph build` (a cold checkout, no run required) share, so the generation a batch
-is recorded under can never drift between them. Four properties define it:
+The graph has two halves with two owners, joined at read. The code store addendum linked at the
+top of this document gives the full design; this is its shape.
 
-- **A project-scoped walk.** It walks the project tree at the repo root and lowers each
-  file's structure (code) and rationale (design), scoped to the project - never the harness's
-  own machinery.
-- **Parallel parse with ordered emit.** The code half parses and lowers files across a
-  worker pool (one worker per logical core), yet **emits in sorted file-path order**, so the
-  event sequence a sink observes is byte-identical to a serial walk's regardless of
-  scheduling. Parallelism is a throughput win that is *observationally invisible* - the
-  rebuild-byte-identical discipline holds.
-- **Batched fold.** Each file's whole batch is recorded in ONE store append and folded in
-  ONE graph transaction, because the measured cold-build throughput was transaction-cadence
-  bound, not parse-bound - one transaction per file, not per event. Both sinks, the run's and a
-  cold `graph build`'s, append the batch's one `GenerationIngested` ledger entry and fold the
-  batch with it through the ledger form (`FoldingStore::append_entry_and_fold`).
-- **Content-keyed skip, project-scoped.** Every event carries a deterministic content key
-  `<prefix>/<file>@<hash>#<i>`, a pure function of the batch's bytes (`gc` for code, `gd` for
-  design). Neither sink records a derived event: each records the batch as ONE
-  `GenerationIngested` ledger entry, built by its one constructor under its GROUP
-  (`eventstore::META_GROUP`), the batch identity `<prefix>/<file>` cut from the key by the one key
-  parser, and a replay key naming the identity, the generation and the batch's event count. A
-  store recorded before the ledger still holds keyed derived rows, grouped the same way, and the
-  lookup reads them as recordings. The store answers, per group, the newest
-  event carrying it (`EventStore::latest_in_group`: position, type and metadata, never data) from
-  its own group index - a partial expression index on the embedded store, one link stream per
-  identity on the server-backed one - so the question "what is this file's latest recorded
-  generation?" (`ingest::latest_generation`) never reads the stream. Both sinks ask
-  `ingest::entry_of_batch` of each batch: it reads the log's
-  latest generation of the identity and the graph's current one, weighing the graph's only when
-  the graph does not owe its rebuild; a batch both hold records nothing; for any other it reads
-  the file's bytes once (none for a path that holds no file or lies outside the walk's scope),
-  extracts them, and records one entry of that extraction's generation, hashed from the bytes
-  when there are any, unless the extraction is empty or is itself the generation both hold, which
-  records nothing. The run's sink memoizes the log side for its process (`LoggedGenerations`, a
-  memo of the log and never the ledger): it asks the store's group lookup for an identity once
-  and answers that identity's later batches from the memo, which takes a lookup's answer when
-  the lookup succeeds and the entry's generation once the entry's append succeeds. The graph's
-  side is read on every batch and never remembered, so a long-lived run records again an
-  identity a rebuild left behind the next time a walk hands its batch. A cold
-  `graph build` keeps no memo: it asks the store's group lookup for each batch, binds the hash
-  to git in the tree it walks, stamps no run id, and counts in its line the batch events of
-  each entry but one that folded as a re-recording. The
-  lookup's answer applies three rules in order:
-  - **Type first.** Only the perception types - the four derived index types
-    (`CodeEntityExtracted`, `EdgeInferred`, `DocConceptExtracted`, `DocLinkExtracted`) and the
-    `GenerationIngested` ledger entry - answer a generation. A newest group member of any other
-    type, or one whose key does not parse, answers none, so the batch is recorded - the
-    fail-safe direction - and no domain event can be dropped by this path; the partition is a
-    property of the code, not of a naming convention.
-  - **Project scope, not run scope.** The lookup spans the project's whole stream, because a
-    file's content hash does not change because a new run started. A derived index fact is a fact
-    about the project's files; run scoping belongs to keys whose recurrence is a property of one
-    run (unit lifecycle, gate verdicts, breaker trips), and those still seed from the current run's
-    slice. So an unchanged file appends **zero** events on every subsequent run, forever - the log
-    stops re-accumulating a re-derivable index - and a step that ingests reads no derived event to
-    decide it. A lookup the store cannot answer fails the ingest; it is never read as "recorded".
-  - **Latest generation per file, never ever-recorded.** A batch is suppressed only when its hash
-    equals the hash of the LATEST batch recorded for that same file. A changed file - **including
-    one reverted to content it held at an earlier recorded generation** - differs from its latest
-    batch, so it is recorded again: either sink records a new entry. A rule that asked whether the generation was EVER recorded would match
-    the reverted content's old records, record nothing, and strand the graph on a superseded
-    version of that file. What the re-recorded batch then RETIRES is a different mechanism's doing, not this rule's, and it covers
-    both halves: a code batch carries a `fresh` head, and the fold's two `fresh` arms are the
-    only callers of `supersede_file_edges`, so the file's prior structural edges are retired by that
-    spec 29a mechanism. The design half sets no `fresh` head; a re-emitted design batch opens a
-    newer generation of its `gd` identity, and `advance_generation` (spec 101) retires the design
-    links its earlier generation asserted, each one the newer generation asserts again revived in
-    place.
+- **The code half: the code store.** `.rigger/store/code/<seq>.snap` holds each file's facts as
+  written, for ONE named commit, stamped with the HEAD ref, the commit, its tree id and the
+  extractor's fingerprint. `advance` moves it to a commit: it lists the target tree, copies the
+  facts of every file whose blob is unchanged, extracts only the others in parallel from git
+  objects (never the worktree's bytes), computes the groupings (section 5.3), and writes the new
+  snapshot and the `CURRENT` pointer atomically under one lock, reaping the old snapshot - git
+  holds every earlier tree. `rigger setup`, `rigger graph build` and the conductor after a landed
+  merge advance it. Nothing is resolved at advance: every cross-file rule runs at read, so a file
+  changing never rewrites another file's facts and the order of advances never changes an answer.
+- **The record half: the event log and `graph.db`.** The log holds only what cannot be
+  re-derived from the tree: decisions, findings, lessons and the run's own events. It refuses
+  every derived type at append (`retention::DERIVED_TYPES`: the four extraction types
+  `CodeEntityExtracted`, `EdgeInferred`, `DocConceptExtracted` and `DocLinkExtracted`, and
+  `GenerationIngested`, `CommunityAssigned`, `ConceptDerived` and `ConceptRealized`). `graph.db`
+  folds the record events alone and skips a derived type by its type, so a log written before the
+  code store refolds to the graph its records alone fold to.
+- **Reads compose the two.** `Composed` joins the record graph and the code view, and an honesty
+  check runs once per view: it compares the snapshot's tree with the caller's worktree, withholds
+  every code node in a file that differs (and every code node when the worktree cannot be
+  compared), and labels every answer with the commit it describes and what it withheld. The CLI
+  prints the label, the MCP tools return it, the dash shows it.
+- **The project walk** (`crates/rigger-grounder/src/ingest.rs`) still lowers the tree into
+  per-file batches keyed `<prefix>/<file>@<hash>#<i>` (`gc` code, `gd` design, `gw` workflow) for
+  the offline passes that read them; the log records none of it.
 
-  The net contract is stated against the LOG, because the log is the only thing the skip
-  decides: after any mix of skipping and re-ingest, the log holds each file's LATEST content
-  generation **as the walk lowered it** in full, and only what changed is ever re-emitted. That
-  qualifier is load-bearing and the last bullet below is why: the walk's view of a file is not always
-  the tree's. Whether the live graph then equals a cold rebuild is a property of the FOLD, not of
-  this rule - suppression withholds only an append whose content the log already records: it is
-  correct about the LOG, and a lost fold is therefore NOT self-healing by re-ingest, because the
-  skip withholds exactly the re-append that would have re-folded it; only the append-and-fold
-  authority can heal that half. In each case below, the log stays right while the GRAPH or the TREE
-  diverges from it; what follows names some of them and is not a closed enumeration.
-
-  The first of these three is retired by the walk itself; in the other two **no batch is folded
-  for the file at all**:
-
-  - **A file the walk no longer sees.** Retiring a file's structure is driven by that file's OWN
-    batch, so a whole-project walk hands every `gc`, `gd` or `gw` identity the graph holds whose
-    path the tree no longer holds one batch more: the boundary batch for no bytes. Its fold advances
-    the identity's generation and retires the file's nodes and edges. The walk asks the tree, so a
-    deleted path gets the retirement batch.
-  - **A file the walk still sees that now extracts to NOTHING** - an ordinary edit that removes its
-    last definition and reference. Both halves drop a file whose extraction is empty, so again no
-    batch is emitted, no `supersede_file_edges` runs, and that file's prior entities and edges stay
-    live.
-  - **A batch whose APPEND landed but whose FOLD did not.** `append_and_fold_batch` folds
-    best-effort by contract - a fold failure never fails an append that already landed durably - so
-    the log is right and the graph is behind. The append IS recorded, so a later run correctly skips
-    it; healing that half is the append-and-fold authority's obligation, not the skip rule's.
-
-  On the INGEST path the projection deletes nothing: the next whole-project walk RETIRES a removed
-  file's facts (`valid_to` stamped, the rows kept), and reclaiming those rows is a deliberate act
-  (`Projector::prune`), never a consequence of an ingest. The projection is not
-  delete-free overall, and the distinction is worth stating exactly: besides `prune`'s three deletes,
-  the fold's `CommunityAssigned` and `ConceptDerived` arms each DELETE the super-nodes of their own
-  grain that the same pass just left with no live member (nodes carry no `valid_to`, so removal is
-  the only way to retire one - the same node-removal primitive `prune` uses). Both are scoped by
-  their grain's id prefix and by `KIND_COMMUNITY` / `KIND_CONCEPT` and guarded on having no live
-  member, so neither can reach a file entity or its edges, and neither is reachable from an event of
-  the four derived index types.
+**Moving an older store to this shape** is fold rule 7. `rigger setup` advances the code store,
+then refolds `graph.db` from the record events alone into a shadow beside it and compares the
+two: every live decision, finding and lesson node with its attributes, every live and retired
+record edge, every record assertion and every alias must survive, and no record may name a
+`community/` or `concept/` id. Otherwise setup refuses, keeps the old file and prints what is
+missing; when the comparison holds it swaps the shadow in. Once the migrated graph stands, setup
+deletes every derived event of the project's run stream in one transaction under the rebuild
+lock, then reclaims the file's free space. While the run is live it deletes nothing, says so,
+and leaves the delete to `rigger reset --derived`, which runs the same transaction: it refuses
+while another holds the rebuild lock, while a rebuild is unfinished, while `graph.db` owes its
+rebuild and while a writer is live (`--force-live` overrides only the last), and a rerun after a
+crash deletes what is left. A delete leaves revision holes in the stream and never reuses a
+position (section 5.1.3).
 
 ### 5.6 The loop, concretely: emit, project, retrieve
 
@@ -1137,8 +1072,8 @@ github.com/virtual-velocitation/rigger
 |   |   |-- namespace.rs         per-project segregation decorator (Namespaced)
 |   |   |-- contract.rs          the shared contract suite (assert_contract)
 |   |-- contextgraph/            the Projection trait + bi-temporal sqlite projector + calls traversal
-|   |-- community.rs concepts.rs the offline derivations (coupling communities, intent concepts)
-|   |-- ingest.rs                the one parallel, incremental, project-scoped ingest authority
+|   |-- community.rs concepts.rs the groupings computed at each code-store advance
+|   |-- ingest.rs                the project walk and its per-file content key
 |   |-- dash.rs registry.rs      the fixed-address dashboard singleton + the instance registry
 |   |-- driver/                  claude_code.rs (headless sessions) + cli.rs (canary)
 |   |-- grounder/                symbols (structural; the default) + grep + nop (opt-out)
@@ -1157,9 +1092,9 @@ cd my-project
 rigger init                         # scaffold .rigger/workflow.yml + .rigger/agents/
 rigger run specs/feature.md         # run the producing loop on a spec
 rigger dash                         # the fixed-address observability dashboard (127.0.0.1:7420)
-rigger graph build                  # fold the project's source into the graph from a cold checkout
-rigger graph communities            # derive the code lens's coupling communities (offline)
-rigger graph concepts               # derive the concepts lens's intent grouping (offline)
+rigger graph build                  # advance the code store to the checkout's commit
+rigger graph communities            # report the code store's coupling communities (read-only)
+rigger graph concepts               # report the code store's intent concepts (read-only)
 rigger graph --around modifier.rs   # inspect the knowledge graph (subgraph query)
 rigger ground <query> [k]           # the configured grounder's top-k references
 rigger validate                     # load + validate the workflow + agents
