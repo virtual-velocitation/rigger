@@ -15,7 +15,7 @@ use std::fmt;
 use std::sync::{Mutex, OnceLock};
 
 use crate::code_facts::Tip;
-use crate::code_graph::CodeGraph;
+use crate::code_graph::{CodeGraph, DOC_ATTR};
 use crate::code_view::{CodeView, Groupings, Tests, ViewFilter, Withheld, WorktreeDiff};
 use crate::contextgraph::query::{
     entity_id, leaf_of, member_file, node_file, node_leaf, node_name, path_leaf, split_id,
@@ -27,7 +27,7 @@ use crate::contextgraph::{
     REL_GOVERNS, REL_IN_COMMUNITY, REL_REALIZES, REL_REFERENCES, TIER_AMBIGUOUS, TIER_EXTRACTED,
     TIER_INFERRED,
 };
-use crate::resolve::ProofCall;
+use crate::resolve::{ProofCall, INTENT_KINDS};
 use crate::test_view::{join_tests, TestAttachment};
 
 /// How the caller's worktree compares with the tree a view describes.
@@ -318,7 +318,7 @@ impl Neighbors for Indexed {
 pub(crate) fn joined(
     mut graph: Graph,
     groupings: &Groupings,
-    proofs: &[ProofCall],
+    attachments: &[TestAttachment; 2],
     tests: Tests,
 ) -> Graph {
     let kinds: BTreeMap<String, String> = graph
@@ -330,7 +330,7 @@ pub(crate) fn joined(
         (KIND_COMMUNITY, REL_IN_COMMUNITY, &groupings.communities),
         (KIND_CONCEPT, REL_REALIZES, &groupings.concepts),
     ];
-    for (kind, rel, clusters) in arms {
+    for ((kind, rel, clusters), attachment) in arms.into_iter().zip(attachments) {
         for c in clusters {
             let attrs = [
                 ("hash", c.hash.clone()),
@@ -356,9 +356,14 @@ pub(crate) fn joined(
                 }
             }
         }
-        join_tests(&mut graph, &TestAttachment::new(proofs, clusters), tests);
+        join_tests(&mut graph, attachment, tests);
     }
     graph
+}
+
+/// The tests `proofs` attach to `groupings`' communities, then to its concepts.
+pub(crate) fn attachments(proofs: &[ProofCall], groupings: &Groupings) -> [TestAttachment; 2] {
+    [&groupings.communities, &groupings.concepts].map(|c| TestAttachment::new(proofs, c))
 }
 
 /// The code half as [`Composed`] reads it: its neighbours, and what composing the halves reads
@@ -373,6 +378,37 @@ pub trait CodeHalf: Neighbors {
     fn concept_members(&self, concept: &str) -> Vec<String>;
     /// The test entities the filter hides, in id order.
     fn hidden_tests(&self) -> Vec<Node>;
+    /// The files the attributes of the grouping `id` summarise, by [`fact_file`]: its members'
+    /// (its label and hash) and its attached tests' (its test count); none when `id` names no
+    /// grouping.
+    fn summarised_files(&self, id: &str) -> Vec<String>;
+}
+
+/// The file `node`'s facts came from, the one rule withholding reads: a design or workflow node's
+/// document, else the file its id names ([`node_file`]).
+pub(crate) fn fact_file(node: &Node) -> Option<&str> {
+    let doc = INTENT_KINDS
+        .contains(&node.kind.as_str())
+        .then(|| node.attrs.get(DOC_ATTR))
+        .flatten();
+    doc.map(String::as_str)
+        .or_else(|| node_file(&node.kind, &node.id))
+}
+
+/// The files the grouping `cluster` summarises: [`fact_file`] of each member `node` answers,
+/// and the file of each of its `tests`, code entities all.
+pub(crate) fn cluster_files<'m>(
+    members: impl Iterator<Item = &'m String>,
+    tests: impl Iterator<Item = &'m str>,
+    node: impl Fn(&str) -> Option<Node>,
+) -> Vec<String> {
+    let mut files: Vec<String> = members
+        .filter_map(|m| node(m).and_then(|n| fact_file(&n).map(str::to_string)))
+        .chain(tests.filter_map(|t| node_file(KIND_CODE_ENTITY, t).map(str::to_string)))
+        .collect();
+    files.sort();
+    files.dedup();
+    files
 }
 
 /// The code half resolved whole: every node and edge the view resolves to, with its groupings
@@ -383,6 +419,9 @@ pub struct Whole {
     concept_members: BTreeMap<String, Vec<String>>,
     concepts_of: BTreeMap<String, Vec<String>>,
     hidden_tests: Vec<Node>,
+    /// The view's groupings and, per arm, the tests attached to them.
+    groupings: Groupings,
+    attachments: [TestAttachment; 2],
 }
 
 impl Whole {
@@ -392,8 +431,9 @@ impl Whole {
         let code_graph = CodeGraph::new(view, filter);
         let resolved = code_graph.resolved();
         let proofs = code_graph.resolver().proof_calls();
+        let attachments = attachments(proofs, groupings);
         let code = Indexed::new(
-            joined(resolved.graph, groupings, proofs, filter.tests),
+            joined(resolved.graph, groupings, &attachments, filter.tests),
             Vec::new(),
         );
         let mut concept_members: BTreeMap<String, Vec<String>> = BTreeMap::new();
@@ -412,6 +452,8 @@ impl Whole {
             concept_members,
             concepts_of,
             hidden_tests: resolved.hidden_tests,
+            groupings: groupings.clone(),
+            attachments,
         }
     }
 }
@@ -461,6 +503,16 @@ impl CodeHalf for Whole {
     }
     fn hidden_tests(&self) -> Vec<Node> {
         self.hidden_tests.clone()
+    }
+    fn summarised_files(&self, id: &str) -> Vec<String> {
+        let arms = [&self.groupings.communities, &self.groupings.concepts];
+        let members = arms
+            .into_iter()
+            .flatten()
+            .filter(|c| c.id == id)
+            .flat_map(|c| &c.members);
+        let tests = self.attachments.iter().flat_map(|a| a.tests_of(id));
+        cluster_files(members, tests, |m| self.code.node(m).ok().flatten())
     }
 }
 
@@ -595,13 +647,26 @@ impl<'r, C: CodeHalf> Composed<'r, C> {
     }
 
     /// Whether `node` is withheld because it is [`Withheld`], counting it when it is.
+    /// A node of the code half is withheld when a file its facts came from is ([`fact_file`]; a
+    /// grouping's are the files it summarises), which a worktree that cannot be compared puts
+    /// every file in.
     fn withholds(&self, node: &Node) -> bool {
-        let stale = match &self.stale {
-            Withheld::Files(_) => {
-                node_file(&node.kind, &node.id).is_some_and(|f| self.stale.withholds_file(f))
-            }
-            Withheld::All => self.code.holds(&node.id),
-        };
+        self.code.holds(&node.id) && self.withholds_code(node)
+    }
+
+    /// Whether `node`, a node of the code half shown or hidden, is withheld because it is
+    /// [`Withheld`], counting it when it is.
+    fn withholds_code(&self, node: &Node) -> bool {
+        let withheld = |f: &str| self.stale.withholds_file(f);
+        let stale = !self.stale.withholds_nothing()
+            && if [KIND_COMMUNITY, KIND_CONCEPT].contains(&node.kind.as_str()) {
+                self.code
+                    .summarised_files(&node.id)
+                    .iter()
+                    .any(|f| withheld(f))
+            } else {
+                fact_file(node).is_some_and(withheld)
+            };
         if stale {
             self.withheld.lock().unwrap().insert(node.id.clone());
         }
@@ -850,7 +915,7 @@ impl<C: CodeHalf> ContextGraph for Composed<'_, C> {
             .code
             .hidden_tests()
             .into_iter()
-            .filter(|n| !self.withholds(n))
+            .filter(|n| !self.withholds_code(n))
             .collect())
     }
     fn whole(&self) -> Result<Graph, Error> {
@@ -1281,12 +1346,13 @@ pub fn locate(graph: &dyn Neighbors, entity: &str) -> Result<Located, Error> {
 mod tests {
     use super::*;
     use crate::code_facts::{
-        Def, DocConcept, DocLink, FileFacts, Half, Mention, MentionKind, Stamp, Tip,
+        Def, DocConcept, DocLink, FileFacts, Half, Mention, MentionKind, Stamp, Tip, WfNode,
     };
     use crate::code_view::{Cluster, DefRef, FactsView, FileRef, Groupings, MentionRef};
     use crate::contextgraph::{
         KIND_ARTIFACT, KIND_CODE_ENTITY, KIND_CONCEPT, KIND_DECISION, KIND_DESIGN_DOC, KIND_FILE,
-        KIND_FINDING, REL_ABOUT, REL_GOVERNS, REL_REALIZES, REL_SPECIFIES, TIER_EXTRACTED,
+        KIND_FINDING, KIND_STAGE, REL_ABOUT, REL_GOVERNS, REL_REALIZES, REL_SPECIFIES,
+        TIER_EXTRACTED,
     };
     use std::borrow::Cow;
 
@@ -1706,5 +1772,107 @@ mod tests {
             label.to_string(),
             "describes c1; 1 file in W differs; 2 withheld"
         );
+    }
+
+    /// [`view`] with the workflow definition's stage and a community grouping `src/a.rs::run`.
+    fn view_with_workflow() -> Grouped {
+        let mut grouped = view(Some("c1"));
+        let workflow = FileFacts {
+            path: ".rigger/workflow.yml".into(),
+            lang: "yaml".into(),
+            half: Half::Workflow,
+            wf_nodes: vec![WfNode {
+                kind: KIND_STAGE.into(),
+                id: "stage:implement".into(),
+                title: "implement".into(),
+            }],
+            ..Default::default()
+        };
+        let mut files: Vec<FileFacts> = grouped
+            .facts
+            .files()
+            .filter_map(|f| grouped.facts.file(f.path).map(Cow::into_owned))
+            .collect();
+        files.push(workflow);
+        grouped.facts = FactsView::new(grouped.facts.stamp().clone(), files);
+        grouped.groupings.communities = vec![Cluster {
+            id: COMMUNITY.into(),
+            label: "run".into(),
+            resolution: 1.0,
+            hash: "h".into(),
+            members: vec!["src/a.rs::run".into()],
+        }];
+        grouped
+    }
+
+    const COMMUNITY: &str = "community/1/0";
+
+    /// Every code-half node names the file its facts came from by one rule, which both the
+    /// differing-files arm and the cannot-compare arm read: GIVEN one file differing (or the
+    /// worktree not comparable), WHEN each kind of code-half node is read whole and near, THEN a
+    /// node is withheld and counted exactly when its file is withheld, a grouping when a member's
+    /// file is, and nothing else is.
+    #[test]
+    fn a_code_half_node_is_withheld_exactly_when_the_file_its_facts_came_from_is() {
+        let probes = [
+            "src/a.rs",
+            "src/a.rs::run",
+            "docs/d.md",
+            "stage:implement",
+            COMMUNITY,
+            CONCEPT,
+        ];
+        let differing = |path: &str| {
+            Ok(WorktreeDiff {
+                changed: vec![path.into()],
+                untracked: Vec::new(),
+            })
+        };
+        // (case, the diff, the probes withheld)
+        let cases: [(&str, Result<WorktreeDiff, String>, &[&str]); 4] = [
+            (
+                "a code file",
+                differing("src/a.rs"),
+                &["src/a.rs", "src/a.rs::run", COMMUNITY],
+            ),
+            (
+                "a design doc",
+                differing("docs/d.md"),
+                &["docs/d.md", CONCEPT],
+            ),
+            (
+                "the workflow definition",
+                differing(".rigger/workflow.yml"),
+                &["stage:implement"],
+            ),
+            ("no comparison", Err("unreadable".into()), &probes),
+        ];
+        let (records, view) = (records(), view_with_workflow());
+        for (case, diff, withheld) in cases {
+            for near in [false, true] {
+                let honesty = honest(diff.clone());
+                let g: Box<dyn ContextGraph + '_> = if near {
+                    Box::new(
+                        Composed::near(&records, &view, ViewFilter::default(), honesty).unwrap(),
+                    )
+                } else {
+                    Box::new(composed(&records, &view, honesty))
+                };
+                let answered: Vec<&str> = probes
+                    .into_iter()
+                    .filter(|id| g.resolve(id).unwrap().is_some())
+                    .collect();
+                let want: Vec<&str> = probes
+                    .into_iter()
+                    .filter(|id| !withheld.contains(id))
+                    .collect();
+                assert_eq!(answered, want, "{case} (near {near}): the probes answered");
+                assert_eq!(
+                    g.stamp_label().withheld,
+                    withheld.len(),
+                    "{case} (near {near}): the probes withheld are counted"
+                );
+            }
+        }
     }
 }

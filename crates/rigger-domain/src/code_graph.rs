@@ -19,6 +19,9 @@ use crate::contextgraph::query::leaf_of;
 use crate::contextgraph::{Edge, Graph, Node, KIND_ARTIFACT, KIND_CODE_ENTITY, KIND_FILE};
 use crate::resolve::{Entity, Resolver};
 
+/// The attribute naming the file a design or workflow node's facts came from.
+pub(crate) const DOC_ATTR: &str = "doc";
+
 /// A view resolved into a graph under one filter.
 pub struct CodeGraph<'v> {
     view: &'v dyn CodeView,
@@ -351,7 +354,12 @@ impl<'v> CodeGraph<'v> {
     pub(crate) fn intent(&self, facts: &FileFacts, b: &mut impl Asserts) {
         let (nodes, links) = self.resolver.intent(facts);
         for n in nodes {
-            b.node(&n.id, n.kind, [("title", n.title), ("doc", n.doc)], n.test);
+            b.node(
+                &n.id,
+                n.kind,
+                [("title", n.title), (DOC_ATTR, n.doc)],
+                n.test,
+            );
         }
         for l in links {
             b.link(&l.from, l.rel, &l.to, l.tier, l.test);

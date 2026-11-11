@@ -18,7 +18,9 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use crate::code_facts::{FileFacts, Half, MentionKind};
 use crate::code_graph::{Asserts, Builder, CodeGraph};
 use crate::code_view::{Cluster, CodeView, FileRef, Tests, ViewFilter};
-use crate::composed::{binds_leaf, id_binds_leaf, joined, ordered, CodeHalf, Indexed};
+use crate::composed::{
+    attachments, binds_leaf, cluster_files, id_binds_leaf, joined, ordered, CodeHalf, Indexed,
+};
 use crate::contextgraph::query::{entity_id, leaf_of, member_file, placeholder_id, split_id};
 use crate::contextgraph::{
     holds_attachment, Edge, Error, Graph, Neighbors, Node, KIND_ARTIFACT, KIND_CODE_ENTITY,
@@ -319,7 +321,12 @@ impl<'v> Near<'v> {
             let groupings = state.view.groupings();
             let proofs = state.graph.resolver().proof_calls();
             Indexed::new(
-                joined(resolved.graph, groupings, proofs, state.tests),
+                joined(
+                    resolved.graph,
+                    groupings,
+                    &attachments(proofs, groupings),
+                    state.tests,
+                ),
                 Vec::new(),
             )
         })
@@ -1012,6 +1019,24 @@ impl CodeHalf for Near<'_> {
     }
     fn hidden_tests(&self) -> Vec<Node> {
         self.state().graph.hidden_tests()
+    }
+    fn summarised_files(&self, id: &str) -> Vec<String> {
+        let (members, tests) = {
+            let mut state = self.state();
+            let clusters = state.clusters();
+            let held = clusters.with_id(id).to_vec();
+            let members: Vec<String> = (held.iter())
+                .flat_map(|&c| clusters.cluster(c).members.clone())
+                .collect();
+            let mut tests = Vec::new();
+            for (arm, _) in held {
+                tests.extend(state.attached_to(arm, id).iter().cloned());
+            }
+            (members, tests)
+        };
+        cluster_files(members.iter(), tests.iter().map(String::as_str), |m| {
+            Neighbors::node(self, m).ok().flatten()
+        })
     }
 }
 

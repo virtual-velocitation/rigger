@@ -17,7 +17,7 @@ use crate::contextgraph::{
     KIND_DECISION, REBUILD_OWED,
 };
 #[cfg(feature = "symbols")]
-use crate::contextgraph::{Edge, KIND_CODE_ENTITY, REL_CALLS, TIER_EXTRACTED};
+use crate::contextgraph::KIND_CODE_ENTITY;
 use rigger_domain::composed::{Compared, Label};
 
 /// The label [`Held`] answers under: it describes `c1` and withholds nothing.
@@ -428,51 +428,47 @@ fn records_rank_as_prose_and_a_left_out_record_set_is_stated() {
 /// A tree whose `kept.rs` is unchanged since the graph's tree, `edited.rs` was edited since and
 /// `gone.rs` deleted since, and whose `added.rs` is new since; each defines a `widget_*`
 /// function, and `kept.rs`'s `widget_kept` is called by `edited.rs`'s `widget_edited`. Beside it
-/// the record half the graph is read through, and the worktree's diff against the graph's tree.
+/// the record half and the code half the graph is read through, and the worktree's diff against
+/// the graph's tree.
 #[cfg(feature = "symbols")]
 fn diverged() -> (
     tempfile::TempDir,
     rigger_domain::composed::Indexed,
+    rigger_domain::code_view::FactsView,
     rigger_domain::code_view::WorktreeDiff,
 ) {
+    use rigger_domain::code_facts::{Def, FileFacts, Mention, MentionKind};
     let dir = tree(&[
         ("kept.rs", "fn widget_kept() {}\n"),
         ("edited.rs", "fn widget_renamed() { widget_kept() }\n"),
         ("added.rs", "fn widget_added() {}\n"),
     ]);
-    let records = rigger_domain::composed::Indexed::new(
-        Graph {
-            nodes: vec![
-                entity("kept.rs", "widget_kept", 1),
-                entity("edited.rs", "widget_edited", 1),
-                entity("gone.rs", "widget_gone", 1),
-            ],
-            edges: vec![Edge {
-                from: "edited.rs::widget_edited".to_string(),
-                to: "kept.rs::widget_kept".to_string(),
-                rel: REL_CALLS.to_string(),
-                valid_from: 0,
-                valid_to: None,
-                source: 0,
-                tier: TIER_EXTRACTED.to_string(),
-            }],
-        },
-        Vec::new(),
-    );
-    let diff = rigger_domain::code_view::WorktreeDiff {
-        changed: vec!["edited.rs".to_string(), "gone.rs".to_string()],
-        untracked: vec!["added.rs".to_string()],
+    let def = |name: &str| Def {
+        local: name.to_string(),
+        leaf: name.to_string(),
+        kind: "function".to_string(),
+        line: 1,
+        end_line: 1,
+        parent: None,
+        test: false,
     };
-    (dir, records, diff)
-}
-
-/// The record half `records` composed over an empty tree stamped `c1`, the worktree differing
-/// from it by `diff`.
-#[cfg(feature = "symbols")]
-fn composed(
-    records: &rigger_domain::composed::Indexed,
-    diff: rigger_domain::code_view::WorktreeDiff,
-) -> rigger_domain::composed::Composed<'_> {
+    let file = |path: &str, name: &str, mentions: Vec<Mention>| FileFacts {
+        path: path.to_string(),
+        lang: "rust".to_string(),
+        defs: vec![def(name)],
+        mentions,
+        ..FileFacts::default()
+    };
+    // The tree the store holds: `edited.rs` then called `widget_kept` from `widget_edited`, and
+    // `gone.rs` still stood.
+    let calls_kept = Mention {
+        enclosing: Some(0),
+        name: "widget_kept".to_string(),
+        leaf: "widget_kept".to_string(),
+        kind: MentionKind::Call,
+        line: 1,
+        test: false,
+    };
     let stamp = rigger_domain::code_facts::Stamp {
         tip: rigger_domain::code_facts::Tip {
             head: "main".to_string(),
@@ -482,13 +478,36 @@ fn composed(
         fingerprint: 0,
         seq: 0,
     };
-    let view = rigger_domain::code_view::FactsView::new(stamp, Vec::new());
+    let view = rigger_domain::code_view::FactsView::new(
+        stamp,
+        vec![
+            file("edited.rs", "widget_edited", vec![calls_kept]),
+            file("gone.rs", "widget_gone", Vec::new()),
+            file("kept.rs", "widget_kept", Vec::new()),
+        ],
+    );
+    let records = rigger_domain::composed::Indexed::new(Graph::default(), Vec::new());
+    let diff = rigger_domain::code_view::WorktreeDiff {
+        changed: vec!["edited.rs".to_string(), "gone.rs".to_string()],
+        untracked: vec!["added.rs".to_string()],
+    };
+    (dir, records, view, diff)
+}
+
+/// The record half `records` composed over the code half `view`, the worktree differing from it
+/// by `diff`.
+#[cfg(feature = "symbols")]
+fn composed<'g>(
+    records: &'g rigger_domain::composed::Indexed,
+    view: &'g rigger_domain::code_view::FactsView,
+    diff: rigger_domain::code_view::WorktreeDiff,
+) -> rigger_domain::composed::Composed<'g> {
     let honesty = rigger_domain::composed::Honesty {
         worktree: "W".to_string(),
         diff: Ok(diff),
         behind: None,
     };
-    rigger_domain::composed::Composed::new(records, &view, Default::default(), honesty).unwrap()
+    rigger_domain::composed::Composed::new(records, view, Default::default(), honesty).unwrap()
 }
 
 /// One withheld case: the term, the entity lines the graph half shows, what else the graph half
@@ -502,7 +521,7 @@ type WithheldCase<'a> = (&'a str, &'a [&'a str], &'a [&'a str], &'a [&'a str]);
 #[cfg(feature = "symbols")]
 #[test]
 fn a_file_changed_deleted_or_added_is_answered_by_text_and_withheld_by_graph() {
-    let (dir, records, diff) = diverged();
+    let (dir, records, view, diff) = diverged();
     let lookup = TreeLookup::new(dir.path());
     let cases: [WithheldCase; 4] = [
         (
@@ -531,7 +550,7 @@ fn a_file_changed_deleted_or_added_is_answered_by_text_and_withheld_by_graph() {
         ),
     ];
     for (term, shown, graph_says, text_says) in cases {
-        let graph = composed(&records, diff.clone());
+        let graph = composed(&records, &view, diff.clone());
         let reply = lookup.lookup(&terms(&[term]), Ok(&graph)).unwrap();
         let graph_part = section(&reply, "graph");
         let label = graph.stamp_label();
@@ -568,8 +587,8 @@ fn a_file_changed_deleted_or_added_is_answered_by_text_and_withheld_by_graph() {
 #[cfg(feature = "symbols")]
 #[test]
 fn a_multi_term_lookup_groups_each_section_per_term() {
-    let (dir, records, diff) = diverged();
-    let graph = composed(&records, diff);
+    let (dir, records, view, diff) = diverged();
+    let graph = composed(&records, &view, diff);
     let reply = TreeLookup::new(dir.path())
         .lookup(
             &terms(&["widget_kept", "widget_added", "widget_kept"]),

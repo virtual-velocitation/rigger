@@ -274,3 +274,41 @@ fn ground_names_the_callers_worktree_from_a_subdirectory() {
         "the label is {label:?}; stderr:\n{err}"
     );
 }
+
+/// GIVEN a committed, built project whose workflow definition names a stage, WHEN the definition
+/// is edited and `rigger graph --around` reads the stage, THEN the stage, a fact of the differing
+/// file, is withheld and counted like any node of a differing file, never answered from the
+/// snapshot.
+#[test]
+fn a_workflow_node_of_a_differing_definition_is_withheld() {
+    let dir = temp_project();
+    let root = dir.path();
+    write_text(root, "src/lib.rs", "pub fn alpha() {}\n");
+    let workflow = "stages:\n  implement:\n    agent: worker\n";
+    write_text(root, ".rigger/workflow.yml", workflow);
+    git_commit_all(root, "source");
+    run_rigger_ok(root, &["graph", "build"]);
+    write_text(
+        root,
+        ".rigger/workflow.yml",
+        &workflow.replace("worker", "other"),
+    );
+    let head = git_out(root, &["rev-parse", "HEAD"]);
+    let worktree = root.canonicalize().unwrap().display().to_string();
+
+    let (out, err, ok) = run_rigger(
+        root,
+        &["graph", "--around", "stage:implement", "--depth", "1"],
+    );
+
+    assert!(ok, "the around answers; stderr:\n{err}");
+    // The seed stage, withheld, so the walk reaches nothing beyond it.
+    let label = format!("describes {head}; 1 file in {worktree} differs; 1 withheld");
+    assert_eq!(out.lines().next(), Some(label.as_str()), "stdout:\n{out}");
+    assert!(
+        !out.lines()
+            .skip(2)
+            .any(|l| l.contains("stage:implement") || l.contains("agent:worker")),
+        "no fact of the differing definition is answered; stdout:\n{out}"
+    );
+}

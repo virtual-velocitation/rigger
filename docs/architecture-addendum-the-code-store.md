@@ -543,6 +543,13 @@ open(caller worktree W, filter)
                      record half still answers
 ```
 
+A node is in the file its facts came from, by one rule both arms read: a design or workflow
+node's document (its `doc`; `stage:implement` is in `.rigger/workflow.yml`), any other code-half
+node the file its id names, and a community or concept every file its attributes summarise (its
+members', which give its label and hash, and its attached tests', which give its test count). A
+differing file withholds the nodes in it; a worktree that cannot be compared puts every file in
+doubt. Only code-half nodes are withheld: a record is never stale.
+
 W is the caller's worktree: the git top-level of the cwd, else the cwd. Every reader names it by
 that one rule (graph, ground, lookup, MCP, dash), so a read from a subdirectory counts the whole
 worktree's differing files and its label names the top-level.
