@@ -15,17 +15,12 @@
 //!     bounded by the parser, never a hand-rolled lexer. These faces are asserted under `symbols`.
 //!   - CLAMP: a body longer than the max window is bounded to it AND carries an explicit omitted-line
 //!     note, so the surface never dumps an unbounded body and a clamp is never read as the whole.
-//!   - LIGHT LANE: a build without the `symbols` feature links no grammar, so a located entity
-//!     degrades to the site plus an explicit extent-unavailable note and NO body - the honesty
-//!     contract for a feature lane that cannot derive the extent.
 //!   - ARG EDGE: `graph` with neither `--around` nor `--show` errors and names BOTH selectors.
 //!   - MEMBERS (spec 119, THE MEMBER RULE): `--around` a file prints its named code entities one
 //!     hop on and `--around` one of them its file, over a store no `CONTAINS` edge reaches.
 //!
-//! The graph is seeded by folding the ALWAYS-compiled `CodeEntityExtracted` events (no `symbols`
-//! extractor), so RESOLUTION and the degrade/none/arg faces run identically in BOTH feature lanes.
-//! The BODY extent is bounded through the extraction grammar, so the extent/clamp faces are gated to
-//! the `symbols` lane and the extent-unavailable note is asserted in the light lane. `definition_body`
+//! Code entities come from the code store, which only the `symbols` lane keeps, so every face that
+//! shows a definition is gated to it; the none/no-store/arg faces run in both lanes. `definition_body`
 //! is a private binary fn reachable only through the CLI, so this integration layer is the only place
 //! its degrade/extent boundary can be proven.
 
@@ -34,8 +29,6 @@
 // and every suite that spawns the product then dies with a bare NotFound.
 use crate::common;
 
-#[cfg(not(feature = "symbols"))]
-use common::cli::assert_light_lane_extent_note;
 #[cfg(feature = "symbols")]
 use common::cli::body_line_count;
 use common::cli::open_graph;
@@ -193,51 +186,6 @@ fn graph_requires_around_or_show() {
     assert!(
         err.contains("--around") && err.contains("--show"),
         "the usage error names BOTH selectors (--around and --show); got stderr:\n{err}"
-    );
-}
-
-/// LIGHT-LANE face: a build without the `symbols` feature links no extraction grammar, so a located
-/// entity whose file and line ARE present in the working tree still cannot have its body extent
-/// derived. The surface degrades to the site header plus an explicit extent-unavailable note and NO
-/// body, and EXITS SUCCESS - the honesty contract for a feature lane that cannot derive the extent
-/// (in place of the hand-rolled lexer that would mis-read the grammars the graph ingests). Only
-/// compiled in the light lane; the `symbols` lane proves the body IS shown for the same shape.
-#[cfg(not(feature = "symbols"))]
-#[test]
-fn graph_show_light_lane_degrades_to_extent_unavailable_note() {
-    let dir = temp_project();
-    let root = dir.path();
-    seed_rigger_dir(root);
-
-    // A present, readable definition at a valid line: the ONLY reason a body cannot be shown is the
-    // missing extraction grammar, so the degrade is attributable to the light lane alone.
-    std::fs::write(
-        root.join("present.rs"),
-        "fn present() {\n    let body = 1;\n}\n",
-    )
-    .unwrap();
-    {
-        let p = open_graph(root);
-        apply_code_entity(&p, 1, "present.rs", "present", "function", 1, "rust");
-    }
-    common::fixtures::commit_tree(root);
-
-    let (out, _err, ok) = run_rigger(root, &["graph", "--show", "present"]);
-    // The recorded site header survives (resolution is always compiled)...
-    assert!(
-        out.contains("present.rs:1"),
-        "the located site header is printed in the light lane; got:\n{out}"
-    );
-    // ...and the body degrades to the explicit extent-unavailable note, never a silent truncation.
-    assert!(
-        ok,
-        "a located entity in the light lane still EXITS SUCCESS (a note, never an error); got:\n{out}"
-    );
-    assert_light_lane_extent_note(&out);
-    // The real body line is never shown without the grammar (no silent partial body).
-    assert!(
-        !out.contains("let body = 1"),
-        "the light lane shows no body text without the extraction grammar; got:\n{out}"
     );
 }
 

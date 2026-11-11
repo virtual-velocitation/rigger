@@ -2507,21 +2507,6 @@ pub fn reported_reclaimed_bytes(report: &str, marker: &str) -> Option<u64> {
     rest[..end].trim().parse().ok()
 }
 
-/// In a build WITHOUT the `symbols` feature (the light `--no-default-features` lane), `graph
-/// --show` cannot derive a located entity's body extent (no extraction grammar is linked), so it
-/// must degrade to the site header plus an explicit extent-unavailable note and NO line-numbered
-/// body - never a hand-rolled lexer that would mis-read the grammars the graph ingests.
-pub fn assert_light_lane_extent_note(out: &str) {
-    assert!(
-        out.contains("code-extraction grammar") || out.contains("`symbols` feature"),
-        "the light lane names the missing extraction grammar in the extent note; got:\n{out}"
-    );
-    assert!(
-        !out.contains(" | ") && body_line_count(out) == 0,
-        "the light lane prints NO line-numbered body (extent unavailable); got:\n{out}"
-    );
-}
-
 /// The line `rigger validate` warns of log bloat on, over a store still holding `events` derived
 /// events.
 pub fn bloat_advisory_naming(events: usize) -> String {

@@ -1,11 +1,10 @@
 //! Integration test for `rigger graph --show <entity>` (spec 58, criterion 1: the show
 //! surface's RESOLUTION and OUTPUT). It drives the COMPILED `rigger` binary against a throwaway
-//! project whose `graph.db` is seeded with code-entity nodes - folded from the ALWAYS-compiled
-//! `CodeEntityExtracted` events, so the test runs identically in BOTH feature lanes (default and
-//! `--no-default-features`) - and whose working tree holds the real source the body is read from.
+//! project whose committed tree holds the real source: the code store extracts its definitions at
+//! the head, and the body is read from the working tree.
 //!
 //! It proves the three faces of criterion 1 through the real CLI path (`main::cmd_graph` ->
-//! `cmd_graph_show` -> `Projector::locate` -> body read from the working tree):
+//! `cmd_graph_show` -> the code store's view -> body read from the working tree):
 //!   - SHOW BY UNIQUE NAME: a bare name with one definition prints its site + line-numbered body.
 //!   - SHOW BY ID: the full `<file>::<name>` id resolves to the SAME entity and body.
 //!   - AMBIGUOUS NAME: a bare name with several definitions LISTS them (sorted, with files) and
@@ -17,39 +16,22 @@
 //!     id whose show lists several definitions prints the held node's line and no `unresolved`
 //!     line after it.
 //!
-//! RESOLUTION is feature-lane independent (the code-entity fold is always compiled), so the site
-//! header and the ambiguous listing are asserted in BOTH lanes. The BODY is bounded through the
-//! `symbols` extraction grammar (tree-sitter), so its content is asserted under `symbols`; the
-//! light (`--no-default-features`) lane, which links no grammar, degrades a located entity to the
-//! site plus an explicit extent-unavailable note and NO body - the honesty contract for a feature
-//! lane that cannot derive the extent (asserted by [`assert_light_lane_extent_note`]).
-
-use rigger::contextgraph::sqlite::Projector;
+//! Every face needs the `symbols` extractor: the light (`--no-default-features`) lane links none and
+//! keeps no code store, so it holds no code entity to show.
 
 // The compiled `rigger` binary under test is located at RUNTIME by the shared authority in
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves,
 // and every suite that spawns the product then dies with a bare NotFound.
 use crate::common;
 
-#[cfg(not(feature = "symbols"))]
-use common::cli::assert_light_lane_extent_note;
-
-#[cfg(feature = "symbols")]
 use common::cli::ambiguous_show;
-#[cfg(feature = "symbols")]
 use common::cli::open_graph;
-#[cfg(feature = "symbols")]
 use common::cli::run_around;
 use common::cli::run_rigger;
-use common::cli::run_stream_identity;
 use common::cli::seed_rigger_dir;
-#[cfg(feature = "symbols")]
 use common::cli::show_head;
 use common::cli::temp_project;
-use common::fixtures::apply_code_entity;
-#[cfg(feature = "symbols")]
 use common::fixtures::A_RS_NEWS;
-#[cfg(feature = "symbols")]
 use common::fixtures::{hold, FLAT_LEAF_ID};
 
 #[test]
@@ -77,20 +59,12 @@ fn graph_show_resolves_by_id_and_name_and_lists_ambiguous_candidates() {
     )
     .unwrap();
 
-    // Seed the graph: alpha@a.rs:1, shared@a.rs:3, shared@b.rs:1. Distinct positions so each
-    // fold is a distinct (non-deduped) apply.
-    let id = run_stream_identity(root);
-    {
-        let p =
-            Projector::open(root.join(".rigger").join("graph.db").to_str().unwrap(), &id).unwrap();
-        apply_code_entity(&p, 1, "a.rs", "alpha", "function", 1, "rust");
-        apply_code_entity(&p, 2, "a.rs", "shared", "function", 3, "rust");
-        apply_code_entity(&p, 3, "b.rs", "shared", "function", 1, "rust");
-    }
+    // The committed tree is what the code store extracts: alpha@a.rs:1, shared@a.rs:3 and
+    // shared@b.rs:1.
+    common::fixtures::commit_tree(root);
 
     // (1) SHOW BY UNIQUE NAME: `alpha` has one definition -> its site + kind + degree + a
     //     line-numbered body.
-    common::fixtures::commit_tree(root);
     let (out, err, ok) = run_rigger(root, &["graph", "--show", "alpha"]);
     assert!(ok, "graph --show alpha must succeed; stderr: {err}");
     assert!(
@@ -105,16 +79,12 @@ fn graph_show_resolves_by_id_and_name_and_lists_ambiguous_candidates() {
         out.contains("degree"),
         "prints the entity's one-hop DEGREE; got:\n{out}"
     );
-    // The BODY is bounded through the extraction grammar: asserted under `symbols`; the light lane
-    // degrades to the extent-unavailable note with no body.
-    #[cfg(feature = "symbols")]
+    // The BODY is bounded through the extraction grammar.
     assert!(
         out.lines()
             .any(|l| l.contains("fn alpha") && l.contains('1')),
         "the definition BODY is shown, line-numbered with its 1-based line; got:\n{out}"
     );
-    #[cfg(not(feature = "symbols"))]
-    assert_light_lane_extent_note(&out);
 
     // (2) SHOW BY ID: the full `<file>::<name>` id resolves to the SAME entity, and its body is
     //     read from the working tree at the recorded line - a.rs's `shared`, never b.rs's.
@@ -124,26 +94,21 @@ fn graph_show_resolves_by_id_and_name_and_lists_ambiguous_candidates() {
         out_id.contains("a.rs:3"),
         "the full id resolves to shared@a.rs:3; got:\n{out_id}"
     );
-    // Never b.rs's `shared` body, in EITHER lane (the light lane shows no body at all).
+    // Never b.rs's `shared` body.
     assert!(
         !out_id.contains("marker_in_b"),
         "only a.rs's `shared` body is shown, never b.rs's; got:\n{out_id}"
     );
-    #[cfg(feature = "symbols")]
-    {
-        assert!(
-            out_id.contains("marker_in_a"),
-            "the body read from the working tree at a.rs:3 is shown; got:\n{out_id}"
-        );
-        assert!(
-            out_id
-                .lines()
-                .any(|l| l.contains("fn shared") && l.contains('3')),
-            "the body is line-numbered from its recorded line (3); got:\n{out_id}"
-        );
-    }
-    #[cfg(not(feature = "symbols"))]
-    assert_light_lane_extent_note(&out_id);
+    assert!(
+        out_id.contains("marker_in_a"),
+        "the body read from the working tree at a.rs:3 is shown; got:\n{out_id}"
+    );
+    assert!(
+        out_id
+            .lines()
+            .any(|l| l.contains("fn shared") && l.contains('3')),
+        "the body is line-numbered from its recorded line (3); got:\n{out_id}"
+    );
 
     // (3) AMBIGUOUS NAME: `shared` has two definitions -> LIST both (sorted by id, each with its
     //     file) and print NO body (never guess among candidates).
@@ -174,7 +139,6 @@ fn graph_show_resolves_by_id_and_name_and_lists_ambiguous_candidates() {
 /// graph --show` on the flat `a.rs::new` and on the path `T::new`, THEN each lists every
 /// definition it names, sorted, and prints no body: the flat id `a.rs`'s two, never `b.rs`'s, and
 /// the path both `T::new`, never `U::new`.
-#[cfg(feature = "symbols")]
 #[test]
 fn graph_show_lists_every_definition_a_flat_id_or_a_path_names() {
     let dir = temp_project();
@@ -208,7 +172,6 @@ fn graph_show_lists_every_definition_a_flat_id_or_a_path_names() {
 /// `T::new` and a decision holding the pre-spec flat id `a.rs::new`, WHEN the operator runs `rigger
 /// graph --show a.rs::new`, THEN it shows `a.rs::T::new` at its site, never the decision's bare
 /// node. (Its degree counts the view's containment edge beside the decision's.)
-#[cfg(feature = "symbols")]
 #[test]
 fn graph_show_answers_a_flat_id_a_decision_holds_by_its_definition() {
     let dir = held_flat_id_project("impl T { fn new() {} }\n");
@@ -229,7 +192,6 @@ fn graph_show_answers_a_flat_id_a_decision_holds_by_its_definition() {
 /// operator runs `rigger graph --around a.rs::new --depth 1`, a node whose show lists both
 /// methods, THEN the held node's line prints with no `unresolved` line after it: a query whose
 /// site is ambiguous lists no unresolved leaf.
-#[cfg(feature = "symbols")]
 #[test]
 fn graph_around_an_ambiguous_flat_id_prints_its_node_and_no_unresolved_line() {
     let dir = held_flat_id_project("impl T { fn new() {} }\nimpl U { fn new() {} }\n");
@@ -246,7 +208,6 @@ fn graph_around_an_ambiguous_flat_id_prints_its_node_and_no_unresolved_line() {
 
 /// A [`temp_project`] whose committed tree holds `a.rs` as `source` and whose own graph holds a
 /// decision holding the pre-spec flat id [`FLAT_LEAF_ID`] ([`hold`]).
-#[cfg(feature = "symbols")]
 fn held_flat_id_project(source: &str) -> tempfile::TempDir {
     let dir = temp_project();
     seed_rigger_dir(dir.path());
@@ -257,7 +218,6 @@ fn held_flat_id_project(source: &str) -> tempfile::TempDir {
 
 /// Write each `(path, source)` of `files` into the tree at `root` and commit it, so the code
 /// store describes exactly these files.
-#[cfg(feature = "symbols")]
 fn plant_sources(root: &std::path::Path, files: &[(&str, &str)]) {
     for (path, source) in files {
         std::fs::write(root.join(path), source).unwrap();

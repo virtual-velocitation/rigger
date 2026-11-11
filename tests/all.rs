@@ -136,6 +136,7 @@ mod graph_rebuild_collapses_dupes;
 mod graph_seeds_repoint_denoise;
 mod graph_show_periphery;
 mod graph_show_staleness;
+#[cfg(feature = "symbols")]
 mod graph_show_surface;
 mod grep_fallback_metric_periphery;
 mod grounder_name_contract;
