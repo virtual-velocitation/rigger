@@ -358,6 +358,11 @@ fn diverged() -> (tempfile::TempDir, Held) {
     (dir, graph)
 }
 
+/// One freshness case: the term, the entity lines the graph half shows, what else the graph half
+/// says, and what the text half says.
+#[cfg(feature = "symbols")]
+type FreshnessCase<'a> = (&'a str, &'a [&'a str], &'a [&'a str], &'a [&'a str]);
+
 /// A file changed, deleted or added in the caller's tree is answered from the tree by the text
 /// half and withheld by the graph half, with an unchanged file's hit kept.
 #[cfg(feature = "symbols")]
@@ -365,7 +370,7 @@ fn diverged() -> (tempfile::TempDir, Held) {
 fn a_file_changed_deleted_or_added_is_answered_by_text_and_withheld_by_graph() {
     let (dir, graph) = diverged();
     let lookup = TreeLookup::new(dir.path());
-    let cases: [(&str, &[&str], &[&str], &[&str]); 4] = [
+    let cases: [FreshnessCase; 4] = [
         (
             "widget_kept",
             &["kept.rs:1 kept.rs::widget_kept (function)"],
