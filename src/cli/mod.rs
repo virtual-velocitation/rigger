@@ -456,8 +456,12 @@ fn standing_graph(graph_db: &str, project: &str) -> Option<Projector> {
 /// and names the command that pays the rebuild. `None` when there is no file (never creating
 /// one), when it owes nothing, or when it cannot be read.
 fn graph_rebuild_owed_note(graph_db: &str, project: &str) -> Option<String> {
-    let owed = standing_graph(graph_db, project)?.rebuild_owed().ok()?;
-    owed.then(|| {
+    rebuild_owed_note_of(&standing_graph(graph_db, project)?)
+}
+
+/// [`graph_rebuild_owed_note`] for a `graph.db` already open.
+fn rebuild_owed_note_of(graph: &Projector) -> Option<String> {
+    graph.rebuild_owed().ok()?.then(|| {
         format!(
             "note: {} - until then the context graph answers as it stands",
             contextgraph::REBUILD_OWED
@@ -493,15 +497,18 @@ const PASSED_OVER_RETRIED: &str = "a rebuild under a later fold rule retries the
 
 /// Open this project's `graph.db` for a read-only inspection: it answers from the projection as
 /// it stands, saying on stderr first when that projection owes its rebuild
-/// ([`graph_rebuild_owed_note`]). The open writes nothing to such a file.
+/// ([`graph_rebuild_owed_note`]), from the one open it answers with. The open writes nothing to
+/// such a file.
 fn open_graph_to_read(
     graph_db: &str,
     project: &str,
 ) -> Result<Projector, Box<dyn std::error::Error>> {
-    if let Some(note) = graph_rebuild_owed_note(graph_db, project) {
+    let existed = Path::new(graph_db).exists();
+    let graph = Projector::open(graph_db, project)?;
+    if let Some(note) = existed.then(|| rebuild_owed_note_of(&graph)).flatten() {
         eprintln!("{note}");
     }
-    Ok(Projector::open(graph_db, project)?)
+    Ok(graph)
 }
 
 /// The environment variable carrying the server's full connection string (§48 rung 2).
