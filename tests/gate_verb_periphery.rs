@@ -104,6 +104,66 @@ fn with_no_driver_the_gate_verb_runs_the_gate_for_information_only_and_records_n
     }
 }
 
+/// THE VERB ASKS WHERE THE DRIVER BINDS: GIVEN a socket bound by the shared path rule for the
+/// project under the verb's runtime directory, WHEN an agent runs `rigger gate g`, THEN the answer
+/// served there is what the verb reports.
+#[cfg(unix)]
+#[test]
+fn the_gate_verb_asks_the_socket_the_shared_path_rule_names_for_its_project() {
+    use rigger::gate_channel::{GateChannel, GateReply, GateRequest};
+    let (root, scratch) = committed_project();
+    let path = rigger::gate_socket::socket_path_under(scratch.path(), root.path()).unwrap();
+    let socket = rigger::gate_socket::GateSocket::bind(&path).unwrap();
+    let answer = |request: GateRequest| GateReply::Refused {
+        reason: format!("the driver heard gate {}", request.gate),
+    };
+    let (_out, err, ok) = std::thread::scope(|s| {
+        let serving = s.spawn(|| socket.serve(&answer));
+        let ran = rigger_in(root.path(), scratch.path(), &["gate", "g"]);
+        socket.close();
+        serving.join().unwrap().unwrap();
+        ran
+    });
+    assert!(!ok, "a refusal is the verb's error");
+    assert!(
+        err.contains("the driver heard gate g"),
+        "the verb reports the served answer: {err}"
+    );
+}
+
+/// A RUNTIME DIRECTORY TOO LONG FOR A SOCKET IS NAMED: GIVEN a runtime directory so long that the
+/// project's socket path overflows the OS limit, WHEN an agent runs `rigger gate g`, THEN the verb
+/// names the runtime directory as the cause, runs the gate for information only and records
+/// nothing.
+#[cfg(unix)]
+#[test]
+fn a_runtime_directory_too_long_for_a_socket_is_named_and_the_verb_runs_for_information_only() {
+    let (root, scratch) = committed_project();
+    let long = scratch.path().join("r".repeat(120));
+    std::fs::create_dir_all(&long).unwrap();
+    let (out, err, ok) = run_rigger_envs(
+        root.path(),
+        &["gate", "g"],
+        &[
+            ("RIGGER_TMPDIR", scratch.path().to_str().unwrap()),
+            ("XDG_RUNTIME_DIR", long.to_str().unwrap()),
+        ],
+    );
+    assert!(ok, "the gate is green; stderr:\n{err}");
+    assert!(
+        out.contains("PASS gate g"),
+        "the verb prints the result: {out}"
+    );
+    assert!(
+        err.contains("the runtime directory") && err.contains("recorded nothing"),
+        "the verb names the cause and says it recorded nothing: {err}"
+    );
+    assert!(
+        gate_verdicts(root.path()).is_empty(),
+        "nothing was recorded"
+    );
+}
+
 #[test]
 fn the_gate_verb_refuses_an_uncommitted_tree_and_an_undeclared_gate_recording_nothing() {
     struct Case {

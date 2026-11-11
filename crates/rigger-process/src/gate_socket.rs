@@ -423,8 +423,9 @@ mod tests {
     }
 
     /// A PATH TOO LONG FOR A SOCKET IS NAMED AS SUCH: GIVEN a runtime directory so long the
-    /// socket path overflows the OS limit, THEN binding and asking both answer `InvalidInput`,
-    /// the cause the verb reports before it falls back to an information-only run.
+    /// socket path overflows the OS limit, THEN binding and asking both answer `InvalidInput`
+    /// naming the path and the runtime directory as the cause, which the driver and the verb
+    /// report as they are.
     #[test]
     fn a_socket_path_longer_than_the_os_allows_is_invalid_input_at_both_ends() {
         let runtime = tempfile::tempdir().unwrap();
@@ -438,6 +439,11 @@ mod tests {
         ] {
             let err = err.unwrap_or_else(|| panic!("{end}: an over-long path fails"));
             assert_eq!(err.kind(), io::ErrorKind::InvalidInput, "{end}: {err}");
+            let said = err.to_string();
+            assert!(
+                said.contains(&path.display().to_string()) && said.contains("runtime directory"),
+                "{end}: the error names the path and the cause: {said}"
+            );
         }
     }
 }
