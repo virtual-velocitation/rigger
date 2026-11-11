@@ -966,6 +966,10 @@ is idempotent.
 
 - **No loss.** Steps 3 and 4 prove that every non-derivable fact survives before anything is
   deleted.
+- **Scope.** Step 4 runs on every refold to rule 7, whatever rule the old file records; step 3
+  runs from the older rules that fold records as rule 7 does (5 and 6, since rule 5 last changed
+  the record fold), because a file an older rule folded holds record facts the records no longer
+  fold to, and a rebuild at rule 7 refolds the log it is handed, a removed or other log included.
 - **Rebuild lock.** Step 6 reuses the existing verb, its rebuild lock and its refusal while a
   live writer holds the log. Its rewrite-to-ledger-entry step is removed, because nothing derived
   is kept.

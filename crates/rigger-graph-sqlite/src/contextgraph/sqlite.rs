@@ -704,9 +704,7 @@ impl Projector {
                 })
                 .map_err(FrameError::unframed)?;
                 fold_source(&mut shadow, project, source, progress, true)?;
-                if fold_rule(live)? == RECORDS_ONLY_RULE - 1 {
-                    refuse_a_lossy_refold(&shadow, path, project)?;
-                }
+                refuse_a_lossy_refold(&shadow, path, project, fold_rule(live)?)?;
                 // The graph the live one would hold, never a larger one: the prune `rigger reset
                 // --runs` applies, derived from what the fold gathered, on a copy of the shadow.
                 let copy = pruned_copy(path);
@@ -1800,30 +1798,51 @@ fn prune_a_copy(shadow: &Connection, copy: &str, project: &str) -> Result<Connec
 /// The fold rule that folds the records alone ([`PROJECTION_VERSION`] 7).
 const RECORDS_ONLY_RULE: i64 = 7;
 
+/// The older fold rules whose record fold is the records-only rule's: rule 5 is the last that
+/// changed how a record folds (a lesson's or finding's `file` read as one more location), rule 6
+/// changed only community memberships, which are not record facts, and rule 7 only the derived
+/// types. A file one of them folded holds no record fact its migration's refold does not give, so
+/// a record fact it holds and the refold lacks is lost ([`refuse_a_lossy_refold`]); a file an
+/// older rule folded holds record facts the records no longer fold to, and is not compared. Nor is
+/// a file the records-only rule folded: its rebuild is the recovery that refolds the log it is
+/// handed, a removed, shorter or other log among them, and the graph then holds what that log
+/// holds.
+const RECORD_FOLD_RULES: std::ops::Range<i64> = 5..RECORDS_ONLY_RULE;
+
 /// The node kinds a record event folds, whose nodes, edges and assertions a migration to the
 /// records-only rule keeps ([`refuse_a_lossy_refold`]).
 const RECORD_KINDS: [&str; 3] = [KIND_DECISION, KIND_FINDING, KIND_LESSON];
 
 /// Refuse the swap of the records-only refold the shadow behind `shadow` holds for `project` over
-/// the graph file at `live_path`, which the rule before it folded (addendum section 11, steps 3 and
-/// 4): that rule folded the records exactly as this one does, so every record fact the old file
-/// holds - each record node with its attrs, each live or retired edge from or onto one (its
-/// endpoints, relation, validity and tier, endpoints compared by id, so a governed file the old
-/// file held as a file is kept as the refold's bare artifact), each assertion the record identity
-/// holds, and each alias - must be in the refold, and no record may name a grouping id, which no
-/// fold holds any longer ([`grouping_id_sql`]). A grouping's memberships, and the record identity's
-/// assertion of a grouping, are the grouping passes' rows rather than record facts and are not
-/// compared. Anything missing, or any record naming a grouping, is an error printing each one,
+/// the graph file at `live_path`, which fold rule `old_rule` folded (addendum section 11, steps 3
+/// and 4). No record of the refold may name a grouping id, which no fold holds any longer
+/// ([`grouping_id_sql`]), whatever the old rule. When the old rule is one of
+/// [`RECORD_FOLD_RULES`], which fold the records exactly as this one does, every record fact the
+/// old file holds - each record node with its attrs, each live or retired edge from or onto one
+/// (its endpoints, relation, validity and tier, endpoints compared by id, so a governed file the
+/// old file held as a file is kept as the refold's bare artifact), each assertion the record
+/// identity holds, and each alias - must be in the refold too. A grouping's memberships, and the
+/// record identity's assertion of a grouping, are the grouping passes' rows rather than record
+/// facts and are not compared. Anything missing, or any record naming a grouping, is an error printing each one,
 /// returned before the swap, so the old file stands untouched and the shadow stays standing for a
 /// rerun to compare and refuse again. Only the old file's columns are compared: a file an older
 /// shape left may lack one.
-fn refuse_a_lossy_refold(shadow: &Connection, live_path: &str, project: &str) -> Result<(), Error> {
-    shadow
-        .execute("ATTACH DATABASE ?1 AS old", [live_path])
-        .map_err(be)?;
-    let lost = record_facts_lost(shadow, project);
-    shadow.execute_batch("DETACH DATABASE old").map_err(be)?;
-    let lost = lost?;
+fn refuse_a_lossy_refold(
+    shadow: &Connection,
+    live_path: &str,
+    project: &str,
+    old_rule: i64,
+) -> Result<(), Error> {
+    let lost = if RECORD_FOLD_RULES.contains(&old_rule) {
+        shadow
+            .execute("ATTACH DATABASE ?1 AS old", [live_path])
+            .map_err(be)?;
+        let lost = record_facts_lost(shadow, project);
+        shadow.execute_batch("DETACH DATABASE old").map_err(be)?;
+        lost?
+    } else {
+        Vec::new()
+    };
     let groupings = labels(
         shadow,
         &format!(
@@ -1840,7 +1859,7 @@ fn refuse_a_lossy_refold(shadow: &Connection, live_path: &str, project: &str) ->
         return Ok(());
     }
     let mut refusal = vec![format!(
-        "{live_path} was not migrated to the records-only fold and is kept as it stands:"
+        "{live_path} was not swapped for its records-only refold and is kept as it stands:"
     )];
     for (heading, lines) in [
         (

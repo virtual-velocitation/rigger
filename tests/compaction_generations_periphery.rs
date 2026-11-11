@@ -2449,11 +2449,12 @@ rigger::test_cases! {
             PROJECTION_VERSION,
             rebuilt_for_a_lost_fold(),
         );
-    /// A file at a fold rule older than the one before the current one: the rule before it is the
-    /// migration to the records-only fold, which refuses a file whose decision the log lacks.
+    /// A file at a fold rule that folds records otherwise than the current one: a migration to
+    /// the records-only fold from a rule that folds them as it does refuses a file whose decision
+    /// the log lacks.
     setup_rebuilds_a_cursorless_graph_db_at_an_older_fold_rule_whose_log_was_removed_for_that_rule:
         setup_reads_a_cursorless_graph_db_whose_event_log_was_removed(
-            PROJECTION_VERSION - 2,
+            PROJECTION_VERSION - 3,
             rebuilt_for(OLDER_RULE_REBUILD_LINE),
         );
 }
