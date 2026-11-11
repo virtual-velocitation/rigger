@@ -544,7 +544,8 @@ open(caller worktree W, filter)
 ```
 
 A head with no commit (an unborn branch) reads as the empty tree, so every file in W differs
-until W commits.
+until W commits. Without git, the directory source counts a file in W it cannot read as
+differing, since its content is unknown; its facts hold no such file.
 
 This check replaces the per-hit generation comparison. It runs once per view, not once per hit,
 and the label travels with every answer:
