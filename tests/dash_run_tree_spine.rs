@@ -101,6 +101,7 @@ fn state_json(events: &[Event], progress: &[Event], liveness: &HashMap<String, u
     let state = dash::build_state(
         events,
         &Graph::default(),
+        None,
         false,
         progress,
         liveness,
@@ -178,7 +179,7 @@ fn run_tree_spine_crosses_the_http_state_boundary() {
     let provider = move |_instance: Option<&str>| -> Result<DashInputs, String> {
         Ok((
             events.clone(),
-            Graph::default(),
+            Graph::default().into(),
             progress.clone(),
             liveness.clone(),
         ))

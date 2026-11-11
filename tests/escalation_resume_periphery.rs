@@ -189,6 +189,7 @@ fn status_and_the_dashboards_build_state_render_the_same_resumed_line_through_a_
     let state = rigger::dash::build_state(
         &events,
         &Graph::default(),
+        None,
         false,
         &[],
         &HashMap::new(),

@@ -113,7 +113,12 @@ where
     let addr = listener.local_addr().ok()?;
 
     let provider = move |_instance: Option<&str>| -> Result<DashInputs, String> {
-        Ok((Vec::new(), poll_graph.clone(), Vec::new(), HashMap::new()))
+        Ok((
+            Vec::new(),
+            poll_graph.clone().into(),
+            Vec::new(),
+            HashMap::new(),
+        ))
     };
     let calls_provider =
         |_: Option<&str>,

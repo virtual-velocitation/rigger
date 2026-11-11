@@ -225,7 +225,10 @@ pub(crate) fn cmd_dash(args: &[String]) -> Res {
                 DashAttach::Instance(inst) => Ok(dash_attach_inputs(&inst)),
                 DashAttach::Empty => Ok((
                     Vec::new(),
-                    contextgraph::Graph::default(),
+                    dash::GraphRead {
+                        label: Some(unattached(instance)),
+                        ..dash::GraphRead::default()
+                    },
                     Vec::new(),
                     std::collections::HashMap::new(),
                 )),
@@ -265,7 +268,8 @@ pub(crate) fn cmd_dash(args: &[String]) -> Res {
                 provider(None).map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
             let html = dash::render_export(
                 &events,
-                &graph,
+                &graph.graph,
+                graph.label.as_ref(),
                 &progress,
                 &liveness,
                 max_retries,
@@ -530,19 +534,23 @@ fn dash_read_run(
 }
 
 /// Build the context subgraph around the run's own units/decisions/findings from
-/// `graph_db` (seeds via [`dash::graph_seeds`]). Best-effort: an absent graph (a grep-only
-/// run never builds one) or any query error yields an empty graph, so the rest of the dash
-/// still serves.
-fn dash_read_graph(graph_db: &str, identity: &str, events: &[Event]) -> contextgraph::Graph {
+/// `graph_db` (seeds via [`dash::graph_seeds`]), with what that read describes (spec 6.1).
+/// Best-effort: an absent graph (a grep-only run never builds one) or any query error yields an
+/// empty graph with the reason it read none, so the rest of the dash still serves. A run with no
+/// seeds opens no store, so its read describes nothing.
+fn dash_read_graph(graph_db: &str, identity: &str, events: &[Event]) -> dash::GraphRead {
     let seeds = dash::graph_seeds(events);
     if seeds.is_empty() {
-        return contextgraph::Graph::default();
+        return dash::GraphRead::default();
     }
-    dash_read(graph_db, identity, Tests::default(), |g| {
+    let (graph, label) = described(dash_read(graph_db, identity, Tests::default(), |g| {
         g.subgraph(&seeds, 2)
-    })
-    .map(|(graph, _)| graph)
-    .unwrap_or_default()
+    }));
+    dash::GraphRead {
+        graph,
+        tests_hidden: 0,
+        label: Some(label),
+    }
 }
 
 /// What `read` answers of the context graph (7.3) over the record graph at `graph_db`, compared
@@ -1002,7 +1010,7 @@ mod tests {
             dash::graph_seeds(&no_run_events).is_empty(),
             "the never-built repo has no run seeds"
         );
-        let run_seeded = dash_read_graph(graph_path, identity, &no_run_events);
+        let run_seeded = dash_read_graph(graph_path, identity, &no_run_events).graph;
         assert!(
             run_seeded.nodes.is_empty(),
             "the run-seeded read is the empty dead-end this criterion removes, got {run_seeded:?}"
@@ -1067,6 +1075,49 @@ mod tests {
             !ov["clusters"].as_array().unwrap().is_empty() && ov["total"].as_u64().unwrap() > 0,
             "the whole-graph overview returns clusters, not an empty default, got {body2}"
         );
+    }
+
+    /// The run-seeded read the polled snapshot draws its decisions from states what it read: the
+    /// label of its open over a built graph, the reason over a graph never built, and nothing when
+    /// the run seeds no read.
+    #[test]
+    fn the_run_seeded_read_states_what_it_describes() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        crate::test_support::git_ok_with_identity(root, &["init", "-q"]);
+        std::fs::create_dir_all(root.join(".rigger")).unwrap();
+        std::fs::write(root.join("a.txt"), "a\n").unwrap();
+        crate::test_support::commit_tree(root);
+        let graph_path = root.join(".rigger").join("graph.db");
+        let graph_db = graph_path.to_str().unwrap();
+        let identity = "labeltest";
+        let decided = vec![Event::new(
+            contextgraph::TYPE_DECISION_MADE,
+            br#"{"id":"d-1","summary":"s","governs":["a.txt"]}"#.to_vec(),
+        )];
+
+        let read = dash_read_graph(graph_db, identity, &decided);
+        assert_eq!(
+            read.label,
+            Some(dash::GraphLabel::Unread(format!(
+                "no graph has been built at {graph_db}"
+            ))),
+            "a graph never built is stated, never an empty graph alone"
+        );
+
+        Projector::open(graph_db, identity).unwrap();
+        let read = dash_read_graph(graph_db, identity, &decided);
+        match read.label {
+            Some(dash::GraphLabel::Read(label)) => assert_eq!(
+                label.worktree,
+                root.to_str().unwrap(),
+                "the label names the checkout that holds the graph"
+            ),
+            other => panic!("a built graph's read states its label, got {other:?}"),
+        }
+
+        let read = dash_read_graph(graph_db, identity, &[]);
+        assert_eq!(read.label, None, "a run with no seeds opens no store");
     }
 
     /// Spec 45 GLOBAL CONSTRAINT (read-only provider, L33-34 / L72-73): the direct-projection

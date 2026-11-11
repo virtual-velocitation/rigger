@@ -909,11 +909,11 @@ pub fn should_reap_singleton(
     ever_seen_live && live_instances == 0 && !agent_live
 }
 
-/// What the dash's data provider yields per request: the run's events, its context subgraph,
-/// this run's progress reports (spec 14), and each in-flight spawn's liveness-marker age.
-/// Factored into a `type` so the provider signature stays readable across the server, its
-/// callers, and the tests.
-pub type DashInputs = (Vec<Event>, Graph, Vec<Event>, HashMap<String, u64>);
+/// What the dash's data provider yields per request: the run's events, its context subgraph with
+/// what the read that drew it describes, this run's progress reports (spec 14), and each in-flight
+/// spawn's liveness-marker age. Factored into a `type` so the provider signature stays readable
+/// across the server, its callers, and the tests.
+pub type DashInputs = (Vec<Event>, GraphRead, Vec<Event>, HashMap<String, u64>);
 
 /// One row of the dash's LANDING view (spec 50, criterion 3): a registered rigger instance the
 /// operator can ATTACH to. It is the presentation projection of a [`crate::registry::Instance`],
@@ -1104,6 +1104,27 @@ pub struct GateView {
 pub struct GraphView {
     pub decisions: Vec<DecisionView>,
     pub findings: Vec<FindingView>,
+    /// What the read these were drawn from describes (spec 6.1), or why it read no graph; absent
+    /// when no store was opened.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<GraphLabelView>,
+}
+
+/// A [`GraphLabel`] on the wire: `{"read": "<label>"}` or `{"unread": "<reason>"}`.
+#[derive(Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum GraphLabelView {
+    Read(String),
+    Unread(String),
+}
+
+impl From<&GraphLabel> for GraphLabelView {
+    fn from(label: &GraphLabel) -> Self {
+        match label {
+            GraphLabel::Read(l) => GraphLabelView::Read(l.to_string()),
+            GraphLabel::Unread(reason) => GraphLabelView::Unread(reason.clone()),
+        }
+    }
 }
 
 /// A decision node; `superseded` is true when a currently-valid `SUPERSEDES` edge points
@@ -1347,6 +1368,7 @@ pub struct ConsoleSnapshotView {
 pub fn build_state(
     events: &[Event],
     graph: &Graph,
+    graph_label: Option<&GraphLabel>,
     include_events: bool,
     progress_events: &[Event],
     liveness_ages: &HashMap<String, u64>,
@@ -1453,7 +1475,10 @@ pub fn build_state(
         blockers,
         step,
         activity,
-        graph: build_graph_view(graph),
+        graph: GraphView {
+            label: graph_label.map(GraphLabelView::from),
+            ..build_graph_view(graph)
+        },
         tree,
         events: events_view,
         release_ready,
@@ -1495,6 +1520,7 @@ fn build_graph_view(graph: &Graph) -> GraphView {
     GraphView {
         decisions,
         findings,
+        label: None,
     }
 }
 
@@ -2761,6 +2787,7 @@ fn now_unix() -> u64 {
 pub fn state_json(
     events: &[Event],
     graph: &Graph,
+    graph_label: Option<&GraphLabel>,
     progress_events: &[Event],
     liveness_ages: &HashMap<String, u64>,
     configured_max_retries: u32,
@@ -2770,6 +2797,7 @@ pub fn state_json(
     serde_json::to_string(&build_state(
         events,
         graph,
+        graph_label,
         false,
         progress_events,
         liveness_ages,
@@ -2879,6 +2907,7 @@ pub fn console_page() -> String {
 pub fn render_export(
     events: &[Event],
     graph: &Graph,
+    graph_label: Option<&GraphLabel>,
     progress_events: &[Event],
     liveness_ages: &HashMap<String, u64>,
     configured_max_retries: u32,
@@ -2888,6 +2917,7 @@ pub fn render_export(
     let json = serde_json::to_string(&build_state(
         events,
         graph,
+        graph_label,
         true,
         progress_events,
         liveness_ages,
@@ -3064,6 +3094,7 @@ pub fn route(
         events,
         graph,
         0,
+        None,
         progress_events,
         liveness_ages,
         configured_max_retries,
@@ -3139,7 +3170,8 @@ impl From<CallGraph> for CallsRead {
     }
 }
 
-/// [`route`] over a graph read that hid `tests_hidden` test entities: the overview reports them.
+/// [`route`] over a graph read that hid `tests_hidden` test entities, which the overview reports,
+/// and that describes `graph_label`, which the run snapshot states.
 #[allow(clippy::too_many_arguments)]
 fn route_hiding(
     method: &str,
@@ -3147,6 +3179,7 @@ fn route_hiding(
     events: &[Event],
     graph: &Graph,
     tests_hidden: usize,
+    graph_label: Option<&GraphLabel>,
     progress_events: &[Event],
     liveness_ages: &HashMap<String, u64>,
     configured_max_retries: u32,
@@ -3196,6 +3229,7 @@ fn route_hiding(
             match state_json(
                 events,
                 graph,
+                graph_label,
                 progress_events,
                 liveness_ages,
                 configured_max_retries,
@@ -3622,7 +3656,7 @@ where
                             let read: GraphRead = if path == "/api/graph" {
                                 graph_provider(instance, tests.unwrap_or_default()).into()
                             } else {
-                                polled_graph.into()
+                                polled_graph
                             };
                             let answer = route_hiding(
                                 &method,
@@ -3630,14 +3664,20 @@ where
                                 &events,
                                 &read.graph,
                                 read.tests_hidden,
+                                read.label.as_ref(),
                                 &progress,
                                 &liveness,
                                 configured_max_retries,
                                 run_branch,
                                 base,
                                 &[],
-                            )
-                            .labelled(read.label);
+                            );
+                            // A graph view states what its read describes in its headers; the run
+                            // snapshot states it in its body, beside the decisions it draws.
+                            let answer = match path {
+                                "/api/graph" => answer.labelled(read.label),
+                                _ => answer,
+                            };
                             drawn = read.graph;
                             answer
                         }
@@ -4505,7 +4545,12 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         let port = addr.port();
         let provider = |_instance: Option<&str>| -> Result<DashInputs, String> {
-            Ok((Vec::new(), Graph::default(), Vec::new(), HashMap::new()))
+            Ok((
+                Vec::new(),
+                Graph::default().into(),
+                Vec::new(),
+                HashMap::new(),
+            ))
         };
         let graph_provider = |_instance: Option<&str>, _tests: Tests| Graph::default();
         let instances_provider = Vec::new;
@@ -5241,6 +5286,7 @@ mod tests {
         let state = build_state(
             &events,
             &Graph::default(),
+            None,
             false,
             &progress_events,
             &liveness,
@@ -5265,6 +5311,7 @@ mod tests {
         let body = state_json(
             &events,
             &Graph::default(),
+            None,
             &progress_events,
             &liveness,
             3,
@@ -5313,6 +5360,7 @@ mod tests {
         let state = build_state(
             &events,
             &Graph::default(),
+            None,
             false,
             &progress_events,
             &liveness,
@@ -5335,6 +5383,7 @@ mod tests {
         let body = state_json(
             &events,
             &Graph::default(),
+            None,
             &progress_events,
             &liveness,
             3,
@@ -5426,6 +5475,7 @@ mod tests {
         let state = build_state(
             &events,
             &Graph::default(),
+            None,
             false,
             &progress_events,
             &liveness,
@@ -5530,6 +5580,7 @@ mod tests {
         let body = state_json(
             &events,
             &Graph::default(),
+            None,
             &progress_events,
             &liveness,
             3,
@@ -5632,6 +5683,7 @@ mod tests {
         let state = build_state(
             &positioned(events),
             &Graph::default(),
+            None,
             false,
             &[],
             &HashMap::new(),
@@ -5678,6 +5730,7 @@ mod tests {
         let state = build_state(
             &events,
             &Graph::default(),
+            None,
             false,
             &[],
             &HashMap::new(),
@@ -5749,6 +5802,7 @@ mod tests {
         let html = render_export(
             &events,
             &Graph::default(),
+            None,
             &[],
             &HashMap::new(),
             3,
@@ -5788,6 +5842,7 @@ mod tests {
         let html = render_export(
             &events,
             &Graph::default(),
+            None,
             &[],
             &HashMap::new(),
             3,
@@ -6424,6 +6479,7 @@ mod tests {
                 &[],
                 &graph,
                 hidden,
+                None,
                 &[],
                 &HashMap::new(),
                 3,
@@ -8011,6 +8067,7 @@ mod tests {
         let state = build_state(
             &events,
             &Graph::default(),
+            None,
             false,
             &[],
             &HashMap::new(),
@@ -8060,6 +8117,7 @@ mod tests {
         let state = build_state(
             &[],
             &Graph::default(),
+            None,
             false,
             &[],
             &HashMap::new(),
@@ -8099,6 +8157,7 @@ mod tests {
         let state = build_state(
             &done,
             &Graph::default(),
+            None,
             false,
             &[],
             &HashMap::new(),
@@ -8128,6 +8187,7 @@ mod tests {
         let body = state_json(
             &done,
             &Graph::default(),
+            None,
             &[],
             &HashMap::new(),
             3,
@@ -8154,6 +8214,7 @@ mod tests {
         let state = build_state(
             &running,
             &Graph::default(),
+            None,
             false,
             &[],
             &HashMap::new(),
@@ -8167,6 +8228,7 @@ mod tests {
         let body = state_json(
             &running,
             &Graph::default(),
+            None,
             &[],
             &HashMap::new(),
             3,
@@ -8206,6 +8268,7 @@ mod tests {
         let state = build_state(
             &done,
             &Graph::default(),
+            None,
             false,
             &[],
             &HashMap::new(),
@@ -8309,7 +8372,7 @@ mod tests {
             let events = store
                 .read_stream(conductor::STREAM, 0, Direction::Forward)
                 .map_err(|e| e.to_string())?;
-            Ok((events, Graph::default(), Vec::new(), HashMap::new()))
+            Ok((events, Graph::default().into(), Vec::new(), HashMap::new()))
         };
 
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
@@ -8405,6 +8468,22 @@ mod tests {
         }
     }
 
+    /// The run snapshot's decision history states what its graph read describes: the label the
+    /// state's graph carries, or the reason it could not be read, marked so.
+    #[test]
+    fn the_decision_history_states_what_its_graph_read_describes() {
+        let page = live_page();
+        for needle in [
+            r#"id="decisionslabel""#,
+            "const read = graph.label || {};",
+            r#"readBox.textContent = read.unread !== undefined ? read.unread : (read.read || "");"#,
+            r#"readBox.className = read.unread !== undefined ? "kglabel kglabel-error" : "kglabel";"#,
+            "readBox.hidden = read.unread === undefined && read.read === undefined;",
+        ] {
+            assert!(page.contains(needle), "the page lacks {needle}");
+        }
+    }
+
     /// `/api/graph` takes `tests=exclude|include|only` (`exclude` when absent) and hands it to the
     /// graph provider, to the directed-call provider too; a value that is none of the three is
     /// refused 400 before either provider is consulted. Each row: the request's target, the status
@@ -8420,7 +8499,12 @@ mod tests {
             let calls_seen = Arc::new(Mutex::new(Vec::new()));
             let (g, c) = (Arc::clone(&graph_seen), Arc::clone(&calls_seen));
             let provider = |_: Option<&str>| -> Result<DashInputs, String> {
-                Ok((Vec::new(), Graph::default(), Vec::new(), HashMap::new()))
+                Ok((
+                    Vec::new(),
+                    Graph::default().into(),
+                    Vec::new(),
+                    HashMap::new(),
+                ))
             };
             let graph_provider = move |_: Option<&str>, tests: Tests| {
                 g.lock().unwrap().push(tests);
@@ -8513,6 +8597,83 @@ mod tests {
         assert!(body.contains(r#""tests_hidden":4"#), "{body}");
     }
 
+    /// The polled run snapshot states what the read its decisions and findings were drawn from
+    /// describes (spec 6.1), in its body beside them, so the static export states it too: the label
+    /// of that open, or why no graph could be read, and nothing when no store was opened. Each row:
+    /// what the polled read describes and the snapshot's `graph.label`.
+    #[test]
+    fn the_run_snapshot_states_what_its_graph_read_describes() {
+        use rigger_domain::composed::Compared;
+        use std::io::{Read, Write};
+        use std::net::{TcpListener, TcpStream};
+
+        let ask = |read: Option<GraphLabel>| -> (String, serde_json::Value) {
+            let provider = Arc::new(move |_: Option<&str>| -> Result<DashInputs, String> {
+                let polled = GraphRead {
+                    label: read.clone(),
+                    ..GraphRead::default()
+                };
+                Ok((Vec::new(), polled, Vec::new(), HashMap::new()))
+            });
+            let graph_provider = |_: Option<&str>, _: Tests| GraphRead::default();
+            let calls_provider = |_: Option<&str>,
+                                  _: &[String],
+                                  _: crate::contextgraph::Direction,
+                                  _: i64,
+                                  _: &str,
+                                  _: Tests| CallsRead::default();
+            let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            let addr = listener.local_addr().unwrap();
+            let server = std::thread::spawn(move || {
+                let (conn, _) = listener.accept().unwrap();
+                handle_conn(
+                    conn,
+                    &provider,
+                    &graph_provider,
+                    &calls_provider,
+                    &Vec::new,
+                    3,
+                    "rigger-run",
+                    "origin/main",
+                )
+                .unwrap();
+            });
+            let mut client = TcpStream::connect(addr).unwrap();
+            client
+                .write_all(b"GET /api/state HTTP/1.1\r\nHost: localhost\r\n\r\n")
+                .unwrap();
+            let mut resp = String::new();
+            client.read_to_string(&mut resp).unwrap();
+            server.join().unwrap();
+            let (head, body) = resp.split_once("\r\n\r\n").expect("a head");
+            (head.to_string(), serde_json::from_str(body).unwrap())
+        };
+        let described = GraphLabel::Read(Label {
+            describes: "c1".to_string(),
+            worktree: "/w".to_string(),
+            compared: Compared::Differ(1),
+            behind: None,
+            withheld: 0,
+        });
+        let unread = GraphLabel::Unread("no graph has been built at g.db".to_string());
+        let cases = [
+            (
+                Some(described),
+                serde_json::json!({"read": "describes c1; 1 file in /w differs"}),
+            ),
+            (
+                Some(unread),
+                serde_json::json!({"unread": "no graph has been built at g.db"}),
+            ),
+            (None, serde_json::Value::Null),
+        ];
+        for (read, expected) in cases {
+            let (head, state) = ask(read);
+            assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
+            assert_eq!(state["graph"]["label"], expected);
+        }
+    }
+
     /// Every graph view states what the reads behind it describe: the label of each open (spec
     /// 6.1) in one header, the reason a store could not be read in another, so a graph that could
     /// not be read is never an empty graph alone. Each row: the request, what the whole-graph and
@@ -8525,7 +8686,12 @@ mod tests {
 
         let ask = |target: &str, read: Option<GraphLabel>| -> String {
             let provider = Arc::new(|_: Option<&str>| -> Result<DashInputs, String> {
-                Ok((Vec::new(), Graph::default(), Vec::new(), HashMap::new()))
+                Ok((
+                    Vec::new(),
+                    Graph::default().into(),
+                    Vec::new(),
+                    HashMap::new(),
+                ))
             });
             let whole = read.clone();
             let graph_provider = move |_: Option<&str>, _: Tests| GraphRead {
@@ -8676,7 +8842,12 @@ mod tests {
         // Its graph slot is the run-seeded slice (here empty); it is what the decisions/findings
         // panel reads, and it must be the ONLY graph the state poll touches.
         let provider = |_instance: Option<&str>| -> Result<DashInputs, String> {
-            Ok((Vec::new(), Graph::default(), Vec::new(), HashMap::new()))
+            Ok((
+                Vec::new(),
+                Graph::default().into(),
+                Vec::new(),
+                HashMap::new(),
+            ))
         };
 
         // The SEPARATE whole-graph provider: it counts every consultation and yields a fixture

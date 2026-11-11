@@ -482,6 +482,7 @@
         </div>
         <div class="card" style="grid-column: 1 / -1;">
           <h3>Decision history</h3>
+          <div class="kglabel" id="decisionslabel" hidden></div>
           <div class="wrap" id="decisions"></div>
         </div>
       </div>
@@ -673,6 +674,13 @@ function render(state) {
   // <summary> line previews `id + a one-line summary` and the body reveals the FULL reasoning on
   // click, so a multi-KB decision collapses to one line but expands whole - no framework, no
   // inline multi-KB dumps. Superseded entries stay struck through in the collapsed line.
+  // The snapshot's graph states what it describes: the label of the read that answered it, or why
+  // no graph could be read (spec 6.1); a snapshot with no graph read carries neither.
+  const read = graph.label || {};
+  const readBox = el("decisionslabel");
+  readBox.textContent = read.unread !== undefined ? read.unread : (read.read || "");
+  readBox.className = read.unread !== undefined ? "kglabel kglabel-error" : "kglabel";
+  readBox.hidden = read.unread === undefined && read.read === undefined;
   const decisions = graph.decisions || [];
   el("decisions").innerHTML = decisions.length ? decisions.map(d =>
     '<details class="decision' + (d.superseded ? " struck" : "") + '"'

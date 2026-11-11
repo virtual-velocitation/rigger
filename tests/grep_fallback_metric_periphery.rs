@@ -212,6 +212,7 @@ fn build_state_counts_fallbacks_off_the_progress_slice_only_run_metrics_unchange
     let with = build_state(
         &events,
         &Graph::default(),
+        None,
         false,
         &progress_events,
         &liveness,
@@ -223,6 +224,7 @@ fn build_state_counts_fallbacks_off_the_progress_slice_only_run_metrics_unchange
     let without = build_state(
         &events,
         &Graph::default(),
+        None,
         false,
         &empty,
         &liveness,
@@ -274,6 +276,7 @@ fn the_state_json_body_always_carries_the_grep_fallbacks_key_even_at_zero() {
     let body = state_json(
         &events,
         &Graph::default(),
+        None,
         &empty,
         &liveness,
         3,

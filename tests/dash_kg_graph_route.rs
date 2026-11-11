@@ -1397,7 +1397,12 @@ fn the_served_graph_route_reads_the_lazy_provider_only_and_never_on_the_state_po
         // graph slot is a DECOY (`polled-neighbor`) the `/api/graph` route must NOT read.
         let polled_graph = build("polled-neighbor");
         let provider = move |_instance: Option<&str>| -> Result<DashInputs, String> {
-            Ok((Vec::new(), polled_graph.clone(), Vec::new(), HashMap::new()))
+            Ok((
+                Vec::new(),
+                polled_graph.clone().into(),
+                Vec::new(),
+                HashMap::new(),
+            ))
         };
 
         // The SEPARATE lazy provider: it counts every consultation and yields the REAL neighbor

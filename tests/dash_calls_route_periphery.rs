@@ -136,7 +136,12 @@ where
     // whole-graph read rides the SEPARATE `graph_provider`), and a `view=calls` request never reads
     // it at all.
     let state_provider = |_instance: Option<&str>| -> Result<DashInputs, String> {
-        Ok((Vec::new(), Graph::default(), Vec::new(), HashMap::new()))
+        Ok((
+            Vec::new(),
+            Graph::default().into(),
+            Vec::new(),
+            HashMap::new(),
+        ))
     };
     // The whole-graph provider: records that it was consulted, so a `view=calls` request can be proven
     // to bypass it (dispatch precedence) and a plain neighborhood request to use it.

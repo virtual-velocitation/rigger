@@ -6529,6 +6529,7 @@ mod tests {
         let state = dash::build_state(
             &events,
             &Graph::default(),
+            None,
             false,
             &[],
             &HashMap::new(),
