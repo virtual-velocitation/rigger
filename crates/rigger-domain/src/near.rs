@@ -1289,14 +1289,20 @@ mod tests {
     }
 
     /// Each row: an id, and every file, definition and mention a read of its node and edges
-    /// makes once the view is open. A definition reads its own file, the design and workflow
-    /// files, the files holding a tagged reference to its leaf, and the mentions of that leaf;
-    /// it resolves only the mentions it encloses and those of its leaf, so the definitions read
-    /// are those of the leaves it names and its own. A file reads itself, the design files and
-    /// the files declaring modules, and resolves the mentions it holds alone.
+    /// makes, counted from before the resolver is built: building it reads the files declaring a
+    /// module held elsewhere. A definition reads its own file, the design and workflow files, the
+    /// files holding a tagged reference to its leaf, and the mentions of that leaf; it resolves
+    /// only the mentions it encloses and those of its leaf, so the definitions read are those of
+    /// the leaves it names and its own. A file reads itself, the design files and the files
+    /// declaring modules, and resolves the mentions it holds alone.
     #[test]
     fn a_neighbourhood_reads_one_ids_file_and_its_leaf_only() {
-        let intent = [
+        let opened = [
+            // The files declaring a module held elsewhere, which the resolver reads.
+            "file src/a.rs",
+            "file src/a_tests.rs",
+            "file src/b.rs",
+            // The design and workflow files every read reads.
             "file .rigger/workflow.yml",
             "file docs/d.md",
             "file tests/it.rs",
@@ -1340,7 +1346,6 @@ mod tests {
                 reads: Mutex::new(Vec::new()),
             };
             let near = Near::new(&view, ViewFilter::default());
-            view.taken();
             near.node(id).unwrap();
             near.out(id).unwrap();
             near.incoming(id).unwrap();
@@ -1348,8 +1353,9 @@ mod tests {
             got.sort();
             got.dedup();
             let mut want: Vec<String> = want.iter().map(|r| r.to_string()).collect();
-            want.extend(intent.map(String::from));
+            want.extend(opened.map(String::from));
             want.sort();
+            want.dedup();
             assert_eq!(got, want, "{id}");
         }
     }

@@ -259,16 +259,21 @@ impl<'v> Resolver<'v> {
     pub fn new(view: &'v dyn CodeView) -> Self {
         let mut code_files = BTreeSet::new();
         let mut test_files = BTreeSet::new();
+        // Only a file that declares a module held elsewhere has a declaration to read.
+        let mut declaring = Vec::new();
         for f in view.files() {
             if f.half == Half::Code {
                 code_files.insert(f.path);
+                if f.modules {
+                    declaring.push(f.path);
+                }
             }
             if f.scope == Scope::Test {
                 test_files.insert(f.path);
             }
         }
         let mut declared: Vec<(&'v str, bool, &'v str)> = Vec::new();
-        for &path in &code_files {
+        for path in declaring {
             let Some(facts) = view.file(path) else {
                 continue;
             };
