@@ -1118,7 +1118,9 @@ fn reclaim_orphans_at_start(
 }
 
 /// Begin (or adopt) and definition-PIN the run `rigger run` drives (spec 13, unit 1).
-/// First, before anything is appended, a command that would begin a new run on a spec whose
+/// First, a run that is not `--fresh` reads its hold and names a standing one on stderr
+/// ([`held_line`], this driver's own beat being the latest), failing on a hold it cannot read.
+/// Then, before anything is appended, a command that would begin a new run on a spec whose
 /// critique is not clean is refused (spec 112, [`RunStartCritique::refuse_unless_clean`]; the
 /// caller hands `critique`, naming its own command).
 /// When `--fresh` is set it appends a new pinned `RunStarted` for `criteria` so the run starts
@@ -1143,6 +1145,19 @@ fn fresh_run_if_requested(
     helpers: &[conductor::HelperCopy],
     critique: &RunStartCritique,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // A HELD RUN IS NAMED FIRST: a plain run reads its hold ahead of the critique refusal, so a
+    // held run names its hold before anything refuses it and a hold it cannot read fails the run
+    // before any refusal. `--fresh` decides its refusal first, since its mint ends the hold.
+    if !parsed.fresh {
+        if let Some(hold) = runscope::read::read_current_hold(store, conductor::STREAM)? {
+            let now = std::time::SystemTime::now();
+            stderr_line(&format!(
+                "{}: {}",
+                critique.command,
+                held_line(&hold, Some(now), now)
+            ));
+        }
+    }
     critique.refuse_unless_clean(parsed.spec.as_deref(), criteria, parsed.fresh)?;
     let definition = definition_hash(".", helpers)?;
     // The resolved run-branch base to persist on the RunStarted this mints (spec 38, criterion

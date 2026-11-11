@@ -10,10 +10,11 @@
 //! critiqued. A critique with a pass whose attempt count cannot be read, a spawn request on its
 //! stream being unreadable, fails the command on the line `rigger critique` fails on, appending
 //! nothing. A run that adopts the spec's existing run proceeds whatever the critique; and under
-//! a workflow naming no critic a new run proceeds with one line saying so. The refusal stands
-//! ahead of spec 105's hold: a run adopting a held run waits on the hold, while one that would
-//! begin a new run on the spec is refused ahead of any read of the hold, and a run past its
-//! refusal fails on a hold no fold applies to ahead of its mint.
+//! a workflow naming no critic a new run proceeds with one line saying so. Beside spec 105's
+//! hold, a run reads the hold ahead of the refusal: a held run names its hold first, a run adopting
+//! it waits on the hold, one that would begin a new run on the spec is then refused, and a hold no
+//! fold applies to fails the run ahead of any refusal. `--fresh` decides its refusal first, since
+//! its mint ends the hold, and then fails on an unreadable hold ahead of its mint.
 //!
 //! Every workflow here stops at the grounder ([`stopping_at_the_grounder`]), so a run that gets
 //! past its run start stops there, before it drives an agent; the hold tests alone keep the `nop`
@@ -430,11 +431,13 @@ const PLANNER_SPAWN: &str = "plan/implementer#0";
 const WAITED: Duration = Duration::from_secs(2);
 
 /// Spec 105, HELD MEANS NO LAUNCH AND NO CHARGE, beside the refusal: given an operator hold on the
-/// spec's run, when a run names the unchanged spec it adopts the held run whatever the critique
-/// and waits on the hold, launching nothing until the operator releases it; when a run would
-/// begin a new run on the spec - amended criteria, or `--fresh` - the refusal stands ahead of the
-/// hold, and a text critiqued clean lets it mint the new run, which ends the hold it replaced.
-/// The workflow keeps its `nop` grounder, which a run selects before it reads its hold.
+/// spec's run, a plain run names the hold on stderr before anything else it says of the run; when
+/// it names the unchanged spec it adopts the held run whatever the critique and waits on the hold,
+/// launching nothing until the operator releases it; when a run would begin a new run on the
+/// spec (amended criteria, or `--fresh`) the refusal still stands, and a text critiqued clean
+/// lets it mint the new run, which ends the hold it replaced. `--fresh` decides its refusal before
+/// it reads the hold its mint ends, so it names no hold. The workflow keeps its `nop` grounder,
+/// which a run selects before it reads its hold.
 #[test]
 fn a_run_adopting_a_held_run_waits_on_the_hold_and_one_beginning_a_new_run_keeps_its_refusal() {
     use HeldRun::{BeginsANewRun, Refused, WaitsOnTheHold};
@@ -512,10 +515,24 @@ fn a_run_adopting_a_held_run_waits_on_the_hold_and_one_beginning_a_new_run_keeps
 
         println!("row: {name}");
         let planned = |launched: &[String]| launched.iter().any(|spawn| spawn == PLANNER_SPAWN);
+        let named_the_hold_first = |err: &str| {
+            let held = err.find("rigger run: HELD ");
+            (
+                held.is_some(),
+                held.is_some_and(|at| err.find("refusing").is_none_or(|refused| at < refused)),
+            )
+        };
+        let held_first = (extra.is_empty(), extra.is_empty());
         match ends {
             WaitsOnTheHold => {
                 let ran = run_beside_a_hold(root, extra, Some(WAITED));
                 assert_unrefused(("rigger run", SPEC_REL), &ran.output.1, 0);
+                assert_eq!(
+                    named_the_hold_first(&ran.output.1),
+                    held_first,
+                    "{name}: (names the hold, first); stderr:\n{}",
+                    ran.output.1
+                );
                 assert_eq!(
                     (
                         ran.released,
@@ -537,6 +554,12 @@ fn a_run_adopting_a_held_run_waits_on_the_hold_and_one_beginning_a_new_run_keeps
             Refused(refusal) => {
                 let ran = run_beside_a_hold(root, extra, None);
                 assert_eq!(ran.launched, Vec::<String>::new(), "{name}: no launch");
+                assert_eq!(
+                    named_the_hold_first(&ran.output.1),
+                    held_first,
+                    "{name}: (names the hold, first); stderr:\n{}",
+                    ran.output.1
+                );
                 assert_refused(root, ran.output, ("rigger run", SPEC_REL, refusal), 1);
                 assert_eq!(
                     read_run_events(root).len(),
@@ -547,6 +570,12 @@ fn a_run_adopting_a_held_run_waits_on_the_hold_and_one_beginning_a_new_run_keeps
             BeginsANewRun => {
                 let ran = run_beside_a_hold(root, extra, None);
                 assert_unrefused(("rigger run", SPEC_REL), &ran.output.1, 0);
+                assert_eq!(
+                    named_the_hold_first(&ran.output.1),
+                    held_first,
+                    "{name}: (names the hold, first); stderr:\n{}",
+                    ran.output.1
+                );
                 assert_eq!(
                     (
                         planned(&ran.launched),
@@ -564,23 +593,23 @@ fn a_run_adopting_a_held_run_waits_on_the_hold_and_one_beginning_a_new_run_keeps
 }
 
 /// Spec 105, a run not proved unheld launches nothing: given a `RunHeld` no fold applies, when a
-/// run adopts the spec's run, or reaches its mint past a clean critique of a spec amended since
-/// that run began, then it fails on the hold it cannot read; while a run beginning a new run on
-/// the uncritiqued amended text is refused ahead of that read. Each launches nothing and appends
-/// nothing. The workflow keeps its `nop` grounder, which a run selects before it reads its hold.
+/// plain run adopts the spec's run or would begin a new run on an uncritiqued amended text, it
+/// fails on the hold it cannot read ahead of any refusal; a `--fresh` run decides its refusal
+/// first, so it is refused on the uncritiqued amended text and fails on the hold ahead of its mint
+/// past a clean critique. Each launches nothing and appends nothing. The workflow keeps its `nop`
+/// grounder, which a run selects before it reads its hold.
 #[test]
-fn a_run_not_proved_unheld_fails_on_its_hold_past_its_refusal_and_ahead_of_any_mint() {
+fn a_run_not_proved_unheld_fails_on_its_hold_ahead_of_any_refusal_and_any_mint() {
     let unread = "rigger: event store: fold the run's hold: expected ident at line 1 column 2\n";
-    let adopted = "rigger: conductor: expected ident at line 1 column 2\n";
     let refused = refused_new_run("rigger run", SPEC_REL, Unexhausted);
     let rows: [(&str, &str, bool, &[&str], &str); 4] = [
-        ("the spec unchanged, adopted", SPEC, false, &[], adopted),
+        ("the spec unchanged, adopted", SPEC, false, &[], unread),
         (
             "the spec amended, not critiqued",
             SPEC_DROPPED,
             false,
             &[],
-            &refused,
+            unread,
         ),
         (
             "--fresh on the amended spec, not critiqued",

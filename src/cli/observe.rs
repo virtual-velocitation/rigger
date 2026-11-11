@@ -461,7 +461,7 @@ pub(crate) fn cmd_status(args: &[String]) -> Res {
 /// ([`rigger::hold_probe::is_probed`]) and the supervisor's `latest_beat` is no older than the
 /// 90 s of LIVENESS ([`rigger::liveness::unwatched`]); otherwise `rigger release` ends it. A
 /// hold a clock set backwards dates after `now` reads as held no time.
-fn held_line(
+pub(crate) fn held_line(
     hold: &ledger::Hold,
     latest_beat: Option<std::time::SystemTime>,
     now: std::time::SystemTime,
