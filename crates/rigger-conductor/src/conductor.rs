@@ -16002,6 +16002,12 @@ mod tests {
             fn resolve(&self, _m: &str) -> Result<Option<String>, contextgraph::Error> {
                 Ok(None)
             }
+            fn nodes_of_kind(
+                &self,
+                _kind: &str,
+            ) -> Result<Vec<contextgraph::Node>, contextgraph::Error> {
+                Ok(Vec::new())
+            }
             fn rebuild_owed(&self) -> Result<bool, contextgraph::Error> {
                 Ok(false)
             }
@@ -23620,6 +23626,12 @@ mod tests {
             }
             fn resolve(&self, mention: &str) -> Result<Option<String>, contextgraph::Error> {
                 self.inner.resolve(mention)
+            }
+            fn nodes_of_kind(
+                &self,
+                kind: &str,
+            ) -> Result<Vec<contextgraph::Node>, contextgraph::Error> {
+                self.inner.nodes_of_kind(kind)
             }
         }
 
