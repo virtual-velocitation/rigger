@@ -1121,10 +1121,13 @@ pub struct GateVerbRun {
     pub evidence: String,
     /// The commit the gate ran on.
     pub commit: String,
-    /// The run's input digest; empty when the tree changed while the gate ran, so the run
-    /// addresses no commit.
+    /// The run's input digest; empty when the tree changed while the gate ran, which is a
+    /// non-pass that addresses no commit.
     pub digest: String,
 }
+
+/// The reason a gate run that changed the tree it gated is not a pass ([`gate_once`]).
+const WORKTREE_CHANGED: &str = "the worktree changed while the gate ran";
 
 /// Whether `dir` holds changes no commit records; an unreadable status counts as dirty.
 fn tree_is_dirty(dir: &str) -> bool {
@@ -1134,8 +1137,10 @@ fn tree_is_dirty(dir: &str) -> bool {
 /// Run the declared gate `gate_id` once on `dir`'s committed tree, through the gate run and the
 /// input resolution the driver uses ([`run_gate_with_taxonomy`] over [`GateInputs::resolve`]),
 /// with `run_base` as the run's `$RIGGER_RUN_BASE`. Records nothing and moves no ratchet. The tree
-/// must be clean and committed, since only a commit addresses what ran; a tree the gate itself
-/// changed while running gets no digest.
+/// must be clean and committed, since only a commit addresses what ran. A gate that changed the
+/// tree while it ran (left changes, or committed them) is a non-pass whatever it reported: its
+/// evidence starts with [`WORKTREE_CHANGED`] and tells the caller to commit and run it again, and
+/// it gets no digest.
 ///
 /// Refuses, running nothing, an undeclared gate (naming the declared ones), a dirty tree and a tree
 /// with no commit; a failed guard probe is returned as its error.
@@ -1176,13 +1181,23 @@ fn gate_once(
     let (pass, flaky, _ratchet, evidence) =
         run_gate_with_taxonomy(runner, taxonomy, &g, dir, &inputs)
             .map_err(|fault| without_halt_markers(probe_fault_halt(fault)))?;
-    // The digest addresses the commit only if the gate left it as it found it.
-    let unchanged = crate::worktree::head_sha_of(dir) == commit && !tree_is_dirty(dir);
-    let digest = if unchanged {
-        input_digest(&gc.run, &commit)
-    } else {
-        String::new()
-    };
+    // A result addresses the commit only if the gate left it as it found it: otherwise no one can
+    // say which tree it describes, so it fails closed.
+    if crate::worktree::head_sha_of(dir) != commit || tree_is_dirty(dir) {
+        return Ok(GateVerbRun {
+            gate: gate_id.to_string(),
+            command: gc.run.clone(),
+            pass: false,
+            flaky: false,
+            evidence: format!(
+                "{WORKTREE_CHANGED}, so its result addresses no commit; commit the tree, then run \
+                 `rigger gate {gate_id}` again\n{evidence}"
+            ),
+            commit,
+            digest: String::new(),
+        });
+    }
+    let digest = input_digest(&gc.run, &commit);
     Ok(GateVerbRun {
         gate: gate_id.to_string(),
         command: gc.run.clone(),

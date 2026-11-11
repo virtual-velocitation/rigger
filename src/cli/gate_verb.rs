@@ -74,7 +74,7 @@ pub(crate) fn cmd_gate(args: &[String]) -> Res {
 fn print_gate_run(gate: &str, pass: bool, commit: &str, digest: &str, evidence: &str) -> Res {
     let result = if pass { "PASS" } else { "FAIL" };
     let digest = if digest.is_empty() {
-        "none: the gate changed the tree, so the driver will run it again"
+        "none: the worktree changed while the gate ran"
     } else {
         digest
     };

@@ -23,7 +23,7 @@ pub struct GateRequest {
 pub enum GateReply {
     /// The driver ran the gate on `commit` and recorded the signed verdict at `position`;
     /// `digest` is the input digest a later gate of the same command over the same commit is
-    /// answered from, empty when the gate changed the tree it gated.
+    /// answered from, empty when the gate changed the tree it gated, which is never a pass.
     Ran {
         gate: String,
         pass: bool,
