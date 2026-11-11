@@ -1018,6 +1018,14 @@ pub trait Projection: Send + Sync {
     fn locate(&self, _entity: &str) -> Result<Located, Error> {
         Ok(Located::None)
     }
+
+    /// Every node of `kind` this projection holds, ordered by id: the names the combined lookup
+    /// resolves a term against (`code-entity`) and the records it ranks as prose (`decision`,
+    /// `lesson`, `finding`). The default returns none, so a projection with no node listing (a
+    /// test double) answers an empty set; the sqlite `Projector` overrides it.
+    fn nodes_of_kind(&self, _kind: &str) -> Result<Vec<Node>, Error> {
+        Ok(Vec::new())
+    }
 }
 
 /// The neighborhood `rigger graph --around` and the `rigger_graph` tool's `around` serve: the
