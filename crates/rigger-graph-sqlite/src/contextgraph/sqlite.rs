@@ -10,13 +10,13 @@ use std::time::{Duration, SystemTime};
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 
 use super::{
-    Edge, Error, FoldAccess, Graph, Neighbors, Node, RecordFold, KIND_ARCH_DECISION, KIND_ARTIFACT,
-    KIND_CODE_ENTITY, KIND_DECISION, KIND_DESIGN_DOC, KIND_FILE, KIND_FINDING, KIND_HANDBOOK_RULE,
-    KIND_LESSON, KIND_RATIONALE, OWED_LOST_FOLD, OWED_OLDER_RULE, PLACEHOLDER_SIGIL, REBUILD_OWED,
-    REBUILD_OWED_FOR_LOST_FOLD, REL_ABOUT, REL_GOVERNS, REL_RAISED, REL_SUPERSEDES, TIER_EXTRACTED,
-    TYPE_ALIAS_DEFINED, TYPE_ALIAS_UNRESOLVED, TYPE_DECISION_MADE, TYPE_FILE_TOUCHED,
-    TYPE_GATE_VERDICT, TYPE_LESSON_LEARNED, TYPE_REVIEW_FINDING, TYPE_UNIT_INTEGRATED,
-    TYPE_UNIT_STARTED,
+    Edge, Error, FoldAccess, Graph, Neighbors, Node, RecordFold, Rows, KIND_ARCH_DECISION,
+    KIND_ARTIFACT, KIND_CODE_ENTITY, KIND_DECISION, KIND_DESIGN_DOC, KIND_FILE, KIND_FINDING,
+    KIND_HANDBOOK_RULE, KIND_LESSON, KIND_RATIONALE, OWED_LOST_FOLD, OWED_OLDER_RULE,
+    PLACEHOLDER_SIGIL, REBUILD_OWED, REBUILD_OWED_FOR_LOST_FOLD, REL_ABOUT, REL_GOVERNS,
+    REL_RAISED, REL_SUPERSEDES, TIER_EXTRACTED, TYPE_ALIAS_DEFINED, TYPE_ALIAS_UNRESOLVED,
+    TYPE_DECISION_MADE, TYPE_FILE_TOUCHED, TYPE_GATE_VERDICT, TYPE_LESSON_LEARNED,
+    TYPE_REVIEW_FINDING, TYPE_UNIT_INTEGRATED, TYPE_UNIT_STARTED,
 };
 use crate::eventstore::{from_nanos, to_nanos, Event, EventStore, Filter, Position, Revision};
 use crate::lockfile::HeldLock;
@@ -2758,26 +2758,85 @@ impl Neighbors for Projector {
     fn whole(&self) -> Result<Graph, Error> {
         Projector::whole(self)
     }
+
+    /// One read per relation for all of `ids`: their nodes, their live edges out and their live
+    /// edges in, each a seek of its id column per id.
+    fn rows(&self, ids: &[&str]) -> Result<Vec<Rows>, Error> {
+        let list = serde_json::to_string(ids).map_err(|e| Error(e.to_string()))?;
+        let mut at: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
+        for (place, id) in ids.iter().enumerate() {
+            at.entry(id).or_default().push(place);
+        }
+        let mut rows = vec![Rows::default(); ids.len()];
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(NODES_ONE_OF_LIST).map_err(be)?;
+        let nodes = stmt.query_map(params![self.project, list], row_to_node);
+        for node in nodes.map_err(be)? {
+            let node = node.map_err(be)?;
+            for &place in &at[node.id.as_str()] {
+                rows[place].node = Some(node.clone());
+            }
+        }
+        for e in live_edges_where(&conn, &self.project, "from_id", ONE_OF_LIST, &list)? {
+            for &place in &at[e.from.as_str()] {
+                rows[place].out.push(e.clone());
+            }
+        }
+        for e in live_edges_where(&conn, &self.project, "to_id", ONE_OF_LIST, &list)? {
+            for &place in &at[e.to.as_str()] {
+                rows[place].incoming.push(e.clone());
+            }
+        }
+        Ok(rows)
+    }
+}
+
+/// The SQL test that a value is one of the JSON array `?2`.
+const ONE_OF_LIST: &str = "IN (SELECT value FROM json_each(?2))";
+
+/// The nodes of this project (`?1`) whose id is [`ONE_OF_LIST`].
+const NODES_ONE_OF_LIST: &str = "SELECT id, kind, attrs FROM nodes
+  WHERE id IN (SELECT value FROM json_each(?2)) AND project = ?1";
+
+/// The live edges of a project (`?1`) whose `column` (`from_id` or `to_id`) passes `test` over
+/// `?2`, ordered by their ends then relation.
+fn live_edges_sql(column: &str, test: &str) -> String {
+    format!(
+        "SELECT from_id, to_id, rel, valid_from, source, tier FROM edges
+          WHERE valid_to IS NULL AND project = ?1 AND {column} {test}
+          ORDER BY from_id, to_id, rel, valid_from"
+    )
+}
+
+/// The live edges of `project` whose `column` (`from_id` or `to_id`) passes `test` over `arg`
+/// ([`live_edges_sql`]).
+fn live_edges_where(
+    conn: &Connection,
+    project: &str,
+    column: &str,
+    test: &str,
+    arg: &str,
+) -> Result<Vec<Edge>, Error> {
+    let mut stmt = conn.prepare(&live_edges_sql(column, test)).map_err(be)?;
+    let edges = stmt
+        .query_map(params![project, arg], row_to_edge)
+        .map_err(be)?
+        .collect::<Result<_, _>>()
+        .map_err(be);
+    edges
 }
 
 impl Projector {
     /// The live edges of this project whose `column` (`from_id` or `to_id`) is `id`, ordered by
     /// their ends then relation.
     fn live_edges(&self, column: &str, id: &str) -> Result<Vec<Edge>, Error> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn
-            .prepare(&format!(
-                "SELECT from_id, to_id, rel, valid_from, source, tier FROM edges
-                  WHERE valid_to IS NULL AND project = ?1 AND {column} = ?2
-                  ORDER BY from_id, to_id, rel, valid_from"
-            ))
-            .map_err(be)?;
-        let edges = stmt
-            .query_map(params![self.project, id], row_to_edge)
-            .map_err(be)?
-            .collect::<Result<_, _>>()
-            .map_err(be);
-        edges
+        live_edges_where(
+            &self.conn.lock().unwrap(),
+            &self.project,
+            column,
+            "= ?2",
+            id,
+        )
     }
 
     /// The nodes `sql` reads, `?1` this project and `?2` the one value `arg`.
@@ -10067,6 +10126,101 @@ mod tests {
             plan.iter().any(|d| d.contains("idx_edges_live_rel_from")),
             "the relationship-scoped forward scan uses the partial idx_edges_live_rel_from; plan was {plan:?}"
         );
+    }
+
+    /// The record half's rows read together answer its per-id reads: GIVEN this project's nodes
+    /// and live edges, a superseded edge and another project's rows, WHEN the rows of ids (nodes
+    /// with edges both ways, an edge end with no node, an id twice, an id nothing holds) are read
+    /// together, THEN each id's rows are its node, edges out and edges in read alone, and each
+    /// of the three reads seeks its table by the id rather than scanning it.
+    #[test]
+    fn rows_read_together_answer_the_per_id_reads_and_seek_their_tables() {
+        let p = Projector::open(":memory:", "test").unwrap();
+        leaf_keys_resolution::write_directly(&p, |tx, project| {
+            let nodes = [
+                ("d1", KIND_DECISION),
+                ("src/f.rs", KIND_FILE),
+                ("f1", KIND_FINDING),
+            ];
+            for (id, kind) in nodes {
+                ensure_node(tx, id, kind, &[("title", id)], project).unwrap();
+            }
+            let edges = [
+                ("d1", "src/f.rs", REL_GOVERNS),
+                ("f1", "src/f.rs", REL_ABOUT),
+                ("f1", "d1", REL_ABOUT),
+                ("d1", "src/gone.rs", REL_GOVERNS),
+            ];
+            for (from, to, rel) in edges {
+                add_edge(tx, from, to, rel, 7, 3, project, TIER_EXTRACTED).unwrap();
+            }
+            let old = add_edge(
+                tx,
+                "f1",
+                "src/old.rs",
+                REL_ABOUT,
+                7,
+                3,
+                project,
+                TIER_EXTRACTED,
+            );
+            let superseded = "UPDATE edges SET valid_to = 9 WHERE id = ?1";
+            tx.execute(superseded, [old.unwrap()]).unwrap();
+            ensure_node(tx, "nothing", KIND_DECISION, &[], "other").unwrap();
+            add_edge(
+                tx,
+                "d1",
+                "nothing",
+                REL_ABOUT,
+                7,
+                3,
+                "other",
+                TIER_EXTRACTED,
+            )
+            .unwrap();
+        });
+        let ids = [
+            "d1",
+            "src/f.rs",
+            "src/gone.rs",
+            "f1",
+            "d1",
+            "nothing",
+            "src/old.rs",
+        ];
+        let together = p.rows(&ids).unwrap();
+        assert_eq!(together.len(), ids.len());
+        let mut held = 0;
+        for (id, rows) in ids.iter().zip(&together) {
+            let alone = (
+                p.node(id).unwrap(),
+                p.out(id).unwrap(),
+                p.incoming(id).unwrap(),
+            );
+            let rows = (rows.node.clone(), rows.out.clone(), rows.incoming.clone());
+            held += rows.1.len() + rows.2.len() + usize::from(rows.0.is_some());
+            assert_eq!(format!("{rows:?}"), format!("{alone:?}"), "{id}");
+        }
+        // d1 twice (a node, two edges out, one in), src/f.rs, src/gone.rs, f1.
+        assert_eq!(
+            held,
+            2 * 4 + 3 + 1 + 3,
+            "the rows read hold what the fixture wrote"
+        );
+        let list = r#"["d1","f1"]"#;
+        let reads = [
+            ("nodes", NODES_ONE_OF_LIST.to_string()),
+            ("edges", live_edges_sql("from_id", ONE_OF_LIST)),
+            ("edges", live_edges_sql("to_id", ONE_OF_LIST)),
+        ];
+        for (table, sql) in reads {
+            let plan = query_plan(&p, &sql, params!["test", list]);
+            assert_plan_uses(&plan, &format!("SEARCH {table} USING"));
+            assert!(
+                !plan.iter().any(|d| d.starts_with(&format!("SCAN {table}"))),
+                "{sql}: {plan:?}"
+            );
+        }
     }
 
     /// Spec 119 criterion 1 (THE LEAF KEYS RESOLUTION): every node-side reader keys a definition

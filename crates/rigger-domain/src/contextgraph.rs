@@ -1142,6 +1142,37 @@ pub trait Neighbors: Send + Sync {
     fn aliases(&self) -> Result<Vec<(String, String)>, Error>;
     /// Every node and live edge of this half.
     fn whole(&self) -> Result<Graph, Error>;
+    /// The rows of each of `ids`, in their order: what [`Self::node`], [`Self::out`] and
+    /// [`Self::incoming`] answer at it. A half read by query reads them together, one read per
+    /// relation for all of `ids`.
+    fn rows(&self, ids: &[&str]) -> Result<Vec<Rows>, Error> {
+        (ids.iter())
+            .map(|id| {
+                Ok(Rows {
+                    node: self.node(id)?,
+                    out: self.out(id)?,
+                    incoming: self.incoming(id)?,
+                })
+            })
+            .collect()
+    }
+    /// The ids a walk reads next, told ahead of its reads of them: a graph over a half read by
+    /// query reads their rows there together ([`Self::rows`]). It answers nothing; the reads
+    /// that follow answer as they would without it.
+    fn read_ahead(&self, _ids: &[String]) -> Result<(), Error> {
+        Ok(())
+    }
+}
+
+/// One id's rows in a half ([`Neighbors::rows`]): its node and its live edges each way.
+#[derive(Debug, Default, Clone)]
+pub struct Rows {
+    /// [`Neighbors::node`] at the id.
+    pub node: Option<Node>,
+    /// [`Neighbors::out`] at the id.
+    pub out: Vec<Edge>,
+    /// [`Neighbors::incoming`] at the id.
+    pub incoming: Vec<Edge>,
 }
 
 /// The neighborhood `rigger graph --around` and the `rigger_graph` tool's `around` serve: the

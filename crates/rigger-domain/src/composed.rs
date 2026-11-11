@@ -22,7 +22,7 @@ use crate::contextgraph::query::{
 };
 use crate::contextgraph::{
     entity_site, holds_attachment, is_call_target, CallEdge, CallGraph, CallNode, Candidate,
-    ContextGraph, Direction, Edge, EntitySite, Error, Graph, Located, Neighbors, Node,
+    ContextGraph, Direction, Edge, EntitySite, Error, Graph, Located, Neighbors, Node, Rows,
     KIND_ARTIFACT, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT, PLACEHOLDER_SIGIL, REL_CALLS,
     REL_GOVERNS, REL_IN_COMMUNITY, REL_REALIZES, REL_REFERENCES, TIER_AMBIGUOUS, TIER_EXTRACTED,
     TIER_INFERRED,
@@ -618,6 +618,8 @@ pub struct Composed<'r, C = Whole> {
     label: Label,
     /// The ids withheld so far because they are [`Withheld`].
     withheld: Mutex<BTreeSet<String>>,
+    /// The record half's rows read ahead ([`Neighbors::read_ahead`]), by the spelling read.
+    ahead: Mutex<FxHashMap<String, Rows>>,
 }
 
 impl<'r> Composed<'r> {
@@ -676,7 +678,30 @@ impl<'r, C: CodeHalf> Composed<'r, C> {
             stale,
             label,
             withheld: Mutex::new(BTreeSet::new()),
+            ahead: Mutex::new(FxHashMap::default()),
         })
+    }
+
+    /// The record half's node `spelling`, read ahead or read now.
+    fn record_node(&self, spelling: &str) -> Result<Option<Node>, Error> {
+        match self.ahead.lock().unwrap().get(spelling) {
+            Some(rows) => Ok(rows.node.clone()),
+            None => self.records.node(spelling),
+        }
+    }
+
+    /// The record half's edges at `spelling` running `way`, read ahead or read now.
+    fn record_edges(&self, spelling: &str, way: Way) -> Result<Vec<Edge>, Error> {
+        if let Some(rows) = self.ahead.lock().unwrap().get(spelling) {
+            return Ok(match way {
+                Way::Out => rows.out.clone(),
+                Way::In => rows.incoming.clone(),
+            });
+        }
+        match way {
+            Way::Out => self.records.out(spelling),
+            Way::In => self.records.incoming(spelling),
+        }
     }
 
     /// `e` with both ends read through the recorded aliases.
@@ -834,7 +859,7 @@ impl<'r, C: CodeHalf> Composed<'r, C> {
         if self.canonical.contains_key(id) {
             return Ok(None);
         }
-        Ok(merge(self.code.node(id)?, self.records.node(id)?))
+        Ok(merge(self.code.node(id)?, self.record_node(id)?))
     }
 
     /// Whether an edge end `id` is answered: nothing is [`Withheld`], or the node it reads as (an
@@ -849,15 +874,14 @@ impl<'r, C: CodeHalf> Composed<'r, C> {
 
     /// The edges both halves hold at `spelling` running `way`, ends canonical.
     fn halves_at(&self, spelling: &str, way: Way) -> Result<Vec<Edge>, Error> {
-        let mut found = Vec::new();
-        for half in [&self.code as &dyn Neighbors, self.records] {
-            let edges = match way {
-                Way::Out => half.out(spelling)?,
-                Way::In => half.incoming(spelling)?,
-            };
-            found.extend(edges.into_iter().map(|e| self.canon_edge(e)));
-        }
-        Ok(found)
+        let code = match way {
+            Way::Out => self.code.out(spelling)?,
+            Way::In => self.code.incoming(spelling)?,
+        };
+        let records = self.record_edges(spelling, way)?;
+        Ok((code.into_iter().chain(records))
+            .map(|e| self.canon_edge(e))
+            .collect())
     }
 
     /// The edges read at `id` running `way` from both halves and its aliases, ends canonical,
@@ -908,9 +932,10 @@ impl<'r, C: CodeHalf> Composed<'r, C> {
         Ok(ordered(answered))
     }
 
-    /// The answered nodes of `ids` from both halves, in id order.
+    /// The answered nodes of `ids` from both halves, in id order, the record half's read together.
     fn answered(&self, ids: impl IntoIterator<Item = String>) -> Result<Vec<Node>, Error> {
         let ids: BTreeSet<String> = ids.into_iter().collect();
+        self.read_ahead(&ids.iter().cloned().collect::<Vec<_>>())?;
         let mut nodes = Vec::new();
         for id in ids {
             nodes.extend(self.node(&id)?);
@@ -966,6 +991,26 @@ impl<C: CodeHalf> Neighbors for Composed<'_, C> {
     }
     fn whole(&self) -> Result<Graph, Error> {
         self.whole_over(self.code.whole()?, &self.withheld_groupings())
+    }
+    /// The record half's rows at every spelling of `ids` not read ahead yet, read together.
+    fn read_ahead(&self, ids: &[String]) -> Result<(), Error> {
+        let spellings: BTreeSet<&str> = {
+            let ahead = self.ahead.lock().unwrap();
+            (ids.iter())
+                .flat_map(|id| self.spellings(id))
+                .filter(|s| !ahead.contains_key(*s))
+                .collect()
+        };
+        if spellings.is_empty() {
+            return Ok(());
+        }
+        let spellings: Vec<&str> = spellings.into_iter().collect();
+        let rows = self.records.rows(&spellings)?;
+        let mut ahead = self.ahead.lock().unwrap();
+        for (spelling, rows) in spellings.into_iter().zip(rows) {
+            ahead.insert(spelling.to_string(), rows);
+        }
+        Ok(())
     }
 }
 
@@ -1062,27 +1107,36 @@ impl<C: CodeHalf> ContextGraph for Composed<'_, C> {
 /// reached ids, an edge end no half holds reading as an `artifact`.
 pub fn subgraph(graph: &dyn Neighbors, seed: &[String], depth: i64) -> Result<Graph, Error> {
     let mut reached: BTreeSet<String> = seed.iter().cloned().collect();
-    let mut queue: VecDeque<(String, i64)> = reached.iter().map(|s| (s.clone(), 0)).collect();
+    let mut level: Vec<String> = reached.iter().cloned().collect();
     let mut nodes = BTreeMap::new();
     let mut edges = Vec::new();
-    while let Some((id, hops)) = queue.pop_front() {
-        let node = graph.node(&id)?;
-        let out = graph.out(&id)?;
-        if hops < depth {
-            let mut next: Vec<String> = out.iter().map(|e| e.to.clone()).collect();
-            next.extend(graph.incoming(&id)?.into_iter().map(|e| e.from));
-            next.extend(graph.members(&id)?.into_iter().map(|m| m.id));
-            next.extend(node.as_ref().and_then(member_file).map(str::to_string));
-            for n in next {
-                if reached.insert(n.clone()) {
-                    queue.push_back((n, hops + 1));
+    // Level by level, each level's ids told ahead of their reads.
+    for hops in 0.. {
+        if level.is_empty() {
+            break;
+        }
+        graph.read_ahead(&level)?;
+        let mut deeper = Vec::new();
+        for id in std::mem::take(&mut level) {
+            let node = graph.node(&id)?;
+            let out = graph.out(&id)?;
+            if hops < depth {
+                let mut next: Vec<String> = out.iter().map(|e| e.to.clone()).collect();
+                next.extend(graph.incoming(&id)?.into_iter().map(|e| e.from));
+                next.extend(graph.members(&id)?.into_iter().map(|m| m.id));
+                next.extend(node.as_ref().and_then(member_file).map(str::to_string));
+                for n in next {
+                    if reached.insert(n.clone()) {
+                        deeper.push(n);
+                    }
                 }
             }
+            edges.extend(out);
+            if let Some(node) = node {
+                nodes.insert(id, node);
+            }
         }
-        edges.extend(out);
-        if let Some(node) = node {
-            nodes.insert(id, node);
-        }
+        level = deeper;
     }
     edges.retain(|e| reached.contains(&e.from) && reached.contains(&e.to));
     Ok(closed(nodes, edges))
@@ -1767,6 +1821,88 @@ mod tests {
                 has_edge(&edges, "dec-1", CONCEPT, REL_REALIZES),
                 "{read}: {edges:?}"
             );
+        }
+    }
+
+    /// A record half that counts its reads by name.
+    struct CountingRecords {
+        records: Indexed,
+        reads: Mutex<BTreeMap<&'static str, usize>>,
+    }
+
+    impl CountingRecords {
+        fn read(&self, name: &'static str) {
+            *self.reads.lock().unwrap().entry(name).or_default() += 1;
+        }
+    }
+
+    impl Neighbors for CountingRecords {
+        fn node(&self, id: &str) -> Result<Option<Node>, Error> {
+            self.read("node");
+            self.records.node(id)
+        }
+        fn out(&self, id: &str) -> Result<Vec<Edge>, Error> {
+            self.read("out");
+            self.records.out(id)
+        }
+        fn incoming(&self, id: &str) -> Result<Vec<Edge>, Error> {
+            self.read("incoming");
+            self.records.incoming(id)
+        }
+        fn members(&self, file: &str) -> Result<Vec<Node>, Error> {
+            self.read("members");
+            self.records.members(file)
+        }
+        fn leaf_nodes(&self, leaf: &str) -> Result<Vec<Node>, Error> {
+            self.read("leaf_nodes");
+            self.records.leaf_nodes(leaf)
+        }
+        fn of_kind(&self, kind: &str) -> Result<Vec<Node>, Error> {
+            self.read("of_kind");
+            self.records.of_kind(kind)
+        }
+        fn unresolved(&self, node: &Node) -> Result<Vec<String>, Error> {
+            self.records.unresolved(node)
+        }
+        fn aliases(&self) -> Result<Vec<(String, String)>, Error> {
+            self.records.aliases()
+        }
+        fn whole(&self) -> Result<Graph, Error> {
+            self.read("whole");
+            self.records.whole()
+        }
+        fn rows(&self, ids: &[&str]) -> Result<Vec<Rows>, Error> {
+            self.read("rows");
+            self.records.rows(ids)
+        }
+    }
+
+    /// A neighbourhood reads the record half's rows a level at a time: GIVEN a record half that
+    /// counts its reads, WHEN the subgraph two hops around each seed is read, over the code half
+    /// resolved whole and near, THEN the record half is read once per level for every node and
+    /// edge the walk reads, and per id only for a file's members.
+    #[test]
+    fn a_neighbourhood_reads_the_record_half_in_batches_never_per_id() {
+        let view = view_with_workflow();
+        // (seed, batched reads, ids stepped from): one batch a level, plus one for a stepped
+        // file's members, whose answered nodes are read together before the level they join.
+        let cases = [("f1", 3, 2), ("src/a.rs", 3 + 1, 3), ("dec-1", 3, 3)];
+        for (seed, batches, stepped) in cases {
+            for near in [false, true] {
+                let records = CountingRecords {
+                    records: records(),
+                    reads: Mutex::new(BTreeMap::new()),
+                };
+                let filter = ViewFilter::default();
+                let g: Box<dyn ContextGraph + '_> = match near {
+                    true => Box::new(Composed::near(&records, &view, filter, exact()).unwrap()),
+                    false => Box::new(Composed::new(&records, &view, filter, exact()).unwrap()),
+                };
+                g.subgraph(&[seed.to_string()], 2).unwrap();
+                let reads = records.reads.lock().unwrap().clone();
+                let want = BTreeMap::from([("members", stepped), ("rows", batches)]);
+                assert_eq!(reads, want, "{seed} (near {near})");
+            }
         }
     }
 
