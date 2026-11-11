@@ -70,11 +70,15 @@ fn served_state(events: Vec<Event>) -> Value {
     let addr = listener.local_addr().unwrap();
     // The lazy `/api/graph` provider (spec 45, criterion 1): this test drives the state poll, which
     // never consults it, so an empty graph provider satisfies `serve`'s `Fn() -> Graph` bound.
-    let graph_provider = |_instance: Option<&str>| Graph::default();
+    let graph_provider =
+        |_instance: Option<&str>, _tests: rigger::code_view::Tests| Graph::default();
     let calls_provider =
-        |_: Option<&str>, _: &[String], _: rigger::contextgraph::Direction, _: i64, _: &str| {
-            rigger::contextgraph::CallGraph::default()
-        };
+        |_: Option<&str>,
+         _: &[String],
+         _: rigger::contextgraph::Direction,
+         _: i64,
+         _: &str,
+         _tests: rigger::code_view::Tests| { rigger::contextgraph::CallGraph::default() };
     let instances_provider = Vec::new;
     // A detached server thread: `serve_on` loops until the process ends; we drive one request.
     // `run_branch`/`base` are the same values `cmd_dash` threads from `resolve_run_base`.

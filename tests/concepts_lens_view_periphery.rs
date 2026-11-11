@@ -189,7 +189,8 @@ rigger::test_cases! {
                     count: 3,
                     kind: KIND_CODE_ENTITY.to_string(),
                     label: Some("the store".to_string()),
-                },
+                tests: 0,
+},
                 // concept/1/1 (the smaller): the SHARED append folds under its primary c0, so c1
                 // counts ONLY its sole non-shared member docs/api.md - never silently duplicated.
                 Cluster {
@@ -197,7 +198,8 @@ rigger::test_cases! {
                     count: 1,
                     kind: KIND_DESIGN_DOC.to_string(),
                     label: Some("the api".to_string()),
-                },
+                tests: 0,
+},
                 // NO cluster for the unattached code entity or the membership-less decision (spec
                 // 63 c4): the concepts lens admits ONLY concept members, so a membership-less node
                 // of any kind carries no bucket here.
@@ -373,7 +375,8 @@ fn concepts_lens_admits_a_realizing_member_of_any_kind_not_only_code_and_docs() 
             count: 2,
             kind: KIND_CODE_ENTITY.to_string(),
             label: Some("the idea".to_string()),
-        }],
+        tests: 0,
+}],
         "a decision that REALIZES a concept folds into it exactly like a code entity - membership, \
          not kind, is the only filter under the concepts lens (dominant-kind tie resolves to the \
          lexicographically-smallest, code-entity): {overview:?}"

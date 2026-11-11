@@ -241,7 +241,7 @@ fn fetch_whole_served(graph_db: &str, identity: &str, path: &str) -> String {
         // projection through the provider split alone.
         let db = graph_db.to_string();
         let id = identity.to_string();
-        let whole = move |_instance: Option<&str>| -> Graph {
+        let whole = move |_instance: Option<&str>, _tests: rigger::code_view::Tests| -> Graph {
             match Projector::open(&db, &id) {
                 Ok(p) => {
                     ContextGraph::whole(&view_graph(&p, &code_ingest_view())).unwrap_or_default()

@@ -1405,14 +1405,19 @@ fn the_served_graph_route_reads_the_lazy_provider_only_and_never_on_the_state_po
         let lazy_graph = build("lazy-neighbor");
         let hits = Arc::new(AtomicUsize::new(0));
         let hits_for_provider = Arc::clone(&hits);
-        let graph_provider = move |_instance: Option<&str>| -> Graph {
-            hits_for_provider.fetch_add(1, Ordering::SeqCst);
-            lazy_graph.clone()
-        };
-        let calls_provider =
-            |_: Option<&str>, _: &[String], _: rigger::contextgraph::Direction, _: i64, _: &str| {
-                rigger::contextgraph::CallGraph::default()
+        let graph_provider =
+            move |_instance: Option<&str>, _tests: rigger::code_view::Tests| -> Graph {
+                hits_for_provider.fetch_add(1, Ordering::SeqCst);
+                lazy_graph.clone()
             };
+        let calls_provider = |_: Option<&str>,
+                              _: &[String],
+                              _: rigger::contextgraph::Direction,
+                              _: i64,
+                              _: &str,
+                              _tests: rigger::code_view::Tests| {
+            rigger::contextgraph::CallGraph::default()
+        };
         let instances_provider = Vec::new;
 
         std::thread::spawn(move || {

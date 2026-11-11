@@ -50,8 +50,9 @@ use crate::contextgraph::{
 // one of them (in the code below and in `mod tests`'s `use super::*`), it just no longer DEFINES
 // them.
 use crate::contextgraph::query::{
-    bucket_label_index, defs_by_entity_suffix, fold_buckets, member_set, memory_rail_of,
-    neighborhood_of, node_file, node_label, node_leaf, node_name, referenced_id, Buckets,
+    bucket_label_index, count_tests, defs_by_entity_suffix, fold_buckets, member_set,
+    memory_rail_of, neighborhood_of, node_file, node_label, node_leaf, node_name, referenced_id,
+    Buckets,
 };
 pub use crate::contextgraph::query::{
     card, cluster_detail, cluster_key, clustered_overview, explain, memory_rail, neighborhood,
@@ -65,6 +66,7 @@ pub use crate::contextgraph::query::{
 use crate::eventstore::{Event, Position};
 use crate::progress::{self, AgentActivity};
 use crate::{blocker, ledger, metrics, run, spawn};
+use rigger_domain::code_view::Tests;
 /// The supervised child-process guard, re-exported from `rigger-driver` under its historical path.
 pub use rigger_driver::reaped_child::ReapedChild;
 
@@ -1610,12 +1612,13 @@ fn reprojection_lens_key(buckets: &Buckets, node: &Node) -> Option<String> {
 fn reproject_derived(graph: &Graph, subject: &str, lens: &Lens, members: &[&Node]) -> Reprojection {
     let buckets = Buckets::new(graph, lens);
     let bucket_label = bucket_label_index(graph, &buckets);
-    let (clusters, edges) = fold_buckets(
+    let (mut clusters, edges) = fold_buckets(
         members.iter().copied(),
         &graph.edges,
         |n| reprojection_lens_key(&buckets, n),
         &bucket_label,
     );
+    count_tests(&mut clusters, graph, &buckets);
     // Spec 55 c2, the EMPTY cell: when NO member folds into a derived (community/concept) bucket, the
     // cell is defined-but-empty. The kind-fallback clusters above still render (criterion 1, nothing
     // dropped); this message is the additive caption the panel shows. A single member with a derived
@@ -2024,7 +2027,7 @@ fn calls_view(
 /// spec-50 attach selector threaded to the provider so the walk opens the SELECTED instance's store.
 fn calls_route<G>(instance: Option<&str>, target: &str, calls_provider: &G) -> Option<Response>
 where
-    G: Fn(Option<&str>, &[String], Direction, i64, &str) -> CallGraph,
+    G: Fn(Option<&str>, &[String], Direction, i64, &str, Tests) -> CallGraph,
 {
     if query_param(target, "view").map(percent_decode).as_deref() != Some("calls") {
         return None;
@@ -2043,11 +2046,13 @@ where
         .map(percent_decode)
         .unwrap_or_else(|| TIER_INFERRED.to_string());
     let dir = parse_call_dir(query_param(target, "dir").map(percent_decode).as_deref());
+    // The caller refuses a malformed `tests=` before this runs.
+    let tests = tests_param(target).unwrap_or_default();
 
     let down = matches!(dir, CallDir::Down | CallDir::Both)
-        .then(|| calls_provider(instance, &seeds, Direction::Down, depth, &floor));
+        .then(|| calls_provider(instance, &seeds, Direction::Down, depth, &floor, tests));
     let up = matches!(dir, CallDir::Up | CallDir::Both)
-        .then(|| calls_provider(instance, &seeds, Direction::Up, depth, &floor));
+        .then(|| calls_provider(instance, &seeds, Direction::Up, depth, &floor, tests));
 
     let view = calls_view(down.as_ref(), up.as_ref(), &seed, depth);
     // Serializing these plain view DTOs cannot realistically fail; degrade a serialization error to
@@ -3014,6 +3019,54 @@ pub fn route(
     base: &str,
     instances: &[InstanceView],
 ) -> Response {
+    route_hiding(
+        method,
+        target,
+        events,
+        graph,
+        0,
+        progress_events,
+        liveness_ages,
+        configured_max_retries,
+        run_branch,
+        base,
+        instances,
+    )
+}
+
+/// What a whole-graph provider reads: the graph a read drew and how many test entities its
+/// `tests` filter removed from it, which the graph itself does not hold.
+#[derive(Debug, Default)]
+pub struct GraphRead {
+    pub graph: Graph,
+    pub tests_hidden: usize,
+}
+
+/// A provider that reads no hidden tests answers a plain [`Graph`].
+impl From<Graph> for GraphRead {
+    fn from(graph: Graph) -> Self {
+        GraphRead {
+            graph,
+            tests_hidden: 0,
+        }
+    }
+}
+
+/// [`route`] over a graph read that hid `tests_hidden` test entities: the overview reports them.
+#[allow(clippy::too_many_arguments)]
+fn route_hiding(
+    method: &str,
+    target: &str,
+    events: &[Event],
+    graph: &Graph,
+    tests_hidden: usize,
+    progress_events: &[Event],
+    liveness_ages: &HashMap<String, u64>,
+    configured_max_retries: u32,
+    run_branch: &str,
+    base: &str,
+    instances: &[InstanceView],
+) -> Response {
     if method != "GET" {
         return Response::text(
             405,
@@ -3153,7 +3206,9 @@ pub fn route(
                     .map(percent_decode)
                     .unwrap_or_default();
                 if seed.is_empty() {
-                    serde_json::to_string(&clustered_overview(graph, &lens))
+                    let mut overview = clustered_overview(graph, &lens);
+                    overview.tests_hidden = tests_hidden;
+                    serde_json::to_string(&overview)
                 } else if query_param(target, "lens").is_some() {
                     // SUBJECT x LENS re-projection (spec 55 c1): a non-empty seed WITH an explicit
                     // `lens=` re-grains THAT subject's member set at the chosen altitude, in place -
@@ -3183,6 +3238,14 @@ pub fn route(
         }
         _ => Response::text(404, "not found"),
     }
+}
+
+/// The `tests` filter a request names: `exclude` when it carries none, else the one
+/// [`Tests`] parser's reading of `tests=`.
+fn tests_param(target: &str) -> Result<Tests, String> {
+    query_param(target, "tests")
+        .map(percent_decode)
+        .map_or(Ok(Tests::Exclude), |spelled| spelled.parse())
 }
 
 /// Percent-decode a URL query value (`%XX` -> the byte; every other byte verbatim). The client
@@ -3259,7 +3322,7 @@ fn parse_request_line(line: &str) -> Option<(String, String)> {
 /// local project (backward compatible). The `instances_provider` reads the machine-global
 /// registry for the `/api/instances` landing list.
 #[allow(clippy::too_many_arguments)]
-pub fn serve_on<F, G, H, I>(
+pub fn serve_on<F, G, R, H, I>(
     listener: TcpListener,
     provider: F,
     graph_provider: G,
@@ -3271,9 +3334,10 @@ pub fn serve_on<F, G, H, I>(
 ) -> io::Result<()>
 where
     F: Fn(Option<&str>) -> Result<DashInputs, String> + Send + Sync + 'static,
-    G: Fn(Option<&str>) -> Graph,
+    G: Fn(Option<&str>, Tests) -> R,
+    R: Into<GraphRead>,
     H: Fn() -> Vec<InstanceView>,
-    I: Fn(Option<&str>, &[String], Direction, i64, &str) -> CallGraph,
+    I: Fn(Option<&str>, &[String], Direction, i64, &str, Tests) -> CallGraph,
 {
     let bound = listener.local_addr()?;
     eprintln!("rigger dash: serving on http://{bound}/ (read-only; Ctrl-C to stop)");
@@ -3317,7 +3381,7 @@ where
 /// absent, the dash's own local project. `/api/instances` is served from the separate
 /// `instances_provider` (the registry landing) and needs no store read at all.
 #[allow(clippy::too_many_arguments)]
-fn handle_conn<F, G, H, I>(
+fn handle_conn<F, G, R, H, I>(
     stream: TcpStream,
     provider: &Arc<F>,
     graph_provider: &G,
@@ -3329,9 +3393,10 @@ fn handle_conn<F, G, H, I>(
 ) -> io::Result<()>
 where
     F: Fn(Option<&str>) -> Result<DashInputs, String> + Send + Sync + 'static,
-    G: Fn(Option<&str>) -> Graph,
+    G: Fn(Option<&str>, Tests) -> R,
+    R: Into<GraphRead>,
     H: Fn() -> Vec<InstanceView>,
-    I: Fn(Option<&str>, &[String], Direction, i64, &str) -> CallGraph,
+    I: Fn(Option<&str>, &[String], Direction, i64, &str, Tests) -> CallGraph,
 {
     // Bound how long a slow or broken client can hold the single serving slot.
     stream.set_read_timeout(Some(Duration::from_secs(10)))?;
@@ -3442,7 +3507,14 @@ where
                 // opens only the calls provider, never the whole-graph read. `calls_route` returns
                 // `None` for every other `/api/graph` request (and every non-graph path), so those
                 // fall through to the byte-identical neighborhood / overview / drill path below.
-                if let Some(resp) = (path == "/api/graph")
+                //
+                // The graph's `tests=exclude|include|only` filter rides every `/api/graph` read, the
+                // directed-call views included; a value that is none of the three is refused 400
+                // before any provider is consulted.
+                let tests = tests_param(&target);
+                if let (true, Err(refusal)) = (path == "/api/graph", &tests) {
+                    Response::text(400, &format!("dash: {refusal}"))
+                } else if let Some(resp) = (path == "/api/graph")
                     .then(|| calls_route(instance, &target, calls_provider))
                     .flatten()
                 {
@@ -3455,16 +3527,17 @@ where
                             // every other `/api/*` path keeps the cheap run-seeded graph the polled
                             // provider yields (spec 45, criterion 1). Both open the SELECTED
                             // instance's store (spec 50, criterion 3).
-                            let graph = if path == "/api/graph" {
-                                graph_provider(instance)
+                            let read: GraphRead = if path == "/api/graph" {
+                                graph_provider(instance, tests.unwrap_or_default()).into()
                             } else {
-                                polled_graph
+                                polled_graph.into()
                             };
-                            route(
+                            route_hiding(
                                 &method,
                                 &target,
                                 &events,
-                                &graph,
+                                &read.graph,
+                                read.tests_hidden,
                                 &progress,
                                 &liveness,
                                 configured_max_retries,
@@ -4329,12 +4402,15 @@ mod tests {
         let provider = |_instance: Option<&str>| -> Result<DashInputs, String> {
             Ok((Vec::new(), Graph::default(), Vec::new(), HashMap::new()))
         };
-        let graph_provider = |_instance: Option<&str>| Graph::default();
+        let graph_provider = |_instance: Option<&str>, _tests: Tests| Graph::default();
         let instances_provider = Vec::new;
         let calls_provider =
-            |_: Option<&str>, _: &[String], _: crate::contextgraph::Direction, _: i64, _: &str| {
-                crate::contextgraph::CallGraph::default()
-            };
+            |_: Option<&str>,
+             _: &[String],
+             _: crate::contextgraph::Direction,
+             _: i64,
+             _: &str,
+             _: Tests| { crate::contextgraph::CallGraph::default() };
         // A dash that FAILS instead of serving reports its error here, so the failure surfaces
         // LOUD and named (spec 19c) rather than as a silent stall that only shows up much later
         // as an unexplained deadline.
@@ -5825,12 +5901,14 @@ mod tests {
                     count: 1,
                     kind: KIND_CODE_ENTITY.to_string(),
                     label: None,
+                    tests: 0,
                 },
                 Cluster {
                     key: "src/a.rs".to_string(),
                     count: 2,
                     kind: KIND_CODE_ENTITY.to_string(),
                     label: None,
+                    tests: 0,
                 },
             ],
             "each code entity folds by its OWN FILE; the file's own node, the design-doc, and the \
@@ -6168,6 +6246,103 @@ mod tests {
         assert!(none.nodes.is_empty() && none.edges.is_empty() && none.truncated.is_none());
     }
 
+    /// The lenses report the tests the filter hides: a community or concept cluster carries its
+    /// attached test count (`tests`), and the overview says how many attached tests it hides
+    /// (`tests_hidden`): all of them under `exclude`, none once `include` or `only` draws them.
+    /// Each row: the lens, whether the tests are drawn, the overview's hidden count and its
+    /// clusters' test counts.
+    #[test]
+    fn lenses_report_the_hidden_test_count() {
+        use rigger_domain::contextgraph::REL_TESTS;
+
+        let node = |id: &str, kind: &str, tests: Option<&str>| Node {
+            id: id.to_string(),
+            kind: kind.to_string(),
+            attrs: tests
+                .map(|n| ("tests".to_string(), n.to_string()))
+                .into_iter()
+                .chain([("name".to_string(), id.to_string())])
+                .collect(),
+        };
+        let edge = |from: &str, to: &str, rel: &str| Edge {
+            from: from.to_string(),
+            to: to.to_string(),
+            rel: rel.to_string(),
+            valid_from: 0,
+            valid_to: None,
+            source: 0,
+            tier: TIER_INFERRED.to_string(),
+        };
+        let product = |drawn: bool| {
+            let mut graph = Graph {
+                nodes: vec![
+                    node("src/a.rs::foo", KIND_CODE_ENTITY, None),
+                    node("src/b.rs::bar", KIND_CODE_ENTITY, None),
+                    node("community/1/0", KIND_COMMUNITY, Some("2")),
+                    node("community/1/1", KIND_COMMUNITY, None),
+                ],
+                edges: vec![
+                    edge("src/a.rs::foo", "community/1/0", REL_IN_COMMUNITY),
+                    edge("src/b.rs::bar", "community/1/1", REL_IN_COMMUNITY),
+                ],
+            };
+            if drawn {
+                for t in ["tests/t.rs::t1", "tests/t.rs::t2"] {
+                    graph.nodes.push(node(t, KIND_CODE_ENTITY, None));
+                    graph.edges.push(edge(t, "community/1/0", REL_TESTS));
+                }
+            }
+            graph
+        };
+        let code = Lens::Code {
+            resolution: DEFAULT_COMMUNITY_RESOLUTION.to_string(),
+        };
+        // Three tests are hidden when none is drawn: the two attached to community 0 and one that
+        // proves nothing grouped. The opened graph counts them; the drawn graph holds none.
+        let cases = [
+            ("exclude", false, "code", 3, vec![("community/1/0", 2)]),
+            ("include", true, "code", 0, vec![("community/1/0", 2)]),
+            ("exclude, files lens", false, "files", 3, vec![]),
+            ("include, files lens", true, "files", 0, vec![]),
+        ];
+        for (name, drawn, lens_name, hidden, counted) in cases {
+            let lens = match lens_name {
+                "code" => &code,
+                _ => &Lens::Files,
+            };
+            let graph = product(drawn);
+            let response = route_hiding(
+                "GET",
+                &format!("/api/graph?lens={lens_name}"),
+                &[],
+                &graph,
+                hidden,
+                &[],
+                &HashMap::new(),
+                3,
+                "run",
+                "base",
+                &[],
+            );
+            let json: serde_json::Value = serde_json::from_slice(&response.body).unwrap();
+            let mut overview = clustered_overview(&graph, lens);
+            overview.tests_hidden = hidden;
+            let counts: Vec<(&str, usize)> = overview
+                .clusters
+                .iter()
+                .filter(|c| c.tests > 0)
+                .map(|c| (c.key.as_str(), c.tests))
+                .collect();
+            assert_eq!(overview.tests_hidden, hidden, "{name}: hidden count");
+            assert_eq!(counts, counted, "{name}: cluster test counts");
+            assert_eq!(
+                json.get("tests_hidden").and_then(|v| v.as_u64()),
+                (hidden > 0).then_some(hidden as u64),
+                "{name}: the hidden count rides the body only when something is hidden"
+            );
+        }
+    }
+
     /// Spec 53 c4 - the CODE LENS VIEW: with `lens=code` the SAME overview/drill folds bucket every
     /// CODE-ENTITY node carrying a live `IN_COMMUNITY` membership by its coupling COMMUNITY (a
     /// subsystem grouped ACROSS directory lines), sizing the community super-node by member count,
@@ -6269,12 +6444,14 @@ mod tests {
                     count: 2,
                     kind: KIND_CODE_ENTITY.to_string(),
                     label: Some("foo".to_string()),
+                    tests: 0,
                 },
                 Cluster {
                     key: "community/1/1".to_string(),
                     count: 2,
                     kind: KIND_CODE_ENTITY.to_string(),
                     label: Some("baz".to_string()),
+                    tests: 0,
                 },
                 // NO cluster for the membership-less decision / design-doc nodes (spec 63 c1): the
                 // code lens admits ONLY code-entity subjects, so they carry no bucket of any kind.
@@ -6483,6 +6660,7 @@ mod tests {
                     count: 3,
                     kind: KIND_CODE_ENTITY.to_string(),
                     label: Some("the graph".to_string()),
+                    tests: 0,
                 },
                 // concept/1/1 (the smaller): the SHARED build folds under its primary c0, so c1 counts
                 // ONLY its sole non-shared member docs/review.md.
@@ -6491,6 +6669,7 @@ mod tests {
                     count: 1,
                     kind: KIND_DESIGN_DOC.to_string(),
                     label: Some("the review".to_string()),
+                    tests: 0,
                 },
                 // NO cluster for the membership-less code entity / decision (spec 63 c4): the concepts
                 // lens admits ONLY concept members, so they carry no bucket of any kind.
@@ -8028,11 +8207,14 @@ mod tests {
 
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let addr = listener.local_addr().unwrap();
-        let graph_provider = |_instance: Option<&str>| Graph::default();
+        let graph_provider = |_instance: Option<&str>, _tests: Tests| Graph::default();
         let calls_provider =
-            |_: Option<&str>, _: &[String], _: crate::contextgraph::Direction, _: i64, _: &str| {
-                crate::contextgraph::CallGraph::default()
-            };
+            |_: Option<&str>,
+             _: &[String],
+             _: crate::contextgraph::Direction,
+             _: i64,
+             _: &str,
+             _: Tests| { crate::contextgraph::CallGraph::default() };
         let instances_provider = Vec::new;
         let provider = Arc::new(provider);
         let server = std::thread::spawn(move || {
@@ -8070,6 +8252,137 @@ mod tests {
         assert_eq!(v["metrics"]["review_approve"], 1);
     }
 
+    /// The explorer offers a "Show tests" toggle in its static header, cycling the filter
+    /// exclude -> include -> only, and every `/api/graph` fetch carries the choice through the one
+    /// URL builder, `apiUrl`, so no view reads past it.
+    #[test]
+    fn explorer_offers_a_show_tests_toggle() {
+        let page = live_page();
+        for needle in [
+            r#"id="kgteststoggle""#,
+            "Show tests",
+            r#"let kgTests = "exclude";"#,
+            r#""tests=" + encodeURIComponent(kgTests)"#,
+            "function setTests(",
+            "tests_hidden",
+        ] {
+            assert!(page.contains(needle), "the page lacks {needle}");
+        }
+        assert!(
+            !page.contains(r#"fetch("/api/graph"#),
+            "every graph fetch goes through apiUrl"
+        );
+        let fetches = page.matches(r#"fetch(apiUrl("/api/graph"#).count();
+        assert!(fetches >= 8, "{fetches} graph fetches ride apiUrl");
+    }
+
+    /// `/api/graph` takes `tests=exclude|include|only` (`exclude` when absent) and hands it to the
+    /// graph provider, to the directed-call provider too; a value that is none of the three is
+    /// refused 400 before either provider is consulted. Each row: the request's target, the status
+    /// it answers, and the filters the whole-graph and directed-call providers were opened under.
+    #[test]
+    fn api_graph_takes_the_tests_parameter() {
+        use std::io::{Read, Write};
+        use std::net::{TcpListener, TcpStream};
+        use std::sync::Mutex;
+
+        let ask = |target: &str| -> (String, String, Vec<Tests>, Vec<Tests>) {
+            let graph_seen = Arc::new(Mutex::new(Vec::new()));
+            let calls_seen = Arc::new(Mutex::new(Vec::new()));
+            let (g, c) = (Arc::clone(&graph_seen), Arc::clone(&calls_seen));
+            let provider = |_: Option<&str>| -> Result<DashInputs, String> {
+                Ok((Vec::new(), Graph::default(), Vec::new(), HashMap::new()))
+            };
+            let graph_provider = move |_: Option<&str>, tests: Tests| {
+                g.lock().unwrap().push(tests);
+                GraphRead {
+                    graph: Graph::default(),
+                    tests_hidden: 4,
+                }
+            };
+            let calls_provider = move |_: Option<&str>,
+                                       _: &[String],
+                                       _: crate::contextgraph::Direction,
+                                       _: i64,
+                                       _: &str,
+                                       tests: Tests| {
+                c.lock().unwrap().push(tests);
+                crate::contextgraph::CallGraph::default()
+            };
+            let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            let addr = listener.local_addr().unwrap();
+            let provider = Arc::new(provider);
+            let server = std::thread::spawn(move || {
+                let (conn, _) = listener.accept().unwrap();
+                handle_conn(
+                    conn,
+                    &provider,
+                    &graph_provider,
+                    &calls_provider,
+                    &Vec::new,
+                    3,
+                    "rigger-run",
+                    "origin/main",
+                )
+                .unwrap();
+            });
+            let mut client = TcpStream::connect(addr).unwrap();
+            client
+                .write_all(format!("GET {target} HTTP/1.1\r\nHost: localhost\r\n\r\n").as_bytes())
+                .unwrap();
+            let mut resp = String::new();
+            client.read_to_string(&mut resp).unwrap();
+            server.join().unwrap();
+            let status = resp.lines().next().unwrap().to_string();
+            let body = resp
+                .split("\r\n\r\n")
+                .nth(1)
+                .unwrap_or_default()
+                .to_string();
+            let graph_seen = graph_seen.lock().unwrap().clone();
+            let calls_seen = calls_seen.lock().unwrap().clone();
+            (status, body, graph_seen, calls_seen)
+        };
+        let ok = "HTTP/1.1 200 OK";
+        let refused = "HTTP/1.1 400 Bad Request";
+        let cases = [
+            ("/api/graph", ok, vec![Tests::Exclude], vec![]),
+            ("/api/graph?tests=exclude", ok, vec![Tests::Exclude], vec![]),
+            ("/api/graph?tests=include", ok, vec![Tests::Include], vec![]),
+            ("/api/graph?tests=only", ok, vec![Tests::Only], vec![]),
+            (
+                "/api/graph?lens=code&tests=include",
+                ok,
+                vec![Tests::Include],
+                vec![],
+            ),
+            (
+                "/api/graph?view=calls&seed=x&dir=down&tests=only",
+                ok,
+                vec![],
+                vec![Tests::Only],
+            ),
+            ("/api/graph?tests=some", refused, vec![], vec![]),
+            (
+                "/api/graph?view=calls&seed=x&tests=",
+                refused,
+                vec![],
+                vec![],
+            ),
+        ];
+        for (target, status, graph, calls) in cases {
+            let (got, _, seen_graph, seen_calls) = ask(target);
+            assert_eq!(
+                (got, seen_graph, seen_calls),
+                (status.to_string(), graph, calls),
+                "{target}"
+            );
+        }
+        // The count the provider read rides the overview body, from the same read as the graph.
+        let (_, body, _, _) = ask("/api/graph?tests=exclude");
+        assert!(body.contains(r#""tests_hidden":4"#), "{body}");
+    }
+
     /// The read-only guard also holds over a real socket: a POST is refused 405 and the
     /// provider is never even consulted (it would panic if called), proving no request can
     /// reach a mutation path.
@@ -8081,14 +8394,15 @@ mod tests {
         let provider = |_instance: Option<&str>| -> Result<DashInputs, String> {
             panic!("a non-GET request must never read the store");
         };
-        let graph_provider = |_instance: Option<&str>| -> Graph {
+        let graph_provider = |_instance: Option<&str>, _tests: Tests| -> Graph {
             panic!("a non-GET request must never open the graph projection");
         };
         let calls_provider = |_: Option<&str>,
                               _: &[String],
                               _: crate::contextgraph::Direction,
                               _: i64,
-                              _: &str|
+                              _: &str,
+                              _: Tests|
          -> crate::contextgraph::CallGraph {
             panic!("a non-GET request must never open the calls projection");
         };
@@ -8153,7 +8467,7 @@ mod tests {
         // count proves it was opened ONLY on that request.
         let hits = Arc::new(AtomicUsize::new(0));
         let hits_for_provider = Arc::clone(&hits);
-        let graph_provider = move |_instance: Option<&str>| -> Graph {
+        let graph_provider = move |_instance: Option<&str>, _tests: Tests| -> Graph {
             hits_for_provider.fetch_add(1, Ordering::SeqCst);
             Graph {
                 nodes: vec![Node {
@@ -8168,9 +8482,12 @@ mod tests {
         // A call view is not exercised here (no request carries `view=calls`), so the calls
         // provider must never be consulted; a plain empty walk keeps the wiring complete.
         let calls_provider =
-            |_: Option<&str>, _: &[String], _: crate::contextgraph::Direction, _: i64, _: &str| {
-                crate::contextgraph::CallGraph::default()
-            };
+            |_: Option<&str>,
+             _: &[String],
+             _: crate::contextgraph::Direction,
+             _: i64,
+             _: &str,
+             _: Tests| { crate::contextgraph::CallGraph::default() };
         let instances_provider = Vec::new;
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let addr = listener.local_addr().unwrap();
@@ -9170,7 +9487,8 @@ mod tests {
                       seed: &[String],
                       dir: Direction,
                       depth: i64,
-                      floor: &str|
+                      floor: &str,
+                      _tests: Tests|
              -> CallGraph {
                 ContextGraph::calls(&view_graph(&p, &view), seed, dir, depth, floor)
                     .unwrap_or_default()
@@ -9229,7 +9547,8 @@ mod tests {
                       _seed: &[String],
                       _dir: Direction,
                       depth: i64,
-                      floor: &str|
+                      floor: &str,
+                      _tests: Tests|
              -> CallGraph {
                 seen.borrow_mut().push((depth, floor.to_string()));
                 CallGraph::default()
@@ -9262,7 +9581,8 @@ mod tests {
                       _seed: &[String],
                       dir: Direction,
                       _depth: i64,
-                      _floor: &str|
+                      _floor: &str,
+                      _tests: Tests|
              -> CallGraph {
                 dirs.borrow_mut().push(dir);
                 CallGraph::default()

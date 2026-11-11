@@ -142,6 +142,18 @@ pub struct Link {
     pub test: bool,
 }
 
+/// One test call that proves a product definition.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProofCall {
+    /// The product definition proved.
+    pub target: String,
+    /// The test entity that calls it: the enclosing definition of the call, or the file's own id
+    /// when the call sits at file level.
+    pub caller: String,
+    /// The call's `file:line`.
+    pub evidence: String,
+}
+
 /// One node a design concept or a workflow node names.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IntentNode {
@@ -218,6 +230,8 @@ pub struct Resolver<'v> {
     test_files: BTreeSet<&'v str>,
     /// The candidates of each leaf asked for, settled once per resolver.
     candidates: RefCell<HashMap<String, Rc<Vec<Candidate<'v>>>>>,
+    /// The test calls that prove a product definition, walked once per resolver.
+    proof_calls: std::cell::OnceCell<Vec<ProofCall>>,
 }
 
 impl<'v> Resolver<'v> {
@@ -267,6 +281,7 @@ impl<'v> Resolver<'v> {
             code_files,
             test_files,
             candidates: RefCell::new(HashMap::new()),
+            proof_calls: std::cell::OnceCell::new(),
         }
     }
 
@@ -521,10 +536,18 @@ impl<'v> Resolver<'v> {
         links
     }
 
-    /// Every product definition a test call proves, with its evidence `file:line`s in file then
-    /// evidence order. The same whatever tests a reader shows.
-    pub fn proofs(&self) -> BTreeMap<String, Vec<String>> {
-        let mut rows: Vec<(String, &str, String)> = Vec::new();
+    /// Every test call that proves a product definition, ordered by the definition proved, then
+    /// the calling file, then the evidence `file:line` as text. The same whatever tests a reader
+    /// shows.
+    ///
+    /// The walk of every test mention runs once per resolver: proofs and test attachment both read
+    /// this result.
+    pub fn proof_calls(&self) -> &[ProofCall] {
+        self.proof_calls.get_or_init(|| self.walk_proof_calls())
+    }
+
+    fn walk_proof_calls(&self) -> Vec<ProofCall> {
+        let mut rows: Vec<(String, &str, String, String)> = Vec::new();
         for &path in &self.code_files {
             let Some(facts) = self.view.file(path) else {
                 continue;
@@ -534,14 +557,33 @@ impl<'v> Resolver<'v> {
                     continue;
                 }
                 if let Some(target) = self.proof(path, &m.leaf) {
-                    rows.push((target, path, format!("{path}:{}", m.line)));
+                    let caller = m
+                        .enclosing
+                        .and_then(|i| facts.defs.get(i as usize))
+                        .map_or_else(|| path.to_string(), |d| entity_id(path, &d.local));
+                    rows.push((target, path, format!("{path}:{}", m.line), caller));
                 }
             }
         }
         rows.sort();
+        rows.into_iter()
+            .map(|(target, _, evidence, caller)| ProofCall {
+                target,
+                caller,
+                evidence,
+            })
+            .collect()
+    }
+
+    /// Every product definition a test call proves, with its evidence `file:line`s in file then
+    /// evidence order. The same whatever tests a reader shows.
+    pub fn proofs(&self) -> BTreeMap<String, Vec<String>> {
         let mut proofs: BTreeMap<String, Vec<String>> = BTreeMap::new();
-        for (target, _, evidence) in rows {
-            proofs.entry(target).or_default().push(evidence);
+        for call in self.proof_calls() {
+            proofs
+                .entry(call.target.clone())
+                .or_default()
+                .push(call.evidence.clone());
         }
         proofs
     }

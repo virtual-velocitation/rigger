@@ -121,9 +121,15 @@ where
 {
     let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind an ephemeral loopback port");
     let addr = listener.local_addr().expect("learn the bound port");
-    let graph_provider = |_instance: Option<&str>| Graph::default();
+    let graph_provider =
+        |_instance: Option<&str>, _tests: rigger::code_view::Tests| Graph::default();
     let calls_provider =
-        |_: Option<&str>, _: &[String], _: Direction, _: i64, _: &str| CallGraph::default();
+        |_: Option<&str>,
+         _: &[String],
+         _: Direction,
+         _: i64,
+         _: &str,
+         _tests: rigger::code_view::Tests| CallGraph::default();
     let instances_provider = Vec::<InstanceView>::new;
     std::thread::spawn(move || {
         let _ = dash::serve_on(

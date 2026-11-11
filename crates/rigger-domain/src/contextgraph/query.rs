@@ -33,6 +33,7 @@ use crate::contextgraph::{
     REL_IN_COMMUNITY, REL_REALIZES,
 };
 use crate::eventstore::Position;
+use crate::test_view::TESTS_ATTR;
 
 /// The default hop bound for a seeded [`neighborhood`] walk (spec 30 c5) - the same breadth an
 /// agent's own blast-radius grounding walk uses (`subgraph` calls it, and `rigger graph --around`
@@ -611,6 +612,7 @@ pub fn clustered_overview(graph: &Graph, lens: &Lens) -> ClusterOverview {
             edges: Vec::new(),
             total: graph.nodes.len(),
             empty_state: buckets.derived_texts().map(|t| t.underived.to_string()),
+            tests_hidden: 0,
         };
     }
 
@@ -619,12 +621,13 @@ pub fn clustered_overview(graph: &Graph, lens: &Lens) -> ClusterOverview {
     // identical to it under Files / Concepts), and cross-bucket edges weight the super-edges. `total`
     // reports the whole node count.
     let bucket_label = bucket_label_index(graph, &buckets);
-    let (clusters, edges) = fold_buckets(
+    let (mut clusters, edges) = fold_buckets(
         graph.nodes.iter(),
         &graph.edges,
         |n| whole_graph_lens_key(&buckets, n),
         &bucket_label,
     );
+    count_tests(&mut clusters, graph, &buckets);
     // Spec 63 c1 round 4: a POST-FOLD re-check (mirrors `dash.rs`'s `reproject_derived`'s own
     // `has_derived_bucket` fix pattern at that sibling call site). `buckets.underived()` above only
     // asks whether ANY membership exists anywhere in the graph - it says nothing about whether a
@@ -657,6 +660,7 @@ pub fn clustered_overview(graph: &Graph, lens: &Lens) -> ClusterOverview {
         edges,
         total: graph.nodes.len(),
         empty_state,
+        tests_hidden: 0,
     }
 }
 
@@ -736,6 +740,24 @@ pub fn bucket_label_index<'g>(
     }
 }
 
+/// Sets each of `clusters`' `tests` to the attached test count its bucket super-node carries
+/// (its [`TESTS_ATTR`] attr): a community under [`Lens::Code`], a concept under [`Lens::Concepts`].
+/// Nothing under [`Lens::Files`], which has no super-node.
+pub fn count_tests(clusters: &mut [Cluster], graph: &Graph, buckets: &Buckets) {
+    let Some(super_kind) = buckets.derived_texts().map(|t| t.label_kind) else {
+        return;
+    };
+    let carried: BTreeMap<&str, usize> = graph
+        .nodes
+        .iter()
+        .filter(|n| n.kind == super_kind)
+        .filter_map(|n| Some((n.id.as_str(), n.attrs.get(TESTS_ATTR)?.parse().ok()?)))
+        .collect();
+    for c in clusters {
+        c.tests = carried.get(c.key.as_str()).copied().unwrap_or(0);
+    }
+}
+
 /// The SINGLE bucket-fold authority the whole-graph overview ([`clustered_overview`]) and `dash.rs`'s
 /// subject re-projection (`reproject`) both consume - implemented ONCE over the shared abstraction,
 /// never a second parallel fold. Fold each node `key_of` yields a bucket key for into a [`Cluster`]
@@ -790,6 +812,7 @@ pub fn fold_buckets<'g>(
                 count,
                 kind: dominant.to_string(),
                 label,
+                tests: 0,
             }
         })
         .collect();
@@ -1721,6 +1744,16 @@ pub struct Cluster {
     /// module / kind - so the default files overview stays byte-identical.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
+    /// The tests attached to this bucket (the code store's test views): how many test entities
+    /// prove the product it holds, whatever tests the view shows. Zero (skipped in JSON) for a
+    /// bucket with none and under [`Lens::Files`].
+    #[serde(skip_serializing_if = "is_zero")]
+    pub tests: usize,
+}
+
+/// Whether `n` is zero: the serde skip for a count that is absent when none.
+fn is_zero(n: &usize) -> bool {
+    *n == 0
 }
 
 /// A weighted, symmetric edge between two DIFFERENT clusters in the overview (spec 42 c2): its
@@ -1760,6 +1793,11 @@ pub struct ClusterOverview {
     /// derived code grain, so the default files overview stays byte-identical.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub empty_state: Option<String>,
+    /// How many test entities the read hid, attached to a cluster or not: the caller sets it from
+    /// the opened graph's `hidden_tests()`, since the drawn graph holds none of them. Skipped in
+    /// JSON when none is hidden.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub tests_hidden: usize,
 }
 
 // ---------------------------------------------------------------------------

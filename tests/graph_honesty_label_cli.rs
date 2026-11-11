@@ -106,3 +106,143 @@ fn an_uncomparable_worktree_withholds_every_code_hit() {
         );
     }
 }
+
+/// GIVEN a built project whose product function `alpha` has a same-named test beside it, WHEN
+/// `rigger graph --lookup alpha` is read under each `--tests` setting, THEN `exclude` (the
+/// default) answers the product hit and counts the test hit apart, `include` answers both and
+/// marks the test, `only` answers the test alone, and a value that is none of the three is
+/// refused naming the three.
+#[test]
+fn graph_takes_a_tests_option() {
+    let dir = temp_project();
+    let root = dir.path();
+    write_text(root, "src/lib.rs", "pub fn alpha() {}\n");
+    write_text(
+        root,
+        "tests/t.rs",
+        "#[test]\nfn alpha() { crate_alpha(); }\n",
+    );
+    git_commit_all(root, "source");
+    run_rigger_ok(root, &["graph", "build"]);
+    let product = "src/lib.rs:1 src/lib.rs::alpha (function)";
+    let test = "tests/t.rs:2 tests/t.rs::alpha (function) [test]";
+    let not_shown = "1 test hit not shown";
+    // (the arguments, what the graph half holds, what it does not)
+    let cases: [(&[&str], &[&str], &[&str]); 4] = [
+        (
+            &["graph", "--lookup", "alpha"],
+            &[product, not_shown],
+            &[test],
+        ),
+        (
+            &["graph", "--lookup", "alpha", "--tests", "include"],
+            &[product, test],
+            &[not_shown],
+        ),
+        (
+            &["graph", "--lookup", "alpha", "--tests", "only"],
+            &[test],
+            &[product, not_shown],
+        ),
+        (
+            &["graph", "--lookup", "alpha", "--tests", "exclude"],
+            &[product, not_shown],
+            &[test],
+        ),
+    ];
+    for (args, holds, lacks) in cases {
+        let (out, err, ok) = run_rigger(root, args);
+        assert!(ok, "{args:?} answers; stderr:\n{err}");
+        for line in holds {
+            assert!(out.contains(line), "{args:?} holds {line:?}:\n{out}");
+        }
+        for line in lacks {
+            assert!(!out.contains(line), "{args:?} lacks {line:?}:\n{out}");
+        }
+    }
+    let (_, err, ok) = run_rigger(root, &["graph", "--lookup", "alpha", "--tests", "some"]);
+    assert!(!ok);
+    assert!(
+        err.contains("--tests: `tests` is one of exclude, include or only, not \"some\""),
+        "{err}"
+    );
+}
+
+/// GIVEN a built project whose one community has a test proving it, WHEN `rigger graph
+/// communities` reads it under each `--tests` setting, THEN the community shows its attached test
+/// count; `include` also lists the test beneath it, and `only` reports the tests alone.
+#[test]
+fn graph_communities_report_their_attached_tests() {
+    let dir = temp_project();
+    let root = dir.path();
+    write_text(
+        root,
+        "src/lib.rs",
+        "pub fn alpha() { beta() }\npub fn beta() {}\n",
+    );
+    write_text(
+        root,
+        "tests/t.rs",
+        "#[test]\nfn proves_alpha() { alpha(); }\n",
+    );
+    git_commit_all(root, "source");
+    run_rigger_ok(root, &["graph", "build"]);
+    let summary = "graph communities: 1 community over 3 node(s) at resolution 1\n";
+    let community = "community/1/0\t3\tbeta\t1 test\n";
+    let listed = "  test tests/t.rs::proves_alpha\n";
+    // (the extra arguments, the whole report)
+    let cases: [(&[&str], String); 3] = [
+        (&[], format!("{summary}{community}")),
+        (
+            &["--tests", "include"],
+            format!("{summary}{community}{listed}"),
+        ),
+        (
+            &["--tests", "only"],
+            format!("{summary}{community}{listed}"),
+        ),
+    ];
+    for (extra, report) in cases {
+        let mut args = vec!["graph", "communities"];
+        args.extend(extra);
+        assert_eq!(run_rigger_ok(root, &args), report, "{extra:?}");
+    }
+}
+
+/// GIVEN a built project whose product function `alpha` has a test calling it, WHEN `rigger
+/// ground alpha` runs under each `--tests` setting, THEN `exclude` (the default) prints the
+/// product row and says on stderr how many test hits it left out, `include` prints the product
+/// row (a test's call joins the entity it calls) and `only` the test rows, neither stating a count, and a bad value is refused.
+#[test]
+fn ground_takes_the_same_tests_option_and_counts_what_it_hides() {
+    let dir = temp_project();
+    let root = dir.path();
+    write_text(root, "src/lib.rs", "pub fn alpha() {}\n");
+    write_text(
+        root,
+        "tests/t.rs",
+        "#[test]\nfn alpha_works() { alpha(); }\n",
+    );
+    git_commit_all(root, "source");
+    run_rigger_ok(root, &["graph", "build"]);
+    let hidden = "test hit not shown";
+    // (the extra arguments, whether the product row and the test row print, whether a count does)
+    let cases: [(&[&str], bool, bool, bool); 4] = [
+        (&[], true, false, true),
+        (&["--tests", "exclude"], true, false, true),
+        // The ranked page dedups by entity, so the test call joins the product row it calls.
+        (&["--tests", "include"], true, false, false),
+        (&["--tests", "only"], false, true, false),
+    ];
+    for (extra, product, test, counted) in cases {
+        let mut args = vec!["ground", "alpha"];
+        args.extend(extra);
+        let (out, err, ok) = run_rigger(root, &args);
+        assert!(ok, "{extra:?} answers; stderr:\n{err}");
+        assert_eq!(out.contains("src/lib.rs:"), product, "{extra:?}:\n{out}");
+        assert_eq!(out.contains("tests/t.rs:"), test, "{extra:?}:\n{out}");
+        assert_eq!(err.contains(hidden), counted, "{extra:?}:\n{err}");
+    }
+    let (_, err, ok) = run_rigger(root, &["ground", "alpha", "--tests", "some"]);
+    assert!(!ok && err.contains("not \"some\""), "{err}");
+}

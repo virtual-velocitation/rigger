@@ -57,6 +57,7 @@ fn kind_bucket(count: usize) -> Cluster {
         count,
         kind: KIND_CODE_ENTITY.to_string(),
         label: None,
+        tests: 0,
     }
 }
 
@@ -289,6 +290,7 @@ fn a_partially_membered_derived_cell_is_full_under_both_derived_lenses() {
                 count: 1,
                 kind: KIND_CODE_ENTITY.to_string(),
                 label: Some("cx".to_string()),
+                tests: 0,
             },
         ],
         "the mixed cell renders BOTH the derived bucket and the kind-fallback bucket: {code:?}"
@@ -311,7 +313,8 @@ fn a_partially_membered_derived_cell_is_full_under_both_derived_lenses() {
             count: 1,
             kind: KIND_CODE_ENTITY.to_string(),
             label: Some("cc".to_string()),
-        }],
+        tests: 0,
+}],
         "the mixed concepts cell renders ONLY the concept bucket - e2's membership-less realization \
          spawns no kind-fallback cluster of its own, purity being total under the concepts lens: \
          {concepts:?}"
@@ -522,12 +525,14 @@ fn a_multi_concept_member_appears_once_and_is_flagged_shared() {
                 count: 1,
                 kind: KIND_CODE_ENTITY.to_string(),
                 label: Some("cc".to_string()),
+                tests: 0,
             },
             Cluster {
                 key: OTHER_D.to_string(),
                 count: 1,
                 kind: KIND_CODE_ENTITY.to_string(),
                 label: Some("dd".to_string()),
+                tests: 0,
             },
         ],
         "the shared member appears once (in its primary bucket D), never duplicated: {re:?}"

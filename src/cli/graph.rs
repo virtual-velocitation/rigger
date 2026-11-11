@@ -1,4 +1,13 @@
 use super::*;
+use rigger_domain::code_view::{Tests, ViewFilter};
+
+/// The value of a `--tests` option, `raw`: `exclude`, `include` or `only` through the one parser
+/// every reader shares, else the refusal that names the three.
+fn tests_option(verb: &str, raw: Option<&String>) -> Result<Tests, String> {
+    raw.ok_or_else(|| format!("{verb}: --tests expects exclude, include or only"))?
+        .parse()
+        .map_err(|e| format!("{verb}: --tests: {e}"))
+}
 
 pub(crate) fn cmd_graph(args: &[String]) -> Res {
     // `rigger graph build` is a distinct verb (populate) from the default `--around` inspector
@@ -17,9 +26,14 @@ pub(crate) fn cmd_graph(args: &[String]) -> Res {
     let mut show = String::new();
     let mut lookup = Vec::new();
     let mut depth: i64 = 2;
+    let mut tests = Tests::default();
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
+            "--tests" => {
+                i += 1;
+                tests = tests_option("graph", args.get(i))?;
+            }
             "--lookup" => {
                 while args.get(i + 1).is_some_and(|a| !a.starts_with("--")) {
                     i += 1;
@@ -46,10 +60,10 @@ pub(crate) fn cmd_graph(args: &[String]) -> Res {
     // body, beside `--around`'s structural neighborhood. Dispatched before the `--around` guard so
     // a `--show` query needs no `--around`.
     if !show.is_empty() {
-        return cmd_graph_show(&show);
+        return cmd_graph_show(&show, tests);
     }
     if !lookup.is_empty() {
-        return cmd_graph_lookup(&lookup);
+        return cmd_graph_lookup(&lookup, tests);
     }
     if around.is_empty() {
         return Err(
@@ -58,7 +72,7 @@ pub(crate) fn cmd_graph(args: &[String]) -> Res {
     }
     let records = owning_graph_to_read()?;
     let read = ReadGraph::new(&records, caller_tree());
-    let graph = read.open(Default::default())?;
+    let graph = read.open(ViewFilter { tests })?;
     // The queried id (spec 117, UNRESOLVED REFERENCES ARE A READ): the query resolved once through
     // the interface, an alias to its canonical id, else the query as typed. Its one site read
     // answers the queried node's unresolved leaves.
@@ -231,13 +245,13 @@ fn logged_site(id: &str) -> Result<Option<contextgraph::EntitySite>, Box<dyn std
 
 /// `rigger graph --lookup <term>...`: the combined lookup, the same reply `rigger_graph`'s
 /// `lookup` serves, answered from the owning repository's graph and the caller's own tree.
-fn cmd_graph_lookup(terms: &[String]) -> Res {
+fn cmd_graph_lookup(terms: &[String], tests: Tests) -> Res {
     use rigger::lookup::Lookup as _;
     let lookup = rigger::lookup::TreeLookup::new(caller_tree());
     let reply = match owning_graph_to_read() {
         Ok(records) => {
             let read = ReadGraph::new(&records, caller_tree());
-            let graph = contextgraph::open_unowed(&records, &read, Default::default());
+            let graph = contextgraph::open_unowed(&records, &read, ViewFilter { tests });
             lookup.lookup(terms, graph.as_deref().map_err(|e| e.0.clone()))?
         }
         Err(e) => lookup.lookup(
@@ -249,10 +263,10 @@ fn cmd_graph_lookup(terms: &[String]) -> Res {
     Ok(())
 }
 
-fn cmd_graph_show(entity: &str) -> Res {
+fn cmd_graph_show(entity: &str, tests: Tests) -> Res {
     let records = owning_graph_to_read()?;
     let read = ReadGraph::new(&records, caller_tree());
-    let graph = read.open(Default::default())?;
+    let graph = read.open(ViewFilter { tests })?;
     let located = graph.locate(entity)?;
     // The label heads the answer (6.1), counting what the locate withheld.
     println!("{}", graph.stamp_label());
@@ -614,16 +628,17 @@ fn cmd_graph_concepts(args: &[String]) -> Res {
     )
 }
 
-/// One `rigger graph <verb> [--resolution <r>]` report: parse the positive, finite resolution
-/// (defaulting to the stored grain), open the code store as a reader, and print the clusters
-/// `pick` selects - a summary line, then each cluster's id, member count and label.
+/// One `rigger graph <verb> [--resolution <r>] [--tests <t>]` report: parse the positive, finite
+/// resolution (defaulting to the stored grain), open the code store as a reader, and print the
+/// clusters `pick` selects - a summary line, then each cluster's id, member count, label and
+/// attached test count, and under `include` or `only` the tests attached to it.
 fn report_groupings(
     verb: &str,
     args: &[String],
     pick: impl Fn(&rigger_domain::code_view::Groupings) -> &Vec<rigger_domain::code_view::Cluster>,
     counted: impl Fn(usize) -> String,
 ) -> Res {
-    let resolution = grain(verb, args)?;
+    let (resolution, tests) = report_options(verb, args)?;
     let lines = head_view(&cwd(), |view, _, _| {
         let computed;
         let groupings = if resolution == community::DEFAULT_RESOLUTION {
@@ -634,15 +649,30 @@ fn report_groupings(
         };
         let clusters = pick(groupings);
         let members: usize = clusters.iter().map(|c| c.members.len()).sum();
+        let resolver = rigger_domain::resolve::Resolver::new(view);
+        let attached =
+            rigger_domain::test_view::TestAttachment::new(resolver.proof_calls(), clusters);
         let mut lines = vec![format!(
             "graph {verb}: {} over {members} node(s) at resolution {resolution}",
             counted(clusters.len())
         )];
-        lines.extend(
-            clusters
-                .iter()
-                .map(|c| format!("{}\t{}\t{}", c.id, c.members.len(), c.label)),
-        );
+        for c in clusters {
+            let n = attached.count(&c.id);
+            // `only` reports the tests alone, grouped by the cluster they prove.
+            if tests == Tests::Only && n == 0 {
+                continue;
+            }
+            let noun = if n == 1 { "test" } else { "tests" };
+            let tail = if n > 0 {
+                format!("\t{n} {noun}")
+            } else {
+                String::new()
+            };
+            lines.push(format!("{}\t{}\t{}{tail}", c.id, c.members.len(), c.label));
+            if tests != Tests::Exclude {
+                lines.extend(attached.tests_of(&c.id).map(|t| format!("  test {t}")));
+            }
+        }
         Ok(lines)
     })?;
     for line in lines {
@@ -651,10 +681,11 @@ fn report_groupings(
     Ok(())
 }
 
-/// The `--resolution` grain `args` ask `rigger graph <verb>` for: a positive, finite number,
-/// [`community::DEFAULT_RESOLUTION`] when none is given.
-fn grain(verb: &str, args: &[String]) -> Result<f64, Box<dyn std::error::Error>> {
+/// What `args` ask `rigger graph <verb>` for: the `--resolution` grain, a positive, finite number
+/// ([`community::DEFAULT_RESOLUTION`] when none is given), and the `--tests` setting.
+fn report_options(verb: &str, args: &[String]) -> Result<(f64, Tests), Box<dyn std::error::Error>> {
     let mut resolution = community::DEFAULT_RESOLUTION;
+    let mut tests = Tests::default();
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -671,13 +702,17 @@ fn grain(verb: &str, args: &[String]) -> Result<f64, Box<dyn std::error::Error>>
                     .into());
                 }
             }
+            "--tests" => {
+                i += 1;
+                tests = tests_option(&format!("graph {verb}"), args.get(i))?;
+            }
             other => {
                 return Err(format!("graph {verb}: unknown argument {other:?}").into());
             }
         }
         i += 1;
     }
-    Ok(resolution)
+    Ok((resolution, tests))
 }
 
 /// `rigger ground "<query>" [<k>]` - run the project's configured grounder (the
@@ -699,16 +734,27 @@ pub(crate) fn cmd_ground(args: &[String]) -> Res {
     let query = args
         .first()
         .ok_or("ground: expected a query: rigger ground \"<query>\" [<k>]")?;
-    let k: usize = match args.get(1) {
+    // `--tests <exclude|include|only>` may stand anywhere after the query; the rest is `[<k>]`.
+    let mut tests = Tests::default();
+    let mut rest = Vec::new();
+    let mut it = args[1..].iter();
+    while let Some(a) = it.next() {
+        if a == "--tests" {
+            tests = tests_option("ground", it.next())?;
+        } else {
+            rest.push(a);
+        }
+    }
+    let k: usize = match rest.first() {
         Some(s) => s
             .parse()
             .map_err(|_| format!("ground: <k> must be a non-negative integer, got {s:?}"))?,
         None => 8,
     };
-    if args.len() > 2 {
+    if rest.len() > 1 {
         return Err(format!(
             "ground: expected at most a query and k, got {} arguments",
-            args.len()
+            rest.len() + 1
         )
         .into());
     }
@@ -721,8 +767,8 @@ pub(crate) fn cmd_ground(args: &[String]) -> Res {
         .unwrap_or_default();
     let grounder = select_grounder(&name)?;
     // The rows and their honesty label (6.1) come from one read of the code store.
-    let (rows, label) = grounder.ground_ranked_labelled(query, k);
-    match rows {
+    let grounded = grounder.ground_ranked_labelled(query, k, tests);
+    match grounded.rows {
         None => println!("no entity matches strongly for {query:?}"),
         Some(rows) => {
             for r in rows {
@@ -734,8 +780,14 @@ pub(crate) fn cmd_ground(args: &[String]) -> Res {
         }
     }
     // The label travels with every answer; stderr keeps the rows themselves clean.
-    if let Some(label) = label {
+    if let Some(label) = grounded.label {
         eprintln!("{label}");
+    }
+    // The test hits the filter left out, counted apart from the rows above.
+    let hidden = grounded.tests_hidden;
+    if hidden > 0 {
+        let noun = if hidden == 1 { "hit" } else { "hits" };
+        eprintln!("{hidden} test {noun} not shown; --tests include or only shows them");
     }
     Ok(())
 }

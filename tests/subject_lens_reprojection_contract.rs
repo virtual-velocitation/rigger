@@ -51,6 +51,7 @@ fn bucket(key: &str, count: usize, label: Option<&str>) -> Cluster {
         count,
         kind: KIND_CODE_ENTITY.to_string(),
         label: label.map(str::to_string),
+        tests: 0,
     }
 }
 

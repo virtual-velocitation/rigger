@@ -16,7 +16,7 @@ use crate::code_facts::{FileFacts, Half};
 use crate::code_view::{CodeView, Tests, ViewFilter};
 use crate::contextgraph::query::leaf_of;
 use crate::contextgraph::{Edge, Graph, Node, KIND_ARTIFACT, KIND_CODE_ENTITY, KIND_FILE};
-use crate::resolve::{Link, Resolver};
+use crate::resolve::{Entity, Link, Resolver};
 
 /// A view resolved into a graph under one filter.
 pub struct CodeGraph<'v> {
@@ -82,11 +82,7 @@ impl Builder {
         } = self;
         let edges: Vec<_> = edges
             .into_iter()
-            .filter(|(_, (_, test))| match tests {
-                Tests::Exclude => !test,
-                Tests::Include => true,
-                Tests::Only => *test,
-            })
+            .filter(|(_, (_, test))| tests.admits(*test))
             .collect();
         let reached: BTreeSet<&str> = edges
             .iter()
@@ -120,6 +116,16 @@ impl Builder {
             .collect();
         Graph { nodes, edges }
     }
+}
+
+/// The attributes a code entity node carries.
+fn entity_attrs(facts: &FileFacts, e: Entity) -> [(&'static str, String); 4] {
+    [
+        ("kind", e.kind),
+        ("lang", facts.lang.clone()),
+        ("line", e.line.to_string()),
+        ("name", e.name),
+    ]
 }
 
 impl<'v> CodeGraph<'v> {
@@ -165,6 +171,35 @@ impl<'v> CodeGraph<'v> {
         b.into_graph(self.filter.tests)
     }
 
+    /// The test code entities of the view, in id order, whatever the filter: the nodes a filter
+    /// that excludes tests leaves out of [`Self::whole`].
+    pub fn test_entities(&self) -> Vec<Node> {
+        let mut found = Vec::new();
+        for f in self.view.files().filter(|f| f.half == Half::Code) {
+            let Some(facts) = self.view.file(f.path) else {
+                continue;
+            };
+            for e in self
+                .resolver
+                .entities(&facts, true)
+                .into_iter()
+                .filter(|e| e.test)
+            {
+                found.push(Node {
+                    id: e.id.clone(),
+                    kind: KIND_CODE_ENTITY.to_string(),
+                    attrs: entity_attrs(&facts, e)
+                        .into_iter()
+                        .map(|(k, v)| (k.to_string(), v))
+                        .chain([("test".to_string(), "true".to_string())])
+                        .collect(),
+                });
+            }
+        }
+        found.sort_by(|a, b| a.id.cmp(&b.id));
+        found
+    }
+
     /// The file node, entities, placeholders and edges of the code file `facts`.
     fn code(&self, facts: &FileFacts, tests: bool, b: &mut Builder) {
         let file_test = self.resolver.is_test_file(&facts.path);
@@ -185,13 +220,12 @@ impl<'v> CodeGraph<'v> {
             }
         }
         for e in self.resolver.entities(facts, tests) {
-            let attrs = [
-                ("kind", e.kind),
-                ("lang", facts.lang.clone()),
-                ("line", e.line.to_string()),
-                ("name", e.name),
-            ];
-            b.node(&e.id, KIND_CODE_ENTITY, attrs, e.test);
+            b.node(
+                &e.id,
+                KIND_CODE_ENTITY,
+                entity_attrs(facts, e.clone()),
+                e.test,
+            );
         }
         for l in self.resolver.links(facts, tests) {
             if leaf_of(&l.to).is_some() {

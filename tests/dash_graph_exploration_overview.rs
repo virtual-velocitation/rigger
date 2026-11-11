@@ -83,13 +83,15 @@ fn clustered_overview_is_reachable_and_folds_code_entities_by_their_own_file() {
                 count: 1,
                 kind: KIND_CODE_ENTITY.to_string(),
                 label: None,
-            },
+            tests: 0,
+},
             Cluster {
                 key: "src/b.rs".to_string(),
                 count: 1,
                 kind: KIND_CODE_ENTITY.to_string(),
                 label: None,
-            },
+            tests: 0,
+},
         ],
         "each code entity becomes one counted Cluster keyed by its own file; the design-doc and the \
          decision carry no cluster: {overview:?}"
@@ -127,13 +129,15 @@ fn clustered_overview_merges_same_file_entities_and_is_deterministic() {
                 count: 2,
                 kind: KIND_CODE_ENTITY.to_string(),
                 label: None,
-            },
+            tests: 0,
+},
             Cluster {
                 key: "lib/b.rs".to_string(),
                 count: 1,
                 kind: KIND_CODE_ENTITY.to_string(),
                 label: None,
-            },
+            tests: 0,
+},
         ],
         "same-file entities merge (count 2); a different file never merges, even in the same directory"
     );
@@ -298,7 +302,8 @@ fn a_directory_named_like_a_kind_no_longer_collides_with_anything() {
             count: 1,
             kind: KIND_CODE_ENTITY.to_string(),
             label: None,
-        }],
+        tests: 0,
+}],
         "the code entity folds to its own file; the two decisions carry no cluster - nothing collides: {overview:?}"
     );
     assert_eq!(overview.total, 3, "every node is still counted in total");

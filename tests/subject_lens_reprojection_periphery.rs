@@ -129,13 +129,15 @@ fn concept_recodegrains_its_members_by_coupling_community() {
                 count: 3,
                 kind: KIND_CODE_ENTITY.to_string(),
                 label: Some("foo".to_string()),
-            },
+            tests: 0,
+},
             Cluster {
                 key: C1.to_string(),
                 count: 2,
                 kind: KIND_CODE_ENTITY.to_string(),
                 label: Some("baz".to_string()),
-            },
+            tests: 0,
+},
         ],
         "the concept's members re-grain into their two communities, sized by member count and labelled: {re:?}"
     );
@@ -280,5 +282,6 @@ fn file_bucket(file: &str) -> Cluster {
         count: 1,
         kind: KIND_CODE_ENTITY.to_string(),
         label: None,
+        tests: 0,
     }
 }

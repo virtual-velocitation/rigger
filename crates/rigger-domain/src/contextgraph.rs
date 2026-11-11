@@ -250,6 +250,11 @@ pub const REL_DOC_REFERENCES: &str = "references";
 /// `lens=code` view buckets each member by its one live community. Folded at [`TIER_INFERRED`] - a
 /// derived grouping, one confidence step below the explicit structural edges it is detected over.
 pub const REL_IN_COMMUNITY: &str = "IN_COMMUNITY";
+/// A test entity TESTS the community or concept whose product it proves (the code store's test
+/// views): the edge from the test entity to the cluster holding the plurality of the product
+/// definitions it proves, drawn as that cluster's "tests" group. It is never membership: a
+/// cluster's members stay product code under every filter. Present only when tests are shown.
+pub const REL_TESTS: &str = "TESTS";
 /// A node REALIZES a derived concept (spec 54): the membership edge from a member node (a design-doc,
 /// handbook-rule, spec, rationale, or the code entity / file the intent layer attaches to) to its
 /// [`KIND_CONCEPT`] super-node, folded from a `ConceptRealized` event. Direction: the concept is
@@ -973,6 +978,13 @@ pub trait ContextGraph: Send + Sync {
 
     /// Every node and edge of the graph, nodes in id order.
     fn whole(&self) -> Result<Graph, Error>;
+
+    /// The test code entities the graph's `tests` filter hides, ordered by id and less any the
+    /// caller's worktree puts in doubt: what a reader counts as test hits it does not show. None
+    /// when tests are shown, and by default (a graph that holds no code, a test double).
+    fn hidden_tests(&self) -> Result<Vec<Node>, Error> {
+        Ok(Vec::new())
+    }
 
     /// The honesty label (spec 6.1): the tree the answers describe and how the caller's worktree
     /// differs from it, with the count of nodes withheld so far for differing.

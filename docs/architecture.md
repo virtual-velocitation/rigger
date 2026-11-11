@@ -266,7 +266,7 @@ stages:
     strategy: fan-out                       # one agent per ready unit, in worktrees
     partition: by-blast-radius              # overlapping radii never run at once
     gates: [build, test, lint, custom]      # red -> green enforced; the full final set
-    on_pass: merge                          # land + reindex + record, per unit
+    on_pass: merge                          # land + advance the code store + record, per unit
 ```
 
 **The YAML -> runtime mapping** (loader, section 4.1): each `stage` becomes a node in the
@@ -364,7 +364,7 @@ flowchart LR
     IMPL["implement<br/>(red -> green)"] --> GATES["the unit's gates"]
     GATES -->|green| REV["review panel of THIS unit<br/>(its steps in order)"]
     GATES -->|red| REMED
-    REV -->|approve| INT["integrate<br/>commit . land . emit events . reindex"]
+    REV -->|approve| INT["integrate<br/>commit . land . emit events . advance code store"]
     REV -->|reject| REMED["remediate<br/>(resume each session with the feedback;<br/>escalate after N)"]
     REMED --> IMPL
   end
@@ -634,10 +634,13 @@ affected stream only:
 
 ### 5.2 The knowledge graph: a bi-temporal projection of the target project
 
-The graph is a **read model** the projector maintains by folding the global log. It is,
-first, a **knowledge graph** - it holds a project's *knowledge*: its **code** structure,
-its **design intent**, and the **decisions** that shaped it. Event sourcing is the
-persistence mechanism underneath, not the framing.
+The graph is a **knowledge graph** - it holds a project's *knowledge*: its **code**
+structure, its **design intent**, and the **decisions** that shaped it. It has two halves,
+composed per read. The **record half** is `graph.db`, a read model the projector maintains by
+folding the global log; it holds only records (decision, finding, lesson and artifact nodes,
+`ABOUT` edges, `GOVERNS` edges from decisions, `SUPERSEDES`). The **code half** is the code
+store (section 5.5). Event sourcing is the persistence mechanism under the record half, not
+the framing.
 
 ```rust
 // crates/rigger-domain/src/contextgraph.rs
@@ -704,7 +707,9 @@ always groups the same way:
 `rigger graph communities` and `rigger graph concepts` are read-only reports over the current
 snapshot; nothing else writes a grouping (`crates/rigger-domain/src/groupings.rs` is the one
 place it is computed). A grain other than the default is computed on demand at read and not
-stored. The concept-graph addendum linked above covers the concept derivation in depth.
+stored. A test attaches to the community or concept whose products it proves most (ties to the
+earliest), as a `tests` edge and a count on that cluster; tests are never members. The
+concept-graph addendum linked above covers the concept derivation in depth.
 
 ### 5.4 The inspector: three lenses, subject re-projection, call queries, the "why"
 
@@ -793,6 +798,9 @@ top of this document gives the full design; this is its shape.
   every code node in a file that differs (and every code node when the worktree cannot be
   compared), and labels every answer with the commit it describes and what it withheld. The CLI
   prints the label, the MCP tools return it, the dash shows it.
+- **Test views.** Test code is held in the snapshot and filtered by one `tests` option on every
+  reader (CLI `--tests`, MCP `tests`, dash `tests=`): `exclude` (the default), `include`, `only`.
+  A read that hides tests reports how many it hid.
 - **The project walk** (`crates/rigger-grounder/src/ingest.rs`) still lowers the tree into
   per-file batches keyed `<prefix>/<file>@<hash>#<i>` (`gc` code, `gd` design, `gw` workflow) for
   the offline passes that read them; the log records none of it.
@@ -842,7 +850,7 @@ Grounding seeds each agent with exactly the code and memory it needs, on two axe
 
 - **Structural (the default).** The pluggable `Grounder` trait (`ground(query, k) -> Vec<Ref>`)
   is served by the `symbols` grounder (behind the `symbols` feature): a deterministic,
-  tree-sitter-derived symbol index answering "where is this defined, what references it, what
+  tree-sitter-derived code view (the code store, section 5.5) answering "where is this defined, what references it, what
   does changing this file reach". It is the UNSET default - an unset `defaults.grounder`
   resolves to it and it ships in the default build (the `symbols` cargo feature is on by
   default) - and it serves both a precise/ranked contract for grounding and a safe contract
@@ -1022,7 +1030,7 @@ structurally.
 | A leftover / stale worktree dir blocks a fresh one | Self-healing worktree (section 4.4): reconcile from the deterministic branch, never wedge the next window |
 | Stale base (a peer landed while I ran) | Integrate does `pull --rebase` + re-runs gates; the graph's `TOUCHES` edges flag the overlap pre-merge |
 | Event store append conflict (optimistic concurrency) | `ExpectedRevision` mismatch -> `Error::Conflict { stream, expected, actual }`; re-read, re-project, retry the append |
-| Projector falls behind / crashes | The graph is a *pure projection*: rebuild it from the log from position 0; idempotent |
+| Projector falls behind / crashes | The graph is a *pure projection*: its record half is rebuilt by refolding the log from position 0 (idempotent), and the code store by one advance from HEAD |
 | Superseded decision still in the graph | Bi-temporal `valid_to` set on supersession; `subgraph` filters live edges by default |
 | Store selected but no connection string | The store resolver errors and names all three credential channels (`--conn`, `KURRENTDB_CONN`, `.rigger/store.conn`) |
 | An unreadable secret file or config | Surfaces LOUDLY; never a silent fall-through to the sqlite default that would fracture the run's store |

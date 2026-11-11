@@ -33,9 +33,11 @@ fn held_label() -> Label {
 
 /// `terms` answered under [`held_label`].
 fn answered(terms: Vec<TermGraph>) -> Answered {
+    let test_hits = vec![0; terms.len()];
     Answered {
         label: held_label(),
         terms,
+        test_hits,
     }
 }
 
@@ -46,6 +48,8 @@ struct Held {
     nodes: Vec<Node>,
     calls: Vec<(String, String)>,
     located: BTreeMap<String, Vec<String>>,
+    /// The test entities its filter hides.
+    hidden_tests: Vec<Node>,
 }
 
 impl ContextGraph for Held {
@@ -119,6 +123,9 @@ impl ContextGraph for Held {
             nodes: self.nodes.clone(),
             edges: Vec::new(),
         })
+    }
+    fn hidden_tests(&self) -> Result<Vec<Node>, Error> {
+        Ok(self.hidden_tests.clone())
     }
     fn stamp_label(&self) -> Label {
         held_label()
@@ -688,6 +695,7 @@ fn worst_case(n: usize) -> (Vec<String>, String) {
         id: format!("src/{long}/f{i}.rs::{long}"),
         kind: "function".to_string(),
         file: Some((format!("src/{long}/f{i}.rs"), 12)),
+        test: false,
     };
     let graph = refs
         .iter()
@@ -768,6 +776,7 @@ fn sites(prefix: &str, n: usize) -> Vec<Site> {
             id: format!("{prefix}{i}"),
             kind: "fn".to_string(),
             file: None,
+            test: false,
         })
         .collect()
 }
@@ -801,6 +810,7 @@ fn a_reply_within_every_bound_is_laid_out_whole() {
                     id: "a.rs::hit".to_string(),
                     kind: "function".to_string(),
                     file: Some(("a.rs".to_string(), 3)),
+                    test: false,
                 },
                 callers: sites("c", 12),
                 callees: vec![
@@ -808,11 +818,13 @@ fn a_reply_within_every_bound_is_laid_out_whole() {
                         id: "b.rs::x".to_string(),
                         kind: "fn".to_string(),
                         file: Some(("b.rs".to_string(), 0)),
+                        test: false,
                     },
                     Site {
                         id: "b.rs::y".to_string(),
                         kind: "fn".to_string(),
                         file: Some(("b.rs".to_string(), 0)),
+                        test: false,
                     },
                 ],
                 referenced_in: (0..12).map(|i| format!("r{i}.rs")).collect(),
@@ -922,6 +934,7 @@ fn graph_blocks_kept(lengths: &[usize], shown: usize, cut: Option<&str>) {
                 id: format!("{i}{}", "e".repeat(len - 8)),
                 kind: "f".to_string(),
                 file: None,
+                test: false,
             },
             callers: vec![],
             callees: vec![],
@@ -1056,6 +1069,7 @@ fn a_located_term_is_answered_with_its_direct_callers() {
             nodes: vec![entity("a.rs", "target", 1), entity("b.rs", "caller", 1)],
             calls: vec![("b.rs::caller".to_string(), "a.rs::target".to_string())],
             located: [("the-alias".to_string(), vec!["a.rs::target".to_string()])].into(),
+            ..Held::default()
         },
     );
     let reply = TreeLookup::new(dir.path())
@@ -1063,6 +1077,76 @@ fn a_located_term_is_answered_with_its_direct_callers() {
         .unwrap();
     let expected = "exact match: 1 entity\n- a.rs:1 a.rs::target (function)\n  called by: b.rs:1 b.rs::caller (function)\n";
     assert!(section(&reply, "graph").contains(expected), "{reply}");
+}
+
+/// One test-hit case: the term, the product entities and the hidden test entities the graph
+/// holds, and the lines the graph half must hold.
+#[cfg(feature = "symbols")]
+type TestHitCase<'a> = (&'a str, &'a [&'a str], &'a [&'a str], &'a [&'a str]);
+
+/// A lookup answers the product hits it shows and the test hits its filter hides as a separate
+/// count, naming the filter that shows them. Each row: the term, the product entities and the
+/// hidden test entities the graph holds, and the lines the graph half must hold.
+#[cfg(feature = "symbols")]
+#[test]
+fn lookup_reports_test_hits_as_a_separate_count() {
+    let cases: [TestHitCase; 4] = [
+        (
+            "widget",
+            &["widget"],
+            &["tests/t.rs::widget", "tests/u.rs::widget"],
+            &[
+                "exact match: 1 entity\n- w.rs:1 w.rs::widget (function)\n",
+                "2 test hits not shown; the tests filter (include or only) shows them\n",
+            ],
+        ),
+        (
+            "widget",
+            &["widget"],
+            &["tests/t.rs::widget_ok"],
+            &["1 test hit not shown; the tests filter (include or only) shows them\n"],
+        ),
+        (
+            "widget",
+            &[],
+            &["tests/t.rs::widget"],
+            &[
+                "no entity named widget; the graph holds no near name\n",
+                "1 test hit not shown; the tests filter (include or only) shows them\n",
+            ],
+        ),
+        ("widget", &["widget"], &[], &["exact match: 1 entity\n"]),
+    ];
+    for (term, product, hidden, expected) in cases {
+        let graph = Held {
+            nodes: product.iter().map(|n| entity("w.rs", n, 1)).collect(),
+            hidden_tests: hidden
+                .iter()
+                .map(|id| {
+                    let (file, name) = id.split_once("::").unwrap();
+                    entity(file, name, 1)
+                })
+                .collect(),
+            ..Held::default()
+        };
+        let dir = tree(&[("w.rs", "fn widget() {}\n")]);
+        let reply = TreeLookup::new(dir.path())
+            .lookup(&terms(&[term]), Ok(&graph))
+            .unwrap();
+        let part = section(&reply, "graph");
+        for line in expected {
+            assert!(
+                part.contains(line),
+                "{hidden:?}: wants {line:?} in:\n{part}"
+            );
+        }
+        if hidden.is_empty() {
+            assert!(
+                !part.contains("test hit"),
+                "no hidden test, no count:\n{part}"
+            );
+        }
+    }
 }
 
 /// A term reaching more entities than the graph half reads says how many it left unread.
