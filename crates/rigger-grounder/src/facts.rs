@@ -27,7 +27,7 @@ use crate::grounder::{text_of, workflow_doc, workflowdef};
 /// [`GRAMMAR_TAGS_VERSION`] is bumped for theirs; the two together make the fingerprint. A golden
 /// test pins it beside the digest of the facts read over a fixture set, so a change that is not
 /// bumped fails there.
-const FACTS_GENERATION: &str = "facts-v1";
+const FACTS_GENERATION: &str = "facts-v2";
 
 /// The fingerprint of an extractor built from these generations: a stable hash, since a snapshot
 /// stores it and a later process compares against it.
@@ -125,6 +125,7 @@ fn code_facts(path: &str, symbols: &FileSymbols, facts: &mut FileFacts) {
         .filter(|d| d.is_out_of_line_module)
         .map(|d| ModuleDecl {
             name: d.name.clone(),
+            def: by_path[d.path.as_str()],
             test: d.is_test,
             candidates: module_candidates(path, d),
         })
@@ -697,7 +698,7 @@ mod tests {
     #[test]
     fn a_change_to_the_facts_ships_with_a_generation_bump() {
         use crate::grounder::symbols::registry::tests::GOLDEN_SOURCES;
-        const PINNED: (&str, &str, &str) = ("ts-tags-v5", "facts-v1", "3a4a86c7c00c9a15");
+        const PINNED: (&str, &str, &str) = ("ts-tags-v5", "facts-v2", "ec3d0eb0685882b8");
         let mut fixtures: Vec<(String, &str)> = GOLDEN_SOURCES
             .iter()
             .enumerate()

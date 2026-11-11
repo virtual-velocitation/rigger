@@ -129,6 +129,27 @@ pub struct Config {
 }
 "#,
     ),
+    // Two inline modules each declaring an out-of-line module of one name: each declaration's
+    // edge leaves its own definition.
+    (
+        "src/twins.rs",
+        r#"pub mod left {
+    mod leaf;
+}
+
+pub mod right {
+    mod leaf;
+}
+"#,
+    ),
+    (
+        "src/twins/left/leaf.rs",
+        "pub fn left_value() -> u32 {\n    1\n}\n",
+    ),
+    (
+        "src/twins/right/leaf.rs",
+        "pub fn right_value() -> u32 {\n    2\n}\n",
+    ),
     // The out-of-line test module, the closure's seed, which declares a module of its own.
     (
         "src/lib_tests.rs",

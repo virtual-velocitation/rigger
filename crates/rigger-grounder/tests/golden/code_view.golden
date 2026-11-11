@@ -53,6 +53,14 @@ edge src/shapes.rs::impl Default for Shape -CALLS/extracted-> src/shapes.rs::Sha
 edge src/shapes.rs::impl Default for Shape -CONTAINS/extracted-> src/shapes.rs::<Shape as Default>::default
 edge src/shapes.rs::impl Shape -CALLS/extracted-> src/shapes.rs::Shape
 edge src/shapes.rs::impl Shape -CONTAINS/extracted-> src/shapes.rs::Shape::new
+edge src/twins.rs -CONTAINS/extracted-> src/twins.rs::left
+edge src/twins.rs -CONTAINS/extracted-> src/twins.rs::right
+edge src/twins.rs::left -CONTAINS/extracted-> src/twins.rs::left::leaf
+edge src/twins.rs::left::leaf -CONTAINS/extracted-> src/twins/left/leaf.rs
+edge src/twins.rs::right -CONTAINS/extracted-> src/twins.rs::right::leaf
+edge src/twins.rs::right::leaf -CONTAINS/extracted-> src/twins/right/leaf.rs
+edge src/twins/left/leaf.rs -CONTAINS/extracted-> src/twins/left/leaf.rs::left_value
+edge src/twins/right/leaf.rs -CONTAINS/extracted-> src/twins/right/leaf.rs::right_value
 edge src/util.rs -CONTAINS/extracted-> src/util.rs::Config
 edge src/util.rs -CONTAINS/extracted-> src/util.rs::LIMIT
 edge src/util.rs -CONTAINS/extracted-> src/util.rs::compute
@@ -99,6 +107,15 @@ node src/shapes.rs::draw [code-entity] kind=function lang=rust line=25 name=draw
 node src/shapes.rs::impl Default for Shape [code-entity] kind=impl lang=rust line=9 name=impl Default for Shape
 node src/shapes.rs::impl Shape [code-entity] kind=impl lang=rust line=3 name=impl Shape
 node src/shapes.rs::origin [code-entity] kind=function lang=rust line=16 name=origin
+node src/twins.rs [file] lang=rust
+node src/twins.rs::left [code-entity] kind=module lang=rust line=1 name=left
+node src/twins.rs::left::leaf [code-entity] kind=module lang=rust line=2 name=leaf
+node src/twins.rs::right [code-entity] kind=module lang=rust line=5 name=right
+node src/twins.rs::right::leaf [code-entity] kind=module lang=rust line=6 name=leaf
+node src/twins/left/leaf.rs [file] lang=rust
+node src/twins/left/leaf.rs::left_value [code-entity] kind=function lang=rust line=1 name=left_value
+node src/twins/right/leaf.rs [file] lang=rust
+node src/twins/right/leaf.rs::right_value [code-entity] kind=function lang=rust line=1 name=right_value
 node src/util.rs [file] lang=rust
 node src/util.rs::Config [code-entity] kind=type lang=rust line=9 name=Config
 node src/util.rs::Config.draw [code-entity] kind=field lang=rust line=10 name=draw

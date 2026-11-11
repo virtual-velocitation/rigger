@@ -91,6 +91,8 @@ pub struct Mention {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ModuleDecl {
     pub name: String,
+    /// The index in the file's definitions of the module definition that declares it.
+    pub def: u32,
     /// Whether the declaration is test-only.
     pub test: bool,
     /// The paths the module's file can have, from the declaring file's path and any explicit path

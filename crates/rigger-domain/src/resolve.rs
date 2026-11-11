@@ -10,7 +10,7 @@
 //! | up-hop | the edges landing on a definition, or on a placeholder whose candidates hold it |
 //! | tagged reference | candidates of the tag's kinds in the file's language: one same-file is `extracted`, else one in the view is `inferred`, else no edge |
 //! | held reference | a tagged reference whose node already references the target, or its placeholder from that node, writes no edge |
-//! | module | the first candidate path that is a code file in the view ([`module_target`]): a `CONTAINS` edge to it |
+//! | module | the first candidate path that is a code file in the view ([`module_target`]): a `CONTAINS` edge to it from the declaring definition |
 //! | structure | each definition's `CONTAINS` from its parent, else from its file |
 //! | proof | a test call: one same-file product call-target candidate, else one in the view |
 //! | duplicate id, kind precedence | one entity per id, its kind and line by [`definition_precedence`] |
@@ -29,7 +29,7 @@ use crate::code_facts::{Def, FileFacts, Half, Mention, MentionKind, ModuleDecl, 
 use crate::code_view::{CodeView, DefRef};
 use crate::contextgraph::query::{entity_id, leaf_of, placeholder_id};
 use crate::contextgraph::{
-    definition_precedence, is_call_target, reference_candidate_kinds, CODE_KIND_MODULE, KIND_AGENT,
+    definition_precedence, is_call_target, reference_candidate_kinds, KIND_AGENT,
     KIND_ARCH_DECISION, KIND_DESIGN_DOC, KIND_GATE, KIND_HANDBOOK_RULE, KIND_RATIONALE, KIND_STAGE,
     REL_CALLS, REL_CONSTRAINS, REL_CONTAINS, REL_DOC_REFERENCES, REL_EXPLAINS, REL_GOVERNS,
     REL_NEEDS, REL_REFERENCES, REL_REVIEWS, REL_REVIEWS_LIGHT, REL_RUNS, REL_SPECIFIES,
@@ -458,13 +458,8 @@ impl<'v> Resolver<'v> {
             let Some(target) = self.module_target(decl).filter(|_| tests || !test) else {
                 continue;
             };
-            let declaring = facts
-                .defs
-                .iter()
-                .find(|d| d.kind == CODE_KIND_MODULE && d.leaf == decl.name && d.test == decl.test)
-                .map_or_else(|| file.to_string(), |d| entity_id(file, &d.local));
             links.push(Link {
-                from: declaring,
+                from: from_of(Some(decl.def)),
                 rel: REL_CONTAINS,
                 to: target.to_string(),
                 tier: TIER_EXTRACTED,
@@ -631,9 +626,10 @@ pub(crate) mod tests {
         )
     }
 
-    fn decl(name: &str, test: bool, candidates: &[&str]) -> ModuleDecl {
+    fn decl(name: &str, def: u32, test: bool, candidates: &[&str]) -> ModuleDecl {
         ModuleDecl {
             name: name.into(),
+            def,
             test,
             candidates: candidates.iter().map(|c| c.to_string()).collect(),
         }
@@ -686,6 +682,7 @@ pub(crate) mod tests {
                 def("tests", "module", 20, None, true),
                 def("tests::helper", "function", 21, Some(5), true),
                 def("tests::checks", "function", 24, Some(5), true),
+                def("a_tests", "module", 32, None, true),
             ],
             vec![
                 call("helper", Some(0), 2, false),
@@ -699,8 +696,8 @@ pub(crate) mod tests {
             ],
         );
         a.modules = vec![
-            decl("sub", false, &["src/a/sub.rs", "src/sub.rs"]),
-            decl("a_tests", true, &["src/a/a_tests.rs", "src/a_tests.rs"]),
+            decl("sub", 1, false, &["src/a/sub.rs", "src/sub.rs"]),
+            decl("a_tests", 8, true, &["src/a/a_tests.rs", "src/a_tests.rs"]),
         ];
         let b = code(
             "src/b.rs",
@@ -741,10 +738,13 @@ pub(crate) mod tests {
             "src/a_tests.rs",
             "rust",
             Scope::Product,
-            vec![def("checks_run", "function", 3, None, false)],
+            vec![
+                def("checks_run", "function", 3, None, false),
+                def("deeper", "module", 1, None, false),
+            ],
             vec![call("run", Some(0), 4, false)],
         );
-        a_tests.modules = vec![decl("deeper", false, &["src/a_tests/deeper.rs"])];
+        a_tests.modules = vec![decl("deeper", 1, false, &["src/a_tests/deeper.rs"])];
         let deeper = code(
             "src/a_tests/deeper.rs",
             "rust",
@@ -1186,7 +1186,7 @@ pub(crate) mod tests {
             ("no candidate in the view", &["x.rs"], &["y.rs"], None),
         ];
         for (name, candidates, code_files, want) in cases {
-            let d = decl("m", false, candidates);
+            let d = decl("m", 0, false, candidates);
             assert_eq!(
                 module_target(&d, |p| code_files.contains(&p)),
                 *want,
@@ -1199,7 +1199,7 @@ pub(crate) mod tests {
             (
                 "the module rule",
                 Ask::Links("src/a.rs", true),
-                &["src/a.rs -CONTAINS/extracted-> src/a_tests.rs"],
+                &["src/a.rs::a_tests -CONTAINS/extracted-> src/a_tests.rs"],
                 &["src/a/a_tests.rs"],
             ),
             (
