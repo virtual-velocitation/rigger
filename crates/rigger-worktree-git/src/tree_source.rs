@@ -18,7 +18,8 @@ pub struct GitTreeSource {
 }
 
 impl GitTreeSource {
-    pub fn new(root: &Path) -> Self {
+    /// The tree source of the git repository holding `root`, making its temps in `scratch`.
+    pub fn new(root: &Path, _scratch: &Path) -> Self {
         Self {
             root: root.to_path_buf(),
         }
@@ -308,7 +309,8 @@ mod tests {
             git_ok(dir.path(), &["config", "user.email", "t@example.com"]);
             git_ok(dir.path(), &["config", "user.name", "t"]);
             (row.setup)(dir.path());
-            let source = GitTreeSource::new(dir.path());
+            let copies = tempfile::tempdir().unwrap();
+            let source = GitTreeSource::new(dir.path(), copies.path());
             let tip = source.head().expect(row.name);
             assert_eq!(tip.head, row.head, "{}", row.name);
             assert_eq!(tip.commit.is_some(), row.commit, "{}", row.name);
@@ -361,7 +363,8 @@ mod tests {
             let dir = repo(&[("a.txt", "a\n")]);
             git_ok(dir.path(), &["checkout", "-q", "-b", "work"]);
             break_head(dir.path());
-            let head = GitTreeSource::new(dir.path()).head();
+            let copies = tempfile::tempdir().unwrap();
+            let head = GitTreeSource::new(dir.path(), copies.path()).head();
             assert!(head.is_err(), "{name}: read as {head:?}");
         }
     }
@@ -398,7 +401,8 @@ mod tests {
             let dir = repo(row.committed);
             write(dir.path(), row.edit);
             remove(dir.path(), row.delete);
-            let source = GitTreeSource::new(dir.path());
+            let copies = tempfile::tempdir().unwrap();
+            let source = GitTreeSource::new(dir.path(), copies.path());
             let extract = ToyExtract::new(1);
             let head = source.head().expect(row.name);
             Store::new(dir.path())
@@ -467,7 +471,8 @@ mod tests {
         ];
         for row in rows {
             let dir = repo(base);
-            let git = GitTreeSource::new(dir.path());
+            let copies = tempfile::tempdir().unwrap();
+            let git = GitTreeSource::new(dir.path(), copies.path());
             let plain = DirTreeSource::new(dir.path());
             // Each source is asked about its head as it reads it, before the commit after it: the
             // directory source answers only for the tree it read last.
@@ -509,26 +514,28 @@ mod tests {
         let checkout = repo(tree);
         let copy = tempfile::tempdir().unwrap();
         write(copy.path(), tree);
-        type Opens = fn(&Path) -> Box<dyn TreeSource>;
+        let copies = tempfile::tempdir().unwrap();
+        /// The source over `root`, a git one making its temps in `copies`.
+        type Opens = fn(&Path, &Path) -> Box<dyn TreeSource>;
         let rows: [(&str, &Path, Opens); 3] = [
             (
                 "the git source over the checkout",
                 checkout.path(),
-                |root| Box::new(GitTreeSource::new(root)),
+                |root, copies| Box::new(GitTreeSource::new(root, copies)),
             ),
             (
                 "the directory source over the checkout",
                 checkout.path(),
-                |root| Box::new(DirTreeSource::new(root)),
+                |root, _| Box::new(DirTreeSource::new(root)),
             ),
             (
                 "the directory source over a plain copy",
                 copy.path(),
-                |root| Box::new(DirTreeSource::new(root)),
+                |root, _| Box::new(DirTreeSource::new(root)),
             ),
         ];
         for (name, root, source) in rows {
-            let source = source(root);
+            let source = source(root, copies.path());
             let extract = ToyExtract::new(1);
             let store = tempfile::tempdir().unwrap();
             Store::new(store.path())
@@ -650,7 +657,8 @@ mod tests {
         ];
         for row in rows {
             let dir = repo(base);
-            let source = GitTreeSource::new(dir.path());
+            let copies = tempfile::tempdir().unwrap();
+            let source = GitTreeSource::new(dir.path(), copies.path());
             let head = source.head().expect(row.name);
             write(dir.path(), row.write);
             remove(dir.path(), row.delete);
@@ -673,6 +681,92 @@ mod tests {
                 "{}",
                 row.name
             );
+        }
+    }
+
+    /// A read leaves the index of the worktree it reads as it was, even where a file's stat
+    /// changed while its bytes did not, over which git's diff refreshes the index it reads; and
+    /// whatever the read makes in its scratch directory is gone once the read ends.
+    #[test]
+    fn a_read_leaves_the_worktrees_index_as_it_was() {
+        struct Row {
+            name: &'static str,
+            /// The worktree to read, readied beside the checkout `main`, whose head commit holds
+            /// `a.txt` and `b.txt`.
+            worktree: fn(&Path) -> PathBuf,
+            changed: &'static [&'static str],
+        }
+        let rows = [
+            Row {
+                name: "the main checkout",
+                worktree: Path::to_path_buf,
+                changed: &[],
+            },
+            Row {
+                name: "a linked worktree, whose index is in its own administrative directory",
+                worktree: |main| {
+                    let linked = main.with_file_name("linked");
+                    let at = linked.to_str().unwrap();
+                    git_ok(main, &["worktree", "add", "-q", "--detach", at]);
+                    linked
+                },
+                changed: &[],
+            },
+            Row {
+                name: "a checkout with no index, which git reads as every file deleted",
+                worktree: |main| {
+                    std::fs::remove_file(main.join(".git").join("index")).unwrap();
+                    main.to_path_buf()
+                },
+                changed: &["a.txt", "b.txt"],
+            },
+        ];
+        for row in rows {
+            let dir = tempfile::tempdir().unwrap();
+            let main = dir.path().join("main");
+            std::fs::create_dir(&main).unwrap();
+            init_repo(&main);
+            write(&main, &[("a.txt", "a\n"), ("b.txt", "b\n")]);
+            git_commit_all(&main, "base");
+            let worktree = (row.worktree)(&main);
+            let an_hour_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+            std::fs::File::options()
+                .write(true)
+                .open(worktree.join("a.txt"))
+                .and_then(|file| file.set_modified(an_hour_ago))
+                .unwrap();
+            let git_dir = git_out(&worktree, &["rev-parse", "--absolute-git-dir"]);
+            let index = Path::new(&git_dir).join("index");
+            let before = std::fs::read(&index).ok();
+            let scratch = dir.path().join("store");
+            let source = GitTreeSource::new(&main, &scratch);
+            let tree = source.head().expect(row.name).tree;
+            let diff = source
+                .changed_against_worktree(&tree, &worktree)
+                .expect(row.name);
+            assert_eq!(
+                std::fs::read(&index).ok(),
+                before,
+                "{}: the worktree's index",
+                row.name
+            );
+            let changed = row.changed.iter().map(|p| (*p).to_owned()).collect();
+            assert_eq!(
+                diff,
+                WorktreeDiff {
+                    changed,
+                    untracked: Vec::new(),
+                },
+                "{}",
+                row.name
+            );
+            let left: Vec<_> = std::fs::read_dir(&scratch)
+                .into_iter()
+                .flatten()
+                .flatten()
+                .map(|entry| entry.file_name())
+                .collect();
+            assert!(left.is_empty(), "{}: left {left:?}", row.name);
         }
     }
 }
