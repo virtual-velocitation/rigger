@@ -1,5 +1,11 @@
 # 107 - Perception is re-derived: the log keeps knowledge, never the derived index
 
+**Status: partly superseded.** The code store (docs/architecture-addendum-the-code-store.md) replaces
+the generation ledger this spec defines: the log keeps no entry per file generation, the tree is
+read at a commit, and the cross-file rules run at read. The ledger sections below are marked
+SUPERSEDED and are not to be built; the retention classes and the refusal of a derived append
+stand.
+
 **Goal:** rigger is a hive mind: its graph holds the project's whole understanding and serves each
 persona the slice it needs, and the append-only log is only the persistence underneath. That log
 keeps what the hive decided, learned and did; it stops holding what the hive merely perceived (the
@@ -122,6 +128,8 @@ Criterion 1 moves the `TYPE_` constants of `GatePromoted`, `GateDemoted`, `Scope
 its own `TYPE_SPEC_DEFECT` too, as it re-exports `TYPE_MANUAL_REVIEW`, so `retention` re-spells no
 type string.
 
+SUPERSEDED by the code store (docs/architecture-addendum-the-code-store.md): the section below describes the generation ledger and no longer applies.
+
 **THE ENTRY AND ITS BATCH FOLD AS ONE.** The `Projection` port gains `apply_generation(entry,
 batch)`, where `batch` is a function it calls at most once and which answers the entry's batch, that
 it is unresolved, or an error, which fails the fold. The port is ungated and compiles in the `core`
@@ -181,6 +189,8 @@ parameter, and `check_fold_payload` judges a `GenerationIngested` by `retention`
 rebuild passes over an entry whose payload does not parse, as it passes over any event the fold
 rejects; a re-extracted batch event's fold error is a store failure that propagates, never passed
 over, since the batch is this binary's own extraction.
+
+SUPERSEDED by the code store (docs/architecture-addendum-the-code-store.md): the section below describes the generation ledger and no longer applies.
 
 **THE REBUILD RE-EXTRACTS THE LEDGER.** `rigger setup`'s rebuild (`rebuild_owed_graph`,
 `src/cli/setup.rs`, over `Projector::rebuild`) folds the log's live selection as spec 101 decided
@@ -320,6 +330,8 @@ REPRODUCES). An identity whose path holds no such file is not counted: what it h
 rebuild, nothing for a gone file with no resolvable entry, is its correct state. The `applied` rows
 of shed positions are outside spec 101's comparison surface.
 
+SUPERSEDED by the code store (docs/architecture-addendum-the-code-store.md): the section below describes the generation ledger and no longer applies.
+
 **WHAT A REBUILD REPRODUCES, stated once.** An entry no source resolves is as if absent from the
 fold. For every identity whose latest entry resolves, a rebuild holds the same live facts and
 current generation as the incremental folds, but for the instances below; for one whose latest entry
@@ -364,6 +376,8 @@ layer returns through the next ingest. Its instances are the only accepted diffe
   supersedes on any unequal generation with no position check, so the live graph holds the
   generation and facts of whichever folded last until the next walk finds the batch not current and
   records again, where a rebuild folds in log order and holds the latest by position.
+
+SUPERSEDED by the code store (docs/architecture-addendum-the-code-store.md): the section below describes the generation ledger and no longer applies.
 
 **PERCEPTION IS A LEDGER ENTRY.** Both ingest sinks, the run's `RunCtx::emit_keyed_batch`
 (`crates/rigger-conductor/src/conductor.rs`) and `rigger graph build`'s `ingest_tree`
@@ -448,6 +462,8 @@ the ledger type, criterion 8's. Criteria 10 and 12 own the sinks, the run's and 
 build`'s; criterion 7 owns no entry in `read_current_run`'s slice and none in the seeded key set,
 and criterion 12 N on the graph build line.
 
+SUPERSEDED by the code store (docs/architecture-addendum-the-code-store.md): the section below describes the generation ledger and no longer applies.
+
 **THE LEDGER ANSWERS THE INDEX-LAG ADVISORY.** `rigger validate`'s graph index-lag advisory
 (`read_graph_index_lag`, `src/cli/validate.rs`) reads the run stream through criterion 6's
 `ingest::perceived_generations` (THE REBUILD block), never the whole stream, and reads `graph.db` as
@@ -475,6 +491,8 @@ and calls `project_scoped_latest_generations` no more. The keys part of
 `project_scoped_latest_generations`'s answer then has no production reader, so criterion 13 removes
 it, and `reference_replay_keys` (`tests/common/fixtures/ingest.rs`) collects its keys test-side from
 criterion 13 on.
+
+SUPERSEDED by the code store (docs/architecture-addendum-the-code-store.md): the section below describes the generation ledger and no longer applies.
 
 **MIGRATION CONVERTS THE BACKLOG IN PLACE.** `rigger reset --derived` becomes the one-time migration
 and refuses in this order: a live writer (`refuse_derived_reset_if_live`), the one refusal
@@ -700,6 +718,8 @@ that clause observes criterion 6's number, and the default lane's rebuild-equali
   keeps its stream and its meaning, N counting the batch events of each entry SINK OUTCOMES counts
   in N, beside the existing fold-loss clause; and the bloat and index-lag advisories on standard
   error; no line reaches `rigger step`'s standard output.
+
+SUPERSEDED by the code store (docs/architecture-addendum-the-code-store.md): the section below describes the generation ledger and no longer applies.
 
 **STATE PLACEMENT.** The ledger is the log (`GenerationIngested`); the class of a type is code
 (`retention`); `graph.db` is a projection. An in-memory set of ingested generations, a `.rigger/`
