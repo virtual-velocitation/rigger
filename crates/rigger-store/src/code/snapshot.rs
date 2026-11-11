@@ -13,7 +13,8 @@
 //! DEFS         local, leaf, kind, line, end_line, parent (u32::MAX: none), flags (test)
 //! MENTIONS     enclosing (u32::MAX: none), name, leaf, kind u8 (0 call, 1 tagged), tag,
 //!              line, flags (test)
-//! MODULES      name, flags (test), [start, end) into CANDIDATES
+//! MODULES      name, def (its declaring DEFS row in the file), flags (test),
+//!              [start, end) into CANDIDATES
 //! CANDIDATES   path
 //! DOC_*, WF_*  three strings each, as written
 //! IDX_LEAF     u32 key count, keys (leaf, [start, end) into the postings) sorted by leaf,
@@ -37,8 +38,8 @@ use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
 use std::ops::Range;
 
-const MAGIC: &[u8; 4] = b"RGCS";
-const VERSION: u16 = 1;
+pub(crate) const MAGIC: &[u8; 4] = b"RGCS";
+pub(crate) const VERSION: u16 = 2;
 /// An absent index (parent, enclosing definition) or an absent string (commit).
 const NONE: u32 = u32::MAX;
 
@@ -96,7 +97,8 @@ const M_FLAGS: usize = M_LINE + 4;
 const MENTION_ROW: usize = M_FLAGS + 1;
 
 /// MODULES row.
-const MOD_FLAGS: usize = STR;
+const MOD_DEF: usize = STR;
+const MOD_FLAGS: usize = MOD_DEF + 4;
 const MOD_CANDS: usize = MOD_FLAGS + 1;
 const MODULE_ROW: usize = MOD_CANDS + 8;
 
@@ -223,6 +225,7 @@ impl Encoder {
         let mut candidates = self.sections.remove(&CANDIDATES).unwrap_or_default();
         for module in &facts.modules {
             self.pool.put(&mut modules, &module.name);
+            put_u32(&mut modules, module.def);
             put_u8(&mut modules, flag(module.test));
             put_u32(&mut modules, (candidates.len() / STR) as u32);
             for candidate in &module.candidates {
@@ -595,6 +598,11 @@ impl Snapshot {
                     return Err(format!("file {path}: an unknown mention kind"));
                 }
             }
+            for m in self.list(row, L_MODULES) {
+                if le32(self.row(self.table(MODULES), m), MOD_DEF) >= defs {
+                    return Err(format!("file {path}: a module def outside the file"));
+                }
+            }
         }
         for (l, &kind) in LISTS.iter().enumerate() {
             if next[l] != self.table(kind).rows {
@@ -707,6 +715,7 @@ impl Snapshot {
                     let r = self.row(modules, m);
                     ModuleDecl {
                         name: self.text(r, 0).to_owned(),
+                        def: le32(r, MOD_DEF),
                         test: byte(r, MOD_FLAGS) & FLAG_SET != 0,
                         candidates: (le32(r, MOD_CANDS) as usize..le32(r, MOD_CANDS + 4) as usize)
                             .map(|c| self.text(self.row(candidates, c), 0).to_owned())
@@ -918,6 +927,7 @@ mod tests {
             ],
             modules: vec![ModuleDecl {
                 name: "inner".into(),
+                def: 1,
                 test: true,
                 candidates: vec!["src/inner.rs".into(), "src/inner/mod.rs".into()],
             }],

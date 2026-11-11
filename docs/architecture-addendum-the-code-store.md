@@ -271,6 +271,7 @@ Mention
 
 ModuleDecl
   name        "foo"
+  def         the index in this file's defs of the module definition that declares it
   test        true for a test-only module
   candidates  ["crates/x/src/foo.rs", "crates/x/src/foo/mod.rs"]   (from this file's path and
                                                                    any explicit path attribute)

@@ -605,10 +605,14 @@ mod tests {
                 Box::new(move |dir: &Path| {
                     let path = dir.join("000001.snap");
                     let mut bytes = std::fs::read(&path).unwrap();
-                    let range = Container::parse(&bytes, b"RGCS", 1)
-                        .unwrap()
-                        .section_range(kind)
-                        .unwrap();
+                    let range = Container::parse(
+                        &bytes,
+                        crate::code::snapshot::MAGIC,
+                        crate::code::snapshot::VERSION,
+                    )
+                    .unwrap()
+                    .section_range(kind)
+                    .unwrap();
                     let at = if range.is_empty() {
                         range.start - 1
                     } else {
