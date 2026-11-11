@@ -320,6 +320,29 @@ pub(crate) fn load_run_config(dir: &str) -> Result<config::Config, Box<dyn std::
     Ok(cfg)
 }
 
+/// The refusal a run started outside a rigger project gives: `cwd` holds no workflow file, so
+/// there is nothing to drive.
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "{command}: not a rigger project - {cwd} has no {RIGGER_DIR}/{WORKFLOW_FILE}; run \
+     `rigger setup` in the project root first, or run from the directory that holds it"
+)]
+struct NotAProject {
+    command: &'static str,
+    cwd: String,
+}
+
+/// Refuse, creating nothing, unless `cwd` holds a rigger project's workflow file.
+fn refuse_outside_a_project(cwd: &Path, command: &'static str) -> Res {
+    if cwd.join(RIGGER_DIR).join(WORKFLOW_FILE).is_file() {
+        return Ok(());
+    }
+    Err(Box::new(NotAProject {
+        command,
+        cwd: cwd.display().to_string(),
+    }))
+}
+
 pub(crate) fn cmd_run(args: &[String]) -> Res {
     let parsed = parse_run_args(args)?;
     run_cli(&parsed, &*sleep_hold())
@@ -483,6 +506,33 @@ fn reclaim_run_scratch(root: &str) {
     }
     let _ = reclaim_shared_build_cache(&base.join(rigger::worktree::SHARED_BUILD_CACHE_NAME), base);
     reap_then_remove_dir(&base.join("target"), base);
+}
+
+/// The one teardown every ending of a `rigger run` passes through: dropped as `run_cli` returns,
+/// done, halted, escalated or failed, it reclaims the run-level scratch ([`reclaim_run_scratch`])
+/// unless the run ended with a unit awaiting a human, whose review resumes it. No spawn of the run
+/// is live by then: the run reaps every earlier launch at its start and the driver reaps each
+/// launch it makes before the conductor returns. A log that cannot be read reclaims nothing, and a
+/// project with no scratch root has none to reclaim.
+struct RunTeardown<'a> {
+    scratch: Option<&'a str>,
+    store: &'a dyn EventStore,
+}
+
+impl Drop for RunTeardown<'_> {
+    fn drop(&mut self) {
+        if let Some(root) = self.scratch.filter(|_| awaits_no_human(self.store)) {
+            reclaim_run_scratch(root);
+        }
+    }
+}
+
+/// Whether the current run's log reads, and no unit of it awaits a human's review.
+fn awaits_no_human(store: &dyn EventStore) -> bool {
+    runscope::read::read_current_run(store, conductor::STREAM)
+        .ok()
+        .and_then(|(events, _)| ledger::project(&events).ok())
+        .is_some_and(|rs| rs.manual_review.is_empty())
 }
 
 /// The agent areas under a scratch root, each holding one entry per run: the scratch a worker
@@ -783,6 +833,7 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
     // FIRST - see `resolve_main_worktree_or_refuse`'s doc comment.
     let cwd = cwd();
     let repo = resolve_main_worktree_or_refuse(&cwd, command)?;
+    refuse_outside_a_project(&cwd, command)?;
     // Refuse before starting if a gating persona would stall the integration gate (spec 18,
     // unit 2); `load_run_config` reuses unit 1's lint at this run's config-load seam.
     let cfg = load_run_config(".")?;
@@ -861,6 +912,19 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
     // Every appended event is folded into the graph as it lands, on `--fresh`'s mint and on the
     // results the host records alike.
     let folding = rigger::ingest::folding_into(&store, Some(&graph), &stderr_line);
+    // Every way this run ends from here - done, a halt, an escalation, a refusal or an error -
+    // passes through this one teardown, dropped after the driver, the dash and the gate socket.
+    let _teardown = RunTeardown {
+        scratch: scratch.as_deref(),
+        store: &store,
+    };
+    // RUN-START SWEEPS: leftovers of earlier runs are reclaimed under the step lock, before the
+    // conductor adds any unit worktree. The terminal sweep runs ahead of the definition pin, so a
+    // run that halts on drift still reclaims its integrated worktrees.
+    let sweep_root = scratch.as_deref().filter(|_| !repo.is_empty());
+    if let Some(root) = sweep_root {
+        sweep_terminal_at_start(&repo, root, &cfg.workflow, &store);
+    }
     // `--fresh`: begin a NEW run before driving, so the conductor's own `ensure_started`
     // adopts this just-minted boundary instead of the (possibly wedged) latest run. See
     // `runscope_store::start_fresh` - the evented restart for a terminal escalation on an
@@ -880,6 +944,10 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
             text: &text,
         },
     )?;
+    // The orphan sweep runs behind `--fresh`'s mint, so a superseded run's scratch reads as dead.
+    if let Some(root) = sweep_root {
+        reclaim_orphans_at_start(&repo, root, &cfg.workflow, &store);
+    }
     let driver = claude_code::Driver {
         bin: String::new(),
         rigger_bin: running_executable(),
@@ -927,17 +995,22 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
     // SIGNED VERDICTS: this driver process's verdict key lives only in its memory, and the
     // project's gate request socket ([`rigger::gate_socket::socket_path`]) carries each
     // `rigger gate <id>` to it for as long as the run drives; every spawn is handed its path as
-    // `RIGGER_GATE_SOCKET`. A socket that cannot be bound leaves the verb information-only.
+    // `RIGGER_GATE_SOCKET`. A socket that cannot be bound leaves the verb information-only. A
+    // project with no repository has no unit worktree a request could come from, so it binds none.
     let verdict_key = rigger::verdict_mac::VerdictKey::generate()?;
-    let socket = rigger::gate_socket::socket_path(Path::new(&root))
-        .and_then(|path| rigger::gate_socket::GateSocket::bind(&path))
-        .inspect_err(|e| {
-            stderr_line(&format!(
-                "rigger run: gate requests are not served ({e}); `rigger gate <id>` runs for \
-                 information only and records nothing"
-            ))
+    let socket = (!root.is_empty())
+        .then(|| {
+            rigger::gate_socket::socket_path(Path::new(&root))
+                .and_then(|path| rigger::gate_socket::GateSocket::bind(&path))
+                .inspect_err(|e| {
+                    stderr_line(&format!(
+                        "rigger run: gate requests are not served ({e}); `rigger gate <id>` runs \
+                         for information only and records nothing"
+                    ))
+                })
+                .ok()
         })
-        .ok();
+        .flatten();
     let channel = socket
         .as_ref()
         .map(|s| s as &dyn rigger::gate_channel::GateChannel);
@@ -961,12 +1034,6 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
                 "rigger run: the done run's hold was not released: {e}"
             ));
         }
-    }
-    // The conductor returned, so no spawn of this run is live: a done run's scratch is residue. A
-    // run that stopped short of done keeps it for the resume, and a project with no scratch root
-    // has none to reclaim.
-    if let Some(root) = scratch.as_deref().filter(|_| rs.done()) {
-        reclaim_run_scratch(root);
     }
     // The release-target base the ready-to-release handoff names (spec 38, criterion 3): read
     // the base PERSISTED on this run's RunStarted, so the end-of-run summary, `rigger status`,
@@ -1004,8 +1071,85 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
     Ok(())
 }
 
+/// The unit branches `workflow` declares: config, never the event log, so it is populated even
+/// before a project's first run records an event. Both run-start sweeps spare a dirty candidate
+/// only when it is one of these.
+fn declared_unit_branches(workflow: &config::Workflow) -> std::collections::HashSet<String> {
+    workflow
+        .stages
+        .keys()
+        .map(|slug| conductor::unit_branch(slug))
+        .collect()
+}
+
+/// Remove the terminal worktrees under `root` (integrated units, review scaffolding) that an
+/// earlier run left, sparing every unit still live in the current run and any branch whose latest
+/// spawn is still in flight ([`rigger::worktree::sweep_terminal`]). An unreadable stream skips
+/// the sweep ([`live_branches_for_sweep`]), since liveness may be under- but never over-determined.
+/// Best-effort: a failure warns and never blocks the run.
+fn sweep_terminal_at_start(
+    repo: &str,
+    root: &str,
+    workflow: &config::Workflow,
+    store: &dyn EventStore,
+) {
+    let Some(live_branches) =
+        live_branches_for_sweep(runscope::read::read_run(store, conductor::STREAM))
+    else {
+        return;
+    };
+    let fence_events = runscope::read::read_current_run(store, conductor::STREAM)
+        .map(|(run, _)| run)
+        .unwrap_or_default();
+    match rigger::worktree::sweep_terminal(
+        repo,
+        root,
+        RUN_BRANCH,
+        &live_branches,
+        &declared_unit_branches(workflow),
+        &fence_events,
+    ) {
+        Ok(0) => {}
+        Ok(n) => stderr_line(&format!(
+            "rigger run: swept {n} terminal worktree(s) from {root}"
+        )),
+        Err(e) => stderr_line(&format!("rigger run: scratch sweep skipped: {e}")),
+    }
+}
+
+/// Reclaim the scratch under `root` no live unit of the current run owns: an earlier run's
+/// stranded worktree or build cache, or a cache an agent wrote outside its assigned path
+/// ([`reclaim_orphan_scratch`]). The shared areas a running spawn may write into are spared.
+/// Best-effort: a failure warns and never blocks the run.
+fn reclaim_orphans_at_start(
+    repo: &str,
+    root: &str,
+    workflow: &config::Workflow,
+    store: &dyn EventStore,
+) {
+    match runscope::read::read_run(store, conductor::STREAM) {
+        Ok(events) => {
+            let removed = reclaim_orphan_scratch(
+                repo,
+                root,
+                &current_run_units(&events),
+                &declared_unit_branches(workflow),
+            );
+            if removed > 0 {
+                stderr_line(&format!(
+                    "rigger run: reclaimed {removed} orphaned scratch entr{} under {root}",
+                    if removed == 1 { "y" } else { "ies" }
+                ));
+            }
+        }
+        Err(e) => stderr_line(&format!("rigger run: orphan sweep skipped: {e}")),
+    }
+}
+
 /// Begin (or adopt) and definition-PIN the run `rigger run` drives (spec 13, unit 1).
-/// First, before anything is appended, a command that would begin a new run on a spec whose
+/// First, a run that is not `--fresh` reads its hold and names a standing one on stderr
+/// ([`held_line`], this driver's own beat being the latest), failing on a hold it cannot read.
+/// Then, before anything is appended, a command that would begin a new run on a spec whose
 /// critique is not clean is refused (spec 112, [`RunStartCritique::refuse_unless_clean`]; the
 /// caller hands `critique`, naming its own command).
 /// When `--fresh` is set it appends a new pinned `RunStarted` for `criteria` so the run starts
@@ -1030,6 +1174,19 @@ fn fresh_run_if_requested(
     helpers: &[conductor::HelperCopy],
     critique: &RunStartCritique,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // A HELD RUN IS NAMED FIRST: a plain run reads its hold ahead of the critique refusal, so a
+    // held run names its hold before anything refuses it and a hold it cannot read fails the run
+    // before any refusal. `--fresh` decides its refusal first, since its mint ends the hold.
+    if !parsed.fresh {
+        if let Some(hold) = runscope::read::read_current_hold(store, conductor::STREAM)? {
+            let now = std::time::SystemTime::now();
+            stderr_line(&format!(
+                "{}: {}",
+                critique.command,
+                held_line(&hold, Some(now), now)
+            ));
+        }
+    }
     critique.refuse_unless_clean(parsed.spec.as_deref(), criteria, parsed.fresh)?;
     let definition = definition_hash(".", helpers)?;
     // The resolved run-branch base to persist on the RunStarted this mints (spec 38, criterion
@@ -1269,8 +1426,8 @@ pub(crate) fn load_criteria(
 /// get their OWN); its URL is printed at run start and recorded in `.rigger/`[`DASH_URL_FILE`]
 /// so `rigger status` can surface it.
 ///
-/// Returns the [`dash::ReapedChild`] guard the DRIVER holds for the whole run: dropping it
-/// (on a normal finish OR an unwinding panic) reaps the dash. That guard is unit 3's reaping
+/// Returns the [`RunDash`] guard the DRIVER holds for the whole run: dropping it (on a normal
+/// finish OR an unwinding panic) reaps the dash and removes its marker. That guard is unit 3's reaping
 /// mechanism, reused here as the single reaper - THIS unit owns only start + discoverability,
 /// never stopping. Best-effort: if the dash cannot be started the run still proceeds (the
 /// dash is observability, not the deliverable), so a port-starved or spawn-refused
@@ -1283,10 +1440,7 @@ pub(crate) fn load_criteria(
 ///
 /// OPT-OUT: the one opt-out ([`dash_opted_out`] over `config_dash_enabled`, the workflow's
 /// resolved [`config::Workflow::dash_enabled`]) starts no dash and stamps no attempt.
-fn start_run_dashboard(
-    config_dash_enabled: bool,
-    store: &dyn EventStore,
-) -> Option<dash::ReapedChild> {
+fn start_run_dashboard(config_dash_enabled: bool, store: &dyn EventStore) -> Option<RunDash> {
     if dash_opted_out(config_dash_enabled) {
         return None;
     }
@@ -1309,11 +1463,12 @@ fn start_run_dashboard(
 }
 
 /// Pick a free port, spawn `rigger dash --port <n>` as a child of the current executable,
-/// and record its URL in `.rigger/`[`DASH_URL_FILE`] for `rigger status`. The child's stdout
+/// record its URL in `.rigger/`[`DASH_URL_FILE`] for `rigger status` and its port and pid in
+/// `.rigger/`[`DASH_MARKER_FILE`] for `rigger watch` and `rigger status`. The child's stdout
 /// is silenced (the parent's stdout is the run's own report, which the dash child must never
 /// write to) and its stdin is closed; the dash
 /// logs only to its own stderr. Returns the guard plus the URL for the run-start pointer.
-fn spawn_run_dashboard() -> Result<(dash::ReapedChild, String), Box<dyn std::error::Error>> {
+fn spawn_run_dashboard() -> Result<(RunDash, String), Box<dyn std::error::Error>> {
     let port = dash::free_port_from(dash::DEFAULT_PORT)?;
     let exe = std::env::current_exe()?;
     let child = subprocess::command(exe)
@@ -1327,7 +1482,39 @@ fn spawn_run_dashboard() -> Result<(dash::ReapedChild, String), Box<dyn std::err
     // Discoverability breadcrumb for `rigger status`; best-effort and overwritten each run.
     // `.rigger/` already exists (the driver created it before reaching here).
     let _ = std::fs::write(db_path(DASH_URL_FILE), &url);
-    Ok((dash::ReapedChild::new(child), url))
+    let marker = dash::DashMarker {
+        port,
+        pid: child.id(),
+    };
+    let marker_path = PathBuf::from(db_path(DASH_MARKER_FILE));
+    let _ = marker.write(&marker_path);
+    Ok((
+        RunDash {
+            child: Some(dash::ReapedChild::new(child)),
+            marker,
+            marker_path,
+        },
+        url,
+    ))
+}
+
+/// The dash `rigger run` started, held for the whole run: dropping it reaps the dash child
+/// ([`dash::ReapedChild`]) and then removes the [`DASH_MARKER_FILE`] it recorded, unless the
+/// file by then names another dash, so a marker on disk names a dash a run still holds or one
+/// whose run never reached its teardown.
+struct RunDash {
+    child: Option<dash::ReapedChild>,
+    marker: dash::DashMarker,
+    marker_path: PathBuf,
+}
+
+impl Drop for RunDash {
+    fn drop(&mut self) {
+        drop(self.child.take());
+        if dash::DashMarker::read(&self.marker_path) == Some(self.marker) {
+            let _ = std::fs::remove_file(&self.marker_path);
+        }
+    }
 }
 
 /// Whether the always-on dash auto-ensure is SUPPRESSED for this run (spec 50, criterion 4) -

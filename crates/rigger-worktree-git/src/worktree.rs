@@ -495,8 +495,8 @@ impl Worktree {
     ///
     /// Also reclaims the dir's store-fence sibling (spec 70 criterion 3, u4 round 2 fix for
     /// `adv-u4c70r2-discard-path-leaks-review-fence-sibling`), via the SAME
-    /// [`reclaim_cache_sibling`] authority [`Self::remove`]/[`reclaim_worktree_on_branch`]
-    /// already call - mirroring the exact clear-then-reclaim
+    /// [`reclaim_cache_sibling`] authority [`Self::remove`]/[`sweep_terminal`]/
+    /// [`reclaim_worktree_on_branch`] already call - mirroring the exact clear-then-reclaim
     /// sequence [`reclaim_worktree_on_branch`] uses. `discard` is the FOURTH teardown path
     /// (this doc comment's own crash-resume case, driven by `review_only_worktree` on every
     /// standalone-review-stage attempt): before this fix a fenced review worktree's
@@ -2033,7 +2033,8 @@ pub fn review_fence_sibling(worktree_dir: &str) -> Option<String> {
 /// tautology`, both UPHELD): passed straight through to [`reap_dir_before_removal`] for
 /// every sibling, NEVER re-derived from `worktree_dir`'s own position. Every call site
 /// already has this value to hand ([`Worktree::remove`]/[`Worktree::discard`] carry or take
-/// it, [`reclaim_worktree_on_branch`]'s caller resolves it the same way `Worktree::create`'s
+/// it, [`sweep_terminal`] already resolves it to confirm `d.starts_with(root)`,
+/// [`reclaim_worktree_on_branch`]'s caller resolves it the same way `Worktree::create`'s
 /// callers do).
 fn reclaim_cache_sibling(worktree_dir: &str, authorized_root: &str) {
     if let Some(cache) = unit_cache_sibling(worktree_dir) {
@@ -2188,6 +2189,182 @@ pub fn spawn_fence(events: &[Event], unit: &str) -> SpawnFence {
         // conservative direction `result_of`'s own callers already take on decode failure.
         _ => SpawnFence::InFlight { spawn: req.id },
     }
+}
+
+/// Sweep the scratch root's TERMINAL worktrees: prune stale registrations, then remove
+/// every registered worktree under `root` whose branch tip is already an ancestor of
+/// `run_branch` - integrated (or never-advanced review scaffolding), so the worktree
+/// serves no in-flight unit. Unmerged branches are in-flight checkpoints and are left
+/// alone. Returns how many worktrees were removed. This is the "the loop cleans up
+/// after itself" half of Gap 14: crashed or superseded run processes leak worktrees,
+/// and integrate-time removal alone never reclaims them.
+///
+/// Removing a UNIT worktree also reclaims its sibling per-unit build cache
+/// (`cargo-target-<slug>`, Gap 19) via [`reclaim_cache_sibling`]. This is the CRASH-recovery
+/// half: a run process killed before it reached [`Worktree::remove`] leaves its worktree
+/// still registered, so the graceful reclamation never ran and the sweep must reclaim the
+/// cache here. On the dominant graceful path [`Worktree::remove`] already reclaimed it, so
+/// this sweep never sees that worktree at all. Reclamation is best-effort and never aborts
+/// the sweep.
+/// `live_branches` is the `rigger/u/<slug>` set of the CURRENT run's non-terminal units (the
+/// same run-scoped fold the conductor already reads to decide liveness elsewhere - see
+/// `current_run_units` in the `rigger` binary), never a process-memory list. The merged-only ancestry
+/// rule alone is not sufficient: a PARKED unit whose attempt produced an EMPTY diff has a
+/// branch tip that IS an ancestor of `run_branch` (trivially - it never advanced past it)
+/// while the unit is still live in review, so `live_branches` is checked BEFORE the ancestry
+/// test and spares such a worktree outright; a merged-or-dead, not-live worktree is still
+/// reclaimed exactly as before.
+///
+/// `events` is the SAME current-run-scoped slice `live_branches` was folded from (spec 83,
+/// criterion 1: THE FENCE). Both pre-existing signals above can still read a branch as
+/// terminal while a STRAGGLER spawn for the identical unit keeps working the very worktree
+/// this loop is about to remove (the deciding verdict integrates the unit while a slower
+/// confirmatory review lens is still running - the observed `u81c1` bug); [`spawn_fence`]
+/// closes that gap by consulting the unit's LATEST requested spawn directly. A branch with NO
+/// recorded spawn at all ([`SpawnFence::NoSpawn`]) sweeps exactly as before -
+/// the fence has nothing to add and must never itself become a reason dead residue lingers.
+/// Every fence-relevant decision (kept in flight, or removed with its terminal/hung evidence)
+/// is printed, so a worktree's vanish - or its being spared - is attributable from the run's
+/// own log output after the fact.
+///
+/// `declared_units` (spec 89, criterion 1, round 2 fix) is the `rigger/u/<slug>` set of the
+/// CURRENTLY LOADED workflow's own stages - config, never the event log - so it stays
+/// populated even at this project's very first run, before a single event has ever been
+/// recorded. It narrows ONLY the dirty-spare exception below to a unit THIS workflow actually
+/// declares: an unrelated, genuinely dead branch (a prior run's leftover, a hand-made test
+/// fixture) that happens to also be dirty is still reclaimed exactly as before this fix -
+/// dirtiness alone is not evidence of a halted spawn worth protecting; dirtiness on a branch
+/// this run's own definition still claims is.
+pub fn sweep_terminal(
+    repo: &str,
+    root: &str,
+    run_branch: &str,
+    live_branches: &std::collections::HashSet<String>,
+    declared_units: &std::collections::HashSet<String>,
+    events: &[Event],
+) -> Result<usize, Error> {
+    sweep_terminal_logged(
+        repo,
+        root,
+        run_branch,
+        live_branches,
+        declared_units,
+        events,
+        &mut |line| eprintln!("{line}"),
+    )
+}
+
+/// [`sweep_terminal`]'s real body, with its evidence lines routed through an injected `log`
+/// sink instead of a hardcoded `eprintln!` (strict DI, per this crate's own discipline: no
+/// hardcoded I/O a test cannot observe) - production wires stderr; the fence's own test
+/// module wires a `Vec<String>` collector so a KEPT vs. REMOVED decision's evidence text is
+/// itself an assertable fact, not merely a side effect no test can see.
+pub fn sweep_terminal_logged(
+    repo: &str,
+    root: &str,
+    run_branch: &str,
+    live_branches: &std::collections::HashSet<String>,
+    declared_units: &std::collections::HashSet<String>,
+    events: &[Event],
+    log: &mut dyn FnMut(&str),
+) -> Result<usize, Error> {
+    // Serialize this WHOLE sweep - the prune below and every candidate's own `git worktree
+    // remove --force` in the loop - against every other in-process admin-directory mutation
+    // this process makes for the SAME repository (spec 103 checkin round 4; see
+    // `repo_admin_lock`'s doc comment).
+    let repo_lock = repo_admin_lock(repo);
+    let _repo_guard = repo_lock.lock().unwrap();
+    git(repo, &["worktree", "prune"])?;
+    let out = run_git(repo, &["worktree", "list", "--porcelain"]).map_err(Error)?;
+    let mut removed = 0;
+    let mut dir: Option<String> = None;
+    for line in out.lines() {
+        if let Some(d) = line.strip_prefix("worktree ") {
+            dir = Some(d.to_string());
+        } else if let Some(branch) = line.strip_prefix("branch refs/heads/") {
+            let Some(d) = dir.take() else { continue };
+            if !d.starts_with(root) || branch == run_branch || live_branches.contains(branch) {
+                continue;
+            }
+            let merged = is_ancestor(repo, branch, run_branch);
+            if merged {
+                // A HALT NEVER DISCARDS A TREE (spec 89, criterion 1), the ordering contract
+                // between this sweep and `run_single_stage`'s halted-commit recovery
+                // (src/conductor.rs): that recovery captures a prior incarnation's abandoned
+                // edit as its own `wip` commit the instant a unit's worktree is adopted, but
+                // `rigger run` (`run_cli`) runs THIS sweep strictly BEFORE it ever gets that
+                // chance. A candidate that still carries uncommitted changes - an in-progress
+                // merge or a real content conflict included, since either always leaves the
+                // tree dirty - has not yet had its edit captured, so removing it here would
+                // discard it outright rather than merely defer the capture. This spares the
+                // candidate regardless of the fence below (even `NoSpawn`, which normally
+                // defers entirely to the ancestry signal): a store desynced from the worktree
+                // on disk - a restored snapshot, or this project's very first run, adopting a
+                // worktree that already exists - never gets a chance to record a spawn before
+                // this sweep runs, so the fence alone cannot protect it. An unreadable status
+                // (`run_git` errors) is treated as dirty too - liveness here can only be
+                // under-, never over-determined, exactly like `live_branches_for_sweep`'s own
+                // fail-closed read one call site up. A clean worktree in this same shape
+                // (`sweep_terminal_reclaims_a_merged_branch_with_no_spawn_recorded_at_all_
+                // unchanged`) is unaffected: it sweeps exactly as it did before this fix.
+                //
+                // Gated on `declared_units` too (round 2 fix,
+                // `step_start_sweep_spares_a_live_units_empty_diff_worktree_but_reclaims_a_dead_
+                // ancestor_leftover`): dirtiness ALONE is not proof of a halted spawn worth
+                // protecting - a genuinely dead, unrelated branch (a prior run's leftover
+                // registration, a hand-made fixture) this workflow never declared is just as
+                // dirty-looking and must still be reclaimed exactly as before this criterion; a
+                // branch this run's OWN definition still claims as one of its units is the one
+                // worth deferring for.
+                //
+                // The status read itself goes through [`path_is_dirty`] (round 3 fix,
+                // `arch-u89c1r2-dirty-check-duplicated-and-diverges-fail-direction`) - the same
+                // shared primitive `reclaim_orphan_scratch` (the `rigger` binary) calls too, rather than
+                // each growing its own inline `git status` call that can silently pick a
+                // different failure direction. `unwrap_or(true)`: an unreadable status fails
+                // CLOSED (dirty), never open - see that function's own doc comment for why.
+                let dirty = declared_units.contains(branch) && path_is_dirty(&d).unwrap_or(true);
+                if dirty {
+                    log(&format!(
+                        "rigger run: worktree sweep: kept {d:?} (branch {branch:?}) - \
+                         uncommitted changes are pending the halt-recovery commit"
+                    ));
+                    continue;
+                }
+                // THE FENCE (spec 83, criterion 1): the unit id doubles as the branch's
+                // `rigger/u/<slug>` tail - the same assumption `current_run_units`'
+                // dead/live-slug split already makes for a branch in this exact shape.
+                let unit = branch.strip_prefix("rigger/u/").unwrap_or(branch);
+                let fence = spawn_fence(events, unit);
+                if !fence.permits_reclaim() {
+                    log(&format!(
+                        "rigger run: worktree sweep: kept {d:?} (branch {branch:?}) - {}",
+                        fence.evidence(unit)
+                    ));
+                    continue;
+                }
+                if !matches!(fence, SpawnFence::NoSpawn) {
+                    log(&format!(
+                        "rigger run: worktree sweep: removing {d:?} (branch {branch:?}) - {}",
+                        fence.evidence(unit)
+                    ));
+                }
+                // Reap any process rooted inside this terminal worktree BEFORE removing it
+                // (spec 79, criterion 1): a crashed run process can leave a build or tool
+                // still running here, and this is the CRASH-recovery path, not the graceful
+                // `Worktree::remove` one - nothing else reaps it. `root` is the SAME resolved
+                // scratch root already used to confirm `d.starts_with(root)` above.
+                crate::reap::reap_processes_rooted_under(
+                    std::path::Path::new(&d),
+                    std::path::Path::new(root),
+                );
+                git(repo, &["worktree", "remove", "--force", &d])?;
+                reclaim_cache_sibling(&d, root);
+                removed += 1;
+            }
+        }
+    }
+    Ok(removed)
 }
 
 /// Whether `dir` already exists on disk AS the worktree that has `branch` checked out -
@@ -2371,7 +2548,7 @@ pub fn heal_corrupt_worktree_admin(repo: &str) {
 ///
 /// Every public entry point that mutates the admin directory takes this ONCE, for its whole
 /// call: [`Worktree::create`], [`Worktree::discard`], [`Worktree::remove`],
-/// and [`reclaim_worktree_on_branch`]. The helpers those
+/// [`sweep_terminal_logged`], and [`reclaim_worktree_on_branch`]. The helpers those
 /// entry points call - [`clear_worktree_dir`] and [`heal_corrupt_worktree_admin`] - are
 /// deliberately left LOCK-FREE: the underlying `std::sync::Mutex` is not reentrant, and
 /// every caller of either helper already holds this lock across the helper's call, so a
@@ -3381,6 +3558,35 @@ mod tests {
 
     fn exists(path: &str) -> bool {
         std::path::Path::new(path).exists()
+    }
+
+    /// [`sweep_terminal`] over `root` against `rigger-run`, with no live branch or declared unit.
+    fn sweep(repo_path: &str, root: &str, events: &[Event]) -> usize {
+        sweep_terminal(
+            repo_path,
+            root,
+            "rigger-run",
+            &std::collections::HashSet::new(),
+            &std::collections::HashSet::new(),
+            events,
+        )
+        .unwrap()
+    }
+
+    /// [`sweep`] through `sweep_terminal_logged`, also returning the evidence lines it printed.
+    fn sweep_logged(repo_path: &str, root: &str, events: &[Event]) -> (usize, Vec<String>) {
+        let mut lines = Vec::new();
+        let removed = sweep_terminal_logged(
+            repo_path,
+            root,
+            "rigger-run",
+            &std::collections::HashSet::new(),
+            &std::collections::HashSet::new(),
+            events,
+            &mut |l| lines.push(l.to_string()),
+        )
+        .unwrap();
+        (removed, lines)
     }
 
     #[test]
@@ -5824,6 +6030,87 @@ mod tests {
         );
     }
 
+    /// A never-advanced (terminal) unit worktree `done` and an in-flight one `live` whose
+    /// branch carries a commit the run branch does not have, under `root`; returns their dirs.
+    fn done_and_live_units(repo_path: &str, root: &str) -> (String, String) {
+        let (done_dir, _) = unit_wt(repo_path, root, "done");
+        let (live_dir, live) = unit_wt(repo_path, root, "live");
+        std::fs::write(std::path::Path::new(&live_dir).join("wip.txt"), "wip\n").unwrap();
+        live.commit("rigger: in-flight").unwrap();
+        (done_dir, live_dir)
+    }
+
+    #[test]
+    fn sweep_terminal_removes_merged_worktrees_and_keeps_inflight_ones() {
+        // Gap 14 maintenance: a worktree whose branch is already an ancestor of the
+        // run branch serves no in-flight unit and is swept; an unmerged branch is a
+        // live checkpoint and must be left alone. Only dirs under the scratch root
+        // are considered.
+        let (_repo, repo_path, root) = scratch_repo(true);
+        let (done_dir, live_dir) = done_and_live_units(&repo_path, &root);
+
+        assert_eq!(
+            sweep(&repo_path, &root, &[]),
+            1,
+            "exactly the terminal worktree is swept"
+        );
+        assert!(
+            !exists(&done_dir),
+            "the merged/never-advanced worktree is gone"
+        );
+        assert!(
+            std::path::Path::new(&live_dir).join("wip.txt").exists(),
+            "the in-flight worktree is untouched"
+        );
+    }
+
+    #[test]
+    fn sweep_terminal_spares_a_live_units_worktree_even_at_the_empty_diff_run_tip() {
+        // Spec 64 criterion 4: the merged-only ancestry rule alone is NOT sufficient. A
+        // PARKED unit whose attempt produced an EMPTY diff has a branch tip that IS an
+        // ancestor of the run branch (trivially - it never advanced past it) while the
+        // unit is still LIVE in review. Liveness - read from the current run's event-log
+        // slice, passed in as `live_branches` - must spare it despite it passing the
+        // ancestry test; a dead unit in the identical empty-diff shape is still swept.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        run_git(&repo_path, &["checkout", "-b", "rigger-run"]).unwrap();
+        let root = scratch_root(&repo_path, "", None);
+
+        // Live, empty-diff: branch created off the run branch, never advanced (so it IS
+        // an ancestor of run_branch, exactly like a terminal unit) but its unit is still
+        // in-flight per the current run's log.
+        let live_dir = format!("{root}/rigger-wt-live-empty-diff");
+        Worktree::create(&repo_path, &live_dir, "rigger/u/live-empty-diff", "").unwrap();
+
+        // Dead, empty-diff: the identical shape, but no live unit claims its branch - this
+        // is the case the pre-existing ancestry rule already swept and must keep sweeping.
+        let dead_dir = format!("{root}/rigger-wt-dead-empty-diff");
+        Worktree::create(&repo_path, &dead_dir, "rigger/u/dead-empty-diff", "").unwrap();
+
+        let mut live_branches = std::collections::HashSet::new();
+        live_branches.insert("rigger/u/live-empty-diff".to_string());
+
+        let removed = sweep_terminal(
+            &repo_path,
+            &root,
+            "rigger-run",
+            &live_branches,
+            &std::collections::HashSet::new(),
+            &[],
+        )
+        .unwrap();
+        assert_eq!(removed, 1, "only the dead empty-diff worktree is swept");
+        assert!(
+            std::path::Path::new(&live_dir).exists(),
+            "the live unit's worktree survives despite its branch tip equalling the run tip"
+        );
+        assert!(
+            !std::path::Path::new(&dead_dir).exists(),
+            "a dead unit in the identical empty-diff shape is still reclaimed"
+        );
+    }
+
     // --- Spec 83, criterion 1: THE FENCE (direct `spawn_fence` unit tests) ---
 
     use crate::conductor::STREAM;
@@ -6052,6 +6339,281 @@ mod tests {
         let scoped = crate::run::current_run(&events);
 
         assert_eq!(spawn_fence(scoped, "reused-slug"), SpawnFence::NoSpawn);
+    }
+
+    /// A `SpawnRequested` event for `unit`, unanswered - the shape `spawn_fence` reads as
+    /// "in flight".
+    fn requested(unit: &str) -> Event {
+        let req = crate::spawn::test_request(unit, unit, "implementer", 0, "task");
+        req.to_event().unwrap()
+    }
+
+    /// A `SpawnRequested` for `unit` followed by the `SpawnResult` `result` builds for its id:
+    /// `SpawnResult::ok` is the shape `spawn_fence` reads as "terminal", a liveness fault the
+    /// shape it reads as "hung".
+    fn requested_with(unit: &str, result: impl FnOnce(&str) -> SpawnResult) -> Vec<Event> {
+        let req = crate::spawn::test_request(unit, unit, "implementer", 0, "task");
+        let res = result(&req.id);
+        vec![req.to_event().unwrap(), res.to_event().unwrap()]
+    }
+
+    /// Sweep a merged unit worktree `slug` that reads terminal by BOTH pre-spec-83 signals
+    /// (merged into the run branch, absent from `live_branches`) with `events` recorded: it is
+    /// reclaimed exactly when `reclaimed`, and otherwise survives on disk.
+    fn assert_sweep_of_a_merged_unit(slug: &str, events: &[Event], reclaimed: bool, why: &str) {
+        let (_repo, repo_path, root) = scratch_repo(true);
+        let (dir, _) = unit_wt(&repo_path, &root, slug);
+        assert_eq!(
+            sweep(&repo_path, &root, events),
+            usize::from(reclaimed),
+            "{why}"
+        );
+        assert_eq!(exists(&dir), !reclaimed, "{why}");
+    }
+
+    crate::test_cases! {
+        /// Spec 83, criterion 1: THE FENCE - exactly the shape that raced ahead of a straggler
+        /// spawn in the observed bug (a reviewer's verdict integrates the unit while an
+        /// adversary/sdet lens for the SAME unit is still working the identical worktree). No
+        /// liveness MARKER exists at all - the Design's explicit "absence is never reapable
+        /// evidence on its own" case - so the worktree survives despite reading terminal by
+        /// every pre-spec-83 signal.
+        sweep_terminal_spares_a_merged_branch_whose_units_latest_spawn_is_still_in_flight:
+            assert_sweep_of_a_merged_unit(
+                "fenced",
+                &[requested("fenced")],
+                false,
+                "an in-flight latest spawn must fence off the reclaim entirely",
+            );
+        /// The counterpart to the fence case: once the SAME shape's latest spawn has actually
+        /// answered, the fence must not block the pre-existing removal.
+        sweep_terminal_reclaims_a_merged_branch_once_its_latest_spawn_has_a_real_result:
+            assert_sweep_of_a_merged_unit(
+                "answered",
+                &requested_with("answered", |id| SpawnResult::ok(id, "done")),
+                true,
+                "a terminal latest spawn does not block the reclaim",
+            );
+        /// A latest spawn the liveness sweep already classified hung (a recorded
+        /// liveness-fault SpawnResult, spec 10 unit 3) is ALSO terminal for fencing purposes:
+        /// "hung past max_wall_clock" is the fence's other reclaim-eligible arm.
+        sweep_terminal_reclaims_a_merged_branch_whose_latest_spawn_is_hung:
+            assert_sweep_of_a_merged_unit(
+                "hung",
+                &requested_with("hung", |id| {
+                    SpawnResult::liveness_fault(id, "stale marker", "infra")
+                }),
+                true,
+                "a hung latest spawn does not block the reclaim",
+            );
+        /// Back-compat: a branch whose unit never recorded ANY spawn (`SpawnFence::NoSpawn`)
+        /// must sweep exactly as it did before spec 83 - the fence has nothing to add and must
+        /// never itself become a NEW reason to keep dead residue around forever.
+        sweep_terminal_reclaims_a_merged_branch_with_no_spawn_recorded_at_all_unchanged:
+            assert_sweep_of_a_merged_unit("nospawn", &[], true, "no spawn recorded at all");
+    }
+
+    #[test]
+    fn sweep_terminal_spares_a_dirty_no_spawn_worktree_pending_halt_recovery() {
+        // Spec 89, criterion 1 (A HALT NEVER DISCARDS A TREE), round 2 fix
+        // (sdet-u89c1-sweep-terminal-discards-halted-tree): a worktree can exist, dirty, at
+        // this exact "branch tip is an ancestor of run_branch, no spawn ever recorded" shape
+        // for a REAL reason, not just the back-compat test above's clean one - a store
+        // restored from an older snapshot (or this project's very first `rigger run`) whose
+        // event log has not yet caught up to a worktree already sitting on disk. The
+        // halted-commit recovery that would turn this dirt into a durable `wip` commit lives
+        // in `run_single_stage` (src/conductor.rs), which `rigger run` reaches strictly AFTER
+        // this sweep (`run_cli`) - so sweeping a dirty candidate here, before that recovery
+        // ever runs, discards the tree outright rather than merely deferring its capture.
+        // `SpawnFence::NoSpawn` alone (the back-compat test just above) must keep sweeping a
+        // CLEAN worktree in this shape exactly as before; only DIRTY content changes the
+        // outcome, regardless of the fence - PROVIDED the branch is one `declared_units`
+        // names (round 3 fix,
+        // `step_start_sweep_spares_a_live_units_empty_diff_worktree_but_reclaims_a_dead_
+        // ancestor_leftover`): a dirty branch this run's own workflow does NOT declare is
+        // still genuinely dead residue, not a halted spawn, and is swept exactly as before -
+        // pinned by the second half of this test below.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        run_git(&repo_path, &["checkout", "-b", "rigger-run"]).unwrap();
+        let root = scratch_root(&repo_path, "", None);
+
+        let dir = format!("{root}/rigger-wt-halted");
+        Worktree::create(&repo_path, &dir, "rigger/u/halted", "").unwrap();
+        std::fs::write(
+            std::path::Path::new(&dir).join("halted-work.txt"),
+            "abandoned mid-edit\n",
+        )
+        .unwrap();
+
+        let mut declared_units = std::collections::HashSet::new();
+        declared_units.insert("rigger/u/halted".to_string());
+        let removed = sweep_terminal(
+            &repo_path,
+            &root,
+            "rigger-run",
+            &std::collections::HashSet::new(),
+            &declared_units,
+            &[],
+        )
+        .unwrap();
+        assert_eq!(
+            removed, 0,
+            "a dirty candidate this workflow declares is spared, never force-removed"
+        );
+        assert!(
+            std::path::Path::new(&dir).join("halted-work.txt").exists(),
+            "the abandoned edit must survive the sweep untouched"
+        );
+
+        // The negative-space twin: the IDENTICAL dirty, no-spawn, empty-diff shape, but for a
+        // branch this workflow does NOT declare - genuinely dead, unrelated residue (a prior
+        // run's leftover registration, a hand-made fixture), not a halted spawn worth
+        // protecting - is still reclaimed exactly as it was before this criterion.
+        let orphan_dir = format!("{root}/rigger-wt-undeclared-orphan");
+        Worktree::create(&repo_path, &orphan_dir, "rigger/u/undeclared-orphan", "").unwrap();
+        std::fs::write(
+            std::path::Path::new(&orphan_dir).join("stray.txt"),
+            "unrelated debris\n",
+        )
+        .unwrap();
+        let removed = sweep_terminal(
+            &repo_path,
+            &root,
+            "rigger-run",
+            &std::collections::HashSet::new(),
+            &declared_units,
+            &[],
+        )
+        .unwrap();
+        assert_eq!(
+            removed, 1,
+            "a dirty candidate this workflow never declared is still reclaimed"
+        );
+        assert!(
+            !std::path::Path::new(&orphan_dir).exists(),
+            "the undeclared, unrelated worktree is gone"
+        );
+    }
+
+    #[test]
+    fn sweep_terminal_prints_evidence_for_a_kept_decision_but_not_for_a_removed_no_spawn_one() {
+        // Spec 83, criterion 1: "each sweep decision is attributable from the log with its
+        // evidence". Drives `sweep_terminal_logged` directly (the DI seam) so the printed
+        // evidence text itself is an assertable fact: a FENCED (kept) worktree names WHY in
+        // the log, while the ordinary NO-SPAWN removal (the ubiquitous common case, unrelated
+        // to this fence) stays exactly as silent as it was before spec 83 - no new noise for
+        // every routine integration.
+        let (_repo, repo_path, root) = scratch_repo(true);
+        unit_wt(&repo_path, &root, "fenced");
+        unit_wt(&repo_path, &root, "nospawn");
+
+        let (removed, lines) = sweep_logged(&repo_path, &root, &[requested("fenced")]);
+        assert_eq!(removed, 1, "only the no-spawn worktree is reclaimed");
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("kept") && l.contains("fenced") && l.contains("in flight")),
+            "the fenced (kept) decision must be attributable from the log: {lines:?}"
+        );
+        assert!(
+            !lines.iter().any(|l| l.contains("nospawn")),
+            "the ordinary no-spawn removal stays silent, exactly as before spec 83: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn sweep_terminal_prints_evidence_for_a_removed_terminal_spawn_decision() {
+        // The counterpart: a MERGED branch whose latest spawn genuinely answered is REMOVED,
+        // and that removal is ALSO attributable - the evidence line must fire on the
+        // REMOVING arm, not just the KEPT one (this is what
+        // `sweep_terminal_prints_evidence_for_a_kept_decision...` cannot pin alone: a
+        // flipped condition that prints on the WRONG arm still passes that test's `nospawn`
+        // exclusion since "answered" isn't "nospawn").
+        let (_repo, repo_path, root) = scratch_repo(true);
+        unit_wt(&repo_path, &root, "answered");
+
+        let events = requested_with("answered", |id| SpawnResult::ok(id, "done"));
+        let (removed, lines) = sweep_logged(&repo_path, &root, &events);
+        assert_eq!(removed, 1);
+        assert!(
+            lines.iter().any(|l| l.contains("removing")
+                && l.contains("answered")
+                && l.contains("terminal")),
+            "the removed decision must be attributable from the log: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn sweep_terminal_reclaims_a_crash_left_terminal_units_per_unit_build_cache() {
+        // Gap 19 CRASH-recovery path: a step process killed before it reached
+        // `Worktree::remove` leaves its unit worktree STILL REGISTERED, so the graceful
+        // reclamation never ran and its sibling per-unit build cache (`cargo-target-<slug>`)
+        // is dead weight on disk. When the next step's sweep removes that still-registered
+        // TERMINAL worktree it must also reclaim the sibling cache; an IN-FLIGHT unit's cache
+        // (its worktree is kept) must be left untouched. (The DOMINANT graceful path, where
+        // `Worktree::remove` reclaims the cache directly, is pinned by
+        // `worktree_remove_reclaims_the_sibling_per_unit_cache`.)
+        let (_repo, repo_path, root) = scratch_repo(true);
+        done_and_live_units(&repo_path, &root);
+        let done_cache = format!("{root}/{UNIT_CACHE_PREFIX}done");
+        populate(&done_cache, &["incremental"]);
+        let live_cache = format!("{root}/{UNIT_CACHE_PREFIX}live");
+        populate(&live_cache, &[]);
+
+        assert_eq!(
+            sweep(&repo_path, &root, &[]),
+            1,
+            "exactly the terminal unit worktree is swept"
+        );
+        assert!(
+            !exists(&done_cache),
+            "the swept unit's per-unit build cache must be removed alongside its worktree"
+        );
+        assert!(
+            exists(&live_cache),
+            "an in-flight unit's build cache must be left untouched"
+        );
+    }
+
+    #[test]
+    fn sweep_terminal_reaps_a_process_rooted_in_a_terminal_worktree_before_removing_it() {
+        // spec 79 inventory item 1: `sweep_terminal` (crash recovery) removed a terminal
+        // worktree via a bare `git worktree remove --force` with no reap of its own - a build
+        // or tool a killed step process left running inside it outlived the removed dir. Mirrors
+        // `remove_reaps_a_process_rooted_inside_the_worktree_and_spares_one_outside`'s fixture
+        // shape (SIGTERM-ignoring, so only the SIGKILL escalation ends it) but drives it through
+        // `sweep_terminal` instead of `Worktree::remove`.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        run_git(&repo_path, &["checkout", "-b", "rigger-run"]).unwrap();
+        let root = scratch_root(&repo_path, "", None);
+
+        let done_dir = format!("{root}/{UNIT_WORKTREE_PREFIX}sweepreap");
+        Worktree::create(&repo_path, &done_dir, "rigger/u/sweepreap", "").unwrap();
+        let done_path = std::path::Path::new(&done_dir).to_path_buf();
+
+        assert_teardown_reaps_what_is_rooted_inside(
+            &done_path,
+            None,
+            || {
+                let removed = sweep_terminal(
+                    &repo_path,
+                    &root,
+                    "rigger-run",
+                    &std::collections::HashSet::new(),
+                    &std::collections::HashSet::new(),
+                    &[],
+                )
+                .unwrap();
+                assert_eq!(removed, 1, "the terminal worktree is swept");
+            },
+            "sweep_terminal",
+        );
+        assert!(
+            !done_path.exists(),
+            "the terminal worktree is still removed once its rooted process is reaped"
+        );
     }
 
     /// `Worktree::remove` on the unit worktree `slug` must reclaim its populated

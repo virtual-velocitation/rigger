@@ -79,8 +79,9 @@ const DASH_URL_FILE: &str = "dash.url";
 
 /// The per-project dash marker file, under [`RIGGER_DIR`] alongside [`DASH_URL_FILE`]: the
 /// port + pid of a dashboard serving this project (a [`dash::DashMarker`]). `rigger status`
-/// and `rigger watch` read it to probe a recorded dash; the guard-bound dash `rigger run`
-/// starts writes none, so an absent file is the ordinary state during a run.
+/// and `rigger watch` read it to probe a recorded dash. `rigger run` writes it when it starts
+/// its dash and removes it when it reaps that dash, so an absent file is the ordinary state
+/// between runs and under a dash opt-out.
 const DASH_MARKER_FILE: &str = "dash.marker";
 
 /// The per-project breadcrumb, under [`RIGGER_DIR`], naming the run id whose OWN drive most
@@ -1925,6 +1926,54 @@ fn acquire_step_lock(rigger_dir: &Path) -> Result<HeldLock, Box<dyn std::error::
     })
 }
 
+/// The run-start sweep's liveness decision (spec 64, criterion 4 fix): given the outcome of
+/// reading the CURRENT run's stream, decide the live branches `run_cli` hands to
+/// `worktree::sweep_terminal` - or that the sweep must not run at all.
+///
+/// Fails CLOSED (`None`) on an unreadable stream, mirroring the fail-closed convention
+/// `reclaim_orphan_scratch` and the run teardown already use: liveness can only be UNDER- not
+/// OVER-determined, so when `store.read_stream` errors (a real failure class under WAL-mode
+/// concurrent writers - see `SQLITE_BUSY_SNAPSHOT` in `eventstore/sqlite.rs`) this returns
+/// `None` and prints a warning, which the caller reads as "skip the sweep entirely" - never as
+/// an empty live set. An empty live set means "nobody is live" (still runs the sweep,
+/// reclaiming everything the ancestry rule would), the OPPOSITE of "we don't know who is live" -
+/// conflating the two would silently revert to the ancestry-only rule that force-removes a
+/// live unit's empty-diff worktree mid-review.
+fn live_branches_for_sweep(
+    read: Result<Vec<Event>, rigger::eventstore::Error>,
+) -> Option<std::collections::HashSet<String>> {
+    match read {
+        Ok(events) => Some(current_run_units(&events).live_branches),
+        Err(e) => {
+            eprintln!("rigger run: scratch sweep skipped (liveness unreadable): {e}");
+            None
+        }
+    }
+}
+
+/// Reap any process rooted in a leftover unit worktree `dir` (spec 23), then reclaim the dir -
+/// the worktree half of the spec-34 orphan-sweep, the analog of [`reap_then_remove_dir`] for a
+/// scratch entry git may still track. A killed run can leave a `rigger-wt-<slug>` worktree
+/// still REGISTERED, so a plain `remove_dir_all` would strand a dangling admin entry; `git
+/// worktree remove --force` deregisters it (and tolerates a dirty tree). A bare leftover dir
+/// git never tracked makes that command fail, so it falls through to the plain removal, and any
+/// dangling admin entry a partial removal leaves is pruned by [`rigger::worktree::sweep_terminal`]
+/// at the next run start. Best-effort - a failed reclaim never aborts the sweep.
+/// `authorized_root` is the resolved scratch root `dir` was enumerated from (spec 78 round 2).
+fn reap_then_remove_worktree(repo: &str, dir: &std::path::Path, authorized_root: &std::path::Path) {
+    rigger::reap::reap_processes_rooted_under(dir, authorized_root);
+    let deregistered = !repo.is_empty()
+        && subprocess::git_in(repo)
+            .args(["worktree", "remove", "--force"])
+            .arg(dir)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+    if !deregistered {
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
 /// Run `run_id`'s progress reports out of `project`'s namespace of the progress store
 /// `backend` - its own per-run stream alone ([`progress::read_run`], spec 101), the one progress
 /// read `rigger status` and the dash snapshot fold. An unreadable stream is no progress.
@@ -3193,10 +3242,11 @@ fn watch_poll_over(
     // verified with the same real serve probe `dash_serving_on` uses - a marker naming
     // a dead or hung-holder pid never reads as serving, exactly like c4's status truth.
     //
-    // `rigger run` (`start_run_dashboard`/`spawn_run_dashboard`) writes no marker; it records
-    // the `dash.url` and `dash.attempt` breadcrumbs only. Without a fallback, a marker-absent
-    // project would read as `NotRecorded` regardless of whether a dash was ever actually up -
-    // silently blind for `rigger run` (round-3 reject cause
+    // `rigger run` (`spawn_run_dashboard`) records the marker beside the `dash.url` and
+    // `dash.attempt` breadcrumbs and removes it when it reaps its dash, so the URL outlives the
+    // marker. Without a fallback, a marker-absent project would read as `NotRecorded` regardless
+    // of whether a dash was ever actually up - silently blind to the URL a run left (round-3
+    // reject cause
     // adv-u69c1r3-watch-once-inherits-marker-absent-blindspot). So when no marker
     // exists, probe the PORT EMBEDDED IN THE RECORDED URL directly instead - the same
     // safe, timeout-bounded `dash::dash_answer_on` probe, just without a pid to name. Only
@@ -3380,8 +3430,8 @@ fn spec_lint_warning_lines(spec_path: &str, text: &str) -> Vec<String> {
 // no longer live, orphaned build caches, shadow `events.db` stores (the misfiling hazard
 // proven by adversary finding adv9-shadow-store-reopens-defect), and dead `rigger/u/*`
 // branches - as warnings that NEVER fail validation and NEVER delete anything. Cleanup
-// belongs to the teardown reaps (`Worktree::remove`, `reclaim_run_scratch`) and `rigger
-// reset`; this half only reports.
+// stays with the run-start sweeps (`worktree::sweep_terminal`, `reclaim_orphan_scratch`) and
+// the run teardown (`reclaim_run_scratch`); this half only reports.
 
 /// The leftover artifacts a `rigger validate` residue scan found under the scratch root
 /// (plus dead `rigger/u/*` branches), each with a size where one is meaningful. Held as
@@ -3465,8 +3515,9 @@ fn current_run_units(events: &[Event]) -> RunUnits {
         // still running after the deciding verdict already integrated it - the observed
         // `u81c1` bug); `spawn_fence` closes that gap by consulting the unit's LATEST
         // requested spawn directly, so `dead_slugs`/`live_branches` stay the ONE liveness
-        // authority the residue scan (`worktree_belongs_to_live`) reads, rather than leaving a
-        // second notion of "in flight" for callers to reconcile themselves.
+        // authority every consumer (`sweep_terminal`, `reclaim_orphan_scratch` via
+        // `worktree_belongs_to_live`) already reads, rather than leaving a second notion of
+        // "in flight" for callers to reconcile themselves.
         let fenced_live = run.is_terminal(&u.id)
             && matches!(
                 rigger::worktree::spawn_fence(scoped, &u.id),
@@ -3509,6 +3560,126 @@ fn live_slugs(
         .collect()
 }
 
+/// Orphan-sweep backstop (spec 34, criterion 2): reclaim every scratch entry under `root`
+/// that NO live unit of the current run owns - the ownership backstop that makes the
+/// clean-up guarantee independent of agent goodwill. Two shapes are reclaimed: a
+/// `rigger-wt-<slug>` worktree and a per-unit cache - a `cargo-target-<slug>` build cache (Gap
+/// 19) or a `rigger-gate-<slug>` gate scratch root (spec 113) - whose `<slug>` names no live unit -
+/// a prior run's killed-process leftover, or an ad-hoc
+/// `cargo-target-<slug>` an agent wrote outside its assigned path (the unbounded per-agent
+/// build-cache leak spec 34 names). Both are removed only when they are NOT live-owned,
+/// decided by the SAME [`worktree_belongs_to_live`] predicate `rigger validate`'s residue
+/// report reads over the current run's [`RunUnits`] - one definition of "live-owned", not a
+/// parallel notion.
+///
+/// The never-delete-live-owned invariant (spec 34 Global Constraint) is what the liveness key
+/// buys: a LIVE unit's worktree/cache is spared, and so are the shared live-spawn areas this
+/// backstop deliberately never touches - `agent-scratch` (probe repos and verify builds an
+/// in-flight worker parks there), `agent-live` (per-spawn liveness markers), and the bare
+/// shared `cargo-target`/`target` a live spawn may still be building into (the driver's
+/// `CARGO_TARGET_DIR`). Those are run-level scratch reclaimed by the run's fixpoint/teardown
+/// once no spawn is live, never by this run-start backstop, so it can never delete a target a
+/// running build is writing. Best-effort per entry: a failed reclaim never aborts the sweep.
+///
+/// `declared_units` (spec 89, criterion 1, round 2 fix) is the CURRENTLY loaded workflow's own
+/// `rigger/u/<slug>` stages - config, never the event log, the SAME set `run_cli` also hands
+/// `sweep_terminal` - narrowing this backstop's own dirty-spare exception (see the worktree arm
+/// below) to a unit this run's definition actually declares.
+///
+/// Returns how many entries were reclaimed.
+fn reclaim_orphan_scratch(
+    repo: &str,
+    root: &str,
+    run_units: &RunUnits,
+    declared_units: &std::collections::HashSet<String>,
+) -> usize {
+    let live = live_slugs(&run_units.live_branches);
+    let declared_slugs = live_slugs(declared_units);
+    let root_path = std::path::Path::new(root);
+    let mut removed = 0;
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return 0;
+    };
+    for entry in entries.flatten() {
+        let Ok(ft) = entry.file_type() else { continue };
+        if !ft.is_dir() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let path = entry.path();
+        if name.starts_with(rigger::worktree::UNIT_WORKTREE_PREFIX) {
+            // A leftover unit worktree no live unit owns. Reap any process still rooted in it
+            // (a leaked build) BEFORE removing it, and deregister it from git if a killed run
+            // left it registered.
+            //
+            // A HALT NEVER DISCARDS A TREE (spec 89, criterion 1), round 2 fix
+            // (sdet-u89c1-sweep-terminal-discards-halted-tree, generalized): this backstop is a
+            // SECOND worktree-disposition authority alongside `sweep_terminal` - both run from
+            // `run_cli`, strictly before `conductor::run_serving` ever gets a chance to capture a
+            // halted spawn's abandoned edit as its own `wip` commit - and `reap_then_remove_
+            // worktree`'s own `git worktree remove --force` "also tolerates a dirty tree" (its
+            // doc comment), i.e. force-discards one. "Not live-owned" alone is exactly the
+            // shape a store/worktree desync (a restored snapshot, or this project's very first
+            // run) leaves a genuine, not-yet-recorded unit in, so a STILL-DIRTY candidate whose
+            // slug this workflow DECLARES is spared here too, regardless of liveness - mirroring
+            // `sweep_terminal_logged`'s identical guard. Gated on `declared_slugs`: dirtiness
+            // alone is not evidence of a halted spawn - a genuinely dead, undeclared branch that
+            // happens to also carry untracked content is still reclaimed exactly as before this
+            // criterion. The status read is scoped to a REAL linked worktree only
+            // (`path.join(".git")` present) - a bare directory git never tracked has no `.git`
+            // of its own, and running `git status` from inside one climbs to whatever repo
+            // happens to enclose `root` (the "act on the enclosing repository" hazard spec 89's
+            // own STEP-RESOLVES-ONE-ROOT criterion names), reading unrelated content as "dirty" -
+            // falling back, for that shape, to the ORIGINAL unconditional reclaim, unchanged.
+            //
+            // The status read itself now goes through [`rigger::worktree::path_is_dirty`]
+            // (round 3 fix, `arch-u89c1r2-dirty-check-duplicated-and-diverges-fail-direction`)
+            // instead of a second, independently-hardcoded `Command::new("git")` call: round 2's
+            // own inline version collapsed ANY spawn failure or non-zero git exit to `dirty =
+            // false` (fail OPEN, reclaim/discard), the exact opposite of `sweep_terminal_logged`'s
+            // `unwrap_or(false)` (which, negated into this same `dirty` polarity, fails CLOSED -
+            // spare) on the identical unreadable-status error, despite this comment already
+            // claiming the two mirror each other. Sharing the one primitive - and picking the
+            // same `unwrap_or(true)` fail-closed direction the sibling call site now also picks
+            // explicitly - makes that divergence structurally impossible to reintroduce.
+            let slug = name.trim_start_matches(rigger::worktree::UNIT_WORKTREE_PREFIX);
+            let dirty = declared_slugs.contains(slug)
+                && path.join(".git").exists()
+                && rigger::worktree::path_is_dirty(&path.to_string_lossy()).unwrap_or(true);
+            if !worktree_belongs_to_live(&name, &live, &run_units.dead_slugs) && !dirty {
+                reap_then_remove_worktree(repo, &path, root_path);
+                removed += 1;
+            }
+        } else if let Some(slug) = rigger::worktree::unit_scratch_slug(&name) {
+            // A per-unit / ad-hoc `cargo-target-<slug>` cache, a unit's review cache
+            // (`review-target-<slug>`), or its gate scratch root (`rigger-gate-<slug>`, spec 113).
+            // Mirror the worktree liveness check on the
+            // reconstructed `rigger-wt-<slug>` name so either stays in lockstep with its unit's
+            // liveness (a live unit's is in use, not residue). A bare `cargo-target` (no
+            // `-<slug>` tail) never matches and is spared.
+            let wt = format!("{}{slug}", rigger::worktree::UNIT_WORKTREE_PREFIX);
+            if !worktree_belongs_to_live(&wt, &live, &run_units.dead_slugs) {
+                reap_then_remove_dir(&path, root_path);
+                removed += 1;
+            }
+        } else if is_build_cache_tombstone(&name) {
+            // A stray shared-build-cache tombstone (spec 77 criterion 5): the enumerable
+            // residue an interrupted `reclaim_shared_build_cache` delete can leave behind
+            // (a killed process, a filesystem error mid-`remove_dir_all`). NO liveness
+            // check, unlike every other arm here - the rename that created this name is
+            // the LAST thing that will ever reference it by path, so it is always safe to
+            // reap unconditionally (spec 77 Design: "correct precisely because nothing can
+            // ever want it back").
+            reap_then_remove_dir(&path, root_path);
+            removed += 1;
+        }
+        // Any other entry (agent-scratch, agent-live, a bare cargo-target/target, a review
+        // worktree) is either a live-shared area or not rigger's slug-keyed scratch: spared
+        // here and reclaimed, if ever, by the run-level fixpoint/teardown - never this backstop.
+    }
+    removed
+}
+
 /// Scan `scratch_root` (a filesystem read, no mutation) plus the given local `rigger/u/*`
 /// branches for residue no live unit owns. `live_slugs` are the `<slug>` of live units and
 /// `live_branches` their full branch names; `dead_slugs` are the `<slug>` of terminal units
@@ -3541,12 +3712,13 @@ fn scan_residue(
             } else if let Some(slug) = rigger::worktree::unit_scratch_slug(&name) {
                 // A per-unit build cache (`cargo-target-<slug>`, Gap 19), review cache
                 // (`review-target-<slug>`) or gate scratch root (`rigger-gate-<slug>`, spec 113).
-                // It is reclaimed with its unit's worktree by `Worktree::remove` at the end of
-                // the unit's stage, so it is residue ONLY when that worktree is not live -
-                // a leftover a crash stranded before that removal ran, or from an older run. A LIVE
-                // unit's cache is in use, not residue. Mirror the worktree liveness check on the
-                // reconstructed `rigger-wt-<slug>` name so the cache and its worktree stay in
-                // lockstep.
+                // It is reclaimed with
+                // its unit's worktree on BOTH the graceful (`Worktree::remove`) and crash
+                // (`sweep_terminal`) paths, so it is residue ONLY when that worktree is no
+                // longer live - a leftover a crash stranded between removing the worktree and
+                // reclaiming the cache, or from an older run. A LIVE unit's cache is in use,
+                // not residue. Mirror the worktree liveness check on the reconstructed
+                // `rigger-wt-<slug>` name so the cache and its worktree stay in lockstep.
                 let wt_name = format!("{}{slug}", rigger::worktree::UNIT_WORKTREE_PREFIX);
                 if !worktree_belongs_to_live(&wt_name, live_slugs, dead_slugs) {
                     report.caches.push((name, dir_size_bytes(&entry.path())));
@@ -3694,7 +3866,9 @@ enum BuildCacheReclaim {
 /// process- and time-qualified so concurrent or rapid-succession reclaims (of a cache a
 /// build recreated in between) can never collide on one name - no lock is held across the
 /// delete, so uniqueness here is what keeps two tombstones from ever fighting over the same
-/// path.
+/// path. Named for [`is_build_cache_tombstone`] to recognize (spec 77 Design: "a failed
+/// tombstone delete leaves an ENUMERABLE residue shape the orphan sweep reaps
+/// unconditionally").
 fn build_cache_tombstone_path(cache: &Path) -> PathBuf {
     let name = cache
         .file_name()
@@ -3707,10 +3881,22 @@ fn build_cache_tombstone_path(cache: &Path) -> PathBuf {
     cache.with_file_name(format!("{name}.tombstone-{}-{nanos}", std::process::id()))
 }
 
+/// Whether `name` (a bare filename, no path) is a [`build_cache_tombstone_path`] residue -
+/// the enumerable shape a reclaim's own failed (or killed-mid-flight) delete can leave
+/// behind. Nothing ever references a tombstone by path again once the rename lands (the
+/// reclaim that created it either deletes it itself or is gone), so ANY match here is safe
+/// to reap unconditionally - no liveness check needed, unlike the live cache name itself.
+fn is_build_cache_tombstone(name: &str) -> bool {
+    name.starts_with(&format!(
+        "{}.tombstone-",
+        rigger::worktree::SHARED_BUILD_CACHE_NAME
+    ))
+}
+
 /// Reclaim the shared gate build cache at `cache` (spec 77 criterion 5, BOUNDED SHARED
 /// CACHE) - the ONE mutation authority over this resource: both the operator-invoked
 /// `rigger reset --build-cache` ([`reset_build_cache`]) and the best-effort run-teardown
-/// reclaim ([`reclaim_run_scratch`]) call this, so the safety protocol can never diverge
+/// sweep ([`reclaim_run_scratch`]) call this, so the safety protocol can never diverge
 /// between call sites (spec 77 Global Constraint 3: fail-safe deletion only, skip anything
 /// a liveness guard claims).
 ///
@@ -3737,7 +3923,8 @@ fn build_cache_tombstone_path(cache: &Path) -> PathBuf {
 /// A failed rename (still holding the lock, released before returning) changes nothing on
 /// disk and surfaces the `io::Error`; the delete itself is best-effort
 /// (`reap_then_remove_dir`'s own swallowed-`Result` convention) - a failed or
-/// killed-mid-flight delete leaves the `<cache>.tombstone-<pid>-<nanos>` sibling on disk.
+/// killed-mid-flight delete leaves an enumerable tombstone [`is_build_cache_tombstone`]
+/// recognizes, never a silently unrecoverable leak.
 ///
 /// `scratch_root` is the resolved scratch root `cache` was itself joined onto by every real
 /// caller (`cache = scratch.join(SHARED_BUILD_CACHE_NAME)`) - it authorizes the tombstone
@@ -3846,9 +4033,9 @@ fn format_residue(report: &ResidueReport) -> Vec<String> {
 /// dead entries `rigger reset --build-cache` removes one by one ([`reclaim_dead_footprint`]) -
 /// the SAME entries whose bytes `dead_bytes` counts, so the advisory and the reaper read one
 /// accounting (gap 96). It is empty for a category that verb does not reclaim entry by entry:
-/// store and backups (never auto-deleted), worktrees (git-registered, removed by hand - see
-/// [`FOOTPRINT_RECLAIM_HINT_UNIT_SCOPED`]), and the shared build cache (reclaimed whole, under its
-/// guard, by [`reclaim_shared_build_cache`]).
+/// store and backups (never auto-deleted), worktrees (git-registered, reclaimed by the next
+/// `rigger run`'s start sweeps), and the shared build cache (reclaimed whole, under its guard, by
+/// [`reclaim_shared_build_cache`]).
 #[derive(Debug, Clone, PartialEq)]
 struct FootprintCategory {
     name: &'static str,
@@ -3874,14 +4061,19 @@ struct DeadEntry {
 /// is reported) or fixed, never per-project configurable.
 const FOOTPRINT_DEAD_SHARE_THRESHOLD_PCT: u64 = 50;
 
-/// Reclaim hint for dead worktrees: no rigger verb reclaims a dead unit worktree, so the hint
-/// names the manual path - remove the listed dirs, then let git drop their registrations.
+/// Reclaim hint for dead worktrees: reclaimed automatically the moment the next `rigger run`
+/// starts ([`rigger::worktree::sweep_terminal`] and [`reclaim_orphan_scratch`]), which deregister
+/// each from git as they remove it - so a dead entry an operator sees here is transient, not a
+/// leak requiring manual action - naming both the automatic path and the manual fallback for an
+/// operator with no run to start.
 const FOOTPRINT_RECLAIM_HINT_UNIT_SCOPED: &str =
-    "remove the listed dirs directly, then `git worktree prune` drops their registrations";
+    "reclaimed automatically by the next `rigger run`, or remove the listed dirs directly";
 
 /// Reclaim hint for dead per-unit caches (gap 96): `rigger reset --build-cache` reclaims them
-/// now.
-const FOOTPRINT_RECLAIM_HINT_UNIT_CACHES: &str = "`rigger reset --build-cache` reclaims it now";
+/// now, and the next `rigger run`'s orphan backstop ([`reclaim_orphan_scratch`]) would too - an
+/// operator with no run to start needs the verb, not a run that may never come.
+const FOOTPRINT_RECLAIM_HINT_UNIT_CACHES: &str =
+    "`rigger reset --build-cache` reclaims it now (the next `rigger run` also does)";
 
 /// Reclaim hint for the registered-scratch-roots category (spec 77 criterion 6): a dead spawn
 /// leaf is reclaimed when its spawn's result records - the host reclaims it for every spawn it
@@ -5185,6 +5377,7 @@ mod tests {
     use crate::test_support::assert_teardown_reaps_what_is_rooted_inside;
     use crate::test_support::git_init_quiet;
     use crate::test_support::git_ok;
+    use crate::test_support::run_git;
     use crate::test_support::write_file;
     use crate::test_support::CwdGuard;
     use rigger::spawn::SpawnEvent;
@@ -6674,9 +6867,10 @@ mod tests {
         // (Integrated), the pre-spec-83 signal `dead_slugs` used exclusively - but a
         // straggler spawn for the SAME unit (a slower review lens still working after the
         // deciding verdict already integrated it) is still unanswered. The fence must keep
-        // its branch OUT of `dead_slugs` and IN `live_branches`, so the residue scan
-        // (`worktree_belongs_to_live`, keyed off these exact two sets) never reports its
-        // worktree as removable while the straggler still works in it.
+        // its branch OUT of `dead_slugs` and IN `live_branches`, so neither
+        // `sweep_terminal`'s ancestry sweep nor `reclaim_orphan_scratch`'s backstop
+        // (`worktree_belongs_to_live`, keyed off these exact two sets) can remove its
+        // worktree out from under the straggler.
         let events = [
             Event::new(
                 runscope::TYPE_RUN_STARTED,
@@ -6784,6 +6978,44 @@ mod tests {
         );
         assert!(!run.live_spawn_leaf_names.contains(&want_answered));
         assert!(!run.live_spawn_leaf_names.contains(&want_prior));
+    }
+
+    /// Spec 64, criterion 4 fix (the rejected round): an unreadable run stream must make the
+    /// run-start sweep decision fail CLOSED (`None`, read by `run_cli` as "skip the sweep
+    /// call entirely"), never degrade to `Some(HashSet::new())` - the rejected bug, which
+    /// `sweep_terminal` would still run with an EMPTY live set, silently reverting to the
+    /// pre-c4 ancestry-only rule that force-removes a live unit's empty-diff worktree mid-review.
+    /// `Err` is asserted first (the exact arm the prior round shipped with zero coverage of);
+    /// `Ok` is asserted too, so this also pins that a readable stream still hands back the SAME
+    /// fold `current_run_units` computes elsewhere in this function - one liveness authority,
+    /// not a second one reimplemented here.
+    #[test]
+    fn live_branches_for_sweep_fails_closed_on_an_unreadable_stream_but_folds_a_readable_one() {
+        let err = live_branches_for_sweep(Err(rigger::eventstore::Error::Backend(
+            "simulated read failure (e.g. SQLITE_BUSY_SNAPSHOT under a concurrent writer)"
+                .to_string(),
+        )));
+        assert_eq!(
+            err, None,
+            "an unreadable run stream must decide None (skip the sweep outright), never \
+             Some(empty set) - the rejected silent degrade that still runs the sweep"
+        );
+
+        let events = vec![
+            Event::new(
+                runscope::TYPE_RUN_STARTED,
+                br#"{"run":"r1","criteria":["c"]}"#.to_vec(),
+            ),
+            Event::new(
+                ledger::TYPE_UNIT_STARTED,
+                br#"{"id":"unit-6","branch":"rigger/u/unit-6"}"#.to_vec(),
+            ),
+        ];
+        assert_eq!(
+            live_branches_for_sweep(Ok(events)),
+            Some(slugs(["rigger/u/unit-6"])),
+            "a readable stream decides Some(the current_run_units fold) - the sweep still runs"
+        );
     }
 
     #[test]
@@ -7617,6 +7849,294 @@ mod tests {
             child.to_string_lossy().into_owned(),
             "must resolve to the store's own root (child), not the outer git toplevel \
              (grandparent) - proving the store-root branch actually wins over the fallback"
+        );
+    }
+
+    // ---- spec 34 (criterion 2): the orphan-sweep backstop reclaim seam --------------
+
+    #[test]
+    fn reclaim_orphan_scratch_removes_non_live_owned_scratch_and_spares_live_and_shared_areas() {
+        // spec 34 (criterion 2): the ORPHAN-SWEEP reclaims every scratch entry no LIVE unit of
+        // the current run owns - a prior run's stranded worktree/cache, or a `cargo-target-<slug>`
+        // an agent wrote outside its assigned path - keyed on the SAME liveness-ownership
+        // predicate the residue report reads. The never-delete-live-owned rail (spec 34 Global
+        // Constraint): a LIVE unit's worktree/cache is spared, proving the sweep can never remove
+        // scratch a live spawn/run owns; the shared live-spawn areas (`agent-scratch`,
+        // `agent-live`, the bare `cargo-target` a live spawn builds into) are spared too.
+        let dir = tempfile::tempdir().unwrap();
+        let scratch = dir.path();
+
+        // A LIVE unit (`rigger/u/live-unit`, non-terminal) owns a worktree + per-unit cache.
+        write_file(
+            &scratch.join("rigger-wt-live-unit").join("keep.txt"),
+            &[0u8; 8],
+        );
+        write_file(
+            &scratch.join("cargo-target-live-unit").join("live.rlib"),
+            &[0u8; 8],
+        );
+        // A DEAD (terminal) unit's stranded worktree + per-unit cache - residue.
+        write_file(
+            &scratch.join("rigger-wt-dead-unit").join("stale.txt"),
+            &[0u8; 8],
+        );
+        write_file(
+            &scratch.join("cargo-target-dead-unit").join("dead.rlib"),
+            &[0u8; 8],
+        );
+        // Each unit's gate scratch root (`rigger-gate-<slug>`, spec 113) is a per-unit cache
+        // like its `cargo-target-<slug>` sibling: the live unit's spared, the dead one's
+        // reclaimed. A directory of another prefix matches no arm and stays.
+        write_file(
+            &scratch.join("rigger-gate-live-unit").join("rerun.list"),
+            &[0u8; 8],
+        );
+        write_file(
+            &scratch.join("rigger-gate-dead-unit").join("rerun.list"),
+            &[0u8; 8],
+        );
+        write_file(
+            &scratch.join("mutation-tool-dead-unit").join("rerun.list"),
+            &[0u8; 8],
+        );
+        // An ad-hoc `cargo-target-<slug>` an agent wrote outside its assigned path (no live
+        // owner) - the unbounded per-agent build-cache leak spec 34 names.
+        write_file(
+            &scratch.join("cargo-target-adhoc-x1").join("junk.rlib"),
+            &[0u8; 8],
+        );
+        // A prior run's killed-process leftover worktree (no live unit) - residue.
+        write_file(
+            &scratch
+                .join("rigger-wt-old-run-deadbeef")
+                .join("leftover.txt"),
+            &[0u8; 8],
+        );
+        // The shared live-spawn areas a running spawn is still using - MUST be spared.
+        write_file(
+            &scratch
+                .join("agent-scratch")
+                .join("probe")
+                .join("Cargo.toml"),
+            b"[package]",
+        );
+        write_file(&scratch.join("agent-live").join("run").join("marker"), b"");
+        write_file(&scratch.join("cargo-target").join("shared.rlib"), &[0u8; 8]);
+
+        let run_units = RunUnits {
+            live_branches: slugs(["rigger/u/live-unit"]),
+            dead_slugs: slugs(["dead-unit"]),
+            live_spawn_leaf_names: slugs([]),
+            current_run_scratch_leaf: None,
+        };
+        // Empty repo -> the git-aware worktree deregister is skipped and a plain removal runs,
+        // which is all the synthetic (non-registered) worktree dirs here need.
+        let removed = reclaim_orphan_scratch(
+            "",
+            scratch.to_str().unwrap(),
+            &run_units,
+            &std::collections::HashSet::new(),
+        );
+        assert_eq!(
+            removed, 5,
+            "exactly the five non-live-owned entries are reclaimed"
+        );
+        assert!(
+            scratch.join("rigger-gate-live-unit").exists(),
+            "the LIVE unit's gate scratch root is spared"
+        );
+        assert!(
+            !scratch.join("rigger-gate-dead-unit").exists(),
+            "the DEAD unit's gate scratch root is reclaimed"
+        );
+        assert!(
+            scratch.join("mutation-tool-dead-unit").exists(),
+            "a directory of another prefix matches no arm and is never reclaimed"
+        );
+
+        // Live-owned scratch: spared.
+        assert!(
+            scratch.join("rigger-wt-live-unit").exists(),
+            "the LIVE unit's worktree is spared (keyed on liveness)"
+        );
+        assert!(
+            scratch.join("cargo-target-live-unit").exists(),
+            "the LIVE unit's per-unit build cache is in use, not residue"
+        );
+        // Shared live-spawn areas: spared (reclaimed by the run teardown, never this backstop).
+        assert!(
+            scratch.join("agent-scratch").exists(),
+            "agent-scratch (in-flight worker probe/build area) is spared"
+        );
+        assert!(
+            scratch.join("agent-live").exists(),
+            "agent-live (per-spawn liveness markers) is spared"
+        );
+        assert!(
+            scratch.join("cargo-target").exists(),
+            "the bare shared cargo-target a live spawn may still build into is spared"
+        );
+        // Non-live-owned scratch: reclaimed.
+        assert!(
+            !scratch.join("rigger-wt-dead-unit").exists(),
+            "the DEAD unit's worktree is reclaimed"
+        );
+        assert!(
+            !scratch.join("cargo-target-dead-unit").exists(),
+            "the DEAD unit's per-unit cache is reclaimed"
+        );
+        assert!(
+            !scratch.join("cargo-target-adhoc-x1").exists(),
+            "an ad-hoc cargo-target outside a spawn's assigned path is reclaimed"
+        );
+        assert!(
+            !scratch.join("rigger-wt-old-run-deadbeef").exists(),
+            "a prior run's leftover worktree is reclaimed"
+        );
+
+        // Idempotent: a re-run over the now-clean root reclaims nothing and errors on nothing.
+        assert_eq!(
+            reclaim_orphan_scratch(
+                "",
+                scratch.to_str().unwrap(),
+                &run_units,
+                &std::collections::HashSet::new(),
+            ),
+            0,
+            "the sweep is idempotent - a clean root reclaims nothing"
+        );
+    }
+
+    #[test]
+    fn reclaim_orphan_scratch_spares_a_non_live_worktree_that_is_still_dirty() {
+        // Spec 89, criterion 1 (A HALT NEVER DISCARDS A TREE), round 2 fix: this backstop is a
+        // SECOND, independent worktree-disposition authority alongside `sweep_terminal` (both
+        // run from `run_cli`, before `conductor::run_serving` ever gets a chance to capture a halted
+        // spawn's abandoned edit as its own `wip` commit) - so the SAME "never force-remove a
+        // dirty candidate" guard `sweep_terminal_logged` now carries must apply here too, or a
+        // unit's tree can still be discarded through this door alone. `reap_then_remove_worktree`
+        // itself runs `git worktree remove --force`, which "also tolerates a dirty tree" (its
+        // own doc comment) - i.e. force-discards it. Not-yet-live is exactly the "no spawn
+        // recorded yet" shape (a store/worktree desync, or this project's very first step): the
+        // worktree here is real, dirty, and NOT in `live_branches` at all.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        init_committed_repo(root, "README.md", "seed\n");
+        let repo = root.to_str().unwrap();
+
+        let wt_dir = root.join("rigger-wt-halted-unit");
+        Worktree::create(repo, wt_dir.to_str().unwrap(), "rigger/u/halted-unit", "").unwrap();
+        write_file(&wt_dir.join("halted-work.txt"), b"abandoned mid-edit\n");
+
+        let run_units = RunUnits {
+            live_branches: slugs([]),
+            dead_slugs: slugs([]),
+            live_spawn_leaf_names: slugs([]),
+            current_run_scratch_leaf: None,
+        };
+        // Declared (round 3 fix): this workflow's own current definition still names
+        // "halted-unit" as one of its units - the signal that distinguishes it from
+        // `reclaim_orphan_scratch_spares_only_a_declared_dirty_worktree` below's genuinely
+        // dead, undeclared one.
+        let declared_units = slugs(["rigger/u/halted-unit"]);
+        let removed =
+            reclaim_orphan_scratch(repo, root.to_str().unwrap(), &run_units, &declared_units);
+        assert_eq!(
+            removed, 0,
+            "a dirty, non-live-owned, but DECLARED worktree is spared, never force-removed"
+        );
+        assert!(
+            wt_dir.join("halted-work.txt").exists(),
+            "the abandoned edit must survive the sweep untouched"
+        );
+
+        // The paired negative-space case: once the SAME worktree is clean (its work
+        // committed - exactly what the halt-recovery wip commit, or an ordinary landed unit,
+        // leaves behind) it is reclaimed exactly as before this fix - dirtiness, not mere
+        // non-liveness, is what changed.
+        run_git(&wt_dir, &["add", "-A"]);
+        run_git(&wt_dir, &["commit", "-q", "-m", "resolved"]);
+        let removed =
+            reclaim_orphan_scratch(repo, root.to_str().unwrap(), &run_units, &declared_units);
+        assert_eq!(
+            removed, 1,
+            "a CLEAN non-live-owned worktree is still reclaimed as before"
+        );
+        assert!(!wt_dir.exists(), "the clean worktree is gone");
+    }
+
+    #[test]
+    fn reclaim_orphan_scratch_spares_only_a_declared_dirty_worktree() {
+        // Spec 89, criterion 1, round 3 fix: the negative-space twin of the test above.
+        // Dirtiness ALONE is not proof of a halted spawn - a genuinely dead, UNDECLARED branch
+        // (a prior run's leftover, a hand-made fixture) that happens to also carry untracked
+        // content is still reclaimed exactly as it was before this criterion, matching
+        // `sweep_terminal`'s own identical `declared_units` gate.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        init_committed_repo(root, "README.md", "seed\n");
+        let repo = root.to_str().unwrap();
+
+        let wt_dir = root.join("rigger-wt-undeclared-orphan");
+        Worktree::create(
+            repo,
+            wt_dir.to_str().unwrap(),
+            "rigger/u/undeclared-orphan",
+            "",
+        )
+        .unwrap();
+        write_file(&wt_dir.join("stray.txt"), b"unrelated debris\n");
+
+        let run_units = RunUnits {
+            live_branches: slugs([]),
+            dead_slugs: slugs([]),
+            live_spawn_leaf_names: slugs([]),
+            current_run_scratch_leaf: None,
+        };
+        // Declares an UNRELATED unit only - never "undeclared-orphan".
+        let declared_units = slugs(["rigger/u/halted-unit"]);
+        let removed =
+            reclaim_orphan_scratch(repo, root.to_str().unwrap(), &run_units, &declared_units);
+        assert_eq!(
+            removed, 1,
+            "a dirty, non-live-owned, and UNDECLARED worktree is still reclaimed"
+        );
+        assert!(
+            !wt_dir.exists(),
+            "the undeclared, unrelated worktree is gone"
+        );
+    }
+
+    #[test]
+    fn reclaim_orphan_scratch_reaps_a_stray_build_cache_tombstone_unconditionally() {
+        // spec 77 criterion 5 (BOUNDED SHARED CACHE), Design: "a failed tombstone delete
+        // leaves an ENUMERABLE residue shape the orphan sweep reaps unconditionally -
+        // correct precisely because nothing can ever want it back". A tombstone
+        // (`reclaim_shared_build_cache`'s own rename target) is never referenced by path
+        // again once the rename lands, so - unlike every other entry this sweep classifies -
+        // it needs NO liveness check at all: it is reaped every time, regardless of any
+        // `RunUnits` liveness state.
+        let dir = tempfile::tempdir().unwrap();
+        let scratch = dir.path();
+        let tombstone = scratch.join("cargo-target.tombstone-12345-67890");
+        write_file(&tombstone.join("stranded.rlib"), &[0u8; 16]);
+        // The LIVE bare cache must still be spared alongside it - the tombstone shape is a
+        // distinct, disjoint name (a `.tombstone-` suffix), never confused with the live
+        // cache's own bare name.
+        write_file(&scratch.join("cargo-target").join("live.rlib"), &[0u8; 8]);
+
+        let run_units = RunUnits::default();
+        let removed = reclaim_orphan_scratch(
+            "",
+            scratch.to_str().unwrap(),
+            &run_units,
+            &std::collections::HashSet::new(),
+        );
+        assert_eq!(removed, 1, "exactly the one stray tombstone is reclaimed");
+        assert!(!tombstone.exists(), "the stray tombstone must be reaped");
+        assert!(
+            scratch.join("cargo-target").exists(),
+            "the live bare cache must be spared - its name is disjoint from the tombstone shape"
         );
     }
 

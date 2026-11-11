@@ -252,10 +252,10 @@ impl Anomaly {
 /// classified - `detect` never touches a socket or a file.
 ///
 /// TWO breadcrumbs can independently record a dash: a per-project MARKER (port + pid) and
-/// the URL breadcrumb. `rigger run` (`spawn_run_dashboard`) writes ONLY the URL breadcrumb,
-/// never a marker - so the caller's probe falls back to the URL's own port when no marker
-/// exists, and [`NotServing`](DashProbe::NotServing) carries `pid: None` in that case rather
-/// than inventing one.
+/// the URL breadcrumb. `rigger run` (`spawn_run_dashboard`) writes both and removes the marker
+/// when it reaps its dash, leaving the URL - so the caller's probe falls back to the URL's own
+/// port when no marker exists, and [`NotServing`](DashProbe::NotServing) carries `pid: None`
+/// in that case rather than inventing one.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DashProbe {
     /// Neither a marker nor a URL was ever recorded for this project - a headless run
@@ -266,8 +266,8 @@ pub enum DashProbe {
     /// Nothing verifiably serves the recorded port - the "hung holder" or
     /// dead-process case `rigger-restore-the-dash` diagnoses. `pid` names the
     /// culprit ONLY when a marker actually recorded one FOR THIS PORT; `None` when
-    /// the probe fell back to the URL breadcrumb alone (no marker was ever written,
-    /// e.g. `rigger run`) or when the on-disk marker's port differs
+    /// the probe fell back to the URL breadcrumb alone (no marker is recorded,
+    /// e.g. after `rigger run` reaped its dash) or when the on-disk marker's port differs
     /// from the recorded URL's (`dash::dash_status`'s canonical mismatch handling: a
     /// mismatched marker's pid belongs to some other dash and is never named as this
     /// url's) - there is genuinely no pid to name in either case, never a guess.
@@ -646,7 +646,7 @@ fn dash_anomaly_detail(probe: &DashProbe) -> Option<String> {
             pid: Some(pid),
             port,
         } => format!("marker names dead pid {pid} on port {port}"),
-        // No MATCHING marker: either none was ever recorded (rigger run) or the
+        // No MATCHING marker: either none is recorded (a run reaped its dash) or the
         // one on disk names a different port than the recorded dash.url's - either way there is
         // genuinely no pid to name for THIS url (dash_status's canonical mismatch handling).
         DashProbe::NotServing { pid: None, port } => {
@@ -1157,8 +1157,8 @@ mod tests {
         )
         .line()
         .contains("rigger-restore-the-dash"));
-        /// The marker-absent case (`rigger run`, which records only the URL
-        /// breadcrumb, never a marker - see `DashProbe` docs): a dead port is STILL reported,
+        /// The marker-absent case (the URL a `rigger run` leaves once it has reaped its dash
+        /// and removed its marker - see `DashProbe` docs): a dead port is STILL reported,
         /// with no pid invented. This is the round-3 reject's own root cause
         /// (adv-u69c1r3-watch-once-inherits-marker-absent-blindspot) - before this fix
         /// `NotServing` required a `u32` pid unconditionally, so the caller had nothing to

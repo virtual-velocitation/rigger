@@ -576,10 +576,10 @@ outside-a-repository case is asserted through the binary.
 
 TEST DISPOSITIONS. Each existing test this spec breaks, the criterion whose change breaks it first
 and what it pins afterwards. No other existing test asserts that the run stream keeps an earlier
-run's episodic row after a driver step or a reset, and none whose fixture is its own git repository
+run's episodic row after a run or a reset, and none whose fixture is its own git repository
 holding an earlier finished span pins the current run's event count, type sequence or positions
-across a step: the one such step
-(`a_step_adopting_the_specs_run_proceeds_while_one_beginning_a_new_run_refuses`) counts only
+across a run: the one such run
+(`a_run_adopting_the_specs_run_proceeds_while_one_beginning_a_new_run_refuses`) counts only
 `RunStarted`, which stays.
 
 | Test | First broken by | Disposition |
@@ -589,7 +589,7 @@ across a step: the one such step
 | `reset_runs_closes_a_dead_landed_run_whatever_a_prior_run_left_unanswered` (`tests/reset_runs_closes_landed_run_periphery.rs`): `assert_prefix_kept` and "exactly one terminal event" | 6 | the prefix is restated over the knowledge rows, and the reset's appends are expected in order: the `UnitIntegrated` first (the close runs before the archive, RESET ORDER), then the `RunArchived` |
 | `discipline_names_reset_derived_as_the_event_logs_own_prune` (`docs.rs`), as spec 107 leaves it | 6 | pins the discipline naming both reset verbs that delete events |
 | the seeding helper in `tests/common/`, criterion 2's, which serializes rows, writes their blob through the adapter, appends a `RunArchived` it builds inline and deletes through `delete_archived` | 3 | its uses become `archive_run`, over criterion 3's failing store double for the span archived and not yet deleted, and it is deleted with its inline event: it is test code the audit's dead-code rule exempts, and its duplicate rule would cluster it with the serializer if it stayed |
-| `worktree_sweep_completes_before_any_add_within_one_step` (`tests/cli.rs`): its add anchor, the literal `conductor::run(&cfg, &deps)` in `cmd_step`'s body | 3 | re-anchored on `archive_then_run(` as the step path's first adding call, its lock-before-add and sweep-before-add ordering kept |
+| `run_start_sweeps_run_under_the_lock_and_complete_before_any_worktree_add` (`tests/cli.rs`): its add anchor, the literal `conductor::run_serving(` in `run_cli`'s body | 3 | re-anchored on `archive_then_run(` as the run path's first adding call, its lock-before-add and sweep-before-add ordering kept |
 | `baseline_run_slice_selects_a_run_by_id_including_a_middle_run` (`src/cli/mod.rs`) | 2 | deleted with `baseline_run_slice`; its by-id selection of a middle run is restated by criterion 2's replay of a middle run |
 
 DOCUMENT EDITS. Each passage this spec makes false, the criterion whose change makes it false and

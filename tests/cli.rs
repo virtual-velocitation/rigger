@@ -7703,29 +7703,88 @@ rigger::test_cases! {
     );
 }
 
-/// Spec 105's run teardown, end to end: given a project whose run ends, when the run ended done
-/// the agent streams its launches wrote are reclaimed with the rest of its scratch, and when it
-/// ended with work left (here an escalated unit) they stand for whoever resumes or reads them.
+/// [`REVIEWLESS_GIT_UNIT_WORKFLOW`] with its one stage under `autonomy: manual`: the run pauses the
+/// unit for a human's review before driving it, so the run ends with the unit awaiting review.
+const MANUAL_REVIEW_GIT_UNIT_WORKFLOW: WorkflowFixture = WorkflowFixture {
+    worker: "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\n---\nDo the unit.\n",
+    body: r#"defaults:
+  grounder: nop
+  budget: 60
+gates:
+  ok: { run: "true", kind: core }
+stages:
+  solo:
+    agent: worker
+    gates: [ok]
+    autonomy: manual
+    on_pass: merge
+"#,
+};
+
+/// The run teardown, end to end: given a project whose run ends, every way `rigger run` ends it -
+/// done, an escalated unit, a budget halt, a definition-drift halt - reclaims the run-level scratch,
+/// its agent streams included, and a run that ends with a unit awaiting a human keeps it for the
+/// review that resumes it.
 #[cfg(unix)]
 #[test]
-fn a_done_runs_agent_streams_are_reclaimed_and_an_unfinished_runs_are_kept() {
+fn every_ending_of_a_run_reclaims_its_run_scratch_and_a_run_awaiting_review_keeps_it() {
     struct Case {
         name: &'static str,
         workflow: &'static WorkflowFixture,
-        ending: &'static str,
+        /// What happens to the project before the run under test: an earlier run, an edit.
+        before: fn(&Path, &Path),
+        ok: bool,
+        tells: &'static str,
         reclaimed: bool,
+    }
+    fn nothing(_: &Path, _: &Path) {}
+    fn a_pinned_run_then_a_prompt_edit(root: &Path, scratch: &Path) {
+        let (out, err, _ok, _fake) = run_recording(root, &["run"], scratch);
+        assert!(
+            out.contains("halted: budget exhausted"),
+            "stderr: {err}\nstdout: {out}"
+        );
+        edit_worker_prompt(root, "Do the unit, but differently now.");
     }
     let cases = [
         Case {
             name: "done",
             workflow: &REVIEWLESS_GIT_UNIT_WORKFLOW,
-            ending: "done: every unit integrated",
+            before: nothing,
+            ok: true,
+            tells: "done: every unit integrated",
             reclaimed: true,
         },
         Case {
             name: "escalated",
             workflow: &REVIEWLESS_GIT_ESCALATING_UNIT_WORKFLOW,
-            ending: "incomplete: not every unit integrated",
+            before: nothing,
+            ok: true,
+            tells: "incomplete: not every unit integrated",
+            reclaimed: true,
+        },
+        Case {
+            name: "budget halt",
+            workflow: &BUDGET_ONE_TWO_STAGE_WORKFLOW,
+            before: nothing,
+            ok: true,
+            tells: "halted: budget exhausted",
+            reclaimed: true,
+        },
+        Case {
+            name: "definition-drift halt",
+            workflow: &BUDGET_ONE_TWO_STAGE_WORKFLOW,
+            before: a_pinned_run_then_a_prompt_edit,
+            ok: false,
+            tells: "definition drift",
+            reclaimed: true,
+        },
+        Case {
+            name: "awaiting review",
+            workflow: &MANUAL_REVIEW_GIT_UNIT_WORKFLOW,
+            before: nothing,
+            ok: true,
+            tells: "incomplete: not every unit integrated",
             reclaimed: false,
         },
     ];
@@ -7734,29 +7793,19 @@ fn a_done_runs_agent_streams_are_reclaimed_and_an_unfinished_runs_are_kept() {
         let root = dir.path();
         write_workflow_fixture(root, case.workflow);
         let scratch = tempfile::tempdir().unwrap();
+        (case.before)(root, scratch.path());
         plant_run_level_scratch(scratch.path());
-        let (out, err, ok, fake) = run_recording(root, &["run"], scratch.path());
-        assert!(
-            ok,
-            "{}: the run exits 0; stderr: {err}\nstdout: {out}",
+        let (out, err, ok, _fake) = run_recording(root, &["run"], scratch.path());
+        assert_eq!(
+            (ok, out.contains(case.tells) || err.contains(case.tells)),
+            (case.ok, true),
+            "{}: how the run ended; stderr: {err}\nstdout: {out}",
             case.name
         );
         assert_eq!(
-            out.lines().nth(2).unwrap(),
-            case.ending,
-            "{}: how the run ended",
-            case.name
-        );
-        assert_eq!(
-            std::fs::read_to_string(fake.path().join("bin/streams")).unwrap(),
-            "solo_2fimplementer_230.0.jsonl\n",
-            "{}: the launch's stream was on disk under the scratch root while it ran",
-            case.name
-        );
-        assert_eq!(
-            !scratch.path().join("agent-stream").exists(),
+            common::cli::run_payloads(root, "ManualReview").is_empty(),
             case.reclaimed,
-            "{}: the agent streams after the run",
+            "{}: a run keeps its scratch exactly when it ends awaiting a human's review",
             case.name
         );
         if case.reclaimed {
@@ -7870,6 +7919,85 @@ fn a_done_run_in_a_project_with_no_repository_reclaims_nothing() {
         "the launch wrote no stream of its own"
     );
     assert_eq!(std::fs::read_to_string(&stale).unwrap(), "stale");
+}
+
+/// `rigger run` and the project it runs in: given a directory with no `.rigger/workflow.yml`,
+/// plain or a git repository, when the run starts, then it refuses as not a rigger project,
+/// creating nothing and saying nothing of gate requests; given a project with no repository, it
+/// runs, and with no unit worktree to serve it binds no gate request socket and says nothing of
+/// one.
+#[cfg(unix)]
+#[test]
+fn a_run_outside_a_rigger_project_refuses_and_a_project_with_no_repository_serves_no_gate_socket() {
+    const MERGING_WORKFLOW: WorkflowFixture = WorkflowFixture {
+        worker: UNISOLATED_WORKER,
+        body: "defaults:\n  grounder: nop\n  budget: 60\nstages:\n  a:\n    agent: worker\n    \
+               on_pass: merge\n",
+    };
+    struct Case {
+        name: &'static str,
+        git: bool,
+        project: bool,
+    }
+    let cases = [
+        Case {
+            name: "an empty directory",
+            git: false,
+            project: false,
+        },
+        Case {
+            name: "a git repository with no rigger project",
+            git: true,
+            project: false,
+        },
+        Case {
+            name: "a rigger project with no repository",
+            git: false,
+            project: true,
+        },
+    ];
+    for case in &cases {
+        let name = case.name;
+        let dir = match case.git {
+            true => temp_git_project_with_commit(),
+            false => temp_repoless_project(),
+        };
+        let root = dir.path();
+        if case.project {
+            write_workflow_fixture(root, &MERGING_WORKFLOW);
+        }
+        let scratch = tempfile::tempdir().unwrap();
+        let (out, err, ok, fake) = run_recording(root, &["run"], scratch.path());
+        assert!(
+            !err.contains("gate requests"),
+            "{name}: nothing is said of gate requests: {err}"
+        );
+        if case.project {
+            assert!(ok, "{name}: the run succeeds; stderr: {err}\nstdout: {out}");
+            assert!(
+                out.contains("done: every unit integrated\n"),
+                "{name}: the run is done: {out}"
+            );
+            continue;
+        }
+        assert!(!ok, "{name}: the run refuses; stdout: {out}");
+        assert!(
+            err.starts_with("rigger: rigger run: not a rigger project - "),
+            "{name}: the refusal names the missing project: {err}"
+        );
+        assert!(
+            err.contains(".rigger/workflow.yml") && err.contains("`rigger setup`"),
+            "{name}: the refusal names the missing file and the remedy: {err}"
+        );
+        assert!(
+            !root.join(".rigger").exists(),
+            "{name}: the refusal creates nothing"
+        );
+        assert!(
+            !fake.path().join("bin/argv").exists(),
+            "{name}: no agent is launched"
+        );
+    }
 }
 
 /// Spec 105's store hand-off: given a run, when the operator selects a store, then every launch
@@ -10297,6 +10425,50 @@ fn rigger_run_honors_each_dash_opt_out_and_starts_its_dash_without_one() {
     assert_one_dash(&run(false, false), "rigger run with no opt-out");
 }
 
+/// Given a workflow whose one agent copies `.rigger/dash.marker` aside while it works, when the
+/// operator runs `rigger run` with its dash on, then the marker read mid-run names the port of
+/// the URL the run printed and a real pid, and once the run has reaped its dash the marker is
+/// gone, leaving the `dash.url` breadcrumb alone.
+#[cfg(unix)]
+#[test]
+fn rigger_run_records_its_dash_marker_while_the_dash_serves_and_removes_it_on_reap() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    let marker = root.join(".rigger").join("dash.marker");
+    let seen = root.join("marker-seen");
+    let (_fakebin, path_env) = install_fake_claude(&format!(
+        r#"  *"Do the unit."*)
+    cp "{marker}" "{seen}" 2>/dev/null
+    echo "did the unit"
+    ;;
+"#,
+        marker = marker.display(),
+        seen = seen.display(),
+    ));
+    write_workflow_fixture(root, &TWO_STAGE_WORKFLOW);
+    let out = dash_entry_command(root, &["run"], Some(&path_env), false, root)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .expect("failed to spawn the rigger binary");
+    let trace = dash_trace(root, &out);
+    assert_one_dash(&trace, "rigger run with its dash on");
+    let url_port = trace.url.as_deref().and_then(rigger::dash::url_port);
+    let recorded = std::fs::read_to_string(&seen)
+        .ok()
+        .and_then(|text| rigger::dash::DashMarker::parse(&text));
+    assert_eq!(
+        (
+            recorded.map(|m| m.port),
+            recorded.is_some_and(|m| m.pid != rigger::dash::UNATTRIBUTED_PID),
+            marker.exists(),
+        ),
+        (url_port, true, false),
+        "the run records its dash's port and pid in dash.marker while the dash serves and \
+         removes the marker when it reaps the dash; stderr:\n{}",
+        trace.stderr
+    );
+}
+
 /// The single-stage liveness workflow the end-to-end tests drive: a per-role wall-clock
 /// default so the parked implementer carries a `max_wall_clock` the sweep can time out
 /// against, `isolation: none` (no worktree), and `on_pass: none` (no integrate).
@@ -10305,10 +10477,105 @@ const LIVENESS_WORKFLOW: WorkflowFixture = WorkflowFixture {
     body: "defaults:\n  grounder: nop\n  budget: 60\n  max_wall_clock: 60\nstages:\n  a:\n    agent: worker\n    on_pass: none\n",
 };
 
+/// The body of `run_cli` within `src/cli/run.rs` (its declaration up to the next top-level `fn`),
+/// so a source-order pin on the run's lifecycle stays pointed at that seam.
+fn run_cli_source(run_rs: &str) -> &str {
+    let at = run_rs
+        .find("fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {")
+        .expect("src/cli/run.rs must still define run_cli, the `rigger run` lifecycle");
+    let end = run_rs[at..]
+        .find("\nfn ")
+        .map(|off| at + off)
+        .expect("run_cli must be followed by another top-level fn");
+    &run_rs[at..end]
+}
+
+/// RUN-START SWEEPS, their order: `rigger run` takes the step lock, sweeps the terminal worktrees,
+/// settles `--fresh` and the definition pin, reclaims the orphaned scratch, and only then drives
+/// the conductor, the first code that adds a unit worktree. So no sweep runs outside the lock, a
+/// halted-on-drift run still sweeps its terminal worktrees, a superseded run's scratch reads as
+/// dead to the orphan sweep, and no removal races an add on the shared `.git/worktrees` area.
+/// A source-text pin: the conductor's adds are deep inside `conductor::run_serving`.
+#[test]
+fn run_start_sweeps_run_under_the_lock_and_complete_before_any_worktree_add() {
+    let src = repo_text("src/cli/run.rs");
+    let run_cli = run_cli_source(&src);
+    let anchors = [
+        "acquire_step_lock(",
+        "sweep_terminal_at_start(",
+        "fresh_run_if_requested(",
+        "reclaim_orphans_at_start(",
+        "conductor::run_serving(",
+    ];
+    let offsets: Vec<usize> = anchors
+        .iter()
+        .map(|anchor| {
+            assert_eq!(
+                run_cli.matches(anchor).count(),
+                1,
+                "run_cli must call {anchor} exactly once"
+            );
+            run_cli.find(anchor).unwrap()
+        })
+        .collect();
+    assert!(
+        offsets.windows(2).all(|pair| pair[0] < pair[1]),
+        "run_cli must call {anchors:?} in that order; found offsets {offsets:?}"
+    );
+}
+
+/// RUN-START SWEEPS, end to end: given a scratch root holding what a killed earlier run left - a
+/// worktree on a branch no unit of this run owns and a dead unit's build cache - `rigger run`
+/// reclaims both at start, deregistering the worktree from git too, and reports each sweep.
+#[cfg(unix)]
+#[test]
+fn rigger_run_reclaims_an_earlier_runs_leftover_worktree_and_cache_at_start() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_workflow_fixture(root, &REVIEWLESS_GIT_UNIT_WORKFLOW);
+    let scratch = tempfile::tempdir().unwrap();
+    let scratch = scratch.path();
+    git_ok(root, &["branch", "rigger-run"]);
+    let leftover = scratch.join("rigger-wt-leftover-orphan");
+    git_ok(
+        root,
+        &[
+            "worktree",
+            "add",
+            leftover.to_str().unwrap(),
+            "-b",
+            "rigger/u/leftover-orphan",
+            "rigger-run",
+        ],
+    );
+    let dead_cache = scratch.join("cargo-target-ghost");
+    std::fs::create_dir_all(&dead_cache).unwrap();
+    std::fs::write(dead_cache.join("incremental.bin"), [0u8; 64]).unwrap();
+
+    let (out, err, ok, _fake) = run_recording(root, &["run"], scratch);
+    assert!(ok, "the run must succeed\nstderr: {err}\nstdout: {out}");
+    let list = git_answer(root, &["worktree", "list", "--porcelain"]).unwrap_or_default();
+    assert_eq!(
+        (
+            leftover.exists(),
+            list.contains("rigger/u/leftover-orphan"),
+            dead_cache.exists(),
+        ),
+        (false, false, false),
+        "(leftover dir, leftover registered, dead cache)\nworktrees: {list}\nstderr: {err}"
+    );
+    assert!(
+        err.contains("rigger run: swept 1 terminal worktree(s)")
+            && err.contains("rigger run: reclaimed 1 orphaned scratch entry"),
+        "both run-start sweeps report what they reclaimed; stderr: {err}"
+    );
+}
+
 /// Plant the run-LEVEL shared scratch areas the terminal-state teardown (spec 34 c3) owns under
 /// `scratch`: the SHARED build cache (`cargo-target` + `target` directly under the root - the
 /// driver's `CARGO_TARGET_DIR`, the unbounded multi-GB leak), `agent-scratch` (probe repos +
-/// verify builds a worker parks there), and `agent-live` (per-spawn liveness markers). These are
+/// verify builds a worker parks there), `agent-live` (per-spawn liveness markers) and
+/// `agent-stream` (a headless launch's transcript). These are
 /// exactly what the orphan-sweep backstop (c2) deliberately SPARES while the run is live, so
 /// only the run-level teardown ever reclaims them.
 fn plant_run_level_scratch(scratch: &Path) {
@@ -10324,13 +10591,25 @@ fn plant_run_level_scratch(scratch: &Path) {
     let marker = scratch.join("agent-live").join("run").join("spawn");
     std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
     std::fs::write(&marker, b"heartbeat").unwrap();
+    let stream = scratch.join("agent-stream");
+    std::fs::create_dir_all(&stream).unwrap();
+    std::fs::write(stream.join("spawn.jsonl"), b"{}\n").unwrap();
 }
+
+/// The run-level areas [`plant_run_level_scratch`] plants.
+const RUN_LEVEL_SCRATCH: [&str; 5] = [
+    "cargo-target",
+    "target",
+    "agent-scratch",
+    "agent-live",
+    "agent-stream",
+];
 
 /// Assert the run-level shared scratch planted by [`plant_run_level_scratch`] is ALL still
 /// present (the never-delete-live rail: while a spawn is live, or a run ended with work left, the
 /// teardown must not fire).
 fn assert_run_level_scratch_spared(scratch: &Path, ctx: &str) {
-    for area in ["cargo-target", "target", "agent-scratch", "agent-live"] {
+    for area in RUN_LEVEL_SCRATCH {
         assert!(
             scratch.join(area).exists(),
             "{ctx}: the teardown must SPARE the run-level {area}; it was wrongly reclaimed"
@@ -10341,7 +10620,7 @@ fn assert_run_level_scratch_spared(scratch: &Path, ctx: &str) {
 /// Assert the run-level shared scratch planted by [`plant_run_level_scratch`] is ALL reclaimed
 /// (the terminal teardown fired). Includes the SHARED build cache the orphan-sweep spares.
 fn assert_run_level_scratch_reclaimed(scratch: &Path, ctx: &str) {
-    for area in ["cargo-target", "target", "agent-scratch", "agent-live"] {
+    for area in RUN_LEVEL_SCRATCH {
         assert!(
             !scratch.join(area).exists(),
             "{ctx}: the terminal-state teardown must reclaim the run-level {area}; it survived under {}",
@@ -14056,17 +14335,17 @@ fn validate_footprint_worktrees_and_per_unit_caches_measure_real_dead_and_live_e
         err.contains("per-unit caches is 96% dead (300B of 310B reclaimable)"),
         "the per-unit-caches dead share must reflect ONLY the dead unit's cache; stderr:\n{err}"
     );
-    // Each flagged category names its own reclaim path: dead worktrees are removed by hand, dead
-    // per-unit caches by the operator verb.
+    // Both flagged categories name the next run's start sweeps, which reach them; dead per-unit
+    // caches also name the operator verb that reclaims them now.
     assert!(
         err.contains(
-            "remove the listed dirs directly, then `git worktree prune` drops their registrations"
+            "reclaimed automatically by the next `rigger run`, or remove the listed dirs directly"
         ),
-        "the worktrees advisory must name the manual reclaim path; stderr:\n{err}"
+        "the worktrees advisory must name the run-start sweep and the manual path; stderr:\n{err}"
     );
     assert!(
-        err.contains("per-unit caches is 96% dead (300B of 310B reclaimable) - `rigger reset --build-cache` reclaims it now"),
-        "the per-unit-caches advisory must name the verb that reclaims it; stderr:\n{err}"
+        err.contains("per-unit caches is 96% dead (300B of 310B reclaimable) - `rigger reset --build-cache` reclaims it now (the next `rigger run` also does)"),
+        "the per-unit-caches advisory must name the verb and the run-start sweep; stderr:\n{err}"
     );
 }
 
@@ -19889,7 +20168,7 @@ rigger::test_cases! {
 }
 
 /// A `dash.url` naming a definitely-unbound loopback port followed by `path`, with NO marker
-/// recorded (the `rigger run` shape): the port is correctly parsed out of the
+/// recorded (what a run leaves once it reaps its dash): the port is correctly parsed out of the
 /// url and reported dead, and no pid is named - with no marker there is none to read.
 fn assert_watch_once_reports_a_dead_marker_less_url(path: &str) {
     let dead_port = free_loopback_port();
@@ -19912,8 +20191,8 @@ fn assert_watch_once_reports_a_dead_marker_less_url(path: &str) {
 rigger::test_cases! {
     /// Round-3 reject cause (adv-u69c1r3-watch-once-inherits-marker-absent-blindspot), closed:
     /// the sibling test above only seeds `.rigger/dash.marker`, a shape only an earlier
-    /// binary's drive path wrote. `rigger run` (`spawn_run_dashboard`) writes ONLY
-    /// `.rigger/dash.url`, never a marker. Before the round-4 fix, `watch_poll`
+    /// binary's drive path wrote. `rigger run` (`spawn_run_dashboard`) removes its marker when it
+    /// reaps its dash and leaves `.rigger/dash.url`. Before the round-4 fix, `watch_poll`
     /// mapped an absent marker straight to `DashProbe::NotRecorded`, which `detect()` never
     /// turns into an anomaly, so `rigger watch --once` printed NOTHING for this exact,
     /// empirically-reproduced shape (verified by the round-3 adversary against the real
@@ -19941,7 +20220,7 @@ rigger::test_cases! {
     /// `http://127.0.0.1:<port>/` or `.../api/state` shape), so this exact divergence class was
     /// never driven through the compiled binary. This seeds a `dash.url` naming a
     /// definitely-unbound loopback port followed by a path segment containing a colon, with NO
-    /// marker recorded (the `rigger run` shape), and proves the port is still
+    /// marker recorded (what a run leaves once it reaps its dash), and proves the port is still
     /// correctly extracted and reported dead. Confirmed this reproduces the pre-round-12 defect:
     /// against the old `port_from_dash_url` (`url.rsplit_once(':')` over the whole string), the
     /// last colon in this fixture's url falls inside the path, so the parse yields a non-numeric
@@ -20033,7 +20312,7 @@ rigger::test_cases! {
 /// `watch_poll`'s marker-absent branch hardcoded to `false` survived every test in the
 /// suite - nothing drove a real, answering dash through this exact fallback path, so a
 /// regression that always reported it as dead would have gone undetected. Spins up a real
-/// `rigger dash`, records ONLY its URL (the `rigger run` shape - no
+/// `rigger dash`, records ONLY its URL (what a run leaves once it reaps its dash - no
 /// marker), and asserts `rigger watch --once` reports no anomaly.
 #[test]
 fn watch_once_reports_nothing_when_a_real_dash_serves_the_url_only_recorded_port() {
