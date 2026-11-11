@@ -27060,7 +27060,7 @@ fn graph_show_prints_each_node_through_the_one_site_renderer() {
     for ((id, site), out) in common::fixtures::shown_sites(&graph).iter().zip(&shown) {
         assert_eq!(
             common::cli::printed_site_entries(out),
-            common::cli::site_entries_as_printed(site, site.line),
+            common::cli::site_entries_as_printed(site),
             "{id}: the CLI prints site_fields"
         );
     }
@@ -27213,45 +27213,6 @@ fn graph_around_fails_on_an_unreadable_subgraph() {
     );
 }
 
-/// Spec 119, SHOW IS ONE RENDERER: GIVEN a definition the graph records at line 1 of a file whose
-/// working tree now holds it at line 3, WHEN the operator runs `rigger graph --show` on its id,
-/// THEN it prints `show <id>`, the healed `site:` header with its `(recorded line 1, now 3)` note,
-/// its `name` and `lang` entry lines, then the body from the live line; and the header and entry
-/// lines read back equal `site_fields` after both CLI transforms, the live line among them.
-#[cfg(feature = "symbols")]
-#[test]
-fn graph_show_prints_the_entry_lines_between_a_healed_header_and_the_body() {
-    let dir = temp_project();
-    let root = dir.path();
-    let out = common::cli::show_record_only(
-        root,
-        "src/heal.rs",
-        "\n\nfn healed() -> u8 {\n    1\n}\n",
-        "healed",
-        "function",
-        1,
-        "rust",
-    );
-    assert_eq!(
-        out.lines().take(5).collect::<Vec<_>>(),
-        [
-            "show src/heal.rs::healed",
-            "  site: src/heal.rs:3   kind function   degree 1   (recorded line 1, now 3)",
-            "  name healed",
-            "  lang rust",
-            "       3 | fn healed() -> u8 {",
-        ],
-        "the entry lines sit between the healed header and the body"
-    );
-    let site =
-        common::fixtures::located_site(&common::cli::open_graph(root), "src/heal.rs::healed");
-    assert_eq!(
-        common::cli::printed_site_entries(&out),
-        common::cli::site_entries_as_printed(&site, 3),
-        "the healed show prints site_fields at the live line"
-    );
-}
-
 /// Spec 119, ONE EXTENT: GIVEN a `.tsx` file whose constant `App::v` holds a JSX element, which
 /// only the TSX grammar parses as one, WHEN the operator runs `rigger graph --show` on its id, THEN
 /// its body is bounded to its own line under the TSX grammar (the plain TypeScript grammar would
@@ -27294,43 +27255,6 @@ fn graph_show_bounds_a_tsx_definition_under_its_tsx_grammar() {
 }
 
 /// Spec 119, IDS FOLLOW THE LANGUAGE'S PATH: GIVEN a graph recording the method `T::new` at line 4
-/// of a file the head does not hold, whose `impl T` and `impl U` each define `new`, WHEN the
-/// working tree holds both two lines further down and the operator runs `rigger graph --show` on
-/// `T::new`'s exact id, THEN its body heals to `T::new`'s live lines alone, the path telling it
-/// from `U::new`, which shares its name and kind.
-#[cfg(feature = "symbols")]
-#[test]
-fn graph_show_heals_a_drifted_method_by_its_path_beside_a_same_named_one() {
-    let dir = temp_project();
-    let root = dir.path();
-    let source = "struct T;\nstruct U;\nimpl T {\n    fn new() -> T {\n        T\n    }\n}\n\
-                  impl U {\n    fn new() -> U {\n        U\n    }\n}\n";
-    assert_eq!(
-        common::cli::show_record_only(
-            root,
-            "src/pair.rs",
-            &format!("// one\n// two\n{source}"),
-            "T::new",
-            "method",
-            4,
-            "rust",
-        )
-        .lines()
-        .collect::<Vec<_>>(),
-        [
-            "show src/pair.rs::T::new",
-            "  site: src/pair.rs:6   kind method   degree 1   (recorded line 4, now 6)",
-            "  name new",
-            "  lang rust",
-            "       6 |     fn new() -> T {",
-            "       7 |         T",
-            "       8 |     }",
-        ],
-        "the drifted T::new heals to its own body, never U::new's"
-    );
-}
-
-/// Spec 119, IDS FOLLOW THE LANGUAGE'S PATH: GIVEN a graph recording the method `T::new` at line 4
 /// of a file whose working tree has deleted it while `U::new`, of the same name and kind, sits at
 /// that line, WHEN the operator runs `rigger graph --show` on `T::new`'s id, THEN no body is
 /// printed and the note names the path it was sought at, `U::new` never bounding it.
@@ -27355,8 +27279,7 @@ fn graph_show_notes_a_deleted_method_at_its_path_beside_a_same_named_one() {
             "  name new",
             "  lang rust",
             "  (no production definition named \"new\" at path \"T::new\" of kind method at line 4 \
-             or elsewhere in src/pair.rs in the current working tree; the recorded location may be \
-             stale)",
+             of src/pair.rs)",
         ],
         "a deleted T::new is noted at its path, never bounded by U::new at its line"
     );
@@ -27555,38 +27478,6 @@ fn graph_around_a_bare_name_notes_the_seed_form_and_show() {
              `rigger graph --show <name>` resolves a bare name; has `rigger run` been run yet?)",
         ],
         "an empty around names the seed form and --show"
-    );
-}
-
-/// Spec 119, ONE EXTENT: GIVEN a code entity with a file and a non-zero line but no `name` attr,
-/// recorded alone (the head does not hold its file), beside a definition of its leaf in the working
-/// tree, WHEN the operator runs `rigger graph --show` on its id, THEN it prints the "no production
-/// definition named" note with its id in place of the name and no body, on every lane, never
-/// bounding a body by a cut of the id.
-#[test]
-fn graph_show_notes_a_nameless_node_by_its_id() {
-    let dir = temp_project();
-    let root = dir.path();
-    common::cli::write_ignored(root, &[("src/x.rs", "fn thing() {}\n")]);
-    let nameless = common::fixtures::node_with_attrs(
-        "src/x.rs::thing",
-        "code-entity",
-        &[("kind", "function"), ("line", "1")],
-    );
-    drop(common::cli::planted_graph(
-        root,
-        &rigger::contextgraph::Graph {
-            nodes: vec![nameless],
-            edges: Vec::new(),
-        },
-    ));
-
-    assert_eq!(
-        common::cli::graph_ok(root, &["graph", "--show", "src/x.rs::thing"]),
-        "show src/x.rs::thing\n  site: src/x.rs:1   kind function   degree 0\n  (no production \
-         definition named \"src/x.rs::thing\" of kind function at line 1 or elsewhere in src/x.rs \
-         in the current working tree; the recorded location may be stale)\n",
-        "a nameless node at a line is noted by its id"
     );
 }
 

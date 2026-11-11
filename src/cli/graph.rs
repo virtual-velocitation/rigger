@@ -206,9 +206,9 @@ const SHOW_MAX_BODY_LINES: u32 = 60;
 ///   prints no site, no body and no note), and
 ///   the definition BODY read from the WORKING TREE at that location - line-numbered and bounded by
 ///   the extent the shared multi-grammar symbols authority derives (the grammar's own node
-///   boundary), clamped to a max window. A missing file, a recorded line past end-of-file, a drifted
-///   location the current tree no longer matches, a nameless node, or a build without the
-///   extraction grammar degrades to the site plus an explicit note, never an error (the recorded
+///   boundary), clamped to a max window. A missing file, a line past end-of-file, no definition of
+///   the node's name and kind at its line, a nameless node, or a build without the extraction
+///   grammar degrades to the site plus an explicit note, never an error (the recorded
 ///   graph facts are still shown; only the body is unavailable, and the surface says so).
 /// - MANY matches (an ambiguous bare name, path or flat `<file>::<name>`): LISTS the sorted
 ///   candidates, each with its file, and prints NO body - the graph's honesty rule is never to
@@ -284,24 +284,20 @@ fn cmd_graph_show(entity: &str) -> Res {
 /// INTEGRATION, for the header; spec 119, SHOW IS ONE RENDERER): `show <id>`, the site/kind/degree
 /// header, one `  <entry> <value>` line per remaining [`contextgraph::site_fields`] entry, then the
 /// line-numbered body bounded through the shared multi-grammar symbols authority - or an explicit
-/// note (a drifted location this tree cannot resolve even by name and kind at its id path, a
-/// nameless node, or a
-/// build without the extraction grammar) in place of the body, so the surface is never silently
-/// wrong (a graceful degrade, never an error). A node naming no file has no line: its header reads
+/// note (no definition of the node's name and kind at its line, a nameless node, or a build
+/// without the extraction grammar) in place of the body, so the surface is never silently wrong
+/// (a graceful degrade, never an error). A node naming no file has no line: its header reads
 /// `  kind K degree D` with no `site:` part, and it prints no body and no note, [`definition_body`]
-/// never called. When [`definition_body`] HEALS a drifted recorded line to the entity's live one,
-/// the header prints the LIVE site with the recorded one noted alongside it (`"recorded line N, now
-/// M"`) rather than silently swapping one location for the other with no trace of the drift.
+/// never called.
 ///
 /// The body is bounded by the node's `name` attr and its kind (spec 119, ONE EXTENT), never a cut
 /// of the id, since a file id holds a `.` and an impl header id a `::`, and by its id path, the
 /// rest half of the id's one cut ([`contextgraph::query::split_id`]; spec 119, IDS FOLLOW THE
-/// LANGUAGE'S PATH), so a drifted `T::new` heals onto its own body, never `U::new`'s; an id with
-/// no `::` gives none, bounded by name, kind and line alone. A node with no `name` at a
-/// non-zero line gets the "no production definition named" note with its id in place of the name,
-/// here, ahead
-/// of the feature-gated [`locate_definition_extent`], so both lanes print the same note; one at line
-/// 0 keeps [`definition_body`]'s `source unavailable`.
+/// LANGUAGE'S PATH), so `T::new` bounds its own body, never `U::new`'s; an id with no `::` gives
+/// none, bounded by name, kind and line alone. A node with no `name` at a non-zero line gets the
+/// "no production definition named" note with its id in place of the name, here, ahead of the
+/// feature-gated [`locate_definition_extent`], so both lanes print the same note; one at line 0
+/// keeps [`definition_body`]'s `source unavailable`.
 fn print_entity_site(site: &contextgraph::EntitySite) {
     println!("show {}", site.id);
     let Some(file) = site.file.as_deref() else {
@@ -330,12 +326,11 @@ fn print_entity_site(site: &contextgraph::EntitySite) {
     };
     match body {
         ShowBody::Lines {
-            start,
             lines,
             omitted,
             extent_end,
         } => {
-            print_site_header(site, file, start);
+            print_site_header(site, file);
             print_site_entries(site);
             for (n, text) in lines {
                 println!("  {n:>6} | {text}");
@@ -349,7 +344,7 @@ fn print_entity_site(site: &contextgraph::EntitySite) {
             }
         }
         ShowBody::Note(reason) => {
-            print_site_header(site, file, site.line);
+            print_site_header(site, file);
             print_site_entries(site);
             println!("  ({reason})");
         }
@@ -360,12 +355,11 @@ fn print_entity_site(site: &contextgraph::EntitySite) {
 /// printed as one note in place of the body ([`Unbounded::note`]).
 enum Unbounded {
     /// No production definition (one outside test code) of the label's name and kind, at its id
-    /// path when it has one, sits at its recorded line or anywhere else in the file, nor a lone
-    /// production one of the name at that path at that line: a deleted definition, or a nameless
-    /// node no definition can be sought for.
+    /// path when it has one, sits at its line, or the node is nameless and no definition can be
+    /// sought for it.
     Missing,
-    /// Any other reason, already worded: an ambiguous drift, no registered grammar, or a build
-    /// without the extraction grammar.
+    /// Any other reason, already worded: no registered grammar, or a build without the
+    /// extraction grammar.
     Note(String),
 }
 
@@ -375,8 +369,7 @@ impl Unbounded {
     fn note(self, label: &str, path: Option<&str>, kind: &str, file: &str, line: u32) -> String {
         match self {
             Unbounded::Missing => format!(
-                "no production definition {} of kind {kind} at line {line} or elsewhere in {file} \
-                 in the current working tree; the recorded location may be stale",
+                "no production definition {} of kind {kind} at line {line} of {file}",
                 sought(label, path)
             ),
             Unbounded::Note(why) => why,
@@ -385,7 +378,7 @@ impl Unbounded {
 }
 
 /// How a show note names the definition it sought (spec 119, IDS FOLLOW THE LANGUAGE'S PATH):
-/// `named "<label>"`, then ` at path "<path>"` when the id carried a path, the one every tier of
+/// `named "<label>"`, then ` at path "<path>"` when the id carried a path, the one
 /// [`extract::locate_extent`](rigger::grounder::symbols::extract::locate_extent) filtered by.
 fn sought(label: &str, path: Option<&str>) -> String {
     match path {
@@ -394,26 +387,13 @@ fn sought(label: &str, path: Option<&str>) -> String {
     }
 }
 
-/// The site/kind/degree header line of a node naming `file` (spec 92 criterion 1): `live_line` is
-/// where the body actually came from (or, for a [`ShowBody::Note`], simply the recorded line -
-/// nothing was located). When it agrees with the entity's RECORDED line (`site.line`) - the
-/// overwhelmingly common case, and every case before spec 92 - the header is exactly the spec-58
-/// shape. When a drifted recorded line healed by name and kind at its id path to a different live
-/// one, the
-/// header shows the LIVE line as the site (it is what the body below is FROM) and notes the
-/// recorded line beside it, so the drift is visible rather than silently resolved.
-fn print_site_header(site: &contextgraph::EntitySite, file: &str, live_line: u32) {
-    if live_line != site.line {
-        println!(
-            "  site: {}:{}   kind {}   degree {}   (recorded line {}, now {})",
-            file, live_line, site.kind, site.degree, site.line, live_line
-        );
-    } else {
-        println!(
-            "  site: {}:{}   kind {}   degree {}",
-            file, site.line, site.kind, site.degree
-        );
-    }
+/// The site/kind/degree header line of a node naming `file` (spec 92 criterion 1), at the line
+/// the node holds.
+fn print_site_header(site: &contextgraph::EntitySite, file: &str) {
+    println!(
+        "  site: {}:{}   kind {}   degree {}",
+        file, site.line, site.kind, site.degree
+    );
 }
 
 /// One `  <entry> <value>` line per [`contextgraph::site_fields`] entry the header does not print
@@ -434,23 +414,17 @@ fn print_site_entries(site: &contextgraph::EntitySite) {
 /// The outcome of bounding a located definition's body for `rigger graph --show` (spec 58; spec 92
 /// criterion 1).
 enum ShowBody {
-    /// The line-numbered body window `[start, end]`: `start` is where the body actually begins -
-    /// the entity's RECORDED line when it still holds the definition, or the LIVE line a drift
-    /// healed to by name and kind at its id path (spec 92; spec 119) - so the caller always knows
-    /// which line the printed
-    /// body is from. `omitted` is how many lines were dropped past the [`SHOW_MAX_BODY_LINES`]
-    /// clamp (`0` when the whole extent fit), and `extent_end` is the extent's true last line, so
-    /// the caller can print an honest clamp note when `omitted > 0`.
+    /// The line-numbered body window from the node's line. `omitted` is how many lines were
+    /// dropped past the [`SHOW_MAX_BODY_LINES`] clamp (`0` when the whole extent fit), and
+    /// `extent_end` is the extent's true last line, so the caller can print an honest clamp note
+    /// when `omitted > 0`.
     Lines {
-        start: u32,
         lines: Vec<(u32, String)>,
         omitted: u32,
         extent_end: u32,
     },
-    /// No body could be shown; the string is the human reason (a drifted working-tree location this
-    /// tree cannot resolve even by name and kind at its id path, a nameless node, or a build
-    /// compiled without the
-    /// extraction grammar).
+    /// No body could be shown; the string is the human reason (no definition of the node's name
+    /// and kind at its line, a nameless node, or a build compiled without the extraction grammar).
     /// Printed in place of the body so the show surface degrades honestly, never guessing or
     /// silently truncating.
     Note(String),
@@ -468,27 +442,15 @@ enum ShowBody {
 /// single-quote string carrying a lone `{` are all bounded correctly by the parser - including a
 /// signature that itself carries a brace (a struct-destructuring parameter, an `= {}` default) and
 /// a definition that CONTAINS a nested `fn`/item (its extent spans the child, never truncates at
-/// it). The window is `[start, extent]` (the RESOLVED `start` - see below), clamped by
-/// [`SHOW_MAX_BODY_LINES`]; a clamp reports its omitted-line count so a bounded body is never read
-/// as whole.
-///
-/// The recorded `start` no longer holding the definition (the graph has not been reindexed since the
-/// code moved) is not, by itself, a reason to refuse: [`locate_definition_extent`] falls back to
-/// locating `name` of `kind`, at `id_path` when one is given, by a search of the SAME file,
-/// healing to the live line when that definition is UNAMBIGUOUS among its production
-/// definitions, those outside test code. [`ShowBody::Lines::start`] then carries that LIVE line
-/// rather than the recorded one, so the caller's header can show the drift instead of hiding it.
+/// it). The window is `[start, extent]`, clamped by [`SHOW_MAX_BODY_LINES`]; a clamp reports its
+/// omitted-line count so a bounded body is never read as whole.
 ///
 /// Returns [`ShowBody::Note`] - the caller prints it in place of the body, never an error - when the
-/// body cannot be shown honestly: the recorded `start` line is `0` or past end-of-file (a location
-/// that never named a real source line, or one that has drifted past the file itself, each refused
-/// before any search), the file cannot be read (a drifted or unknown location), the current tree
-/// holds no production definition (one outside test code) of that name and kind at `id_path`,
-/// when one is given, ANYWHERE in the file nor a lone production one of the name at that path at
-/// the recorded line (deleted, not merely moved), the name and kind at that path are ambiguous in
-/// the file (production definitions at more than one live line, never guessed), or this build has no extraction grammar (the light,
-/// `--no-default-features` lane). It never GUESSES a body from a structural next-definition bound
-/// or from an ambiguous candidate.
+/// body cannot be shown honestly: the `start` line is `0` or past end-of-file, the file cannot be
+/// read, the tree holds no production definition (one outside test code) of that name and kind
+/// at `id_path`, when one is given, at `start`, or this build has no extraction grammar (the
+/// light, `--no-default-features` lane). It never GUESSES a body from a structural
+/// next-definition bound.
 fn definition_body(
     file: &str,
     start: u32,
@@ -496,9 +458,8 @@ fn definition_body(
     id_path: Option<&str>,
     kind: &str,
 ) -> ShowBody {
-    // A recorded line of 0 never named a real source line: degrade before any read. (Also covers a
-    // reference-only graph entity with no definition site of its own to search from, so a hard,
-    // un-healed refusal.)
+    // A line of 0 never named a real source line: degrade before any read. (Also covers a
+    // reference-only graph entity with no definition site of its own.)
     if start == 0 {
         return ShowBody::Note(format!(
             "source unavailable at {file}:{start}; the recorded location may be stale"
@@ -518,54 +479,41 @@ fn definition_body(
     let all: Vec<&str> = text.lines().collect();
     let total = all.len() as u32;
     if start > total {
-        // The recorded line is past end-of-file: the location drifted past the file itself, which
-        // no within-file search is asked to reach - a hard refusal.
+        // The line is past end-of-file.
         return ShowBody::Note(format!(
             "source unavailable at {file}:{start}; the recorded location may be stale"
         ));
     }
-    // Resolve WHERE the body starts (the recorded line, or - spec 92 - a healed live line) and its
-    // extent's end, through the ONE multi-grammar authority. A miss (deleted, ambiguous, or a
-    // light-lane build with no grammar) is an explicit note, never a guessed body.
-    let (live_start, extent_end) =
-        match locate_definition_extent(file, &text, start, name, id_path, kind) {
-            Ok((s, e)) => (s, e.min(total)),
-            Err(why) => return ShowBody::Note(why.note(name, id_path, kind, file, start)),
-        };
+    // The extent's end through the ONE multi-grammar authority. A miss (no such definition at
+    // the line, or a light-lane build with no grammar) is an explicit note, never a guessed body.
+    let extent_end = match locate_definition_extent(file, &text, start, name, id_path, kind) {
+        Ok(end) => end.min(total),
+        Err(why) => return ShowBody::Note(why.note(name, id_path, kind, file, start)),
+    };
     // The max window: never dump an unbounded body. A clamp keeps the extent's true end so the
-    // caller can announce the omitted lines. The window is anchored at the RESOLVED start, so a
-    // healed drift is bounded exactly like an unmoved definition would be.
-    let window_cap = live_start
-        .saturating_add(SHOW_MAX_BODY_LINES)
-        .saturating_sub(1);
-    let printed_end = extent_end.max(live_start).min(window_cap);
+    // caller can announce the omitted lines.
+    let window_cap = start.saturating_add(SHOW_MAX_BODY_LINES).saturating_sub(1);
+    let printed_end = extent_end.max(start).min(window_cap);
     let omitted = extent_end.saturating_sub(printed_end);
-    let lines = (live_start..=printed_end)
+    let lines = (start..=printed_end)
         .map(|n| (n, all[(n - 1) as usize].to_string()))
         .collect();
     ShowBody::Lines {
-        start: live_start,
         lines,
         omitted,
         extent_end,
     }
 }
 
-/// The 1-based, inclusive `(start, end)` line range of the definition named `name` of kind `kind`
-/// recorded at `start`, at the id path `id_path` when one is given (spec 58; spec 92 criterion 1,
-/// FRESH ON EVERY INTEGRATION; spec 119, ONE EXTENT and IDS FOLLOW THE LANGUAGE'S PATH). It resolves the file's grammar by its path through the symbols registry, so a `.tsx`
-/// file keeps its TSX grammar, and only calls [`extract::locate_extent`], the ONE extent authority,
-/// whose three tiers decide the bound: the recorded name, kind and line, else the recorded name
-/// and line, else a drifted line by name and kind, healed only when one line holds them; each tier
-/// reads production definitions only, those outside test code, and only those at `id_path` when
-/// it is given.
+/// The 1-based, inclusive last line of the definition named `name` of kind `kind` at `start`, at
+/// the id path `id_path` when one is given (spec 58; spec 119, ONE EXTENT and IDS FOLLOW THE
+/// LANGUAGE'S PATH). It resolves the file's grammar by its path through the symbols registry, so
+/// a `.tsx` file keeps its TSX grammar, and only calls [`extract::locate_extent`], the ONE extent
+/// authority, which reads production definitions only, those outside test code.
 ///
-/// Returns the [`Unbounded`] reason - the caller degrades to a note - when no production
-/// definition of that name and kind at `id_path`, when one is given, exists anywhere in the file
-/// nor a lone production one of the name at that path at the recorded line (deleted, not moved),
-/// and a worded one when no grammar is registered for the file's extension, the grammar cannot
-/// tag the source, or production definitions of the name and kind at that path sit at more than
-/// one live line and none at the recorded one, the note naming the path it sought ([`sought`]).
+/// Returns the [`Unbounded`] reason - the caller degrades to a note - when no such production
+/// definition sits at `start`, and a worded one when no grammar is registered for the file's
+/// extension or the grammar cannot tag the source.
 #[cfg(feature = "symbols")]
 fn locate_definition_extent(
     file: &str,
@@ -574,15 +522,15 @@ fn locate_definition_extent(
     name: &str,
     id_path: Option<&str>,
     kind: &str,
-) -> Result<(u32, u32), Unbounded> {
-    use rigger::grounder::symbols::extract::{self, Extent, Recorded};
+) -> Result<u32, Unbounded> {
+    use rigger::grounder::symbols::extract::{self, Recorded};
     use rigger::grounder::symbols::registry;
     let Some(entry) = registry::for_path(file, None) else {
         return Err(Unbounded::Note(format!(
             "no code-extraction grammar is registered for {file}; the body extent is unavailable"
         )));
     };
-    match extract::locate_extent(
+    extract::locate_extent(
         source,
         entry.lang,
         &entry.language,
@@ -595,20 +543,11 @@ fn locate_definition_extent(
         },
     )
     .map_err(Unbounded::Note)?
-    {
-        Extent::Bounded { start, end } => Ok((start, end)),
-        Extent::Missing => Err(Unbounded::Missing),
-        Extent::Ambiguous(n) => Err(Unbounded::Note(format!(
-            "production definitions {} of kind {kind} sit at {n} lines in {file} and none at the \
-             recorded line {start}; the recorded location may be stale (cannot resolve which one \
-             moved)",
-            sought(name, id_path)
-        ))),
-    }
+    .ok_or(Unbounded::Missing)
 }
 
 /// Light-lane [`locate_definition_extent`]: a build WITHOUT the `symbols` feature links no grammar,
-/// so no extent - recorded or healed - can be derived. It returns an explicit reason the caller
+/// so no extent can be derived. It returns an explicit reason the caller
 /// prints as a note - the show surface stays honest ("the body needs the extraction grammar this
 /// build omits") rather than falling back to a hand-rolled lexer that would mis-read the very
 /// grammars the graph ingests.
@@ -620,7 +559,7 @@ fn locate_definition_extent(
     _name: &str,
     _id_path: Option<&str>,
     _kind: &str,
-) -> Result<(u32, u32), Unbounded> {
+) -> Result<u32, Unbounded> {
     Err(Unbounded::Note(
         "the body extent needs the code-extraction grammar; this build was compiled without the `symbols` feature"
             .to_string(),

@@ -1411,22 +1411,6 @@ pub fn show_recorded(
     show_planted(root, file, path, kind, line, lang)
 }
 
-/// [`show_recorded`] over a worktree whose `file` the head does not hold ([`write_ignored`]), so
-/// the recorded definition is the record half's alone.
-pub fn show_record_only(
-    root: &Path,
-    file: &str,
-    source: &str,
-    path: &str,
-    kind: &str,
-    line: u64,
-    lang: &str,
-) -> String {
-    seed_rigger_dir(root);
-    write_ignored(root, &[(file, source)]);
-    show_planted(root, file, path, kind, line, lang)
-}
-
 /// `rigger graph --show <file>::<path>`'s stdout past the honesty label once the graph records
 /// the definition at the id path `path` of `file`, named by the text after the path's last `::`,
 /// of kind `kind` at `line` in `lang`.
@@ -1823,17 +1807,6 @@ pub fn build_head(root: &Path) -> String {
     run_rigger_ok(root, &["graph", "build"])
 }
 
-/// Writes each `(path, text)` into the worktree of the project at `root` behind a committed
-/// `.gitignore` naming it, so the head holds none of them and the worktree diff counts none (6.1):
-/// a definition the graph records in one is the record half's alone, the one node `--show`'s drift
-/// heal still reaches.
-pub fn write_ignored(root: &Path, files: &[(&str, &str)]) {
-    let ignored: String = files.iter().map(|(path, _)| format!("/{path}\n")).collect();
-    super::fixtures::write_text(root, ".gitignore", &ignored);
-    super::fixtures::commit_tree(root);
-    super::fixtures::write_files(root, files);
-}
-
 /// GIVEN a project whose one file `path`, in the language `lang`, holds `source`, WHEN the
 /// operator runs `rigger graph build`, THEN the built graph's definitions and placeholders are
 /// exactly one node `<path>::<id path>` per `definitions` row, an (id path, leaf, kind, line)
@@ -2077,7 +2050,6 @@ pub fn printed_site_entries(out: &str) -> Vec<(String, String)> {
     };
     pairs.extend(
         rest.split("   ")
-            .take_while(|part| !part.starts_with('('))
             .map(|part| part.split_once(' ').expect("an entry")),
     );
     pairs.extend(
@@ -2091,18 +2063,14 @@ pub fn printed_site_entries(out: &str) -> Vec<(String, String)> {
         .collect()
 }
 
-/// The [`site_fields`](rigger::contextgraph::site_fields) entries of `site` after the CLI's two
-/// print transforms (spec 119, SHOW IS ONE RENDERER): `line` the live line the body came from,
-/// and each string value's newlines spaces - the pairs [`printed_site_entries`] reads back.
-pub fn site_entries_as_printed(
-    site: &rigger::contextgraph::EntitySite,
-    live_line: u32,
-) -> Vec<(String, String)> {
+/// The [`site_fields`](rigger::contextgraph::site_fields) entries of `site` after the CLI's
+/// print transform (spec 119, SHOW IS ONE RENDERER), each string value's newlines spaces - the
+/// pairs [`printed_site_entries`] reads back.
+pub fn site_entries_as_printed(site: &rigger::contextgraph::EntitySite) -> Vec<(String, String)> {
     rigger::contextgraph::site_fields(site)
         .into_iter()
         .map(|(key, value)| {
             let text = match value {
-                _ if key == "line" => live_line.to_string(),
                 serde_json::Value::String(text) => text.replace('\n', " "),
                 number => number.to_string(),
             };
