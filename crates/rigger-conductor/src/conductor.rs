@@ -14486,7 +14486,15 @@ fn write_design_intent(b: &mut String, g: &Graph, seed: &[String]) {
         .iter()
         .filter(|n| binds.contains_key(n.id.as_str()))
         .collect();
-    nodes.sort_by(|a, c| a.id.cmp(&c.id));
+    // The cap keeps the intents that bind the most seed files: most first, ties by id.
+    let bound = |n: &contextgraph::Node| {
+        binds[n.id.as_str()]
+            .iter()
+            .map(|(_, file)| *file)
+            .collect::<BTreeSet<_>>()
+            .len()
+    };
+    nodes.sort_by(|a, c| bound(c).cmp(&bound(a)).then_with(|| a.id.cmp(&c.id)));
 
     let line = |n: &contextgraph::Node| -> String {
         let title = n.attrs.get("title").map(String::as_str).unwrap_or("");
@@ -23440,11 +23448,12 @@ mod tests {
     }
 
     #[test]
-    fn the_design_intent_section_renders_the_first_binding_by_id_and_elides_the_last() {
-        // The design-intent budget cap keeps a deterministic verbatim slice: the nodes in id order.
-        // The rules are listed in DESCENDING id order, so a section that kept the graph's own order
-        // (or reversed the comparator) would render rule_040 verbatim and elide rule_001.
-        let seed = vec!["core.rs".to_string()];
+    fn the_design_intent_section_keeps_the_intents_binding_the_most_seed_files() {
+        // The cap keeps the intents binding the most seed files, ties by id. The rules are listed
+        // in DESCENDING id order and rule_040, the last by id, alone also binds lib.rs: a section
+        // in id order would elide it, one in the graph's own order would render rule_039 and
+        // elide rule_001.
+        let seed = vec!["core.rs".to_string(), "lib.rs".to_string()];
         let mut g = Graph::default();
         for i in (1..=40u32).rev() {
             let id = format!("docs/handbook/rule_{i:03}.md");
@@ -23453,24 +23462,36 @@ mod tests {
                 contextgraph::KIND_HANDBOOK_RULE,
                 &[("title", &format!("the governing rule {i:03}"))],
             ));
-            g.edges.push(crate::test_support::edge(
-                &id,
-                "core.rs",
-                contextgraph::REL_GOVERNS,
-                contextgraph::TIER_EXTRACTED,
-            ));
+            let files: &[&str] = if i == 40 {
+                &["core.rs", "lib.rs"]
+            } else {
+                &["core.rs"]
+            };
+            for file in files {
+                g.edges.push(crate::test_support::edge(
+                    &id,
+                    file,
+                    contextgraph::REL_GOVERNS,
+                    contextgraph::TIER_EXTRACTED,
+                ));
+            }
         }
 
         let mut b = String::new();
         write_design_intent(&mut b, &g, &seed);
 
-        assert!(
-            b.contains("the governing rule 001"),
-            "the first design-intent binding by id must render verbatim; got:\n{b}"
+        let (most, first) = (
+            b.find("the governing rule 040"),
+            b.find("the governing rule 001"),
         );
         assert!(
-            !b.contains("the governing rule 040"),
-            "the last design-intent binding by id must be elided past the cap, not rendered; \
+            most.is_some() && first.is_some() && most < first,
+            "the intent binding the most seed files must render first, then the first by id; \
+             got:\n{b}"
+        );
+        assert!(
+            !b.contains("the governing rule 039"),
+            "the last single-file binding by id must be elided past the cap, not rendered; \
              got:\n{b}"
         );
         assert!(
