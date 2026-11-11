@@ -805,6 +805,12 @@ pub(crate) fn cmd_setup(args: &[String]) -> Res {
     let grep_guard = config_store::load_workflow(&root.join(RIGGER_DIR).join(WORKFLOW_FILE))?
         .defaults
         .grep_guard;
+    // Advance the code store to the head before the rebuild, so a `graph.db` migrated to the
+    // records-only fold never stands without the snapshot that answers its code.
+    let code_store = open_project_code_store(rigger_store::code::Mode::Write)?;
+    if let Some(opened) = &code_store {
+        opened.warn_if_behind();
+    }
     // Pay the one cold rebuild a `graph.db` owes (spec 101) - folded under an older fold rule, or
     // missing an event the log holds, in the cases `rebuild_owed_graph` names: the only command
     // that rebuilds it, because it is the verb every install already runs.
@@ -839,12 +845,6 @@ pub(crate) fn cmd_setup(args: &[String]) -> Res {
     // 5: THE STATUSLINE COMMAND) - so the line under the person's conversation and the
     // console's own bottom line are one text. Drift-aware like every install above.
     let status_line = install_status_line(root)?;
-    // Advance the code store to the head last, so the snapshot describes the tree every install
-    // above left.
-    let code_store = open_project_code_store(rigger_store::code::Mode::Write)?;
-    if let Some(opened) = &code_store {
-        opened.warn_if_behind();
-    }
 
     // The --agents import (units 4 + 8 woven) is itself a REQUESTED change: it runs
     // before the silent-no-op check and always reports its outcome, so an import onto
