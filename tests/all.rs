@@ -55,6 +55,8 @@ mod code_ingest_events;
 mod code_lens_map_real_store_periphery;
 mod code_lens_overview_collapse_viz;
 mod code_lens_view_periphery;
+#[cfg(feature = "symbols")]
+mod combined_lookup_periphery;
 mod community_detection_cli;
 mod community_detection_pass;
 mod community_fold_periphery;
