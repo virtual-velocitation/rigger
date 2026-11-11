@@ -136,6 +136,15 @@ pub trait Group {
     fn group(&self, view: &dyn CodeView) -> Groupings;
 }
 
+/// Advances one project's code store to the head its operator checkout has checked out. The
+/// conductor calls it right after it lands a merge, so the cost of describing the new tip falls on
+/// the merge rather than on the next reader. The project is bound where the interface is built.
+pub trait AdvanceCodeStore: Send + Sync {
+    /// Advances the store to the head, waiting for a writer in flight; an error says why the
+    /// store still describes an older tip.
+    fn advance_to_head(&self) -> Result<(), String>;
+}
+
 /// Whether test code is shown.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum Tests {
