@@ -74,6 +74,13 @@ impl TestAttachment {
         self.counts.get(cluster).copied().unwrap_or(0)
     }
 
+    /// The test entities attached to the cluster `cluster`, in id order.
+    pub fn tests_of<'a>(&'a self, cluster: &'a str) -> impl Iterator<Item = &'a str> {
+        self.attached()
+            .filter(move |(_, c)| *c == cluster)
+            .map(|(t, _)| t)
+    }
+
     /// Every attached test entity with its cluster, in test id order.
     pub fn attached(&self) -> impl Iterator<Item = (&str, &str)> {
         self.cluster_of

@@ -167,3 +167,44 @@ fn graph_takes_a_tests_option() {
         "{err}"
     );
 }
+
+/// GIVEN a built project whose one community has a test proving it, WHEN `rigger graph
+/// communities` reads it under each `--tests` setting, THEN the community shows its attached test
+/// count; `include` also lists the test beneath it, and `only` reports the tests alone.
+#[test]
+fn graph_communities_report_their_attached_tests() {
+    let dir = temp_project();
+    let root = dir.path();
+    write_text(
+        root,
+        "src/lib.rs",
+        "pub fn alpha() { beta() }\npub fn beta() {}\n",
+    );
+    write_text(
+        root,
+        "tests/t.rs",
+        "#[test]\nfn proves_alpha() { alpha(); }\n",
+    );
+    git_commit_all(root, "source");
+    run_rigger_ok(root, &["graph", "build"]);
+    let summary = "graph communities: 1 community over 3 node(s) at resolution 1\n";
+    let community = "community/1/0\t3\tbeta\t1 test\n";
+    let listed = "  test tests/t.rs::proves_alpha\n";
+    // (the extra arguments, the whole report)
+    let cases: [(&[&str], String); 3] = [
+        (&[], format!("{summary}{community}")),
+        (
+            &["--tests", "include"],
+            format!("{summary}{community}{listed}"),
+        ),
+        (
+            &["--tests", "only"],
+            format!("{summary}{community}{listed}"),
+        ),
+    ];
+    for (extra, report) in cases {
+        let mut args = vec!["graph", "communities"];
+        args.extend(extra);
+        assert_eq!(run_rigger_ok(root, &args), report, "{extra:?}");
+    }
+}

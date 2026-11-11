@@ -692,16 +692,17 @@ fn cmd_graph_concepts(args: &[String]) -> Res {
     )
 }
 
-/// One `rigger graph <verb> [--resolution <r>]` report: parse the positive, finite resolution
-/// (defaulting to the stored grain), open the code store as a reader, and print the clusters
-/// `pick` selects - a summary line, then each cluster's id, member count and label.
+/// One `rigger graph <verb> [--resolution <r>] [--tests <t>]` report: parse the positive, finite
+/// resolution (defaulting to the stored grain), open the code store as a reader, and print the
+/// clusters `pick` selects - a summary line, then each cluster's id, member count, label and
+/// attached test count, and under `include` or `only` the tests attached to it.
 fn report_groupings(
     verb: &str,
     args: &[String],
     pick: impl Fn(&rigger_domain::code_view::Groupings) -> &Vec<rigger_domain::code_view::Cluster>,
     counted: impl Fn(usize) -> String,
 ) -> Res {
-    let resolution = grain(verb, args)?;
+    let (resolution, tests) = report_options(verb, args)?;
     let lines = head_view(&cwd(), |view, _, _| {
         let computed;
         let groupings = if resolution == community::DEFAULT_RESOLUTION {
@@ -712,15 +713,29 @@ fn report_groupings(
         };
         let clusters = pick(groupings);
         let members: usize = clusters.iter().map(|c| c.members.len()).sum();
+        let proofs = rigger_domain::resolve::Resolver::new(view).proof_calls();
+        let attached = rigger_domain::test_view::TestAttachment::new(&proofs, clusters);
         let mut lines = vec![format!(
             "graph {verb}: {} over {members} node(s) at resolution {resolution}",
             counted(clusters.len())
         )];
-        lines.extend(
-            clusters
-                .iter()
-                .map(|c| format!("{}\t{}\t{}", c.id, c.members.len(), c.label)),
-        );
+        for c in clusters {
+            let n = attached.count(&c.id);
+            // `only` reports the tests alone, grouped by the cluster they prove.
+            if tests == Tests::Only && n == 0 {
+                continue;
+            }
+            let noun = if n == 1 { "test" } else { "tests" };
+            let tail = if n > 0 {
+                format!("\t{n} {noun}")
+            } else {
+                String::new()
+            };
+            lines.push(format!("{}\t{}\t{}{tail}", c.id, c.members.len(), c.label));
+            if tests != Tests::Exclude {
+                lines.extend(attached.tests_of(&c.id).map(|t| format!("  test {t}")));
+            }
+        }
         Ok(lines)
     })?;
     for line in lines {
@@ -729,10 +744,11 @@ fn report_groupings(
     Ok(())
 }
 
-/// The `--resolution` grain `args` ask `rigger graph <verb>` for: a positive, finite number,
-/// [`community::DEFAULT_RESOLUTION`] when none is given.
-fn grain(verb: &str, args: &[String]) -> Result<f64, Box<dyn std::error::Error>> {
+/// What `args` ask `rigger graph <verb>` for: the `--resolution` grain, a positive, finite number
+/// ([`community::DEFAULT_RESOLUTION`] when none is given), and the `--tests` setting.
+fn report_options(verb: &str, args: &[String]) -> Result<(f64, Tests), Box<dyn std::error::Error>> {
     let mut resolution = community::DEFAULT_RESOLUTION;
+    let mut tests = Tests::default();
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -749,13 +765,17 @@ fn grain(verb: &str, args: &[String]) -> Result<f64, Box<dyn std::error::Error>>
                     .into());
                 }
             }
+            "--tests" => {
+                i += 1;
+                tests = tests_option(&format!("graph {verb}"), args.get(i))?;
+            }
             other => {
                 return Err(format!("graph {verb}: unknown argument {other:?}").into());
             }
         }
         i += 1;
     }
-    Ok(resolution)
+    Ok((resolution, tests))
 }
 
 /// `rigger ground "<query>" [<k>]` - run the project's configured grounder (the
