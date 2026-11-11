@@ -20,7 +20,8 @@
 //!     hop on and `--around` one of them its file, over a store no `CONTAINS` edge reaches.
 //!
 //! Code entities come from the code store, which only the `symbols` lane keeps, so every face that
-//! shows a definition is gated to it; the none/no-store/arg faces run in both lanes. `definition_body`
+//! shows a definition from the tree is gated to it; the none/no-store/arg faces, and a definition a
+//! not-yet-rebuilt `graph.db` still holds, run in both lanes. `definition_body`
 //! is a private binary fn reachable only through the CLI, so this integration layer is the only place
 //! its degrade/extent boundary can be proven.
 
@@ -37,8 +38,8 @@ use common::cli::run_rigger;
 use common::cli::seed_rigger_dir;
 use common::cli::temp_project;
 use common::fixtures::{
-    file_half, member_graph, BARE_PARENT, FILELESS_MEMBER, FILE_MATE, LEAF_PLACEHOLDER,
-    MAKE_TARGET, NESTED_METHOD, RANGE_ARTIFACT,
+    file_half, member_graph, node_with_attrs, BARE_PARENT, FILELESS_MEMBER, FILE_MATE,
+    LEAF_PLACEHOLDER, MAKE_TARGET, NESTED_METHOD, RANGE_ARTIFACT,
 };
 use rigger::contextgraph::{KIND_ARTIFACT, KIND_CODE_ENTITY, KIND_FILE};
 
@@ -83,6 +84,45 @@ fn graph_show_unknown_entity_reports_not_found() {
     assert!(
         !out.contains(" | "),
         "an unknown entity prints NO line-numbered body; got:\n{out}"
+    );
+}
+
+/// DEGRADE face at a stored definition: GIVEN a `graph.db` whose record half holds a named code
+/// entity with a line - as a file folded under a fold rule before the records-only one does until
+/// `rigger setup` rebuilds it, and which every graph read serves as it stands - and the committed
+/// file it names, WHEN the operator runs `rigger graph --show` on it, THEN a light-lane build, which
+/// links no grammar, prints the missing-grammar note and no body, and a `symbols` build prints the
+/// definition's body. Lane-independent: the rows are written straight into the store the binary
+/// reads.
+#[test]
+fn graph_show_a_stored_definition_prints_its_body_or_without_a_grammar_the_note_saying_so() {
+    let dir = temp_project();
+    let root = dir.path();
+    std::fs::write(root.join("a.rs"), "fn alpha() {}\n").unwrap();
+    common::fixtures::commit_tree(root);
+    let stored = node_with_attrs(
+        "a.rs::alpha",
+        KIND_CODE_ENTITY,
+        &[("name", "alpha"), ("kind", "function"), ("line", "1")],
+    );
+    drop(planted_graph(
+        root,
+        &rigger::contextgraph::Graph {
+            nodes: vec![stored],
+            edges: Vec::new(),
+        },
+    ));
+    let (out, err, ok) = run_rigger(root, &["graph", "--show", "a.rs::alpha"]);
+    assert!(
+        ok,
+        "--show on a stored definition exits SUCCESS; stderr: {err}"
+    );
+    let body = out.contains("     1 | fn alpha() {}");
+    let grammar_note = out.contains("the body extent needs the code-extraction grammar");
+    assert_eq!(
+        (body, grammar_note),
+        (cfg!(feature = "symbols"), !cfg!(feature = "symbols")),
+        "a symbols build prints the body, a light-lane build only the missing-grammar note; got:\n{out}"
     );
 }
 
