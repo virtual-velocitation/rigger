@@ -347,14 +347,22 @@ impl<'v> Resolver<'v> {
     /// The call rule: the target and tier of a call to `leaf` from `file`.
     fn call(&self, file: &str, leaf: &str, pool: Pool) -> (String, &'static str) {
         let candidates = self.candidates(leaf);
-        let targets: Vec<&Candidate> = candidates.iter().filter(|c| pool.calls(c)).collect();
-        let here: Vec<&&Candidate> = targets.iter().filter(|c| c.file == file).collect();
-        if let [one] = here.as_slice() {
+        let (mut targets, mut here, mut one_here) = (0, 0, None);
+        for c in candidates.iter().filter(|c| pool.calls(c)) {
+            targets += 1;
+            if c.file == file {
+                here += 1;
+                one_here = Some(c);
+            }
+        }
+        if let (1, Some(one)) = (here, one_here) {
             return (one.id.clone(), TIER_EXTRACTED);
         }
-        let tier = match hop(targets) {
-            Hop::Terminal => TIER_AMBIGUOUS,
-            Hop::One(_) | Hop::Frontier(_) => TIER_INFERRED,
+        // No target is terminal ([`hop`]); one or more is a hop onward.
+        let tier = if targets == 0 {
+            TIER_AMBIGUOUS
+        } else {
+            TIER_INFERRED
         };
         (placeholder_id(file, leaf), tier)
     }
@@ -440,16 +448,40 @@ impl<'v> Resolver<'v> {
     /// declarations, and each id's one `CONTAINS`, from the parent (or the file) of the definition
     /// that settles it ([`Self::winners`]); test code's edges only when `tests`.
     pub fn links(&self, facts: &FileFacts, tests: bool) -> Vec<Link> {
+        let mut links = Vec::new();
+        self.each_link(facts, tests, |from, rel, to, tier, test| {
+            links.push(Link {
+                from: from.to_string(),
+                rel,
+                to: to.to_string(),
+                tier,
+                test,
+            })
+        });
+        links
+    }
+
+    /// [`Self::links`] handed to `sink` one at a time as (from, relation, to, tier, test), in
+    /// the same order, without holding them.
+    pub fn each_link(
+        &self,
+        facts: &FileFacts,
+        tests: bool,
+        mut sink: impl FnMut(&str, &'static str, &str, &'static str, bool),
+    ) {
         let file = facts.path.as_str();
         let file_test = self.is_test_file(file);
-        let entity = |i: u32| {
-            facts
-                .defs
-                .get(i as usize)
-                .map(|d| entity_id(file, &d.local))
-        };
-        let from_of = |i: Option<u32>| i.and_then(entity).unwrap_or_else(|| file.to_string());
-        let mut links = Vec::new();
+        let ids: Vec<String> = facts
+            .defs
+            .iter()
+            .map(|d| entity_id(file, &d.local))
+            .collect();
+        let entity = |i: u32| ids.get(i as usize).map(String::as_str);
+        let from_of = |i: Option<u32>| i.and_then(entity).unwrap_or(file);
+        // A product reference is held only by a product edge, so showing tests changes no
+        // product edge. A call's reference runs from the file, so only one from the file is held;
+        // each target maps to whether a product call references it.
+        let mut referenced: HashMap<String, bool> = HashMap::new();
         for m in &facts.mentions {
             let test = self.mention_is_test(facts, m);
             if m.kind != MentionKind::Call || (test && !tests) {
@@ -457,33 +489,19 @@ impl<'v> Resolver<'v> {
             }
             let (to, tier) = self.call(file, &m.leaf, Pool::of(test));
             if let Some(caller) = m.enclosing.and_then(entity) {
-                links.push(Link {
-                    from: caller,
-                    rel: REL_CALLS,
-                    to: to.clone(),
-                    tier,
-                    test,
-                });
+                sink(caller, REL_CALLS, &to, tier, test);
             }
-            links.push(Link {
-                from: file.to_string(),
-                rel: REL_REFERENCES,
-                to,
-                tier,
-                test,
-            });
-        }
-        // A product reference is held only by a product edge, so showing tests changes no
-        // product edge. A call's reference runs from the file, so only one from the file is held;
-        // each target maps to whether a product call references it.
-        let mut referenced: HashMap<&str, bool> = HashMap::new();
-        for l in links.iter().filter(|l| l.rel == REL_REFERENCES) {
-            *referenced.entry(l.to.as_str()).or_default() |= !l.test;
+            sink(file, REL_REFERENCES, &to, tier, test);
+            match referenced.get_mut(&to) {
+                Some(product) => *product |= !test,
+                None => {
+                    referenced.insert(to, !test);
+                }
+            }
         }
         let held = |from: &str, to: &str, test: bool| {
             from == file && referenced.get(to).is_some_and(|&product| test || product)
         };
-        let mut tagged = Vec::new();
         for m in &facts.mentions {
             let MentionKind::Tagged(tag) = &m.kind else {
                 continue;
@@ -497,41 +515,28 @@ impl<'v> Resolver<'v> {
                 continue;
             };
             let from = from_of(m.enclosing);
-            if held(&from, &to, test) || held(&from, &placeholder_id(&from, &m.leaf), test) {
+            if held(from, &to, test) || held(from, &placeholder_id(from, &m.leaf), test) {
                 continue;
             }
-            tagged.push(Link {
-                from,
-                rel: REL_REFERENCES,
-                to,
-                tier,
-                test,
-            });
+            sink(from, REL_REFERENCES, &to, tier, test);
         }
-        links.extend(tagged);
         for decl in &facts.modules {
             let test = decl.test || file_test;
             let Some(target) = self.module_target(decl).filter(|_| tests || !test) else {
                 continue;
             };
-            links.push(Link {
-                from: from_of(Some(decl.def)),
-                rel: REL_CONTAINS,
-                to: target.to_string(),
-                tier: TIER_EXTRACTED,
+            sink(
+                from_of(Some(decl.def)),
+                REL_CONTAINS,
+                target,
+                TIER_EXTRACTED,
                 test,
-            });
+            );
         }
         for (local, d, test) in self.winners(facts, tests) {
-            links.push(Link {
-                from: from_of(d.parent),
-                rel: REL_CONTAINS,
-                to: entity_id(file, local),
-                tier: TIER_EXTRACTED,
-                test,
-            });
+            let to = entity_id(file, local);
+            sink(from_of(d.parent), REL_CONTAINS, &to, TIER_EXTRACTED, test);
         }
-        links
     }
 
     /// Every test call that proves a product definition, ordered by the definition proved, then

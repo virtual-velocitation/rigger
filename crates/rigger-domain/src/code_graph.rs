@@ -10,13 +10,14 @@
 //! node in a test file is test code whatever fact names it.
 //! Product edges are the same under every filter.
 
-use std::collections::{BTreeMap, HashMap};
+use rustc_hash::FxHashMap;
+use std::collections::BTreeMap;
 
 use crate::code_facts::{FileFacts, Half};
 use crate::code_view::{CodeView, Tests, ViewFilter};
 use crate::contextgraph::query::leaf_of;
 use crate::contextgraph::{Edge, Graph, Node, KIND_ARTIFACT, KIND_CODE_ENTITY, KIND_FILE};
-use crate::resolve::{Entity, Link, Resolver};
+use crate::resolve::{Entity, Resolver};
 
 /// A view resolved into a graph under one filter.
 pub struct CodeGraph<'v> {
@@ -30,10 +31,10 @@ pub struct CodeGraph<'v> {
 /// put in id order once, when it becomes a graph.
 #[derive(Default)]
 struct Builder {
-    index: HashMap<String, usize>,
+    index: FxHashMap<String, usize>,
     nodes: Vec<Node>,
     product: Vec<bool>,
-    edges: HashMap<(usize, &'static str, usize), (&'static str, bool)>,
+    edges: FxHashMap<(usize, &'static str, usize), (&'static str, bool)>,
 }
 
 impl Builder {
@@ -69,16 +70,14 @@ impl Builder {
         at
     }
 
-    /// Asserts `link` and its ends; a product assertion of an edge replaces a test one.
-    fn link(&mut self, link: Link) {
-        let from = self.node(&link.from, KIND_ARTIFACT, [], link.test);
-        let to = self.node(&link.to, KIND_ARTIFACT, [], link.test);
-        let held = self
-            .edges
-            .entry((from, link.rel, to))
-            .or_insert((link.tier, link.test));
-        if held.1 && !link.test {
-            *held = (link.tier, false);
+    /// Asserts the edge `from` -`rel`-> `to` of `tier` and its ends; a product assertion of an
+    /// edge replaces a test one.
+    fn link(&mut self, from: &str, rel: &'static str, to: &str, tier: &'static str, test: bool) {
+        let from = self.node(from, KIND_ARTIFACT, [], test);
+        let to = self.node(to, KIND_ARTIFACT, [], test);
+        let held = self.edges.entry((from, rel, to)).or_insert((tier, test));
+        if held.1 && !test {
+            *held = (tier, false);
         }
     }
 
@@ -103,7 +102,7 @@ impl Builder {
             .into_iter()
             .filter(|(_, (_, test))| tests.admits(*test))
             .collect();
-        edges.sort_unstable_by_key(|&((from, rel, to), _)| (rank[from], rel, rank[to]));
+        edges.sort_unstable_by_key(|&((from, rel, to), _)| (rank[from], rank[to], rel));
         let mut reached = vec![false; nodes.len()];
         for &((from, _, to), _) in &edges {
             reached[from] = true;
@@ -199,7 +198,9 @@ impl<'v> CodeGraph<'v> {
             for n in nodes {
                 b.node(&n.id, n.kind, [("title", n.title), ("doc", n.doc)], n.test);
             }
-            links.into_iter().for_each(|l| b.link(l));
+            for l in links {
+                b.link(&l.from, l.rel, &l.to, l.tier, l.test);
+            }
         }
         self.resolver.settle_proofs(proofs);
         for (id, evidence) in self.resolver.proofs() {
@@ -259,12 +260,13 @@ impl<'v> CodeGraph<'v> {
                 test,
             );
         }
-        for l in self.resolver.links(facts, tests) {
-            if leaf_of(&l.to).is_some() {
-                b.node(&l.to, KIND_CODE_ENTITY, [], l.test);
-            }
-            b.link(l);
-        }
+        self.resolver
+            .each_link(facts, tests, |from, rel, to, tier, test| {
+                if leaf_of(to).is_some() {
+                    b.node(to, KIND_CODE_ENTITY, [], test);
+                }
+                b.link(from, rel, to, tier, test);
+            });
     }
 }
 
