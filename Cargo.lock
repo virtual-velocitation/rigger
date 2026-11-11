@@ -2572,6 +2572,7 @@ name = "rigger-store"
 version = "0.1.0"
 dependencies = [
  "ignore",
+ "memmap2",
  "rigger-domain",
  "tempfile",
 ]

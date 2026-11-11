@@ -8,7 +8,7 @@
 //! The reaper keeps the pointers of the two most recently advanced fingerprints and their
 //! snapshots, so two binaries sharing a store each keep theirs.
 
-use crate::code::snapshot::{encode, Snapshot};
+use crate::code::snapshot::{encode, Snapshot, SnapshotBytes};
 use crate::format::{write_atomic, WriteLock};
 use rigger_domain::code_facts::{FileFacts, Stamp, Tip};
 use rigger_domain::code_view::{in_scope, CodeView, Entry, Extract, FactsView, Group, TreeSource};
@@ -120,7 +120,7 @@ impl Store {
     /// which callers treat as an empty store. A store file that cannot be read for a reason other
     /// than its absence is an error.
     pub fn current(&self, fingerprint: u64) -> Result<Option<Snapshot>, String> {
-        self.current_with(fingerprint, &|path| std::fs::read(path))
+        self.current_with(fingerprint, &SnapshotBytes::mapped)
     }
 
     /// [`Store::current`], reading snapshot files through `read`. When the file the pointer named
@@ -129,13 +129,15 @@ impl Store {
     pub(crate) fn current_with(
         &self,
         fingerprint: u64,
-        read: &dyn Fn(&Path) -> std::io::Result<Vec<u8>>,
+        read: &dyn Fn(&Path) -> std::io::Result<SnapshotBytes>,
     ) -> Result<Option<Snapshot>, String> {
-        let readable = |path: &Path, bytes: std::io::Result<Vec<u8>>| match bytes {
-            Ok(bytes) => Ok(Some(bytes)),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(format!("read {}: {e}", path.display())),
-        };
+        fn readable<B>(path: &Path, bytes: std::io::Result<B>) -> Result<Option<B>, String> {
+            match bytes {
+                Ok(bytes) => Ok(Some(bytes)),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+                Err(e) => Err(format!("read {}: {e}", path.display())),
+            }
+        }
         for _ in 0..READ_ATTEMPTS {
             let current = self.dir.join(pointer_name(fingerprint));
             let Some(pointer) = readable(&current, std::fs::read(&current))? else {
@@ -1214,6 +1216,41 @@ mod tests {
         }
     }
 
+    /// The snapshot in force is read through a mapping of its file, never a copy, and reads whole
+    /// after the reaper unlinks the file under it.
+    #[test]
+    fn the_snapshot_in_force_is_mapped_and_outlives_its_unlink() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Store::new(root.path());
+        let source = MemSource::default();
+        let group = CountingGroup::default();
+        let tip = source.commit("c1", A);
+        let written = store
+            .advance(&source, &ToyExtract::new(FP), &group, &tip)
+            .unwrap();
+        let read = store
+            .current(stamped(FP))
+            .unwrap()
+            .expect("a snapshot in force");
+        assert!(read.is_mapped(), "read through a mapping");
+        for name in snap_names(&store).into_iter().filter(|n| n.ends_with(SNAP)) {
+            std::fs::remove_file(store.dir().join(name)).unwrap();
+        }
+        assert_eq!(
+            read.bytes(),
+            written.bytes(),
+            "the unlinked file reads whole"
+        );
+        for file in written.files() {
+            assert_eq!(
+                read.file(file.path),
+                written.file(file.path),
+                "{}",
+                file.path
+            );
+        }
+    }
+
     /// Each row: how many reads the reaper wins. The reader re-reads its pointer and retries, up to
     /// its bound; past it, the store reads as absent.
     #[test]
@@ -1233,7 +1270,7 @@ mod tests {
                 .unwrap();
             let target = source.commit("c2", B);
             let reads = Mutex::new(0usize);
-            let read = |path: &Path| -> std::io::Result<Vec<u8>> {
+            let read = |path: &Path| -> std::io::Result<SnapshotBytes> {
                 let mut n = reads.lock().unwrap();
                 *n += 1;
                 if *n == 1 {
@@ -1244,7 +1281,7 @@ mod tests {
                 if *n <= wins {
                     return Err(std::io::ErrorKind::NotFound.into());
                 }
-                std::fs::read(path)
+                SnapshotBytes::mapped(path)
             };
             let snap = store.current_with(stamped(FP), &read).unwrap();
             assert_eq!(

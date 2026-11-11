@@ -45,7 +45,8 @@ use rigger_domain::code_view::{
 use rigger_domain::resolve::{ProofCall, Resolver};
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
-use std::ops::Range;
+use std::ops::{Deref, Range};
+use std::path::Path;
 use std::sync::OnceLock;
 
 pub(crate) const MAGIC: &[u8; 4] = b"RGCS";
@@ -471,12 +472,48 @@ fn scope_of(b: u8) -> Option<Scope> {
         .find(|s| *s as u8 == b)
 }
 
+/// A snapshot's bytes: built in memory by the writer, or a published file mapped read-only.
+pub enum SnapshotBytes {
+    Owned(Vec<u8>),
+    Mapped(memmap2::Mmap),
+}
+
+impl SnapshotBytes {
+    /// The published snapshot at `path`, mapped rather than copied: an open touches the file's
+    /// cached pages where a copy would fault in a fresh buffer of the file's size.
+    pub fn mapped(path: &Path) -> std::io::Result<Self> {
+        let file = std::fs::File::open(path)?;
+        // SAFETY: a snapshot file is immutable once published. The writer writes a temp file and
+        // renames it to a sequence number never used before; the reaper unlinks; nothing writes,
+        // truncates or renames over a `.snap` in place. An unlinked file stays mapped whole, and
+        // an OS that refuses to unlink a mapped file leaves it to the next reap.
+        let map = unsafe { memmap2::Mmap::map(&file) }?;
+        Ok(Self::Mapped(map))
+    }
+}
+
+impl From<Vec<u8>> for SnapshotBytes {
+    fn from(bytes: Vec<u8>) -> Self {
+        Self::Owned(bytes)
+    }
+}
+
+impl Deref for SnapshotBytes {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        match self {
+            Self::Owned(bytes) => bytes,
+            Self::Mapped(map) => map,
+        }
+    }
+}
+
 /// A [`CodeView`] over one snapshot's bytes. Every reference in the bytes is checked when the
 /// snapshot is opened, so reading it later never fails.
 pub struct Snapshot {
     stamp: Stamp,
     groupings: Groupings,
-    bytes: Vec<u8>,
+    bytes: SnapshotBytes,
     pool: String,
     tables: BTreeMap<u16, Table>,
     leaf: Index,
@@ -488,7 +525,8 @@ pub struct Snapshot {
 impl Snapshot {
     /// Reads `bytes`, verifying every crc and every reference; a damaged snapshot is an error,
     /// never a panic.
-    pub fn decode(bytes: Vec<u8>) -> Result<Self, String> {
+    pub fn decode(bytes: impl Into<SnapshotBytes>) -> Result<Self, String> {
+        let bytes = bytes.into();
         let container = Container::parse(&bytes, MAGIC, VERSION)?;
         let pool = String::from_utf8(container.section(STRINGS)?.to_vec())
             .map_err(|_| "the string pool is not UTF-8".to_string())?;
@@ -778,6 +816,12 @@ impl Snapshot {
     /// The bytes this snapshot was decoded from, as a publish writes them.
     pub(crate) fn bytes(&self) -> &[u8] {
         &self.bytes
+    }
+
+    /// Whether this snapshot reads a mapped file rather than bytes of its own.
+    #[cfg(test)]
+    pub(crate) fn is_mapped(&self) -> bool {
+        matches!(self.bytes, SnapshotBytes::Mapped(_))
     }
 
     fn facts(&self, row: &[u8]) -> FileFacts {
