@@ -12481,13 +12481,18 @@ impl RunCtx<'_> {
         // content is no longer the generation both sides hold. The code half lowers from the
         // PERSISTED symbols index when the project has one, so a batch the walk hands can lag the
         // file's bytes: the sink records the bytes' generation, never the walk's. A file the walk
-        // lowers to nothing hands no batch and reaches no decision, while a path the tree has
-        // deleted still arrives from the code half as its batch for no bytes while that index
-        // lists it. Whether a recorded entry then FOLDS is the folding store's best-effort
+        // lowers to nothing hands no batch and reaches no decision, while every identity the graph
+        // holds a generation for whose file the tree no longer holds arrives as the batch its
+        // prefix extracts from no bytes, whatever that index lists, so its nodes retire once -
+        // read from the graph, never the log, so the step's reads stay those of one that does
+        // not ingest. Whether a recorded entry then FOLDS is the folding store's best-effort
         // contract - a lost fold leaves the log right and the graph behind.
+        let held = contextgraph::wired(self.deps.graph)
+            .and_then(|graph| graph.held_identities())
+            .map_err(|e| Error(e.to_string()))?;
         crate::ingest::sink_walked_batches(
             |sink| {
-                crate::ingest::ingest_project_batched(&root, sink);
+                crate::ingest::ingest_project_batched(&root, &held, sink);
             },
             |keyed, excluded| self.emit_keyed_batch(keyed, excluded),
         )
@@ -16015,6 +16020,9 @@ mod tests {
                 _identity: &str,
             ) -> Result<Option<String>, contextgraph::Error> {
                 Ok(None)
+            }
+            fn held_identities(&self) -> Result<Vec<String>, contextgraph::Error> {
+                Ok(Vec::new())
             }
         }
     }
@@ -23115,7 +23123,9 @@ mod tests {
     /// Spec 29c criterion 5 (re-extraction / freshness): a re-ingest on a later grounding pass
     /// RECORDS a CHANGED file's new generation (its batch superseding the file's prior facts) and
     /// records nothing for an UNCHANGED file. The walk itself re-lowers every file it sees; what
-    /// the log's latest generation and the graph's current one decide is what is RECORDED.
+    /// the log's latest generation and the graph's current one decide is what is RECORDED. A file
+    /// DELETED after that records one entry of its batch for no bytes, which retires every symbol
+    /// it held, and a re-ingest after it records nothing.
     #[cfg(feature = "symbols")]
     #[test]
     fn re_ingesting_re_extracts_a_changed_file_and_skips_unchanged_ones() {
@@ -23198,6 +23208,24 @@ mod tests {
         // symbol and no longer the one it replaced, and the unchanged file's is as it stood.
         assert_eq!(reached("src/churn.rs"), names(&["replacement_symbol"]));
         assert_eq!(reached("src/stable.rs"), names(&["stable_symbol"]));
+
+        // Delete churn.rs: one entry of its batch for no bytes retires its symbol, the unchanged
+        // file's stands, and the ingest after it records nothing.
+        let before = crate::test_support::entry_records(&log()).len();
+        std::fs::remove_file(root.join("src/churn.rs")).unwrap();
+        ctx.ingest_project_batches().unwrap();
+        let retired = crate::test_support::entry_records(&log());
+        assert_eq!(
+            retired[before..]
+                .iter()
+                .map(|(e, ..)| (e.prefix.as_str(), e.file.as_str()))
+                .collect::<Vec<_>>(),
+            [("gc", "src/churn.rs")]
+        );
+        assert_eq!(reached("src/churn.rs"), names(&[]));
+        assert_eq!(reached("src/stable.rs"), names(&["stable_symbol"]));
+        ctx.ingest_project_batches().unwrap();
+        assert_eq!(crate::test_support::entry_records(&log()), retired);
     }
 
     /// Spec 92 criterion 1 (FRESH ON EVERY INTEGRATION): [`RunCtx::ingest_files_into_graph`] is
@@ -23606,6 +23634,9 @@ mod tests {
                 self.unless(GraphCall::Current, || {
                     self.inner.current_generation(identity)
                 })
+            }
+            fn held_identities(&self) -> Result<Vec<String>, contextgraph::Error> {
+                self.inner.held_identities()
             }
             fn rebuild_owed(&self) -> Result<bool, contextgraph::Error> {
                 self.unless(GraphCall::Owed, || self.inner.rebuild_owed())
@@ -26157,9 +26188,13 @@ mod tests {
         let root_str = root.to_str().unwrap().to_string();
         // The size of each batch the walk extracts, in walk order.
         let mut batch_sizes = Vec::new();
-        crate::ingest::ingest_project_batched(&root_str, |keyed: &[(String, &Event)], _: bool| {
-            batch_sizes.push(keyed.len());
-        });
+        crate::ingest::ingest_project_batched(
+            &root_str,
+            &[],
+            |keyed: &[(String, &Event)], _: bool| {
+                batch_sizes.push(keyed.len());
+            },
+        );
         assert_eq!(batch_sizes.len(), K, "sanity: one batch per file");
         assert!(
             batch_sizes.iter().all(|&n| n >= 2),
@@ -39889,7 +39924,7 @@ mod tests {
         // What the walk of the tree as it stands emits: each batch's identity and keys, in order.
         let walk = || -> Vec<(String, Vec<String>)> {
             let mut batches = Vec::new();
-            crate::ingest::ingest_project_batched(&root_str, |keyed, _| {
+            crate::ingest::ingest_project_batched(&root_str, &[], |keyed, _| {
                 let identity = crate::ingest::derived_key_parts(&keyed[0].0).unwrap().0;
                 batches.push((
                     identity.to_string(),
@@ -40089,7 +40124,7 @@ mod tests {
         std::fs::write(root.join("src/b.rs"), "pub fn b() {}\n").unwrap();
         git_commit_all(root, "tree");
         let mut walked: Vec<Vec<String>> = Vec::new();
-        crate::ingest::ingest_project_batched(&root_str, |keyed, _| {
+        crate::ingest::ingest_project_batched(&root_str, &[], |keyed, _| {
             walked.push(keyed.iter().map(|(key, _)| key.clone()).collect());
         });
         assert_eq!(

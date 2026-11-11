@@ -23,7 +23,7 @@ pub fn derived_count(events: &[Event]) -> usize {
 #[cfg(feature = "symbols")]
 pub fn walked_entry_events(root: &std::path::Path, blob_of: impl Fn(&str) -> String) -> Vec<Event> {
     let mut out: Vec<Event> = Vec::new();
-    rigger::ingest::ingest_project_batched(root.to_str().unwrap(), |batch, excluded| {
+    rigger::ingest::ingest_project_batched(root.to_str().unwrap(), &[], |batch, excluded| {
         let Some((key, _)) = batch.first() else {
             return;
         };
@@ -167,7 +167,7 @@ impl Handed {
 pub fn handed_by_the_walk(root: &str, identity: &str) -> Handed {
     Handed::by(
         |sink| {
-            rigger::ingest::ingest_project_batched(root, sink);
+            rigger::ingest::ingest_project_batched(root, &[], sink);
         },
         identity,
     )
@@ -203,7 +203,7 @@ pub fn seed_pre_ledger_rows_without_a_group(
     graph: &dyn rigger::contextgraph::Projection,
 ) {
     let folding = rigger::ingest::folding_into(store, Some(graph), &|_| {});
-    rigger::ingest::ingest_project_batched(root.to_str().unwrap(), |batch, _| {
+    rigger::ingest::ingest_project_batched(root.to_str().unwrap(), &[], |batch, _| {
         let rows: Vec<Event> = batch
             .iter()
             .map(|(key, event)| {
@@ -236,7 +236,7 @@ pub fn seed_generations_on_another_stream(
     graph: &dyn rigger::contextgraph::Projection,
     stream: &str,
 ) {
-    rigger::ingest::ingest_project_batched(root.to_str().unwrap(), |batch, excluded| {
+    rigger::ingest::ingest_project_batched(root.to_str().unwrap(), &[], |batch, excluded| {
         let (identity, generation) = rigger::ingest::derived_key_parts(&batch[0].0).unwrap();
         let (prefix, file) =
             rigger::retention::GenerationIngested::identity_parts(identity).unwrap();

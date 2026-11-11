@@ -69,7 +69,7 @@ fn map_ordered_public_boundary_preserves_order_visits_once_and_fans_out() {
 /// observable the byte-identical contract is defined over - by driving a PUBLIC ingest entry point.
 #[cfg(feature = "symbols")]
 fn drive_default(root: &str) -> (Vec<(String, String, Vec<u8>)>, rigger::ingest::IngestStats) {
-    record_emitted(|on_batch| rigger::ingest::ingest_project_batched(root, on_batch))
+    record_emitted(|on_batch| rigger::ingest::ingest_project_batched(root, &[], on_batch))
 }
 
 #[cfg(feature = "symbols")]
@@ -77,7 +77,9 @@ fn drive_paced(
     root: &str,
     workers: usize,
 ) -> (Vec<(String, String, Vec<u8>)>, rigger::ingest::IngestStats) {
-    record_emitted(|on_batch| rigger::ingest::ingest_project_batched_paced(root, workers, on_batch))
+    record_emitted(|on_batch| {
+        rigger::ingest::ingest_project_batched_paced(root, workers, &[], on_batch)
+    })
 }
 
 /// Runs `ingest`, recording every `(key, type, payload)` it hands its batch callback in emit

@@ -178,11 +178,16 @@ pub fn in_walk_scope(root: &Path, prefix: &str, path: &str) -> bool {
 /// holds the bytes or it holds none. The regular-file test comes before the read because `gw`'s
 /// scope is the path alone: a FIFO there would hold the read waiting for a writer.
 pub fn tree_bytes(root: &Path, prefix: &str, path: &str) -> Option<Vec<u8>> {
-    let file = root.join(path);
-    if !in_walk_scope(root, prefix, path) || !file.is_file() {
+    if !tree_holds(root, prefix, path) {
         return None;
     }
-    std::fs::read(file).ok()
+    std::fs::read(root.join(path)).ok()
+}
+
+/// Whether the tree holds a file at `path` (relative to `root`) that an ingest under `prefix`
+/// reads: a regular file [`in_walk_scope`] admits, the only kind [`tree_bytes`] reads.
+pub fn tree_holds(root: &Path, prefix: &str, path: &str) -> bool {
+    in_walk_scope(root, prefix, path) && root.join(path).is_file()
 }
 
 /// The text of a file's `bytes` as an extraction half reads it: none for no bytes and for bytes

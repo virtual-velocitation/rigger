@@ -8,7 +8,8 @@
 //! reader's view is `rigger graph --show`: every id the deleted file held answers before the
 //! deletion and none answers after it, while the kept files still answer. A cold row deletes
 //! `graph.db` after the repairing build, so the rebuild `rigger setup` makes folds the retirement
-//! from the log alone.
+//! from the log alone. No cold row deletes the workflow definition: `rigger setup` scaffolds a new
+//! one where none exists, so the tree would hold the file again.
 
 use crate::common;
 
@@ -212,14 +213,5 @@ rigger::test_cases! {
             after: &[],
             cold: true,
             held: DESIGN_DOC,
-        });
-    /// A deleted workflow definition's retirement, folded again by a cold rebuild from the log.
-    a_cold_rebuild_keeps_a_deleted_workflow_definition_retired:
-        assert_a_build_retires(Deletion {
-            deleted: WORKFLOW_PATH,
-            before: &[],
-            after: &[],
-            cold: true,
-            held: WORKFLOW_DEFINITION,
         });
 }

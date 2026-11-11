@@ -73,13 +73,13 @@ fn whole_walks(root: &Path) -> [Vec<(String, bool)>; 3] {
     let root = root.to_str().unwrap();
     [
         handoffs(|sink| {
-            rigger::ingest::ingest_project_batched(root, sink);
+            rigger::ingest::ingest_project_batched(root, &[], sink);
         }),
         handoffs(|sink| {
-            rigger::ingest::ingest_project_batched_paced(root, 1, sink);
+            rigger::ingest::ingest_project_batched_paced(root, 1, &[], sink);
         }),
         handoffs(|sink| {
-            rigger::ingest::ingest_project_batched_paced(root, 4, sink);
+            rigger::ingest::ingest_project_batched_paced(root, 4, &[], sink);
         }),
     ]
 }
@@ -351,7 +351,7 @@ fn the_fallible_sink_driver_hands_on_the_flag_the_real_walk_handed_each_batch() 
         let mut seen: Vec<(String, bool)> = Vec::new();
         let answer = sink_walked_batches(
             |sink| {
-                rigger::ingest::ingest_project_batched(root, sink);
+                rigger::ingest::ingest_project_batched(root, &[], sink);
             },
             |batch, excluded| {
                 let identity = rigger::ingest::derived_key_parts(&batch[0].0)
@@ -419,9 +419,11 @@ fn without_the_extraction_pass_neither_walk_hands_a_flagged_sink_any_batch() {
     let root = dir.path().to_str().unwrap();
     let mut handed: Vec<(usize, bool)> = Vec::new();
 
-    rigger::ingest::ingest_project_batched(root, |batch: &[(String, &Event)], excluded: bool| {
-        handed.push((batch.len(), excluded))
-    });
+    rigger::ingest::ingest_project_batched(
+        root,
+        &[],
+        |batch: &[(String, &Event)], excluded: bool| handed.push((batch.len(), excluded)),
+    );
     rigger::ingest::ingest_files_batched(
         root,
         &[TEST_MODULE_PATH.to_string(), SOURCE_PATH.to_string()],

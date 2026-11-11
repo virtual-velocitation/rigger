@@ -130,7 +130,7 @@ pub fn file_batches(root: &str, files: &[String]) -> Vec<(String, Vec<Event>, bo
 /// The `gc` batch of a path that holds nothing a grammar parsed: exactly the one structural
 /// boundary event, of an unknown language. `lang` is immaterial there - the fold's supersede keys
 /// on the file alone - so it is never guessed or re-derived.
-fn unparsed_batch(path: &str) -> Vec<Event> {
+pub(crate) fn unparsed_batch(path: &str) -> Vec<Event> {
     vec![empty_structural_boundary_event(path, "unknown", false)]
 }
 

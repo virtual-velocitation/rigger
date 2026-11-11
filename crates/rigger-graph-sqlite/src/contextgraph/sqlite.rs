@@ -3312,6 +3312,18 @@ impl Projection for Projector {
         current_generation(&self.conn.lock().unwrap(), &self.project, identity)
     }
 
+    /// A plain read of the `generations` table, as [`current_generation`] is.
+    fn held_identities(&self) -> Result<Vec<String>, Error> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare("SELECT identity FROM generations WHERE project = ?1 ORDER BY identity")
+            .map_err(be)?;
+        let rows = stmt
+            .query_map(params![self.project], |r| r.get(0))
+            .map_err(be)?;
+        rows.collect::<Result<Vec<String>, _>>().map_err(be)
+    }
+
     fn subgraph(&self, seed: &[String], depth: i64) -> Result<Graph, Error> {
         let seed_json = serde_json::to_string(seed).map_err(be)?;
         let conn = self.conn.lock().unwrap();
@@ -20012,6 +20024,11 @@ mod tests {
                     Some("h1".to_string()),
                     "the generation is read from a graph that owes its rebuild"
                 );
+                assert_eq!(
+                    p.held_identities().unwrap(),
+                    vec![crate::test_support::gc_identity("src/f.rs")],
+                    "the identities are read from a graph that owes its rebuild"
+                );
             }
 
             /// A fresh file-backed graph whose fold of `entry` with `batch` fails with `why`, with
@@ -20079,6 +20096,22 @@ mod tests {
                 assert_eq!(generation_of_f(&ours), Some("h1".to_string()));
                 assert_eq!(generation_of_f(&theirs), None);
                 assert_eq!(ours.current_generation("gd/src/f.rs").unwrap(), None);
+            }
+
+            #[test]
+            fn held_identities_answers_only_the_asking_projects_own_identities() {
+                let (_dir, ours, theirs) = crate::test_support::ours_and_theirs();
+                holding_h1(&ours);
+                assert_eq!(
+                    (
+                        ours.held_identities().unwrap(),
+                        theirs.held_identities().unwrap()
+                    ),
+                    (
+                        vec![crate::test_support::gc_identity("src/f.rs")],
+                        Vec::<String>::new()
+                    )
+                );
             }
 
             /// Every table of the projection that carries a `project` column (spec 117, A

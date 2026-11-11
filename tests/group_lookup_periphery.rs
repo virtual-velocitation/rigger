@@ -200,7 +200,7 @@ mod ingest_sinks {
     /// test invented.
     fn walk(root: &Path) -> Vec<Batch> {
         let mut batches = Vec::new();
-        rigger::ingest::ingest_project_batched(root.to_str().unwrap(), |keyed, _| {
+        rigger::ingest::ingest_project_batched(root.to_str().unwrap(), &[], |keyed, _| {
             let (identity, generation) = rigger::ingest::derived_key_parts(&keyed[0].0).unwrap();
             batches.push((
                 identity.to_string(),
@@ -748,7 +748,7 @@ mod ingest_sinks {
         let now = walk(root);
         let all: Vec<String> = now.iter().flat_map(|(_, _, keys)| keys.clone()).collect();
         let mut legacy = Vec::new();
-        rigger::ingest::ingest_project_batched(root.to_str().unwrap(), |keyed, _| {
+        rigger::ingest::ingest_project_batched(root.to_str().unwrap(), &[], |keyed, _| {
             for (key, event) in keyed {
                 legacy.push((*event).clone().with_meta(META_REPLAY_KEY, key.as_str()));
             }

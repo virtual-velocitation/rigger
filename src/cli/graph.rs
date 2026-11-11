@@ -613,11 +613,13 @@ fn locate_definition_extent(
 /// and the graph does not. What an entry records is the extraction of the bytes this command
 /// READS, hashed by git, never the batch the walk handed: the code half lowers from the
 /// PERSISTED symbols index when the project has one, so a lowering that lags the file records
-/// the generation of the file's bytes. A file the walk hands over NO batch for - one the walk no
-/// longer sees, or one whose extraction the walk lowered to nothing - reaches no decision here
-/// and retires nothing, whereas a path the tree has DELETED that the persisted index still lists
-/// IS handed over and does reach one. An entry whose append lands but whose fold does not leaves
-/// the log right and the graph behind, and this command's line names the first fold it lost.
+/// the generation of the file's bytes. An identity the graph holds a generation for whose file
+/// the tree no longer holds is handed over as the batch its prefix extracts from no bytes,
+/// whatever the persisted index says of the path, so one build retires the deleted file's nodes
+/// and a later build, the log and the graph both holding that retirement, records nothing for
+/// it. A file whose extraction the walk lowered to nothing reaches no decision here. An entry
+/// whose append lands but whose fold does not leaves the log right and the graph behind, and
+/// this command's line names the first fold it lost.
 /// The light lane compiles no extraction pass, so `graph build` there records nothing, degrades
 /// to an empty graph (it still creates the store) and exits 0, never an error.
 fn cmd_graph_build(_args: &[String]) -> Res {
@@ -660,8 +662,10 @@ fn cmd_graph_build(_args: &[String]) -> Res {
 /// function to `root` ([`hash_blob_in`]), so the build detects the root's repository once.
 ///
 /// A re-build refreshes incrementally (spec 45) without reading the log (spec 101): the walk hands
-/// this each batch identity exactly once, and each batch is recorded by [`record_batch`], which
-/// asks the store one group lookup for it. A batch that records nothing counts nothing.
+/// this each batch identity exactly once - each identity the graph holds a generation for
+/// ([`Projection::held_identities`]) whose file is gone included - and each batch is recorded by
+/// [`record_batch`], which asks the store one group lookup for it. A batch that records nothing
+/// counts nothing.
 ///
 /// N counts the batch events of each entry SINK OUTCOMES counts (spec 107): an entry the graph
 /// folded, and one whose fold was lost - refused by a graph that owes its rebuild, or failed.
@@ -684,9 +688,10 @@ fn ingest_tree(
     let mut counted = 0usize;
     let mut first_lost = contextgraph::Fold::Folded;
     let hash_blob = hash_blob_in(root);
+    let held = graph.held_identities()?;
     rigger::ingest::sink_walked_batches(
         |sink| {
-            rigger::ingest::ingest_project_batched(root, sink);
+            rigger::ingest::ingest_project_batched(root, &held, sink);
         },
         |keyed, excluded| {
             let Some((events, fold)) =
@@ -1269,6 +1274,9 @@ mod tests {
                     Some(why) => Err(contextgraph::Error(why.to_string())),
                     None => MinimalProjection.current_generation(identity),
                 }
+            }
+            fn held_identities(&self) -> Result<Vec<String>, contextgraph::Error> {
+                MinimalProjection.held_identities()
             }
             fn apply_generation(
                 &self,
