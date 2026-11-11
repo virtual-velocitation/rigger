@@ -98,7 +98,8 @@ impl TreeSource for GitTreeSource {
 
     /// Staged and unstaged edits both count: a path the tree holds is changed when the
     /// worktree's bytes differ or are gone, and a path it does not hold is untracked unless
-    /// git ignores it.
+    /// git ignores it. A change of the worktree's mode alone leaves the bytes as they were, so
+    /// it is no change.
     fn changed_against_worktree(
         &self,
         tree: &str,
@@ -107,6 +108,8 @@ impl TreeSource for GitTreeSource {
         let status = Self::git(
             worktree,
             &[
+                "-c",
+                "core.fileMode=false",
                 "diff",
                 "--name-status",
                 "-z",
@@ -200,6 +203,17 @@ mod tests {
         git_commit_all(dir.path(), "base");
         dir
     }
+
+    /// Sets the executable bits of `file`, on an OS whose files carry them.
+    #[cfg(unix)]
+    fn make_executable(file: &Path) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(file, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    /// A file on this OS carries no executable bit to set.
+    #[cfg(not(unix))]
+    fn make_executable(_: &Path) {}
 
     fn paths(entries: &[Entry]) -> Vec<String> {
         entries.iter().map(|e| e.path.clone()).collect()
@@ -408,6 +422,8 @@ mod tests {
             delete: &'static [&'static str],
             /// Paths staged with `git add` before the diff.
             stage: &'static [&'static str],
+            /// Paths made executable in the worktree before the diff.
+            chmod: &'static [&'static str],
             changed: &'static [&'static str],
             untracked: &'static [&'static str],
         }
@@ -422,6 +438,7 @@ mod tests {
                 write: &[],
                 delete: &[],
                 stage: &[],
+                chmod: &[],
                 changed: &[],
                 untracked: &[],
             },
@@ -430,6 +447,7 @@ mod tests {
                 write: &[("a.txt", "a2\n")],
                 delete: &[],
                 stage: &[],
+                chmod: &[],
                 changed: &["a.txt"],
                 untracked: &[],
             },
@@ -438,6 +456,7 @@ mod tests {
                 write: &[("a.txt", "a2\n")],
                 delete: &[],
                 stage: &["a.txt"],
+                chmod: &[],
                 changed: &["a.txt"],
                 untracked: &[],
             },
@@ -446,6 +465,7 @@ mod tests {
                 write: &[],
                 delete: &["b.txt"],
                 stage: &[],
+                chmod: &[],
                 changed: &["b.txt"],
                 untracked: &[],
             },
@@ -454,6 +474,7 @@ mod tests {
                 write: &[("new.txt", "n\n")],
                 delete: &[],
                 stage: &[],
+                chmod: &[],
                 changed: &[],
                 untracked: &["new.txt"],
             },
@@ -462,6 +483,7 @@ mod tests {
                 write: &[("new.txt", "n\n")],
                 delete: &[],
                 stage: &["new.txt"],
+                chmod: &[],
                 changed: &[],
                 untracked: &["new.txt"],
             },
@@ -470,6 +492,16 @@ mod tests {
                 write: &[("ignored.txt", "i\n")],
                 delete: &[],
                 stage: &[],
+                chmod: &[],
+                changed: &[],
+                untracked: &[],
+            },
+            Row {
+                name: "a mode change alone is no change",
+                write: &[],
+                delete: &[],
+                stage: &[],
+                chmod: &["a.txt"],
                 changed: &[],
                 untracked: &[],
             },
@@ -478,6 +510,7 @@ mod tests {
                 write: &[("a.txt", "a2\n"), ("z/new.txt", "n\n")],
                 delete: &["b.txt"],
                 stage: &[],
+                chmod: &[],
                 changed: &["a.txt", "b.txt"],
                 untracked: &["z/new.txt"],
             },
@@ -490,6 +523,9 @@ mod tests {
             remove(dir.path(), row.delete);
             for path in row.stage {
                 git_ok(dir.path(), &["add", path]);
+            }
+            for path in row.chmod {
+                make_executable(&dir.path().join(path));
             }
             let diff = source
                 .changed_against_worktree(&head.tree, dir.path())
