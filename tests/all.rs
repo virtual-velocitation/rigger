@@ -94,6 +94,7 @@ mod dash_graph_exploration_fold;
 mod dash_graph_exploration_overview;
 mod dash_graph_exploration_viz;
 mod dash_kg_graph_route;
+mod dash_ownership_audit;
 mod dash_release_ready;
 mod dash_run_tree_spine;
 mod dash_whole_projection_reach;
