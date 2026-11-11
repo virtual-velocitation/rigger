@@ -690,7 +690,7 @@ impl<'r, C: CodeHalf> Composed<'r, C> {
     /// grouping's are the files it summarises), which a worktree that cannot be compared puts
     /// every file in.
     fn withholds(&self, node: &Node) -> bool {
-        self.code.holds(&node.id) && self.withholds_code(node)
+        !self.stale.withholds_nothing() && self.code.holds(&node.id) && self.withholds_code(node)
     }
 
     /// Whether `node`, a node of the code half shown or hidden, is withheld because it is
@@ -894,7 +894,10 @@ impl<C: CodeHalf> Neighbors for Composed<'_, C> {
             Some(&answered) => answered,
             None => !self.withholds(&artifact(id)),
         };
-        edges.retain(|e| answered(&e.from) && answered(&e.to));
+        // Nothing withheld answers every edge.
+        if !self.stale.withholds_nothing() {
+            edges.retain(|e| answered(&e.from) && answered(&e.to));
+        }
         let mut ends: BTreeMap<&str, Node> = BTreeMap::new();
         for e in &edges {
             for end in [&e.from, &e.to] {
