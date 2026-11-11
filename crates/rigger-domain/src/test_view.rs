@@ -387,4 +387,55 @@ mod tests {
         assert!(hidden(Tests::Include).is_empty());
         assert!(hidden(Tests::Only).is_empty());
     }
+
+    /// Every test mention is walked once per open: the proofs and the attachment both read the
+    /// resolver's one walk, so asking again reads no file.
+    #[test]
+    fn the_proof_walk_runs_once_per_resolver() {
+        use crate::code_view::{CodeView, DefRef, FileRef, MentionRef};
+        use std::borrow::Cow;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct Counting {
+            inner: FactsView,
+            reads: AtomicUsize,
+        }
+        impl CodeView for Counting {
+            fn stamp(&self) -> &Stamp {
+                self.inner.stamp()
+            }
+            fn files(&self) -> Box<dyn Iterator<Item = FileRef<'_>> + '_> {
+                self.inner.files()
+            }
+            fn file(&self, path: &str) -> Option<Cow<'_, FileFacts>> {
+                self.reads.fetch_add(1, Ordering::SeqCst);
+                self.inner.file(path)
+            }
+            fn defs_named(&self, leaf: &str) -> Box<dyn Iterator<Item = DefRef<'_>> + '_> {
+                self.inner.defs_named(leaf)
+            }
+            fn mentions_named(&self, leaf: &str) -> Box<dyn Iterator<Item = MentionRef<'_>> + '_> {
+                self.inner.mentions_named(leaf)
+            }
+            fn groupings(&self) -> &Groupings {
+                self.inner.groupings()
+            }
+        }
+
+        let view = Counting {
+            inner: view(),
+            reads: AtomicUsize::new(0),
+        };
+        let resolver = Resolver::new(&view);
+        let first = resolver.proof_calls().len();
+        let after_first = view.reads.load(Ordering::SeqCst);
+        assert!(first > 0 && after_first > 0, "the walk reads the files");
+        let again = (resolver.proof_calls().len(), resolver.proofs().len());
+        assert_eq!(again.0, first);
+        assert_eq!(
+            view.reads.load(Ordering::SeqCst),
+            after_first,
+            "no second walk: {again:?}"
+        );
+    }
 }

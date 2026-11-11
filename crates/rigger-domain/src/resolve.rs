@@ -211,6 +211,8 @@ pub struct Resolver<'v> {
     test_files: BTreeSet<&'v str>,
     /// The candidates of each leaf asked for, settled once per resolver.
     candidates: RefCell<HashMap<String, Rc<Vec<Candidate<'v>>>>>,
+    /// The test calls that prove a product definition, walked once per resolver.
+    proof_calls: std::cell::OnceCell<Vec<ProofCall>>,
 }
 
 impl<'v> Resolver<'v> {
@@ -254,6 +256,7 @@ impl<'v> Resolver<'v> {
             code_files,
             test_files,
             candidates: RefCell::new(HashMap::new()),
+            proof_calls: std::cell::OnceCell::new(),
         }
     }
 
@@ -511,7 +514,14 @@ impl<'v> Resolver<'v> {
     /// Every test call that proves a product definition, ordered by the definition proved, then
     /// the calling file, then the evidence `file:line` as text. The same whatever tests a reader
     /// shows.
-    pub fn proof_calls(&self) -> Vec<ProofCall> {
+    ///
+    /// The walk of every test mention runs once per resolver: proofs and test attachment both read
+    /// this result.
+    pub fn proof_calls(&self) -> &[ProofCall] {
+        self.proof_calls.get_or_init(|| self.walk_proof_calls())
+    }
+
+    fn walk_proof_calls(&self) -> Vec<ProofCall> {
         let mut rows: Vec<(String, &str, String, String)> = Vec::new();
         for &path in &self.code_files {
             let Some(facts) = self.view.file(path) else {
@@ -545,7 +555,10 @@ impl<'v> Resolver<'v> {
     pub fn proofs(&self) -> BTreeMap<String, Vec<String>> {
         let mut proofs: BTreeMap<String, Vec<String>> = BTreeMap::new();
         for call in self.proof_calls() {
-            proofs.entry(call.target).or_default().push(call.evidence);
+            proofs
+                .entry(call.target.clone())
+                .or_default()
+                .push(call.evidence.clone());
         }
         proofs
     }
