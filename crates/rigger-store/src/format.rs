@@ -119,6 +119,17 @@ impl<'a> Cursor<'a> {
     }
 }
 
+/// `n` as the fixed-width field type `T` that stores it, or an error naming `what` when it does
+/// not fit: a writer never wraps a count, length or offset into a smaller one.
+pub fn narrow<T: TryFrom<usize>>(n: usize, what: &str) -> Result<T, String> {
+    T::try_from(n).map_err(|_| {
+        format!(
+            "{what} {n} does not fit its {}-byte field",
+            std::mem::size_of::<T>()
+        )
+    })
+}
+
 /// The size of one section-table row: kind, offset, length, crc.
 const TABLE_ROW: usize = 2 + 8 + 8 + 4;
 
@@ -132,18 +143,21 @@ pub fn write_container(
     let mut out = Vec::new();
     out.extend_from_slice(magic);
     put_u16(&mut out, version);
-    put_u16(&mut out, sections.len() as u16);
-    put_u32(&mut out, payload.len() as u32);
+    put_u16(&mut out, narrow(sections.len(), "section count")?);
+    put_u32(&mut out, narrow(payload.len(), "payload length")?);
     out.extend_from_slice(payload);
     let crc = crc32(&out);
     put_u32(&mut out, crc);
-    let mut offset = (out.len() + sections.len() * TABLE_ROW) as u64;
+    let mut offset: u64 = narrow(out.len() + sections.len() * TABLE_ROW, "section offset")?;
     for (kind, bytes) in sections {
+        let length: u64 = narrow(bytes.len(), "section length")?;
         put_u16(&mut out, *kind);
         put_u64(&mut out, offset);
-        put_u64(&mut out, bytes.len() as u64);
+        put_u64(&mut out, length);
         put_u32(&mut out, crc32(bytes));
-        offset += bytes.len() as u64;
+        offset = offset
+            .checked_add(length)
+            .ok_or_else(|| "section offset overflows its 8-byte field".to_string())?;
     }
     for (_, bytes) in sections {
         out.extend_from_slice(bytes);
