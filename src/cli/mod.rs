@@ -4878,7 +4878,9 @@ const PRECOMMIT_END: &str = "# <<< END rigger docs pre-commit (managed) <<<";
 /// BINARY SELECTION (spec 75): the block prefers a `rigger` built FROM THIS TREE over
 /// whatever is first on PATH, and runs the RESOLVED binary by its path, so a worktree whose
 /// code legitimately changes a rendered fact is checked by a binary that reflects that
-/// change. PATH is the last candidate, so a team's clones need no absolute path to one
+/// change. Of the tree-built candidates that exist, the most recently modified wins (a newer
+/// debug build beside an older release build is the one checked), with the candidate order
+/// breaking a tie. PATH is the last candidate, so a team's clones need no absolute path to one
 /// developer's binary.
 ///
 /// The trailing `true` on the pass path (rather than `exit 0`) keeps the block cooperative:
@@ -4907,12 +4909,15 @@ fn precommit_block() -> String {
 # BINARY SELECTION (spec 75): prefer a `rigger` BUILT FROM THIS TREE over whatever happens to
 # sit first on PATH, so a worktree whose code legitimately changes a rendered fact is checked
 # by a binary that actually reflects that change instead of deadlocking against a stale PATH
-# install. Candidate order, most authoritative first: the env-provided cargo target dir
-# (release then debug), this working tree's own local target (release then debug), this
-# worktree's own unit-derived scratch cargo-target - its unit is read from the worktree
-# directory name, `rigger-wt-<unit>` (release then debug), the run's shared build-cache target
-# (debug only - unit gates build the debug profile only), and finally PATH. The check is only
-# as current as the binary that runs it, which is why the tree-built candidates come first.
+# install. Of the tree-built candidates that exist, the MOST RECENTLY MODIFIED is the one
+# checked, since the newest build is the one most likely to reflect the tree; on equal times
+# the earlier in this order wins: the env-provided cargo target dir (release then debug), this
+# working tree's own local target (release then debug), this worktree's own unit-derived
+# scratch cargo-target - its unit is read from the worktree directory name, `rigger-wt-<unit>`
+# (release then debug), and the run's shared build-cache target (debug only - unit gates build
+# the debug profile only). PATH is consulted only when no tree-built candidate exists. The
+# check is only as current as the binary that runs it, which is why the tree-built candidates
+# come first.
 git_common_dir=$(git rev-parse --git-common-dir 2>/dev/null)
 worktree_top=$(git rev-parse --show-toplevel 2>/dev/null)
 worktree_base=$(basename "$worktree_top" 2>/dev/null)
@@ -4967,8 +4972,9 @@ for candidate in \
     "$shared_debug" \
 ; do
     if [ -n "$candidate" ] && [ -x "$candidate" ]; then
-        rigger_bin="$candidate"
-        break
+        if [ -z "$rigger_bin" ] || [ "$candidate" -nt "$rigger_bin" ]; then
+            rigger_bin="$candidate"
+        fi
     fi
 done
 if [ -z "$rigger_bin" ] && command -v rigger >/dev/null 2>&1; then
