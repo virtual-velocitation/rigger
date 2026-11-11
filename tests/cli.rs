@@ -9877,6 +9877,161 @@ fn rigger_run_records_its_dash_marker_while_the_dash_serves_and_removes_it_on_re
     );
 }
 
+/// The dash a `rigger run` in `root` records in `.rigger/dash.marker`, read once it serves at the
+/// URL `.rigger/dash.url` names, with the start time read with it: the witness that tells this
+/// dash from a later process given its pid.
+struct SeenRunDash {
+    marker: rigger::dash::DashMarker,
+    started: u64,
+    url: String,
+}
+
+impl SeenRunDash {
+    /// The dash the run in `root` serves once its marker names a dash other than `not`, polled
+    /// beside the run; panics when none serves within [`POLLS_BESIDE_A_RUN`].
+    fn wait_for(root: &Path, not: Option<rigger::dash::DashMarker>) -> Self {
+        let rigger_dir = root.join(".rigger");
+        let mut marker = None;
+        assert!(
+            common::fixtures::wait_until_for(POLLS_BESIDE_A_RUN, || {
+                marker = rigger::dash::DashMarker::read(&rigger_dir.join("dash.marker"))
+                    .filter(|m| Some(*m) != not);
+                marker.is_some()
+            }),
+            "the run records a dash of its own in dash.marker"
+        );
+        let marker = marker.expect("the marker the poll read");
+        let url = std::fs::read_to_string(rigger_dir.join("dash.url"))
+            .expect("a run with its dash on records dash.url beside its marker")
+            .trim()
+            .to_string();
+        assert!(
+            matches!(http_get(&url), Some(body) if body.contains("rigger dash")),
+            "the run's dash serves at {url}"
+        );
+        let started = rigger::reap::pid_starttime(marker.pid)
+            .expect("the serving dash's start time, read by its pid");
+        let seen = Self {
+            marker,
+            started,
+            url,
+        };
+        assert!(
+            seen.running(),
+            "the dash dash.marker names (pid {}) runs while {} serves",
+            seen.marker.pid,
+            seen.url
+        );
+        seen
+    }
+
+    /// Whether this dash's process still runs: its pid carries the start time read with it and
+    /// is no zombie.
+    fn running(&self) -> bool {
+        rigger::reap::still_started(self.marker.pid, self.started)
+            && common::is_running(self.marker.pid)
+    }
+}
+
+/// A fake worker that holds on its first launch until `$here/sampled` stands, marking
+/// `$here/working`, and on any later launch until `$here/released` stands, marking
+/// `$here/relaunched`, before it writes the unit's work: a run relaunched after its predecessor
+/// died stays live while a test samples it.
+const WORKER_HELD_ON_EACH_LAUNCH_ARM: &str = concat!(
+    "  *\"Do the unit.\"*)\n",
+    "    if [ ! -e \"$here/working\" ]; then\n",
+    "    : > \"$here/working\"\n",
+    waiting_for!("sampled"),
+    "    else\n",
+    "    : > \"$here/relaunched\"\n",
+    waiting_for!("released"),
+    "    fi\n",
+    "    echo \"pub fn work() {}\" > work.rs\n",
+    "    ;;\n"
+);
+
+/// Given a `rigger run` with its dash on whose one worker holds, when the run ends from outside
+/// (its owner drops it, so the run never reaches its own teardown), then the dash process it
+/// started is gone within a bound: a dash a run started never outlives that run.
+#[cfg(unix)]
+#[test]
+fn a_run_ended_from_outside_takes_its_dash_down_with_it() {
+    use std::process::Stdio;
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    let (fakebin, path_env) = install_fake_claude(WORKER_HELD_UNTIL_SAMPLED_ARM);
+    write_workflow_fixture(root, &TWO_STAGE_WORKFLOW);
+    let marks = fakebin.path().join("bin");
+    let run = common::cli::OwnedChild::new(
+        dash_entry_command(root, &["run"], Some(&path_env), false, root)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("failed to spawn the rigger binary"),
+    );
+    assert!(
+        common::fixtures::wait_until_for(POLLS_BESIDE_A_RUN, || marks.join("working").exists()),
+        "rigger run: its unit's worker starts"
+    );
+    let dash = SeenRunDash::wait_for(root, None);
+    drop(run);
+    std::fs::write(marks.join("sampled"), "").unwrap();
+    assert!(
+        common::fixtures::wait_until_for(400, || !dash.running()),
+        "the dash (pid {}) of a run ended from outside is gone once the run is gone",
+        dash.marker.pid
+    );
+}
+
+/// Given a `rigger run` with its dash on whose driver ended from outside while its worker held,
+/// when the operator relaunches `rigger run` on the same project, then exactly one dash serves:
+/// the dead driver's dash is gone, and `dash.url` and `dash.marker` both name the relaunched
+/// run's dash, which serves at that URL.
+#[cfg(unix)]
+#[test]
+fn a_relaunched_run_serves_the_one_dash_its_dead_predecessor_left_none_beside() {
+    use std::process::Stdio;
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    let (fakebin, path_env) = install_fake_claude(WORKER_HELD_ON_EACH_LAUNCH_ARM);
+    write_workflow_fixture(root, &TWO_STAGE_WORKFLOW);
+    let marks = fakebin.path().join("bin");
+    let launch = || {
+        common::cli::OwnedChild::new(
+            dash_entry_command(root, &["run"], Some(&path_env), false, root)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("failed to spawn the rigger binary"),
+        )
+    };
+    let first = launch();
+    assert!(
+        common::fixtures::wait_until_for(POLLS_BESIDE_A_RUN, || marks.join("working").exists()),
+        "rigger run: its unit's worker starts"
+    );
+    let dead = SeenRunDash::wait_for(root, None);
+    drop(first);
+    std::fs::write(marks.join("sampled"), "").unwrap();
+    let _relaunched = launch();
+    let live = SeenRunDash::wait_for(root, Some(dead.marker));
+    let dead_gone = common::fixtures::wait_until_for(400, || !dead.running());
+    let url_port = rigger::dash::url_port(&live.url);
+    assert_eq!(
+        (dead_gone, live.running(), url_port),
+        (true, true, Some(live.marker.port)),
+        "beside the relaunched run, the dead driver's dash (pid {}, {}) is gone and dash.url and \
+         dash.marker name the one live dash (pid {}, {})",
+        dead.marker.pid,
+        dead.url,
+        live.marker.pid,
+        live.url
+    );
+    std::fs::write(marks.join("released"), "").unwrap();
+}
+
 /// The single-stage liveness workflow the end-to-end tests drive: a per-role wall-clock
 /// default so the parked implementer carries a `max_wall_clock` the sweep can time out
 /// against, `isolation: none` (no worktree), and `on_pass: none` (no integrate).
