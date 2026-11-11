@@ -23,8 +23,13 @@ graph, taking the project's machine-scope slot `$XDG_STATE_HOME/rigger/machine/m
 (an exclusive lock held for the mount's life; `$XDG_STATE_HOME` is the registry's state home,
 `crates/rigger-store-sqlite/src/registry.rs:109`, `~/.local/state` by default) and writing into it, every 30 s alongside the
 supervisor beat, the owner's identity `(pid, start-time, boot-id)`, the mount time and its
-measured resident bytes (RSS now minus RSS at mount). A slot whose lock is free is a stale
-row; its content is informational only.
+measured resident bytes (RSS now minus RSS at mount). The owner may keep the current code
+snapshot open and counts its bytes there. A slot whose lock is free is a stale row; its
+content is informational only.
+
+ADVANCE IS NOT STRUCTURAL, decided: `advance` of the code store is a locked write any process
+may make (the conductor, the CLI, a reader whose stamp is behind HEAD). It takes the code
+store's own LOCK, never the OWNER lock or a slot, and is not owner-only work.
 
 WORKLOAD, decided: a live run (not terminal, not held with cause `stopped`), a live spawn, a
 held step lock, or a client session heartbeat younger than 90 s. UNMOUNT happens when no
@@ -56,7 +61,8 @@ resident bytes, mounted since, owner identity), the budget and its headroom, and
 `wanted` flag; `rigger status` on a held-for-resources run opens with
 `HELD <duration> - resources - <detail>`.
 
-CONSTRAINTS WALK: owner crash - OWNER and slot locks drop with the process; the next mount
+CONSTRAINTS WALK: a reader whose stamp is behind HEAD on an unmounted project - advances under
+the code LOCK and mounts nothing. Owner crash - OWNER and slot locks drop with the process; the next mount
 finds a stale slot row and overwrites it. Two supervisors on one project - the second cannot
 take OWNER and refuses, naming the first's identity. Project root moved - the slot is keyed by
 project id, so the next mount re-derives the path and the stale row is overwritten. Machine
@@ -90,6 +96,10 @@ until the first beat publishes the measurement; the first beat corrects the slot
   held, resident bytes published within 30 s), stays mounted while any workload exists, and
   unmounts after the idle window releasing both locks and closing every file. This criterion
   OWNS mount, workload and unmount; admission is criterion 3's, NOT this one's.
+- [ ] a test proves ADVANCE TAKES THE CODE LOCK: an `advance` by a client process on an
+  unmounted project publishes a snapshot while holding the code store's LOCK and neither OWNER
+  nor a slot, and a second advance waits on that LOCK. This criterion OWNS the lock `advance`
+  takes.
 - [ ] a test proves COLD READS NEVER MOUNT: `rigger status`, `rigger peers` and `rigger emit`
   on an unmounted project answer and append without taking OWNER or a slot, and a second
   supervisor on a mounted project refuses naming the owner. This criterion OWNS the
