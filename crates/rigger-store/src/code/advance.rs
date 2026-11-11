@@ -167,13 +167,15 @@ impl Store {
             Some(b) => b.groupings().clone(),
             None => group.group(&view),
         };
-        let bytes = encode(&view, &groupings)?;
-        let name = snap_name(view.stamp().seq);
-        self.publish.publish(&self.dir.join(&name), &bytes)?;
+        // Decoded, and so validated, before anything is published: a snapshot that would not
+        // read back is an error, and the store keeps the one in force.
+        let snap = Snapshot::decode(encode(&view, &groupings)?)?;
+        let name = snap_name(snap.stamp().seq);
+        self.publish.publish(&self.dir.join(&name), snap.bytes())?;
         self.publish
             .publish(&self.dir.join(CURRENT), name.as_bytes())?;
         self.reap(&name);
-        Snapshot::decode(bytes)
+        Ok(snap)
     }
 
     /// One past every sequence number in use: CURRENT's, and every snapshot file's, so a name is

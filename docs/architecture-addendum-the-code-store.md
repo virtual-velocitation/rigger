@@ -384,6 +384,8 @@ advance(store, source: TreeSource, extract: Extract, group: Group, target: Tip) 
                                                             source.read_blobs, never the worktree)
   view    <- FactsView(keep + fresh)                         (in memory; indexes built)
   G       <- group.group(&view)                              (section 5.4)
+  bytes   <- encode(view, G), then decoded back, every crc and reference checked: a snapshot
+             that fails to read is an error, and nothing is published or reaped
   write   <seq+1>.snap.tmp ; fsync ; rename to <seq+1>.snap ; sync_dir
   write   CURRENT.tmp      ; fsync ; rename to CURRENT       ; sync_dir
   reap    every *.snap not named by CURRENT and every *.tmp (a failed delete is left for the

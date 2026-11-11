@@ -693,6 +693,11 @@ impl Snapshot {
         })
     }
 
+    /// The bytes this snapshot was decoded from, as a publish writes them.
+    pub(crate) fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
     fn facts(&self, row: &[u8]) -> FileFacts {
         let defs = self.table(DEFS);
         let mentions = self.table(MENTIONS);
