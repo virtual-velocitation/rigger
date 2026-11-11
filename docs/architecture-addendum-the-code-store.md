@@ -172,7 +172,8 @@ Any design that holds test code fully has to keep product views the size they ar
    - Before the overlay, an answer names the stamp commit, lists how many of the caller's files
      differ from it, and withholds hits in those files.
    - With the overlay, it merges those files and describes the caller's worktree.
-3. **Pure.** A snapshot is a pure function of (tree, extractor fingerprint). Advancing from A to B
+3. **Pure.** A snapshot is a pure function of (tree, fingerprint), and the fingerprint names
+   everything that computes it: the extractors and the grouping algorithm. Advancing from A to B
    gives the same bytes as advancing from empty to B.
 4. **Local facts.** A file's facts depend only on that file's path and bytes. Nothing is resolved
    across files at write time.
@@ -310,13 +311,15 @@ Tip                                  (what a TreeSource names: the tree to descr
 
 Stamp                                (a Tip plus what only advance knows)
   tip         the Tip the snapshot describes
-  fingerprint the extractor fingerprint: changes when any extractor's output can change
-              (the symbol extractors' tag version and the facts generation, which a golden test
-              pins to a digest of the facts read over a fixture set, so an unbumped change fails)
+  fingerprint the extractor's fingerprint folded with the grouper's generation: changes when
+              any extractor's output or the groupings can change (the symbol extractors' tag
+              version, the facts generation and the grouping generation; golden tests pin them
+              to digests of the facts and the groupings over fixtures, so an unbumped change
+              fails)
   seq         the snapshot's sequence number
 ```
 
-A source returns a `Tip`. Only `advance` builds a `Stamp`, from a `Tip`, the extractor's
+A source returns a `Tip`. Only `advance` builds a `Stamp`, from a `Tip`, the folded
 fingerprint and the sequence number it assigns, so no stamp ever holds a placeholder.
 
 ### 4.5 Snapshot layout
@@ -327,7 +330,7 @@ a (u32 offset, u32 length) pair into one pool, and each distinct string is store
 ```
  +-------------------------------------------------------------------------------+
  | header   magic "RGCS"  | u16 format version | u16 section count               |
- |          u64 extractor fingerprint                                            |
+ |          u64 fingerprint (extractor and grouper)                              |
  |          stamp: head (str), commit (str), tree (str), u64 seq                 |
  |          u32 crc32 of the header                                              |
  +-------------------------------------------------------------------------------+
@@ -375,7 +378,7 @@ advance(store, source: TreeSource, extract: Extract, group: Group, target: Tip) 
   take LOCK (exclusive: a writer blocks; a reader tries once and, if the lock is held, answers
        from CURRENT with the label "advance in flight")
   S <- snapshot named by CURRENT; or EMPTY if there is none, its crc fails, or its fingerprint
-       differs from extract.fingerprint(); a store file that exists but cannot be read is an
+       differs from fingerprint(extract, group); a store file that exists but cannot be read is an
        error
   if S.stamp.tip.tree == target.tree:      release LOCK; return S.stamp      (no-op)
   entries <- source.list(target.tree)                       [(path, blob)] of each in-scope file
@@ -496,6 +499,10 @@ so it runs once per advance and is stored in the snapshot:
   | **Why** | Groupings stored in a stamped snapshot must be a pure function of the tree. A grouping that read records would go stale at every recorded decision, and would need a record-driven recompute with its own lock and its own staleness. |
   | **Cost** | A concept that existed only because a decision bridged two documents splits into the documents' own concepts. Its decisions then show under each of them. |
 
+- **Generation.** The grouping algorithm carries a generation (`Group::generation`), folded into
+  the stamp's fingerprint, so a snapshot grouped by another algorithm is never trusted and is
+  computed anew. A golden test pins it beside a digest of the groupings over a fixture, so an
+  unbumped change fails.
 - A grain other than the default is computed on demand at read (~2 s) and is not stored.
 - `rigger graph communities` and `rigger graph concepts` become read-only reports over the
   current snapshot. Nothing writes groupings anywhere else.
@@ -689,7 +696,10 @@ pub trait Extract: Send + Sync {
     fn fingerprint(&self) -> u64;
     fn extract(&self, entry: &Entry, bytes: &[u8]) -> FileFacts;   // path and blob set from the entry
 }
-pub trait Group   { fn group(&self, view: &dyn CodeView) -> Groupings; }
+pub trait Group {
+    fn generation(&self) -> u64;                                   // folded into the fingerprint
+    fn group(&self, view: &dyn CodeView) -> Groupings;
+}
 
 pub enum Tests { Exclude, Include, Only }
 pub struct ViewFilter { pub tests: Tests }                         // default: Exclude

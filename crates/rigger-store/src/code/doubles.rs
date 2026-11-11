@@ -128,6 +128,10 @@ impl CountingGroup {
 }
 
 impl Group for CountingGroup {
+    fn generation(&self) -> u64 {
+        1
+    }
+
     fn group(&self, view: &dyn CodeView) -> Groupings {
         self.calls.fetch_add(1, Ordering::SeqCst);
         let members: Vec<String> = view

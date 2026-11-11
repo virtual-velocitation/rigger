@@ -200,6 +200,9 @@ pub trait Extract: Send + Sync {
 
 /// Computes a view's groupings.
 pub trait Group {
+    /// Changes whenever the groupings computed for a view can change; a snapshot grouped under
+    /// another generation is not trusted.
+    fn generation(&self) -> u64;
     fn group(&self, view: &dyn CodeView) -> Groupings;
 }
 

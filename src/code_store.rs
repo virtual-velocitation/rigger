@@ -1,15 +1,15 @@
 //! The code store as the composition root wires it: the store at a project's root, read from the
 //! repository's objects (or from the directory, for a project with no git), extracted by
-//! [`FactsExtractor`] and grouped by the production groupings. Every caller opens it through
+//! [`FactsExtractor`](rigger_grounder::facts::FactsExtractor) and grouped by the production groupings. Every caller opens it through
 //! [`CodeStore::open`], which is `open_current`: the conductor after a landed merge, `graph build`
 //! and `setup` as writers, and every reader.
 
 use rigger_domain::code_facts::Stamp;
 use rigger_domain::code_view::{
-    AdvanceCodeStore, CodeView, Extract, Head, OpenCodeView, TreeSource, Withheld, WorktreeDiff,
+    AdvanceCodeStore, CodeView, Head, OpenCodeView, TreeSource, Withheld, WorktreeDiff,
 };
 use rigger_domain::composed::Label;
-use rigger_grounder::facts::{open_store, FactsExtractor};
+use rigger_grounder::facts::{open_store, store_fingerprint};
 use rigger_store::code::{DirTreeSource, Mode, Opened, Store};
 use rigger_worktree_git::tree_source::GitTreeSource;
 use std::path::{Path, PathBuf};
@@ -51,7 +51,7 @@ impl CodeStore {
     /// The stamp of the snapshot in force, read without advancing; none for an empty store, and
     /// an error for a store that cannot be read.
     pub fn in_force(&self) -> Result<Option<Stamp>, String> {
-        let current = Store::new(&self.root).current(FactsExtractor.fingerprint())?;
+        let current = Store::new(&self.root).current(store_fingerprint())?;
         Ok(current.map(|view| view.stamp().clone()))
     }
 

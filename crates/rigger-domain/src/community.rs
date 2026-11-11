@@ -71,7 +71,7 @@ const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
 const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
 
 /// A stable 16-hex-digit FNV-1a of `s`, byte-identical across processes, builds, and machines.
-fn fnv1a_hex(s: &str) -> String {
+pub(crate) fn fnv1a_hex(s: &str) -> String {
     let mut h = FNV_OFFSET;
     for &b in s.as_bytes() {
         h ^= u64::from(b);

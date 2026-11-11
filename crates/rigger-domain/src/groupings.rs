@@ -18,6 +18,13 @@ use crate::resolve::{Hop, Pool};
 /// The groupings rigger computes over the production view.
 pub struct ProductionGroupings;
 
+/// The generation of the grouping algorithm: the community detection, the concept derivation,
+/// the labels and the numbering. Bump it whenever any of them can give a view other groupings
+/// than before; the store's fingerprint folds it in, so a snapshot grouped under an older one is
+/// computed anew. A golden test pins it beside a digest of the groupings over a fixture, so a
+/// change that is not bumped fails there.
+const GROUPINGS_GENERATION: u64 = 1;
+
 /// The coupling layer of `graph`, which `code` built: each coupling edge with its placeholder ends
 /// taken to the one product definition they resolve to.
 fn coupling(code: &CodeGraph, graph: &Graph) -> Coupling {
@@ -63,6 +70,10 @@ fn clusters<'a>(
 }
 
 impl Group for ProductionGroupings {
+    fn generation(&self) -> u64 {
+        GROUPINGS_GENERATION
+    }
+
     fn group(&self, view: &dyn CodeView) -> Groupings {
         group_at(view, DEFAULT_RESOLUTION)
     }
@@ -124,6 +135,7 @@ pub fn group_at(view: &dyn CodeView, resolution: f64) -> Groupings {
 mod tests {
     use super::*;
     use crate::code_view::{FactsView, Tests};
+    use crate::community::fnv1a_hex;
     use crate::concepts::{derive, intent_layer};
     use crate::resolve::tests::{fixture, stamp};
     use std::collections::BTreeSet;
@@ -167,6 +179,28 @@ mod tests {
         assert!(
             clustered.is_empty(),
             "test entities clustered: {clustered:?}"
+        );
+    }
+
+    /// A CHANGE TO THE GROUPINGS SHIPS WITH A BUMP: the fixture's groupings, communities and
+    /// concepts both, are pinned by digest beside the generation the store's fingerprint folds
+    /// in, so a change to the detection, the derivation, the labels or the numbering fails here
+    /// until `GROUPINGS_GENERATION` is bumped and the pair re-pinned.
+    #[test]
+    fn a_change_to_the_groupings_ships_with_a_generation_bump() {
+        const PINNED: (u64, &str) = (1, "c06a7962f403c7a6");
+        let groupings = ProductionGroupings.group(&fixture());
+        assert!(
+            !groupings.communities.is_empty() && !groupings.concepts.is_empty(),
+            "the fixture holds communities and concepts"
+        );
+        let digest = fnv1a_hex(&format!("{groupings:#?}"));
+        assert_eq!(
+            (ProductionGroupings.generation(), digest.as_str()),
+            PINNED,
+            "this build's grouping generation and the digest of the fixture's groupings (left) \
+             differ from the pinned pair: a change to what the groupings hold ships with a bump, \
+             so bump `GROUPINGS_GENERATION` and re-pin the pair to this build's values together"
         );
     }
 

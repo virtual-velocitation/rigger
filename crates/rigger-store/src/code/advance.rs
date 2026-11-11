@@ -11,6 +11,7 @@ use crate::format::{write_atomic, WriteLock};
 use rigger_domain::code_facts::{FileFacts, Stamp, Tip};
 use rigger_domain::code_view::{in_scope, CodeView, Entry, Extract, FactsView, Group, TreeSource};
 use rigger_domain::config::RIGGER_DIR;
+use rigger_domain::playbooks::fnv1a_64;
 use std::collections::HashMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -36,6 +37,15 @@ impl Publish for AtomicPublish {
     fn publish(&self, path: &Path, bytes: &[u8]) -> Result<(), String> {
         write_atomic(path, bytes)
     }
+}
+
+/// The fingerprint a snapshot is stamped with: the extractor's fingerprint and the grouper's
+/// generation folded together, since both compute the snapshot, so a change to either computes
+/// it anew.
+pub fn fingerprint(extract: &dyn Extract, group: &dyn Group) -> u64 {
+    let mut both = extract.fingerprint().to_le_bytes().to_vec();
+    both.extend_from_slice(&group.generation().to_le_bytes());
+    fnv1a_64(&both)
 }
 
 fn snap_name(seq: u64) -> String {
@@ -144,7 +154,7 @@ impl Store {
         group: &dyn Group,
         target: &Tip,
     ) -> Result<Snapshot, String> {
-        let fingerprint = extract.fingerprint();
+        let fingerprint = fingerprint(extract, group);
         let base = match self.current(fingerprint)? {
             Some(snap) if snap.stamp().tip == *target => {
                 self.reap(&snap_name(snap.stamp().seq));
@@ -335,7 +345,7 @@ pub(crate) fn open_current_in(
     mode: Mode,
 ) -> Result<Opened, String> {
     let head = source.head()?;
-    let current = match store.current(extract.fingerprint())? {
+    let current = match store.current(fingerprint(extract, group))? {
         Some(view) if view.stamp().tip == head => {
             return Ok(Opened {
                 view,
@@ -382,6 +392,12 @@ mod tests {
     use std::sync::Mutex;
 
     const FP: u64 = 1;
+
+    /// The fingerprint a snapshot is stamped with when the toy extractor of `extracted_under`
+    /// reads it and the counting grouper groups it.
+    fn stamped(extracted_under: u64) -> u64 {
+        fingerprint(&ToyExtract::new(extracted_under), &CountingGroup::default())
+    }
 
     /// A commit's files as (path, text), and a list of paths.
     type Files = &'static [(&'static str, &'static str)];
@@ -551,7 +567,7 @@ mod tests {
             ("same fingerprint", FP, 0),
             ("new fingerprint", FP + 7, A.len()),
         ];
-        for (name, fingerprint, extracted) in cases {
+        for (name, extracted_under, extracted) in cases {
             let root = tempfile::tempdir().unwrap();
             let store = Store::new(root.path());
             let source = MemSource::default();
@@ -560,12 +576,16 @@ mod tests {
             store
                 .advance(&source, &ToyExtract::new(FP), &group, &tip)
                 .unwrap();
-            let extract = ToyExtract::new(fingerprint);
+            let extract = ToyExtract::new(extracted_under);
             let snap = store.advance(&source, &extract, &group, &tip).unwrap();
             assert_eq!(extract.calls(), extracted, "{name}: extracted");
-            assert_eq!(snap.stamp().fingerprint, fingerprint, "{name}: fingerprint");
+            assert_eq!(
+                snap.stamp().fingerprint,
+                stamped(extracted_under),
+                "{name}: fingerprint"
+            );
             assert!(
-                store.current(fingerprint).unwrap().is_some(),
+                store.current(stamped(extracted_under)).unwrap().is_some(),
                 "{name}: current"
             );
         }
@@ -704,14 +724,17 @@ mod tests {
                 .unwrap();
             damage(store.dir());
             assert!(
-                store.current(FP).unwrap().is_none(),
+                store.current(stamped(FP)).unwrap().is_none(),
                 "{name}: read as absent"
             );
             let extract = ToyExtract::new(FP);
             let repaired = store.advance(&source, &extract, &group, &tip).unwrap();
             assert_eq!(extract.calls(), rich.len(), "{name}: advanced from empty");
             assert_eq!(repaired.stamp().tip, tip, "{name}: repaired stamp");
-            assert!(store.current(FP).unwrap().is_some(), "{name}: repaired");
+            assert!(
+                store.current(stamped(FP)).unwrap().is_some(),
+                "{name}: repaired"
+            );
         }
     }
 
@@ -795,7 +818,10 @@ mod tests {
             );
             let store = Store::new(root.path());
             assert_eq!(
-                store.current(FP).unwrap().map(|s| s.stamp().tip.clone()),
+                store
+                    .current(stamped(FP))
+                    .unwrap()
+                    .map(|s| s.stamp().tip.clone()),
                 Some(first),
                 "{name}: the old stamp stays current"
             );
@@ -874,7 +900,10 @@ mod tests {
                 "{name}: nothing published or reaped"
             );
             assert_eq!(
-                store.current(FP).unwrap().map(|s| s.stamp().tip.clone()),
+                store
+                    .current(stamped(FP))
+                    .unwrap()
+                    .map(|s| s.stamp().tip.clone()),
                 Some(first),
                 "{name}: the old stamp stays current"
             );
@@ -890,7 +919,7 @@ mod tests {
     impl Probe {
         fn look(&self) {
             let tree = Store::new(&self.root)
-                .current(FP)
+                .current(stamped(FP))
                 .unwrap()
                 .map(|s| s.stamp().tip.tree.clone());
             self.seen.lock().unwrap().push(tree);
@@ -1049,7 +1078,7 @@ mod tests {
                 }
                 std::fs::read(path)
             };
-            let snap = store.current_with(FP, &read).unwrap();
+            let snap = store.current_with(stamped(FP), &read).unwrap();
             assert_eq!(
                 snap.map(|s| s.stamp().tip.clone()),
                 found.then(|| target.clone()),
