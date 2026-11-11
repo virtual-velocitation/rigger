@@ -8179,6 +8179,30 @@ mod tests {
         assert_eq!(v["metrics"]["review_approve"], 1);
     }
 
+    /// The explorer offers a "Show tests" toggle in its static header, cycling the filter
+    /// exclude -> include -> only, and every `/api/graph` fetch carries the choice through the one
+    /// URL builder, `apiUrl`, so no view reads past it.
+    #[test]
+    fn explorer_offers_a_show_tests_toggle() {
+        let page = live_page();
+        for needle in [
+            r#"id="kgteststoggle""#,
+            "Show tests",
+            r#"let kgTests = "exclude";"#,
+            r#""tests=" + encodeURIComponent(kgTests)"#,
+            "function setTests(",
+            "tests_hidden",
+        ] {
+            assert!(page.contains(needle), "the page lacks {needle}");
+        }
+        assert!(
+            !page.contains(r#"fetch("/api/graph"#),
+            "every graph fetch goes through apiUrl"
+        );
+        let fetches = page.matches(r#"fetch(apiUrl("/api/graph"#).count();
+        assert!(fetches >= 8, "{fetches} graph fetches ride apiUrl");
+    }
+
     /// `/api/graph` takes `tests=exclude|include|only` (`exclude` when absent) and hands it to the
     /// graph provider, to the directed-call provider too; a value that is none of the three is
     /// refused 400 before either provider is consulted. Each row: the request's target, the status
