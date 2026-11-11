@@ -2362,19 +2362,18 @@ mod tests {
     #[test]
     fn lookup_surface_rigger_graph_show_resolves_via_the_locate_trait_method() {
         use crate::contextgraph::sqlite::Projector;
-        use crate::contextgraph::TYPE_CODE_ENTITY_EXTRACTED;
         use crate::grounder::Nop;
 
         let store = Store::open(":memory:").unwrap();
         let grounder = Nop;
         let graph = Projector::open(":memory:", "test").unwrap();
-        let payload =
-            r#"{"file":"src/widget.rs","name":"frobnicate","kind":"fn","line":7,"lang":"rust"}"#;
-        let mut e = Event::new(TYPE_CODE_ENTITY_EXTRACTED, payload.as_bytes().to_vec());
-        e.position = 1;
-        crate::test_support::folds(&graph, std::slice::from_ref(&e));
+        let mut tree = crate::test_support::PlantedTree::default();
+        tree.define("src/widget.rs", "frobnicate", "function", 7);
 
-        let context = crate::test_support::RecordsOnly(&graph);
+        let context = crate::test_support::ViewedRecords {
+            records: &graph,
+            view: tree.view(),
+        };
         let server = Server::new(&store, "run")
             .with_graph(&graph)
             .with_context(&context)
@@ -2389,7 +2388,7 @@ mod tests {
         assert_eq!(structured["site"]["id"], "src/widget.rs::frobnicate");
         assert_eq!(structured["site"]["file"], "src/widget.rs");
         assert_eq!(structured["site"]["line"], 7);
-        assert_eq!(structured["site"]["kind"], "fn");
+        assert_eq!(structured["site"]["kind"], "function");
     }
 
     /// The `rigger_graph` answer to `arguments` of a lookup surface wired to `graph`: the
@@ -2650,22 +2649,20 @@ mod tests {
     #[test]
     fn lookup_surface_rigger_graph_show_lists_ambiguous_candidates() {
         use crate::contextgraph::sqlite::Projector;
-        use crate::contextgraph::TYPE_CODE_ENTITY_EXTRACTED;
         use crate::grounder::Nop;
 
         let store = Store::open(":memory:").unwrap();
         let grounder = Nop;
         let graph = Projector::open(":memory:", "test").unwrap();
-        for (pos, file) in [(1, "src/a.rs"), (2, "src/b.rs")] {
-            let payload = format!(
-                r#"{{"file":"{file}","name":"shared","kind":"fn","line":1,"lang":"rust"}}"#
-            );
-            let mut e = Event::new(TYPE_CODE_ENTITY_EXTRACTED, payload.into_bytes());
-            e.position = pos;
-            crate::test_support::folds(&graph, std::slice::from_ref(&e));
+        let mut tree = crate::test_support::PlantedTree::default();
+        for file in ["src/a.rs", "src/b.rs"] {
+            tree.define(file, "shared", "function", 1);
         }
 
-        let context = crate::test_support::RecordsOnly(&graph);
+        let context = crate::test_support::ViewedRecords {
+            records: &graph,
+            view: tree.view(),
+        };
         let server = Server::new(&store, "run")
             .with_graph(&graph)
             .with_context(&context)
