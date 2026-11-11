@@ -92,54 +92,62 @@ fn diverged() -> tempfile::TempDir {
 }
 
 /// A file changed, deleted or added since the graph was built is answered by the text half from
-/// the tree as it stands and withheld by the graph half, which names the file; a file the tree
-/// holds as the graph ingested it, or changed in nothing the graph records of it (the generation
-/// its bytes extract to is the graph's), is answered by both.
+/// the tree as it stands and withheld by the graph half, whose label heads it counting the files
+/// that differ (6.1); a file the tree holds as the graph describes it is answered by both.
 #[test]
 fn a_file_changed_deleted_or_added_is_answered_by_text_and_withheld_by_graph() {
     let dir = diverged();
-    let withheld = "changed in your tree; see the text results";
-    let cases: [(&str, &[String], &[&str]); 5] = [
+    let head = common::fixtures::git_out(dir.path(), &["rev-parse", "HEAD"]);
+    let worktree = dir.path().canonicalize().unwrap().display().to_string();
+    let label = format!("describes {head}; 4 files in {worktree} differ");
+    let cases: [(&str, &str, &str); 5] = [
         (
             "widget_kept",
-            &["src/kept.rs:1 src/kept.rs::widget_kept".to_string()],
-            &["src/kept.rs:1: pub fn widget_kept() {}"],
+            "src/kept.rs:1 src/kept.rs::widget_kept",
+            "src/kept.rs:1: pub fn widget_kept() {}",
         ),
         (
             "widget_changed",
-            &[format!("{withheld}: src/changed.rs")],
-            &["src/changed.rs:2: pub fn widget_changed() {}"],
+            "no entity named widget_changed",
+            "src/changed.rs:2: pub fn widget_changed() {}",
         ),
         (
             "widget_body",
-            &["src/body.rs:1 src/body.rs::widget_body".to_string()],
-            &["src/body.rs:1: pub fn widget_body() { let now = 1; }"],
+            "no entity named widget_body",
+            "src/body.rs:1: pub fn widget_body() { let now = 1; }",
         ),
         (
             "widget_gone",
-            &[format!("{withheld}: src/gone.rs")],
-            &["no line of your tree holds widget_gone"],
+            "no entity named widget_gone",
+            "no line of your tree holds widget_gone",
         ),
         (
             "widget_added",
-            &["no entity named widget_added".to_string()],
-            &["src/added.rs:1: pub fn widget_added() {}"],
+            "no entity named widget_added",
+            "src/added.rs:1: pub fn widget_added() {}",
         ),
     ];
     for (term, graph_says, text_says) in cases {
         let reply = cli_lookup(dir.path(), &[term]);
-        for line in graph_says {
+        let graph = section(&reply, "graph");
+        assert!(
+            graph.starts_with(&label),
+            "{term}: the graph section opens with the label {label:?}:\n{reply}"
+        );
+        assert!(
+            graph.contains(graph_says),
+            "{term}: the graph section says {graph_says:?}:\n{reply}"
+        );
+        for differing in ["src/changed.rs", "src/gone.rs", "src/body.rs"] {
             assert!(
-                section(&reply, "graph").contains(line.as_str()),
-                "{term}: the graph section says {line:?}:\n{reply}"
+                !graph.contains(differing),
+                "{term}: the graph section names no hit in {differing}:\n{reply}"
             );
         }
-        for line in text_says {
-            assert!(
-                section(&reply, "text").contains(line),
-                "{term}: the text section says {line:?}:\n{reply}"
-            );
-        }
+        assert!(
+            section(&reply, "text").contains(text_says),
+            "{term}: the text section says {text_says:?}:\n{reply}"
+        );
     }
 }
 
