@@ -23,7 +23,6 @@ use common::cli::graph_node_ids;
 use common::cli::path_without;
 use common::cli::pin_identity;
 use common::cli::read_run_events;
-#[cfg(feature = "symbols")]
 use common::cli::reported_reclaimed_bytes;
 use common::cli::run_around;
 use common::cli::run_rigger;

@@ -8,6 +8,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rigger::config::RIGGER_DIR;
 use rigger::contextgraph::sqlite::Projector;
+#[cfg(feature = "symbols")]
 use rigger::contextgraph::{Edge, Error as GraphError, Graph, Node};
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::Store;
@@ -1718,11 +1719,13 @@ pub fn open_graph_with_its_log(root: &Path) -> Projector {
 /// What `rigger graph build` leaves a project, read as the binary's readers read it: the record
 /// half its `.rigger/graph.db` holds, composed with the view of the head the build advanced the
 /// code store to.
+#[cfg(feature = "symbols")]
 pub struct BuiltGraph {
     pub records: Projector,
     pub view: rigger_store::code::Snapshot,
 }
 
+#[cfg(feature = "symbols")]
 impl BuiltGraph {
     /// The project at `root` as its last `graph build` left it: the code store is read, never
     /// advanced, so a build that left it behind the head fails here.
@@ -1752,6 +1755,7 @@ impl BuiltGraph {
     }
 }
 
+#[cfg(feature = "symbols")]
 impl rigger::contextgraph::Neighbors for BuiltGraph {
     fn node(&self, id: &str) -> Result<Option<Node>, GraphError> {
         self.composed().node(id)
@@ -1785,6 +1789,7 @@ impl rigger::contextgraph::Neighbors for BuiltGraph {
 /// The graph `rigger graph build` leaves a fresh [`temp_project`] holding each of `files`, a
 /// `(root-relative path, source text)` pair ([`BuiltGraph`]); the project lives as long as the
 /// returned directory.
+#[cfg(feature = "symbols")]
 pub fn built_graph(files: &[(&str, &str)]) -> (tempfile::TempDir, BuiltGraph) {
     let dir = temp_project();
     let graph = rebuilt_graph(dir.path(), files);
@@ -1794,6 +1799,7 @@ pub fn built_graph(files: &[(&str, &str)]) -> (tempfile::TempDir, BuiltGraph) {
 /// The graph `rigger graph build` leaves the project at `root` once each of `files`, a
 /// `(root-relative path, source text)` pair, is written and committed there ([`BuiltGraph`]): a
 /// first build, or a rebuild over the files' next generation.
+#[cfg(feature = "symbols")]
 pub fn rebuilt_graph(root: &Path, files: &[(&str, &str)]) -> BuiltGraph {
     super::fixtures::write_files(root, files);
     build_head(root);
@@ -1817,6 +1823,7 @@ pub fn build_head(root: &Path) -> String {
 /// code entity is the nameless node a call folds from, named in `calls`.
 ///
 /// [`placeholder_id`]: rigger::contextgraph::query::placeholder_id
+#[cfg(feature = "symbols")]
 pub fn assert_built_graph_holds(
     (path, lang, source): (&str, &str, &str),
     definitions: &[(&str, &str, &str, u64)],
