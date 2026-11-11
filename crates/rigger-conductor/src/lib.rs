@@ -102,13 +102,6 @@ mod config_fixtures;
 #[allow(dead_code, unused_imports)]
 #[path = "../../../tests/common/fixtures/events.rs"]
 mod event_fixtures;
-/// THE EXTRACTION TREE the run sink's tests walk and the ledger fixtures name through `super::`,
-/// compiled here from the same file as the root crate's tests; only the default lane's tests
-/// plant it.
-#[cfg(all(test, any(feature = "store", not(feature = "core"))))]
-#[allow(dead_code)]
-#[path = "../../../tests/common/fixtures/extraction_tree.rs"]
-mod extraction_tree_fixtures;
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 #[allow(dead_code, unused_imports)]
 #[path = "../../../tests/common/fixtures/fold.rs"]
@@ -120,33 +113,16 @@ mod fold_fixtures;
 mod scratch_fixtures;
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 use scratch_fixtures::temp_root;
-/// The host fixtures the run sink's tests write their files through. They name the reaper and
-/// the open-files reader as `rigger::reap` and `rigger::holders`, which the import below makes
-/// resolve in this crate.
-#[cfg(all(
-    test,
-    feature = "symbols",
-    any(feature = "store", not(feature = "core"))
-))]
-#[allow(dead_code, unused_imports)]
-#[path = "../../../tests/common/fixtures/host.rs"]
-mod host_fixtures;
-/// The ledger fixtures the run sink's tests, and the fold report's test owing its rebuild, share
-/// with the root crate's tests, compiled here from the same file.
-#[cfg(all(test, any(feature = "store", not(feature = "core"))))]
-#[allow(dead_code)]
-#[path = "../../../tests/common/fixtures/ledger.rs"]
-mod ledger_fixtures;
-#[cfg(all(
-    test,
-    feature = "symbols",
-    any(feature = "store", not(feature = "core"))
-))]
-use rigger_process::{holders, reap};
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 #[allow(dead_code, unused_imports)]
 #[path = "../../../tests/common/fixtures/git.rs"]
 mod git_fixtures;
+/// The ledger fixtures the fold report's test owing its rebuild shares with the root crate's
+/// tests, compiled here from the same file.
+#[cfg(all(test, any(feature = "store", not(feature = "core"))))]
+#[allow(dead_code)]
+#[path = "../../../tests/common/fixtures/ledger.rs"]
+mod ledger_fixtures;
 // The composed view the shared graph fixtures read a record half through.
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 use rigger_domain::{code_facts, code_view, composed};
@@ -166,16 +142,6 @@ mod instructions_fixtures;
 #[allow(dead_code, unused_imports)]
 #[path = "../../../tests/common/fixtures/plan_critique.rs"]
 mod plan_critique_fixtures;
-/// THE READ FAULT fixture the run sink's test arms, compiled here from the same file as the
-/// grounder's and the root crate's tests.
-#[cfg(all(
-    test,
-    feature = "symbols",
-    any(feature = "store", not(feature = "core"))
-))]
-#[allow(dead_code)]
-#[path = "../../../tests/common/fixtures/read_fault.rs"]
-mod read_fault_fixtures;
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 #[allow(dead_code, unused_imports)]
 #[path = "../../../tests/common/fixtures/spawn.rs"]
@@ -188,20 +154,7 @@ use {
 };
 // The fixtures the ledger fixtures name through `super::`.
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
-use {
-    event_fixtures::CountedRead,
-    extraction_tree_fixtures::WALKED,
-    fold_fixtures::{
-        decision_json, event_of, folds, generation_ingested, graph_file_in, placed_at, resolving,
-    },
-};
-// The git fixture the ledger fixtures' default-lane walk names through `super::`.
-#[cfg(all(
-    test,
-    feature = "symbols",
-    any(feature = "store", not(feature = "core"))
-))]
-use git_fixtures::git_hash_object;
+use fold_fixtures::{decision_json, event_of, folds, placed_at};
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 mod test_support {
     pub use crate::canary_fixtures::*;

@@ -358,7 +358,7 @@ enum Unbounded {
     /// path when it has one, sits at its line, or the node is nameless and no definition can be
     /// sought for it.
     Missing,
-    /// Any other reason, already worded: no registered grammar, or a build without the
+    /// Any other reason, already worded: a source the grammar cannot tag, or a build without the
     /// extraction grammar.
     Note(String),
 }
@@ -512,8 +512,9 @@ fn definition_body(
 /// authority, which reads production definitions only, those outside test code.
 ///
 /// Returns the [`Unbounded`] reason - the caller degrades to a note - when no such production
-/// definition sits at `start`, and a worded one when no grammar is registered for the file's
-/// extension or the grammar cannot tag the source.
+/// definition sits at `start`, and a worded one when the grammar cannot tag the source. A file no
+/// grammar is registered for holds no definition: the code view extracts by the same registry
+/// lookup, so it holds no entity there, and the miss is no production definition.
 #[cfg(feature = "symbols")]
 fn locate_definition_extent(
     file: &str,
@@ -525,11 +526,7 @@ fn locate_definition_extent(
 ) -> Result<u32, Unbounded> {
     use rigger::grounder::symbols::extract::{self, Recorded};
     use rigger::grounder::symbols::registry;
-    let Some(entry) = registry::for_path(file, None) else {
-        return Err(Unbounded::Note(format!(
-            "no code-extraction grammar is registered for {file}; the body extent is unavailable"
-        )));
-    };
+    let entry = registry::for_path(file, None).ok_or(Unbounded::Missing)?;
     extract::locate_extent(
         source,
         entry.lang,

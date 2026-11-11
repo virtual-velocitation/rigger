@@ -2143,7 +2143,6 @@ mod tests {
             fn rebuild_owed(&self) -> Result<bool, GraphError> {
                 Ok(true)
             }
-            crate::record_fold_folds_no_entry!();
         }
 
         let tree = tempfile::tempdir().unwrap();
@@ -2389,16 +2388,9 @@ mod tests {
         assert_eq!(structured["site"]["kind"], "function");
     }
 
-    /// The `rigger_graph` answer to `arguments` of a lookup surface wired to `graph`: the
-    /// structured content the show-renderer tests read (spec 119, SHOW IS ONE RENDERER).
-    fn shown_graph_answer(
-        graph: &crate::contextgraph::sqlite::Projector,
-        arguments: Value,
-    ) -> Value {
-        shown_graph_answer_over(graph, &crate::test_support::RecordsOnly(graph), arguments)
-    }
-
-    /// [`shown_graph_answer`] reading `graph` through `context`.
+    /// The `rigger_graph` answer to `arguments` of a lookup surface wired to `graph`, reading it
+    /// through `context`: the structured content the show-renderer tests read (spec 119, SHOW IS
+    /// ONE RENDERER).
     fn shown_graph_answer_over(
         graph: &crate::contextgraph::sqlite::Projector,
         context: &dyn crate::contextgraph::OpenGraph,
@@ -2411,18 +2403,6 @@ mod tests {
             .with_context(context)
             .with_grounder(Ok(&grounder));
         call(&server, &tools_call("rigger_graph", arguments))["result"]["structuredContent"].clone()
-    }
-
-    /// The site object the `rigger_graph` `show` of `id` answers over `graph`
-    /// ([`shown_graph_answer`]).
-    fn shown_site(graph: &crate::contextgraph::sqlite::Projector, id: &str) -> Value {
-        shown_graph_answer(graph, json!({"show": id}))["site"].clone()
-    }
-
-    /// The `rigger_graph` `around` answer of `seed` at depth 1 over `graph`
-    /// ([`shown_graph_answer`]).
-    fn around_answer(graph: &crate::contextgraph::sqlite::Projector, seed: &str) -> Value {
-        shown_graph_answer(graph, json!({"around": seed, "depth": 1}))
     }
 
     /// The MCP `show` of an id the graph no longer holds falls back to the run store's log, as the
@@ -2567,27 +2547,6 @@ mod tests {
         );
     }
 
-    /// Spec 117, UNRESOLVED REFERENCES ARE A READ: the MCP `show` of a file node carries its
-    /// unresolved leaves as one `unresolved` key, joined by `LIST_SEP`, beside its `partial`; a
-    /// file listing none carries no `unresolved` key; and the MCP `around` of the file carries
-    /// spec 119's `entity_site` fields alone, none of its three nodes an `unresolved` key.
-    #[test]
-    fn rigger_graph_show_carries_a_files_unresolved_leaves_and_around_carries_none() {
-        use crate::test_support::{
-            assert_around_lists_no_unresolved, assert_show_lists_unresolved_leaves, fold_events,
-            seed_unresolved_references, RESOLVING_FILE, UNRESOLVED_FILE,
-        };
-
-        let graph = fold_events([]);
-        seed_unresolved_references(&graph);
-        let (reader, definer) = (
-            shown_site(&graph, UNRESOLVED_FILE),
-            shown_site(&graph, RESOLVING_FILE),
-        );
-        assert_show_lists_unresolved_leaves(&reader, &definer);
-        assert_around_lists_no_unresolved(&around_answer(&graph, UNRESOLVED_FILE));
-    }
-
     /// Spec 101: a wired graph that owes its rebuild is refused by every tool whose answer depends
     /// on the fold - `rigger_graph` (both selectors) and `rigger_ground` - at once, naming
     /// `rigger setup` and never reading the projection, while `rigger_emit` on the same server
@@ -2609,7 +2568,6 @@ mod tests {
             fn rebuild_owed(&self) -> Result<bool, GraphError> {
                 Ok(true)
             }
-            crate::record_fold_folds_no_entry!();
         }
 
         let store = Store::open(":memory:").unwrap();

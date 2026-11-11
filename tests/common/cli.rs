@@ -1331,25 +1331,32 @@ pub fn planted_graph(root: &Path, graph: &rigger::contextgraph::Graph) -> Projec
     planted
 }
 
-/// An alias the CLI's alias tests define of
-/// [`UNRESOLVED_FILE`](super::fixtures::UNRESOLVED_FILE) (spec 117).
-pub const UNRESOLVED_ALIAS: &str = "src/aka.rs";
+/// The file the one decision a [`governed_project`] holds governs.
+pub const GOVERNED_FILE: &str = "src/reader.rs";
 
-/// A [`temp_project`] whose own graph holds the rows
-/// [`seed_unresolved_references`](super::fixtures::seed_unresolved_references) stages (spec 117,
-/// UNRESOLVED REFERENCES ARE A READ).
-pub fn unresolved_project() -> tempfile::TempDir {
+/// An alias the CLI's failing-read tests define of [`GOVERNED_FILE`].
+pub const GOVERNED_ALIAS: &str = "src/aka.rs";
+
+/// A [`temp_project`] whose own graph holds one decision governing [`GOVERNED_FILE`].
+pub fn governed_project() -> tempfile::TempDir {
     let dir = temp_project();
     seed_rigger_dir(dir.path());
-    super::fixtures::seed_unresolved_references(&open_graph(dir.path()));
+    super::fixtures::apply_decision(
+        &open_graph(dir.path()),
+        1,
+        "d-reader",
+        "governs the reader",
+        &[GOVERNED_FILE],
+        "",
+    );
     dir
 }
 
-/// The error `rigger graph --around <seed> --depth 1` fails with over an [`unresolved_project`]
+/// The error `rigger graph --around <seed> --depth 1` fails with over a [`governed_project`]
 /// once `sql` ran on its graph, the command printing nothing on stdout and its stderr that error
 /// alone, behind the opening of a graph error's [`refusal_line`] ([`super::fixtures::graph_error`]).
-pub fn around_unresolved_fails_after(sql: &str, seed: &str) -> String {
-    let dir = unresolved_project();
+pub fn around_fails_after(sql: &str, seed: &str) -> String {
+    let dir = governed_project();
     rigger_db(dir.path(), "graph.db")
         .execute_batch(sql)
         .unwrap();
@@ -1434,26 +1441,17 @@ fn show_planted(root: &Path, file: &str, path: &str, kind: &str, line: u64, lang
 }
 
 /// The fold state of the graph at `graph_db` that decides how FUTURE events fold (spec 101, "the
-/// identity"): every recorded test reference and where it resolved (pending ones included), the restorable attrs a retired node keeps, each
-/// identity's current generation, the node and edge assertions of live generations (edges by their
-/// columns, never their row ids), and the detached attachments a returning node revives. Everything
-/// else in the file is history a compacted log no longer replays.
+/// identity"): the node and edge assertions each record holds (edges by their columns, never
+/// their row ids). Everything else in the file is history a compacted log no longer replays.
 pub fn fold_state(graph_db: &Path) -> Vec<String> {
     let conn = rusqlite::Connection::open(graph_db).unwrap();
     [
-        "SELECT project, name, file, evidence, source, target FROM proofs
-          ORDER BY project, name, file, source, evidence",
-        "SELECT project, id, attrs FROM retired_nodes WHERE attrs IS NOT NULL ORDER BY project, id",
-        "SELECT project, identity, generation FROM generations ORDER BY project, identity",
-        "SELECT project, identity, generation, node_id, kind, attrs FROM live_node_assertions
+        "SELECT project, identity, generation, node_id, kind, attrs FROM node_assertions
           ORDER BY project, identity, node_id",
         "SELECT a.project, a.identity, a.generation, e.from_id, e.to_id, e.rel, e.tier,
                 e.valid_from, e.valid_to, e.source
-           FROM live_edge_assertions a JOIN edges e ON e.id = a.edge_id
+           FROM edge_assertions a JOIN edges e ON e.id = a.edge_id
           ORDER BY 1, 2, 3, 4, 5, 6, 7",
-        "SELECT d.project, d.node_id, e.to_id, e.rel, e.tier, e.valid_from, e.source
-           FROM detached_attachments d JOIN edges e ON e.id = d.edge_id
-          ORDER BY 1, 2, 3, 4",
     ]
     .into_iter()
     .flat_map(|sql| {
@@ -1639,21 +1637,19 @@ pub fn rebuilt_for_a_lost_fold() -> Vec<String> {
 }
 
 /// The [`rebuild_lines`] of a `rigger setup` that rebuilt a `graph.db` missing an event the log
-/// holds ([`rebuilt_for_a_lost_fold`]) and that then counts events passed over, by cause:
-/// `rejected` rejected payloads, `failed` fold failures and `unresolved` entries resolved to nothing
-/// ([`passed_over_line`]).
-pub fn rebuilt_passing_over(rejected: usize, failed: usize, unresolved: usize) -> Vec<String> {
+/// holds ([`rebuilt_for_a_lost_fold`]) and that then counts `rejected` rejected payloads passed
+/// over ([`passed_over_line`]).
+pub fn rebuilt_passing_over(rejected: usize) -> Vec<String> {
     let mut lines = rebuilt_for_a_lost_fold();
-    lines.push(passed_over_line(rejected, failed, unresolved));
+    lines.push(passed_over_line(rejected));
     lines
 }
 
 /// The line `rigger setup` prints once its graph step ends while `graph.db` counts events passed
-/// over, by cause (spec 124, CATCH-UP LINES): `rejected` rejected payloads, `failed` fold failures
-/// and `unresolved` entries resolved to nothing, counted by cause and in total
-/// ([`super::fixtures::passed_over_counts`]).
-pub fn passed_over_line(rejected: usize, failed: usize, unresolved: usize) -> String {
-    let (n, by_cause) = super::fixtures::passed_over_counts(rejected, failed, unresolved);
+/// over, by cause (spec 124, CATCH-UP LINES): `rejected` rejected payloads, counted by cause and in
+/// total ([`super::fixtures::passed_over_counts`]).
+pub fn passed_over_line(rejected: usize) -> String {
+    let (n, by_cause) = super::fixtures::passed_over_counts(rejected);
     format!(
         "passed over {n} event(s) the fold could not fold {by_cause}, recorded as folded - {}",
         super::fixtures::RETRIED_BY_A_LATER_RULE

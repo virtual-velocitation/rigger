@@ -815,7 +815,7 @@ pub(crate) fn cmd_mcp(args: &[String]) -> Res {
         // stands: an emit this server serves appends whether or not the graph owes its rebuild (the
         // fold refuses while it does), and the graph and grounding tools, which depend on the fold,
         // refuse naming `rigger setup` until it is paid (spec 101).
-        let (graph, _) = open_graph_for_write(&loc.file("graph.db"), &loc.identity(), selection)?;
+        let graph = open_graph_for_write(&loc.file("graph.db"), &loc.identity(), selection)?;
         // `rigger_graph` reads the graph composed for the caller's own tree.
         let context = ReadGraph::new(&graph, caller_tree());
 

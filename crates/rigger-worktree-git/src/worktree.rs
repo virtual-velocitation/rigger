@@ -1760,8 +1760,8 @@ fn git_failure(args: &[&str], root: &std::path::Path, why: &str) -> Error {
     ))
 }
 
-/// The one `git cat-file --batch` process a graph rebuild reads its ledger entries' blobs from
-/// (spec 107): started once for a repository, asked for one object at a time, and ended by
+/// The one `git cat-file --batch` process the code store's tree source reads its blobs from:
+/// started once for a repository, asked for one object at a time, and ended by
 /// closing its standard input and waiting for it on every exit path - when this is dropped -
 /// never by a signal. It runs with `GIT_NO_LAZY_FETCH=1`, so a blob a partial clone has not
 /// fetched is one git does not hold, never a network read.
@@ -2997,8 +2997,7 @@ pub fn scratch_root_path_from_env(repo: &str, configured: &str) -> String {
 
 #[cfg(test)]
 mod blob_batch_tests {
-    //! Tests for [`BlobBatch`] (spec 107, THE REBUILD RE-EXTRACTS THE LEDGER): the one
-    //! `git cat-file --batch` process a rebuild reads its entries' blobs from.
+    //! Tests for [`BlobBatch`]: the one `git cat-file --batch` process blobs are read from.
 
     use super::BlobBatch;
     use crate::test_support::{

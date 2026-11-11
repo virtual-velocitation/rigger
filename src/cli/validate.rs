@@ -314,17 +314,6 @@ pub(crate) fn cmd_validate(args: &[String]) -> Res {
             eprintln!("{advisory}");
         }
     }
-    // RETIRED CODE-ENTITY advisory (spec 86 criterion 3, THE MIGRATION IS DELIBERATE): report,
-    // once, how many code-entity nodes the graph's own supersession has retired since their last
-    // extraction - what makes the test-exclusion migration's shrink VISIBLE to the operator
-    // rather than a silent internal bookkeeping fact (`rigger::contextgraph::sqlite::Projector::
-    // retired_code_entity_count` is the one counting authority; this never re-derives it). `None`
-    // on every reason there is nothing honest to report (see `retired_entities_advisory_for`'s own
-    // doc), so this never fails validate.
-    if let Some(advisory) = retired_entities_advisory_for(&db_path("graph.db"), &project_identity())
-    {
-        eprintln!("{advisory}");
-    }
     // REBUILD OWED advisory (spec 101): a `graph.db` that owes its rebuild - folded under an older
     // fold rule - answers as it stands until `rigger setup` rebuilds it; validate says so, and
     // writes nothing to it. Validate alone then says how many events the file passed over, by
@@ -485,35 +474,6 @@ fn bloat_advisory_for(path: &str, project: &str) -> Option<String> {
     let store = open_sqlite_store(path).ok()?;
     let counted = store.count_derived(&run_stream_of(project)).ok()?;
     bloat_advisory(&counted)
-}
-
-/// The RETIRED CODE-ENTITY advisory line (spec 86 criterion 3, THE MIGRATION IS DELIBERATE),
-/// rendered from an already-measured count - pure formatting, separate from the gathering in
-/// [`retired_entities_advisory_for`]. `None` when nothing has been retired: the steady-state
-/// case, and the honest answer before any re-ingest has excluded or removed anything.
-fn retired_entities_advisory(n: usize) -> Option<String> {
-    if n == 0 {
-        return None;
-    }
-    let noun = if n == 1 { "entity" } else { "entities" };
-    Some(format!(
-        "{n} code-{noun} retired (no longer reachable by any live edge; history stays in the \
-         log, never a store wipe)"
-    ))
-}
-
-/// Gather + measure the RETIRED CODE-ENTITY advisory's input (spec 86 criterion 3): open the graph
-/// at `graph_db`, scoped to `project`, and read
-/// [`rigger::contextgraph::sqlite::Projector::retired_code_entity_count`] - the ONE counting
-/// authority the migration's supersession backs (never a second, shadow count). The context graph
-/// is always a local sqlite file regardless of `--eventstore` (unlike the event log this mirrors
-/// the shape of, `Projector` is the only [`RecordFold`] this binary ever opens), so this needs no
-/// backend-selection guard. `None`, never an error, on every reason there is nothing honest to
-/// report: no `graph.db` file YET, or one that does not open ([`standing_graph`]), or any read
-/// error after that point, exactly like the log-bloat advisory above swallows one.
-fn retired_entities_advisory_for(graph_db: &str, project: &str) -> Option<String> {
-    let graph = standing_graph(graph_db, project)?;
-    retired_entities_advisory(graph.retired_code_entity_count().ok()?)
 }
 
 /// Whether commit `ancestor` is an ancestor of commit `descendant` in the git repository
@@ -1882,8 +1842,6 @@ mod tests {
     /// contract: with NO store file at `<tempdir>/.rigger/<filename>` at all, `advisory_for` must
     /// return `None` BEFORE opening anything (opening would create the file - a read-only
     /// advisory's forbidden side effect), and the file must genuinely stay absent afterwards.
-    /// `bloat_advisory_for` and `retired_entities_advisory_for` (spec 86 criterion 3) share this
-    /// exact contract and this exact test shape - one helper, never two near-identical bodies.
     fn assert_advisory_for_never_fabricates_a_missing_store(
         filename: &str,
         advisory_for: impl Fn(&str, &str) -> Option<String>,
@@ -1904,73 +1862,5 @@ mod tests {
     #[test]
     fn bloat_advisory_for_never_fabricates_a_store_that_does_not_exist() {
         assert_advisory_for_never_fabricates_a_missing_store("events.db", bloat_advisory_for);
-    }
-
-    // --- Spec 86 criterion 3, THE MIGRATION IS DELIBERATE: the RETIRED CODE-ENTITY advisory ---
-
-    #[test]
-    fn retired_entities_advisory_is_none_at_zero_and_named_with_correct_pluralization() {
-        assert_eq!(
-            retired_entities_advisory(0),
-            None,
-            "nothing retired is not worth an operator's attention"
-        );
-        let one = retired_entities_advisory(1).expect("a count of one must still be reported");
-        assert!(one.contains('1'), "advisory: {one}");
-        assert!(
-            one.contains("entity") && !one.contains("entities"),
-            "singular wording for exactly one: {one}"
-        );
-        let many = retired_entities_advisory(3).expect("a count above one must be reported");
-        assert!(many.contains('3'), "advisory: {many}");
-        assert!(
-            many.contains("entities"),
-            "plural wording for more than one: {many}"
-        );
-    }
-
-    #[test]
-    fn retired_entities_advisory_for_never_fabricates_a_graph_that_does_not_exist() {
-        assert_advisory_for_never_fabricates_a_missing_store(
-            "graph.db",
-            retired_entities_advisory_for,
-        );
-    }
-
-    #[test]
-    fn retired_entities_advisory_for_reads_the_projectors_own_counting_authority() {
-        // An end-to-end check that the advisory's gathering half is wired to the SAME counting
-        // authority the fold-level migration tests exercise directly
-        // (`contextgraph::sqlite::migration_c3`), never a second, shadow count.
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join(".rigger").join("graph.db");
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        {
-            let p = Projector::open(path.to_str().unwrap(), "proj").unwrap();
-            // A legacy test-entity node, then the empty structural boundary that retires it -
-            // exactly the migration's own fold-level shape.
-            let def = serde_json::json!({
-                "file": "tests/integration.rs", "name": "an_integration_test", "kind": "function",
-                "line": 2, "lang": "rust", "fresh": true,
-            });
-            let mut e = Event::new(
-                contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
-                serde_json::to_vec(&def).unwrap(),
-            );
-            e.position = 1;
-            crate::test_support::folds(&p, std::slice::from_ref(&e));
-            let boundary = serde_json::json!({
-                "file": "tests/integration.rs", "name": "", "lang": "rust", "fresh": true,
-            });
-            let mut e = Event::new(
-                contextgraph::TYPE_EDGE_INFERRED,
-                serde_json::to_vec(&boundary).unwrap(),
-            );
-            e.position = 2;
-            crate::test_support::folds(&p, std::slice::from_ref(&e));
-        }
-        let advisory = retired_entities_advisory_for(path.to_str().unwrap(), "proj")
-            .expect("the migration retired exactly one entity, so the advisory must fire");
-        assert!(advisory.contains('1'), "advisory: {advisory}");
     }
 }

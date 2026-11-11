@@ -120,41 +120,14 @@ pub fn pair_map(pairs: &[(String, String)]) -> BTreeMap<String, String> {
     pairs.iter().cloned().collect()
 }
 
-/// The ledger half of a `RecordFold` double that folds no ledger entry: it holds no generation
-/// and refuses the ledger fold. Expanded inside that double's `impl RecordFold` block.
-#[macro_export]
-macro_rules! record_fold_folds_no_entry {
-    () => {
-        fn current_generation(
-            &self,
-            _identity: &str,
-        ) -> Result<Option<String>, rigger::contextgraph::Error> {
-            Ok(None)
-        }
-        fn held_identities(&self) -> Result<Vec<String>, rigger::contextgraph::Error> {
-            Ok(Vec::new())
-        }
-        fn apply_generation(
-            &self,
-            _entry: &rigger::eventstore::Event,
-            _batch: rigger::contextgraph::EntryBatch<'_>,
-        ) -> Result<rigger::contextgraph::EntryFold, rigger::contextgraph::Error> {
-            Err(rigger::contextgraph::Error(
-                "this double folds no ledger entry".to_string(),
-            ))
-        }
-    };
-}
-
-/// A `RecordFold` double that owes no rebuild, with the ledger half of a double that folds no
-/// entry (`record_fold_folds_no_entry`), expanded inside that double's `impl RecordFold` block.
+/// A `RecordFold` double that owes no rebuild, expanded inside that double's `impl RecordFold`
+/// block.
 #[macro_export]
 macro_rules! record_fold_owes_nothing {
     () => {
         fn rebuild_owed(&self) -> Result<bool, rigger::contextgraph::Error> {
             Ok(false)
         }
-        $crate::record_fold_folds_no_entry!();
     };
 }
 

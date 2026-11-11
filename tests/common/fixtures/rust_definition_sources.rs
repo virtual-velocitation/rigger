@@ -46,13 +46,6 @@ fn f() { #[cfg(test)] let x = 1; }
 mod outer { #[cfg(test)] mod inner {} }
 ";
 
-/// The enum `E` holding the variants `A` and `B` (spec 119, CONTAINS IS STRUCTURE), each
-/// contained by `E` and `E` by its file.
-pub const ENUM_E_HOLDING_A_AND_B: &str = "enum E {\n    A,\n    B,\n}\n";
-
-/// [`ENUM_E_HOLDING_A_AND_B`] with its variant `B` removed: `E` holds `A` alone.
-pub const ENUM_E_HOLDING_A: &str = "enum E {\n    A,\n}\n";
-
 /// The method `c` of `a::B` defined twice (spec 119, ONE PATH IS ONE EVENT): at line 4 in the
 /// `impl B` inside `mod a`, and at line 8 in the file-level `impl a::B`.
 pub const METHOD_C_IN_TWO_IMPLS: &str =

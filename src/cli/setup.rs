@@ -1029,9 +1029,7 @@ const REBUILD_BATCH: usize = 10_000;
 /// log's head (spec 124, ONE PROCEDURE, [`catch_up_to_head`]) and says how that ended, unless the
 /// seeding met another writer's write lock; the catch-up reads the log through the store the
 /// projector opens for itself at its first call, a second open of the log the seeding and the
-/// rebuild read, and re-extracts each ledger entry its fold hands a re-extraction - one not yet
-/// folded, whose payload parses and whose generation its identity does not already hold - from the
-/// sources a rebuild reads (below, [`reextract_entry`]). A catch-up stopped at a failure fails
+/// rebuild read. A catch-up stopped at a failure fails
 /// setup with the line naming the position it stopped at.
 ///
 /// A NEW rebuild - one whose pay starts a fresh shadow and folds the log from its start
@@ -1045,29 +1043,6 @@ const REBUILD_BATCH: usize = 10_000;
 /// probe took, making `.rigger/step.lock` where none stands, until the rebuild returns. Resuming a
 /// resumable shadow, cause or not, and finishing a tail no cause is owed beside are exempt and run
 /// beside a live run, and a `graph.db` whose pay starts no fresh shadow reads no liveness.
-///
-/// A ledger entry of perception whose fold asks a batch - one not yet folded, whose payload parses
-/// and whose generation its identity does not already hold - folds with the batch re-extracted for
-/// it (spec 107, `ingest::resolve_entry`) by a re-extraction the rebuild builds for itself from the
-/// factory the write open installs ([`Projector::with_reextraction`]), as each catch-up call builds
-/// its own. In the lane compiled with an extraction the batch is re-extracted from the entry's blob
-/// in the repository's object database, else from the tree's file under THE ONE ROOT of the open's
-/// cell ([`TreeRoot`]), else from no bytes; in the lane compiled without one no source re-extracts
-/// a batch. An entry no source resolves folds nothing and is passed over as resolved to nothing
-/// (spec 124, THE DECIDE STEP). The root is asked of git at the first entry the rebuild's
-/// re-extraction is handed, resolved or not, in either lane. In the lane compiled with an
-/// extraction that first entry also asks whether an object database stands there and, inside a
-/// repository, starts the one batch process ([`entry_blobs`]) the blobs are read through, ended as
-/// the rebuild returns - before the report and the catch-up, each call of which starts its own at
-/// the first entry it is handed - so no two batch processes run at once; a batch process that
-/// cannot start there fails the rebuild, naming its command, rather than fold the entries with no
-/// object database asked. The lane compiled without one asks for no object database and starts no
-/// batch process. A rebuild that meets no entry starts no batch process. The report that follows a
-/// rebuild ([`identities_behind_their_recording`]) reads the tree under the same root, from the
-/// same cell, and is the one to ask git for it when the rebuild handed its re-extraction no entry
-/// and an identity is behind its latest recording: the root is asked for once, by whichever reader
-/// of the cell needs it first - the rebuild's re-extraction, the report or a catch-up call's
-/// re-extraction - and of git by none when none does.
 ///
 /// Once an orphaned mark is dropped, and before it reads or writes anything else, it takes the
 /// rebuild lock on `graph.db.lock` ([`Projector::lock_rebuild`]), making that zero-byte file
@@ -1103,17 +1078,8 @@ fn rebuild_owed_graph() -> Result<bool, Box<dyn std::error::Error>> {
         )
     };
     // The one write open of `graph.db` this setup makes, under the rebuild lock: the file it seeds,
-    // rebuilds and catches up, with the catch-up's log and re-extraction installed. The rebuild
-    // re-extracts through a re-extraction it builds for itself from that installed factory and
-    // drops as it returns, which, compiled with an extraction, asks git for the object database at
-    // the first entry it is handed, and compiled without one never does. Where the tree is rooted
-    // is asked of git once, from the one cell the open returns, by the first reader to need it: the
-    // first entry the rebuild's re-extraction is handed, resolved or not, or else the report's
-    // first identity behind its latest recording, which reads the tree under the root any entry was
-    // handed under, or else the first entry a catch-up call's re-extraction is handed. A rebuild
-    // that meets no entry and leaves no identity behind asks git for neither.
-    let (graph, root) = open_graph_for_write(held.path(), &project, &selection)?;
-    let tree = || root.get();
+    // rebuilds and catches up, with the catch-up's log installed.
+    let graph = open_graph_for_write(held.path(), &project, &selection)?;
     match &selection {
         sqlite @ StoreSelection::Sqlite => {
             // A project with no run recorded has no log file: its log is read as the empty one it
@@ -1126,7 +1092,6 @@ fn rebuild_owed_graph() -> Result<bool, Box<dyn std::error::Error>> {
                 &held,
                 &graph,
                 &Namespaced::new(&store, &project),
-                &tree,
                 SeedingReads {
                     live: &mut |sink| {
                         store
@@ -1178,7 +1143,6 @@ fn rebuild_owed_graph() -> Result<bool, Box<dyn std::error::Error>> {
                 &held,
                 &graph,
                 &store,
-                &tree,
                 SeedingReads {
                     live: &mut positions,
                     stamp_of: &mut |_| Ok(None),
@@ -1224,16 +1188,13 @@ fn live_run_rebuild_refusal(reasons: &str) -> String {
 /// tail standing or not, or a standing shadow that is not resumable - ask `refuse_if_live` of `log`
 /// and fail with its refusal while the run is live, before any line is printed or the file
 /// rewritten, else hold the step lock its probe took until the rebuild returns; say so naming each
-/// cause, and pay it by rebuilding from `source`, the log's live selection, each ledger entry of
-/// perception its fold asks a batch for folded with the batch the rebuild's own re-extraction
-/// answers for it ([`Projector::rebuild`]), which also pays a rebuild's own unfinished work with no
+/// cause, and pay it by rebuilding from `source`, the log's live selection ([`Projector::rebuild`]),
+/// which also pays a rebuild's own unfinished work with no
 /// cause to name, since neither the file's records nor the seeding names it: a standing shadow,
 /// resumed when it is resumable and else refolded from the start, or a swapped-in cursor's tail,
 /// finished - the resume and the tail with no liveness asked, so beside a live run too; print how
 /// far along the rebuild is, what its run-closure prune removed from the rebuilt graph
-/// ([`pruned_line`], as `rigger reset --runs` words its own), and, read from `log` and the rebuilt
-/// graph once the rebuild ends, how many identities the next ingest records again
-/// ([`rebuild_report_line`]); then, when the seeding met another writer's write lock
+/// ([`pruned_line`], as `rigger reset --runs` words its own); then, when the seeding met another writer's write lock
 /// ([`contextgraph::sqlite::Seeding::Skipped`]), that the catch-up was not started, the next setup
 /// seeding the file (spec 124, CATCH-UP LINES), and otherwise fold the file forward from its cursor
 /// to the log's head ([`catch_up_to_head`]), saying how that ended; then, rebuilt or not, how many
@@ -1246,11 +1207,10 @@ fn live_run_rebuild_refusal(reasons: &str) -> String {
 /// standing is no cause, and the next setup's removal retries it; only when the catch-up did not
 /// stop at a failure is a failed passed-over read setup's failure, and after it a mark the removal
 /// cannot remove, naming the mark.
-fn pay_owed_rebuild<'t>(
+fn pay_owed_rebuild(
     held: &contextgraph::sqlite::RebuildLock,
     graph: &Projector,
     log: &dyn EventStore,
-    tree: &dyn Fn() -> &'t Path,
     seeding: SeedingReads,
     source: &mut contextgraph::sqlite::RebuildSource,
     refuse_if_live: &LiveRunRefusal,
@@ -1288,10 +1248,6 @@ fn pay_owed_rebuild<'t>(
     if let Some(rebuilt) = rebuilt {
         println!("rebuilt graph.db from the event log");
         println!("{} from the rebuilt graph", pruned_line(&rebuilt.pruned));
-        println!(
-            "{}",
-            rebuild_report_line(identities_behind_their_recording(log, graph, tree)?)
-        );
     }
     let caught_up = if seeded == contextgraph::sqlite::Seeding::Skipped {
         println!(
@@ -1371,43 +1327,6 @@ fn catch_up_to_head(
 /// last call read, or would read, its page from, for the reason `why` (spec 124, CATCH-UP LINES).
 fn catch_up_stopped(at: rigger::eventstore::Position, why: &str) -> String {
     format!("graph.db catch-up stopped at position {at}: {why}")
-}
-
-/// How many identities `graph` holds at a generation that is not their latest recording's on
-/// `log` ([`rigger::ingest::perceived_generations`]), none held included, and whose file the tree
-/// holds ([`rigger::ingest::next_ingest_records`]): the ones whose next ingest records an entry
-/// (spec 107). The tree is asked for its root only once an identity differs, so a graph that
-/// holds every latest recording reads no file and asks git nothing.
-fn identities_behind_their_recording<'t>(
-    log: &dyn EventStore,
-    graph: &dyn contextgraph::RecordFold,
-    tree: &dyn Fn() -> &'t Path,
-) -> Result<usize, Box<dyn std::error::Error>> {
-    let mut behind = 0;
-    for (identity, recorded) in rigger::ingest::perceived_generations(log, conductor::STREAM)? {
-        if graph.current_generation(&identity)? != Some(recorded)
-            && rigger::ingest::next_ingest_records(tree(), &identity)
-        {
-            behind += 1;
-        }
-    }
-    Ok(behind)
-}
-
-/// The line a rebuild reports `behind` on ([`identities_behind_their_recording`]). Where an
-/// extraction is compiled a number above zero carries the note that each counted identity
-/// records an entry at its next ingest; a zero carries none, and neither does the lane that
-/// compiles no extraction, where no ingest records one.
-fn rebuild_report_line(behind: usize) -> String {
-    let note = if cfg!(feature = "symbols") && behind > 0 {
-        " (each records an entry at its next ingest of the file)"
-    } else {
-        ""
-    };
-    format!(
-        "identities the tree holds a file for whose generation in graph.db is not their latest \
-         recording's: {behind}{note}"
-    )
 }
 
 /// The progress line a graph rebuild prints at `at`, if any: one each time a batch carries it into
@@ -2503,7 +2422,6 @@ mod tests {
             &held,
             &Projector::open(held.path(), "proj").unwrap(),
             &log,
-            &|| dir.path(),
             SeedingReads {
                 live: &mut |sink| sink(&[1]),
                 stamp_of: &mut |_| Ok(None),

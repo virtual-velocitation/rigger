@@ -2,7 +2,6 @@
 //! node and edge tables in a local SQLite file and answers Subgraph and Resolve.
 //! A single connection behind a mutex serializes the read-then-write of apply.
 
-use std::cell::{Cell, OnceCell};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -10,28 +9,20 @@ use std::time::{Duration, SystemTime};
 
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 
-use super::query::{entity_id, placeholder_id, split_id};
 use super::{
-    definition_precedence, holds_attachment, reference_candidate_kinds, staged_rel, Edge,
-    EntryBatch, EntryFold, Error, FoldAccess, Graph, Neighbors, Node, RecordFold, KIND_AGENT,
-    KIND_ARCH_DECISION, KIND_ARTIFACT, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT,
-    KIND_DECISION, KIND_DESIGN_DOC, KIND_FILE, KIND_FINDING, KIND_GATE, KIND_HANDBOOK_RULE,
-    KIND_LESSON, KIND_RATIONALE, KIND_STAGE, LEAF_REF_KINDS, MODULE_CANDIDATE_SEPARATOR,
-    NON_TARGET_KINDS, OWED_LOST_FOLD, OWED_OLDER_RULE, PLACEHOLDER_SIGIL, REBUILD_OWED,
-    REBUILD_OWED_FOR_LOST_FOLD, REF_KIND_MODULE, REL_ABOUT, REL_CALLS, REL_CONSTRAINS,
-    REL_CONTAINS, REL_DOC_REFERENCES, REL_EXPLAINS, REL_GOVERNS, REL_IN_COMMUNITY, REL_NEEDS,
-    REL_RAISED, REL_REALIZES, REL_REFERENCES, REL_REVIEWS, REL_REVIEWS_LIGHT, REL_RUNS,
-    REL_SPECIFIES, REL_SUPERSEDES, STAGED_RELS, TIER_AMBIGUOUS, TIER_EXTRACTED, TIER_INFERRED,
-    TYPE_ALIAS_DEFINED, TYPE_ALIAS_UNRESOLVED, TYPE_CODE_ENTITY_EXTRACTED, TYPE_COMMUNITY_ASSIGNED,
-    TYPE_CONCEPT_DERIVED, TYPE_CONCEPT_REALIZED, TYPE_DECISION_MADE, TYPE_DOC_CONCEPT_EXTRACTED,
-    TYPE_DOC_LINK_EXTRACTED, TYPE_EDGE_INFERRED, TYPE_FILE_TOUCHED, TYPE_GATE_VERDICT,
-    TYPE_LESSON_LEARNED, TYPE_REVIEW_FINDING, TYPE_UNIT_INTEGRATED, TYPE_UNIT_STARTED,
+    Edge, Error, FoldAccess, Graph, Neighbors, Node, RecordFold, KIND_ARCH_DECISION, KIND_ARTIFACT,
+    KIND_CODE_ENTITY, KIND_DECISION, KIND_DESIGN_DOC, KIND_FILE, KIND_FINDING, KIND_HANDBOOK_RULE,
+    KIND_LESSON, KIND_RATIONALE, OWED_LOST_FOLD, OWED_OLDER_RULE, PLACEHOLDER_SIGIL, REBUILD_OWED,
+    REBUILD_OWED_FOR_LOST_FOLD, REL_ABOUT, REL_GOVERNS, REL_RAISED, REL_SUPERSEDES, TIER_EXTRACTED,
+    TYPE_ALIAS_DEFINED, TYPE_ALIAS_UNRESOLVED, TYPE_DECISION_MADE, TYPE_FILE_TOUCHED,
+    TYPE_GATE_VERDICT, TYPE_LESSON_LEARNED, TYPE_REVIEW_FINDING, TYPE_UNIT_INTEGRATED,
+    TYPE_UNIT_STARTED,
 };
 use crate::eventstore::{from_nanos, to_nanos, Event, EventStore, Filter, Position, Revision};
 use crate::lockfile::HeldLock;
 use crate::spawn::{SpawnEvent, SpawnResult, TYPE_SPAWN_RESULT};
 use crate::sqlite::open_connection;
-use rigger_domain::retention::{is_ledger_entry, GenerationIngested, TYPE_GENERATION_INGESTED};
+use rigger_domain::retention::DERIVED_TYPES;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS nodes (
@@ -50,17 +41,6 @@ CREATE INDEX IF NOT EXISTS idx_edges_from ON edges(from_id);
 CREATE INDEX IF NOT EXISTS idx_edges_to ON edges(to_id);
 CREATE TABLE IF NOT EXISTS aliases (alias TEXT PRIMARY KEY, canonical_id TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS applied (position INTEGER PRIMARY KEY);
-CREATE TABLE IF NOT EXISTS proofs (
-  project TEXT NOT NULL, name TEXT NOT NULL, file TEXT NOT NULL, evidence TEXT NOT NULL,
-  source INTEGER NOT NULL, target TEXT
-);
-CREATE INDEX IF NOT EXISTS idx_proofs_name ON proofs(project, name);
-CREATE INDEX IF NOT EXISTS idx_proofs_file ON proofs(project, file);
-CREATE INDEX IF NOT EXISTS idx_proofs_target ON proofs(project, target);
-CREATE TABLE IF NOT EXISTS generations (
-  project TEXT NOT NULL, identity TEXT NOT NULL, generation TEXT NOT NULL, prior TEXT,
-  PRIMARY KEY (project, identity)
-);
 CREATE TABLE IF NOT EXISTS node_assertions (
   project TEXT NOT NULL, identity TEXT NOT NULL, generation TEXT NOT NULL, node_id TEXT NOT NULL,
   kind TEXT NOT NULL, attrs TEXT,
@@ -72,40 +52,7 @@ CREATE TABLE IF NOT EXISTS edge_assertions (
   since INTEGER NOT NULL, source INTEGER NOT NULL,
   PRIMARY KEY (project, identity, edge_id)
 );
-CREATE TABLE IF NOT EXISTS retired_nodes (
-  id TEXT NOT NULL, kind TEXT NOT NULL, attrs TEXT,
-  project TEXT NOT NULL DEFAULT '',
-  PRIMARY KEY (id, project)
-);
 CREATE INDEX IF NOT EXISTS idx_edge_assertions_edge ON edge_assertions(project, edge_id);
-CREATE VIEW IF NOT EXISTS live_node_assertions AS
-  SELECT b.rowid AS seq, b.project, b.identity, b.generation, b.node_id, b.kind, b.attrs
-    FROM node_assertions b
-    LEFT JOIN generations g ON g.project = b.project AND g.identity = b.identity
-   WHERE b.identity = '' OR b.generation = g.generation;
-CREATE VIEW IF NOT EXISTS live_edge_assertions AS
-  SELECT a.project, a.identity, a.generation, a.edge_id, a.since, a.source
-    FROM edge_assertions a
-    LEFT JOIN generations g ON g.project = a.project AND g.identity = a.identity
-   WHERE a.identity = '' OR a.generation = g.generation;
-CREATE TABLE IF NOT EXISTS detached_attachments (
-  project TEXT NOT NULL, edge_id INTEGER NOT NULL, node_id TEXT NOT NULL,
-  PRIMARY KEY (project, edge_id)
-);
-CREATE INDEX IF NOT EXISTS idx_detached_attachments_node ON detached_attachments(project, node_id);
-CREATE TABLE IF NOT EXISTS relabel_owed (
-  project TEXT NOT NULL, community TEXT NOT NULL,
-  PRIMARY KEY (project, community)
-);
-CREATE TABLE IF NOT EXISTS refs (
-  project TEXT NOT NULL, identity TEXT NOT NULL, generation TEXT NOT NULL,
-  from_id TEXT NOT NULL, leaf TEXT NOT NULL, ref_kind TEXT NOT NULL, lang TEXT NOT NULL,
-  position INTEGER NOT NULL, target TEXT,
-  PRIMARY KEY (project, identity, from_id, leaf, ref_kind)
-);
-CREATE INDEX IF NOT EXISTS idx_refs_leaf ON refs(project, leaf);
-CREATE INDEX IF NOT EXISTS idx_refs_kind ON refs(project, ref_kind);
-CREATE TABLE IF NOT EXISTS proofs_owed (name TEXT PRIMARY KEY);
 CREATE TABLE IF NOT EXISTS passed_over (position INTEGER PRIMARY KEY, cause TEXT NOT NULL);
 ";
 
@@ -130,8 +77,9 @@ CREATE TABLE IF NOT EXISTS passed_over (position INTEGER PRIMARY KEY, cause TEXT
 /// is never resumed ([`open_shadow`]).
 pub const PROJECTION_VERSION: i64 = 6;
 
-/// The generation ledgers and their views, dropped from a file at an older [`PROJECTION_VERSION`]
-/// so [`SCHEMA`] recreates them in their current shape.
+/// The assertion ledgers, dropped from a file at an older [`PROJECTION_VERSION`] so [`SCHEMA`]
+/// recreates them in their current shape, and every table and view an older rule kept for the code
+/// fold, which no rule since holds.
 const DROP_LEDGERS: &str = "
 DROP VIEW IF EXISTS live_node_assertions;
 DROP VIEW IF EXISTS live_edge_assertions;
@@ -141,6 +89,8 @@ DROP TABLE IF EXISTS edge_assertions;
 DROP TABLE IF EXISTS retired_nodes;
 DROP TABLE IF EXISTS detached_attachments;
 DROP TABLE IF EXISTS relabel_owed;
+DROP TABLE IF EXISTS refs;
+DROP TABLE IF EXISTS proofs_owed;
 DROP TABLE IF EXISTS pending_proof;
 DROP TABLE IF EXISTS proofs;
 ";
@@ -149,16 +99,7 @@ DROP TABLE IF EXISTS proofs;
 /// rows [`Projector::migrate_project`] re-keys with the facts, each only when the file holds it
 /// with that column, since a file that owes its rebuild is opened as it stands and may predate
 /// any of them.
-const PROJECT_KEYED_LEDGERS: [&str; 8] = [
-    "generations",
-    "node_assertions",
-    "edge_assertions",
-    "proofs",
-    "retired_nodes",
-    "detached_attachments",
-    "relabel_owed",
-    "refs",
-];
+const PROJECT_KEYED_LEDGERS: [&str; 2] = ["node_assertions", "edge_assertions"];
 
 /// The state a rebuild ([`Projector::rebuild`]) keeps in the shadow file it folds and, from the
 /// swap until the tail it owes is folded, in the live one, born together in one transaction
@@ -260,17 +201,6 @@ pub type RebuildSink<'s> = dyn FnMut(&[Event], Position) -> Result<(), Error> + 
 /// [`Projector::rebuild`] folds. The sqlite event store's `read_live_selection` is the one in
 /// production.
 pub type RebuildSource<'s> = dyn FnMut(Position, &mut RebuildSink) -> Result<(), Error> + 's;
-
-/// Re-extracts the batch of a ledger entry of perception (spec 107): handed the entry's event, it
-/// answers the batch the entry's generation names, that no source resolves it, which the fold
-/// passes the entry over for (spec 124, THE DECIDE STEP), or an error, which fails the rebuild or
-/// the catch-up call ([`CatchUp::Failed`]). What a [`Projector::rebuild`] or a
-/// [`Projector::catch_up`] folds with each ledger entry its fold asks a batch for, one not yet
-/// folded whose payload parses and whose generation its identity does not hold, behind the ledger
-/// fold, asked before the entry's transaction opens, so it holds no write lock
-/// ([`extracted_batch`]); `rigger setup` binds the one that, in the lane compiled with an
-/// extraction, reads the repository's object database and the tree.
-pub type Reextract<'s> = dyn FnMut(&Event) -> Result<Option<Vec<Event>>, Error> + 's;
 
 /// Hand `sink` the events of `log` - in position order - past position `after`, in batches of at
 /// most `batch`, each with the log's last position: the [`RebuildSource`] body for a log already
@@ -416,10 +346,6 @@ pub struct Projector {
     /// The event log [`Projector::catch_up`] folds this file forward from, once installed
     /// ([`Projector::with_log`]): none folds nothing forward.
     log: Option<CatchUpLog>,
-    /// What each [`Projector::catch_up`] and [`Projector::rebuild`] call builds its re-extraction
-    /// from, once installed ([`Projector::with_reextraction`]): with none a call re-extracts
-    /// nothing.
-    reextraction: Option<ReextractionFactory>,
     /// The identity of the event log this projector folds ([`Projector::with_store_identity`]):
     /// what the seeding and a rebuild record beside the `caught_up` cursor they create, and what
     /// the seeding and every catch-up compare the cursor's with ([`log_switched`]); empty for a
@@ -456,10 +382,6 @@ impl CatchUpLog {
         Ok(log)
     }
 }
-
-/// What builds the re-extraction of one [`Projector::catch_up`] call
-/// ([`Projector::with_reextraction`]).
-type ReextractionFactory = Box<dyn Fn() -> Box<Reextract<'static>> + Send + Sync>;
 
 /// The file an older binary wrote beside the graph file at `path` when a fold into it failed - a
 /// write lost to another writer's lock left the file current but missing an event; no fold writes
@@ -513,14 +435,6 @@ pub struct Rebuilt {
 /// ([`super::check_fold_payload`]) rejects (spec 124, PASSED OVER WITH ITS CAUSE).
 pub const PAYLOAD_REJECTED: &str = "payload rejected";
 
-/// The class of the cause a fold pass records for a ledger entry an event of whose re-extracted
-/// batch the judge ([`super::check_fold_payload`]) rejects (spec 124, PASSED OVER WITH ITS CAUSE).
-pub const FOLD_FAILED: &str = "fold failed";
-
-/// The cause a fold pass records for a ledger entry whose re-extraction resolves to nothing - no
-/// source extracts to its generation (spec 124, PASSED OVER WITH ITS CAUSE).
-pub const RESOLVED_TO_NOTHING: &str = "resolved to nothing";
-
 /// The cause a fold pass records under `class` for the payload `data` of a `type_` event when the
 /// judge ([`super::check_fold_payload`]) rejects it - the class, then the judge's text, the one
 /// spelling [`Projector::passed_over`] reads the class back from, up to its first `:` - or none
@@ -536,16 +450,12 @@ pub fn rejection(class: &str, type_: &str, data: &[u8]) -> Option<String> {
 pub struct PassedOver {
     /// Events whose own payload the judge rejects (`payload rejected`).
     pub rejected: usize,
-    /// Ledger entries an event of whose re-extracted batch the judge rejects (`fold failed`).
-    pub failed: usize,
-    /// Ledger entries whose re-extraction resolves to nothing (`resolved to nothing`).
-    pub unresolved: usize,
 }
 
 impl PassedOver {
-    /// Every position counted passed over, under any of the three classes.
+    /// Every position counted passed over.
     pub fn total(&self) -> usize {
-        [self.rejected, self.failed, self.unresolved].iter().sum()
+        self.rejected
     }
 }
 
@@ -686,7 +596,6 @@ impl Projector {
             path: path.to_string(),
             owed_mark: owed_mark(path),
             log: None,
-            reextraction: None,
             store: String::new(),
             lock_ceiling: FOLD_LOCK_CEILING,
             holds_rebuild_lock: false,
@@ -719,11 +628,7 @@ impl Projector {
     /// the one the swap copies into and the tail folds through, under this projector's project.
     ///
     /// The rebuild folds `source` - the log's live selection, whose cost is bounded by the live
-    /// projection rather than the log's age - each ledger entry of perception its fold asks a batch
-    /// for with the batch a re-extraction of the rebuild's own answers for it (see `fold_source`):
-    /// one this projector builds for the call ([`Projector::reextraction`]), shared by the shadow's
-    /// fold and the tail and dropped as the call returns, so nothing it holds outlives the rebuild.
-    /// It folds into a fresh SHADOW file beside the graph file, in the batches `source` hands it,
+    /// projection rather than the log's age. It folds into a fresh SHADOW file beside the graph file, in the batches `source` hands it,
     /// each folded in the bounded transactions `fold_source` cuts it into, each transaction
     /// committed with the last position it folded and the run attribution it gathered
     /// ([`REBUILD_STATE`]), and each batch reported to `progress`; the live file is only ever read
@@ -784,7 +689,6 @@ impl Projector {
             self.project.as_str(),
             self.store.as_str(),
         );
-        let mut reextract = self.reextraction();
         let mut live = self.conn.lock().unwrap();
         let live = &mut *live;
         let shadow_path = shadow_of(path);
@@ -797,19 +701,12 @@ impl Projector {
             pay => {
                 let mut shadow = open_shadow(&shadow_path, pay.starts_fresh())?;
                 schema(&shadow, project)?;
-                in_transaction(&mut shadow, project, |tx| {
+                in_transaction(&mut shadow, |tx| {
                     tx.execute_batch(REBUILD_STATE).map_err(be)?;
                     create_cursor(tx, rebuild_cursor(tx)?, store)
                 })
                 .map_err(FrameError::unframed)?;
-                fold_source(
-                    &mut shadow,
-                    project,
-                    source,
-                    &mut *reextract,
-                    progress,
-                    true,
-                )?;
+                fold_source(&mut shadow, project, source, progress, true)?;
                 // The graph the live one would hold, never a larger one: the prune `rigger reset
                 // --runs` applies, derived from what the fold gathered, on a copy of the shadow.
                 let copy = pruned_copy(path);
@@ -832,7 +729,7 @@ impl Projector {
                 remove_shadow(shadow, &shadow_path)?;
             }
         }
-        fold_source(live, project, source, &mut *reextract, progress, false)?;
+        fold_source(live, project, source, progress, false)?;
         let pruned = live
             .query_row(
                 "SELECT pruned_nodes, reclaimed_edges FROM rebuild_cursor",
@@ -845,7 +742,7 @@ impl Projector {
                 },
             )
             .map_err(be)?;
-        in_transaction(live, project, |tx| {
+        in_transaction(live, |tx| {
             let through = rebuild_cursor(tx)?;
             create_cursor(tx, through, store)?;
             set_cursor(tx, CAUGHT_UP, through)?;
@@ -901,8 +798,8 @@ impl Projector {
 
     /// How many positions this file records passed over, by the class of their cause (spec 124,
     /// CATCH-UP LINES): its `passed_over` rows as they stand, whoever wrote them, each counted by
-    /// the class its cause begins with ([`rejection`]) - [`PAYLOAD_REJECTED`], [`FOLD_FAILED`]
-    /// or [`RESOLVED_TO_NOTHING`], the only classes a fold pass writes ([`decide_step`]). None on
+    /// the class its cause begins with ([`rejection`]) - [`PAYLOAD_REJECTED`], the only class a
+    /// fold pass writes ([`decide_step`]). None on
     /// a file without the table, such as one that owes its rebuild, which is opened as it stands.
     /// Reads, and writes nothing.
     pub fn passed_over(&self) -> Result<PassedOver, Error> {
@@ -924,11 +821,8 @@ impl Projector {
             .map_err(be)?;
         for class in classes {
             let (class, n) = class.map_err(be)?;
-            match class.as_str() {
-                PAYLOAD_REJECTED => counts.rejected += n,
-                FOLD_FAILED => counts.failed += n,
-                RESOLVED_TO_NOTHING => counts.unresolved += n,
-                _ => {}
+            if class == PAYLOAD_REJECTED {
+                counts.rejected += n;
             }
         }
         Ok(counts)
@@ -1043,17 +937,6 @@ impl Projector {
         self
     }
 
-    /// This projector, each [`Projector::catch_up`] and [`Projector::rebuild`] call re-extracting
-    /// the ledger entries its fold asks a batch for through a re-extraction `factory` builds for
-    /// that call alone (spec 124, WIRING), dropped as the call returns.
-    pub fn with_reextraction(
-        mut self,
-        factory: impl Fn() -> Box<Reextract<'static>> + Send + Sync + 'static,
-    ) -> Self {
-        self.reextraction = Some(Box::new(factory));
-        self
-    }
-
     /// This projector, folding the event log whose identity is `store` (spec 124, A LOG SWITCHED
     /// UNDER A STANDING GRAPH): the text its seeding ([`Projector::seed_cursor`]) and its rebuild's
     /// shadow open and drop ([`Projector::rebuild`]) record beside the `caught_up` cursor they
@@ -1088,18 +971,6 @@ impl Projector {
         self
     }
 
-    /// A re-extraction of the ledger entries one fold of this file asks a batch for (spec 124,
-    /// WIRING), each not yet folded, whose payload parses and whose generation its identity does
-    /// not hold: a fresh one the installed factory builds ([`Projector::with_reextraction`]), or,
-    /// with none installed, one that resolves no entry, so each entry it is asked for is passed
-    /// over [`RESOLVED_TO_NOTHING`].
-    fn reextraction(&self) -> Box<Reextract<'static>> {
-        match &self.reextraction {
-            Some(build) => build(),
-            None => Box::new(|_: &Event| Ok(None)),
-        }
-    }
-
     /// FOLD FORWARD FROM THE CURSOR (spec 124, ONE PROCEDURE): fold this file forward from its
     /// `caught_up` cursor by one cut of the log ([`Projector::with_log`]), in ONE immediate
     /// transaction, and answer what the call did ([`CatchUp`]); a caller that needs the file at the
@@ -1115,12 +986,8 @@ impl Projector {
     /// handed, or every one there is when fewer are ([`EventStore::read_all_page`]) - with no lock
     /// of the file held: a page without an event is [`CatchUp::AtHead`]. The page's events of the
     /// project's run stream are its positions to decide; its first transaction cut
-    /// ([`fold_transactions`]) - one ledger entry alone, or a run
-    /// of other events - is decided and folded by THE DECIDE STEP ([`decide_step`]), the step a
-    /// rebuild's fold pass shares, each entry its fold asks a batch for, one not yet folded whose
-    /// payload parses and whose generation is not held, with the batch the call's re-extraction
-    /// answers ([`Projector::reextraction`]; with none installed it resolves nothing, so the entry
-    /// is passed over [`RESOLVED_TO_NOTHING`]). The cut's transaction reads the cursor again under
+    /// ([`fold_transactions`]) is decided and folded by THE DECIDE STEP ([`decide_step`]), the step a
+    /// rebuild's fold pass shares. The cut's transaction reads the cursor again under
     /// the write lock and ends by moving it to the cut's last position, or to the page's last
     /// position when the cut holds every run-stream event of the page - a page of other streams'
     /// events alone moves it there folding nothing - and the call answers [`CatchUp::Advanced`],
@@ -1136,25 +1003,11 @@ impl Projector {
     /// outrun: the positions it passed are in the ledger, and the cut passes them. A cut that
     /// meets another writer's write lock past the busy timeout answers [`CatchUp::Skipped`] at the
     /// position its page was read from; a log that fails to open, a page read that fails, and a
-    /// cut whose fold fails - a re-extraction that fails included - answer [`CatchUp::Failed`] at
+    /// cut whose fold fails answer [`CatchUp::Failed`] at
     /// the position the call reads, or would read, its last page from, with the failure's text. Each
-    /// of those writes nothing. The connection's lock is held for the cut's transaction
-    /// and, briefly, for the reads that decide whether an entry asks its re-extraction, and
-    /// released for the page read and the re-extraction itself. Only a failure to read the file's
-    /// own standing is an error.
-    ///
-    /// An accepted cost of the light lane, whose re-extraction resolves no entry: a call on one
-    /// host may pass over a concurrent writer's young own entry as resolved to nothing before that
-    /// writer's own fold folds it.
+    /// of those writes nothing. The connection's lock is held for the cut's transaction and
+    /// released for the page read. Only a failure to read the file's own standing is an error.
     pub fn catch_up(&self) -> Result<CatchUp, Error> {
-        self.catch_up_with(None)
-    }
-
-    /// One [`Projector::catch_up`] call made by the appender of `own` (spec 124, THE OWN ENTRY):
-    /// a cut that is that entry alone folds it from the batch the appender holds rather than from
-    /// the call's re-extraction ([`decide_step`]); with none, every entry folds from the
-    /// re-extraction.
-    fn catch_up_with(&self, own: Option<&OwnEntry>) -> Result<CatchUp, Error> {
         let mut from = match standing_cursor(&self.conn.lock().unwrap(), &self.store)? {
             Ok(at) => at,
             Err(inert) => return Ok(CatchUp::Inert(inert)),
@@ -1171,7 +1024,6 @@ impl Projector {
                 })
             }
         };
-        let mut reextract = self.reextraction();
         let mut outrun = false;
         loop {
             let page = match log.read_all_page(from, &Filter::default(), FOLD_BATCH) {
@@ -1205,10 +1057,6 @@ impl Projector {
                 part,
                 through,
                 &mut cut,
-                EntryBatches {
-                    reextract: &mut *reextract,
-                    own,
-                },
                 false,
             );
             match decided {
@@ -1275,9 +1123,8 @@ impl Projector {
     }
 
     /// Run `body` in ONE transaction on this file's connection, held under its lock for the
-    /// whole of it ([`in_transaction`]): the one lock -> transaction -> body -> settlement ->
-    /// commit frame, taken by each method that writes in a transaction, settling the proofs
-    /// `body` owed in this projector's project. The lock is released when this returns.
+    /// whole of it ([`in_transaction`]): the one lock -> transaction -> body -> commit frame,
+    /// taken by each method that writes in a transaction. The lock is released when this returns.
     fn transact<T, E>(
         &self,
         body: impl FnOnce(&Transaction) -> Result<T, E>,
@@ -1285,11 +1132,10 @@ impl Projector {
     where
         FrameError: From<E>,
     {
-        in_transaction(&mut self.conn.lock().unwrap(), &self.project, body)
+        in_transaction(&mut self.conn.lock().unwrap(), body)
     }
 
-    /// THE APPENDER (spec 124): fold the appender's own `events` - with `own`, the ledger entry
-    /// among them and the batch it holds ([`OwnEntry`]) - into this file, and answer what the
+    /// THE APPENDER (spec 124): fold the appender's own `events` into this file, and answer what the
     /// direct fold's `fold` answered, or none when the calls folded them. It refuses before
     /// folding when the file owes its rebuild ([`REBUILD_OWED`]), and writes no mark for any
     /// failure: a position it leaves unfolded is missing from the `applied` ledger, which the next
@@ -1314,7 +1160,6 @@ impl Projector {
     fn guarded<T>(
         &self,
         events: &[Event],
-        own: Option<&OwnEntry>,
         mut fold: impl FnMut(&Transaction) -> Result<T, FrameError>,
     ) -> Result<Option<T>, Error> {
         if self.rebuild_owed()? {
@@ -1326,14 +1171,14 @@ impl Projector {
         let mut retry = false;
         loop {
             let by_calls = self.folds_by_calls(&self.conn.lock().unwrap(), streamed)?;
-            if by_calls && self.fold_by_calls(events, own, busy)? {
+            if by_calls && self.fold_by_calls(events, busy)? {
                 return Ok(None);
             }
             let mut conn = self.conn.lock().unwrap();
             if retry && self.past_ceiling(events) {
                 return Err(self.past_the_ceiling(Short::Contended, pays));
             }
-            let folded = in_transaction(&mut conn, &self.project, |tx| {
+            let folded = in_transaction(&mut conn, |tx| {
                 if self.folds_by_calls(tx, streamed)? {
                     return Ok(None);
                 }
@@ -1365,8 +1210,7 @@ impl Projector {
         Ok(self.log.is_some() && streamed && carries_caught_up(conn)?)
     }
 
-    /// THE APPENDER's calls (spec 124): call [`Projector::catch_up`] - with `own`, the appender's
-    /// own entry, folding from its batch ([`Projector::catch_up_with`]) - until the appender's
+    /// THE APPENDER's calls (spec 124): call [`Projector::catch_up`] until the appender's
     /// success test passes, and answer true then, or false when a call or the test meets no
     /// `caught_up` cursor, the direct fold folding the events instead.
     ///
@@ -1379,24 +1223,19 @@ impl Projector {
     /// position at or below the cursor is folded. Still short, the call's answer decides. An older
     /// fold rule answers [`REBUILD_OWED`] at once, the file's
     /// rebuild state the unfinished-rebuild text at once when this projector's process holds its
-    /// rebuild lock ([`Projector::with_rebuild_lock`]), and a failure anywhere but at the own entry
-    /// its error at once; otherwise, past the ceiling ([`Projector::past_ceiling`]), it answers
-    /// what the call met - the catch-up text after a call that advanced or met the log's head, the
-    /// write-lock text after a skipped one, the unfinished-rebuild text, or the own entry's
-    /// failure - each but `REBUILD_OWED` ending with [`CALL_PAYS`]. Inside the ceiling a call that
+    /// rebuild lock ([`Projector::with_rebuild_lock`]), and a failed call its error at once;
+    /// otherwise, past the ceiling ([`Projector::past_ceiling`]), it answers what the call met -
+    /// the catch-up text after a call that advanced or met the log's head, the write-lock text
+    /// after a skipped one, or the unfinished-rebuild text - each but `REBUILD_OWED` ending with
+    /// [`CALL_PAYS`]. Inside the ceiling a call that
     /// advanced is followed by the next at once, and any other by one busy interval `busy` with the
     /// connection's lock released.
-    fn fold_by_calls(
-        &self,
-        events: &[Event],
-        own: Option<&OwnEntry>,
-        busy: Duration,
-    ) -> Result<bool, Error> {
+    fn fold_by_calls(&self, events: &[Event], busy: Duration) -> Result<bool, Error> {
         let positions: Vec<Position> = events.iter().map(|e| e.position).collect();
         let last = positions.iter().copied().max();
         let positions = serde_json::to_string(&positions).map_err(be)?;
         loop {
-            let call = self.catch_up_with(own)?;
+            let call = self.catch_up()?;
             match call {
                 CatchUp::Inert(Inert::NoCursor) => return Ok(false),
                 CatchUp::Inert(Inert::LogSwitched) => {
@@ -1429,13 +1268,7 @@ impl Projector {
                 // An older fold rule; a call meeting no cursor turned direct above, and one
                 // meeting a cursor of another log answered there.
                 CatchUp::Inert(_) => return Err(Error(REBUILD_OWED.to_string())),
-                CatchUp::Failed { error, .. } => {
-                    let failed = Error(format!("{error}{CALL_PAYS}"));
-                    if !own.is_some_and(|own| own.failed.take()) {
-                        return Err(failed);
-                    }
-                    (failed, true)
-                }
+                CatchUp::Failed { error, .. } => return Err(Error(format!("{error}{CALL_PAYS}"))),
             };
             if self.past_ceiling(events) {
                 return Err(short);
@@ -1710,52 +1543,6 @@ impl Projector {
         })
         .map_err(FrameError::unframed)
     }
-
-    /// Spec 86 criterion 3 (THE MIGRATION IS DELIBERATE, VALIDATE ADVISORY): the count of
-    /// `code-entity` nodes this project's graph currently holds that are RETIRED - reachable by NO
-    /// live edge at all, in either direction, though each DID at some point carry a live `CONTAINS`
-    /// edge from its parent, its own file at file level (spec 119), whatever that edge's source
-    /// (proving it was once a genuine, reachable graph member, never a
-    /// dangling placeholder [`ensure_node`] creates for an unresolved cross-file reference that
-    /// simply has not resolved yet - such a placeholder never had a `CONTAINS` edge to lose, live
-    /// or historical, so it is never counted here).
-    ///
-    /// This is exactly the shape the migration's supersession leaves behind (spec 86 Design): a
-    /// re-ingest of a store that predates criterion 1's exclusion rule retires a legacy
-    /// test-entity's own structural edges via `supersede_file_edges` - on either the
-    /// empty-after-exclusion structural sentinel (a whole `tests/`-dir file, the central case) or
-    /// the ordinary re-extraction boundary (an in-file `#[cfg(test)] mod tests` item, retired the
-    /// SAME way the moment its own file next re-extracts) - and adds nothing back for the excluded
-    /// entity, so it falls out of every live traversal though its node row and every historical
-    /// edge persist (never a store wipe - node rows are never deleted here, spec 29a section 6.4).
-    /// `rigger validate` reads this once per run to report the migration's shrink to the operator
-    /// (`main::retired_entities_advisory_for`).
-    ///
-    /// Read-only; never mutates. Project-scoped like every other read here.
-    pub fn retired_code_entity_count(&self) -> Result<usize, Error> {
-        let conn = self.conn.lock().unwrap();
-        let n: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM (SELECT id, kind, project FROM nodes
-                                       UNION ALL
-                                       SELECT id, kind, project FROM retired_nodes) n
-                  WHERE n.kind = ?1 AND n.project = ?2
-                    AND NOT EXISTS (
-                      SELECT 1 FROM edges e
-                       WHERE e.valid_to IS NULL AND e.project = ?2
-                         AND (e.from_id = n.id OR e.to_id = n.id)
-                    )
-                    AND EXISTS (
-                      SELECT 1 FROM edges e
-                       WHERE e.valid_to IS NOT NULL AND e.project = ?2
-                         AND e.to_id = n.id AND e.rel = ?3
-                    )",
-                params![KIND_CODE_ENTITY, self.project, REL_CONTAINS],
-                |r| r.get(0),
-            )
-            .map_err(be)?;
-        Ok(n as usize)
-    }
 }
 
 /// The run-closure prune [`Projector::prune`] applies, inside the caller's transaction `tx` on the
@@ -1816,20 +1603,16 @@ fn prune_in(
 }
 
 /// Run `body` in ONE transaction on `conn` and commit it: the one IMMEDIATE transaction -> body ->
-/// settlement -> commit frame of this file; [`open_current`] keeps its own immediate transaction
+/// commit frame of this file; [`open_current`] keeps its own immediate transaction
 /// on the shared connection it is handed. The open takes the write lock (spec 122), so a frame
 /// meeting a lock another connection holds fails at its open once the busy timeout passes, before
 /// `body` runs - [`FrameError::Contended`] for SQLite's busy or locked code, read there before
 /// anything stringifies it, and [`FrameError::Failed`] for any other open error (spec 124) - and a
-/// `body` that reads before it writes never finds its read outdated by another's commit. Before
-/// the commit, outside every savepoint `body` opened, the proofs of every name `body` owed are
-/// settled in `project`, each name once ([`settle_proofs`], spec 122, PROOFS SETTLE ONCE PER
-/// TRANSACTION); a `body` that owed none settles nothing. A `body` that fails - with the domain's
-/// error, which is [`FrameError::Failed`], or a frame error of its own - a settlement that does,
-/// or a commit that does, leaves nothing written - the transaction rolls back whole as it drops.
+/// `body` that reads before it writes never finds its read outdated by another's commit. A `body`
+/// that fails - with the domain's error, which is [`FrameError::Failed`], or a frame error of its
+/// own - or a commit that does, leaves nothing written - the transaction rolls back whole as it drops.
 fn in_transaction<T, E>(
     conn: &mut Connection,
-    project: &str,
     body: impl FnOnce(&Transaction) -> Result<T, E>,
 ) -> Result<T, FrameError>
 where
@@ -1844,7 +1627,6 @@ where
             _ => FrameError::Failed(be(e)),
         })?;
     let answer = body(&tx)?;
-    settle_proofs(&tx, project)?;
     tx.commit().map_err(be)?;
     Ok(answer)
 }
@@ -1858,7 +1640,7 @@ where
 /// however many passes the rebuild took, and what it removed is stamped, in its transaction, as
 /// the counts the rebuild state records - the cold rebuild's counts, never a sum.
 fn prune_run_closure(conn: &mut Connection, project: &str) -> Result<(), Error> {
-    in_transaction(conn, project, |tx| -> Result<(), Error> {
+    in_transaction(conn, |tx| -> Result<(), Error> {
         let gathered = tx
             .prepare(
                 "SELECT position, type, data, valid_from FROM rebuild_run_closure ORDER BY position",
@@ -2065,7 +1847,6 @@ fn fold_source(
     conn: &mut Connection,
     project: &str,
     source: &mut RebuildSource,
-    reextract: &mut Reextract,
     progress: &mut dyn FnMut(RebuildProgress),
     gather_run_closure: bool,
 ) -> Result<(), Error> {
@@ -2081,10 +1862,6 @@ fn fold_source(
                 part,
                 through,
                 &mut RebuildCursor,
-                EntryBatches {
-                    reextract: &mut *reextract,
-                    own: None,
-                },
                 gather_run_closure,
             )
             .map_err(FrameError::unframed)?;
@@ -2101,129 +1878,62 @@ fn fold_source(
 }
 
 /// THE DECIDE STEP (spec 124): fold the one transaction cut `part` of a fold pass
-/// ([`fold_transactions`]) - one ledger entry of perception alone, or a run of other events, none
-/// for a catch-up page of other streams' events alone - into the connection `conn` lends, deciding
-/// each position in order, in a transaction that `cursor` opens before any position folds and,
-/// once they are folded, closes at `through` ([`FoldCursor`]): a rebuild's fold pass
-/// ([`fold_source`]) advancing its `rebuild_cursor` to the cut's last position ([`RebuildCursor`]),
-/// a catch-up ([`Projector::catch_up`]) reading its `caught_up` cursor again under the write lock
-/// and advancing it ([`CatchUpCut`]); a cursor that declines its open folds nothing, answering
-/// its decline. A position already in the `applied` ledger, passed over or folded, is passed by
-/// the fold's per-position guard. An event other than an entry folds as [`RecordFold::apply`]
+/// ([`fold_transactions`]), none for a catch-up page of other streams' events alone, into the
+/// connection `conn` lends, deciding each position in order, in a transaction that `cursor` opens
+/// before any position folds and, once they are folded, closes at `through` ([`FoldCursor`]): a
+/// rebuild's fold pass ([`fold_source`]) advancing its `rebuild_cursor` to the cut's last position
+/// ([`RebuildCursor`]), a catch-up ([`Projector::catch_up`]) reading its `caught_up` cursor again
+/// under the write lock and advancing it ([`CatchUpCut`]); a cursor that declines its open folds
+/// nothing, answering its decline. A position already in the `applied` ledger, passed over or
+/// folded, is passed by the fold's per-position guard. Each event folds as [`RecordFold::apply`]
 /// folds it, from its own bytes, under a savepoint of its own ([`fold_in_savepoint`]); one whose
 /// own payload the judge ([`super::check_fold_payload`] - deterministic, so no fold will ever hold
-/// it) rejects is passed over with the class [`PAYLOAD_REJECTED`]. An entry folds as
-/// [`RecordFold::apply_generation`] folds it ([`fold_entry`]), in its own transaction
-/// ([`fold_entry_alone`]), with the batch `reextract` answers for it when its fold asks one,
-/// before that transaction opens ([`extracted_batch`], spec 122, EXTRACTION OUTSIDE THE WRITE
-/// TRANSACTION), so no extraction holds the write lock - with the batch `batches` names for it
-/// ([`EntryBatches`]), recording on an appender's own entry what became of its fold
-/// ([`OwnEntry::settle`]): one whose own payload the judge rejects is passed over with
-/// [`PAYLOAD_REJECTED`], one whose re-extracted batch holds an event the judge rejects with
-/// [`FOLD_FAILED`], and one whose re-extraction resolves to nothing with [`RESOLVED_TO_NOTHING`]
-/// (CONTENT). Any other failure (ENVIRONMENT) - a re-extraction that fails, before the entry's
-/// transaction opens; an entry that asks a batch it was not handed on its retry too
-/// ([`unread_entry`]); a fold's own error over a payload and a batch the judge accepts; a statement
-/// outside every fold - propagates with the cut's transaction rolled back, and an open meeting
-/// another writer's lock past the busy timeout answers [`FrameError::Contended`] (CONTENTION), so
-/// nothing is passed over but CONTENT.
+/// it) rejects is passed over with the class [`PAYLOAD_REJECTED`] (CONTENT). Any other failure
+/// (ENVIRONMENT) - a fold's own error over a payload the judge accepts; a statement outside every
+/// fold - propagates with the cut's transaction rolled back, and an open meeting another writer's
+/// lock past the busy timeout answers [`FrameError::Contended`] (CONTENTION), so nothing is passed
+/// over but CONTENT.
 fn decide_step<L: Lend>(
     conn: &mut L,
     project: &str,
     part: &[Event],
     through: Position,
     cursor: &mut impl FoldCursor,
-    batches: EntryBatches,
     gather_run_closure: bool,
 ) -> Result<(), FrameError> {
-    match part {
-        [entry] if is_ledger_entry(&entry.type_) => {
-            let own = batches.own.filter(|own| own.position == entry.position);
-            let reextract = batches.reextract;
-            let folded = fold_entry_alone(
-                conn,
-                project,
-                entry,
-                through,
-                cursor,
-                &mut |lent| match own {
-                    Some(own) => {
-                        extracted_batch(lent, project, entry, &mut |_: &Event| own.batch())
-                    }
-                    None => extracted_batch(lent, project, entry, reextract),
-                },
-                gather_run_closure,
-            );
-            if let Some(own) = own {
-                own.settle(&folded);
+    conn.lend(|conn| {
+        in_transaction(conn, |tx| {
+            cursor.open(tx, through)?;
+            for e in part {
+                fold_in_savepoint(tx, e, gather_run_closure, || {
+                    fold_new(tx, std::slice::from_ref(e), project).map(drop)
+                })?;
             }
-            folded.map(drop)
-        }
-        _ => conn.lend(|conn| {
-            in_transaction(conn, project, |tx| {
-                cursor.open(tx, through)?;
-                for e in part {
-                    fold_in_savepoint(
-                        tx,
-                        e,
-                        gather_run_closure,
-                        || fold_new(tx, std::slice::from_ref(e), project).map(|_| Decided::Read),
-                        || rejected_payload(e),
-                    )?;
-                }
-                cursor.close(tx, through)
-            })
-        }),
-    }
-}
-
-/// What the fold of one position of a fold pass decided ([`fold_in_savepoint`], THE DECIDE STEP):
-/// it is read - folded, or found folded already - or, a ledger entry, it asked a batch it was not
-/// handed ([`EntryOutcome::Unread`]), or it is passed over with the cause it carries.
-enum Decided {
-    Read,
-    Unread,
-    PassedOver(String),
-}
-
-/// The cause a fold pass passes the event `e` over with when the judge
-/// ([`super::check_fold_payload`]) rejects its own payload ([`PAYLOAD_REJECTED`]), or none.
-fn rejected_payload(e: &Event) -> Option<String> {
-    rejection(PAYLOAD_REJECTED, &e.type_, &e.data)
+            cursor.close(tx, through)
+        })
+    })
 }
 
 /// Fold the event `e` of a fold pass ([`decide_step`]) through `fold`, in `tx`, under a savepoint
-/// of its own, and answer whether it is read. A position `fold` decides is not read
-/// ([`Decided::Unread`]) rolls the savepoint back, the event's `applied` row with it, and writes
-/// nothing. A position it passes over ([`Decided::PassedOver`]), and one whose `fold` fails while
-/// `rejected` names the cause the judge rejects it for, rolls the savepoint back and is recorded
-/// passed over with that cause ([`pass_over`]); any other failure of `fold` propagates. A read
-/// event of the [`rigger_domain::run::RUN_CLOSURE_TYPES`] is kept for the run-closure prune when
+/// of its own. One whose `fold` fails while the judge ([`super::check_fold_payload`]) rejects its
+/// own payload rolls the savepoint back and is recorded passed over with that cause
+/// ([`PAYLOAD_REJECTED`], [`pass_over`]); any other failure of `fold` propagates. A folded event of
+/// the [`rigger_domain::run::RUN_CLOSURE_TYPES`] is kept for the run-closure prune when
 /// `gather_run_closure` asks it ([`REBUILD_STATE`]).
 fn fold_in_savepoint(
     tx: &Transaction,
     e: &Event,
     gather_run_closure: bool,
-    fold: impl FnOnce() -> Result<Decided, Error>,
-    rejected: impl FnOnce() -> Option<String>,
-) -> Result<bool, Error> {
+    fold: impl FnOnce() -> Result<(), Error>,
+) -> Result<(), Error> {
     tx.execute_batch("SAVEPOINT fold_event").map_err(be)?;
-    let decided = match fold() {
-        Ok(decided) => decided,
-        Err(failed) => Decided::PassedOver(rejected().ok_or(failed)?),
-    };
-    if !matches!(decided, Decided::Read) {
+    if let Err(failed) = fold() {
+        let cause = rejection(PAYLOAD_REJECTED, &e.type_, &e.data).ok_or(failed)?;
         tx.execute_batch("ROLLBACK TO fold_event").map_err(be)?;
-    }
-    if let Decided::PassedOver(cause) = &decided {
-        pass_over(tx, e.position, cause)?;
+        pass_over(tx, e.position, &cause)?;
     }
     tx.execute_batch("RELEASE fold_event").map_err(be)?;
-    let read = !matches!(decided, Decided::Unread);
-    if read
-        && gather_run_closure
-        && rigger_domain::run::RUN_CLOSURE_TYPES.contains(&e.type_.as_str())
-    {
+    if gather_run_closure && rigger_domain::run::RUN_CLOSURE_TYPES.contains(&e.type_.as_str()) {
         tx.execute(
             "INSERT OR IGNORE INTO rebuild_run_closure
              (position, type, data, valid_from) VALUES (?1, ?2, ?3, ?4)",
@@ -2231,7 +1941,7 @@ fn fold_in_savepoint(
         )
         .map_err(be)?;
     }
-    Ok(read)
+    Ok(())
 }
 
 /// Record `position` passed over with `cause` in `tx` (spec 124, PASSED OVER WITH ITS CAUSE): its
@@ -2288,193 +1998,11 @@ fn on_the_run_stream(e: &Event) -> bool {
     e.stream == rigger_domain::run::STREAM
 }
 
-/// Where THE DECIDE STEP ([`decide_step`]) takes the batch of a ledger entry it folds: the
-/// pass's re-extraction `reextract`, or, for the entry at the position of `own`, an appender's own
-/// entry, the batch that appender holds (spec 124, THE OWN ENTRY).
-struct EntryBatches<'a, 'r, 'b> {
-    reextract: &'a mut Reextract<'r>,
-    own: Option<&'a OwnEntry<'b>>,
-}
-
-/// THE OWN ENTRY (spec 124): the ledger entry at `position` an appender folds
-/// ([`RecordFold::apply_generation`]), with the batch function it was handed, asked at most once,
-/// by whichever fold of the entry asks first - its direct fold's or one of its calls' - and its
-/// answer kept for every later one ([`OwnEntry::batch`]); what its calls did with the entry is
-/// recorded here ([`OwnEntry::settle`]). It lives in the appender's frame and drops with it.
-struct OwnEntry<'b> {
-    position: Position,
-    /// The batch function, until it is asked.
-    ask: Cell<Option<EntryBatch<'b>>>,
-    /// What the batch function answered, its error as text.
-    answer: OnceCell<Result<Option<Vec<Event>>, String>>,
-    /// The outcome the call that folded the entry folded it with.
-    folded: Cell<Option<EntryFold>>,
-    /// Whether the last call that decided the entry failed at it, cleared as the appender's call
-    /// loop reads it ([`Projector::fold_by_calls`]), so a later call's failure elsewhere never
-    /// reads as the entry's.
-    failed: Cell<bool>,
-}
-
-impl<'b> OwnEntry<'b> {
-    fn new(position: Position, batch: EntryBatch<'b>) -> Self {
-        OwnEntry {
-            position,
-            ask: Cell::new(Some(batch)),
-            answer: OnceCell::new(),
-            folded: Cell::new(None),
-            failed: Cell::new(false),
-        }
-    }
-
-    /// The entry's batch: what the batch function answered when first asked, asked now if it has
-    /// not been.
-    fn batch(&self) -> Result<Option<Vec<Event>>, Error> {
-        self.answer
-            .get_or_init(|| match self.ask.take() {
-                Some(ask) => ask().map_err(|e| e.0),
-                None => Ok(None),
-            })
-            .clone()
-            .map_err(Error)
-    }
-
-    /// Record what a call's fold of the entry answered ([`fold_entry_alone`]): the outcome it
-    /// folded the entry with, and whether it failed at the entry.
-    fn settle(&self, folded: &Result<Option<EntryFold>, FrameError>) {
-        self.failed
-            .set(matches!(folded, Err(FrameError::Failed(_))));
-        if let Ok(Some(fold)) = folded {
-            self.folded.set(Some(*fold));
-        }
-    }
-}
-
-/// The entry's body of a fold pass ([`decide_step`], spec 122, EXTRACTION OUTSIDE THE WRITE
-/// TRANSACTION): fold the ledger entry `entry` alone, in a transaction of its own on the
-/// connection `conn` lends, that `cursor` opens before the entry folds and closes at `through`
-/// once it is read ([`FoldCursor`]), its fold ([`fold_entry`]) handed what `batch` answers -
-/// asked, with no transaction open, before that transaction opens. An entry whose re-extraction
-/// resolves to nothing ([`EntryOutcome::Unresolved`]) is passed over with
-/// [`RESOLVED_TO_NOTHING`]; one whose fold fails is passed over with the cause the judge rejects
-/// its own payload for, else the one `batch` named for its batch, else the failure propagates
-/// ([`fold_in_savepoint`]). An entry whose fold asks a batch `batch` did not extract
-/// ([`BatchAnswer::Unread`]) is undone with its savepoint, so its transaction commits no write
-/// and leaves the cursor where it stood; `batch` is asked again and the entry retried ONCE (THE
-/// REVERSE RACE), and a second miss fails with [`unread_entry`]. A read entry answers the outcome
-/// its committed fold folded it with ([`EntryFold`]), or none when it was passed over.
-fn fold_entry_alone<L: Lend>(
-    conn: &mut L,
-    project: &str,
-    entry: &Event,
-    through: Position,
-    cursor: &mut impl FoldCursor,
-    batch: &mut dyn FnMut(&mut L) -> Result<Extracted, Error>,
-    gather_run_closure: bool,
-) -> Result<Option<EntryFold>, FrameError> {
-    // Some when the entry is read, holding the outcome it folded with; none when it is unread.
-    let mut attempt = || -> Result<Option<Option<EntryFold>>, FrameError> {
-        let Extracted { answer, rejected } = batch(conn)?;
-        conn.lend(|conn| {
-            in_transaction(conn, project, |tx| {
-                cursor.open(tx, through)?;
-                let mut folded = None;
-                let read = fold_in_savepoint(
-                    tx,
-                    entry,
-                    gather_run_closure,
-                    || {
-                        fold_entry(tx, entry, project, || Ok(answer)).map(|outcome| match outcome {
-                            EntryOutcome::Folded(fold) => {
-                                folded = Some(fold);
-                                Decided::Read
-                            }
-                            EntryOutcome::Unresolved => {
-                                Decided::PassedOver(RESOLVED_TO_NOTHING.to_string())
-                            }
-                            EntryOutcome::Unread => Decided::Unread,
-                        })
-                    },
-                    || rejected_payload(entry).or(rejected),
-                )?;
-                if read {
-                    cursor.close(tx, through)?;
-                }
-                Ok::<_, FrameError>(read.then_some(folded))
-            })
-        })
-    };
-    match attempt()? {
-        Some(folded) => Ok(folded),
-        None => attempt()?.ok_or_else(|| unread_entry(entry.position).into()),
-    }
-}
-
-/// What a fold pass extracted for a ledger entry before its transaction opens
-/// ([`extracted_batch`]): what the entry's fold is handed when it asks its batch, and the cause
-/// the entry is passed over with should its fold fail on that batch.
-struct Extracted {
-    answer: BatchAnswer,
-    rejected: Option<String>,
-}
-
-/// What a fold pass hands the fold of the ledger entry `entry` (spec 122, EXTRACTION OUTSIDE THE
-/// WRITE TRANSACTION), read with no transaction open from the connection `conn` lends for those
-/// reads alone, so neither the re-extraction nor the judging holds its lock: the batch `reextract`
-/// answers when the entry's fold will ask it - its position is not in the `applied` ledger
-/// ([`has_applied`]) and it names a generation its identity does not hold ([`is_re_recording`]) -
-/// beside the cause the entry is passed over with should its fold fail on that batch: the first
-/// event of it whose payload the judge ([`super::check_fold_payload`]) rejects, under
-/// [`FOLD_FAILED`] (spec 124, THE DECIDE STEP), judged here so the judging holds no write lock.
-/// Otherwise [`BatchAnswer::Unread`] and no cause, `reextract` never called: an entry the file
-/// already folded, a re-recording, or an entry whose payload does not parse, whose fold fails its
-/// parse before it asks.
-fn extracted_batch(
-    conn: &mut impl Lend,
-    project: &str,
-    entry: &Event,
-    reextract: &mut Reextract,
-) -> Result<Extracted, Error> {
-    let asks = conn.lend(|conn| -> Result<bool, Error> {
-        Ok(!has_applied(conn, entry.position)?
-            && match GenerationIngested::parse(&entry.data) {
-                Ok(named) => !is_re_recording(conn, project, &named)?,
-                Err(_) => false,
-            })
-    })?;
-    if !asks {
-        return Ok(Extracted {
-            answer: BatchAnswer::Unread,
-            rejected: None,
-        });
-    }
-    let batch = reextract(entry)?;
-    let rejected = batch
-        .iter()
-        .flatten()
-        .find_map(|e| rejection(FOLD_FAILED, &e.type_, &e.data));
-    Ok(Extracted {
-        answer: BatchAnswer::Batch(batch),
-        rejected,
-    })
-}
-
-/// The failure of a ledger entry's fold at `position` that asked a batch it was not handed
-/// ([`EntryOutcome::Unread`]): a fold pass - a rebuild's, or a catch-up call's, an appender's own
-/// entry included - meets it when the entry's retry misses too ([`fold_entry_alone`]), and an
-/// appender's direct fold ([`RecordFold::apply_generation`]) would answer it for that outcome,
-/// which its batch function, always answering a batch, never meets.
-fn unread_entry(position: Position) -> Error {
-    Error(format!(
-        "the {TYPE_GENERATION_INGESTED} entry at position {position} asked for a batch it was \
-         not handed: another writer installed a newer generation of its identity while it folded"
-    ))
-}
-
 /// A connection THE DECIDE STEP ([`decide_step`]) folds into, lent for one use at a time: a
 /// rebuild's fold pass lends the connection it holds for the whole pass ([`Connection`]), and a
 /// catch-up its projector's, locking the projector's mutex for that use alone
-/// (`&Mutex<Connection>`), so between two uses - the page read, the re-extraction - the call holds
-/// no lock of the file (spec 124, ONE PROCEDURE).
+/// (`&Mutex<Connection>`), so between two uses the call holds no lock of the file (spec 124, ONE
+/// PROCEDURE).
 trait Lend {
     /// Answer what `use_` answers, handed the connection for its length.
     fn lend<T>(&mut self, use_: impl FnOnce(&mut Connection) -> T) -> T;
@@ -2584,19 +2112,16 @@ fn applied_between(conn: &Connection, after: Position, through: Position) -> Res
     .map_err(be)
 }
 
-/// The most events other than ledger entries of perception that one transaction of a fold pass
-/// ([`fold_source`]) folds before it commits (spec 122, ONE BATCHING RULE): a writer meeting the
-/// pass waits at most this many events' fold, or one entry's alone. It is also the most events one
+/// The most events that one transaction of a fold pass ([`fold_source`]) folds before it commits
+/// (spec 122, ONE BATCHING RULE): a writer meeting the pass waits at most this many events' fold.
+/// It is also the most events one
 /// [`Projector::catch_up`] call reads of the log for its page ([`EventStore::read_all_page`]).
 pub const FOLD_BATCH: usize = 256;
 
-/// The transactions a fold pass ([`fold_source`]) folds `events` in, in order: every ledger entry
-/// of perception alone, and every run of other events - before, between or after the entries -
-/// in slices of at most [`FOLD_BATCH`]. Each is a slice of `events`, never empty.
+/// The transactions a fold pass ([`fold_source`]) folds `events` in, in order: slices of at most
+/// [`FOLD_BATCH`], each a slice of `events`, never empty.
 fn fold_transactions(events: &[Event]) -> impl Iterator<Item = &[Event]> {
-    events
-        .chunk_by(|a, b| !is_ledger_entry(&a.type_) && !is_ledger_entry(&b.type_))
-        .flat_map(|run| run.chunks(FOLD_BATCH))
+    events.chunks(FOLD_BATCH)
 }
 
 /// Whether the file behind `conn` was swapped in by a [`Projector::rebuild`] that has not yet
@@ -2855,9 +2380,8 @@ fn migrate_edge_tier(conn: &Connection) -> Result<(), Error> {
 ///   seek by `rel` then `from_id` instead of scanning every historical edge. A query MUST carry the
 ///   exact `valid_to IS NULL` term for SQLite to use a partial index.
 /// - `idx_nodes_leaf` is the LEAF index (spec 119) on `(project, <leaf>, id)`, `<leaf>` the pinned
-///   [`node_leaf_sql`] expression: every node-side reader resolving a definition by its leaf
-///   ([`definitions_with_suffix`], [`same_file_candidates`]) seeks it, the `id` column serving a
-///   file's `<file>::` id range. SQLite uses an expression index only when the query's expression
+///   [`node_leaf_sql`] expression: the node side of a leaf's nodes ([`Neighbors::leaf_nodes`])
+///   seeks it, the `id` column serving a file's `<file>::` id range ([`Neighbors::members`]). SQLite uses an expression index only when the query's expression
 ///   MATCHES the indexed one, so every reader embeds [`node_leaf_sql`] verbatim or it silently
 ///   misses the index.
 /// - `idx_edges_live_to_name_suffix` is a PARTIAL EXPRESSION index on a live edge's target text,
@@ -2937,79 +2461,11 @@ impl RecordFold for Projector {
     /// then are committed, and the batch's events past them are left for a later fold. Any other
     /// failure rolls back only its call's cut, the cuts before it committed.
     fn apply_batch(&self, events: &[Event], _access: FoldAccess) -> Result<(), Error> {
-        self.guarded(events, None, |tx| {
-            match fold_new(tx, events, &self.project)? {
-                Some(cause) => Err(FrameError::Recorded(cause)),
-                None => Ok(()),
-            }
+        self.guarded(events, |tx| match fold_new(tx, events, &self.project)? {
+            Some(cause) => Err(FrameError::Recorded(cause)),
+            None => Ok(()),
         })
         .map(drop)
-    }
-
-    /// Fold `entry` with its batch as THE APPENDER of it ([`Projector::guarded`], spec 124),
-    /// holding the batch as its own entry ([`OwnEntry`]), whose batch function is asked at most
-    /// once, whichever fold asks first: refused before folding, its batch never asked for, on a
-    /// file that owes its rebuild, and writing no mark for any failure.
-    ///
-    /// Folded directly, it folds in ONE transaction ([`fold_entry`]), its batch function asked
-    /// inside it when the entry's fold asks a batch - not an entry the file already folded, one
-    /// whose payload does not parse, or a re-recording - and answers the outcome that transaction
-    /// folded it with: an entry the file already folded answers [`EntryFold::AlreadyApplied`],
-    /// or, recorded passed over, that cause ([`FrameError::Recorded`]); a batch function
-    /// answering no batch folds nothing past the entry's `applied` row ([`EntryFold::BatchAsked`]);
-    /// and a fold that fails - an entry whose payload does not parse, a batch function that fails,
-    /// a batch event the fold rejects - rolls back whole, its `applied` row included, and returns
-    /// its cause.
-    ///
-    /// Folded by its calls, a call whose cut is the entry alone folds it in that cut's transaction
-    /// ([`fold_entry_alone`]), its batch function asked just before that transaction opens when
-    /// the entry's fold asks a batch - not one already folded, one whose payload does not parse,
-    /// or a re-recording - and the appender answers the outcome that call folded it with, or
-    /// [`EntryFold::AlreadyApplied`] when another writer folded it first, its batch asked for or
-    /// not. An entry whose own payload the judge rejects is passed over with
-    /// [`PAYLOAD_REJECTED`], one whose batch holds an event the judge rejects with
-    /// [`FOLD_FAILED`], and one whose batch function answers no batch with
-    /// [`RESOLVED_TO_NOTHING`], its `applied` and `passed_over` rows committing, and the appender
-    /// answers that cause; a batch function that fails is waited out under the ceiling, and past
-    /// it the appender answers that failure ([`Projector::fold_by_calls`]).
-    fn apply_generation(&self, entry: &Event, batch: EntryBatch<'_>) -> Result<EntryFold, Error> {
-        let own = OwnEntry::new(entry.position, batch);
-        let folded = self.guarded(
-            std::slice::from_ref(entry),
-            Some(&own),
-            |tx| match fold_entry(tx, entry, &self.project, || {
-                own.batch().map(BatchAnswer::Batch)
-            })? {
-                EntryOutcome::Folded(EntryFold::AlreadyApplied) => {
-                    match passed_over_cause(tx, std::slice::from_ref(&entry.position))? {
-                        Some(cause) => Err(FrameError::Recorded(cause)),
-                        None => Ok(EntryFold::AlreadyApplied),
-                    }
-                }
-                EntryOutcome::Folded(fold) => Ok(fold),
-                EntryOutcome::Unresolved => Ok(EntryFold::BatchAsked),
-                EntryOutcome::Unread => Err(unread_entry(entry.position).into()),
-            },
-        )?;
-        Ok(folded.unwrap_or_else(|| own.folded.get().unwrap_or(EntryFold::AlreadyApplied)))
-    }
-
-    /// A plain read of the `generations` table ([`current_generation`]): it asks no
-    /// [`RecordFold::rebuild_owed`], so it answers on a file that owes its rebuild.
-    fn current_generation(&self, identity: &str) -> Result<Option<String>, Error> {
-        current_generation(&self.conn.lock().unwrap(), &self.project, identity)
-    }
-
-    /// A plain read of the `generations` table, as [`current_generation`] is.
-    fn held_identities(&self) -> Result<Vec<String>, Error> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn
-            .prepare("SELECT identity FROM generations WHERE project = ?1 ORDER BY identity")
-            .map_err(be)?;
-        let rows = stmt
-            .query_map(params![self.project], |r| r.get(0))
-            .map_err(be)?;
-        rows.collect::<Result<Vec<String>, _>>().map_err(be)
     }
 }
 
@@ -3067,8 +2523,9 @@ impl Neighbors for Projector {
         )
     }
 
-    fn unresolved(&self, node: &Node) -> Result<Vec<String>, Error> {
-        unresolved_leaves(&self.conn.lock().unwrap(), node, &self.project)
+    /// The record graph stages no reference rows, so it holds no unresolved leaf.
+    fn unresolved(&self, _node: &Node) -> Result<Vec<String>, Error> {
+        Ok(Vec::new())
     }
 
     /// The `aliases` table, which carries no project column and is shared.
@@ -3145,51 +2602,25 @@ fn row_to_edge(r: &rusqlite::Row) -> rusqlite::Result<Edge> {
     })
 }
 
-/// Who asserts the facts one event folds: the `<prefix>/<file>` identity and content generation
-/// of a derived-index event ([`rigger_domain::ingest::derived_generation`]) or of the ledger
-/// entry whose batch the event belongs to ([`fold_entry`]), or, for every other event, the log
-/// itself - an assertion no later generation can retract (both fields empty).
-struct Asserter<'e> {
-    identity: &'e str,
-    generation: &'e str,
-    /// The asserting event's valid time.
-    at: i64,
-}
-
-impl<'e> Asserter<'e> {
-    fn of(e: &'e Event) -> Self {
-        let (identity, generation) =
-            rigger_domain::ingest::derived_generation(e).unwrap_or(("", ""));
-        Asserter {
-            identity,
-            generation,
-            at: to_nanos(e.valid_from),
-        }
-    }
-}
-
 /// Fold every event of `events` whose position has not folded yet, in order - the one
 /// per-position idempotency guard (`applied`) every fold path shares - and answer the cause of the
 /// first of them already recorded passed over ([`passed_over_cause`], spec 124), which a direct
 /// fold answers for its own position and a fold pass, for which every position is foreign,
-/// passes. A ledger entry of perception is refused, whatever its position and before anything is
-/// written for it: it folds only with its batch ([`fold_entry`]).
+/// passes. A derived event ([`DERIVED_TYPES`]), which only a log an older binary wrote holds, is
+/// recorded applied and folds nothing: the code view derives from the tree, never from the log.
 fn fold_new(tx: &Transaction, events: &[Event], project: &str) -> Result<Option<String>, Error> {
     let mut passed_over = None;
     for e in events {
-        if is_ledger_entry(&e.type_) {
-            return Err(Error(format!(
-                "a {TYPE_GENERATION_INGESTED} entry folds only with its batch, through \
-                 `RecordFold::apply_generation`"
-            )));
+        if DERIVED_TYPES.contains(&e.type_.as_str()) {
+            record_applied(tx, e.position)?;
+            continue;
         }
         if record_applied(tx, e.position)? {
-            fold(tx, e, project, &Asserter::of(e))?;
+            fold_event(tx, e, project)?;
         } else if passed_over.is_none() {
             passed_over = passed_over_cause(tx, std::slice::from_ref(&e.position))?;
         }
     }
-    relabel_owed_communities(tx)?;
     Ok(passed_over)
 }
 
@@ -3221,1037 +2652,7 @@ fn record_applied(tx: &Transaction, position: Position) -> Result<bool, Error> {
     .map_err(be)
 }
 
-/// Fold the ledger entry `entry` with its batch, in the caller's transaction, and answer which of
-/// the three outcomes happened ([`EntryOutcome::Folded`]), that its batch resolved to nothing
-/// ([`EntryOutcome::Unresolved`]), or that it asked a batch it was not handed
-/// ([`EntryOutcome::Unread`]). It begins, as [`fold_new`] does, with the entry's `applied`
-/// row, so everything after it is read under the write lock: a position already there folds
-/// nothing. An entry naming the generation its identity holds is a re-recording
-/// ([`is_re_recording`]) and writes that row alone. Any other asks `batch` for the entry's batch,
-/// once: an answer of [`BatchAnswer::Unread`] returns at once, nothing written past the `applied`
-/// row, which its caller undoes ([`fold_entry_alone`]). Otherwise it folds each event of it through
-/// [`fold`] at the entry's position and valid-time - which [`fold_event`] reads for every edge it
-/// adds - under the ENTRY's identity and generation, never a key the event carries. The first
-/// event folded installs the generation ([`advance_generation`]), so an entry no source resolves -
-/// answered [`EntryOutcome::Unresolved`], with its `applied` row written - installs none and leaves
-/// the identity's facts as they stood, its `refs` rows included. Any other
-/// batch drops every `refs` row its identity staged - each at an older generation, since an entry
-/// naming the current one is a re-recording - before its first event, and stages each tagged
-/// reference after its event folds ([`stage_reference`]); its end settles every row it staged,
-/// whose leaf it defines or, a module row, one of whose candidates names a `file` node it asserts
-/// ([`settle_references`]) - here alone, never in [`fold_new`] (spec 117, STAGED REFERENCES).
-/// Every community the batch owed a relabel is labelled before this returns
-/// ([`relabel_owed_communities`]), the row edges' debt included.
-/// The `applied` row cannot guard the batch's events, which share the entry's position.
-fn fold_entry(
-    tx: &Transaction,
-    entry: &Event,
-    project: &str,
-    batch: impl FnOnce() -> Result<BatchAnswer, Error>,
-) -> Result<EntryOutcome, Error> {
-    if !record_applied(tx, entry.position)? {
-        return Ok(EntryOutcome::Folded(EntryFold::AlreadyApplied));
-    }
-    let named = GenerationIngested::parse(&entry.data).map_err(Error)?;
-    if is_re_recording(tx, project, &named)? {
-        return Ok(EntryOutcome::Folded(EntryFold::ReRecording));
-    }
-    let identity = named.identity();
-    let by = Asserter {
-        identity: &identity,
-        generation: &named.generation,
-        at: to_nanos(entry.valid_from),
-    };
-    let events = match batch()? {
-        BatchAnswer::Batch(Some(events)) => events,
-        BatchAnswer::Batch(None) => return Ok(EntryOutcome::Unresolved),
-        BatchAnswer::Unread => return Ok(EntryOutcome::Unread),
-    };
-    if events.is_empty() {
-        return Ok(EntryOutcome::Folded(EntryFold::BatchAsked));
-    }
-    tx.execute(
-        "DELETE FROM refs WHERE project = ?1 AND identity = ?2",
-        params![project, by.identity],
-    )
-    .map_err(be)?;
-    for mut e in events {
-        e.position = entry.position;
-        e.valid_from = entry.valid_from;
-        fold(tx, &e, project, &by)?;
-        stage_reference(tx, &e, project, &by)?;
-    }
-    settle_references(tx, &by, project)?;
-    relabel_owed_communities(tx)?;
-    Ok(EntryOutcome::Folded(EntryFold::BatchAsked))
-}
-
-/// What the batch function of a ledger entry's fold ([`fold_entry`]) answers: the entry's batch
-/// (`Batch`) - the answer of the live path's [`EntryBatch`], or of a fold pass's extraction, `None`
-/// when no source resolves the entry - or `Unread`, a fold pass's answer for an entry its read
-/// before the entry's transaction found would ask no batch ([`extracted_batch`], spec 122, THE
-/// REVERSE RACE).
-enum BatchAnswer {
-    Batch(Option<Vec<Event>>),
-    Unread,
-}
-
-/// What became of a ledger entry's fold ([`fold_entry`]): one of the three outcomes of
-/// [`EntryFold`] (`Folded`); `Unresolved` - its batch function answered no batch, no source
-/// resolving the entry, so it wrote nothing past its `applied` row, which an appender's direct
-/// fold ([`RecordFold::apply_generation`]) answers as [`EntryFold::BatchAsked`] and a fold pass -
-/// a rebuild's, or a catch-up call's, an appender's own entry included - passes over with
-/// [`RESOLVED_TO_NOTHING`] (spec 124);
-/// or `Unread` - it asked a batch its batch function answered [`BatchAnswer::Unread`] for, and
-/// wrote nothing past its `applied` row.
-enum EntryOutcome {
-    Folded(EntryFold),
-    Unresolved,
-    Unread,
-}
-
-/// Whether the ledger entry `named` names the generation its identity already holds in `project`
-/// in the file behind `conn` ([`current_generation`]): a re-recording, whose fold asks no batch.
-fn is_re_recording(
-    conn: &Connection,
-    project: &str,
-    named: &GenerationIngested,
-) -> Result<bool, Error> {
-    Ok(
-        current_generation(conn, project, &named.identity())?.as_deref()
-            == Some(named.generation.as_str()),
-    )
-}
-
-/// A `refs` row read back for its batch-end settlement (spec 117, STAGED REFERENCES): its
-/// `rowid`, the identity and generation that staged it, the node it is read `from`, the `leaf` it
-/// names, its `ref_kind`, its `lang`, the log `position` of its staging and the `target` it was
-/// last resolved to.
-struct StagedRow {
-    rowid: i64,
-    identity: String,
-    generation: String,
-    from: String,
-    leaf: String,
-    ref_kind: String,
-    lang: String,
-    position: Position,
-    target: Option<String>,
-}
-
-/// The columns [`staged_rows_sql`] selects, in its order: a [`StagedRow`]'s fields as stored, one
-/// conversion of the row, so a column that cannot be read fails it whole.
-type StagedColumns = (
-    i64,
-    String,
-    String,
-    String,
-    String,
-    String,
-    String,
-    i64,
-    Option<String>,
-);
-
-impl From<StagedColumns> for StagedRow {
-    fn from(
-        (rowid, identity, generation, from, leaf, ref_kind, lang, position, target): StagedColumns,
-    ) -> Self {
-        StagedRow {
-            rowid,
-            identity,
-            generation,
-            from,
-            leaf,
-            ref_kind,
-            lang,
-            position: position as Position,
-            target,
-        }
-    }
-}
-
-/// Stage `e`, a batch event `by` asserts, as a `refs` row of `by`'s identity and generation when
-/// it is a tagged reference of a kind whose row is an edge of a relation ([`staged_rel`]; spec
-/// 117, STAGED REFERENCES): a leaf kind's or a module row's. It is read from its caller's node,
-/// else its file's, either alias-resolved ([`resolve_in_tx`]), for its leaf - a module row's its
-/// candidates joined by [`MODULE_CANDIDATE_SEPARATOR`] - at its log position, unresolved until
-/// its batch's end ([`settle_references`]). The rows are a set: two references of one leaf and
-/// kind from one node are one row, the generation implied, since an identity's rows all stand at
-/// the one generation that staged them.
-fn stage_reference(tx: &Transaction, e: &Event, project: &str, by: &Asserter) -> Result<(), Error> {
-    let tagged = (e.type_ == TYPE_EDGE_INFERRED)
-        .then(|| serde_json::from_slice::<super::EdgeInferred>(&e.data).ok())
-        .flatten();
-    let staged = tagged.and_then(|r| {
-        let kind = (r.ref_kind.clone()).filter(|kind| staged_rel(kind).is_some());
-        kind.map(|kind| (r, kind))
-    });
-    if let Some((r, kind)) = staged {
-        let file = resolve_in_tx(tx, &r.file);
-        let from = match &r.caller {
-            Some(caller) => resolve_in_tx(tx, &code_entity_id(&file, caller)),
-            None => file,
-        };
-        tx.execute(
-            "INSERT INTO refs (project, identity, generation, from_id, leaf, ref_kind, lang, position)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) ON CONFLICT DO NOTHING",
-            params![
-                project,
-                by.identity,
-                by.generation,
-                from,
-                r.name,
-                kind,
-                r.lang,
-                e.position as i64
-            ],
-        )
-        .map_err(be)?;
-    }
-    Ok(())
-}
-
-/// The SQL term a `refs` row aliased `row` is LIVE by (spec 117): it was staged at its identity's
-/// current generation in its project.
-fn live_ref_sql(row: &str) -> String {
-    format!(
-        "EXISTS (SELECT 1 FROM generations g
-                  WHERE g.project = {row}.project AND g.identity = {row}.identity
-                    AND g.generation = {row}.generation)"
-    )
-}
-
-/// The live `refs` rows of project `?1` a batch of identity `?2` settles ([`settle_references`]):
-/// the identity's own, sought by the key's `(project, identity)` prefix; any identity's naming
-/// a leaf of a node `?2` asserts, sought by `idx_refs_leaf`; and any identity's module row
-/// ([`REF_KIND_MODULE`]), sought by `idx_refs_kind`, one of whose candidates is a `file` node `?2`
-/// asserts or an alias of one, so the batch a candidate's file node is created or retired in
-/// settles the row (spec 117, A MODULE ROW REACHES ITS FILE) - in identity order, so of two rows one batch resolves onto one pair, the
-/// lesser identity's asserts it ([`settled_target_sql`]).
-fn staged_rows_sql() -> String {
-    format!(
-        "SELECT r.rowid, r.identity, r.generation, r.from_id, r.leaf, r.ref_kind, r.lang,
-                r.position, r.target
-           FROM refs r
-          WHERE r.rowid IN (
-                  SELECT rowid FROM refs WHERE project = ?1 AND identity = ?2
-                  UNION
-                  SELECT rowid FROM refs WHERE project = ?1 AND leaf IN (
-                    SELECT {} FROM node_assertions WHERE project = ?1 AND identity = ?2)
-                  UNION
-                  SELECT m.rowid FROM refs m INDEXED BY idx_refs_kind
-                    JOIN node_assertions n ON n.project = m.project
-                   WHERE m.project = ?1 AND m.ref_kind = '{REF_KIND_MODULE}' AND n.identity = ?2
-                     AND n.kind = '{KIND_FILE}'
-                     AND EXISTS (
-                       SELECT 1 FROM (SELECT n.node_id AS id
-                                      UNION ALL
-                                      SELECT alias FROM aliases WHERE canonical_id = n.node_id)
-                        WHERE instr('{MODULE_CANDIDATE_SEPARATOR}' || m.leaf || '{MODULE_CANDIDATE_SEPARATOR}',
-                                    '{MODULE_CANDIDATE_SEPARATOR}' || id || '{MODULE_CANDIDATE_SEPARATOR}')))
-            AND {}
-          ORDER BY r.identity",
-        node_leaf_sql(),
-        live_ref_sql("r")
-    )
-}
-
-/// Settle `refs` at the end of `by`'s batch (spec 117, RESOLUTION SETTLES ONCE PER BATCH): each
-/// live row its identity holds, each live row of any identity naming a leaf its prior or new
-/// generation defines (its identity's node assertions) and each live module row naming a `file`
-/// node either generation asserts is resolved against the batch's final definitions and file nodes
-/// ([`settle_reference`]), in identity order ([`staged_rows_sql`]). Then every entry the
-/// identity's prior generation recorded of a row's edge - a `REFERENCES` or a module row's
-/// `CONTAINS` ([`STAGED_RELS`]), an entry at another generation than `by`'s, the older ones gone
-/// with the generation's advance - that no row of the new one asserted again is deleted, so no
-/// later batch revives that edge ([`assert_link`]); a design link's prior entry keeps until the
-/// identity's next generation ([`advance_generation`]).
-fn settle_references(tx: &Transaction, by: &Asserter, project: &str) -> Result<(), Error> {
-    let rows: Vec<StagedColumns> = tx
-        .prepare(&staged_rows_sql())
-        .and_then(|mut stmt| {
-            let rows = stmt
-                .query_map(params![project, by.identity], |r| {
-                    StagedColumns::try_from(r)
-                })
-                .and_then(Iterator::collect);
-            rows
-        })
-        .map_err(be)?;
-    for row in &rows.into_iter().map(StagedRow::from).collect::<Vec<_>>() {
-        settle_reference(tx, by, row, project)?;
-    }
-    tx.execute(
-        &format!(
-            "DELETE FROM edge_assertions
-              WHERE project = ?1 AND identity = ?2 AND generation != ?3
-                AND EXISTS (SELECT 1 FROM edges e
-                             WHERE e.id = edge_assertions.edge_id AND e.rel IN ({}))",
-            kinds_sql(&STAGED_RELS)
-        ),
-        params![project, by.identity, by.generation],
-    )
-    .map_err(be)?;
-    Ok(())
-}
-
-/// Resolve `row` at the end of `by`'s batch and write what changed (spec 117), in one statement:
-/// a module row's ([`settled_module`]) or a leaf kind's ([`settled_target_sql`]), the edge's
-/// relation the row's kind names ([`staged_rel`]). A row of a kind this binary stages none of,
-/// written into the shared store by another binary, settles nothing: it keeps its target and its
-/// edge. A row resolving to the target it holds changes
-/// nothing, its edge and that edge's dates included - the statement answers nothing, so no edge
-/// is asserted, and the release keeps the entry a row still targets. Otherwise the row takes its
-/// new target; its edge onto the old one is released ([`release_reference`]); and its edge onto
-/// the new one is asserted under the row's own identity and generation ([`assert_link`]), valid
-/// from `by`'s event time and recorded at the row's staging position, unless, for a leaf kind's
-/// row, a live edge of its relation already holds the pair, which the row then leaves as the
-/// pair's one edge.
-fn settle_reference(
-    tx: &Transaction,
-    by: &Asserter,
-    row: &StagedRow,
-    project: &str,
-) -> Result<(), Error> {
-    let Some(rel) = staged_rel(&row.ref_kind) else {
-        return Ok(());
-    };
-    let settled: Settled = if row.ref_kind == REF_KIND_MODULE {
-        settled_module(tx, row, project)?
-    } else {
-        tx.query_row(
-            &settled_target_sql(&reference_candidate_kinds(&row.ref_kind)),
-            params![
-                row.leaf,
-                KIND_CODE_ENTITY,
-                project,
-                split_id(&row.from).0,
-                row.lang,
-                row.rowid,
-                rel,
-                placeholder_id(&row.from, &row.leaf)
-            ],
-            |r| <_>::try_from(r),
-        )
-        .optional()
-        .map_err(be)?
-    };
-    let (resolved, tier, held) = settled.unwrap_or_default();
-    let asserter = Asserter {
-        identity: &row.identity,
-        generation: &row.generation,
-        at: by.at,
-    };
-    if let Some(old) = &row.target {
-        release_reference(tx, &asserter, &row.from, old, project)?;
-    }
-    match resolved {
-        Some(target) if !held => assert_link(
-            tx,
-            &asserter,
-            &row.from,
-            &target,
-            rel,
-            by.at,
-            row.position,
-            project,
-            &tier,
-        ),
-        _ => Ok(()),
-    }
-}
-
-/// What settling a `refs` row answers ([`settled_module`], [`settled_target_sql`]): nothing when
-/// the row keeps its target, else its new target, the tier of its edge and whether a live
-/// `REFERENCES` already holds the pair, which a module row's never answers.
-type Settled = Option<(Option<String>, String, bool)>;
-
-/// Settle a module row `row` (spec 117, A MODULE ROW REACHES ITS FILE): one statement sets the row
-/// to the first of its candidates - its leaf split on [`MODULE_CANDIDATE_SEPARATOR`], each
-/// alias-resolved ([`resolve_in_tx`]) - holding a `file` node in `project`, else none, only when
-/// that differs from the target it holds ([`retarget_sql`]), answering as [`settled_target_sql`]'s statement does:
-/// the new target, its tier, [`TIER_EXTRACTED`] - the language's module rule decides it - and
-/// that no live edge holds the pair, a declaration having no twin. A row it leaves unchanged
-/// answers nothing. It writes no node.
-fn settled_module(tx: &Transaction, row: &StagedRow, project: &str) -> Result<Settled, Error> {
-    let mut target = None;
-    for id in row
-        .leaf
-        .split(MODULE_CANDIDATE_SEPARATOR)
-        .map(|candidate| resolve_in_tx(tx, candidate))
-    {
-        if node_row(tx, &id, project)?.is_some_and(|node| node.kind == KIND_FILE) {
-            target = Some(id);
-            break;
-        }
-    }
-    let settled: Option<Option<String>> = tx
-        .query_row(
-            &retarget_sql("?1", "?2", "target"),
-            params![row.rowid, target],
-            |r| r.get(0),
-        )
-        .optional()
-        .map_err(be)?;
-    Ok(settled.map(|target| (target, TIER_EXTRACTED.to_string(), false)))
-}
-
-/// The statement that settles a leaf kind's `refs` row (spec 117, STAGED REFERENCES): it sets the
-/// row `?6` to the one definition its leaf `?1` resolves to now - the one candidate in the file
-/// `?4` it is read from, else the one in project `?3`, else none, never a guess among several - a
-/// candidate being a code entity (`?2`) of one of `kinds` ([`reference_candidate_kinds`]) in the
-/// row's language `?5` ([`leaf_definitions_sql`]), and only when that differs from the target it
-/// holds ([`retarget_sql`]). It answers the new target, its tier ([`TIER_EXTRACTED`] for the
-/// same-file one, else [`TIER_INFERRED`]) and whether a live edge of the row's relation (`?7`, a
-/// `REFERENCES`) from the row's node onto it, or onto the placeholder `?8` of its leaf under that
-/// node ([`placeholder_id`]), already holds the pair: a call's twin, the pair's one writer, which
-/// the call arm writes from the file whether it landed on the file's definition or on the
-/// placeholder - so only a file-level row's node meets a placeholder - or another identity's row
-/// on the same pair. A row it leaves unchanged answers nothing.
-fn settled_target_sql(kinds: &[&str]) -> String {
-    let rule = format!(
-        "json_extract(attrs, '$.kind') IN ({}) AND json_extract(attrs, '$.lang') = ?5",
-        kinds_sql(kinds)
-    );
-    let one = |in_file: bool| {
-        format!(
-            "(SELECT id FROM (SELECT id, COUNT(*) OVER () AS n FROM ({})) WHERE n = 1)",
-            leaf_definitions_sql(&rule, in_file)
-        )
-    };
-    let (same, any) = (one(true), one(false));
-    retarget_sql(
-        "?6",
-        &format!("COALESCE({same}, {any})"),
-        &format!(
-            "target,
-             CASE WHEN target = {same} THEN '{TIER_EXTRACTED}' ELSE '{TIER_INFERRED}' END,
-             EXISTS (SELECT 1 FROM edges
-                      WHERE project = ?3 AND from_id = refs.from_id AND rel = ?7
-                        AND valid_to IS NULL AND to_id IN (refs.target, ?8))"
-        ),
-    )
-}
-
-/// The one change-only retarget of a `refs` row (spec 117): the row `rowid` takes `target` only
-/// when that differs from the target it holds, answering `returning` of the updated row - so a
-/// row resolving to the target it holds updates nothing and answers nothing.
-fn retarget_sql(rowid: &str, target: &str, returning: &str) -> String {
-    format!(
-        "UPDATE refs SET target = {target} WHERE rowid = {rowid} AND target IS NOT {target}
-         RETURNING {returning}"
-    )
-}
-
-/// Release the edge a row of `by`'s identity read from `from` held onto `target` once the row
-/// resolves elsewhere (spec 117, ONE RETIRER): while another row of the identity still targets the
-/// pair nothing changes - the check reads every row of the identity, all of them staged by its one
-/// latest batch; otherwise the identity's own entry of each edge from `from` onto `target` is
-/// deleted, another identity's entry keeping that edge for its row, and the edge settled at `by`'s
-/// event time ([`settle_edge`]), retired when no live assertion holds it. A row that asserted
-/// nothing names no entry, so it changes no edge.
-fn release_reference(
-    tx: &Transaction,
-    by: &Asserter,
-    from: &str,
-    target: &str,
-    project: &str,
-) -> Result<(), Error> {
-    let released: Vec<i64> = tx
-        .prepare(
-            "DELETE FROM edge_assertions
-              WHERE project = ?1 AND identity = ?2
-                AND edge_id IN (SELECT id FROM edges WHERE from_id = ?3 AND to_id = ?4)
-                AND NOT EXISTS (SELECT 1 FROM refs
-                                 WHERE project = ?1 AND identity = ?2 AND from_id = ?3
-                                   AND target = ?4)
-             RETURNING edge_id",
-        )
-        .and_then(|mut stmt| {
-            let rows = stmt
-                .query_map(params![project, by.identity, from, target], |r| r.get(0))
-                .and_then(Iterator::collect);
-            rows
-        })
-        .map_err(be)?;
-    for edge in released {
-        settle_edge(tx, edge, by.at, project)?;
-    }
-    Ok(())
-}
-
-/// Fold one event, asserted by `by` ([`Asserter`]), under the GENERATION RULE (spec 101,
-/// [`rigger_domain::ingest::derived_generation`]): when the event opens a newer generation of its
-/// identity, the prior generation's asserted edges - design links and staged references' edges -
-/// are retired BEFORE it folds (each one the newer generation asserts again is revived in place by
-/// [`assert_link`], a staged reference's at its batch's end), and every node the prior
-/// generation asserted that nothing live still holds is retired AFTER it folds
-/// ([`retire_unheld_nodes`]) - after, because the event's own arm is what retires the code half's
-/// prior edges (its `fresh` head) and re-asserts the nodes it keeps.
-fn fold(tx: &Transaction, e: &Event, project: &str, by: &Asserter) -> Result<(), Error> {
-    let prior = advance_generation(tx, by, project)?;
-    fold_event(tx, e, project, by)?;
-    match prior {
-        Some(prior) => retire_unheld_nodes(tx, by, &prior, project),
-        None => Ok(()),
-    }
-}
-
-/// The generation the file behind `conn` currently holds for `identity` in `project`, or `None`
-/// when it holds none.
-fn current_generation(
-    conn: &Connection,
-    project: &str,
-    identity: &str,
-) -> Result<Option<String>, Error> {
-    conn.query_row(
-        "SELECT generation FROM generations WHERE project = ?1 AND identity = ?2",
-        params![project, identity],
-        |r| r.get(0),
-    )
-    .optional()
-    .map_err(be)
-}
-
-/// Record `by`'s generation as its identity's current one, answering the PRIOR generation when
-/// this one supersedes it (`None` on the identity's first generation, on a re-recording of the
-/// current one, and for an event outside the rule). On a supersession the prior generation's live
-/// asserted edges - its design links and its staged references' edges (spec 117) - are retired at
-/// `at`, all but one another live asserter still asserts (an unkeyed recording, [`assert_link`]),
-/// and assertions of any generation older than the prior one are dropped: the prior generation's
-/// are kept, because they are what [`assert_link`] revives from and what [`retire_unheld_nodes`]
-/// settles.
-fn advance_generation(
-    tx: &Transaction,
-    by: &Asserter,
-    project: &str,
-) -> Result<Option<String>, Error> {
-    if by.identity.is_empty() {
-        return Ok(None);
-    }
-    let Some(prior) = current_generation(tx, project, by.identity)? else {
-        tx.execute(
-            "INSERT INTO generations (project, identity, generation) VALUES (?1, ?2, ?3)",
-            params![project, by.identity, by.generation],
-        )
-        .map_err(be)?;
-        return Ok(None);
-    };
-    if prior == by.generation {
-        return Ok(None);
-    }
-    for table in ["node_assertions", "edge_assertions"] {
-        tx.execute(
-            &format!(
-                "DELETE FROM {table} WHERE project = ?1 AND identity = ?2 AND generation != ?3"
-            ),
-            params![project, by.identity, prior],
-        )
-        .map_err(be)?;
-    }
-    tx.execute(
-        "UPDATE generations SET generation = ?3, prior = ?4 WHERE project = ?1 AND identity = ?2",
-        params![project, by.identity, by.generation, prior],
-    )
-    .map_err(be)?;
-    let asserted: Vec<i64> = {
-        let mut stmt = tx
-            .prepare(
-                "SELECT e.id FROM edge_assertions a JOIN edges e ON e.id = a.edge_id
-                  WHERE a.project = ?1 AND a.identity = ?2 AND a.generation = ?3
-                    AND e.valid_to IS NULL
-                  ORDER BY e.id",
-            )
-            .map_err(be)?;
-        let rows = stmt
-            .query_map(params![project, by.identity, prior], |r| r.get(0))
-            .map_err(be)?
-            .collect::<Result<_, _>>()
-            .map_err(be)?;
-        rows
-    };
-    for edge in asserted {
-        settle_edge(tx, edge, by.at, project)?;
-    }
-    Ok(Some(prior))
-}
-
-/// Settle every node the `prior` generation of `identity` asserted and the newer one has not (yet)
-/// asserted again ([`settle_node`]), at the valid time of `by`, the newer generation's event.
-fn retire_unheld_nodes(
-    tx: &Transaction,
-    by: &Asserter,
-    prior: &str,
-    project: &str,
-) -> Result<(), Error> {
-    let identity = by.identity;
-    let superseded: Vec<(String, Option<String>)> = {
-        let mut stmt = tx
-            .prepare(
-                "SELECT node_id, attrs FROM node_assertions
-                  WHERE project = ?1 AND identity = ?2 AND generation = ?3
-                  ORDER BY node_id",
-            )
-            .map_err(be)?;
-        let rows = stmt
-            .query_map(params![project, identity, prior], |r| {
-                Ok((r.get(0)?, r.get(1)?))
-            })
-            .map_err(be)?
-            .collect::<Result<_, _>>()
-            .map_err(be)?;
-        rows
-    };
-    for (id, attrs) in &superseded {
-        settle_node(tx, id, attrs.as_deref(), by.at, project)?;
-    }
-    Ok(())
-}
-
-/// Settle node `id` after an assertion of it that said `retracted` stopped being live (spec 101).
-///
-/// A node a live assertion still names ([`live_node_assertions`] - an identity-empty asserter such
-/// as a decision, lesson or finding naming it, or an identity at its current generation) keeps
-/// only what its live assertions say: every attrs key of `retracted` no live assertion carries is
-/// removed, its kind settles on them ([`settled_kind`]) and its graph-derived attachments settle on
-/// that kind ([`revive_attachments`], [`detach_attachments`]). A node nothing live asserts is
-/// RETIRED: never deleted, it moves to `retired_nodes` without the keys its superseded assertion
-/// made, and its graph-derived attachments are detached. Either way, a definition
-/// that stops being one undoes what resolved against it ([`definition_retired`]).
-///
-/// [`live_node_assertions`]: SCHEMA
-fn settle_node(
-    tx: &Transaction,
-    id: &str,
-    retracted: Option<&str>,
-    at: i64,
-    project: &str,
-) -> Result<(), Error> {
-    let defined = definition_name(tx, id, project)?;
-    owe_relabel_of(tx, id, false, project)?;
-    let live: Vec<(String, Option<String>)> = {
-        let mut stmt = tx
-            .prepare(
-                "SELECT kind, attrs FROM live_node_assertions
-                  WHERE project = ?1 AND node_id = ?2
-                  ORDER BY seq",
-            )
-            .map_err(be)?;
-        let rows = stmt
-            .query_map(params![project, id], |r| Ok((r.get(0)?, r.get(1)?)))
-            .map_err(be)?
-            .collect::<Result<_, _>>()
-            .map_err(be)?;
-        rows
-    };
-    let stale = assertion_keys(retracted);
-    match settled_kind(live.iter().map(|(k, _)| k.as_str())) {
-        Some(kind) => {
-            let held: BTreeSet<String> = live
-                .iter()
-                .flat_map(|(_, a)| assertion_keys(a.as_deref()))
-                .collect();
-            remove_attr_keys(tx, "nodes", id, &(&stale - &held), project)?;
-            tx.execute(
-                "UPDATE nodes SET kind = ?3 WHERE id = ?1 AND project = ?2",
-                params![id, project, kind],
-            )
-            .map_err(be)?;
-            revive_attachments(tx, id, kind, project)?;
-            detach_attachments(tx, id, Some(kind), at, project)?;
-        }
-        None => {
-            tx.execute(
-                "INSERT OR REPLACE INTO retired_nodes (id, kind, attrs, project)
-                 SELECT id, kind, attrs, project FROM nodes WHERE id = ?1 AND project = ?2",
-                params![id, project],
-            )
-            .map_err(be)?;
-            remove_attr_keys(tx, "retired_nodes", id, &stale, project)?;
-            tx.execute(
-                "DELETE FROM nodes WHERE id = ?1 AND project = ?2",
-                params![id, project],
-            )
-            .map_err(be)?;
-            detach_attachments(tx, id, None, at, project)?;
-        }
-    }
-    undo_what_resolved_against(tx, id, defined, project).map(drop)
-}
-
-/// Undo what resolved against node `id` ([`definition_retired`]) when it defined `defined`
-/// before a fold changed it and no longer defines that name now - it defines no name, or a
-/// different leaf (spec 119, A RENAMED PATH RETIRES ITS OLD LEAF: a definition refolded at its
-/// path under another leaf) - and answer the name it defines now.
-fn undo_what_resolved_against(
-    tx: &Transaction,
-    id: &str,
-    defined: Option<String>,
-    project: &str,
-) -> Result<Option<String>, Error> {
-    let now = definition_name(tx, id, project)?;
-    if let Some(name) = defined.as_ref().filter(|name| now.as_ref() != Some(*name)) {
-        definition_retired(tx, id, name, project)?;
-    }
-    Ok(now)
-}
-
-/// The `(kind, line)` node `id` takes when `by` folds a definition of it, a `kind` at `line` (spec
-/// 116, A SHARED NODE TAKES ONE KIND). Every definition at one id path in one file folds onto one
-/// node, so for a keyed event the node settles on ONE of the definitions its file's identity
-/// asserts on it at its current generation: the first by [`definition_precedence`] (its kind's
-/// place in [`CODE_KIND_PRECEDENCE`](super::CODE_KIND_PRECEDENCE), then the lower line), the lesser
-/// kind string breaking a tie - whatever order the batch emitted them in. The assertion that
-/// identity already recorded holds the winner of the definitions folded so far; one of another
-/// generation, or carrying no `kind` attr (a reference that folded before its definition), is no
-/// candidate. An unkeyed event is asserted by no generation and takes the node as it is, the last
-/// folded.
-fn settling_definition(
-    tx: &Transaction,
-    by: &Asserter,
-    id: &str,
-    kind: &str,
-    line: u32,
-    project: &str,
-) -> Result<(String, u32), Error> {
-    let ranked = |kind: String, line: u32| {
-        let (rank, line) = definition_precedence(&kind, line);
-        (rank, line, kind)
-    };
-    let folded = ranked(kind.to_string(), line);
-    if by.identity.is_empty() {
-        return Ok((folded.2, folded.1));
-    }
-    let held = recorded_assertion(tx, by, id, project)?
-        .filter(|(generation, ..)| generation == by.generation)
-        .and_then(|(_, _, attrs)| held_definition(&attrs?));
-    let (_, line, kind) = match held {
-        Some((kind, line)) => folded.min(ranked(kind, line)),
-        None => folded,
-    };
-    Ok((kind, line))
-}
-
-/// The `(kind, line)` of the definition an assertion's `attrs` JSON carries: none for attrs
-/// without a `kind` (a bare reference target).
-fn held_definition(attrs: &str) -> Option<(String, u32)> {
-    let attrs: BTreeMap<String, String> = serde_json::from_str(attrs).ok()?;
-    Some((attrs.get("kind")?.clone(), attrs.get("line")?.parse().ok()?))
-}
-
-/// The one assertion `by`'s identity has recorded of node `id`, as `(generation, kind, attrs)`:
-/// an identity asserts a node once, its newest generation replacing the older
-/// ([`record_assertion`]).
-fn recorded_assertion(
-    tx: &Transaction,
-    by: &Asserter,
-    id: &str,
-    project: &str,
-) -> Result<Option<(String, String, Option<String>)>, Error> {
-    tx.query_row(
-        "SELECT generation, kind, attrs FROM node_assertions
-          WHERE project = ?1 AND identity = ?2 AND node_id = ?3",
-        params![project, by.identity, id],
-        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-    )
-    .optional()
-    .map_err(be)
-}
-
-/// The name node `id` defines, when it is a live definition: a code entity carrying the
-/// non-empty `name` attr its definition's extraction gave it ([`node_leaf_sql`], an empty `name`
-/// defining nothing), of a kind a call resolves onto ([`call_target_sql`]). A data member or a
-/// declaration defines no name here.
-fn definition_name(tx: &Transaction, id: &str, project: &str) -> Result<Option<String>, Error> {
-    tx.query_row(
-        &format!(
-            "SELECT {} FROM nodes
-              WHERE id = ?1 AND project = ?2 AND kind = ?3 AND {}",
-            node_leaf_sql(),
-            call_target_sql()
-        ),
-        params![id, project, KIND_CODE_ENTITY],
-        |r| r.get::<_, Option<String>>(0),
-    )
-    .optional()
-    .map(Option::flatten)
-    .map_err(be)
-}
-
-/// Undo what resolved against definition `id` of `name` now that it no longer defines `name`
-/// (spec 101, "convergences undo with their definition"; spec 119, renamed to another leaf at its
-/// path), the inverse of the definition arm's two
-/// convergences: every live cross-file reference whose target text binds `name`
-/// ([`edge_binds_leaf_sql`], spelled `<file>::<name>` or `<file>::%<name>`) and that no assertion
-/// holds - a staged reference's edge is its row's to settle ([`settle_references`]) - tiered
-/// INFERRED because a definition of it existed is demoted to AMBIGUOUS when no other call target has `name` as its
-/// leaf ([`node_leaf_sql`], nested or not: [`reference_tier`]'s own rule), and the test proofs of `name` are owed their settlement ([`owe_proofs`]), which resolves them again without it before the transaction commits ([`settle_proofs`]): what
-/// landed on `id` waits for, or moves to, the definition that now answers the name, and a retired
-/// `id` keeps no proof to come back with.
-fn definition_retired(tx: &Transaction, id: &str, name: &str, project: &str) -> Result<(), Error> {
-    tx.execute(
-        &format!(
-            "UPDATE edges SET tier = ?1
-              WHERE rel IN (?2, ?3) AND tier = ?4 AND project = ?5 AND valid_to IS NULL
-                AND {}
-                AND {}
-                AND NOT EXISTS (
-                  SELECT 1 FROM nodes n
-                   WHERE n.project = ?5 AND {} = ?6
-                     AND n.kind = ?7 AND n.id != edges.to_id AND {})",
-            edge_binds_leaf_sql("to_id", "?6"),
-            UNASSERTED_EDGE_SQL,
-            node_leaf_sql(),
-            call_target_sql()
-        ),
-        params![
-            TIER_AMBIGUOUS,
-            REL_REFERENCES,
-            REL_CALLS,
-            TIER_INFERRED,
-            project,
-            name,
-            KIND_CODE_ENTITY
-        ],
-    )
-    .map_err(be)?;
-    remove_attr_keys(tx, "retired_nodes", id, &proof_keys(), project)?;
-    owe_proofs(tx, name)
-}
-
-/// The graph-derived attachments: the edges a community pass ([`REL_IN_COMMUNITY`]) or a concept
-/// pass ([`REL_REALIZES`]) hangs off a node.
-const ATTACHMENT_RELS: [&str; 2] = [REL_IN_COMMUNITY, REL_REALIZES];
-
-/// Detach, at `at`, node `id`'s live graph-derived attachments it no longer holds: every one when
-/// the graph no longer holds it (`held` is `None`, as `id` retires), else each its kind `held`
-/// does not hold ([`holds_attachment`]). An attachment never holds a node. Each is recorded in
-/// `detached_attachments`, from which [`revive_attachments`] revives it the moment `id` is held as
-/// a kind that holds it - the state a fold reaches whether the attachment folded before the node's
-/// latest generation or after it.
-fn detach_attachments(
-    tx: &Transaction,
-    id: &str,
-    held: Option<&str>,
-    at: i64,
-    project: &str,
-) -> Result<(), Error> {
-    for rel in ATTACHMENT_RELS
-        .into_iter()
-        .filter(|rel| !held.is_some_and(|kind| holds_attachment(kind, rel)))
-    {
-        tx.execute(
-            "INSERT OR IGNORE INTO detached_attachments (project, edge_id, node_id)
-             SELECT project, id, from_id FROM edges
-              WHERE from_id = ?1 AND project = ?2 AND rel = ?3 AND valid_to IS NULL",
-            params![id, project, rel],
-        )
-        .map_err(be)?;
-        tx.execute(
-            "UPDATE edges SET valid_to = ?3
-              WHERE from_id = ?1 AND project = ?2 AND rel = ?4 AND valid_to IS NULL",
-            params![id, project, at, rel],
-        )
-        .map_err(be)?;
-    }
-    Ok(())
-}
-
-/// Revive every detached graph-derived attachment of node `id` that the graph, holding it as
-/// `kind`, holds ([`holds_attachment`]): each comes back live and leaves `detached_attachments`,
-/// and each other stays detached.
-fn revive_attachments(tx: &Transaction, id: &str, kind: &str, project: &str) -> Result<(), Error> {
-    let detached: Vec<(i64, String)> = {
-        let mut stmt = tx
-            .prepare(
-                "SELECT d.edge_id, e.rel FROM detached_attachments d
-                   JOIN edges e ON e.id = d.edge_id
-                  WHERE d.project = ?1 AND d.node_id = ?2",
-            )
-            .map_err(be)?;
-        let rows = stmt
-            .query_map(params![project, id], |r| Ok((r.get(0)?, r.get(1)?)))
-            .map_err(be)?
-            .collect::<Result<_, _>>()
-            .map_err(be)?;
-        rows
-    };
-    for (edge, _) in detached
-        .into_iter()
-        .filter(|(_, rel)| holds_attachment(kind, rel))
-    {
-        tx.execute(
-            "UPDATE edges SET valid_to = NULL WHERE id = ?1",
-            params![edge],
-        )
-        .map_err(be)?;
-        tx.execute(
-            "DELETE FROM detached_attachments WHERE project = ?1 AND edge_id = ?2",
-            params![project, edge],
-        )
-        .map_err(be)?;
-    }
-    Ok(())
-}
-
-/// Owe a relabel to every community `member` (or, with `whole_file`, any `<member>::<name>` in the
-/// file `member`) is a live member of: its degree, its label or its membership may have changed.
-fn owe_relabel_of(
-    tx: &Transaction,
-    member: &str,
-    whole_file: bool,
-    project: &str,
-) -> Result<(), Error> {
-    let sql = if whole_file {
-        format!(
-            "INSERT OR IGNORE INTO relabel_owed (project, community)
-             SELECT DISTINCT project, to_id FROM edges
-              WHERE rel = ?3 AND valid_to IS NULL AND project = ?2
-                AND (from_id = ?1 OR ({}))",
-            id_range_sql("from_id", "?1")
-        )
-    } else {
-        "INSERT OR IGNORE INTO relabel_owed (project, community)
-         SELECT DISTINCT project, to_id FROM edges
-          WHERE from_id = ?1 AND rel = ?3 AND valid_to IS NULL AND project = ?2"
-            .to_string()
-    };
-    tx.execute(&sql, params![member, project, REL_IN_COMMUNITY])
-        .map_err(be)?;
-    Ok(())
-}
-
-/// Settle the label of every community a fold owed one to, as the fold ends: its highest-degree
-/// LIVE member's label (its `name` attr, else its id), ties broken to the lexicographically
-/// smallest - the dominant-kind tie-break discipline the overview uses - where degree is the count
-/// of live structural edges (CALLS / REFERENCES / CONTAINS, the coupling layer detection runs over,
-/// but a module declaration's CONTAINS onto its file, [`declaration_sql`]) incident to the member,
-/// and a community with no live member is labelled empty. Every change to
-/// a member's degree, label or membership owes the relabel ([`owe_relabel_of`]), so the label is a
-/// pure function of the projection it labels: the same whether a member's generation folded before
-/// the community pass or after it (spec 101), and nothing waits on a model.
-fn relabel_owed_communities(tx: &Transaction) -> Result<(), Error> {
-    let owed: Vec<(String, String)> = {
-        let mut stmt = tx
-            .prepare("SELECT project, community FROM relabel_owed ORDER BY project, community")
-            .map_err(be)?;
-        let rows = stmt
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
-            .map_err(be)?
-            .collect::<Result<_, _>>()
-            .map_err(be)?;
-        rows
-    };
-    for (project, community) in &owed {
-        tx.execute(
-            &format!(
-                "UPDATE nodes SET attrs = json_set(COALESCE(attrs, '{{}}'), '$.label', COALESCE((
-                SELECT COALESCE(json_extract(n.attrs, '$.name'), n.id) AS lbl
-                  FROM edges m
-                  JOIN nodes n ON n.id = m.from_id AND n.project = m.project
-                 WHERE m.to_id = ?1 AND m.rel = ?4 AND m.valid_to IS NULL AND m.project = ?2
-                 ORDER BY (
-                     SELECT COUNT(*) FROM edges d
-                      WHERE d.project = ?2 AND d.valid_to IS NULL
-                        AND d.rel IN (?5, ?6, ?7) AND NOT {}
-                        AND (d.from_id = m.from_id OR d.to_id = m.from_id)
-                 ) DESC, lbl ASC
-                 LIMIT 1), ''))
-              WHERE id = ?1 AND project = ?2 AND kind = ?3",
-                declaration_sql("d.rel", "d.to_id", "?2")
-            ),
-            params![
-                community,
-                project,
-                KIND_COMMUNITY,
-                REL_IN_COMMUNITY,
-                REL_CALLS,
-                REL_REFERENCES,
-                REL_CONTAINS
-            ],
-        )
-        .map_err(be)?;
-    }
-    tx.execute("DELETE FROM relabel_owed", []).map_err(be)?;
-    Ok(())
-}
-
-/// A re-run of a community or concept pass supersedes every attachment of its grain (the
-/// `prefix` of its super-node ids) with `rel`: every live one is retired (`valid_to` set at `at`,
-/// never deleted) and every detached one is released for good, never revived when its node is
-/// held again.
-fn retire_grain(
-    tx: &Transaction,
-    prefix: &str,
-    rel: &str,
-    at: i64,
-    project: &str,
-) -> Result<(), Error> {
-    tx.execute(
-        "UPDATE edges SET valid_to = ?1
-         WHERE valid_to IS NULL AND project = ?4 AND rel = ?3
-           AND substr(to_id, 1, length(?2)) = ?2",
-        params![at, prefix, rel, project],
-    )
-    .map_err(be)?;
-    tx.execute(
-        "DELETE FROM detached_attachments
-          WHERE project = ?1 AND edge_id IN (
-            SELECT id FROM edges
-             WHERE project = ?1 AND rel = ?2 AND substr(to_id, 1, length(?3)) = ?3)",
-        params![project, rel, prefix],
-    )
-    .map_err(be)?;
-    Ok(())
-}
-
-/// Hang a graph-derived attachment (`rel`, [`REL_IN_COMMUNITY`] or [`REL_REALIZES`]) from `node` to
-/// its super-node `to`. On a node the graph holds as a kind that holds it ([`holds_attachment`]) it
-/// folds live through [`add_edge`]; on any other (a node whose generation was shed or retired, or
-/// one only knowledge holds that `rel` does not ride) it creates no node and is recorded detached
-/// from the start - merged into an already-detached edge of the same key the way [`add_edge`]
-/// merges a live one - so it is live exactly when its node holds it.
-#[allow(clippy::too_many_arguments)]
-fn attach(
-    tx: &Transaction,
-    node: &str,
-    to: &str,
-    rel: &str,
-    at: i64,
-    src: Position,
-    project: &str,
-) -> Result<(), Error> {
-    if node_row(tx, node, project)?.is_some_and(|n| holds_attachment(&n.kind, rel)) {
-        add_edge(tx, node, to, rel, at, src, project, TIER_INFERRED)?;
-        return Ok(());
-    }
-    let merged = tx
-        .execute(
-            "UPDATE edges SET source = max(source, ?5), valid_from = min(valid_from, ?4)
-              WHERE id IN (SELECT edge_id FROM detached_attachments
-                            WHERE project = ?6 AND node_id = ?1)
-                AND to_id = ?2 AND rel = ?3 AND tier = ?7",
-            params![node, to, rel, at, src as i64, project, TIER_INFERRED],
-        )
-        .map_err(be)?;
-    if merged == 0 {
-        tx.execute(
-            "INSERT INTO edges (from_id, to_id, rel, valid_from, valid_to, source, project, tier)
-             VALUES (?1, ?2, ?3, ?4, ?4, ?5, ?6, ?7)",
-            params![node, to, rel, at, src as i64, project, TIER_INFERRED],
-        )
-        .map_err(be)?;
-        tx.execute(
-            "INSERT INTO detached_attachments (project, edge_id, node_id) VALUES (?1, ?2, ?3)",
-            params![project, tx.last_insert_rowid(), node],
-        )
-        .map_err(be)?;
-    }
-    Ok(())
-}
-
-fn fold_event(tx: &Transaction, e: &Event, project: &str, by: &Asserter) -> Result<(), Error> {
+fn fold_event(tx: &Transaction, e: &Event, project: &str) -> Result<(), Error> {
     // The edge's bi-temporal valid-time is when the fact became true (the event's
     // caller-supplied valid_from), not the ingest time.
     let at = to_nanos(e.valid_from);
@@ -4260,7 +2661,6 @@ fn fold_event(tx: &Transaction, e: &Event, project: &str, by: &Asserter) -> Resu
             let d: super::DecisionMade = serde_json::from_slice(&e.data).map_err(be)?;
             ensure_node(
                 tx,
-                by,
                 &d.id,
                 KIND_DECISION,
                 &[("summary", &d.summary)],
@@ -4273,7 +2673,7 @@ fn fold_event(tx: &Transaction, e: &Event, project: &str, by: &Asserter) -> Resu
             // in the log for metrics and the run-tree, which read events, not this projection.
             for path in &d.governs {
                 let canonical = resolve_in_tx(tx, path);
-                ensure_node(tx, by, &canonical, KIND_ARTIFACT, &[], project)?;
+                ensure_node(tx, &canonical, KIND_ARTIFACT, &[], project)?;
                 add_edge(
                     tx,
                     &d.id,
@@ -4286,7 +2686,7 @@ fn fold_event(tx: &Transaction, e: &Event, project: &str, by: &Asserter) -> Resu
                 )?;
             }
             if !d.supersedes.is_empty() {
-                ensure_node(tx, by, &d.supersedes, KIND_DECISION, &[], project)?;
+                ensure_node(tx, &d.supersedes, KIND_DECISION, &[], project)?;
                 add_edge(
                     tx,
                     &d.id,
@@ -4388,17 +2788,10 @@ fn fold_event(tx: &Transaction, e: &Event, project: &str, by: &Asserter) -> Resu
         }
         TYPE_LESSON_LEARNED => {
             let l: super::LessonLearned = serde_json::from_slice(&e.data).map_err(be)?;
-            ensure_node(
-                tx,
-                by,
-                &l.id,
-                KIND_LESSON,
-                &[("summary", &l.summary)],
-                project,
-            )?;
+            ensure_node(tx, &l.id, KIND_LESSON, &[("summary", &l.summary)], project)?;
             for path in super::locations(&l.about, &l.file) {
                 let canonical = resolve_in_tx(tx, path);
-                ensure_node(tx, by, &canonical, KIND_ARTIFACT, &[], project)?;
+                ensure_node(tx, &canonical, KIND_ARTIFACT, &[], project)?;
                 add_edge(
                     tx,
                     &l.id,
@@ -4425,7 +2818,6 @@ fn fold_event(tx: &Transaction, e: &Event, project: &str, by: &Asserter) -> Resu
             let f: super::ReviewFinding = serde_json::from_slice(&e.data).map_err(be)?;
             ensure_node(
                 tx,
-                by,
                 &f.id,
                 KIND_FINDING,
                 &[("summary", &f.summary), ("by", &f.by), ("unit", &f.unit)],
@@ -4433,7 +2825,7 @@ fn fold_event(tx: &Transaction, e: &Event, project: &str, by: &Asserter) -> Resu
             )?;
             for path in super::locations(&f.about, &f.file) {
                 let canonical = resolve_in_tx(tx, path);
-                ensure_node(tx, by, &canonical, KIND_ARTIFACT, &[], project)?;
+                ensure_node(tx, &canonical, KIND_ARTIFACT, &[], project)?;
                 add_edge(
                     tx,
                     &f.id,
@@ -4445,350 +2837,6 @@ fn fold_event(tx: &Transaction, e: &Event, project: &str, by: &Asserter) -> Resu
                     TIER_EXTRACTED,
                 )?;
             }
-        }
-        TYPE_CODE_ENTITY_EXTRACTED => {
-            // Spec 29a criterion 1: one definition the extraction pass emitted. Fold it into a
-            // code-entity node in its file container node, hung off its parent (spec 119; the file
-            // at file level), so code structure lives in the event-sourced projection, not a
-            // mutable side index. ALWAYS compiled: the light lane folds this with the extraction
-            // pass absent, which is why the node kinds and this arm live outside the `symbols`
-            // feature. Project-scoped like every arm (spec 28): the
-            // file, the entity, and the edge all carry the injected project. The file path is
-            // alias-resolved exactly as the artifact-producing arms resolve theirs, so the file
-            // container is the SAME node those arms build for the path (one-graph identity), never
-            // a parallel node that only coincidentally shares a literal string.
-            let c: super::CodeEntityExtracted = serde_json::from_slice(&e.data).map_err(be)?;
-            let file = resolve_in_tx(tx, &c.file);
-            // Supersede-on-re-extract (criterion 3): the FIRST event of an extraction batch retires
-            // the file's prior structural edges before this batch folds its own, so a re-extraction
-            // REPLACES rather than accretes. A no-op on the initial extraction (no prior edges).
-            if c.fresh {
-                supersede_file_edges(tx, &file, at, project)?;
-            }
-            // Spec 92 criterion 2 round 4 (adv-u2c2-partial-marker-unimplemented): stamp the
-            // degraded-parse marker through the SAME `ensure_node` attrs authority `lang` already
-            // rides - never a second attrs-writing path. Merge semantics (see `ensure_node`'s own
-            // doc) mean omitting the key on a later, unrelated definition from the same file never
-            // clears a marker an earlier event of this batch already set.
-            let mut file_attrs: Vec<(&str, &str)> = vec![("lang", &c.lang)];
-            if c.partial {
-                file_attrs.push(("partial", "true"));
-            }
-            ensure_node(tx, by, &file, KIND_FILE, &file_attrs, project)?;
-            let entity = code_entity_id(&file, c.id_path());
-            // A node its file's definitions share takes ONE kind and line
-            // ([`settling_definition`]), passed to the one `ensure_node` call, and is a
-            // definition only while that winner is a call target: a node that defined a name
-            // before this fold and defines none after it (a fn that is only a field at its
-            // file's next generation, a field settling over a module of its leaf), or defines
-            // another leaf at its path after it (spec 119, A RENAMED PATH RETIRES ITS OLD LEAF:
-            // `B` refolded as `A.B`), undoes what resolved against the name it defined, as a
-            // node that stops being a definition does when it settles ([`settle_node`], which
-            // reads the node only after this arm has changed it).
-            let defined = definition_name(tx, &entity, project)?;
-            let (kind, line) = settling_definition(tx, by, &entity, &c.kind, c.line, project)?;
-            let line = line.to_string();
-            ensure_node(
-                tx,
-                by,
-                &entity,
-                KIND_CODE_ENTITY,
-                &[
-                    ("name", &c.name),
-                    ("kind", &kind),
-                    ("line", &line),
-                    ("lang", &c.lang),
-                ],
-                project,
-            )?;
-            let defines = undo_what_resolved_against(tx, &entity, defined, project)?;
-            // CONTAINS (spec 119, CONTAINS IS STRUCTURE): the definition's parent holds it, the
-            // file when it has none ([`CodeEntityExtracted::parent_path`]). The parent is asserted
-            // bare under this batch's identity first, since a variant can fold before its enum;
-            // the parent's own event fills it, and a parent no event defines stays that nameless
-            // node. A definition's containment is the most explicit
-            // structural fact there is, so it folds at the EXTRACTED tier (spec 29a, addendum 6.2).
-            let container = match c.parent_path() {
-                Some(parent) => {
-                    let parent = code_entity_id(&file, parent);
-                    ensure_node(tx, by, &parent, KIND_CODE_ENTITY, &[], project)?;
-                    parent
-                }
-                None => file.clone(),
-            };
-            add_edge(
-                tx,
-                &container,
-                &entity,
-                REL_CONTAINS,
-                at,
-                e.position,
-                project,
-                TIER_EXTRACTED,
-            )?;
-            // Convergent tier upgrade (spec 29a criterion 2): a reference to THIS name that folded
-            // BEFORE this definition existed was tiered AMBIGUOUS (grep-visible-only - no definition
-            // was known yet) and landed on its file's placeholder `<file>::%<name>`. Now that the
-            // definition IS known, any such reference - from ANOTHER file, or from this
-            // definition's own file when it folded before the definition - is a derived /
-            // transitive link, so promote it AMBIGUOUS -> INFERRED. This mirrors the
-            // one-writer kind-promotion above: it makes the tier a pure function of the FINAL log,
-            // independent of whether a reference or its definition folds first, so a rebuild
-            // re-derives byte-identical tiers. Matched exactly by the reference's target text
-            // binding this definition's name ([`edge_binds_leaf_sql`]: `<file>::<name>` or
-            // `<file>::%<name>`, a file path never containing `::`), never by a wildcard, so a
-            // symbol whose name contains any character still matches precisely. A reference landed
-            // on its one same-file candidate is EXTRACTED and targets this definition's own entity
-            // id, which the `to_id != entity` guard and the `tier = AMBIGUOUS` match both exclude,
-            // so it is never demoted.
-            //
-            // The caller-attributed CALLS edge (spec 37) shares the callee `target` and tier of its
-            // REFERENCES twin, so it is promoted in the SAME upgrade (`rel IN (REFERENCES, CALLS)`):
-            // one tier authority evolves both structural edges together, never a forked behavior
-            // where the CALLS edge lags its sibling's confidence. A same-file CALLS to this
-            // definition's own entity is excluded by the same `to_id != entity` guard; a same-file
-            // CALLS folded before this definition, landed on the placeholder, is promoted with its
-            // REFERENCES twin.
-            //
-            // Both convergences run only when the settled node is a call target: a data member
-            // or a declaration of this name upgrades no tier and takes no proof.
-            if defines.is_some() {
-                tx.execute(
-                    &format!(
-                        "UPDATE edges SET tier = ?1
-                       WHERE rel IN (?2, ?7) AND tier = ?3 AND project = ?4 AND valid_to IS NULL
-                         AND to_id != ?5 AND {}",
-                        edge_binds_leaf_sql("to_id", "?6")
-                    ),
-                    params![
-                        TIER_INFERRED,
-                        REL_REFERENCES,
-                        TIER_AMBIGUOUS,
-                        project,
-                        entity,
-                        c.name,
-                        REL_CALLS
-                    ],
-                )
-                .map_err(be)?;
-                // Spec 86 criterion 2's convergent half: any TEST-ORIGIN evidence recorded before
-                // this definition existed (a forward reference to a file the sorted ingest had not
-                // yet reached) names it now - this definition owes its name's proofs
-                // ([`owe_proofs`]), which the transaction settles once before it commits
-                // ([`settle_proofs`], spec 122), landing them on `entity`. The same fold that makes
-                // the tier upgrade just above resolvable owes them; the transaction's frame is the
-                // one timing authority of the proof.
-                owe_proofs(tx, &c.name)?;
-            }
-        }
-        TYPE_EDGE_INFERRED => {
-            // Spec 29a criterion 1: one reference the extraction pass emitted. Fold a call
-            // reference into a structural REFERENCES edge (a tagged one stops after its file node,
-            // spec 117, below) from the referencing file to the code entity it lands on
-            // (spec 119, A CALL LANDS ON ITS ONE SAME-FILE CANDIDATE): the file's one call target
-            // of the referenced leaf a live assertion defines ([`same_file_candidates`]), else the
-            // placeholder `<file>::%<leaf>` ([`placeholder_id`]), which `ensure_node` creates bare
-            // so the edge never dangles - cross-file name resolution is the readers' (the calls
-            // walk, the tiers), never a move of the edge. The empty attr set means
-            // a reference never overwrites a definition's attrs (the `ensure_node` COALESCE keeps
-            // the existing ones). ALWAYS compiled, project-scoped like every arm. The file path is
-            // alias-resolved like the artifact-producing arms, so the referencing file node is the
-            // SAME one-graph node (see the definition arm above).
-            let r: super::EdgeInferred = serde_json::from_slice(&e.data).map_err(be)?;
-            // Spec 86 criterion 2 (PROOF LANDS ON THE CARD): a TEST-ORIGIN reference is EVIDENCE,
-            // not a structural fact - checked FIRST, before any of the structural folding below,
-            // so it takes NEITHER the `file` KIND_FILE node NOR the REFERENCES/CALLS edge:
-            // criterion 1's "never a node and never an edge on the canvas" promise extends to
-            // evidence exactly as it holds for the exclusion itself. See `fold_test_evidence`'s own
-            // doc for the target-resolution and merge-not-replace mechanics.
-            if r.is_test {
-                return fold_test_evidence(tx, &r, e.position, project);
-            }
-            let file = resolve_in_tx(tx, &r.file);
-            // Supersede-on-re-extract (spec 29a criterion 3): a refs-only file (no definitions)
-            // carries the batch boundary on its first reference; retire the file's prior
-            // structural edges before folding this one, so the two fold arms share one supersede
-            // authority.
-            if r.fresh {
-                supersede_file_edges(tx, &file, at, project)?;
-            }
-            // Spec 86 criterion 3 (THE MIGRATION IS DELIBERATE): an EMPTY `r.name` marks
-            // `grounder::symbols::events::extract_events`'s own empty-after-exclusion structural
-            // sentinel ([`crate::grounder::symbols::events`]'s `empty_structural_boundary_event`) -
-            // the file's WHOLE structural batch when its surviving definition/reference set drops
-            // to zero (a whole `tests/`-dir file, the central migration case, or any file an edit
-            // left with nothing to extract). The supersede call above (which ran unconditionally on
-            // `r.fresh`, independent of what else this event carries) IS this sentinel's entire
-            // job: it retires every LIVE structural edge this file's PRIOR extraction left - a
-            // legacy test-entity node's own CONTAINS/REFERENCES/CALLS edge included - so a re-ingest
-            // of a store that predates criterion 1's exclusion rule genuinely shrinks, never by a
-            // store wipe (node rows are never deleted; only their reachability is retired). There is
-            // no real reference here and no file content to contain - `""` is never a genuine
-            // reference name - so this returns immediately rather than falling through to
-            // `ensure_node` a `KIND_FILE` container for an excluded file: criterion 1's "never a
-            // node and never an edge on the canvas" promise holds through the migration too.
-            if r.name.is_empty() {
-                return Ok(());
-            }
-            // Spec 92 criterion 2 round 4 (adv-u2c2-partial-marker-unimplemented): the `EdgeInferred`
-            // twin of the definition arm's identical stamp above - see that arm's own comment.
-            let mut file_attrs: Vec<(&str, &str)> = vec![("lang", &r.lang)];
-            if r.partial {
-                file_attrs.push(("partial", "true"));
-            }
-            ensure_node(tx, by, &file, KIND_FILE, &file_attrs, project)?;
-            // Spec 117 (REFERENCES): a tagged reference - a type reference, a const read, a
-            // `use` or a module row - runs the structural head above alone, the `fresh` supersede
-            // and its file node, so a `use`-only file gains its file node; this arm folds no
-            // `REFERENCES`, `CALLS` or `CONTAINS` edge and no node beyond the file's from it. A
-            // ledger entry's batch stages it as a `refs` row after it folds ([`stage_reference`]),
-            // an edge only once its batch's end resolves it ([`settle_references`]).
-            if r.ref_kind.is_some() {
-                return Ok(());
-            }
-            // REFERENCES (spec 29a criterion 2): the file references this symbol, at the confidence
-            // tier its resolution earns: EXTRACTED on its one same-file candidate, else what
-            // [`reference_tier`] answers for the placeholder. The tier is read BEFORE `ensure_node`
-            // creates the bare placeholder, so a placeholder this reference is about to create
-            // never miscounts as a definition. The definition arm's convergent upgrade covers the
-            // reverse fold order.
-            let (target, tier) = match same_file_candidates(tx, project, &file, &r.name)?.as_slice()
-            {
-                [one] => (one.clone(), TIER_EXTRACTED),
-                _ => {
-                    let target = placeholder_id(&file, &r.name);
-                    let tier = reference_tier(tx, &target, &r.name, project)?;
-                    (target, tier)
-                }
-            };
-            ensure_node(tx, by, &target, KIND_CODE_ENTITY, &[], project)?;
-            add_edge(
-                tx,
-                &file,
-                &target,
-                REL_REFERENCES,
-                at,
-                e.position,
-                project,
-                tier,
-            )?;
-            // Caller-attributed CALLS edge (spec 37): when extraction attributed this reference to an
-            // enclosing definition, ADD `<file>::<caller> --CALLS--> <callee>` ALONGSIDE the file
-            // REFERENCES edge above, so one `subgraph` around the callee answers "who calls it" by
-            // FUNCTION, not merely "referenced from which file". Purely additive: a caller-less
-            // reference (a top-level `use`/import) folds no CALLS edge, exactly today's behavior.
-            // Callee resolution is UNCHANGED - the SAME `target` and `tier` the REFERENCES edge uses,
-            // so the CALLS edge is a faithful caller-keyed twin (the definition arm's convergent
-            // upgrade promotes both rels together, keeping the twin's tier in lock-step). The caller
-            // entity node is `ensure_node`d bare like the target, at `<file>::<caller>`, the
-            // caller's path (spec 119 criterion 8): its definition's own id, nested (`T::new`) or
-            // file-level, folded first in real extraction (defs emit before refs), so this is a
-            // no-op that keeps its attrs; a payload recorded before paths carries the caller's
-            // leaf and folds to that flat id, as its definition then did. Either way a reverse
-            // fold order never leaves the CALLS edge dangling.
-            if let Some(caller) = &r.caller {
-                let caller_id = code_entity_id(&file, caller);
-                ensure_node(tx, by, &caller_id, KIND_CODE_ENTITY, &[], project)?;
-                add_edge(
-                    tx, &caller_id, &target, REL_CALLS, at, e.position, project, tier,
-                )?;
-            }
-        }
-        TYPE_DOC_CONCEPT_EXTRACTED => {
-            // Spec 29b criterion 1 (plus spec 92 criterion 2's SAME arm, never a second one): one
-            // entity a definition-extraction pass emitted - the design-intent pass's design-doc /
-            // arch-decision / handbook-rule / rationale, or the workflow-definition pass's
-            // stage / gate / agent role read off `.rigger/workflow.yml` - folded into a node of that
-            // kind, so both layers live in the event-sourced projection alongside the code half.
-            // ALWAYS compiled: the light lane folds either log with its extraction pass absent,
-            // which is why the node kinds and this arm live outside the feature that gates
-            // extraction, mirroring the 29a CodeEntityExtracted arm.
-            //
-            // The seven kinds are matched exactly; a payload carrying any other kind string folds
-            // nothing (defensive - the two passes only ever produce these seven). Project-scoped
-            // like every arm (spec 28). The id is alias-resolved exactly as the artifact-producing
-            // arms resolve their paths, so a design-doc (or a `stage:<name>` workflow node) is the
-            // SAME one-graph node that a decision GOVERNS or a lesson is ABOUT (addendum 6.1 single
-            // id space) - the `ensure_node` promotion below settles which kind wins.
-            let c: super::DocConceptExtracted = serde_json::from_slice(&e.data).map_err(be)?;
-            let kind = match c.kind.as_str() {
-                KIND_DESIGN_DOC => KIND_DESIGN_DOC,
-                KIND_ARCH_DECISION => KIND_ARCH_DECISION,
-                KIND_HANDBOOK_RULE => KIND_HANDBOOK_RULE,
-                KIND_RATIONALE => KIND_RATIONALE,
-                KIND_STAGE => KIND_STAGE,
-                KIND_GATE => KIND_GATE,
-                KIND_AGENT => KIND_AGENT,
-                _ => return Ok(()),
-            };
-            let id = c.asserted(&|mention| resolve_in_tx(tx, mention));
-            ensure_node(
-                tx,
-                by,
-                &id,
-                kind,
-                &[("title", &c.title), ("doc", &c.doc)],
-                project,
-            )?;
-        }
-        TYPE_DOC_LINK_EXTRACTED => {
-            // Spec 29b criterion 2 (plus spec 92 criterion 2's SAME arm, never a second one): one
-            // link a definition-extraction pass emitted. Fold it into a typed edge - the
-            // design-intent pass's design-doc --SPECIFIES--> code, arch-decision --CONSTRAINS-->
-            // code, handbook-rule --GOVERNS--> code (REUSING REL_GOVERNS, never a second governs
-            // relation), rationale --explains--> code, design-doc --references--> doc; or the
-            // workflow-definition pass's stage --NEEDS--> stage, stage --RUNS--> gate/agent, and
-            // agent --REVIEWS--> stage (or, for a `tiers.light`-only reviewer, --REVIEWS_LIGHT-->
-            // stage - a DISTINCT relation, never unioned with REVIEWS, since a real run routes each
-            // unit to light XOR full exclusively by risk) - so both layers' links live in the
-            // event-sourced projection alongside the code half; a subgraph traversal from a touched
-            // file then reaches the RA section that designed it, the decision that constrains it, or
-            // the stage that owns it. ALWAYS compiled: the light lane folds either log with its
-            // extraction pass absent, which is why the edge relations and this arm live outside the
-            // feature that gates extraction, mirroring the 29a EdgeInferred arm.
-            //
-            // The nine relations are matched exactly; a payload carrying any other relation string
-            // folds nothing (defensive - the two passes only ever produce these nine), mirroring
-            // the concept arm's kind guard. Every such link is an explicit fact recorded on the log,
-            // so it folds at TIER_EXTRACTED (addendum 6.2 - the precise seed) for both passes. Both
-            // endpoints are alias-resolved and ensured exactly as the artifact-producing arms
-            // resolve their paths, so the edge lands on the SAME one-graph nodes a decision GOVERNS,
-            // a lesson is ABOUT, code was extracted from (spec 29a), or design/definition intent was
-            // ingested into (criterion 1, addendum 6.1 single id space) - never a parallel node that
-            // only coincidentally shares a literal string. The endpoints are ensured as the generic
-            // KIND_ARTIFACT role: a design-doc (or `stage:<name>` / `gate:<name>` / `agent:<name>`)
-            // from-node folded by criterion 1 keeps its specific kind (ensure_node never demotes), a
-            // bare target promotes to its specific kind when its own extraction folds, and the edge
-            // never dangles when it folds before its endpoints. This is the single edge-fold
-            // authority for both passes' links; c2 owns the edge relations, criterion 1 owns the
-            // node kinds.
-            let l: super::DocLinkExtracted = serde_json::from_slice(&e.data).map_err(be)?;
-            let (from, rel, to) = l.asserted(&|mention| resolve_in_tx(tx, mention));
-            let rel = match rel.as_str() {
-                REL_SPECIFIES => REL_SPECIFIES,
-                REL_CONSTRAINS => REL_CONSTRAINS,
-                REL_GOVERNS => REL_GOVERNS,
-                REL_EXPLAINS => REL_EXPLAINS,
-                REL_DOC_REFERENCES => REL_DOC_REFERENCES,
-                REL_NEEDS => REL_NEEDS,
-                REL_RUNS => REL_RUNS,
-                REL_REVIEWS => REL_REVIEWS,
-                REL_REVIEWS_LIGHT => REL_REVIEWS_LIGHT,
-                _ => return Ok(()),
-            };
-            ensure_node(tx, by, &from, KIND_ARTIFACT, &[], project)?;
-            ensure_node(tx, by, &to, KIND_ARTIFACT, &[], project)?;
-            assert_link(
-                tx,
-                by,
-                &from,
-                &to,
-                rel,
-                at,
-                e.position,
-                project,
-                TIER_EXTRACTED,
-            )?;
         }
         TYPE_SPAWN_RESULT => {
             // Disposition-expiry (spec 25, criterion 1 - the DISCARD trigger): an
@@ -4864,185 +2912,9 @@ fn fold_event(tx: &Transaction, e: &Event, project: &str, by: &Asserter) -> Resu
             // Create the node and mark it unresolved for later merge (never drop).
             ensure_node(
                 tx,
-                by,
                 &a.mention,
                 KIND_ARTIFACT,
                 &[("unresolved", "true")],
-                project,
-            )?;
-        }
-        TYPE_COMMUNITY_ASSIGNED => {
-            // Spec 53 criterion 3 (the EVENT-SOURCED FOLD): one membership the offline
-            // community-detection pass emitted. Fold it into a KIND_COMMUNITY super-node plus a live
-            // `<node> --IN_COMMUNITY--> <community>` edge, so the derived coupling grouping lives in
-            // the event-sourced projection (never computed at request time) and the `lens=code` view
-            // is a pure read over it. ALWAYS compiled: the light lane folds a community log with the
-            // detection pass absent, which is why the node kind, the relation, and this arm live
-            // outside the feature that gates detection - mirroring the 29a CodeEntityExtracted arm.
-            // Project-scoped like every arm (spec 28).
-            let c: super::CommunityAssigned = serde_json::from_slice(&e.data).map_err(be)?;
-            // The resolution grain is the f64's canonical string (the emit contract: the community
-            // id's grain segment equals this), so the `fresh` reset and the stored attr agree.
-            let res = format!("{}", c.resolution);
-            // Re-run supersession (rides `fresh` on the pass's FIRST event, mirroring
-            // supersede_file_edges): retire (set `valid_to` on, never delete) every LIVE
-            // IN_COMMUNITY edge of THIS resolution grain BEFORE folding the new pass, so a re-run at
-            // a resolution REPLACES that grain's assignment set rather than accreting - and leaves
-            // every OTHER grain's memberships live (scoped by the exact `community/<res>/` id prefix,
-            // a substr equality, never a LIKE/GLOB whose wildcards a value could carry). A no-op on
-            // the first-ever pass (no prior memberships). This is the fold-side supersession the
-            // grain criterion relies on; the criterion 3 recording discipline owns the mechanism.
-            // An EMPTY re-run never reaches here (an empty assignment records no events, so no `fresh`
-            // event fires): that is the deliberate KEEP-LAST-GOOD policy - the prior non-empty
-            // assignment stays live - documented on `community::events` (d-u53c2-empty-rerun-keep-last-good).
-            if c.fresh {
-                let prefix = format!("community/{res}/");
-                retire_grain(tx, &prefix, REL_IN_COMMUNITY, at, project)?;
-                // Node-side supersession (the completeness half): the edge retire above leaves every
-                // community super-node of THIS grain with no live member, so a re-run that DROPS or
-                // EMPTIES a community (a shrink, or the last member moving out of one) would strand
-                // its KIND_COMMUNITY node - a ghost/orphan bucket that `whole()` (the read the dash
-                // `/api/graph` provider consults) still surfaces with ZERO live members and a STALE
-                // label. Drop every now-memberless community node OF THIS GRAIN so no such ghost
-                // survives; the pass's own events immediately re-`ensure` exactly the communities its
-                // NEW assignment uses (the first member of each folds its node back), leaving only the
-                // dropped/emptied communities gone. Nodes carry no `valid_to`, so this is a DELETE
-                // (the same node-removal primitive `prune` uses), not an edge-style retire. Scoped by
-                // the SAME `community/<res>/` id prefix (a substr equality, never a wildcard) so it
-                // never touches another grain's nodes, and by KIND_COMMUNITY so only derived
-                // super-nodes are eligible; the `NOT EXISTS(live member)` guard makes the intent
-                // exact - a community is dropped only once its last live member is gone. A rebuild
-                // replays the same events in the same order and re-derives the identical node set.
-                tx.execute(
-                    "DELETE FROM nodes
-                      WHERE kind = ?2 AND project = ?3
-                        AND substr(id, 1, length(?1)) = ?1
-                        AND NOT EXISTS (
-                            SELECT 1 FROM edges e
-                             WHERE e.to_id = nodes.id AND e.rel = ?4
-                               AND e.valid_to IS NULL AND e.project = ?3
-                        )",
-                    params![prefix, KIND_COMMUNITY, project, REL_IN_COMMUNITY],
-                )
-                .map_err(be)?;
-            }
-            // The community super-node (first-writer-wins kind; its attrs are set below once the
-            // deterministic label is computed). A bare ensure keeps any attrs an earlier member of
-            // the same community already wrote until this fold overwrites them with the recomputed
-            // label over the now-larger live membership.
-            ensure_node(tx, by, &c.community, KIND_COMMUNITY, &[], project)?;
-            // The membership edge, a DERIVED grouping (TIER_INFERRED - one confidence step below the
-            // explicit structural edges detection runs over). Upsert-live like every fold (spec 40),
-            // and live only while its member node is held ([`attach`]).
-            attach(
-                tx,
-                &c.node,
-                &c.community,
-                REL_IN_COMMUNITY,
-                at,
-                e.position,
-                project,
-            )?;
-            // The label over the community's live membership is settled once this fold ends
-            // ([`relabel_owed_communities`]); the pass's own attrs are written here.
-            let attrs = serde_json::json!({
-                "resolution": res,
-                "hash": c.hash,
-                "label": "",
-            })
-            .to_string();
-            tx.execute(
-                "UPDATE nodes SET attrs = ?1 WHERE id = ?2 AND project = ?3",
-                params![attrs, c.community, project],
-            )
-            .map_err(be)?;
-            tx.execute(
-                "INSERT OR IGNORE INTO relabel_owed (project, community) VALUES (?1, ?2)",
-                params![project, c.community],
-            )
-            .map_err(be)?;
-        }
-        TYPE_CONCEPT_DERIVED => {
-            // Spec 54 (the CONCEPTS lens): one concept the offline intent-derivation pass emitted.
-            // Fold it into a KIND_CONCEPT super-node carrying the pass-computed label, so the derived
-            // grouping lives in the event-sourced projection (never computed at request time) and the
-            // `lens=concepts` view is a pure read over it. ALWAYS compiled, mirroring the 53
-            // CommunityAssigned arm: the light lane folds a concept log with the derivation pass
-            // absent. Project-scoped like every arm (spec 28).
-            let c: super::ConceptDerived = serde_json::from_slice(&e.data).map_err(be)?;
-            // The resolution grain is the f64's canonical string (the emit contract: the concept id's
-            // grain segment equals this), so the `fresh` reset and the stored attr agree.
-            let res = format!("{}", c.resolution);
-            // Re-run supersession (rides `fresh` on the pass's FIRST event, mirroring the community
-            // arm): retire (set `valid_to` on, never delete) every LIVE REALIZES edge of THIS
-            // resolution grain, then drop the grain's now-orphan concept nodes, BEFORE folding the new
-            // pass - so a re-run at a resolution REPLACES that grain's grouping rather than accreting,
-            // and leaves every OTHER grain's memberships live (scoped by the exact `concept/<res>/` id
-            // prefix, a substr equality, never a LIKE/GLOB whose wildcards a value could carry). A
-            // no-op on the first-ever pass. The pass emits all its ConceptDerived events before any
-            // ConceptRealized, so this boundary fires once, at the head, before this pass's grouping
-            // folds. An EMPTY re-run never reaches here (an empty derivation records no events, so no
-            // `fresh` event fires): the KEEP-LAST-GOOD policy documented on `concepts::events`.
-            if c.fresh {
-                let prefix = format!("concept/{res}/");
-                retire_grain(tx, &prefix, REL_REALIZES, at, project)?;
-                // Node-side supersession (the completeness half, mirroring the community arm): the
-                // edge retire above leaves every concept super-node of THIS grain with no live member,
-                // so a re-run that DROPS or EMPTIES a concept would strand its KIND_CONCEPT node - a
-                // ghost bucket `whole()` still surfaces with ZERO live members and a STALE label. Drop
-                // every now-memberless concept node OF THIS GRAIN; this pass's own ConceptDerived
-                // events immediately re-`ensure` exactly the concepts its NEW grouping uses, leaving
-                // only the dropped/emptied concepts gone. Scoped by the SAME `concept/<res>/` id prefix
-                // and by KIND_CONCEPT, with a `NOT EXISTS(live member)` guard, so it never touches
-                // another grain's nodes. A rebuild replays the same events in the same order and
-                // re-derives the identical node set.
-                tx.execute(
-                    "DELETE FROM nodes
-                      WHERE kind = ?2 AND project = ?3
-                        AND substr(id, 1, length(?1)) = ?1
-                        AND NOT EXISTS (
-                            SELECT 1 FROM edges e
-                             WHERE e.to_id = nodes.id AND e.rel = ?4
-                               AND e.valid_to IS NULL AND e.project = ?3
-                        )",
-                    params![prefix, KIND_CONCEPT, project, REL_REALIZES],
-                )
-                .map_err(be)?;
-            }
-            // The concept super-node, carrying its pass-computed label + provenance attrs. Unlike the
-            // community arm (which recomputes a label from the folded members), the label is KNOWN
-            // upfront - it rides on the event - so a single `ensure_node` with the attrs suffices; the
-            // attrs blob is a sorted-key BTreeMap render (byte-stable across folds and rebuilds).
-            ensure_node(
-                tx,
-                by,
-                &c.concept,
-                KIND_CONCEPT,
-                &[
-                    ("resolution", res.as_str()),
-                    ("hash", c.hash.as_str()),
-                    ("label", c.label.as_str()),
-                ],
-                project,
-            )?;
-        }
-        TYPE_CONCEPT_REALIZED => {
-            // Spec 54: one concept membership the offline intent-derivation pass emitted. Fold it into
-            // a live `<node> --REALIZES--> <concept>` edge, a DERIVED grouping (TIER_INFERRED - one
-            // confidence step below the explicit intent edges the derivation runs over). The concept
-            // super-node already exists (its ConceptDerived folded earlier in the pass); ensure it
-            // defensively (a bare ensure is idempotent and first-writer-wins keeps the Derived label
-            // attrs) so the edge never dangles if the events are replayed out of the pass's order.
-            // Upsert-live like every fold (spec 40). ALWAYS compiled, mirroring the community arm.
-            let r: super::ConceptRealized = serde_json::from_slice(&e.data).map_err(be)?;
-            ensure_node(tx, by, &r.concept, KIND_CONCEPT, &[], project)?;
-            attach(
-                tx,
-                &r.node,
-                &r.concept,
-                REL_REALIZES,
-                at,
-                e.position,
                 project,
             )?;
         }
@@ -5077,47 +2949,6 @@ fn invalidate_finding_edges(
     Ok(())
 }
 
-/// Supersede-on-re-extract (spec 29a criterion 3): set `valid_to` on (never delete - mirroring the
-/// decision-supersession arm and [`invalidate_finding_edges`]) every LIVE structural edge OUT of a
-/// file's OWN structure - the `CONTAINS` / `REFERENCES` edges out of its container node AND the
-/// `CALLS` and `CONTAINS` edges out of the code entities it defines (spec 37; spec 119, CONTAINS IS
-/// STRUCTURE: a variant's `CONTAINS` comes from its enum). Called at the boundary of a file's
-/// extraction batch (the `fresh` event), BEFORE that batch folds its own edges, so re-extracting a
-/// changed file REPLACES its structural edges rather than accreting duplicates: a removed
-/// definition's / reference's / call's edge drops from the live `subgraph` (its `valid_to` is now
-/// set) while the new pass inserts fresh live edges. The old rows are retained with `valid_to`
-/// stamped, so a historical / as-of query still reaches the previous graph (bi-temporal, spec 29a
-/// section 6.4).
-///
-/// The top-level `CONTAINS` and the `REFERENCES` edges hang off `from_id = file` (the container
-/// node); a `CALLS` edge instead hangs off `from_id = <file>::<caller>` (the enclosing definition
-/// entity), and a nested definition's `CONTAINS` off `from_id = <file>::<parent>`, so both are
-/// matched by an EXACT `<file>::` id prefix (`substr`, never a `LIKE`/`GLOB` whose `_`/`%`/`*`
-/// wildcards a real path could contain). Both scopings retire ONLY this file's own structure: a
-/// cross-file `REFERENCES` from ANOTHER file (whose `from_id` is that other file) and a cross-file
-/// `CALLS` whose caller lives in another file (whose `from_id` is `<other-file>::...`) are left
-/// untouched, as is a non-structural edge INTO the file (an agent `TOUCHES` it, a decision `GOVERNS`
-/// it, the file `GATED_BY` a gate). Project-scoped like every fold, so a shared backend never
-/// touches another project's edges. On the initial extraction this matches zero live edges (the
-/// file has none yet).
-fn supersede_file_edges(tx: &Transaction, file: &str, at: i64, project: &str) -> Result<(), Error> {
-    owe_relabel_of(tx, file, true, project)?;
-    tx.execute(
-        &format!(
-            "UPDATE edges SET valid_to = ?1
-             WHERE valid_to IS NULL AND project = ?5
-               AND (
-                 (from_id = ?2 AND (rel = ?3 OR rel = ?4))
-                 OR ((rel = ?6 OR rel = ?3) AND {})
-               )",
-            id_range_sql("from_id", "?2")
-        ),
-        params![at, file, REL_CONTAINS, REL_REFERENCES, project, REL_CALLS],
-    )
-    .map_err(be)?;
-    Ok(())
-}
-
 /// Collapse a mention onto its canonical node via the alias table; an unknown
 /// mention resolves to itself.
 fn resolve_in_tx(tx: &Transaction, mention: &str) -> String {
@@ -5130,49 +2961,6 @@ fn resolve_in_tx(tx: &Transaction, mention: &str) -> String {
     .ok()
     .flatten()
     .unwrap_or_else(|| mention.to_string())
-}
-
-/// The stable node id for a code entity (spec 29a): `<file>::<path>`, the domain's one join
-/// ([`entity_id`]), `path` a definition's id path in its file (spec 119, IDS FOLLOW THE
-/// LANGUAGE'S PATH) or a caller's path. File-scoped so two files defining the same name are
-/// distinct located entities, and stable across re-extraction (it carries no line, which an edit
-/// shifts) so a later supersede-on-re-extract criterion can key a file's edges by this from-side
-/// identity. It derives a definition's node and a caller's, while a reference lands on its file's
-/// one candidate or on its placeholder ([`placeholder_id`]).
-fn code_entity_id(file: &str, path: &str) -> String {
-    entity_id(file, path)
-}
-
-/// A file node's unresolved references (spec 117, UNRESOLVED REFERENCES ARE A READ), read at
-/// read time and never stored: the sorted distinct leaves of its live `type`, `const` and `use`
-/// rows ([`LEAF_REF_KINDS`], so a module row is never listed) in `project` - those read from the
-/// file or from an id in its `<file>::` range ([`id_range_sql`]), staged at their identity's
-/// current generation ([`live_ref_sql`]) - of which no row of the same `from` and leaf resolves.
-/// Any other node, and a file that owes its rebuild opened with no `refs` table
-/// ([`column_exists`]), lists none.
-fn unresolved_leaves(conn: &Connection, node: &Node, project: &str) -> Result<Vec<String>, Error> {
-    if node.kind != KIND_FILE || !column_exists(conn, "refs", "leaf")? {
-        return Ok(Vec::new());
-    }
-    let sql = format!(
-        "SELECT r.leaf FROM refs r
-          WHERE r.project = ?2 AND (r.from_id = ?1 OR {}) AND r.ref_kind IN ({}) AND {}
-          GROUP BY r.from_id, r.leaf
-         HAVING COUNT(r.target) = 0",
-        id_range_sql("r.from_id", "?1"),
-        kinds_sql(&LEAF_REF_KINDS),
-        live_ref_sql("r")
-    );
-    let leaves: BTreeSet<String> = conn
-        .prepare(&sql)
-        .and_then(|mut stmt| {
-            let leaves = stmt
-                .query_map(params![node.id, project], |r| r.get(0))
-                .and_then(Iterator::collect);
-            leaves
-        })
-        .map_err(be)?;
-    Ok(leaves.into_iter().collect())
 }
 
 /// Fetch a node's `(id, kind, attrs)` scoped to `project`, or `None` when it does not exist there
@@ -5189,24 +2977,6 @@ fn node_row(conn: &Connection, id: &str, project: &str) -> Result<Option<Node>, 
     .map_err(be)
 }
 
-/// The SQL predicate [`is_call_target`] is, over a node row's `attrs`: true unless its `kind` is
-/// one of [`NON_TARGET_KINDS`], an absent `kind` coalescing to the empty string, which is none
-/// of them.
-fn call_target_sql() -> String {
-    format!(
-        "COALESCE(json_extract(attrs, '$.kind'), '') NOT IN ({})",
-        kinds_sql(&NON_TARGET_KINDS)
-    )
-}
-
-/// The kinds `kinds` as the items of a SQL list, each a quoted literal: the code kinds a node
-/// row's `kind` attr is compared against ([`call_target_sql`], [`settled_target_sql`]) and the
-/// `ref_kind`s a `refs` row's is ([`unresolved_leaves`]).
-fn kinds_sql(kinds: &[&str]) -> String {
-    let kinds: Vec<String> = kinds.iter().map(|k| format!("'{k}'")).collect();
-    kinds.join(", ")
-}
-
 /// The store form of [`node_leaf`](super::query::node_leaf) over a node row's `attrs` (spec 119):
 /// its non-empty `name`, NULL for an absent or empty one, where `node_leaf` reads the id. ONE pinned
 /// expression the leaf index (`idx_nodes_leaf`, [`migrate_indexes`]) is built on and every
@@ -5219,10 +2989,7 @@ fn node_leaf_sql() -> &'static str {
 /// The `<file>::` id range (spec 119): `column` holds an id whose file half is the SQL value
 /// `file`, an id `<file>::<rest>` sorting at or after `<file>::` and before `<file>:;` (`;` the
 /// byte after `:`), so a seek of an index on `column` answers it and no `LIKE`/`GLOB` wildcard a
-/// real path could hold is read. The one spelling every reader of a file's id range embeds: the
-/// leaf lookup filtered to a file ([`leaf_definitions_sql`]), a file's supersession
-/// ([`supersede_file_edges`]), its relabel debt ([`owe_relabel_of`]), a file's members
-/// ([`Neighbors::members`]) and its unresolved references ([`unresolved_leaves`]).
+/// real path could hold is read: the spelling a file's members ([`Neighbors::members`]) embed.
 fn id_range_sql(column: &str, file: &str) -> String {
     format!("{column} >= {file} || '::' AND {column} < {file} || ':;'")
 }
@@ -5255,127 +3022,26 @@ fn edge_text_sql(to_id: &str) -> String {
 /// SQL value `leaf` and that value prefixed by [`PLACEHOLDER_SIGIL`]: two seeks of the index, the
 /// first matching a target spelled `<file>::<leaf>`, the second one spelled `<file>::%<leaf>`, so
 /// the binding holds under both spellings and decides nothing about where a reference lands.
-/// `to_id` names the edge's target column. The one spelling every edge-side reader embeds: a
-/// leaf's nodes ([`Neighbors::leaf_nodes`]), the definition arm's tier upgrade and
-/// [`definition_retired`]'s demotion.
+/// `to_id` names the edge's target column. The spelling a leaf's nodes ([`Neighbors::leaf_nodes`])
+/// embed.
 fn edge_binds_leaf_sql(to_id: &str, leaf: &str) -> String {
     let text = edge_text_sql(to_id);
     format!("{text} IN ({leaf}, '{PLACEHOLDER_SIGIL}' || {leaf})")
 }
 
 /// The SQL term an `edges` row passes while no assertion holds it: no `edge_assertions` entry names
-/// its `id`, so neither the history prune's count and delete nor a retirement's re-tiering
-/// touches an edge any entry still names, a prior generation's kept entry included.
+/// its `id`, so the history prune's count and delete never touch an edge an assertion still names.
 const UNASSERTED_EDGE_SQL: &str = "id NOT IN (SELECT edge_id FROM edge_assertions)";
 
 /// The statement `verb` over the `edges` rows the history prune reclaims (spec 41), past the
 /// further conditions `exclusions`, so [`Projector::count_prunable`] counts and [`prune_in`]
 /// deletes one set: an edge retired before the boundary `?1` - a live edge's NULL `valid_to` is
-/// before no boundary - in project `?2`, held by no assertion ([`UNASSERTED_EDGE_SQL`]) and
-/// recorded by no detached attachment, which keeps it to revive.
+/// before no boundary - in project `?2`, held by no assertion ([`UNASSERTED_EDGE_SQL`]).
 fn superseded_edges_sql(verb: &str, exclusions: &str) -> String {
     format!(
         "{verb} FROM edges
-          WHERE valid_to < ?1 AND project = ?2 AND {UNASSERTED_EDGE_SQL}
-            AND id NOT IN (SELECT edge_id FROM detached_attachments) {exclusions}"
+          WHERE valid_to < ?1 AND project = ?2 AND {UNASSERTED_EDGE_SQL} {exclusions}"
     )
-}
-
-/// The read of the code-entity nodes a leaf names, each admitted by the SQL term `rule`: `?1` the
-/// leaf, `?2` the code-entity kind, `?3` the project and, when `in_file`, `?4` the file whose
-/// `<file>::` id range the candidates lie in, or NULL for every file; without `in_file` every
-/// file's candidates. Phrased with the pinned [`node_leaf_sql`] after the project so it seeks the
-/// leaf index `idx_nodes_leaf`.
-fn leaf_definitions_sql(rule: &str, in_file: bool) -> String {
-    let file = if in_file {
-        format!("AND (?4 IS NULL OR ({}))", id_range_sql("id", "?4"))
-    } else {
-        String::new()
-    };
-    format!(
-        "SELECT id FROM nodes
-          WHERE project = ?3 AND {} = ?1
-            AND kind = ?2
-            AND {rule}
-            {file}
-          ORDER BY id",
-        node_leaf_sql()
-    )
-}
-
-/// Which named nodes of a leaf [`definitions_with_suffix`] admits.
-#[derive(Clone, Copy)]
-enum Admitted {
-    /// The call targets alone, by the node's own `kind` ([`call_target_sql`]): what a walk
-    /// resolves a call onto.
-    CallTargets,
-    /// The call targets a live assertion defines ([`live_definition_sql`]): what a reference
-    /// lands on and what a test proof names.
-    LiveCallTargets,
-}
-
-/// The SQL term [`leaf_definitions_sql`] admits a node by under `admitted`.
-fn admitted_sql(admitted: Admitted) -> String {
-    match admitted {
-        Admitted::CallTargets => call_target_sql(),
-        Admitted::LiveCallTargets => live_definition_sql(),
-    }
-}
-
-/// The live-assertion candidate rule (spec 119) for [`leaf_definitions_sql`]: a node is a
-/// candidate only while a LIVE assertion of it ([`live_node_assertions`], joined by `node_id`
-/// through `idx_node_assertions_node`) carries a non-empty `name` ([`node_leaf_sql`]) and a kind
-/// that passes [`call_target_sql`], both read off that assertion's own attrs, since the subquery's
-/// unqualified `attrs` is the assertion's. A knowledge assertion carries no `name`, so it never
-/// keeps a dropped definition a candidate, and a `nodes` row no live assertion names is none.
-///
-/// [`live_node_assertions`]: SCHEMA
-fn live_definition_sql() -> String {
-    format!(
-        "EXISTS (SELECT 1 FROM live_node_assertions
-                  WHERE project = nodes.project AND node_id = nodes.id
-                    AND {} IS NOT NULL AND {})",
-        node_leaf_sql(),
-        call_target_sql()
-    )
-}
-
-/// The code-entity DEFINITION nodes whose leaf is `leaf` ([`node_leaf_sql`], spec 119) that
-/// `admitted` admits ([`Admitted`]), in `project` and, given a `file`, in that file's `<file>::`
-/// id range, sorted by id, each id once (spec 52 - the conservative resolution by leaf's
-/// candidate set). Only a node with a non-empty `name` has a leaf here, so a bare placeholder
-/// sharing the leaf is never itself a candidate.
-fn definitions_with_suffix(
-    conn: &Connection,
-    leaf: &str,
-    project: &str,
-    admitted: Admitted,
-    file: Option<&str>,
-) -> Result<Vec<String>, Error> {
-    let mut stmt = conn
-        .prepare(&leaf_definitions_sql(&admitted_sql(admitted), true))
-        .map_err(be)?;
-    let ids = stmt
-        .query_map(params![leaf, KIND_CODE_ENTITY, project, file], |r| {
-            r.get::<_, String>(0)
-        })
-        .map_err(be)?
-        .collect::<Result<_, _>>()
-        .map_err(be)?;
-    Ok(ids)
-}
-
-/// The call targets of `leaf` a live assertion defines in `file` ([`definitions_with_suffix`]
-/// admitting [`Admitted::LiveCallTargets`] over the file's `<file>::` id range), in `project`,
-/// sorted by id: the candidates a reference from `file` lands on when there is exactly one (the
-/// reference fold arm) and a test proof's same-file candidates ([`resolve_proofs`]).
-fn same_file_candidates(
-    tx: &Transaction,
-    project: &str,
-    file: &str,
-    leaf: &str,
-) -> Result<Vec<String>, Error> {
-    definitions_with_suffix(tx, leaf, project, Admitted::LiveCallTargets, Some(file))
 }
 
 /// The file half of the id `column` holds, cut in SQL at its first `::`: NULL for an id with no
@@ -5384,326 +3050,13 @@ fn file_half_sql(column: &str) -> String {
     format!("NULLIF(substr({column}, 1, instr({column}, '::') - 1), '')")
 }
 
-/// The confidence tier for a REFERENCES edge landed on the placeholder `target` (spec 29a
-/// criterion 2, addendum 6.2; spec 119): the reference arm itself tiers one landed on its one
-/// same-file candidate [`TIER_EXTRACTED`], and calls this for every other. Derived from how the
-/// referenced `name` resolves against the graph's structural knowledge, WITHOUT moving the edge:
-///
-/// - the name is DEFINED somewhere the graph knows (some code-entity node other than the target
-///   has it as its leaf, a call-target definition, nested or not, two same-file ones included)
-///   -> [`TIER_INFERRED`]: a derived / transitive link.
-/// - else no call target defines the name ANYWHERE known -> [`TIER_AMBIGUOUS`]: a grep-visible-only occurrence (a
-///   macro body, reflection string, dynamic or external name). It is kept, never dropped, but
-///   tiered lowest, and the blast radius never crosses it (addendum 2.4).
-///
-/// A definition node is told from a bare reference target by carrying a non-empty `name` attr (the
-/// definition arm sets it; the reference arm creates bare, attr-less targets) and being a call target
-/// ([`call_target_sql`]): a data member or a declaration of the name tiers a reference as no
-/// definition at all does. Called BEFORE the reference arm
-/// `ensure_node`s its bare target, so the target this reference is about to create never miscounts
-/// as its own definition. The reverse fold order - a reference folding before its definition, in
-/// another file or its own - is reconciled convergently by the definition arm's AMBIGUOUS ->
-/// INFERRED upgrade, so the stored tier is a pure function of the final log, not of fold
-/// interleaving.
-fn reference_tier(
-    tx: &Transaction,
-    target: &str,
-    name: &str,
-    project: &str,
-) -> Result<&'static str, Error> {
-    // A code-entity other than this target whose leaf is this name, a call target
-    // ([`definitions_with_suffix`]), nested or not. A bare reference target elsewhere never
-    // matches - it has no `name` attr.
-    let cross_file_def = definitions_with_suffix(tx, name, project, Admitted::CallTargets, None)?
-        .iter()
-        .any(|id| id != target);
-    if cross_file_def {
-        Ok(TIER_INFERRED)
-    } else {
-        Ok(TIER_AMBIGUOUS)
-    }
-}
-
-/// Spec 86 criterion 2 (PROOF LANDS ON THE CARD): fold one TEST-ORIGIN reference (`r.is_test`,
-/// recorded at `source`) entirely as evidence, never as a structural fact - no `file` node and no
-/// edge of any kind, since criterion 1's "never a node and never an edge on the canvas" promise for
-/// test-origin content extends to its evidence. When `r.fresh` marks the first test reference of its
-/// file's batch, the file's prior evidence is superseded first ([`supersede_file_proof`]). An EMPTY
-/// `r.name` is the file's empty-boundary sentinel (its test reference set dropped to zero): the
-/// supersession is its whole job. Otherwise the reference is recorded in `proofs` and its name owes
-/// its proofs their settlement ([`owe_proofs`]), which resolves them once before the transaction
-/// commits ([`settle_proofs`]).
-fn fold_test_evidence(
-    tx: &Transaction,
-    r: &super::EdgeInferred,
-    source: Position,
-    project: &str,
-) -> Result<(), Error> {
-    let file = resolve_in_tx(tx, &r.file);
-    if r.fresh {
-        supersede_file_proof(tx, &file, project)?;
-    }
-    if r.name.is_empty() {
-        return Ok(());
-    }
-    tx.execute(
-        "INSERT INTO proofs (project, name, file, evidence, source) VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![
-            project,
-            r.name,
-            file,
-            format!("{file}:{}", r.line),
-            source as i64
-        ],
-    )
-    .map_err(be)?;
-    owe_proofs(tx, &r.name)
-}
-
-/// Supersede-on-re-extract for EVIDENCE (spec 86 criterion 2, round 2): a test file's re-extracted
-/// batch replaces every proof its prior batch recorded, so an unchanged reference set nets to the
-/// same proof and a reference the edit removed is gone from whatever it proved.
-fn supersede_file_proof(tx: &Transaction, file: &str, project: &str) -> Result<(), Error> {
-    reproving(tx, project, "file", file, || {
-        tx.execute(
-            &format!("DELETE FROM {}", proof_rows_by("file")),
-            params![project, file],
-        )
-        .map(drop)
-        .map_err(be)
-    })
-}
-
-/// Run `change` over the proof rows of `project` whose `key` column holds `value` - `file`, from
-/// [`supersede_file_proof`], its one caller - then rewrite the proof attrs ([`write_proof`]) of
-/// every target those rows held before it or hold after it, each once and in id order: an entity
-/// a row left, reached or kept carries what the rows resolved to it now give it.
-fn reproving(
-    tx: &Transaction,
-    project: &str,
-    key: &str,
-    value: &str,
-    change: impl FnOnce() -> Result<(), Error>,
-) -> Result<(), Error> {
-    let mut targets = proof_targets_by(tx, project, key, value)?;
-    change()?;
-    targets.extend(proof_targets_by(tx, project, key, value)?);
-    for target in &targets {
-        write_proof(tx, target, project)?;
-    }
-    Ok(())
-}
-
-/// The proof rows of the project bound to `?1` whose `key` column - `file`, `name` or `target` -
-/// holds the value bound to `?2`: the one row selection each read and write of one file's, one
-/// name's or one target's proof rows spells.
-fn proof_rows_by(key: &str) -> String {
-    format!("proofs WHERE project = ?1 AND {key} = ?2")
-}
-
-/// The text of the read of the targets the proof rows whose `key` column - `file` or `name` -
-/// holds a value resolve to ([`proof_targets_by`]), each once.
-fn proof_targets_sql(key: &str) -> String {
-    format!(
-        "SELECT DISTINCT target FROM {} AND target IS NOT NULL",
-        proof_rows_by(key)
-    )
-}
-
-/// The targets the proof rows of `project` whose `key` column - `file` or `name` - holds `value`
-/// resolve to, each once, sorted.
-fn proof_targets_by(
-    tx: &Transaction,
-    project: &str,
-    key: &str,
-    value: &str,
-) -> Result<BTreeSet<String>, Error> {
-    let mut stmt = tx.prepare(&proof_targets_sql(key)).map_err(be)?;
-    let targets = stmt
-        .query_map(params![project, value], |r| r.get(0))
-        .map_err(be)?
-        .collect::<Result<_, _>>()
-        .map_err(be)?;
-    Ok(targets)
-}
-
-/// Owe the proofs of `name` their settlement (spec 122, PROOFS SETTLE ONCE PER TRANSACTION): its
-/// row in `proofs_owed`, one however often the transaction owes it, which the transaction's frame
-/// pays before it commits ([`settle_proofs`]). Owed whenever a test reference to `name` is
-/// recorded ([`fold_test_evidence`]) and whenever a call-target definition of `name` folds or
-/// stops being one ([`definition_retired`]).
-fn owe_proofs(tx: &Transaction, name: &str) -> Result<(), Error> {
-    tx.execute(
-        "INSERT OR IGNORE INTO proofs_owed (name) VALUES (?1)",
-        [name],
-    )
-    .map(drop)
-    .map_err(be)
-}
-
-/// Settle every name `tx` owed its proofs ([`owe_proofs`]) in `project`, in name order, and pay
-/// its row, so `proofs_owed` is empty when the transaction commits ([`in_transaction`]): each is
-/// resolved once ([`resolve_proofs`]), which itself rewrites the proof attrs of the old and new
-/// target of every row it moves, and then every target its rows hold after resolving has its
-/// proof attrs rewritten once ([`write_proof`]) - so a definition retired and revived within the
-/// transaction, whose rows never moved off it, regains the proof its retirement stripped (THE
-/// REVIVED PROOF). A file without `proofs_owed` - one that owes its rebuild, opened as it stands
-/// ([`Projector::open`]) - owes no name, since no fold writes into it, and settles nothing.
-fn settle_proofs(tx: &Transaction, project: &str) -> Result<(), Error> {
-    if !has_table(tx, "proofs_owed")? {
-        return Ok(());
-    }
-    for name in &owed_names(tx)? {
-        resolve_proofs(tx, name, project)?;
-        for target in &proof_targets_by(tx, project, "name", name)? {
-            write_proof(tx, target, project)?;
-        }
-    }
-    tx.execute("DELETE FROM proofs_owed", [])
-        .map(drop)
-        .map_err(be)
-}
-
-/// The names `conn`'s file owes their proofs ([`owe_proofs`]), in name order.
-fn owed_names(conn: &Connection) -> Result<Vec<String>, Error> {
-    let mut stmt = conn
-        .prepare("SELECT name FROM proofs_owed ORDER BY name")
-        .map_err(be)?;
-    let names = stmt
-        .query_map([], |r| r.get(0))
-        .map_err(be)?
-        .collect::<Result<_, _>>()
-        .map_err(be)?;
-    Ok(names)
-}
-
-/// Resolve every recorded test reference to `name` against the call-target definitions of the leaf
-/// `name` a live assertion defines ([`Admitted::LiveCallTargets`]; no proof lands on a data member, a
-/// declaration or a `nodes` row no live assertion names) the graph
-/// holds NOW (spec 86 criterion 2; spec 101, "convergences undo with their definition"; spec 119):
-/// the reference's own file's one candidate when it has exactly one ([`same_file_candidates`], the
-/// `#[cfg(test)] mod tests` idiom), else, when its file has none, the ONE definition of `name` in
-/// the project, else none - two same-file candidates name none, and a reference waits, never
-/// guessing among several same-named definitions. Run once per transaction for each name it owed
-/// ([`settle_proofs`]) - a name is owed whenever a reference to it is recorded and whenever a
-/// definition of it folds or stops being one ([`owe_proofs`]) - so where a proof lands is a pure
-/// function of the live definitions and references - the same whichever order they folded in, and
-/// the same for a log and its compacted form.
-fn resolve_proofs(tx: &Transaction, name: &str, project: &str) -> Result<(), Error> {
-    let definitions = definitions_with_suffix(tx, name, project, Admitted::LiveCallTargets, None)?;
-    let only = match definitions.as_slice() {
-        [one] => Some(one.clone()),
-        _ => None,
-    };
-    let recorded: Vec<(i64, String, Option<String>)> = {
-        let mut stmt = tx
-            .prepare(&format!(
-                "SELECT rowid, file, target FROM {} ORDER BY rowid",
-                proof_rows_by("name")
-            ))
-            .map_err(be)?;
-        let rows = stmt
-            .query_map(params![project, name], |r| {
-                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
-            })
-            .map_err(be)?
-            .collect::<Result<_, _>>()
-            .map_err(be)?;
-        rows
-    };
-    let mut touched: BTreeSet<String> = BTreeSet::new();
-    for (row, file, target) in recorded {
-        let resolved = match same_file_candidates(tx, project, &file, name)?.as_slice() {
-            [] => only.clone(),
-            [one] => Some(one.clone()),
-            _ => None,
-        };
-        if resolved != target {
-            tx.execute(
-                "UPDATE proofs SET target = ?2 WHERE rowid = ?1",
-                params![row, resolved],
-            )
-            .map_err(be)?;
-            touched.extend(target);
-            touched.extend(resolved);
-        }
-    }
-    for id in &touched {
-        write_proof(tx, id, project)?;
-    }
-    Ok(())
-}
-
-/// The attrs keys a proof writes onto the entity it proves.
-fn proof_keys() -> BTreeSet<String> {
-    ["proof_evidence", "proven_by"]
-        .into_iter()
-        .map(String::from)
-        .collect()
-}
-
-/// Write onto entity `id` the proof its resolved references give it: `proven_by`, their count, and
-/// `proof_evidence`, their `file:line`s in the order they were recorded - or neither key when none
-/// resolves to it. Both are JSON STRINGS merged over the entity's other attrs (`Node::attrs` is a
-/// `String` map, so a bare number or array would fail its whole deserialize); the list is computed
-/// here and bound as a plain parameter, because a json1 function's return value nested as
-/// `json_set`'s value would be stored as a bare array.
-fn write_proof(tx: &Transaction, id: &str, project: &str) -> Result<(), Error> {
-    let evidence: Vec<String> = {
-        let mut stmt = tx
-            .prepare(&format!(
-                "SELECT evidence FROM {} ORDER BY source, evidence",
-                proof_rows_by("target")
-            ))
-            .map_err(be)?;
-        let rows = stmt
-            .query_map(params![project, id], |r| r.get(0))
-            .map_err(be)?
-            .collect::<Result<_, _>>()
-            .map_err(be)?;
-        rows
-    };
-    if evidence.is_empty() {
-        return remove_attr_keys(tx, "nodes", id, &proof_keys(), project);
-    }
-    tx.execute(
-        "UPDATE nodes SET attrs = json_set(
-             COALESCE(attrs, '{}'), '$.proven_by', ?2, '$.proof_evidence', ?3
-         ) WHERE id = ?1 AND project = ?4",
-        params![
-            id,
-            evidence.len().to_string(),
-            serde_json::to_string(&evidence).map_err(be)?,
-            project
-        ],
-    )
-    .map_err(be)?;
-    Ok(())
-}
-
 fn ensure_node(
     tx: &Transaction,
-    by: &Asserter,
     id: &str,
     kind: &str,
     attrs: &[(&str, &str)],
     project: &str,
 ) -> Result<(), Error> {
-    // A node a superseded generation left unheld was RETIRED, not deleted
-    // ([`retire_unheld_nodes`]): asserting it again restores what other folds recorded on it, as
-    // the kind THIS assertion says - the retired kind was only the superseded generation's word -
-    // before the upsert below merges this assertion into it.
-    tx.execute(
-        "INSERT OR IGNORE INTO nodes (id, kind, attrs, project)
-         SELECT id, ?3, attrs, project FROM retired_nodes WHERE id = ?1 AND project = ?2",
-        params![id, project, kind],
-    )
-    .map_err(be)?;
-    tx.execute(
-        "DELETE FROM retired_nodes WHERE id = ?1 AND project = ?2",
-        params![id, project],
-    )
-    .map_err(be)?;
     let attr_json: Option<String> = if attrs.is_empty() {
         None
     } else {
@@ -5714,54 +3067,17 @@ fn ensure_node(
     // (id, project), so the SAME id under a DIFFERENT project is a distinct row, never an
     // upsert over another project's node.
     //
-    // One-graph identity (spec 29a/29b, addendum 6.1 single id space): a rel-path is ONE node
-    // whether it is reached as a touched / governed / cited artifact (KIND_ARTIFACT), as a source
-    // file with extracted code structure (KIND_FILE, spec 29a), or as an ingested design-intent doc
-    // (KIND_DESIGN_DOC / KIND_ARCH_DECISION / KIND_HANDBOOK_RULE / KIND_RATIONALE, spec 29b). All
-    // fold into the same (id, project) row, so the kind must resolve deterministically no matter
-    // which event folds first. KIND_ARTIFACT is the GENERIC role - a path merely referenced by a
-    // decision / lesson / finding - so a more specific role PROMOTES it: a path only becomes a file
-    // because code was extracted from it, and only becomes a design-doc because it was ingested as
-    // design intent, and either PROVES what the path is. On conflict an existing bare KIND_ARTIFACT
-    // is promoted to the specific incoming kind and, symmetrically, a later KIND_ARTIFACT reference
-    // never DEMOTES an established specific kind - so the node's kind is a pure function of the
-    // source, not of log interleaving. Only KIND_ARTIFACT promotes: its ids are the only path
-    // space, and every other kind keeps first-writer-wins (their ids are distinct slug spaces -
-    // decision / unit / agent / gate ids - that never collide with a path). This is the single
-    // node-mutation authority, so the reconciliation lives here rather than in a second UPDATE path.
+    // One kind per (id, project): a more specific kind promotes a bare KIND_ARTIFACT and a later
+    // KIND_ARTIFACT never demotes it ([`settled_kind`]), so the kind is a function of the source,
+    // not of log interleaving. This is the single node-mutation authority, so the reconciliation
+    // lives here rather than in a second UPDATE path.
     //
-    // MERGE, never whole-blob replace (spec 86 criterion 2 round 2:
-    // sdet-u86c2-r-fresh-refold-wipes-cross-file-proof). Before this fix, incoming non-empty attrs
-    // fully REPLACED the stored blob (`COALESCE(excluded.attrs, nodes.attrs)`), which silently
-    // erased whatever `record_proof`/`supersede_file_proof` had written directly onto a
-    // code-entity's attrs (`proven_by`/`proof_evidence`) the moment that SAME entity's own
-    // structural fields (`name`/`kind`/`line`/`lang`) re-asserted on a later, unrelated
-    // re-extraction of its file - the TYPE_CODE_ENTITY_EXTRACTED arm's `ensure_node` call carries
-    // only those four keys, never the evidence ones. `json_patch` (RFC 7396 merge) keeps every
-    // existing key the incoming attrs do not mention and overwrites only the ones they do, so a
-    // structural re-fold still updates `line` when a definition moves while leaving a DIFFERENT
-    // file's accumulated proof untouched - the two mutation paths (this one and
-    // `record_proof`/`supersede_file_proof`'s own merge-via-`json_set`) now compose instead of
-    // racing. Every OTHER caller of `ensure_node` passes attrs whose OWN keys are either
-    // all-or-nothing stable across refolds (a decision's `summary`, a finding's
-    // `summary`/`by`/`unit`, a design-intent concept's `title`/`doc`) or empty, so none of THEM
-    // relied on the old whole-blob-replace semantics to drop one of THEIR OWN stale keys - this is
-    // a pure widening for `ensure_node`'s own callers, not a behavior change for any other fold
-    // arm's OWN attrs.
-    //
-    // Narrower than it first reads, corrected (spec 86 criterion 2 round 3, arch-u86c2-r2-
-    // ensure-node-merge-silently-narrows-spec25-disposition-mark-erasure): that claim covers only
-    // keys `ensure_node`'s OWN callers write. A DIFFERENT writer - the spec-25 disposition-expiry
-    // mark (`$.disposition`/`$.unit`, set by a raw `json_set` UPDATE outside `ensure_node`
-    // entirely, on the SAME `KIND_FINDING` node `TYPE_REVIEW_FINDING`'s `ensure_node` call also
-    // writes) - DID rely on the old whole-blob-replace to get cleared on a re-raise. Under this
-    // merge it is not silently WRONG (the `TYPE_UNIT_INTEGRATED` fold arm's own doc above works
-    // out why the run-scoping guarantee it protects still holds, for a narrower and more fragile
-    // reason), but the widening is not the "no other fold arm relies on the old semantics" pure
-    // case this paragraph's own claim implies - a second writer sharing a node with an
-    // `ensure_node` caller is exactly the composability seam to check before widening this
-    // function again. When the incoming attrs are empty (`excluded.attrs IS NULL`, a
-    // bare/defensive `ensure_node`), the existing attrs are left untouched exactly as before.
+    // MERGE, never whole-blob replace: `json_patch` (RFC 7396) keeps every stored key the incoming
+    // attrs do not mention. A second writer shares a node with this one - the spec-25
+    // disposition-expiry mark (`$.disposition`/`$.unit`, a raw `json_set` on a KIND_FINDING node
+    // `TYPE_REVIEW_FINDING` also writes) - which a re-raise therefore keeps; the
+    // `TYPE_UNIT_INTEGRATED` arm's doc works out why run scoping still holds. Empty incoming attrs
+    // (`excluded.attrs IS NULL`) leave the stored ones untouched.
     tx.execute(
         "INSERT INTO nodes (id, kind, attrs, project) VALUES (?1, ?2, ?3, ?4)
          ON CONFLICT(id, project) DO UPDATE SET
@@ -5789,19 +3105,7 @@ fn ensure_node(
         ],
     )
     .map_err(be)?;
-    // The node is held: every attachment detached while it was not, or while it was held as a
-    // kind that does not hold it, comes back live if its kind now holds it. The upsert never
-    // demotes a kind, so no live attachment needs detaching here.
-    let held: String = tx
-        .query_row(
-            "SELECT kind FROM nodes WHERE id = ?1 AND project = ?2",
-            params![id, project],
-            |r| r.get(0),
-        )
-        .map_err(be)?;
-    revive_attachments(tx, id, &held, project)?;
-    owe_relabel_of(tx, id, false, project)?;
-    record_assertion(tx, by, id, kind, attr_json.as_deref(), project)
+    record_assertion(tx, id, kind, attr_json.as_deref(), project)
 }
 
 /// The specific kinds that PROMOTE a bare [`KIND_ARTIFACT`] path node ([`ensure_node`]): each
@@ -5827,81 +3131,42 @@ fn settled_kind<'k>(kinds: impl IntoIterator<Item = &'k str>) -> Option<&'k str>
     })
 }
 
-/// Record that `by` asserts node `id` as `kind` with `attrs` (spec 101): the node assertions are
-/// what the generation rule reads to know who still holds a node. Within one generation the
-/// assertions merge as the node does; an assertion of a NEWER generation of the same identity
-/// replaces the older one, and what only the older one said is retracted from the node
-/// ([`settle_node`]).
+/// Record the log's assertion of the node `id` as `kind` with `attrs` (identity-empty: no later
+/// generation retracts it), merging `attrs` into the one it recorded before and keeping the kind
+/// it settled ([`settled_kind`]).
 fn record_assertion(
     tx: &Transaction,
-    by: &Asserter,
     id: &str,
     kind: &str,
     attrs: Option<&str>,
     project: &str,
 ) -> Result<(), Error> {
-    match recorded_assertion(tx, by, id, project)? {
-        Some((generation, recorded_kind, _)) if generation == by.generation => {
-            let settled = settled_kind([recorded_kind.as_str(), kind]).unwrap_or(kind);
-            tx.execute(
-                "UPDATE node_assertions
-                    SET kind = ?4,
-                        attrs = CASE
-                            WHEN ?5 IS NULL THEN attrs
-                            ELSE json_patch(COALESCE(attrs, '{}'), ?5)
-                        END
-                  WHERE project = ?1 AND identity = ?2 AND node_id = ?3",
-                params![project, by.identity, id, settled, attrs],
-            )
-            .map_err(be)?;
-            Ok(())
-        }
-        recorded => {
-            tx.execute(
-                "INSERT INTO node_assertions (project, identity, generation, node_id, kind, attrs)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-                 ON CONFLICT (project, identity, node_id) DO UPDATE SET
-                     generation = excluded.generation, kind = excluded.kind,
-                     attrs = excluded.attrs",
-                params![project, by.identity, by.generation, id, kind, attrs],
-            )
-            .map_err(be)?;
-            match recorded {
-                Some((_, _, prior)) => settle_node(tx, id, prior.as_deref(), by.at, project),
-                None => Ok(()),
-            }
-        }
-    }
-}
-
-/// The attrs keys an assertion's `attrs` JSON carries (none for absent or unreadable attrs).
-fn assertion_keys(attrs: Option<&str>) -> BTreeSet<String> {
-    attrs
-        .and_then(|a| serde_json::from_str::<BTreeMap<String, serde_json::Value>>(a).ok())
-        .map(|m| m.into_keys().collect())
-        .unwrap_or_default()
-}
-
-/// Remove every attrs key in `keys` from node `id`'s row in `table` (`nodes` or `retired_nodes`),
-/// leaving no attrs at all (as a node never given any has) when none remain.
-fn remove_attr_keys(
-    tx: &Transaction,
-    table: &str,
-    id: &str,
-    keys: &BTreeSet<String>,
-    project: &str,
-) -> Result<(), Error> {
-    for key in keys {
-        tx.execute(
-            &format!(
-                "UPDATE {table} SET attrs = NULLIF(json_remove(attrs, ?3), '{{}}')
-                  WHERE id = ?1 AND project = ?2"
-            ),
-            params![id, project, format!("$.\"{key}\"")],
+    let recorded: Option<String> = tx
+        .query_row(
+            "SELECT kind FROM node_assertions
+              WHERE project = ?1 AND identity = '' AND node_id = ?2",
+            params![project, id],
+            |r| r.get(0),
         )
+        .optional()
         .map_err(be)?;
-    }
-    Ok(())
+    let settled = match &recorded {
+        Some(recorded) => settled_kind([recorded.as_str(), kind]).unwrap_or(kind),
+        None => kind,
+    };
+    tx.execute(
+        "INSERT INTO node_assertions (project, identity, generation, node_id, kind, attrs)
+         VALUES (?1, '', '', ?2, ?3, ?4)
+         ON CONFLICT (project, identity, node_id) DO UPDATE SET
+             kind = excluded.kind,
+             attrs = CASE
+                 WHEN excluded.attrs IS NULL THEN node_assertions.attrs
+                 ELSE json_patch(COALESCE(node_assertions.attrs, '{}'), excluded.attrs)
+             END",
+        params![project, id, settled, attrs],
+    )
+    .map(drop)
+    .map_err(be)
 }
 
 /// Assert a live edge, UPSERT-LIVE (spec 40): at most one live edge per
@@ -5945,181 +3210,14 @@ fn add_edge(
     if let Some(id) = live {
         return Ok(id);
     }
-    let (id, declaration): (i64, bool) = tx
-        .query_row(
-            &format!(
-                "INSERT INTO edges (from_id, to_id, rel, valid_from, valid_to, source, project, tier)
-                 VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?6, ?7)
-                 RETURNING id, {}",
-                edge_declaration_sql()
-            ),
-            params![from, to, rel, at, src as i64, project, tier],
-            |r| <(i64, bool)>::try_from(r),
-        )
-        .map_err(be)?;
-    // A new structural edge raises both endpoints' degree, which a community label weighs, a module
-    // declaration's excepted ([`owe_relabel_of_ends`]).
-    owe_relabel_of_ends(tx, from, to, rel, declaration, project).map(|()| id)
-}
-
-/// Owe a relabel to the communities of both ends of a `rel` edge from `from` to `to` whose
-/// liveness just changed, when it is a structural edge (`CALLS`, `REFERENCES` or `CONTAINS`) and
-/// no module declaration's `CONTAINS` onto its file - `declaration`, which the statement writing
-/// the edge answers ([`edge_declaration_sql`], spec 117): its endpoints' degree, which a community
-/// label weighs ([`relabel_owed_communities`]), moved.
-fn owe_relabel_of_ends(
-    tx: &Transaction,
-    from: &str,
-    to: &str,
-    rel: &str,
-    declaration: bool,
-    project: &str,
-) -> Result<(), Error> {
-    match [REL_CALLS, REL_REFERENCES, REL_CONTAINS].contains(&rel) && !declaration {
-        true => [from, to]
-            .into_iter()
-            .try_for_each(|end| owe_relabel_of(tx, end, false, project)),
-        false => Ok(()),
-    }
-}
-
-/// The store form of [`declares_a_module`](super::declares_a_module) over the SQL values `rel`,
-/// `to` and `project`: a `CONTAINS` onto a node of kind `file` in the project, held or retired
-/// ([`retire_unheld_nodes`]), so the edge a retired file's batch stamps is one too - the one
-/// spelling the label degree ([`relabel_owed_communities`]) and the relabel debt
-/// ([`edge_declaration_sql`]) read, held to the domain rule by a test.
-fn declaration_sql(rel: &str, to: &str, project: &str) -> String {
-    format!(
-        "({rel} = '{REL_CONTAINS}' AND EXISTS (
-            SELECT 1 FROM nodes WHERE id = {to} AND project = {project} AND kind = '{KIND_FILE}'
-            UNION ALL
-            SELECT 1 FROM retired_nodes
-             WHERE id = {to} AND project = {project} AND kind = '{KIND_FILE}'))"
+    tx.query_row(
+        "INSERT INTO edges (from_id, to_id, rel, valid_from, valid_to, source, project, tier)
+         VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?6, ?7)
+         RETURNING id",
+        params![from, to, rel, at, src as i64, project, tier],
+        |r| r.get(0),
     )
-}
-
-/// [`declaration_sql`] of the `edges` row a statement writes, which its `RETURNING` answers: the
-/// one form [`add_edge`] and [`settle_edge`] owe a relabel by ([`owe_relabel_of_ends`]).
-fn edge_declaration_sql() -> String {
-    declaration_sql("edges.rel", "edges.to_id", "edges.project")
-}
-
-/// Settle live asserted edge `edge` - a design link, or a staged row's edge (spec 117) - from its
-/// LIVE assertions ([`live_edge_assertions`]): an edge no live assertion holds any more is retired
-/// at `at`, owing its endpoints a relabel when it is structural and no module declaration
-/// ([`owe_relabel_of_ends`]); one still held takes its dates from them - valid since the earliest
-/// of their runs began, last asserted at the newest of their recordings - so what a superseded
-/// generation said about it is gone with that generation.
-///
-/// [`live_edge_assertions`]: SCHEMA
-fn settle_edge(tx: &Transaction, edge: i64, at: i64, project: &str) -> Result<(), Error> {
-    let held: Option<(i64, i64)> = tx
-        .query_row(
-            "SELECT min(since), max(source) FROM live_edge_assertions
-              WHERE project = ?1 AND edge_id = ?2
-             HAVING count(*) > 0",
-            params![project, edge],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .optional()
-        .map_err(be)?;
-    match held {
-        Some((since, source)) => tx
-            .execute(
-                "UPDATE edges SET valid_from = ?2, source = ?3 WHERE id = ?1",
-                params![edge, since, source],
-            )
-            .map(drop)
-            .map_err(be),
-        None => {
-            let (from, to, rel, declaration): (String, String, String, bool) = tx
-                .query_row(
-                    &format!(
-                        "UPDATE edges SET valid_to = ?2 WHERE id = ?1
-                         RETURNING from_id, to_id, rel, {}",
-                        edge_declaration_sql()
-                    ),
-                    params![edge, at],
-                    |r| <(String, String, String, bool)>::try_from(r),
-                )
-                .map_err(be)?;
-            owe_relabel_of_ends(tx, &from, &to, &rel, declaration, project)
-        }
-    }
-}
-
-/// Assert a `tier` link under the generation rule (spec 101): a design link, at
-/// [`TIER_EXTRACTED`], or a staged row's edge - a reference's or a module row's (spec 117, ONE
-/// RETIRER; A MODULE ROW REACHES ITS FILE). Every asserter
-/// records its own assertion of the edge: the valid time its unbroken run of assertions began
-/// (`since`) and its newest recording (`source`), and the edge takes its dates from its live
-/// assertions ([`settle_edge`]). A link the identity's PRIOR generation asserted continues that run - retired
-/// when this generation opened ([`advance_generation`]) unless another asserter held it, it is
-/// REVIVED in place - and keeps the date the run began; a link the prior generation did not assert
-/// is new from `at`, whatever an older generation once said: a generation that dropped it broke the
-/// run. An event outside the rule (an unkeyed recording) asserts the edge identity-empty, so no
-/// generation's retirement ever retires an edge a recording the log keeps still asserts.
-#[allow(clippy::too_many_arguments)]
-fn assert_link(
-    tx: &Transaction,
-    by: &Asserter,
-    from: &str,
-    to: &str,
-    rel: &str,
-    at: i64,
-    src: Position,
-    project: &str,
-    tier: &str,
-) -> Result<(), Error> {
-    let revived: Option<i64> = tx
-        .query_row(
-            "UPDATE edges SET valid_to = NULL
-              WHERE id = (
-                SELECT e.id FROM edges e
-                  JOIN edge_assertions a ON a.edge_id = e.id
-                  JOIN generations g
-                    ON g.project = a.project AND g.identity = a.identity
-                   AND a.generation = g.prior
-                 WHERE a.project = ?4 AND a.identity = ?6
-                   AND e.from_id = ?1 AND e.to_id = ?2 AND e.rel = ?3 AND e.tier = ?5
-                   AND e.valid_to IS NOT NULL
-                   AND NOT EXISTS (
-                     SELECT 1 FROM edges l
-                      WHERE l.from_id = ?1 AND l.to_id = ?2 AND l.rel = ?3 AND l.tier = ?5
-                        AND l.project = ?4 AND l.valid_to IS NULL)
-                 ORDER BY e.id DESC
-                 LIMIT 1)
-             RETURNING id",
-            params![from, to, rel, project, tier, by.identity],
-            |r| r.get(0),
-        )
-        .optional()
-        .map_err(be)?;
-    let id = match revived {
-        Some(id) => id,
-        None => add_edge(tx, from, to, rel, at, src, project, tier)?,
-    };
-    // The run this assertion belongs to: its own generation's (a re-recording), the prior
-    // generation's (an unbroken continuation), or a new one from `at`.
-    tx.execute(
-        "INSERT INTO edge_assertions (project, identity, generation, edge_id, since, source)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-         ON CONFLICT (project, identity, edge_id) DO UPDATE SET
-             since = CASE
-                 WHEN edge_assertions.generation = excluded.generation
-                     THEN min(edge_assertions.since, excluded.since)
-                 WHEN edge_assertions.generation = (
-                     SELECT prior FROM generations
-                      WHERE project = excluded.project AND identity = excluded.identity)
-                     THEN edge_assertions.since
-                 ELSE excluded.since
-             END,
-             source = max(edge_assertions.source, excluded.source),
-             generation = excluded.generation",
-        params![project, by.identity, by.generation, id, at, src as i64],
-    )
-    .map_err(be)?;
-    settle_edge(tx, id, at, project)
+    .map_err(be)
 }
 
 #[cfg(test)]
@@ -6130,13 +3228,11 @@ mod tests {
     // only these tests - which PROVE the machinery is gone - still name them. REL_RAISED stays in
     // the module-level import (invalidate_finding_edges still references it).
     use super::super::{
-        KIND_AGENT, KIND_GATE, KIND_UNIT, META_ACTOR, REL_ASSIGNED_TO, REL_BLOCKS, REL_DECIDED,
-        REL_GATED_BY, REL_TOUCHES,
+        KIND_AGENT, KIND_GATE, KIND_UNIT, META_ACTOR, REL_ASSIGNED_TO, REL_BLOCKS, REL_CALLS,
+        REL_DECIDED, REL_GATED_BY, REL_REFERENCES, REL_TOUCHES, TIER_AMBIGUOUS, TIER_INFERRED,
     };
     use crate::test_support::{
-        apply_call, apply_code_entity, apply_decision, apply_def, apply_def_at,
-        apply_edge_inferred_evidence, apply_governs_at, apply_json, apply_json_as, apply_ref,
-        call_back_edge, call_edge_pairs, call_layer, call_node_ids, decision_json, dir_snapshot,
+        apply_decision, apply_governs_at, apply_json, apply_json_as, decision_json, dir_snapshot,
         edge_tier,
     };
     use crate::test_support::{records_graph, RecordsRead};
@@ -6695,31 +3791,16 @@ mod tests {
         );
     }
 
-    /// The log [`a_rebuild_passes_an_unresolved_entry_and_a_rejected_batch_over_with_their_causes`]
-    /// and [`a_direct_fold_meeting_its_own_passed_over_position_answers_its_cause_with_no_mark`]
-    /// rebuild: a ledger entry at 1 no source resolves, one at 2 whose re-extracted batch
-    /// ([`batch_of_the_rejected_entry`]) the judge rejects, a decision at 3 whose own payload it
+    /// The log [`catching_up_over_a_log_folds_what_a_rebuild_of_it_folds`] folds both ways: a
+    /// decision at 1 that folds, a decision at 2 and a lesson at 3 whose own payloads the judge
     /// rejects, and a decision at 4 that folds.
     fn passing_over_log() -> [Event; 4] {
         [
-            crate::test_support::unresolved_entry_at(1),
-            crate::test_support::rejected_batch_entries([2]).remove(0),
-            crate::test_support::poisoned_decision_at(3),
+            decision_at("d1", "a.rs", 1),
+            crate::test_support::poisoned_decision_at(2),
+            rejected_lesson_at(3),
             decision_at("d4", "d.rs", 4),
         ]
-    }
-
-    /// What the re-extraction of [`passing_over_log`] answers for `entry`: no batch for the entry at
-    /// 1, and for the one at 2 a batch whose one event's payload the judge rejects.
-    fn batch_of_the_rejected_entry(entry: &Event) -> Result<Option<Vec<Event>>, Error> {
-        Ok((entry.position == 2).then(crate::test_support::poisoned_batch))
-    }
-
-    /// The cause a position of [`passing_over_log`] is passed over with when the judge rejects its
-    /// one payload, an event of `type_` - `class` names whose payload it is: the entry at 2's
-    /// re-extracted batch event (`fold failed`) or the decision at 3's own (`payload rejected`).
-    fn poison_cause(class: &str, type_: &str) -> String {
-        crate::test_support::judged_cause(class, type_, crate::test_support::POISON)
     }
 
     /// `log`, a [`passing_over_log`], rebuilt into a fresh graph file, as setup rebuilds it: the
@@ -6727,149 +3808,13 @@ mod tests {
     fn rebuilt_passing_over(log: &[Event]) -> (tempfile::TempDir, String) {
         let (dir, path) = crate::test_support::temp_graph_db();
         assert_eq!(
-            crate::test_support::rebuild_answer(
-                &path,
-                true,
-                &mut |after, sink| stream_past(log, after, 10, sink),
-                crate::test_support::resolving(batch_of_the_rejected_entry),
-            ),
+            crate::test_support::rebuild_answer(&path, true, &mut |after, sink| stream_past(
+                log, after, 10, sink
+            ),),
             crate::test_support::clean_rebuild(),
             "the rebuild completes, passing every position it cannot fold over"
         );
         (dir, path)
-    }
-
-    /// Spec 124, THE DECIDE STEP: a rebuild passes over, each with its cause, a ledger entry whose
-    /// re-extraction resolves to nothing (`resolved to nothing`), one whose re-extracted batch the
-    /// judge rejects (`fold failed`) and an event whose own payload it rejects (`payload
-    /// rejected`), recording every position in the `applied` ledger, and completes, folding the
-    /// rest - neither entry installs a generation.
-    #[test]
-    fn a_rebuild_passes_an_unresolved_entry_and_a_rejected_batch_over_with_their_causes() {
-        let (_dir, path) = rebuilt_passing_over(&passing_over_log());
-        let p = Projector::open(&path, "test").unwrap();
-        assert_eq!(
-            (
-                crate::test_support::passed_over_rows(&path),
-                applied_through(&p, 4),
-                live_governs(&p)
-                    .into_iter()
-                    .map(|g| g.1)
-                    .collect::<Vec<_>>(),
-                [
-                    p.current_generation(&crate::test_support::gc_identity("src/a.rs"))
-                        .unwrap(),
-                    p.current_generation(&crate::test_support::gc_identity("src/b.rs"))
-                        .unwrap(),
-                ],
-            ),
-            (
-                vec![
-                    (1, RESOLVED_TO_NOTHING.to_string()),
-                    (2, poison_cause(FOLD_FAILED, TYPE_CODE_ENTITY_EXTRACTED)),
-                    (3, poison_cause(PAYLOAD_REJECTED, TYPE_DECISION_MADE)),
-                ],
-                vec![true; 4],
-                vec!["d.rs".to_string()],
-                [None, None],
-            )
-        );
-    }
-
-    /// Spec 124, WIRING: a rebuild re-extracts through a re-extraction of its own, which it builds
-    /// once from the factory its projector is handed ([`Projector::with_reextraction`]) and drops
-    /// before it returns, so nothing the re-extraction holds - a batch process - outlives the
-    /// rebuild; the entries it folds take the batches that re-extraction answers.
-    #[test]
-    fn a_rebuild_re_extracts_through_one_re_extraction_of_its_own_dropped_as_it_returns() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        use std::sync::Arc;
-
-        /// What a re-extraction holds: it counts itself dropped.
-        struct Held(Arc<AtomicUsize>);
-        impl Drop for Held {
-            fn drop(&mut self) {
-                self.0.fetch_add(1, Ordering::SeqCst);
-            }
-        }
-
-        let log = passing_over_log();
-        let (built, dropped) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
-        let (_dir, path) = crate::test_support::temp_graph_db();
-        let p = Projector::open(&path, "test").unwrap().with_reextraction({
-            let (built, dropped) = (Arc::clone(&built), Arc::clone(&dropped));
-            move || {
-                built.fetch_add(1, Ordering::SeqCst);
-                let held = Held(Arc::clone(&dropped));
-                Box::new(move |entry: &Event| {
-                    let _ = &held;
-                    batch_of_the_rejected_entry(entry)
-                })
-            }
-        });
-        let rebuilt = p.rebuild(
-            &locked(&path),
-            true,
-            &mut |after, sink| stream_past(&log, after, 10, sink),
-            &mut |_| {},
-        );
-        assert_eq!(
-            (
-                rebuilt.map_err(|e| e.0),
-                built.load(Ordering::SeqCst),
-                dropped.load(Ordering::SeqCst),
-                crate::test_support::passed_over_rows(&path),
-            ),
-            (
-                Ok(Some(Rebuilt::default())),
-                1,
-                1,
-                vec![
-                    (1, RESOLVED_TO_NOTHING.to_string()),
-                    (2, poison_cause(FOLD_FAILED, TYPE_CODE_ENTITY_EXTRACTED)),
-                    (3, poison_cause(PAYLOAD_REJECTED, TYPE_DECISION_MADE)),
-                ],
-            ),
-            "one re-extraction built for the rebuild, dropped as it returns, its batches folded"
-        );
-    }
-
-    /// Spec 124, the direct fold's own-position answer: a direct fold meeting its own position
-    /// already passed over answers that position's cause - through `apply_generation`, through
-    /// `apply`, and through `apply_batch` beside a position it folds and still commits - writing no
-    /// mark, and the next fold into the file is not refused.
-    #[test]
-    fn a_direct_fold_meeting_its_own_passed_over_position_answers_its_cause_with_no_mark() {
-        use crate::contextgraph::Fold;
-        let log = passing_over_log();
-        let (dir, path) = rebuilt_passing_over(&log);
-        let p = Projector::open(&path, "test").unwrap();
-        let rejected = poison_cause(PAYLOAD_REJECTED, TYPE_DECISION_MADE);
-        assert_eq!(
-            (
-                crate::test_support::fold_entry_result(&p, &log[0], Vec::new()),
-                crate::test_support::fold_entry_result(&p, &log[1], Vec::new()),
-                crate::test_support::fold_of(&p, &log[2..3]),
-                crate::test_support::fold_of(&p, &[log[2].clone(), decision_at("d5", "e.rs", 5)]),
-            ),
-            (
-                Err(RESOLVED_TO_NOTHING.to_string()),
-                Err(poison_cause(FOLD_FAILED, TYPE_CODE_ENTITY_EXTRACTED)),
-                Fold::NotFolded(crate::test_support::graph_error(&rejected)),
-                Fold::NotFolded(crate::test_support::graph_error(&rejected)),
-            ),
-            "each direct fold answers its own passed-over position's cause"
-        );
-        assert_eq!(
-            (
-                crate::test_support::owed_mark_in(dir.path()).exists(),
-                p.rebuild_owed().unwrap(),
-                applied(&p, 5),
-            ),
-            (false, false, true),
-            "no mark is written, the file owes nothing, and the batch's other position committed"
-        );
-        crate::test_support::folds(&p, &[decision_at("d6", "f.rs", 6)]);
     }
 
     /// Spec 124, the direct fold's own-position answer when a batch holds two of its own positions
@@ -6885,12 +3830,9 @@ mod tests {
             decision_at("d-folds", "g.rs", 3),
         ];
         assert_eq!(
-            crate::test_support::rebuild_answer(
-                &path,
-                true,
-                &mut |after, sink| stream_past(&log, after, 10, sink),
-                crate::test_support::resolving(|_| Ok(None)),
-            ),
+            crate::test_support::rebuild_answer(&path, true, &mut |after, sink| stream_past(
+                &log, after, 10, sink
+            ),),
             crate::test_support::clean_rebuild()
         );
         let p = Projector::open(&path, "test").unwrap();
@@ -6992,7 +3934,7 @@ mod tests {
             .unwrap();
         let ran = std::cell::Cell::new(false);
         let opened = crate::test_support::with_graph_locked(Path::new(&path), || {
-            in_transaction(&mut conn, "test", |tx| {
+            in_transaction(&mut conn, |tx| {
                 ran.set(true);
                 record_applied(tx, 1).map(drop)
             })
@@ -7566,10 +4508,10 @@ mod tests {
     /// Spec 124, ONE PROCEDURE: each call reads one page of the log past the cursor, of at most
     /// [`FOLD_BATCH`] events, narrowed to the project's run stream, and folds its first cut
     /// ([`fold_transactions`]) - through the page's last position when the cut covers every
-    /// narrowed event, else through the cut's last - every ledger entry alone, until a call meets
+    /// narrowed event, else through the cut's last - until a call meets
     /// no event past the cursor ([`CatchUp::AtHead`]). An empty log is at its head; a page of
-    /// another stream's events alone moves the cursor past them, folding nothing; an entry no
-    /// re-extraction resolves is passed over `resolved to nothing`; a gap longer than a page is
+    /// another stream's events alone moves the cursor past them, folding nothing; a record whose
+    /// payload the judge rejects is passed over `payload rejected`; a gap longer than a page is
     /// read one page per call.
     #[test]
     fn each_catch_up_call_folds_one_cut_of_one_page_past_the_cursor_until_the_head() {
@@ -7613,22 +4555,24 @@ mod tests {
                 vec![],
             ),
             (
-                "an entry between two decisions, another stream's event last",
+                "a rejected payload between two decisions, another stream's event last",
                 vec![
                     (
                         run,
                         vec![
                             decision_at("d1", "a.rs", 1),
-                            crate::test_support::unresolved_entry_at(2),
+                            crate::test_support::poisoned_decision_at(2),
                             decision_at("d3", "c.rs", 3),
                         ],
                     ),
                     (canary, decisions_at([4])),
                 ],
-                vec![advanced(1), advanced(1), advanced(1), CatchUp::AtHead],
-                vec![(0, 4), (1, 3), (2, 2), (4, 0)],
+                vec![advanced(3), CatchUp::AtHead],
+                vec![(0, 4), (4, 0)],
                 4,
-                vec![(2, RESOLVED_TO_NOTHING.to_string())],
+                vec![crate::test_support::rejected_row(
+                    &crate::test_support::poisoned_decision_at(2),
+                )],
             ),
             (
                 "a gap longer than a page",
@@ -7663,29 +4607,22 @@ mod tests {
     }
 
     /// Spec 124, ONE PROCEDURE: catching a file up over a log folds what a rebuild of that log
-    /// folds, through the re-extraction its projector is handed - an entry it resolves to nothing,
-    /// one whose re-extracted batch the judge rejects and a decision whose payload it rejects each
-    /// passed over with its cause, the last decision folded - each entry in a call of its own.
+    /// folds - a decision and a lesson whose payloads the judge rejects each passed over with its
+    /// cause, the decisions around them folded - in one call.
     #[test]
     fn catching_up_over_a_log_folds_what_a_rebuild_of_it_folds() {
         let events = passing_over_log();
         let (_rebuilt_dir, rebuilt) = rebuilt_passing_over(&events);
         let rebuilt_p = Projector::open(&rebuilt, "test").unwrap();
         let (_dir, path, p, log) = catching_up();
-        let p = p.with_reextraction(|| Box::new(batch_of_the_rejected_entry));
         logged(&*log, &events);
         assert_eq!(
             (answers(&p), log.reads()),
             (
-                vec![
-                    Ok(CatchUp::Advanced { recorded: 1 }),
-                    Ok(CatchUp::Advanced { recorded: 1 }),
-                    Ok(CatchUp::Advanced { recorded: 2 }),
-                    Ok(CatchUp::AtHead),
-                ],
-                page_reads(&[(0, 4), (1, 3), (2, 2), (4, 0)]),
+                vec![Ok(CatchUp::Advanced { recorded: 4 }), Ok(CatchUp::AtHead)],
+                page_reads(&[(0, 4), (4, 0)]),
             ),
-            "each entry folds in a call of its own, the decisions after them in one"
+            "the four positions fold in one call"
         );
         assert_eq!(
             (
@@ -8099,11 +5036,13 @@ mod tests {
                     .to_string();
                 (p, unread)
             }),
-            ("its cut's fold", |p, _, log, at| {
-                logged(&**log, &[crate::test_support::unresolved_entry_at(at + 1)]);
-                let p = p
-                    .with_reextraction(|| Box::new(|_: &Event| crate::test_support::blob_unread()));
-                (p, crate::test_support::BLOB_UNREAD.to_string())
+            ("its cut's fold", |p, path, log, at| {
+                logged(
+                    &**log,
+                    &[decision_at(crate::test_support::D_BOOM, "b.rs", at + 1)],
+                );
+                crate::test_support::the_disk_gives_out_at_d_boom(Path::new(path));
+                (p, crate::test_support::DISK_GAVE_OUT.to_string())
             }),
         ];
         for (arm, failing) in arms {
@@ -9067,8 +6006,8 @@ mod tests {
         one_decision(path)
     }
 
-    /// The appender's one copy: the event `at` builds at position 1 - an own ledger entry whose
-    /// batch is not yet resolved, a decision whose payload the judge rejects - appended to the log
+    /// The appender's one copy: the event `at` builds at position 1 - a decision whose payload the
+    /// judge rejects - appended to the log
     /// beside the graph file at `path` and read back ([`appended_copies`]).
     fn own_copy(path: &str, at: fn(u64) -> Event) -> Vec<Event> {
         appended_copies(path, &[at(1)])
@@ -9241,46 +6180,8 @@ mod tests {
         }
     }
 
-    /// Spec 124, THE OWN ENTRY: an appender whose own ledger entry fails its calls waits them out
-    /// under its ceiling, keeping the batch it was handed - asked once, however many calls retry
-    /// the entry - and past the ceiling returns not-folded with the last call's error and the
-    /// call-run suffix, the entry unfolded and no mark written.
-    #[test]
-    fn an_own_entry_failing_its_calls_is_waited_out_under_the_ceiling_asking_its_batch_once() {
-        use crate::test_support::{lost_fold, BLOB_UNREAD, CATCH_UP_PAYS};
-        let (_dir, path, p) = seeded_graph();
-        let copies = own_copy(&path, crate::test_support::unresolved_entry_at);
-        let ceiling = Duration::from_secs(1);
-        let p = p.with_log(the_log_beside(&path)).with_lock_ceiling(ceiling);
-        impatient(&p);
-        let asked = std::cell::Cell::new(0);
-        let folded = generations::ledger_entries::apply_entry(
-            &p,
-            &copies[0],
-            crate::test_support::blob_unread(),
-            &asked,
-        );
-        assert_eq!(
-            (
-                folded,
-                asked.get(),
-                answered_past(&copies, ceiling),
-                applied(&p, 1),
-                crate::test_support::mark_stands_beside(Path::new(&path)),
-            ),
-            (
-                Err(lost_fold(BLOB_UNREAD, CATCH_UP_PAYS)),
-                1,
-                true,
-                false,
-                false,
-            ),
-            "the entry's failure is waited out past the ceiling, its batch asked once, no mark"
-        );
-    }
-
     /// Spec 124, THE APPENDER and CAUSE TEXTS: an appender returns at once, inside its ceiling,
-    /// when a call fails at a position other than its own ledger entry, with the call's error and
+    /// when a call fails at a position other than its own, with the call's error and
     /// the call-run suffix; when a call meets an older fold rule another writer stamped, with the
     /// refusal of a file that owes its rebuild; when a call meets a cursor recorded beside another
     /// log, with the refusal naming the lost fold, folding nothing, before the success test, which
@@ -9292,7 +6193,7 @@ mod tests {
     fn an_appender_returns_at_once_on_a_foreign_failure_an_owed_rebuild_or_its_position_passed_over(
     ) {
         use crate::contextgraph::Fold;
-        use crate::test_support::{graph_error, lost_by_calls, BLOB_UNREAD};
+        use crate::test_support::{graph_error, lost_by_calls};
         // Each case: the appender's copies and its projector, given the graph file's path, its
         // log and the projector handed that log; and what its fold answers, given the copies.
         type Handed = fn(&str, &CountedLog, Projector) -> (Vec<Event>, Projector);
@@ -9307,21 +6208,19 @@ mod tests {
             |_| Fold::NotFolded(graph_error(crate::contextgraph::REBUILD_OWED_FOR_LOST_FOLD));
         let cases: [(&str, Handed, Answer); 6] = [
             (
-                "a foreign entry failing its call",
+                "a foreign record failing its call",
                 |path, _, p| {
                     let copies = appended_copies(
                         path,
                         &[
-                            crate::test_support::unresolved_entry_at(1),
+                            decision_at(crate::test_support::D_BOOM, "b.rs", 1),
                             decision_at("d2", "a.rs", 2),
                         ],
                     );
-                    let p = p.with_reextraction(|| {
-                        Box::new(|_: &Event| crate::test_support::blob_unread())
-                    });
+                    crate::test_support::the_disk_gives_out_at_d_boom(Path::new(path));
                     (copies[1..].to_vec(), p)
                 },
-                |_| Fold::NotFolded(lost_by_calls(BLOB_UNREAD)),
+                |_| Fold::NotFolded(lost_by_calls(crate::test_support::DISK_GAVE_OUT)),
             ),
             (
                 "an older fold rule stamped under the call",
@@ -9521,55 +6420,6 @@ mod tests {
         }
     }
 
-    /// Spec 124, THE OWN ENTRY: an appender's own ledger entry folds by its call from the batch it
-    /// was handed, asked once, and answers [`EntryFold::BatchAsked`]; one another writer's call
-    /// folded first, from its own re-extraction, answers [`EntryFold::AlreadyApplied`], the
-    /// appender's batch never asked. Either way the cursor stands past it.
-    #[test]
-    fn an_own_entry_folds_from_its_batch_or_answers_already_applied_once_another_folded_it() {
-        // Each case: whether another writer catches the file up before the appender folds, and
-        // what the appender's fold answers.
-        let cases = [
-            ("its call", false, EntryFold::BatchAsked, 1),
-            (
-                "another writer's call first",
-                true,
-                EntryFold::AlreadyApplied,
-                0,
-            ),
-        ];
-        for (case, another_first, outcome, asks) in cases {
-            let (_dir, path, p, _log) = catching_up();
-            let copies = own_copy(&path, crate::test_support::unresolved_entry_at);
-            if another_first {
-                let q = another_writer(&path)
-                    .with_reextraction(|| Box::new(|_: &Event| Ok(Some(Vec::new()))));
-                assert_eq!(
-                    q.catch_up().map_err(|e| e.0),
-                    Ok(CatchUp::Advanced { recorded: 1 }),
-                    "{case}: the other writer folds the entry"
-                );
-            }
-            let asked = std::cell::Cell::new(0);
-            let folded = generations::ledger_entries::apply_entry(
-                &p,
-                &copies[0],
-                Ok(Some(Vec::new())),
-                &asked,
-            );
-            assert_eq!(
-                (
-                    folded,
-                    asked.get(),
-                    crate::test_support::caught_up_at(Path::new(&path)),
-                    crate::test_support::mark_stands_beside(Path::new(&path)),
-                ),
-                (Ok(outcome), asks, Some(1), false),
-                "{case}: the entry's outcome, its batch's asks, the cursor past it, no mark"
-            );
-        }
-    }
-
     /// Spec 124, THE APPENDER: an appender's ceiling counts from the stamp of its lowest own
     /// position, wherever among its events that position comes and whatever the others' stamps;
     /// an appender with no position to wait for is past it.
@@ -9623,7 +6473,7 @@ mod tests {
     fn an_appender_with_no_own_position_ends_its_calls_folded_after_the_first() {
         let (_dir, _path, p, _log) = catching_up();
         assert_eq!(
-            p.fold_by_calls(&[], None, Duration::ZERO).map_err(|e| e.0),
+            p.fold_by_calls(&[], Duration::ZERO).map_err(|e| e.0),
             Ok(true),
             "folded by its calls, with no position to wait for"
         );
@@ -9632,8 +6482,8 @@ mod tests {
     /// Spec 124, THE APPENDER: an appender waits between two attempts only after one that did
     /// not advance, its connection's lock released through the wait. A call that advanced is
     /// followed by the next at once; one that met the log's head below the appender's position,
-    /// one another writer's write lock skipped, one the file's rebuild state held inert and one
-    /// its own ledger entry failed are each followed by one busy interval of the connection, as is
+    /// one another writer's write lock skipped and one the file's rebuild state held inert are
+    /// each followed by one busy interval of the connection, as is
     /// a direct fold's open that met that write lock past the busy timeout - and another user of
     /// the projector asking for the connection halfway through the appender's last wait takes it
     /// at once.
@@ -9641,7 +6491,7 @@ mod tests {
     fn an_appender_waits_a_busy_interval_with_its_connection_released_after_each_attempt_that_did_not_advance(
     ) {
         use crate::contextgraph::Fold;
-        use crate::test_support::{lost_by_calls, lost_fold, BLOB_UNREAD, CATCH_UP_PAYS};
+        use crate::test_support::lost_by_calls;
         /// What an appender of the copies `copies` builds answers, folded by `folding` under the
         /// ceiling `ceiling`; the whole busy intervals of its connection its fold took; and
         /// whether another user of the projector, asking for the connection halfway through the
@@ -9678,14 +6528,6 @@ mod tests {
                 crate::test_support::fold_of(p, copies)
             })
         };
-        let entry: Folding = |_, p, copies| {
-            let asked = std::cell::Cell::new(0);
-            let blob = crate::test_support::blob_unread();
-            match generations::ledger_entries::apply_entry(p, &copies[0], blob, &asked) {
-                Ok(_) => Fold::Folded,
-                Err(cause) => Fold::NotFolded(cause),
-            }
-        };
         let without_one: Copies = |path| {
             without_a_cursor(path);
             one_decision(path)
@@ -9695,7 +6537,7 @@ mod tests {
         // each wait, and one for each attempt that met the write lock, since such an attempt
         // waits the connection's busy timeout before it gives up.
         type Case = (&'static str, Copies, Folding, Duration, Fold, u32);
-        let cases: [Case; 6] = [
+        let cases: [Case; 5] = [
             (
                 "a call that advanced short of it",
                 beyond_one_batch,
@@ -9728,14 +6570,6 @@ mod tests {
                 alone,
                 Duration::from_secs(1),
                 Fold::NotFolded(lost_by_calls(crate::test_support::UNFINISHED_REBUILD)),
-                1,
-            ),
-            (
-                "a call its own ledger entry failed",
-                |path| own_copy(path, crate::test_support::unresolved_entry_at),
-                entry,
-                Duration::from_secs(1),
-                Fold::NotFolded(lost_fold(BLOB_UNREAD, CATCH_UP_PAYS)),
                 1,
             ),
             (
@@ -10791,500 +7625,21 @@ mod tests {
         );
     }
 
-    fn apply_edge_inferred(p: &Projector, pos: u64, file: &str, name: &str, lang: &str) {
-        apply_json(
-            p,
-            pos,
-            TYPE_EDGE_INFERRED,
-            serde_json::json!({ "file": file, "name": name, "lang": lang }),
-        );
-    }
-
-    /// Spec 92 criterion 2 round 4 (review REJECT `adj-u2c2-r3-verdict-reject`, finding
-    /// `adv-u2c2-partial-marker-unimplemented`): the `partial`-carrying twin of
-    /// [`apply_code_entity`], a SEPARATE function (never a new parameter threaded onto that one,
-    /// which every existing call site would then have to grow) so each keeps its own distinct
-    /// shape, mirroring how [`apply_edge_inferred_evidence_fresh`] extends
-    /// [`apply_edge_inferred_evidence`] with its own extra flag rather than widening it in place.
-    #[allow(clippy::too_many_arguments)]
-    fn apply_code_entity_partial(
-        p: &Projector,
-        pos: u64,
-        file: &str,
-        name: &str,
-        kind: &str,
-        line: u32,
-        lang: &str,
-        partial: bool,
-    ) {
-        apply_json(
-            p,
-            pos,
-            TYPE_CODE_ENTITY_EXTRACTED,
-            serde_json::json!({
-                "file": file, "name": name, "kind": kind, "line": line, "lang": lang,
-                "partial": partial,
-            }),
-        );
-    }
-
-    /// A test-origin evidence event carrying an explicit `fresh` (round 2, spec 86 criterion 2):
-    /// marks this event as the FIRST is_test reference of the referencing file's own batch,
-    /// mirroring [`apply_batch_ref`]'s structural `fresh` for evidence's own supersession
-    /// boundary (`supersede_file_proof`). Written independently of
-    /// [`apply_edge_inferred_evidence`] (never delegating to/from it) so each keeps its own
-    /// distinct shape.
-    fn apply_edge_inferred_evidence_fresh(
-        p: &Projector,
-        pos: u64,
-        file: &str,
-        name: &str,
-        line: u32,
-        fresh: bool,
-    ) {
-        apply_json(
-            p,
-            pos,
-            TYPE_EDGE_INFERRED,
-            serde_json::json!({
-                "file": file, "name": name, "lang": "rust", "line": line, "is_test": true,
-                "fresh": fresh,
-            }),
-        );
-    }
-
-    /// Fold `node`'s assignment to `community` at resolution 1.0 under one fixed hash
-    /// ([`apply_community`]).
-    fn assign_community(p: &Projector, pos: u64, node: &str, community: &str, fresh: bool) {
-        apply_community(p, pos, node, community, 1.0, "h", fresh);
-    }
-
-    /// Construct and fold one `CommunityAssigned` event by hand (no detection-pass dependency), so
-    /// the fold is proven in BOTH feature lanes exactly like the code-ingest fold tests.
-    fn apply_community(
-        p: &Projector,
-        pos: u64,
-        node: &str,
-        community: &str,
-        resolution: f64,
-        hash: &str,
-        fresh: bool,
-    ) {
-        apply_json(
-            p,
-            pos,
-            TYPE_COMMUNITY_ASSIGNED,
-            serde_json::json!({
-                "node": node, "community": community,
-                "resolution": resolution, "hash": hash, "fresh": fresh,
-            }),
-        );
-    }
-
-    /// Fold the canonical spec-53 community fixture: a coupling graph whose `apply_damage` hub is
-    /// the clear highest-degree member, then a resolution-1.0 detection pass grouping members ACROSS
-    /// directory lines (`src/combat`, `src/net`) into `community/1/0` and an equal-degree pair into
-    /// `community/1/1` (its label decided by the lexicographic tie-break). Shared by the fold and
-    /// the rebuild tests so they re-derive from the SAME log.
-    fn seed_community_fixture(p: &Projector) {
-        // Coupling graph (definitions).
-        apply_code_entity(
-            p,
-            1,
-            "src/combat/hit.rs",
-            "apply_damage",
-            "function",
-            10,
-            "rust",
-        );
-        apply_code_entity(p, 2, "src/combat/hit.rs", "clamp", "function", 30, "rust");
-        apply_code_entity(p, 3, "src/net/socket.rs", "send", "function", 5, "rust");
-        apply_code_entity(p, 4, "src/util.rs", "alpha", "function", 1, "rust");
-        apply_code_entity(p, 5, "src/util.rs", "zeta", "function", 2, "rust");
-        // `apply_damage` calls three symbols, making it the highest-degree hub (1 CONTAINS + 3
-        // CALLS = degree 4); `clamp` reaches degree 3 (CONTAINS + the CALLS + the REFERENCES twin);
-        // `send` stays at degree 1 (its CONTAINS only).
-        apply_call(p, 6, "src/combat/hit.rs", "clamp", "apply_damage");
-        apply_call(p, 7, "src/combat/hit.rs", "min", "apply_damage");
-        apply_call(p, 8, "src/combat/hit.rs", "max", "apply_damage");
-        // Detection pass at resolution 1.0. The FIRST event carries `fresh` (the pass boundary).
-        apply_community(
-            p,
-            9,
-            "src/combat/hit.rs::apply_damage",
-            "community/1/0",
-            1.0,
-            "h-alpha",
-            true,
-        );
-        apply_community(
-            p,
-            10,
-            "src/combat/hit.rs::clamp",
-            "community/1/0",
-            1.0,
-            "h-alpha",
-            false,
-        );
-        apply_community(
-            p,
-            11,
-            "src/net/socket.rs::send",
-            "community/1/0",
-            1.0,
-            "h-alpha",
-            false,
-        );
-        apply_community(
-            p,
-            12,
-            "src/util.rs::alpha",
-            "community/1/1",
-            1.0,
-            "h-alpha",
-            false,
-        );
-        apply_community(
-            p,
-            13,
-            "src/util.rs::zeta",
-            "community/1/1",
-            1.0,
-            "h-alpha",
-            false,
-        );
-    }
-
-    /// A deterministic snapshot of the whole community layer: every KIND_COMMUNITY node (id, kind,
-    /// attrs json) and every LIVE IN_COMMUNITY edge (from, to), each sorted. Two folds of the same
-    /// log must produce byte-identical snapshots (the rebuildable-projection invariant).
-    fn community_snapshot(p: &Projector) -> Vec<String> {
-        let conn = p.conn.lock().unwrap();
-        let mut rows: Vec<String> = Vec::new();
-        let mut nstmt = conn
-            .prepare(
-                "SELECT id, kind, COALESCE(attrs, '') FROM nodes
-                 WHERE kind = ?1 AND project = ?2 ORDER BY id",
-            )
-            .unwrap();
-        rows.extend(
-            nstmt
-                .query_map(params![KIND_COMMUNITY, p.project], |r| {
-                    Ok(format!(
-                        "node\t{}\t{}\t{}",
-                        r.get::<_, String>(0)?,
-                        r.get::<_, String>(1)?,
-                        r.get::<_, String>(2)?
-                    ))
-                })
-                .unwrap()
-                .collect::<Result<Vec<_>, _>>()
-                .unwrap(),
-        );
-        let mut estmt = conn
-            .prepare(
-                "SELECT from_id, to_id FROM edges
-                 WHERE rel = ?1 AND valid_to IS NULL AND project = ?2
-                 ORDER BY from_id, to_id",
-            )
-            .unwrap();
-        rows.extend(
-            estmt
-                .query_map(params![REL_IN_COMMUNITY, p.project], |r| {
-                    Ok(format!(
-                        "edge\t{}\t{}",
-                        r.get::<_, String>(0)?,
-                        r.get::<_, String>(1)?
-                    ))
-                })
-                .unwrap()
-                .collect::<Result<Vec<_>, _>>()
-                .unwrap(),
-        );
-        rows
-    }
-
-    #[test]
-    fn community_assigned_events_fold_to_a_community_node_with_live_membership_and_a_deterministic_label(
-    ) {
-        // Spec 53 criterion 3 (the EVENT-SOURCED FOLD): each CommunityAssigned event folds into a
-        // live `<member> --IN_COMMUNITY--> <community>` edge PLUS the KIND_COMMUNITY super-node,
-        // whose deterministic LABEL is its highest-degree member's label (ties broken to the
-        // lexicographically-smallest). Built by hand (no detection dependency) so the fold is proven
-        // in BOTH feature lanes. Owns the recording discipline; it does NOT own detection
-        // (criterion 1) - the assignments are given.
-        let p = Projector::open(":memory:", "test").unwrap();
-        seed_community_fixture(&p);
-
-        let g = p.whole().unwrap();
-
-        // The community super-node folded, tagged KIND_COMMUNITY, carrying its resolution grain, the
-        // pass hash, and a deterministic label - its highest-degree member (`apply_damage`, degree
-        // 4), grouped ACROSS the src/combat and src/net directory lines.
-        let comm = g
-            .nodes
-            .iter()
-            .find(|n| n.id == "community/1/0")
-            .expect("community super-node folded from CommunityAssigned");
-        assert_eq!(comm.kind, KIND_COMMUNITY);
-        assert_eq!(comm.attrs.get("resolution").map(String::as_str), Some("1"));
-        assert_eq!(comm.attrs.get("hash").map(String::as_str), Some("h-alpha"));
-        assert_eq!(
-            comm.attrs.get("label").map(String::as_str),
-            Some("apply_damage"),
-            "the community label is its highest-degree member's label; got {:?}",
-            comm.attrs
-        );
-
-        // Every member carries a LIVE membership edge to its community - across directories.
-        for m in [
-            "src/combat/hit.rs::apply_damage",
-            "src/combat/hit.rs::clamp",
-            "src/net/socket.rs::send",
-        ] {
-            assert!(
-                g.edges.iter().any(|e| e.rel == REL_IN_COMMUNITY
-                    && e.from == m
-                    && e.to == "community/1/0"
-                    && e.valid_to.is_none()),
-                "a live IN_COMMUNITY edge ties member {m} to community/1/0; got {:?}",
-                g.edges
-            );
-        }
-
-        // A member with NO structural degree beyond its own container still folds; and the
-        // equal-degree pair's community label resolves by the lexicographic tie-break.
-        let comm1 = g
-            .nodes
-            .iter()
-            .find(|n| n.id == "community/1/1")
-            .expect("second community super-node folded");
-        assert_eq!(
-            comm1.attrs.get("label").map(String::as_str),
-            Some("alpha"),
-            "equal-degree members break the label tie to the lexicographically-smallest label; got {:?}",
-            comm1.attrs
-        );
-    }
-
-    #[test]
-    fn a_rebuild_reproduces_byte_identical_community_rows_from_the_log() {
-        // Spec 53 criterion 3: the community layer is a rebuildable projection of the log. Folding
-        // the SAME log into a FRESH projection re-derives byte-identical community nodes (id, kind,
-        // AND attrs - including the computed label) and live membership edges, so a full rebuild
-        // reproduces the derivation without re-running detection.
-        let p1 = Projector::open(":memory:", "test").unwrap();
-        seed_community_fixture(&p1);
-        let p2 = Projector::open(":memory:", "test").unwrap();
-        seed_community_fixture(&p2);
-
-        let s1 = community_snapshot(&p1);
-        let s2 = community_snapshot(&p2);
-        assert!(
-            s1.iter().any(|r| r.starts_with("node\t"))
-                && s1.iter().any(|r| r.starts_with("edge\t")),
-            "precondition: the fixture folded community nodes and membership edges; got {s1:?}"
-        );
-        assert_eq!(
-            s1, s2,
-            "a rebuild from the same log re-derives byte-identical community rows"
-        );
-    }
-
-    #[test]
-    fn a_fresh_rerun_supersedes_only_its_own_resolution_grain() {
-        // Spec 53 criterion 3 (the fold's supersession mechanism; criterion 2 owns the grain
-        // semantics): a re-run's `fresh` boundary retires ONLY the re-run resolution's prior
-        // memberships, leaving a DIFFERENT resolution grain's memberships live and coexisting.
-        let p = Projector::open(":memory:", "test").unwrap();
-        apply_code_entity(&p, 1, "a.rs", "x", "function", 1, "rust");
-        apply_code_entity(&p, 2, "b.rs", "y", "function", 1, "rust");
-        // Resolution-1.0 pass: x, y in community/1/0.
-        apply_community(&p, 3, "a.rs::x", "community/1/0", 1.0, "h1", true);
-        apply_community(&p, 4, "b.rs::y", "community/1/0", 1.0, "h1", false);
-        // Resolution-2.0 pass (a DIFFERENT grain): x in community/2/0.
-        apply_community(&p, 5, "a.rs::x", "community/2/0", 2.0, "h2", true);
-        // Re-run resolution 1.0 (fresh): x moves to community/1/1.
-        apply_community(&p, 6, "a.rs::x", "community/1/1", 1.0, "h1b", true);
-        apply_community(&p, 7, "b.rs::y", "community/1/1", 1.0, "h1b", false);
-
-        let x_memberships: Vec<(String, Option<i64>)> = edges_from(&p, "a.rs::x")
-            .into_iter()
-            .filter(|(_to, rel, _vt)| rel == REL_IN_COMMUNITY)
-            .map(|(to, _rel, vt)| (to, vt))
-            .collect();
-
-        // The prior resolution-1.0 membership is superseded (valid_to set), never deleted.
-        assert!(
-            x_memberships
-                .iter()
-                .any(|(to, vt)| to == "community/1/0" && vt.is_some()),
-            "the re-run supersedes x's prior community/1/0 membership (valid_to set); got {x_memberships:?}"
-        );
-        // Exactly ONE live resolution-1.0 membership remains: the new community/1/1 assignment.
-        let live_res1: Vec<&String> = x_memberships
-            .iter()
-            .filter(|(to, vt)| to.starts_with("community/1/") && vt.is_none())
-            .map(|(to, _)| to)
-            .collect();
-        assert_eq!(
-            live_res1,
-            vec![&"community/1/1".to_string()],
-            "the re-run leaves exactly one live resolution-1.0 membership, the new grain; got {x_memberships:?}"
-        );
-        // The resolution-2.0 grain is UNTOUCHED by the resolution-1.0 re-run - it stays live.
-        assert!(
-            x_memberships
-                .iter()
-                .any(|(to, vt)| to == "community/2/0" && vt.is_none()),
-            "the resolution-2.0 membership stays live across a resolution-1.0 re-run; got {x_memberships:?}"
-        );
-    }
-
-    #[test]
-    fn code_extraction_events_fold_into_a_file_container_entities_and_structural_edges() {
-        // Criterion 1: a source file's extraction EMITS CodeEntityExtracted (one per path, spec
-        // 119) and EdgeInferred (one per reference, and a module row per out-of-line `mod`
-        // declaration); the ALWAYS-compiled fold turns them into a
-        // file container node, code-entity nodes, and structural edges - so code structure lives in
-        // the event-sourced projection, not a mutable side index. This test constructs the events
-        // by hand (no extraction dependency) so it proves the fold in BOTH feature lanes: the fold
-        // must build and pass with the `symbols` extractor absent.
-        let p = Projector::open(":memory:", "test").unwrap();
-        // Definition `apply_damage` in combat.rs, and a reference to `clamp` from the same file.
-        apply_code_entity(
-            &p,
-            1,
-            "src/combat.rs",
-            "apply_damage",
-            "function",
-            7,
-            "rust",
-        );
-        apply_edge_inferred(&p, 2, "src/combat.rs", "clamp", "rust");
-
-        let g = p.subgraph(&["src/combat.rs".to_string()], 2).unwrap();
-
-        // The file container node exists, tagged KIND_FILE.
-        let file = g
-            .nodes
-            .iter()
-            .find(|n| n.id == "src/combat.rs")
-            .expect("file container node folded from the code events");
-        assert_eq!(file.kind, KIND_FILE);
-
-        // The definition folded into a code-entity node carrying its name, kind, and 1-based line.
-        let ent = g
-            .nodes
-            .iter()
-            .find(|n| n.id == "src/combat.rs::apply_damage")
-            .expect("code-entity node folded from CodeEntityExtracted");
-        assert_eq!(ent.kind, KIND_CODE_ENTITY);
-        assert_eq!(
-            ent.attrs.get("name").map(String::as_str),
-            Some("apply_damage")
-        );
-        assert_eq!(ent.attrs.get("kind").map(String::as_str), Some("function"));
-        assert_eq!(ent.attrs.get("line").map(String::as_str), Some("7"));
-
-        // The file CONTAINS its definition (a structural edge from the container to the entity).
-        assert!(
-            g.edges.iter().any(|e| e.rel == REL_CONTAINS
-                && e.from == "src/combat.rs"
-                && e.to == "src/combat.rs::apply_damage"),
-            "a CONTAINS edge ties the file to its definition; got {:?}",
-            g.edges
-        );
-        // The file REFERENCES the symbol named at the reference site (a structural edge folded
-        // from EdgeInferred), targeting the file-scoped placeholder of its leaf, which the file
-        // does not define.
-        assert!(
-            g.edges.iter().any(|e| e.rel == REL_REFERENCES
-                && e.from == "src/combat.rs"
-                && e.to == "src/combat.rs::%clamp"),
-            "a REFERENCES edge ties the file to the referenced symbol; got {:?}",
-            g.edges
-        );
-    }
-
-    #[test]
-    fn a_partial_code_entity_event_stamps_the_file_nodes_partial_attr_true_and_an_ordinary_one_never_does(
-    ) {
-        // Spec 92 criterion 2 round 4 (review REJECT `adj-u2c2-r3-verdict-reject`, finding
-        // `adv-u2c2-partial-marker-unimplemented`): a `CodeEntityExtracted` event carrying
-        // `partial: true` (a JS file the grammar could not fully parse, per
-        // `grounder::symbols::extract::extract`'s own `has_error()` check) must stamp
-        // `("partial", "true")` onto its file's KIND_FILE node through the SAME `ensure_node`
-        // attrs authority already used for `lang`/`title` - never a second attrs-writing path. An
-        // ORDINARY (well-formed) file's event must NEVER stamp that key at all. Both files folded
-        // into ONE Projector so the merge-not-replace `ensure_node` semantics are also proven: a
-        // second, unrelated file's ordinary event must never bleed a `partial` marker onto a file
-        // it was never folded for.
-        let p = Projector::open(":memory:", "test").unwrap();
-        apply_code_entity_partial(
-            &p,
-            1,
-            "workflows/broken.js",
-            "greet",
-            "function",
-            1,
-            "js",
-            true,
-        );
-        apply_code_entity(&p, 2, "workflows/clean.js", "helper", "function", 1, "js");
-
-        let g = p
-            .subgraph(
-                &[
-                    "workflows/broken.js".to_string(),
-                    "workflows/clean.js".to_string(),
-                ],
-                1,
-            )
-            .unwrap();
-
-        let broken = g
-            .nodes
-            .iter()
-            .find(|n| n.id == "workflows/broken.js")
-            .expect("the malformed file's container node folded");
-        assert_eq!(
-            broken.attrs.get("partial").map(String::as_str),
-            Some("true"),
-            "a partial: true event must stamp the file node's own partial attr as \"true\"; got {:?}",
-            broken.attrs
-        );
-
-        let clean = g
-            .nodes
-            .iter()
-            .find(|n| n.id == "workflows/clean.js")
-            .expect("the well-formed file's container node folded");
-        assert_eq!(
-            clean.attrs.get("partial"),
-            None,
-            "an ordinary (non-degraded) file's event must never stamp a partial attr at all; \
-             got {:?}",
-            clean.attrs
-        );
-    }
-
     /// `nodes_of_kind` lists exactly the nodes of the kind it is asked for, ordered by id and
-    /// scoped to the projector's own project: code entities, the decision a fold projects and
-    /// none for a kind nothing folded.
+    /// scoped to the projector's own project: the decisions a fold projects, the artifacts they
+    /// govern and none for a kind nothing folded.
     #[test]
     fn nodes_of_kind_lists_one_kind_ordered_by_id_within_the_project() {
         let backend = tempfile::tempdir().unwrap();
         let db = backend.path().join("graph.db");
         let p = Projector::open(db.to_str().unwrap(), "alpha").unwrap();
         let other = Projector::open(db.to_str().unwrap(), "beta").unwrap();
-        apply_code_entity(&p, 1, "b.rs", "beta_fn", "function", 1, "rust");
-        apply_code_entity(&p, 2, "a.rs", "alpha_fn", "function", 2, "rust");
-        apply_decision_by(&p, 3, "d1", "keep the walk scoped", &[], "planner");
-        apply_code_entity(&other, 1, "c.rs", "other_fn", "function", 1, "rust");
+        apply_decision(&p, 1, "d2", "keep the reads narrow", &["b.rs"], "");
+        apply_decision_by(&p, 2, "d1", "keep the walk scoped", &["a.rs"], "planner");
+        apply_decision(&other, 1, "dz", "another project's", &["c.rs"], "");
         let cases: [(&str, &[&str]); 3] = [
-            (KIND_CODE_ENTITY, &["a.rs::alpha_fn", "b.rs::beta_fn"]),
-            (KIND_DECISION, &["d1"]),
+            (KIND_ARTIFACT, &["a.rs", "b.rs"]),
+            (KIND_DECISION, &["d1", "d2"]),
             (KIND_LESSON, &[]),
         ];
         for (kind, ids) in cases {
@@ -11296,58 +7651,6 @@ mod tests {
                 .collect();
             assert_eq!(listed, ids, "{kind}");
         }
-    }
-
-    /// spec 58 criterion 1: `locate` is the show surface's single resolution authority. Over the
-    /// SAME node/edge tables every graph surface reads, it resolves a full `<file>::<path>` id and a
-    /// unique bare name to the SAME site (carrying kind and one-hop degree), LISTS the SORTED
-    /// candidates for an ambiguous bare name (never guessing), and returns `None` for an unknown
-    /// query. The code-entity fold it reads is always compiled, so this holds in BOTH feature lanes.
-    /// The body extent is NOT a resolution concern: the show surface derives it from the working
-    /// tree through the symbols authority, so `EntitySite` carries no structural end-line here.
-    #[test]
-    fn locate_resolves_by_id_and_name_and_lists_ambiguous_candidates_sorted() {
-        let p = Projector::open(":memory:", "test").unwrap();
-        // a.rs defines alpha@1 then shared@3; b.rs defines a second shared@1.
-        apply_code_entity(&p, 1, "a.rs", "alpha", "function", 1, "rust");
-        apply_code_entity(&p, 2, "a.rs", "shared", "function", 3, "rust");
-        apply_code_entity(&p, 3, "b.rs", "shared", "function", 1, "rust");
-
-        // A unique bare name resolves to One, with its site facts.
-        let alpha = match p.locate("alpha").unwrap() {
-            Located::One(s) => s,
-            other => panic!("expected One for a unique name, got {other:?}"),
-        };
-        assert_eq!(alpha.id, "a.rs::alpha");
-        assert_eq!(alpha.file.as_deref(), Some("a.rs"));
-        assert_eq!(alpha.line, 1);
-        assert_eq!(alpha.kind, "function");
-        // The only edge incident to alpha is the file's CONTAINS edge -> one-hop degree 1.
-        assert_eq!(alpha.degree, 1);
-
-        // The full id resolves to the SAME entity a unique name would.
-        match p.locate("a.rs::alpha").unwrap() {
-            Located::One(s) => assert_eq!(s, alpha, "the full id and the unique name agree"),
-            other => panic!("expected One for a full id, got {other:?}"),
-        }
-
-        // An ambiguous bare name lists its candidates, SORTED by id, each with its file.
-        match p.locate("shared").unwrap() {
-            Located::Many(cands) => {
-                let ids: Vec<&str> = cands.iter().map(|c| c.id.as_str()).collect();
-                assert_eq!(
-                    ids,
-                    ["a.rs::shared", "b.rs::shared"],
-                    "candidates are sorted by id"
-                );
-                assert_eq!(cands[0].file, "a.rs");
-                assert_eq!(cands[1].file, "b.rs");
-            }
-            other => panic!("expected Many for an ambiguous name, got {other:?}"),
-        }
-
-        // An unknown query resolves to None (never an error).
-        assert_eq!(p.locate("does_not_exist").unwrap(), Located::None);
     }
 
     #[test]
@@ -11362,11 +7665,11 @@ mod tests {
         let path = path.to_str().unwrap();
 
         // Project p1: d1 governs a.rs, then d2 supersedes d1 and ALSO governs a.rs (so d1's GOVERNS
-        // edge is invalidated while d2's stays live), plus a code entity in b.rs.
+        // edge is invalidated while d2's stays live), plus a decision d3 governing b.rs.
         let p1 = Projector::open(path, "p1").unwrap();
         apply_decision(&p1, 1, "d1", "old", &["a.rs"], "");
         apply_decision(&p1, 2, "d2", "new", &["a.rs"], "d1");
-        apply_code_entity(&p1, 3, "b.rs", "run", "function", 1, "rust");
+        apply_decision(&p1, 3, "d3", "run", &["b.rs"], "");
 
         // Project p2 on the SAME backend file: its nodes must never leak into p1's whole read.
         let p2 = Projector::open(path, "p2").unwrap();
@@ -11374,9 +7677,9 @@ mod tests {
 
         let g = p1.whole().unwrap();
 
-        // (a) every p1 node is present - both decisions, the governed file, the code entity and its
-        // file container - WITHOUT any seed.
-        for id in ["d1", "d2", "a.rs", "b.rs", "b.rs::run"] {
+        // (a) every p1 node is present - the decisions and the files they govern - WITHOUT any
+        // seed.
+        for id in ["d1", "d2", "d3", "a.rs", "b.rs"] {
             assert!(
                 g.nodes.iter().any(|n| n.id == id),
                 "whole() returns node {id}, got {:?}",
@@ -11390,21 +7693,16 @@ mod tests {
             g.nodes
         );
 
-        // (a) the live GOVERNS edge (from d2) and the live structural CONTAINS edge are returned.
-        assert!(
-            g.edges
-                .iter()
-                .any(|e| e.from == "d2" && e.to == "a.rs" && e.rel == REL_GOVERNS),
-            "the live GOVERNS edge is returned, got {:?}",
-            g.edges
-        );
-        assert!(
-            g.edges
-                .iter()
-                .any(|e| e.from == "b.rs" && e.to == "b.rs::run" && e.rel == REL_CONTAINS),
-            "the live CONTAINS edge is returned, got {:?}",
-            g.edges
-        );
+        // (a) the live GOVERNS edges (from d2 and d3) are returned.
+        for (from, to) in [("d2", "a.rs"), ("d3", "b.rs")] {
+            assert!(
+                g.edges
+                    .iter()
+                    .any(|e| e.from == from && e.to == to && e.rel == REL_GOVERNS),
+                "the live GOVERNS edge {from} -> {to} is returned, got {:?}",
+                g.edges
+            );
+        }
         // (b) the supersede-invalidated GOVERNS edge (from d1) is EXCLUDED by the valid_to filter.
         assert!(
             !g.edges
@@ -11424,458 +7722,6 @@ mod tests {
         );
     }
 
-    /// Fold a design-intent concept (`kind` node `id`, titled `title`, from `doc`) from its raw
-    /// on-log JSON at `pos`. Built by hand so the fold is exercised with the design-intent
-    /// extraction pass absent - the always-compiled arm must run in BOTH feature lanes.
-    fn apply_doc_concept(p: &Projector, pos: u64, kind: &str, id: &str, title: &str, doc: &str) {
-        apply_json(
-            p,
-            pos,
-            TYPE_DOC_CONCEPT_EXTRACTED,
-            serde_json::json!({ "kind": kind, "id": id, "title": title, "doc": doc }),
-        );
-    }
-
-    #[test]
-    fn design_intent_concept_events_fold_into_the_four_design_intent_node_kinds() {
-        // Criterion 1 (spec 29b): a design-intent extraction pass EMITS DocConceptExtracted events
-        // (one per concept) that the ALWAYS-compiled fold turns into design-doc / arch-decision /
-        // handbook-rule / rationale nodes - so the design-intent layer lives in the event-sourced
-        // projection alongside the code half. Built by hand here (no extraction dependency) so it
-        // proves the fold in BOTH feature lanes: the fold arm and the four node kinds must build and
-        // pass with the design-intent extractor absent (the light lane).
-        let p = Projector::open(":memory:", "test").unwrap();
-        // A reference-architecture doc, a load-bearing decision, a spec-shape rule, and a WHY
-        // comment - the four design-intent sources the criterion names, each its own node kind.
-        apply_doc_concept(
-            &p,
-            1,
-            KIND_DESIGN_DOC,
-            "docs/architecture.md",
-            "Reference architecture",
-            "docs/architecture.md",
-        );
-        apply_doc_concept(
-            &p,
-            2,
-            KIND_ARCH_DECISION,
-            "docs/adr/0001-code-as-events.md",
-            "Code structure is ingested as events",
-            "docs/adr/0001-code-as-events.md",
-        );
-        apply_doc_concept(
-            &p,
-            3,
-            KIND_HANDBOOK_RULE,
-            "docs/handbook.md#one-owner-per-criterion",
-            "Each criterion names its sole owner",
-            "docs/handbook.md",
-        );
-        apply_doc_concept(
-            &p,
-            4,
-            KIND_RATIONALE,
-            "src/combat.rs#L7",
-            "WHY: clamp keeps damage non-negative",
-            "src/combat.rs",
-        );
-
-        let g = p
-            .subgraph(
-                &[
-                    "docs/architecture.md".to_string(),
-                    "docs/adr/0001-code-as-events.md".to_string(),
-                    "docs/handbook.md#one-owner-per-criterion".to_string(),
-                    "src/combat.rs#L7".to_string(),
-                ],
-                1,
-            )
-            .unwrap();
-        let kind_of = |id: &str| g.nodes.iter().find(|n| n.id == id).map(|n| n.kind.as_str());
-        assert_eq!(
-            kind_of("docs/architecture.md"),
-            Some(KIND_DESIGN_DOC),
-            "a reference-architecture doc folds into a design-doc node; got {:?}",
-            g.nodes
-        );
-        assert_eq!(
-            kind_of("docs/adr/0001-code-as-events.md"),
-            Some(KIND_ARCH_DECISION),
-            "a load-bearing decision folds into an arch-decision node; got {:?}",
-            g.nodes
-        );
-        assert_eq!(
-            kind_of("docs/handbook.md#one-owner-per-criterion"),
-            Some(KIND_HANDBOOK_RULE),
-            "a spec-shape rule folds into a handbook-rule node; got {:?}",
-            g.nodes
-        );
-        assert_eq!(
-            kind_of("src/combat.rs#L7"),
-            Some(KIND_RATIONALE),
-            "a WHY comment folds into a rationale node; got {:?}",
-            g.nodes
-        );
-
-        // The concept's title and source doc ride onto the node's attrs (provenance a later
-        // criterion's design-intent edges key their links off).
-        let ra = g
-            .nodes
-            .iter()
-            .find(|n| n.id == "docs/architecture.md")
-            .expect("the design-doc node folded");
-        assert_eq!(
-            ra.attrs.get("title").map(String::as_str),
-            Some("Reference architecture")
-        );
-        assert_eq!(
-            ra.attrs.get("doc").map(String::as_str),
-            Some("docs/architecture.md")
-        );
-    }
-
-    /// Fold a design-intent link (`from --rel--> to`) from its raw on-log JSON at `pos`. Built by
-    /// hand so the fold is exercised with the design-intent extraction pass absent - the
-    /// always-compiled arm must run in BOTH feature lanes.
-    fn apply_doc_link(p: &Projector, pos: u64, from: &str, rel: &str, to: &str) {
-        apply_json(
-            p,
-            pos,
-            TYPE_DOC_LINK_EXTRACTED,
-            serde_json::json!({ "from": from, "to": to, "rel": rel }),
-        );
-    }
-
-    #[test]
-    fn design_intent_link_events_fold_into_the_five_design_intent_edges() {
-        // Criterion 2 (spec 29b): a design-intent extraction pass EMITS DocLinkExtracted events
-        // (one per link) that the ALWAYS-compiled fold turns into the five typed design-intent
-        // edges - design-doc --SPECIFIES--> code, arch-decision --CONSTRAINS--> code, handbook-rule
-        // --GOVERNS--> code (reusing REL_GOVERNS), rationale --explains--> code, and design-doc
-        // --references--> doc - so the design-intent layer's links live in the event-sourced
-        // projection alongside the code half. Built by hand here (no extraction dependency) so it
-        // proves the fold in BOTH feature lanes: the fold arm and the edge relations must build and
-        // pass with the design-intent extractor absent (the light lane).
-        let p = Projector::open(":memory:", "test").unwrap();
-        // Fold the four design-intent source nodes first (criterion 1), so each edge emanates from a
-        // real design-intent node of the right kind - the from-side identity the criterion names.
-        apply_doc_concept(
-            &p,
-            1,
-            KIND_DESIGN_DOC,
-            "docs/architecture.md",
-            "RA",
-            "docs/architecture.md",
-        );
-        apply_doc_concept(
-            &p,
-            2,
-            KIND_ARCH_DECISION,
-            "docs/adr/0001-code-as-events.md",
-            "Code as events",
-            "docs/adr/0001-code-as-events.md",
-        );
-        apply_doc_concept(
-            &p,
-            3,
-            KIND_HANDBOOK_RULE,
-            "docs/handbook.md",
-            "Rules",
-            "docs/handbook.md",
-        );
-        apply_doc_concept(
-            &p,
-            4,
-            KIND_RATIONALE,
-            "src/combat.rs#L7",
-            "WHY: clamp",
-            "src/combat.rs",
-        );
-
-        // The five links the criterion names, one per relation.
-        apply_doc_link(
-            &p,
-            5,
-            "docs/architecture.md",
-            REL_SPECIFIES,
-            "src/contextgraph/sqlite.rs",
-        );
-        apply_doc_link(
-            &p,
-            6,
-            "docs/adr/0001-code-as-events.md",
-            REL_CONSTRAINS,
-            "src/conductor.rs",
-        );
-        apply_doc_link(&p, 7, "docs/handbook.md", REL_GOVERNS, "src/spawn.rs");
-        apply_doc_link(&p, 8, "src/combat.rs#L7", REL_EXPLAINS, "src/combat.rs");
-        apply_doc_link(
-            &p,
-            9,
-            "docs/architecture.md",
-            REL_DOC_REFERENCES,
-            "docs/addendum.md",
-        );
-
-        let g = p
-            .subgraph(
-                &[
-                    "docs/architecture.md".to_string(),
-                    "docs/adr/0001-code-as-events.md".to_string(),
-                    "docs/handbook.md".to_string(),
-                    "src/combat.rs#L7".to_string(),
-                ],
-                1,
-            )
-            .unwrap();
-        let has_edge = |from: &str, rel: &str, to: &str| {
-            g.edges
-                .iter()
-                .any(|e| e.from == from && e.rel == rel && e.to == to && e.tier == TIER_EXTRACTED)
-        };
-        assert!(
-            has_edge(
-                "docs/architecture.md",
-                REL_SPECIFIES,
-                "src/contextgraph/sqlite.rs"
-            ),
-            "a design-doc SPECIFIES the code it designs; got {:?}",
-            g.edges
-        );
-        assert!(
-            has_edge(
-                "docs/adr/0001-code-as-events.md",
-                REL_CONSTRAINS,
-                "src/conductor.rs"
-            ),
-            "an arch-decision CONSTRAINS the code it binds; got {:?}",
-            g.edges
-        );
-        assert!(
-            has_edge("docs/handbook.md", REL_GOVERNS, "src/spawn.rs"),
-            "a handbook-rule GOVERNS the file it rules (reusing REL_GOVERNS); got {:?}",
-            g.edges
-        );
-        assert!(
-            has_edge("src/combat.rs#L7", REL_EXPLAINS, "src/combat.rs"),
-            "a rationale explains the code it annotates; got {:?}",
-            g.edges
-        );
-        assert!(
-            has_edge(
-                "docs/architecture.md",
-                REL_DOC_REFERENCES,
-                "docs/addendum.md"
-            ),
-            "a design-doc references the doc it cites; got {:?}",
-            g.edges
-        );
-    }
-
-    #[test]
-    fn workflow_definition_events_fold_into_stage_gate_agent_nodes_with_needs_runs_reviews_edges() {
-        // Spec 92 criterion 2 (THE WHOLE PRODUCT IS COVERED): the workflow-definition
-        // extraction pass reuses this SAME DocConceptExtracted/DocLinkExtracted fold (never a
-        // second entity/edge-fold authority) to turn `.rigger/workflow.yml`'s stages, gates and
-        // agents into graph entities with needs/runs/reviews relations (`stage:<name>`,
-        // `gate:<name>`, `agent:<name>`). Built by hand here
-        // (no extraction dependency) so the fold is proven in BOTH feature lanes, exactly like
-        // the design-intent tests above.
-        let p = Projector::open(":memory:", "test").unwrap();
-        apply_doc_concept(
-            &p,
-            1,
-            KIND_STAGE,
-            "stage:implement",
-            "implement",
-            ".rigger/workflow.yml",
-        );
-        apply_doc_concept(
-            &p,
-            2,
-            KIND_GATE,
-            "gate:sweep",
-            "sweep",
-            ".rigger/workflow.yml",
-        );
-        apply_doc_concept(
-            &p,
-            3,
-            KIND_AGENT,
-            "agent:rust-engineer",
-            "rust-engineer",
-            ".rigger/workflow.yml",
-        );
-        apply_doc_concept(
-            &p,
-            4,
-            KIND_STAGE,
-            "stage:plan-critique",
-            "plan-critique",
-            ".rigger/workflow.yml",
-        );
-        apply_doc_concept(
-            &p,
-            5,
-            KIND_AGENT,
-            "agent:adjudicator",
-            "adjudicator",
-            ".rigger/workflow.yml",
-        );
-
-        apply_doc_link(&p, 6, "stage:implement", REL_NEEDS, "stage:plan-critique");
-        apply_doc_link(&p, 7, "stage:implement", REL_RUNS, "gate:sweep");
-        apply_doc_link(&p, 8, "stage:implement", REL_RUNS, "agent:rust-engineer");
-        apply_doc_link(
-            &p,
-            9,
-            "agent:adjudicator",
-            REL_REVIEWS,
-            "stage:plan-critique",
-        );
-
-        let g = p
-            .subgraph(
-                &[
-                    "stage:implement".to_string(),
-                    "stage:plan-critique".to_string(),
-                    "gate:sweep".to_string(),
-                    "agent:rust-engineer".to_string(),
-                    "agent:adjudicator".to_string(),
-                ],
-                1,
-            )
-            .unwrap();
-        let kind_of = |id: &str| g.nodes.iter().find(|n| n.id == id).map(|n| n.kind.as_str());
-        assert_eq!(
-            kind_of("stage:implement"),
-            Some(KIND_STAGE),
-            "a workflow stage folds into a stage node; got {:?}",
-            g.nodes
-        );
-        assert_eq!(
-            kind_of("gate:sweep"),
-            Some(KIND_GATE),
-            "a workflow gate folds into a gate node; got {:?}",
-            g.nodes
-        );
-        assert_eq!(
-            kind_of("agent:rust-engineer"),
-            Some(KIND_AGENT),
-            "a workflow agent role folds into an agent node; got {:?}",
-            g.nodes
-        );
-
-        let has_edge = |from: &str, rel: &str, to: &str| {
-            g.edges
-                .iter()
-                .any(|e| e.from == from && e.rel == rel && e.to == to && e.tier == TIER_EXTRACTED)
-        };
-        assert!(
-            has_edge("stage:implement", REL_NEEDS, "stage:plan-critique"),
-            "a stage NEEDS the stage its needs: list names; got {:?}",
-            g.edges
-        );
-        assert!(
-            has_edge("stage:implement", REL_RUNS, "gate:sweep"),
-            "a stage RUNS the gates its gates: list names; got {:?}",
-            g.edges
-        );
-        assert!(
-            has_edge("stage:implement", REL_RUNS, "agent:rust-engineer"),
-            "a stage RUNS its assigned implementer agent; got {:?}",
-            g.edges
-        );
-        assert!(
-            has_edge("agent:adjudicator", REL_REVIEWS, "stage:plan-critique"),
-            "a reviewer agent REVIEWS the stage its verdict gates; got {:?}",
-            g.edges
-        );
-    }
-
-    #[test]
-    fn a_doc_link_with_an_unrecognized_rel_folds_nothing_and_never_errors() {
-        // The fold matches only the five design-intent relations; a payload carrying any other
-        // relation string folds nothing (defensive - the emit only ever produces the five), and
-        // never errors the rebuild. Mirrors the concept arm's unrecognized-kind guard.
-        let p = Projector::open(":memory:", "test").unwrap();
-        apply_doc_concept(
-            &p,
-            1,
-            KIND_DESIGN_DOC,
-            "docs/architecture.md",
-            "RA",
-            "docs/architecture.md",
-        );
-        apply_doc_link(
-            &p,
-            2,
-            "docs/architecture.md",
-            "TELEPORTS",
-            "src/contextgraph/sqlite.rs",
-        );
-        let g = p
-            .subgraph(&["docs/architecture.md".to_string()], 1)
-            .unwrap();
-        assert!(
-            g.edges.is_empty(),
-            "an unrecognized design-intent relation folds no edge; got {:?}",
-            g.edges
-        );
-    }
-
-    #[test]
-    fn a_governed_doc_path_promotes_to_a_design_doc_node_in_both_fold_orders() {
-        // One-graph identity (spec 29b, addendum 6.1 single id space): an architecture doc is folded
-        // as a bare KIND_ARTIFACT the moment a decision GOVERNS it - which happens in a real run
-        // (the decision stream cites the addenda by path). When that SAME path is later ingested as
-        // design intent, it must become a design-doc node, not stay a bare artifact, or the
-        // design-doc query would MISS the reference architecture - defeating the spec's core goal.
-        // The promotion is order-independent: the specific kind wins whichever event folds first.
-        let doc = "docs/architecture-addendum-context-management.md";
-
-        // Order A: governed-first (artifact), then ingested (design-doc) -> promotes to design-doc.
-        let a = Projector::open(":memory:", "test").unwrap();
-        apply_decision(&a, 1, "d-ctx-mgmt", "context management RA", &[doc], "");
-        apply_doc_concept(&a, 2, KIND_DESIGN_DOC, doc, "Context management", doc);
-        let g = a.subgraph(&[doc.to_string()], 1).unwrap();
-        let n = g.nodes.iter().find(|n| n.id == doc).expect("node folded");
-        assert_eq!(
-            n.kind, KIND_DESIGN_DOC,
-            "a governed artifact PROMOTES to design-doc when ingested; got {:?}",
-            n
-        );
-        assert_eq!(
-            n.attrs.get("title").map(String::as_str),
-            Some("Context management"),
-            "the ingested title rides onto the promoted node"
-        );
-
-        // Order B: ingested-first (design-doc), then governed (artifact) -> stays design-doc (a
-        // later bare-artifact reference never DEMOTES the established specific kind).
-        let b = Projector::open(":memory:", "test").unwrap();
-        apply_doc_concept(&b, 1, KIND_DESIGN_DOC, doc, "Context management", doc);
-        apply_decision(&b, 2, "d-ctx-mgmt", "context management RA", &[doc], "");
-        let g = b.subgraph(&[doc.to_string()], 1).unwrap();
-        let n = g.nodes.iter().find(|n| n.id == doc).expect("node folded");
-        assert_eq!(
-            n.kind, KIND_DESIGN_DOC,
-            "a later governing reference never DEMOTES the design-doc node; got {:?}",
-            n
-        );
-    }
-
-    /// Fold a code REFERENCE (`file` references `name`) from its raw on-log JSON at `pos`. `fresh`
-    /// marks the first event of an extraction batch, exactly as for [`apply_def`].
-    fn apply_batch_ref(p: &Projector, pos: u64, file: &str, name: &str, fresh: bool) {
-        apply_json(
-            p,
-            pos,
-            TYPE_EDGE_INFERRED,
-            serde_json::json!({ "file": file, "name": name, "lang": "rust", "fresh": fresh }),
-        );
-    }
-
     /// Every edge from `from`, as `(to, rel, valid_to)`, read STRAIGHT from the table - INCLUDING
     /// invalidated rows (a set `valid_to`) that the live `subgraph` filter hides. This is what lets
     /// a test prove supersede-not-delete: a superseded edge is RETAINED with `valid_to` stamped, so
@@ -11888,16 +7734,6 @@ mod tests {
             [from],
             |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get(2)?)),
         )
-    }
-
-    /// The value an SQL `fragment` answers over `params`, selected off the projector's own
-    /// connection ([`raw_rows`]).
-    fn fragment_values<T: rusqlite::types::FromSql>(
-        p: &Projector,
-        fragment: &str,
-        params: impl rusqlite::Params,
-    ) -> Vec<T> {
-        raw_rows(p, &format!("SELECT {fragment}"), params, |r| r.get(0))
     }
 
     /// Every row `sql` selects straight off the projector's own connection, mapped by `row`.
@@ -11913,12 +7749,6 @@ mod tests {
             .unwrap()
             .collect::<Result<C, _>>()
             .unwrap()
-    }
-
-    /// The text of the definition lookup a proof's resolution ([`resolve_proofs`]) and a
-    /// reference's same-file candidates ([`same_file_candidates`]) run, with a file bound.
-    fn definition_lookup_sql() -> String {
-        leaf_definitions_sql(&admitted_sql(Admitted::LiveCallTargets), true)
     }
 
     /// Every row of every table but the ledger's - the `applied` positions and the `caught_up`
@@ -11999,1484 +7829,6 @@ mod tests {
                 after, applied,
                 "folding {type_} adds exactly its own applied row"
             );
-        }
-    }
-
-    #[test]
-    fn re_extraction_supersedes_a_files_prior_structural_edges_without_deleting_them() {
-        // Criterion 3: re-extracting a CHANGED file SUPERSEDES rather than overwrites. The FIRST
-        // event of each extraction batch carries `fresh`, so the fold sets `valid_to` on the file's
-        // prior live structural edges (CONTAINS / REFERENCES) before folding the new batch. The live
-        // `subgraph` at the new position then shows the new entities and NONE of the removed ones,
-        // while every old edge stays in the table with `valid_to` stamped - a historical / as-of
-        // query still reaches the previous graph (supersede-not-delete, spec 29a section 6.4).
-        let p = Projector::open(":memory:", "test").unwrap();
-        let file = "src/a.rs";
-
-        // Initial extraction: defs `foo` (line 5) and `bar` (line 9), plus a reference to `helper`.
-        apply_def(&p, 1, file, "foo", 5, true); // first event of the batch: fresh
-        apply_def(&p, 2, file, "bar", 9, false);
-        apply_batch_ref(&p, 3, file, "helper", false);
-
-        // Precondition: the initial graph holds both definitions and the reference, all live.
-        let g0 = p.subgraph(&[file.to_string()], 2).unwrap();
-        assert!(
-            g0.edges
-                .iter()
-                .any(|e| e.rel == REL_CONTAINS && e.to == "src/a.rs::bar"),
-            "precondition: bar is CONTAINed before re-extraction; got {:?}",
-            g0.edges
-        );
-        assert!(
-            g0.edges
-                .iter()
-                .any(|e| e.rel == REL_REFERENCES && e.to == "src/a.rs::%helper"),
-            "precondition: helper is REFERENCEd before re-extraction; got {:?}",
-            g0.edges
-        );
-
-        // The file CHANGES and is re-extracted: `foo` moved to line 12, `bar` was DELETED, the
-        // `helper` reference is gone, and a new reference to `other` appears.
-        apply_def(&p, 10, file, "foo", 12, true); // first event of the RE-extraction batch: fresh
-        apply_batch_ref(&p, 11, file, "other", false);
-
-        // LIVE view at the new position: foo is still contained (re-folded at its new line), the new
-        // reference is live, and the removed bar / helper are GONE from the live subgraph.
-        let g1 = p.subgraph(&[file.to_string()], 2).unwrap();
-        assert!(
-            g1.edges
-                .iter()
-                .any(|e| e.rel == REL_CONTAINS && e.to == "src/a.rs::foo"),
-            "foo is still CONTAINed after re-extraction; got {:?}",
-            g1.edges
-        );
-        assert!(
-            g1.edges
-                .iter()
-                .any(|e| e.rel == REL_REFERENCES && e.to == "src/a.rs::%other"),
-            "the new `other` reference is live; got {:?}",
-            g1.edges
-        );
-        assert!(
-            !g1.edges.iter().any(|e| e.to == "src/a.rs::bar"),
-            "the DELETED bar has no live edge after re-extraction; got {:?}",
-            g1.edges
-        );
-        assert!(
-            !g1.edges.iter().any(|e| e.to == "src/a.rs::%helper"),
-            "the removed helper reference is gone from the live view; got {:?}",
-            g1.edges
-        );
-        // The surviving entity re-folded to its new line (the node upserts in place; only edges are
-        // bi-temporal, so the entity id is stable and its attrs reflect the latest extraction).
-        let foo = g1
-            .nodes
-            .iter()
-            .find(|n| n.id == "src/a.rs::foo")
-            .expect("foo entity present after re-extraction");
-        assert_eq!(
-            foo.attrs.get("line").map(String::as_str),
-            Some("12"),
-            "foo re-folded at its new line"
-        );
-
-        // Supersede-NOT-delete, read straight from the edge table (the live filter hides
-        // invalidated rows): every prior structural edge is RETAINED with `valid_to` stamped, so a
-        // historical / as-of query still reaches the old graph, and exactly one CONTAINS(foo) lives.
-        let from_file = edges_from(&p, file);
-        let contains_foo: Vec<_> = from_file
-            .iter()
-            .filter(|t| t.1 == REL_CONTAINS && t.0 == "src/a.rs::foo")
-            .collect();
-        assert_eq!(
-            contains_foo.len(),
-            2,
-            "CONTAINS(foo) has one historical + one live row (nothing deleted); got {contains_foo:?}"
-        );
-        assert_eq!(
-            contains_foo.iter().filter(|t| t.2.is_none()).count(),
-            1,
-            "exactly one CONTAINS(foo) is live; got {contains_foo:?}"
-        );
-        assert_eq!(
-            contains_foo.iter().filter(|t| t.2.is_some()).count(),
-            1,
-            "the prior CONTAINS(foo) is retained with valid_to stamped; got {contains_foo:?}"
-        );
-        // The deleted bar's and removed helper's old edges are RETAINED but invalidated (their
-        // valid_to is set), never deleted - so a historical query still sees the old file.
-        let bar_edge = from_file
-            .iter()
-            .find(|t| t.1 == REL_CONTAINS && t.0 == "src/a.rs::bar")
-            .expect("bar's CONTAINS edge is retained, not deleted");
-        assert!(
-            bar_edge.2.is_some(),
-            "bar's CONTAINS edge is invalidated (valid_to set), not live; got {bar_edge:?}"
-        );
-        let helper_edge = from_file
-            .iter()
-            .find(|t| t.1 == REL_REFERENCES && t.0 == "src/a.rs::%helper")
-            .expect("helper's REFERENCES edge is retained, not deleted");
-        assert!(
-            helper_edge.2.is_some(),
-            "helper's REFERENCES edge is invalidated (valid_to set), not live; got {helper_edge:?}"
-        );
-    }
-
-    #[test]
-    fn the_fold_adds_a_caller_attributed_calls_edge_alongside_the_references_edge() {
-        // Spec 37 criterion 3: folding an `EdgeInferred` whose `caller` is `F` for a reference to
-        // `G` in `<file>` adds a `<file>::F --CALLS--> <callee-of-G>` edge, WHILE the existing
-        // `<file> --REFERENCES--> <callee-of-G>` edge is STILL produced. The CALLS edge is purely
-        // additive and uses the SAME callee resolution the REFERENCES edge already uses.
-        let p = Projector::open(":memory:", "test").unwrap();
-        let file = "src/a.rs";
-
-        // A file defining caller `F` and callee `G`, with `G` called from inside `F`'s body.
-        apply_def(&p, 1, file, "F", 1, true);
-        apply_def(&p, 2, file, "G", 5, false);
-        apply_call(&p, 3, file, "G", "F");
-
-        let g = p.subgraph(&[file.to_string()], 2).unwrap();
-
-        // The additive REFERENCES edge is UNCHANGED: the file still references G.
-        assert!(
-            g.edges
-                .iter()
-                .any(|e| e.rel == REL_REFERENCES && e.from == file && e.to == "src/a.rs::G"),
-            "the file-level REFERENCES(G) edge is still produced (additive); got {:?}",
-            g.edges
-        );
-        // The new caller-attributed CALLS edge: F calls G, keyed by the enclosing definition.
-        assert!(
-            g.edges
-                .iter()
-                .any(|e| e.rel == REL_CALLS && e.from == "src/a.rs::F" && e.to == "src/a.rs::G"),
-            "the caller-attributed <file>::F --CALLS--> <file>::G edge is folded; got {:?}",
-            g.edges
-        );
-        // Same callee resolution: the CALLS edge lands on the SAME same-file definition entity the
-        // REFERENCES edge resolves to (both at the EXTRACTED tier for a resolved local symbol).
-        let calls = g
-            .edges
-            .iter()
-            .find(|e| e.rel == REL_CALLS && e.from == "src/a.rs::F")
-            .expect("CALLS edge present");
-        assert_eq!(
-            calls.tier, TIER_EXTRACTED,
-            "a resolved same-file call folds at EXTRACTED, mirroring its REFERENCES sibling; got {calls:?}"
-        );
-    }
-
-    #[test]
-    fn a_caller_less_reference_folds_no_calls_edge() {
-        // Spec 37 (purely additive): a reference OUTSIDE every definition (a top-level `use`/import)
-        // carries no caller, so it folds EXACTLY today's file-level REFERENCES edge and NO CALLS
-        // edge. This pins the additive boundary: the CALLS edge appears ONLY when a caller is set.
-        let p = Projector::open(":memory:", "test").unwrap();
-        let file = "src/a.rs";
-
-        apply_def(&p, 1, file, "G", 5, true);
-        apply_batch_ref(&p, 2, file, "G", false); // caller-less: a top-level reference
-
-        let g = p.subgraph(&[file.to_string()], 2).unwrap();
-        assert!(
-            g.edges
-                .iter()
-                .any(|e| e.rel == REL_REFERENCES && e.to == "src/a.rs::G"),
-            "the caller-less reference still folds today's REFERENCES(G) edge; got {:?}",
-            g.edges
-        );
-        assert!(
-            !g.edges.iter().any(|e| e.rel == REL_CALLS),
-            "a caller-less reference folds NO CALLS edge; got {:?}",
-            g.edges
-        );
-    }
-
-    #[test]
-    fn re_extraction_supersedes_a_files_prior_calls_edges() {
-        // Spec 37 + spec 29a criterion 3: a re-extracted file SUPERSEDES its own CALLS edges under
-        // the same `fresh` batch boundary as its CONTAINS/REFERENCES edges. A CALLS edge's `from_id`
-        // is `<file>::<caller>` (not the bare file node), so the supersede must retire it too -
-        // otherwise a changed file would ACCRETE stale call edges rather than replace them.
-        let p = Projector::open(":memory:", "test").unwrap();
-        let file = "src/a.rs";
-
-        // Initial extraction: F calls G.
-        apply_def(&p, 1, file, "F", 1, true);
-        apply_def(&p, 2, file, "G", 5, false);
-        apply_call(&p, 3, file, "G", "F");
-        let g0 = p.subgraph(&[file.to_string()], 2).unwrap();
-        assert!(
-            g0.edges
-                .iter()
-                .any(|e| e.rel == REL_CALLS && e.from == "src/a.rs::F"),
-            "precondition: F --CALLS--> G is live before re-extraction; got {:?}",
-            g0.edges
-        );
-
-        // The file CHANGES: F no longer calls anything; the call is GONE.
-        apply_def(&p, 10, file, "F", 1, true); // fresh: first event of the re-extraction batch
-
-        // LIVE view: the stale CALLS edge is GONE from the live subgraph (superseded, not accreted).
-        let g1 = p.subgraph(&[file.to_string()], 2).unwrap();
-        assert!(
-            !g1.edges.iter().any(|e| e.rel == REL_CALLS),
-            "the removed call is superseded - no live CALLS edge after re-extraction; got {:?}",
-            g1.edges
-        );
-        // Supersede-NOT-delete: the old CALLS row is RETAINED with `valid_to` stamped (bi-temporal).
-        let from_caller = edges_from(&p, "src/a.rs::F");
-        let calls_row = from_caller
-            .iter()
-            .find(|t| t.1 == REL_CALLS && t.0 == "src/a.rs::G")
-            .expect("the prior F --CALLS--> G row is retained, not deleted");
-        assert!(
-            calls_row.2.is_some(),
-            "the prior CALLS edge is invalidated (valid_to set), not live; got {calls_row:?}"
-        );
-    }
-
-    #[test]
-    fn prune_reclaims_superseded_structural_edges_older_than_the_boundary_and_keeps_every_live_edge(
-    ) {
-        // Spec 41 criterion 1 (OWNS the superseded-edge prune): a file re-extracted across MULTIPLE
-        // runs accretes one superseded structural edge per prior extraction - the `fresh` batch
-        // boundary sets `valid_to` on the file's prior live edges before folding the new batch. The
-        // extended prune authority reclaims ONLY the superseded rows (`valid_to IS NOT NULL`) retired
-        // BEFORE the retention boundary (the active run's start), while EVERY live edge
-        // (`valid_to IS NULL`) remains and a row retired AT the boundary is kept as recent history -
-        // so the historical tail is bounded, but LIVE is sacrosanct and the log re-derives the rest.
-        let p = Projector::open(":memory:", "test").unwrap();
-        let file = "src/a.rs";
-
-        // Run 1 (t=100s): first extraction of `foo` and `bar` - two live CONTAINS edges (vf=100s).
-        apply_def_at(&p, 1, file, "foo", 5, true, 100);
-        apply_def_at(&p, 2, file, "bar", 9, false, 100);
-
-        // Run 2 (t=200s): re-extract `foo` only (bar deleted). The fresh event supersedes run-1's
-        // CONTAINS(foo)+CONTAINS(bar) with valid_to=to_nanos(200s), then folds a new live CONTAINS(foo).
-        apply_def_at(&p, 10, file, "foo", 12, true, 200);
-
-        // Run 3 (t=300s, the ACTIVE run): re-extract `foo` and add `baz`. This supersedes run-2's
-        // CONTAINS(foo) with valid_to=to_nanos(300s) and folds live CONTAINS(foo)+CONTAINS(baz).
-        apply_def_at(&p, 20, file, "foo", 3, true, 300);
-        apply_def_at(&p, 21, file, "baz", 7, false, 300);
-
-        let boundary = to_nanos(UNIX_EPOCH + std::time::Duration::from_secs(300));
-
-        // Before: three superseded rows (run-1 foo@200s, run-1 bar@200s, run-2 foo@300s) and two
-        // live rows (run-3 foo, run-3 baz) out of the file node.
-        let before = edges_from(&p, file);
-        let live_before: Vec<_> = before
-            .iter()
-            .filter(|(_, _, vt)| vt.is_none())
-            .cloned()
-            .collect();
-        let superseded_before = before.iter().filter(|(_, _, vt)| vt.is_some()).count();
-        assert_eq!(
-            superseded_before, 3,
-            "three superseded structural edges accrued across the re-extractions; got {before:?}"
-        );
-        assert_eq!(
-            live_before.len(),
-            2,
-            "the active run's two live CONTAINS edges; got {before:?}"
-        );
-
-        // Prune with NO dead-run nodes - only the spec-41 superseded-edge reclamation at the
-        // active-run boundary.
-        let stats = p.prune(&[], Some(boundary)).unwrap();
-        assert_eq!(
-            stats.superseded_edges, 2,
-            "exactly the two rows retired BEFORE the boundary (run-1 foo+bar, valid_to=200s) are reclaimed"
-        );
-        assert_eq!(stats.nodes, 0, "no node was named to drop");
-
-        // After: the two run-1 rows (valid_to=200s < boundary) are gone; the run-2 row
-        // (valid_to=300s == boundary) survives as recent history; BOTH live rows (valid_to NULL)
-        // are untouched - LIVE is sacrosanct.
-        let after = edges_from(&p, file);
-        let superseded_after: Vec<_> = after
-            .iter()
-            .filter(|(_, _, vt)| vt.is_some())
-            .cloned()
-            .collect();
-        let live_after: Vec<_> = after
-            .iter()
-            .filter(|(_, _, vt)| vt.is_none())
-            .cloned()
-            .collect();
-        assert_eq!(
-            superseded_after.len(),
-            1,
-            "only the boundary-time (recent) superseded row survives; got {after:?}"
-        );
-        assert!(
-            superseded_after
-                .iter()
-                .all(|(_, _, vt)| *vt == Some(boundary)),
-            "the surviving superseded row is exactly the one retired AT the boundary; got {after:?}"
-        );
-        assert_eq!(
-            live_before, live_after,
-            "EVERY live edge is untouched by the prune (LIVE is sacrosanct)"
-        );
-    }
-
-    /// A live `subgraph` result reduced to a sorted, comparable form: nodes as `(id, kind, attrs)`
-    /// and edges as `(from, rel, to, tier, valid_from, source)`. `subgraph` returns ONLY live rows
-    /// (`valid_to IS NULL`), so this is exactly the slice a grounding consumer reads; the
-    /// superseded-edge prune must leave it identical, because it reclaims only historical rows a
-    /// live query never sees. Sorted so the comparison is order-independent (SQLite returns rows in
-    /// no guaranteed order).
-    #[allow(clippy::type_complexity)]
-    fn live_slice(
-        g: &Graph,
-    ) -> (
-        Vec<(String, String, BTreeMap<String, String>)>,
-        Vec<(String, String, String, String, i64, Position)>,
-    ) {
-        let mut nodes: Vec<_> = g
-            .nodes
-            .iter()
-            .map(|n| (n.id.clone(), n.kind.clone(), n.attrs.clone()))
-            .collect();
-        nodes.sort();
-        let mut edges: Vec<_> = g
-            .edges
-            .iter()
-            .map(|e| {
-                (
-                    e.from.clone(),
-                    e.rel.clone(),
-                    e.to.clone(),
-                    e.tier.clone(),
-                    e.valid_from,
-                    e.source,
-                )
-            })
-            .collect();
-        edges.sort();
-        (nodes, edges)
-    }
-
-    #[test]
-    fn pruning_superseded_edges_leaves_the_live_grounding_subgraph_exactly_unchanged() {
-        // Spec 41 criterion 2 (OWNS the live-invariant guarantee): the superseded-edge prune reclaims
-        // ONLY historical rows (`valid_to IS NOT NULL`), so the LIVE slice a grounding consumer reads
-        // through `subgraph` (which filters `valid_to IS NULL`) is byte-for-byte identical before and
-        // after. This is the dedicated grounding-unaffected proof - a RICH live slice (two files;
-        // CONTAINS / REFERENCES / caller-attributed CALLS) over a table carrying MANY superseded rows,
-        // pruned NON-vacuously, returns the exact same nodes AND edges, and no live edge is removed at
-        // the storage layer either. It does NOT own the prune mechanism's exact reclamation semantics
-        // (criterion 1) or the bounded-growth regression (criterion 3) - only that LIVE is sacrosanct,
-        // so no grounding, blast-radius, or safe-superset consumer loses a reference it needs.
-        let p = Projector::open(":memory:", "test").unwrap();
-        let a = "src/a.rs";
-        let b = "src/b.rs";
-
-        // Project-scoped raw edge counts, straight from the private table, so the LIVE-invariant is
-        // proven at the storage layer INCLUDING the caller-attributed CALLS rows (from an entity, not
-        // the file, so `edges_from(a)` alone would miss them).
-        let count_live = |proj: &Projector| -> i64 {
-            let conn = proj.conn.lock().unwrap();
-            conn.query_row(
-                "SELECT COUNT(*) FROM edges WHERE valid_to IS NULL AND project = ?1",
-                params![proj.project],
-                |r| r.get(0),
-            )
-            .unwrap()
-        };
-        let count_superseded = |proj: &Projector| -> i64 {
-            let conn = proj.conn.lock().unwrap();
-            conn.query_row(
-                "SELECT COUNT(*) FROM edges WHERE valid_to IS NOT NULL AND project = ?1",
-                params![proj.project],
-                |r| r.get(0),
-            )
-            .unwrap()
-        };
-
-        // a.rs is re-extracted across THREE runs, so the edges table accretes a superseded copy of its
-        // prior structural edges on every re-extraction - historical rows the live view never shows.
-        // b.rs is extracted ONCE and never re-extracted, contributing purely-live structure the prune
-        // must equally leave untouched.
-        //
-        // Run 1 (t=100s): a.rs defines foo + bar and CALLS helper from inside foo; b.rs defines gadget
-        // and CALLS widget from inside gadget.
-        apply_def_at(&p, 1, a, "foo", 5, true, 100);
-        apply_def_at(&p, 2, a, "bar", 9, false, 100);
-        apply_call(&p, 3, a, "helper", "foo");
-        apply_def_at(&p, 4, b, "gadget", 2, true, 100);
-        apply_call(&p, 5, b, "widget", "gadget");
-
-        // Run 2 (t=200s): re-extract a.rs (bar deleted). The fresh event supersedes run-1's a.rs edges
-        // with valid_to=to_nanos(200s), then folds a.rs's new live structure.
-        apply_def_at(&p, 10, a, "foo", 12, true, 200);
-        apply_call(&p, 11, a, "helper", "foo");
-
-        // Run 3 (t=300s, the ACTIVE run): re-extract a.rs adding baz. Supersedes run-2's a.rs edges
-        // with valid_to=to_nanos(300s); folds a.rs's final live structure (foo, baz, helper).
-        apply_def_at(&p, 20, a, "foo", 3, true, 300);
-        apply_def_at(&p, 21, a, "baz", 7, false, 300);
-        apply_call(&p, 22, a, "helper", "foo");
-
-        let boundary = to_nanos(UNIX_EPOCH + std::time::Duration::from_secs(300));
-
-        // Precondition (non-vacuity): the table genuinely carries superseded rows retired BEFORE the
-        // boundary - without them the prune is a no-op and the invariance vacuous.
-        let superseded_pre = count_superseded(&p);
-        assert!(
-            superseded_pre > 0,
-            "precondition: re-extraction accrued superseded historical rows to reclaim; got {superseded_pre}"
-        );
-        let live_pre = count_live(&p);
-
-        // The LIVE slice a grounding consumer reads, captured over BOTH files at a depth spanning the
-        // whole live structure, BEFORE the prune.
-        let seed = [a.to_string(), b.to_string()];
-        let before = live_slice(&p.subgraph(&seed, 3).unwrap());
-        assert!(
-            !before.0.is_empty() && !before.1.is_empty(),
-            "the captured live slice is non-empty - real nodes and edges to protect; got {before:?}"
-        );
-
-        // Prune the superseded edges at the active-run boundary (no dead-run nodes). This reclaims
-        // historical rows the live view never shows - and it MUST reclaim some, or the invariance
-        // below is proven only against a no-op.
-        let stats: PruneStats = p.prune(&[], Some(boundary)).unwrap();
-        assert!(
-            stats.superseded_edges > 0,
-            "the prune reclaimed historical rows (non-vacuous); got {stats:?}"
-        );
-        assert_eq!(
-            stats.nodes, 0,
-            "no node was named to drop - only the superseded-edge reclamation ran"
-        );
-
-        // THE criterion-2 proof: the LIVE slice a grounding consumer reads is EXACTLY the same after
-        // the prune - the same nodes AND the same edges. Grounding, blast-radius, and the two-view
-        // safe superset are unaffected because only historical rows were reclaimed.
-        let after = live_slice(&p.subgraph(&seed, 3).unwrap());
-        assert_eq!(
-            before, after,
-            "the live subgraph a grounding consumer reads is byte-for-byte unchanged by the prune"
-        );
-
-        // The LIVE-invariant at the storage layer: NOT ONE live edge was removed (a live edge outside
-        // the seeded slice would escape the subgraph check above but not this project-wide count),
-        // while the superseded tail genuinely shrank - the prune removed ONLY historical rows.
-        assert_eq!(
-            count_live(&p),
-            live_pre,
-            "no live edge is removed by the prune - the live edge count is unchanged (LIVE is sacrosanct)"
-        );
-        assert!(
-            count_superseded(&p) < superseded_pre,
-            "the superseded historical tail genuinely shrank; before={superseded_pre} after={}",
-            count_superseded(&p)
-        );
-    }
-
-    #[test]
-    fn pruning_keeps_the_superseded_edge_count_bounded_by_the_window_across_n_re_extractions() {
-        // Spec 41 criterion 3 (OWNS the bounded-growth regression). The measured failure was the
-        // superseded-edge table growing WITHOUT bound as runs re-extract: every re-extraction's
-        // `fresh` batch boundary retires the file's prior live structural edges (spec 29a), and
-        // before spec 41 nothing reclaimed them - 301,156 superseded rows piled up, ~90% of the
-        // table and 70MB of an 83MB graph, slow enough on every fold to stall a loop run. This
-        // proves the fix BOUNDS that growth: re-extracting the SAME file N times accretes O(N)
-        // superseded rows, but a prune at the active-run boundary leaves a count fixed by the
-        // RETENTION WINDOW (the most recent run's supersessions), NOT growing with N. It is proven
-        // for two Ns an order of magnitude apart - the pre-prune tail scales with N while the
-        // post-prune count is IDENTICAL - so a regression that stopped reclaiming would make the two
-        // post-prune counts diverge and fail here.
-        //
-        // Scope is strictly the O(N) bound: the LIVE-untouched / subgraph-equivalence guarantee is
-        // criterion 2's to own, and the prune mechanism itself is criterion 1's. The single
-        // live-count assertion here is a guard on this test's premise, not the owned criterion.
-
-        // Re-extract a file with a STABLE two-definition shape (foo + bar) across `runs` runs, run r
-        // at t=100*r s. Run r's FIRST event is `fresh`, so it retires run (r-1)'s two live CONTAINS
-        // edges, stamping their valid_to = to_nanos(100*r), then the batch re-folds the two live
-        // edges. Prune at the ACTIVE run's (run `runs`) boundary and return the superseded/live row
-        // counts read straight from the edge table, before and after the prune.
-        let experiment = |runs: u64| -> (usize, usize, usize, usize) {
-            let p = Projector::open(":memory:", "test").unwrap();
-            let file = "src/a.rs";
-            let mut pos = 0u64;
-            for r in 1..=runs {
-                let secs = 100 * r;
-                pos += 1;
-                apply_def_at(&p, pos, file, "foo", 5, true, secs); // fresh: retires prior live
-                pos += 1;
-                apply_def_at(&p, pos, file, "bar", 9, false, secs);
-            }
-            // Count the file's outgoing CONTAINS rows by liveness, straight from the table (the live
-            // `subgraph` filter hides the superseded ones this bound is about).
-            let superseded = |p: &Projector| {
-                edges_from(p, file)
-                    .into_iter()
-                    .filter(|(_, _, vt)| vt.is_some())
-                    .count()
-            };
-            let live = |p: &Projector| {
-                edges_from(p, file)
-                    .into_iter()
-                    .filter(|(_, _, vt)| vt.is_none())
-                    .count()
-            };
-            let superseded_before = superseded(&p);
-            let live_before = live(&p);
-            // The active run's start is the retention boundary (the same run-boundary attribution
-            // `reset --runs` uses): reclaim only superseded rows retired BEFORE it.
-            let boundary = to_nanos(UNIX_EPOCH + std::time::Duration::from_secs(100 * runs));
-            let stats = p.prune(&[], Some(boundary)).unwrap();
-            let superseded_after = superseded(&p);
-            let live_after = live(&p);
-            // The prune's reported reclamation equals the rows it actually removed from the table.
-            assert_eq!(
-                stats.superseded_edges,
-                superseded_before - superseded_after,
-                "prune's reported superseded_edges equals the superseded rows it removed (runs={runs})"
-            );
-            (superseded_before, superseded_after, live_before, live_after)
-        };
-
-        let (before_5, after_5, live_before_5, live_after_5) = experiment(5);
-        let (before_50, after_50, live_before_50, live_after_50) = experiment(50);
-
-        // UNBOUNDED WITHOUT THE PRUNE: the superseded tail grows O(N) with re-extractions - each of
-        // the (runs - 1) supersessions retires the stable 2-edge shape, so before any prune the
-        // count is 2*(runs - 1), and an order-of-magnitude-larger N carries an order-of-magnitude-
-        // larger tail (the unbounded accumulation spec 41 measured).
-        assert_eq!(
-            before_5,
-            2 * (5 - 1),
-            "5 re-extractions accrue 2*(5-1) superseded rows"
-        );
-        assert_eq!(
-            before_50,
-            2 * (50 - 1),
-            "50 re-extractions accrue 2*(50-1) superseded rows"
-        );
-        assert!(
-            before_50 > before_5,
-            "the pre-prune superseded tail GROWS with N: {before_50} (N=50) > {before_5} (N=5)"
-        );
-
-        // BOUNDED WITH THE PRUNE: after the active-run-boundary prune, the superseded count is fixed
-        // by the retention window - exactly the most recent run's supersessions (the stable 2-edge
-        // shape, retired AT the boundary and so kept as recent history) - independent of N. The
-        // count is IDENTICAL for N=5 and N=50: the regression guard, since a reclamation that
-        // stopped would leave O(N) rows and the two counts would diverge.
-        assert_eq!(
-            after_5, 2,
-            "after the prune only the last run's 2 supersessions (the window) remain, not O(N)"
-        );
-        assert_eq!(
-            after_50, after_5,
-            "the post-prune superseded count is bounded by the window - IDENTICAL for N=50 and N=5, not O(N): {after_50} vs {after_5}"
-        );
-
-        // Premise guard (criterion 2 OWNS the full live-invariant): the active run's live shape is
-        // unchanged by the prune and independent of N - the prune reclaimed history only.
-        assert_eq!(
-            (live_before_5, live_after_5, live_before_50, live_after_50),
-            (2, 2, 2, 2),
-            "the prune leaves the active run's live edges untouched (a guard; criterion 2 owns this)"
-        );
-    }
-
-    #[test]
-    fn a_cross_file_calls_edge_upgrades_ambiguous_to_inferred_with_its_references_twin() {
-        // Spec 37 tier-consistency: a CALLS edge to a callee defined in ANOTHER file, folded BEFORE
-        // that definition exists, is tiered AMBIGUOUS - then the definition's convergent upgrade
-        // promotes it AMBIGUOUS -> INFERRED, identically to its REFERENCES twin, so the CALLS edge
-        // never lags its sibling's confidence. One tier authority governs both structural edges.
-        let p = Projector::open(":memory:", "test").unwrap();
-        let a = "src/a.rs";
-        let b = "src/b.rs";
-
-        // File A: `F` calls `G`, but `G` is NOT yet defined anywhere the graph knows -> AMBIGUOUS.
-        apply_def(&p, 1, a, "F", 1, true);
-        apply_call(&p, 2, a, "G", "F");
-        let g_pre = p.subgraph(&[a.to_string()], 2).unwrap();
-        let calls_pre = g_pre
-            .edges
-            .iter()
-            .find(|e| e.rel == REL_CALLS && e.from == "src/a.rs::F")
-            .expect("CALLS edge present pre-definition");
-        assert_eq!(
-            calls_pre.tier, TIER_AMBIGUOUS,
-            "a call to a not-yet-known name folds AMBIGUOUS; got {calls_pre:?}"
-        );
-
-        // File B DEFINES `G`: the convergent upgrade promotes A's cross-file edges to INFERRED.
-        apply_def(&p, 3, b, "G", 9, true);
-
-        let g_post = p.subgraph(&[a.to_string()], 2).unwrap();
-        let calls_post = g_post
-            .edges
-            .iter()
-            .find(|e| e.rel == REL_CALLS && e.from == "src/a.rs::F")
-            .expect("CALLS edge present post-definition");
-        assert_eq!(
-            calls_post.tier, TIER_INFERRED,
-            "the cross-file CALLS edge upgrades AMBIGUOUS -> INFERRED with its REFERENCES twin; got {calls_post:?}"
-        );
-        let refs_post = g_post
-            .edges
-            .iter()
-            .find(|e| e.rel == REL_REFERENCES && e.to == "src/a.rs::%G")
-            .expect("REFERENCES twin present");
-        assert_eq!(
-            refs_post.tier, TIER_INFERRED,
-            "the REFERENCES twin also upgraded (baseline the CALLS edge must match); got {refs_post:?}"
-        );
-    }
-
-    #[test]
-    fn calls_down_walks_the_execution_path_as_a_layered_deduped_dag_with_a_back_edge() {
-        // Spec 52 criterion 1: the DOWN traversal. From a seed with a SAME-FILE callee and a
-        // SINGLE-CANDIDATE cross-file callee, `calls(Down)` returns the transitive DAG with correct
-        // per-node LAYERS, DEDUPED nodes under a cycle, and the recursive edge marked as a BACK
-        // edge. A cross-file hop resolves THROUGH its bare placeholder to the real definition and
-        // continues; nothing is a frontier (every hop here is single-candidate).
-        let p = Projector::open(":memory:", "test").unwrap();
-        let a = "src/a.rs";
-        let b = "src/b.rs";
-
-        // Definitions first (so the cross-file references fold INFERRED, not AMBIGUOUS): a.rs
-        // defines `main` and `helper`; b.rs defines `work`.
-        apply_def(&p, 1, a, "main", 1, true);
-        apply_def(&p, 2, a, "helper", 5, false);
-        apply_def(&p, 3, b, "work", 1, true);
-        // Calls: main -> helper (same-file), main -> work (single-candidate cross-file), and
-        // work -> main (cross-file, closing a CYCLE back onto the seed).
-        apply_call(&p, 4, a, "helper", "main");
-        apply_call(&p, 5, a, "work", "main");
-        apply_call(&p, 6, b, "main", "work");
-
-        let cg = p
-            .calls(
-                &["src/a.rs::main".to_string()],
-                Direction::Down,
-                5,
-                TIER_INFERRED,
-            )
-            .unwrap();
-
-        // LAYERS: the seed at 0; both its callees at 1; the cross-file callee resolved to its real
-        // definition b.rs::work (NOT the bare a.rs::%work placeholder). The cycle back onto main
-        // DEDUPS - main appears EXACTLY ONCE, still at layer 0.
-        assert_eq!(
-            call_layer(&cg, "src/a.rs::main"),
-            Some(0),
-            "the seed is layer 0; nodes were {:?}",
-            call_node_ids(&cg)
-        );
-        assert_eq!(
-            call_layer(&cg, "src/a.rs::helper"),
-            Some(1),
-            "the same-file callee is layer 1; nodes were {:?}",
-            call_node_ids(&cg)
-        );
-        assert_eq!(
-            call_layer(&cg, "src/b.rs::work"),
-            Some(1),
-            "the cross-file callee resolved to its definition at layer 1; nodes were {:?}",
-            call_node_ids(&cg)
-        );
-        assert_eq!(
-            cg.nodes
-                .iter()
-                .filter(|n| n.node.id == "src/a.rs::main")
-                .count(),
-            1,
-            "the recursion dedups: main appears exactly once (a DAG, not a loop); nodes were {:?}",
-            call_node_ids(&cg)
-        );
-        // The walk resolved THROUGH the bare placeholders - they are not in the answer.
-        for bare in ["src/a.rs::%work", "src/b.rs::%main"] {
-            assert!(
-                !cg.nodes.iter().any(|n| n.node.id == bare),
-                "the bare placeholder {bare} is resolved away, not returned; nodes were {:?}",
-                call_node_ids(&cg)
-            );
-        }
-        assert_eq!(
-            call_node_ids(&cg),
-            vec!["src/a.rs::helper", "src/a.rs::main", "src/b.rs::work"],
-            "exactly the seed plus its two resolved callees"
-        );
-
-        // No FRONTIER: every hop is single-candidate, so no node is a marked frontier.
-        assert!(
-            cg.nodes.iter().all(|n| n.frontier.is_none()),
-            "single-candidate hops carry no frontier marker; nodes were {:?}",
-            cg.nodes
-                .iter()
-                .map(|n| (n.node.id.clone(), n.frontier.clone()))
-                .collect::<Vec<_>>()
-        );
-
-        // EDGES: two forward tree edges (back=false) and the recursion edge work -> main (back=true).
-        assert_eq!(
-            call_back_edge(&cg, "src/a.rs::main", "src/a.rs::helper"),
-            Some(false),
-            "the same-file forward edge is not a back edge; edges were {:?}",
-            call_edge_pairs(&cg)
-        );
-        assert_eq!(
-            call_back_edge(&cg, "src/a.rs::main", "src/b.rs::work"),
-            Some(false),
-            "the resolved cross-file forward edge lands on the definition, not a back edge; edges were {:?}",
-            call_edge_pairs(&cg)
-        );
-        assert_eq!(
-            call_back_edge(&cg, "src/b.rs::work", "src/a.rs::main"),
-            Some(true),
-            "the recursion edge closing the cycle onto the seed is marked BACK; edges were {:?}",
-            call_edge_pairs(&cg)
-        );
-        assert_eq!(
-            call_edge_pairs(&cg),
-            vec![
-                ("src/a.rs::main".to_string(), "src/a.rs::helper".to_string()),
-                ("src/a.rs::main".to_string(), "src/b.rs::work".to_string()),
-                ("src/b.rs::work".to_string(), "src/a.rs::main".to_string()),
-            ],
-            "exactly the three resolved CALLS edges"
-        );
-        assert!(
-            cg.edges.iter().all(|e| e.edge.rel == REL_CALLS),
-            "every traversed edge is a CALLS edge"
-        );
-    }
-
-    #[test]
-    fn calls_down_follows_a_single_candidate_hop_but_marks_a_multi_candidate_one_a_sorted_frontier()
-    {
-        // Spec 52 criterion 2 - the CONSERVATIVE RESOLUTION policy, hardened past c1's coverage
-        // (adj-u52cdw-c2-scope-reconcile). One seed reaches BOTH kinds of cross-file hop, so a single
-        // walk proves the boundary the policy turns on:
-        //   - a SINGLE-definition callee IS followed - resolved through its bare placeholder onto the
-        //     real definition, and the walk DESCENDS past it (its own callee is reached one layer
-        //     deeper);
-        //   - a MULTI-definition callee becomes a marked FRONTIER carrying its SORTED candidate ids
-        //     and is NOT descended (honest by construction - the view may be INCOMPLETE but never
-        //     confidently wrong; the human re-seeds on a chosen candidate).
-        // The candidate-sort assertion has TEETH the c1 periphery test lacks: that test folds a name's
-        // two definitions a.rs-then-b.rs, so their natural row order already EQUALS the sorted order
-        // and the sort is unproven (sdet-u52cdw-frontier-sort-vacuous). Here `dup`'s b.rs definition
-        // is folded BEFORE its a.rs one, so the natural (rowid) row order is [b, a]; only the
-        // `ORDER BY id` in `definitions_with_suffix` yields the asserted [a, b] - drop the sort and
-        // this assertion fails.
-        let p = Projector::open(":memory:", "test").unwrap();
-
-        // Definitions, folded before the calls so every cross-file reference tiers INFERRED (a
-        // definition already exists), placing it at/above the default floor.
-        apply_def(&p, 1, "src/caller.rs", "entry", 1, true); // the seed
-        apply_def(&p, 2, "src/solo.rs", "solo", 1, true); // the SINGLE-candidate callee
-        apply_def(&p, 3, "src/sink.rs", "sink", 1, true); // solo's own callee (proves descent)
-                                                          // `dup` is defined in TWO files - fold b.rs BEFORE a.rs so the pre-sort (rowid) order is
-                                                          // [b, a] and only `ORDER BY id` re-sorts it to [a, b].
-        apply_def(&p, 4, "src/b.rs", "dup", 1, true);
-        apply_def(&p, 5, "src/b.rs", "only_via_b", 2, false);
-        apply_def(&p, 6, "src/a.rs", "dup", 1, true);
-        apply_def(&p, 7, "src/a.rs", "only_via_a", 2, false);
-
-        // Calls: entry -> solo (single-candidate cross-file) and entry -> dup (multi-candidate);
-        // solo -> sink (so the followed single-candidate hop has somewhere to descend); and each
-        // `dup` candidate calls a distinct sentinel that is reachable ONLY by descending that
-        // candidate.
-        apply_call(&p, 8, "src/caller.rs", "solo", "entry");
-        apply_call(&p, 9, "src/caller.rs", "dup", "entry");
-        apply_call(&p, 10, "src/solo.rs", "sink", "solo");
-        apply_call(&p, 11, "src/a.rs", "only_via_a", "dup");
-        apply_call(&p, 12, "src/b.rs", "only_via_b", "dup");
-
-        let cg = p
-            .calls(
-                &["src/caller.rs::entry".to_string()],
-                Direction::Down,
-                5,
-                TIER_INFERRED,
-            )
-            .unwrap();
-
-        let node = |id: &str| cg.nodes.iter().find(|n| n.node.id == id);
-
-        // SINGLE-candidate: `solo` IS followed - resolved onto its real definition (not the bare
-        // caller-namespace placeholder), at layer 1, carrying NO frontier marker.
-        let solo = node("src/solo.rs::solo")
-            .expect("the single-candidate callee is followed onto its def");
-        assert_eq!(
-            solo.layer, 1,
-            "the followed single-candidate callee is one hop from the seed"
-        );
-        assert!(
-            solo.frontier.is_none(),
-            "a single-candidate hop is fully resolved - not a frontier"
-        );
-        assert!(
-            node("src/caller.rs::%solo").is_none(),
-            "the bare placeholder is resolved away, not returned; nodes were {:?}",
-            call_node_ids(&cg),
-        );
-        // ...and the walk DESCENDS past it: solo's own callee is reached at layer 2, so the
-        // single-candidate hop was followed THROUGH, not merely landed on.
-        let sink =
-            node("src/sink.rs::sink").expect("the walk descends past the followed single hop");
-        assert_eq!(
-            sink.layer, 2,
-            "solo's callee is two hops from the seed - the single-candidate hop was traversed"
-        );
-
-        // MULTI-candidate: `dup` is a marked FRONTIER on the bare placeholder, carrying its SORTED
-        // candidate ids. TEETH: b.rs was folded before a.rs, so a missing `ORDER BY id` would return
-        // [b, a]; only the real sort yields [a, b].
-        let dup = node("src/caller.rs::%dup")
-            .expect("the multi-candidate callee is returned as a frontier node");
-        assert_eq!(dup.layer, 1, "the frontier callee is one hop from the seed");
-        assert_eq!(
-            dup.frontier,
-            Some(vec![
-                "src/a.rs::dup".to_string(),
-                "src/b.rs::dup".to_string()
-            ]),
-            "the frontier carries its candidate ids SORTED by id - even though b.rs was folded first",
-        );
-
-        // The multi-candidate hop is the ONLY frontier; the single-candidate hop did not become one.
-        assert_eq!(
-            cg.nodes.iter().filter(|n| n.frontier.is_some()).count(),
-            1,
-            "exactly one node is a frontier - the multi-candidate hop, not the single one",
-        );
-
-        // NOT DESCENDED: neither candidate definition, nor anything reachable ONLY through a
-        // candidate, appears - the walk stopped at the frontier and never guessed.
-        for hidden in [
-            "src/a.rs::dup",
-            "src/b.rs::dup",
-            "src/a.rs::only_via_a",
-            "src/b.rs::only_via_b",
-        ] {
-            assert!(
-                node(hidden).is_none(),
-                "{hidden} lies beyond the un-descended frontier and must not be reached; nodes were {:?}",
-                call_node_ids(&cg),
-            );
-        }
-
-        // Exactly the seed, the followed single-candidate chain, and the marked frontier placeholder.
-        assert_eq!(
-            call_node_ids(&cg),
-            vec![
-                "src/caller.rs::%dup".to_string(),
-                "src/caller.rs::entry".to_string(),
-                "src/sink.rs::sink".to_string(),
-                "src/solo.rs::solo".to_string(),
-            ],
-            "the reached set is the seed + the followed single-candidate chain + the marked frontier",
-        );
-    }
-
-    #[test]
-    fn calls_down_leaves_a_zero_candidate_cross_file_callee_a_terminal_leaf_not_a_frontier() {
-        // Spec 52 criterion 2 - the ZERO-candidate branch of the resolution policy
-        // (adj-u52cdw-c2-scope-reconcile). A bare cross-file callee whose name is defined NOWHERE the
-        // graph knows resolves to ZERO candidates: `resolve_down_hop` returns the bare placeholder id
-        // itself with NO frontier - it is a terminal LEAF, categorically distinct from a
-        // multi-candidate frontier (there is nothing to fan out to). Such a call tiers `ambiguous`,
-        // so the floor is lowered to reach it; the point proved here is the resolution OUTCOME (a
-        // bare leaf, `frontier` None), not the floor itself.
-        let p = Projector::open(":memory:", "test").unwrap();
-        apply_def(&p, 1, "src/caller.rs", "entry", 1, true);
-        // `ghost` is defined in no file the graph knows - the CALLS edge tiers ambiguous and, once
-        // followed, resolves to zero candidates.
-        apply_call(&p, 2, "src/caller.rs", "ghost", "entry");
-
-        let cg = p
-            .calls(
-                &["src/caller.rs::entry".to_string()],
-                Direction::Down,
-                5,
-                TIER_AMBIGUOUS,
-            )
-            .unwrap();
-
-        let ghost = cg
-            .nodes
-            .iter()
-            .find(|n| n.node.id == "src/caller.rs::%ghost")
-            .expect("the zero-candidate callee is reached on the bare placeholder itself");
-        assert_eq!(
-            ghost.layer, 1,
-            "the unresolved callee sits one hop from the seed"
-        );
-        assert!(
-            ghost.frontier.is_none(),
-            "a ZERO-candidate resolution is a terminal leaf, NOT a frontier (nothing to fan out to)",
-        );
-        // It is a genuine LEAF: nothing descends from the bare placeholder.
-        assert!(
-            !cg.edges
-                .iter()
-                .any(|e| e.edge.from == "src/caller.rs::%ghost"),
-            "no edge leaves the zero-candidate leaf; edges were {:?}",
-            cg.edges
-                .iter()
-                .map(|e| (e.edge.from.clone(), e.edge.to.clone()))
-                .collect::<Vec<_>>(),
-        );
-        // Exactly the seed and its one terminal leaf - the walk neither errored nor guessed.
-        let mut ids: Vec<String> = cg.nodes.iter().map(|n| n.node.id.clone()).collect();
-        ids.sort();
-        assert_eq!(
-            ids,
-            vec![
-                "src/caller.rs::%ghost".to_string(),
-                "src/caller.rs::entry".to_string()
-            ],
-            "the walk resolves the unknown callee to a bare terminal leaf, nothing more",
-        );
-    }
-
-    #[test]
-    fn calls_up_walks_the_call_sites_as_a_layered_deduped_dag_and_lists_referenced_but_not_called()
-    {
-        // Spec 52 criterion 3: the UP traversal. From a seed DEFINITION, `calls(Up)` returns the
-        // transitive CALLER DAG - callers resolving THROUGH bare placeholders back onto the
-        // seed's definition (the reverse name-match), each at its correct per-node LAYER, deduped
-        // under a mutual-call cycle whose recursive edge is marked BACK - PLUS the flat, non-traversed
-        // "referenced but not called" list of files that reference the seed name - here a top-level
-        // import/use - without calling it.
-        let p = Projector::open(":memory:", "test").unwrap();
-        let a = "src/a.rs";
-        let b = "src/b.rs";
-        let c = "src/c.rs";
-        let d = "src/d.rs";
-
-        // Definitions first, so every cross-file reference tiers INFERRED (a definition already
-        // exists), placing it at/above the default floor. a.rs defines the SEED `target` and a
-        // same-file caller `local`; b.rs defines `mid`; c.rs defines `top`.
-        apply_def(&p, 1, a, "target", 1, true);
-        apply_def(&p, 2, a, "local", 2, false);
-        apply_def(&p, 3, b, "mid", 1, true);
-        apply_def(&p, 4, c, "top", 1, true);
-        // Calls (each is a caller-attributed reference the emit pass produces for a call in a body):
-        //   local  -> target  (SAME-FILE: lands directly on the seed def)
-        //   mid    -> target  (CROSS-FILE single-candidate: through the bare b.rs::%target)
-        //   top    -> mid     (CROSS-FILE single-candidate: through the bare c.rs::%mid)
-        //   target -> mid     (the mutual call that closes a CYCLE - target both defines the seed and
-        //                      calls mid, so walking UP from target reaches mid, whose callers include
-        //                      target again: a BACK edge, deduped, not re-ascended)
-        apply_call(&p, 5, a, "target", "local");
-        apply_call(&p, 6, a, "mid", "target");
-        apply_call(&p, 7, b, "target", "mid");
-        apply_call(&p, 8, c, "mid", "top");
-        // d.rs imports/uses `target` at TOP LEVEL (no enclosing caller): a file-level REFERENCES edge
-        // with NO CALLS twin - the "referenced but not called" site.
-        apply_batch_ref(&p, 9, d, "target", true);
-
-        let cg = p
-            .calls(
-                &["src/a.rs::target".to_string()],
-                Direction::Up,
-                5,
-                TIER_INFERRED,
-            )
-            .unwrap();
-
-        // LAYERS: the seed at 0; its direct same-file caller and its single-candidate cross-file
-        // caller at 1; the caller-of-a-caller at 2. Cross-file callers resolved THROUGH their bare
-        // placeholders onto the real caller definitions (b.rs::mid, c.rs::top), never the bare nodes.
-        assert_eq!(
-            call_layer(&cg, "src/a.rs::target"),
-            Some(0),
-            "the seed is layer 0; nodes were {:?}",
-            call_node_ids(&cg)
-        );
-        assert_eq!(
-            call_layer(&cg, "src/a.rs::local"),
-            Some(1),
-            "the same-file caller is layer 1; nodes were {:?}",
-            call_node_ids(&cg)
-        );
-        assert_eq!(
-            call_layer(&cg, "src/b.rs::mid"),
-            Some(1),
-            "the cross-file caller resolved to its def at layer 1; nodes were {:?}",
-            call_node_ids(&cg)
-        );
-        assert_eq!(
-            call_layer(&cg, "src/c.rs::top"),
-            Some(2),
-            "the caller-of-a-caller is two hops up; nodes were {:?}",
-            call_node_ids(&cg)
-        );
-        // The bare placeholders the callers literally target are resolved away.
-        for bare in ["src/b.rs::%target", "src/c.rs::%mid", "src/a.rs::%mid"] {
-            assert!(
-                !cg.nodes.iter().any(|n| n.node.id == bare),
-                "the bare placeholder {bare} is resolved away, not returned; nodes were {:?}",
-                call_node_ids(&cg),
-            );
-        }
-        // The mutual call dedups: the seed appears EXACTLY ONCE, still at layer 0 (a DAG, not a loop).
-        assert_eq!(
-            cg.nodes
-                .iter()
-                .filter(|n| n.node.id == "src/a.rs::target")
-                .count(),
-            1,
-            "the recursion dedups: the seed appears exactly once; nodes were {:?}",
-            call_node_ids(&cg),
-        );
-        assert_eq!(
-            call_node_ids(&cg),
-            vec![
-                "src/a.rs::local".to_string(),
-                "src/a.rs::target".to_string(),
-                "src/b.rs::mid".to_string(),
-                "src/c.rs::top".to_string(),
-            ],
-            "exactly the seed plus its transitive resolved callers",
-        );
-
-        // No FRONTIER: every caller's call is single-candidate here.
-        assert!(
-            cg.nodes.iter().all(|n| n.frontier.is_none()),
-            "single-candidate caller hops carry no frontier marker; nodes were {:?}",
-            cg.nodes
-                .iter()
-                .map(|n| (n.node.id.clone(), n.frontier.clone()))
-                .collect::<Vec<_>>(),
-        );
-
-        // EDGES keep the real CALLS direction (caller -> callee). Three forward caller edges and the
-        // mutual recursion target -> mid marked BACK (its caller, the seed, sits no deeper than mid).
-        assert_eq!(
-            call_back_edge(&cg, "src/a.rs::local", "src/a.rs::target"),
-            Some(false),
-            "the same-file forward caller edge is not a back edge; edges were {:?}",
-            call_edge_pairs(&cg)
-        );
-        assert_eq!(call_back_edge(&cg, "src/b.rs::mid", "src/a.rs::target"), Some(false), "the resolved cross-file caller edge lands on the seed def, not a back edge; edges were {:?}", call_edge_pairs(&cg));
-        assert_eq!(
-            call_back_edge(&cg, "src/c.rs::top", "src/b.rs::mid"),
-            Some(false),
-            "the caller-of-a-caller forward edge is not a back edge; edges were {:?}",
-            call_edge_pairs(&cg)
-        );
-        assert_eq!(
-            call_back_edge(&cg, "src/a.rs::target", "src/b.rs::mid"),
-            Some(true),
-            "the mutual-call edge closing the cycle is marked BACK; edges were {:?}",
-            call_edge_pairs(&cg)
-        );
-        assert_eq!(
-            call_edge_pairs(&cg),
-            vec![
-                (
-                    "src/a.rs::local".to_string(),
-                    "src/a.rs::target".to_string()
-                ),
-                ("src/a.rs::target".to_string(), "src/b.rs::mid".to_string()),
-                ("src/b.rs::mid".to_string(), "src/a.rs::target".to_string()),
-                ("src/c.rs::top".to_string(), "src/b.rs::mid".to_string()),
-            ],
-            "exactly the four resolved caller edges",
-        );
-        assert!(
-            cg.edges.iter().all(|e| e.edge.rel == REL_CALLS),
-            "every traversed edge is a CALLS edge"
-        );
-
-        // REFERENCED-BUT-NOT-CALLED: d.rs imports `target` without calling it, so it is the one
-        // non-traversed site. a.rs and b.rs both CALL target (local, mid), so - though they reference
-        // it - they are callers in the DAG, never in this list; and it is a FILE node, not an entity.
-        let refd: Vec<String> = cg
-            .referenced_not_called
-            .iter()
-            .map(|n| n.id.clone())
-            .collect();
-        assert_eq!(
-            refd,
-            vec!["src/d.rs".to_string()],
-            "only the import-only file is referenced-but-not-called (callers are excluded)",
-        );
-        assert_eq!(
-            cg.referenced_not_called[0].kind, KIND_FILE,
-            "the referenced-but-not-called entry is the referencing FILE node",
-        );
-    }
-
-    #[test]
-    fn calls_up_marks_an_ambiguous_cross_file_caller_a_frontier_and_does_not_ascend_it() {
-        // Spec 52 criterion 3, the honest-by-construction half of the UP walk (the reverse of the
-        // DOWN conservative-resolution policy). A cross-file caller calls a name with MORE THAN ONE
-        // definition, so it cannot be confidently attributed to THIS seed: it comes back a marked
-        // FRONTIER carrying the SORTED candidate definition ids and is NOT ascended - the walk never
-        // guesses, and nothing reachable only by ascending past it appears.
-        let p = Projector::open(":memory:", "test").unwrap();
-
-        // `target` is defined in TWO files, so a cross-file call to `target` is multi-candidate. Fold
-        // e.rs BEFORE a.rs so the natural (rowid) order is [e, a]; only `ORDER BY id` in
-        // `definitions_with_suffix` yields the asserted [a, b]-sorted candidate list.
-        apply_def(&p, 1, "src/e.rs", "target", 1, true);
-        apply_def(&p, 2, "src/a.rs", "target", 1, true); // the SEED
-        apply_def(&p, 3, "src/f.rs", "amb", 1, true); // the ambiguous caller
-        apply_def(&p, 4, "src/g.rs", "over", 1, true); // amb's own caller (must NOT be reached)
-                                                       // amb calls `target` cross-file (multi-candidate); over calls amb (only reachable by ascending
-                                                       // past the frontier).
-        apply_call(&p, 5, "src/f.rs", "target", "amb");
-        apply_call(&p, 6, "src/g.rs", "amb", "over");
-
-        let cg = p
-            .calls(
-                &["src/a.rs::target".to_string()],
-                Direction::Up,
-                5,
-                TIER_INFERRED,
-            )
-            .unwrap();
-        let node = |id: &str| cg.nodes.iter().find(|n| n.node.id == id);
-
-        // The ambiguous caller is a marked FRONTIER at layer 1, carrying its SORTED candidate defs.
-        // TEETH: e.rs was folded before a.rs, so a missing `ORDER BY id` would return [e, a]; only the
-        // real sort yields [a, e].
-        let amb =
-            node("src/f.rs::amb").expect("the ambiguous caller is returned as a frontier node");
-        assert_eq!(
-            amb.layer, 1,
-            "the frontier caller is one hop up from the seed"
-        );
-        assert_eq!(
-            amb.frontier,
-            Some(vec!["src/a.rs::target".to_string(), "src/e.rs::target".to_string()]),
-            "the frontier carries its candidate definition ids SORTED by id - even though e.rs was folded first",
-        );
-        assert_eq!(
-            cg.nodes.iter().filter(|n| n.frontier.is_some()).count(),
-            1,
-            "exactly one node is a frontier - the multi-candidate caller",
-        );
-
-        // NOT ASCENDED: nothing reachable ONLY by ascending past the frontier appears (`over`), and
-        // the other same-named definition is never descended into (`e.rs::target`).
-        for hidden in ["src/g.rs::over", "src/e.rs::target"] {
-            assert!(
-                node(hidden).is_none(),
-                "{hidden} lies beyond the un-ascended frontier and must not be reached; nodes were {:?}",
-                call_node_ids(&cg),
-            );
-        }
-        assert_eq!(
-            call_node_ids(&cg),
-            vec!["src/a.rs::target".to_string(), "src/f.rs::amb".to_string()],
-            "the reached set is the seed plus the marked frontier caller, nothing more",
-        );
-        // The edge to the frontier keeps the real CALLS direction, redirected onto the seed def.
-        assert_eq!(
-            cg.edges
-                .iter()
-                .map(|e| (e.edge.from.clone(), e.edge.to.clone()))
-                .collect::<Vec<_>>(),
-            vec![("src/f.rs::amb".to_string(), "src/a.rs::target".to_string())],
-            "one caller edge, onto the seed def, marking the frontier",
-        );
-    }
-
-    /// Spec 116 criterion 4, A DATA MEMBER IS NO CALL TARGET: a `field`, `property` or
-    /// `declaration` node is to every call-side reader what a bare placeholder is, over
-    /// hand-built events. `src/a.rs` holds the member `x` beside its fn `f`; `src/c.rs` holds the
-    /// fn `x`; `src/b.rs`'s fn `g` calls `x` across files.
-    mod call_target {
-        use super::*;
-        use crate::contextgraph::{
-            is_call_target, CODE_KIND_CONSTANT, CODE_KIND_CONSTRUCTOR, CODE_KIND_DECLARATION,
-            CODE_KIND_FIELD, CODE_KIND_FUNCTION, CODE_KIND_IMPL, CODE_KIND_MACRO, CODE_KIND_METHOD,
-            CODE_KIND_MODULE, CODE_KIND_OTHER, CODE_KIND_PRECEDENCE, CODE_KIND_PROPERTY,
-            CODE_KIND_STATIC, CODE_KIND_TRAIT, CODE_KIND_TYPE, CODE_KIND_VARIABLE,
-            CODE_KIND_VARIANT,
-        };
-        use crate::test_support::{call_frontiers as frontiers, call_walk as walk};
-
-        const A: &str = "src/a.rs";
-        const B: &str = "src/b.rs";
-        const C: &str = "src/c.rs";
-
-        /// `a.rs`'s `f` calls `x`, which `c.rs` defines as a fn and `a.rs` as `member` (as
-        /// nothing when `None`): the call resolves down onto `c.rs`'s fn, its edges are tiered
-        /// as a cross-file reference, and the up walk from that fn reaches `f`.
-        fn a_same_file_call_naming_a_member_reaches_the_other_files_fn(member: Option<&str>) {
-            let p = Projector::open(":memory:", "test").unwrap();
-            apply_def(&p, 1, A, "f", 1, true);
-            if let Some(kind) = member {
-                apply_code_entity(&p, 2, A, "x", kind, 2, "rust");
-            }
-            apply_def(&p, 3, C, "x", 1, true);
-            apply_call(&p, 4, A, "x", "f");
-
-            let g = p.whole().unwrap();
-            assert_eq!(edge_tier(&g, REL_CALLS, "src/a.rs::%x"), TIER_INFERRED);
-            assert_eq!(edge_tier(&g, REL_REFERENCES, "src/a.rs::%x"), TIER_INFERRED);
-
-            let down = walk(&records_graph(&p), "src/a.rs::f", Direction::Down);
-            assert_eq!(call_node_ids(&down), ["src/a.rs::f", "src/c.rs::x"]);
-            assert_eq!(
-                call_edge_pairs(&down),
-                [("src/a.rs::f".to_string(), "src/c.rs::x".to_string())]
-            );
-            assert_eq!(frontiers(&down), []);
-
-            let up = walk(&records_graph(&p), "src/c.rs::x", Direction::Up);
-            assert_eq!(call_node_ids(&up), ["src/a.rs::f", "src/c.rs::x"]);
-            assert_eq!(
-                call_edge_pairs(&up),
-                [("src/a.rs::f".to_string(), "src/c.rs::x".to_string())]
-            );
-            assert_eq!(frontiers(&up), []);
-        }
-
-        /// No fn defines `x`: a same-file call and a cross-file call naming it stay ambiguous
-        /// whether `a.rs`'s `member` of that leaf folds before the calls or after them.
-        fn a_member_tiers_no_reference_to_its_leaf(member: &str, member_first: bool) {
-            let p = Projector::open(":memory:", "test").unwrap();
-            apply_def(&p, 1, A, "f", 1, true);
-            apply_def(&p, 2, B, "g", 1, true);
-            if member_first {
-                apply_code_entity(&p, 3, A, "x", member, 2, "rust");
-            }
-            apply_call(&p, 4, A, "x", "f");
-            apply_call(&p, 5, B, "x", "g");
-            if !member_first {
-                apply_code_entity(&p, 6, A, "x", member, 2, "rust");
-            }
-
-            for target in ["src/a.rs::%x", "src/b.rs::%x"] {
-                assert_eq!(
-                    call_tiers(&p, target),
-                    [TIER_AMBIGUOUS, TIER_AMBIGUOUS],
-                    "the edges onto {target}"
-                );
-            }
-        }
-
-        /// `b.rs`'s `g` calls `x`, which `c.rs` defines as a fn and each `(file, kind)` of
-        /// `others` defines too: the down walk from `g` lands on `landing`, and it and the up
-        /// walk from `c.rs`'s fn mark exactly `frontier`, the candidates the call targets are.
-        fn the_walks_frontier_holds(
-            others: &[(&str, &str)],
-            landing: &str,
-            frontier: Option<&[&str]>,
-        ) {
-            let p = Projector::open(":memory:", "test").unwrap();
-            apply_def(&p, 1, B, "g", 1, true);
-            apply_def(&p, 2, C, "x", 1, true);
-            for (pos, (file, kind)) in (3..).zip(others) {
-                apply_code_entity(&p, pos, file, "x", kind, 1, "rust");
-            }
-            apply_call(&p, 9, B, "x", "g");
-
-            let marked = |id: &str| -> Vec<(String, Vec<String>)> {
-                frontier
-                    .iter()
-                    .map(|cands| {
-                        (
-                            id.to_string(),
-                            cands.iter().map(|c| c.to_string()).collect(),
-                        )
-                    })
-                    .collect()
-            };
-            let down = walk(&records_graph(&p), "src/b.rs::g", Direction::Down);
-            let mut reached = ["src/b.rs::g", landing];
-            reached.sort();
-            assert_eq!(call_node_ids(&down), reached);
-            assert_eq!(frontiers(&down), marked(landing));
-            let up = walk(&records_graph(&p), "src/c.rs::x", Direction::Up);
-            assert_eq!(call_node_ids(&up), ["src/b.rs::g", "src/c.rs::x"]);
-            assert_eq!(frontiers(&up), marked("src/b.rs::g"));
-        }
-
-        /// The up walk seeded at `seed`, `a.rs`'s `x` or the placeholder `a.rs::%x` its calls
-        /// land on, which `f` calls in its file and `g` across files, `c.rs` defining the fn
-        /// `x`: a `member` has no caller, a bare placeholder (`None`) keeps its direct one.
-        fn the_up_walk_seeded_at_x_reaches(member: Option<&str>, seed: &str, nodes: &[&str]) {
-            let p = Projector::open(":memory:", "test").unwrap();
-            apply_def(&p, 1, A, "f", 1, true);
-            apply_def(&p, 2, B, "g", 1, true);
-            apply_def(&p, 3, C, "x", 1, true);
-            if let Some(kind) = member {
-                apply_code_entity(&p, 4, A, "x", kind, 2, "rust");
-            }
-            apply_call(&p, 5, A, "x", "f");
-            apply_call(&p, 6, B, "x", "g");
-
-            let up = walk(&records_graph(&p), seed, Direction::Up);
-            assert_eq!(call_node_ids(&up), nodes);
-            assert_eq!(up.edges.len(), nodes.len() - 1);
-        }
-
-        /// The up walk from `c.rs`'s fn `t` reaches `a.rs`'s `member` `x`, the caller a
-        /// hand-built call names, and ascends no further: neither to `f`, which calls `x` in its
-        /// file, nor to `g`, which calls it across files.
-        fn the_up_walk_stops_at_a_member_it_reaches(member: &str) {
-            let p = Projector::open(":memory:", "test").unwrap();
-            apply_def(&p, 1, C, "t", 1, true);
-            apply_def(&p, 2, A, "f", 1, true);
-            apply_def(&p, 3, B, "g", 1, true);
-            apply_code_entity(&p, 4, A, "x", member, 2, "rust");
-            apply_call(&p, 5, A, "t", "x");
-            apply_call(&p, 6, A, "x", "f");
-            apply_call(&p, 7, B, "x", "g");
-
-            let up = walk(&records_graph(&p), "src/c.rs::t", Direction::Up);
-            assert_eq!(call_node_ids(&up), ["src/a.rs::x", "src/c.rs::t"]);
-            assert_eq!(call_layer(&up, "src/a.rs::x"), Some(1));
-            assert_eq!(
-                call_edge_pairs(&up),
-                [("src/a.rs::x".to_string(), "src/c.rs::t".to_string())]
-            );
-        }
-
-        /// `locate` answers a `member`'s leaf: the member alone, and one of the sorted
-        /// candidates when another file's fn shares the leaf.
-        fn locate_answers_a_members_leaf(member: &str) {
-            let p = Projector::open(":memory:", "test").unwrap();
-            apply_code_entity(&p, 1, A, "x", member, 2, "rust");
-            match p.locate("x").unwrap() {
-                Located::One(site) => assert_eq!(
-                    (site.id.as_str(), site.kind.as_str(), site.line),
-                    ("src/a.rs::x", member, 2)
-                ),
-                other => panic!("expected the member alone, got {other:?}"),
-            }
-            apply_def(&p, 2, C, "x", 1, true);
-            match p.locate("x").unwrap() {
-                Located::Many(cands) => assert_eq!(
-                    cands.into_iter().map(|c| c.id).collect::<Vec<_>>(),
-                    ["src/a.rs::x", "src/c.rs::x"]
-                ),
-                other => panic!("expected both candidates, got {other:?}"),
-            }
-        }
-
-        crate::test_cases! {
-            a_call_beside_no_member_reaches_the_other_files_fn:
-                a_same_file_call_naming_a_member_reaches_the_other_files_fn(None);
-            a_call_naming_a_field_reaches_the_other_files_fn:
-                a_same_file_call_naming_a_member_reaches_the_other_files_fn(Some("field"));
-            a_call_naming_a_property_reaches_the_other_files_fn:
-                a_same_file_call_naming_a_member_reaches_the_other_files_fn(Some("property"));
-            a_call_naming_a_declaration_reaches_the_other_files_fn:
-                a_same_file_call_naming_a_member_reaches_the_other_files_fn(Some("declaration"));
-            a_field_folded_first_tiers_no_reference_to_its_leaf:
-                a_member_tiers_no_reference_to_its_leaf("field", true);
-            a_field_folded_last_tiers_no_reference_to_its_leaf:
-                a_member_tiers_no_reference_to_its_leaf("field", false);
-            a_property_folded_first_tiers_no_reference_to_its_leaf:
-                a_member_tiers_no_reference_to_its_leaf("property", true);
-            a_property_folded_last_tiers_no_reference_to_its_leaf:
-                a_member_tiers_no_reference_to_its_leaf("property", false);
-            a_declaration_folded_first_tiers_no_reference_to_its_leaf:
-                a_member_tiers_no_reference_to_its_leaf("declaration", true);
-            a_declaration_folded_last_tiers_no_reference_to_its_leaf:
-                a_member_tiers_no_reference_to_its_leaf("declaration", false);
-            a_field_a_property_and_a_declaration_of_a_fns_leaf_add_no_candidate:
-                the_walks_frontier_holds(
-                    &[("src/a.rs", "field"), ("src/d.rs", "declaration"), ("src/p.rs", "property")],
-                    "src/c.rs::x",
-                    None,
-                );
-            a_constant_of_a_fns_leaf_is_still_a_candidate:
-                the_walks_frontier_holds(
-                    &[("src/a.rs", "field"), ("src/d.rs", "declaration"), ("src/k.rs", "constant")],
-                    "src/b.rs::%x",
-                    Some(&["src/c.rs::x", "src/k.rs::x"]),
-                );
-            a_field_seed_has_no_caller:
-                the_up_walk_seeded_at_x_reaches(Some("field"), "src/a.rs::x", &["src/a.rs::x"]);
-            a_property_seed_has_no_caller:
-                the_up_walk_seeded_at_x_reaches(Some("property"), "src/a.rs::x", &["src/a.rs::x"]);
-            a_declaration_seed_has_no_caller:
-                the_up_walk_seeded_at_x_reaches(Some("declaration"), "src/a.rs::x", &["src/a.rs::x"]);
-            a_bare_placeholder_seed_keeps_its_direct_caller:
-                the_up_walk_seeded_at_x_reaches(
-                    None,
-                    "src/a.rs::%x",
-                    &["src/a.rs::%x", "src/a.rs::f"]
-                );
-            the_up_walk_stops_at_a_field_it_reaches:
-                the_up_walk_stops_at_a_member_it_reaches("field");
-            the_up_walk_stops_at_a_property_it_reaches:
-                the_up_walk_stops_at_a_member_it_reaches("property");
-            the_up_walk_stops_at_a_declaration_it_reaches:
-                the_up_walk_stops_at_a_member_it_reaches("declaration");
-            locate_answers_a_fields_leaf: locate_answers_a_members_leaf("field");
-            locate_answers_a_propertys_leaf: locate_answers_a_members_leaf("property");
-            locate_answers_a_declarations_leaf: locate_answers_a_members_leaf("declaration");
-        }
-
-        /// `call_target_sql()` and `is_call_target` answer alike, and as this table states, for
-        /// every kind of `CODE_KIND_PRECEDENCE`, the one production list of the code kinds, and
-        /// for a node carrying no `kind`.
-        #[test]
-        fn the_sql_predicate_and_is_call_target_agree_over_every_kind() {
-            let targets: BTreeMap<&str, bool> = [
-                (CODE_KIND_FUNCTION, true),
-                (CODE_KIND_METHOD, true),
-                (CODE_KIND_TYPE, true),
-                (CODE_KIND_TRAIT, true),
-                (CODE_KIND_IMPL, true),
-                (CODE_KIND_MODULE, true),
-                (CODE_KIND_CONSTANT, true),
-                (CODE_KIND_CONSTRUCTOR, true),
-                (CODE_KIND_MACRO, true),
-                (CODE_KIND_OTHER, true),
-                (CODE_KIND_STATIC, true),
-                (CODE_KIND_VARIANT, true),
-                (CODE_KIND_VARIABLE, true),
-                (CODE_KIND_DECLARATION, false),
-                (CODE_KIND_PROPERTY, false),
-                (CODE_KIND_FIELD, false),
-            ]
-            .into_iter()
-            .collect();
-            assert_eq!(
-                CODE_KIND_PRECEDENCE.into_iter().collect::<BTreeSet<_>>(),
-                targets.keys().copied().collect::<BTreeSet<_>>(),
-                "the table states every listed kind, and no other"
-            );
-            assert_eq!(
-                CODE_KIND_PRECEDENCE.len(),
-                targets.len(),
-                "no kind is listed twice"
-            );
-            let conn = Connection::open_in_memory().unwrap();
-            let sql = format!(
-                "SELECT {} FROM (SELECT json_patch('{{\"name\":\"x\"}}', json_object('kind', ?1)) AS attrs)",
-                call_target_sql()
-            );
-            let kinds = CODE_KIND_PRECEDENCE
-                .into_iter()
-                .map(|kind| (Some(kind), targets[kind]))
-                .chain([(None, true)]);
-            for (kind, target) in kinds {
-                let by_sql: bool = conn.query_row(&sql, params![kind], |r| r.get(0)).unwrap();
-                assert_eq!(
-                    (by_sql, is_call_target(kind)),
-                    (target, target),
-                    "kind {kind:?}"
-                );
-            }
         }
     }
 
@@ -14857,6 +9209,235 @@ mod tests {
         );
     }
 
+    /// A node's kind settles on its first assertion's, promoted from a bare artifact only, by
+    /// the first promoting kind after it ([`settled_kind`]).
+    #[test]
+    fn a_nodes_kind_settles_on_its_first_assertion_promoted_only_from_a_bare_artifact() {
+        let cases: [(&[&str], Option<&str>); 7] = [
+            (&[], None),
+            (&[KIND_ARTIFACT], Some(KIND_ARTIFACT)),
+            (&[KIND_ARTIFACT, KIND_FILE], Some(KIND_FILE)),
+            (
+                &[KIND_ARTIFACT, KIND_ARTIFACT, KIND_CODE_ENTITY],
+                Some(KIND_CODE_ENTITY),
+            ),
+            (&[KIND_ARTIFACT, KIND_DECISION], Some(KIND_ARTIFACT)),
+            (&[KIND_FILE, KIND_ARTIFACT], Some(KIND_FILE)),
+            (&[KIND_CODE_ENTITY, KIND_FILE], Some(KIND_CODE_ENTITY)),
+        ];
+        for (kinds, settled) in cases {
+            assert_eq!(settled_kind(kinds.iter().copied()), settled, "{kinds:?}");
+        }
+    }
+
+    /// Spec 117, A MIGRATED PROJECT STAYS LIVE: [`Projector::migrate_project`] re-keys every
+    /// project-keyed table the file holds, in one transaction, and skips each it does not hold.
+    mod migrate_project {
+        use super::leaf_keys_resolution::write_directly;
+        use super::*;
+
+        /// Every table of the projection that carries a `project` column.
+        const PROJECT_KEYED: [&str; 4] = ["nodes", "edges", "node_assertions", "edge_assertions"];
+
+        /// How many rows of each of `tables` in `p`'s file carry the scope `project`.
+        fn rows_under(p: &Projector, tables: &[&str], project: &str) -> Vec<(String, i64)> {
+            tables
+                .iter()
+                .map(|table| {
+                    let sql = format!("SELECT count(*) FROM {table} WHERE project = ?1");
+                    let n: Vec<i64> = raw_rows(p, &sql, [project], |r| r.get(0));
+                    (table.to_string(), n[0])
+                })
+                .collect()
+        }
+
+        /// `tables` each paired with its row count from `counts`, in order.
+        fn counted(tables: &[&str], counts: &[i64]) -> Vec<(String, i64)> {
+            tables
+                .iter()
+                .zip(counts)
+                .map(|(table, n)| (table.to_string(), *n))
+                .collect()
+        }
+
+        /// `p`'s migration of its own project to `minted`: the nodes it moved, or its error's
+        /// text.
+        fn migrate_to_minted(p: &Projector) -> Result<usize, String> {
+            p.migrate_project(&p.project, "minted").map_err(|e| e.0)
+        }
+
+        /// A fresh projector holding the decision `d1` governing `src/f.rs`: two nodes, one edge
+        /// and the two node assertions behind them ([`HELD`]).
+        fn holding_a_decision() -> Projector {
+            let p = crate::test_support::fold_events([]);
+            crate::test_support::apply_decision(&p, 1, "d1", "governs f", &["src/f.rs"], "");
+            p
+        }
+
+        /// The rows of each [`PROJECT_KEYED`] table [`holding_a_decision`] leaves.
+        const HELD: [i64; 4] = [2, 1, 2, 0];
+
+        /// A file that owes its rebuild is opened as it stands, so it may hold `nodes` and `edges`
+        /// and none of the ledgers; the migration moves both and skips every table the file does
+        /// not hold.
+        #[test]
+        fn an_owed_store_holding_only_nodes_and_edges_migrates_both() {
+            let owed = holding_a_decision();
+            let from = owed.project.clone();
+            write_directly(&owed, |tx, _| {
+                tx.execute_batch(&format!("{DROP_LEDGERS} PRAGMA user_version = 0;"))
+                    .unwrap();
+            });
+            assert!(owed.rebuild_owed().unwrap());
+            let tables = ["nodes", "edges"];
+            assert_eq!(migrate_to_minted(&owed), Ok(2));
+            assert_eq!(
+                rows_under(&owed, &tables, "minted"),
+                counted(&tables, &HELD[..2])
+            );
+            assert_eq!(rows_under(&owed, &tables, &from), counted(&tables, &[0, 0]));
+        }
+
+        /// Every row of `p`'s file but its `applied` ledger, its fold rule, and whether its
+        /// `nodes` and `edges` carry a `project` column.
+        fn as_it_stands(p: &Projector) -> (Vec<String>, i64, [bool; 2]) {
+            let conn = p.conn.lock().unwrap();
+            let keyed =
+                ["nodes", "edges"].map(|table| column_exists(&conn, table, "project").unwrap());
+            let rule = fold_rule(&conn).unwrap();
+            drop(conn);
+            (projection_but_ledger(p), rule, keyed)
+        }
+
+        /// A graph.db folded before spec 28 owes its rebuild and is opened as it stands, its
+        /// `nodes` and `edges` with no `project` column; the migration moves nothing and leaves
+        /// the file as planted.
+        #[test]
+        fn a_pre_project_owed_store_migrates_nothing_and_stands_as_planted() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("graph.db");
+            let path = path.to_str().unwrap();
+            Connection::open(path)
+                .unwrap()
+                .execute_batch(&format!(
+                    "{PRE_PROJECT_GRAPH} INSERT INTO applied VALUES (1);"
+                ))
+                .unwrap();
+            let owed = Projector::open(path, "legacy").unwrap();
+            assert!(owed.rebuild_owed().unwrap());
+            let planted = as_it_stands(&owed);
+            assert_eq!(
+                (planted.0.len(), planted.1, planted.2),
+                (3, 0, [false, false]),
+                "the open leaves the two nodes and the edge as planted, at no fold rule"
+            );
+            assert_eq!(
+                owed.migrate_project("legacy", "minted").map_err(|e| e.0),
+                Ok(0)
+            );
+            assert_eq!(as_it_stands(&owed), planted);
+        }
+
+        /// The error a trigger planted by [`refusing_the_rekey_of`] raises.
+        const REFUSED: &str = "re-key refused";
+
+        /// A re-key that fails in `table` fails the whole migration with its error and moves
+        /// nothing, in that table or any other: a trigger refuses every update of `table`.
+        fn refusing_the_rekey_of(table: &str) {
+            let p = holding_a_decision();
+            let from = p.project.clone();
+            write_directly(&p, |tx, _| {
+                tx.execute_batch(&format!(
+                    "CREATE TRIGGER refuse BEFORE UPDATE ON {table}
+                     BEGIN SELECT RAISE(ABORT, '{REFUSED}'); END;"
+                ))
+                .unwrap();
+            });
+            assert_eq!(
+                migrate_to_minted(&p),
+                Err(REFUSED.to_string()),
+                "the refused re-key of {table} fails the migration"
+            );
+            assert_eq!(
+                (
+                    rows_under(&p, &PROJECT_KEYED, &from),
+                    rows_under(&p, &PROJECT_KEYED, "minted")
+                ),
+                (
+                    counted(&PROJECT_KEYED, &HELD),
+                    counted(&PROJECT_KEYED, &[0; 4])
+                ),
+                "a refused re-key of {table} leaves every row under the old scope"
+            );
+        }
+
+        /// The edges, the nodes and a ledger: each re-keyed by its own update.
+        #[test]
+        fn a_refused_rekey_of_the_edges_the_nodes_or_a_ledger_moves_nothing() {
+            for table in ["edges", "nodes", "node_assertions"] {
+                refusing_the_rekey_of(table);
+            }
+        }
+
+        /// A column check that fails fails the whole migration with its error and moves nothing:
+        /// `node_assertions` stands as a view over a table the file lacks, so reading its columns
+        /// fails.
+        #[test]
+        fn a_failed_column_check_fails_the_migration_and_moves_nothing() {
+            let p = holding_a_decision();
+            let from = p.project.clone();
+            write_directly(&p, |tx, _| {
+                tx.execute_batch(
+                    "DROP VIEW IF EXISTS live_node_assertions; DROP TABLE node_assertions;
+                     CREATE VIEW node_assertions AS SELECT * FROM gone;",
+                )
+                .unwrap();
+            });
+            assert_eq!(
+                migrate_to_minted(&p),
+                Err("no such table: main.gone".to_string())
+            );
+            let tables = ["nodes", "edges"];
+            assert_eq!(rows_under(&p, &tables, &from), counted(&tables, &HELD[..2]));
+        }
+
+        /// [`PROJECT_KEYED`] is every table of a fresh graph file that carries a `project` column,
+        /// read from the file's schema, and the migration re-keys each: `nodes`, `edges` and
+        /// every [`PROJECT_KEYED_LEDGERS`] table.
+        #[test]
+        fn the_project_keyed_tables_are_every_table_carrying_a_project_column() {
+            let p = crate::test_support::fold_events([]);
+            let keyed: Vec<String> = raw_rows(
+                &p,
+                "SELECT m.name FROM sqlite_master m JOIN pragma_table_info(m.name) c
+                  WHERE m.type = 'table' AND c.name = 'project'
+                  ORDER BY m.name",
+                [],
+                |r| r.get(0),
+            );
+            let mut oracle = PROJECT_KEYED.map(String::from).to_vec();
+            oracle.sort();
+            assert_eq!(keyed, oracle);
+            assert_eq!(PROJECT_KEYED[2..], PROJECT_KEYED_LEDGERS);
+        }
+
+        /// A store holding every table migrates each, moving every row to the minted scope.
+        #[test]
+        fn a_store_holding_every_keyed_table_migrates_each() {
+            let p = holding_a_decision();
+            let from = p.project.clone();
+            assert_eq!(migrate_to_minted(&p), Ok(2));
+            assert_eq!(
+                rows_under(&p, &PROJECT_KEYED, "minted"),
+                counted(&PROJECT_KEYED, &HELD)
+            );
+            assert_eq!(
+                rows_under(&p, &PROJECT_KEYED, &from),
+                counted(&PROJECT_KEYED, &[0; 4])
+            );
+        }
+    }
+
     #[test]
     fn subgraph_traversal_and_edge_scope_are_pinned_independently_of_the_node_fetch() {
         // Spec 28 criterion 2, hardening. The base isolation test distinguishes projects by node
@@ -15055,139 +9636,6 @@ mod tests {
 
     // ---- spec 29a criterion 2: the confidence tier on folded structural edges ----
 
-    /// The tiers of the `CALLS` edge and of the `REFERENCES` edge landing on `to`, in that order.
-    fn call_tiers(p: &Projector, to: &str) -> [String; 2] {
-        let g = p.whole().unwrap();
-        [
-            edge_tier(&g, REL_CALLS, to),
-            edge_tier(&g, REL_REFERENCES, to),
-        ]
-    }
-
-    #[test]
-    fn every_structural_edge_carries_its_confidence_tier() {
-        // Spec 29a criterion 2: every structural edge folds at a confidence tier - the precise/safe
-        // split made a first-class edge attribute (addendum 6.2). One integrated graph exercises all
-        // three tiers from real folded events:
-        //   - a definition's CONTAINS edge, and a reference resolved to a SAME-file definition, fold
-        //     EXTRACTED (explicit in source);
-        //   - a reference whose name is defined in ANOTHER file folds INFERRED (derived / transitive);
-        //   - a reference whose name is defined NOWHERE folds AMBIGUOUS (grep-visible-only).
-        let p = Projector::open(":memory:", "test").unwrap();
-        // combat.rs defines `apply_damage` and references it (same-file), references `shared` (a name
-        // defined in util.rs), and references `magic` (defined nowhere).
-        apply_code_entity(&p, 1, "util.rs", "shared", "function", 1, "rust");
-        apply_code_entity(&p, 2, "combat.rs", "apply_damage", "function", 1, "rust");
-        apply_ref(&p, 3, "combat.rs", "apply_damage");
-        apply_ref(&p, 4, "combat.rs", "shared");
-        apply_ref(&p, 5, "combat.rs", "magic");
-
-        let g = p.subgraph(&["combat.rs".to_string()], 3).unwrap();
-
-        // A definition's containment is the most explicit structural fact: EXTRACTED.
-        assert_eq!(
-            edge_tier(&g, REL_CONTAINS, "combat.rs::apply_damage"),
-            TIER_EXTRACTED,
-            "a CONTAINS edge folds at the EXTRACTED tier"
-        );
-        // A reference resolved to a same-file definition: EXTRACTED (explicit local reference).
-        assert_eq!(
-            edge_tier(&g, REL_REFERENCES, "combat.rs::apply_damage"),
-            TIER_EXTRACTED,
-            "a reference to a same-file definition folds EXTRACTED"
-        );
-        // A reference to a name defined in ANOTHER file: INFERRED (derived / transitive link).
-        assert_eq!(
-            edge_tier(&g, REL_REFERENCES, "combat.rs::%shared"),
-            TIER_INFERRED,
-            "a reference to a name defined in another file folds INFERRED"
-        );
-        // A reference to a name defined nowhere known: AMBIGUOUS (grep-visible-only).
-        assert_eq!(
-            edge_tier(&g, REL_REFERENCES, "combat.rs::%magic"),
-            TIER_AMBIGUOUS,
-            "a reference to a name defined nowhere folds AMBIGUOUS"
-        );
-
-        // Tiering NEVER drops a reference: the three tiers partition the reference edges, so
-        // their union recovers EVERY reference folded (3 here).
-        let refs: Vec<&Edge> = g.edges.iter().filter(|e| e.rel == REL_REFERENCES).collect();
-        assert_eq!(
-            refs.len(),
-            3,
-            "every reference yields exactly one edge; got {refs:?}"
-        );
-        assert!(
-            refs.iter().all(|e| e.tier == TIER_EXTRACTED
-                || e.tier == TIER_INFERRED
-                || e.tier == TIER_AMBIGUOUS),
-            "every reference edge carries one of the three tiers; got {refs:?}"
-        );
-    }
-
-    #[test]
-    fn the_cross_file_inferred_tier_is_order_independent() {
-        // The tier is a pure function of the FINAL log, not of fold interleaving (the convergence the
-        // definition arm's AMBIGUOUS -> INFERRED upgrade guarantees, mirroring c1's kind promotion).
-        // A cross-file reference lands INFERRED whether it folds AFTER its definition or BEFORE it.
-
-        // Definition-first: util.rs defines `shared`, THEN combat.rs references it.
-        let a = Projector::open(":memory:", "test").unwrap();
-        apply_code_entity(&a, 1, "util.rs", "shared", "function", 1, "rust");
-        apply_ref(&a, 2, "combat.rs", "shared");
-        let ga = a.subgraph(&["combat.rs".to_string()], 3).unwrap();
-        assert_eq!(
-            edge_tier(&ga, REL_REFERENCES, "combat.rs::%shared"),
-            TIER_INFERRED,
-            "definition-first: the cross-file reference is INFERRED"
-        );
-
-        // Reference-first: combat.rs references `shared` while it is still unknown (folds AMBIGUOUS),
-        // THEN util.rs defines it - the definition arm must upgrade the earlier reference to INFERRED.
-        let b = Projector::open(":memory:", "test").unwrap();
-        apply_ref(&b, 1, "combat.rs", "shared");
-        // Before the definition folds, the reference is grep-visible-only: AMBIGUOUS.
-        let mid = b.subgraph(&["combat.rs".to_string()], 3).unwrap();
-        assert_eq!(
-            edge_tier(&mid, REL_REFERENCES, "combat.rs::%shared"),
-            TIER_AMBIGUOUS,
-            "reference-first, before any definition: the reference is AMBIGUOUS"
-        );
-        apply_code_entity(&b, 2, "util.rs", "shared", "function", 1, "rust");
-        let gb = b.subgraph(&["combat.rs".to_string()], 3).unwrap();
-        assert_eq!(
-            edge_tier(&gb, REL_REFERENCES, "combat.rs::%shared"),
-            TIER_INFERRED,
-            "reference-first: the later definition promotes the earlier reference AMBIGUOUS -> INFERRED"
-        );
-
-        // Convergence: both fold orders reach the identical stored tier.
-        assert_eq!(
-            edge_tier(&ga, REL_REFERENCES, "combat.rs::%shared"),
-            edge_tier(&gb, REL_REFERENCES, "combat.rs::%shared"),
-            "the cross-file tier is order-independent"
-        );
-    }
-
-    #[test]
-    fn the_definition_upgrade_never_demotes_a_same_file_extracted_reference() {
-        // The convergent upgrade targets only AMBIGUOUS references on a placeholder. A reference
-        // resolved to a SAME-file definition is EXTRACTED and must stay EXTRACTED when the same
-        // name is later defined in another file too - the upgrade excludes the definition's own
-        // entity id, and the EXTRACTED reference is not AMBIGUOUS, so it is doubly protected from
-        // being pulled down.
-        let p = Projector::open(":memory:", "test").unwrap();
-        apply_code_entity(&p, 1, "combat.rs", "shared", "function", 1, "rust");
-        apply_ref(&p, 2, "combat.rs", "shared");
-        apply_code_entity(&p, 3, "util.rs", "shared", "function", 1, "rust");
-        let g = p.subgraph(&["combat.rs".to_string()], 3).unwrap();
-        assert_eq!(
-            edge_tier(&g, REL_REFERENCES, "combat.rs::shared"),
-            TIER_EXTRACTED,
-            "a same-file reference stays EXTRACTED even after the name is also defined elsewhere"
-        );
-    }
-
     #[test]
     fn a_dev_loop_edge_folds_at_the_extracted_tier() {
         // Every non-code dev-loop edge (DECIDED / GOVERNS / ...) is an explicit fact on the log, so
@@ -15269,124 +9717,6 @@ mod tests {
     }
 
     // ---- spec 29a criterion 4: the code graph is REBUILDABLE from the log ----
-
-    #[test]
-    fn the_code_graph_is_rebuildable_from_the_log_re_deriving_identical_nodes_and_tiered_edges() {
-        // Spec 29a criterion 4 (rebuild). The code graph is a REBUILDABLE projection of the event
-        // log (the spec goal + the Global constraint "the code graph is a rebuildable projection"),
-        // never a mutable side index. Discarding the graph.db and folding the SAME
-        // CodeEntityExtracted / EdgeInferred log from scratch re-derives byte-identical
-        // code-entity / file nodes and TIERED structural edges - so code structure survives purely
-        // as a function of the log, with no mutable side artifact a rebuild could drop. This owns
-        // rebuild; it leans on (but does not own) the extract-as-events fold (criterion 1), the
-        // confidence tier (criterion 2), or supersede-on-re-extract (criterion 3).
-        //
-        // The canonical log exercises all three tiers AND the reverse (reference-before-definition)
-        // fold order, so the rebuild has real teeth: the cross-file reference at position 1 folds
-        // AMBIGUOUS (its name is unknown yet), then the definition at position 2 upgrades it to
-        // INFERRED (criterion 2's convergent AMBIGUOUS -> INFERRED promotion). That upgrade is a
-        // pure product of REPLAYING the whole log, not a cached side fact - so were the tier a
-        // mutable artifact instead of a fold derivation, a from-scratch rebuild would lose it.
-        // Every event carries fresh=false (a single extraction, not a re-extraction), so supersede
-        // never fires: this criterion proves rebuild of the initial projection, not re-extraction.
-        fn node_desc(n: &Node) -> String {
-            // kind, id, and every derived attr (BTreeMap iterates key-sorted, so this is
-            // deterministic) - a bare reference target has no attrs and reads back empty.
-            let attrs = n
-                .attrs
-                .iter()
-                .map(|(k, v)| format!("{k}={v}"))
-                .collect::<Vec<_>>()
-                .join(",");
-            format!("{} {} [{}]", n.kind, n.id, attrs)
-        }
-        fn edge_desc(e: &Edge) -> String {
-            format!("{} -{}-> {} [{}]", e.from, e.rel, e.to, e.tier)
-        }
-
-        let fold_log = |p: &Projector| {
-            apply_ref(p, 1, "combat.rs", "shared"); // cross-file ref, folds AMBIGUOUS first
-            apply_code_entity(p, 2, "util.rs", "shared", "function", 1, "rust"); // its definition promotes the ref to INFERRED
-            apply_code_entity(p, 3, "combat.rs", "apply_damage", "function", 1, "rust");
-            apply_ref(p, 4, "combat.rs", "apply_damage"); // resolved to a same-file def -> EXTRACTED
-            apply_ref(p, 5, "combat.rs", "magic"); // defined nowhere -> AMBIGUOUS
-        };
-
-        // Fold the whole log into a FRESH, EMPTY graph.db at `path` and read the code half of the
-        // projection back as two order-independent sets: the code-entity / file NODES (id, kind,
-        // and every derived attr) and the structural EDGES (from, rel, to, and the folded tier). A
-        // fresh db has no pre-existing rows, so nothing is ever backfilled - what comes back is
-        // purely what the fold derived. BTreeSets make the snapshot deterministic per the Global
-        // constraint.
-        let rebuild = |path: &str| -> (BTreeSet<String>, BTreeSet<String>) {
-            let p = Projector::open(path, "test").unwrap();
-            fold_log(&p);
-            let g = p
-                .subgraph(&["combat.rs".to_string(), "util.rs".to_string()], 3)
-                .unwrap();
-            let nodes = g.nodes.iter().map(node_desc).collect::<BTreeSet<_>>();
-            let edges = g.edges.iter().map(edge_desc).collect::<BTreeSet<_>>();
-            (nodes, edges)
-        };
-
-        let dir = tempfile::tempdir().unwrap();
-        let first = dir.path().join("graph.db");
-        let (nodes, edges) = rebuild(first.to_str().unwrap());
-
-        // The rebuilt projection is EXACTLY the code graph the log describes - every file container
-        // node, every code-entity node with its re-derived attrs (definitions carry name/kind/line/
-        // lang; a bare reference target carries none), and nothing spurious. Exact-set equality
-        // pins both failure directions at once, so the rebuild neither under-derives nor
-        // over-derives the nodes.
-        let want_nodes: BTreeSet<String> = [
-            "file combat.rs [lang=rust]",
-            "file util.rs [lang=rust]",
-            "code-entity combat.rs::apply_damage [kind=function,lang=rust,line=1,name=apply_damage]",
-            "code-entity util.rs::shared [kind=function,lang=rust,line=1,name=shared]",
-            "code-entity combat.rs::%shared []",
-            "code-entity combat.rs::%magic []",
-        ]
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
-        assert_eq!(
-            nodes, want_nodes,
-            "the rebuilt code graph re-derives EXACTLY the file and code-entity nodes the log \
-             describes, with their attrs; got {nodes:?}"
-        );
-
-        // Every structural edge is re-derived at its confidence tier: a definition's containment
-        // and a same-file reference EXTRACTED, the cross-file reference INFERRED (the convergent
-        // upgrade, re-derived on replay), and a reference defined nowhere AMBIGUOUS.
-        let want_edges: BTreeSet<String> = [
-            "util.rs -CONTAINS-> util.rs::shared [extracted]",
-            "combat.rs -CONTAINS-> combat.rs::apply_damage [extracted]",
-            "combat.rs -REFERENCES-> combat.rs::apply_damage [extracted]",
-            "combat.rs -REFERENCES-> combat.rs::%shared [inferred]",
-            "combat.rs -REFERENCES-> combat.rs::%magic [ambiguous]",
-        ]
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
-        assert_eq!(
-            edges, want_edges,
-            "the rebuilt code graph re-derives EXACTLY the tiered structural edges the log \
-             describes; got {edges:?}"
-        );
-
-        // REBUILDABLE: discard that graph.db and fold the SAME log from scratch into a DIFFERENT
-        // fresh, empty db. The re-derived nodes and tiered edges are IDENTICAL - the code graph is
-        // a pure, reproducible function of the log, re-derived on every fold (including the
-        // convergent tier upgrade), never a mutable side artifact a rebuild would drop.
-        let dir2 = tempfile::tempdir().unwrap();
-        let second = dir2.path().join("graph.db");
-        let rebuilt_again = rebuild(second.to_str().unwrap());
-        assert_eq!(
-            (nodes, edges),
-            rebuilt_again,
-            "rebuilding the code log from scratch re-derives the identical nodes and tiered edges"
-        );
-    }
 
     /// Every user-defined index name on the graph tables, read from `sqlite_master` (the
     /// implicit `sqlite_autoindex_*` primary-key indexes are excluded), so a test can assert an
@@ -15474,20 +9804,7 @@ mod tests {
     /// `new`) answers the references `b.rs` folds after it, one assertion per node-side row.
     mod leaf_keys_resolution {
         use super::*;
-        use crate::test_support::{attrs_of, call_node_ids, call_walk};
         use rigger_domain::contextgraph::query::node_leaf;
-
-        /// The assertion of a recording outside the generation rule: never retracted.
-        pub(super) const UNKEYED: Asserter<'static> = keyed("", "");
-
-        /// An assertion by `identity` at `generation`, valid from time zero.
-        pub(super) const fn keyed<'e>(identity: &'e str, generation: &'e str) -> Asserter<'e> {
-            Asserter {
-                identity,
-                generation,
-                at: 0,
-            }
-        }
 
         /// Run `write` in one committed transaction on `p`'s own connection: the direct writes a
         /// test makes beneath the fold - a nested id planted before any payload carries its path,
@@ -15499,18 +9816,12 @@ mod tests {
             tx.commit().unwrap();
         }
 
-        /// Assert code entity `id` carrying `attrs` as `by`.
-        pub(super) fn entity(
-            tx: &Transaction,
-            project: &str,
-            by: &Asserter,
-            id: &str,
-            attrs: &[(&str, &str)],
-        ) {
-            ensure_node(tx, by, id, KIND_CODE_ENTITY, attrs, project).unwrap();
+        /// Write code entity `id` carrying `attrs`.
+        pub(super) fn entity(tx: &Transaction, project: &str, id: &str, attrs: &[(&str, &str)]) {
+            ensure_node(tx, id, KIND_CODE_ENTITY, attrs, project).unwrap();
         }
 
-        /// Write the function definitions `(id, name)` unkeyed.
+        /// Write the function definitions `(id, name)`.
         pub(super) fn define(p: &Projector, defs: &[(&str, &str)]) {
             let defs: Vec<_> = defs
                 .iter()
@@ -15519,17 +9830,17 @@ mod tests {
             define_kinds(p, &defs);
         }
 
-        /// Write the definitions `(id, name, kind)` unkeyed.
+        /// Write the definitions `(id, name, kind)`.
         pub(super) fn define_kinds(p: &Projector, defs: &[(&str, &str, &str)]) {
             write_directly(p, |tx, project| {
                 for (id, name, kind) in defs {
                     let attrs = [("name", *name), ("kind", *kind), ("line", "1")];
-                    entity(tx, project, &UNKEYED, id, &attrs);
+                    entity(tx, project, id, &attrs);
                 }
             });
         }
 
-        /// Write the live `rel` edge `from -> to` at `tier` unkeyed, first planting each endpoint
+        /// Write the live `rel` edge `from -> to` at `tier`, first planting each endpoint
         /// no node holds yet as a nameless node: a file for an id holding no `::`, else a code
         /// entity. The edge is spelled whatever `to` spells, before any fold spells it.
         pub(super) fn edge_directly(p: &Projector, from: &str, to: &str, rel: &str, tier: &str) {
@@ -15541,29 +9852,11 @@ mod tests {
                         } else {
                             KIND_FILE
                         };
-                        ensure_node(tx, &UNKEYED, id, kind, &[], project).unwrap();
+                        ensure_node(tx, id, kind, &[], project).unwrap();
                     }
                 }
                 add_edge(tx, from, to, rel, 0, 4, project, tier).unwrap();
             });
-        }
-
-        /// The target of each recorded test proof, in recorded order, `None` where none is named.
-        pub(super) fn proof_targets(p: &Projector) -> Vec<Option<String>> {
-            raw_rows(p, "SELECT target FROM proofs ORDER BY rowid", [], |r| {
-                r.get(0)
-            })
-        }
-
-        /// Write `caller`'s live call onto `target` directly ([`edge_directly`]) and answer the
-        /// node ids the down walk from `caller` reaches, sorted.
-        pub(super) fn a_direct_call_walked_down(
-            p: &Projector,
-            caller: &str,
-            target: &str,
-        ) -> Vec<String> {
-            edge_directly(p, caller, target, REL_CALLS, TIER_INFERRED);
-            call_node_ids(&call_walk(&records_graph(p), caller, Direction::Down))
         }
 
         /// The value the SQL expression `expr` gives node `id`'s row, paired with the value the
@@ -15589,147 +9882,20 @@ mod tests {
             }
         }
 
-        /// The proof attrs `(proven_by, proof_evidence)` node `id` carries, absent as empty.
-        fn proof_of(p: &Projector, id: &str) -> (String, String) {
-            let attrs = attrs_of(p, id);
-            let key = |k: &str| attrs.get(k).cloned().unwrap_or_default();
-            (key("proven_by"), key("proof_evidence"))
-        }
-
         #[test]
         fn locate_answers_a_bare_query_by_the_leaf_of_a_nested_definition() {
             let p = Projector::open(":memory:", "test").unwrap();
             write_directly(&p, |tx, project| {
                 let new = [("name", "new"), ("kind", "function"), ("line", "3")];
-                entity(tx, project, &UNKEYED, "a.rs::T::new", &new);
+                entity(tx, project, "a.rs::T::new", &new);
                 let field = [("name", "field"), ("kind", "field"), ("line", "5")];
-                entity(tx, project, &UNKEYED, "a.rs::S.field", &field);
+                entity(tx, project, "a.rs::S.field", &field);
                 let op = [("name", "%"), ("kind", "method"), ("line", "7")];
-                entity(tx, project, &UNKEYED, "a.rs::T::%", &op);
+                entity(tx, project, "a.rs::T::%", &op);
             });
             assert_eq!(located(&p, "new"), "a.rs::T::new");
             assert_eq!(located(&p, "field"), "a.rs::S.field");
             assert_eq!(located(&p, "%"), "a.rs::T::%");
-        }
-
-        #[test]
-        fn a_call_from_another_file_resolves_down_onto_the_nested_definition_of_its_leaf() {
-            let p = Projector::open(":memory:", "test").unwrap();
-            define(&p, &[("a.rs::T::new", "new")]);
-            apply_def(&p, 1, "b.rs", "main", 1, true);
-            apply_def(&p, 2, "b.rs", "run", 5, false);
-            apply_call(&p, 3, "b.rs", "new", "main");
-            assert_eq!(
-                call_node_ids(&call_walk(
-                    &records_graph(&p),
-                    "b.rs::main",
-                    Direction::Down
-                )),
-                vec!["a.rs::T::new", "b.rs::main"]
-            );
-            // A placeholder spelled with the sigil, its call written directly.
-            assert_eq!(
-                a_direct_call_walked_down(&p, "b.rs::run", "b.rs::%new"),
-                vec!["a.rs::T::new", "b.rs::run"]
-            );
-        }
-
-        #[test]
-        fn a_reference_from_another_file_to_a_nested_definitions_leaf_is_inferred() {
-            let p = Projector::open(":memory:", "test").unwrap();
-            define(&p, &[("a.rs::T::new", "new")]);
-            apply_ref(&p, 1, "b.rs", "new");
-            apply_ref(&p, 2, "b.rs", "gone");
-            let g = p.whole().unwrap();
-            assert_eq!(edge_tier(&g, REL_REFERENCES, "b.rs::%new"), TIER_INFERRED);
-            assert_eq!(edge_tier(&g, REL_REFERENCES, "b.rs::%gone"), TIER_AMBIGUOUS);
-        }
-
-        #[test]
-        fn a_test_proof_from_another_file_lands_on_the_one_nested_definition_of_its_leaf() {
-            let p = Projector::open(":memory:", "test").unwrap();
-            define(&p, &[("a.rs::T::new", "new")]);
-            apply_edge_inferred_evidence(&p, 1, "b.rs", "new", 7);
-            assert_eq!(
-                proof_of(&p, "a.rs::T::new"),
-                ("1".to_string(), r#"["b.rs:7"]"#.to_string())
-            );
-        }
-
-        #[test]
-        fn a_proof_recorded_in_a_file_lands_on_its_one_same_file_candidate() {
-            let p = Projector::open(":memory:", "test").unwrap();
-            define(&p, &[("a.rs::T::new", "new"), ("c.rs::new", "new")]);
-            apply_edge_inferred_evidence(&p, 1, "a.rs", "new", 9);
-            assert_eq!(
-                proof_of(&p, "a.rs::T::new"),
-                ("1".to_string(), r#"["a.rs:9"]"#.to_string())
-            );
-            assert_eq!(proof_of(&p, "c.rs::new"), (String::new(), String::new()));
-        }
-
-        #[test]
-        fn two_same_file_candidates_of_a_proofs_leaf_name_no_target() {
-            let p = Projector::open(":memory:", "test").unwrap();
-            define(&p, &[("a.rs::T::new", "new"), ("a.rs::U::new", "new")]);
-            apply_edge_inferred_evidence(&p, 1, "a.rs", "new", 9);
-            for id in ["a.rs::T::new", "a.rs::U::new"] {
-                assert_eq!(proof_of(&p, id), (String::new(), String::new()), "{id}");
-            }
-            assert_eq!(proof_targets(&p), vec![None]);
-        }
-
-        #[test]
-        fn an_empty_named_call_target_is_counted_bare_by_the_callers_walk() {
-            let p = Projector::open(":memory:", "test").unwrap();
-            write_directly(&p, |tx, project| {
-                let attrs = [("name", ""), ("kind", "function"), ("line", "1")];
-                entity(tx, project, &UNKEYED, "b.rs::new", &attrs);
-            });
-            apply_def(&p, 1, "a.rs", "new", 1, true);
-            apply_def(&p, 2, "b.rs", "main", 3, true);
-            // The call written directly onto the empty-named node, which no fold lands one on.
-            edge_directly(&p, "b.rs::main", "b.rs::new", REL_CALLS, TIER_INFERRED);
-            assert_eq!(
-                call_node_ids(&call_walk(&records_graph(&p), "a.rs::new", Direction::Up)),
-                vec!["a.rs::new", "b.rs::main"]
-            );
-        }
-
-        #[test]
-        fn an_empty_named_nodes_settle_fires_no_definition_retired() {
-            let p = Projector::open(":memory:", "test").unwrap();
-            let first = keyed("gc/x", "g1");
-            let second = Asserter {
-                generation: "g2",
-                ..first
-            };
-            write_directly(&p, |tx, project| {
-                let attrs = [("name", ""), ("kind", "function"), ("line", "1")];
-                entity(tx, project, &first, "x", &attrs);
-                // An inferred reference whose target text is the empty leaf: a definition of
-                // the empty name retiring would demote it.
-                add_edge(
-                    tx,
-                    "f.rs",
-                    "q.rs::",
-                    REL_REFERENCES,
-                    0,
-                    1,
-                    project,
-                    TIER_INFERRED,
-                )
-                .unwrap();
-                // The second generation drops `x`: its settle retires the node.
-                entity(tx, project, &second, "x", &[]);
-            });
-            let tiers: Vec<String> = raw_rows(
-                &p,
-                "SELECT tier FROM edges WHERE to_id = 'q.rs::'",
-                [],
-                |r| r.get(0),
-            );
-            assert_eq!(tiers, vec![TIER_INFERRED]);
         }
 
         #[test]
@@ -15753,7 +9919,7 @@ mod tests {
         }
 
         #[test]
-        fn the_leaf_index_serves_the_pinned_leaf_query_and_the_same_file_candidates_read() {
+        fn the_leaf_index_serves_the_pinned_leaf_query() {
             let p = Projector::open(":memory:", "test").unwrap();
             assert!(index_names(&p).contains("idx_nodes_leaf"));
             define(&p, &[("a.rs::T::new", "new"), ("b.rs::new", "new")]);
@@ -15761,13 +9927,7 @@ mod tests {
                 "SELECT id FROM nodes WHERE project = 'test' AND {} = 'new'",
                 node_leaf_sql()
             );
-            let same_file = params!["new", KIND_CODE_ENTITY, "test", "a.rs"];
-            for plan in [
-                query_plan(&p, &pinned, []),
-                query_plan(&p, &definition_lookup_sql(), same_file),
-            ] {
-                assert_plan_uses(&plan, "USING INDEX idx_nodes_leaf");
-            }
+            assert_plan_uses(&query_plan(&p, &pinned, []), "USING INDEX idx_nodes_leaf");
         }
     }
 
@@ -15776,15 +9936,13 @@ mod tests {
     /// `subgraph`'s member hops load a file's members one hop on and a member its file, with no
     /// file `CONTAINS` written.
     mod member_rule {
-        use super::generations::ledger_entries::label;
         use super::leaf_keys_resolution::{
-            define, edge_directly, entity, stored_beside, write_directly, UNKEYED,
+            define, edge_directly, entity, stored_beside, write_directly,
         };
         use super::*;
         use crate::test_support::{
-            assert_live_calls, file_half, fold_events, folds, hold, no_bytes_batch, BARE_PARENT,
-            FILELESS_MEMBER, FILE_MATE, FLAT_LEAF_ID, LEAF_PLACEHOLDER, MAKE_TARGET, NESTED_METHOD,
-            ONE_COMMUNITY, RANGE_ARTIFACT,
+            file_half, fold_events, hold, BARE_PARENT, FILE_MATE, FLAT_LEAF_ID, LEAF_PLACEHOLDER,
+            MAKE_TARGET, NESTED_METHOD, RANGE_ARTIFACT,
         };
         use rigger_domain::contextgraph::query::{member_file, path_leaf};
 
@@ -15801,9 +9959,9 @@ mod tests {
             define(&p, &[(fileless, fileless)]);
             write_directly(&p, |tx, project| {
                 let file = file_half(NESTED_METHOD);
-                ensure_node(tx, &UNKEYED, file, KIND_FILE, &[], project).unwrap();
+                ensure_node(tx, file, KIND_FILE, &[], project).unwrap();
                 for bare in [LEAF_PLACEHOLDER, BARE_PARENT] {
-                    entity(tx, project, &UNKEYED, bare, &[]);
+                    entity(tx, project, bare, &[]);
                 }
                 tx.execute(
                     "UPDATE nodes SET kind = ?1 WHERE id = ?2 AND project = ?3",
@@ -15869,41 +10027,11 @@ mod tests {
                 });
             }
             write_directly(&p, |tx, project| {
-                entity(tx, project, &UNKEYED, NESTED_METHOD, &[]);
+                entity(tx, project, NESTED_METHOD, &[]);
             });
             let file = file_half(NESTED_METHOD);
             assert_eq!(reach(&p, file, 1), [file]);
             assert_eq!(reach(&p, NESTED_METHOD, 1), [NESTED_METHOD]);
-        }
-
-        /// A file's supersession retires the `CALLS` its id range makes ([`id_range_sql`] over
-        /// `from_id`), never a call another file makes into it.
-        #[test]
-        fn a_files_supersession_retires_its_calls_out_and_keeps_a_call_into_it() {
-            let p = fold_events([]);
-            edge_directly(&p, NESTED_METHOD, FILELESS_MEMBER, REL_CALLS, TIER_INFERRED);
-            edge_directly(&p, FILELESS_MEMBER, FILE_MATE, REL_CALLS, TIER_INFERRED);
-            let leaf = path_leaf(FILE_MATE);
-            apply_def(&p, 1, file_half(NESTED_METHOD), leaf, 1, true);
-            let why = "the fresh batch of a file retires only the calls its own range makes";
-            assert_live_calls(&p, &[(FILELESS_MEMBER, FILE_MATE)], why);
-        }
-
-        /// A file emptied by its boundary sentinel owes a relabel to every community its members
-        /// held ([`id_range_sql`] over the membership edge's `from_id`), so the fold settles the
-        /// label on the highest-degree member left.
-        #[test]
-        fn a_file_emptied_by_its_boundary_relabels_the_community_its_members_held() {
-            let p = fold_events([]);
-            seed_community_fixture(&p);
-            let before = label(&p, ONE_COMMUNITY);
-            let mut boundary = no_bytes_batch("src/combat/hit.rs").remove(0);
-            boundary.position = 20;
-            folds(&p, &[boundary]);
-            assert_eq!(
-                (before, label(&p, ONE_COMMUNITY)),
-                (Some("apply_damage".into()), Some("send".into()))
-            );
         }
 
         #[test]
@@ -15948,115 +10076,31 @@ mod tests {
         }
     }
 
-    /// Spec 119 criterion 7 (A BARE SHOW FINDS A LEAF OR PATH): after the exact id and the leaf,
-    /// `locate` answers the leaf lookup filtered on the id, by the suffix `::<query>`, then by the
-    /// query's `<file>::` range, and last the exact id of a nameless `code-entity` or `artifact`
-    /// whose id holds `::`, over hand-built events.
+    /// Spec 119 criterion 7 (A BARE SHOW FINDS A LEAF OR PATH) over the record graph: a record
+    /// whose id holds `::` answers its own id where no definition does, over hand-built events.
     mod a_bare_show_finds_a_leaf_or_path {
         use super::leaf_keys_resolution::located;
         use super::*;
-        use crate::test_support::{
-            fold_path_def_rows, hold, located_many, PathDef, A_RS_NEWS, FLAT_LEAF_ID, T_NEW, U_NEW,
-        };
+        use crate::test_support::hold;
 
-        /// Fold `defs` from position 1, each at its position's line, then `then` at the next
-        /// position.
-        fn folded(defs: &[PathDef], then: impl FnOnce(&Projector, u64)) -> Projector {
+        /// Once `then` folds at position 1, each `(query, id)` of `shown` shows the one node `id`.
+        fn shows(then: impl FnOnce(&Projector, u64), shown: &[(&str, &str)]) {
             let p = Projector::open(":memory:", "test").unwrap();
-            let next = fold_path_def_rows(&p, defs);
-            then(&p, next);
-            p
-        }
-
-        /// Once `defs` and then `then` fold, each `(query, id)` of `shown` shows the one node `id`.
-        fn shows(defs: &[PathDef], then: impl FnOnce(&Projector, u64), shown: &[(&str, &str)]) {
-            let p = folded(defs, then);
+            then(&p, 1);
             for (query, id) in shown {
                 assert_eq!(located(&p, query), *id, "{query}");
             }
         }
 
         crate::test_cases! {
-            a_path_query_answers_the_definition_whose_id_ends_in_it: shows(
-                &[
-                    ("a.rs", "method", "Type::method", "method"),
-                    ("a.rs", "field", "Struct.field", "field"),
-                    ("a.rs", "Constant", "Kind::Constant", "constant"),
-                    ("b.rs", "method", "method", "function"),
-                    ("c.rs", "method", "xType::method", "method"),
-                ],
-                |_, _| {},
-                &[
-                    ("Type::method", "a.rs::Type::method"),
-                    ("Struct.field", "a.rs::Struct.field"),
-                    ("Kind::Constant", "a.rs::Kind::Constant"),
-                ],
-            );
-            a_dotted_query_answers_the_namespace_it_names_before_a_field_at_its_path: shows(
-                &[("s.rs", "B", "A.B", "field")],
-                |p, pos| apply_code_entity(p, pos, "n.cs", "A.B", "namespace", pos, "csharp"),
-                &[("A.B", "n.cs::A.B")],
-            );
-            a_path_query_answers_its_path_before_a_file_named_by_its_first_segment: shows(
-                &[T_NEW, ("T", "new", "U::new", "method")],
-                |_, _| {},
-                &[("T::new", "a.rs::T::new")],
-            );
-            a_flat_id_answers_the_definition_its_file_holds_at_its_leaf: shows(
-                &[
-                    T_NEW,
-                    ("a.rs", "field", "S.field", "field"),
-                    ("a.rs", "m", "Trait::m", "declaration"),
-                    ("b.rs", "new", "new", "function"),
-                ],
-                |_, _| {},
-                &[
-                    ("a.rs::new", "a.rs::T::new"),
-                    ("a.rs::field", "a.rs::S.field"),
-                    ("a.rs::m", "a.rs::Trait::m"),
-                ],
-            );
-            a_flat_id_a_decision_holds_answers_the_definition_its_file_holds_at_its_leaf: shows(
-                &[T_NEW],
-                |p, pos| hold(p, pos, &[FLAT_LEAF_ID]),
-                &[("a.rs::new", "a.rs::T::new")],
-            );
-            a_flat_id_a_caller_holds_answers_the_definition_its_file_holds_at_its_leaf: shows(
-                &[T_NEW],
-                |p, pos| apply_call(p, pos, "a.rs", "go", "new"),
-                &[("a.rs::new", "a.rs::T::new")],
-            );
             a_flat_id_a_decision_is_named_by_answers_that_decision: shows(
-                &[T_NEW],
                 |p, pos| apply_decision(p, pos, "a.rs::new", "flat", &[], ""),
                 &[("a.rs::new", "a.rs::new")],
             );
-            a_flat_id_a_definition_holds_answers_itself: shows(
-                &[T_NEW, ("a.rs", "new", "new", "function")],
-                |_, _| {},
-                &[("a.rs::new", "a.rs::new")],
-            );
             an_artifact_spelling_a_path_answers_where_no_definition_does: shows(
-                &[],
                 |p, pos| hold(p, pos, &["T::new"]),
                 &[("T::new", "T::new")],
             );
-            a_path_query_answers_the_definition_beside_an_artifact_spelling_it: shows(
-                &[T_NEW],
-                |p, pos| hold(p, pos, &["T::new"]),
-                &[("T::new", "a.rs::T::new")],
-            );
-            an_artifact_spelling_a_bare_leaf_answers_before_the_definition_of_that_leaf: shows(
-                &[T_NEW],
-                |p, pos| hold(p, pos, &["new"]),
-                &[("new", "new")],
-            );
-        }
-
-        #[test]
-        fn a_flat_id_naming_two_definitions_of_its_leaf_lists_both() {
-            let p = folded(&[T_NEW, U_NEW], |_, _| {});
-            assert_eq!(p.locate("a.rs::new").unwrap(), located_many(A_RS_NEWS));
         }
     }
 
@@ -16065,9 +10109,8 @@ mod tests {
     /// leaf, over a nested definition `a.rs::T::new` written directly and `b.rs`'s references to
     /// `new`, each spelled `b.rs::new` and `b.rs::%new`.
     mod edge_side_binds_the_leaf {
-        use super::leaf_keys_resolution::{define, edge_directly, entity, write_directly, UNKEYED};
+        use super::leaf_keys_resolution::{define, edge_directly, entity, write_directly};
         use super::*;
-        use crate::test_support::apply_generation_head;
         use crate::test_support::{
             call_frontiers, call_node_ids, call_walk, referenced_not_called_ids,
         };
@@ -16090,37 +10133,6 @@ mod tests {
                 the_callers_walk_reaches(("a.rs::T::new", "new"), "b.rs::run", "b.rs::%new");
             a_csharp_operator_percent_seed_reaches_its_double_percent_caller:
                 the_callers_walk_reaches(("a.cs::T::%", "%"), "b.cs::run", "b.cs::%%");
-        }
-
-        /// A reference from `b.rs` written directly onto `target` at `ambiguous`, beside the
-        /// definitions `beside` written directly, is upgraded to `inferred` when a definition
-        /// `a.rs::new` folds and ends at `retired` when the next generation of `a.rs` drops it.
-        fn a_direct_reference_follows_a_definition_of_its_leaf(
-            target: &str,
-            beside: &[(&str, &str)],
-            retired: &str,
-        ) {
-            let p = Projector::open(":memory:", "test").unwrap();
-            define(&p, beside);
-            edge_directly(&p, "b.rs", target, REL_REFERENCES, TIER_AMBIGUOUS);
-            let tier = |p: &Projector| edge_tier(&p.whole().unwrap(), REL_REFERENCES, target);
-            apply_generation_head(&p, 1, "a.rs", "h1", "new", 10);
-            assert_eq!(tier(&p), TIER_INFERRED);
-            apply_generation_head(&p, 2, "a.rs", "h2", "other", 20);
-            assert_eq!(tier(&p), retired);
-        }
-
-        crate::test_cases! {
-            a_bare_reference_is_upgraded_and_demoted_with_a_definition_of_its_leaf:
-                a_direct_reference_follows_a_definition_of_its_leaf("b.rs::new", &[], TIER_AMBIGUOUS);
-            a_sigiled_reference_is_upgraded_and_demoted_with_a_definition_of_its_leaf:
-                a_direct_reference_follows_a_definition_of_its_leaf("b.rs::%new", &[], TIER_AMBIGUOUS);
-            a_reference_stays_inferred_while_a_nested_definition_of_its_leaf_stands:
-                a_direct_reference_follows_a_definition_of_its_leaf(
-                    "b.rs::new",
-                    &[("c.rs::U::new", "new")],
-                    TIER_INFERRED
-                );
         }
 
         #[test]
@@ -16192,5758 +10204,12 @@ mod tests {
         #[test]
         fn a_seed_with_no_leaf_names_nothing_referenced() {
             let p = Projector::open(":memory:", "test").unwrap();
-            write_directly(&p, |tx, project| entity(tx, project, &UNKEYED, "x", &[]));
+            write_directly(&p, |tx, project| entity(tx, project, "x", &[]));
             edge_directly(&p, "f.rs", "f.rs::x", REL_REFERENCES, TIER_AMBIGUOUS);
             assert_eq!(
                 referenced_not_called_ids(&records_graph(&p), "x"),
                 Vec::<String>::new()
             );
         }
-    }
-
-    /// Spec 119 criterion 3 (A CALL LANDS ON ITS ONE SAME-FILE CANDIDATE): a reference naming
-    /// exactly one same-file call target lands on it at `extracted`, else on the placeholder
-    /// `<file>::%<leaf>` at the tier its leaf's other definitions give it, over hand-built events
-    /// folding each file's definitions before its references and nested definitions written
-    /// directly.
-    mod call_lands_on_its_one_same_file_candidate {
-        use super::leaf_keys_resolution::{
-            a_direct_call_walked_down, define, define_kinds, proof_targets, write_directly,
-        };
-        use super::*;
-        use crate::test_support::{
-            a_call_from_main, apply_generation_head, apply_generation_head_event, apply_keyed,
-            hold, landed, ref_json,
-        };
-
-        /// `f.rs` defines `main` and the top-level `(name, kind)`s of `top` by hand-built
-        /// events, holds the `(id, name, kind)`s of `nested` written directly, and `main` calls
-        /// `called`: the call lands on `to` at `tier`.
-        fn a_call_lands(
-            top: &[(&str, &str)],
-            nested: &[(&str, &str, &str)],
-            called: &str,
-            to: &str,
-            tier: &str,
-        ) {
-            let p = Projector::open(":memory:", "test").unwrap();
-            define_kinds(&p, nested);
-            apply_def(&p, 1, "f.rs", "main", 1, true);
-            for (pos, (name, kind)) in (2..).zip(top) {
-                apply_code_entity(&p, pos, "f.rs", name, kind, pos, "rust");
-            }
-            apply_call(&p, 9, "f.rs", called, "main");
-            assert_eq!(landed(&p), a_call_from_main(to, tier));
-        }
-
-        crate::test_cases! {
-            a_call_lands_on_its_one_same_file_method_beside_a_field_of_its_leaf:
-                a_call_lands(
-                    &[],
-                    &[("f.rs::T::run", "run", "method"), ("f.rs::S.run", "run", "field")],
-                    "run",
-                    "f.rs::T::run",
-                    TIER_EXTRACTED
-                );
-            a_call_beside_a_class_and_its_constructor_lands_on_the_placeholder:
-                a_call_lands(
-                    &[],
-                    &[("f.rs::N::Foo", "Foo", "class"), ("f.rs::N::Foo::Foo", "Foo", "constructor")],
-                    "Foo",
-                    "f.rs::%Foo",
-                    TIER_INFERRED
-                );
-            a_call_to_a_provided_trait_method_beside_its_impl_lands_on_the_placeholder:
-                a_call_lands(
-                    &[],
-                    &[("f.rs::Trait::m", "m", "method"), ("f.rs::<T as Trait>::m", "m", "method")],
-                    "m",
-                    "f.rs::%m",
-                    TIER_INFERRED
-                );
-            a_call_to_a_required_trait_fn_lands_on_its_one_impl:
-                a_call_lands(
-                    &[],
-                    &[("f.rs::Trait::m", "m", "declaration"), ("f.rs::<T as Trait>::m", "m", "method")],
-                    "m",
-                    "f.rs::<T as Trait>::m",
-                    TIER_EXTRACTED
-                );
-            a_call_beside_a_top_level_fn_and_a_method_of_its_leaf_lands_on_the_placeholder:
-                a_call_lands(
-                    &[("new", "function")],
-                    &[("f.rs::T::new", "new", "method")],
-                    "new",
-                    "f.rs::%new",
-                    TIER_INFERRED
-                );
-            a_call_beside_a_type_and_a_same_named_variant_lands_on_the_placeholder:
-                a_call_lands(
-                    &[("Foo", "struct")],
-                    &[("f.rs::E::Foo", "Foo", "variant")],
-                    "Foo",
-                    "f.rs::%Foo",
-                    TIER_INFERRED
-                );
-            a_call_with_no_same_file_candidate_lands_on_a_named_placeholder_id_ambiguous:
-                a_call_lands(&[("%x", "module")], &[], "x", "f.rs::%x", TIER_AMBIGUOUS);
-        }
-
-        /// Fold onto `p`, at `pos`, the first event of generation `generation` of `f.rs`: its
-        /// top-level reference to `name` ([`apply_generation_head_event`]).
-        fn apply_reference_head(p: &Projector, pos: u64, generation: &str, name: &str) {
-            let head = crate::test_support::marked_fresh(ref_json("f.rs", name), true);
-            apply_generation_head_event(p, pos, "f.rs", generation, TYPE_EDGE_INFERRED, head, pos);
-        }
-
-        /// Generation `h1` of `f.rs` defines `foo` and references it, `held` names the nodes a
-        /// decision then holds, and generation `h2` only references `foo`: its reference lands
-        /// on `f.rs::%foo` at `ambiguous`, the dropped definition being no candidate.
-        fn a_dropped_definitions_reference_lands_on_its_placeholder(held: &[&str]) {
-            let p = Projector::open(":memory:", "test").unwrap();
-            apply_generation_head(&p, 1, "f.rs", "h1", "foo", 1);
-            apply_keyed(
-                &p,
-                2,
-                TYPE_EDGE_INFERRED,
-                ref_json("f.rs", "foo"),
-                "gc/f.rs@h1#1",
-                2,
-            );
-            hold(&p, 3, held);
-            apply_reference_head(&p, 4, "h2", "foo");
-            let to = ("f.rs".into(), REL_REFERENCES.into(), "f.rs::%foo".into());
-            assert_eq!(landed(&p), vec![(to.0, to.1, to.2, TIER_AMBIGUOUS.into())]);
-            let held_nodes: Vec<(String, String)> = raw_rows(
-                &p,
-                "SELECT id, kind FROM nodes WHERE id = 'f.rs::foo'",
-                [],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            );
-            let expected: Vec<(String, String)> = held
-                .iter()
-                .map(|id| (id.to_string(), KIND_ARTIFACT.to_string()))
-                .collect();
-            assert_eq!(held_nodes, expected);
-        }
-
-        crate::test_cases! {
-            a_reference_to_a_definition_its_next_generation_dropped_lands_on_its_placeholder:
-                a_dropped_definitions_reference_lands_on_its_placeholder(&[]);
-            a_dropped_definition_a_knowledge_assertion_still_holds_names_no_candidate:
-                a_dropped_definitions_reference_lands_on_its_placeholder(&["f.rs::foo"]);
-        }
-
-        #[test]
-        fn a_down_hop_from_a_bare_unsigiled_target_resolves_onto_nothing() {
-            let p = Projector::open(":memory:", "test").unwrap();
-            define(&p, &[("g.rs::helper", "helper")]);
-            apply_def(&p, 1, "f.rs", "main", 1, true);
-            assert_eq!(
-                a_direct_call_walked_down(&p, "f.rs::main", "f.rs::helper"),
-                vec!["f.rs::helper", "f.rs::main"]
-            );
-        }
-
-        /// A `nodes` row `a.rs::foo` carrying the `name` `foo` that no assertion holds, beside
-        /// the live definitions `(id, name)` of `beside`, and a test proof of `foo` recorded in
-        /// `file`: the proof's target is `target`, never the unheld row.
-        fn an_unheld_named_row_is_no_proof_target(
-            beside: &[(&str, &str)],
-            file: &str,
-            target: Option<&str>,
-        ) {
-            let p = Projector::open(":memory:", "test").unwrap();
-            write_directly(&p, |tx, project| {
-                tx.execute(
-                    "INSERT INTO nodes (id, kind, attrs, project)
-                     VALUES ('a.rs::foo', ?1, json_object('name', 'foo', 'kind', 'function'), ?2)",
-                    params![KIND_CODE_ENTITY, project],
-                )
-                .unwrap();
-            });
-            define(&p, beside);
-            apply_edge_inferred_evidence(&p, 1, file, "foo", 7);
-            assert_eq!(proof_targets(&p), vec![target.map(str::to_string)]);
-        }
-
-        crate::test_cases! {
-            an_unheld_named_row_alone_takes_no_proof_from_another_file:
-                an_unheld_named_row_is_no_proof_target(&[], "t.rs", None);
-            an_unheld_named_row_alone_takes_no_proof_from_its_own_file:
-                an_unheld_named_row_is_no_proof_target(&[], "a.rs", None);
-            an_unheld_named_row_beside_a_definition_leaves_another_files_proof_to_it:
-                an_unheld_named_row_is_no_proof_target(
-                    &[("b.rs::foo", "foo")],
-                    "t.rs",
-                    Some("b.rs::foo")
-                );
-            an_unheld_named_row_beside_a_definition_leaves_its_own_files_proof_to_it:
-                an_unheld_named_row_is_no_proof_target(
-                    &[("b.rs::foo", "foo")],
-                    "a.rs",
-                    Some("b.rs::foo")
-                );
-        }
-    }
-
-    /// Spec 86 criterion 2 (PROOF LANDS ON THE CARD): the `TYPE_EDGE_INFERRED` fold's `is_test`
-    /// branch. Proven directly against the fold (via [`apply_edge_inferred_evidence`]/
-    /// [`apply_code_entity`]), never through the extraction pass - the emit half's own contract
-    /// (`proof_events`) is proven separately in `grounder::symbols::events`.
-    mod proof_evidence_c2 {
-        use super::*;
-
-        fn proven_by(g: &Graph, id: &str) -> usize {
-            g.nodes
-                .iter()
-                .find(|n| n.id == id)
-                .and_then(|n| n.attrs.get("proven_by"))
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(0)
-        }
-
-        fn proof_evidence(g: &Graph, id: &str) -> Vec<String> {
-            g.nodes
-                .iter()
-                .find(|n| n.id == id)
-                .and_then(|n| n.attrs.get("proof_evidence"))
-                .and_then(|s| serde_json::from_str(s).ok())
-                .unwrap_or_default()
-        }
-
-        /// Spec 116 criterion 4, no proof moves onto a data member: `src/a.rs` defines a
-        /// `member` `x`, `src/c.rs` the fn `x` when `order` names `fn`, and `evidence_file`
-        /// records one test reference to `x`, folded in `order`. The fn is proven once when it
-        /// folds, the member never.
-        fn a_member_takes_no_proof_of_its_leaf(member: &str, evidence_file: &str, order: &[&str]) {
-            let p = Projector::open(":memory:", "test").unwrap();
-            for (pos, step) in (1..).zip(order) {
-                match *step {
-                    "fn" => apply_def(&p, pos, "src/c.rs", "x", 1, true),
-                    "member" => apply_code_entity(&p, pos, "src/a.rs", "x", member, 2, "rust"),
-                    "evidence" => apply_edge_inferred_evidence(&p, pos, evidence_file, "x", 7),
-                    other => panic!("no step {other}"),
-                }
-            }
-            let g = p.whole().unwrap();
-            assert_eq!(
-                proven_by(&g, "src/a.rs::x"),
-                0,
-                "the member; got {:?}",
-                g.nodes
-            );
-            assert_eq!(proof_evidence(&g, "src/a.rs::x"), Vec::<String>::new());
-            let landed: Vec<String> = order
-                .iter()
-                .filter(|step| **step == "fn")
-                .map(|_| format!("{evidence_file}:7"))
-                .collect();
-            assert_eq!(proven_by(&g, "src/c.rs::x"), landed.len());
-            assert_eq!(proof_evidence(&g, "src/c.rs::x"), landed);
-        }
-
-        crate::test_cases! {
-            a_field_folded_before_the_fn_takes_no_proof:
-                a_member_takes_no_proof_of_its_leaf("field", "tests/t.rs", &["member", "fn", "evidence"]);
-            a_field_folded_after_the_proof_landed_takes_none:
-                a_member_takes_no_proof_of_its_leaf("field", "tests/t.rs", &["fn", "evidence", "member"]);
-            a_field_folded_after_a_waiting_proof_leaves_it_for_the_fn:
-                a_member_takes_no_proof_of_its_leaf("field", "tests/t.rs", &["evidence", "member", "fn"]);
-            a_field_takes_no_proof_recorded_in_its_own_file:
-                a_member_takes_no_proof_of_its_leaf("field", "src/a.rs", &["member", "fn", "evidence"]);
-            a_field_alone_takes_no_proof:
-                a_member_takes_no_proof_of_its_leaf("field", "tests/t.rs", &["member", "evidence"]);
-            a_field_alone_takes_no_proof_that_waited_for_it:
-                a_member_takes_no_proof_of_its_leaf("field", "src/a.rs", &["evidence", "member"]);
-            a_property_takes_no_proof:
-                a_member_takes_no_proof_of_its_leaf("property", "src/a.rs", &["evidence", "member", "fn"]);
-            a_declaration_takes_no_proof:
-                a_member_takes_no_proof_of_its_leaf("declaration", "src/a.rs", &["evidence", "member", "fn"]);
-        }
-
-        /// `product.rs::product_fn`, referenced by one test-origin reference per `(file, line)`
-        /// in `references`, is proven that many times, its evidence naming each `file:line` in
-        /// fold order.
-        fn assert_product_fn_proven_by(references: &[(&str, u32)]) {
-            let p = Projector::open(":memory:", "test").unwrap();
-            apply_code_entity(&p, 1, "product.rs", "product_fn", "function", 1, "rust");
-            for (pos, (file, line)) in (2..).zip(references) {
-                apply_edge_inferred_evidence(&p, pos, file, "product_fn", *line);
-            }
-            let g = p.subgraph(&["product.rs".to_string()], 1).unwrap();
-            assert_eq!(
-                proven_by(&g, "product.rs::product_fn"),
-                references.len(),
-                "each test-origin reference proves the entity once; got {:?}",
-                g.nodes
-            );
-            let evidence: Vec<String> = references
-                .iter()
-                .map(|(file, line)| format!("{file}:{line}"))
-                .collect();
-            assert_eq!(
-                proof_evidence(&g, "product.rs::product_fn"),
-                evidence,
-                "the evidence list names each reference's own file:line, in fold order"
-            );
-        }
-
-        crate::test_cases! {
-            /// The overwhelmingly common `#[cfg(test)] mod tests` idiom: `product.rs::product_fn` is
-            /// defined, then a test in the SAME file references it. proven_by lands on the
-            /// definition's OWN id directly - no bare placeholder, no second node.
-            a_same_file_test_reference_increments_proven_by_and_records_its_evidence:
-                assert_product_fn_proven_by(&[("product.rs", 7)]);
-            /// Spec 86 criterion 2's own literal Done-when example: "a product entity referenced by
-            /// two test functions carries proven_by: 2 with both file:line's". One same-file, one
-            /// cross-file (a `tests/` integration test), proving accumulation is not same-file-only.
-            two_test_references_accumulate_proven_by_to_2_with_both_evidence_entries:
-                assert_product_fn_proven_by(&[("product.rs", 7), ("tests/integration.rs", 4)]);
-        }
-
-        #[test]
-        fn an_is_test_edge_creates_no_file_node_and_no_edge_of_any_kind() {
-            // Criterion 1's "never a node and never an edge on the canvas" promise extends to
-            // evidence: the referencing file (a tests/ integration file here) gets no KIND_FILE
-            // node, and NOTHING folds a REFERENCES/CALLS edge from it - only the target entity's
-            // attrs change.
-            let p = Projector::open(":memory:", "test").unwrap();
-            apply_code_entity(&p, 1, "product.rs", "product_fn", "function", 1, "rust");
-            apply_edge_inferred_evidence(&p, 2, "tests/integration.rs", "product_fn", 4);
-            let g = p
-                .subgraph(
-                    &["product.rs".to_string(), "tests/integration.rs".to_string()],
-                    2,
-                )
-                .unwrap();
-            assert!(
-                !g.nodes
-                    .iter()
-                    .any(|n| n.kind == KIND_FILE && n.id == "tests/integration.rs"),
-                "a test-origin reference's own file never becomes a KIND_FILE node; got {:?}",
-                g.nodes
-            );
-            assert!(
-                !g.edges.iter().any(|e| e.from == "tests/integration.rs"),
-                "a test-origin reference never folds an edge of any kind; got {:?}",
-                g.edges
-            );
-            assert_eq!(
-                proven_by(&g, "product.rs::product_fn"),
-                1,
-                "the evidence still landed on the product entity"
-            );
-        }
-
-        #[test]
-        fn recording_proof_never_wipes_the_entitys_own_name_kind_and_line_attrs() {
-            // record_proof MERGES via json_set/json_insert, never ensure_node's whole-attrs
-            // COALESCE-REPLACE - guards against a regression that would silently erase name/kind/
-            // line the moment a test proves the entity (see record_proof's own doc for why this
-            // matters: Node::attrs is BTreeMap<String,String>, and row_to_node's single
-            // serde_json::from_str over the whole blob fails SILENTLY to an empty map on any
-            // non-string value).
-            let p = Projector::open(":memory:", "test").unwrap();
-            apply_code_entity(&p, 1, "product.rs", "product_fn", "function", 1, "rust");
-            apply_edge_inferred_evidence(&p, 2, "product.rs", "product_fn", 7);
-            let g = p.subgraph(&["product.rs".to_string()], 1).unwrap();
-            let n = g
-                .nodes
-                .iter()
-                .find(|n| n.id == "product.rs::product_fn")
-                .expect("the entity still exists");
-            assert_eq!(n.attrs.get("name").map(String::as_str), Some("product_fn"));
-            assert_eq!(n.attrs.get("kind").map(String::as_str), Some("function"));
-            assert_eq!(n.attrs.get("line").map(String::as_str), Some("1"));
-            assert_eq!(n.attrs.get("lang").map(String::as_str), Some("rust"));
-        }
-
-        #[test]
-        fn a_cross_file_test_reference_resolves_by_name_when_the_definition_already_exists() {
-            // No same-file definition exists in the evidence's OWN referencing file
-            // (`other_tests.rs` defines no `product_fn`); resolution falls through to the
-            // first code-entity anywhere in the project carrying this exact name - mirroring
-            // reference_tier's own cross-file lookup.
-            let p = Projector::open(":memory:", "test").unwrap();
-            apply_code_entity(&p, 1, "product.rs", "product_fn", "function", 1, "rust");
-            apply_edge_inferred_evidence(&p, 2, "other_tests.rs", "product_fn", 9);
-            let g = p.subgraph(&["product.rs".to_string()], 1).unwrap();
-            assert_eq!(proven_by(&g, "product.rs::product_fn"), 1);
-            assert!(
-                !g.nodes
-                    .iter()
-                    .any(|n| n.id == "other_tests.rs::%product_fn"),
-                "no placeholder entity is ever manufactured under the referencing file's own \
-                 namespace; got {:?}",
-                g.nodes
-            );
-        }
-
-        #[test]
-        fn an_unresolvable_test_reference_is_staged_and_reconciled_once_its_definition_later_folds()
-        {
-            // A FORWARD reference: the evidence event folds BEFORE any matching definition exists
-            // anywhere (a test file that sorts before the file it tests, e.g. "aaa_tests.rs" before
-            // "zzz_product.rs"). It must not be lost - the SAME eventual-consistency shape
-            // reference_tier's AMBIGUOUS tier already accepts for structural edges.
-            let p = Projector::open(":memory:", "test").unwrap();
-            apply_edge_inferred_evidence(&p, 1, "aaa_tests.rs", "product_fn", 3);
-            // Before the definition exists, nothing is manufactured to carry the evidence.
-            let g = p.subgraph(&["aaa_tests.rs".to_string()], 1).unwrap();
-            assert!(
-                g.nodes.is_empty() && g.edges.is_empty(),
-                "an unresolvable test reference creates nothing while pending; got {:?} / {:?}",
-                g.nodes,
-                g.edges
-            );
-            // The definition folds later; reconciliation (from the TYPE_CODE_ENTITY_EXTRACTED arm)
-            // transfers the staged evidence onto it.
-            apply_code_entity(&p, 2, "zzz_product.rs", "product_fn", "function", 1, "rust");
-            let g = p.subgraph(&["zzz_product.rs".to_string()], 1).unwrap();
-            assert_eq!(
-                proven_by(&g, "zzz_product.rs::product_fn"),
-                1,
-                "the forward-referenced evidence is reconciled onto the definition once it folds; \
-                 got {:?}",
-                g.nodes
-            );
-            assert_eq!(
-                proof_evidence(&g, "zzz_product.rs::product_fn"),
-                vec!["aaa_tests.rs:3".to_string()]
-            );
-        }
-
-        #[test]
-        fn reconciliation_is_a_no_op_when_nothing_is_pending_for_a_newly_defined_entity() {
-            // The overwhelming common case (no forward reference at all): defining an entity with
-            // nothing staged for its name must not error or fabricate evidence.
-            let p = Projector::open(":memory:", "test").unwrap();
-            apply_code_entity(&p, 1, "product.rs", "product_fn", "function", 1, "rust");
-            let g = p.subgraph(&["product.rs".to_string()], 1).unwrap();
-            assert_eq!(proven_by(&g, "product.rs::product_fn"), 0);
-            assert!(proof_evidence(&g, "product.rs::product_fn").is_empty());
-        }
-
-        #[test]
-        fn re_extracting_an_edited_file_does_not_silently_drop_an_unrelated_files_accumulated_proof(
-        ) {
-            // sdet-u86c2-r-review: cross-file proof evidence must survive a LATER, UNRELATED
-            // re-extraction of the DEFINING file. The real pipeline (project_batches_paced)
-            // keys each file's batch on its own content hash, so an unchanged file
-            // (here, the test file that proved this entity) is never re-walked and its
-            // `proof_events` never re-emit merely because a SIBLING file changed - see
-            // grounder::symbols::events::project_batches's own doc: "an unchanged file is not
-            // re-ingested". `ensure_node`'s conflict clause is `attrs = COALESCE(excluded.attrs,
-            // nodes.attrs)` - a plain whole-blob REPLACE whenever the incoming attrs are non-empty,
-            // and the TYPE_CODE_ENTITY_EXTRACTED fold's own `ensure_node` call for the entity
-            // carries only its structural attrs (name/kind/line/lang), never proven_by/
-            // proof_evidence. So a `fresh` re-fold of the SAME entity (product.rs is edited
-            // elsewhere and re-extracts, unrelated to product_fn's own body) replaces product_fn's
-            // attrs wholesale - and nothing re-derives the CROSS-FILE evidence a different,
-            // untouched test file contributed, because that file's batch never re-runs. Editing any
-            // line of product.rs should never make an unrelated test's proof vanish from the card.
-            let p = Projector::open(":memory:", "test").unwrap();
-            // Initial extraction (fresh = the file's first-ever batch).
-            apply_def(&p, 1, "product.rs", "product_fn", 10, true);
-            // A DIFFERENT, unchanged file proves it.
-            apply_edge_inferred_evidence(&p, 2, "tests/integration.rs", "product_fn", 4);
-            let g = p.subgraph(&["product.rs".to_string()], 1).unwrap();
-            assert_eq!(
-                proven_by(&g, "product.rs::product_fn"),
-                1,
-                "sanity: the cross-file evidence landed before the re-extraction"
-            );
-            // product.rs is edited (something unrelated to product_fn) and re-extracts: the SAME
-            // entity re-folds with `fresh = true`, exactly as project_batches_paced's real batch
-            // composition would emit for a changed file. tests/integration.rs is NOT touched, so
-            // (matching the real pipeline) its proof_events never re-emit here.
-            apply_def(&p, 3, "product.rs", "product_fn", 10, true);
-            let g = p.subgraph(&["product.rs".to_string()], 1).unwrap();
-            assert_eq!(
-                proven_by(&g, "product.rs::product_fn"),
-                1,
-                "re-extracting product.rs must not silently discard the proof an unrelated, \
-                 unchanged file already established; got attrs {:?}",
-                g.nodes
-                    .iter()
-                    .find(|n| n.id == "product.rs::product_fn")
-                    .map(|n| &n.attrs)
-            );
-            assert_eq!(
-                proof_evidence(&g, "product.rs::product_fn"),
-                vec!["tests/integration.rs:4".to_string()],
-                "the evidence entry itself must survive the re-extraction too"
-            );
-        }
-
-        #[test]
-        fn an_ambiguous_same_named_pair_never_gets_confident_credit_through_either_resolution_path()
-        {
-            // adv-u86c2-r-cross-file-name-match-misattributes-proof-to-the-wrong-entity (round
-            // 2): two UNRELATED files defining the identical name, then a cross-file is_test
-            // reference to that name from a third file with no local definition of its own - the
-            // shape that made `resolve_proof_target`'s old LIMIT-1 cross-file lookup pick an
-            // arbitrary winner, handing false credit to whichever entity the index happened to
-            // return first while the genuinely referenced one rendered the spec's own "no test
-            // reaches this entity" state. Ambiguous by name alone is honest by construction:
-            // neither candidate is ever confidently credited.
-            let p = Projector::open(":memory:", "test").unwrap();
-            apply_code_entity(&p, 1, "product.rs", "helper", "function", 1, "rust");
-            apply_code_entity(&p, 2, "other.rs", "helper", "function", 1, "rust");
-            apply_edge_inferred_evidence(&p, 3, "tests/it.rs", "helper", 9);
-            let seeds = ["product.rs".to_string(), "other.rs".to_string()];
-            let before = p.subgraph(&seeds, 1).unwrap();
-            assert_eq!(
-                proven_by(&before, "product.rs::helper"),
-                0,
-                "an ambiguous name must not confidently credit either candidate via \
-                 resolve_proof_target; got {:?}",
-                before.nodes
-            );
-            assert_eq!(proven_by(&before, "other.rs::helper"), 0);
-
-            // Then the OTHER resolution path: product.rs is edited elsewhere and re-extracts
-            // (fresh), re-firing TYPE_CODE_ENTITY_EXTRACTED for "helper". Its own
-            // `reconcile_pending_proof` call must apply the SAME uniqueness discipline - it must
-            // NOT claim the still-pending, still-ambiguous evidence merely because it is the one
-            // refolding right now, reopening the misattribution the resolved path above just
-            // refused.
-            apply_def(&p, 4, "product.rs", "helper", 1, true);
-            let after = p.subgraph(&seeds, 1).unwrap();
-            assert_eq!(
-                proven_by(&after, "product.rs::helper"),
-                0,
-                "a re-fold must not retroactively claim an ambiguous name's pending evidence via \
-                 reconcile_pending_proof; got {:?}",
-                after.nodes
-            );
-            assert_eq!(proven_by(&after, "other.rs::helper"), 0);
-        }
-
-        /// One step of [`re_extracting_a_test_file_supersedes_rather_than_accretes_or_strands_its_own_evidence`]'s
-        /// walk: `tests/integration.rs` re-extracts fresh, this time referencing `name` at `line`,
-        /// and the two named product entities must land at exactly `want_product`/`want_other`
-        /// afterward. Table-driven (rather than three near-identical inline blocks) so the walk
-        /// reads as ONE progression - first proof, an unchanged re-fold, an edit that swaps which
-        /// entity the file reaches - over a single shared `Projector`.
-        struct SupersessionStep {
-            name: &'static str,
-            line: u32,
-            want_product: usize,
-            want_other: usize,
-        }
-
-        #[test]
-        fn re_extracting_a_test_file_supersedes_rather_than_accretes_or_strands_its_own_evidence() {
-            // adv-u86c2-r-test-file-re-extraction-double-counts-its-own-unchanged-references
-            // (round 2): editing a TEST file (adding an unrelated test, fixing a comment)
-            // changes its content hash and re-extracts the whole file, re-emitting every is_test
-            // reference it still contains. Without a per-file supersession boundary for evidence,
-            // each re-fold would append a NEW evidence entry for a still-present reference,
-            // permanently inflating `proven_by`; `supersede_file_proof` retracts this file's own
-            // prior evidence before the new batch folds - so the walk below nets to the SAME
-            // count across an unchanged step, and to ZERO once a later step's edit removes the
-            // reference entirely.
-            let p = Projector::open(":memory:", "test").unwrap();
-            apply_code_entity(&p, 1, "product.rs", "product_fn", "function", 1, "rust");
-            apply_code_entity(&p, 2, "product.rs", "other_fn", "function", 5, "rust");
-
-            let walk = [
-                SupersessionStep {
-                    name: "product_fn",
-                    line: 4,
-                    want_product: 1,
-                    want_other: 0,
-                },
-                SupersessionStep {
-                    name: "product_fn",
-                    line: 4,
-                    want_product: 1,
-                    want_other: 0,
-                },
-                SupersessionStep {
-                    name: "other_fn",
-                    line: 9,
-                    want_product: 0,
-                    want_other: 1,
-                },
-            ];
-            for (step_idx, step) in walk.iter().enumerate() {
-                let pos = 3 + step_idx as u64;
-                apply_edge_inferred_evidence_fresh(
-                    &p,
-                    pos,
-                    "tests/integration.rs",
-                    step.name,
-                    step.line,
-                    true,
-                );
-                let g = p.subgraph(&["product.rs".to_string()], 1).unwrap();
-                assert_eq!(
-                    proven_by(&g, "product.rs::product_fn"),
-                    step.want_product,
-                    "step {step_idx} (re-extracting with {:?}): product_fn; got {:?}",
-                    step.name,
-                    g.nodes
-                        .iter()
-                        .find(|n| n.id == "product.rs::product_fn")
-                        .map(|n| &n.attrs)
-                );
-                assert_eq!(
-                    proven_by(&g, "product.rs::other_fn"),
-                    step.want_other,
-                    "step {step_idx} (re-extracting with {:?}): other_fn",
-                    step.name
-                );
-                if step_idx == 1 {
-                    assert_eq!(
-                        proof_evidence(&g, "product.rs::product_fn"),
-                        vec!["tests/integration.rs:4".to_string()],
-                        "exactly one evidence entry survives the unchanged re-extraction, not two"
-                    );
-                }
-            }
-        }
-
-        #[test]
-        fn a_files_evidence_dropping_to_zero_retracts_its_own_stale_contribution_via_the_empty_boundary_sentinel(
-        ) {
-            // Round 3 (adv-u86c2-r2-deleted-test-reference-strands-proof-forever): a file whose
-            // evidence set drops to zero (the ordinary case of deleting or rewriting the one test
-            // that proved something) must still retract its own stale contribution, not strand it
-            // forever. `proof_events` now emits an empty-name `is_test` sentinel as the file's
-            // WHOLE evidence batch in that case (see its own doc and
-            // `grounder::symbols::events::tests::
-            // proof_events_on_a_file_with_no_test_evidence_returns_a_boundary_only_sentinel_never_an_empty_vec`
-            // for proof `proof_events` itself emits it). This test drives `fold_test_evidence`
-            // DIRECTLY with that exact sentinel shape (`apply_edge_inferred_evidence_fresh` with an
-            // empty name), bypassing `proof_events` itself, to pin the FOLD's own contract: the
-            // supersede runs, and the empty name resolves/records nothing.
-            let p = Projector::open(":memory:", "test").unwrap();
-            apply_code_entity(&p, 1, "product.rs", "product_fn", "function", 1, "rust");
-            apply_edge_inferred_evidence_fresh(
-                &p,
-                2,
-                "tests/integration.rs",
-                "product_fn",
-                4,
-                true,
-            );
-            let g = p.subgraph(&["product.rs".to_string()], 1).unwrap();
-            assert_eq!(
-                proven_by(&g, "product.rs::product_fn"),
-                1,
-                "sanity: the test proves product_fn before its reference is retracted"
-            );
-
-            // The empty-name sentinel: the SAME shape proof_events now emits when
-            // tests/integration.rs's evidence set drops to zero.
-            apply_edge_inferred_evidence_fresh(&p, 3, "tests/integration.rs", "", 0, true);
-
-            let g = p.subgraph(&["product.rs".to_string()], 1).unwrap();
-            assert_eq!(
-                proven_by(&g, "product.rs::product_fn"),
-                0,
-                "the empty-boundary sentinel retracts this file's own stale contribution, not \
-                 merely leaves it uncounted; got {:?}",
-                g.nodes
-            );
-            assert!(
-                proof_evidence(&g, "product.rs::product_fn").is_empty(),
-                "the stale evidence entry is retracted from proof_evidence too; got {:?}",
-                g.nodes
-            );
-        }
-
-        #[test]
-        fn the_empty_boundary_sentinel_never_resolves_records_or_stages_anything_for_its_empty_name(
-        ) {
-            // A companion to the retraction test above, isolating the OTHER half of the fold's
-            // contract: an empty-name sentinel must never itself create a `pending_proof` row or
-            // credit any entity - it is boundary-only. A same-named entity ("" is never a real
-            // symbol name, but this guards the guard) must see no effect, and nothing lingers in
-            // `pending_proof` for reconciliation to later misattribute.
-            let p = Projector::open(":memory:", "test").unwrap();
-            apply_edge_inferred_evidence_fresh(&p, 1, "tests/only_sentinel.rs", "", 0, true);
-            let g = p
-                .subgraph(&["tests/only_sentinel.rs".to_string()], 1)
-                .unwrap();
-            assert!(
-                g.nodes.is_empty() && g.edges.is_empty(),
-                "a lone empty-boundary sentinel (a file's very first extraction, nothing to \
-                 supersede) creates nothing at all; got {:?} / {:?}",
-                g.nodes,
-                g.edges
-            );
-            // If the sentinel had wrongly staged evidence under the empty name, a LATER
-            // definition that happens to be named "" would wrongly inherit it. No production
-            // extraction ever names anything "" (see events.rs's own doc), but pinning this proves
-            // the fold guard, not merely the absence of a coincidental match.
-            apply_code_entity(&p, 2, "weird.rs", "", "function", 1, "rust");
-            let g = p.subgraph(&["weird.rs".to_string()], 1).unwrap();
-            assert_eq!(
-                proven_by(&g, "weird.rs::"),
-                0,
-                "the sentinel never staged pending evidence under its empty name; got {:?}",
-                g.nodes
-            );
-        }
-    }
-
-    /// Spec 122 criterion 5, PROOFS SETTLE ONCE PER TRANSACTION: a name a fold owes its proofs
-    /// is resolved once, before its transaction commits, however many of its references and
-    /// definitions the transaction folds, and the rows that leaves equal those of settling after
-    /// every event.
-    mod proofs_settle_once {
-        use super::*;
-        use crate::contextgraph::CODE_KIND_FUNCTION;
-        use crate::test_support::{
-            attrs_of, definition_event, edge_inferred_evidence_json, entry_at, event_of,
-            fold_events, folds, placed_at, proven_definition, test_reference_json,
-            GENERATION_AFTER, GENERATION_BEFORE,
-        };
-        use std::cell::Cell;
-
-        thread_local! {
-            /// The executions of the definition lookup [`resolve_proofs`] runs on this thread that
-            /// the statement-trace callback [`count_lookup`] saw since [`taken`] last read it: one
-            /// count per test thread, so tests counting at once never read each other's lookups
-            /// (SQLite calls the callback on the thread running the statement).
-            static LOOKUPS: Cell<usize> = const { Cell::new(0) };
-            /// The executions of the read of a name's proof targets ([`proof_targets_sql`] for
-            /// `name`) [`count_lookup`] saw on this thread since [`taken`] last read it.
-            static TARGET_READS: Cell<usize> = const { Cell::new(0) };
-        }
-
-        /// The statement-trace callback of a counted connection: a traced statement, its bound
-        /// parameters replaced by their values, is the definition lookup, or the read of a name's
-        /// proof targets, when it opens with that statement's built text up to the text's first
-        /// bound parameter.
-        fn count_lookup(traced: &str) {
-            for (built, count) in [
-                (definition_lookup_sql(), &LOOKUPS),
-                (proof_targets_sql("name"), &TARGET_READS),
-            ] {
-                let head = &built[..built.find('?').unwrap_or(built.len())];
-                if traced.starts_with(head) {
-                    count.with(|n| n.set(n.get() + 1));
-                }
-            }
-        }
-
-        /// The executions `count` counted on this thread since its last read, reset to zero.
-        fn taken(count: &'static std::thread::LocalKey<Cell<usize>>) -> usize {
-            count.with(|n| n.replace(0))
-        }
-
-        /// The test references `tests/owed.rs` holds to `owed` at log positions
-        /// `from..from + count`, none its batch's head.
-        fn references_to_owed(from: u64, count: u64) -> Vec<Event> {
-            (from..from + count)
-                .map(|pos| {
-                    let json = edge_inferred_evidence_json("tests/owed.rs", "owed", pos as u32);
-                    placed_at(event_of(TYPE_EDGE_INFERRED, json), pos, pos)
-                })
-                .collect()
-        }
-
-        /// A projector whose connection counts the definition lookups and the proof-target reads
-        /// ([`count_lookup`]), holding `seeded` proof rows of `owed` ([`references_to_owed`]),
-        /// the counts the seeding took read and reset.
-        fn counted_holding(seeded: u64) -> Projector {
-            let p = fold_events([]);
-            p.conn.lock().unwrap().trace(Some(count_lookup));
-            folds(&p, &references_to_owed(1, seeded));
-            taken(&LOOKUPS);
-            taken(&TARGET_READS);
-            p
-        }
-
-        /// THE COUNT TEST: over r = 2 recorded proof rows of `owed`, k = 3 more test references
-        /// to it folded in one transaction resolve `owed` once, executing the definition lookup
-        /// 1 + r + k = 6 times - its one `only` lookup and one same-file lookup per row - where
-        /// folding each in its own transaction, resolving after every reference, executes it
-        /// k(1 + r) + k(k + 1)/2 = 15 times.
-        #[test]
-        fn one_transaction_resolves_an_owed_name_once_where_one_per_reference_resolves_it_each_time(
-        ) {
-            const R: u64 = 2;
-            const K: u64 = 3;
-            let once = counted_holding(R);
-            let per_reference = counted_holding(R);
-            let references = references_to_owed(R + 1, K);
-            folds(&once, &references);
-            let in_one = taken(&LOOKUPS);
-            for reference in &references {
-                folds(&per_reference, std::slice::from_ref(reference));
-            }
-            let in_each = taken(&LOOKUPS);
-            assert_eq!(
-                (in_one, in_each),
-                (
-                    (1 + R + K) as usize,
-                    (K * (1 + R) + K * (K + 1) / 2) as usize
-                )
-            );
-        }
-
-        /// Settlement reads an owed name's proof targets once per transaction, after resolving
-        /// it ([`settle_proofs`]): over r = 2 recorded proof rows of `owed`, k = 3 more test
-        /// references to it folded in one transaction execute the read of `owed`'s proof
-        /// targets ([`proof_targets_sql`]) once.
-        #[test]
-        fn one_transaction_reads_an_owed_name_proof_targets_once() {
-            let p = counted_holding(2);
-            folds(&p, &references_to_owed(3, 3));
-            assert_eq!(taken(&TARGET_READS), 1);
-        }
-
-        /// `proofs_owed` is empty after every commit: the transaction that folded the seeded
-        /// references to `owed` owed `owed` its proofs ([`owe_proofs`]), and its frame paid the
-        /// row before it committed ([`settle_proofs`]).
-        #[test]
-        fn a_transaction_that_owed_a_name_commits_owing_none() {
-            let p = counted_holding(2);
-            assert_eq!(
-                owed_names(&p.conn.lock().unwrap()).unwrap(),
-                Vec::<String>::new()
-            );
-        }
-
-        /// One part of [`settling_log`]: a ledger entry with the batch it folds with, or another
-        /// event alone.
-        type Part = (Event, Option<Vec<Event>>);
-
-        /// Fold `part` in `tx`: an entry with its batch ([`fold_entry`]), any other event
-        /// alone ([`fold_new`]).
-        fn fold_part(tx: &Transaction, project: &str, (e, batch): &Part) -> Result<(), Error> {
-            match batch {
-                Some(batch) => fold_entry(tx, e, project, || {
-                    Ok(BatchAnswer::Batch(Some(batch.clone())))
-                })
-                .map(drop),
-                None => fold_new(tx, std::slice::from_ref(e), project).map(drop),
-            }
-        }
-
-        /// `src/settled.rs` defines `lead`, `kept` and `dropped`, proven by
-        /// `tests/settled_a.rs` and `tests/settled_b.rs`; `tests/settled_a.rs`'s next
-        /// generation drops its reference to `dropped`, and last, so no later fold rewrites
-        /// `kept`'s proof, `src/settled.rs`'s next keeps `kept` behind its head `lead` and
-        /// drops `dropped`.
-        fn settling_log() -> Vec<Part> {
-            let def = |name, line, head| {
-                definition_event("src/settled.rs", name, CODE_KIND_FUNCTION, line, head)
-            };
-            let proof = |file, name, line, head| {
-                let json = test_reference_json(file, name, line, head);
-                event_of(TYPE_EDGE_INFERRED, json)
-            };
-            let entry = |file, generation, pos, batch| {
-                (entry_at("gc", file, generation, pos, pos), Some(batch))
-            };
-            vec![
-                entry(
-                    "src/settled.rs",
-                    GENERATION_BEFORE,
-                    1,
-                    vec![
-                        def("lead", 1, true),
-                        def("kept", 2, false),
-                        def("dropped", 3, false),
-                    ],
-                ),
-                entry(
-                    "tests/settled_a.rs",
-                    GENERATION_BEFORE,
-                    2,
-                    vec![
-                        proof("tests/settled_a.rs", "kept", 3, true),
-                        proof("tests/settled_a.rs", "dropped", 4, false),
-                    ],
-                ),
-                (
-                    placed_at(proof("tests/settled_b.rs", "kept", 5, false), 3, 3),
-                    None,
-                ),
-                (
-                    placed_at(proof("tests/settled_b.rs", "dropped", 6, false), 4, 4),
-                    None,
-                ),
-                entry(
-                    "tests/settled_a.rs",
-                    GENERATION_AFTER,
-                    5,
-                    vec![proof("tests/settled_a.rs", "kept", 3, true)],
-                ),
-                entry(
-                    "src/settled.rs",
-                    GENERATION_AFTER,
-                    6,
-                    vec![def("lead", 1, true), def("kept", 2, false)],
-                ),
-            ]
-        }
-
-        /// THE EQUALITY ORACLE: [`settling_log`] folded in one transaction leaves, on every
-        /// table but `applied`, the rows of folding each of its parts in a transaction of its
-        /// own, settled after every part; and THE REVIVED PROOF: `kept`, retired after its next
-        /// generation's head and revived by the event after it, keeps on both the proof
-        /// `tests/settled_b.rs` and `tests/settled_a.rs` record on it.
-        #[test]
-        fn a_log_settled_once_folds_to_the_rows_of_settling_after_every_event() {
-            let log = settling_log();
-            let once = fold_events([]);
-            once.transact(|tx| {
-                log.iter()
-                    .try_for_each(|part| fold_part(tx, &once.project, part))
-            })
-            .unwrap();
-            let per_event = fold_events([]);
-            for part in &log {
-                per_event
-                    .transact(|tx| fold_part(tx, &per_event.project, part))
-                    .unwrap();
-            }
-            assert_eq!(
-                projection_but_ledger(&once),
-                projection_but_ledger(&per_event)
-            );
-            let proven = proven_definition(
-                "kept",
-                CODE_KIND_FUNCTION,
-                2,
-                &["tests/settled_b.rs:5", "tests/settled_a.rs:3"],
-            );
-            for p in [&once, &per_event] {
-                assert_eq!(attrs_of(p, "src/settled.rs::kept"), proven);
-            }
-        }
-    }
-
-    /// Spec 86 criterion 3 (THE MIGRATION IS DELIBERATE). Proven directly against the fold (raw
-    /// `TYPE_EDGE_INFERRED` payloads), never through the extraction pass - the emit half's own
-    /// contract (`extract_events`'s empty-after-exclusion boundary) is proven separately in
-    /// `grounder::symbols::events`.
-    mod migration_c3 {
-        use super::*;
-
-        #[test]
-        fn the_empty_structural_boundary_sentinel_creates_no_node_and_no_edge_of_its_own() {
-            // The structural twin of proof_evidence_c2's own
-            // `the_empty_boundary_sentinel_never_resolves_records_or_stages_anything`: a LONE
-            // empty-name structural sentinel (a file's very first extraction, nothing yet to
-            // supersede) must fold into nothing at all - no KIND_FILE container, no code-entity
-            // node, no edge. This is what keeps criterion 1's "never a node and never an edge on
-            // the canvas" promise true for an excluded file even through the boundary event this
-            // criterion adds.
-            let p = Projector::open(":memory:", "test").unwrap();
-            let payload = serde_json::json!({
-                "file": "tests/only_sentinel.rs", "name": "", "lang": "rust", "fresh": true,
-            });
-            let mut e = Event::new(TYPE_EDGE_INFERRED, serde_json::to_vec(&payload).unwrap());
-            e.position = 1;
-            crate::test_support::folds(&p, std::slice::from_ref(&e));
-
-            let g = p
-                .subgraph(&["tests/only_sentinel.rs".to_string()], 1)
-                .unwrap();
-            assert!(
-                g.nodes.is_empty() && g.edges.is_empty(),
-                "a lone empty structural sentinel creates nothing at all; got {:?} / {:?}",
-                g.nodes,
-                g.edges
-            );
-        }
-
-        #[test]
-        fn re_ingesting_a_store_that_already_holds_test_entity_nodes_retires_them_through_supersession_and_leaves_product_entities_unchanged(
-        ) {
-            // Spec 86 criterion 3's own Done-when, end to end at the fold: simulate a store that
-            // predates the criterion-1 exclusion rule - a whole `tests/`-dir file already folded a
-            // real code-entity node, CONTAINed by its own file, exactly as a pre-spec-86 ingest
-            // would have, alongside an unrelated product entity. A re-ingest through the REAL
-            // current pipeline's own empty-after-exclusion structural sentinel (proven at the emit
-            // layer separately; applied here directly to isolate the fold) must retire the legacy
-            // node's structural edges via supersession - NEVER a store wipe - while the fold
-            // "yields the same product entities before and after".
-            let p = Projector::open(":memory:", "test").unwrap();
-
-            // "Before": the legacy, pre-criterion-1 state.
-            apply_def(
-                &p,
-                1,
-                "tests/integration.rs",
-                "an_integration_test",
-                2,
-                true,
-            );
-            apply_def(&p, 2, "product.rs", "product_fn", 1, true);
-            assert_eq!(
-                p.retired_code_entity_count().unwrap(),
-                0,
-                "precondition: nothing is retired yet - both entities are live"
-            );
-
-            // "After": tests/integration.rs re-extracts to nothing (criterion 1 now excludes it
-            // wholesale) and stamps the empty structural boundary instead of emitting nothing.
-            // product.rs is NOT touched by this re-ingest.
-            let boundary = serde_json::json!({
-                "file": "tests/integration.rs", "name": "", "lang": "rust", "fresh": true,
-            });
-            let mut e = Event::new(TYPE_EDGE_INFERRED, serde_json::to_vec(&boundary).unwrap());
-            e.position = 10;
-            crate::test_support::folds(&p, std::slice::from_ref(&e));
-
-            // The legacy test entity is retired: `rigger validate`'s own counting authority now
-            // reports it, and no live edge reaches it - though its row and the superseded CONTAINS
-            // edge both remain in the store (never a wipe, never a delete).
-            assert_eq!(
-                p.retired_code_entity_count().unwrap(),
-                1,
-                "the migration retires exactly the one legacy test entity - this is what `rigger \
-                 validate` reports"
-            );
-            let retired = "tests/integration.rs::an_integration_test";
-            assert_eq!(
-                (
-                    p.out(retired).unwrap().is_empty(),
-                    p.incoming(retired).unwrap().is_empty()
-                ),
-                (true, true),
-                "the retired entity has no live edge left"
-            );
-            let raw = edges_from(&p, "tests/integration.rs");
-            assert!(
-                raw.iter().any(|(to, rel, valid_to)| {
-                    to == "tests/integration.rs::an_integration_test"
-                        && rel == REL_CONTAINS
-                        && valid_to.is_some()
-                }),
-                "the old CONTAINS edge is retained with valid_to stamped, never deleted; got {raw:?}"
-            );
-
-            // "the fold yields the same product entities before and after": product.rs::product_fn,
-            // untouched by this re-ingest, is still fully live and reachable, and the migration
-            // never touches criterion 1's own promise that the excluded file gains no KIND_FILE
-            // container from the boundary sentinel itself.
-            let g = p.subgraph(&["product.rs".to_string()], 1).unwrap();
-            assert!(
-                g.nodes.iter().any(|n| n.id == "product.rs::product_fn"),
-                "an unrelated product entity in the same store survives the migration untouched; \
-                 got {:?}",
-                g.nodes
-            );
-        }
-
-        #[test]
-        fn retired_code_entity_count_never_counts_a_placeholder_whose_only_reference_was_dropped() {
-            // A bare placeholder (its OWN file never CONTAINs it - `ensure_node` created
-            // it with an empty attr set purely to anchor a REFERENCES edge) that later loses even
-            // that reference (the referencing file re-extracts without it) ends up with NO live
-            // edge either - but it must never be counted as "retired": it never carried a live
-            // CONTAINS edge to lose, so it was never a genuine graph member, only ever a dangling
-            // guess that time proved wrong.
-            let p = Projector::open(":memory:", "test").unwrap();
-            apply_batch_ref(&p, 1, "src/a.rs", "undefined_symbol", true);
-            // src/a.rs re-extracts without the reference: its REFERENCES edge is retired via the
-            // ordinary supersede boundary, with nothing added back for `undefined_symbol`.
-            apply_def(&p, 2, "src/a.rs", "something_else", 1, true);
-            assert_eq!(
-                p.retired_code_entity_count().unwrap(),
-                0,
-                "a placeholder that never had its own CONTAINS edge is never counted, even once \
-                 its only reference is gone"
-            );
-        }
-    }
-
-    /// Spec 119, CONTAINS IS STRUCTURE, over hand-built events: a definition's `CONTAINS` comes
-    /// from its parent, the file holding only a definition with none.
-    mod contains_is_structure {
-        use super::*;
-        use crate::test_support::{
-            assert_live, attrs_of, child_entity_json, definition, definition_ids, event_of,
-            fold_events, fold_generation, kind_def_json, node_of, ENUM_E, E_HOLDS_A,
-            GENERATION_AFTER, GENERATION_BEFORE, VARIANT_E_A,
-        };
-
-        /// The parent [`GHOST_M`] names, which no event defines.
-        const GHOST: &str = "a.rs::Ghost";
-        /// The method `m` of [`GHOST`].
-        const GHOST_M: &str = "a.rs::Ghost::m";
-
-        /// The `CodeEntityExtracted` event of the variant `a.rs::E::<name>`, its parent `E`.
-        fn variant_of_e(name: &str) -> Event {
-            event_of(
-                TYPE_CODE_ENTITY_EXTRACTED,
-                child_entity_json("a.rs", name, &format!("E::{name}"), "E", "variant"),
-            )
-        }
-
-        /// The `CodeEntityExtracted` event of the enum `a.rs::E` at line 1.
-        fn enum_e(fresh: bool) -> Event {
-            event_of(
-                TYPE_CODE_ENTITY_EXTRACTED,
-                kind_def_json("a.rs", "E", "type", 1, fresh),
-            )
-        }
-
-        #[test]
-        fn a_variant_folded_before_its_enum_is_contained_by_it_and_the_enum_by_the_file() {
-            let p = fold_events([variant_of_e("A"), enum_e(false)]);
-            assert_live(
-                &p,
-                REL_CONTAINS,
-                E_HOLDS_A,
-                "the variant hangs off its enum, the enum off the file",
-            );
-            assert_eq!(
-                attrs_of(&p, ENUM_E),
-                definition("E", "type", 1),
-                "the enum's own event fills the parent its variant asserted first"
-            );
-        }
-
-        #[test]
-        fn a_parent_no_event_defines_stays_a_nameless_node_the_file_does_not_contain() {
-            let p = fold_events([event_of(
-                TYPE_CODE_ENTITY_EXTRACTED,
-                child_entity_json("a.rs", "m", "Ghost::m", "Ghost", "method"),
-            )]);
-            assert_live(
-                &p,
-                REL_CONTAINS,
-                &[(GHOST, GHOST_M)],
-                "the child hangs off its undefined parent, which no CONTAINS from the file reaches",
-            );
-            assert_eq!(
-                attrs_of(&p, GHOST),
-                BTreeMap::new(),
-                "the undefined parent is held, a bare node carrying no name"
-            );
-            assert_eq!(
-                node_of(&p, GHOST).kind,
-                KIND_CODE_ENTITY,
-                "the undefined parent is held as a code entity, never an artifact"
-            );
-            assert_eq!(definition_ids(&p), [GHOST_M]);
-        }
-
-        #[test]
-        fn an_empty_parent_and_one_naming_its_own_path_are_contained_by_the_file() {
-            let p = fold_events([
-                event_of(
-                    TYPE_CODE_ENTITY_EXTRACTED,
-                    child_entity_json("a.rs", "s", "T::s", "T::s", "method"),
-                ),
-                event_of(
-                    TYPE_CODE_ENTITY_EXTRACTED,
-                    child_entity_json("a.rs", "e", "e", "", "function"),
-                ),
-            ]);
-            assert_live(
-                &p,
-                REL_CONTAINS,
-                &[("a.rs", "a.rs::T::s"), ("a.rs", "a.rs::e")],
-                "an empty parent and a self-naming one read as no parent",
-            );
-        }
-
-        #[test]
-        fn a_removed_variants_contains_retires_at_its_files_next_generation() {
-            let p = fold_events([]);
-            let mut pos = 0;
-            let before = vec![enum_e(true), variant_of_e("A"), variant_of_e("B")];
-            fold_generation(&p, &mut pos, "a.rs", GENERATION_BEFORE, before);
-            let after = vec![enum_e(true), variant_of_e("A")];
-            fold_generation(&p, &mut pos, "a.rs", GENERATION_AFTER, after);
-            assert_live(
-                &p,
-                REL_CONTAINS,
-                E_HOLDS_A,
-                "the removed variant's CONTAINS from its enum retires with the generation",
-            );
-            assert_eq!(definition_ids(&p), [ENUM_E, VARIANT_E_A]);
-        }
-    }
-
-    /// Spec 101, A GENERATION SUPERSEDES THE WHOLE PRIOR GENERATION OF ITS FILE, IN BOTH HALVES:
-    /// the facts a newer generation of a `<prefix>/<file>` identity does not re-assert are retired,
-    /// so the graph holds the file's CURRENT facts whether it is folded from the whole log or from
-    /// a log holding only each file's latest generation.
-    mod generations {
-        use super::*;
-        use std::time::Duration;
-
-        /// A live edge as `(from, to, rel, valid-from, source)`.
-        type LiveEdge = (String, String, String, i64, Position);
-
-        use crate::test_support::{apply_generation_head, apply_keyed, f_rs_batch_def, folds};
-
-        fn node_ids(p: &Projector) -> Vec<String> {
-            p.whole().unwrap().nodes.into_iter().map(|n| n.id).collect()
-        }
-
-        fn live_edges(p: &Projector) -> Vec<LiveEdge> {
-            p.whole()
-                .unwrap()
-                .edges
-                .into_iter()
-                .map(|e| (e.from, e.to, e.rel, e.valid_from, e.source))
-                .collect()
-        }
-
-        fn edge(from: &str, to: &str, rel: &str, secs: u64, source: Position) -> LiveEdge {
-            let at = to_nanos(UNIX_EPOCH + Duration::from_secs(secs));
-            (from.into(), to.into(), rel.into(), at, source)
-        }
-
-        /// Fold `links` - `(from, to, key, secs)` `SPECIFIES` links, at positions 1, 2, ... - and
-        /// require exactly `edges` live and exactly `nodes` held.
-        fn links_fold_to(links: &[(&str, &str, &str, u64)], edges: &[LiveEdge], nodes: &[&str]) {
-            let p = Projector::open(":memory:", "test").unwrap();
-            for (i, (from, to, key, secs)) in links.iter().enumerate() {
-                let link = serde_json::json!({ "from": from, "to": to, "rel": REL_SPECIFIES });
-                apply_keyed(&p, i as u64 + 1, TYPE_DOC_LINK_EXTRACTED, link, key, *secs);
-            }
-            assert_eq!(live_edges(&p), edges);
-            assert_eq!(node_ids(&p), nodes);
-        }
-
-        /// Fold `defs` - `(name, line, fresh, key, secs)` definitions of `src/f.rs`, at positions
-        /// 1, 2, ... - and require exactly `edges` live, exactly `nodes` held, and `retired`
-        /// retired code entities.
-        fn defs_fold_to(
-            defs: &[(&str, u64, &str, usize, u64)],
-            edges: &[LiveEdge],
-            nodes: &[&str],
-            retired: usize,
-        ) {
-            let p = Projector::open(":memory:", "test").unwrap();
-            for (i, (name, line, generation, index, secs)) in defs.iter().enumerate() {
-                let def = f_rs_batch_def(
-                    i as u64 + 1,
-                    generation,
-                    *index,
-                    (name, "function", *line),
-                    None,
-                    *secs,
-                );
-                folds(&p, &[def]);
-            }
-            assert_eq!(live_edges(&p), edges);
-            assert_eq!(node_ids(&p), nodes);
-            assert_eq!(p.retired_code_entity_count().unwrap(), retired);
-        }
-
-        /// The tiers of the call `src/b.rs`'s `g` makes to `leaf` across files, landed on its
-        /// placeholder `src/b.rs::%<leaf>` ([`call_tiers`]).
-        fn cross_file_call_tiers(p: &Projector, leaf: &str) -> [String; 2] {
-            call_tiers(p, &format!("src/b.rs::%{leaf}"))
-        }
-
-        /// Spec 116 criterion 4: `src/f.rs`'s fn `x` retires at its file's next generation
-        /// while `src/a.rs` keeps a definition of that leaf of kind `beside` (none when `None`).
-        /// The call `src/b.rs`'s `g` makes to `x`, inferred while the fn stood, ends at `tier`:
-        /// beside a data member as with nothing beside it.
-        fn a_fn_retiring_leaves_its_cross_file_call(beside: Option<&str>, tier: &str) {
-            let p = Projector::open(":memory:", "test").unwrap();
-            apply_generation_head(&p, 1, "src/f.rs", "h1", "x", 10);
-            if let Some(kind) = beside {
-                apply_code_entity(&p, 2, "src/a.rs", "x", kind, 2, "rust");
-            }
-            apply_def(&p, 3, "src/b.rs", "g", 1, true);
-            apply_call(&p, 4, "src/b.rs", "x", "g");
-            let tiers = |p: &Projector| cross_file_call_tiers(p, "x");
-            assert_eq!(tiers(&p), [TIER_INFERRED, TIER_INFERRED]);
-
-            apply_generation_head(&p, 5, "src/f.rs", "h2", "y", 20);
-            assert_eq!(tiers(&p), [tier, tier]);
-        }
-
-        crate::test_cases! {
-            a_fn_retiring_alone_demotes_its_cross_file_call:
-                a_fn_retiring_leaves_its_cross_file_call(None, TIER_AMBIGUOUS);
-            a_fn_retiring_beside_a_field_demotes_its_cross_file_call:
-                a_fn_retiring_leaves_its_cross_file_call(Some("field"), TIER_AMBIGUOUS);
-            a_fn_retiring_beside_a_property_demotes_its_cross_file_call:
-                a_fn_retiring_leaves_its_cross_file_call(Some("property"), TIER_AMBIGUOUS);
-            a_fn_retiring_beside_a_declaration_demotes_its_cross_file_call:
-                a_fn_retiring_leaves_its_cross_file_call(Some("declaration"), TIER_AMBIGUOUS);
-            a_fn_retiring_beside_a_constant_keeps_its_cross_file_call_inferred:
-                a_fn_retiring_leaves_its_cross_file_call(Some("constant"), TIER_INFERRED);
-        }
-
-        /// Spec 116 criterion 5, A SHARED NODE TAKES ONE KIND: the definitions one generation of
-        /// `src/f.rs` asserts on one node settle its kind and line by `CODE_KIND_PRECEDENCE`,
-        /// the lower line and then the lesser kind string breaking a tie, whatever order they
-        /// fold in, and the node is a definition only while that winner is a call target.
-        mod shared_node {
-            use super::super::leaf_keys_resolution::proof_targets;
-            use super::*;
-            use crate::contextgraph::CODE_KIND_PRECEDENCE;
-            use crate::graph_fixtures::{LATER_UNLISTED_KIND, UNLISTED_KIND};
-            use crate::test_support::{
-                attrs_of, call_json, cross_file_call_and_proof, definition, kind_def_json,
-                proven_by_attr, ref_json, DefRow as Def, NEW_LEAF_MODULE, OLD_LEAF_FN,
-                RENAMED_NODE, RENAMED_PATH,
-            };
-
-            const X: &str = "src/f.rs::x";
-            const FN_AT_1: &[Def] = &[("x", "function", 1)];
-            const FIELD_AT_1: &[Def] = &[("x", "field", 1)];
-
-            /// Fold `defs` from `pos` as the first events of generation `generation` of
-            /// `src/f.rs`, at `secs`.
-            fn fold_defs(p: &Projector, pos: u64, generation: &str, secs: u64, defs: &[Def]) {
-                fold_path_defs(p, pos, generation, secs, defs, None);
-            }
-
-            /// [`fold_defs`], each definition carrying the id path `path` when one is given
-            /// (spec 119, IDS FOLLOW THE LANGUAGE'S PATH), so differing names share one node.
-            fn fold_path_defs(
-                p: &Projector,
-                pos: u64,
-                generation: &str,
-                secs: u64,
-                defs: &[Def],
-                path: Option<&str>,
-            ) {
-                for (i, def) in defs.iter().enumerate() {
-                    folds(
-                        p,
-                        &[f_rs_batch_def(
-                            pos + i as u64,
-                            generation,
-                            i,
-                            *def,
-                            path,
-                            secs,
-                        )],
-                    );
-                }
-            }
-
-            /// Fold, from `pos`, the call `src/b.rs`'s fn `g` makes to `x` and the test
-            /// reference `tests/t.rs` holds to it.
-            pub(in crate::contextgraph::sqlite::tests) fn fold_a_cross_file_call_and_a_proof(
-                p: &Projector,
-                pos: u64,
-            ) {
-                fold_a_cross_file_call_and_a_proof_of(p, pos, "x");
-            }
-
-            /// [`fold_a_cross_file_call_and_a_proof`] to the leaf `name`.
-            fn fold_a_cross_file_call_and_a_proof_of(p: &Projector, pos: u64, name: &str) {
-                for (i, (type_, json)) in cross_file_call_and_proof(name).into_iter().enumerate() {
-                    apply_json(p, pos + i as u64, type_, json);
-                }
-            }
-
-            /// `defs`, the definitions of one leaf, settle their node as a `kind` at `line`
-            /// folded in the order given and in its reverse.
-            fn a_shared_node_settles(defs: &[Def], kind: &str, line: u64) {
-                let name = defs[0].0;
-                let reversed: Vec<Def> = defs.iter().rev().copied().collect();
-                for order in [defs, &reversed] {
-                    let p = Projector::open(":memory:", "test").unwrap();
-                    fold_defs(&p, 1, "h1", 10, order);
-                    assert_eq!(
-                        attrs_of(&p, &format!("src/f.rs::{name}")),
-                        definition(name, kind, line),
-                        "folded as {order:?}"
-                    );
-                }
-            }
-
-            crate::test_cases! {
-                a_fn_above_a_field_of_its_leaf_settles_function_at_the_fns_line:
-                    a_shared_node_settles(&[("x", "function", 3), ("x", "field", 7)], "function", 3);
-                a_field_above_a_fn_of_its_leaf_settles_function_at_the_fns_line:
-                    a_shared_node_settles(&[("x", "field", 3), ("x", "function", 7)], "function", 7);
-                a_class_above_its_same_named_constructor_settles_type:
-                    a_shared_node_settles(&[("x", "type", 1), ("x", "constructor", 2)], "type", 1);
-                two_fn_new_settle_the_lower_line:
-                    a_shared_node_settles(
-                        &[("new", "function", 4), ("new", "function", 9)],
-                        "function",
-                        4,
-                    );
-                three_definitions_settle_the_first_kind_at_its_lower_line:
-                    a_shared_node_settles(
-                        &[("x", "field", 1), ("x", "function", 9), ("x", "function", 4)],
-                        "function",
-                        4,
-                    );
-                an_unlisted_kind_beside_a_function_settles_function:
-                    a_shared_node_settles(&[("x", "function", 5), ("x", UNLISTED_KIND, 1)], "function", 5);
-                two_unlisted_kinds_at_one_line_settle_the_lesser_kind_string:
-                    a_shared_node_settles(&[("x", UNLISTED_KIND, 3), ("x", LATER_UNLISTED_KIND, 3)], UNLISTED_KIND, 3);
-                two_unlisted_kinds_settle_the_lower_line_before_the_lesser_kind_string:
-                    a_shared_node_settles(&[("x", UNLISTED_KIND, 2), ("x", LATER_UNLISTED_KIND, 1)], LATER_UNLISTED_KIND, 1);
-                an_unlisted_kind_ranks_with_other_so_the_lesser_kind_string_settles_one_line:
-                    a_shared_node_settles(&[("x", UNLISTED_KIND, 3), ("x", "other", 3)], UNLISTED_KIND, 3);
-                an_unlisted_kind_ranks_with_other_so_its_lower_line_settles:
-                    a_shared_node_settles(&[("x", LATER_UNLISTED_KIND, 1), ("x", "other", 2)], LATER_UNLISTED_KIND, 1);
-                other_at_a_lower_line_settles_over_an_unlisted_kind:
-                    a_shared_node_settles(&[("x", "other", 1), ("x", UNLISTED_KIND, 2)], "other", 1);
-                a_module_beside_a_field_of_its_leaf_settles_field:
-                    a_shared_node_settles(&[("x", "field", 2), ("x", "module", 1)], "field", 2);
-            }
-
-            /// Each kind of `CODE_KIND_PRECEDENCE` settles the node over the kind listed after
-            /// it, though that one sits at a lower line.
-            #[test]
-            fn a_kind_settles_the_node_over_the_kind_listed_after_it_at_a_lower_line() {
-                for pair in CODE_KIND_PRECEDENCE.windows(2) {
-                    a_shared_node_settles(&[("x", pair[0], 2), ("x", pair[1], 1)], pair[0], 2);
-                }
-            }
-
-            /// `src/f.rs`'s fn `f` calls `x`, which its file defines by `defs` folded in that
-            /// order, and `src/b.rs`'s `g` calls it across files: the same-file call is tiered
-            /// extracted and the cross-file one inferred, as onto the fn alone.
-            fn references_to_x_tier_as_onto_its_fn(defs: &[Def]) {
-                let p = Projector::open(":memory:", "test").unwrap();
-                let batch = [&[("f", "function", 1)], defs].concat();
-                fold_defs(&p, 1, "h1", 10, &batch);
-                let call = call_json("src/f.rs", "x", "f");
-                apply_keyed(&p, 5, TYPE_EDGE_INFERRED, call, "gc/src/f.rs@h1#4", 10);
-                fold_a_cross_file_call_and_a_proof(&p, 6);
-                assert_eq!(call_tiers(&p, X), [TIER_EXTRACTED, TIER_EXTRACTED]);
-                assert_eq!(
-                    cross_file_call_tiers(&p, "x"),
-                    [TIER_INFERRED, TIER_INFERRED]
-                );
-            }
-
-            crate::test_cases! {
-                references_to_a_fn_alone_are_tiered_extracted_in_its_file_and_inferred_across:
-                    references_to_x_tier_as_onto_its_fn(&[("x", "function", 3)]);
-                references_to_a_fn_folded_before_a_field_of_its_leaf_tier_as_onto_the_fn:
-                    references_to_x_tier_as_onto_its_fn(&[("x", "function", 3), ("x", "field", 7)]);
-                references_to_a_fn_folded_after_a_field_of_its_leaf_tier_as_onto_the_fn:
-                    references_to_x_tier_as_onto_its_fn(&[("x", "field", 7), ("x", "function", 3)]);
-            }
-
-            /// `src/f.rs` holds its fn `f`, which calls `x`, and `defs` of the leaf `x`, a
-            /// cross-file call and a test reference landing on it, and is ingested again
-            /// unchanged at generation 2. The node retires with generation 1 and returns, so
-            /// its fn, at `line`, is proven and called at both tiers again: what a rebuild
-            /// folding generation 2 alone gives.
-            fn an_unchanged_shared_leaf_re_ingested_stays_the_fn_it_was(defs: &[Def], line: u64) {
-                let batch = [&[("f", "function", 1)], defs].concat();
-                let fold_generation = |p: &Projector, pos: u64, generation: &str, secs: u64| {
-                    fold_defs(p, pos, generation, secs, &batch);
-                    let call = call_json("src/f.rs", "x", "f");
-                    let key = format!("gc/src/f.rs@{generation}#4");
-                    apply_keyed(p, pos + 4, TYPE_EDGE_INFERRED, call, &key, secs);
-                };
-                let folded = Projector::open(":memory:", "test").unwrap();
-                fold_generation(&folded, 1, "h1", 10);
-                fold_a_cross_file_call_and_a_proof(&folded, 6);
-                fold_generation(&folded, 9, "h2", 20);
-                let rebuilt = Projector::open(":memory:", "test").unwrap();
-                fold_generation(&rebuilt, 1, "h2", 20);
-                fold_a_cross_file_call_and_a_proof(&rebuilt, 6);
-
-                let proven = crate::test_support::proven_definition(
-                    "x",
-                    "function",
-                    line,
-                    &["tests/t.rs:3"],
-                );
-                for (p, why) in [
-                    (&folded, "folded onto generation 1"),
-                    (&rebuilt, "a rebuild of generation 2"),
-                ] {
-                    assert_eq!(attrs_of(p, X), proven, "{why}");
-                    assert_eq!(call_tiers(p, X), [TIER_EXTRACTED, TIER_EXTRACTED], "{why}");
-                    assert_eq!(
-                        cross_file_call_tiers(p, "x"),
-                        [TIER_INFERRED, TIER_INFERRED],
-                        "{why}"
-                    );
-                }
-            }
-
-            crate::test_cases! {
-                an_unchanged_fn_above_a_field_of_its_leaf_re_ingested_stays_the_fn_it_was:
-                    an_unchanged_shared_leaf_re_ingested_stays_the_fn_it_was(
-                        &[("x", "function", 3), ("x", "field", 7)],
-                        3,
-                    );
-                an_unchanged_field_above_a_fn_of_its_leaf_re_ingested_stays_the_fn_it_was:
-                    an_unchanged_shared_leaf_re_ingested_stays_the_fn_it_was(
-                        &[("x", "field", 3), ("x", "function", 7)],
-                        7,
-                    );
-            }
-
-            /// A rebuild's shadow holds what the fold rule it was folded under gave, so one
-            /// left by a binary of another rule is never resumed. A rebuild is interrupted
-            /// past the batch holding `src/f.rs`'s fn `x` at line 3 and its field `x` at line
-            /// 7, and its shadow is left as a rule-1 binary left one: the node the last
-            /// definition folded, a field at 7, and no fold rule recorded. The next rebuild
-            /// discards it and folds the log from its start, to the function at 3 a cold
-            /// rebuild gives.
-            #[test]
-            fn a_rebuild_discards_a_shadow_folded_under_another_fold_rule() {
-                let log = [
-                    f_rs_batch_def(1, "h1", 0, ("x", "function", 3), None, 10),
-                    f_rs_batch_def(2, "h1", 1, ("x", "field", 7), None, 10),
-                    decision_at("d1", "a.rs", 3),
-                ];
-                let dir = tempfile::tempdir().unwrap();
-                let path = dir.path().join("graph.db");
-                let path = path.to_str().unwrap();
-                drop(Projector::open(path, "test").unwrap());
-                let interrupted = rebuild_interrupted_after_its_first_batch(path, &log);
-                Connection::open(shadow_of(path))
-                    .unwrap()
-                    .execute_batch(
-                        "UPDATE nodes SET attrs = json_patch(attrs, '{\"kind\":\"field\",\"line\":\"7\"}')
-                          WHERE id = 'src/f.rs::x';
-                         PRAGMA user_version = 0;",
-                    )
-                    .unwrap();
-
-                let mut reads_from = Vec::new();
-                rebuild_in_batches(path, &log, 2, &mut reads_from).unwrap();
-                let p = Projector::open(path, "test").unwrap();
-                assert_eq!(
-                    (
-                        interrupted.map_err(|e| e.to_string()),
-                        reads_from,
-                        attrs_of(&p, X),
-                        p.owed_because().unwrap(),
-                    ),
-                    (
-                        Err(crate::test_support::graph_error(FIRST_BATCH_INTERRUPTED)),
-                        vec![0, 3],
-                        definition("x", "function", 3),
-                        Vec::<&str>::new(),
-                    ),
-                    "the shadow of another rule is folded again from the start"
-                );
-            }
-
-            /// `x` ends as a field at line 1 carrying no proof, and the cross-file call to it
-            /// ambiguous: what a graph holding a field `x` and no fn of that leaf gives.
-            fn x_is_a_field_no_call_resolves_onto(p: &Projector, why: &str) {
-                no_call_resolves_onto(p, X, "x", definition("x", "field", 1), why);
-            }
-
-            /// Node `id` carries `attrs`, and the cross-file call `src/b.rs`'s `g` makes to
-            /// `leaf` is ambiguous: what a graph holding no call target of the leaf gives.
-            fn no_call_resolves_onto(
-                p: &Projector,
-                id: &str,
-                leaf: &str,
-                attrs: BTreeMap<String, String>,
-                why: &str,
-            ) {
-                assert_eq!(attrs_of(p, id), attrs, "{why}");
-                assert_eq!(
-                    cross_file_call_tiers(p, leaf),
-                    [TIER_AMBIGUOUS, TIER_AMBIGUOUS],
-                    "{why}"
-                );
-            }
-
-            /// `src/f.rs` holds the fn `x` at generation 1, inferred by a cross-file call and
-            /// proven by a test reference, and `second` at generation 2, which holds only a
-            /// field of that leaf: the call turns ambiguous and the proof moves off, as a
-            /// rebuild folding generation 2 alone gives.
-            fn a_fn_that_is_only_a_field_at_the_next_generation_stops_being_a_definition(
-                second: &[Def],
-            ) {
-                the_next_generation_retires_a_leaf(
-                    FN_AT_1,
-                    second,
-                    None,
-                    (X, "x"),
-                    x_is_a_field_no_call_resolves_onto,
-                );
-            }
-
-            /// `src/f.rs` holds `first` at generation 1, at the id path `path` when one is
-            /// given, defining the leaf of `(id, leaf)` on node `id`, inferred by a cross-file
-            /// call and proven by a test reference, and `second` at generation 2, which defines
-            /// no call target of that leaf: `ends` holds of the graph folded onto generation 1
-            /// and of a rebuild folding generation 2 alone.
-            fn the_next_generation_retires_a_leaf(
-                first: &[Def],
-                second: &[Def],
-                path: Option<&str>,
-                (id, leaf): (&str, &str),
-                ends: fn(&Projector, &str),
-            ) {
-                let p = Projector::open(":memory:", "test").unwrap();
-                fold_path_defs(&p, 1, "h1", 10, first, path);
-                fold_a_cross_file_call_and_a_proof_of(&p, 2, leaf);
-                assert_eq!(
-                    cross_file_call_tiers(&p, leaf),
-                    [TIER_INFERRED, TIER_INFERRED]
-                );
-                assert_eq!(proven_by_attr(&p, id).as_deref(), Some("1"));
-                fold_path_defs(&p, 5, "h2", 20, second, path);
-                ends(&p, "folded onto generation 1");
-
-                let rebuilt = Projector::open(":memory:", "test").unwrap();
-                fold_path_defs(&rebuilt, 1, "h2", 20, second, path);
-                fold_a_cross_file_call_and_a_proof_of(&rebuilt, 5, leaf);
-                ends(&rebuilt, "a rebuild of generation 2");
-            }
-
-            crate::test_cases! {
-                /// The field opens generation 2's batch, so the node is settled by the entity
-                /// arm alone, before anything retires what generation 1 left unheld.
-                a_fn_at_generation_1_and_only_a_field_opening_generation_2_demotes_and_unproves:
-                    a_fn_that_is_only_a_field_at_the_next_generation_stops_being_a_definition(
-                        FIELD_AT_1,
-                    );
-                /// Another definition opens the batch, so generation 1's fn retires before the
-                /// field folds.
-                a_fn_at_generation_1_and_only_a_field_later_in_generation_2_demotes_and_unproves:
-                    a_fn_that_is_only_a_field_at_the_next_generation_stops_being_a_definition(
-                        &[("a", "function", 9), ("x", "field", 1)],
-                    );
-            }
-
-            /// A `module x` and a `field x` of one generation settle `field` in either fold
-            /// order, so a cross-file call and a test reference folded after the first of
-            /// `defs` end as onto a field: the module folded onto the field upgrades nothing,
-            /// and the field folded onto the module undoes what the module resolved.
-            fn a_module_and_a_field_of_one_leaf_leave_references_as_a_field_does(defs: &[Def; 2]) {
-                let p = Projector::open(":memory:", "test").unwrap();
-                fold_defs(&p, 1, "h1", 10, &defs[..1]);
-                fold_a_cross_file_call_and_a_proof(&p, 2);
-                folds(&p, &[f_rs_batch_def(5, "h1", 1, defs[1], None, 10)]);
-                x_is_a_field_no_call_resolves_onto(&p, "the module and the field folded");
-            }
-
-            crate::test_cases! {
-                a_module_folded_onto_a_field_winner_upgrades_no_reference:
-                    a_module_and_a_field_of_one_leaf_leave_references_as_a_field_does(
-                        &[("x", "field", 1), ("x", "module", 2)],
-                    );
-                a_field_folded_onto_a_module_takes_the_node_and_undoes_what_the_module_resolved:
-                    a_module_and_a_field_of_one_leaf_leave_references_as_a_field_does(
-                        &[("x", "module", 2), ("x", "field", 1)],
-                    );
-            }
-
-            /// The id path `A.B` the renamed definitions share, as [`fold_path_defs`] takes it.
-            const PATH_A_B: Option<&str> = Some(RENAMED_PATH);
-            /// The one node the id path `A.B` gives `src/f.rs`'s definitions.
-            const A_B: &str = RENAMED_NODE;
-            /// The fn `B` at line 2, the old leaf of the id path `A.B`.
-            const FN_B_AT_2: &[Def] = &[OLD_LEAF_FN];
-            /// The module `A.B` at line 1, the new leaf of the id path `A.B`.
-            const MODULE_A_B_AT_1: &[Def] = &[NEW_LEAF_MODULE];
-
-            /// `src/f.rs::A.B` carries `attrs`, the cross-file call to `B` is ambiguous and its
-            /// test reference names no target: what a graph holding no call target of the leaf
-            /// `B` gives.
-            fn b_resolves_onto_nothing(p: &Projector, attrs: BTreeMap<String, String>, why: &str) {
-                no_call_resolves_onto(p, A_B, "B", attrs, why);
-                assert_eq!(proof_targets(p), vec![None], "{why}");
-            }
-
-            /// Spec 119 criterion 15, A RENAMED PATH RETIRES ITS OLD LEAF: the fn `B` at the id
-            /// path `A.B`, inferred by a cross-file call and proven by a test reference at
-            /// generation 1, is refolded as the module `A.B` on the same node at generation
-            /// 2's batch head. The node still defines a name, but no longer `B`, so the call
-            /// turns ambiguous and the proof moves off, as a rebuild folding generation 2 alone
-            /// gives.
-            #[test]
-            fn a_fn_b_refolded_as_a_b_at_the_next_generations_head_retires_the_leaf_b() {
-                the_next_generation_retires_a_leaf(
-                    FN_B_AT_2,
-                    MODULE_A_B_AT_1,
-                    PATH_A_B,
-                    (A_B, "B"),
-                    |p, why| b_resolves_onto_nothing(p, definition("A.B", "module", 1), why),
-                );
-            }
-
-            /// Spec 119 criterion 15: a hand-built differing-name pair at the id path `A.B` in
-            /// one batch, the fn `B` then the module `A.B`, settles the node on the fn's kind
-            /// and line under the last-folded name `A.B`, so the call and the test reference
-            /// to `B` end as they do folded after the batch, whether they folded before it or
-            /// after it.
-            #[test]
-            fn a_differing_name_pair_in_one_batch_retires_the_first_leaf_at_any_position() {
-                let pair: &[Def] = &[FN_B_AT_2[0], MODULE_A_B_AT_1[0]];
-                let before = Projector::open(":memory:", "test").unwrap();
-                fold_a_cross_file_call_and_a_proof_of(&before, 1, "B");
-                fold_path_defs(&before, 4, "h1", 10, pair, PATH_A_B);
-                let after = Projector::open(":memory:", "test").unwrap();
-                fold_path_defs(&after, 1, "h1", 10, pair, PATH_A_B);
-                fold_a_cross_file_call_and_a_proof_of(&after, 3, "B");
-                for (p, why) in [
-                    (&before, "the references folded before the pair"),
-                    (&after, "the references folded after the pair"),
-                ] {
-                    b_resolves_onto_nothing(p, definition("A.B", "function", 2), why);
-                }
-            }
-
-            /// An unkeyed definition is asserted by no generation, so the node takes the last
-            /// one folded: a re-fold moves `line` up as well as down, and a field folded onto a
-            /// fn takes the node and undoes what the fn resolved.
-            #[test]
-            fn an_unkeyed_re_fold_moves_line_and_kind_to_the_last_folded() {
-                let p = Projector::open(":memory:", "test").unwrap();
-                apply_def(&p, 1, "src/f.rs", "x", 5, true);
-                fold_a_cross_file_call_and_a_proof(&p, 2);
-                apply_def(&p, 5, "src/f.rs", "x", 9, true);
-                assert_eq!(attrs_of(&p, X).get("line").map(String::as_str), Some("9"));
-                apply_def(&p, 6, "src/f.rs", "x", 2, true);
-                assert_eq!(attrs_of(&p, X).get("line").map(String::as_str), Some("2"));
-                apply_code_entity(&p, 7, "src/f.rs", "x", "field", 1, "rust");
-                x_is_a_field_no_call_resolves_onto(&p, "the unkeyed field folded last");
-            }
-
-            /// The precedence reads only what the event's own identity asserts: a definition
-            /// another identity folds onto the node, at a generation of the same name, takes
-            /// it, last folded.
-            #[test]
-            fn a_definition_another_identity_asserts_on_the_node_takes_it_last_folded() {
-                let p = Projector::open(":memory:", "test").unwrap();
-                fold_defs(&p, 1, "h1", 10, FN_AT_1);
-                let field = kind_def_json("src/f.rs", "x", "field", 9, true);
-                apply_keyed(
-                    &p,
-                    2,
-                    TYPE_CODE_ENTITY_EXTRACTED,
-                    field,
-                    "gc/src/g.rs@h1#0",
-                    10,
-                );
-                assert_eq!(attrs_of(&p, X), definition("x", "field", 9));
-            }
-
-            /// A reference `src/f.rs`'s generation folds before its definition asserts the
-            /// node with no attrs: it is no candidate, so the field that folds next settles the
-            /// node, and the fn after it wins by precedence.
-            #[test]
-            fn an_assertion_carrying_no_kind_is_no_candidate() {
-                let p = Projector::open(":memory:", "test").unwrap();
-                let reference = ref_json("src/f.rs", "x");
-                apply_keyed(&p, 1, TYPE_EDGE_INFERRED, reference, "gc/src/f.rs@h1#0", 10);
-                folds(
-                    &p,
-                    &[f_rs_batch_def(2, "h1", 1, ("x", "field", 4), None, 10)],
-                );
-                assert_eq!(attrs_of(&p, X), definition("x", "field", 4));
-                let function = f_rs_batch_def(3, "h1", 2, ("x", "function", 9), None, 10);
-                folds(&p, &[function]);
-                assert_eq!(attrs_of(&p, X), definition("x", "function", 9));
-            }
-        }
-
-        const F: &str = "docs/f.md";
-
-        crate::test_cases! {
-            /// The re-asserted link keeps its first date and its newest provenance; the dropped
-            /// one is retired with the target only it reached.
-            a_design_generation_that_drops_a_link_retires_it_and_the_target_only_it_reached:
-                links_fold_to(
-                    &[
-                        (F, "src/a.rs", "gd/docs/f.md@h1#0", 10),
-                        (F, "src/b.rs", "gd/docs/f.md@h1#1", 10),
-                        (F, "src/a.rs", "gd/docs/f.md@h2#0", 20),
-                    ],
-                    &[edge(F, "src/a.rs", REL_SPECIFIES, 10, 3)],
-                    &[F, "src/a.rs"],
-                );
-            a_link_every_generation_reasserts_holds_from_its_first_generation: links_fold_to(
-                &[
-                    (F, "src/a.rs", "gd/docs/f.md@h1#0", 10),
-                    (F, "src/a.rs", "gd/docs/f.md@h2#0", 20),
-                    (F, "src/a.rs", "gd/docs/f.md@h3#0", 30),
-                ],
-                &[edge(F, "src/a.rs", REL_SPECIFIES, 10, 3)],
-                &[F, "src/a.rs"],
-            );
-            /// h2 retired the link, so its return is a new fact, and h2's own link is retired.
-            a_link_that_returns_after_a_generation_dropped_it_holds_from_its_return: links_fold_to(
-                &[
-                    (F, "src/a.rs", "gd/docs/f.md@h1#0", 10),
-                    (F, "src/b.rs", "gd/docs/f.md@h2#0", 20),
-                    (F, "src/a.rs", "gd/docs/f.md@h1#0", 30),
-                ],
-                &[edge(F, "src/a.rs", REL_SPECIFIES, 30, 3)],
-                &[F, "src/a.rs"],
-            );
-            /// h1 asserts `a`, h2 drops it, h1 returns (a new row from 30s), and h4 keeps it: the
-            /// row h4 revives is the one the return asserted, never the one h2 retired.
-            a_link_that_returned_revives_from_its_return_not_from_its_first_run: links_fold_to(
-                &[
-                    (F, "src/a.rs", "gd/docs/f.md@h1#0", 10),
-                    (F, "src/b.rs", "gd/docs/f.md@h2#0", 20),
-                    (F, "src/a.rs", "gd/docs/f.md@h1#0", 30),
-                    (F, "src/a.rs", "gd/docs/f.md@h4#0", 40),
-                ],
-                &[edge(F, "src/a.rs", REL_SPECIFIES, 30, 4)],
-                &[F, "src/a.rs"],
-            );
-            a_generation_of_one_file_never_retires_another_files_facts: links_fold_to(
-                &[
-                    (F, "src/a.rs", "gd/docs/f.md@h1#0", 10),
-                    ("docs/g.md", "src/b.rs", "gd/docs/g.md@k1#0", 20),
-                    (F, "src/c.rs", "gd/docs/f.md@h2#0", 30),
-                ],
-                &[
-                    edge(F, "src/c.rs", REL_SPECIFIES, 30, 3),
-                    edge("docs/g.md", "src/b.rs", REL_SPECIFIES, 20, 2),
-                ],
-                &[F, "docs/g.md", "src/b.rs", "src/c.rs"],
-            );
-            /// The dropped definition is retired, and counted as a retired code entity.
-            a_code_generation_that_drops_an_entity_retires_its_node: defs_fold_to(
-                &[
-                    ("alpha", 1, "h1", 0, 10),
-                    ("gone", 9, "h1", 1, 10),
-                    ("alpha", 2, "h2", 0, 20),
-                ],
-                &[edge("src/f.rs", "src/f.rs::alpha", REL_CONTAINS, 20, 3)],
-                &["src/f.rs", "src/f.rs::alpha"],
-                1,
-            );
-            /// `gone` returns with h1, and `alpha`, which only h2 defined, is the retired one.
-            an_entity_that_returns_after_a_generation_dropped_it_is_live_again: defs_fold_to(
-                &[
-                    ("gone", 9, "h1", 0, 10),
-                    ("alpha", 1, "h2", 0, 20),
-                    ("gone", 9, "h1", 0, 30),
-                ],
-                &[edge("src/f.rs", "src/f.rs::gone", REL_CONTAINS, 30, 3)],
-                &["src/f.rs", "src/f.rs::gone"],
-                1,
-            );
-        }
-
-        #[test]
-        fn a_nodes_kind_settles_on_its_first_assertion_promoted_only_from_a_bare_artifact() {
-            let cases: [(&[&str], Option<&str>); 7] = [
-                (&[], None),
-                (&[KIND_ARTIFACT], Some(KIND_ARTIFACT)),
-                (&[KIND_ARTIFACT, KIND_FILE], Some(KIND_FILE)),
-                (
-                    &[KIND_ARTIFACT, KIND_ARTIFACT, KIND_CODE_ENTITY],
-                    Some(KIND_CODE_ENTITY),
-                ),
-                (&[KIND_ARTIFACT, KIND_DECISION], Some(KIND_ARTIFACT)),
-                (&[KIND_FILE, KIND_ARTIFACT], Some(KIND_FILE)),
-                (&[KIND_CODE_ENTITY, KIND_FILE], Some(KIND_CODE_ENTITY)),
-            ];
-            for (kinds, settled) in cases {
-                assert_eq!(settled_kind(kinds.iter().copied()), settled, "{kinds:?}");
-            }
-        }
-
-        #[test]
-        fn a_dropped_entity_a_decision_still_governs_stays_live() {
-            let p = Projector::open(":memory:", "test").unwrap();
-            apply_generation_head(&p, 1, "src/f.rs", "h1", "alpha", 10);
-            folds(
-                &p,
-                &[f_rs_batch_def(
-                    2,
-                    "h1",
-                    1,
-                    ("gone", "function", 9),
-                    None,
-                    10,
-                )],
-            );
-            apply_json(
-                &p,
-                3,
-                TYPE_DECISION_MADE,
-                decision_json("d1", "keep it", &["src/f.rs::gone"], ""),
-            );
-            folds(
-                &p,
-                &[f_rs_batch_def(
-                    4,
-                    "h2",
-                    0,
-                    ("alpha", "function", 2),
-                    None,
-                    20,
-                )],
-            );
-            assert_eq!(
-                node_ids(&p),
-                vec!["d1", "src/f.rs", "src/f.rs::alpha", "src/f.rs::gone"],
-                "a live GOVERNS edge keeps the dropped definition's node live"
-            );
-        }
-
-        #[test]
-        fn a_retired_node_that_returns_keeps_the_proof_another_file_recorded_on_it() {
-            let p = Projector::open(":memory:", "test").unwrap();
-            apply_generation_head(&p, 1, "src/f.rs", "h1", "alpha", 10);
-            crate::test_support::fold_at(
-                &p,
-                2,
-                crate::test_support::fresh_test_reference("alpha", 3, 11),
-            );
-            // h2's first event defines another name, so `alpha` is retired at the boundary and
-            // comes back with the event after it.
-            apply_generation_head(&p, 3, "src/f.rs", "h2", "beta", 20);
-            folds(
-                &p,
-                &[f_rs_batch_def(
-                    4,
-                    "h2",
-                    1,
-                    ("alpha", "function", 2),
-                    None,
-                    20,
-                )],
-            );
-            let alpha = p
-                .whole()
-                .unwrap()
-                .nodes
-                .into_iter()
-                .find(|n| n.id == "src/f.rs::alpha")
-                .expect("alpha is live again");
-            assert_eq!(
-                alpha.attrs.get("proven_by").map(String::as_str),
-                Some("1"),
-                "the proof tests/t.rs recorded survives alpha's retirement; got {:?}",
-                alpha.attrs
-            );
-            assert_eq!(alpha.attrs.get("line").map(String::as_str), Some("2"));
-        }
-
-        /// Spec 107, THE ENTRY AND ITS BATCH FOLD AS ONE: a `GenerationIngested` ledger entry
-        /// folds only through `RecordFold::apply_generation`, with the batch its `batch` function
-        /// answers, at the entry's position and valid-time and under the entry's identity and
-        /// generation. Every entry is built by the one constructor and no sink is involved.
-        pub(in crate::contextgraph::sqlite::tests) mod ledger_entries {
-            use super::super::leaf_keys_resolution::write_directly;
-            use super::shared_node::fold_a_cross_file_call_and_a_proof;
-            use super::*;
-            use crate::contextgraph::{wired, EntryFold, Fold};
-            use crate::test_support::fold_events;
-            use crate::test_support::{event_of, ONE_COMMUNITY};
-            use rigger_domain::retention::{GenerationIngested, TYPE_GENERATION_INGESTED};
-            use std::cell::Cell;
-
-            /// The hand-built entry of `<prefix>/<file>` at `generation`, at log position `pos`,
-            /// valid from `secs` past the epoch.
-            fn entry(prefix: &str, file: &str, generation: &str, pos: u64, secs: u64) -> Event {
-                crate::test_support::entry_at(prefix, file, generation, pos, secs)
-            }
-
-            /// Fold `entry` into `p` with a batch function that answers `batch` and counts each
-            /// call of it in `asked`, answering the outcome or the error's text.
-            pub(in crate::contextgraph::sqlite::tests) fn apply_entry(
-                p: &Projector,
-                entry: &Event,
-                batch: Result<Option<Vec<Event>>, Error>,
-                asked: &Cell<u32>,
-            ) -> Result<EntryFold, String> {
-                p.apply_generation(
-                    entry,
-                    Box::new(move || {
-                        asked.set(asked.get() + 1);
-                        batch
-                    }),
-                )
-                .map_err(|e| e.0)
-            }
-
-            /// One unkeyed definition of `src/f.rs`, as a batch event.
-            fn def_event(name: &str, line: u64, fresh: bool) -> Event {
-                crate::test_support::definition_event("src/f.rs", name, "function", line, fresh)
-            }
-
-            /// One unkeyed `SPECIFIES` link from [`F`] to `to`, as a batch event.
-            fn link_event(to: &str) -> Event {
-                event_of(
-                    TYPE_DOC_LINK_EXTRACTED,
-                    serde_json::json!({ "from": F, "to": to, "rel": REL_SPECIFIES }),
-                )
-            }
-
-            /// Every position `p`'s `applied` ledger holds, in order.
-            fn applied_positions(p: &Projector) -> Vec<i64> {
-                raw_rows(
-                    p,
-                    "SELECT position FROM applied ORDER BY position",
-                    [],
-                    |r| r.get(0),
-                )
-            }
-
-            /// The rebuild's cursor in `p`'s file, read on `p`'s own connection.
-            fn cursor_of(p: &Projector) -> Position {
-                rebuild_cursor(&p.conn.lock().unwrap()).unwrap()
-            }
-
-            /// The generation `p` holds for `gc/src/f.rs`, the identity [`h1_at_7`] names.
-            fn generation_of_f(p: &Projector) -> Option<String> {
-                p.current_generation(&crate::test_support::gc_identity("src/f.rs"))
-                    .unwrap()
-            }
-
-            /// Every distinct `(identity, generation)` pair in `p`'s `table`, in order: the
-            /// generations it holds (`generations`) or made its node assertions under
-            /// (`node_assertions`).
-            fn identity_generations(p: &Projector, table: &str) -> Vec<(String, String)> {
-                raw_rows(
-                    p,
-                    &format!(
-                        "SELECT DISTINCT identity, generation FROM {table}
-                          ORDER BY identity, generation"
-                    ),
-                    [],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
-                )
-            }
-
-            /// The `label` attribute of the community node `community` in `p`.
-            pub(in crate::contextgraph::sqlite::tests) fn label(
-                p: &Projector,
-                community: &str,
-            ) -> Option<String> {
-                p.whole()
-                    .unwrap()
-                    .nodes
-                    .into_iter()
-                    .find(|n| n.id == community)
-                    .and_then(|n| n.attrs.get("label").cloned())
-            }
-
-            /// A fresh file-backed graph, with the directory that keeps it and its owed mark's path.
-            fn graph_file() -> (tempfile::TempDir, Projector, PathBuf) {
-                let (dir, path) = crate::test_support::temp_graph_db();
-                let p = Projector::open(&path, "test").unwrap();
-                let mark = crate::test_support::owed_mark_in(dir.path());
-                (dir, p, mark)
-            }
-
-            /// Make `p`'s file one that owes its rebuild and holds no `refs` table: a file folded
-            /// under an older rule, opened as it stands (spec 117, GENERATIONS).
-            pub(in crate::contextgraph::sqlite::tests) fn owe_without_refs(p: &Projector) {
-                write_directly(p, |tx, _| {
-                    tx.execute_batch("DROP TABLE refs; PRAGMA user_version = 0;")
-                        .unwrap();
-                });
-                assert!(
-                    p.rebuild_owed().unwrap(),
-                    "premise: the file owes its rebuild"
-                );
-            }
-
-            /// The error a read of a table [`view_over_a_missing_table`] replaced meets.
-            pub(in crate::contextgraph::sqlite::tests) const MISSING_TABLE: &str =
-                "no such table: main.gone";
-
-            /// Replace `p`'s `table` by a view over a table the file does not hold, so a read of
-            /// its columns fails with [`MISSING_TABLE`].
-            pub(in crate::contextgraph::sqlite::tests) fn view_over_a_missing_table(
-                p: &Projector,
-                table: &str,
-            ) {
-                write_directly(p, |tx, _| {
-                    tx.execute_batch(&format!(
-                        "DROP TABLE {table}; CREATE VIEW {table} AS SELECT * FROM gone;"
-                    ))
-                    .unwrap();
-                });
-            }
-
-            /// `p`'s migration of the project `from` to `minted`: the rows it moved, or its
-            /// error's text.
-            fn migrate_to_minted(p: &Projector, from: &str) -> Result<usize, String> {
-                p.migrate_project(from, "minted").map_err(|e| e.0)
-            }
-
-            /// The entry of generation `h1` of `gc/src/f.rs` at log position 7, valid from 10s.
-            fn h1_at_7() -> Event {
-                entry("gc", "src/f.rs", "h1", 7, 10)
-            }
-
-            /// The batch of generation `h1` of `gc/src/f.rs`: the definitions `alpha` and `gone`.
-            fn h1_batch() -> Vec<Event> {
-                vec![def_event("alpha", 1, true), def_event("gone", 9, false)]
-            }
-
-            /// `p` holding generation `h1` of `gc/src/f.rs`, folded from the entry at position 7
-            /// valid from 10s ([`h1_at_7`]): the definitions `alpha` and `gone` ([`h1_batch`]).
-            fn holding_h1(p: &Projector) {
-                let asked = Cell::new(0);
-                assert_eq!(
-                    apply_entry(p, &h1_at_7(), Ok(Some(h1_batch())), &asked),
-                    Ok(EntryFold::BatchAsked)
-                );
-            }
-
-            /// A fresh file-backed graph holding a rebuild's state, so a [`Projector::rebuild`]
-            /// that owes nothing folds only the tail past its cursor: the directory that keeps it,
-            /// its path and a projector on it.
-            fn owing_its_tail() -> (tempfile::TempDir, String, Projector) {
-                let (dir, path) = crate::test_support::temp_graph_db();
-                let p = Projector::open(&path, "test").unwrap();
-                p.conn.lock().unwrap().execute_batch(REBUILD_STATE).unwrap();
-                (dir, path, p)
-            }
-
-            /// Spec 124, ONE PROCEDURE: a foreign ledger entry past the cursor, however old, folds
-            /// re-extracted through the re-extraction its projector is handed - its generation
-            /// installed - and, handed none, is passed over `resolved to nothing`, installing
-            /// none; either way the call records its position and the next meets the head.
-            #[test]
-            fn catch_up_folds_a_foreign_entry_re_extracted_else_passes_it_over_resolved_to_nothing()
-            {
-                // How a case hands the projector its re-extraction, if it hands one.
-                type Handed = fn(Projector) -> Projector;
-                // Each case: how the projector is handed its re-extraction; the generation the
-                // file holds for `gc/src/f.rs` after the calls; and what was passed over.
-                type Case = (&'static str, Handed, Option<String>, Vec<(u64, String)>);
-                let cases: [Case; 2] = [
-                    (
-                        "handed a re-extraction",
-                        |p| p.with_reextraction(|| Box::new(|_: &Event| Ok(Some(h1_batch())))),
-                        Some("h1".to_string()),
-                        vec![],
-                    ),
-                    (
-                        "handed none",
-                        |p| p,
-                        None,
-                        vec![(1, RESOLVED_TO_NOTHING.to_string())],
-                    ),
-                ];
-                for (case, handed, generation, passed) in cases {
-                    let (_dir, path, p, log) = catching_up();
-                    let p = handed(p);
-                    logged(&*log, &[entry("gc", "src/f.rs", "h1", 1, 10)]);
-                    assert_eq!(
-                        (
-                            answers(&p),
-                            generation_of_f(&p),
-                            crate::test_support::passed_over_rows(&path),
-                        ),
-                        (folds_one_then_meets_the_head(), generation, passed),
-                        "{case}: the calls' answers, the generation installed and what was passed \
-                         over"
-                    );
-                }
-            }
-
-            /// Spec 122, ONE BATCHING RULE and THE SEAM: a rebuild's tail commits a transaction
-            /// after at most `FOLD_BATCH` non-entry events and cuts before and after every ledger
-            /// entry, each transaction advancing the cursor in itself, and holds no transaction
-            /// between the read batches its source hands: a writer on a second connection commits
-            /// there, and each entry's extraction reads, from that connection, every transaction
-            /// before the entry committed. The tail meets the writer's position through the fold's
-            /// per-position guard, so the ledger ends holding exactly the log's positions.
-            #[test]
-            fn a_fold_pass_commits_in_bounded_transactions_and_none_spans_its_read_batches() {
-                let (_dir, path, p) = owing_its_tail();
-                p.conn
-                    .lock()
-                    .unwrap()
-                    .execute_batch(
-                        "CREATE TABLE cursor_moves (position INTEGER NOT NULL);
-                         CREATE TRIGGER moved AFTER UPDATE ON rebuild_cursor
-                         BEGIN INSERT INTO cursor_moves VALUES (NEW.position); END;",
-                    )
-                    .unwrap();
-                let log: Vec<Event> = (1..=800)
-                    .map(|pos| match pos {
-                        521 => entry("gc", "src/a.rs", "h1", pos, 10),
-                        778 => entry("gc", "src/b.rs", "h1", pos, 20),
-                        _ => decision_at(&format!("d{pos}"), "src/d.rs", pos),
-                    })
-                    .collect();
-                // The cursor and the last position `applied` holds, as the second connection `p`
-                // reads them committed.
-                let committed = |p: &Projector| {
-                    let conn = p.conn.lock().unwrap();
-                    let last: i64 = conn
-                        .query_row("SELECT coalesce(max(position), 0) FROM applied", [], |r| {
-                            r.get(0)
-                        })
-                        .unwrap();
-                    (rebuild_cursor(&conn).unwrap(), last as u64)
-                };
-                let p = std::sync::Arc::new(p);
-                let extracted = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-                let (mut seam, mut reported) = (Vec::new(), Vec::new());
-                let rebuilt = Projector::open(&path, "test")
-                    .unwrap()
-                    .with_reextraction(crate::test_support::resolving({
-                        let (p, extracted) =
-                            (std::sync::Arc::clone(&p), std::sync::Arc::clone(&extracted));
-                        move |e| {
-                            extracted.lock().unwrap().push((e.position, committed(&p)));
-                            Ok(None)
-                        }
-                    }))
-                    .rebuild(
-                        &locked(&path),
-                        false,
-                        &mut |after, sink| {
-                            crate::test_support::two_read_batches(&log, 790, after, sink, || {
-                                crate::test_support::folds(&*p, std::slice::from_ref(&log[794]));
-                                seam.push(committed(&p));
-                            })
-                        },
-                        &mut |at| reported.push(at),
-                    )
-                    .unwrap();
-                assert_eq!(rebuilt, Some(Rebuilt::default()));
-                assert_eq!(
-                    *extracted.lock().unwrap(),
-                    vec![(521, (520, 520)), (778, (777, 777))],
-                    "each entry is extracted with every transaction before it committed"
-                );
-                assert_eq!(
-                    seam,
-                    vec![(790, 795)],
-                    "the writer commits between the read batches, the cursor at the first's end"
-                );
-                assert_eq!(
-                    fragment_values::<i64>(&p, "position FROM cursor_moves ORDER BY rowid", []),
-                    vec![256, 512, 520, 521, 777, 778, 790, 800],
-                    "the cursor advances once per transaction: a run of 520 non-entry events \
-                     commits as 256, 256 and 8, one of exactly 256 as one, each entry alone"
-                );
-                assert_eq!(
-                    reported,
-                    vec![
-                        RebuildProgress {
-                            start: 0,
-                            through: 790,
-                            head: 790,
-                            folded: 790
-                        },
-                        RebuildProgress {
-                            start: 0,
-                            through: 800,
-                            head: 800,
-                            folded: 800
-                        },
-                    ],
-                    "progress is reported once per read batch, after its last transaction"
-                );
-                assert_eq!(
-                    applied_positions(&p),
-                    log.iter().map(|e| e.position as i64).collect::<Vec<_>>()
-                );
-            }
-
-            /// Spec 122, ONE BATCHING RULE: the cut falls before AND after every ledger entry, so a
-            /// run of adjacent entries - the shape a code ingest appends - never shares a
-            /// transaction: each entry is extracted with the one before it committed, the cursor
-            /// advancing once per entry.
-            #[test]
-            fn adjacent_ledger_entries_each_commit_in_a_transaction_of_their_own() {
-                let (_dir, path, p) = owing_its_tail();
-                let log = vec![
-                    decision_at("d1", "src/d.rs", 1),
-                    entry("gc", "src/a.rs", "h1", 2, 10),
-                    entry("gc", "src/b.rs", "h1", 3, 20),
-                    entry("gc", "src/c.rs", "h1", 4, 30),
-                    decision_at("d5", "src/d.rs", 5),
-                ];
-                let p = std::sync::Arc::new(p);
-                let extracted = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-                crate::test_support::rebuild_clean(
-                    &path,
-                    false,
-                    &mut |after, sink| crate::test_support::one_read(&log, after, sink),
-                    crate::test_support::resolving({
-                        let (p, extracted) =
-                            (std::sync::Arc::clone(&p), std::sync::Arc::clone(&extracted));
-                        move |e| {
-                            extracted.lock().unwrap().push((e.position, cursor_of(&p)));
-                            Ok(None)
-                        }
-                    }),
-                );
-                assert_eq!(
-                    *extracted.lock().unwrap(),
-                    vec![(2, 1), (3, 2), (4, 3)],
-                    "each adjacent entry is extracted with the one before it committed alone"
-                );
-                assert_eq!(applied_positions(&p), vec![1, 2, 3, 4, 5]);
-            }
-
-            /// How many times a rebuild's tail over the graph file at `path`, folding `log` in one
-            /// read, asks its re-extraction for an entry's batch.
-            fn tail_asks(path: &str, log: &[Event]) -> usize {
-                use std::sync::atomic::{AtomicUsize, Ordering};
-                let asks = std::sync::Arc::new(AtomicUsize::new(0));
-                crate::test_support::rebuild_clean(
-                    path,
-                    false,
-                    &mut |after, sink| crate::test_support::one_read(log, after, sink),
-                    crate::test_support::resolving({
-                        let asks = std::sync::Arc::clone(&asks);
-                        move |_| {
-                            asks.fetch_add(1, Ordering::SeqCst);
-                            Ok(None)
-                        }
-                    }),
-                );
-                asks.load(Ordering::SeqCst)
-            }
-
-            /// Spec 122, EXTRACTION OUTSIDE THE WRITE TRANSACTION: the read before an entry's
-            /// transaction extracts nothing for an entry whose position the file already folded -
-            /// here one whose generation its identity no longer holds, so its `applied` row alone
-            /// says so - and the tail leaves the ledger as it stood.
-            #[test]
-            fn a_fold_pass_never_extracts_an_entry_the_file_already_folded() {
-                let (_dir, path, p) = owing_its_tail();
-                holding_h1(&p);
-                crate::test_support::fold_asked(&p, "src/f.rs", "h2", 8, 20, h1_batch());
-                assert_eq!(tail_asks(&path, &[h1_at_7()]), 0);
-                assert_eq!(applied_positions(&p), vec![7, 8]);
-            }
-
-            /// Spec 122, EXTRACTION OUTSIDE THE WRITE TRANSACTION: the read before an entry's
-            /// transaction extracts nothing for a re-recording the file has not folded - an entry
-            /// naming the generation its identity already holds - which then records its position
-            /// alone.
-            #[test]
-            fn a_fold_pass_never_extracts_a_re_recording_the_file_has_not_folded() {
-                let (_dir, path, p) = owing_its_tail();
-                holding_h1(&p);
-                let again = crate::test_support::placed_at(h1_at_7(), 9, 30);
-                assert_eq!(tail_asks(&path, &[again]), 0);
-                assert_eq!(applied_positions(&p), vec![7, 9]);
-            }
-
-            /// Spec 122, EXTRACTION OUTSIDE THE WRITE TRANSACTION: a rebuild's tail extracts an
-            /// entry's batch with no transaction open, so while its re-extraction blocks on a
-            /// barrier a writer on a second connection commits, and the entry then folds the batch
-            /// it extracted: the folded rows equal those of folding the entry with that batch in
-            /// hand, after the writer's.
-            #[test]
-            fn a_writer_commits_while_an_entry_is_extracted_and_the_entry_folds_as_with_its_batch_in_hand(
-            ) {
-                let (_dir, path, p) = owing_its_tail();
-                let log = vec![
-                    decision_at("d6", "src/d.rs", 6),
-                    h1_at_7(),
-                    decision_at("d8", "src/d.rs", 8),
-                ];
-                let written = crate::test_support::rebuild_meeting_a_writer(
-                    &path,
-                    false,
-                    &mut |after, sink| crate::test_support::one_read(&log, after, sink),
-                    &p,
-                    &log[2..],
-                    &h1_batch(),
-                );
-                assert_eq!(
-                    written,
-                    Fold::Folded,
-                    "the writer commits while the entry's batch is extracted"
-                );
-                // The rows in the order they committed: the writer's before the entry's.
-                let in_hand = Projector::open(":memory:", "test").unwrap();
-                crate::test_support::folds(&in_hand, &log[..1]);
-                crate::test_support::folds(&in_hand, &log[2..]);
-                crate::test_support::entry_asked(&in_hand, &log[1], h1_batch());
-                assert_eq!(projection_but_ledger(&p), projection_but_ledger(&in_hand));
-            }
-
-            /// What a second connection reads committed of a fold pass over a graph owing its tail:
-            /// the positions of the `applied` ledger and the rebuild's cursor.
-            type Committed = (Vec<i64>, Position);
-
-            /// What a second connection reads committed of a fold pass that has folded nothing.
-            const NOTHING_COMMITTED: Committed = (Vec::new(), 0);
-
-            /// What `p`'s own connection reads committed ([`Committed`]).
-            fn committed_of(p: &Projector) -> Committed {
-                (applied_positions(p), cursor_of(p))
-            }
-
-            /// What [`fold_answering`] found.
-            #[derive(Debug, PartialEq)]
-            struct Answered {
-                /// The entry's body's answer, its error as text.
-                folded: Result<(), String>,
-                /// What a second connection read committed at each ask of the batch function.
-                asks: Vec<Committed>,
-                /// What it read committed once the entry's body returned.
-                after: Committed,
-                /// The generation `gc/src/f.rs` then holds.
-                generation: Option<String>,
-            }
-
-            /// Fold the entry of `h1` at position 7 ([`h1_at_7`]) alone through the entry's body of
-            /// a fold pass ([`fold_entry_alone`]), on a connection of its own to a fresh graph
-            /// owing its tail ([`owing_its_tail`]), its batch function answering `answers` in turn.
-            fn fold_answering(mut answers: Vec<BatchAnswer>) -> Answered {
-                let (_dir, path, p) = owing_its_tail();
-                let mut conn = connection_to(&path);
-                let mut asks = Vec::new();
-                let entry = h1_at_7();
-                let folded = fold_entry_alone(
-                    &mut conn,
-                    "test",
-                    &entry,
-                    entry.position,
-                    &mut RebuildCursor,
-                    &mut |_| {
-                        asks.push(committed_of(&p));
-                        Ok(Extracted {
-                            answer: answers.remove(0),
-                            rejected: None,
-                        })
-                    },
-                    false,
-                );
-                Answered {
-                    folded: folded.map(drop).map_err(|e| e.unframed().0),
-                    asks,
-                    after: committed_of(&p),
-                    generation: generation_of_f(&p),
-                }
-            }
-
-            /// Spec 122, THE REVERSE RACE: an entry whose read before its transaction extracted
-            /// nothing, but whose fold asks a batch, answers `Unread`: its `applied` row is undone
-            /// with the rolled-back savepoint and the cursor is not advanced, so the retry finds
-            /// both as they stood, and the one retry folds the batch it extracted.
-            #[test]
-            fn an_entry_whose_batch_is_unread_is_undone_and_retried_once() {
-                assert_eq!(
-                    fold_answering(vec![
-                        BatchAnswer::Unread,
-                        BatchAnswer::Batch(Some(h1_batch()))
-                    ]),
-                    Answered {
-                        folded: Ok(()),
-                        asks: vec![NOTHING_COMMITTED; 2],
-                        after: (vec![7], 7),
-                        generation: Some("h1".to_string()),
-                    },
-                    "the retry finds no applied row and the cursor unmoved, and is the only one"
-                );
-            }
-
-            /// Spec 122, THE REVERSE RACE: an entry `Unread` on its retry too fails the pass, with
-            /// nothing of it written and the cursor where it stood.
-            #[test]
-            fn an_entry_unread_twice_fails_the_pass() {
-                assert_eq!(
-                    fold_answering(vec![BatchAnswer::Unread, BatchAnswer::Unread]),
-                    Answered {
-                        folded: Err(
-                            "the GenerationIngested entry at position 7 asked for a batch \
-                                     it was not handed: another writer installed a newer \
-                                     generation of its identity while it folded"
-                                .to_string()
-                        ),
-                        asks: vec![NOTHING_COMMITTED; 2],
-                        after: NOTHING_COMMITTED,
-                        generation: None,
-                    }
-                );
-            }
-
-            #[test]
-            fn the_entry_builder_stamps_the_identity_as_group_and_the_generation_key() {
-                let named = GenerationIngested {
-                    prefix: "gd".to_string(),
-                    file: "docs/f.md".to_string(),
-                    generation: "h1".to_string(),
-                    blob: "b10b".to_string(),
-                    excluded: true,
-                };
-                let e = named.event(3);
-                assert_eq!(e.type_, TYPE_GENERATION_INGESTED);
-                assert_eq!(
-                    e.meta
-                        .get(crate::eventstore::META_GROUP)
-                        .map(String::as_str),
-                    Some("gd/docs/f.md")
-                );
-                assert_eq!(
-                    e.meta
-                        .get(rigger_domain::ingest::META_REPLAY_KEY)
-                        .map(String::as_str),
-                    Some("gd/docs/f.md@h1#3")
-                );
-                assert_eq!(GenerationIngested::parse(&e.data), Ok(named));
-            }
-
-            #[test]
-            fn a_resolved_entry_folds_its_batch_at_the_entrys_position_and_installs_its_generation()
-            {
-                let p = Projector::open(":memory:", "test").unwrap();
-                assert_eq!(generation_of_f(&p), None);
-                // The second batch event carries a replay key naming another identity, and its own
-                // position and valid-time: the fold reads none of the three.
-                let mut stray = def_event("gone", 9, false)
-                    .with_meta(
-                        rigger_domain::ingest::META_REPLAY_KEY,
-                        "gc/src/other.rs@zz#0",
-                    )
-                    .with_valid_from(UNIX_EPOCH + Duration::from_secs(99));
-                stray.position = 42;
-                let asked = Cell::new(0);
-                assert_eq!(
-                    apply_entry(
-                        &p,
-                        &h1_at_7(),
-                        Ok(Some(vec![def_event("alpha", 1, true), stray])),
-                        &asked,
-                    ),
-                    Ok(EntryFold::BatchAsked)
-                );
-                assert_eq!(asked.get(), 1, "the batch is asked for exactly once");
-                assert_eq!(generation_of_f(&p), Some("h1".to_string()));
-                assert_eq!(
-                    live_edges(&p),
-                    vec![
-                        edge("src/f.rs", "src/f.rs::alpha", REL_CONTAINS, 10, 7),
-                        edge("src/f.rs", "src/f.rs::gone", REL_CONTAINS, 10, 7),
-                    ],
-                    "every batch event folds at the entry's position and valid-time"
-                );
-                assert_eq!(
-                    node_ids(&p),
-                    vec!["src/f.rs", "src/f.rs::alpha", "src/f.rs::gone"]
-                );
-                assert_eq!(
-                    applied_positions(&p),
-                    vec![7],
-                    "the entry's position is recorded once, and no batch event's own"
-                );
-                let h1 = vec![("gc/src/f.rs".to_string(), "h1".to_string())];
-                assert_eq!(identity_generations(&p, "generations"), h1);
-                assert_eq!(
-                    identity_generations(&p, "node_assertions"),
-                    h1,
-                    "every batch event is asserted under the entry's identity and generation"
-                );
-            }
-
-            #[test]
-            fn an_entry_of_another_generation_supersedes_the_code_facts_its_batch_drops() {
-                let p = Projector::open(":memory:", "test").unwrap();
-                holding_h1(&p);
-                let asked = Cell::new(0);
-                assert_eq!(
-                    apply_entry(
-                        &p,
-                        &entry("gc", "src/f.rs", "h2", 9, 20),
-                        Ok(Some(vec![def_event("alpha", 2, true)])),
-                        &asked,
-                    ),
-                    Ok(EntryFold::BatchAsked)
-                );
-                assert_eq!(asked.get(), 1);
-                assert_eq!(generation_of_f(&p), Some("h2".to_string()));
-                assert_eq!(
-                    live_edges(&p),
-                    vec![edge("src/f.rs", "src/f.rs::alpha", REL_CONTAINS, 20, 9)]
-                );
-                assert_eq!(node_ids(&p), vec!["src/f.rs", "src/f.rs::alpha"]);
-                assert_eq!(p.retired_code_entity_count().unwrap(), 1);
-                assert_eq!(applied_positions(&p), vec![7, 9]);
-            }
-
-            #[test]
-            fn an_entry_of_another_generation_retires_the_design_link_its_batch_drops() {
-                let p = Projector::open(":memory:", "test").unwrap();
-                let asked = Cell::new(0);
-                assert_eq!(
-                    apply_entry(
-                        &p,
-                        &entry("gd", F, "h1", 1, 10),
-                        Ok(Some(vec![link_event("src/a.rs"), link_event("src/b.rs")])),
-                        &asked,
-                    ),
-                    Ok(EntryFold::BatchAsked)
-                );
-                assert_eq!(
-                    apply_entry(
-                        &p,
-                        &entry("gd", F, "h2", 3, 20),
-                        Ok(Some(vec![link_event("src/a.rs")])),
-                        &asked,
-                    ),
-                    Ok(EntryFold::BatchAsked)
-                );
-                assert_eq!(asked.get(), 2);
-                assert_eq!(
-                    live_edges(&p),
-                    vec![edge(F, "src/a.rs", REL_SPECIFIES, 10, 3)],
-                    "the kept link holds from its first entry and is sourced at its newest"
-                );
-                assert_eq!(node_ids(&p), vec![F, "src/a.rs"]);
-                let retired_at: Vec<Option<i64>> = raw_rows(
-                    &p,
-                    "SELECT valid_to FROM edges WHERE to_id = 'src/b.rs'",
-                    [],
-                    |r| r.get(0),
-                );
-                assert_eq!(
-                    retired_at,
-                    vec![Some(to_nanos(UNIX_EPOCH + Duration::from_secs(20)))],
-                    "the dropped link is retired at the superseding entry's valid-time"
-                );
-                assert_eq!(
-                    p.current_generation("gd/docs/f.md").unwrap(),
-                    Some("h2".to_string())
-                );
-            }
-
-            /// A graph holding `h1` folds `entry`, of `gc/src/f.rs` at position 8, with a batch
-            /// function answering `batch`: the fold answers `outcome` having asked for the batch
-            /// `asks` times, and changes no fact - every table but `applied` stands row for row,
-            /// `applied` gains exactly position 8 and the identity still holds `h1`. Answers the
-            /// graph, for the caller to go on from.
-            fn folds_nothing_onto_h1(
-                entry: Event,
-                batch: Option<Vec<Event>>,
-                outcome: EntryFold,
-                asks: u32,
-            ) -> Projector {
-                let p = Projector::open(":memory:", "test").unwrap();
-                holding_h1(&p);
-                let before = projection_but_ledger(&p);
-                let asked = Cell::new(0);
-                assert_eq!(apply_entry(&p, &entry, Ok(batch), &asked), Ok(outcome));
-                assert_eq!(asked.get(), asks, "how often the batch was asked for");
-                assert_eq!(projection_but_ledger(&p), before, "no fact changes");
-                assert_eq!(applied_positions(&p), vec![7, 8]);
-                assert_eq!(generation_of_f(&p), Some("h1".to_string()));
-                p
-            }
-
-            #[test]
-            fn a_re_recording_writes_only_its_applied_row_and_never_asks_for_its_batch() {
-                // The batch would resolve, and would change the identity's facts, were it asked for.
-                let _ = folds_nothing_onto_h1(
-                    entry("gc", "src/f.rs", "h1", 8, 50),
-                    Some(vec![def_event("other", 5, true)]),
-                    EntryFold::ReRecording,
-                    0,
-                );
-            }
-
-            #[test]
-            fn an_unresolved_entry_leaves_the_identitys_facts_and_generation_as_they_stood() {
-                // A batch that resolves to no events folds as an unresolved one does: asked for
-                // once, and nothing changes.
-                let _ = folds_nothing_onto_h1(
-                    entry("gc", "src/f.rs", "h2", 8, 20),
-                    Some(vec![]),
-                    EntryFold::BatchAsked,
-                    1,
-                );
-                let p = folds_nothing_onto_h1(
-                    entry("gc", "src/f.rs", "h2", 8, 20),
-                    None,
-                    EntryFold::BatchAsked,
-                    1,
-                );
-                let held = projection_but_ledger(&p);
-                let asked = Cell::new(0);
-                // An identity that holds no generation installs none either.
-                assert_eq!(
-                    apply_entry(
-                        &p,
-                        &entry("gc", "src/new.rs", "k1", 9, 20),
-                        Ok(None),
-                        &asked
-                    ),
-                    Ok(EntryFold::BatchAsked)
-                );
-                assert_eq!(asked.get(), 1, "the batch is asked for exactly once");
-                assert_eq!(
-                    projection_but_ledger(&p),
-                    held,
-                    "an unresolved entry folds nothing"
-                );
-                assert_eq!(applied_positions(&p), vec![7, 8, 9]);
-                assert_eq!(p.current_generation("gc/src/new.rs").unwrap(), None);
-                // The generation the first entry named is still not the current one, so a later
-                // entry of it that resolves folds.
-                assert_eq!(
-                    apply_entry(
-                        &p,
-                        &entry("gc", "src/f.rs", "h2", 10, 30),
-                        Ok(Some(vec![def_event("alpha", 2, true)])),
-                        &asked,
-                    ),
-                    Ok(EntryFold::BatchAsked)
-                );
-                assert_eq!(asked.get(), 2);
-                assert_eq!(generation_of_f(&p), Some("h2".to_string()));
-                assert_eq!(
-                    live_edges(&p),
-                    vec![edge("src/f.rs", "src/f.rs::alpha", REL_CONTAINS, 30, 10)]
-                );
-            }
-
-            #[test]
-            fn an_entry_whose_position_is_applied_folds_nothing_and_never_asks_for_its_batch() {
-                let (_dir, p, mark) = graph_file();
-                apply_decision(&p, 3, "d1", "keep", &["src/f.rs"], "");
-                holding_h1(&p);
-                let before = projection_but_ledger(&p);
-                let asked = Cell::new(0);
-                // Position 7 is the entry that installed h1; position 3 a decision's.
-                for (file, generation, pos) in [("src/f.rs", "h2", 7), ("src/new.rs", "k1", 3)] {
-                    assert_eq!(
-                        apply_entry(
-                            &p,
-                            &entry("gc", file, generation, pos, 20),
-                            Ok(Some(vec![def_event("other", 5, true)])),
-                            &asked,
-                        ),
-                        Ok(EntryFold::AlreadyApplied),
-                        "position {pos}"
-                    );
-                }
-                // An entry whose payload does not parse, at a position already applied: the
-                // `applied` guard answers before the payload is read, so the fold neither fails
-                // nor marks the file owed.
-                let mut unparsable = entry("gc", "src/f.rs", "h2", 7, 20);
-                unparsable.data = b"not a ledger entry".to_vec();
-                assert_eq!(
-                    apply_entry(
-                        &p,
-                        &unparsable,
-                        Ok(Some(vec![def_event("other", 5, true)])),
-                        &asked,
-                    ),
-                    Ok(EntryFold::AlreadyApplied),
-                    "an unparsable entry at an applied position"
-                );
-                assert_eq!(
-                    asked.get(),
-                    0,
-                    "an applied position never asks for its batch"
-                );
-                assert_eq!(projection_but_ledger(&p), before);
-                assert_eq!(applied_positions(&p), vec![3, 7]);
-                assert_eq!(generation_of_f(&p), Some("h1".to_string()));
-                assert_eq!(p.current_generation("gc/src/new.rs").unwrap(), None);
-                assert_eq!(
-                    (p.rebuild_owed().unwrap(), mark.exists()),
-                    (false, false),
-                    "nothing failed, so the file owes nothing"
-                );
-            }
-
-            #[test]
-            fn a_resolved_batch_changing_a_members_degree_relabels_its_community_as_it_returns() {
-                let p = Projector::open(":memory:", "test").unwrap();
-                seed_community_fixture(&p);
-                assert_eq!(label(&p, ONE_COMMUNITY), Some("apply_damage".to_string()));
-                let hit = "src/combat/hit.rs";
-                let batch = vec![
-                    event_of(
-                        TYPE_CODE_ENTITY_EXTRACTED,
-                        crate::test_support::def_json(hit, "apply_damage", 10, true),
-                    ),
-                    event_of(
-                        TYPE_CODE_ENTITY_EXTRACTED,
-                        crate::test_support::def_json(hit, "clamp", 30, false),
-                    ),
-                    event_of(
-                        TYPE_EDGE_INFERRED,
-                        crate::test_support::call_json(hit, "min", "clamp"),
-                    ),
-                    event_of(
-                        TYPE_EDGE_INFERRED,
-                        crate::test_support::call_json(hit, "max", "clamp"),
-                    ),
-                    event_of(
-                        TYPE_EDGE_INFERRED,
-                        crate::test_support::call_json(hit, "floor", "clamp"),
-                    ),
-                ];
-                let asked = Cell::new(0);
-                assert_eq!(
-                    apply_entry(&p, &entry("gc", hit, "h1", 20, 30), Ok(Some(batch)), &asked),
-                    Ok(EntryFold::BatchAsked)
-                );
-                assert_eq!(
-                    label(&p, ONE_COMMUNITY),
-                    Some("clamp".to_string()),
-                    "the member whose degree the batch raised labels the community at once"
-                );
-                assert_eq!(label(&p, "community/1/1"), Some("alpha".to_string()));
-                let owed: Vec<String> =
-                    raw_rows(&p, "SELECT community FROM relabel_owed", [], |r| r.get(0));
-                assert_eq!(owed, Vec::<String>::new(), "the fold ends owing no relabel");
-            }
-
-            #[test]
-            fn the_generic_fold_refuses_a_ledger_entry_naming_apply_generation_and_writes_no_mark()
-            {
-                let refused = crate::test_support::entry_refusal();
-                // A batch holding an entry is refused whole.
-                let (_dir, p, mark) = graph_file();
-                let mut held =
-                    event_of(TYPE_DECISION_MADE, decision_json("d1", "x", &["a.rs"], ""));
-                held.position = 1;
-                let batch = [held, entry("gc", "src/f.rs", "h1", 2, 10)];
-                assert_eq!(crate::test_support::fold_of(&p, &batch), refused);
-                assert_eq!((p.rebuild_owed().unwrap(), mark.exists()), (false, false));
-                assert_eq!(applied_positions(&p), Vec::<i64>::new());
-                assert_eq!(node_ids(&p), Vec::<String>::new());
-
-                // One entry alone is refused.
-                let (_dir, p, mark) = graph_file();
-                assert_eq!(
-                    Fold::of(wired(Some(&p)), &entry("gc", "src/f.rs", "h1", 2, 10)),
-                    refused
-                );
-                assert_eq!((p.rebuild_owed().unwrap(), mark.exists()), (false, false));
-                assert_eq!(applied_positions(&p), Vec::<i64>::new());
-
-                // So is one whose position the ledger already holds.
-                let (_dir, p, mark) = graph_file();
-                let asked = Cell::new(0);
-                let folded = entry("gc", "src/f.rs", "h1", 5, 10);
-                assert_eq!(
-                    apply_entry(&p, &folded, Ok(None), &asked),
-                    Ok(EntryFold::BatchAsked)
-                );
-                assert_eq!((p.rebuild_owed().unwrap(), mark.exists()), (false, false));
-                assert_eq!(Fold::of(wired(Some(&p)), &folded), refused);
-                assert_eq!((p.rebuild_owed().unwrap(), mark.exists()), (false, false));
-                assert_eq!(applied_positions(&p), vec![5]);
-            }
-
-            #[test]
-            fn apply_generation_refuses_on_a_graph_that_owes_its_rebuild_and_the_generation_still_reads(
-            ) {
-                let (_dir, p, mark) = graph_file();
-                holding_h1(&p);
-                crate::test_support::stamp_user_version(Path::new(&p.path), PROJECTION_VERSION - 1);
-                assert_eq!((p.rebuild_owed().unwrap(), mark.exists()), (true, false));
-                let before = projection_but_ledger(&p);
-                let asked = Cell::new(0);
-                assert_eq!(
-                    apply_entry(
-                        &p,
-                        &entry("gc", "src/f.rs", "h2", 9, 20),
-                        Ok(Some(vec![def_event("alpha", 2, true)])),
-                        &asked,
-                    ),
-                    Err(REBUILD_OWED.to_string())
-                );
-                assert_eq!(asked.get(), 0, "a refused fold never asks for its batch");
-                assert_eq!(applied_positions(&p), vec![7]);
-                assert_eq!(projection_but_ledger(&p), before);
-                assert_eq!(
-                    generation_of_f(&p),
-                    Some("h1".to_string()),
-                    "the generation is read from a graph that owes its rebuild"
-                );
-                assert_eq!(
-                    p.held_identities().unwrap(),
-                    vec![crate::test_support::gc_identity("src/f.rs")],
-                    "the identities are read from a graph that owes its rebuild"
-                );
-            }
-
-            /// A fresh file-backed graph whose fold of `entry` with `batch` fails with `why`, with
-            /// no tail since the entry names no stream: no mark, applied row, generation or fact is
-            /// written.
-            fn fails_writing_no_mark(
-                entry: Event,
-                batch: Result<Option<Vec<Event>>, Error>,
-                why: &str,
-            ) {
-                let (_dir, p, mark) = graph_file();
-                assert_eq!((p.rebuild_owed().unwrap(), mark.exists()), (false, false));
-                let asked = Cell::new(0);
-                assert_eq!(apply_entry(&p, &entry, batch, &asked), Err(why.to_string()));
-                assert_eq!(
-                    (p.rebuild_owed().unwrap(), mark.exists()),
-                    (false, false),
-                    "{why}"
-                );
-                assert_eq!(applied_positions(&p), Vec::<i64>::new(), "{why}");
-                assert_eq!(
-                    identity_generations(&p, "generations"),
-                    Vec::<(String, String)>::new(),
-                    "{why}"
-                );
-                assert_eq!(node_ids(&p), Vec::<String>::new(), "{why}");
-            }
-
-            #[test]
-            fn a_failed_apply_generation_writes_no_mark_and_no_applied_row() {
-                // The batch function fails.
-                fails_writing_no_mark(
-                    h1_at_7(),
-                    crate::test_support::blob_unread(),
-                    crate::test_support::BLOB_UNREAD,
-                );
-                // The entry's payload does not parse.
-                let mut unparsable = h1_at_7();
-                unparsable.data = b"{}".to_vec();
-                fails_writing_no_mark(
-                    unparsable,
-                    Ok(Some(vec![def_event("alpha", 1, true)])),
-                    "GenerationIngested payload: missing field `prefix` at line 1 column 2",
-                );
-                // A batch event's fold fails after an earlier one folded: the whole entry rolls
-                // back, the generation the first event installed included.
-                let poison = crate::test_support::POISON;
-                let rejected = serde_json::from_slice::<serde_json::Value>(poison)
-                    .unwrap_err()
-                    .to_string();
-                fails_writing_no_mark(
-                    h1_at_7(),
-                    Ok(Some(vec![
-                        def_event("alpha", 1, true),
-                        Event::new(TYPE_CODE_ENTITY_EXTRACTED, poison.to_vec()),
-                    ])),
-                    &rejected,
-                );
-            }
-
-            #[test]
-            fn current_generation_answers_only_the_asking_projects_own_identity() {
-                let (_dir, ours, theirs) = crate::test_support::ours_and_theirs();
-                holding_h1(&ours);
-                assert_eq!(generation_of_f(&ours), Some("h1".to_string()));
-                assert_eq!(generation_of_f(&theirs), None);
-                assert_eq!(ours.current_generation("gd/src/f.rs").unwrap(), None);
-            }
-
-            #[test]
-            fn held_identities_answers_only_the_asking_projects_own_identities() {
-                let (_dir, ours, theirs) = crate::test_support::ours_and_theirs();
-                holding_h1(&ours);
-                assert_eq!(
-                    (
-                        ours.held_identities().unwrap(),
-                        theirs.held_identities().unwrap()
-                    ),
-                    (
-                        vec![crate::test_support::gc_identity("src/f.rs")],
-                        Vec::<String>::new()
-                    )
-                );
-            }
-
-            /// Every table of the projection that carries a `project` column (spec 117, A
-            /// MIGRATED PROJECT STAYS LIVE).
-            const PROJECT_KEYED: [&str; 10] = [
-                "nodes",
-                "edges",
-                "generations",
-                "node_assertions",
-                "edge_assertions",
-                "proofs",
-                "retired_nodes",
-                "detached_attachments",
-                "relabel_owed",
-                "refs",
-            ];
-
-            /// How many rows of each of `tables` in `p`'s file carry the scope `project`.
-            fn rows_under(p: &Projector, tables: &[&str], project: &str) -> Vec<(String, i64)> {
-                tables
-                    .iter()
-                    .map(|table| {
-                        let sql = format!("SELECT count(*) FROM {table} WHERE project = ?1");
-                        let n: Vec<i64> = raw_rows(p, &sql, [project], |r| r.get(0));
-                        (table.to_string(), n[0])
-                    })
-                    .collect()
-            }
-
-            /// `tables` each paired with its row count from `counts`, in order.
-            fn counted(tables: &[&str], counts: &[i64]) -> Vec<(String, i64)> {
-                tables
-                    .iter()
-                    .zip(counts)
-                    .map(|(table, n)| (table.to_string(), *n))
-                    .collect()
-            }
-
-            /// The live `SPECIFIES` targets of [`F`] under `project`, and every node `project`
-            /// holds retired, each in order.
-            fn links_and_retired(p: &Projector, project: &str) -> (Vec<String>, Vec<String>) {
-                let links = raw_rows(
-                    p,
-                    "SELECT to_id FROM edges
-                      WHERE project = ?1 AND from_id = ?2 AND rel = ?3 AND valid_to IS NULL
-                      ORDER BY to_id",
-                    params![project, F, REL_SPECIFIES],
-                    |r| r.get(0),
-                );
-                let retired = raw_rows(
-                    p,
-                    "SELECT id FROM retired_nodes WHERE project = ?1 ORDER BY id",
-                    [project],
-                    |r| r.get(0),
-                );
-                (links, retired)
-            }
-
-            /// `p`'s own connection, scoped to `project`: the projector the migrated identity
-            /// opens on the same file.
-            fn rescoped(p: Projector, project: &str) -> Projector {
-                Projector {
-                    project: project.to_string(),
-                    ..p
-                }
-            }
-
-            /// Spec 117, A MIGRATED PROJECT STAYS LIVE: `migrate_project` re-keys every
-            /// project-keyed table, so the identity's next generation under the new scope
-            /// supersedes the one it held under the old. Under the fixture's scope `gd/docs/f.md`
-            /// holds `h1` (links to `src/kept.rs` and `src/dropped.rs`), `src/dropped.rs` joins a
-            /// community, `tests/t.rs` proves `x`, and `h2` (the link to `src/kept.rs` alone)
-            /// retires `src/dropped.rs`, detaching its attachment; one relabel is owed by hand,
-            /// since a fold ends owing none. So the scope holds one generation, two edge
-            /// assertions (`h2` re-asserts the kept link's row in place) and one row each of a
-            /// proof, a retired node, a detached attachment and an owed relabel, beside six nodes,
-            /// six edges and seven node assertions.
-            #[test]
-            fn a_migrated_identity_keeps_its_generation_and_its_next_one_retires_what_it_dropped() {
-                let old = fold_events([]);
-                let from = old.project.clone();
-                let asked = Cell::new(0);
-                let h1 = vec![link_event("src/kept.rs"), link_event("src/dropped.rs")];
-                assert_eq!(
-                    apply_entry(&old, &entry("gd", F, "h1", 1, 10), Ok(Some(h1)), &asked),
-                    Ok(EntryFold::BatchAsked)
-                );
-                apply_community(
-                    &old,
-                    2,
-                    "src/dropped.rs",
-                    ONE_COMMUNITY,
-                    1.0,
-                    "h-alpha",
-                    true,
-                );
-                fold_a_cross_file_call_and_a_proof(&old, 3);
-                let h2 = vec![link_event("src/kept.rs")];
-                assert_eq!(
-                    apply_entry(&old, &entry("gd", F, "h2", 6, 20), Ok(Some(h2)), &asked),
-                    Ok(EntryFold::BatchAsked)
-                );
-                write_directly(&old, |tx, project| {
-                    tx.execute(
-                        "INSERT INTO relabel_owed (project, community) VALUES (?1, ?2)",
-                        [project, ONE_COMMUNITY],
-                    )
-                    .unwrap();
-                });
-                let held = counted(&PROJECT_KEYED, &[6, 6, 1, 7, 2, 1, 1, 1, 1, 0]);
-                assert_eq!(rows_under(&old, &PROJECT_KEYED, &from), held);
-
-                assert_eq!(migrate_to_minted(&old, &from).unwrap(), 6);
-                assert_eq!(
-                    rows_under(&old, &PROJECT_KEYED, "minted"),
-                    held,
-                    "every row of every project-keyed table moves to the new scope"
-                );
-                assert_eq!(
-                    rows_under(&old, &PROJECT_KEYED, &from),
-                    counted(&PROJECT_KEYED, &[0; 10]),
-                    "no row stays under the old scope"
-                );
-                let migrated = projection_but_ledger(&old);
-                assert_eq!(migrate_to_minted(&old, &from).unwrap(), 0);
-                assert_eq!(
-                    projection_but_ledger(&old),
-                    migrated,
-                    "a second migration moves nothing"
-                );
-
-                let minted = rescoped(old, "minted");
-                let h3 = vec![link_event("src/added.rs")];
-                assert_eq!(
-                    apply_entry(&minted, &entry("gd", F, "h3", 7, 30), Ok(Some(h3)), &asked),
-                    Ok(EntryFold::BatchAsked)
-                );
-                assert_eq!(
-                    links_and_retired(&minted, "minted"),
-                    (
-                        vec!["src/added.rs".to_string()],
-                        vec!["src/dropped.rs".to_string(), "src/kept.rs".to_string()]
-                    ),
-                    "h3 retires the link and the node h2 asserted and h3 does not"
-                );
-            }
-
-            /// Spec 117, A MIGRATED PROJECT STAYS LIVE: a file that owes its rebuild is opened as
-            /// it stands, so it may hold `nodes` and `edges` and none of the ledgers; the
-            /// migration moves both and skips every table the file does not hold. `h1` of
-            /// `gc/src/f.rs` leaves three nodes and two edges.
-            #[test]
-            fn an_owed_store_holding_only_nodes_and_edges_migrates_both() {
-                let owed = fold_events([]);
-                let from = owed.project.clone();
-                holding_h1(&owed);
-                write_directly(&owed, |tx, _| {
-                    tx.execute_batch(&format!("{DROP_LEDGERS} PRAGMA user_version = 0;"))
-                        .unwrap();
-                });
-                assert!(owed.rebuild_owed().unwrap());
-                let tables = ["nodes", "edges"];
-                assert_eq!(migrate_to_minted(&owed, &from), Ok(3));
-                assert_eq!(
-                    rows_under(&owed, &tables, "minted"),
-                    counted(&tables, &[3, 2])
-                );
-                assert_eq!(rows_under(&owed, &tables, &from), counted(&tables, &[0, 0]));
-            }
-
-            /// Every row of `p`'s file but its `applied` ledger, its fold rule, and whether its
-            /// `nodes` and `edges` carry a `project` column.
-            fn as_it_stands(p: &Projector) -> (Vec<String>, i64, [bool; 2]) {
-                let conn = p.conn.lock().unwrap();
-                let keyed =
-                    ["nodes", "edges"].map(|table| column_exists(&conn, table, "project").unwrap());
-                let rule = fold_rule(&conn).unwrap();
-                drop(conn);
-                (projection_but_ledger(p), rule, keyed)
-            }
-
-            /// Spec 117, A MIGRATED PROJECT STAYS LIVE: a graph.db folded before spec 28 owes
-            /// its rebuild and is opened as it stands, its `nodes` and `edges` with no `project`
-            /// column; the migration moves nothing and leaves the file as planted.
-            #[test]
-            fn a_pre_project_owed_store_migrates_nothing_and_stands_as_planted() {
-                let dir = tempfile::tempdir().unwrap();
-                let path = dir.path().join("graph.db");
-                let path = path.to_str().unwrap();
-                Connection::open(path)
-                    .unwrap()
-                    .execute_batch(&format!(
-                        "{PRE_PROJECT_GRAPH} INSERT INTO applied VALUES (1);"
-                    ))
-                    .unwrap();
-                let owed = Projector::open(path, "legacy").unwrap();
-                assert!(owed.rebuild_owed().unwrap());
-                let planted = as_it_stands(&owed);
-                assert_eq!(
-                    (planted.0.len(), planted.1, planted.2),
-                    (3, 0, [false, false]),
-                    "the open leaves the two nodes and the edge as planted, at no fold rule"
-                );
-                assert_eq!(
-                    owed.migrate_project("legacy", "minted").map_err(|e| e.0),
-                    Ok(0)
-                );
-                assert_eq!(as_it_stands(&owed), planted);
-            }
-
-            /// The error a trigger planted by [`refusing_the_rekey_of`] raises.
-            const REFUSED: &str = "re-key refused";
-
-            /// Spec 117, A MIGRATED PROJECT STAYS LIVE: a re-key that fails in `table` fails the
-            /// whole migration with its error and moves nothing, in that table or any other.
-            /// `h1` of `gc/src/f.rs` leaves rows in `nodes`, `edges` and `generations`, and a
-            /// trigger refuses every update of `table`.
-            fn refusing_the_rekey_of(table: &str) {
-                let p = fold_events([]);
-                let from = p.project.clone();
-                holding_h1(&p);
-                let held = rows_under(&p, &PROJECT_KEYED, &from);
-                write_directly(&p, |tx, _| {
-                    tx.execute_batch(&format!(
-                        "CREATE TRIGGER refuse BEFORE UPDATE ON {table}
-                         BEGIN SELECT RAISE(ABORT, '{REFUSED}'); END;"
-                    ))
-                    .unwrap();
-                });
-                assert_eq!(
-                    migrate_to_minted(&p, &from),
-                    Err(REFUSED.to_string()),
-                    "the refused re-key of {table} fails the migration"
-                );
-                assert_eq!(
-                    (
-                        rows_under(&p, &PROJECT_KEYED, &from),
-                        rows_under(&p, &PROJECT_KEYED, "minted")
-                    ),
-                    (held, counted(&PROJECT_KEYED, &[0; 10])),
-                    "a refused re-key of {table} leaves every row under the old scope"
-                );
-            }
-
-            /// The edges, the nodes and a ledger: each re-keyed by its own update.
-            #[test]
-            fn a_refused_rekey_of_the_edges_the_nodes_or_a_ledger_moves_nothing() {
-                for table in ["edges", "nodes", "generations"] {
-                    refusing_the_rekey_of(table);
-                }
-            }
-
-            /// Spec 117, A MIGRATED PROJECT STAYS LIVE: a column check that fails fails the whole
-            /// migration with its error and moves nothing. `h1` of `gc/src/f.rs` leaves three
-            /// nodes and two edges, and `generations` stands as a view over a table the file
-            /// lacks, so reading its columns fails.
-            #[test]
-            fn a_failed_column_check_fails_the_migration_and_moves_nothing() {
-                let p = fold_events([]);
-                let from = p.project.clone();
-                holding_h1(&p);
-                view_over_a_missing_table(&p, "generations");
-                assert_eq!(migrate_to_minted(&p, &from), Err(MISSING_TABLE.to_string()));
-                let tables = ["nodes", "edges"];
-                assert_eq!(rows_under(&p, &tables, &from), counted(&tables, &[3, 2]));
-            }
-
-            /// Spec 117, A MIGRATED PROJECT STAYS LIVE: [`PROJECT_KEYED`] is every table of a
-            /// fresh graph file that carries a `project` column, read from the file's schema.
-            #[test]
-            fn the_project_keyed_tables_are_every_table_carrying_a_project_column() {
-                let p = fold_events([]);
-                let keyed: Vec<String> = raw_rows(
-                    &p,
-                    "SELECT m.name FROM sqlite_master m JOIN pragma_table_info(m.name) c
-                      WHERE m.type = 'table' AND c.name = 'project'
-                      ORDER BY m.name",
-                    [],
-                    |r| r.get(0),
-                );
-                let mut oracle = PROJECT_KEYED.map(String::from).to_vec();
-                oracle.sort();
-                assert_eq!(keyed, oracle);
-            }
-
-            /// Spec 117, STAGED REFERENCES: a `refs` row moves with its edges under
-            /// `migrate_project`, so the migrated identity's next generation drops it and retires
-            /// its edge under the new scope. `gc/src/b.rs` defines `CAP` and `gc/src/a.rs`'s fn
-            /// `read` reads it: one row, one row edge and its entry.
-            #[test]
-            fn a_refs_row_moves_with_its_edges_and_the_next_generation_drops_it() {
-                use crate::contextgraph::REF_KIND_CONST;
-                use crate::test_support::{fold_asked, tagged_ref};
-                let old = fold_events([]);
-                let from = old.project.clone();
-                let cap =
-                    crate::test_support::kind_def_json("src/b.rs", "CAP", "constant", 1, true);
-                fold_asked(
-                    &old,
-                    "src/b.rs",
-                    "b1",
-                    1,
-                    10,
-                    vec![event_of(TYPE_CODE_ENTITY_EXTRACTED, cap)],
-                );
-                let read = crate::test_support::def_json("src/a.rs", "read", 1, true);
-                fold_asked(
-                    &old,
-                    "src/a.rs",
-                    "a1",
-                    2,
-                    20,
-                    vec![
-                        event_of(TYPE_CODE_ENTITY_EXTRACTED, read),
-                        tagged_ref("src/a.rs", "CAP", REF_KIND_CONST, Some("read")),
-                    ],
-                );
-                let moved = ["refs", "edge_assertions"];
-                assert_eq!(rows_under(&old, &moved, &from), counted(&moved, &[1, 1]));
-                migrate_to_minted(&old, &from).unwrap();
-                assert_eq!(rows_under(&old, &moved, "minted"), counted(&moved, &[1, 1]));
-                assert_eq!(rows_under(&old, &moved, &from), counted(&moved, &[0, 0]));
-
-                let minted = rescoped(old, "minted");
-                let read = crate::test_support::def_json("src/a.rs", "read", 1, true);
-                fold_asked(
-                    &minted,
-                    "src/a.rs",
-                    "a2",
-                    3,
-                    30,
-                    vec![event_of(TYPE_CODE_ENTITY_EXTRACTED, read)],
-                );
-                assert_eq!(
-                    rows_under(&minted, &moved, "minted"),
-                    counted(&moved, &[0, 0])
-                );
-                assert_eq!(
-                    crate::test_support::live_of(&minted, REL_REFERENCES),
-                    [],
-                    "the migrated identity's next generation retires the row edge"
-                );
-            }
-
-            /// Spec 117, STAGED REFERENCES: an owed store with no `refs` table migrates every
-            /// table it holds. `h1` of `gc/src/f.rs` leaves three nodes, two edges, a generation
-            /// and three node assertions.
-            #[test]
-            fn an_owed_store_with_no_refs_table_migrates_the_tables_it_holds() {
-                let owed = fold_events([]);
-                let from = owed.project.clone();
-                holding_h1(&owed);
-                owe_without_refs(&owed);
-                let held = &PROJECT_KEYED[..9];
-                let counts = [3, 2, 1, 3, 0, 0, 0, 0, 0];
-                assert_eq!(rows_under(&owed, held, &from), counted(held, &counts));
-                assert_eq!(migrate_to_minted(&owed, &from), Ok(3));
-                assert_eq!(rows_under(&owed, held, "minted"), counted(held, &counts));
-                assert_eq!(rows_under(&owed, held, &from), counted(held, &[0; 9]));
-            }
-        }
-
-        /// Spec 117, STAGED REFERENCES: a tagged reference a ledger entry's batch carries is a
-        /// `refs` row of the entry's identity and generation, an edge only while exactly one
-        /// definition of its kinds answers its leaf - the staging file's own, else the project's
-        /// one in the row's language - settled at the end of every batch that stages it or
-        /// changes a definition of its leaf. Every batch here folds through
-        /// `RecordFold::apply_generation`, the one fold that stages a row.
-        mod staged_references {
-            use super::super::leaf_keys_resolution::{keyed, write_directly};
-            use super::ledger_entries::{
-                label, owe_without_refs, view_over_a_missing_table, MISSING_TABLE,
-            };
-            use super::*;
-            use crate::contextgraph::{
-                CODE_KIND_CONSTANT, CODE_KIND_DECLARATION, CODE_KIND_FIELD, CODE_KIND_FUNCTION,
-                CODE_KIND_METHOD, CODE_KIND_PROPERTY, CODE_KIND_STATIC, CODE_KIND_TRAIT,
-                CODE_KIND_TYPE, CODE_KIND_VARIANT, REF_KIND_CONST, REF_KIND_MODULE, REF_KIND_TYPE,
-                REF_KIND_USE,
-            };
-            use crate::test_support::{
-                call_json, code_entity_json, definition_event, entry_asked, entry_at, event_of,
-                fold_asked as fold, fold_entry_result, fold_entry_with, fold_events, kind_def_json,
-                landed, nanos, no_bytes_batch, reference, referenced_not_called_ids,
-                seed_unresolved_references, tagged_ref as tagged, tagged_ref_json, ONE_COMMUNITY,
-                RESOLVING_FILE, UNRESOLVED_FILE, UNRESOLVED_LEAVES, UNRESOLVED_SCAN,
-            };
-
-            /// The file whose functions read what the other files define.
-            const A: &str = "src/a.rs";
-            /// A file defining what [`A`] reads.
-            const B: &str = "src/b.rs";
-            /// A second file defining what [`A`] reads.
-            const C: &str = "src/c.rs";
-            /// The fn of [`A`] every function-level reference here is read from.
-            const READ: &str = "src/a.rs::read";
-            /// The constant `CAP` of [`B`].
-            const CAP: &str = "src/b.rs::CAP";
-
-            /// A staged row as `(identity, generation, from, leaf, ref_kind, lang, position,
-            /// target)`.
-            type Row = (
-                String,
-                String,
-                String,
-                String,
-                String,
-                String,
-                i64,
-                Option<String>,
-            );
-
-            /// The Rust row `gc/<file>` at `generation` stages from `from` for `leaf` as a
-            /// `ref_kind` reference at log position `position`, resolved to `target`.
-            fn row(
-                file: &str,
-                generation: &str,
-                (from, leaf, ref_kind): (&str, &str, &str),
-                position: i64,
-                target: Option<&str>,
-            ) -> Row {
-                (
-                    crate::test_support::gc_identity(file),
-                    generation.into(),
-                    from.into(),
-                    leaf.into(),
-                    ref_kind.into(),
-                    "rust".into(),
-                    position,
-                    target.map(Into::into),
-                )
-            }
-
-            /// Every `refs` row of `p`'s project, in key order.
-            fn rows(p: &Projector) -> Vec<Row> {
-                raw_rows(
-                    p,
-                    "SELECT identity, generation, from_id, leaf, ref_kind, lang, position, target
-                       FROM refs WHERE project = ?1
-                      ORDER BY identity, generation, from_id, leaf, ref_kind",
-                    [&p.project],
-                    |r| {
-                        Ok((
-                            r.get(0)?,
-                            r.get(1)?,
-                            r.get(2)?,
-                            r.get(3)?,
-                            r.get(4)?,
-                            r.get(5)?,
-                            r.get(6)?,
-                            r.get(7)?,
-                        ))
-                    },
-                )
-            }
-
-            /// [`READ`]'s `const` read of `name`, as a batch event.
-            fn read_of(name: &str) -> Event {
-                tagged(A, name, REF_KIND_CONST, Some("read"))
-            }
-
-            /// Fold generation `generation` of [`B`] defining each `(name, kind)` of `names`.
-            fn b_defines(
-                p: &Projector,
-                generation: &str,
-                pos: u64,
-                secs: u64,
-                names: &[(&str, &str)],
-            ) {
-                fold_defining(p, B, generation, pos, secs, names);
-            }
-
-            /// Fold generation `generation` of `file` defining each `(name, kind)` of `names`.
-            fn fold_defining(
-                p: &Projector,
-                file: &str,
-                generation: &str,
-                pos: u64,
-                secs: u64,
-                names: &[(&str, &str)],
-            ) {
-                let batch = names
-                    .iter()
-                    .enumerate()
-                    .map(|(i, (name, kind))| {
-                        definition_event(file, name, kind, i as u64 + 1, i == 0)
-                    })
-                    .collect();
-                fold(p, file, generation, pos, secs, batch);
-            }
-
-            /// Fold generation `generation` of [`A`]: the fn `read` and `refs` after it.
-            fn a_reads(p: &Projector, generation: &str, pos: u64, secs: u64, refs: Vec<Event>) {
-                let mut batch = vec![definition_event(A, "read", CODE_KIND_FUNCTION, 1, true)];
-                batch.extend(refs);
-                fold(p, A, generation, pos, secs, batch);
-            }
-
-            /// A projector where [`B`] defines `CAP` (generation `b1`, position 1, 10 s) and then
-            /// [`READ`] reads it (generation `a1`, position 2, 20 s): one resolved `const` row
-            /// and its live `REFERENCES` edge onto [`CAP`].
-            fn const_read_resolved() -> Projector {
-                let p = fold_events([]);
-                b_defines(&p, "b1", 1, 10, &[("CAP", CODE_KIND_CONSTANT)]);
-                a_reads(&p, "a1", 2, 20, vec![read_of("CAP")]);
-                p
-            }
-
-            /// The `(from, rel, to, tier)` of every live `REFERENCES` edge of `p`, sorted.
-            fn references(p: &Projector) -> Vec<(String, String, String, String)> {
-                landed(p)
-                    .into_iter()
-                    .filter(|(_, rel, ..)| rel == REL_REFERENCES)
-                    .collect()
-            }
-
-            /// Every `REFERENCES` edge row of `p` from `from` ([`edge_rows`]).
-            fn reference_rows(p: &Projector, from: &str) -> Vec<(String, i64, Option<i64>, i64)> {
-                edge_rows(p, from, REL_REFERENCES)
-            }
-
-            /// Every `rel` edge row of `p` from `from`, live or retired, as
-            /// `(to, valid_from, valid_to, source)` in row order.
-            fn edge_rows(
-                p: &Projector,
-                from: &str,
-                rel: &str,
-            ) -> Vec<(String, i64, Option<i64>, i64)> {
-                raw_rows(
-                    p,
-                    "SELECT to_id, valid_from, valid_to, source FROM edges
-                      WHERE from_id = ?1 AND rel = ?2 ORDER BY id",
-                    params![from, rel],
-                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-                )
-            }
-
-            /// Every `edge_assertions` entry of `p`'s project naming a `REFERENCES` edge
-            /// ([`assertions_of`]).
-            fn reference_assertions(p: &Projector) -> Vec<(String, String, String, String)> {
-                assertions_of(p, REL_REFERENCES)
-            }
-
-            /// Every `edge_assertions` entry of `p`'s project naming a `rel` edge, as
-            /// `(identity, generation, from, to)` sorted.
-            fn assertions_of(p: &Projector, rel: &str) -> Vec<(String, String, String, String)> {
-                raw_rows(
-                    p,
-                    "SELECT a.identity, a.generation, e.from_id, e.to_id
-                       FROM edge_assertions a JOIN edges e ON e.id = a.edge_id
-                      WHERE e.rel = ?1 AND a.project = ?2 ORDER BY a.identity, e.from_id, e.to_id",
-                    [rel, &p.project],
-                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-                )
-            }
-
-            /// A fn reading a const another file defines is a row resolved project-wide, its
-            /// edge `inferred`, its `source` the staging batch's position and its valid-time
-            /// opened at the resolving batch's event time - the staging batch's when the
-            /// definition folded first, the defining batch's when it folded after - so either
-            /// order ends on the one edge.
-            #[test]
-            fn a_const_read_resolves_to_its_one_definer_in_either_fold_order() {
-                let defined_first = fold_events([]);
-                b_defines(&defined_first, "b1", 1, 10, &[("CAP", CODE_KIND_CONSTANT)]);
-                a_reads(&defined_first, "a1", 2, 20, vec![read_of("CAP")]);
-                let read_first = fold_events([]);
-                a_reads(&read_first, "a1", 1, 10, vec![read_of("CAP")]);
-                assert_eq!(
-                    (rows(&read_first), references(&read_first)),
-                    (
-                        vec![row(A, "a1", (READ, "CAP", REF_KIND_CONST), 1, None)],
-                        vec![]
-                    ),
-                    "a read nothing defines yet stages an unresolved row and no edge"
-                );
-                b_defines(&read_first, "b1", 2, 20, &[("CAP", CODE_KIND_CONSTANT)]);
-                for (p, staged_at) in [(&defined_first, 2), (&read_first, 1)] {
-                    assert_eq!(
-                        rows(p),
-                        [row(
-                            A,
-                            "a1",
-                            (READ, "CAP", REF_KIND_CONST),
-                            staged_at,
-                            Some(CAP)
-                        )],
-                        "the row resolves to its one definer"
-                    );
-                    assert_eq!(references(p), [reference(READ, CAP, TIER_INFERRED)]);
-                    assert_eq!(
-                        reference_rows(p, READ),
-                        [(CAP.to_string(), nanos(20), None, staged_at)],
-                        "source is the staging position, valid-time the resolving batch's"
-                    );
-                }
-            }
-
-            /// A `ref_kind` this binary stages none of ([`staged_rel`] answers it nothing), as a
-            /// row another binary sharing the store writes.
-            const FOREIGN_KIND: &str = "foreign";
-
-            /// A resolved row of a kind this binary stages none of, written into the shared store
-            /// by another binary, settles nothing: a later batch defining its leaf, which reaches
-            /// it through the leaf, leaves its target and its edge as they were.
-            #[test]
-            fn a_row_of_a_kind_this_binary_stages_none_of_keeps_its_target_and_its_edge() {
-                let p = const_read_resolved();
-                write_directly(&p, |tx, project| {
-                    tx.execute(
-                        "UPDATE refs SET ref_kind = ?2 WHERE project = ?1",
-                        params![project, FOREIGN_KIND],
-                    )
-                    .unwrap();
-                });
-                let planted = (rows(&p), reference_rows(&p, READ));
-                assert_eq!(
-                    planted.0,
-                    [row(A, "a1", (READ, "CAP", FOREIGN_KIND), 2, Some(CAP))]
-                );
-                fold_defining(&p, C, "c1", 3, 30, &[("CAP", CODE_KIND_CONSTANT)]);
-                assert_eq!((rows(&p), reference_rows(&p, READ)), planted);
-            }
-
-            /// Two candidates of a row's kinds, or none, leave it unresolved with no edge and
-            /// no node: no placeholder is written for a staged reference.
-            #[test]
-            fn two_candidates_or_none_leave_the_row_unresolved_writing_no_edge_and_no_node() {
-                let p = fold_events([]);
-                b_defines(&p, "b1", 1, 10, &[("Dup", CODE_KIND_TYPE)]);
-                fold_defining(&p, C, "c1", 2, 10, &[("Dup", CODE_KIND_TRAIT)]);
-                let read_dup = tagged(A, "Dup", REF_KIND_TYPE, Some("read"));
-                let read_gone = tagged(A, "Gone", REF_KIND_TYPE, Some("read"));
-                a_reads(&p, "a1", 3, 20, vec![read_dup, read_gone]);
-                assert_eq!(
-                    rows(&p),
-                    [
-                        row(A, "a1", (READ, "Dup", REF_KIND_TYPE), 3, None),
-                        row(A, "a1", (READ, "Gone", REF_KIND_TYPE), 3, None),
-                    ]
-                );
-                assert_eq!(references(&p), []);
-                assert_eq!(
-                    node_ids(&p),
-                    [A, READ, B, "src/b.rs::Dup", C, "src/c.rs::Dup"],
-                    "no node beyond the files and their definitions"
-                );
-            }
-
-            /// The staging file's own one candidate is taken before a project one, its edge
-            /// `extracted`; a definition in another language is never a candidate, so a leaf
-            /// defined once in Rust and once in Go resolves to the Rust one and a leaf defined
-            /// only in Go resolves to nothing.
-            #[test]
-            fn the_same_file_candidate_wins_and_another_languages_never_counts() {
-                let p = fold_events([]);
-                b_defines(
-                    &p,
-                    "b1",
-                    1,
-                    10,
-                    &[("Kestrel", CODE_KIND_TYPE), ("Hawk", CODE_KIND_TYPE)],
-                );
-                let go = |name: &str, fresh: bool| {
-                    let json = code_entity_json("src/g.go", name, CODE_KIND_TYPE, 1, "go");
-                    event_of(
-                        TYPE_CODE_ENTITY_EXTRACTED,
-                        crate::test_support::marked_fresh(json, fresh),
-                    )
-                };
-                fold(
-                    &p,
-                    "src/g.go",
-                    "g1",
-                    2,
-                    10,
-                    vec![go("Hawk", true), go("Owl", false)],
-                );
-                let mut batch = vec![definition_event(A, "Kestrel", CODE_KIND_TYPE, 1, true)];
-                batch.extend(
-                    ["Kestrel", "Hawk", "Owl"].map(|name| tagged(A, name, REF_KIND_TYPE, None)),
-                );
-                fold(&p, A, "a1", 3, 20, batch);
-                assert_eq!(
-                    rows(&p),
-                    [
-                        row(
-                            A,
-                            "a1",
-                            (A, "Hawk", REF_KIND_TYPE),
-                            3,
-                            Some("src/b.rs::Hawk")
-                        ),
-                        row(
-                            A,
-                            "a1",
-                            (A, "Kestrel", REF_KIND_TYPE),
-                            3,
-                            Some("src/a.rs::Kestrel")
-                        ),
-                        row(A, "a1", (A, "Owl", REF_KIND_TYPE), 3, None),
-                    ]
-                );
-                assert_eq!(
-                    references(&p),
-                    [
-                        reference(A, "src/a.rs::Kestrel", TIER_EXTRACTED),
-                        reference(A, "src/b.rs::Hawk", TIER_INFERRED),
-                    ]
-                );
-            }
-
-            /// A row's kinds are its candidates: a `type` row resolves onto a type or a trait and
-            /// never a fn, a `const` row onto a constant or a static, a `use` row onto a fn or a
-            /// variant but never a method, a field, a property or a declaration, a `module` row
-            /// onto a `file` node and never a definition, and a `ref_kind` naming none of the
-            /// four stages no row.
-            #[test]
-            fn a_rows_kind_names_the_definition_kinds_it_resolves_onto() {
-                let p = fold_events([]);
-                b_defines(
-                    &p,
-                    "b1",
-                    1,
-                    10,
-                    &[
-                        ("Shape", CODE_KIND_TRAIT),
-                        ("make", CODE_KIND_FUNCTION),
-                        ("LIMIT", CODE_KIND_STATIC),
-                        ("Red", CODE_KIND_VARIANT),
-                        ("run", CODE_KIND_METHOD),
-                        ("size", CODE_KIND_FIELD),
-                        ("len", CODE_KIND_PROPERTY),
-                        ("call", CODE_KIND_DECLARATION),
-                    ],
-                );
-                let refs = [
-                    ("Shape", REF_KIND_TYPE),
-                    ("make", REF_KIND_TYPE),
-                    ("LIMIT", REF_KIND_CONST),
-                    ("make", REF_KIND_USE),
-                    ("Red", REF_KIND_USE),
-                    ("run", REF_KIND_USE),
-                    ("size", REF_KIND_USE),
-                    ("len", REF_KIND_USE),
-                    ("call", REF_KIND_USE),
-                    ("make", REF_KIND_MODULE),
-                    ("make", "bogus"),
-                ];
-                a_reads(
-                    &p,
-                    "a1",
-                    2,
-                    20,
-                    refs.iter()
-                        .map(|(name, kind)| tagged(A, name, kind, Some("read")))
-                        .collect(),
-                );
-                let resolved: Vec<(String, String, Option<String>)> = rows(&p)
-                    .into_iter()
-                    .map(|(.., leaf, kind, _, _, target)| (leaf, kind, target))
-                    .collect();
-                let b = |leaf: &str| Some(format!("{B}::{leaf}"));
-                assert_eq!(
-                    resolved,
-                    [
-                        ("LIMIT".into(), REF_KIND_CONST.into(), b("LIMIT")),
-                        ("Red".into(), REF_KIND_USE.into(), b("Red")),
-                        ("Shape".into(), REF_KIND_TYPE.into(), b("Shape")),
-                        ("call".into(), REF_KIND_USE.into(), None),
-                        ("len".into(), REF_KIND_USE.into(), None),
-                        ("make".into(), REF_KIND_MODULE.into(), None),
-                        ("make".into(), REF_KIND_TYPE.into(), None),
-                        ("make".into(), REF_KIND_USE.into(), b("make")),
-                        ("run".into(), REF_KIND_USE.into(), None),
-                        ("size".into(), REF_KIND_USE.into(), None),
-                    ]
-                );
-            }
-
-            /// Two reads of one leaf in one fn are one row, and an entry naming the generation
-            /// its identity holds is a re-recording that stages nothing, whatever its batch.
-            #[test]
-            fn two_reads_are_one_row_and_a_re_recording_stages_nothing() {
-                let p = fold_events([]);
-                a_reads(&p, "a1", 1, 10, vec![read_of("CAP"), read_of("CAP")]);
-                let staged = vec![row(A, "a1", (READ, "CAP", REF_KIND_CONST), 1, None)];
-                assert_eq!(
-                    rows(&p),
-                    staged,
-                    "two reads of one leaf in one fn are one row"
-                );
-                assert_eq!(
-                    fold_entry_with(&p, &entry_at("gc", A, "a1", 2, 20), vec![read_of("MAX")]),
-                    EntryFold::ReRecording
-                );
-                assert_eq!(rows(&p), staged, "a re-recording stages nothing");
-            }
-
-            /// A new generation drops every row of its identity the old one staged, an entry no
-            /// source resolves drops none, and a deleted file's no-bytes batch drops its rows and
-            /// retires their edges.
-            #[test]
-            fn a_new_generation_drops_old_rows_and_a_deleted_files_batch_retires_their_edges() {
-                let p = fold_events([]);
-                b_defines(
-                    &p,
-                    "b1",
-                    1,
-                    10,
-                    &[("CAP", CODE_KIND_CONSTANT), ("MAX", CODE_KIND_CONSTANT)],
-                );
-                a_reads(&p, "a1", 2, 20, vec![read_of("CAP")]);
-                let unresolved = p
-                    .apply_generation(&entry_at("gc", A, "a2", 3, 30), Box::new(|| Ok(None)))
-                    .unwrap();
-                assert_eq!(
-                    (unresolved, rows(&p)),
-                    (
-                        EntryFold::BatchAsked,
-                        vec![row(A, "a1", (READ, "CAP", REF_KIND_CONST), 2, Some(CAP))]
-                    ),
-                    "an entry no source resolves leaves the identity's rows"
-                );
-                a_reads(&p, "a3", 4, 40, vec![read_of("MAX")]);
-                assert_eq!(
-                    rows(&p),
-                    [row(
-                        A,
-                        "a3",
-                        (READ, "MAX", REF_KIND_CONST),
-                        4,
-                        Some("src/b.rs::MAX")
-                    )],
-                    "the new generation's rows alone"
-                );
-                fold(&p, A, "a4", 5, 50, no_bytes_batch(A));
-                assert_eq!(
-                    (rows(&p), references(&p)),
-                    (vec![], vec![]),
-                    "the deleted file's batch drops its rows and retires their edges"
-                );
-                assert_eq!(
-                    reference_rows(&p, READ),
-                    [
-                        (CAP.to_string(), nanos(20), Some(nanos(40)), 2),
-                        ("src/b.rs::MAX".to_string(), nanos(40), Some(nanos(50)), 4),
-                    ]
-                );
-            }
-
-            /// A file-level `use` beside a same-file call to its leaf writes no edge of its own:
-            /// the call's `REFERENCES` is the pair's one edge, whether the call landed on the
-            /// file's definition or on the leaf's placeholder, the row keeping its target.
-            #[test]
-            fn a_file_level_use_beside_a_call_to_its_leaf_writes_one_edge() {
-                let p = fold_events([]);
-                b_defines(&p, "b1", 1, 10, &[("remote", CODE_KIND_FUNCTION)]);
-                let batch = vec![
-                    definition_event(A, "local", CODE_KIND_FUNCTION, 1, true),
-                    definition_event(A, "main", CODE_KIND_FUNCTION, 2, false),
-                    event_of(TYPE_EDGE_INFERRED, call_json(A, "local", "main")),
-                    event_of(TYPE_EDGE_INFERRED, call_json(A, "remote", "main")),
-                    tagged(A, "local", REF_KIND_USE, None),
-                    tagged(A, "remote", REF_KIND_USE, None),
-                ];
-                fold(&p, A, "a1", 2, 20, batch);
-                assert_eq!(
-                    references(&p),
-                    [
-                        reference(A, "src/a.rs::%remote", TIER_INFERRED),
-                        reference(A, "src/a.rs::local", TIER_EXTRACTED),
-                    ]
-                );
-                assert_eq!(
-                    rows(&p),
-                    [
-                        row(
-                            A,
-                            "a1",
-                            (A, "local", REF_KIND_USE),
-                            2,
-                            Some("src/a.rs::local")
-                        ),
-                        row(
-                            A,
-                            "a1",
-                            (A, "remote", REF_KIND_USE),
-                            2,
-                            Some("src/b.rs::remote")
-                        ),
-                    ]
-                );
-                assert_eq!(reference_assertions(&p), [], "the rows asserted nothing");
-
-                b_defines(&p, "b2", 3, 30, &[("other", CODE_KIND_FUNCTION)]);
-                assert_eq!(
-                    references(&p),
-                    [
-                        reference(A, "src/a.rs::%remote", TIER_AMBIGUOUS),
-                        reference(A, "src/a.rs::local", TIER_EXTRACTED),
-                    ],
-                    "the row that asserted nothing re-resolving away leaves the call's edge live"
-                );
-            }
-
-            /// A row's `from` an alias maps is stored at its canonical id.
-            #[test]
-            fn a_row_whose_from_is_an_alias_is_stored_at_the_canonical_id() {
-                let p = fold_events([]);
-                apply_json(
-                    &p,
-                    1,
-                    TYPE_ALIAS_DEFINED,
-                    crate::test_support::alias_json("src/a.rs::old", READ),
-                );
-                a_reads(
-                    &p,
-                    "a1",
-                    2,
-                    20,
-                    vec![tagged(A, "CAP", REF_KIND_CONST, Some("old"))],
-                );
-                assert_eq!(
-                    rows(&p),
-                    [row(A, "a1", (READ, "CAP", REF_KIND_CONST), 2, None)]
-                );
-            }
-
-            /// A tagged reference folded through the generic fold - an unkeyed recording, its
-            /// identity empty, or one keyed to a generation - stages nothing, beside a definition
-            /// that would answer it.
-            #[test]
-            fn a_tagged_reference_through_the_generic_fold_stages_nothing() {
-                let p = fold_events([]);
-                b_defines(&p, "b1", 1, 10, &[("CAP", CODE_KIND_CONSTANT)]);
-                apply_json(
-                    &p,
-                    2,
-                    TYPE_EDGE_INFERRED,
-                    tagged_ref_json(A, "CAP", REF_KIND_CONST, None),
-                );
-                apply_keyed(
-                    &p,
-                    3,
-                    TYPE_EDGE_INFERRED,
-                    tagged_ref_json(A, "CAP", REF_KIND_CONST, Some("read")),
-                    &crate::test_support::code_batch_key(A, "a1", 0),
-                    20,
-                );
-                assert_eq!((rows(&p), references(&p)), (vec![], vec![]));
-            }
-
-            /// Two staging files' rows on one definition settle apart, each edge asserted under
-            /// its own staging identity, so one file dropping its read retires its edge alone.
-            #[test]
-            fn two_staging_files_rows_settle_independently() {
-                let p = const_read_resolved();
-                let c_reads = vec![
-                    definition_event(C, "use_it", CODE_KIND_FUNCTION, 1, true),
-                    tagged(C, "CAP", REF_KIND_CONST, Some("use_it")),
-                ];
-                fold(&p, C, "c1", 3, 30, c_reads);
-                assert_eq!(
-                    reference_assertions(&p),
-                    [
-                        ("gc/src/a.rs".into(), "a1".into(), READ.into(), CAP.into()),
-                        (
-                            "gc/src/c.rs".into(),
-                            "c1".into(),
-                            "src/c.rs::use_it".into(),
-                            CAP.into()
-                        ),
-                    ]
-                );
-                a_reads(&p, "a2", 4, 40, vec![]);
-                assert_eq!(
-                    references(&p),
-                    [reference("src/c.rs::use_it", CAP, TIER_INFERRED)],
-                    "a.rs dropping its read retires its edge alone"
-                );
-                let c_row = row(
-                    C,
-                    "c1",
-                    ("src/c.rs::use_it", "CAP", REF_KIND_CONST),
-                    3,
-                    Some(CAP),
-                );
-                assert_eq!(rows(&p), [c_row], "c.rs's row stands");
-                assert_eq!(
-                    reference_assertions(&p),
-                    [(
-                        "gc/src/c.rs".into(),
-                        "c1".into(),
-                        "src/c.rs::use_it".into(),
-                        CAP.into()
-                    )],
-                    "c.rs's entry stands"
-                );
-            }
-
-            /// The target file edited with the definition kept leaves the edge and its dates
-            /// untouched; the definition removed stamps the edge's `valid_to` at that batch's
-            /// event time, and restored in a later batch writes a new edge row.
-            #[test]
-            fn a_definition_kept_leaves_the_edge_and_removed_then_restored_writes_a_new_row() {
-                let p = const_read_resolved();
-                b_defines(
-                    &p,
-                    "b2",
-                    3,
-                    30,
-                    &[("MAX", CODE_KIND_CONSTANT), ("CAP", CODE_KIND_CONSTANT)],
-                );
-                assert_eq!(
-                    reference_rows(&p, READ),
-                    [(CAP.to_string(), nanos(20), None, 2)],
-                    "the kept definition leaves the edge and its dates"
-                );
-                b_defines(&p, "b3", 4, 40, &[("MAX", CODE_KIND_CONSTANT)]);
-                b_defines(&p, "b4", 5, 50, &[("CAP", CODE_KIND_CONSTANT)]);
-                assert_eq!(
-                    reference_rows(&p, READ),
-                    [
-                        (CAP.to_string(), nanos(20), Some(nanos(40)), 2),
-                        (CAP.to_string(), nanos(50), None, 2),
-                    ],
-                    "removed, the edge is stamped; restored, a new row opens at the restoring batch"
-                );
-            }
-
-            /// The staging file re-extracted with the reference kept continues its edge: one
-            /// row, valid since the first resolution, its `source` moved to the new staging.
-            #[test]
-            fn the_staging_file_re_extracted_with_the_read_kept_continues_the_edge() {
-                let p = const_read_resolved();
-                a_reads(&p, "a2", 3, 30, vec![read_of("CAP")]);
-                assert_eq!(
-                    reference_rows(&p, READ),
-                    [(CAP.to_string(), nanos(20), None, 3)]
-                );
-                assert_eq!(
-                    reference_assertions(&p),
-                    [("gc/src/a.rs".into(), "a2".into(), READ.into(), CAP.into())]
-                );
-            }
-
-            /// The batch end deletes the prior generation's entry of each row edge no row of the
-            /// new generation re-asserted - so the retired edge is prunable past its boundary -
-            /// while a design link's prior entry keeps the base's boundary, the identity's next
-            /// generation.
-            #[test]
-            fn a_prior_generations_row_edge_entry_no_new_row_asserts_is_gone_at_the_batch_end() {
-                let p = const_read_resolved();
-                a_reads(&p, "a2", 3, 30, vec![]);
-                assert_eq!(reference_assertions(&p), []);
-                assert_eq!(
-                    p.count_prunable(&[], Some(nanos(31)))
-                        .unwrap()
-                        .superseded_edges,
-                    2,
-                    "a.rs's first CONTAINS and the row edge, neither named by an entry"
-                );
-
-                doc_linked_to_a_then_b(&p);
-                let design: Vec<(String, String)> = raw_rows(
-                    &p,
-                    "SELECT a.generation, e.to_id FROM edge_assertions a
-                       JOIN edges e ON e.id = a.edge_id
-                      WHERE a.identity = 'gd/docs/f.md' ORDER BY a.generation",
-                    [],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
-                );
-                assert_eq!(
-                    design,
-                    [("h1".into(), A.into()), ("h2".into(), B.into())],
-                    "the design link's prior entry stands"
-                );
-            }
-
-            /// A retired edge an entry still names - the doc's link to [`A`], retired by its
-            /// generation `h2`, its `h1` entry kept until the generation after - is neither
-            /// counted nor reclaimed by the history prune past its boundary.
-            #[test]
-            fn a_retired_edge_an_entry_names_is_neither_counted_nor_pruned() {
-                let p = fold_events([]);
-                doc_linked_to_a_then_b(&p);
-                assert_eq!(superseded(p.count_prunable(&[], Some(nanos(51)))), 0);
-                assert_eq!(superseded(p.prune(&[], Some(nanos(51)))), 0);
-                let links: Vec<String> = raw_rows(
-                    &p,
-                    "SELECT to_id FROM edges WHERE rel = ?1 ORDER BY to_id",
-                    [REL_SPECIFIES],
-                    |r| r.get(0),
-                );
-                assert_eq!(links, [A, B]);
-            }
-
-            /// The history count and the history prune reclaim one set of edges: only an edge
-            /// retired before the boundary, in the project, held by no entry and recorded by no
-            /// detached attachment - the count leaving out an edge touching a node it is told
-            /// drops, which that node's cascade removes.
-            #[test]
-            fn the_history_count_and_prune_pass_only_an_edge_every_term_admits() {
-                let p = fold_events([]);
-                write_directly(&p, |tx, project| {
-                    for (id, from, to, valid_to, edge_project) in [
-                        (1, "x", "y", Some(10), project),
-                        (2, "x", "y", Some(20), project),
-                        (3, "x", "y", None, project),
-                        (4, "x", "y", Some(10), "other"),
-                        (5, "x", "y", Some(10), project),
-                        (6, "x", "y", Some(10), project),
-                        (7, "gone", "y", Some(10), project),
-                        (8, "x", "gone", Some(10), project),
-                    ] {
-                        tx.execute(
-                            "INSERT INTO edges (id, from_id, to_id, rel, valid_from, valid_to,
-                                                source, project)
-                             VALUES (?1, ?2, ?3, 'CONTAINS', 0, ?4, 1, ?5)",
-                            params![id, from, to, valid_to, edge_project],
-                        )
-                        .unwrap();
-                    }
-                    tx.execute_batch(&format!(
-                        "INSERT INTO detached_attachments (project, edge_id, node_id)
-                         VALUES ('{project}', 5, 'x');
-                         INSERT INTO edge_assertions
-                           (project, identity, generation, edge_id, since, source)
-                         VALUES ('{project}', 'i', 'g', 6, 0, 1);"
-                    ))
-                    .unwrap();
-                });
-                let gone = ["gone".to_string()];
-                assert_eq!(superseded(p.count_prunable(&gone, Some(20))), 1);
-                assert_eq!(superseded(p.count_prunable(&[], Some(20))), 3);
-                assert_eq!(superseded(p.prune(&[], Some(20))), 3);
-                let kept: Vec<i64> =
-                    raw_rows(&p, "SELECT id FROM edges ORDER BY id", [], |r| r.get(0));
-                assert_eq!(kept, [2, 3, 4, 5, 6]);
-            }
-
-            /// The superseded edges a history count or prune answered.
-            fn superseded(stats: Result<PruneStats, Error>) -> usize {
-                stats.unwrap().superseded_edges
-            }
-
-            /// The `gd/docs/f.md` design batches `h1` at position 4 linking the doc to [`A`] and
-            /// `h2` at position 5 linking it to [`B`] alone, each folded whole.
-            fn doc_linked_to_a_then_b(p: &Projector) {
-                for (generation, pos, to) in [("h1", 4, A), ("h2", 5, B)] {
-                    let (entry, batch) = doc_linking(generation, pos, to);
-                    entry_asked(p, &entry, batch);
-                }
-            }
-
-            /// A row re-resolving away with no other live row of its identity on the pair
-            /// deletes its entry and retires the edge, so it is prunable past its boundary;
-            /// with another row of the identity still on the pair the edge stays live.
-            #[test]
-            fn a_row_resolving_away_alone_leaves_its_edge_prunable_and_beside_another_live() {
-                let p = fold_events([]);
-                b_defines(
-                    &p,
-                    "b1",
-                    1,
-                    10,
-                    &[("Error", CODE_KIND_TYPE), ("CAP", CODE_KIND_CONSTANT)],
-                );
-                let batch = vec![
-                    definition_event(A, "read", CODE_KIND_FUNCTION, 1, true),
-                    tagged(A, "Error", REF_KIND_USE, None),
-                    tagged(A, "Error", REF_KIND_TYPE, None),
-                    read_of("CAP"),
-                ];
-                fold(&p, A, "a1", 2, 20, batch);
-                assert_eq!(
-                    references(&p),
-                    [
-                        reference(A, "src/b.rs::Error", TIER_INFERRED),
-                        reference(READ, CAP, TIER_INFERRED),
-                    ]
-                );
-                fold_defining(
-                    &p,
-                    C,
-                    "c1",
-                    3,
-                    30,
-                    &[("Error", CODE_KIND_FUNCTION), ("CAP", CODE_KIND_STATIC)],
-                );
-                assert_eq!(
-                    rows(&p),
-                    [
-                        row(
-                            A,
-                            "a1",
-                            (A, "Error", REF_KIND_TYPE),
-                            2,
-                            Some("src/b.rs::Error")
-                        ),
-                        row(A, "a1", (A, "Error", REF_KIND_USE), 2, None),
-                        row(A, "a1", (READ, "CAP", REF_KIND_CONST), 2, None),
-                    ]
-                );
-                assert_eq!(
-                    references(&p),
-                    [reference(A, "src/b.rs::Error", TIER_INFERRED)],
-                    "the type row on the pair keeps the edge the use row no longer resolves"
-                );
-                assert_eq!(
-                    reference_assertions(&p),
-                    [(
-                        "gc/src/a.rs".into(),
-                        "a1".into(),
-                        A.into(),
-                        "src/b.rs::Error".into()
-                    )]
-                );
-                assert_eq!(
-                    reference_rows(&p, READ),
-                    [(CAP.to_string(), nanos(20), Some(nanos(30)), 2)]
-                );
-                assert_eq!(
-                    p.count_prunable(&[], Some(nanos(31)))
-                        .unwrap()
-                        .superseded_edges,
-                    1,
-                    "the retired row edge, named by no entry"
-                );
-            }
-
-            /// A definition of a row's target leaf retiring elsewhere demotes a call edge on
-            /// the same target and never the row's edge, which an entry names.
-            #[test]
-            fn a_definition_retiring_elsewhere_demotes_the_call_edge_and_never_the_rows() {
-                let p = fold_events([]);
-                b_defines(&p, "b1", 1, 10, &[("Foo", CODE_KIND_TYPE)]);
-                fold_defining(&p, C, "c1", 2, 10, &[("Foo", CODE_KIND_FUNCTION)]);
-                a_reads(
-                    &p,
-                    "a1",
-                    3,
-                    20,
-                    vec![tagged(A, "Foo", REF_KIND_TYPE, Some("read"))],
-                );
-                write_directly(&p, |tx, project| {
-                    tx.execute(
-                        "INSERT INTO edges (from_id, to_id, rel, valid_from, source, project, tier)
-                         VALUES (?1, ?2, ?3, 0, 4, ?4, ?5)",
-                        params![
-                            "src/a.rs::main",
-                            "src/b.rs::Foo",
-                            REL_CALLS,
-                            project,
-                            TIER_INFERRED
-                        ],
-                    )
-                    .unwrap();
-                });
-                fold_defining(&p, C, "c2", 5, 30, &[("other", CODE_KIND_FUNCTION)]);
-                let tiers: Vec<(String, String, String)> = landed(&p)
-                    .into_iter()
-                    .filter(|(_, _, to, _)| to == "src/b.rs::Foo")
-                    .map(|(from, rel, _, tier)| (from, rel, tier))
-                    .collect();
-                assert_eq!(
-                    tiers,
-                    [
-                        (
-                            "src/a.rs::main".into(),
-                            REL_CALLS.into(),
-                            TIER_AMBIGUOUS.into()
-                        ),
-                        (READ.into(), REL_REFERENCES.into(), TIER_INFERRED.into()),
-                    ]
-                );
-            }
-
-            /// `referenced_not_called` lists the file of a fn-level row's edge, never the fn.
-            #[test]
-            fn referenced_not_called_lists_a_fn_level_rows_file_never_the_fn() {
-                let p = const_read_resolved();
-                assert_eq!(referenced_not_called_ids(&records_graph(&p), CAP), [A]);
-            }
-
-            /// The resolving batch's fold pays the row edge's relabel debt, and a dropped
-            /// reference owes both its endpoints theirs at the batch's end: `src/b.rs`'s `X`
-            /// and `Y`, one community, are labelled by degree, ties to the lesser name.
-            #[test]
-            fn a_row_edge_added_or_retired_relabels_its_endpoints_communities_in_its_fold() {
-                let p = fold_events([]);
-                b_defines(
-                    &p,
-                    "b1",
-                    1,
-                    10,
-                    &[("X", CODE_KIND_TYPE), ("Y", CODE_KIND_TYPE)],
-                );
-                assign_community(&p, 2, "src/b.rs::X", ONE_COMMUNITY, true);
-                assign_community(&p, 3, "src/b.rs::Y", ONE_COMMUNITY, false);
-                assert_eq!(label(&p, ONE_COMMUNITY), Some("X".to_string()));
-                a_reads(
-                    &p,
-                    "a1",
-                    4,
-                    40,
-                    vec![tagged(A, "Y", REF_KIND_TYPE, Some("read"))],
-                );
-                assert_eq!(
-                    label(&p, ONE_COMMUNITY),
-                    Some("Y".to_string()),
-                    "the row edge raises Y's degree in the fold that resolves it"
-                );
-                a_reads(&p, "a2", 5, 50, vec![]);
-                assert_eq!(
-                    label(&p, ONE_COMMUNITY),
-                    Some("X".to_string()),
-                    "the dropped reference lowers Y's degree in the fold that retires it"
-                );
-            }
-
-            /// Two projects staging one relative file keep separate rows: one's batch drops,
-            /// settles and releases none of the other's rows, edges or entries, and one's live
-            /// edge on a pair never holds the pair for the other. `theirs` resolves `READ`'s read
-            /// of `CAP`; `ours` stages it with nothing defining `CAP`, then drops it, then stages
-            /// it again beside a `CAP` of its own that it then removes.
-            #[test]
-            fn two_projects_staging_one_file_keep_separate_rows() {
-                let (_dir, ours, theirs) = crate::test_support::ours_and_theirs();
-                // The `applied` ledger is the file's, so each project folds at its own positions.
-                b_defines(&theirs, "b1", 1, 10, &[("CAP", CODE_KIND_CONSTANT)]);
-                a_reads(&theirs, "a1", 2, 20, vec![read_of("CAP")]);
-                let held = (
-                    vec![row(A, "a1", (READ, "CAP", REF_KIND_CONST), 2, Some(CAP))],
-                    vec![reference(READ, CAP, TIER_INFERRED)],
-                    vec![("gc/src/a.rs".into(), "a1".into(), READ.into(), CAP.into())],
-                );
-                let theirs_now = |p: &Projector| (rows(p), references(p), reference_assertions(p));
-                a_reads(&ours, "a1", 3, 30, vec![read_of("CAP")]);
-                assert_eq!(
-                    rows(&ours),
-                    [row(A, "a1", (READ, "CAP", REF_KIND_CONST), 3, None)],
-                    "ours stages its own row, unresolved by theirs' definition"
-                );
-                a_reads(&ours, "a2", 4, 40, vec![]);
-                assert_eq!(rows(&ours), []);
-                assert_eq!(
-                    theirs_now(&theirs),
-                    held,
-                    "ours' new generation leaves theirs"
-                );
-
-                b_defines(&ours, "b1", 5, 50, &[("CAP", CODE_KIND_CONSTANT)]);
-                a_reads(&ours, "a3", 6, 60, vec![read_of("CAP")]);
-                assert_eq!(
-                    references(&ours),
-                    [reference(READ, CAP, TIER_INFERRED)],
-                    "theirs' live edge on the pair holds nothing for ours"
-                );
-                b_defines(&ours, "b2", 7, 70, &[("MAX", CODE_KIND_CONSTANT)]);
-                assert_eq!(
-                    references(&ours),
-                    [],
-                    "ours' row released though theirs still targets the pair"
-                );
-                assert_eq!(theirs_now(&theirs), held, "ours' release leaves theirs");
-            }
-
-            /// Only an `EdgeInferred` is a reference: a definition event carrying a `ref_kind`
-            /// stages nothing.
-            #[test]
-            fn a_definition_event_carrying_a_ref_kind_stages_nothing() {
-                let p = fold_events([]);
-                let mut limit = kind_def_json(A, "LIMIT", CODE_KIND_CONSTANT, 1, true);
-                limit["ref_kind"] = REF_KIND_CONST.into();
-                fold(
-                    &p,
-                    A,
-                    "a1",
-                    1,
-                    10,
-                    vec![event_of(TYPE_CODE_ENTITY_EXTRACTED, limit)],
-                );
-                assert_eq!(rows(&p), []);
-            }
-
-            /// A fn's own row beside its file's call twins writes its own edge: a call from the
-            /// file onto the leaf's placeholder holds only the file's pair, and the fn's own
-            /// `CALLS` of the leaf is no `REFERENCES` holding it. A twin a later generation drops
-            /// holds nothing, so the `use` kept writes a new edge row.
-            #[test]
-            fn a_fn_level_row_writes_its_own_edge_beside_its_files_and_its_fns_call_twins() {
-                let p = fold_events([]);
-                b_defines(
-                    &p,
-                    "b1",
-                    1,
-                    10,
-                    &[("Kestrel", CODE_KIND_TYPE), ("make", CODE_KIND_FUNCTION)],
-                );
-                let calls = |batch: &mut Vec<Event>| {
-                    batch.push(event_of(
-                        TYPE_EDGE_INFERRED,
-                        call_json(A, "Kestrel", "read"),
-                    ));
-                    batch.push(event_of(TYPE_EDGE_INFERRED, call_json(A, "make", "read")));
-                };
-                let mut batch = vec![
-                    tagged(A, "Kestrel", REF_KIND_TYPE, Some("read")),
-                    tagged(A, "make", REF_KIND_USE, Some("read")),
-                    tagged(A, "make", REF_KIND_USE, None),
-                ];
-                calls(&mut batch);
-                a_reads(&p, "a1", 2, 20, batch);
-                assert_eq!(
-                    references(&p),
-                    [
-                        reference(A, "src/a.rs::%Kestrel", TIER_INFERRED),
-                        reference(A, "src/a.rs::%make", TIER_INFERRED),
-                        reference(READ, "src/b.rs::Kestrel", TIER_INFERRED),
-                        reference(READ, "src/b.rs::make", TIER_INFERRED),
-                    ]
-                );
-                a_reads(&p, "a2", 3, 30, vec![tagged(A, "make", REF_KIND_USE, None)]);
-                assert_eq!(
-                    references(&p),
-                    [reference(A, "src/b.rs::make", TIER_INFERRED)],
-                    "the dropped call's twin holds nothing for the kept `use`"
-                );
-                assert_eq!(
-                    reference_rows(&p, A)
-                        .into_iter()
-                        .filter(|(to, ..)| to == "src/b.rs::make")
-                        .collect::<Vec<_>>(),
-                    [("src/b.rs::make".to_string(), nanos(30), None, 3)],
-                    "a new edge row, from the generation that writes it"
-                );
-            }
-
-            /// A row is released by its own `from` and target alone: a `use` inside `read`
-            /// whose leaf turns ambiguous retires its edge though the file's type row on the
-            /// same target and `read`'s const row on another stay.
-            #[test]
-            fn a_row_releases_its_edge_though_rows_on_another_from_or_target_stay() {
-                let p = fold_events([]);
-                b_defines(
-                    &p,
-                    "b1",
-                    1,
-                    10,
-                    &[("Foo", CODE_KIND_TYPE), ("CAP", CODE_KIND_CONSTANT)],
-                );
-                let batch = vec![
-                    tagged(A, "Foo", REF_KIND_USE, Some("read")),
-                    tagged(A, "Foo", REF_KIND_TYPE, None),
-                    read_of("CAP"),
-                ];
-                a_reads(&p, "a1", 2, 20, batch);
-                fold_defining(&p, C, "c1", 3, 30, &[("Foo", CODE_KIND_FUNCTION)]);
-                assert_eq!(
-                    references(&p),
-                    [
-                        reference(A, "src/b.rs::Foo", TIER_INFERRED),
-                        reference(READ, CAP, TIER_INFERRED),
-                    ]
-                );
-            }
-
-            /// A row of another identity aliased onto a pair keeps none of the releasing
-            /// identity's edge: `src/c.rs`'s `x`, aliased to [`READ`], reads `CAP` as `READ` does,
-            /// asserting nothing while `src/a.rs`'s edge holds the pair; once `src/a.rs`'s row
-            /// resolves away, its edge retires, the alias's row keeping its target (accepted).
-            #[test]
-            fn an_aliased_row_of_another_identity_keeps_no_edge_of_the_releasing_one() {
-                let p = aliased_reads_of_cap(REF_KIND_USE, REF_KIND_CONST);
-                assert_eq!(
-                    rows(&p),
-                    [
-                        row(A, "a1", (READ, "CAP", REF_KIND_USE), 3, None),
-                        row(C, "c1", (READ, "CAP", REF_KIND_CONST), 4, Some(CAP)),
-                    ]
-                );
-                assert_eq!(references(&p), []);
-            }
-
-            /// A row of another identity aliased onto a pair releases none of the asserting
-            /// identity's edge: [`READ`] reads `CAP` as a const and asserts the edge, `src/c.rs`'s
-            /// `x`, aliased to [`READ`], uses it and asserts nothing while that edge holds the pair;
-            /// once `src/d.rs` defines a fn `CAP`, `x`'s use resolves away and releases its own
-            /// entries alone, so [`READ`]'s edge stays live.
-            #[test]
-            fn an_aliased_row_resolving_away_leaves_the_asserting_identitys_edge_live() {
-                let p = aliased_reads_of_cap(REF_KIND_CONST, REF_KIND_USE);
-                assert_eq!(
-                    rows(&p),
-                    [
-                        row(A, "a1", (READ, "CAP", REF_KIND_CONST), 3, Some(CAP)),
-                        row(C, "c1", (READ, "CAP", REF_KIND_USE), 4, None),
-                    ]
-                );
-                assert_eq!(references(&p), [reference(READ, CAP, TIER_INFERRED)]);
-            }
-
-            /// [`READ`] referencing `CAP` as `read_kind` from `src/a.rs`, then `src/c.rs`'s `x`,
-            /// aliased to [`READ`], referencing it as `x_kind`, `src/b.rs` defining it a constant
-            /// first and `src/d.rs` a fn last.
-            fn aliased_reads_of_cap(read_kind: &str, x_kind: &str) -> Projector {
-                let p = fold_events([]);
-                apply_json(
-                    &p,
-                    1,
-                    TYPE_ALIAS_DEFINED,
-                    crate::test_support::alias_json("src/c.rs::x", READ),
-                );
-                b_defines(&p, "b1", 2, 10, &[("CAP", CODE_KIND_CONSTANT)]);
-                a_reads(
-                    &p,
-                    "a1",
-                    3,
-                    20,
-                    vec![tagged(A, "CAP", read_kind, Some("read"))],
-                );
-                let x_reads = vec![
-                    definition_event(C, "x", CODE_KIND_FUNCTION, 1, true),
-                    tagged(C, "CAP", x_kind, Some("x")),
-                ];
-                fold(&p, C, "c1", 4, 30, x_reads);
-                fold_defining(&p, "src/d.rs", "d1", 5, 40, &[("CAP", CODE_KIND_FUNCTION)]);
-                p
-            }
-
-            /// A row is live only at its identity's current generation in its project: `ours`
-            /// stages `src/a.rs` at `a1`, then folds `a2` through the generic fold, which drops
-            /// no row, while `theirs` stages `src/a.rs` at `a1`; a batch of `ours` defining `CAP`
-            /// at a generation also named `a1` resolves no stale row.
-            #[test]
-            fn a_row_staged_at_a_superseded_generation_is_not_live() {
-                let (_dir, ours, theirs) = crate::test_support::ours_and_theirs();
-                a_reads(&ours, "a1", 1, 10, vec![read_of("CAP")]);
-                let read = crate::test_support::def_json(A, "read", 1, true);
-                let key = crate::test_support::code_batch_key(A, "a2", 0);
-                apply_keyed(&ours, 2, TYPE_CODE_ENTITY_EXTRACTED, read, &key, 20);
-                a_reads(&theirs, "a1", 3, 30, vec![read_of("CAP")]);
-                b_defines(&ours, "a1", 4, 40, &[("CAP", CODE_KIND_CONSTANT)]);
-                assert_eq!(
-                    (rows(&ours), references(&ours)),
-                    (
-                        vec![row(A, "a1", (READ, "CAP", REF_KIND_CONST), 1, None)],
-                        vec![]
-                    )
-                );
-            }
-
-            /// Only a batch staging a row or defining its leaf settles it: once `CAP`'s
-            /// definition retires through the generic fold, which settles nothing (accepted),
-            /// the row keeps its edge through a batch of `src/c.rs` defining another leaf - and
-            /// through one of the same identity in another project defining `CAP`.
-            #[test]
-            fn a_batch_settles_only_rows_of_its_identity_or_naming_a_leaf_it_defines() {
-                let (_dir, ours, theirs) = crate::test_support::ours_and_theirs();
-                b_defines(&ours, "b1", 1, 10, &[("CAP", CODE_KIND_CONSTANT)]);
-                a_reads(&ours, "a1", 2, 20, vec![read_of("CAP")]);
-                let other = kind_def_json(B, "OTHER", CODE_KIND_CONSTANT, 1, true);
-                let key = crate::test_support::code_batch_key(B, "b2", 0);
-                apply_keyed(&ours, 3, TYPE_CODE_ENTITY_EXTRACTED, other, &key, 30);
-                fold_defining(&theirs, C, "c1", 4, 40, &[("CAP", CODE_KIND_CONSTANT)]);
-                fold_defining(&ours, C, "c1", 5, 50, &[("unrelated", CODE_KIND_FUNCTION)]);
-                assert_eq!(references(&ours), [reference(READ, CAP, TIER_INFERRED)]);
-            }
-
-            /// A dropped edge's `from` end owes its relabel too: `src/a.rs`'s `read` and `abc`,
-            /// one community labelled by degree, ties to the lesser name, label `read` while its
-            /// row edge stands and `abc` once `src/b.rs` removing the target releases it.
-            #[test]
-            fn a_released_row_edge_relabels_its_from_ends_community() {
-                let p = fold_events([]);
-                b_defines(&p, "b1", 1, 10, &[("Y", CODE_KIND_TYPE)]);
-                let batch = vec![
-                    definition_event(A, "abc", CODE_KIND_FUNCTION, 2, false),
-                    tagged(A, "Y", REF_KIND_TYPE, Some("read")),
-                ];
-                a_reads(&p, "a1", 2, 20, batch);
-                assign_community(&p, 3, READ, ONE_COMMUNITY, true);
-                assign_community(&p, 4, "src/a.rs::abc", ONE_COMMUNITY, false);
-                assert_eq!(label(&p, ONE_COMMUNITY), Some("read".to_string()));
-                b_defines(&p, "b2", 5, 50, &[("OTHER", CODE_KIND_TYPE)]);
-                assert_eq!(label(&p, ONE_COMMUNITY), Some("abc".to_string()));
-            }
-
-            /// Two fns of one file reading one const are two rows, each its own edge.
-            #[test]
-            fn two_fns_reading_one_const_are_two_rows_and_two_edges() {
-                let p = fold_events([]);
-                b_defines(&p, "b1", 1, 10, &[("CAP", CODE_KIND_CONSTANT)]);
-                let batch = vec![
-                    read_of("CAP"),
-                    definition_event(A, "write", CODE_KIND_FUNCTION, 2, false),
-                    tagged(A, "CAP", REF_KIND_CONST, Some("write")),
-                ];
-                a_reads(&p, "a1", 2, 20, batch);
-                assert_eq!(
-                    rows(&p),
-                    [
-                        row(A, "a1", (READ, "CAP", REF_KIND_CONST), 2, Some(CAP)),
-                        row(
-                            A,
-                            "a1",
-                            ("src/a.rs::write", "CAP", REF_KIND_CONST),
-                            2,
-                            Some(CAP)
-                        ),
-                    ]
-                );
-                assert_eq!(
-                    references(&p),
-                    [
-                        reference(READ, CAP, TIER_INFERRED),
-                        reference("src/a.rs::write", CAP, TIER_INFERRED),
-                    ]
-                );
-            }
-
-            /// A file-level reference recorded under an aliased file is staged from its
-            /// canonical file.
-            #[test]
-            fn a_file_level_row_whose_file_is_an_alias_is_stored_at_the_canonical_file() {
-                let p = fold_events([]);
-                apply_json(
-                    &p,
-                    1,
-                    TYPE_ALIAS_DEFINED,
-                    crate::test_support::alias_json("src/old.rs", A),
-                );
-                a_reads(
-                    &p,
-                    "a1",
-                    2,
-                    20,
-                    vec![tagged("src/old.rs", "CAP", REF_KIND_USE, None)],
-                );
-                assert_eq!(rows(&p), [row(A, "a1", (A, "CAP", REF_KIND_USE), 2, None)]);
-            }
-
-            /// Of two rows one batch resolves onto one pair, the lesser identity's asserts it:
-            /// `src/c.rs`'s `x`, aliased to [`READ`], stages its read of `CAP` before `src/a.rs`
-            /// stages its own, each its own row on one key; `src/b.rs` defining `CAP` settles both,
-            /// and `gc/src/a.rs`'s row, staged second, asserts the one edge.
-            #[test]
-            fn the_lesser_identitys_row_of_a_pair_asserts_its_edge() {
-                let p = fold_events([]);
-                apply_json(
-                    &p,
-                    1,
-                    TYPE_ALIAS_DEFINED,
-                    crate::test_support::alias_json("src/c.rs::x", READ),
-                );
-                let c_reads = vec![
-                    definition_event(C, "x", CODE_KIND_FUNCTION, 1, true),
-                    tagged(C, "CAP", REF_KIND_CONST, Some("x")),
-                ];
-                fold(&p, C, "c1", 2, 20, c_reads);
-                a_reads(&p, "a1", 3, 30, vec![read_of("CAP")]);
-                b_defines(&p, "b1", 4, 40, &[("CAP", CODE_KIND_CONSTANT)]);
-                assert_eq!(
-                    rows(&p),
-                    [
-                        row(A, "a1", (READ, "CAP", REF_KIND_CONST), 3, Some(CAP)),
-                        row(C, "c1", (READ, "CAP", REF_KIND_CONST), 2, Some(CAP)),
-                    ]
-                );
-                assert_eq!(
-                    reference_assertions(&p),
-                    [("gc/src/a.rs".into(), "a1".into(), READ.into(), CAP.into())]
-                );
-            }
-
-            /// Two definitions of one leaf in the staging file are no same-file answer, and with
-            /// no other answer project-wide the row resolves to nothing.
-            #[test]
-            fn two_same_file_definitions_of_a_leaf_resolve_its_row_to_nothing() {
-                let p = fold_events([]);
-                let nested = crate::test_support::path_entity_json(
-                    A,
-                    "CAP",
-                    "inner::CAP",
-                    CODE_KIND_CONSTANT,
-                    3,
-                    "rust",
-                );
-                let batch = vec![
-                    read_of("CAP"),
-                    definition_event(A, "CAP", CODE_KIND_CONSTANT, 2, false),
-                    event_of(TYPE_CODE_ENTITY_EXTRACTED, nested),
-                ];
-                a_reads(&p, "a1", 1, 10, batch);
-                assert_eq!(
-                    (rows(&p), references(&p)),
-                    (
-                        vec![row(A, "a1", (READ, "CAP", REF_KIND_CONST), 1, None)],
-                        vec![]
-                    )
-                );
-            }
-
-            /// A file calling the leaf from within is never listed by `referenced_not_called`,
-            /// though its fn's row also references the leaf's definition in another file.
-            #[test]
-            fn referenced_not_called_never_lists_a_file_calling_the_leaf_from_within() {
-                let p = fold_events([]);
-                b_defines(&p, "b1", 1, 10, &[("CAP", CODE_KIND_CONSTANT)]);
-                let call = crate::test_support::call_event(A, "CAP", "read");
-                a_reads(&p, "a1", 2, 20, vec![read_of("CAP"), call]);
-                assert_eq!(
-                    referenced_not_called_ids(&records_graph(&p), CAP),
-                    Vec::<String>::new()
-                );
-            }
-
-            /// The communities of `project` a relabel is owed to after `owe` writes, which the
-            /// fold's end would pay, sorted; the debt is then cleared.
-            fn owed_by(p: &Projector, owe: impl FnOnce(&Transaction, &str)) -> Vec<String> {
-                let mut owed = Vec::new();
-                write_directly(p, |tx, project| {
-                    owe(tx, project);
-                    let mut stmt = tx
-                        .prepare("SELECT community FROM relabel_owed ORDER BY community")
-                        .unwrap();
-                    owed = stmt
-                        .query_map([], |r| r.get(0))
-                        .unwrap()
-                        .collect::<Result<_, _>>()
-                        .unwrap();
-                    tx.execute("DELETE FROM relabel_owed", []).unwrap();
-                });
-                owed
-            }
-
-            /// A structural edge's two ends - a `CALLS`, `REFERENCES` or `CONTAINS` one declaring
-            /// no module, as `add_edge` writes it or `settle_edge` retires it - owe exactly their
-            /// own communities a relabel, never one of a member nested under an end; any other
-            /// relation owes none.
-            #[test]
-            fn a_structural_edges_ends_owe_exactly_their_own_communities_a_relabel() {
-                let p = fold_events([]);
-                b_defines(&p, "b1", 1, 10, &[("CAP", CODE_KIND_CONSTANT)]);
-                let inner = crate::test_support::child_entity_json(
-                    A,
-                    "inner",
-                    "read::inner",
-                    "read",
-                    CODE_KIND_FUNCTION,
-                );
-                let nested = vec![event_of(TYPE_CODE_ENTITY_EXTRACTED, inner)];
-                a_reads(&p, "a1", 2, 20, nested);
-                assign_community(&p, 3, READ, "c-read", true);
-                assign_community(&p, 4, "src/a.rs::read::inner", "c-inner", false);
-                assign_community(&p, 5, CAP, "c-cap", false);
-                for rel in [REL_CALLS, REL_REFERENCES, REL_CONTAINS, REL_ABOUT] {
-                    let owed = owed_by(&p, |tx, project| {
-                        owe_relabel_of_ends(tx, READ, CAP, rel, false, project).unwrap()
-                    });
-                    let structural = rel != REL_ABOUT;
-                    assert_eq!(
-                        owed,
-                        if structural {
-                            vec!["c-cap", "c-read"]
-                        } else {
-                            vec![]
-                        },
-                        "{rel}"
-                    );
-                }
-                let added = owed_by(&p, |tx, project| {
-                    add_edge(tx, READ, CAP, REL_REFERENCES, 0, 0, project, TIER_INFERRED).unwrap();
-                });
-                assert_eq!(added, ["c-cap", "c-read"], "a new edge owes both its ends");
-            }
-
-            /// The batch settling rows seeks them by the key's identity prefix, by
-            /// `idx_refs_leaf` for the leaves the batch defines and by `idx_refs_kind` for the
-            /// module rows its file nodes may settle.
-            #[test]
-            fn the_rows_a_batch_settles_are_sought_by_identity_leaf_and_kind() {
-                let p = fold_events([]);
-                let plan =
-                    super::super::query_plan(&p, &staged_rows_sql(), ["test", "gc/src/a.rs"]);
-                for step in [
-                    "SEARCH refs USING COVERING INDEX sqlite_autoindex_refs_1 (project=? AND identity=?)",
-                    "SEARCH refs USING COVERING INDEX idx_refs_leaf (project=? AND leaf=?)",
-                    "SEARCH m USING INDEX idx_refs_kind (project=? AND ref_kind=?)",
-                ] {
-                    assert!(plan.iter().any(|d| d == step), "{step}: {plan:?}");
-                }
-            }
-
-            /// The SQL file half of an id ([`file_half_sql`]) is [`split_id`]'s file half when the id
-            /// holds a `::` after a non-empty file, else NULL.
-            #[test]
-            fn the_sql_file_half_of_an_id_is_split_ids_non_empty_file_half() {
-                let p = fold_events([]);
-                for id in ["src/a.rs::read", "src/a.rs::T::new", "src/a.rs", "::x", ""] {
-                    let half: Vec<Option<String>> = fragment_values(&p, &file_half_sql("?1"), [id]);
-                    let split = match split_id(id) {
-                        (file, Some(_)) if !file.is_empty() => Some(file.to_string()),
-                        _ => None,
-                    };
-                    assert_eq!(half, [split], "{id}");
-                }
-            }
-
-            /// A row is live ([`live_ref_sql`]) exactly when a node assertion of its identity at
-            /// its generation is, by the ledger views' rule: both at `a1` while it is
-            /// `src/a.rs`'s generation, neither once the generic fold advances it to `a2`.
-            #[test]
-            fn a_rows_liveness_is_the_ledger_views_rule() {
-                let p = fold_events([]);
-                let live = |p: &Projector| -> Vec<(bool, bool)> {
-                    let sql = format!(
-                        "SELECT EXISTS (SELECT 1 FROM refs r WHERE {}),
-                                EXISTS (SELECT 1 FROM live_node_assertions
-                                         WHERE identity = 'gc/src/a.rs' AND generation = 'a1')",
-                        live_ref_sql("r")
-                    );
-                    raw_rows(p, &sql, [], |r| Ok((r.get(0)?, r.get(1)?)))
-                };
-                a_reads(&p, "a1", 1, 10, vec![read_of("CAP")]);
-                assert_eq!(live(&p), [(true, true)]);
-                let read = crate::test_support::def_json(A, "read", 1, true);
-                let key = crate::test_support::code_batch_key(A, "a2", 0);
-                apply_keyed(&p, 2, TYPE_CODE_ENTITY_EXTRACTED, read, &key, 20);
-                assert_eq!(live(&p), [(false, false)]);
-            }
-
-            /// Every `refs` column but `target` refuses NULL: a row always names its project,
-            /// identity, generation, `from`, leaf, kind, language and position, and only an
-            /// unresolved row's target is NULL.
-            #[test]
-            fn every_refs_column_but_target_refuses_a_null() {
-                let p = fold_events([]);
-                let columns = [
-                    "project",
-                    "identity",
-                    "generation",
-                    "from_id",
-                    "leaf",
-                    "ref_kind",
-                    "lang",
-                    "position",
-                ];
-                for column in columns {
-                    let values: Vec<&str> = columns
-                        .iter()
-                        .map(|c| if *c == column { "NULL" } else { "'x'" })
-                        .collect();
-                    let sql = format!(
-                        "INSERT INTO refs ({}) VALUES ({})",
-                        columns.join(", "),
-                        values.join(", ")
-                    );
-                    write_directly(&p, |tx, _| {
-                        assert_eq!(
-                            tx.execute(&sql, []).map_err(|e| e.to_string()),
-                            Err(format!("NOT NULL constraint failed: refs.{column}"))
-                        );
-                    });
-                }
-            }
-
-            /// The text a trigger [`refused_by`] plants raises.
-            const REFUSED: &str = "refused";
-
-            /// What a trigger refusing every `refs` update fires on ([`refusing`]).
-            const REFS_UPDATE: &str = "BEFORE UPDATE ON refs";
-
-            /// The trigger refusing `refused` (`BEFORE <event> ON <table> [WHEN ..]`) with
-            /// [`REFUSED`]'s text.
-            fn refusing(refused: &str) -> String {
-                format!(
-                    "CREATE TRIGGER refuse {refused} BEGIN SELECT RAISE(ABORT, '{REFUSED}'); END;"
-                )
-            }
-
-            /// After `setup`, a trigger refusing `refused` ([`refusing`]) fails the batch `failing` answers - its entry and events - whole, with the
-            /// trigger's text and no tail, since the entry names no stream.
-            fn refused_by(
-                refused: &str,
-                setup: impl FnOnce(&Projector),
-                failing: (Event, Vec<Event>),
-            ) {
-                failed_by(&refusing(refused), setup, failing, REFUSED.to_string());
-            }
-
-            /// After `setup`, the `trigger` planted fails the batch `failing` answers - its
-            /// entry and events - whole, with `expected`.
-            fn failed_by(
-                trigger: &str,
-                setup: impl FnOnce(&Projector),
-                failing: (Event, Vec<Event>),
-                expected: String,
-            ) {
-                let p = fold_events([]);
-                setup(&p);
-                write_directly(&p, |tx, _| tx.execute_batch(trigger).unwrap());
-                let (entry, batch) = failing;
-                assert_eq!(
-                    fold_entry_result(&p, &entry, batch),
-                    Err(expected),
-                    "{trigger}"
-                );
-            }
-
-            /// `src/b.rs` defining `CAP`.
-            fn defining_cap(p: &Projector) {
-                b_defines(p, "b1", 1, 10, &[("CAP", CODE_KIND_CONSTANT)]);
-            }
-
-            /// [`defining_cap`], then [`READ`] reading it.
-            fn reading_cap(p: &Projector) {
-                defining_cap(p);
-                a_reads(p, "a1", 2, 20, vec![read_of("CAP")]);
-            }
-
-            /// [`READ`]'s batch at `generation`, its entry at `pos`, reading each of `reads`.
-            fn a_batch(generation: &str, pos: u64, reads: &[&str]) -> (Event, Vec<Event>) {
-                let mut batch = vec![definition_event(A, "read", CODE_KIND_FUNCTION, 1, true)];
-                batch.extend(reads.iter().map(|name| read_of(name)));
-                (entry_at("gc", A, generation, pos, pos), batch)
-            }
-
-            /// The `gd/docs/f.md` design batch at `generation`, its entry at `pos`, linking the
-            /// doc to `to`.
-            fn doc_linking(generation: &str, pos: u64, to: &str) -> (Event, Vec<Event>) {
-                let link = event_of(
-                    TYPE_DOC_LINK_EXTRACTED,
-                    serde_json::json!({ "from": "docs/f.md", "to": to, "rel": REL_SPECIFIES }),
-                );
-                (
-                    entry_at("gd", "docs/f.md", generation, pos, 10 * pos),
-                    vec![link],
-                )
-            }
-
-            /// [`READ`] reading `CAP`, nothing defining it, and the one member of
-            /// [`ONE_COMMUNITY`].
-            fn read_in_a_community(p: &Projector) {
-                a_reads(p, "a1", 1, 10, vec![read_of("CAP")]);
-                assign_community(p, 2, READ, ONE_COMMUNITY, true);
-            }
-
-            /// `src/b.rs`'s batch at `generation`, its entry at position 3, defining the
-            /// constant `name` alone.
-            fn b_defining(generation: &str, name: &str) -> (Event, Vec<Event>) {
-                let batch = vec![definition_event(B, name, CODE_KIND_CONSTANT, 1, true)];
-                (entry_at("gc", B, generation, 3, 30), batch)
-            }
-
-            /// A row whose `column` (at `index` of [`staged_rows_sql`]) cannot be read fails the
-            /// batch settling it, its entry and events whole: [`READ`]'s row on `CAP`, that
-            /// column made a blob as it is staged.
-            fn unreadable(column: &str, index: usize) {
-                failed_by(
-                    &format!(
-                        "CREATE TRIGGER unreadable AFTER INSERT ON refs BEGIN
-                           UPDATE refs SET {column} = x'00' WHERE rowid = NEW.rowid;
-                         END;"
-                    ),
-                    |_| {},
-                    a_batch("a1", 1, &["CAP"]),
-                    format!("Invalid column type Blob at index: {index}, name: {column}"),
-                );
-            }
-
-            crate::test_cases! {
-                an_unreadable_from_id_fails_the_batch_settling_it: unreadable("from_id", 3);
-                an_unreadable_leaf_fails_the_batch_settling_it: unreadable("leaf", 4);
-                an_unreadable_ref_kind_fails_the_batch_settling_it: unreadable("ref_kind", 5);
-                an_unreadable_lang_fails_the_batch_settling_it: unreadable("lang", 6);
-                an_unreadable_position_fails_the_batch_settling_it: unreadable("position", 7);
-                an_unreadable_target_fails_the_batch_settling_it: unreadable("target", 8);
-            }
-
-            crate::test_cases! {
-                a_refused_drop_fails_the_batch:
-                    refused_by("BEFORE DELETE ON refs", reading_cap, a_batch("a2", 3, &[]));
-                a_refused_staging_fails_the_batch:
-                    refused_by("BEFORE INSERT ON refs", |_| {}, a_batch("a1", 1, &["CAP"]));
-                a_refused_settlement_fails_the_batch:
-                    refused_by(REFS_UPDATE, defining_cap, a_batch("a1", 2, &["CAP"]));
-                a_refused_batch_end_entry_deletion_fails_the_batch:
-                    refused_by(
-                        "BEFORE DELETE ON edge_assertions",
-                        reading_cap,
-                        a_batch("a2", 3, &[]),
-                    );
-                a_refused_release_fails_the_batch:
-                    refused_by("BEFORE DELETE ON edge_assertions", reading_cap, b_defining("b2", "MAX"));
-                a_refused_design_link_assertion_fails_the_batch:
-                    refused_by("BEFORE INSERT ON edge_assertions", |_| {}, doc_linking("h1", 1, A));
-                a_refused_relabel_debt_fails_the_batch:
-                    refused_by("BEFORE INSERT ON relabel_owed", read_in_a_community, b_defining("b1", "CAP"));
-                a_refused_release_stamp_fails_the_batch:
-                    refused_by(
-                        "BEFORE UPDATE OF valid_to ON edges WHEN OLD.rel = 'REFERENCES'",
-                        reading_cap,
-                        b_defining("b2", "MAX"),
-                    );
-            }
-
-            /// A store opened without a `refs` table gains it empty.
-            #[test]
-            fn a_store_opened_without_refs_gains_it_empty() {
-                let (_dir, path) = crate::test_support::temp_graph_db();
-                let p = Projector::open(&path, "test").unwrap();
-                a_reads(&p, "a1", 1, 10, vec![read_of("CAP")]);
-                write_directly(&p, |tx, _| tx.execute_batch("DROP TABLE refs;").unwrap());
-                drop(p);
-                let reopened = Projector::open(&path, "test").unwrap();
-                assert_eq!(rows(&reopened), []);
-            }
-
-            /// A rebuild from the log leaves `refs` row for row equal to the incremental fold of
-            /// the same log.
-            #[test]
-            fn a_rebuild_from_the_log_leaves_refs_row_for_row_equal() {
-                let batches: Vec<(Event, Vec<Event>)> = vec![
-                    (
-                        entry_at("gc", A, "a1", 1, 10),
-                        vec![
-                            definition_event(A, "read", CODE_KIND_FUNCTION, 1, true),
-                            read_of("CAP"),
-                            tagged(A, "Gone", REF_KIND_TYPE, None),
-                        ],
-                    ),
-                    (
-                        entry_at("gc", B, "b1", 2, 20),
-                        vec![definition_event(B, "CAP", CODE_KIND_CONSTANT, 1, true)],
-                    ),
-                    (
-                        entry_at("gc", C, "c1", 3, 30),
-                        vec![
-                            definition_event(C, "use_it", CODE_KIND_FUNCTION, 1, true),
-                            tagged(C, "CAP", REF_KIND_CONST, Some("use_it")),
-                        ],
-                    ),
-                ];
-                let (_dir, path) = crate::test_support::temp_graph_db();
-                let incremental = Projector::open(&path, "test").unwrap();
-                for (entry, batch) in &batches {
-                    entry_asked(&incremental, entry, batch.clone());
-                }
-                let refs_dump = |p: &Projector| -> Vec<String> {
-                    projection_but_ledger(p)
-                        .into_iter()
-                        .filter(|row| row.starts_with("refs: "))
-                        .collect()
-                };
-                let folded = refs_dump(&incremental);
-                assert_eq!(folded.len(), 3, "premise: the log stages three rows");
-                drop(incremental);
-                let log: Vec<Event> = batches.iter().map(|(entry, _)| entry.clone()).collect();
-                let answers = std::sync::Arc::new(batches.clone());
-                Projector::open(&path, "test")
-                    .unwrap()
-                    .with_reextraction(crate::test_support::resolving(move |entry| {
-                        Ok(answers
-                            .iter()
-                            .find(|(e, _)| e.position == entry.position)
-                            .map(|(_, batch)| batch.clone()))
-                    }))
-                    .rebuild(
-                        &Projector::lock_rebuild(&path).unwrap(),
-                        true,
-                        &mut |after, sink| stream_past(&log, after, 10, sink),
-                        &mut |_| {},
-                    )
-                    .unwrap();
-                assert_eq!(refs_dump(&Projector::open(&path, "test").unwrap()), folded);
-            }
-
-            /// The leaves the site `p` locates for `id` lists unresolved (spec 117, UNRESOLVED
-            /// REFERENCES ARE A READ).
-            fn listed(p: &Projector, id: &str) -> Vec<String> {
-                crate::test_support::located_site(p, id).unresolved
-            }
-
-            /// The site read of [`UNRESOLVED_FILE`] over `p`, its error as text.
-            fn site_read(p: &Projector) -> Result<Located, String> {
-                p.locate(UNRESOLVED_FILE).map_err(|e| e.0)
-            }
-
-            /// Spec 117, UNRESOLVED REFERENCES ARE A READ: a file node's site lists the sorted
-            /// distinct leaves of its live `type`, `const` and `use` rows, file-level and each
-            /// fn's, that resolve to nothing - a leaf two fns read once, a leaf another row of its
-            /// `from` resolves never, nor a resolved row's or another file's - while a file staging
-            /// no row and a fn node reading unresolved leaves list nothing.
-            #[test]
-            fn a_files_site_lists_the_sorted_distinct_leaves_its_live_rows_leave_unresolved() {
-                let p = fold_events([]);
-                seed_unresolved_references(&p);
-                assert_eq!(
-                    [UNRESOLVED_FILE, RESOLVING_FILE, UNRESOLVED_SCAN].map(|id| listed(&p, id)),
-                    [UNRESOLVED_LEAVES.map(String::from).to_vec(), vec![], vec![]]
-                );
-            }
-
-            /// Spec 117, UNRESOLVED REFERENCES ARE A READ: rows written into `refs` directly beside
-            /// [`seed_unresolved_references`]'s - an unresolved `module` row from the file at its
-            /// live generation, and an unresolved `type` row from its fn at a generation its
-            /// identity no longer holds - list nothing.
-            #[test]
-            fn an_unresolved_module_row_and_a_row_of_an_older_generation_list_nothing() {
-                let p = fold_events([]);
-                seed_unresolved_references(&p);
-                write_directly(&p, |tx, project| {
-                    tx.execute(
-                        "INSERT INTO refs
-                           (project, identity, generation, from_id, leaf, ref_kind, lang, position)
-                         SELECT project, identity, generation, ?2, 'src/reader/x.rs', 'module',
-                                'rust', 2
-                           FROM generations WHERE project = ?1 AND identity = ?3
-                         UNION ALL SELECT ?1, ?3, 'g-older', ?4, 'Stale', 'type', 'rust', 1",
-                        params![
-                            project,
-                            UNRESOLVED_FILE,
-                            crate::test_support::gc_identity(UNRESOLVED_FILE),
-                            UNRESOLVED_SCAN
-                        ],
-                    )
-                    .unwrap();
-                });
-                assert_eq!(listed(&p, UNRESOLVED_FILE), UNRESOLVED_LEAVES);
-            }
-
-            /// Spec 117, UNRESOLVED REFERENCES ARE A READ: two projects sharing one graph file
-            /// each list their own rows of one file: `theirs` holding
-            /// [`seed_unresolved_references`]'s, `ours` the same file staging none at the log
-            /// position after them.
-            #[test]
-            fn a_files_site_lists_its_own_projects_rows_alone() {
-                let (_dir, ours, theirs) = crate::test_support::ours_and_theirs();
-                seed_unresolved_references(&theirs);
-                let scan = definition_event(UNRESOLVED_FILE, "scan", CODE_KIND_FUNCTION, 1, true);
-                fold(&ours, UNRESOLVED_FILE, "g-ours", 4, 40, vec![scan]);
-                assert_eq!(
-                    (
-                        listed(&ours, UNRESOLVED_FILE),
-                        listed(&theirs, UNRESOLVED_FILE)
-                    ),
-                    (vec![], UNRESOLVED_LEAVES.map(String::from).to_vec())
-                );
-            }
-
-            /// Spec 117, GENERATIONS: a file that owes its rebuild, opened as it stands with no
-            /// `refs` table, answers a file node's site listing nothing.
-            #[test]
-            fn an_owed_store_with_no_refs_table_lists_nothing() {
-                let p = fold_events([]);
-                seed_unresolved_references(&p);
-                owe_without_refs(&p);
-                assert!(listed(&p, UNRESOLVED_FILE).is_empty());
-            }
-
-            /// A `refs` whose columns cannot be read fails a file's site read: the table replaced
-            /// by a view over a table the file does not hold.
-            #[test]
-            fn an_unreadable_refs_fails_a_files_site_read() {
-                let p = fold_events([]);
-                seed_unresolved_references(&p);
-                view_over_a_missing_table(&p, "refs");
-                assert_eq!(site_read(&p), Err(MISSING_TABLE.to_string()));
-            }
-
-            /// A file row whose leaf cannot be read fails the site read: every `refs` row's leaf
-            /// made a blob.
-            #[test]
-            fn an_unreadable_leaf_fails_a_files_site_read() {
-                let p = fold_events([]);
-                seed_unresolved_references(&p);
-                write_directly(&p, |tx, _| {
-                    tx.execute_batch(crate::test_support::UNREADABLE_LEAVES)
-                        .unwrap();
-                });
-                assert_eq!(
-                    site_read(&p),
-                    Err(crate::test_support::UNREADABLE_LEAF.to_string())
-                );
-            }
-
-            /// Spec 117, A MODULE ROW REACHES ITS FILE: a `mod x;`'s module row, its leaf the
-            /// declaration's candidates joined by [`MODULE_CANDIDATE_SEPARATOR`], is a `CONTAINS`
-            /// from the `mod` node onto the first candidate holding a `file` node, settled at the
-            /// end of every batch that stages it or asserts a `file` node at one of its candidates.
-            mod module_rows {
-                use super::*;
-                use crate::contextgraph::query::path_leaf;
-                use crate::contextgraph::CODE_KIND_MODULE;
-                use crate::test_support::{
-                    alias_json, declared, module_edges, DECLARING_FILE, DIR_MODULE_FILE,
-                    MODULE_FILE, MODULE_FN, MOD_NODE,
-                };
-
-                /// A fn beside [`MOD_NODE`] in [`DECLARING_FILE`].
-                const DECLARING_FN: &str = "src/lib.rs::w";
-                /// The canonical file an alias of a candidate names.
-                const MOVED_FILE: &str = "src/moved.rs";
-                /// A document whose batch asserts a node at a candidate's id.
-                const NAMING_DOC: &str = "docs/x.md";
-                /// The community [`MOD_NODE`] is the one member of ([`mod_in_a_community`]).
-                const MOD_COMMUNITY: &str = "c-mod";
-                /// The community [`MODULE_FILE`] is the one member of ([`in_communities`]).
-                const FILE_COMMUNITY: &str = "c-file";
-                /// The community [`MODULE_FN`] is the one member of ([`in_communities`]).
-                const FN_COMMUNITY: &str = "c-y";
-
-                /// The candidates of [`MOD_NODE`]'s declaration, joined as its row's leaf.
-                fn candidates() -> String {
-                    [MODULE_FILE, DIR_MODULE_FILE].join(MODULE_CANDIDATE_SEPARATOR)
-                }
-
-                /// The module row [`DECLARING_FILE`] stages in its batch at log position `pos`,
-                /// the generation [`fold_at`] names after it, resolved to `target`.
-                fn module_row(pos: u64, target: Option<&str>) -> Row {
-                    let leaf = candidates();
-                    let key = (MOD_NODE, leaf.as_str(), REF_KIND_MODULE);
-                    row(DECLARING_FILE, &pos.to_string(), key, pos as i64, target)
-                }
-
-                /// Fold `batch` as the generation of `file` named by its log position `pos`,
-                /// valid from `secs`.
-                fn fold_at(p: &Projector, file: &str, pos: u64, secs: u64, batch: Vec<Event>) {
-                    fold(p, file, &pos.to_string(), pos, secs, batch);
-                }
-
-                /// [`DECLARING_FILE`]'s `mod x;` and its module row, as batch events after
-                /// `before` ([`declaration_naming`] its [`candidates`]).
-                fn declaration(before: Vec<Event>) -> Vec<Event> {
-                    declaration_naming(before, &candidates())
-                }
-
-                /// [`DECLARING_FILE`]'s `mod x;` and a module row naming `named`, as batch events
-                /// after `before`.
-                fn declaration_naming(before: Vec<Event>, named: &str) -> Vec<Event> {
-                    let mut batch = before;
-                    let fresh = batch.is_empty();
-                    let leaf = path_leaf(MOD_NODE);
-                    batch.push(definition_event(
-                        DECLARING_FILE,
-                        leaf,
-                        CODE_KIND_MODULE,
-                        2,
-                        fresh,
-                    ));
-                    batch.push(tagged(DECLARING_FILE, named, REF_KIND_MODULE, Some(leaf)));
-                    batch
-                }
-
-                /// Fold [`DECLARING_FILE`] declaring `mod x;` at `pos` ([`fold_at`]).
-                fn declares(p: &Projector, pos: u64, secs: u64) {
-                    fold_at(p, DECLARING_FILE, pos, secs, declaration(vec![]));
-                }
-
-                /// Fold `file` defining [`MODULE_FN`]'s leaf at `pos` ([`fold_at`]).
-                fn holds(p: &Projector, file: &str, pos: u64, secs: u64) {
-                    let fn_y = [(path_leaf(MODULE_FN), CODE_KIND_FUNCTION)];
-                    fold_defining(p, file, &pos.to_string(), pos, secs, &fn_y);
-                }
-
-                /// Fold `file`'s no-bytes batch at `pos` ([`fold_at`]), retiring what it held.
-                fn retires(p: &Projector, file: &str, pos: u64, secs: u64) {
-                    fold_at(p, file, pos, secs, no_bytes_batch(file));
-                }
-
-                /// [`DECLARING_FILE`]'s ledger entry at `pos` and its batch declaring `mod x;`,
-                /// for a batch a test makes fail.
-                fn declaring_entry(pos: u64) -> (Event, Vec<Event>) {
-                    let entry = entry_at("gc", DECLARING_FILE, &pos.to_string(), pos, pos * 10);
-                    (entry, declaration(vec![]))
-                }
-
-                /// The rows `file`'s batch settles ([`staged_rows_sql`]), as `(identity, from,
-                /// ref_kind)`.
-                fn settled_by(p: &Projector, file: &str) -> Vec<(String, String, String)> {
-                    let by = crate::test_support::gc_identity(file);
-                    raw_rows(p, &staged_rows_sql(), params![p.project, by], |r| {
-                        Ok((r.get(1)?, r.get(3)?, r.get(5)?))
-                    })
-                }
-
-                /// [`MOD_NODE`] the one member of [`MOD_COMMUNITY`], at log position `pos`.
-                fn mod_in_a_community(p: &Projector, pos: u64) {
-                    assign_community(p, pos, MOD_NODE, MOD_COMMUNITY, true);
-                }
-
-                /// [`MOD_NODE`], [`MODULE_FILE`] and [`MODULE_FN`] each the one member of its
-                /// community, at log positions `pos` on.
-                fn in_communities(p: &Projector, pos: u64) {
-                    mod_in_a_community(p, pos);
-                    assign_community(p, pos + 1, MODULE_FILE, FILE_COMMUNITY, false);
-                    assign_community(p, pos + 2, MODULE_FN, FN_COMMUNITY, false);
-                }
-
-                /// The communities a new `rel` edge from [`MOD_NODE`] onto `to` at `tier` owes a
-                /// relabel ([`add_edge`]), and the edge.
-                fn owed_by_an_edge(
-                    p: &Projector,
-                    rel: &str,
-                    to: &str,
-                    tier: &str,
-                ) -> (Vec<String>, i64) {
-                    let mut edge = 0;
-                    let owed = owed_by(p, |tx, project| {
-                        edge = add_edge(tx, MOD_NODE, to, rel, 0, 0, project, tier).unwrap();
-                    });
-                    (owed, edge)
-                }
-
-                /// A target with no file node leaves the row unresolved; the row resolves to the
-                /// one candidate holding a `file` node, though it is not the first listed, its
-                /// edge `extracted`, its `source` the staging batch's position and its valid-time
-                /// the resolving batch's, the declaring file folded before or after it ending on
-                /// the one edge.
-                #[test]
-                fn a_module_row_resolves_to_its_first_candidate_holding_a_file_node_in_either_fold_order(
-                ) {
-                    let declared_first = fold_events([]);
-                    declares(&declared_first, 1, 10);
-                    assert_eq!(
-                        (rows(&declared_first), module_edges(&declared_first)),
-                        (vec![module_row(1, None)], vec![]),
-                        "a target with no file node leaves the row unresolved"
-                    );
-                    holds(&declared_first, DIR_MODULE_FILE, 2, 20);
-                    let held_first = fold_events([]);
-                    holds(&held_first, DIR_MODULE_FILE, 1, 10);
-                    declares(&held_first, 2, 20);
-                    for (p, staged_at) in [(&declared_first, 1), (&held_first, 2)] {
-                        assert_eq!(rows(p), [module_row(staged_at, Some(DIR_MODULE_FILE))]);
-                        assert_eq!(module_edges(p), declared(DIR_MODULE_FILE));
-                        assert_eq!(
-                            edge_rows(p, MOD_NODE, REL_CONTAINS),
-                            [(
-                                DIR_MODULE_FILE.to_string(),
-                                nanos(20),
-                                None,
-                                staged_at as i64
-                            )]
-                        );
-                    }
-                }
-
-                /// Of two candidates holding a `file` node the first listed takes the row: its
-                /// edge onto the second is stamped at the batch that adds the first.
-                #[test]
-                fn of_two_candidates_holding_a_file_node_the_first_listed_takes_the_row() {
-                    let p = fold_events([]);
-                    declares(&p, 1, 10);
-                    holds(&p, DIR_MODULE_FILE, 2, 20);
-                    holds(&p, MODULE_FILE, 3, 30);
-                    assert_eq!(rows(&p), [module_row(1, Some(MODULE_FILE))]);
-                    assert_eq!(module_edges(&p), declared(MODULE_FILE));
-                    assert_eq!(
-                        edge_rows(&p, MOD_NODE, REL_CONTAINS),
-                        [
-                            (DIR_MODULE_FILE.to_string(), nanos(20), Some(nanos(30)), 1),
-                            (MODULE_FILE.to_string(), nanos(30), None, 1),
-                        ]
-                    );
-                }
-
-                /// The target retired stamps the edge and unresolves the row; restored in a later
-                /// batch it writes a new edge row, leaving the gap.
-                #[test]
-                fn a_target_retired_then_restored_leaves_a_gap() {
-                    let p = fold_events([]);
-                    declares(&p, 1, 10);
-                    holds(&p, MODULE_FILE, 2, 20);
-                    retires(&p, MODULE_FILE, 3, 30);
-                    assert_eq!(
-                        (rows(&p), module_edges(&p)),
-                        (vec![module_row(1, None)], vec![]),
-                        "the retired target unresolves the row"
-                    );
-                    holds(&p, MODULE_FILE, 4, 40);
-                    assert_eq!(
-                        edge_rows(&p, MOD_NODE, REL_CONTAINS),
-                        [
-                            (MODULE_FILE.to_string(), nanos(20), Some(nanos(30)), 1),
-                            (MODULE_FILE.to_string(), nanos(40), None, 1),
-                        ]
-                    );
-                }
-
-                /// Module resolution writes no node: unresolved or resolved, the graph holds the
-                /// files and their definitions alone.
-                #[test]
-                fn module_resolution_writes_no_node() {
-                    let p = fold_events([]);
-                    declares(&p, 1, 10);
-                    assert_eq!(node_ids(&p), [DECLARING_FILE, MOD_NODE]);
-                    holds(&p, MODULE_FILE, 2, 20);
-                    assert_eq!(
-                        node_ids(&p),
-                        [DECLARING_FILE, MOD_NODE, MODULE_FILE, MODULE_FN]
-                    );
-                }
-
-                /// A candidate an alias maps resolves to its canonical `file` node whichever
-                /// folds first.
-                #[test]
-                fn an_aliased_candidate_resolves_to_its_canonical_file_in_either_fold_order() {
-                    for held_first in [true, false] {
-                        let p = fold_events([]);
-                        let alias = alias_json(MODULE_FILE, MOVED_FILE);
-                        apply_json(&p, 1, TYPE_ALIAS_DEFINED, alias);
-                        if held_first {
-                            holds(&p, MOVED_FILE, 2, 20);
-                            declares(&p, 3, 30);
-                        } else {
-                            declares(&p, 2, 20);
-                            holds(&p, MOVED_FILE, 3, 30);
-                        }
-                        assert_eq!(
-                            module_edges(&p),
-                            declared(MOVED_FILE),
-                            "held first: {held_first}"
-                        );
-                    }
-                }
-
-                /// A dropped `mod x;` drops its row and its edge, and the prior generation's
-                /// entry of that edge is gone at the batch's end.
-                #[test]
-                fn a_dropped_mods_row_edge_and_prior_entry_are_gone_at_the_batch_end() {
-                    let p = fold_events([]);
-                    declares(&p, 1, 10);
-                    holds(&p, MODULE_FILE, 2, 20);
-                    assert_eq!(
-                        assertions_of(&p, REL_CONTAINS),
-                        [(
-                            crate::test_support::gc_identity(DECLARING_FILE),
-                            1.to_string(),
-                            MOD_NODE.into(),
-                            MODULE_FILE.into()
-                        )]
-                    );
-                    let leaf = path_leaf(DECLARING_FN);
-                    let kept = definition_event(DECLARING_FILE, leaf, CODE_KIND_FUNCTION, 1, true);
-                    fold_at(&p, DECLARING_FILE, 3, 30, vec![kept]);
-                    assert_eq!((rows(&p), module_edges(&p)), (vec![], vec![]));
-                    assert_eq!(assertions_of(&p, REL_CONTAINS), []);
-                }
-
-                /// A `mod` node's community label degree counts no module `CONTAINS`: of
-                /// [`DECLARING_FN`] and [`MOD_NODE`], one community each holding one `CONTAINS`
-                /// from their file, the label stays the lesser name after the `mod` node's module
-                /// row resolves and the community pass re-runs.
-                #[test]
-                fn a_module_contains_counts_in_no_community_label_degree() {
-                    let p = fold_events([]);
-                    let leaf = path_leaf(DECLARING_FN);
-                    let w = definition_event(DECLARING_FILE, leaf, CODE_KIND_FUNCTION, 1, true);
-                    fold_at(&p, DECLARING_FILE, 1, 10, declaration(vec![w]));
-                    let assign = |pos: u64| {
-                        assign_community(&p, pos, MOD_NODE, ONE_COMMUNITY, true);
-                        assign_community(&p, pos + 1, DECLARING_FN, ONE_COMMUNITY, false);
-                    };
-                    assign(2);
-                    assert_eq!(label(&p, ONE_COMMUNITY), Some(leaf.to_string()));
-                    holds(&p, MODULE_FILE, 4, 40);
-                    assign(5);
-                    assert_eq!(module_edges(&p), declared(MODULE_FILE));
-                    assert_eq!(label(&p, ONE_COMMUNITY), Some(leaf.to_string()));
-                }
-
-                /// A module `CONTAINS` [`add_edge`] writes owes no relabel, onto a live `file` node
-                /// or a retired one, where a `CONTAINS` onto a code entity and a `REFERENCES` onto a
-                /// `file` node owe both their ends theirs.
-                #[test]
-                fn a_module_contains_owes_no_relabel_where_one_onto_a_code_entity_does() {
-                    let p = fold_events([]);
-                    declares(&p, 1, 10);
-                    holds(&p, MODULE_FILE, 2, 20);
-                    in_communities(&p, 3);
-                    let owed = |to: &str, tier: &str| owed_by_an_edge(&p, REL_CONTAINS, to, tier).0;
-                    assert_eq!(owed(MODULE_FILE, TIER_INFERRED), Vec::<String>::new());
-                    assert_eq!(
-                        owed(MODULE_FN, TIER_INFERRED),
-                        [MOD_COMMUNITY, FN_COMMUNITY]
-                    );
-                    let referenced =
-                        owed_by_an_edge(&p, REL_REFERENCES, MODULE_FILE, TIER_INFERRED);
-                    assert_eq!(
-                        referenced.0,
-                        [FILE_COMMUNITY, MOD_COMMUNITY],
-                        "a REFERENCES onto a file node"
-                    );
-                    retires(&p, MODULE_FILE, 6, 60);
-                    assert_eq!(
-                        owed(MODULE_FILE, TIER_EXTRACTED),
-                        Vec::<String>::new(),
-                        "a retired file"
-                    );
-                }
-
-                /// A module `CONTAINS` [`settle_edge`] stamps owes no relabel, where one onto a code
-                /// entity owes both its ends theirs.
-                #[test]
-                fn a_stamped_module_contains_owes_no_relabel_where_one_onto_a_code_entity_does() {
-                    let p = fold_events([]);
-                    declares(&p, 1, 10);
-                    holds(&p, MODULE_FILE, 2, 20);
-                    in_communities(&p, 3);
-                    for (to, expected) in [
-                        (MODULE_FILE, vec![]),
-                        (MODULE_FN, vec![MOD_COMMUNITY, FN_COMMUNITY]),
-                    ] {
-                        let (_, edge) = owed_by_an_edge(&p, REL_CONTAINS, to, TIER_INFERRED);
-                        let stamped =
-                            owed_by(&p, |tx, project| settle_edge(tx, edge, 0, project).unwrap());
-                        assert_eq!(stamped, expected, "{to}");
-                    }
-                }
-
-                /// The rows a batch settles ([`staged_rows_sql`]) hold another identity's module row
-                /// exactly when the batch's identity asserts a candidate's `file` node or the
-                /// canonical one an alias of a candidate names: never for a reference whose leaf spells such a node's id,
-                /// a node whose id is a candidate's without its first or its last character, or a
-                /// node another identity asserts.
-                #[test]
-                fn a_batch_settles_another_identitys_module_row_by_its_candidates_alone() {
-                    let p = fold_events([]);
-                    apply_json(
-                        &p,
-                        1,
-                        TYPE_ALIAS_DEFINED,
-                        alias_json(DIR_MODULE_FILE, MOVED_FILE),
-                    );
-                    let mut batch = declaration(vec![]);
-                    let leaf = path_leaf(MOD_NODE);
-                    batch.push(tagged(DECLARING_FILE, MODULE_FN, REF_KIND_TYPE, Some(leaf)));
-                    fold_at(&p, DECLARING_FILE, 2, 20, batch);
-                    let (suffix, prefix) =
-                        (&MODULE_FILE[1..], &MODULE_FILE[..MODULE_FILE.len() - 1]);
-                    for (pos, file) in [(3, MODULE_FILE), (4, suffix), (5, prefix), (6, MOVED_FILE)]
-                    {
-                        holds(&p, file, pos, pos * 10);
-                    }
-                    let by = crate::test_support::gc_identity(DECLARING_FILE);
-                    let module = (by, MOD_NODE.to_string(), REF_KIND_MODULE.to_string());
-                    for (file, expected) in [
-                        (MODULE_FILE, vec![module.clone()]),
-                        (suffix, vec![]),
-                        (prefix, vec![]),
-                        (MOVED_FILE, vec![module]),
-                    ] {
-                        assert_eq!(settled_by(&p, file), expected, "{file}");
-                    }
-                }
-
-                /// Another project's node assertions settle none of this project's module rows, nor
-                /// this project's batch another project's.
-                #[test]
-                fn a_batch_settles_no_module_row_of_another_project() {
-                    let (_dir, ours, theirs) = crate::test_support::ours_and_theirs();
-                    declares(&theirs, 1, 10);
-                    holds(&theirs, MODULE_FILE, 2, 20);
-                    declares(&ours, 3, 30);
-                    assert_eq!(settled_by(&ours, MODULE_FILE), []);
-                }
-
-                /// The rows a batch settles hold another identity's module row only through a `file`
-                /// node at one of its candidates: a batch asserting a node of another kind at that
-                /// id, an artifact a document names, settles none.
-                #[test]
-                fn a_batch_asserting_a_non_file_node_at_a_candidate_settles_no_module_row() {
-                    let by = crate::test_support::gc_identity(DECLARING_FILE);
-                    let module = (by, MOD_NODE.to_string(), REF_KIND_MODULE.to_string());
-                    for (kind, expected) in [(KIND_ARTIFACT, vec![]), (KIND_FILE, vec![module])] {
-                        let p = fold_events([]);
-                        declares(&p, 1, 10);
-                        let identity = crate::test_support::gc_identity(NAMING_DOC);
-                        write_directly(&p, |tx, project| {
-                            let by = keyed(&identity, &identity);
-                            ensure_node(tx, &by, MODULE_FILE, kind, &[], project).unwrap();
-                        });
-                        assert_eq!(settled_by(&p, NAMING_DOC), expected, "{kind}");
-                    }
-                }
-
-                /// A candidate a node of another kind holds is passed over: a row naming
-                /// [`MODULE_FN`] and then [`MODULE_FILE`] resolves onto the file.
-                #[test]
-                fn a_candidate_no_file_node_holds_is_passed_over() {
-                    let p = fold_events([]);
-                    holds(&p, MODULE_FILE, 1, 10);
-                    let named = [MODULE_FN, MODULE_FILE].join(MODULE_CANDIDATE_SEPARATOR);
-                    fold_at(
-                        &p,
-                        DECLARING_FILE,
-                        2,
-                        20,
-                        declaration_naming(vec![], &named),
-                    );
-                    assert_eq!(
-                        edge_rows(&p, MOD_NODE, REL_CONTAINS),
-                        [(MODULE_FILE.to_string(), nanos(20), None, 2)]
-                    );
-                }
-
-                /// A later batch of the target keeping its `file` node leaves the row's edge and its
-                /// dates.
-                #[test]
-                fn a_target_refolded_keeps_the_edge_and_its_dates() {
-                    let p = fold_events([]);
-                    declares(&p, 1, 10);
-                    holds(&p, MODULE_FILE, 2, 20);
-                    holds(&p, MODULE_FILE, 3, 30);
-                    assert_eq!(
-                        edge_rows(&p, MOD_NODE, REL_CONTAINS),
-                        [(MODULE_FILE.to_string(), nanos(20), None, 1)]
-                    );
-                }
-
-                /// A later batch of the target keeping its `file` node updates no row: the row
-                /// resolving to the target it holds writes nothing, so a trigger refusing every
-                /// `refs` update lets the batch fold.
-                #[test]
-                fn a_target_refolded_updates_no_row() {
-                    let p = fold_events([]);
-                    declares(&p, 1, 10);
-                    holds(&p, MODULE_FILE, 2, 20);
-                    let refuse = refusing(REFS_UPDATE);
-                    write_directly(&p, |tx, _| tx.execute_batch(&refuse).unwrap());
-                    holds(&p, MODULE_FILE, 3, 30);
-                    assert_eq!(rows(&p), [module_row(1, Some(MODULE_FILE))]);
-                }
-
-                /// A module row's edge refused fails the batch settling the row onto its file.
-                #[test]
-                fn a_refused_module_edge_fails_the_batch() {
-                    let held = |p: &Projector| holds(p, MODULE_FILE, 1, 10);
-                    let refused =
-                        format!("BEFORE INSERT ON edges WHEN NEW.to_id = '{MODULE_FILE}'");
-                    refused_by(&refused, held, declaring_entry(2));
-                }
-
-                /// A module row's settlement refused fails the batch settling it whole.
-                #[test]
-                fn a_refused_module_settlement_fails_the_batch() {
-                    let held = |p: &Projector| holds(p, MODULE_FILE, 1, 10);
-                    refused_by(REFS_UPDATE, held, declaring_entry(2));
-                }
-
-                /// A candidate's node that cannot be read fails the batch settling the row onto it.
-                #[test]
-                fn an_unreadable_candidate_node_fails_the_batch() {
-                    let held = |p: &Projector| holds(p, MODULE_FILE, 1, 10);
-                    failed_by(
-                        &format!("UPDATE nodes SET attrs = x'00' WHERE id = '{MODULE_FILE}'"),
-                        held,
-                        declaring_entry(2),
-                        "Invalid column type Blob at index: 2, name: attrs".to_string(),
-                    );
-                }
-
-                /// A community node holding no attrs takes the label the pass owes it.
-                #[test]
-                fn a_community_node_without_attrs_takes_its_label() {
-                    let p = fold_events([]);
-                    let leaf = path_leaf(DECLARING_FN);
-                    let w = definition_event(DECLARING_FILE, leaf, CODE_KIND_FUNCTION, 1, true);
-                    fold_at(&p, DECLARING_FILE, 1, 10, vec![w]);
-                    assign_community(&p, 2, DECLARING_FN, ONE_COMMUNITY, true);
-                    write_directly(&p, |tx, project| {
-                        let none = "UPDATE nodes SET attrs = NULL WHERE id = ?1";
-                        tx.execute(none, [ONE_COMMUNITY]).unwrap();
-                        owe_relabel_of(tx, DECLARING_FN, false, project).unwrap();
-                        relabel_owed_communities(tx).unwrap();
-                    });
-                    assert_eq!(label(&p, ONE_COMMUNITY), Some(leaf.to_string()));
-                }
-
-                /// [`declaration_sql`] is the domain's [`declares_a_module`] over the store: of a
-                /// `CONTAINS` and a `REFERENCES` onto a held `file` node, a retired one, a held
-                /// code entity, a retired one and an id no node holds, it answers what the rule
-                /// answers of the node's kind, a retired node's kind its own.
-                #[test]
-                fn the_declaration_sql_is_the_domain_rule() {
-                    use crate::contextgraph::declares_a_module;
-                    let p = fold_events([]);
-                    declares(&p, 1, 10);
-                    holds(&p, MODULE_FILE, 2, 20);
-                    holds(&p, DIR_MODULE_FILE, 3, 30);
-                    retires(&p, DIR_MODULE_FILE, 4, 40);
-                    let retired_fn = entity_id(DIR_MODULE_FILE, path_leaf(MODULE_FN));
-                    let targets = [
-                        (MODULE_FILE, Some(KIND_FILE)),
-                        (DIR_MODULE_FILE, Some(KIND_FILE)),
-                        (MOD_NODE, Some(KIND_CODE_ENTITY)),
-                        (retired_fn.as_str(), Some(KIND_CODE_ENTITY)),
-                        (MOVED_FILE, None),
-                    ];
-                    let sql = declaration_sql("?1", "?2", "?3");
-                    for rel in [REL_CONTAINS, REL_REFERENCES] {
-                        for (to, kind) in targets {
-                            let declared: Vec<bool> =
-                                fragment_values(&p, &sql, params![rel, to, p.project]);
-                            assert_eq!(declared, [declares_a_module(rel, kind)], "{rel} onto {to}");
-                        }
-                    }
-                }
-
-                /// Another project's `file` node, held or retired, makes no `CONTAINS` of this
-                /// project's a declaration: a new one onto either ([`add_edge`]) owes `ours`'s `mod`
-                /// node's community a relabel.
-                #[test]
-                fn another_projects_file_node_declares_no_module() {
-                    let (_dir, ours, theirs) = crate::test_support::ours_and_theirs();
-                    holds(&theirs, MODULE_FILE, 1, 10);
-                    holds(&theirs, DIR_MODULE_FILE, 2, 10);
-                    retires(&theirs, DIR_MODULE_FILE, 3, 10);
-                    declares(&ours, 4, 20);
-                    mod_in_a_community(&ours, 5);
-                    for to in [MODULE_FILE, DIR_MODULE_FILE] {
-                        let (owed, _) = owed_by_an_edge(&ours, REL_CONTAINS, to, TIER_INFERRED);
-                        assert_eq!(owed, [MOD_COMMUNITY], "{to}");
-                    }
-                }
-            }
-        }
-    }
-
-    /// Spec 117 criterion 6: a `ref_kind` event - a type reference, a const read or a `use` -
-    /// runs its batch's structural head alone, so it folds no `REFERENCES` or `CALLS` edge and no
-    /// node but its file's, however it names a caller.
-    #[test]
-    fn a_ref_kind_event_folds_no_edge_and_no_node_beyond_its_file_node() {
-        let p = Projector::open(":memory:", "test").unwrap();
-        apply_def(&p, 1, "a.rs", "read", 1, true);
-        for (pos, name, ref_kind) in [
-            (2, "Kestrel", "type"),
-            (3, "QUOTA_CAP", "const"),
-            (4, "Ledger", "use"),
-        ] {
-            let tagged = crate::test_support::tagged_ref_json("a.rs", name, ref_kind, Some("read"));
-            apply_json(&p, pos, TYPE_EDGE_INFERRED, tagged);
-        }
-        let g = p.whole().unwrap();
-        assert_eq!(
-            crate::test_support::live_file_and_entity_ids(&g),
-            crate::test_support::file_and_entity_ids(&["a.rs"], &["a.rs::read"])
-        );
-        crate::test_support::assert_live(
-            &p,
-            REL_CONTAINS,
-            &[("a.rs", "a.rs::read")],
-            "the definition's CONTAINS is the one live edge",
-        );
-        assert_eq!(
-            crate::test_support::live_edges(&p).len(),
-            1,
-            "a tagged reference folds no edge"
-        );
-    }
-
-    /// Spec 117 criterion 6: a `use`-only file's batch is one `ref_kind` event carrying `fresh`,
-    /// whose head supersedes the file's prior structural edges and creates its file node, stamped
-    /// with its `lang` and `partial`, as a call event's head does.
-    #[test]
-    fn a_use_only_files_head_supersedes_its_prior_edges_and_creates_its_file_node() {
-        let p = Projector::open(":memory:", "test").unwrap();
-        apply_def(&p, 1, "u.rs", "helper", 1, true);
-        apply_call(&p, 2, "u.rs", "helper", "helper");
-        for (pos, file) in [(3, "u.rs"), (4, "v.rs")] {
-            let head = crate::test_support::marked_fresh(
-                crate::test_support::marked_partial(crate::test_support::tagged_ref_json(
-                    file, "Ledger", "use", None,
-                )),
-                true,
-            );
-            apply_json(&p, pos, TYPE_EDGE_INFERRED, head);
-        }
-        assert_eq!(
-            crate::test_support::live_edges(&p).len(),
-            0,
-            "the head event supersedes u.rs's earlier edges and folds none"
-        );
-        let g = p.whole().unwrap();
-        assert_eq!(
-            crate::test_support::live_file_and_entity_ids(&g),
-            crate::test_support::file_and_entity_ids(&["u.rs", "v.rs"], &["u.rs::helper"])
-        );
-        assert_eq!(
-            crate::test_support::attrs_of(&p, "v.rs"),
-            [("lang", "rust"), ("partial", "true")]
-                .map(|(k, v)| (k.to_string(), v.to_string()))
-                .into()
-        );
     }
 }

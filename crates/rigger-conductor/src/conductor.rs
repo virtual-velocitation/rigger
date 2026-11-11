@@ -15735,16 +15735,14 @@ mod tests {
                 .unwrap();
         }
 
-        /// A `RecordFold` double: counts per-EVENT folds (`apply`), records the size of every
-        /// per-BATCH fold (`apply_batch`) and of the batch every LEDGER fold asks for
-        /// (`apply_generation`) and holds no generation; opened as the context, it serves `graph`
-        /// as every subgraph and resolves no mention.
+        /// A `RecordFold` double: counts per-EVENT folds (`apply`) and records the size of every
+        /// per-BATCH fold (`apply_batch`); opened as the context, it serves `graph` as every
+        /// subgraph and resolves no mention.
         #[derive(Default)]
         pub(super) struct SpyGraph {
             pub(super) graph: Graph,
             pub(super) per_event: AtomicU32,
             pub(super) batch_folds: Mutex<Vec<usize>>,
-            pub(super) entry_folds: Mutex<Vec<usize>>,
         }
 
         impl RecordFold for SpyGraph {
@@ -15766,24 +15764,6 @@ mod tests {
             }
             fn rebuild_owed(&self) -> Result<bool, contextgraph::Error> {
                 Ok(false)
-            }
-            fn apply_generation(
-                &self,
-                _entry: &Event,
-                batch: crate::contextgraph::EntryBatch<'_>,
-            ) -> Result<crate::contextgraph::EntryFold, contextgraph::Error> {
-                let batch = batch()?.map_or(0, |events| events.len());
-                self.entry_folds.lock().unwrap().push(batch);
-                Ok(crate::contextgraph::EntryFold::BatchAsked)
-            }
-            fn current_generation(
-                &self,
-                _identity: &str,
-            ) -> Result<Option<String>, contextgraph::Error> {
-                Ok(None)
-            }
-            fn held_identities(&self) -> Result<Vec<String>, contextgraph::Error> {
-                Ok(Vec::new())
             }
         }
 

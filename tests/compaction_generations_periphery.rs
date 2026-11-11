@@ -109,7 +109,6 @@ use common::fixtures::event_of;
 use common::fixtures::f_rs_batch_def;
 use common::fixtures::files_open_by;
 use common::fixtures::fresh_test_reference;
-use common::fixtures::nanos;
 use common::fixtures::owned_ids;
 use common::fixtures::past_the_horizon;
 use common::fixtures::placed_positions;
@@ -266,29 +265,6 @@ fn def_in(file: &str, name: &str, line: u32, fresh: bool) -> Vec<u8> {
     .unwrap()
 }
 
-/// The live `(from, to, rel, tier)` of every edge `graph` holds into `to`.
-fn tiers_into<'g>(
-    graph: &'g rigger::contextgraph::Graph,
-    to: &str,
-) -> Vec<(&'g str, &'g str, &'g str)> {
-    graph
-        .edges
-        .iter()
-        .filter(|e| e.to == to)
-        .map(|e| (e.from.as_str(), e.rel.as_str(), e.tier.as_str()))
-        .collect()
-}
-
-/// A graph-derived attachment payload: `node` in `community` (`CommunityAssigned`), heading the
-/// pass.
-fn community_of(node: &str) -> Vec<u8> {
-    serde_json::to_vec(&serde_json::json!({
-        "node": node, "community": "community/1/c0", "resolution": 1.0, "hash": "h",
-        "fresh": true,
-    }))
-    .unwrap()
-}
-
 // ---------------------------------------------------------------------------------------
 // 1. The key-parser contract
 // ---------------------------------------------------------------------------------------
@@ -391,78 +367,6 @@ fn derived_generation_names_only_a_keyed_derived_events_identity_and_generation(
     }
 }
 
-/// Two projects share one `graph.db`: each one's generations supersede only its own. Folded
-/// interleaved - A's h1, B's h1, B's h9, A's h2 - each project's projection is exactly the one it
-/// folds alone, so A's h2 retires A's `gone` and B's h9 never touched A.
-#[test]
-fn one_projects_generations_never_supersede_anothers_in_a_shared_graph() {
-    const OTHER: &str = "proj-gen-other";
-    let dir = tempfile::tempdir().unwrap();
-    let (backend, events_db) = store_with(
-        dir.path(),
-        &[(
-            rigger::conductor::STREAM,
-            vec![
-                f_rs_batch_def(0, "h1", 0, ("alpha", "function", 1), None, 10),
-                keyed(
-                    TYPE_CODE_ENTITY_EXTRACTED,
-                    entity("gone", 9),
-                    "gc/src/f.rs@h1#1",
-                    10,
-                ),
-                f_rs_batch_def(0, "h2", 0, ("alpha", "function", 2), None, 20),
-            ],
-        )],
-    );
-    let pre_ledger = common::fixtures::PreLedgerStore {
-        db: Path::new(&events_db),
-        inner: &backend,
-    };
-    Namespaced::new(&pre_ledger, OTHER)
-        .append(
-            rigger::conductor::STREAM,
-            ExpectedRevision::Any,
-            &[
-                f_rs_batch_def(0, "h1", 0, ("beta", "function", 1), None, 11),
-                keyed(
-                    TYPE_CODE_ENTITY_EXTRACTED,
-                    entity("kept", 3),
-                    "gc/src/f.rs@h9#1",
-                    12,
-                ),
-                f_rs_batch_def(0, "h9", 0, ("beta", "function", 2), None, 12),
-            ],
-        )
-        .unwrap();
-    let a = run_events(&backend, PROJECT);
-    let b = run_events(&backend, OTHER);
-    let a_alone = fold_in_batches(&dir.path().join("a.db"), PROJECT, std::slice::from_ref(&a));
-    let b_alone = fold_in_batches(&dir.path().join("b.db"), OTHER, std::slice::from_ref(&b));
-
-    let shared = dir.path().join("shared.db");
-    fold_in_batches(&shared, PROJECT, &[a[..2].to_vec()]);
-    fold_in_batches(&shared, OTHER, &[b[..1].to_vec(), b[1..].to_vec()]);
-    let a_shared = fold_in_batches(&shared, PROJECT, &[a[2..].to_vec()]);
-    let b_shared = fold_in_batches(&shared, OTHER, &[]);
-
-    assert_eq!(a_shared, a_alone, "A's projection is the one A folds alone");
-    assert_eq!(b_shared, b_alone, "B's projection is the one B folds alone");
-    let ids = |json: &str| -> Vec<String> {
-        let graph: rigger::contextgraph::Graph = serde_json::from_str(json).unwrap();
-        graph.nodes.into_iter().map(|n| n.id).collect()
-    };
-    assert_eq!(
-        ids(&a_alone),
-        vec!["src/f.rs", "src/f.rs::alpha"],
-        "A's h2 retired the `gone` its h1 defined"
-    );
-    assert_eq!(
-        ids(&b_alone),
-        vec!["src/f.rs", "src/f.rs::beta", "src/f.rs::kept"],
-        "B's h9 holds `beta` and `kept`"
-    );
-}
-
 // ---------------------------------------------------------------------------------------
 // 3. A graph.db folded before the generation rule is rebuilt once, by `rigger setup`
 // ---------------------------------------------------------------------------------------
@@ -506,9 +410,7 @@ fn a_pre_rule_graph_db(db: &Path, events: &[Event], ledgers: &str) {
     );
     let conn = rusqlite::Connection::open(db).unwrap();
     conn.execute_batch(&format!(
-        "DROP VIEW live_node_assertions; DROP VIEW live_edge_assertions;
-         DROP TABLE generations; DROP TABLE node_assertions; DROP TABLE edge_assertions;
-         DROP TABLE retired_nodes; DROP TABLE detached_attachments; DROP TABLE relabel_owed;
+        "DROP TABLE node_assertions; DROP TABLE edge_assertions;
          {ledgers}
          PRAGMA user_version = 0;"
     ))
@@ -984,28 +886,21 @@ fn rebuild_cursor_of(db: &Path) -> u64 {
 }
 
 /// Spec 122, ONE BATCHING RULE and THE SEAM at the rebuild's public surface: given a log that
-/// gained, while a rebuild folded its shadow, a tail of more than `FOLD_BATCH` events holding two
-/// ledger entries, when that rebuild folds the tail into the swapped-in `graph.db` from two read
-/// batches, and another projector folds an event of the second batch between them, then each entry
-/// is extracted with every event before it committed and none from it on, the writer's fold lands
+/// gained, while a rebuild folded its shadow, a tail of more than `FOLD_BATCH` events, when that
+/// rebuild folds the tail into the swapped-in `graph.db` from two read batches, and another
+/// projector folds an event of the second batch between them, then the writer's fold lands
 /// between the read batches with the cursor at the first one's end, and the `applied` ledger's
 /// positions are the log's.
 #[test]
-fn a_rebuild_tail_commits_before_each_entry_and_a_writer_lands_between_its_read_batches() {
+fn a_rebuild_tail_lands_a_writer_between_its_read_batches() {
     use common::cli::applied_positions;
-    use common::fixtures::{
-        entry_at, folds, positions_of, run_started, temp_graph_db, two_read_batches,
-    };
+    use common::fixtures::{folds, positions_of, run_started, temp_graph_db, two_read_batches};
     use rigger::contextgraph::sqlite::Projector;
     let (dir, path) = temp_graph_db();
     let db = Path::new(&path);
     let mut events = two_generations_dropping_facts();
     let swapped = events.len();
-    events.extend((0..600).map(|i| match i {
-        300 => entry_at("gc", "src/tail.rs", "g1", 0, 30),
-        450 => entry_at("gc", "src/tail.rs", "g2", 0, 40),
-        _ => run_started(&format!("r{i}"), &[]),
-    }));
+    events.extend((0..600).map(|i| run_started(&format!("r{i}"), &[])));
     let (backend, _) = store_with(dir.path(), &[(rigger::conductor::STREAM, events)]);
     let log = run_events(&backend, PROJECT);
     fold_in_batches(db, PROJECT, &[log[..swapped].to_vec()]);
@@ -1014,17 +909,9 @@ fn a_rebuild_tail_commits_before_each_entry_and_a_writer_lands_between_its_read_
     // The cursor and every position `applied` holds, as a connection of its own reads them.
     let committed = |db: &Path| (rebuild_cursor_of(db), applied_positions(db));
     let (mut reads, mut seam) = (0, Vec::new());
-    let extracted = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
 
     let rebuilt = Projector::open(&path, PROJECT)
         .unwrap()
-        .with_reextraction(common::fixtures::resolving({
-            let (db, extracted) = (db.to_path_buf(), std::sync::Arc::clone(&extracted));
-            move |e| {
-                extracted.lock().unwrap().push((e.position, committed(&db)));
-                Ok(None)
-            }
-        }))
         .rebuild(
             &Projector::lock_rebuild(&path).unwrap(),
             true,
@@ -1045,19 +932,10 @@ fn a_rebuild_tail_commits_before_each_entry_and_a_writer_lands_between_its_read_
         )
         .unwrap();
 
-    let before = |i: usize| (at(i - 1), positions_of(&log[..i]));
     assert_eq!(
         (rebuilt, reads),
         (Some(Rebuilt::default()), 2),
         "the shadow folds the log as it stood, then the tail is read once"
-    );
-    assert_eq!(
-        *extracted.lock().unwrap(),
-        vec![
-            (at(swapped + 300), before(swapped + 300)),
-            (at(swapped + 450), before(swapped + 450))
-        ],
-        "each entry is extracted with every event before it committed and none from it on"
     );
     assert_eq!(
         seam,
@@ -1134,79 +1012,6 @@ fn reset_derived_refuses_until_a_pre_rule_graph_db_is_rebuilt() {
         ),
         "once the graph is rebuilt the migration converts each file's h2 batch into its entry \
          and sheds all five derived recordings; stderr: {err}"
-    );
-}
-
-/// Pruning superseded edges (`rigger reset --runs`) keeps what the fold may still bring back: an
-/// attachment detached from a retired node and a design link its identity's prior generation
-/// asserted. Only history nothing will revive is reclaimed, and the preview counts exactly that.
-#[test]
-fn pruning_superseded_edges_keeps_what_the_fold_may_revive() {
-    use rigger::contextgraph::sqlite::Projector;
-
-    let dir = tempfile::tempdir().unwrap();
-    let at = std::time::UNIX_EPOCH + std::time::Duration::from_secs(11);
-    let (backend, _) = store_with(
-        dir.path(),
-        &[(
-            rigger::conductor::STREAM,
-            vec![
-                f_rs_batch_def(0, "h1", 0, ("alpha", "function", 1), None, 10),
-                keyed(
-                    TYPE_CODE_ENTITY_EXTRACTED,
-                    entity("gone", 9),
-                    "gc/src/f.rs@h1#1",
-                    10,
-                ),
-                keyed(
-                    TYPE_DOC_LINK_EXTRACTED,
-                    link("src/old.rs"),
-                    "gd/docs/f.md@h1#0",
-                    10,
-                ),
-                Event::new(
-                    rigger::contextgraph::TYPE_COMMUNITY_ASSIGNED,
-                    community_of("src/f.rs::gone"),
-                )
-                .with_valid_from(at),
-                f_rs_batch_def(0, "h2", 0, ("alpha", "function", 2), None, 20),
-                keyed(
-                    TYPE_DOC_LINK_EXTRACTED,
-                    link("src/a.rs"),
-                    "gd/docs/f.md@h2#0",
-                    20,
-                ),
-            ],
-        )],
-    );
-    let db = dir.path().join("graph.db");
-    fold_in_batches(&db, PROJECT, &[run_events(&backend, PROJECT)]);
-    let graph = Projector::open(db.to_str().unwrap(), PROJECT).unwrap();
-    let boundary = Some(nanos(100));
-    let preview = graph.count_prunable(&[], boundary).unwrap();
-    let pruned = graph.prune(&[], boundary).unwrap();
-    assert_eq!(
-        (preview.superseded_edges, pruned.superseded_edges),
-        (2, 2),
-        "only the retired CONTAINS edges of h1 (alpha's and gone's) are reclaimable"
-    );
-    common::fixtures::folds(&graph, &later_events());
-    assert_eq!(
-        tiers_into(&graph.whole().unwrap(), "community/1/c0"),
-        vec![("src/f.rs::gone", "IN_COMMUNITY", "inferred")],
-        "the detached membership survives the prune and revives when its node returns"
-    );
-    let edge_rows: i64 = rusqlite::Connection::open(&db)
-        .unwrap()
-        .query_row(
-            "SELECT COUNT(*) FROM edges WHERE to_id = 'src/old.rs'",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
-    assert_eq!(
-        edge_rows, 1,
-        "the prior generation's retired link stays revivable"
     );
 }
 
@@ -1519,8 +1324,7 @@ fn leave_a_shadow_with_no_rebuild_state(root: &Path) {
 /// the operator runs `rigger setup`, then that `graph.db` is rebuilt cold from the log - setup says
 /// it is rebuilding and reports how far along it is - the superseded facts are gone, the old table
 /// is dropped, the file records the current rule, and it holds exactly the graph a fresh fold of
-/// the whole log reaches, and the rebuild's report reads the keyed derived rows of the log as the
-/// recordings they are. A second `rigger setup` owes and reports no rebuild.
+/// the whole log reaches. A second `rigger setup` owes and reports no rebuild.
 #[test]
 fn rigger_setup_rebuilds_a_release_era_graph_db_from_the_log_and_stamps_the_rule() {
     use rigger::contextgraph::sqlite::Projector;
@@ -1538,13 +1342,9 @@ fn rigger_setup_rebuilds_a_release_era_graph_db_from_the_log_and_stamps_the_rule
             OLDER_RULE_REBUILD_LINE.to_string(),
             rebuilt_through_the_head(3, head),
             REBUILT_LINE.to_string(),
-            "identities the tree holds a file for whose generation in graph.db is not their \
-             latest recording's: 0"
-                .to_string(),
         ],
         "setup says it is rebuilding and how far along it is, folding only the live selection - \
-         h1's three superseded recordings are never folded - and reports no identity the next \
-         ingest records again; stdout: {out}"
+         h1's three superseded recordings are never folded; stdout: {out}"
     );
     assert!(
         !store
@@ -1646,72 +1446,6 @@ fn rigger_setup_rebuilds_from_the_log_under_the_identity_it_mints() {
         graph.0
     );
     assert_eq!(graph, fresh, "the rebuilt graph.db is the whole log's");
-}
-
-/// Given an operator store whose `graph.db` a release at fold rule 1 folded, so the node two
-/// definitions of one leaf share holds the one folded last, when the operator opens it, then the
-/// open owes the rebuild and writes nothing; and when the operator runs `rigger setup`, then setup
-/// names the older rule, rebuilds from the log, the file records the current rule and the node
-/// holds its precedence winner, the fn at the fn's line - exactly the graph a fresh fold of the
-/// log reaches. A second `rigger setup` owes and reports no rebuild.
-#[test]
-fn rigger_setup_rebuilds_a_rule_1_graph_db_and_its_shared_node_takes_its_precedence_winner() {
-    use common::fixtures::{attrs_of, definition};
-    use rigger::contextgraph::sqlite::Projector;
-    const X: &str = "src/f.rs::x";
-    let store = ReleaseEraStore::folded_at_rule_1();
-    let x = || {
-        let graph = Projector::open(store.graph_db.to_str().unwrap(), &store.project()).unwrap();
-        attrs_of(&graph, X)
-    };
-    let before = store.graph_bytes();
-    assert_eq!(
-        version_and_owed(&store.graph_db, PROJECT),
-        (1, true),
-        "a file that folded at rule 1 owes its rebuild"
-    );
-    assert_eq!(
-        x(),
-        definition("x", "field", 7),
-        "until the rebuild the node is as rule 1 left it, the last folded"
-    );
-    assert!(
-        store.graph_bytes() == before,
-        "opening a file that owes its rebuild writes nothing to it"
-    );
-
-    let out = setup_ok(store.root(), &[]);
-    let head = store.log().last().unwrap().position;
-    assert_eq!(
-        rebuilding_and_rebuilt_lines(&out),
-        vec![
-            OLDER_RULE_REBUILD_LINE.to_string(),
-            rebuilt_through_the_head(2, head),
-            REBUILT_LINE.to_string(),
-        ],
-        "setup names the older rule and refolds both definitions; stdout: {out}"
-    );
-    assert_eq!(
-        (user_version(&store.graph_db), x()),
-        (PROJECTION_VERSION, definition("x", "function", 3)),
-        "the rebuilt file records the current rule and the node holds the fn at the fn's line"
-    );
-    assert_eq!(
-        version_and_owed(&store.graph_db, PROJECT),
-        (PROJECTION_VERSION, false),
-        "the rebuild was paid"
-    );
-    let (graph, fresh) = store.graph_and_a_fresh_fold_of_the_log();
-    assert_eq!(
-        graph, fresh,
-        "the rebuilt graph.db is the whole log's, fold state included"
-    );
-
-    let out = setup_ok(store.root(), &[]);
-    assert!(
-        !out.contains("graph.db"),
-        "a paid rebuild is not owed or reported again; stdout: {out}"
-    );
 }
 
 /// Given an operator store whose `graph.db` a release at fold rule 1 folded, and beside it the
@@ -4569,14 +4303,14 @@ fn setup_says_how_many_events_its_rebuild_passed_over_for_a_payload_the_fold_rej
             common::cli::rebuild_lines(&out),
             common::cli::applied_each(&rigger_file(root, "graph.db"), &rejected),
         ),
-        (common::cli::rebuilt_passing_over(2, 0, 0), vec![true, true]),
+        (common::cli::rebuilt_passing_over(2), vec![true, true]),
         "setup rebuilds, and says the two events it passed over - a malformed payload and one \
          with trailing bytes; stdout: {out}"
     );
     let (out, err, ok) = run_rigger_envs(root, &["setup"], &[]);
     assert_eq!(
         (ok, common::cli::rebuild_lines(&out)),
-        (true, vec![common::cli::passed_over_line(2, 0, 0)]),
+        (true, vec![common::cli::passed_over_line(2)]),
         "the passed-over events are not owed again, and setup says again what the file passed \
          over; stdout: {out} stderr: {err}"
     );
@@ -4624,7 +4358,7 @@ fn validate_alone_says_what_graph_db_passed_over_and_no_read_only_surface_writes
     }
     bury_below_an_applied_event(root);
     setup_ok(root, &[]);
-    let passed_over = common::fixtures::passed_over_note(2, 0, 0);
+    let passed_over = common::fixtures::passed_over_note(2);
     each_surface_notes(
         &[],
         std::slice::from_ref(&passed_over),
@@ -4642,31 +4376,14 @@ fn validate_alone_says_what_graph_db_passed_over_and_no_read_only_surface_writes
 }
 
 /// `Projector::passed_over` counts the `passed_over` rows a rebuild wrote by the class of each
-/// cause - one event whose payload the judge rejects, two ledger entries resolving to nothing and
-/// four whose re-extracted batch it rejects - and their total, and counts a row of any other class
-/// under none of them.
+/// cause - one event whose payload the judge rejects - and their total, and counts a row of any
+/// other class under none of them.
 #[test]
 fn passed_over_counts_each_class_a_rebuild_wrote_by_cause_and_no_other_class() {
-    use common::fixtures::{poisoned_decision_at, rejected_batch_entries, unresolved_entry_at};
+    use common::fixtures::poisoned_decision_at;
     use rigger::contextgraph::sqlite::{PassedOver, Projector};
     let (_dir, graph_db) = common::fixtures::temp_graph_db();
-    let log = [
-        vec![
-            poisoned_decision_at(1),
-            unresolved_entry_at(2),
-            unresolved_entry_at(3),
-        ],
-        rejected_batch_entries(4..=7),
-    ]
-    .concat();
-    common::fixtures::rebuild_from_the_log(
-        Path::new(&graph_db),
-        &log,
-        10,
-        common::fixtures::resolving(|entry| {
-            Ok((entry.position > 3).then(common::fixtures::poisoned_batch))
-        }),
-    );
+    common::fixtures::rebuild_from_the_log(Path::new(&graph_db), &[poisoned_decision_at(1)], 10);
     let counted = || {
         let passed = Projector::open(&graph_db, "test")
             .unwrap()
@@ -4674,27 +4391,23 @@ fn passed_over_counts_each_class_a_rebuild_wrote_by_cause_and_no_other_class() {
             .unwrap();
         (passed, passed.total())
     };
-    let by_class = PassedOver {
-        rejected: 1,
-        failed: 4,
-        unresolved: 2,
-    };
+    let by_class = PassedOver { rejected: 1 };
     assert_eq!(
         counted(),
-        (by_class, 7),
+        (by_class, 1),
         "each class the rebuild wrote is counted under its own cause"
     );
 
     rusqlite::Connection::open(&graph_db)
         .unwrap()
         .execute(
-            "INSERT INTO passed_over (position, cause) VALUES (8, 'another class: its text')",
+            "INSERT INTO passed_over (position, cause) VALUES (2, 'another class: its text')",
             [],
         )
         .unwrap();
     assert_eq!(
         counted(),
-        (by_class, 7),
+        (by_class, 1),
         "a cause of no class a fold pass writes is counted under none"
     );
 }

@@ -572,9 +572,7 @@ pub const TYPE_CODE_ENTITY_EXTRACTED: &str = "CodeEntityExtracted";
 /// One reference extracted from a source file (spec 29a): the extraction pass emits one per
 /// reference, and the always-compiled fold turns a call reference into a `REFERENCES` structural
 /// edge from the file container node to the referenced symbol's code-entity id; a tagged one
-/// (`ref_kind`, spec 117) folds its file container node alone, and a ledger entry's batch stages
-/// it as a row whose `REFERENCES` edge lives while one definition answers it (spec 117, STAGED
-/// REFERENCES).
+/// (`ref_kind`, spec 117) folds its file container node alone.
 pub const TYPE_EDGE_INFERRED: &str = "EdgeInferred";
 /// One design-intent concept extracted from a doc (spec 29b): the design-intent extraction pass
 /// emits one per concept, and the always-compiled fold turns it into a `design-doc` /
@@ -750,38 +748,10 @@ pub enum Fold {
     NotFolded(String),
 }
 
-/// What became of folding one ledger entry of perception (a `GenerationIngested` event) with its
-/// batch ([`RecordFold::apply_generation`]): the one answer naming which of the fold's three
-/// outcomes happened, so no caller infers it from an earlier read.
-#[must_use = "the outcome says whether the entry's batch was asked for"]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EntryFold {
-    /// The projection had already folded the entry's position when the fold reached it: nothing
-    /// was written at that position, and the batch, asked for or not, folded nothing.
-    AlreadyApplied,
-    /// The entry names the generation its identity already holds: only its position was recorded,
-    /// and the batch, asked for or not, folded nothing.
-    ReRecording,
-    /// The entry's position was recorded and its batch was asked for, once. A resolved batch
-    /// folded at the entry's position and installed its generation; an unresolved one, answered
-    /// so rather than passed over ([`RecordFold::apply_generation`]), folded nothing and left the
-    /// identity's facts and current generation as they stood.
-    BatchAsked,
-}
-
-/// The function [`RecordFold::apply_generation`] asks for an entry's batch, at most once: the
-/// batch's events, `None` when no source resolves the entry, or an error, which fails the fold.
-/// It runs inside the fold's transaction, while the projection is held for that write, or just
-/// before that transaction opens, as [`RecordFold::apply_generation`] says: it must not read or
-/// fold the projection it is handed to, and must do no slow work there.
-pub type EntryBatch<'a> = Box<dyn FnOnce() -> Result<Option<Vec<Event>>, Error> + 'a>;
-
 /// The permission to fold into a [`RecordFold`] through [`RecordFold::apply`] and
 /// [`RecordFold::apply_batch`]: its field is private to this module, so only [`Fold::of`] and
 /// [`Fold::of_batch`] can hand one over, and every fold through them is therefore one whose
-/// outcome is reported. [`RecordFold::apply_generation`] takes none: its outcome is reported by
-/// convention of its one production caller, the ledger form of the folding store, which answers
-/// the [`Fold`] and the [`EntryFold`] of every entry it appends.
+/// outcome is reported.
 #[derive(Debug, Clone, Copy)]
 pub struct FoldAccess(());
 
@@ -811,8 +781,6 @@ impl Fold {
     }
 
     /// The outcome of a fold that answered `folded`: folded, or not folded for the error's reason.
-    /// The ledger form of the folding store settles [`RecordFold::apply_generation`]'s answer
-    /// through it, as [`Fold::of`] and [`Fold::of_batch`] settle theirs.
     pub fn settle(folded: Result<(), Error>) -> Self {
         match folded {
             Ok(()) => Fold::Folded,
@@ -908,9 +876,7 @@ pub fn rebuild_owed_refusal(command: &str) -> String {
     format!("{command}: {REBUILD_OWED}")
 }
 
-/// The record fold: folds the event log's records into the record graph (graph.db). The code
-/// generation methods are transitional: the code store's stamp and advance replace them, and the
-/// fold that answers them is deleted with them.
+/// The record fold: folds the event log's records into the record graph (graph.db).
 pub trait RecordFold: Send + Sync {
     /// Fold a single event into the graph, idempotently per global position. Reached only through
     /// [`Fold::of`], which holds the [`FoldAccess`] it takes.
@@ -937,37 +903,6 @@ pub trait RecordFold: Send + Sync {
         }
         Ok(())
     }
-
-    /// Fold one ledger entry of perception - `entry`, a `GenerationIngested` event - with its
-    /// batch, and answer which of three things happened ([`EntryFold`]): an entry whose position
-    /// this projection already folded folds nothing - or, when it recorded that position passed
-    /// over, answers that position's cause as its error; one naming the generation its identity
-    /// already holds records only its position; any other records its position and asks `batch`
-    /// for the entry's batch, once. A batch `batch` answers folds event by event at the entry's
-    /// position and valid-time, every event asserted under the entry's identity and generation,
-    /// never under a key the event carries, and installs that generation, all in the ONE
-    /// transaction that records the entry's position; an entry `batch` answers `None` for folds
-    /// nothing; an error from `batch` fails the fold. A projection that records positions passed
-    /// over may instead record the entry's position so - its own payload or an event of its batch
-    /// rejected, or its batch `None` - and answer that cause as its error. `batch` runs inside
-    /// that transaction, while this projection is held for the write, or just before it opens: it
-    /// must not read or fold this projection, and must do no slow work there; which of the two the
-    /// sqlite `Projector` does on each of its paths its own `apply_generation` doc states. A ledger
-    /// entry folds with a batch it is handed only here: an implementor that folds refuses one
-    /// handed to [`apply`](RecordFold::apply) or [`apply_batch`](RecordFold::apply_batch), or
-    /// folds it there with the batch its own source derives for it. It takes no [`FoldAccess`].
-    fn apply_generation(&self, entry: &Event, batch: EntryBatch<'_>) -> Result<EntryFold, Error>;
-
-    /// The generation this projection currently holds for the `<prefix>/<file>` identity
-    /// `identity`, or `None` when it holds none. A plain read: it answers on a projection that
-    /// owes its rebuild ([`rebuild_owed`](RecordFold::rebuild_owed)).
-    fn current_generation(&self, identity: &str) -> Result<Option<String>, Error>;
-
-    /// Every `<prefix>/<file>` identity this projection holds a generation for, sorted: the
-    /// identities whose nodes a whole-project walk retires when the tree no longer holds their
-    /// file. A plain read: it answers on a projection that owes its rebuild
-    /// ([`rebuild_owed`](RecordFold::rebuild_owed)).
-    fn held_identities(&self) -> Result<Vec<String>, Error>;
 
     /// Whether this projection says, without reading the log, that it owes one rebuild from it
     /// (spec 101) - it was folded under an older fold rule: until `rigger setup` pays it nothing
@@ -1219,7 +1154,7 @@ pub const MODULE_CANDIDATE_SEPARATOR: &str = "\n";
 /// [`REF_KIND_TYPE`] a type or a trait, a [`REF_KIND_CONST`] a constant or a static, a
 /// [`REF_KIND_USE`] every kind of [`CODE_KIND_PRECEDENCE`] a `use` can import - all but a method
 /// and the [`NON_TARGET_KINDS`] - and any other value none: a [`REF_KIND_MODULE`] row, which
-/// resolves onto a `file` node instead, and every kind that stages no row ([`staged_rel`]).
+/// resolves onto a `file` node instead, and a call.
 pub fn reference_candidate_kinds(ref_kind: &str) -> Vec<&'static str> {
     match ref_kind {
         REF_KIND_TYPE => vec![CODE_KIND_TYPE, CODE_KIND_TRAIT],
@@ -1229,26 +1164,6 @@ pub fn reference_candidate_kinds(ref_kind: &str) -> Vec<&'static str> {
             .filter(|kind| *kind != CODE_KIND_METHOD && !NON_TARGET_KINDS.contains(kind))
             .collect(),
         _ => Vec::new(),
-    }
-}
-
-/// The reference kinds a leaf resolves (spec 117, KIND CANDIDATES): exactly those
-/// [`reference_candidate_kinds`] names a candidate for, held to its arms by a test, so a module
-/// row's kind is never one of them.
-pub const LEAF_REF_KINDS: [&str; 3] = [REF_KIND_TYPE, REF_KIND_CONST, REF_KIND_USE];
-
-/// The relations a staged `refs` row's edge is of (spec 117): every value [`staged_rel`] answers,
-/// held to its arms by a test.
-pub const STAGED_RELS: [&str; 2] = [REL_REFERENCES, REL_CONTAINS];
-
-/// The relation a staged `refs` row of `ref_kind` is an edge of (spec 117): a [`REL_REFERENCES`]
-/// for a kind a leaf resolves ([`LEAF_REF_KINDS`]), a [`REL_CONTAINS`] for a module row
-/// ([`REF_KIND_MODULE`]), and none for any other value, which stages no row.
-pub fn staged_rel(ref_kind: &str) -> Option<&'static str> {
-    match ref_kind {
-        REF_KIND_MODULE => Some(REL_CONTAINS),
-        kind if LEAF_REF_KINDS.contains(&kind) => Some(REL_REFERENCES),
-        _ => None,
     }
 }
 
@@ -1329,10 +1244,7 @@ pub struct EdgeInferred {
     /// read or imported leaf ([`REF_KIND_TYPE`], [`REF_KIND_CONST`] or [`REF_KIND_USE`]), or a
     /// module row ([`REF_KIND_MODULE`]); absent for a call, which folds as before the field
     /// existed. The event arm runs a tagged event's structural head alone (the `fresh` supersede
-    /// and the file node) and folds nothing else from it; a ledger entry's batch stages it as a
-    /// row ([`staged_rel`]), a leaf kind's an edge while one definition of its
-    /// [`reference_candidate_kinds`] answers its name (spec 117, STAGED REFERENCES), a module
-    /// row's while one of its candidates holds a `file` node (A MODULE ROW REACHES ITS FILE).
+    /// and the file node) and folds nothing else from it.
     /// Serde-defaulted and omitted when absent, so a call's wire form is byte-identical to
     /// before.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1591,45 +1503,6 @@ mod reference_candidate_kinds_rule {
             ],
             "a use imports any kind but a method, a field, a property or a declaration"
         );
-    }
-
-    /// [`LEAF_REF_KINDS`] is the rule's own set: exactly the asked kinds it names a candidate
-    /// for, in their order, so a module row's kind is never among them.
-    #[test]
-    fn the_leaf_reference_kinds_are_the_kinds_the_rule_names_candidates_for() {
-        assert_eq!(
-            ASKED
-                .into_iter()
-                .filter(|kind| !reference_candidate_kinds(kind).is_empty())
-                .collect::<Vec<_>>(),
-            LEAF_REF_KINDS
-        );
-    }
-
-    /// Each asked kind's row is an edge of its relation: a leaf kind's a `REFERENCES`, a module
-    /// row's a `CONTAINS`, and a call's or the empty value's none.
-    #[test]
-    fn each_staged_kind_names_the_relation_its_row_is_an_edge_of() {
-        assert_eq!(
-            ASKED.map(staged_rel),
-            [
-                Some(REL_REFERENCES),
-                Some(REL_REFERENCES),
-                Some(REL_REFERENCES),
-                Some(REL_CONTAINS),
-                None,
-                None
-            ]
-        );
-    }
-
-    /// [`STAGED_RELS`] is the rule's own set: exactly the relations [`staged_rel`] answers, in
-    /// the order the asked kinds first name them.
-    #[test]
-    fn the_staged_relations_are_the_relations_the_rule_answers() {
-        let mut answered: Vec<&str> = ASKED.into_iter().filter_map(staged_rel).collect();
-        answered.dedup();
-        assert_eq!(answered, STAGED_RELS);
     }
 
     /// A module is declared by a `CONTAINS` onto a `file` node alone: never by another relation

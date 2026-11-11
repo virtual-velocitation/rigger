@@ -66,6 +66,22 @@ fn graph_build_hangs_each_call_off_its_innermost_enclosing_function() {
     );
 }
 
+/// The `CALLS` edges of [`common::fixtures::RUST_METHOD_CALLER_SOURCE`] folded as `a.rs`, each `(from, to)`: the
+/// call in `new` from the method's path `T::new`, and the impl header's self type from the impl.
+#[cfg(feature = "symbols")]
+const RUST_METHOD_CALLER_CALLS: &[(&str, &str)] = &[
+    ("a.rs::T::new", "a.rs::helper"),
+    ("a.rs::impl T", "a.rs::T"),
+];
+
+/// The `CALLS` edges of [`common::fixtures::GO_RECEIVER_CALLER_SOURCE`] folded as `g.go`, each `(from, to)`: the
+/// receiver type and the call to `helper`, both from the method's path `Recv::name`.
+#[cfg(feature = "symbols")]
+const GO_RECEIVER_CALLER_CALLS: &[(&str, &str)] = &[
+    ("g.go::Recv::name", "g.go::Recv"),
+    ("g.go::Recv::name", "g.go::helper"),
+];
+
 /// GIVEN a project whose one file calls `helper` from a method: a Rust `new` of `impl T`, or a Go
 /// receiver method `name` of `*Recv`,
 /// WHEN the operator runs `rigger graph build`,
@@ -85,7 +101,7 @@ fn graph_build_hangs_a_method_s_calls_off_the_method_s_path() {
                 ("helper", "helper", "function", 5),
                 ("impl T", "impl T", "impl", 2),
             ][..],
-            common::fixtures::RUST_METHOD_CALLER_CALLS,
+            RUST_METHOD_CALLER_CALLS,
         ),
         (
             ("g.go", "go", common::fixtures::GO_RECEIVER_CALLER_SOURCE),
@@ -94,7 +110,7 @@ fn graph_build_hangs_a_method_s_calls_off_the_method_s_path() {
                 ("Recv::name", "name", "method", 5),
                 ("helper", "helper", "function", 7),
             ][..],
-            common::fixtures::GO_RECEIVER_CALLER_CALLS,
+            GO_RECEIVER_CALLER_CALLS,
         ),
     ];
     for (file, definitions, calls) in cases {

@@ -27081,148 +27081,32 @@ fn graph_show_prints_each_node_through_the_one_site_renderer() {
     }
 }
 
-/// Spec 117, UNRESOLVED REFERENCES ARE A READ: GIVEN a graph whose file `src/reader.rs`, a partial
-/// parse, stages rows of four leaves that resolve to nothing and whose file `src/definer.rs`
-/// stages none, WHEN the operator runs `rigger graph --show` on each file, THEN `src/reader.rs`
-/// prints its sorted distinct unresolved leaves joined by `contextgraph::LIST_SEP` on one
-/// `unresolved` line after its `partial` entry, and `src/definer.rs` prints no `unresolved` line.
-#[test]
-fn graph_show_prints_a_files_unresolved_leaves_after_its_partial_entry() {
-    use common::fixtures::{RESOLVING_FILE, UNRESOLVED_FILE, UNRESOLVED_LEAVES};
-    use rigger::contextgraph::LIST_SEP;
-
-    let dir = common::cli::unresolved_project();
-    let [reader, definer] =
-        [UNRESOLVED_FILE, RESOLVING_FILE].map(|file| common::cli::show_lines(dir.path(), file));
-    assert_eq!(
-        reader[3..5],
-        [
-            "  partial true".to_string(),
-            format!("  unresolved {}", UNRESOLVED_LEAVES.join(LIST_SEP))
-        ],
-        "the file's unresolved leaves print on the line after its partial entry"
-    );
-    assert_eq!(
-        definer
-            .iter()
-            .filter(|line| line.starts_with("  unresolved"))
-            .count(),
-        0,
-        "a file listing none prints no unresolved line"
-    );
-}
-
-/// Spec 117, UNRESOLVED REFERENCES ARE A READ: GIVEN the same graph, WHEN the operator runs `rigger
-/// graph --around src/reader.rs --depth 1`, THEN the queried file's node line is followed by
-/// `unresolved 4`, the count of its leaves, and no other node prints one; WHEN they run `--around
-/// src/definer.rs --depth 3`, whose subgraph reaches `src/reader.rs`, THEN no `unresolved` line
-/// prints, `src/definer.rs` listing none and `src/reader.rs` a neighbour.
-#[test]
-fn graph_around_prints_the_queried_files_unresolved_count_alone() {
-    use common::fixtures::{RESOLVING_FILE, UNRESOLVED_FILE};
-
-    let dir = common::cli::unresolved_project();
-    assert_eq!(
-        [(UNRESOLVED_FILE, 1), (RESOLVING_FILE, 3)].map(|(seed, depth)| run_around(
-            dir.path(),
-            seed,
-            depth
-        )
-        .0),
-        [
-            "subgraph around \"src/reader.rs\" (depth 1):\n\
-             \x20 node src/reader.rs            file\n\
-             \x20 unresolved 4\n\
-             \x20 node src/reader.rs::glance    code-entity\n\
-             \x20 node src/reader.rs::scan      code-entity\n\
-             \x20 edge src/reader.rs -CONTAINS-> src/reader.rs::glance\n\
-             \x20 edge src/reader.rs -CONTAINS-> src/reader.rs::scan\n",
-            "subgraph around \"src/definer.rs\" (depth 3):\n\
-             \x20 node src/definer.rs           file\n\
-             \x20 node src/definer.rs::CEILING  code-entity\n\
-             \x20 node src/definer.rs::Halved   code-entity\n\
-             \x20 node src/definer.rs::Hinted   code-entity\n\
-             \x20 node src/reader.rs            file\n\
-             \x20 node src/reader.rs::scan      code-entity\n\
-             \x20 edge src/definer.rs -CONTAINS-> src/definer.rs::CEILING\n\
-             \x20 edge src/definer.rs -CONTAINS-> src/definer.rs::Halved\n\
-             \x20 edge src/definer.rs -CONTAINS-> src/definer.rs::Hinted\n\
-             \x20 edge src/reader.rs -CONTAINS-> src/reader.rs::scan\n\
-             \x20 edge src/reader.rs::scan -REFERENCES-> src/definer.rs::CEILING\n\
-             \x20 edge src/reader.rs::scan -REFERENCES-> src/definer.rs::Halved\n\
-             \x20 edge src/reader.rs::scan -REFERENCES-> src/definer.rs::Hinted\n",
-        ],
-        "the queried file alone prints its count, and an empty list prints none"
-    );
-}
-
-/// Spec 117, UNRESOLVED REFERENCES ARE A READ: GIVEN the same graph with `src/aka.rs` an alias of
-/// `src/reader.rs`, WHEN the operator runs `rigger graph --around src/aka.rs --depth 1`, THEN it
-/// prints the canonical `src/reader.rs`'s subgraph, its node line followed by its `unresolved`
-/// line, under a header naming the query as typed.
-#[test]
-fn graph_around_an_alias_prints_the_canonical_files_node_and_unresolved_lines() {
-    use common::cli::UNRESOLVED_ALIAS;
-    use common::fixtures::UNRESOLVED_FILE;
-
-    let dir = common::cli::unresolved_project();
-    common::fixtures::apply_json(
-        &common::cli::open_graph(dir.path()),
-        4,
-        rigger::contextgraph::TYPE_ALIAS_DEFINED,
-        common::fixtures::alias_json(UNRESOLVED_ALIAS, UNRESOLVED_FILE),
-    );
-    let [aliased, canonical] =
-        [UNRESOLVED_ALIAS, UNRESOLVED_FILE].map(|seed| run_around(dir.path(), seed, 1).0);
-    assert_eq!(
-        aliased.lines().next(),
-        Some("subgraph around \"src/aka.rs\" (depth 1):"),
-        "the header names the query as typed"
-    );
-    assert!(
-        aliased.lines().skip(1).eq(canonical.lines().skip(1)),
-        "the alias answers the canonical file's subgraph, its node and unresolved lines among it"
-    );
-}
-
-/// Spec 117, UNRESOLVED REFERENCES ARE A READ: GIVEN the same graph, WHEN a `refs` row's leaf
-/// cannot be read and the operator runs `rigger graph --around src/reader.rs`, THEN the command
-/// fails naming the unreadable column, never printing the subgraph without the file's count.
-#[test]
-fn graph_around_fails_on_an_unreadable_unresolved_read() {
-    use common::fixtures::{UNREADABLE_LEAF, UNREADABLE_LEAVES, UNRESOLVED_FILE};
-    assert_eq!(
-        common::cli::around_unresolved_fails_after(UNREADABLE_LEAVES, UNRESOLVED_FILE),
-        UNREADABLE_LEAF
-    );
-}
-
-/// Spec 117, UNRESOLVED REFERENCES ARE A READ: GIVEN the same graph whose alias `src/aka.rs` names
-/// a canonical id that cannot be read, WHEN the operator runs `rigger graph --around src/aka.rs`,
+/// GIVEN a graph holding a decision governing `src/reader.rs`, whose alias `src/aka.rs` names a
+/// canonical id that cannot be read, WHEN the operator runs `rigger graph --around src/aka.rs`,
 /// THEN the command fails naming the unreadable column, never answering the alias as a raw query.
 #[test]
 fn graph_around_fails_on_an_unreadable_alias() {
-    use common::cli::UNRESOLVED_ALIAS;
+    use common::cli::GOVERNED_ALIAS;
     assert_eq!(
-        common::cli::around_unresolved_fails_after(
+        common::cli::around_fails_after(
             &format!(
-                "INSERT INTO aliases (alias, canonical_id) VALUES ('{UNRESOLVED_ALIAS}', x'00')"
+                "INSERT INTO aliases (alias, canonical_id) VALUES ('{GOVERNED_ALIAS}', x'00')"
             ),
-            UNRESOLVED_ALIAS
+            GOVERNED_ALIAS
         ),
         "Invalid column type Blob at index: 0, name: canonical_id"
     );
 }
 
-/// Spec 117, UNRESOLVED REFERENCES ARE A READ: GIVEN the same graph, WHEN an edge's tier cannot be
-/// read and the operator runs `rigger graph --around src/reader.rs`, THEN the command fails naming
-/// the unreadable column, never printing an empty subgraph.
+/// GIVEN a graph holding a decision governing `src/reader.rs`, WHEN an edge's tier cannot be read
+/// and the operator runs `rigger graph --around src/reader.rs`, THEN the command fails naming the
+/// unreadable column, never printing an empty subgraph.
 #[test]
 fn graph_around_fails_on_an_unreadable_subgraph() {
     assert_eq!(
-        common::cli::around_unresolved_fails_after(
+        common::cli::around_fails_after(
             "UPDATE edges SET tier = CAST(tier AS BLOB)",
-            common::fixtures::UNRESOLVED_FILE
+            common::cli::GOVERNED_FILE
         ),
         "Invalid column type Blob at index: 5, name: tier"
     );
@@ -27341,71 +27225,6 @@ fn graph_show_answers_a_struct_field_by_its_path() {
             "       2 |     pub field: u8,",
         ],
         "the path form shows Struct's field alone"
-    );
-}
-
-/// Spec 119, AN OLDER GRAPH IS REBUILT: GIVEN a log holding one hand-built extraction batch of
-/// `src/f.rs` whose method `new` sits at the path `T::new`, folded into a `graph.db` then stamped
-/// with fold rule 2 and holding a row at the flat id `src/f.rs::new` carrying `name`, as a binary
-/// folding before path ids left it, WHEN the operator runs `rigger setup`, THEN the file owed its
-/// rebuild, records the current fold rule after it, no row at the flat id carries `name`, and the
-/// path id `src/f.rs::T::new` does.
-#[test]
-fn rigger_setup_rebuilds_a_rule_2_graph_db_leaving_no_flat_nested_id_named() {
-    use common::cli::{
-        exists, insert_node, open_graph, read_run_events, rigger_db, rigger_file,
-        run_stream_identity, temp_store_project, user_version, version_and_owed,
-    };
-    let dir = temp_store_project();
-    let root = dir.path();
-    let batch = [common::fixtures::f_rs_batch_def(
-        1,
-        "h1",
-        0,
-        ("new", "method", 3),
-        Some("T::new"),
-        10,
-    )];
-    common::cli::seed_pre_ledger_events(root, &batch);
-    common::fixtures::folds(&open_graph(root), &read_run_events(root));
-    let graph_db = rigger_file(root, "graph.db");
-    let project = run_stream_identity(root);
-    insert_node(
-        &rigger_db(root, "graph.db"),
-        &project,
-        "src/f.rs::new",
-        rigger::contextgraph::KIND_CODE_ENTITY,
-        Some(r#"{"name":"new"}"#),
-    );
-    common::fixtures::stamp_user_version(&graph_db, 2);
-    let named = |id: &str| {
-        exists(
-            &graph_db,
-            "SELECT EXISTS (SELECT 1 FROM nodes
-              WHERE id = ?1 AND json_extract(attrs, '$.name') IS NOT NULL)",
-            id,
-        )
-    };
-    assert_eq!(
-        (
-            version_and_owed(&graph_db, &project),
-            named("src/f.rs::new"),
-            named("src/f.rs::T::new")
-        ),
-        ((2, true), true, true),
-        "the rule-2 file owes its rebuild and names both the flat and the path id"
-    );
-
-    setup_ok(root, &[]);
-    assert_eq!(
-        (
-            user_version(&graph_db),
-            named("src/f.rs::new"),
-            named("src/f.rs::T::new")
-        ),
-        (rigger::contextgraph::sqlite::PROJECTION_VERSION, false, true),
-        "the rebuilt file records the current fold rule, no row at the flat nested id carries name \
-         and the path id does"
     );
 }
 
@@ -27614,30 +27433,6 @@ fn mcp_rigger_graph_show_and_around_render_every_node_through_site_fields() {
     let composed = common::fixtures::view_graph(&graph, &view);
     common::fixtures::assert_shown_tree_sites_are_site_fields(&composed, &sites);
     common::fixtures::assert_shown_tree_around_is_entity_sites(&composed, &nodes);
-}
-
-/// Spec 117, UNRESOLVED REFERENCES ARE A READ, at the `rigger mcp` binary: GIVEN the project's own
-/// `graph.db` holding the rows `seed_unresolved_references` stages, WHEN an MCP client calls
-/// `rigger_graph` with `show` on `src/reader.rs` and on `src/definer.rs` and with `around` on
-/// `src/reader.rs` at depth 1, THEN the reader's site carries its leaves joined by
-/// `contextgraph::LIST_SEP` as one `unresolved` key beside its `partial`, the definer's carries no
-/// `unresolved` key, and no node of the `around` carries one.
-#[test]
-fn mcp_rigger_graph_show_carries_a_files_unresolved_leaves_and_around_carries_none() {
-    use common::fixtures::{
-        assert_around_lists_no_unresolved, assert_show_lists_unresolved_leaves, RESOLVING_FILE,
-        UNRESOLVED_FILE,
-    };
-
-    let dir = common::cli::unresolved_project();
-    common::cli::seed_store(dir.path());
-    let mut mcp = McpSession::start(dir.path());
-    let [reader, definer] = [UNRESOLVED_FILE, RESOLVING_FILE].map(|id| mcp.shown_site(id));
-    let around = mcp.around_answer(UNRESOLVED_FILE);
-    mcp.finish_cleanly();
-
-    assert_show_lists_unresolved_leaves(&reader, &definer);
-    assert_around_lists_no_unresolved(&around);
 }
 
 /// The shipped skill's lookup section states the graph-first rule for a human reader

@@ -1,10 +1,6 @@
 //! The resolver's golden: a fixture tree holding a row for every rule of the resolver's table,
-//! and the graph the code fold made of it, captured once as `golden/code_view.golden`. The fold
-//! half proves the golden is the fold's; the view half proves the code view answers it, save
-//! the departures the code store states.
-//!
-//! Capture: `RIGGER_CAPTURE_GOLDEN=1 cargo test -p rigger-grounder --test code_view_golden`
-//! rewrites the golden from the fold. A normal run only compares.
+//! and the graph the retired code fold made of it, kept as `golden/code_view.golden`. The code
+//! view answers it, save the departures the code store states.
 
 #![cfg(all(feature = "symbols", any(feature = "store", not(feature = "core"))))]
 
@@ -13,11 +9,7 @@ use std::path::{Path, PathBuf};
 use rigger_domain::code_facts::{Stamp, Tip};
 use rigger_domain::code_graph::CodeGraph;
 use rigger_domain::code_view::{Entry, Extract, FactsView, ViewFilter};
-use rigger_domain::contextgraph::{EntryFold, Graph, RecordFold};
-use rigger_domain::eventstore::Event;
-use rigger_domain::ingest::derived_key_parts;
-use rigger_domain::retention::GenerationIngested;
-use rigger_graph_sqlite::contextgraph::sqlite::Projector;
+use rigger_domain::contextgraph::Graph;
 use rigger_grounder::facts::FactsExtractor;
 
 /// The fixture tree, one `(path, contents)` per file. Each file's comment names the rows of the
@@ -226,37 +218,6 @@ fn planted() -> tempfile::TempDir {
     dir
 }
 
-/// The graph the code fold makes of the tree at `root`: every batch the walk hands, folded with
-/// its ledger entry at the next log position.
-fn folded(root: &Path) -> Graph {
-    let graph = Projector::open(":memory:", "test").unwrap();
-    let mut position = 0u64;
-    rigger_grounder::ingest::ingest_project_batched(
-        root.to_str().unwrap(),
-        &[],
-        |keyed: &[(String, &Event)], excluded: bool| {
-            let (identity, generation) = derived_key_parts(&keyed[0].0).unwrap();
-            let (prefix, file) = GenerationIngested::identity_parts(identity).unwrap();
-            position += 1;
-            let mut entry = GenerationIngested {
-                prefix: prefix.to_string(),
-                file: file.to_string(),
-                generation: generation.to_string(),
-                blob: String::new(),
-                excluded,
-            }
-            .event(keyed.len());
-            entry.position = position;
-            let batch: Vec<Event> = keyed.iter().map(|(_, e)| (*e).clone()).collect();
-            let fold = graph
-                .apply_generation(&entry, Box::new(move || Ok(Some(batch))))
-                .unwrap();
-            assert_eq!(fold, EntryFold::BatchAsked, "every entry's batch folds");
-        },
-    );
-    graph.whole().unwrap()
-}
-
 /// `g` as sorted lines: one per node (id, kind, attributes) and one per live edge (ends,
 /// relation, tier). Log positions and valid times are not part of a code edge's answer.
 fn render(g: &Graph) -> String {
@@ -277,19 +238,6 @@ fn render(g: &Graph) -> String {
     lines.sort();
     lines.dedup();
     lines.join("\n") + "\n"
-}
-
-/// The golden is the fold's graph of the fixture tree.
-#[test]
-fn the_golden_is_the_retired_folds_graph_of_the_fixture_tree() {
-    let tree = planted();
-    let fold = render(&folded(tree.path()));
-    if std::env::var_os("RIGGER_CAPTURE_GOLDEN").is_some() {
-        std::fs::create_dir_all(golden_path().parent().unwrap()).unwrap();
-        std::fs::write(golden_path(), &fold).unwrap();
-    }
-    let golden = std::fs::read_to_string(golden_path()).expect("the golden is captured");
-    assert_eq!(fold, golden);
 }
 
 /// The view of the tree at `root`: every file's facts, read by the production extractor.

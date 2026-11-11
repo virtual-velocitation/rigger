@@ -674,3 +674,34 @@ fn validate_still_fails_on_a_store_it_cannot_select_whatever_the_claude_login() 
         assert_reports_the_claude_login(name, &out, &err, lines, warnings);
     }
 }
+
+/// GIVEN a freshly initialised project with no `graph.db`, WHEN the operator runs `rigger
+/// validate`, THEN it succeeds, prints its config summary, and leaves `graph.db` absent: a
+/// read-only check never fabricates the file it would have read.
+#[test]
+fn validate_never_fabricates_a_graph_db_on_a_fresh_project() {
+    let dir = temp_rigger_project();
+    let root = dir.path();
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+    let graph_path = root.join(".rigger").join("graph.db");
+    assert!(
+        !graph_path.exists(),
+        "precondition: a fresh project has no graph.db yet"
+    );
+
+    let (out, err, ok) = run_rigger(root, &["validate"]);
+    assert!(
+        ok,
+        "validate must succeed on a project with no graph.db yet; stderr:\n{err}"
+    );
+    assert!(
+        out.contains("config valid"),
+        "validate must still print its config summary; stdout:\n{out}"
+    );
+    assert!(
+        !graph_path.exists(),
+        "a read-only advisory must never fabricate the graph.db file it would have read; the \
+         file must stay absent afterward"
+    );
+}

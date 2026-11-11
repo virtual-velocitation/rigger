@@ -2,30 +2,21 @@
 //! id cut and one node leaf key every node-side reader, so a placeholder resolves onto a nested
 //! definition (`src/a.rs::T::new`, named `new`) by its leaf, and a node with an empty `name` is
 //! no definition. The crates' own tests pin each reader from inside its crate; these run OUTSIDE
-//! the crates and guard the boundaries the rule crosses on its way to an operator:
-//!
-//!  - the readers agreeing across crates: the files lens whole and re-grained (`dash`), the
-//!    served `/api/graph` route and the coupling layer (`community`), over one in-memory graph;
-//!  - the public projection: an entity event with an empty `name`, folded by
-//!    `Projector::apply`, answers no bare lookup through `Projector::locate` (the binary's
-//!    `rigger graph --show` refuses an empty entity before it reaches the projection).
+//! the crates and guard the readers agreeing across crates: the files lens whole and re-grained
+//! (`dash`), the served `/api/graph` route and the coupling layer (`community`), over one
+//! in-memory graph.
 //!
 //! No grammar yields a nested id at this tree, so the cross-crate readers are driven over an
-//! in-memory graph; the empty `name` enters as the entity event the fold reads. Every test runs
-//! on both lanes.
+//! in-memory graph. Every test runs on both lanes.
 
 use crate::common;
 
-use common::fixtures::RecordsRead;
-use common::fixtures::{
-    apply_code_entity, apply_def, def_node, definition, edge, empty_named_node, plain,
-};
+use common::fixtures::{def_node, edge, empty_named_node, plain};
 use common::lens::{files_lens_rows, SUB_C, SUB_C_FILES_ROUTE};
 use common::served::served_json;
-use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{
-    EntitySite, Graph, Located, Node, KIND_CODE_ENTITY, KIND_CONCEPT, REL_CALLS, REL_REALIZES,
-    TIER_EXTRACTED, TIER_INFERRED,
+    Graph, Node, KIND_CODE_ENTITY, KIND_CONCEPT, REL_CALLS, REL_REALIZES, TIER_EXTRACTED,
+    TIER_INFERRED,
 };
 
 /// The nested definition every placeholder below resolves onto.
@@ -153,44 +144,5 @@ fn the_served_files_regrain_folds_a_placeholder_onto_the_nested_definition() {
         }),
         "the served re-grain folds the placeholder under the nested definition's file and \
          carries no unresolved member"
-    );
-}
-
-/// GIVEN a projection where `src/a.rs` holds an entity of an empty `name` and `src/b.rs` a fn
-/// `open`, WHEN each name is looked up through `Projector::locate`, THEN the empty name answers
-/// no entity and `open` its fn.
-#[test]
-fn an_entity_of_an_empty_name_answers_no_bare_lookup() {
-    let p = Projector::open(":memory:", "test").unwrap();
-    apply_code_entity(&p, 1, "src/a.rs", "", "function", 1, "rust");
-    apply_def(&p, 2, "src/b.rs", "open", 1, true);
-    assert_eq!(
-        p.whole()
-            .unwrap()
-            .nodes
-            .iter()
-            .filter(|n| n.kind == KIND_CODE_ENTITY)
-            .map(|n| (n.id.as_str(), n.attrs.get("name").map(String::as_str)))
-            .collect::<Vec<_>>(),
-        [("src/a.rs::", Some("")), ("src/b.rs::open", Some("open"))],
-        "the fold records the empty name it was given"
-    );
-    assert_eq!(
-        p.locate("").unwrap(),
-        Located::None,
-        "an empty name is no leaf"
-    );
-    assert_eq!(
-        p.locate("open").unwrap(),
-        Located::One(EntitySite {
-            id: "src/b.rs::open".to_string(),
-            kind: "function".to_string(),
-            file: Some("src/b.rs".to_string()),
-            line: 1,
-            degree: 1,
-            attrs: definition("open", "function", 1),
-            unresolved: vec![],
-        }),
-        "a named fn answers its leaf"
     );
 }

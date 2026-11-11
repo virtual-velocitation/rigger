@@ -395,23 +395,16 @@ fn open_sqlite_store(path: &str) -> Result<Store, Box<dyn std::error::Error>> {
 /// embedded log whose file does not exist yet is read as the empty one it is
 /// ([`StoreSelection::log_file`]), so no open makes `events.db`; the identity it records of that
 /// log ([`Projector::with_store_identity`]) is the store's own ([`store_identity`]), the embedded
-/// log's path or a digest of the server's endpoint. Its re-extraction
-/// ([`Projector::with_reextraction`]) is a fresh one each catch-up or rebuild call builds for
-/// itself and drops as it returns, resolving each ledger entry it is handed through
-/// [`reextract_entry`] under THE ONE ROOT of the directory holding the file, read from the one cell
-/// the open returns beside the projector ([`TreeRoot`]): asked of git at the first entry any
-/// re-extraction of this open is handed, resolved or not, or by the first other reader of the cell
-/// before it, and once among them.
+/// log's path or a digest of the server's endpoint.
 fn open_graph_for_write(
     graph_db: &str,
     project: &str,
     selection: &StoreSelection,
-) -> Result<(Projector, std::sync::Arc<TreeRoot>), contextgraph::Error> {
+) -> Result<Projector, contextgraph::Error> {
     let store_dir = cwd()
         .join(graph_db)
         .parent()
         .map_or_else(cwd, Path::to_path_buf);
-    let tree = std::sync::Arc::new(TreeRoot::of(store_dir.clone()));
     let (selection, events_db) = (selection.clone(), store_file(&store_dir, "events.db"));
     let store = store_identity(&selection, events_db.clone()).log_identity();
     let scope = project.to_string();
@@ -423,59 +416,9 @@ fn open_graph_for_write(
             })
             .map_err(|e| contextgraph::Error(e.to_string()))
     };
-    let rooted = std::sync::Arc::clone(&tree);
-    let reextraction = move || -> Box<contextgraph::sqlite::Reextract<'static>> {
-        let (tree, mut batch) = (std::sync::Arc::clone(&rooted), None);
-        Box::new(move |entry: &Event| reextract_entry(tree.get(), &mut batch, entry))
-    };
-    let graph = Projector::open(graph_db, project)?
+    Ok(Projector::open(graph_db, project)?
         .with_log(log)
-        .with_reextraction(reextraction)
-        .with_store_identity(store);
-    Ok((graph, tree))
-}
-
-/// Re-extract the batch of the ledger entry of perception `entry` (spec 107,
-/// `ingest::resolve_entry`) for the tree under `root`: from the entry's blob in the repository's
-/// object database, read through the batch process `batch` holds - started at the first entry it
-/// is handed, resolved or not ([`entry_blobs`]), and none outside a git repository, when the
-/// detection's process cannot start, or in the lane compiled without an extraction - else from the
-/// tree's file, else from no bytes. A batch process that cannot start inside a repository fails the
-/// entry, naming its command, and is kept for none, so the next entry starts it again. An entry no
-/// source resolves answers none, and in the lane compiled without an extraction no source resolves
-/// any.
-fn reextract_entry(
-    root: &Path,
-    batch: &mut Option<Option<rigger::worktree::BlobBatch>>,
-    entry: &Event,
-) -> Result<Option<Vec<Event>>, contextgraph::Error> {
-    let started = match batch.take() {
-        Some(started) => started,
-        None => entry_blobs(root)?,
-    };
-    let mut held = batch
-        .insert(started)
-        .as_mut()
-        .map(|batch| |id: &str| batch.blob(id).map_err(|e| contextgraph::Error(e.0)));
-    rigger::ingest::resolve_entry(
-        root,
-        entry,
-        held.as_mut()
-            .map(|source| source as &mut rigger::ingest::BlobSource),
-    )
-}
-
-/// The batch process a re-extraction reads its entries' blobs from, over the repository holding
-/// `root` ([`rigger::worktree::BlobBatch::start`]): none outside a git repository or when the
-/// detection's process cannot start, a failure naming the command when the batch's own cannot
-/// start inside one, and none in the lane that compiles no extraction, where no entry resolves and
-/// no process is started.
-fn entry_blobs(root: &Path) -> Result<Option<rigger::worktree::BlobBatch>, contextgraph::Error> {
-    if cfg!(feature = "symbols") {
-        rigger::worktree::BlobBatch::start(root).map_err(|e| contextgraph::Error(e.0))
-    } else {
-        Ok(None)
-    }
+        .with_store_identity(store))
 }
 
 /// Open this project's `graph.db` for write ([`open_graph_for_write`], under `selection`) for
@@ -490,7 +433,7 @@ fn open_graph(
     selection: &StoreSelection,
     command: &str,
 ) -> Result<Projector, Box<dyn std::error::Error>> {
-    let (graph, _) = open_graph_for_write(graph_db, project, selection)?;
+    let graph = open_graph_for_write(graph_db, project, selection)?;
     if graph.rebuild_owed()? {
         return Err(contextgraph::rebuild_owed_refusal(command).into());
     }
@@ -541,15 +484,7 @@ fn graph_passed_over_note(graph_db: &str, project: &str) -> Option<String> {
 /// setup`'s passed-over line and `rigger validate`'s note ([`graph_passed_over_note`]) both spell
 /// it; `None` when it passed none over, so neither line is printed.
 fn passed_over_by_cause(passed: &contextgraph::sqlite::PassedOver) -> Option<String> {
-    (passed.total() > 0).then(|| {
-        format!(
-            "({} rejected payload(s), {} fold failure(s), {} {})",
-            passed.rejected,
-            passed.failed,
-            passed.unresolved,
-            contextgraph::sqlite::RESOLVED_TO_NOTHING
-        )
-    })
+    (passed.total() > 0).then(|| format!("({} rejected payload(s))", passed.rejected))
 }
 
 /// What `rigger setup`'s passed-over line and `rigger validate`'s note ([`graph_passed_over_note`])
@@ -1274,7 +1209,7 @@ fn migrate_identity_at(loc: &StoreLocation, held: Option<&RebuildLock>) -> Res {
         return Ok(()); // no minted identity distinct from the basename
     }
     let backend = open_sqlite_store(&store_path)?;
-    let (graph, _) = open_graph_for_write(&loc.file("graph.db"), &minted, &StoreSelection::Sqlite)?;
+    let graph = open_graph_for_write(&loc.file("graph.db"), &minted, &StoreSelection::Sqlite)?;
     let graph = graph.with_rebuild_lock(held);
     if let Some((n, decision)) = migrate_project_identity(&backend, &minted, &legacy, Some(&graph))?
     {
@@ -1560,7 +1495,7 @@ impl StoreLocation {
         selection: &StoreSelection,
     ) -> Result<Box<dyn RecordFold>, contextgraph::Error> {
         open_graph_for_write(&self.file("graph.db"), &self.identity(), selection)
-            .map(|(g, _)| Box::new(g) as Box<dyn RecordFold>)
+            .map(|g| Box::new(g) as Box<dyn RecordFold>)
     }
 
     /// A store file path (`events.db` / `graph.db`) under the resolved `.rigger/`, as the
@@ -5406,30 +5341,6 @@ fn tree_root(store_dir: &Path) -> PathBuf {
     }
 }
 
-/// THE ONE ROOT ([`tree_root`]) of the store at a `.rigger/`, as one write open hands it to every
-/// reader of its tree ([`open_graph_for_write`]): asked of git by the first read, and held for the
-/// cell's life, so the readers sharing the cell ask git for it once among them and never when none
-/// reads it.
-struct TreeRoot {
-    store_dir: PathBuf,
-    root: std::sync::OnceLock<PathBuf>,
-}
-
-impl TreeRoot {
-    /// The root of the store at `store_dir`, asked of git by the first [`TreeRoot::get`].
-    fn of(store_dir: PathBuf) -> Self {
-        TreeRoot {
-            store_dir,
-            root: std::sync::OnceLock::new(),
-        }
-    }
-
-    /// The root, asked of git at this cell's first read and held for every later one.
-    fn get(&self) -> &Path {
-        self.root.get_or_init(|| tree_root(&self.store_dir))
-    }
-}
-
 /// The graph-first lookup hook's stated bounce message: first the combined lookup, which answers a
 /// name, path or word from the graph, the caller's tree and the project's prose in one call, then
 /// the graph calls that answer the narrower name lookups (who calls a name, where a name is
@@ -5501,20 +5412,14 @@ mod tests {
     #[test]
     fn the_passed_over_note_counts_by_cause_the_rows_graph_db_holds() {
         let (_dir, graph_db) = crate::test_support::temp_graph_db();
-        let log = [
-            crate::test_support::unresolved_entry_at(1),
-            crate::test_support::poisoned_decision_at(2),
-        ];
+        let log = [crate::test_support::poisoned_decision_at(1)];
         assert_eq!(
-            crate::test_support::rebuild_answer(
-                &graph_db,
-                true,
-                &mut |after, sink| contextgraph::sqlite::stream_past(&log, after, 10, sink),
-                crate::test_support::resolving(|_| Ok(None)),
-            ),
+            crate::test_support::rebuild_answer(&graph_db, true, &mut |after, sink| {
+                contextgraph::sqlite::stream_past(&log, after, 10, sink)
+            }),
             crate::test_support::clean_rebuild()
         );
-        let passed_over = crate::test_support::passed_over_note(1, 0, 1);
+        let passed_over = crate::test_support::passed_over_note(1);
         assert_eq!(
             (
                 graph_rebuild_owed_note(&graph_db, "test"),

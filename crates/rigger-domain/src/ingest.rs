@@ -231,8 +231,7 @@ pub fn reasserted_derived_types() -> Vec<&'static str> {
 /// Neither ingest sink reads a slice to decide what it records (spec 101): both ask
 /// [`latest_generation`], answered by the store's group lookup. This is the reference that
 /// lookup is held to - the lookup's contract test asserts it answers what this answers on the same
-/// log - and what [`perceived_generations`] answers over its one typed read. The rule, in the
-/// order it is applied:
+/// log. The rule, in the order it is applied:
 ///
 /// 1. **Type first.** Only a recording of perception is eligible
 ///    ([`PERCEPTION_TYPES`](crate::retention::PERCEPTION_TYPES)): a keyed derived row or the
@@ -259,25 +258,6 @@ pub fn project_scoped_latest_generations(
         .filter_map(|e| derived_key_parts(e.meta.get(META_REPLAY_KEY)?))
         .map(|(identity, generation)| (identity.to_string(), generation.to_string()))
         .collect()
-}
-
-/// THE LOG SIDE OF PERCEPTION (spec 107): each identity's latest recorded generation on
-/// `stream`, a ledger entry's or a keyed derived row's alike, as
-/// [`project_scoped_latest_generations`] answers it over ONE typed read of
-/// [`PERCEPTION_TYPES`](crate::retention::PERCEPTION_TYPES) from the stream's start. The
-/// generation is cut from each row's replay key, never looked up by group, so a keyed derived row
-/// recorded with no group is seen. On a store whose derived rows are not yet shed the read holds
-/// every one of them at once.
-pub fn perceived_generations(
-    store: &dyn EventStore,
-    stream: &str,
-) -> Result<std::collections::HashMap<String, String>, Error> {
-    let recorded = store.read_stream_typed(
-        stream,
-        0,
-        crate::eventstore::TypeSelection::Only(&crate::retention::PERCEPTION_TYPES),
-    )?;
-    Ok(project_scoped_latest_generations(&recorded))
 }
 
 /// [`batch_is_current`]'s whole truth table: the log's latest generation and the graph's side
