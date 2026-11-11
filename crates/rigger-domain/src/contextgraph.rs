@@ -250,6 +250,11 @@ pub const REL_DOC_REFERENCES: &str = "references";
 /// `lens=code` view buckets each member by its one live community. Folded at [`TIER_INFERRED`] - a
 /// derived grouping, one confidence step below the explicit structural edges it is detected over.
 pub const REL_IN_COMMUNITY: &str = "IN_COMMUNITY";
+/// A test entity TESTS the community or concept whose product it proves (the code store's test
+/// views): the edge from the test entity to the cluster holding the plurality of the product
+/// definitions it proves, drawn as that cluster's "tests" group. It is never membership: a
+/// cluster's members stay product code under every filter. Present only when tests are shown.
+pub const REL_TESTS: &str = "TESTS";
 /// A node REALIZES a derived concept (spec 54): the membership edge from a member node (a design-doc,
 /// handbook-rule, spec, rationale, or the code entity / file the intent layer attaches to) to its
 /// [`KIND_CONCEPT`] super-node, folded from a `ConceptRealized` event. Direction: the concept is

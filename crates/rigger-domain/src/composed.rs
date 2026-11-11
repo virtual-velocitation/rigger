@@ -15,7 +15,7 @@ use std::sync::Mutex;
 
 use crate::code_facts::Tip;
 use crate::code_graph::CodeGraph;
-use crate::code_view::{CodeView, Groupings, ViewFilter, WorktreeDiff};
+use crate::code_view::{CodeView, Groupings, Tests, ViewFilter, WorktreeDiff};
 use crate::contextgraph::query::{
     entity_id, leaf_of, member_file, node_file, node_leaf, node_name, path_leaf, split_id,
 };
@@ -26,6 +26,8 @@ use crate::contextgraph::{
     REL_GOVERNS, REL_IN_COMMUNITY, REL_REALIZES, REL_REFERENCES, TIER_AMBIGUOUS, TIER_EXTRACTED,
     TIER_INFERRED,
 };
+use crate::resolve::ProofCall;
+use crate::test_view::{join_tests, TestAttachment};
 
 /// How the caller's worktree compares with the tree a view describes.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -260,7 +262,7 @@ impl Neighbors for Indexed {
 /// `graph` with the view's `groupings` joined on: each community and concept a node carrying the
 /// pass's resolution, hash and label, and an inferred `IN_COMMUNITY` or `REALIZES` edge from
 /// each member `graph` holds as a kind that holds it ([`holds_attachment`]).
-fn joined(mut graph: Graph, groupings: &Groupings) -> Graph {
+fn joined(mut graph: Graph, groupings: &Groupings, proofs: &[ProofCall], tests: Tests) -> Graph {
     let kinds: BTreeMap<String, String> = graph
         .nodes
         .iter()
@@ -296,6 +298,7 @@ fn joined(mut graph: Graph, groupings: &Groupings) -> Graph {
                 }
             }
         }
+        join_tests(&mut graph, &TestAttachment::new(proofs, clusters), tests);
     }
     graph
 }
@@ -370,8 +373,10 @@ impl<'r> Composed<'r> {
         honesty: Honesty,
     ) -> Result<Self, Error> {
         let groupings = view.groupings();
+        let code_graph = CodeGraph::new(view, filter);
+        let proofs = code_graph.resolver().proof_calls();
         let code = Indexed::new(
-            joined(CodeGraph::new(view, filter).whole(), groupings),
+            joined(code_graph.whole(), groupings, &proofs, filter.tests),
             Vec::new(),
         );
         let mut canonical = BTreeMap::new();

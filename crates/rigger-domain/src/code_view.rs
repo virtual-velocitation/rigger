@@ -216,6 +216,12 @@ impl FactsView {
         }
     }
 
+    /// This view with `groupings` as the groupings it holds.
+    pub fn with_groupings(mut self, groupings: Groupings) -> Self {
+        self.groupings = groupings;
+        self
+    }
+
     fn file_ref(file: &FileFacts) -> FileRef<'_> {
         FileRef {
             path: &file.path,
